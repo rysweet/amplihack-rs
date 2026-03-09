@@ -67,11 +67,15 @@ impl Hook for UserPromptSubmitHook {
         let dirs = ProjectDirs::from_cwd();
         let mut context_parts: Vec<String> = Vec::new();
 
-        // Load user preferences.
-        if let Some(prefs_context) = load_user_preferences(&dirs)
-            && !prefs_context.is_empty()
+        // Load user preferences (including learned patterns detection).
+        let (prefs_context, has_learned_patterns) = load_user_preferences_with_patterns(&dirs);
+        if let Some(ctx) = prefs_context
+            && !ctx.is_empty()
         {
-            context_parts.push(prefs_context);
+            context_parts.push(ctx);
+        }
+        if has_learned_patterns {
+            context_parts.push("Has Learned Patterns: Yes".to_string());
         }
 
         // Inject memory context via bridge.
@@ -86,6 +90,15 @@ impl Hook for UserPromptSubmitHook {
             && !framework_context.is_empty()
         {
             context_parts.push(framework_context);
+        }
+
+        // Detect /dev invocations and inject workflow enforcement context.
+        if is_dev_invocation(&prompt) {
+            context_parts.push(
+                "🔧 /dev workflow detected. Follow DEFAULT_WORKFLOW steps. \
+                 Track progress with TodoWrite."
+                    .to_string(),
+            );
         }
 
         if context_parts.is_empty() {
@@ -106,7 +119,8 @@ impl Hook for UserPromptSubmitHook {
 }
 
 /// Load user preferences from USER_PREFERENCES.md.
-fn load_user_preferences(dirs: &ProjectDirs) -> Option<String> {
+/// Also detects `## Learned Patterns` section.
+fn load_user_preferences_with_patterns(dirs: &ProjectDirs) -> (Option<String>, bool) {
     let candidates = [
         dirs.user_preferences(),
         dirs.root.join("USER_PREFERENCES.md"),
@@ -116,10 +130,20 @@ fn load_user_preferences(dirs: &ProjectDirs) -> Option<String> {
         if path.exists() {
             match fs::read_to_string(path) {
                 Ok(content) => {
+                    let has_learned = content.contains("## Learned Patterns")
+                        && content
+                            .split("## Learned Patterns")
+                            .nth(1)
+                            .map(|s| {
+                                s.lines()
+                                    .any(|l| !l.trim().is_empty() && !l.starts_with('#'))
+                            })
+                            .unwrap_or(false);
                     let prefs = extract_preferences(&content);
                     if !prefs.is_empty() {
-                        return Some(build_preference_context(&prefs));
+                        return (Some(build_preference_context(&prefs)), has_learned);
                     }
+                    return (None, has_learned);
                 }
                 Err(e) => {
                     tracing::warn!("Failed to read preferences: {}", e);
@@ -128,7 +152,17 @@ fn load_user_preferences(dirs: &ProjectDirs) -> Option<String> {
         }
     }
 
-    None
+    (None, false)
+}
+
+/// Check if the user prompt is a /dev invocation.
+fn is_dev_invocation(prompt: &str) -> bool {
+    let trimmed = prompt.trim();
+    trimmed == "/dev"
+        || trimmed.starts_with("/dev ")
+        || trimmed.starts_with("/dev\n")
+        || trimmed.contains("\n/dev ")
+        || trimmed.contains("\n/dev\n")
 }
 
 /// Extract preference key-value pairs from markdown content.
