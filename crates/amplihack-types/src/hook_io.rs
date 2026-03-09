@@ -96,17 +96,30 @@ pub enum HookInput {
 }
 
 /// Output from a hook back to the host.
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize)]
 pub struct HookOutput {
+    /// IPC protocol version. Always 1 for current protocol.
+    pub version: u32,
+
     /// If present, contains the permission decision and optional modifications.
     #[serde(rename = "hookSpecificOutput", skip_serializing_if = "Option::is_none")]
     pub hook_specific_output: Option<HookOutputDecision>,
+}
+
+impl Default for HookOutput {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            hook_specific_output: None,
+        }
+    }
 }
 
 impl HookOutput {
     /// Create an empty output (allow, no modifications).
     pub fn allow() -> Self {
         Self {
+            version: 1,
             hook_specific_output: None,
         }
     }
@@ -114,6 +127,7 @@ impl HookOutput {
     /// Create a deny output with a reason.
     pub fn deny(reason: impl Into<String>) -> Self {
         Self {
+            version: 1,
             hook_specific_output: Some(HookOutputDecision::Deny {
                 reason: reason.into(),
             }),
@@ -123,15 +137,17 @@ impl HookOutput {
     /// Create a block output (for stop hook — block session exit).
     pub fn block(reason: impl Into<String>) -> Self {
         Self {
+            version: 1,
             hook_specific_output: Some(HookOutputDecision::Block {
                 reason: reason.into(),
             }),
         }
     }
 
-    /// Create an output that modifies the user prompt.
+    /// Create a modify prompt output.
     pub fn modify_prompt(new_prompt: impl Into<String>) -> Self {
         Self {
+            version: 1,
             hook_specific_output: Some(HookOutputDecision::ModifyPrompt {
                 new_prompt: new_prompt.into(),
             }),
@@ -190,8 +206,10 @@ mod tests {
     #[test]
     fn serialize_allow_output() {
         let output = HookOutput::allow();
-        let json = serde_json::to_string(&output).unwrap();
-        assert_eq!(json, "{}");
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["version"], 1);
+        // No hookSpecificOutput for allow
+        assert!(json.get("hookSpecificOutput").is_none());
     }
 
     #[test]
@@ -229,5 +247,21 @@ mod tests {
         }"#;
         let input: HookInput = serde_json::from_str(json).unwrap();
         assert!(matches!(input, HookInput::PreToolUse { .. }));
+    }
+
+    #[test]
+    fn version_field_always_present() {
+        let output = HookOutput::deny("test");
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["version"], 1);
+        assert_eq!(json["hookSpecificOutput"]["permissionDecision"], "deny");
+    }
+
+    #[test]
+    fn version_defaults_to_1() {
+        assert_eq!(HookOutput::allow().version, 1);
+        assert_eq!(HookOutput::deny("x").version, 1);
+        assert_eq!(HookOutput::block("x").version, 1);
+        assert_eq!(HookOutput::modify_prompt("x").version, 1);
     }
 }
