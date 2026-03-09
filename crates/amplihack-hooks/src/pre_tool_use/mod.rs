@@ -9,9 +9,10 @@
 mod command;
 mod cwd;
 mod git;
+pub mod launcher;
 
 use crate::protocol::{FailurePolicy, Hook};
-use amplihack_types::HookInput;
+use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
 
 /// Error messages for blocked operations.
@@ -92,6 +93,13 @@ impl Hook for PreToolUseHook {
             } => (tool_name, tool_input),
             _ => return Ok(Value::Object(serde_json::Map::new())),
         };
+
+        // Run launcher-specific context injection (side-effect only, never blocks).
+        let dirs = ProjectDirs::from_cwd();
+        let input_value = serde_json::json!({"tool_name": &tool_name, "tool_input": &tool_input});
+        if let Some(strategy_result) = launcher::inject_context(&dirs, &input_value) {
+            return Ok(strategy_result);
+        }
 
         // Only process Bash tool invocations.
         if tool_name != "Bash" {

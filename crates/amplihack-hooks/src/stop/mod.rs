@@ -8,6 +8,7 @@
 
 pub mod lock;
 pub mod power_steering;
+pub mod reflection;
 
 use crate::protocol::{FailurePolicy, Hook};
 use amplihack_types::{HookInput, ProjectDirs};
@@ -50,6 +51,14 @@ impl Hook for StopHook {
         if power_steering::should_run(&dirs)
             && let Some(block) =
                 power_steering::check(&dirs, &session_id, transcript_path.as_deref())?
+        {
+            return Ok(block);
+        }
+
+        // Run reflection (if enabled).
+        if reflection::should_run(&dirs)
+            && let Some(block) =
+                reflection::run_reflection(&dirs, &session_id, transcript_path.as_deref())?
         {
             return Ok(block);
         }
