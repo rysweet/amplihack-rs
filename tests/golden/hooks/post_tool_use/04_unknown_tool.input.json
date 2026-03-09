@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "CustomTool",
+  "tool_input": {"key": "value"},
+  "tool_result": {"data": "result"}
+}

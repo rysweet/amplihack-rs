@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {"command": "pwd"},
+  "tool_result": {"stdout": "/home/user"},
+  "session_id": "session-12345"
+}

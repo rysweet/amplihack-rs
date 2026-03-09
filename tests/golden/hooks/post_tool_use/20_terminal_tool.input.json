@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "terminal",
+  "tool_input": {"command": "whoami"},
+  "tool_result": {"stdout": "user"}
+}

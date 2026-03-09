@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {"command": "echo hi"}
+}

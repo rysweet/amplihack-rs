@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Edit",
+  "tool_input": {"path": "file.rs", "old_str": "a", "new_str": "b"},
+  "tool_result": {"success": true}
+}

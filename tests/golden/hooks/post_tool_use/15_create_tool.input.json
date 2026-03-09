@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "create",
+  "tool_input": {"path": "/tmp/new.txt", "content": "new file"},
+  "tool_result": {"success": true}
+}

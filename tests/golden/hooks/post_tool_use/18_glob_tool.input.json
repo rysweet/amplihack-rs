@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "glob",
+  "tool_input": {"pattern": "**/*.rs"},
+  "tool_result": {"files": ["src/lib.rs"]}
+}

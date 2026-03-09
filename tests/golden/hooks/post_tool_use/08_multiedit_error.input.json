@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "MultiEdit",
+  "tool_input": {"edits": []},
+  "tool_result": {"error": "invalid edit specification"}
+}

@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "Stop",
+  "session_id": "test-15",
+  "transcript_path": "/home/user/.claude/transcripts/session.jsonl",
+  "stop_hook_active": false
+}

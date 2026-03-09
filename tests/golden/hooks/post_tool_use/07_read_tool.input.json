@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Read",
+  "tool_input": {"path": "/tmp/file.txt"},
+  "tool_result": {"content": "file contents"}
+}
