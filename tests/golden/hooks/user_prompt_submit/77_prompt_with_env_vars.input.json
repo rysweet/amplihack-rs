@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Set DATABASE_URL=postgres://user:pass@host:5432/db and API_KEY=sk-1234567890",
+  "session_id": "s77"
+}

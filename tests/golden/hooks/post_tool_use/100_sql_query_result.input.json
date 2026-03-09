@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "sqlite3 db.sqlite 'SELECT count(*) FROM users'"
+  },
+  "tool_result": {
+    "stdout": "42",
+    "exit_code": 0
+  }
+}

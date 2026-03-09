@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Write a Python function to sort a list of dictionaries by key",
+  "session_id": "s32"
+}

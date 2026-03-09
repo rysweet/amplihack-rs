@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Use the explore agent to find all error handling patterns",
+  "session_id": "s80"
+}

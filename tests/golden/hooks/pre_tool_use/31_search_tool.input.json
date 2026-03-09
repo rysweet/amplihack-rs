@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Search",
+  "tool_input": {"pattern": "TODO", "path": "/tmp"}
+}

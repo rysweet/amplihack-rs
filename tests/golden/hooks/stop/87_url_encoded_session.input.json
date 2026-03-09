@@ -1,0 +1,4 @@
+{
+  "hook_event_name": "Stop",
+  "session_id": "session%20with%20spaces"
+}

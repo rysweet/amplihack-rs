@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "ListAll",
+  "tool_input": {},
+  "tool_result": [
+    "a",
+    "b",
+    "c"
+  ]
+}

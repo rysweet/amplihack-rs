@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "find . -name '*.rs'"
+  },
+  "tool_result": {
+    "stdout": "src/main.rs\nsrc/lib.rs\nsrc/hooks/mod.rs\nsrc/hooks/pre_tool_use.rs\nsrc/hooks/post_tool_use.rs",
+    "exit_code": 0
+  }
+}

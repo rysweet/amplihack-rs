@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "カスタムツール",
+  "tool_input": {
+    "data": "テスト"
+  },
+  "tool_result": {
+    "output": "成功"
+  }
+}

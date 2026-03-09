@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "How should I structure the microservices for the payment system?",
+  "session_id": "s36"
+}

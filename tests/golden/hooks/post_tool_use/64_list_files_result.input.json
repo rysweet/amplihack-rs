@@ -1,0 +1,17 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "ListFiles",
+  "tool_input": {
+    "path": "src/"
+  },
+  "tool_result": {
+    "files": [
+      "main.rs",
+      "lib.rs"
+    ],
+    "directories": [
+      "hooks/",
+      "types/"
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "echo test"
+  },
+  "tool_result": {
+    "exit_code": 0
+  },
+  "session_id": null
+}

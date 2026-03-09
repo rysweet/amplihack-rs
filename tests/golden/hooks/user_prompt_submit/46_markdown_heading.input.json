@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "# Task\n\nImplement user authentication\n\n## Requirements\n\n- JWT tokens\n- Refresh tokens\n- Password hashing",
+  "session_id": "s46"
+}

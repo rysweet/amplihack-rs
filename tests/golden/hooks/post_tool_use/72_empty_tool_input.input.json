@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {},
+  "tool_result": {
+    "exit_code": 0
+  }
+}

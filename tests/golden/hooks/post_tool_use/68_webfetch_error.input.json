@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "WebFetch",
+  "tool_input": {
+    "url": "https://invalid.example"
+  },
+  "tool_result": {
+    "error": "DNS resolution failed",
+    "status": 0
+  }
+}

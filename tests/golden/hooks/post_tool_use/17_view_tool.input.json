@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "View",
+  "tool_input": {"path": "src/lib.rs"},
+  "tool_result": {"content": "// code"}
+}

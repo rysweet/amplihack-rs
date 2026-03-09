@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "path": "/tmp/link.txt",
+    "content": "data"
+  },
+  "tool_result": {
+    "success": true,
+    "path": "/tmp/link.txt"
+  }
+}

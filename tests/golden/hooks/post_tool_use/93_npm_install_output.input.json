@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "npm install"
+  },
+  "tool_result": {
+    "stdout": "added 150 packages in 12s",
+    "exit_code": 0
+  }
+}

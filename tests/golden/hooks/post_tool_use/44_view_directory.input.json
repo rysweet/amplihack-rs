@@ -1,0 +1,14 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "View",
+  "tool_input": {
+    "path": "src/"
+  },
+  "tool_result": {
+    "entries": [
+      "main.rs",
+      "lib.rs",
+      "hooks/"
+    ]
+  }
+}

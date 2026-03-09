@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "SessionStop",
+  "session_id": "s39",
+  "transcript_path": "/home/用户/文档/transcript.jsonl"
+}

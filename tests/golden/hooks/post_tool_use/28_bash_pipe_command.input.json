@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cat file.txt | grep pattern | wc -l"
+  },
+  "tool_result": {
+    "stdout": "42",
+    "exit_code": 0
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "ls --color"
+  },
+  "tool_result": {
+    "stdout": "\u001b[34mdir\u001b[0m  file.txt",
+    "exit_code": 0
+  }
+}

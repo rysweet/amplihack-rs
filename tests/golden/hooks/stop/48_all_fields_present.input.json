@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "Stop",
+  "stop_hook_active": true,
+  "session_id": "full-session-48",
+  "transcript_path": "/var/log/transcript.jsonl"
+}

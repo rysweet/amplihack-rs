@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Search",
+  "tool_input": {"pattern": "function"},
+  "tool_result": {"results": []}
+}

@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Glob",
+  "tool_input": {
+    "pattern": "**/*.xyz"
+  },
+  "tool_result": {
+    "files": []
+  }
+}

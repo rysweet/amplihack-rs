@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "このコードを最適化してください",
+  "session_id": "s52"
+}

@@ -1,0 +1,4 @@
+{
+  "hook_event_name": "FutureNewEvent",
+  "some_field": "some_value"
+}

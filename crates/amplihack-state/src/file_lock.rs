@@ -114,7 +114,6 @@ fn try_lock_exclusive(_file: &File) -> Result<bool, io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Barrier};
 
     #[test]
     fn lock_and_unlock() {

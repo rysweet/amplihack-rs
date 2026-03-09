@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "path": "/home/user/project/new_file.py",
+    "content": "print('hello')"
+  },
+  "tool_result": {
+    "success": true,
+    "path": "/home/user/project/new_file.py"
+  }
+}

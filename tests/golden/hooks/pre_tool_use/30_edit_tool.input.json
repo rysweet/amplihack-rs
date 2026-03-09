@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Edit",
+  "tool_input": {"path": "/tmp/file.rs", "old_str": "foo", "new_str": "bar"}
+}

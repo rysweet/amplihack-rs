@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Read",
+  "tool_input": {
+    "path": "docs/日本語.md"
+  },
+  "tool_result": {
+    "content": "# ドキュメント\n\nこんにちは世界"
+  }
+}

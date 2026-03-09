@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "nohup rm -rf /tmp/nonexistent_cleanup_xyz &"
+  }
+}

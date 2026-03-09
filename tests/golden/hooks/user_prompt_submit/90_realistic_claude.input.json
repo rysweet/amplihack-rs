@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "/dev fix the flaky test",
+  "session_id": "01HQXYZ-abc",
+  "transcript_path": "/home/user/.claude/sessions/01HQXYZ/transcript.jsonl"
+}

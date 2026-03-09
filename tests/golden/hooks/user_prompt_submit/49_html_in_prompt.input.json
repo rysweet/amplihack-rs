@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Fix this HTML: <div class=\"container\"><p>Hello</p></div>",
+  "session_id": "s49"
+}

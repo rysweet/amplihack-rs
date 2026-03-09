@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Implement CRUD for users",
+  "session_id": "copilot-2024-01-15",
+  "workspace": "/home/user/project",
+  "language": "rust"
+}

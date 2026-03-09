@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "이 코드를 리팩토링해 주세요",
+  "session_id": "s53"
+}

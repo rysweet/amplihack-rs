@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "session_id": "s43",
+  "transcript_path": "/tmp/t43.jsonl"
+}

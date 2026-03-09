@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "<script>alert('xss')</script>",
+  "session_id": "s92"
+}

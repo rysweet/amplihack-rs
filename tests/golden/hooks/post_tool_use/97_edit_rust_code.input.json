@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Edit",
+  "tool_input": {
+    "path": "src/hooks/mod.rs",
+    "old_str": "pub fn process(&self)",
+    "new_str": "pub fn process(&self) -> Result<Value>"
+  },
+  "tool_result": {
+    "success": true
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "View",
+  "tool_input": {
+    "path": "src/main.rs",
+    "start": 1,
+    "end": 10
+  },
+  "tool_result": {
+    "content": "fn main() {"
+  }
+}

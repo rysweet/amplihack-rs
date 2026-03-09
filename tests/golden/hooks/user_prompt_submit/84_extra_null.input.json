@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "hello",
+  "session_id": "s84",
+  "context": null
+}

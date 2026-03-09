@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "SessionStop",
+  "session_id": "s75",
+  "stats": {
+    "turns": 15,
+    "tokens": 50000
+  }
+}

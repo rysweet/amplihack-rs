@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Read",
+  "tool_input": {
+    "path": "image.png"
+  },
+  "tool_result": {
+    "error": "Cannot read binary file"
+  }
+}

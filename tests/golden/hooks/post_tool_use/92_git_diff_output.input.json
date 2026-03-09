@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git diff --stat"
+  },
+  "tool_result": {
+    "stdout": " src/main.rs | 5 +++--\n src/lib.rs  | 3 ++-\n 2 files changed, 5 insertions(+), 3 deletions(-)",
+    "exit_code": 0
+  }
+}

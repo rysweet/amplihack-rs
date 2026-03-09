@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "NotebookEdit",
+  "tool_input": {
+    "path": "notebook.ipynb",
+    "cell_index": 0,
+    "new_source": "print(1)"
+  },
+  "tool_result": {
+    "success": true
+  }
+}

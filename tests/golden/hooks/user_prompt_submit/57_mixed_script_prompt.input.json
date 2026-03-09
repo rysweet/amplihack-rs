@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Fix the bug in 文件.py and update テスト.rs",
+  "session_id": "s57"
+}

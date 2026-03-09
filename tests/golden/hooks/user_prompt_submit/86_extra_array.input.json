@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "hello",
+  "session_id": "s86",
+  "attachments": [
+    "file1.py",
+    "file2.rs"
+  ]
+}

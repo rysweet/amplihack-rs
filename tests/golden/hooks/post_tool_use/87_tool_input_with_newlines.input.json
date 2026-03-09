@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "path": "test.py",
+    "content": "line1\nline2\nline3\n"
+  },
+  "tool_result": {
+    "success": true
+  }
+}

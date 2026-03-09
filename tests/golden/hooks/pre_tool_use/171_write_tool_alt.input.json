@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "path": "/home/user/output.txt",
+    "content": "hello world"
+  }
+}

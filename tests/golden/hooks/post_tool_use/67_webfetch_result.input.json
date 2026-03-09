@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "WebFetch",
+  "tool_input": {
+    "url": "https://example.com"
+  },
+  "tool_result": {
+    "content": "<html>...</html>",
+    "status": 200
+  }
+}

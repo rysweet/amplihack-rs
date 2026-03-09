@@ -5,6 +5,7 @@
 
 use serde_json::Value;
 use std::process::Command;
+use std::time::Duration;
 
 /// Check if the current branch is main/master and block commits.
 ///
@@ -27,6 +28,9 @@ pub fn check_main_branch() -> anyhow::Result<Option<Value>> {
     Ok(None)
 }
 
+/// Git command timeout (matches Python's 5-second timeout).
+const GIT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Get the current git branch name.
 ///
 /// Returns `None` if:
@@ -35,20 +39,38 @@ pub fn check_main_branch() -> anyhow::Result<Option<Value>> {
 /// - Command times out (5 seconds)
 /// - Any other error
 fn get_current_branch() -> Option<String> {
-    let output = Command::new("git")
+    let mut child = Command::new("git")
         .args(["branch", "--show-current"])
-        .output();
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
 
-    match output {
-        Ok(out) if out.status.success() => {
-            let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if branch.is_empty() {
-                None
-            } else {
-                Some(branch)
+    // Poll for completion with timeout.
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                let output = child.wait_with_output().ok()?;
+                let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                return if branch.is_empty() {
+                    None
+                } else {
+                    Some(branch)
+                };
             }
+            Ok(Some(_)) => return None, // Non-zero exit.
+            Ok(None) => {
+                if start.elapsed() > GIT_TIMEOUT {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    tracing::warn!("git branch --show-current timed out after 5s");
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return None,
         }
-        _ => None,
     }
 }
 

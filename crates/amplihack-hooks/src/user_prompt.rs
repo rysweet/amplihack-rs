@@ -8,10 +8,10 @@
 
 use crate::protocol::{FailurePolicy, Hook};
 use amplihack_state::PythonBridge;
-use amplihack_types::HookInput;
+use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Embedded Python bridge script for memory injection.
@@ -25,22 +25,17 @@ try:
     session_id = input_data.get("session_id", "")
     prompt = input_data.get("prompt", "")
 
-    try:
-        from amplihack.memory.coordinator import MemoryCoordinator
-        coordinator = MemoryCoordinator()
-        context = coordinator.inject_memory_for_agents_sync(
-            session_id=session_id,
-            prompt=prompt
-        )
-        result = {"injected_context": context or "", "memory_keys_used": []}
-    except ImportError:
-        result = {"injected_context": "", "memory_keys_used": []}
-    except Exception as e:
-        result = {"injected_context": "", "error": str(e)}
-
+    from amplihack.memory.coordinator import MemoryCoordinator
+    coordinator = MemoryCoordinator()
+    context = coordinator.inject_memory_for_agents_sync(
+        session_id=session_id,
+        prompt=prompt
+    )
+    result = {"injected_context": context or "", "memory_keys_used": []}
     json.dump(result, sys.stdout)
 except Exception as e:
     json.dump({"injected_context": "", "error": str(e)}, sys.stdout)
+    sys.exit(1)
 "#;
 
 pub struct UserPromptSubmitHook;
@@ -69,13 +64,18 @@ impl Hook for UserPromptSubmitHook {
             return Ok(Value::Object(serde_json::Map::new()));
         }
 
+        let dirs = ProjectDirs::from_cwd();
         let mut context_parts: Vec<String> = Vec::new();
 
-        // Load user preferences.
-        if let Some(prefs_context) = load_user_preferences()
-            && !prefs_context.is_empty()
+        // Load user preferences (including learned patterns detection).
+        let (prefs_context, has_learned_patterns) = load_user_preferences_with_patterns(&dirs);
+        if let Some(ctx) = prefs_context
+            && !ctx.is_empty()
         {
-            context_parts.push(prefs_context);
+            context_parts.push(ctx);
+        }
+        if has_learned_patterns {
+            context_parts.push("Has Learned Patterns: Yes".to_string());
         }
 
         // Inject memory context via bridge.
@@ -86,10 +86,19 @@ impl Hook for UserPromptSubmitHook {
         }
 
         // Check AMPLIHACK.md injection.
-        if let Some(framework_context) = check_framework_injection()
+        if let Some(framework_context) = check_framework_injection(&dirs)
             && !framework_context.is_empty()
         {
             context_parts.push(framework_context);
+        }
+
+        // Detect /dev invocations and inject workflow enforcement context.
+        if is_dev_invocation(&prompt) {
+            context_parts.push(
+                "🔧 /dev workflow detected. Follow DEFAULT_WORKFLOW steps. \
+                 Track progress with TodoWrite."
+                    .to_string(),
+            );
         }
 
         if context_parts.is_empty() {
@@ -110,25 +119,31 @@ impl Hook for UserPromptSubmitHook {
 }
 
 /// Load user preferences from USER_PREFERENCES.md.
-fn load_user_preferences() -> Option<String> {
-    let cwd = std::env::current_dir().ok()?;
-
-    // Search for USER_PREFERENCES.md in known locations.
+/// Also detects `## Learned Patterns` section.
+fn load_user_preferences_with_patterns(dirs: &ProjectDirs) -> (Option<String>, bool) {
     let candidates = [
-        cwd.join(".claude")
-            .join("context")
-            .join("USER_PREFERENCES.md"),
-        cwd.join("USER_PREFERENCES.md"),
+        dirs.user_preferences(),
+        dirs.root.join("USER_PREFERENCES.md"),
     ];
 
     for path in &candidates {
         if path.exists() {
             match fs::read_to_string(path) {
                 Ok(content) => {
+                    let has_learned = content.contains("## Learned Patterns")
+                        && content
+                            .split("## Learned Patterns")
+                            .nth(1)
+                            .map(|s| {
+                                s.lines()
+                                    .any(|l| !l.trim().is_empty() && !l.starts_with('#'))
+                            })
+                            .unwrap_or(false);
                     let prefs = extract_preferences(&content);
                     if !prefs.is_empty() {
-                        return Some(build_preference_context(&prefs));
+                        return (Some(build_preference_context(&prefs)), has_learned);
                     }
+                    return (None, has_learned);
                 }
                 Err(e) => {
                     tracing::warn!("Failed to read preferences: {}", e);
@@ -137,16 +152,31 @@ fn load_user_preferences() -> Option<String> {
         }
     }
 
-    None
+    (None, false)
+}
+
+/// Check if the user prompt is a /dev invocation.
+fn is_dev_invocation(prompt: &str) -> bool {
+    let trimmed = prompt.trim();
+    trimmed == "/dev"
+        || trimmed.starts_with("/dev ")
+        || trimmed.starts_with("/dev\n")
+        || trimmed.contains("\n/dev ")
+        || trimmed.contains("\n/dev\n")
 }
 
 /// Extract preference key-value pairs from markdown content.
+///
+/// Supports both formats for Python parity:
+/// - Table format: `| key | value |`
+/// - Header format: `### Key\nvalue`
 fn extract_preferences(content: &str) -> Vec<(String, String)> {
     let mut prefs = Vec::new();
 
+    // Try table format first.
+    let mut found_table = false;
     for line in content.lines() {
         let trimmed = line.trim();
-        // Look for table rows: | key | value |
         if trimmed.starts_with('|') && trimmed.ends_with('|') {
             let parts: Vec<&str> = trimmed.split('|').map(str::trim).collect();
             if parts.len() >= 3 {
@@ -159,8 +189,41 @@ fn extract_preferences(content: &str) -> Vec<(String, String)> {
                     && !key.starts_with('-')
                 {
                     prefs.push((key.to_string(), value.to_string()));
+                    found_table = true;
                 }
             }
+        }
+    }
+
+    if found_table {
+        return prefs;
+    }
+
+    // Fall back to header format: ### Key\nvalue
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if let Some(header) = trimmed.strip_prefix("### ") {
+            let key = header.trim().to_string();
+            // Collect value lines until next header or end.
+            let mut value_lines = Vec::new();
+            i += 1;
+            while i < lines.len() {
+                let next = lines[i].trim();
+                if next.starts_with("### ") || next.starts_with("## ") || next.starts_with("# ") {
+                    break;
+                }
+                if !next.is_empty() {
+                    value_lines.push(next);
+                }
+                i += 1;
+            }
+            if !key.is_empty() && !value_lines.is_empty() {
+                prefs.push((key, value_lines.join(" ")));
+            }
+        } else {
+            i += 1;
         }
     }
 
@@ -204,12 +267,9 @@ fn inject_memory(prompt: &str, session_id: Option<&str>) -> Option<String> {
 }
 
 /// Check if AMPLIHACK.md should be injected (differs from CLAUDE.md).
-fn check_framework_injection() -> Option<String> {
-    let cwd = std::env::current_dir().ok()?;
-
-    // Find AMPLIHACK.md.
-    let amplihack_path = find_amplihack_md(&cwd)?;
-    let claude_path = cwd.join("CLAUDE.md");
+fn check_framework_injection(dirs: &ProjectDirs) -> Option<String> {
+    let amplihack_path = find_amplihack_md(dirs)?;
+    let claude_path = dirs.claude_md();
 
     let amplihack_content = fs::read_to_string(&amplihack_path).ok()?;
     let claude_content = fs::read_to_string(&claude_path).ok().unwrap_or_default();
@@ -225,7 +285,7 @@ fn check_framework_injection() -> Option<String> {
     Some(amplihack_content)
 }
 
-fn find_amplihack_md(cwd: &Path) -> Option<PathBuf> {
+fn find_amplihack_md(dirs: &ProjectDirs) -> Option<PathBuf> {
     // Check CLAUDE_PLUGIN_ROOT env var first.
     if let Ok(root) = std::env::var("CLAUDE_PLUGIN_ROOT") {
         let path = PathBuf::from(root).join("AMPLIHACK.md");
@@ -235,7 +295,7 @@ fn find_amplihack_md(cwd: &Path) -> Option<PathBuf> {
     }
 
     // Check .claude/AMPLIHACK.md.
-    let path = cwd.join(".claude").join("AMPLIHACK.md");
+    let path = dirs.amplihack_md();
     if path.exists() {
         return Some(path);
     }
@@ -259,6 +319,26 @@ mod tests {
         assert_eq!(prefs.len(), 2);
         assert_eq!(prefs[0], ("Verbosity".to_string(), "balanced".to_string()));
         assert_eq!(prefs[1], ("Style".to_string(), "casual".to_string()));
+    }
+
+    #[test]
+    fn extract_prefs_from_headers() {
+        let content = r#"
+## Preferences
+
+### Verbosity
+balanced
+
+### Style
+casual and direct
+"#;
+        let prefs = extract_preferences(content);
+        assert_eq!(prefs.len(), 2);
+        assert_eq!(prefs[0], ("Verbosity".to_string(), "balanced".to_string()));
+        assert_eq!(
+            prefs[1],
+            ("Style".to_string(), "casual and direct".to_string())
+        );
     }
 
     #[test]

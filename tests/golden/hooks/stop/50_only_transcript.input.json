@@ -1,0 +1,4 @@
+{
+  "hook_event_name": "Stop",
+  "transcript_path": "/tmp/only-transcript.jsonl"
+}

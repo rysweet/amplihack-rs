@@ -1,0 +1,4 @@
+{
+  "hook_event_name": "Stop",
+  "session_id": "workspace:project:branch:session:12345"
+}

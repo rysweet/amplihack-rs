@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "grep",
+  "tool_input": {
+    "pattern": "import os",
+    "path": "src/",
+    "type": "py"
+  }
+}

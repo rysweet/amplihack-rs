@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "edit",
+  "tool_input": {"path": "file.py"},
+  "tool_result": {"error": "file not found"}
+}

@@ -1,0 +1,14 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "TodoRead",
+  "tool_input": {},
+  "tool_result": {
+    "todos": [
+      {
+        "id": "1",
+        "title": "Fix bug",
+        "status": "done"
+      }
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "CustomTool",
+  "tool_input": {
+    "level1": {
+      "level2": {
+        "level3": {
+          "level4": {
+            "level5": {
+              "data": [
+                1,
+                2,
+                {
+                  "nested": true
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

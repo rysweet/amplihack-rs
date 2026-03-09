@@ -1,0 +1,13 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Edit",
+  "tool_input": {
+    "path": "image.png",
+    "old_str": "abc",
+    "new_str": "def"
+  },
+  "tool_result": {
+    "success": false,
+    "error": "Cannot edit binary file"
+  }
+}

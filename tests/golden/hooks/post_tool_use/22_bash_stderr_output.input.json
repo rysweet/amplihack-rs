@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "ls /nonexistent"
+  },
+  "tool_result": {
+    "stdout": "",
+    "stderr": "ls: cannot access '/nonexistent': No such file or directory",
+    "exit_code": 2
+  }
+}

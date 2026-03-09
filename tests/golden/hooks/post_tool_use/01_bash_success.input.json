@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {"command": "ls"},
+  "tool_result": {"stdout": "file1.txt\nfile2.txt", "exit_code": 0}
+}

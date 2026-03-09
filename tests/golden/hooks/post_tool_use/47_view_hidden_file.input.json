@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "View",
+  "tool_input": {
+    "path": ".gitignore"
+  },
+  "tool_result": {
+    "content": "target/\n*.swp"
+  }
+}
