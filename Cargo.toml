@@ -4,6 +4,7 @@ members = [
     "crates/amplihack-types",
     "crates/amplihack-state",
     "crates/amplihack-hooks",
+    "crates/amplihack-cli",
     "bins/amplihack",
     "bins/amplihack-hooks",
 ]
@@ -23,11 +24,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 tempfile = "3"
 shell-words = "1"
+clap = { version = "4", features = ["derive"] }
+signal-hook = "0.3"
+libc = "0.2"
 
 # Workspace crate cross-references
 amplihack-types = { path = "crates/amplihack-types" }
 amplihack-state = { path = "crates/amplihack-state" }
 amplihack-hooks = { path = "crates/amplihack-hooks" }
+amplihack-cli = { path = "crates/amplihack-cli" }
 
 [profile.release]
 lto = true
