@@ -8,10 +8,10 @@
 
 use crate::protocol::{FailurePolicy, Hook};
 use amplihack_state::PythonBridge;
-use amplihack_types::HookInput;
+use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Embedded Python bridge script for memory injection.
@@ -69,10 +69,11 @@ impl Hook for UserPromptSubmitHook {
             return Ok(Value::Object(serde_json::Map::new()));
         }
 
+        let dirs = ProjectDirs::from_cwd();
         let mut context_parts: Vec<String> = Vec::new();
 
         // Load user preferences.
-        if let Some(prefs_context) = load_user_preferences()
+        if let Some(prefs_context) = load_user_preferences(&dirs)
             && !prefs_context.is_empty()
         {
             context_parts.push(prefs_context);
@@ -86,7 +87,7 @@ impl Hook for UserPromptSubmitHook {
         }
 
         // Check AMPLIHACK.md injection.
-        if let Some(framework_context) = check_framework_injection()
+        if let Some(framework_context) = check_framework_injection(&dirs)
             && !framework_context.is_empty()
         {
             context_parts.push(framework_context);
@@ -110,15 +111,10 @@ impl Hook for UserPromptSubmitHook {
 }
 
 /// Load user preferences from USER_PREFERENCES.md.
-fn load_user_preferences() -> Option<String> {
-    let cwd = std::env::current_dir().ok()?;
-
-    // Search for USER_PREFERENCES.md in known locations.
+fn load_user_preferences(dirs: &ProjectDirs) -> Option<String> {
     let candidates = [
-        cwd.join(".claude")
-            .join("context")
-            .join("USER_PREFERENCES.md"),
-        cwd.join("USER_PREFERENCES.md"),
+        dirs.user_preferences(),
+        dirs.root.join("USER_PREFERENCES.md"),
     ];
 
     for path in &candidates {
@@ -141,12 +137,17 @@ fn load_user_preferences() -> Option<String> {
 }
 
 /// Extract preference key-value pairs from markdown content.
+///
+/// Supports both formats for Python parity:
+/// - Table format: `| key | value |`
+/// - Header format: `### Key\nvalue`
 fn extract_preferences(content: &str) -> Vec<(String, String)> {
     let mut prefs = Vec::new();
 
+    // Try table format first.
+    let mut found_table = false;
     for line in content.lines() {
         let trimmed = line.trim();
-        // Look for table rows: | key | value |
         if trimmed.starts_with('|') && trimmed.ends_with('|') {
             let parts: Vec<&str> = trimmed.split('|').map(str::trim).collect();
             if parts.len() >= 3 {
@@ -159,8 +160,41 @@ fn extract_preferences(content: &str) -> Vec<(String, String)> {
                     && !key.starts_with('-')
                 {
                     prefs.push((key.to_string(), value.to_string()));
+                    found_table = true;
                 }
             }
+        }
+    }
+
+    if found_table {
+        return prefs;
+    }
+
+    // Fall back to header format: ### Key\nvalue
+    let lines: Vec<&str> = content.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        if let Some(header) = trimmed.strip_prefix("### ") {
+            let key = header.trim().to_string();
+            // Collect value lines until next header or end.
+            let mut value_lines = Vec::new();
+            i += 1;
+            while i < lines.len() {
+                let next = lines[i].trim();
+                if next.starts_with("### ") || next.starts_with("## ") || next.starts_with("# ") {
+                    break;
+                }
+                if !next.is_empty() {
+                    value_lines.push(next);
+                }
+                i += 1;
+            }
+            if !key.is_empty() && !value_lines.is_empty() {
+                prefs.push((key, value_lines.join(" ")));
+            }
+        } else {
+            i += 1;
         }
     }
 
@@ -204,12 +238,9 @@ fn inject_memory(prompt: &str, session_id: Option<&str>) -> Option<String> {
 }
 
 /// Check if AMPLIHACK.md should be injected (differs from CLAUDE.md).
-fn check_framework_injection() -> Option<String> {
-    let cwd = std::env::current_dir().ok()?;
-
-    // Find AMPLIHACK.md.
-    let amplihack_path = find_amplihack_md(&cwd)?;
-    let claude_path = cwd.join("CLAUDE.md");
+fn check_framework_injection(dirs: &ProjectDirs) -> Option<String> {
+    let amplihack_path = find_amplihack_md(dirs)?;
+    let claude_path = dirs.claude_md();
 
     let amplihack_content = fs::read_to_string(&amplihack_path).ok()?;
     let claude_content = fs::read_to_string(&claude_path).ok().unwrap_or_default();
@@ -225,7 +256,7 @@ fn check_framework_injection() -> Option<String> {
     Some(amplihack_content)
 }
 
-fn find_amplihack_md(cwd: &Path) -> Option<PathBuf> {
+fn find_amplihack_md(dirs: &ProjectDirs) -> Option<PathBuf> {
     // Check CLAUDE_PLUGIN_ROOT env var first.
     if let Ok(root) = std::env::var("CLAUDE_PLUGIN_ROOT") {
         let path = PathBuf::from(root).join("AMPLIHACK.md");
@@ -235,7 +266,7 @@ fn find_amplihack_md(cwd: &Path) -> Option<PathBuf> {
     }
 
     // Check .claude/AMPLIHACK.md.
-    let path = cwd.join(".claude").join("AMPLIHACK.md");
+    let path = dirs.amplihack_md();
     if path.exists() {
         return Some(path);
     }
@@ -259,6 +290,26 @@ mod tests {
         assert_eq!(prefs.len(), 2);
         assert_eq!(prefs[0], ("Verbosity".to_string(), "balanced".to_string()));
         assert_eq!(prefs[1], ("Style".to_string(), "casual".to_string()));
+    }
+
+    #[test]
+    fn extract_prefs_from_headers() {
+        let content = r#"
+## Preferences
+
+### Verbosity
+balanced
+
+### Style
+casual and direct
+"#;
+        let prefs = extract_preferences(content);
+        assert_eq!(prefs.len(), 2);
+        assert_eq!(prefs[0], ("Verbosity".to_string(), "balanced".to_string()));
+        assert_eq!(
+            prefs[1],
+            ("Style".to_string(), "casual and direct".to_string())
+        );
     }
 
     #[test]

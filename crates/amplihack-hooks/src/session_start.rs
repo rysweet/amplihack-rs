@@ -9,10 +9,10 @@
 
 use crate::protocol::{FailurePolicy, Hook};
 use amplihack_state::PythonBridge;
-use amplihack_types::HookInput;
+use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Embedded Python bridge script for memory/context retrieval.
@@ -43,6 +43,27 @@ except Exception as e:
     json.dump({"context": "", "error": str(e)}, sys.stdout)
 "#;
 
+/// Embedded Python bridge script for version checking.
+const VERSION_CHECK_BRIDGE: &str = r#"
+import sys
+import json
+
+try:
+    input_data = json.load(sys.stdin)
+    project_path = input_data.get("project_path", "")
+
+    try:
+        from amplihack.version import check_version_mismatch
+        result = check_version_mismatch(project_path)
+        json.dump(result or {"mismatch": False}, sys.stdout)
+    except ImportError:
+        json.dump({"mismatch": False}, sys.stdout)
+    except Exception as e:
+        json.dump({"mismatch": False, "error": str(e)}, sys.stdout)
+except Exception as e:
+    json.dump({"mismatch": False, "error": str(e)}, sys.stdout)
+"#;
+
 pub struct SessionStartHook;
 
 impl Hook for SessionStartHook {
@@ -62,38 +83,38 @@ impl Hook for SessionStartHook {
             _ => return Ok(Value::Object(serde_json::Map::new())),
         };
 
-        let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let dirs = ProjectDirs::from_cwd();
         let mut context_parts: Vec<String> = Vec::new();
 
         // Load project context (PROJECT.md).
-        if let Some(ctx) = load_project_context(&project_root) {
+        if let Some(ctx) = load_project_context(&dirs) {
             context_parts.push(ctx);
         }
 
         // Load recent learnings/discoveries.
-        if let Some(learnings) = load_discoveries(&project_root) {
+        if let Some(learnings) = load_discoveries(&dirs) {
             context_parts.push(learnings);
         }
 
         // Load user preferences.
-        if let Some(prefs) = load_user_preferences(&project_root) {
+        if let Some(prefs) = load_user_preferences(&dirs) {
             context_parts.push(prefs);
         }
 
         // Get memory context via bridge.
-        if let Some(memory_ctx) = get_memory_context(&session_id, &project_root)
+        if let Some(memory_ctx) = get_memory_context(&session_id, &dirs)
             && !memory_ctx.is_empty()
         {
             context_parts.push(memory_ctx);
         }
 
-        // Check for version mismatch.
-        if let Some(version_notice) = check_version(&project_root) {
+        // Check for version mismatch via bridge.
+        if let Some(version_notice) = check_version(&dirs) {
             context_parts.push(version_notice);
         }
 
         // Migrate global hooks if needed.
-        if let Some(migration_notice) = migrate_global_hooks(&project_root) {
+        if let Some(migration_notice) = migrate_global_hooks() {
             context_parts.push(migration_notice);
         }
 
@@ -112,14 +133,8 @@ impl Hook for SessionStartHook {
     }
 }
 
-fn load_project_context(project_root: &Path) -> Option<String> {
-    let candidates = [
-        project_root.join("PROJECT.md"),
-        project_root
-            .join(".claude")
-            .join("context")
-            .join("PROJECT.md"),
-    ];
+fn load_project_context(dirs: &ProjectDirs) -> Option<String> {
+    let candidates = [dirs.root.join("PROJECT.md"), dirs.project_context()];
 
     for path in &candidates {
         if let Ok(content) = fs::read_to_string(path)
@@ -132,8 +147,8 @@ fn load_project_context(project_root: &Path) -> Option<String> {
     None
 }
 
-fn load_discoveries(project_root: &Path) -> Option<String> {
-    let path = project_root.join("DISCOVERIES.md");
+fn load_discoveries(dirs: &ProjectDirs) -> Option<String> {
+    let path = dirs.root.join("DISCOVERIES.md");
     if let Ok(content) = fs::read_to_string(path)
         && !content.trim().is_empty()
     {
@@ -142,13 +157,10 @@ fn load_discoveries(project_root: &Path) -> Option<String> {
     None
 }
 
-fn load_user_preferences(project_root: &Path) -> Option<String> {
+fn load_user_preferences(dirs: &ProjectDirs) -> Option<String> {
     let candidates = [
-        project_root
-            .join(".claude")
-            .join("context")
-            .join("USER_PREFERENCES.md"),
-        project_root.join("USER_PREFERENCES.md"),
+        dirs.user_preferences(),
+        dirs.root.join("USER_PREFERENCES.md"),
     ];
 
     for path in &candidates {
@@ -162,11 +174,11 @@ fn load_user_preferences(project_root: &Path) -> Option<String> {
     None
 }
 
-fn get_memory_context(session_id: &str, project_root: &Path) -> Option<String> {
+fn get_memory_context(session_id: &str, dirs: &ProjectDirs) -> Option<String> {
     let input = serde_json::json!({
         "action": "get_context",
         "session_id": session_id,
-        "project_path": project_root.display().to_string(),
+        "project_path": dirs.root.display().to_string(),
     });
 
     match PythonBridge::call(MEMORY_CONTEXT_BRIDGE, &input, Duration::from_secs(10)) {
@@ -185,28 +197,85 @@ fn get_memory_context(session_id: &str, project_root: &Path) -> Option<String> {
     }
 }
 
-fn check_version(project_root: &Path) -> Option<String> {
-    let version_file = project_root.join(".claude").join(".version");
+fn check_version(dirs: &ProjectDirs) -> Option<String> {
+    let version_file = dirs.version_file();
     if !version_file.exists() {
         return None;
     }
 
-    // Version checking is best-effort.
-    match fs::read_to_string(&version_file) {
-        Ok(content) => {
-            let project_commit = content.trim();
-            if project_commit.is_empty() {
-                return None;
+    // Delegate full version check to Python bridge.
+    let input = serde_json::json!({
+        "project_path": dirs.root.display().to_string(),
+    });
+
+    match PythonBridge::call(VERSION_CHECK_BRIDGE, &input, Duration::from_secs(10)) {
+        Ok(result) => {
+            let mismatch = result
+                .get("mismatch")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if mismatch {
+                let message = result
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Version mismatch detected. Run `amplihack update` to update.");
+                Some(format!("⚠️ {}", message))
+            } else {
+                None
             }
-            // Full version comparison would be done by the Python layer.
-            // Here we just note the version exists.
+        }
+        Err(e) => {
+            tracing::warn!("Version check bridge error: {}", e);
             None
         }
-        Err(_) => None,
     }
 }
 
-fn migrate_global_hooks(_project_root: &Path) -> Option<String> {
+/// Embedded Python bridge script for global hook migration.
+const MIGRATE_HOOKS_BRIDGE: &str = r#"
+import sys
+import json
+
+try:
+    input_data = json.load(sys.stdin)
+    action = input_data.get("action", "migrate")
+
+    import os
+    home = os.path.expanduser("~")
+    settings_path = os.path.join(home, ".claude", "settings.json")
+
+    if not os.path.exists(settings_path):
+        json.dump({"migrated": False, "reason": "no global settings"}, sys.stdout)
+        sys.exit(0)
+
+    with open(settings_path, "r") as f:
+        settings = json.load(f)
+
+    hooks = settings.get("hooks", {})
+    modified = False
+    for event_type in list(hooks.keys()):
+        hook_list = hooks[event_type]
+        if isinstance(hook_list, list):
+            original_len = len(hook_list)
+            hooks[event_type] = [
+                h for h in hook_list
+                if not (isinstance(h, dict) and "amplihack" in h.get("command", ""))
+            ]
+            if len(hooks[event_type]) < original_len:
+                modified = True
+
+    if modified:
+        with open(settings_path, "w") as f:
+            json.dump(settings, f, indent=2)
+        json.dump({"migrated": True, "message": "Removed amplihack hooks from global settings"}, sys.stdout)
+    else:
+        json.dump({"migrated": False, "reason": "no amplihack hooks found"}, sys.stdout)
+
+except Exception as e:
+    json.dump({"migrated": False, "error": str(e)}, sys.stdout)
+"#;
+
+fn migrate_global_hooks() -> Option<String> {
     // Check if global hooks exist that should be migrated.
     let home = std::env::var("HOME").ok()?;
     let global_settings = PathBuf::from(&home).join(".claude").join("settings.json");
@@ -238,14 +307,39 @@ fn migrate_global_hooks(_project_root: &Path) -> Option<String> {
         })
         .unwrap_or(false);
 
-    if has_amplihack_hooks {
-        Some(
-            "⚠️ Global amplihack hooks detected in ~/.claude/settings.json. \
-             These should be migrated to project-local hooks."
-                .to_string(),
-        )
-    } else {
-        None
+    if !has_amplihack_hooks {
+        return None;
+    }
+
+    // Actually remove the hooks via Python bridge (handles JSON write safely).
+    let input = serde_json::json!({"action": "migrate"});
+    match PythonBridge::call(MIGRATE_HOOKS_BRIDGE, &input, Duration::from_secs(5)) {
+        Ok(result) => {
+            let migrated = result
+                .get("migrated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if migrated {
+                Some(
+                    "✅ Migrated amplihack hooks from global ~/.claude/settings.json to project-local hooks."
+                        .to_string(),
+                )
+            } else {
+                Some(
+                    "⚠️ Global amplihack hooks detected in ~/.claude/settings.json. \
+                     These should be migrated to project-local hooks."
+                        .to_string(),
+                )
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Hook migration bridge error: {}", e);
+            Some(
+                "⚠️ Global amplihack hooks detected in ~/.claude/settings.json. \
+                 Migration failed — please remove them manually."
+                    .to_string(),
+            )
+        }
     }
 }
 
@@ -270,14 +364,16 @@ mod tests {
     #[test]
     fn load_project_context_missing() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(load_project_context(dir.path()).is_none());
+        let dirs = ProjectDirs::new(dir.path());
+        assert!(load_project_context(&dirs).is_none());
     }
 
     #[test]
     fn load_project_context_exists() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("PROJECT.md"), "# My Project\nDescription").unwrap();
-        let ctx = load_project_context(dir.path());
+        let dirs = ProjectDirs::new(dir.path());
+        fs::write(dirs.root.join("PROJECT.md"), "# My Project\nDescription").unwrap();
+        let ctx = load_project_context(&dirs);
         assert!(ctx.is_some());
         assert!(ctx.unwrap().contains("My Project"));
     }

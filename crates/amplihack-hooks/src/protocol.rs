@@ -98,7 +98,8 @@ pub fn run_hook<H: Hook>(hook: H) {
         }
         Err(_panic) => {
             emit_telemetry(hook_name, duration, "panic", Some("hook panicked"));
-            // Pre-baked response, no allocation needed.
+            // Intentional: on panic, write best-effort empty JSON response.
+            // If stdout is broken too, there's nothing more we can do.
             let _ = io::stdout().write_all(b"{}");
             let _ = io::stdout().flush();
         }
@@ -157,6 +158,7 @@ fn emit_telemetry(hook: &str, duration: std::time::Duration, result: &str, error
         error,
     };
     if let Ok(json) = serde_json::to_string(&event) {
+        // Intentional: telemetry is best-effort; stderr failures are not fatal.
         let _ = io::stderr().write_all(json.as_bytes());
         let _ = io::stderr().write_all(b"\n");
     }

@@ -37,6 +37,18 @@ pub fn check_cwd_deletion(command: &str) -> anyhow::Result<Option<Value>> {
         return Ok(None);
     }
 
+    // Block commands with shell expansion patterns that could bypass path checks.
+    if has_dangerous_expansion(command) {
+        return Ok(Some(serde_json::json!({
+            "block": true,
+            "message": "🚫 OPERATION BLOCKED - Shell Expansion in Destructive Command\n\n\
+                        The command uses shell expansion ($(...), `...`, or variable substitution) \
+                        in a destructive operation. This bypasses path safety checks.\n\n\
+                        Please use literal paths instead of shell expansion in rm/rmdir commands.\n\n\
+                        🔒 This protection cannot be disabled programmatically."
+        })));
+    }
+
     let cwd = match std::env::current_dir() {
         Ok(p) => match p.canonicalize() {
             Ok(c) => c,
@@ -215,6 +227,35 @@ fn is_path_under(child: &Path, parent: &Path) -> bool {
     child.starts_with(parent)
 }
 
+/// Detect shell expansion patterns that could bypass literal path checks.
+///
+/// Blocks: `$(...)`, `` `...` ``, `${VAR}`, `$VAR` (when followed by path-like chars).
+fn has_dangerous_expansion(command: &str) -> bool {
+    // Command substitution: $(...)
+    if command.contains("$(") {
+        return true;
+    }
+    // Backtick substitution: `...`
+    if command.contains('`') {
+        return true;
+    }
+    // Variable expansion: ${VAR} or $VAR (not $? or $! which are status codes)
+    let chars: Vec<char> = command.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '$' && i + 1 < chars.len() {
+            let next = chars[i + 1];
+            if next == '{' {
+                return true;
+            }
+            // $VAR where VAR starts with a letter or underscore
+            if next.is_ascii_alphabetic() || next == '_' {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,12 +324,12 @@ mod tests {
     #[test]
     fn rm_rf_parent_of_cwd_blocked() {
         let cwd = std::env::current_dir().unwrap();
-        if let Some(parent) = cwd.parent() {
-            if parent != Path::new("/") {
-                let cmd = format!("rm -rf {}", parent.display());
-                let result = check_cwd_deletion(&cmd).unwrap();
-                assert!(result.is_some());
-            }
+        if let Some(parent) = cwd.parent()
+            && parent != Path::new("/")
+        {
+            let cmd = format!("rm -rf {}", parent.display());
+            let result = check_cwd_deletion(&cmd).unwrap();
+            assert!(result.is_some());
         }
     }
 
@@ -302,5 +343,54 @@ mod tests {
             let result = check_cwd_deletion(&cmd).unwrap();
             assert!(result.is_none());
         }
+    }
+
+    #[test]
+    fn blocks_command_substitution() {
+        let result = check_cwd_deletion(r#"rm -rf "$(pwd)""#).unwrap();
+        assert!(result.is_some());
+        assert!(
+            result.unwrap()["message"]
+                .as_str()
+                .unwrap()
+                .contains("Shell Expansion")
+        );
+    }
+
+    #[test]
+    fn blocks_backtick_substitution() {
+        let result = check_cwd_deletion("rm -rf `pwd`").unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn blocks_variable_expansion() {
+        let result = check_cwd_deletion("rm -rf $HOME/dir").unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn blocks_brace_variable_expansion() {
+        let result = check_cwd_deletion("rm -rf ${PWD}").unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn allows_dollar_status_codes() {
+        // $? and $! are shell status codes, not path variables.
+        let result = check_cwd_deletion("rm -rf /tmp/test_dir").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn dangerous_expansion_detection() {
+        assert!(has_dangerous_expansion("$(pwd)"));
+        assert!(has_dangerous_expansion("`pwd`"));
+        assert!(has_dangerous_expansion("$HOME"));
+        assert!(has_dangerous_expansion("${PWD}"));
+        assert!(has_dangerous_expansion("$D"));
+        assert!(!has_dangerous_expansion("/tmp/test"));
+        assert!(!has_dangerous_expansion("$?"));
+        assert!(!has_dangerous_expansion("$!"));
     }
 }

@@ -10,9 +10,8 @@ pub mod lock;
 pub mod power_steering;
 
 use crate::protocol::{FailurePolicy, Hook};
-use amplihack_types::HookInput;
+use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
-use std::path::PathBuf;
 
 /// Default continuation prompt when lock mode is active.
 const DEFAULT_CONTINUATION_PROMPT: &str =
@@ -40,17 +39,17 @@ impl Hook for StopHook {
         };
 
         let session_id = session_id.unwrap_or_else(get_session_id);
-        let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let dirs = ProjectDirs::from_cwd();
 
         // Check lock mode.
-        if lock::is_lock_active(&project_root) {
-            return lock::handle_lock_mode(&project_root, &session_id);
+        if lock::is_lock_active(&dirs) {
+            return lock::handle_lock_mode(&dirs, &session_id);
         }
 
         // Check power steering (if enabled).
-        if power_steering::should_run(&project_root)
+        if power_steering::should_run(&dirs)
             && let Some(block) =
-                power_steering::check(&project_root, &session_id, transcript_path.as_deref())?
+                power_steering::check(&dirs, &session_id, transcript_path.as_deref())?
         {
             return Ok(block);
         }

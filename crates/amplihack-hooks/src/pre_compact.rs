@@ -6,11 +6,10 @@
 //! 3. Saves compaction metadata
 
 use crate::protocol::{FailurePolicy, Hook};
-use amplihack_types::HookInput;
+use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
 use std::time::SystemTime;
 
 pub struct PreCompactHook;
@@ -53,7 +52,8 @@ impl Hook for PreCompactHook {
 }
 
 fn export_transcript(transcript_path: &std::path::Path, session_id: &str) -> anyhow::Result<()> {
-    let export_dir = get_session_dir(session_id)?;
+    let dirs = ProjectDirs::from_cwd();
+    let export_dir = dirs.session_logs(session_id);
     fs::create_dir_all(&export_dir)?;
 
     let export_path = export_dir.join("transcript_pre_compact.jsonl");
@@ -70,7 +70,8 @@ fn save_compaction_metadata(
     session_id: &str,
     transcript_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    let session_dir = get_session_dir(session_id)?;
+    let dirs = ProjectDirs::from_cwd();
+    let session_dir = dirs.session_logs(session_id);
     fs::create_dir_all(&session_dir)?;
 
     let metadata = serde_json::json!({
@@ -89,15 +90,6 @@ fn save_compaction_metadata(
     writeln!(file, "{}", json)?;
 
     Ok(())
-}
-
-fn get_session_dir(session_id: &str) -> anyhow::Result<PathBuf> {
-    let dir = std::env::current_dir()?
-        .join(".claude")
-        .join("runtime")
-        .join("logs")
-        .join(session_id);
-    Ok(dir)
 }
 
 fn generate_session_id() -> String {

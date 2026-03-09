@@ -5,11 +5,11 @@
 
 use crate::protocol::{FailurePolicy, Hook};
 use amplihack_types::HookInput;
+use amplihack_types::ProjectDirs;
 use serde::Serialize;
 use serde_json::Value;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
 use std::time::SystemTime;
 
 pub struct PostToolUseHook;
@@ -52,10 +52,10 @@ impl Hook for PostToolUseHook {
 }
 
 fn save_tool_metric(tool_name: &str, session_id: Option<&str>) -> anyhow::Result<()> {
-    let metrics_dir = get_metrics_dir()?;
-    fs::create_dir_all(&metrics_dir)?;
+    let dirs = ProjectDirs::from_cwd();
+    fs::create_dir_all(&dirs.metrics)?;
 
-    let metrics_file = metrics_dir.join("post_tool_use_metrics.jsonl");
+    let metrics_file = dirs.metrics.join("post_tool_use_metrics.jsonl");
 
     let metric = ToolMetric {
         timestamp: now_iso8601(),
@@ -72,14 +72,6 @@ fn save_tool_metric(tool_name: &str, session_id: Option<&str>) -> anyhow::Result
     writeln!(file, "{}", json)?;
 
     Ok(())
-}
-
-fn get_metrics_dir() -> anyhow::Result<PathBuf> {
-    let dir = std::env::current_dir()?
-        .join(".claude")
-        .join("runtime")
-        .join("metrics");
-    Ok(dir)
 }
 
 fn now_iso8601() -> String {
