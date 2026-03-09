@@ -46,8 +46,9 @@ pub fn detect_launcher() -> LauncherType {
 /// Inject context based on the detected launcher.
 ///
 /// This is a side-effect-only operation — it never blocks.
-/// Returns `None` always (strategies don't affect security decisions).
-pub fn inject_context(dirs: &ProjectDirs, input_data: &Value) -> Option<Value> {
+/// Context injection affects WHERE data is stored (AGENTS.md vs hook_context.json),
+/// not WHETHER operations are blocked.
+pub fn inject_context(dirs: &ProjectDirs, input_data: &Value) {
     let launcher = detect_launcher();
 
     match launcher {
@@ -62,9 +63,6 @@ pub fn inject_context(dirs: &ProjectDirs, input_data: &Value) -> Option<Value> {
             // Default: no context injection.
         }
     }
-
-    // Strategies never block — all security checks are independent.
-    None
 }
 
 /// Embedded Python bridge script for Copilot context injection.
@@ -112,10 +110,10 @@ mod tests {
     }
 
     #[test]
-    fn inject_context_returns_none() {
+    fn inject_context_does_not_panic() {
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         let input = serde_json::json!({});
-        assert!(inject_context(&dirs, &input).is_none());
+        inject_context(&dirs, &input);
     }
 }

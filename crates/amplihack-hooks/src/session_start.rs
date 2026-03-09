@@ -12,7 +12,7 @@ use amplihack_state::PythonBridge;
 use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+
 use std::time::Duration;
 
 /// Embedded Python bridge script for memory/context retrieval.
@@ -268,8 +268,7 @@ except Exception as e:
 
 fn migrate_global_hooks() -> Option<String> {
     // Check if global hooks exist that should be migrated.
-    let home = std::env::var("HOME").ok()?;
-    let global_settings = PathBuf::from(&home).join(".claude").join("settings.json");
+    let global_settings = ProjectDirs::global_settings()?;
 
     if !global_settings.exists() {
         return None;

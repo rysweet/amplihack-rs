@@ -97,9 +97,7 @@ impl Hook for PreToolUseHook {
         // Run launcher-specific context injection (side-effect only, never blocks).
         let dirs = ProjectDirs::from_cwd();
         let input_value = serde_json::json!({"tool_name": &tool_name, "tool_input": &tool_input});
-        if let Some(strategy_result) = launcher::inject_context(&dirs, &input_value) {
-            return Ok(strategy_result);
-        }
+        launcher::inject_context(&dirs, &input_value);
 
         // Only process Bash tool invocations.
         if tool_name != "Bash" {

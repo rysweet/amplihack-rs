@@ -83,10 +83,22 @@ pub fn run_reflection(
     let session_dir = dirs.session_logs(session_id);
     fs::create_dir_all(&session_dir)?;
 
-    // Check semaphore to avoid re-presenting.
+    // Atomic semaphore: try to create exclusively. If it already exists,
+    // another invocation already ran reflection — skip.
     let semaphore_path = session_dir.join(".reflection_presented");
-    if semaphore_path.exists() {
-        return Ok(None);
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&semaphore_path)
+    {
+        Ok(_) => {} // We created it — we own this reflection run.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Ok(None);
+        }
+        Err(e) => {
+            tracing::warn!("Failed to create reflection semaphore: {}", e);
+            return Ok(None);
+        }
     }
 
     let input = serde_json::json!({
@@ -104,16 +116,21 @@ pub fn run_reflection(
                 .unwrap_or(false);
 
             if success && let Some(template) = result.get("template").and_then(Value::as_str) {
-                // Save feedback to files.
-                let _ = fs::write(session_dir.join("FEEDBACK_SUMMARY.md"), template);
+                // Save feedback to files — log errors but don't abort.
+                if let Err(e) = fs::write(session_dir.join("FEEDBACK_SUMMARY.md"), template) {
+                    tracing::warn!("Failed to write FEEDBACK_SUMMARY.md: {}", e);
+                }
 
                 // Mirror for backward compatibility.
                 let reflection_dir = dirs.runtime.join("reflection");
-                let _ = fs::create_dir_all(&reflection_dir);
-                let _ = fs::write(reflection_dir.join("current_findings.md"), template);
+                if let Err(e) = fs::create_dir_all(&reflection_dir) {
+                    tracing::warn!("Failed to create reflection dir: {}", e);
+                }
+                if let Err(e) = fs::write(reflection_dir.join("current_findings.md"), template) {
+                    tracing::warn!("Failed to write current_findings.md: {}", e);
+                }
 
-                // Set semaphore.
-                let _ = fs::write(&semaphore_path, "");
+                // Semaphore already created atomically at function entry.
 
                 // Block with findings.
                 return Ok(Some(serde_json::json!({

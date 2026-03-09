@@ -107,8 +107,18 @@ impl ProjectDirs {
 
     /// Build from current working directory (convenience).
     pub fn from_cwd() -> Self {
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let root = std::env::current_dir().unwrap_or_else(|e| {
+            tracing::warn!("Failed to get CWD ({}), falling back to '.'", e);
+            PathBuf::from(".")
+        });
         Self::new(root)
+    }
+
+    /// Global settings.json at `~/.claude/settings.json`.
+    pub fn global_settings() -> Option<PathBuf> {
+        std::env::var("HOME")
+            .ok()
+            .map(|h| PathBuf::from(h).join(".claude").join("settings.json"))
     }
 
     /// Build from explicit root path (preferred for testability).
