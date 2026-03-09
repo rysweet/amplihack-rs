@@ -31,47 +31,44 @@ try:
     project_path = input_data.get("project_path", "")
     transcript_path = input_data.get("transcript_path", "")
 
-    try:
-        from amplihack.hooks.stop import run_claude_reflection
-        session_dir = input_data.get("session_dir", "")
+    from amplihack.hooks.stop import run_claude_reflection
+    session_dir = input_data.get("session_dir", "")
 
-        # Load conversation from transcript
-        conversation = []
-        if transcript_path:
-            import os
-            if os.path.exists(transcript_path):
-                with open(transcript_path, "r") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            entry = json.loads(line)
-                            if entry.get("type") in ("user", "assistant") and "message" in entry:
-                                msg = entry["message"]
-                                if isinstance(msg, str):
-                                    conversation.append({"role": entry["type"], "content": msg})
-                                elif isinstance(msg, list):
-                                    text = " ".join(
-                                        b.get("text", "") for b in msg
-                                        if isinstance(b, dict) and b.get("type") == "text"
-                                    )
-                                    if text:
-                                        conversation.append({"role": entry["type"], "content": text})
-                        except json.JSONDecodeError:
-                            continue
+    # Load conversation from transcript
+    conversation = []
+    if transcript_path:
+        import os
+        if os.path.exists(transcript_path):
+            with open(transcript_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        if entry.get("type") in ("user", "assistant") and "message" in entry:
+                            msg = entry["message"]
+                            if isinstance(msg, str):
+                                conversation.append({"role": entry["type"], "content": msg})
+                            elif isinstance(msg, list):
+                                text = " ".join(
+                                    b.get("text", "") for b in msg
+                                    if isinstance(b, dict) and b.get("type") == "text"
+                                )
+                                if text:
+                                    conversation.append({"role": entry["type"], "content": text})
+                    except json.JSONDecodeError:
+                        continue
 
-        result = run_claude_reflection(session_dir, project_path, conversation)
-        if result:
-            json.dump({"success": True, "template": result}, sys.stdout)
-        else:
-            json.dump({"success": False, "reason": "empty result"}, sys.stdout)
-    except ImportError:
-        json.dump({"success": False, "reason": "amplihack not installed"}, sys.stdout)
-    except Exception as e:
-        json.dump({"success": False, "error": str(e)}, sys.stdout)
+    result = run_claude_reflection(session_dir, project_path, conversation)
+    if result:
+        json.dump({"success": True, "template": result}, sys.stdout)
+    else:
+        json.dump({"success": False, "reason": "empty result"}, sys.stdout)
+        sys.exit(1)
 except Exception as e:
     json.dump({"success": False, "error": str(e)}, sys.stdout)
+    sys.exit(1)
 "#;
 
 /// Run session reflection and return findings if session should be blocked.

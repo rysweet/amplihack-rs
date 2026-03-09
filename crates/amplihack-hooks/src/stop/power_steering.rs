@@ -76,20 +76,16 @@ try:
     project_path = input_data.get("project_path", "")
     stop_count = input_data.get("stop_count", 0)
 
-    try:
-        from amplihack.hooks.stop import check_power_steering
-        result = check_power_steering(
-            session_id=session_id,
-            project_path=project_path,
-            stop_count=stop_count
-        )
-        json.dump(result or {"should_block": False}, sys.stdout)
-    except ImportError:
-        json.dump({"should_block": False, "reason": "amplihack not installed"}, sys.stdout)
-    except Exception as e:
-        json.dump({"should_block": False, "error": str(e)}, sys.stdout)
+    from amplihack.hooks.stop import check_power_steering
+    result = check_power_steering(
+        session_id=session_id,
+        project_path=project_path,
+        stop_count=stop_count
+    )
+    json.dump(result or {"should_block": False}, sys.stdout)
 except Exception as e:
     json.dump({"should_block": False, "error": str(e)}, sys.stdout)
+    sys.exit(1)
 "#;
 
 fn run_power_steering_check(

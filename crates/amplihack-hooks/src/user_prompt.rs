@@ -25,22 +25,17 @@ try:
     session_id = input_data.get("session_id", "")
     prompt = input_data.get("prompt", "")
 
-    try:
-        from amplihack.memory.coordinator import MemoryCoordinator
-        coordinator = MemoryCoordinator()
-        context = coordinator.inject_memory_for_agents_sync(
-            session_id=session_id,
-            prompt=prompt
-        )
-        result = {"injected_context": context or "", "memory_keys_used": []}
-    except ImportError:
-        result = {"injected_context": "", "memory_keys_used": []}
-    except Exception as e:
-        result = {"injected_context": "", "error": str(e)}
-
+    from amplihack.memory.coordinator import MemoryCoordinator
+    coordinator = MemoryCoordinator()
+    context = coordinator.inject_memory_for_agents_sync(
+        session_id=session_id,
+        prompt=prompt
+    )
+    result = {"injected_context": context or "", "memory_keys_used": []}
     json.dump(result, sys.stdout)
 except Exception as e:
     json.dump({"injected_context": "", "error": str(e)}, sys.stdout)
+    sys.exit(1)
 "#;
 
 pub struct UserPromptSubmitHook;

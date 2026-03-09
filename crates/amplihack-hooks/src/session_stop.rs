@@ -20,20 +20,14 @@ try:
     session_id = input_data.get("session_id", "")
     transcript_path = input_data.get("transcript_path", "")
 
-    # Try to import MemoryCoordinator
-    try:
-        from amplihack.memory.coordinator import MemoryCoordinator
-        coordinator = MemoryCoordinator()
-        coordinator.store(session_id=session_id, transcript_path=transcript_path)
-        result = {"stored": True, "memories_count": 0}
-    except ImportError:
-        result = {"stored": False, "error": "MemoryCoordinator not available"}
-    except Exception as e:
-        result = {"stored": False, "error": str(e)}
-
+    from amplihack.memory.coordinator import MemoryCoordinator
+    coordinator = MemoryCoordinator()
+    coordinator.store(session_id=session_id, transcript_path=transcript_path)
+    result = {"stored": True, "memories_count": 0}
     json.dump(result, sys.stdout)
 except Exception as e:
     json.dump({"stored": False, "error": str(e)}, sys.stdout)
+    sys.exit(1)
 "#;
 
 pub struct SessionStopHook;

@@ -76,18 +76,14 @@ try:
     input_data = json.load(sys.stdin)
     project_path = input_data.get("project_path", "")
 
-    try:
-        from amplihack.context.adaptive.strategies import CopilotStrategy
-        import logging
-        strategy = CopilotStrategy(project_path, logging.getLogger("amplihack"))
-        strategy.inject_context()
-        json.dump({"injected": True}, sys.stdout)
-    except ImportError:
-        json.dump({"injected": False, "reason": "strategies not available"}, sys.stdout)
-    except Exception as e:
-        json.dump({"injected": False, "error": str(e)}, sys.stdout)
+    from amplihack.context.adaptive.strategies import CopilotStrategy
+    import logging
+    strategy = CopilotStrategy(project_path, logging.getLogger("amplihack"))
+    strategy.inject_context()
+    json.dump({"injected": True}, sys.stdout)
 except Exception as e:
     json.dump({"injected": False, "error": str(e)}, sys.stdout)
+    sys.exit(1)
 "#;
 
 fn inject_copilot_context(dirs: &ProjectDirs, _input_data: &Value) {

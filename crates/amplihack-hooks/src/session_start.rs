@@ -25,22 +25,17 @@ try:
     session_id = input_data.get("session_id", "")
     project_path = input_data.get("project_path", "")
 
-    try:
-        from amplihack.memory.coordinator import MemoryCoordinator
-        coordinator = MemoryCoordinator()
-        context = coordinator.get_context(
-            session_id=session_id,
-            project_path=project_path
-        )
-        result = {"context": context or "", "memories": []}
-    except ImportError:
-        result = {"context": "", "memories": []}
-    except Exception as e:
-        result = {"context": "", "error": str(e)}
-
+    from amplihack.memory.coordinator import MemoryCoordinator
+    coordinator = MemoryCoordinator()
+    context = coordinator.get_context(
+        session_id=session_id,
+        project_path=project_path
+    )
+    result = {"context": context or "", "memories": []}
     json.dump(result, sys.stdout)
 except Exception as e:
     json.dump({"context": "", "error": str(e)}, sys.stdout)
+    sys.exit(1)
 "#;
 
 /// Embedded Python bridge script for version checking.
@@ -52,16 +47,12 @@ try:
     input_data = json.load(sys.stdin)
     project_path = input_data.get("project_path", "")
 
-    try:
-        from amplihack.version import check_version_mismatch
-        result = check_version_mismatch(project_path)
-        json.dump(result or {"mismatch": False}, sys.stdout)
-    except ImportError:
-        json.dump({"mismatch": False}, sys.stdout)
-    except Exception as e:
-        json.dump({"mismatch": False, "error": str(e)}, sys.stdout)
+    from amplihack.version import check_version_mismatch
+    result = check_version_mismatch(project_path)
+    json.dump(result or {"mismatch": False}, sys.stdout)
 except Exception as e:
     json.dump({"mismatch": False, "error": str(e)}, sys.stdout)
+    sys.exit(1)
 "#;
 
 pub struct SessionStartHook;
