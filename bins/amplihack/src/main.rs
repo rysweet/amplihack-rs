@@ -1,47 +1,22 @@
 //! CLI binary for amplihack.
 //!
-//! Placeholder for Phase 2 — CLI + launcher implementation.
-//! Currently just provides version info and help.
+//! Entry point that parses CLI arguments via amplihack-cli
+//! and dispatches to the appropriate command handler.
 
+use amplihack_cli::Cli;
+use amplihack_cli::commands;
 use clap::Parser;
 
-/// amplihack CLI — Rust core runtime for deterministic infrastructure.
-#[derive(Parser, Debug)]
-#[command(name = "amplihack", version, about)]
-enum Cli {
-    /// Show version information.
-    Version,
-
-    /// Run hooks comparison (development tool).
-    #[command(subcommand)]
-    Hooks(HooksCmd),
-}
-
-#[derive(Parser, Debug)]
-enum HooksCmd {
-    /// Compare Python and Rust hook output for a given input.
-    Compare {
-        /// Path to the input JSON file.
-        #[arg(short, long)]
-        input: Option<String>,
-    },
-}
-
 fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_target(false)
+        .init();
+
     let cli = Cli::parse();
 
-    match cli {
-        Cli::Version => {
-            println!("amplihack-rs {}", env!("CARGO_PKG_VERSION"));
-        }
-        Cli::Hooks(cmd) => match cmd {
-            HooksCmd::Compare { input } => {
-                println!(
-                    "Hook comparison tool (input: {})",
-                    input.as_deref().unwrap_or("stdin")
-                );
-                println!("TODO: Implement in Phase 2");
-            }
-        },
+    if let Err(e) = commands::dispatch(cli.command) {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
     }
 }
