@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Echo",
+  "tool_input": {
+    "text": "hello"
+  },
+  "tool_result": "hello"
+}

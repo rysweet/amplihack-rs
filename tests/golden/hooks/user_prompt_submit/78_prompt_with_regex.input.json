@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Find all matches for pattern: ^\\d{3}-\\d{2}-\\d{4}$ in the codebase",
+  "session_id": "s78"
+}

@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Getting this error:\nthread 'main' panicked at 'called `Result::unwrap()` on an `Err` value: Os { code: 2, kind: NotFound }'\nnote: run with `RUST_BACKTRACE=1`",
+  "session_id": "s73"
+}

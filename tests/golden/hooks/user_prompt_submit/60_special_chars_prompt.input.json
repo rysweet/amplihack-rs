@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Handle these chars: <>&\"'\\/{}",
+  "session_id": "s60"
+}

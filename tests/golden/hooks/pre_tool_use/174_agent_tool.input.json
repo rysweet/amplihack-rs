@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+    "type": "explore",
+    "prompt": "Find all TODO comments"
+  }
+}

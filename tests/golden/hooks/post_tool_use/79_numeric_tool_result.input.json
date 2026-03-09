@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Count",
+  "tool_input": {
+    "path": "src/"
+  },
+  "tool_result": 42
+}

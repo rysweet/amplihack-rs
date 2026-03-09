@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "path": "Makefile",
+    "content": "target:\n\techo hello"
+  },
+  "tool_result": {
+    "success": true
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "ln -sf /usr/bin/python3 /usr/local/bin/python"
+  }
+}

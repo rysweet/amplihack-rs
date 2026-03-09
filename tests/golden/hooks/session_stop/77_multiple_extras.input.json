@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "SessionStop",
+  "session_id": "s77",
+  "x": 1,
+  "y": "two",
+  "z": [
+    3
+  ]
+}

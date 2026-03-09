@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Migrate this Express.js app to Fastify",
+  "session_id": "s40"
+}

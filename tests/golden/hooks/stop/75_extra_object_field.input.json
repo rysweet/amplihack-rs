@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "Stop",
+  "session_id": "s75",
+  "context": {
+    "user": "test",
+    "project": "demo"
+  }
+}

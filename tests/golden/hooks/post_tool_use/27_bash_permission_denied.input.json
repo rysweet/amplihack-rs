@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cat /etc/shadow"
+  },
+  "tool_result": {
+    "stdout": "",
+    "stderr": "Permission denied",
+    "exit_code": 1
+  }
+}

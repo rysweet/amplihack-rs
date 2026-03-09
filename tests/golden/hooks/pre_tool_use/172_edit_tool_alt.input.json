@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Edit",
+  "tool_input": {
+    "path": "/home/user/main.py",
+    "old_str": "print('hello')",
+    "new_str": "print('world')"
+  }
+}

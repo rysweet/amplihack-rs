@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "{\"action\": \"deploy\", \"env\": \"production\"}",
+  "session_id": "s45"
+}

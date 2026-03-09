@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "I'm getting 'TypeError: Cannot read property of undefined' in app.js line 42",
+  "session_id": "s34"
+}

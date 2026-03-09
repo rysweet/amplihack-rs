@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+    "prompt": "Explain the architecture"
+  },
+  "tool_result": {
+    "response": "The system uses a layered architecture..."
+  }
+}

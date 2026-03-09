@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "/dev implement authentication with JWT",
+  "session_id": "s21"
+}

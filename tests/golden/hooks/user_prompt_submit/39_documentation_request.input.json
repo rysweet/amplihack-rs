@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Generate API documentation for the user endpoints",
+  "session_id": "s39"
+}

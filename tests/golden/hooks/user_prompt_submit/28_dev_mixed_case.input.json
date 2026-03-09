@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "/Dev add logging middleware",
+  "session_id": "s28"
+}

@@ -1,0 +1,18 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Complex",
+  "tool_input": {
+    "a": {
+      "b": {
+        "c": {
+          "d": {
+            "e": "deep"
+          }
+        }
+      }
+    }
+  },
+  "tool_result": {
+    "success": true
+  }
+}

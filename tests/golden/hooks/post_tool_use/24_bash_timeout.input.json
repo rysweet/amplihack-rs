@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "sleep 999"
+  },
+  "tool_result": {
+    "stdout": "",
+    "stderr": "Command timed out",
+    "exit_code": 124
+  }
+}

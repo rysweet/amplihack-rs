@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "./crasher"
+  },
+  "tool_result": {
+    "stdout": "",
+    "stderr": "Segmentation fault",
+    "exit_code": 139
+  }
+}

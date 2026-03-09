@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "Stop",
+  "session_id": "s78",
+  "meta": {
+    "a": {
+      "b": {
+        "c": "deep"
+      }
+    }
+  }
+}

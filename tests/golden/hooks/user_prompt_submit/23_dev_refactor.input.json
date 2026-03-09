@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "/dev refactor the database layer to use connection pooling",
+  "session_id": "s23"
+}

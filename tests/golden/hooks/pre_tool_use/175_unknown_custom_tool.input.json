@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "MyCustomTool",
+  "tool_input": {
+    "action": "deploy",
+    "target": "staging"
+  }
+}

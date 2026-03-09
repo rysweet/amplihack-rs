@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Run: cargo build --release && cargo test && cargo clippy -- -D warnings",
+  "session_id": "s79"
+}

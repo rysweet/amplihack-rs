@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "/dev implement the following:\n1. User registration\n2. Email verification\n3. Password reset",
+  "session_id": "s30"
+}

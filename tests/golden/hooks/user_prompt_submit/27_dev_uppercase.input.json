@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "/DEV implement caching",
+  "session_id": "s27"
+}

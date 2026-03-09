@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "long_running"
+  },
+  "tool_result": {
+    "stdout": "",
+    "stderr": "Killed",
+    "exit_code": 137
+  }
+}

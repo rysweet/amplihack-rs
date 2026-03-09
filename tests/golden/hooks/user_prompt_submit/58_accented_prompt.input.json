@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Créer un résumé du café naïf",
+  "session_id": "s58"
+}

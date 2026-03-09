@@ -1,0 +1,17 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Search",
+  "tool_input": {
+    "query": "fn main",
+    "path": "src/"
+  },
+  "tool_result": {
+    "matches": [
+      {
+        "file": "src/main.rs",
+        "line": 1,
+        "text": "fn main() {"
+      }
+    ]
+  }
+}

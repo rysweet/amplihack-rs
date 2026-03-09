@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "path": "config.yaml",
+    "content": "server:\n  port: 8080\n  host: 0.0.0.0\n"
+  },
+  "tool_result": {
+    "success": true
+  }
+}

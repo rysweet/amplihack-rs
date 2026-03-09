@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Create this config:\n```yaml\nserver:\n  port: 8080\n  host: 0.0.0.0\ndatabase:\n  url: postgres://localhost/mydb\n```",
+  "session_id": "s75"
+}

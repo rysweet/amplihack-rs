@@ -1,0 +1,18 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "invalid"
+  },
+  "tool_result": {
+    "error": {
+      "code": "E001",
+      "message": "Command not found",
+      "details": {
+        "suggestions": [
+          "did you mean 'install'?"
+        ]
+      }
+    }
+  }
+}

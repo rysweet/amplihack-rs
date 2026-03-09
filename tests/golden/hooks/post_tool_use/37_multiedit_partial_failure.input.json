@@ -1,0 +1,17 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "MultiEdit",
+  "tool_input": {
+    "path": "file.rs",
+    "edits": [
+      {
+        "old_str": "a",
+        "new_str": "b"
+      }
+    ]
+  },
+  "tool_result": {
+    "success": false,
+    "error": "edit 2 failed: old_str not found"
+  }
+}

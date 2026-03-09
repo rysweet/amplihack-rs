@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Read",
+  "tool_input": {
+    "path": "nonexistent.rs"
+  },
+  "tool_result": {
+    "error": "File not found"
+  }
+}

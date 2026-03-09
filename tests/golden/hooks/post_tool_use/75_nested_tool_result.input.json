@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cat data.json"
+  },
+  "tool_result": {
+    "stdout": "{\"key\": {\"nested\": [1,2,3]}}",
+    "exit_code": 0
+  }
+}

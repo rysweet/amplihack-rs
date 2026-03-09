@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cat << 'EOF'\nhello world\nEOF"
+  },
+  "tool_result": {
+    "stdout": "hello world",
+    "exit_code": 0
+  }
+}
