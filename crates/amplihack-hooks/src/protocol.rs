@@ -59,9 +59,9 @@ pub fn run_hook<H: Hook>(hook: H) {
 
         let input: HookInput = serde_json::from_str(&input_json).unwrap_or(HookInput::Unknown);
 
-        // Unknown events get empty output (graceful forward-compat).
+        // Unknown events get versioned empty output (graceful forward-compat).
         if matches!(input, HookInput::Unknown) {
-            write_stdout(b"{}")?;
+            write_stdout(br#"{"version":1}"#)?;
             return Ok(());
         }
 
