@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Read",
+  "tool_input": {
+    "path": "/tmp/x"
+  }
+}
