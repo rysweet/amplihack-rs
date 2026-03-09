@@ -2,7 +2,7 @@
 //!
 //! After a session ends (and lock/power-steering don't block),
 //! runs Claude reflection to generate feedback on the work done.
-//! Results are saved to FEEDBACK_SUMMARY.md.
+//! Results are saved to timestamped files for history preservation.
 
 use amplihack_state::PythonBridge;
 use amplihack_types::ProjectDirs;
@@ -83,22 +83,10 @@ pub fn run_reflection(
     let session_dir = dirs.session_logs(session_id);
     fs::create_dir_all(&session_dir)?;
 
-    // Atomic semaphore: try to create exclusively. If it already exists,
-    // another invocation already ran reflection — skip.
-    let semaphore_path = session_dir.join(".reflection_presented");
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&semaphore_path)
-    {
-        Ok(_) => {} // We created it — we own this reflection run.
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Ok(None);
-        }
-        Err(e) => {
-            tracing::warn!("Failed to create reflection semaphore: {}", e);
-            return Ok(None);
-        }
+    // Per-session semaphore to avoid re-presenting reflection results.
+    let semaphore_path = session_dir.join(format!(".reflection_presented_{session_id}"));
+    if semaphore_path.exists() {
+        return Ok(None);
     }
 
     let input = serde_json::json!({
@@ -116,21 +104,35 @@ pub fn run_reflection(
                 .unwrap_or(false);
 
             if success && let Some(template) = result.get("template").and_then(Value::as_str) {
-                // Save feedback to files — log errors but don't abort.
+                // Generate timestamped filename for history preservation.
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let filename = format!("reflection_{session_id}_{timestamp}.md");
+
+                // Save feedback to session dir.
                 if let Err(e) = fs::write(session_dir.join("FEEDBACK_SUMMARY.md"), template) {
                     tracing::warn!("Failed to write FEEDBACK_SUMMARY.md: {}", e);
                 }
 
-                // Mirror for backward compatibility.
+                // Save timestamped copy for history.
                 let reflection_dir = dirs.runtime.join("reflection");
                 if let Err(e) = fs::create_dir_all(&reflection_dir) {
                     tracing::warn!("Failed to create reflection dir: {}", e);
                 }
+                if let Err(e) = fs::write(reflection_dir.join(&filename), template) {
+                    tracing::warn!("Failed to write {}: {}", filename, e);
+                }
+                // Also update current_findings.md for backward compat.
                 if let Err(e) = fs::write(reflection_dir.join("current_findings.md"), template) {
                     tracing::warn!("Failed to write current_findings.md: {}", e);
                 }
 
-                // Semaphore already created atomically at function entry.
+                // Write semaphore ONLY after all work succeeds.
+                if let Err(e) = fs::write(&semaphore_path, "") {
+                    tracing::warn!("Failed to write reflection semaphore: {}", e);
+                }
 
                 // Block with findings.
                 return Ok(Some(serde_json::json!({
@@ -166,12 +168,17 @@ mod tests {
     fn semaphore_prevents_re_presentation() {
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
-        let session_dir = dirs.session_logs("test-session");
+        let session_id = "test-session";
+        let session_dir = dirs.session_logs(session_id);
         fs::create_dir_all(&session_dir).unwrap();
-        fs::write(session_dir.join(".reflection_presented"), "").unwrap();
+        fs::write(
+            session_dir.join(format!(".reflection_presented_{session_id}")),
+            "",
+        )
+        .unwrap();
 
         // Should return None even without running bridge.
-        let result = run_reflection(&dirs, "test-session", None).unwrap();
+        let result = run_reflection(&dirs, session_id, None).unwrap();
         assert!(result.is_none());
     }
 }
