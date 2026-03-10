@@ -5,7 +5,7 @@ Rust core runtime for amplihack deterministic infrastructure.
 ## Prerequisites
 
 - **Rust** 2024 edition (1.85+): `rustup update stable`
-- **cross** (for ARM64 Linux): `cargo install cross --locked`
+- **GNU cross toolchain** (for ARM64 Linux): `sudo apt-get install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu`
 - **Python 3.11+** with amplihack installed (for SDK bridge tests)
 
 ## Build & Test
@@ -102,7 +102,11 @@ tests/
 cargo build --release
 
 # Linux ARM64
-cross build --release --target aarch64-unknown-linux-gnu
+rustup target add aarch64-unknown-linux-gnu
+CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+cargo build --release --target aarch64-unknown-linux-gnu
 
 # macOS (from macOS host)
 rustup target add aarch64-apple-darwin
