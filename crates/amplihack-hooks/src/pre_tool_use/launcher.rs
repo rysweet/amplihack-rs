@@ -104,18 +104,21 @@ mod tests {
 
     #[test]
     fn unknown_launcher_by_default() {
-        let launcher = detect_launcher();
-        // In test environment without launcher env vars, expect Unknown.
-        // If a launcher env var happens to be set, accept the detected type.
+        // Clear all launcher env vars to get a deterministic result.
+        // SAFETY: This test must not run in parallel with other tests that
+        // read these env vars. Cargo runs tests in the same process but
+        // the env vars cleared here are test-only.
+        unsafe {
+            std::env::remove_var("GITHUB_COPILOT_AGENT");
+            std::env::remove_var("COPILOT_AGENT");
+            std::env::remove_var("AMPLIFIER_SESSION");
+            std::env::remove_var("CLAUDE_CODE_SESSION");
+            std::env::remove_var("CLAUDE_SESSION_ID");
+        }
+        let result = detect_launcher();
         assert!(
-            matches!(
-                launcher,
-                LauncherType::Unknown
-                    | LauncherType::ClaudeCode
-                    | LauncherType::Copilot
-                    | LauncherType::Amplifier
-            ),
-            "detect_launcher should return a valid LauncherType variant, got: {launcher:?}"
+            matches!(result, LauncherType::Unknown),
+            "Expected Unknown when no launcher env vars set, got: {result:?}"
         );
     }
 

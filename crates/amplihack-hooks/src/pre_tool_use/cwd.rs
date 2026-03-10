@@ -207,8 +207,23 @@ fn check_glob_cwd_match(pattern: &str, cwd: &Path) -> Option<Value> {
 }
 
 /// Resolve a path string to an absolute path.
+///
+/// Expands `~` and `~/...` to `$HOME` before resolution.
+/// Does NOT expand `~user` forms (those are username references).
 fn resolve_path(p: &str) -> Option<std::path::PathBuf> {
-    let path = Path::new(p);
+    // Expand bare ~ and ~/... to $HOME. Skip ~user (username reference).
+    let expanded = if p == "~" || p.starts_with("~/") {
+        let home = std::env::var("HOME").ok()?;
+        if p == "~" {
+            home
+        } else {
+            format!("{}{}", home, &p[1..])
+        }
+    } else {
+        p.to_string()
+    };
+
+    let path = Path::new(&expanded);
     match path.canonicalize() {
         Ok(c) => Some(c),
         Err(_) => {
@@ -259,6 +274,7 @@ fn has_dangerous_expansion(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn safe_rm_not_blocked() {
@@ -392,5 +408,87 @@ mod tests {
         assert!(!has_dangerous_expansion("/tmp/test"));
         assert!(!has_dangerous_expansion("$?"));
         assert!(!has_dangerous_expansion("$!"));
+    }
+
+    #[test]
+    fn tilde_resolves_to_home() {
+        // resolve_path("~") should expand to $HOME.
+        let home = std::env::var("HOME").unwrap();
+        let resolved = resolve_path("~").unwrap();
+        assert_eq!(
+            resolved,
+            Path::new(&home)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(&home))
+        );
+    }
+
+    #[test]
+    fn tilde_slash_resolves_to_home_subpath() {
+        let home = std::env::var("HOME").unwrap();
+        let resolved = resolve_path("~/Documents").unwrap();
+        let expected = Path::new(&home).join("Documents");
+        // canonicalize may or may not succeed depending on whether ~/Documents exists.
+        assert!(
+            resolved == expected.canonicalize().unwrap_or_else(|_| expected.clone()),
+            "~/Documents should resolve under $HOME, got: {:?}",
+            resolved
+        );
+    }
+
+    #[test]
+    fn tilde_other_user_not_expanded() {
+        // ~other_user should NOT be expanded (it's a username reference).
+        let resolved = resolve_path("~other_user");
+        // Should resolve relative to CWD, not as $HOME.
+        if let Some(r) = &resolved {
+            let home = std::env::var("HOME").unwrap();
+            assert!(
+                !r.starts_with(&home) || r.starts_with(std::env::current_dir().unwrap()),
+                "~other_user should not expand to $HOME, got: {:?}",
+                r
+            );
+        }
+    }
+
+    #[test]
+    fn rm_rf_tilde_blocked() {
+        // rm -rf ~ should be blocked because ~ expands to $HOME which contains CWD.
+        let home = std::env::var("HOME").unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        // This test only works when CWD is under $HOME.
+        if cwd.starts_with(&home) {
+            let result = check_cwd_deletion("rm -rf ~").unwrap();
+            assert!(
+                result.is_some(),
+                "rm -rf ~ should be blocked when CWD is under $HOME"
+            );
+        }
+    }
+
+    #[test]
+    fn rm_rf_tilde_slash_blocked() {
+        let home = std::env::var("HOME").unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        if cwd.starts_with(&home) {
+            let result = check_cwd_deletion("rm -rf ~/").unwrap();
+            assert!(
+                result.is_some(),
+                "rm -rf ~/ should be blocked when CWD is under $HOME"
+            );
+        }
+    }
+
+    #[test]
+    fn mv_tilde_blocked() {
+        let home = std::env::var("HOME").unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        if cwd.starts_with(&home) {
+            let result = check_cwd_rename("mv ~ /tmp/x").unwrap();
+            assert!(
+                result.is_some(),
+                "mv ~ /tmp/x should be blocked when CWD is under $HOME"
+            );
+        }
     }
 }
