@@ -9,16 +9,12 @@ pub mod hook_io;
 pub mod paths;
 /// Global and project-level settings deserialization.
 pub mod settings;
-/// Tool permission decision types.
-pub mod tool_decision;
 
 /// Top-level hook input enum (tagged by `hook_event_name`).
-pub use hook_io::{HookInput, HookOutput, HookOutputDecision};
+pub use hook_io::HookInput;
 /// Project directory layout.
 pub use paths::ProjectDirs;
 /// Session ID sanitizer to prevent path traversal.
 pub use paths::sanitize_session_id;
 /// Deserialized settings from `settings.json`.
 pub use settings::Settings;
-/// Tool-level allow/deny decision.
-pub use tool_decision::ToolDecision;

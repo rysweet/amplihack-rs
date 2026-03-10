@@ -89,10 +89,17 @@ impl Hook for SessionStopHook {
     }
 }
 
-/// Check git status and print warnings about uncommitted changes.
+/// Collected git status for uncommitted work.
+struct GitStatus {
+    staged: Vec<String>,
+    unstaged: Vec<String>,
+    untracked: Vec<String>,
+}
+
+/// Gather git status (staged, unstaged, untracked files).
 ///
-/// Best-effort: never blocks session exit.
-fn warn_uncommitted_work() {
+/// Returns `None` if git is unavailable or not in a repo.
+fn get_git_status() -> Option<GitStatus> {
     let staged = match Command::new("git")
         .args(["diff", "--cached", "--name-only"])
         .output()
@@ -102,7 +109,7 @@ fn warn_uncommitted_work() {
             .filter(|l| !l.is_empty())
             .map(String::from)
             .collect::<Vec<_>>(),
-        _ => return,
+        _ => return None,
     };
 
     let unstaged = match Command::new("git").args(["diff", "--name-only"]).output() {
@@ -125,6 +132,28 @@ fn warn_uncommitted_work() {
             .collect::<Vec<_>>(),
         _ => Vec::new(),
     };
+
+    Some(GitStatus {
+        staged,
+        unstaged,
+        untracked,
+    })
+}
+
+/// Check git status and print warnings about uncommitted changes.
+///
+/// Best-effort: never blocks session exit.
+fn warn_uncommitted_work() {
+    let status = match get_git_status() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let GitStatus {
+        staged,
+        unstaged,
+        untracked,
+    } = status;
 
     if staged.is_empty() && unstaged.is_empty() && untracked.is_empty() {
         return;

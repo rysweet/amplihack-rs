@@ -71,6 +71,38 @@ except Exception as e:
     sys.exit(1)
 "#;
 
+/// Save reflection artifacts to disk.
+///
+/// Writes FEEDBACK_SUMMARY.md, timestamped reflection file, and current_findings.md.
+fn save_reflection_artifacts(dirs: &ProjectDirs, session_id: &str, template: &str) {
+    let session_dir = dirs.session_logs(session_id);
+
+    // Generate timestamped filename for history preservation.
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let filename = format!("reflection_{session_id}_{timestamp}.md");
+
+    // Save feedback to session dir.
+    if let Err(e) = fs::write(session_dir.join("FEEDBACK_SUMMARY.md"), template) {
+        tracing::warn!("Failed to write FEEDBACK_SUMMARY.md: {}", e);
+    }
+
+    // Save timestamped copy for history.
+    let reflection_dir = dirs.runtime.join("reflection");
+    if let Err(e) = fs::create_dir_all(&reflection_dir) {
+        tracing::warn!("Failed to create reflection dir: {}", e);
+    }
+    if let Err(e) = fs::write(reflection_dir.join(&filename), template) {
+        tracing::warn!("Failed to write {}: {}", filename, e);
+    }
+    // Also update current_findings.md for backward compat.
+    if let Err(e) = fs::write(reflection_dir.join("current_findings.md"), template) {
+        tracing::warn!("Failed to write current_findings.md: {}", e);
+    }
+}
+
 /// Run session reflection and return findings if session should be blocked.
 ///
 /// Returns `Some(block_json)` if reflection produced findings that should
@@ -104,30 +136,7 @@ pub fn run_reflection(
                 .unwrap_or(false);
 
             if success && let Some(template) = result.get("template").and_then(Value::as_str) {
-                // Generate timestamped filename for history preservation.
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let filename = format!("reflection_{session_id}_{timestamp}.md");
-
-                // Save feedback to session dir.
-                if let Err(e) = fs::write(session_dir.join("FEEDBACK_SUMMARY.md"), template) {
-                    tracing::warn!("Failed to write FEEDBACK_SUMMARY.md: {}", e);
-                }
-
-                // Save timestamped copy for history.
-                let reflection_dir = dirs.runtime.join("reflection");
-                if let Err(e) = fs::create_dir_all(&reflection_dir) {
-                    tracing::warn!("Failed to create reflection dir: {}", e);
-                }
-                if let Err(e) = fs::write(reflection_dir.join(&filename), template) {
-                    tracing::warn!("Failed to write {}: {}", filename, e);
-                }
-                // Also update current_findings.md for backward compat.
-                if let Err(e) = fs::write(reflection_dir.join("current_findings.md"), template) {
-                    tracing::warn!("Failed to write current_findings.md: {}", e);
-                }
+                save_reflection_artifacts(dirs, session_id, template);
 
                 // Write semaphore ONLY after all work succeeds.
                 if let Err(e) = fs::write(&semaphore_path, "") {

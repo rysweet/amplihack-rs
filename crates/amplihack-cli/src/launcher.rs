@@ -98,8 +98,12 @@ impl ManagedChild {
             pid = self.child.id(),
             "child did not exit gracefully, sending SIGKILL"
         );
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Err(e) = self.child.kill() {
+            tracing::warn!("failed to kill child process: {e}");
+        }
+        if let Err(e) = self.child.wait() {
+            tracing::warn!("failed to wait for child process: {e}");
+        }
     }
 }
 
