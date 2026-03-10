@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "PreCompact",
+  "session_id": "compact-extra-fields",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "custom_data": "extra",
+  "numeric_field": 99
+}

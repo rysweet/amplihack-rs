@@ -5,6 +5,22 @@
 
 use std::path::{Path, PathBuf};
 
+/// Sanitize a session ID to prevent path traversal attacks.
+///
+/// Strips path separators (`/`, `\`) and `..` components, returning a safe
+/// string for use in filesystem path construction.
+///
+/// # Panics
+/// Panics if the sanitized result is empty.
+pub fn sanitize_session_id(session_id: &str) -> String {
+    let sanitized: String = session_id.replace(['/', '\\'], "").replace("..", "");
+    assert!(
+        !sanitized.is_empty(),
+        "session_id is empty after sanitization (original: {session_id:?})"
+    );
+    sanitized
+}
+
 /// Directory layout rooted at a project directory.
 ///
 /// Every path that hooks touch is defined here. To change
@@ -51,18 +67,24 @@ impl ProjectDirs {
     }
 
     /// Lock file for a specific session.
+    ///
+    /// The session ID is sanitized to prevent path traversal.
     pub fn session_locks(&self, session_id: &str) -> PathBuf {
-        self.locks.join(session_id)
+        self.locks.join(sanitize_session_id(session_id))
     }
 
     /// Log directory for a specific session.
+    ///
+    /// The session ID is sanitized to prevent path traversal.
     pub fn session_logs(&self, session_id: &str) -> PathBuf {
-        self.logs.join(session_id)
+        self.logs.join(sanitize_session_id(session_id))
     }
 
     /// Power steering directory for a specific session.
+    ///
+    /// The session ID is sanitized to prevent path traversal.
     pub fn session_power_steering(&self, session_id: &str) -> PathBuf {
-        self.power_steering.join(session_id)
+        self.power_steering.join(sanitize_session_id(session_id))
     }
 
     /// The `.lock_active` sentinel file.
@@ -157,6 +179,73 @@ mod tests {
         assert_eq!(
             dirs.session_logs("abc"),
             PathBuf::from("/project/.claude/runtime/logs/abc")
+        );
+    }
+
+    #[test]
+    fn sanitize_normal_session_id() {
+        assert_eq!(
+            sanitize_session_id("normal-session-id-123"),
+            "normal-session-id-123"
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_path_traversal() {
+        assert_eq!(sanitize_session_id("../../../etc/passwd"), "etcpasswd");
+    }
+
+    #[test]
+    fn sanitize_strips_forward_slashes() {
+        assert_eq!(sanitize_session_id("foo/bar"), "foobar");
+    }
+
+    #[test]
+    fn sanitize_strips_backslashes() {
+        assert_eq!(sanitize_session_id("foo\\bar"), "foobar");
+    }
+
+    #[test]
+    fn sanitize_strips_mixed_traversal() {
+        assert_eq!(
+            sanitize_session_id("..\\..\\windows\\system32"),
+            "windowssystem32"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "session_id is empty after sanitization")]
+    fn sanitize_rejects_empty_result() {
+        sanitize_session_id("../../../");
+    }
+
+    #[test]
+    fn session_locks_sanitizes_traversal() {
+        let dirs = ProjectDirs::new("/project");
+        let path = dirs.session_locks("../../../etc/passwd");
+        assert_eq!(
+            path,
+            PathBuf::from("/project/.claude/runtime/locks/etcpasswd")
+        );
+    }
+
+    #[test]
+    fn session_logs_sanitizes_traversal() {
+        let dirs = ProjectDirs::new("/project");
+        let path = dirs.session_logs("../../../etc/passwd");
+        assert_eq!(
+            path,
+            PathBuf::from("/project/.claude/runtime/logs/etcpasswd")
+        );
+    }
+
+    #[test]
+    fn session_power_steering_sanitizes_traversal() {
+        let dirs = ProjectDirs::new("/project");
+        let path = dirs.session_power_steering("../../../etc/passwd");
+        assert_eq!(
+            path,
+            PathBuf::from("/project/.claude/runtime/power-steering/etcpasswd")
         );
     }
 }

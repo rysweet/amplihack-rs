@@ -153,11 +153,20 @@ fn run_golden_tests_for_hook(hook_type: &str) {
         .join("hooks")
         .join(hook_type);
 
-    let cases = discover_cases(&golden_dir);
-    if cases.is_empty() {
-        // No test files → skip silently (directory exists but is empty).
+    if !golden_dir.exists() {
+        eprintln!(
+            "  ⊘ {hook_type}: golden directory does not exist ({}), skipping",
+            golden_dir.display()
+        );
         return;
     }
+
+    let cases = discover_cases(&golden_dir);
+    assert!(
+        !cases.is_empty(),
+        "No golden test cases found for hook: {hook_type} (directory exists at {} but contains no .input.json/.expected.json pairs)",
+        golden_dir.display()
+    );
 
     let mut failures: Vec<String> = Vec::new();
 

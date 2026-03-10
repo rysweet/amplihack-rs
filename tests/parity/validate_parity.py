@@ -12,7 +12,12 @@ from pathlib import Path
 
 RUST_BINARY = Path.home() / "src/amplihack-rs/target/release/amplihack-hooks"
 GOLDEN_DIR = Path.home() / "src/amplihack-rs/tests/golden/hooks"
-PYTHON_HOOKS_DIR = Path.home() / "src/amplihack/.claude/tools/amplihack/hooks"
+PYTHON_HOOKS_DIR = Path(
+    os.environ.get(
+        "AMPLIHACK_PYTHON_HOOKS_DIR",
+        str(Path.home() / "src/amplihack/.claude/tools/amplihack/hooks"),
+    )
+)
 
 # Map golden dir names to Rust subcommands and Python hook scripts
 HOOK_MAP = {
@@ -20,6 +25,8 @@ HOOK_MAP = {
     "post_tool_use": ("post-tool-use", "post_tool_use.py"),
     "stop": ("stop", "stop.py"),
     "session_stop": ("session-stop", "session_stop.py"),
+    "session_start": ("session-start", "session_start.py"),
+    "pre_compact": ("pre-compact", "pre_compact.py"),
     "user_prompt_submit": ("user-prompt-submit", "user_prompt_submit.py"),
 }
 
