@@ -44,7 +44,7 @@ pub fn check(
     let ps_dir = dirs.session_power_steering(session_id);
     fs::create_dir_all(&ps_dir)?;
 
-    let counter = AtomicCounter::new(ps_dir.join("session_count.json"));
+    let counter = AtomicCounter::new(ps_dir.join("session_count"));
     let count = counter.increment()?;
 
     // First stop: always approve (let power steering checker handle on subsequent stops).
