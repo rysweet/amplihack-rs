@@ -13,9 +13,7 @@ use std::path::{Path, PathBuf};
 /// # Panics
 /// Panics if the sanitized result is empty.
 pub fn sanitize_session_id(session_id: &str) -> String {
-    let sanitized: String = session_id
-        .replace(['/', '\\'], "")
-        .replace("..", "");
+    let sanitized: String = session_id.replace(['/', '\\'], "").replace("..", "");
     assert!(
         !sanitized.is_empty(),
         "session_id is empty after sanitization (original: {session_id:?})"
@@ -186,7 +184,10 @@ mod tests {
 
     #[test]
     fn sanitize_normal_session_id() {
-        assert_eq!(sanitize_session_id("normal-session-id-123"), "normal-session-id-123");
+        assert_eq!(
+            sanitize_session_id("normal-session-id-123"),
+            "normal-session-id-123"
+        );
     }
 
     #[test]
@@ -206,7 +207,10 @@ mod tests {
 
     #[test]
     fn sanitize_strips_mixed_traversal() {
-        assert_eq!(sanitize_session_id("..\\..\\windows\\system32"), "windowssystem32");
+        assert_eq!(
+            sanitize_session_id("..\\..\\windows\\system32"),
+            "windowssystem32"
+        );
     }
 
     #[test]
@@ -219,20 +223,29 @@ mod tests {
     fn session_locks_sanitizes_traversal() {
         let dirs = ProjectDirs::new("/project");
         let path = dirs.session_locks("../../../etc/passwd");
-        assert_eq!(path, PathBuf::from("/project/.claude/runtime/locks/etcpasswd"));
+        assert_eq!(
+            path,
+            PathBuf::from("/project/.claude/runtime/locks/etcpasswd")
+        );
     }
 
     #[test]
     fn session_logs_sanitizes_traversal() {
         let dirs = ProjectDirs::new("/project");
         let path = dirs.session_logs("../../../etc/passwd");
-        assert_eq!(path, PathBuf::from("/project/.claude/runtime/logs/etcpasswd"));
+        assert_eq!(
+            path,
+            PathBuf::from("/project/.claude/runtime/logs/etcpasswd")
+        );
     }
 
     #[test]
     fn session_power_steering_sanitizes_traversal() {
         let dirs = ProjectDirs::new("/project");
         let path = dirs.session_power_steering("../../../etc/passwd");
-        assert_eq!(path, PathBuf::from("/project/.claude/runtime/power-steering/etcpasswd"));
+        assert_eq!(
+            path,
+            PathBuf::from("/project/.claude/runtime/power-steering/etcpasswd")
+        );
     }
 }

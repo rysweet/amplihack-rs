@@ -3,12 +3,12 @@
 //! All hooks are host-agnostic — they work with Claude Code, Amplifier,
 //! and Copilot via JSON stdin/stdout protocol.
 
-/// Pre-tool-use hook: decides whether to allow or deny a tool invocation.
-pub mod pre_tool_use;
-/// Pre-compact hook: exports conversation transcript before context compaction.
-pub mod pre_compact;
 /// Post-tool-use hook: observes tool results for metrics and validation.
 pub mod post_tool_use;
+/// Pre-compact hook: exports conversation transcript before context compaction.
+pub mod pre_compact;
+/// Pre-tool-use hook: decides whether to allow or deny a tool invocation.
+pub mod pre_tool_use;
 /// Hook protocol traits and failure policies.
 pub mod protocol;
 /// Session start hook: initializes session state and injects context.
