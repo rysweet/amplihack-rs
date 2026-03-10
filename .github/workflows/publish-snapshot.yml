@@ -1,0 +1,94 @@
+name: Publish Snapshot Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/publish-snapshot.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  cross-compile:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            cross: false
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            cross: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: snapshot-${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build (native)
+        if: "!matrix.cross"
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Package snapshot artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar czf "dist/amplihack-${{ matrix.target }}.tar.gz" \
+            -C "target/${{ matrix.target }}/release" \
+            amplihack amplihack-hooks
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-${{ matrix.target }}
+          path: dist/amplihack-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish snapshot release
+    needs: cross-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub snapshot release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: snapshot-${{ github.sha }}
+          name: snapshot-${{ github.sha }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          generate_release_notes: true
+          files: artifacts/*.tar.gz
