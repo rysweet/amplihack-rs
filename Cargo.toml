@@ -18,6 +18,7 @@ repository = "https://github.com/rysweet/amplihack-rs"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 thiserror = "2"
 anyhow = "1"
 tracing = "0.1"

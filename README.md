@@ -25,6 +25,27 @@ cargo fmt --check
 
 # Run a hook
 echo '{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}}' | cargo run --bin amplihack-hooks -- pre-tool-use
+
+# Run a local CLI parity suite
+python tests/parity/validate_cli_parity.py \
+  --scenario tests/parity/scenarios/tier3-memory.yaml \
+  --python-repo /path/to/amploxy \
+  --rust-binary target/debug/amplihack
+
+# Run the same suite on a remote host (for example azlin)
+python tests/parity/validate_cli_parity.py \
+  --ssh-target azlin \
+  --scenario tests/parity/scenarios/tier3-memory.yaml \
+  --python-repo /home/azureuser/src/amploxy \
+  --rust-binary /home/azureuser/src/amplihack-rs/target/debug/amplihack
+
+# Shadow-mode rollout: log divergences without failing the run
+python tests/parity/validate_cli_parity.py \
+  --scenario tests/parity/scenarios/tier2-install.yaml \
+  --python-repo /path/to/amploxy \
+  --rust-binary target/debug/amplihack \
+  --shadow-mode \
+  --shadow-log /tmp/amplihack-shadow.jsonl
 ```
 
 ## Hook Binary
@@ -45,6 +66,15 @@ Register with your hook host:
 ```json
 {"command": "/path/to/amplihack-hooks pre-tool-use", "timeout": 10}
 ```
+
+## CLI Parity Harness
+
+`tests/parity/validate_cli_parity.py` is the migration loop for native CLI work:
+
+- local or remote (`--ssh-target`) execution
+- side-by-side observable tmux mode (`--observable`)
+- semantic JSON and filesystem comparison
+- shadow-mode logging (`--shadow-mode --shadow-log ...`) for migration dry runs
 
 ## Design Principles
 

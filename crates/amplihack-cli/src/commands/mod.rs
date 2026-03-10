@@ -37,28 +37,77 @@ pub fn dispatch(command: Commands) -> Result<()> {
 
 fn dispatch_plugin(command: PluginCommands) -> Result<()> {
     match command {
-        PluginCommands::Install { name } => plugin::run_install(&name),
-        PluginCommands::Uninstall { name } => plugin::run_uninstall(&name),
-        PluginCommands::Link { path } => plugin::run_link(&path),
-        PluginCommands::Verify => plugin::run_verify(),
+        PluginCommands::Install { source, force } => plugin::run_install(&source, force),
+        PluginCommands::Uninstall { plugin_name } => plugin::run_uninstall(&plugin_name),
+        PluginCommands::Link { plugin_name } => plugin::run_link(&plugin_name),
+        PluginCommands::Verify { plugin_name } => plugin::run_verify(&plugin_name),
     }
 }
 
 fn dispatch_memory(command: MemoryCommands) -> Result<()> {
     match command {
-        MemoryCommands::Tree => memory::run_tree(),
-        MemoryCommands::Export { output } => memory::run_export(output.as_deref()),
-        MemoryCommands::Import { file } => memory::run_import(&file),
-        MemoryCommands::Clean => memory::run_clean(),
+        MemoryCommands::Tree {
+            session,
+            memory_type,
+            depth,
+            backend,
+        } => memory::run_tree(session.as_deref(), memory_type.as_deref(), depth, &backend),
+        MemoryCommands::Export {
+            agent,
+            output,
+            format,
+            storage_path,
+        } => memory::run_export(&agent, &output, &format, storage_path.as_deref()),
+        MemoryCommands::Import {
+            agent,
+            input,
+            format,
+            merge,
+            storage_path,
+        } => memory::run_import(&agent, &input, &format, merge, storage_path.as_deref()),
+        MemoryCommands::Clean {
+            pattern,
+            backend,
+            no_dry_run,
+            confirm,
+        } => memory::run_clean(&pattern, &backend, !no_dry_run, confirm),
     }
 }
 
 fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
     match command {
-        RecipeCommands::Run { name, args } => recipe::run_recipe(&name, &args),
-        RecipeCommands::List => recipe::run_list(),
-        RecipeCommands::Validate { file } => recipe::run_validate(&file),
-        RecipeCommands::Show { name } => recipe::run_show(&name),
+        RecipeCommands::Run {
+            recipe_path,
+            context,
+            dry_run,
+            verbose,
+            format,
+            working_dir,
+        } => recipe::run_recipe(
+            &recipe_path,
+            &context,
+            dry_run,
+            verbose,
+            &format,
+            working_dir.as_deref(),
+        ),
+        RecipeCommands::List {
+            recipe_dir,
+            format,
+            tags,
+            verbose,
+        } => recipe::run_list(recipe_dir.as_deref(), &format, &tags, verbose),
+        RecipeCommands::Validate {
+            file,
+            verbose,
+            format,
+        } => recipe::run_validate(&file, verbose, &format),
+        RecipeCommands::Show {
+            name,
+            format,
+            no_steps,
+            no_context,
+        } => recipe::run_show(&name, &format, !no_steps, !no_context),
     }
 }
 

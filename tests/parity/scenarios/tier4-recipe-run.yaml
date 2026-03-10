@@ -1,0 +1,72 @@
+cases:
+  - name: recipe-run-dry-json
+    argv: ["recipe", "run", "demo.yaml", "--dry-run", "--format", "json"]
+    setup: |
+      cat > demo.yaml <<'EOF'
+      name: demo
+      description: Demo recipe
+      context:
+        repo_path: .
+      steps:
+        - id: step-1
+          command: echo hello
+      EOF
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: recipe-run-dry-json-verbose
+    argv: ["recipe", "run", "demo.yaml", "--dry-run", "--verbose", "--format", "json", "-c", "task_description=Fix bug (#123)"]
+    setup: |
+      cat > demo.yaml <<'EOF'
+      name: demo
+      description: Demo recipe
+      context:
+        repo_path: .
+        task_description: ""
+      steps:
+        - id: step-1
+          command: echo hello
+      EOF
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: recipe-run-table-working-dir
+    argv: ["recipe", "run", "demo.yaml", "--format", "table", "--working-dir", "sandbox"]
+    setup: |
+      mkdir -p sandbox
+      cat > demo.yaml <<'EOF'
+      name: demo
+      description: Demo recipe
+      steps:
+        - id: step-1
+          command: pwd
+      EOF
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: recipe-run-env-context-inference
+    argv: ["recipe", "run", "demo.yaml", "--dry-run", "--verbose", "--format", "json"]
+    env:
+      AMPLIHACK_CONTEXT_PROJECT_NAME: parity-project
+      AMPLIHACK_REPO_PATH: /tmp/repo-root
+    setup: |
+      cat > demo.yaml <<'EOF'
+      name: demo
+      description: Demo recipe
+      context:
+        project_name: ""
+        repo_path: ""
+      steps:
+        - id: step-1
+          command: echo hello
+      EOF
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: recipe-run-invalid-context
+    argv: ["recipe", "run", "demo.yaml", "--dry-run", "--format", "json", "-c", "invalid-context"]
+    setup: |
+      cat > demo.yaml <<'EOF'
+      name: demo
+      description: Demo recipe
+      steps:
+        - id: step-1
+          command: echo hello
+      EOF
+    compare: ["stdout", "stderr", "exit_code"]

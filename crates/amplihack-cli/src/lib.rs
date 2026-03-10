@@ -5,12 +5,15 @@
 //! handling, and nesting detection.
 
 pub mod binary_finder;
+pub mod command_error;
 pub mod commands;
 pub mod env_builder;
 pub mod launcher;
 pub mod nesting;
 pub mod settings_manager;
 pub mod signals;
+#[cfg(test)]
+pub mod test_support;
 
 use clap::{Parser, Subcommand};
 
@@ -96,63 +99,158 @@ pub enum Commands {
 pub enum PluginCommands {
     /// Install a plugin
     Install {
-        /// Plugin name or path
-        name: String,
+        /// Git URL or local directory path
+        source: String,
+        /// Overwrite existing plugin
+        #[arg(long)]
+        force: bool,
     },
     /// Uninstall a plugin
     Uninstall {
         /// Plugin name
-        name: String,
+        plugin_name: String,
     },
-    /// Link a local plugin for development
+    /// Link installed plugin to Claude Code settings
     Link {
-        /// Path to the plugin directory
-        path: String,
+        /// Plugin name to link
+        #[arg(default_value = "amplihack")]
+        plugin_name: String,
     },
     /// Verify installed plugins
-    Verify,
+    Verify {
+        /// Plugin name to verify
+        #[arg(default_value = "amplihack")]
+        plugin_name: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum MemoryCommands {
     /// Show memory tree
-    Tree,
+    Tree {
+        /// Filter by session ID
+        #[arg(long = "session")]
+        session: Option<String>,
+        /// Filter by memory type
+        #[arg(long = "type", value_parser = ["conversation", "decision", "pattern", "context", "learning", "artifact"])]
+        memory_type: Option<String>,
+        /// Maximum tree depth
+        #[arg(long)]
+        depth: Option<u32>,
+        /// Memory backend to use
+        #[arg(long, default_value = "kuzu", value_parser = ["kuzu", "sqlite"])]
+        backend: String,
+    },
     /// Export memory to file
     Export {
-        /// Output file path
+        /// Name of the agent whose memory to export
+        #[arg(long)]
+        agent: String,
+        /// Output file path (.json) or directory (kuzu)
         #[arg(short, long)]
-        output: Option<String>,
+        output: String,
+        /// Export format
+        #[arg(short = 'f', long = "format", default_value = "json", value_parser = ["json", "kuzu"])]
+        format: String,
+        /// Custom storage path for the agent's Kuzu DB
+        #[arg(long = "storage-path")]
+        storage_path: Option<String>,
     },
     /// Import memory from file
     Import {
-        /// Input file path
-        file: String,
+        /// Name of the target agent to import into
+        #[arg(long)]
+        agent: String,
+        /// Input file path (.json) or directory (kuzu)
+        #[arg(short, long)]
+        input: String,
+        /// Import format
+        #[arg(short = 'f', long = "format", default_value = "json", value_parser = ["json", "kuzu"])]
+        format: String,
+        /// Merge into existing memory
+        #[arg(long)]
+        merge: bool,
+        /// Custom storage path for the agent's Kuzu DB
+        #[arg(long = "storage-path")]
+        storage_path: Option<String>,
     },
     /// Clean stale memory entries
-    Clean,
+    Clean {
+        /// Session ID pattern to match
+        #[arg(long, default_value = "test_*")]
+        pattern: String,
+        /// Memory backend to use
+        #[arg(long, default_value = "kuzu", value_parser = ["kuzu", "sqlite"])]
+        backend: String,
+        /// Actually delete sessions instead of dry-run
+        #[arg(long = "no-dry-run")]
+        no_dry_run: bool,
+        /// Skip confirmation prompt
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum RecipeCommands {
     /// Run a recipe
     Run {
-        /// Recipe name
-        name: String,
-        /// Extra args passed to the recipe
-        #[arg(trailing_var_arg = true)]
-        args: Vec<String>,
+        /// Recipe path
+        recipe_path: String,
+        /// Set context variable (key=value)
+        #[arg(short = 'c', long = "context")]
+        context: Vec<String>,
+        /// Show what would be executed
+        #[arg(long)]
+        dry_run: bool,
+        /// Show detailed output
+        #[arg(short, long)]
+        verbose: bool,
+        /// Output format
+        #[arg(short, long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
+        /// Working directory for execution
+        #[arg(short = 'w', long = "working-dir")]
+        working_dir: Option<String>,
     },
     /// List available recipes
-    List,
+    List {
+        /// Directory to search for recipes
+        recipe_dir: Option<String>,
+        /// Output format
+        #[arg(short, long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
+        /// Filter by tags
+        #[arg(short, long)]
+        tags: Vec<String>,
+        /// Show full details
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Validate a recipe file
     Validate {
         /// Recipe file path
         file: String,
+        /// Show details
+        #[arg(short, long)]
+        verbose: bool,
+        /// Output format
+        #[arg(short, long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
     },
     /// Show recipe details
     Show {
         /// Recipe name
         name: String,
+        /// Output format
+        #[arg(short, long, default_value = "table", value_parser = ["table", "json", "yaml"])]
+        format: String,
+        /// Hide step details
+        #[arg(long)]
+        no_steps: bool,
+        /// Hide context variables
+        #[arg(long)]
+        no_context: bool,
     },
 }
 

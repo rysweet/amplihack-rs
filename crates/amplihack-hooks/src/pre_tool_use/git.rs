@@ -81,9 +81,8 @@ mod tests {
     #[test]
     fn get_branch_returns_something_or_none() {
         let branch = get_current_branch();
-        match &branch {
-            Some(name) => assert!(!name.is_empty(), "branch name should not be empty"),
-            None => {} // acceptable — not in a git repo
+        if let Some(name) = &branch {
+            assert!(!name.is_empty(), "branch name should not be empty");
         }
     }
 
@@ -92,12 +91,11 @@ mod tests {
         let result = check_main_branch();
         assert!(result.is_ok(), "check_main_branch should not error");
         // Result is either Some (on protected branch) or None (not protected / not a repo).
-        match result.unwrap() {
-            Some(val) => assert!(
+        if let Some(val) = result.unwrap() {
+            assert!(
                 val.get("block").is_some(),
                 "block JSON should have 'block' key"
-            ),
-            None => {} // acceptable
+            );
         }
     }
 }

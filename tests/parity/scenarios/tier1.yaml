@@ -1,0 +1,161 @@
+cases:
+  - name: mode-detect-none
+    argv: ["mode", "detect"]
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: mode-detect-local
+    argv: ["mode", "detect"]
+    setup: |
+      mkdir -p project/.claude/skills
+    cwd: project
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: mode-detect-plugin
+    argv: ["mode", "detect"]
+    setup: |
+      mkdir -p "$HOME/.amplihack/.claude/tools"
+      mkdir -p "$HOME/.amplihack/.claude-plugin"
+      printf '{}' > "$HOME/.amplihack/.claude-plugin/plugin.json"
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: mode-to-plugin-cancel
+    argv: ["mode", "to-plugin"]
+    stdin: "n\n"
+    setup: |
+      mkdir -p project/.claude/skills
+      mkdir -p "$HOME/.amplihack/.claude/tools"
+      mkdir -p "$HOME/.amplihack/.claude-plugin"
+      printf '{}' > "$HOME/.amplihack/.claude-plugin/plugin.json"
+    cwd: project
+    compare: ["stdout", "stderr", "exit_code", "fs:project/.claude"]
+
+  - name: mode-to-plugin-confirm
+    argv: ["mode", "to-plugin"]
+    stdin: "y\n"
+    setup: |
+      mkdir -p project/.claude/skills
+      printf 'local-skill' > project/.claude/skills/example.txt
+      mkdir -p "$HOME/.amplihack/.claude/tools"
+      mkdir -p "$HOME/.amplihack/.claude-plugin"
+      printf '{}' > "$HOME/.amplihack/.claude-plugin/plugin.json"
+    cwd: project
+    compare: ["stdout", "stderr", "exit_code", "fs:project/.claude"]
+
+  - name: mode-to-local-cancel
+    argv: ["mode", "to-local"]
+    stdin: "n\n"
+    setup: |
+      mkdir -p project
+      mkdir -p "$HOME/.amplihack/.claude/skills"
+      mkdir -p "$HOME/.amplihack/.claude-plugin"
+      printf '{}' > "$HOME/.amplihack/.claude-plugin/plugin.json"
+      printf 'plugin-skill' > "$HOME/.amplihack/.claude/skills/example.txt"
+    cwd: project
+    compare: ["stdout", "stderr", "exit_code", "fs:project/.claude"]
+
+  - name: mode-to-local-confirm
+    argv: ["mode", "to-local"]
+    stdin: "y\n"
+    setup: |
+      mkdir -p project
+      mkdir -p "$HOME/.amplihack/.claude/skills"
+      mkdir -p "$HOME/.amplihack/.claude-plugin"
+      printf '{}' > "$HOME/.amplihack/.claude-plugin/plugin.json"
+      printf 'plugin-skill' > "$HOME/.amplihack/.claude/skills/example.txt"
+    cwd: project
+    compare: ["stdout", "stderr", "exit_code", "fs:project/.claude"]
+
+  - name: recipe-list-json
+    argv: ["recipe", "list", "recipes", "--format", "json"]
+    setup: |
+      mkdir -p recipes
+      cat > recipes/alpha.yaml <<'EOF'
+      name: alpha
+      description: First recipe
+      tags: [core, alpha]
+      steps:
+        - id: step-1
+          command: echo alpha
+      EOF
+      cat > recipes/beta.yaml <<'EOF'
+      name: beta
+      description: Second recipe
+      tags: [core]
+      steps:
+        - id: step-1
+          command: echo beta
+      EOF
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: recipe-list-filter-tag
+    argv: ["recipe", "list", "recipes", "--format", "json", "--tags", "alpha"]
+    setup: |
+      mkdir -p recipes
+      cat > recipes/alpha.yaml <<'EOF'
+      name: alpha
+      description: First recipe
+      tags: [core, alpha]
+      steps:
+        - id: step-1
+          command: echo alpha
+      EOF
+      cat > recipes/beta.yaml <<'EOF'
+      name: beta
+      description: Second recipe
+      tags: [core]
+      steps:
+        - id: step-1
+          command: echo beta
+      EOF
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: recipe-validate-valid-json
+    argv: ["recipe", "validate", "demo.yaml", "--format", "json"]
+    setup: |
+      cat > demo.yaml <<'EOF'
+      name: demo
+      description: Valid recipe
+      steps:
+        - id: step-1
+          command: echo hello
+      EOF
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: recipe-validate-invalid-json
+    argv: ["recipe", "validate", "broken.yaml", "--format", "json"]
+    setup: |
+      cat > broken.yaml <<'EOF'
+      description: Missing name
+      steps: []
+      EOF
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: recipe-show-json
+    argv: ["recipe", "show", "demo.yaml", "--format", "json"]
+    setup: |
+      cat > demo.yaml <<'EOF'
+      name: demo
+      description: Detailed recipe
+      tags: [one, two]
+      context:
+        repo_path: .
+      steps:
+        - id: step-1
+          agent: helper
+          prompt: Run the helper
+      EOF
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: recipe-show-json-no-steps-context
+    argv: ["recipe", "show", "demo.yaml", "--format", "json", "--no-steps", "--no-context"]
+    setup: |
+      cat > demo.yaml <<'EOF'
+      name: demo
+      description: Detailed recipe
+      context:
+        repo_path: .
+      steps:
+        - id: step-1
+          command: echo hello
+      EOF
+    compare: ["stdout", "stderr", "exit_code"]
