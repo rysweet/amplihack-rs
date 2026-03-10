@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "SessionStart",
+  "session_id": "session-with-cwd",
+  "cwd": "/tmp/test-project"
+}

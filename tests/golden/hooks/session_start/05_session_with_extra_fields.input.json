@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "SessionStart",
+  "session_id": "extra-fields-session",
+  "cwd": "/home/user/project",
+  "custom_field": "custom_value",
+  "another_field": 42
+}
