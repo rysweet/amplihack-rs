@@ -102,7 +102,7 @@ pub fn run_hook<H: Hook>(hook: H) {
             emit_telemetry(hook_name, duration, "panic", Some("hook panicked"));
             // Intentional: on panic, write best-effort empty JSON response.
             // If stdout is broken too, there's nothing more we can do.
-            let _ = io::stdout().write_all(b"{}");
+            let _ = io::stdout().write_all(b"{}\n");
             let _ = io::stdout().flush();
         }
     }

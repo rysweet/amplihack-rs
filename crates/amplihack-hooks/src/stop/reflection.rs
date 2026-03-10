@@ -5,7 +5,7 @@
 //! Results are saved to timestamped files for history preservation.
 
 use amplihack_state::PythonBridge;
-use amplihack_types::ProjectDirs;
+use amplihack_types::{ProjectDirs, sanitize_session_id};
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
@@ -76,13 +76,14 @@ except Exception as e:
 /// Writes FEEDBACK_SUMMARY.md, timestamped reflection file, and current_findings.md.
 fn save_reflection_artifacts(dirs: &ProjectDirs, session_id: &str, template: &str) {
     let session_dir = dirs.session_logs(session_id);
+    let safe_id = sanitize_session_id(session_id);
 
     // Generate timestamped filename for history preservation.
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let filename = format!("reflection_{session_id}_{timestamp}.md");
+    let filename = format!("reflection_{safe_id}_{timestamp}.md");
 
     // Save feedback to session dir.
     if let Err(e) = fs::write(session_dir.join("FEEDBACK_SUMMARY.md"), template) {
@@ -116,7 +117,8 @@ pub fn run_reflection(
     fs::create_dir_all(&session_dir)?;
 
     // Per-session semaphore to avoid re-presenting reflection results.
-    let semaphore_path = session_dir.join(format!(".reflection_presented_{session_id}"));
+    let safe_id = sanitize_session_id(session_id);
+    let semaphore_path = session_dir.join(format!(".reflection_presented_{safe_id}"));
     if semaphore_path.exists() {
         return Ok(None);
     }
