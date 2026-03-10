@@ -1,0 +1,98 @@
+cases:
+  - name: install-fake-repo-success
+    argv: ["install"]
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    setup: |
+      mkdir -p bin fake-repo/.claude/agents/amplihack fake-repo/.claude/commands/amplihack
+      mkdir -p fake-repo/.claude/tools/amplihack/hooks fake-repo/.claude/context
+      mkdir -p fake-repo/.claude/workflow fake-repo/.claude/skills fake-repo/.claude/templates
+      mkdir -p fake-repo/.claude/scenarios fake-repo/.claude/docs fake-repo/.claude/schemas fake-repo/.claude/config
+      for hook in session_start.py stop.py pre_tool_use.py post_tool_use.py user_prompt_submit.py workflow_classification_reminder.py pre_compact.py; do
+        printf 'print(1)\n' > "fake-repo/.claude/tools/amplihack/hooks/$hook"
+      done
+      printf '{}\n' > fake-repo/.claude/settings.json
+      printf 'echo statusline\n' > fake-repo/.claude/tools/statusline.sh
+      printf 'framework\n' > fake-repo/.claude/AMPLIHACK.md
+      printf 'claude root\n' > fake-repo/CLAUDE.md
+      cat > bin/git <<'EOF'
+      #!/usr/bin/env bash
+      set -euo pipefail
+      if [ "$1" = clone ] && [ "$2" = --depth ] && [ "$3" = 1 ]; then
+        cp -R "$SANDBOX_ROOT/fake-repo/." "$5"
+        echo "Cloning into '$5'..." >&2
+      else
+        echo "unexpected git args: $*" >&2
+        exit 2
+      fi
+      EOF
+      cat > bin/recipe-runner-rs <<'EOF'
+      #!/usr/bin/env bash
+      exit 0
+      EOF
+      chmod +x bin/git bin/recipe-runner-rs
+    compare:
+      - stdout
+      - stderr
+      - exit_code
+      - fs:home/.claude/install/amplihack-manifest.json
+      - fs:home/.claude/settings.json
+      - fs:home/.claude/tools/amplihack/hooks
+
+  - name: install-git-clone-failure
+    argv: ["install"]
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    setup: |
+      mkdir -p bin
+      cat > bin/git <<'EOF'
+      #!/usr/bin/env bash
+      echo "simulated clone failure" >&2
+      exit 7
+      EOF
+      chmod +x bin/git
+    compare:
+      - stdout
+      - stderr
+      - exit_code
+
+  - name: uninstall-manifest-success
+    argv: ["uninstall"]
+    setup: |
+      mkdir -p "$HOME/.claude/install" "$HOME/.claude/agents/amplihack" "$HOME/.claude/commands/amplihack" "$HOME/.claude/tools/amplihack"
+      printf '{}' > "$HOME/.claude/agents/amplihack/a.json"
+      printf '{}' > "$HOME/.claude/commands/amplihack/b.json"
+      printf '{}' > "$HOME/.claude/tools/amplihack/c.json"
+      cat > "$HOME/.claude/install/amplihack-manifest.json" <<'EOF'
+      {
+        "files": [
+          "agents/amplihack/a.json",
+          "commands/amplihack/b.json",
+          "tools/amplihack/c.json"
+        ],
+        "dirs": [
+          "agents/amplihack",
+          "commands/amplihack",
+          "tools/amplihack"
+        ]
+      }
+      EOF
+    compare:
+      - stdout
+      - stderr
+      - exit_code
+      - fs:home/.claude/install/amplihack-manifest.json
+      - fs:home/.claude/agents/amplihack
+      - fs:home/.claude/commands/amplihack
+      - fs:home/.claude/tools/amplihack
+
+  - name: uninstall-invalid-manifest
+    argv: ["uninstall"]
+    setup: |
+      mkdir -p "$HOME/.claude/install"
+      printf '{invalid json\n' > "$HOME/.claude/install/amplihack-manifest.json"
+    compare:
+      - stdout
+      - stderr
+      - exit_code
+      - fs:home/.claude/install/amplihack-manifest.json

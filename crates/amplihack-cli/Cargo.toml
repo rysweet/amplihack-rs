@@ -13,9 +13,13 @@ clap = { workspace = true }
 libc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 signal-hook = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+kuzu = "0.11.3"
+rusqlite = { version = "0.38.0", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
