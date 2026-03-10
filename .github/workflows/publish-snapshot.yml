@@ -28,15 +28,19 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             cross: false
+            gnu_cross_toolchain: false
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
-            cross: true
+            cross: false
+            gnu_cross_toolchain: true
           - target: x86_64-apple-darwin
             runner: macos-latest
             cross: false
+            gnu_cross_toolchain: false
           - target: aarch64-apple-darwin
             runner: macos-latest
             cross: false
+            gnu_cross_toolchain: false
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,6 +49,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: snapshot-${{ matrix.target }}
+
+      - name: Install GNU cross toolchain
+        if: matrix.gnu_cross_toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Configure GNU cross toolchain
+        if: matrix.gnu_cross_toolchain
+        run: |
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> "$GITHUB_ENV"
+          echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
 
       - name: Install cross
         if: matrix.cross
