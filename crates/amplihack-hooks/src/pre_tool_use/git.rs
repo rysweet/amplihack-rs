@@ -80,12 +80,24 @@ mod tests {
 
     #[test]
     fn get_branch_returns_something_or_none() {
-        // This is environment-dependent, just verify it doesn't panic.
-        let _branch = get_current_branch();
+        let branch = get_current_branch();
+        match &branch {
+            Some(name) => assert!(!name.is_empty(), "branch name should not be empty"),
+            None => {} // acceptable — not in a git repo
+        }
     }
 
     #[test]
     fn check_main_branch_does_not_panic() {
-        let _result = check_main_branch();
+        let result = check_main_branch();
+        assert!(result.is_ok(), "check_main_branch should not error");
+        // Result is either Some (on protected branch) or None (not protected / not a repo).
+        match result.unwrap() {
+            Some(val) => assert!(
+                val.get("block").is_some(),
+                "block JSON should have 'block' key"
+            ),
+            None => {} // acceptable
+        }
     }
 }

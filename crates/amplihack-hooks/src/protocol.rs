@@ -81,7 +81,9 @@ pub fn run_hook<H: Hook>(hook: H) {
             emit_telemetry(hook_name, duration, "error", Some(&e.to_string()));
             match policy {
                 FailurePolicy::Open => {
-                    let _ = write_stdout(b"{}");
+                    if write_stdout(b"{}").is_err() {
+                        std::process::exit(3);
+                    }
                 }
                 FailurePolicy::Closed => {
                     let error_output = serde_json::json!({

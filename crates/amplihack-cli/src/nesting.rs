@@ -154,24 +154,27 @@ mod tests {
 
     #[test]
     fn not_nested_when_no_env_var() {
+        // Use a temp HOME to isolate from any real session.json on the host.
+        let tmp = tempfile::tempdir().unwrap();
+        let original_home = env::var("HOME").ok();
+
         // SAFETY: Test-only env var manipulation; test runner serializes tests by default.
         unsafe {
             env::remove_var("AMPLIHACK_SESSION_ID");
             env::remove_var("AMPLIHACK_DEPTH");
+            env::set_var("HOME", tmp.path());
         }
 
-        // Without a session file, should be NotNested
-        // (This test may report Nested if there's an actual session file,
-        // but in a clean test environment it should be NotNested.)
         let result = NestingDetector::detect();
-        // We accept both NotNested and StaleSession in test environments
-        assert!(
-            matches!(
-                result,
-                NestingResult::NotNested | NestingResult::StaleSession { .. }
-            ),
-            "expected NotNested or StaleSession without env var, got: {result:?}"
-        );
+
+        // Restore HOME
+        unsafe {
+            if let Some(home) = original_home {
+                env::set_var("HOME", home);
+            }
+        }
+
+        assert_eq!(result, NestingResult::NotNested);
     }
 
     #[test]

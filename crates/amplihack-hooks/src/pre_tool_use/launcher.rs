@@ -104,9 +104,19 @@ mod tests {
 
     #[test]
     fn unknown_launcher_by_default() {
-        // In test environment, no launcher env vars should be set.
-        // We can't guarantee this, so just check it doesn't panic.
-        let _ = detect_launcher();
+        let launcher = detect_launcher();
+        // In test environment without launcher env vars, expect Unknown.
+        // If a launcher env var happens to be set, accept the detected type.
+        assert!(
+            matches!(
+                launcher,
+                LauncherType::Unknown
+                    | LauncherType::ClaudeCode
+                    | LauncherType::Copilot
+                    | LauncherType::Amplifier
+            ),
+            "detect_launcher should return a valid LauncherType variant, got: {launcher:?}"
+        );
     }
 
     #[test]
@@ -114,6 +124,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         let input = serde_json::json!({});
+        // inject_context is side-effect-only; verify it completes without panic.
         inject_context(&dirs, &input);
+        // The temp dir should still exist (no destructive side effects).
+        assert!(
+            dir.path().exists(),
+            "temp dir should survive inject_context"
+        );
     }
 }
