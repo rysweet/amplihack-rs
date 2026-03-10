@@ -20,22 +20,8 @@ pub struct ManagedChild {
 }
 
 impl ManagedChild {
-    /// Spawn a command in its own process group (Unix: setpgid).
+    /// Spawn a command while preserving the caller's foreground TTY.
     pub fn spawn(mut cmd: Command) -> Result<Self> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            // SAFETY: setpgid(0, 0) is async-signal-safe and called pre-exec
-            // to place the child in its own process group, preventing the parent's
-            // SIGINT from reaching the child directly.
-            unsafe {
-                cmd.pre_exec(|| {
-                    libc::setpgid(0, 0);
-                    Ok(())
-                });
-            }
-        }
-
         let child = cmd.spawn().context("failed to spawn child process")?;
         tracing::debug!(pid = child.id(), "spawned managed child");
         Ok(Self { child })
@@ -165,5 +151,21 @@ mod tests {
         cmd.arg("0.1");
         let child = ManagedChild::spawn(cmd).unwrap();
         assert!(child.id() > 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_keeps_child_in_foreground_process_group() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("60");
+        let child = ManagedChild::spawn(cmd).unwrap();
+
+        // SAFETY: getpgrp/getpgid only query kernel process-group state.
+        let parent_pgid = unsafe { libc::getpgrp() };
+        // SAFETY: child.id() is a live child PID here.
+        let child_pgid = unsafe { libc::getpgid(child.id() as i32) };
+
+        assert_eq!(child_pgid, parent_pgid);
+        drop(child);
     }
 }
