@@ -9,7 +9,6 @@ pub fn run_clean(pattern: &str, backend: &str, dry_run: bool, confirm: bool) -> 
     let backend = BackendChoice::parse(backend)?;
     let matched = match backend {
         BackendChoice::Sqlite => list_sqlite_sessions()?,
-        #[cfg(feature = "kuzu-backend")]
         BackendChoice::Kuzu => list_kuzu_sessions()?,
     }
     .into_iter()
@@ -55,7 +54,6 @@ pub fn run_clean(pattern: &str, backend: &str, dry_run: bool, confirm: bool) -> 
     for session in &matched {
         let deleted = match backend {
             BackendChoice::Sqlite => delete_sqlite_session(&session.session_id),
-            #[cfg(feature = "kuzu-backend")]
             BackendChoice::Kuzu => delete_kuzu_session(&session.session_id),
         };
         match deleted {

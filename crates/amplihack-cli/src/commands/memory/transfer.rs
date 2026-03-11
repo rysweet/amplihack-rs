@@ -3,25 +3,17 @@
 use super::*;
 use crate::command_error::exit_error;
 use anyhow::Result;
-#[cfg(feature = "kuzu-backend")]
 use kuzu::{
     Connection as KuzuConnection, Database as KuzuDatabase, SystemConfig, Value as KuzuValue,
 };
-#[cfg(feature = "kuzu-backend")]
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "kuzu-backend")]
 use serde_json::Value as JsonValue;
-#[cfg(feature = "kuzu-backend")]
 use std::fs;
-#[cfg(feature = "kuzu-backend")]
 use std::io::Read;
 use std::io::{self, Write};
-#[cfg(feature = "kuzu-backend")]
 use std::path::Path;
-#[cfg(feature = "kuzu-backend")]
 use std::path::PathBuf;
 
-#[cfg(feature = "kuzu-backend")]
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct HierarchicalExportData {
     pub(crate) agent_name: String,
@@ -37,7 +29,6 @@ pub(crate) struct HierarchicalExportData {
     pub(crate) statistics: HierarchicalStats,
 }
 
-#[cfg(feature = "kuzu-backend")]
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct SemanticNode {
     pub(crate) memory_id: String,
@@ -51,7 +42,6 @@ pub(crate) struct SemanticNode {
     pub(crate) entity_name: String,
 }
 
-#[cfg(feature = "kuzu-backend")]
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct EpisodicNode {
     pub(crate) memory_id: String,
@@ -62,7 +52,6 @@ pub(crate) struct EpisodicNode {
     pub(crate) created_at: String,
 }
 
-#[cfg(feature = "kuzu-backend")]
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct SimilarEdge {
     pub(crate) source_id: String,
@@ -71,7 +60,6 @@ pub(crate) struct SimilarEdge {
     pub(crate) metadata: JsonValue,
 }
 
-#[cfg(feature = "kuzu-backend")]
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct DerivesEdge {
     pub(crate) source_id: String,
@@ -80,7 +68,6 @@ pub(crate) struct DerivesEdge {
     pub(crate) confidence: f64,
 }
 
-#[cfg(feature = "kuzu-backend")]
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct SupersedesEdge {
     pub(crate) source_id: String,
@@ -89,7 +76,6 @@ pub(crate) struct SupersedesEdge {
     pub(crate) temporal_delta: String,
 }
 
-#[cfg(feature = "kuzu-backend")]
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct TransitionEdge {
     pub(crate) source_id: String,
@@ -100,7 +86,6 @@ pub(crate) struct TransitionEdge {
     pub(crate) transition_type: String,
 }
 
-#[cfg(feature = "kuzu-backend")]
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct HierarchicalStats {
@@ -112,7 +97,6 @@ pub(crate) struct HierarchicalStats {
     pub(crate) transitioned_to_edge_count: usize,
 }
 
-#[cfg(feature = "kuzu-backend")]
 #[derive(Debug, Default)]
 pub(crate) struct ImportStats {
     pub(crate) semantic_nodes_imported: usize,
@@ -222,7 +206,6 @@ fn export_memory(
 ) -> Result<ExportResult> {
     match format {
         TransferFormat::Json => export_hierarchical_json(agent_name, output, storage_path),
-        #[cfg(feature = "kuzu-backend")]
         TransferFormat::Kuzu => export_hierarchical_kuzu(agent_name, output, storage_path),
     }
 }
@@ -236,12 +219,10 @@ fn import_memory(
 ) -> Result<ImportResult> {
     match format {
         TransferFormat::Json => import_hierarchical_json(agent_name, input, merge, storage_path),
-        #[cfg(feature = "kuzu-backend")]
         TransferFormat::Kuzu => import_hierarchical_kuzu(agent_name, input, merge, storage_path),
     }
 }
 
-#[cfg(feature = "kuzu-backend")]
 fn export_hierarchical_json(
     agent_name: &str,
     output: &str,
@@ -423,21 +404,6 @@ fn export_hierarchical_json(
     })
 }
 
-#[cfg(not(feature = "kuzu-backend"))]
-fn export_hierarchical_json(
-    agent_name: &str,
-    output: &str,
-    _storage_path: Option<&str>,
-) -> Result<ExportResult> {
-    // Without kuzu-backend, json export is not supported (requires kuzu DB)
-    anyhow::bail!(
-        "JSON export from hierarchical memory requires the kuzu-backend feature. \
-        Reinstall with: cargo install --git https://github.com/rysweet/amplihack-rs amplihack --locked --features kuzu-backend. \
-        Agent: {agent_name}, output: {output}"
-    )
-}
-
-#[cfg(feature = "kuzu-backend")]
 fn export_hierarchical_kuzu(
     agent_name: &str,
     output: &str,
@@ -469,7 +435,6 @@ fn export_hierarchical_kuzu(
     })
 }
 
-#[cfg(feature = "kuzu-backend")]
 fn import_hierarchical_json(
     agent_name: &str,
     input: &str,
@@ -672,21 +637,6 @@ fn import_hierarchical_json(
     })
 }
 
-#[cfg(not(feature = "kuzu-backend"))]
-fn import_hierarchical_json(
-    agent_name: &str,
-    _input: &str,
-    _merge: bool,
-    _storage_path: Option<&str>,
-) -> Result<ImportResult> {
-    anyhow::bail!(
-        "JSON import into hierarchical memory requires the kuzu-backend feature. \
-        Reinstall with: cargo install --git https://github.com/rysweet/amplihack-rs amplihack --locked --features kuzu-backend. \
-        Agent: {agent_name}"
-    )
-}
-
-#[cfg(feature = "kuzu-backend")]
 fn import_hierarchical_kuzu(
     agent_name: &str,
     input: &str,
@@ -730,7 +680,6 @@ fn import_hierarchical_kuzu(
     })
 }
 
-#[cfg(feature = "kuzu-backend")]
 fn init_hierarchical_schema(conn: &KuzuConnection<'_>) -> Result<()> {
     for statement in HIERARCHICAL_SCHEMA {
         conn.query(statement)?;
@@ -738,7 +687,6 @@ fn init_hierarchical_schema(conn: &KuzuConnection<'_>) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "kuzu-backend")]
 fn clear_hierarchical_agent_data(conn: &KuzuConnection<'_>, agent_name: &str) -> Result<()> {
     for query in [
         "MATCH (a:SemanticMemory {agent_id: $aid})-[r:SIMILAR_TO]->() DELETE r",
@@ -760,7 +708,6 @@ fn clear_hierarchical_agent_data(conn: &KuzuConnection<'_>, agent_name: &str) ->
     Ok(())
 }
 
-#[cfg(feature = "kuzu-backend")]
 fn get_existing_hierarchical_ids(
     conn: &KuzuConnection<'_>,
     agent_name: &str,
@@ -782,7 +729,6 @@ fn get_existing_hierarchical_ids(
     Ok(ids)
 }
 
-#[cfg(feature = "kuzu-backend")]
 fn create_hierarchical_edge(
     conn: &KuzuConnection<'_>,
     query: &str,
@@ -792,7 +738,6 @@ fn create_hierarchical_edge(
     Ok(conn.execute(&mut prepared, params).is_ok())
 }
 
-#[cfg(feature = "kuzu-backend")]
 fn resolve_hierarchical_db_path(agent_name: &str, storage_path: Option<&str>) -> Result<PathBuf> {
     let base = match storage_path {
         Some(path) => PathBuf::from(path),
@@ -810,7 +755,6 @@ fn resolve_hierarchical_db_path(agent_name: &str, storage_path: Option<&str>) ->
     Ok(base)
 }
 
-#[cfg(feature = "kuzu-backend")]
 fn copy_hierarchical_storage(src: &Path, dst: &Path) -> Result<()> {
     use anyhow::Context;
     if src.is_dir() {
@@ -822,7 +766,6 @@ fn copy_hierarchical_storage(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "kuzu-backend")]
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
@@ -841,7 +784,6 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "kuzu-backend")]
 fn compute_path_size(path: &Path) -> Result<u64> {
     if path.is_file() {
         return Ok(path.metadata()?.len());
@@ -854,7 +796,6 @@ fn compute_path_size(path: &Path) -> Result<u64> {
     Ok(total)
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn kuzu_export_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now()
@@ -865,7 +806,6 @@ pub(crate) fn kuzu_export_timestamp() -> String {
     format!("{}", now)
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn parse_json_array_of_strings(value: &str) -> Result<Vec<String>> {
     if value.is_empty() {
         return Ok(Vec::new());

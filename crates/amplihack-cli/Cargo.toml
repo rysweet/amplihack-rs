@@ -5,8 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[features]
-kuzu-backend = ["dep:kuzu"]
+[lib]
+doctest = false
 
 [dependencies]
 amplihack-types = { workspace = true }
@@ -25,7 +25,7 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 ureq = { version = "2", features = ["json"] }
-kuzu = { version = "0.11.3", optional = true }
+kuzu = { version = "0.11.3" }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 
 [dev-dependencies]

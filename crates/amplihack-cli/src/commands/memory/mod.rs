@@ -9,7 +9,6 @@ pub use transfer::{run_export, run_import};
 pub use tree::run_tree;
 
 use anyhow::{Context, Result};
-#[cfg(feature = "kuzu-backend")]
 use kuzu::{
     Connection as KuzuConnection, Database as KuzuDatabase, SystemConfig, Value as KuzuValue,
 };
@@ -19,7 +18,6 @@ use std::fs;
 use std::path::PathBuf;
 
 pub(crate) const SQLITE_TREE_BACKEND_NAME: &str = "unknown";
-#[cfg(feature = "kuzu-backend")]
 pub(crate) const KUZU_TREE_BACKEND_NAME: &str = "kuzu";
 pub(crate) const SQLITE_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS memory_entries (
@@ -52,7 +50,6 @@ CREATE TABLE IF NOT EXISTS session_agents (
     PRIMARY KEY (session_id, agent_id)
 );
 "#;
-#[cfg(feature = "kuzu-backend")]
 pub(crate) const HIERARCHICAL_SCHEMA: &[&str] = &[
     r#"CREATE NODE TABLE IF NOT EXISTS SemanticMemory(
         memory_id STRING,
@@ -100,7 +97,6 @@ pub(crate) const HIERARCHICAL_SCHEMA: &[&str] = &[
         transition_type STRING
     )"#,
 ];
-#[cfg(feature = "kuzu-backend")]
 pub(crate) const KUZU_BACKEND_SCHEMA: &[&str] = &[
     r#"CREATE NODE TABLE IF NOT EXISTS Session(
         session_id STRING,
@@ -212,7 +208,6 @@ pub(crate) const KUZU_BACKEND_SCHEMA: &[&str] = &[
     r#"CREATE REL TABLE IF NOT EXISTS USES_PROCEDURE(FROM Session TO ProceduralMemory, timestamp TIMESTAMP, success BOOL, notes STRING)"#,
     r#"CREATE REL TABLE IF NOT EXISTS CREATES_INTENTION(FROM Session TO ProspectiveMemory, timestamp TIMESTAMP)"#,
 ];
-#[cfg(feature = "kuzu-backend")]
 pub(crate) const KUZU_MEMORY_TABLES: &[(&str, &str)] = &[
     ("EpisodicMemory", "CONTAINS_EPISODIC"),
     ("SemanticMemory", "CONTRIBUTES_TO_SEMANTIC"),
@@ -223,7 +218,6 @@ pub(crate) const KUZU_MEMORY_TABLES: &[(&str, &str)] = &[
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BackendChoice {
-    #[cfg(feature = "kuzu-backend")]
     Kuzu,
     Sqlite,
 }
@@ -231,12 +225,7 @@ pub(crate) enum BackendChoice {
 impl BackendChoice {
     pub(crate) fn parse(value: &str) -> Result<Self> {
         match value {
-            #[cfg(feature = "kuzu-backend")]
             "kuzu" => Ok(Self::Kuzu),
-            #[cfg(not(feature = "kuzu-backend"))]
-            "kuzu" => anyhow::bail!(
-                "The kuzu backend requires the kuzu-backend feature. Reinstall with: cargo install --git https://github.com/rysweet/amplihack-rs amplihack --locked --features kuzu-backend"
-            ),
             "sqlite" => Ok(Self::Sqlite),
             other => anyhow::bail!("Invalid backend: {other}. Must be kuzu or sqlite"),
         }
@@ -246,7 +235,6 @@ impl BackendChoice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransferFormat {
     Json,
-    #[cfg(feature = "kuzu-backend")]
     Kuzu,
 }
 
@@ -254,12 +242,7 @@ impl TransferFormat {
     pub(crate) fn parse(value: &str) -> Result<Self> {
         match value {
             "json" => Ok(Self::Json),
-            #[cfg(feature = "kuzu-backend")]
             "kuzu" => Ok(Self::Kuzu),
-            #[cfg(not(feature = "kuzu-backend"))]
-            "kuzu" => anyhow::bail!(
-                "The kuzu backend requires the kuzu-backend feature. Reinstall with: cargo install --git https://github.com/rysweet/amplihack-rs amplihack --locked --features kuzu-backend"
-            ),
             other => anyhow::bail!("Unsupported format: {other:?}. Use one of: ('json', 'kuzu')"),
         }
     }
@@ -383,7 +366,6 @@ pub(crate) fn delete_sqlite_session(session_id: &str) -> Result<bool> {
     Ok(deleted > 0)
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn open_kuzu_memory_db() -> Result<KuzuDatabase> {
     let path = home_dir()?.join(".amplihack").join("memory_kuzu.db");
     if let Some(parent) = path.parent() {
@@ -392,7 +374,6 @@ pub(crate) fn open_kuzu_memory_db() -> Result<KuzuDatabase> {
     Ok(KuzuDatabase::new(path, SystemConfig::default())?)
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn init_kuzu_backend_schema(conn: &KuzuConnection<'_>) -> Result<()> {
     for statement in KUZU_BACKEND_SCHEMA {
         conn.query(statement)?;
@@ -400,7 +381,6 @@ pub(crate) fn init_kuzu_backend_schema(conn: &KuzuConnection<'_>) -> Result<()> 
     Ok(())
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn list_kuzu_sessions() -> Result<Vec<SessionSummary>> {
     let db = open_kuzu_memory_db()?;
     let conn = KuzuConnection::new(&db)?;
@@ -408,7 +388,6 @@ pub(crate) fn list_kuzu_sessions() -> Result<Vec<SessionSummary>> {
     list_kuzu_sessions_from_conn(&conn)
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn list_kuzu_sessions_from_conn(
     conn: &KuzuConnection<'_>,
 ) -> Result<Vec<SessionSummary>> {
@@ -429,7 +408,6 @@ pub(crate) fn list_kuzu_sessions_from_conn(
     Ok(sessions)
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn query_kuzu_memories_for_session(
     conn: &KuzuConnection<'_>,
     session_id: &str,
@@ -453,7 +431,6 @@ pub(crate) fn query_kuzu_memories_for_session(
     Ok(memories)
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn collect_kuzu_agent_counts(conn: &KuzuConnection<'_>) -> Result<Vec<(String, usize)>> {
     let rows = kuzu_rows(
         conn,
@@ -482,7 +459,6 @@ pub(crate) fn collect_kuzu_agent_counts(conn: &KuzuConnection<'_>) -> Result<Vec
     Ok(counts)
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn delete_kuzu_session(session_id: &str) -> Result<bool> {
     let db = open_kuzu_memory_db()?;
     let conn = KuzuConnection::new(&db)?;
@@ -517,7 +493,6 @@ pub(crate) fn delete_kuzu_session(session_id: &str) -> Result<bool> {
     Ok(true)
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn kuzu_rows(
     conn: &KuzuConnection<'_>,
     query: &str,
@@ -530,7 +505,6 @@ pub(crate) fn kuzu_rows(
     Ok(conn.execute(&mut prepared, params)?.collect())
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn memory_from_kuzu_node(
     value: &KuzuValue,
     _session_id: &str,
@@ -563,7 +537,6 @@ pub(crate) fn memory_from_kuzu_node(
     })
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn property_string(props: &[(String, KuzuValue)], key: &str) -> Option<String> {
     props.iter().find_map(|(name, value)| {
         if name == key {
@@ -574,7 +547,6 @@ pub(crate) fn property_string(props: &[(String, KuzuValue)], key: &str) -> Optio
     })
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn property_i64(props: &[(String, KuzuValue)], key: &str) -> Option<i64> {
     props.iter().find_map(|(name, value)| {
         if name == key {
@@ -585,7 +557,6 @@ pub(crate) fn property_i64(props: &[(String, KuzuValue)], key: &str) -> Option<i
     })
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn kuzu_value_to_string(value: &KuzuValue) -> String {
     match value {
         KuzuValue::Null(_) => String::new(),
@@ -594,7 +565,6 @@ pub(crate) fn kuzu_value_to_string(value: &KuzuValue) -> String {
     }
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn kuzu_value_to_i64(value: &KuzuValue) -> Option<i64> {
     match value {
         KuzuValue::Int64(v) => Some(*v),
@@ -611,19 +581,16 @@ pub(crate) fn kuzu_value_to_i64(value: &KuzuValue) -> Option<i64> {
     }
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn kuzu_string(value: Option<&KuzuValue>) -> Result<String> {
     Ok(value.map(kuzu_value_to_string).unwrap_or_default())
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn kuzu_i64(value: Option<&KuzuValue>) -> Result<i64> {
     value
         .and_then(kuzu_value_to_i64)
         .context("expected integer Kùzu value")
 }
 
-#[cfg(feature = "kuzu-backend")]
 pub(crate) fn kuzu_f64(value: Option<&KuzuValue>) -> Result<f64> {
     match value {
         Some(KuzuValue::Double(v)) => Ok(*v),
@@ -688,3 +655,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod backend_tests;
