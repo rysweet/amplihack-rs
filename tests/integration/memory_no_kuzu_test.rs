@@ -1,14 +1,14 @@
-//! Integration tests: memory command behaviour without the kuzu-backend feature.
+//! Integration tests: memory command baseline behaviour.
 //!
-//! These tests exercise the compiled `amplihack` binary (default feature set,
-//! no kuzu / cmake dependency) to verify:
+//! These tests exercise the compiled `amplihack` binary to verify:
 //!
-//! 1. `amplihack memory --help` exits 0 regardless of feature flags.
-//! 2. `amplihack memory tree` can run successfully against the sqlite backend.
-//! 3. `amplihack memory tree --backend kuzu` exits non-zero and surfaces an
-//!    actionable error message when the kuzu-backend feature is not enabled.
+//! 1. `amplihack memory --help` exits 0.
+//! 2. `amplihack memory tree` runs successfully against the sqlite backend.
 //!
-//! Run these tests (default features, no cmake required):
+//! Kuzu is a required dependency and is always compiled in; tests that assert
+//! kuzu operations fail have been removed.
+//!
+//! Run:
 //!   cargo test --test memory_no_kuzu_test
 //!
 //! NOTE: These tests skip themselves gracefully when the binary is not yet
@@ -116,97 +116,5 @@ fn memory_tree_sqlite_backend_exits_zero() {
     assert!(
         ok,
         "memory tree --backend sqlite should succeed without kuzu; stderr: {err}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Kuzu backend: actionable error when feature is disabled
-// ---------------------------------------------------------------------------
-
-/// This test only runs when the binary was compiled WITHOUT the kuzu-backend
-/// feature (the default `cargo install` path).  When kuzu-backend IS enabled
-/// the test would need kuzu files on disk, so we skip it.
-///
-/// IMPORTANT: this test will FAIL before the feature-gating implementation is
-/// correct — that is intentional TDD behaviour.
-#[cfg(not(feature = "kuzu-backend"))]
-#[test]
-fn memory_tree_kuzu_backend_exits_nonzero_without_feature() {
-    let bin = amplihack_bin();
-    require_bin!(bin);
-    let tmp = tempfile::tempdir().expect("failed to create tempdir");
-    let (ok, _out, err) = run(Command::new(&bin)
-        .args(["memory", "tree", "--backend", "kuzu"])
-        .env("HOME", tmp.path()));
-    assert!(
-        !ok,
-        "memory tree --backend kuzu must exit non-zero when kuzu-backend feature is disabled"
-    );
-    // The combined output must guide the user to reinstall with the feature.
-    let combined = format!("{_out}{err}");
-    assert!(
-        combined.contains("--features kuzu-backend"),
-        "output must contain '--features kuzu-backend' to guide the user, got:\n{combined}"
-    );
-}
-
-#[cfg(not(feature = "kuzu-backend"))]
-#[test]
-fn memory_export_kuzu_format_exits_nonzero_without_feature() {
-    let bin = amplihack_bin();
-    require_bin!(bin);
-    let tmp = tempfile::tempdir().expect("failed to create tempdir");
-    let out_path = tmp.path().join("out.kuzu");
-    let (ok, _out, err) = run(Command::new(&bin)
-        .args([
-            "memory",
-            "export",
-            "--agent",
-            "test-agent",
-            "--output",
-            out_path.to_str().unwrap(),
-            "--format",
-            "kuzu",
-        ])
-        .env("HOME", tmp.path()));
-    assert!(
-        !ok,
-        "memory export --format kuzu must fail without kuzu-backend feature"
-    );
-    let combined = format!("{_out}{err}");
-    assert!(
-        combined.contains("--features kuzu-backend"),
-        "export error must mention '--features kuzu-backend', got:\n{combined}"
-    );
-}
-
-#[cfg(not(feature = "kuzu-backend"))]
-#[test]
-fn memory_import_kuzu_format_exits_nonzero_without_feature() {
-    let bin = amplihack_bin();
-    require_bin!(bin);
-    let tmp = tempfile::tempdir().expect("failed to create tempdir");
-    let fake_input = tmp.path().join("data.kuzu");
-    std::fs::write(&fake_input, b"").expect("write temp file");
-    let (ok, _out, err) = run(Command::new(&bin)
-        .args([
-            "memory",
-            "import",
-            "--agent",
-            "test-agent",
-            "--input",
-            fake_input.to_str().unwrap(),
-            "--format",
-            "kuzu",
-        ])
-        .env("HOME", tmp.path()));
-    assert!(
-        !ok,
-        "memory import --format kuzu must fail without kuzu-backend feature"
-    );
-    let combined = format!("{_out}{err}");
-    assert!(
-        combined.contains("--features kuzu-backend"),
-        "import error must mention '--features kuzu-backend', got:\n{combined}"
     );
 }

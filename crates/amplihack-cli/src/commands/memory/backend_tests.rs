@@ -1,16 +1,10 @@
-//! TDD tests for kuzu-backend feature-flag gating.
+//! Unit tests for memory backend selection and transfer format parsing.
 //!
-//! These tests define the contract for the optional `kuzu-backend` feature:
-//! - Without `kuzu-backend`: kuzu operations must fail with an actionable error
-//!   message that tells users exactly how to reinstall with the feature enabled.
-//! - With `kuzu-backend`: kuzu parsing must succeed.
-//! - Common operations (sqlite path) must always work regardless of feature.
+//! Kuzu is a required dependency and is always available; all backend operations
+//! are tested unconditionally.
 //!
-//! Run without the kuzu feature (default install path):
+//! Run:
 //!   cargo test -p amplihack-cli --lib -- backend_tests
-//!
-//! Run with the kuzu feature:
-//!   cargo test -p amplihack-cli --lib --features kuzu-backend -- backend_tests
 
 use super::*;
 
@@ -57,62 +51,11 @@ fn backend_choice_parse_very_long_input_does_not_panic() {
     assert!(result.is_err(), "expected Err for long unknown backend");
 }
 
-/// Attempting to use the kuzu backend without the feature must return Err
-/// and the error message must contain the reinstall command so the user knows
-/// exactly what to do.
-#[cfg(not(feature = "kuzu-backend"))]
+/// Parsing "kuzu" must always succeed — kuzu is a required dependency.
 #[test]
-fn backend_choice_parse_kuzu_without_feature_returns_err() {
+fn backend_choice_parse_kuzu_succeeds() {
     let result = BackendChoice::parse("kuzu");
-    assert!(
-        result.is_err(),
-        "expected Err for 'kuzu' when kuzu-backend feature is disabled"
-    );
-}
-
-#[cfg(not(feature = "kuzu-backend"))]
-#[test]
-fn backend_choice_parse_kuzu_error_contains_reinstall_command() {
-    let err = BackendChoice::parse("kuzu").unwrap_err();
-    let msg = err.to_string();
-    assert!(
-        msg.contains("--features kuzu-backend"),
-        "error must mention '--features kuzu-backend' so users know how to fix it, got: {msg}"
-    );
-}
-
-#[cfg(not(feature = "kuzu-backend"))]
-#[test]
-fn backend_choice_parse_kuzu_error_contains_cargo_install() {
-    let err = BackendChoice::parse("kuzu").unwrap_err();
-    let msg = err.to_string();
-    assert!(
-        msg.contains("cargo install"),
-        "error must mention 'cargo install' to guide the user, got: {msg}"
-    );
-}
-
-#[cfg(not(feature = "kuzu-backend"))]
-#[test]
-fn backend_choice_parse_kuzu_error_contains_repo_url() {
-    let err = BackendChoice::parse("kuzu").unwrap_err();
-    let msg = err.to_string();
-    assert!(
-        msg.contains("amplihack-rs"),
-        "error must reference the amplihack-rs repository, got: {msg}"
-    );
-}
-
-/// When `kuzu-backend` IS enabled, parsing "kuzu" must succeed.
-#[cfg(feature = "kuzu-backend")]
-#[test]
-fn backend_choice_parse_kuzu_with_feature_succeeds() {
-    let result = BackendChoice::parse("kuzu");
-    assert!(
-        result.is_ok(),
-        "expected Ok for 'kuzu' when kuzu-backend feature is enabled, got: {:?}",
-        result
-    );
+    assert!(result.is_ok(), "expected Ok for 'kuzu', got: {:?}", result);
     assert_eq!(result.unwrap(), BackendChoice::Kuzu);
 }
 
@@ -150,37 +93,13 @@ fn transfer_format_parse_invalid_mentions_supported_formats() {
     );
 }
 
-/// Without the feature, attempting to parse "kuzu" format must error.
-#[cfg(not(feature = "kuzu-backend"))]
+/// Parsing "kuzu" transfer format must always succeed — kuzu is a required dependency.
 #[test]
-fn transfer_format_parse_kuzu_without_feature_returns_err() {
-    let result = TransferFormat::parse("kuzu");
-    assert!(
-        result.is_err(),
-        "expected Err for 'kuzu' format when kuzu-backend feature is disabled"
-    );
-}
-
-/// The error from TransferFormat must also direct users to reinstall.
-#[cfg(not(feature = "kuzu-backend"))]
-#[test]
-fn transfer_format_parse_kuzu_error_contains_reinstall_command() {
-    let err = TransferFormat::parse("kuzu").unwrap_err();
-    let msg = err.to_string();
-    assert!(
-        msg.contains("--features kuzu-backend"),
-        "error must mention '--features kuzu-backend', got: {msg}"
-    );
-}
-
-/// When `kuzu-backend` IS enabled, parsing "kuzu" format must succeed.
-#[cfg(feature = "kuzu-backend")]
-#[test]
-fn transfer_format_parse_kuzu_with_feature_succeeds() {
+fn transfer_format_parse_kuzu_succeeds() {
     let result = TransferFormat::parse("kuzu");
     assert!(
         result.is_ok(),
-        "expected Ok for 'kuzu' format with kuzu-backend feature, got: {:?}",
+        "expected Ok for 'kuzu' format, got: {:?}",
         result
     );
     assert_eq!(result.unwrap(), TransferFormat::Kuzu);
@@ -336,17 +255,10 @@ fn sqlite_schema_constant_contains_required_tables() {
     );
 }
 
-/// When kuzu-backend is disabled, KUZU_TREE_BACKEND_NAME must NOT be visible
-/// in order to prevent accidentally referencing a kuzu constant in non-kuzu code.
-/// This test is a *compile-time* assertion — it verifies the cfg gate exists by
-/// only referencing the constant behind the same cfg guard.
-#[cfg(feature = "kuzu-backend")]
+/// KUZU_TREE_BACKEND_NAME is always available since kuzu is a required dependency.
 #[test]
-fn kuzu_tree_backend_name_available_when_feature_enabled() {
+fn kuzu_tree_backend_name_is_available() {
     let name: &str = KUZU_TREE_BACKEND_NAME;
-    assert!(
-        !name.is_empty(),
-        "KUZU_TREE_BACKEND_NAME must not be empty when kuzu-backend is enabled"
-    );
+    assert!(!name.is_empty(), "KUZU_TREE_BACKEND_NAME must not be empty");
     assert_eq!(name, "kuzu", "KUZU_TREE_BACKEND_NAME must equal 'kuzu'");
 }

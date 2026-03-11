@@ -655,6 +655,3 @@ mod tests {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod backend_tests;

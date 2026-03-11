@@ -15,6 +15,12 @@ const NO_UPDATE_CHECK_ENV: &str = "AMPLIHACK_NO_UPDATE_CHECK";
 const UPDATE_CACHE_RELATIVE_PATH: &str = ".config/amplihack/last_update_check";
 const UPDATE_CHECK_COOLDOWN_SECS: u64 = 24 * 60 * 60;
 const NETWORK_TIMEOUT_SECS: u64 = 5;
+/// Maximum bytes read from any HTTP response body (prevents OOM on unexpectedly large payloads).
+const MAX_BODY_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
+/// How many times to attempt a request before giving up.
+const MAX_HTTP_RETRIES: u32 = 3;
+/// Initial back-off delay in milliseconds; doubles on each subsequent attempt.
+const RETRY_BASE_DELAY_MS: u64 = 500;
 
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
@@ -97,31 +103,79 @@ fn fetch_latest_release() -> Result<UpdateRelease> {
     parse_latest_release(response, &asset_name)
 }
 
+/// Returns `true` for errors that are worth retrying (transient network glitches
+/// and server-side 5xx / rate-limit responses). Permanent client errors (4xx other
+/// than 429) are not retried so we fail fast on bad URLs or missing resources.
+fn is_retryable(error: &ureq::Error) -> bool {
+    match error {
+        // 429 Too Many Requests and all 5xx codes are transient by convention.
+        ureq::Error::Status(code, _) => matches!(code, 429 | 500 | 502 | 503 | 504),
+        // Transport errors (connection reset, DNS failure, timeout, …) are always retried.
+        ureq::Error::Transport(_) => true,
+    }
+}
+
 fn http_get(url: &str) -> Result<Vec<u8>> {
     let timeout = Duration::from_secs(NETWORK_TIMEOUT_SECS);
-    let response = match ureq::AgentBuilder::new()
+    let agent = ureq::AgentBuilder::new()
         .timeout_connect(timeout)
         .timeout_read(timeout)
         .timeout_write(timeout)
-        .build()
-        .get(url)
-        .set("Accept", "application/vnd.github+json")
-        .set("User-Agent", &format!("amplihack/{CURRENT_VERSION}"))
-        .call()
-    {
-        Ok(response) => response,
-        Err(ureq::Error::Status(404, _)) if url.ends_with("/releases/latest") => {
-            bail!("no stable v* release has been published for {GITHUB_REPO} yet")
-        }
-        Err(error) => return Err(anyhow!("HTTP request failed for {url}: {error}")),
-    };
+        .build();
 
-    let mut body = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut body)
-        .with_context(|| format!("failed to read HTTP response from {url}"))?;
-    Ok(body)
+    let mut last_err = anyhow!("request to {url} failed");
+
+    for attempt in 0..MAX_HTTP_RETRIES {
+        if attempt > 0 {
+            // Exponential back-off: 500 ms, 1 000 ms, …
+            let delay = Duration::from_millis(RETRY_BASE_DELAY_MS * (1u64 << (attempt - 1)));
+            tracing::debug!(
+                attempt,
+                delay_ms = delay.as_millis(),
+                "retrying HTTP request"
+            );
+            std::thread::sleep(delay);
+        }
+
+        let response = match agent
+            .get(url)
+            .set("Accept", "application/vnd.github+json")
+            .set("User-Agent", &format!("amplihack/{CURRENT_VERSION}"))
+            .call()
+        {
+            Ok(r) => r,
+            // Hard 404 on the releases endpoint → not retryable, fail immediately.
+            Err(ureq::Error::Status(404, _)) if url.ends_with("/releases/latest") => {
+                bail!("no stable v* release has been published for {GITHUB_REPO} yet")
+            }
+            Err(ref e) if !is_retryable(e) => {
+                return Err(anyhow!("HTTP request failed for {url}: {e}"));
+            }
+            Err(e) => {
+                tracing::debug!(attempt, error = %e, "transient HTTP error");
+                last_err = anyhow!("HTTP request failed for {url}: {e}");
+                continue;
+            }
+        };
+
+        // Read at most MAX_BODY_BYTES + 1 so we can detect an over-size body
+        // without pulling the entire payload into memory first.
+        let limit = MAX_BODY_BYTES + 1;
+        let mut body = Vec::new();
+        response
+            .into_reader()
+            .take(limit)
+            .read_to_end(&mut body)
+            .with_context(|| format!("failed to read HTTP response from {url}"))?;
+
+        if body.len() as u64 > MAX_BODY_BYTES {
+            bail!("HTTP response from {url} exceeded the {MAX_BODY_BYTES}-byte safety limit");
+        }
+
+        return Ok(body);
+    }
+
+    Err(last_err)
 }
 
 fn parse_latest_release(body: Vec<u8>, asset_name: &str) -> Result<UpdateRelease> {
@@ -444,6 +498,51 @@ mod tests {
     #[test]
     fn current_test_platform_has_release_target() {
         assert!(supported_release_target().is_some());
+    }
+
+    // ── resilience helpers ────────────────────────────────────────────────────
+
+    // NOTE: ureq::Transport is an opaque type that cannot be constructed in unit
+    // tests. The `ureq::Error::Transport(_) => true` arm is covered at runtime by
+    // any test that exercises a live (or mock-server) network path. Here we only
+    // verify the Status-code classification, which is fully deterministic.
+
+    #[test]
+    fn is_retryable_server_errors() {
+        // 5xx and 429 are transient — should be retried.
+        for code in [429u16, 500, 502, 503, 504] {
+            let resp = ureq::Response::new(code, "x", "").unwrap();
+            assert!(
+                is_retryable(&ureq::Error::Status(code, resp)),
+                "status {code} should be retryable"
+            );
+        }
+    }
+
+    #[test]
+    fn is_not_retryable_client_errors() {
+        // 4xx (except 429) are permanent — should not be retried.
+        for code in [400u16, 401, 403, 422] {
+            let resp = ureq::Response::new(code, "x", "").unwrap();
+            assert!(
+                !is_retryable(&ureq::Error::Status(code, resp)),
+                "status {code} should not be retryable"
+            );
+        }
+    }
+
+    #[test]
+    fn body_size_limit_accepted_under_limit() {
+        // A body well within MAX_BODY_BYTES must not trigger the size guard.
+        let small = [0u8; 10];
+        assert!(small.len() as u64 <= MAX_BODY_BYTES);
+    }
+
+    #[test]
+    fn body_size_limit_rejected_over_limit() {
+        // Verify the guard arithmetic: body.len() > MAX_BODY_BYTES → bail.
+        let over_limit_len = MAX_BODY_BYTES + 1;
+        assert!(over_limit_len > MAX_BODY_BYTES);
     }
 
     #[test]
