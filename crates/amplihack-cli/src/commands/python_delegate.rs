@@ -23,14 +23,12 @@ pub fn delegate_to_python(subcommand: &str, args: &[String]) -> Result<()> {
     cmd.arg("-m").arg("amplihack.cli").arg(subcommand);
     cmd.args(args);
 
-    let status = cmd
-        .status()
-        .with_context(|| {
-            format!(
-                "failed to exec python3 -m amplihack.cli {subcommand} — \
+    let status = cmd.status().with_context(|| {
+        format!(
+            "failed to exec python3 -m amplihack.cli {subcommand} — \
                  is python3 installed and amplihack available?"
-            )
-        })?;
+        )
+    })?;
 
     if status.success() {
         Ok(())

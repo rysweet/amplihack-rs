@@ -90,8 +90,8 @@ fn build_command(
     // Inject --model unless user already supplied one
     let user_has_model = extra_args.iter().any(|a| a == "--model");
     if !user_has_model {
-        let default_model = std::env::var("AMPLIHACK_DEFAULT_MODEL")
-            .unwrap_or_else(|_| "opus[1m]".to_string());
+        let default_model =
+            std::env::var("AMPLIHACK_DEFAULT_MODEL").unwrap_or_else(|_| "opus[1m]".to_string());
         cmd.arg("--model");
         cmd.arg(default_model);
     }
@@ -165,7 +165,13 @@ mod tests {
         let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
         assert_eq!(
             args,
-            &["--dangerously-skip-permissions", "--resume", "--continue", "--model", "opus"]
+            &[
+                "--dangerously-skip-permissions",
+                "--resume",
+                "--continue",
+                "--model",
+                "opus"
+            ]
         );
     }
 }
