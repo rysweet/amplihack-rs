@@ -1,0 +1,144 @@
+# Tier 5: Launcher A/B tests.
+# Compares the environment and arguments passed to Claude Code
+# when launched via Python vs Rust.
+#
+# Master issue: rysweet/amplihack-rs#25
+
+cases:
+  # ============================================================================
+  # Launcher environment comparison
+  # ============================================================================
+
+  # LA1: Basic launch — compare env vars passed to claude subprocess
+  - name: launcher-env-basic
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      # Capture all AMPLIHACK_* env vars
+      env | grep -E '^AMPLIHACK_' | sort > "$SANDBOX_ROOT/amplihack_env.txt"
+      # Capture args
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/claude_args.txt"
+      # Capture PATH modifications
+      echo "$PATH" > "$SANDBOX_ROOT/path.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:amplihack_env.txt
+      - fs:claude_args.txt
+
+  # LA2: Launch with extra args passed through
+  - name: launcher-passthrough-args
+    argv: ["launch", "--", "--verbose", "--model", "sonnet"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/claude_args.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:claude_args.txt
+
+  # LA3: Launch copilot — compare subprocess invocation
+  - name: launcher-copilot
+    argv: ["copilot"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    setup: |
+      mkdir -p bin
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      env | grep -E '^AMPLIHACK_' | sort > "$SANDBOX_ROOT/amplihack_env.txt"
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/copilot_args.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - fs:amplihack_env.txt
+
+  # LA4: Launch codex — compare subprocess invocation
+  - name: launcher-codex
+    argv: ["codex"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    setup: |
+      mkdir -p bin
+      cat > bin/codex <<'SCRIPT'
+      #!/usr/bin/env bash
+      env | grep -E '^AMPLIHACK_' | sort > "$SANDBOX_ROOT/amplihack_env.txt"
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/codex_args.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/codex
+    compare:
+      - exit_code
+      - fs:amplihack_env.txt
+
+  # LA5: Nesting detection — second launch should detect nesting
+  - name: launcher-nesting-detection
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_SESSION_ID: "outer-session"
+      AMPLIHACK_DEPTH: "1"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      echo "DEPTH=$AMPLIHACK_DEPTH" > "$SANDBOX_ROOT/nesting.txt"
+      echo "SESSION=$AMPLIHACK_SESSION_ID" >> "$SANDBOX_ROOT/nesting.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:nesting.txt
+
+  # LA6: Launch when claude binary is missing — error handling
+  - name: launcher-claude-missing
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    setup: |
+      mkdir -p bin
+      # No claude binary installed
+    compare:
+      - exit_code
+      - stderr
+
+  # LA7: Launch claude alias — should behave same as launch
+  - name: launcher-claude-alias
+    argv: ["claude"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/claude_args.txt"
+      env | grep -E '^AMPLIHACK_' | sort > "$SANDBOX_ROOT/amplihack_env.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:claude_args.txt
+      - fs:amplihack_env.txt

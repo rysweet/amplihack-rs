@@ -1,0 +1,231 @@
+# Tier 5: Malformed YAML and edge case tests.
+# Tests error handling for various malformed inputs.
+#
+# Master issue: rysweet/amplihack-rs#25
+
+cases:
+  # ============================================================================
+  # Malformed YAML syntax
+  # ============================================================================
+
+  # M1: Completely invalid YAML
+  - name: malformed-invalid-yaml-syntax
+    argv: ["recipe", "validate", "broken.yaml", "--format", "json"]
+    setup: |
+      cat > broken.yaml <<'EOF'
+      name: broken
+      steps:
+        - id: step-1
+          command: echo hello
+        invalid: [unclosed bracket
+      EOF
+    compare: ["exit_code", "stderr"]
+
+  # M2: YAML with tabs instead of spaces (common user error)
+  - name: malformed-tabs-not-spaces
+    argv: ["recipe", "validate", "tabs.yaml", "--format", "json"]
+    setup: |
+      printf 'name: tabs\nsteps:\n\t- id: step-1\n\t  command: echo hello\n' > tabs.yaml
+    compare: ["exit_code", "stderr"]
+
+  # M3: Empty file
+  - name: malformed-empty-file
+    argv: ["recipe", "validate", "empty.yaml", "--format", "json"]
+    setup: |
+      touch empty.yaml
+    compare: ["exit_code", "stderr"]
+
+  # M4: File with only whitespace
+  - name: malformed-whitespace-only
+    argv: ["recipe", "validate", "ws.yaml", "--format", "json"]
+    setup: |
+      printf '   \n  \n\n' > ws.yaml
+    compare: ["exit_code", "stderr"]
+
+  # M5: YAML that parses but is a scalar, not a mapping
+  - name: malformed-scalar-not-mapping
+    argv: ["recipe", "validate", "scalar.yaml", "--format", "json"]
+    setup: |
+      printf 'just a string\n' > scalar.yaml
+    compare: ["exit_code", "stderr"]
+
+  # M6: YAML that parses to a list, not a mapping
+  - name: malformed-list-not-mapping
+    argv: ["recipe", "validate", "list.yaml", "--format", "json"]
+    setup: |
+      printf '%s\n%s\n' '- item1' '- item2' > list.yaml
+    compare: ["exit_code", "stderr"]
+
+  # ============================================================================
+  # Missing required fields
+  # ============================================================================
+
+  # M7: Missing name field
+  - name: malformed-missing-name
+    argv: ["recipe", "validate", "noname.yaml", "--format", "json"]
+    setup: |
+      cat > noname.yaml <<'EOF'
+      description: No name
+      steps:
+        - id: step-1
+          command: echo hello
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # M8: Missing steps field
+  - name: malformed-missing-steps
+    argv: ["recipe", "validate", "nosteps.yaml", "--format", "json"]
+    setup: |
+      cat > nosteps.yaml <<'EOF'
+      name: no-steps
+      description: Missing steps
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # M9: Steps is null
+  - name: malformed-steps-null
+    argv: ["recipe", "validate", "nullsteps.yaml", "--format", "json"]
+    setup: |
+      cat > nullsteps.yaml <<'EOF'
+      name: null-steps
+      steps: null
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # M10: Step without id
+  - name: malformed-step-no-id
+    argv: ["recipe", "validate", "noid.yaml", "--format", "json"]
+    setup: |
+      cat > noid.yaml <<'EOF'
+      name: no-id
+      steps:
+        - command: echo hello
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # M11: Step with empty string id
+  - name: malformed-step-empty-id
+    argv: ["recipe", "validate", "emptyid.yaml", "--format", "json"]
+    setup: |
+      cat > emptyid.yaml <<'EOF'
+      name: empty-id
+      steps:
+        - id: ""
+          command: echo hello
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # M12: Duplicate step IDs
+  - name: malformed-duplicate-step-ids
+    argv: ["recipe", "validate", "dupes.yaml", "--format", "json"]
+    setup: |
+      cat > dupes.yaml <<'EOF'
+      name: dupes
+      steps:
+        - id: same-id
+          command: echo first
+        - id: same-id
+          command: echo second
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # ============================================================================
+  # Edge cases
+  # ============================================================================
+
+  # M13: Unicode in step IDs and values
+  - name: malformed-unicode-step-ids
+    argv: ["recipe", "validate", "unicode.yaml", "--format", "json"]
+    setup: |
+      cat > unicode.yaml <<'EOF'
+      name: unicode-test
+      description: "Ünïcödé tëst 🎉"
+      steps:
+        - id: "étape-1"
+          command: echo "héllo wörld"
+        - id: "步骤-2"
+          command: echo "你好世界"
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # M14: Very long step ID
+  - name: malformed-very-long-step-id
+    argv: ["recipe", "validate", "longid.yaml", "--format", "json"]
+    setup: |
+      python3 -c "
+      long_id = 'a' * 10000
+      print(f'name: long-id')
+      print(f'steps:')
+      print(f'  - id: {long_id}')
+      print(f'    command: echo hello')
+      " > longid.yaml
+    compare: ["stdout", "exit_code"]
+
+  # M15: Nonexistent recipe file
+  - name: malformed-nonexistent-file
+    argv: ["recipe", "validate", "does-not-exist.yaml", "--format", "json"]
+    compare: ["exit_code", "stderr"]
+
+  # M16: Recipe with only name and empty steps
+  - name: malformed-empty-steps-list
+    argv: ["recipe", "validate", "empty-steps.yaml", "--format", "json"]
+    setup: |
+      cat > empty-steps.yaml <<'EOF'
+      name: empty-steps
+      steps: []
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # M17: Step with invalid type
+  - name: malformed-invalid-step-type
+    argv: ["recipe", "validate", "badtype.yaml", "--format", "json"]
+    setup: |
+      cat > badtype.yaml <<'EOF'
+      name: bad-type
+      steps:
+        - id: step-1
+          type: invalid_type
+          command: echo hello
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # M18: YAML with anchors and aliases
+  - name: malformed-yaml-anchors
+    argv: ["recipe", "validate", "anchors.yaml", "--format", "json"]
+    setup: |
+      cat > anchors.yaml <<'EOF'
+      name: anchors-test
+      defaults: &defaults
+        command: echo default
+      steps:
+        - id: step-1
+          <<: *defaults
+        - id: step-2
+          <<: *defaults
+          command: echo override
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # M19: Null name
+  - name: malformed-null-name
+    argv: ["recipe", "validate", "nullname.yaml", "--format", "json"]
+    setup: |
+      cat > nullname.yaml <<'EOF'
+      name: null
+      steps:
+        - id: step-1
+          command: echo hello
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # M20: Step id is null
+  - name: malformed-step-id-null
+    argv: ["recipe", "validate", "nullid.yaml", "--format", "json"]
+    setup: |
+      cat > nullid.yaml <<'EOF'
+      name: null-id
+      steps:
+        - id: null
+          command: echo hello
+      EOF
+    compare: ["stdout", "exit_code"]

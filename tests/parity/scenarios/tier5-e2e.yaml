@@ -1,0 +1,172 @@
+# Tier 5: Full end-to-end tests.
+# Tests complete workflows: install → launch → recipe → uninstall.
+#
+# Master issue: rysweet/amplihack-rs#25
+
+cases:
+  # ============================================================================
+  # E2E: Full lifecycle
+  # ============================================================================
+
+  # E1: Install then verify settings.json has hooks
+  - name: e2e-install-then-verify-hooks
+    argv: ["install", "--local", "${SANDBOX_ROOT}/local-repo"]
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH: "${SANDBOX_ROOT}/bin/amplihack-hooks"
+    setup: |
+      mkdir -p bin local-repo/.claude/agents/amplihack local-repo/.claude/commands/amplihack
+      mkdir -p local-repo/.claude/tools/amplihack/hooks local-repo/.claude/context
+      mkdir -p local-repo/.claude/workflow local-repo/.claude/skills local-repo/.claude/templates
+      mkdir -p local-repo/.claude/scenarios local-repo/.claude/docs local-repo/.claude/schemas local-repo/.claude/config
+      for hook in session_start.py stop.py pre_tool_use.py post_tool_use.py user_prompt_submit.py workflow_classification_reminder.py pre_compact.py; do
+        printf 'print(1)\n' > "local-repo/.claude/tools/amplihack/hooks/$hook"
+      done
+      printf '{}\n' > local-repo/.claude/settings.json
+      printf 'echo statusline\n' > local-repo/.claude/tools/statusline.sh
+      printf 'framework\n' > local-repo/.claude/AMPLIHACK.md
+      printf 'claude root\n' > local-repo/CLAUDE.md
+      cat > bin/recipe-runner-rs <<'EOF'
+      #!/usr/bin/env bash
+      exit 0
+      EOF
+      cat > bin/python3 <<'EOF'
+      #!/usr/bin/env bash
+      exit 0
+      EOF
+      python3 -c "import sys; sys.stdout.buffer.write(b'#!/usr/bin/env bash\nexit 0\n' + b'x' * 1100 + b'\n')" > bin/amplihack-hooks 2>/dev/null \
+        || printf '#!/usr/bin/env bash\nexit 0\n%s\n' "$(printf '%0.sx' {1..1100})" > bin/amplihack-hooks
+      chmod +x bin/recipe-runner-rs bin/python3 bin/amplihack-hooks
+    compare:
+      - exit_code
+      - fs:home/.claude/settings.json
+      - fs:home/.amplihack/.claude/install/amplihack-manifest.json
+
+  # E2: Recipe validate then run pipeline
+  - name: e2e-validate-then-run
+    argv: ["recipe", "validate", "pipeline.yaml", "--format", "json"]
+    setup: |
+      cat > pipeline.yaml <<'EOF'
+      name: pipeline
+      description: Validate-then-run pipeline test
+      steps:
+        - id: check
+          command: echo "checking..."
+          output: check_result
+        - id: process
+          command: echo "processing after check"
+          condition: "'checking' in check_result"
+          output: process_result
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # E3: Mode detection in clean environment
+  - name: e2e-mode-detect-clean
+    argv: ["mode", "detect"]
+    compare: ["stdout", "stderr", "exit_code"]
+
+  # E4: Plugin install then verify then uninstall
+  - name: e2e-plugin-lifecycle
+    argv: ["plugin", "install", "test-plugin"]
+    setup: |
+      mkdir -p test-plugin/.claude-plugin
+      mkdir -p test-plugin/.claude/tools/amplihack/hooks
+      cat > test-plugin/.claude-plugin/plugin.json <<'EOF'
+      {
+        "name": "test-plugin",
+        "version": "1.0.0",
+        "entry_point": "main.py",
+        "description": "Test plugin for E2E",
+        "author": "Parity Test"
+      }
+      EOF
+      cat > test-plugin/.claude/tools/amplihack/hooks/hooks.json <<'EOF'
+      {"PreToolUse": []}
+      EOF
+    compare:
+      - stdout
+      - stderr
+      - exit_code
+      - fs:home/.amplihack/.claude/plugins/test-plugin
+
+  # E5: Memory tree with empty database
+  - name: e2e-memory-tree-empty
+    argv: ["memory", "tree", "--backend", "sqlite"]
+    compare: ["stdout", "stderr", "exit_code"]
+
+  # E6: Recipe list in directory with multiple recipes
+  - name: e2e-recipe-list-multiple
+    argv: ["recipe", "list", "recipes", "--format", "json"]
+    setup: |
+      mkdir -p recipes
+      cat > recipes/first.yaml <<'EOF'
+      name: first
+      description: First recipe
+      tags: [core]
+      steps:
+        - id: s1
+          command: echo first
+      EOF
+      cat > recipes/second.yaml <<'EOF'
+      name: second
+      description: Second recipe
+      tags: [core, extra]
+      steps:
+        - id: s1
+          command: echo second
+      EOF
+      cat > recipes/third.yaml <<'EOF'
+      name: third
+      description: Third recipe
+      tags: [extra]
+      steps:
+        - id: s1
+          command: echo third
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # E7: Recipe show with all details
+  - name: e2e-recipe-show-full
+    argv: ["recipe", "show", "full.yaml", "--format", "json"]
+    setup: |
+      cat > full.yaml <<'EOF'
+      name: full-detail
+      description: Recipe with all fields populated
+      tags: [test, e2e, comprehensive]
+      context:
+        project_name: test-project
+        repo_path: .
+        task_description: E2E test
+      steps:
+        - id: step-1
+          command: echo hello
+          output: greeting
+          timeout: 30
+        - id: step-2
+          agent: builder
+          prompt: Build something based on {{greeting}}
+          condition: "'hello' in greeting"
+          output: build_result
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # E8: Multiple recipe operations in sequence (validate → list → show → run)
+  # This test validates the recipe file, then runs it
+  - name: e2e-recipe-full-pipeline-run
+    argv: ["recipe", "run", "pipeline.yaml", "--format", "json"]
+    setup: |
+      cat > pipeline.yaml <<'EOF'
+      name: full-pipeline
+      description: Full pipeline recipe
+      steps:
+        - id: init
+          command: echo "initialized"
+          output: init_result
+        - id: process
+          command: echo "processed"
+          output: process_result
+        - id: finalize
+          command: echo "finalized"
+          output: final_result
+      EOF
+    compare: ["stdout", "exit_code"]

@@ -1,0 +1,243 @@
+# Tier 5: Failing tests for every identified feature parity gap.
+# Each test documents a known divergence between Python and Rust.
+# Tests are expected to FAIL until the gap is closed.
+#
+# Master issue: rysweet/amplihack-rs#25
+
+cases:
+  # ============================================================================
+  # GAP A: Launch command missing flags
+  # ============================================================================
+
+  # A1: Python adds --dangerously-skip-permissions by default; Rust does not.
+  # When launching Claude, the child process env/args should match.
+  - name: gap-launch-adds-skip-permissions
+    argv: ["launch", "--", "--dry-run-launch-test"]
+    env:
+      AMPLIHACK_DRY_RUN_LAUNCH: "1"
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    timeout: 15
+    setup: |
+      mkdir -p bin
+      # Fake claude binary that prints its own args
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/claude_args.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare: ["exit_code", "fs:claude_args.txt"]
+
+  # A2: Python sets default model (opus[1m]); Rust does not.
+  - name: gap-launch-sets-default-model
+    argv: ["launch"]
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    timeout: 15
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/claude_args.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare: ["exit_code", "fs:claude_args.txt"]
+
+  # A3: SIGINT exit code — Python returns 0, Rust returns 130
+  - name: gap-launch-sigint-exit-code
+    argv: ["launch"]
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    timeout: 15
+    setup: |
+      mkdir -p bin
+      # Claude binary that sends SIGINT to itself
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      kill -INT $$
+      SCRIPT
+      chmod +x bin/claude
+    compare: ["exit_code"]
+
+  # ============================================================================
+  # GAP B: Environment variable divergence
+  # ============================================================================
+
+  # B1: Rust should set AMPLIHACK_RUST_RUNTIME=1 when launching subprocesses
+  - name: gap-env-rust-runtime-flag
+    argv: ["launch"]
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    timeout: 15
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      env | grep AMPLIHACK_ | sort > "$SANDBOX_ROOT/amplihack_env.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare: ["exit_code", "fs:amplihack_env.txt"]
+
+  # B2: Both should set AMPLIHACK_SESSION_ID
+  - name: gap-env-session-id-set
+    argv: ["launch"]
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    timeout: 15
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [ -z "$AMPLIHACK_SESSION_ID" ]; then
+        echo "MISSING" > "$SANDBOX_ROOT/session_id.txt"
+      else
+        echo "PRESENT" > "$SANDBOX_ROOT/session_id.txt"
+      fi
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare: ["exit_code", "fs:session_id.txt"]
+
+  # ============================================================================
+  # GAP C: Recipe runner binary not found handling
+  # ============================================================================
+
+  # C1: Python treats missing recipe-runner-rs as non-fatal; Rust as fatal.
+  # Both should produce the same exit code and error behavior.
+  - name: gap-recipe-run-missing-runner-binary
+    argv: ["recipe", "run", "demo.yaml", "--format", "json"]
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      RECIPE_RUNNER_RS_PATH: "/nonexistent/binary"
+    setup: |
+      mkdir -p bin
+      cat > demo.yaml <<'EOF'
+      name: demo
+      description: Demo recipe
+      steps:
+        - id: step-1
+          command: echo hello
+      EOF
+    compare: ["exit_code", "stderr"]
+
+  # ============================================================================
+  # GAP D: YAML validation warnings (typo detection)
+  # ============================================================================
+
+  # D1: Unrecognized top-level field should produce a warning
+  - name: gap-validate-warns-unknown-top-field
+    argv: ["recipe", "validate", "typo.yaml", "--format", "json"]
+    setup: |
+      cat > typo.yaml <<'EOF'
+      name: typo-test
+      descriptin: Misspelled description
+      steps:
+        - id: step-1
+          command: echo hello
+      EOF
+    compare: ["stdout", "stderr", "exit_code"]
+
+  # D2: Unrecognized step-level field should produce a warning
+  - name: gap-validate-warns-unknown-step-field
+    argv: ["recipe", "validate", "typo-step.yaml", "--format", "json"]
+    setup: |
+      cat > typo-step.yaml <<'EOF'
+      name: typo-step-test
+      description: Step field typo
+      steps:
+        - id: step-1
+          comand: echo hello
+      EOF
+    compare: ["stdout", "stderr", "exit_code"]
+
+  # ============================================================================
+  # GAP E: Settings.json handling differences
+  # ============================================================================
+
+  # E1: Missing settings.json — Python creates rich template; Rust returns empty
+  - name: gap-settings-missing-creates-template
+    argv: ["install", "--local", "${SANDBOX_ROOT}/local-repo"]
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH: "${SANDBOX_ROOT}/bin/amplihack-hooks"
+    setup: |
+      mkdir -p bin local-repo/.claude/agents/amplihack local-repo/.claude/commands/amplihack
+      mkdir -p local-repo/.claude/tools/amplihack/hooks local-repo/.claude/context
+      mkdir -p local-repo/.claude/workflow local-repo/.claude/skills local-repo/.claude/templates
+      mkdir -p local-repo/.claude/scenarios local-repo/.claude/docs local-repo/.claude/schemas local-repo/.claude/config
+      for hook in session_start.py stop.py pre_tool_use.py post_tool_use.py user_prompt_submit.py workflow_classification_reminder.py pre_compact.py; do
+        printf 'print(1)\n' > "local-repo/.claude/tools/amplihack/hooks/$hook"
+      done
+      printf 'echo statusline\n' > local-repo/.claude/tools/statusline.sh
+      printf 'framework\n' > local-repo/.claude/AMPLIHACK.md
+      printf 'claude root\n' > local-repo/CLAUDE.md
+      cat > bin/recipe-runner-rs <<'EOF'
+      #!/usr/bin/env bash
+      exit 0
+      EOF
+      cat > bin/python3 <<'EOF'
+      #!/usr/bin/env bash
+      exit 0
+      EOF
+      python3 -c "import sys; sys.stdout.buffer.write(b'#!/usr/bin/env bash\nexit 0\n' + b'x' * 1100 + b'\n')" > bin/amplihack-hooks 2>/dev/null \
+        || printf '#!/usr/bin/env bash\nexit 0\n%s\n' "$(printf '%0.sx' {1..1100})" > bin/amplihack-hooks
+      chmod +x bin/recipe-runner-rs bin/python3 bin/amplihack-hooks
+      # Note: NO settings.json pre-created — testing fresh install
+    compare:
+      - exit_code
+      - jsonfs:home/.claude/settings.json
+
+  # ============================================================================
+  # GAP F: Version subcommand difference
+  # ============================================================================
+
+  # F1: Python uses --version flag; Rust has explicit `version` subcommand
+  - name: gap-version-subcommand-vs-flag
+    argv: ["version"]
+    compare: ["exit_code"]
+
+  # F2: --version flag should also work in Rust
+  - name: gap-version-flag-works
+    argv: ["--version"]
+    compare: ["exit_code"]
+
+  # ============================================================================
+  # GAP G: Hook engine default
+  # ============================================================================
+
+  # G1: After install, settings.json should use consistent hook format
+  # Python defaults to python hooks, Rust to binary subcommand hooks.
+  # The installed settings.json hook format should be the same.
+  - name: gap-hook-engine-default-format
+    argv: ["install", "--local", "${SANDBOX_ROOT}/local-repo"]
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH: "${SANDBOX_ROOT}/bin/amplihack-hooks"
+    setup: |
+      mkdir -p bin local-repo/.claude/agents/amplihack local-repo/.claude/commands/amplihack
+      mkdir -p local-repo/.claude/tools/amplihack/hooks local-repo/.claude/context
+      mkdir -p local-repo/.claude/workflow local-repo/.claude/skills local-repo/.claude/templates
+      mkdir -p local-repo/.claude/scenarios local-repo/.claude/docs local-repo/.claude/schemas local-repo/.claude/config
+      for hook in session_start.py stop.py pre_tool_use.py post_tool_use.py user_prompt_submit.py workflow_classification_reminder.py pre_compact.py; do
+        printf 'print(1)\n' > "local-repo/.claude/tools/amplihack/hooks/$hook"
+      done
+      printf '{}\n' > local-repo/.claude/settings.json
+      printf 'echo statusline\n' > local-repo/.claude/tools/statusline.sh
+      printf 'framework\n' > local-repo/.claude/AMPLIHACK.md
+      printf 'claude root\n' > local-repo/CLAUDE.md
+      cat > bin/recipe-runner-rs <<'EOF'
+      #!/usr/bin/env bash
+      exit 0
+      EOF
+      cat > bin/python3 <<'EOF'
+      #!/usr/bin/env bash
+      exit 0
+      EOF
+      python3 -c "import sys; sys.stdout.buffer.write(b'#!/usr/bin/env bash\nexit 0\n' + b'x' * 1100 + b'\n')" > bin/amplihack-hooks 2>/dev/null \
+        || printf '#!/usr/bin/env bash\nexit 0\n%s\n' "$(printf '%0.sx' {1..1100})" > bin/amplihack-hooks
+      chmod +x bin/recipe-runner-rs bin/python3 bin/amplihack-hooks
+    compare:
+      - exit_code
+      - jsonfs:home/.claude/settings.json

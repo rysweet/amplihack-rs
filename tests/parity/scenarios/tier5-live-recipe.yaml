@@ -1,0 +1,208 @@
+# Tier 5: Live recipe execution tests (not dry-run).
+# Tests actual command execution, variable passing, conditions, and error recovery.
+#
+# Master issue: rysweet/amplihack-rs#25
+
+cases:
+  # ============================================================================
+  # Live command execution
+  # ============================================================================
+
+  # L1: Single bash step with real command execution
+  - name: live-recipe-single-bash-step
+    argv: ["recipe", "run", "single.yaml", "--format", "json"]
+    setup: |
+      cat > single.yaml <<'EOF'
+      name: single-bash
+      description: Single bash step
+      steps:
+        - id: echo-step
+          command: echo "hello world"
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # L2: Multi-step with variable passing between steps
+  - name: live-recipe-variable-passing
+    argv: ["recipe", "run", "varpass.yaml", "--format", "json"]
+    setup: |
+      cat > varpass.yaml <<'EOF'
+      name: variable-passing
+      description: Test variable passing between steps
+      steps:
+        - id: produce
+          command: echo "PRODUCED_VALUE"
+          output: step1_output
+        - id: consume
+          command: echo "received:${RECIPE_VAR_step1_output:-missing}"
+          output: step2_output
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # L3: Conditional step execution — true condition
+  - name: live-recipe-condition-true
+    argv: ["recipe", "run", "cond-true.yaml", "--format", "json", "-c", "run_optional=yes"]
+    setup: |
+      cat > cond-true.yaml <<'EOF'
+      name: condition-true
+      description: Test condition evaluation (true path)
+      context:
+        run_optional: ""
+      steps:
+        - id: always
+          command: echo "always runs"
+          output: always_out
+        - id: conditional
+          command: echo "conditional ran"
+          condition: "run_optional == 'yes'"
+          output: cond_out
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # L4: Conditional step execution — false condition (step skipped)
+  - name: live-recipe-condition-false
+    argv: ["recipe", "run", "cond-false.yaml", "--format", "json", "-c", "run_optional=no"]
+    setup: |
+      cat > cond-false.yaml <<'EOF'
+      name: condition-false
+      description: Test condition evaluation (false path)
+      context:
+        run_optional: ""
+      steps:
+        - id: always
+          command: echo "always runs"
+          output: always_out
+        - id: conditional
+          command: echo "should not run"
+          condition: "run_optional == 'yes'"
+          output: cond_out
+        - id: after
+          command: echo "after conditional"
+          output: after_out
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # L5: Condition referencing prior step output
+  - name: live-recipe-condition-from-output
+    argv: ["recipe", "run", "cond-output.yaml", "--format", "json"]
+    setup: |
+      cat > cond-output.yaml <<'EOF'
+      name: condition-from-output
+      description: Test condition using previous step output
+      steps:
+        - id: detect
+          command: echo "PROCEED"
+          output: detect_result
+        - id: act
+          command: echo "acting on detection"
+          condition: "'PROCEED' in detect_result"
+          output: act_result
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # L6: Step failure halts execution
+  - name: live-recipe-step-failure-halts
+    argv: ["recipe", "run", "fail.yaml", "--format", "json"]
+    setup: |
+      cat > fail.yaml <<'EOF'
+      name: step-failure
+      description: Test that step failure halts execution
+      steps:
+        - id: succeed
+          command: echo "ok"
+          output: first
+        - id: fail
+          command: exit 1
+          output: second
+        - id: should-not-run
+          command: echo "should not reach here"
+          output: third
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # L7: Context variable injection via -c flag
+  - name: live-recipe-context-injection
+    argv: ["recipe", "run", "ctx.yaml", "--format", "json", "-c", "greeting=hello", "-c", "target=world"]
+    setup: |
+      cat > ctx.yaml <<'EOF'
+      name: context-injection
+      description: Test context variable injection
+      context:
+        greeting: ""
+        target: ""
+      steps:
+        - id: greet
+          command: echo "{{greeting}} {{target}}"
+          output: result
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # L8: Working directory override
+  - name: live-recipe-working-dir
+    argv: ["recipe", "run", "wdir.yaml", "--format", "json", "--working-dir", "subdir"]
+    setup: |
+      mkdir -p subdir
+      cat > wdir.yaml <<'EOF'
+      name: working-dir
+      description: Test working directory override
+      steps:
+        - id: check-cwd
+          command: pwd
+          output: cwd_result
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # L9: Many steps (10) with sequential variable accumulation
+  - name: live-recipe-many-steps
+    argv: ["recipe", "run", "many.yaml", "--format", "json"]
+    setup: |
+      cat > many.yaml <<'EOF'
+      name: many-steps
+      description: 10-step recipe with sequential variable accumulation
+      steps:
+        - id: s1
+          command: echo "1"
+          output: v1
+        - id: s2
+          command: echo "2"
+          output: v2
+        - id: s3
+          command: echo "3"
+          output: v3
+        - id: s4
+          command: echo "4"
+          output: v4
+        - id: s5
+          command: echo "5"
+          output: v5
+        - id: s6
+          command: echo "6"
+          output: v6
+        - id: s7
+          command: echo "7"
+          output: v7
+        - id: s8
+          command: echo "8"
+          output: v8
+        - id: s9
+          command: echo "9"
+          output: v9
+        - id: s10
+          command: echo "10"
+          output: v10
+      EOF
+    compare: ["stdout", "exit_code"]
+
+  # L10: Step with timeout (fast step, should succeed)
+  - name: live-recipe-step-timeout-succeeds
+    argv: ["recipe", "run", "timeout-ok.yaml", "--format", "json"]
+    setup: |
+      cat > timeout-ok.yaml <<'EOF'
+      name: timeout-ok
+      description: Step with timeout that should succeed
+      steps:
+        - id: fast
+          command: echo "fast"
+          timeout: 30
+          output: result
+      EOF
+    compare: ["stdout", "exit_code"]
