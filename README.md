@@ -12,15 +12,18 @@ Rust core runtime for amplihack's deterministic infrastructure layer.
 
 ## Installation
 
-### Standard (no cmake required)
+### Build Prerequisites
+**cmake** is required to build kuzu (the graph memory backend):
+- Ubuntu/Debian: `sudo apt install cmake build-essential`
+- macOS: `brew install cmake`
+
+### Install from source
 ```bash
 cargo install --git https://github.com/rysweet/amplihack-rs amplihack --locked
 ```
 
-### With Kuzu graph backend (requires cmake)
-```bash
-cargo install --git https://github.com/rysweet/amplihack-rs amplihack --locked --features kuzu-backend
-```
+### Pre-built binaries (no build tools required)
+Download from https://github.com/rysweet/amplihack-rs/releases for your platform.
 
 ## Quick Start
 

@@ -15,9 +15,6 @@ disabled-strategies = ["quick-install", "compile"]
 name = "amplihack"
 path = "src/main.rs"
 
-[features]
-kuzu-backend = ["amplihack-cli/kuzu-backend"]
-
 [dependencies]
 amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
@@ -31,7 +28,12 @@ clap = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 
 [[test]]
 name = "cli_launch"
 path = "../../tests/integration/cli_launch_test.rs"
+
+[[test]]
+name = "memory_no_kuzu"
+path = "../../tests/integration/memory_no_kuzu_test.rs"

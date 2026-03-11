@@ -2,7 +2,6 @@
 
 use super::*;
 use anyhow::Result;
-#[cfg(feature = "kuzu-backend")]
 use kuzu::Connection as KuzuConnection;
 
 pub fn run_tree(
@@ -14,7 +13,6 @@ pub fn run_tree(
     let backend = BackendChoice::parse(backend)?;
     let output = match backend {
         BackendChoice::Sqlite => render_sqlite_tree(session_id, memory_type, depth)?,
-        #[cfg(feature = "kuzu-backend")]
         BackendChoice::Kuzu => render_kuzu_tree(session_id, memory_type, depth)?,
     };
     println!("{output}");
@@ -53,7 +51,6 @@ fn render_sqlite_tree(
     ))
 }
 
-#[cfg(feature = "kuzu-backend")]
 fn render_kuzu_tree(
     session_id: Option<&str>,
     _memory_type: Option<&str>,
