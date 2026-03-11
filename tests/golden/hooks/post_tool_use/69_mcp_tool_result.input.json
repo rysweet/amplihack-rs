@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "mcp__server__custom_tool",
+  "tool_input": {
+    "arg1": "value1"
+  },
+  "tool_result": {
+    "data": "custom result"
+  }
+}

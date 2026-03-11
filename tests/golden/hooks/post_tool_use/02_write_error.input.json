@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Write",
+  "tool_input": {"path": "/tmp/file.txt", "content": "test"},
+  "tool_result": {"error": "permission denied"}
+}

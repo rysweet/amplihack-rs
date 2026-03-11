@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "The API endpoint /users is taking 5 seconds, how can I optimize it?",
+  "session_id": "s38"
+}

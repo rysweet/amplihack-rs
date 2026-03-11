@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Review my latest changes and suggest improvements",
+  "session_id": "s35"
+}

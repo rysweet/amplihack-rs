@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "Stop",
+  "session_id": "test-11",
+  "future_field": "ignored"
+}

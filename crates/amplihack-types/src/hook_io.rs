@@ -3,7 +3,7 @@
 //! These types model the JSON protocol that hook hosts use to communicate
 //! with hook binaries via stdin/stdout.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -95,76 +95,6 @@ pub enum HookInput {
     Unknown,
 }
 
-/// Output from a hook back to the host.
-#[derive(Debug, Clone, Serialize, Default)]
-pub struct HookOutput {
-    /// If present, contains the permission decision and optional modifications.
-    #[serde(rename = "hookSpecificOutput", skip_serializing_if = "Option::is_none")]
-    pub hook_specific_output: Option<HookOutputDecision>,
-}
-
-impl HookOutput {
-    /// Create an empty output (allow, no modifications).
-    pub fn allow() -> Self {
-        Self {
-            hook_specific_output: None,
-        }
-    }
-
-    /// Create a deny output with a reason.
-    pub fn deny(reason: impl Into<String>) -> Self {
-        Self {
-            hook_specific_output: Some(HookOutputDecision::Deny {
-                reason: reason.into(),
-            }),
-        }
-    }
-
-    /// Create a block output (for stop hook — block session exit).
-    pub fn block(reason: impl Into<String>) -> Self {
-        Self {
-            hook_specific_output: Some(HookOutputDecision::Block {
-                reason: reason.into(),
-            }),
-        }
-    }
-
-    /// Create an output that modifies the user prompt.
-    pub fn modify_prompt(new_prompt: impl Into<String>) -> Self {
-        Self {
-            hook_specific_output: Some(HookOutputDecision::ModifyPrompt {
-                new_prompt: new_prompt.into(),
-            }),
-        }
-    }
-}
-
-/// The decision component of hook output.
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "permissionDecision")]
-pub enum HookOutputDecision {
-    /// Deny the tool invocation.
-    #[serde(rename = "deny")]
-    Deny {
-        #[serde(rename = "permissionDecisionReason")]
-        reason: String,
-    },
-
-    /// Block session exit (stop hook).
-    #[serde(rename = "block")]
-    Block {
-        #[serde(rename = "permissionDecisionReason")]
-        reason: String,
-    },
-
-    /// Modify the user prompt (user_prompt_submit hook).
-    #[serde(rename = "allow")]
-    ModifyPrompt {
-        #[serde(rename = "userPromptContent")]
-        new_prompt: String,
-    },
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,24 +115,6 @@ mod tests {
         let json = r#"{"hook_event_name": "FutureEvent", "data": "test"}"#;
         let input: HookInput = serde_json::from_str(json).unwrap();
         assert!(matches!(input, HookInput::Unknown));
-    }
-
-    #[test]
-    fn serialize_allow_output() {
-        let output = HookOutput::allow();
-        let json = serde_json::to_string(&output).unwrap();
-        assert_eq!(json, "{}");
-    }
-
-    #[test]
-    fn serialize_deny_output() {
-        let output = HookOutput::deny("dangerous command");
-        let json = serde_json::to_value(&output).unwrap();
-        assert_eq!(json["hookSpecificOutput"]["permissionDecision"], "deny");
-        assert_eq!(
-            json["hookSpecificOutput"]["permissionDecisionReason"],
-            "dangerous command"
-        );
     }
 
     #[test]

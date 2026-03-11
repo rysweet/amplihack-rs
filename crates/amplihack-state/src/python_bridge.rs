@@ -30,24 +30,30 @@ pub enum BridgeError {
 /// and cleaned up after execution.
 pub struct PythonBridge;
 
+/// RAII guard that removes a temp file on drop (even on panic).
+struct TempScript(PathBuf);
+
+impl Drop for TempScript {
+    fn drop(&mut self) {
+        // Best-effort cleanup — failing to delete a temp file is not fatal.
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 impl PythonBridge {
     /// Call a Python bridge script with JSON input and return JSON output.
     ///
-    /// The script is written to a temp file, executed, and cleaned up.
-    /// A hard timeout is enforced — no infinite waits.
+    /// The script is written to a temp file, executed, and cleaned up
+    /// via RAII guard (even on panic). A hard timeout is enforced.
     pub fn call(
         script_content: &str,
         input: &Value,
         timeout: Duration,
     ) -> Result<Value, BridgeError> {
         let script_path = write_temp_script(script_content)?;
+        let _guard = TempScript(script_path.clone());
 
-        let result = Self::execute_script(&script_path, input, timeout);
-
-        // Clean up script file regardless of result.
-        let _ = std::fs::remove_file(&script_path);
-
-        result
+        Self::execute_script(&script_path, input, timeout)
     }
 
     fn execute_script(
@@ -140,6 +146,7 @@ fn wait_with_timeout(
             }
             Ok(None) => {
                 if start.elapsed() >= timeout {
+                    // Best-effort cleanup on timeout — process may already be dead.
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(BridgeError::Timeout { timeout });

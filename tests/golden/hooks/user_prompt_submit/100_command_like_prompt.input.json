@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "/analyze /improve /dev /ultrathink combined request",
+  "session_id": "s100"
+}

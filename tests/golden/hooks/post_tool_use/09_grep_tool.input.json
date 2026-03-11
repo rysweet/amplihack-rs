@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "grep",
+  "tool_input": {"pattern": "TODO"},
+  "tool_result": {"matches": []}
+}

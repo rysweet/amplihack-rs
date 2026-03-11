@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "hello",
+  "session_id": "s85",
+  "metadata": {
+    "source": "vscode",
+    "version": "1.85.0"
+  }
+}

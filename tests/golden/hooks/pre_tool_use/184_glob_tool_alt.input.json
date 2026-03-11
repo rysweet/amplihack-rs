@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "glob",
+  "tool_input": {
+    "pattern": "src/**/*.py",
+    "path": "/home/user/project"
+  }
+}

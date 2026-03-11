@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "/dev /dev /dev implement something",
+  "session_id": "s97"
+}

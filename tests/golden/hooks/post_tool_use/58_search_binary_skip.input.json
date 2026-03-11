@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Search",
+  "tool_input": {
+    "query": "magic",
+    "path": "."
+  },
+  "tool_result": {
+    "matches": [],
+    "skipped_binary": 3
+  }
+}

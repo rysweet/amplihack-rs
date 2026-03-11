@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Read",
+  "tool_input": {
+    "path": "/root/.ssh/id_rsa"
+  },
+  "tool_result": {
+    "error": "Permission denied"
+  }
+}

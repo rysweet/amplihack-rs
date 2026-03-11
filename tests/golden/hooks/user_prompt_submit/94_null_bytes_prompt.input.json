@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "test\u0000null\u0000bytes",
+  "session_id": "s94"
+}

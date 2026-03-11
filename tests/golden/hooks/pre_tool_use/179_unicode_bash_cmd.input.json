@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "echo '\u65e5\u672c\u8a9e\u30c6\u30b9\u30c8 \ud83d\ude80 donn\u00e9es \u00e9mojis \u4e2d\u6587'"
+  }
+}

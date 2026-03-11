@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "SessionStop",
+  "session_id": "amp://session/abc123",
+  "transcript_path": "/home/user/.amplifier/sessions/abc123/log.jsonl"
+}

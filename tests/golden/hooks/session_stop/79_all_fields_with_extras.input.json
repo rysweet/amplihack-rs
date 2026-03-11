@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "SessionStop",
+  "session_id": "full-session",
+  "transcript_path": "/tmp/full.jsonl",
+  "duration": 120,
+  "exit_reason": "complete"
+}

@@ -1,0 +1,4 @@
+{
+  "hook_event_name": "SessionStop",
+  "session_id": "standalone-session"
+}

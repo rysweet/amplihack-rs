@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "\ud83d\udd27ToolName\u65e5\u672c\u8a9e",
+  "tool_input": {
+    "path": "/tmp/test"
+  }
+}

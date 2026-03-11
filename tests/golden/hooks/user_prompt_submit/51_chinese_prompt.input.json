@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "请帮我修复这个bug",
+  "session_id": "s51"
+}

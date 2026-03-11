@@ -1,0 +1,4 @@
+{
+  "hook_event_name": "SessionStart",
+  "session_id": "test-session-123"
+}

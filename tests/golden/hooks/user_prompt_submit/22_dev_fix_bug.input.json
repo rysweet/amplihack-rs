@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "/dev fix the null pointer exception in user service",
+  "session_id": "s22"
+}

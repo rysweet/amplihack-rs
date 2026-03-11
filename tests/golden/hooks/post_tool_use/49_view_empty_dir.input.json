@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "View",
+  "tool_input": {
+    "path": "empty_dir/"
+  },
+  "tool_result": {
+    "entries": []
+  }
+}

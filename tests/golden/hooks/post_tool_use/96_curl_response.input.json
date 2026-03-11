@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "curl -s https://api.example.com/health"
+  },
+  "tool_result": {
+    "stdout": "{\"status\":\"ok\",\"uptime\":99.9}",
+    "exit_code": 0
+  }
+}

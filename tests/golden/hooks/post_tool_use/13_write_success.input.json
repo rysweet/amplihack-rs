@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Write",
+  "tool_input": {"path": "/tmp/out.txt", "content": "hello"},
+  "tool_result": {"success": true}
+}

@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "docker build ."
+  },
+  "tool_result": {
+    "stderr": "Error: Cannot connect to the Docker daemon",
+    "exit_code": 1
+  }
+}

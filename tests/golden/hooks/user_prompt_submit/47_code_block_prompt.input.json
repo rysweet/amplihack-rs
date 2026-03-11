@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Fix this code:\n```python\ndef add(a, b):\n    return a - b\n```",
+  "session_id": "s47"
+}

@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Task",
+  "tool_input": {
+    "description": "Run tests",
+    "command": "cargo test"
+  },
+  "tool_result": {
+    "output": "test result: ok. 42 passed",
+    "exit_code": 0
+  }
+}

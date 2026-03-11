@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Write",
+  "tool_input": {
+    "path": "/etc/passwd",
+    "content": "hacked"
+  },
+  "tool_result": {
+    "success": false,
+    "error": "Permission denied"
+  }
+}

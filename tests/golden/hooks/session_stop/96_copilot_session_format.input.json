@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "SessionStop",
+  "session_id": "copilot-session-2024-01-15T10:30:00Z",
+  "transcript_path": "/tmp/copilot-transcript.jsonl"
+}

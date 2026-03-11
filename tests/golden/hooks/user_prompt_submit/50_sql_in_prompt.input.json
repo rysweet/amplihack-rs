@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Optimize this query: SELECT * FROM users WHERE name LIKE '%test%' ORDER BY created_at DESC",
+  "session_id": "s50"
+}

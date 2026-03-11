@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "hello",
+  "session_id": "s87",
+  "x": 1,
+  "y": "two",
+  "z": [
+    3
+  ]
+}

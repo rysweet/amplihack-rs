@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "python3 test.py"
+  },
+  "tool_result": {
+    "stderr": "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    import nonexistent\nModuleNotFoundError: No module named 'nonexistent'",
+    "exit_code": 1
+  }
+}

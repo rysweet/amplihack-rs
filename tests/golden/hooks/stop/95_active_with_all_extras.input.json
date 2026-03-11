@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "Stop",
+  "stop_hook_active": true,
+  "session_id": "s95",
+  "transcript_path": "/tmp/t95.jsonl",
+  "reason": "user_requested",
+  "duration_ms": 3600000
+}

@@ -1,0 +1,81 @@
+cases:
+  - name: plugin-install-local-success
+    argv: ["plugin", "install", "plugin-src"]
+    setup: |
+      mkdir -p plugin-src/.claude-plugin
+      mkdir -p plugin-src/.claude/tools/amplihack/hooks
+      cat > plugin-src/.claude-plugin/plugin.json <<'EOF'
+      {
+        "name": "demo",
+        "version": "1.2.3",
+        "entry_point": "main.py",
+        "description": "Demo plugin",
+        "author": "Tester"
+      }
+      EOF
+      cat > plugin-src/.claude/tools/amplihack/hooks/hooks.json <<'EOF'
+      {"PreToolUse": []}
+      EOF
+    compare:
+      - stdout
+      - stderr
+      - exit_code
+      - fs:home/.amplihack/.claude/plugins/plugin-src
+      - fs:home/.config/claude-code/plugins.json
+
+  - name: plugin-install-invalid-manifest
+    argv: ["plugin", "install", "plugin-src"]
+    setup: |
+      mkdir -p plugin-src/.claude-plugin
+      cat > plugin-src/.claude-plugin/plugin.json <<'EOF'
+      {"name":"Bad_Name","version":"1.0.0","entry_point":"main.py"}
+      EOF
+    compare: ["stdout", "stderr", "exit_code", "fs:home/.amplihack/.claude/plugins", "fs:home/.config/claude-code/plugins.json"]
+
+  - name: plugin-uninstall-success
+    argv: ["plugin", "uninstall", "demo"]
+    setup: |
+      mkdir -p "$HOME/.amplihack/.claude/plugins/demo/.claude-plugin"
+      cat > "$HOME/.amplihack/.claude/plugins/demo/.claude-plugin/plugin.json" <<'EOF'
+      {"name":"demo","version":"1.0.0","entry_point":"main.py"}
+      EOF
+    compare: ["stdout", "stderr", "exit_code", "fs:home/.amplihack/.claude/plugins/demo"]
+
+  - name: plugin-uninstall-missing
+    argv: ["plugin", "uninstall", "demo"]
+    compare: ["stdout", "stderr", "exit_code", "fs:home/.amplihack/.claude/plugins/demo"]
+
+  - name: plugin-verify-success
+    argv: ["plugin", "verify", "demo"]
+    setup: |
+      mkdir -p "$HOME/.amplihack/.claude/plugins/demo/.claude-plugin"
+      mkdir -p "$HOME/.amplihack/.claude/plugins/demo/.claude/tools/amplihack/hooks"
+      cat > "$HOME/.amplihack/.claude/plugins/demo/.claude-plugin/plugin.json" <<'EOF'
+      {"name":"demo","version":"1.0.0","entry_point":"main.py"}
+      EOF
+      cat > "$HOME/.amplihack/.claude/plugins/demo/.claude/tools/amplihack/hooks/hooks.json" <<'EOF'
+      {"PreToolUse": []}
+      EOF
+      mkdir -p "$HOME/.claude"
+      cat > "$HOME/.claude/settings.json" <<'EOF'
+      {"enabledPlugins":["demo"]}
+      EOF
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: plugin-verify-missing
+    argv: ["plugin", "verify", "demo"]
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: plugin-link-success
+    argv: ["plugin", "link", "amplihack"]
+    setup: |
+      mkdir -p "$HOME/.amplihack/plugins/amplihack"
+    compare:
+      - stdout
+      - stderr
+      - exit_code
+      - fs:home/.config/claude-code/plugins.json
+
+  - name: plugin-link-missing
+    argv: ["plugin", "link", "amplihack"]
+    compare: ["stdout", "stderr", "exit_code", "fs:home/.config/claude-code/plugins.json"]

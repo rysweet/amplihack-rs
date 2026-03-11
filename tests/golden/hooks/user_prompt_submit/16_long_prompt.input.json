@@ -1,0 +1,1 @@
+{"hook_event_name":"UserPromptSubmit","user_prompt":"This is a very long prompt that contains many words and should still be handled correctly by the hook implementation without any issues whatsoever even though it is quite lengthy","session_id":"s16"}

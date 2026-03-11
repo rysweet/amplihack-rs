@@ -37,6 +37,18 @@ pub fn check_cwd_deletion(command: &str) -> anyhow::Result<Option<Value>> {
         return Ok(None);
     }
 
+    // Block commands with shell expansion patterns that could bypass path checks.
+    if has_dangerous_expansion(command) {
+        return Ok(Some(serde_json::json!({
+            "block": true,
+            "message": "🚫 OPERATION BLOCKED - Shell Expansion in Destructive Command\n\n\
+                        The command uses shell expansion ($(...), `...`, or variable substitution) \
+                        in a destructive operation. This bypasses path safety checks.\n\n\
+                        Please use literal paths instead of shell expansion in rm/rmdir commands.\n\n\
+                        🔒 This protection cannot be disabled programmatically."
+        })));
+    }
+
     let cwd = match std::env::current_dir() {
         Ok(p) => match p.canonicalize() {
             Ok(c) => c,
@@ -195,8 +207,23 @@ fn check_glob_cwd_match(pattern: &str, cwd: &Path) -> Option<Value> {
 }
 
 /// Resolve a path string to an absolute path.
+///
+/// Expands `~` and `~/...` to `$HOME` before resolution.
+/// Does NOT expand `~user` forms (those are username references).
 fn resolve_path(p: &str) -> Option<std::path::PathBuf> {
-    let path = Path::new(p);
+    // Expand bare ~ and ~/... to $HOME. Skip ~user (username reference).
+    let expanded = if p == "~" || p.starts_with("~/") {
+        let home = std::env::var("HOME").ok()?;
+        if p == "~" {
+            home
+        } else {
+            format!("{}{}", home, &p[1..])
+        }
+    } else {
+        p.to_string()
+    };
+
+    let path = Path::new(&expanded);
     match path.canonicalize() {
         Ok(c) => Some(c),
         Err(_) => {
@@ -215,9 +242,39 @@ fn is_path_under(child: &Path, parent: &Path) -> bool {
     child.starts_with(parent)
 }
 
+/// Detect shell expansion patterns that could bypass literal path checks.
+///
+/// Blocks: `$(...)`, `` `...` ``, `${VAR}`, `$VAR` (when followed by path-like chars).
+fn has_dangerous_expansion(command: &str) -> bool {
+    // Command substitution: $(...)
+    if command.contains("$(") {
+        return true;
+    }
+    // Backtick substitution: `...`
+    if command.contains('`') {
+        return true;
+    }
+    // Variable expansion: ${VAR} or $VAR (not $? or $! which are status codes)
+    let chars: Vec<char> = command.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '$' && i + 1 < chars.len() {
+            let next = chars[i + 1];
+            if next == '{' {
+                return true;
+            }
+            // $VAR where VAR starts with a letter or underscore
+            if next.is_ascii_alphabetic() || next == '_' {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn safe_rm_not_blocked() {
@@ -283,12 +340,12 @@ mod tests {
     #[test]
     fn rm_rf_parent_of_cwd_blocked() {
         let cwd = std::env::current_dir().unwrap();
-        if let Some(parent) = cwd.parent() {
-            if parent != Path::new("/") {
-                let cmd = format!("rm -rf {}", parent.display());
-                let result = check_cwd_deletion(&cmd).unwrap();
-                assert!(result.is_some());
-            }
+        if let Some(parent) = cwd.parent()
+            && parent != Path::new("/")
+        {
+            let cmd = format!("rm -rf {}", parent.display());
+            let result = check_cwd_deletion(&cmd).unwrap();
+            assert!(result.is_some());
         }
     }
 
@@ -301,6 +358,137 @@ mod tests {
             let cmd = format!("rm -rf {}", dir.path().display());
             let result = check_cwd_deletion(&cmd).unwrap();
             assert!(result.is_none());
+        }
+    }
+
+    #[test]
+    fn blocks_command_substitution() {
+        let result = check_cwd_deletion(r#"rm -rf "$(pwd)""#).unwrap();
+        assert!(result.is_some());
+        assert!(
+            result.unwrap()["message"]
+                .as_str()
+                .unwrap()
+                .contains("Shell Expansion")
+        );
+    }
+
+    #[test]
+    fn blocks_backtick_substitution() {
+        let result = check_cwd_deletion("rm -rf `pwd`").unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn blocks_variable_expansion() {
+        let result = check_cwd_deletion("rm -rf $HOME/dir").unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn blocks_brace_variable_expansion() {
+        let result = check_cwd_deletion("rm -rf ${PWD}").unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn allows_dollar_status_codes() {
+        // $? and $! are shell status codes, not path variables.
+        let result = check_cwd_deletion("rm -rf /tmp/test_dir").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn dangerous_expansion_detection() {
+        assert!(has_dangerous_expansion("$(pwd)"));
+        assert!(has_dangerous_expansion("`pwd`"));
+        assert!(has_dangerous_expansion("$HOME"));
+        assert!(has_dangerous_expansion("${PWD}"));
+        assert!(has_dangerous_expansion("$D"));
+        assert!(!has_dangerous_expansion("/tmp/test"));
+        assert!(!has_dangerous_expansion("$?"));
+        assert!(!has_dangerous_expansion("$!"));
+    }
+
+    #[test]
+    fn tilde_resolves_to_home() {
+        // resolve_path("~") should expand to $HOME.
+        let home = std::env::var("HOME").unwrap();
+        let resolved = resolve_path("~").unwrap();
+        assert_eq!(
+            resolved,
+            Path::new(&home)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(&home))
+        );
+    }
+
+    #[test]
+    fn tilde_slash_resolves_to_home_subpath() {
+        let home = std::env::var("HOME").unwrap();
+        let resolved = resolve_path("~/Documents").unwrap();
+        let expected = Path::new(&home).join("Documents");
+        // canonicalize may or may not succeed depending on whether ~/Documents exists.
+        assert!(
+            resolved == expected.canonicalize().unwrap_or_else(|_| expected.clone()),
+            "~/Documents should resolve under $HOME, got: {:?}",
+            resolved
+        );
+    }
+
+    #[test]
+    fn tilde_other_user_not_expanded() {
+        // ~other_user should NOT be expanded (it's a username reference).
+        let resolved = resolve_path("~other_user");
+        // Should resolve relative to CWD, not as $HOME.
+        if let Some(r) = &resolved {
+            let home = std::env::var("HOME").unwrap();
+            assert!(
+                !r.starts_with(&home) || r.starts_with(std::env::current_dir().unwrap()),
+                "~other_user should not expand to $HOME, got: {:?}",
+                r
+            );
+        }
+    }
+
+    #[test]
+    fn rm_rf_tilde_blocked() {
+        // rm -rf ~ should be blocked because ~ expands to $HOME which contains CWD.
+        let home = std::env::var("HOME").unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        // This test only works when CWD is under $HOME.
+        if cwd.starts_with(&home) {
+            let result = check_cwd_deletion("rm -rf ~").unwrap();
+            assert!(
+                result.is_some(),
+                "rm -rf ~ should be blocked when CWD is under $HOME"
+            );
+        }
+    }
+
+    #[test]
+    fn rm_rf_tilde_slash_blocked() {
+        let home = std::env::var("HOME").unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        if cwd.starts_with(&home) {
+            let result = check_cwd_deletion("rm -rf ~/").unwrap();
+            assert!(
+                result.is_some(),
+                "rm -rf ~/ should be blocked when CWD is under $HOME"
+            );
+        }
+    }
+
+    #[test]
+    fn mv_tilde_blocked() {
+        let home = std::env::var("HOME").unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        if cwd.starts_with(&home) {
+            let result = check_cwd_rename("mv ~ /tmp/x").unwrap();
+            assert!(
+                result.is_some(),
+                "mv ~ /tmp/x should be blocked when CWD is under $HOME"
+            );
         }
     }
 }

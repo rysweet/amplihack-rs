@@ -59,9 +59,9 @@ pub fn run_hook<H: Hook>(hook: H) {
 
         let input: HookInput = serde_json::from_str(&input_json).unwrap_or(HookInput::Unknown);
 
-        // Unknown events get empty output (graceful forward-compat).
+        // Unknown events get versioned empty output (graceful forward-compat).
         if matches!(input, HookInput::Unknown) {
-            write_stdout(b"{}")?;
+            write_stdout(br#"{"version":1}"#)?;
             return Ok(());
         }
 
@@ -81,7 +81,9 @@ pub fn run_hook<H: Hook>(hook: H) {
             emit_telemetry(hook_name, duration, "error", Some(&e.to_string()));
             match policy {
                 FailurePolicy::Open => {
-                    let _ = write_stdout(b"{}");
+                    if write_stdout(b"{}").is_err() {
+                        std::process::exit(3);
+                    }
                 }
                 FailurePolicy::Closed => {
                     let error_output = serde_json::json!({
@@ -98,8 +100,9 @@ pub fn run_hook<H: Hook>(hook: H) {
         }
         Err(_panic) => {
             emit_telemetry(hook_name, duration, "panic", Some("hook panicked"));
-            // Pre-baked response, no allocation needed.
-            let _ = io::stdout().write_all(b"{}");
+            // Intentional: on panic, write best-effort empty JSON response.
+            // If stdout is broken too, there's nothing more we can do.
+            let _ = io::stdout().write_all(b"{}\n");
             let _ = io::stdout().flush();
         }
     }
@@ -157,6 +160,7 @@ fn emit_telemetry(hook: &str, duration: std::time::Duration, result: &str, error
         error,
     };
     if let Ok(json) = serde_json::to_string(&event) {
+        // Intentional: telemetry is best-effort; stderr failures are not fatal.
         let _ = io::stderr().write_all(json.as_bytes());
         let _ = io::stderr().write_all(b"\n");
     }

@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Task",
+  "tool_input": {
+    "description": "Build project",
+    "command": "cargo build"
+  },
+  "tool_result": {
+    "output": "error[E0308]: mismatched types",
+    "exit_code": 1
+  }
+}

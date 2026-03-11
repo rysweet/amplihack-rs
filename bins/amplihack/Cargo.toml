@@ -5,6 +5,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+disabled-strategies = ["quick-install", "compile"]
+
 [[bin]]
 name = "amplihack"
 path = "src/main.rs"
@@ -13,8 +19,16 @@ path = "src/main.rs"
 amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
 amplihack-hooks = { workspace = true }
+amplihack-cli = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-clap = { version = "4", features = ["derive"] }
+clap = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[[test]]
+name = "cli_launch"
+path = "../../tests/integration/cli_launch_test.rs"

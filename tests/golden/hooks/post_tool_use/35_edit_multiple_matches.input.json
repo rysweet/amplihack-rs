@@ -1,0 +1,13 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Edit",
+  "tool_input": {
+    "path": "file.rs",
+    "old_str": "let x",
+    "new_str": "let y"
+  },
+  "tool_result": {
+    "success": false,
+    "error": "old_str matches multiple locations"
+  }
+}

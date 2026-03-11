@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Read",
+  "tool_input": {
+    "path": "big_data.csv"
+  },
+  "tool_result": {
+    "content": "col1,col2\nval0,val0\nval1,val1\nval2,val2\nval3,val3\nval4,val4\nval5,val5\nval6,val6\nval7,val7\nval8,val8\nval9,val9\nval10,val10\nval11,val11\nval12,val12\nval13,val13\nval14,val14\nval15,val15\nval16,val16\nval17,val17\nval18,val18\nval19,val19\nval20,val20\nval21,val21\nval22,val22\nval23,val23\nval24,val24\nval25,val25\nval26,val26\nval27,val27\nval28,val28\nval29,val29\nval30,val30\nval31,val31\nval32,val32\nval33,val33\nval34,val34\nval35,val35\nval36,val36\nval37,val37\nval38,val38\nval39,val39\nval40,val40\nval41,val41\nval42,val42\nval43,val43\nval44,val44\nval45,val45\nval46,val46\nval47,val47\nval48,val48\nval49,val49",
+    "truncated": true
+  }
+}

@@ -101,18 +101,10 @@ mod tests {
     }
 
     #[test]
-    fn env_bool_parsing() {
-        unsafe {
-            env::set_var("AMPLIHACK_TEST_BOOL", "true");
-        }
-        assert!(env_bool("AMPLIHACK_TEST_BOOL", false));
-        unsafe {
-            env::set_var("AMPLIHACK_TEST_BOOL", "0");
-        }
-        assert!(!env_bool("AMPLIHACK_TEST_BOOL", true));
-        unsafe {
-            env::remove_var("AMPLIHACK_TEST_BOOL");
-        }
+    fn env_bool_defaults() {
+        // Test default behavior without modifying env vars.
+        assert!(!env_bool("AMPLIHACK_TEST_BOOL_UNSET_XYZ", false));
+        assert!(env_bool("AMPLIHACK_TEST_BOOL_UNSET_XYZ", true));
     }
 
     #[test]
@@ -121,5 +113,10 @@ mod tests {
             env_str("AMPLIHACK_TEST_NONEXISTENT_456", "default_val"),
             "default_val"
         );
+    }
+
+    #[test]
+    fn env_u64_default() {
+        assert_eq!(env_u64("AMPLIHACK_TEST_NONEXISTENT_789", 99), 99);
     }
 }

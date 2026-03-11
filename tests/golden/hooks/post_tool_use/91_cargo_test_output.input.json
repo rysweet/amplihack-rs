@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cargo test"
+  },
+  "tool_result": {
+    "stdout": "running 15 tests\ntest hooks::test_pre_tool_use ... ok\ntest hooks::test_post_tool_use ... ok\ntest result: ok. 15 passed; 0 failed",
+    "exit_code": 0
+  }
+}

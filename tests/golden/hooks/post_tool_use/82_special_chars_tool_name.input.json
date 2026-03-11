@@ -1,0 +1,8 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "tool-with_special.chars:v2",
+  "tool_input": {},
+  "tool_result": {
+    "ok": true
+  }
+}

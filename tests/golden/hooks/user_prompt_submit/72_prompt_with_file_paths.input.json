@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Fix the issue in src/hooks/pre_tool_use.rs and update tests/golden/hooks/pre_tool_use/",
+  "session_id": "s72"
+}

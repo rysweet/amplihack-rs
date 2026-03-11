@@ -1,0 +1,16 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "TodoWrite",
+  "tool_input": {
+    "todos": [
+      {
+        "id": "1",
+        "title": "Fix bug",
+        "status": "pending"
+      }
+    ]
+  },
+  "tool_result": {
+    "success": true
+  }
+}

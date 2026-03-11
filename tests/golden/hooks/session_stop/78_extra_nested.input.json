@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "SessionStop",
+  "session_id": "s78",
+  "deep": {
+    "a": {
+      "b": {
+        "c": true
+      }
+    }
+  }
+}

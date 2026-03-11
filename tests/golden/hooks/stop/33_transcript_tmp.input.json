@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "Stop",
+  "session_id": "s33",
+  "transcript_path": "/tmp/claude-session-transcript.jsonl"
+}

@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "Stop",
+  "session_id": "test-18",
+  "transcript_path": "/nonexistent/path/transcript.jsonl"
+}

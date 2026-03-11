@@ -20,9 +20,55 @@ pub struct AtomicCounter {
     file: AtomicJsonFile,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, serde::Serialize, Default)]
 struct CounterData {
     value: u64,
+}
+
+// Custom deserializer: accept both {"value": N} (Rust format) and plain N (Python compat).
+impl<'de> serde::Deserialize<'de> for CounterData {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+
+        struct CounterVisitor;
+
+        impl<'de> de::Visitor<'de> for CounterVisitor {
+            type Value = CounterData;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(r#"{"value": N} or plain integer N"#)
+            }
+
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<CounterData, E> {
+                Ok(CounterData { value: v })
+            }
+
+            fn visit_i64<E: de::Error>(self, v: i64) -> Result<CounterData, E> {
+                u64::try_from(v)
+                    .map(|v| CounterData { value: v })
+                    .map_err(|_| de::Error::custom("counter value must be non-negative"))
+            }
+
+            fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<CounterData, A::Error> {
+                let mut value = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "value" {
+                        value = Some(map.next_value()?);
+                    } else {
+                        let _ = map.next_value::<de::IgnoredAny>()?;
+                    }
+                }
+                Ok(CounterData {
+                    value: value.unwrap_or(0),
+                })
+            }
+        }
+
+        deserializer.deserialize_any(CounterVisitor)
+    }
 }
 
 impl AtomicCounter {
@@ -72,5 +118,47 @@ mod tests {
         assert_eq!(counter.get().unwrap(), 2);
         counter.reset().unwrap();
         assert_eq!(counter.get().unwrap(), 0);
+    }
+
+    #[test]
+    fn reads_python_plain_integer_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("counter.txt");
+        // Python writes plain integer text (no JSON object wrapper).
+        std::fs::write(&path, "1").unwrap();
+        let counter = AtomicCounter::new(&path);
+        assert_eq!(counter.get().unwrap(), 1);
+    }
+
+    #[test]
+    fn reads_rust_json_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("counter.txt");
+        std::fs::write(&path, r#"{"value": 1}"#).unwrap();
+        let counter = AtomicCounter::new(&path);
+        assert_eq!(counter.get().unwrap(), 1);
+    }
+
+    #[test]
+    fn rejects_invalid_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("counter.txt");
+        std::fs::write(&path, "abc").unwrap();
+        let counter = AtomicCounter::new(&path);
+        assert!(counter.get().is_err());
+    }
+
+    #[test]
+    fn increment_normalizes_python_format_to_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("counter.txt");
+        // Start with Python format.
+        std::fs::write(&path, "5").unwrap();
+        let counter = AtomicCounter::new(&path);
+        assert_eq!(counter.increment().unwrap(), 6);
+        // After increment, file should be valid JSON (Rust format).
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["value"], 6);
     }
 }

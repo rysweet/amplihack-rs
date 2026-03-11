@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "https://github.com/user/repo/issues/123",
+  "session_id": "s44"
+}

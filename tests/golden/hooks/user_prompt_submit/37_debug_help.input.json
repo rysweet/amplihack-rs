@@ -1,0 +1,5 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "user_prompt": "Help me debug why the tests are failing intermittently",
+  "session_id": "s37"
+}

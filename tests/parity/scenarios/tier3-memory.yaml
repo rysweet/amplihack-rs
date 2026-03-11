@@ -1,0 +1,314 @@
+cases:
+  - name: memory-tree-sqlite
+    argv: ["memory", "tree", "--backend", "sqlite"]
+    setup: |
+      python - <<'PY'
+      from datetime import datetime
+      from amplihack.memory.database import MemoryDatabase
+      from amplihack.memory.models import MemoryEntry, MemoryType
+
+      db = MemoryDatabase()
+      db.store_memory(
+          MemoryEntry(
+              id="m1",
+              session_id="test_session",
+              agent_id="agent_alpha",
+              memory_type=MemoryType.CONVERSATION,
+              title="Hello",
+              content="world",
+              metadata={"confidence": 0.9},
+              created_at=datetime(2026, 1, 2, 3, 4, 5),
+              accessed_at=datetime(2026, 1, 2, 3, 5, 5),
+              importance=8,
+          )
+      )
+      db.store_memory(
+          MemoryEntry(
+              id="m2",
+              session_id="test_session",
+              agent_id="agent_alpha",
+              memory_type=MemoryType.CONTEXT,
+              title="Ctx",
+              content="context",
+              metadata={"usage_count": 3},
+              created_at=datetime(2026, 1, 2, 3, 4, 6),
+              accessed_at=datetime(2026, 1, 2, 3, 4, 6),
+          )
+      )
+      db.close()
+      PY
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: memory-clean-sqlite-dry-run
+    argv: ["memory", "clean", "--backend", "sqlite", "--pattern", "test_*"]
+    setup: |
+      python - <<'PY'
+      from datetime import datetime
+      from amplihack.memory.database import MemoryDatabase
+      from amplihack.memory.models import MemoryEntry, MemoryType
+
+      db = MemoryDatabase()
+      db.store_memory(
+          MemoryEntry(
+              id="m1",
+              session_id="test_session",
+              agent_id="agent_alpha",
+              memory_type=MemoryType.CONVERSATION,
+              title="Hello",
+              content="world",
+              metadata={},
+              created_at=datetime(2026, 1, 2, 3, 4, 5),
+              accessed_at=datetime(2026, 1, 2, 3, 4, 5),
+          )
+      )
+      db.store_memory(
+          MemoryEntry(
+              id="m2",
+              session_id="prod_session",
+              agent_id="agent_beta",
+              memory_type=MemoryType.CONTEXT,
+              title="Keep",
+              content="other",
+              metadata={},
+              created_at=datetime(2026, 1, 2, 3, 4, 6),
+              accessed_at=datetime(2026, 1, 2, 3, 4, 6),
+          )
+      )
+      db.close()
+      PY
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: memory-clean-sqlite-delete
+    argv: ["memory", "clean", "--backend", "sqlite", "--pattern", "test_*", "--no-dry-run"]
+    stdin: "y\n"
+    setup: |
+      python - <<'PY'
+      from datetime import datetime
+      from amplihack.memory.database import MemoryDatabase
+      from amplihack.memory.models import MemoryEntry, MemoryType
+
+      db = MemoryDatabase()
+      db.store_memory(
+          MemoryEntry(
+              id="m1",
+              session_id="test_session",
+              agent_id="agent_alpha",
+              memory_type=MemoryType.CONVERSATION,
+              title="Hello",
+              content="world",
+              metadata={},
+              created_at=datetime(2026, 1, 2, 3, 4, 5),
+              accessed_at=datetime(2026, 1, 2, 3, 4, 5),
+          )
+      )
+      db.store_memory(
+          MemoryEntry(
+              id="m2",
+              session_id="prod_session",
+              agent_id="agent_beta",
+              memory_type=MemoryType.CONTEXT,
+              title="Keep",
+              content="other",
+              metadata={},
+              created_at=datetime(2026, 1, 2, 3, 4, 6),
+              accessed_at=datetime(2026, 1, 2, 3, 4, 6),
+          )
+      )
+      db.close()
+      PY
+    compare: ["stdout", "stderr", "exit_code"]
+
+  - name: memory-export-json
+    argv:
+      [
+        "memory",
+        "export",
+        "--agent",
+        "source_agent",
+        "--output",
+        "out/export.json",
+        "--format",
+        "json",
+        "--storage-path",
+        "hier/source_agent",
+      ]
+    setup: |
+      python - <<'PY'
+      import json
+      from pathlib import Path
+      import kuzu
+
+      base = Path("hier/source_agent")
+      db_path = base / "kuzu_db"
+      base.mkdir(parents=True, exist_ok=True)
+      db = kuzu.Database(str(db_path))
+      conn = kuzu.Connection(db)
+
+      conn.execute("""
+          CREATE NODE TABLE IF NOT EXISTS SemanticMemory(
+              memory_id STRING,
+              concept STRING,
+              content STRING,
+              confidence DOUBLE,
+              source_id STRING,
+              agent_id STRING,
+              tags STRING,
+              metadata STRING,
+              created_at STRING,
+              entity_name STRING DEFAULT '',
+              PRIMARY KEY (memory_id)
+          )
+      """)
+      conn.execute("""
+          CREATE NODE TABLE IF NOT EXISTS EpisodicMemory(
+              memory_id STRING,
+              content STRING,
+              source_label STRING,
+              agent_id STRING,
+              tags STRING,
+              metadata STRING,
+              created_at STRING,
+              PRIMARY KEY (memory_id)
+          )
+      """)
+      conn.execute("""
+          CREATE REL TABLE IF NOT EXISTS DERIVES_FROM(
+              FROM SemanticMemory TO EpisodicMemory,
+              extraction_method STRING,
+              confidence DOUBLE
+          )
+      """)
+
+      conn.execute(
+          """
+          CREATE (e:EpisodicMemory {
+              memory_id: $memory_id,
+              content: $content,
+              source_label: $source_label,
+              agent_id: $agent_id,
+              tags: $tags,
+              metadata: $metadata,
+              created_at: $created_at
+          })
+          """,
+          {
+              "memory_id": "ep-1",
+              "content": "User discussed JWT expiry.",
+              "source_label": "chat",
+              "agent_id": "source_agent",
+              "tags": json.dumps(["conversation"]),
+              "metadata": json.dumps({"turn": 1}),
+              "created_at": "2026-01-02T03:04:04",
+          },
+      )
+      conn.execute(
+          """
+          CREATE (m:SemanticMemory {
+              memory_id: $memory_id,
+              concept: $concept,
+              content: $content,
+              confidence: $confidence,
+              source_id: $source_id,
+              agent_id: $agent_id,
+              tags: $tags,
+              metadata: $metadata,
+              created_at: $created_at,
+              entity_name: $entity_name
+          })
+          """,
+          {
+              "memory_id": "sem-1",
+              "concept": "auth",
+              "content": "JWT tokens expire quickly.",
+              "confidence": 0.95,
+              "source_id": "ep-1",
+              "agent_id": "source_agent",
+              "tags": json.dumps(["security"]),
+              "metadata": json.dumps({"kind": "fact"}),
+              "created_at": "2026-01-02T03:04:05",
+              "entity_name": "JWT",
+          },
+      )
+      conn.execute(
+          """
+          MATCH (s:SemanticMemory {memory_id: $sid})
+          MATCH (e:EpisodicMemory {memory_id: $tid})
+          CREATE (s)-[:DERIVES_FROM {
+              extraction_method: $method,
+              confidence: $confidence
+          }]->(e)
+          """,
+          {
+              "sid": "sem-1",
+              "tid": "ep-1",
+              "method": "manual",
+              "confidence": 0.8,
+          },
+      )
+      PY
+    compare: ["stdout", "exit_code", "jsonfs:out/export.json"]
+
+  - name: memory-import-json
+    argv:
+      [
+        "memory",
+        "import",
+        "--agent",
+        "target_agent",
+        "--input",
+        "fixtures/import.json",
+        "--format",
+        "json",
+        "--storage-path",
+        "hier/target_agent",
+      ]
+    setup: |
+      mkdir -p fixtures
+      python - <<'PY'
+      import json
+      from pathlib import Path
+
+      data = {
+          "agent_name": "source_agent",
+          "exported_at": "2026-01-02T03:04:05",
+          "format_version": "1.1",
+          "semantic_nodes": [
+              {
+                  "memory_id": "sem-1",
+                  "concept": "auth",
+                  "content": "JWT tokens expire quickly.",
+                  "confidence": 0.95,
+                  "source_id": "ep-1",
+                  "tags": ["security"],
+                  "metadata": {"kind": "fact"},
+                  "created_at": "2026-01-02T03:04:05",
+                  "entity_name": "JWT",
+              }
+          ],
+          "episodic_nodes": [
+              {
+                  "memory_id": "ep-1",
+                  "content": "User discussed JWT expiry.",
+                  "source_label": "chat",
+                  "tags": ["conversation"],
+                  "metadata": {"turn": 1},
+                  "created_at": "2026-01-02T03:04:04",
+              }
+          ],
+          "similar_to_edges": [],
+          "derives_from_edges": [
+              {
+                  "source_id": "sem-1",
+                  "target_id": "ep-1",
+                  "extraction_method": "manual",
+                  "confidence": 0.8,
+              }
+          ],
+          "supersedes_edges": [],
+          "transitioned_to_edges": [],
+          "statistics": {},
+      }
+
+      Path("fixtures/import.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+      PY
+    compare: ["stdout", "exit_code"]

@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Read",
+  "tool_input": {
+    "path": "src/main.rs"
+  },
+  "tool_result": {
+    "content": "fn main() {\n    println!(\"hello\");\n}"
+  }
+}

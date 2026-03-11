@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Search",
+  "tool_input": {
+    "query": "xyznonexistent",
+    "path": "src/"
+  },
+  "tool_result": {
+    "matches": []
+  }
+}

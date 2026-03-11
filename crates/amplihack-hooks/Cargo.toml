@@ -17,3 +17,7 @@ regex = "1"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[[test]]
+name = "golden"
+path = "../../tests/golden/run_golden.rs"
