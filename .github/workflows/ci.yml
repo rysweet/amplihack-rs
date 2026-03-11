@@ -123,7 +123,11 @@ jobs:
           cd artifacts
           for dir in amplihack-*; do
             target="${dir#amplihack-}"
-            tar czf "../${dir}.tar.gz" -C "$dir" .
+            mkdir -p "../dist/${dir}"
+            find "$dir" -type f \( -name amplihack -o -name amplihack-hooks \) -exec cp {} "../dist/${dir}/" \;
+            test -f "../dist/${dir}/amplihack"
+            test -f "../dist/${dir}/amplihack-hooks"
+            tar czf "../${dir}.tar.gz" -C "../dist/${dir}" .
           done
 
       - name: Create GitHub Release

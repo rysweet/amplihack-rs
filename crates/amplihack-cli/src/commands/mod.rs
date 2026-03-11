@@ -13,7 +13,7 @@ use anyhow::Result;
 /// Dispatch a parsed CLI command to the appropriate handler.
 pub fn dispatch(command: Commands) -> Result<()> {
     match command {
-        Commands::Install => install::run_install(),
+        Commands::Install { local } => install::run_install(local),
         Commands::Uninstall => install::run_uninstall(),
         Commands::Launch {
             resume,
@@ -32,6 +32,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             println!("amplihack-rs {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
+        Commands::Update => crate::update::run_update(),
     }
 }
 

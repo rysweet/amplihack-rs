@@ -3,7 +3,8 @@
 //! Builds the environment, finds the binary, checks nesting, and spawns
 //! a `ManagedChild` with signal forwarding.
 
-use crate::binary_finder::{BinaryFinder, BinaryInfo};
+use crate::binary_finder::BinaryInfo;
+use crate::bootstrap;
 use crate::env_builder::EnvBuilder;
 use crate::launcher::ManagedChild;
 use crate::nesting::NestingDetector;
@@ -20,6 +21,8 @@ pub fn run_launch(
     continue_session: bool,
     extra_args: Vec<String>,
 ) -> Result<()> {
+    bootstrap::prepare_launcher(tool)?;
+
     // Check nesting
     let nesting = NestingDetector::detect();
     match &nesting {
@@ -39,7 +42,7 @@ pub fn run_launch(
     }
 
     // Find binary
-    let binary = BinaryFinder::find(tool)
+    let binary = bootstrap::ensure_tool_available(tool)
         .with_context(|| format!("could not find '{tool}' binary in PATH"))?;
 
     tracing::info!(

@@ -151,34 +151,35 @@ fn is_stale(timestamp: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{home_env_lock, restore_home, set_home};
 
     #[test]
     fn not_nested_when_no_env_var() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // Use a temp HOME to isolate from any real session.json on the host.
         let tmp = tempfile::tempdir().unwrap();
-        let original_home = env::var("HOME").ok();
+        let original_home = set_home(tmp.path());
 
         // SAFETY: Test-only env var manipulation; test runner serializes tests by default.
         unsafe {
             env::remove_var("AMPLIHACK_SESSION_ID");
             env::remove_var("AMPLIHACK_DEPTH");
-            env::set_var("HOME", tmp.path());
         }
 
         let result = NestingDetector::detect();
 
-        // Restore HOME
-        unsafe {
-            if let Some(home) = original_home {
-                env::set_var("HOME", home);
-            }
-        }
+        restore_home(original_home);
 
         assert_eq!(result, NestingResult::NotNested);
     }
 
     #[test]
     fn nested_when_env_var_set() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // SAFETY: Test-only env var manipulation; test runner serializes tests by default.
         unsafe {
             env::set_var("AMPLIHACK_SESSION_ID", "test-session-123");
@@ -236,6 +237,9 @@ mod tests {
 
     #[test]
     fn claim_and_release_session() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let session_path = dir
             .path()
@@ -243,10 +247,7 @@ mod tests {
             .join("runtime")
             .join(SESSION_FILE_NAME);
 
-        // Override HOME for this test
-        let original_home = env::var("HOME").ok();
-        // SAFETY: Test-only env var manipulation; test runner serializes tests by default.
-        unsafe { env::set_var("HOME", dir.path()) };
+        let original_home = set_home(dir.path());
 
         NestingDetector::claim_session("test-claim").unwrap();
         assert!(session_path.exists());
@@ -259,10 +260,6 @@ mod tests {
         NestingDetector::release_session();
         assert!(!session_path.exists());
 
-        // Restore HOME
-        // SAFETY: Restoring original env var.
-        if let Some(home) = original_home {
-            unsafe { env::set_var("HOME", home) };
-        }
+        restore_home(original_home);
     }
 }
