@@ -1,0 +1,188 @@
+name: Auto Release
+
+# Trigger on merge to main (push) — creates a release if version changed.
+# Also supports manual dispatch for ad-hoc releases.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type (patch/minor/major) — only for manual trigger"
+        required: false
+        default: "patch"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Step 1: Detect if the workspace version changed vs the latest release tag.
+  detect-version:
+    name: Detect version change
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need tags
+
+      - name: Check if version changed
+        id: check
+        run: |
+          # Get version from Cargo.toml
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          # Check if this tag already exists
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists — no release needed"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag ${TAG} does not exist — will release"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Step 2: Build release binaries for all platforms
+  build:
+    name: Build ${{ matrix.target }}
+    needs: detect-version
+    if: needs.detect-version.outputs.should_release == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+            gnu_cross_toolchain: false
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+            gnu_cross_toolchain: true
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            cross: false
+            gnu_cross_toolchain: false
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            cross: false
+            gnu_cross_toolchain: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Install GNU cross toolchain
+        if: matrix.gnu_cross_toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Configure GNU cross toolchain
+        if: matrix.gnu_cross_toolchain
+        run: |
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> "$GITHUB_ENV"
+          echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+
+      - name: Build release
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/amplihack dist/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/amplihack-hooks dist/ 2>/dev/null || true
+          cd dist
+          tar czf ../amplihack-${{ matrix.target }}.tar.gz *
+          cd ..
+          sha256sum amplihack-${{ matrix.target }}.tar.gz > amplihack-${{ matrix.target }}.tar.gz.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: amplihack-${{ matrix.target }}
+          path: |
+            amplihack-${{ matrix.target }}.tar.gz
+            amplihack-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+  # Step 3: Create the release with tag and upload all artifacts
+  release:
+    name: Create Release
+    needs: [detect-version, build]
+    if: needs.detect-version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ needs.detect-version.outputs.tag }}" -m "Release ${{ needs.detect-version.outputs.tag }}"
+          git push origin "${{ needs.detect-version.outputs.tag }}"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release-assets
+          find artifacts -name '*.tar.gz' -exec cp {} release-assets/ \;
+          find artifacts -name '*.sha256' -exec cp {} release-assets/ \;
+          ls -la release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.detect-version.outputs.tag }}
+          name: "amplihack-rs ${{ needs.detect-version.outputs.tag }}"
+          files: release-assets/*
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            Download the binary for your platform and extract:
+
+            ```bash
+            # Linux x86_64
+            curl -fsSL https://github.com/rysweet/amplihack-rs/releases/download/${{ needs.detect-version.outputs.tag }}/amplihack-x86_64-unknown-linux-gnu.tar.gz | tar xz -C ~/.local/bin/
+
+            # Linux ARM64
+            curl -fsSL https://github.com/rysweet/amplihack-rs/releases/download/${{ needs.detect-version.outputs.tag }}/amplihack-aarch64-unknown-linux-gnu.tar.gz | tar xz -C ~/.local/bin/
+
+            # macOS x86_64
+            curl -fsSL https://github.com/rysweet/amplihack-rs/releases/download/${{ needs.detect-version.outputs.tag }}/amplihack-x86_64-apple-darwin.tar.gz | tar xz -C ~/.local/bin/
+
+            # macOS ARM64 (Apple Silicon)
+            curl -fsSL https://github.com/rysweet/amplihack-rs/releases/download/${{ needs.detect-version.outputs.tag }}/amplihack-aarch64-apple-darwin.tar.gz | tar xz -C ~/.local/bin/
+            ```
+
+            Or update an existing installation:
+            ```bash
+            amplihack update
+            ```
+
+            ## SHA256 Checksums
+
+            Verify your download:
+            ```bash
+            sha256sum -c amplihack-<target>.tar.gz.sha256
+            ```
