@@ -15,6 +15,7 @@ cases:
     timeout: 15
     env:
       PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
     setup: |
       mkdir -p bin
       cat > bin/claude <<'SCRIPT'
@@ -39,6 +40,7 @@ cases:
     timeout: 15
     env:
       PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
     setup: |
       mkdir -p bin
       cat > bin/claude <<'SCRIPT'
@@ -57,6 +59,7 @@ cases:
     timeout: 15
     env:
       PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
     setup: |
       mkdir -p bin
       cat > bin/copilot <<'SCRIPT'
@@ -76,6 +79,7 @@ cases:
     timeout: 15
     env:
       PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
     setup: |
       mkdir -p bin
       cat > bin/codex <<'SCRIPT'
@@ -95,6 +99,7 @@ cases:
     timeout: 15
     env:
       PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
       AMPLIHACK_SESSION_ID: "outer-session"
       AMPLIHACK_DEPTH: "1"
     setup: |
@@ -116,6 +121,7 @@ cases:
     timeout: 15
     env:
       PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
     setup: |
       mkdir -p bin
       # No claude binary installed
@@ -129,6 +135,7 @@ cases:
     timeout: 15
     env:
       PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
     setup: |
       mkdir -p bin
       cat > bin/claude <<'SCRIPT'
