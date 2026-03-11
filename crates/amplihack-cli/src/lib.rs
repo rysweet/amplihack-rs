@@ -103,6 +103,36 @@ pub enum Commands {
     Version,
     /// Download and install the latest released binary
     Update,
+
+    // ------------------------------------------------------------------
+    // Python-only subcommands — delegated to `python3 -m amplihack.cli`
+    // ------------------------------------------------------------------
+    /// Fleet orchestration (delegated to Python)
+    Fleet {
+        /// Arguments forwarded to the Python fleet command
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Goal agent generator (delegated to Python)
+    New {
+        /// Arguments forwarded to the Python new command
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// RustyClawd tool (delegated to Python)
+    #[command(name = "RustyClawd")]
+    RustyClawd {
+        /// Arguments forwarded to the Python RustyClawd command
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// UVX help information (delegated to Python)
+    #[command(name = "uvx-help")]
+    UvxHelp {
+        /// Arguments forwarded to the Python uvx-help command
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

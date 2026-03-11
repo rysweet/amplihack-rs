@@ -5,6 +5,7 @@ pub mod launch;
 pub mod memory;
 pub mod mode;
 pub mod plugin;
+pub mod python_delegate;
 pub mod recipe;
 
 use crate::{Commands, MemoryCommands, ModeCommands, PluginCommands, RecipeCommands};
@@ -33,6 +34,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             Ok(())
         }
         Commands::Update => crate::update::run_update(),
+        Commands::Fleet { args } => python_delegate::delegate_to_python("fleet", &args),
+        Commands::New { args } => python_delegate::delegate_to_python("new", &args),
+        #[allow(non_snake_case)]
+        Commands::RustyClawd { args } => python_delegate::delegate_to_python("RustyClawd", &args),
+        Commands::UvxHelp { args } => python_delegate::delegate_to_python("uvx-help", &args),
     }
 }
 

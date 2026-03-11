@@ -1,0 +1,426 @@
+# Tier 7: Launcher feature-parity gap tests.
+#
+# Every test in this file documents a Python launcher behavior that the
+# Rust launcher does NOT yet implement.  All tests are expected to FAIL
+# against the current Rust binary.
+#
+# Master issue: rysweet/amplihack-rs#25
+
+cases:
+  # ============================================================================
+  # GAP A: --dangerously-skip-permissions
+  # Python always injects --dangerously-skip-permissions into the claude
+  # subprocess command.  Rust does not.
+  # ============================================================================
+
+  - name: gap-dangerously-skip-permissions
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/claude_args.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:claude_args.txt
+    # Python produces: --dangerously-skip-permissions\n--model\nopus[1m]\n
+    # Rust produces:   (empty or no --dangerously-skip-permissions)
+
+  # ============================================================================
+  # GAP B: --model default injection
+  # Python adds --model opus[1m] (or AMPLIHACK_DEFAULT_MODEL) when the user
+  # has not supplied --model.  Rust does not inject any default model.
+  # ============================================================================
+
+  - name: gap-default-model-injection
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/claude_args.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:claude_args.txt
+    # Python produces: --dangerously-skip-permissions\n--model\nopus[1m]\n
+    # Rust produces:   (no --model flag at all)
+
+  - name: gap-custom-default-model-via-env
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+      AMPLIHACK_DEFAULT_MODEL: "sonnet-4"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/claude_args.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:claude_args.txt
+    # Python produces: --dangerously-skip-permissions\n--model\nsonnet-4\n
+    # Rust produces:   (no --model flag, ignores AMPLIHACK_DEFAULT_MODEL)
+
+  - name: gap-no-model-when-user-supplies-one
+    argv: ["launch", "--", "--model", "haiku"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/claude_args.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:claude_args.txt
+    # Python: --dangerously-skip-permissions\n--model\nhaiku\n
+    #   (skips default model because user provided --model)
+    # Rust:   --model\nhaiku\n
+    #   (just passes through, no --dangerously-skip-permissions)
+
+  # ============================================================================
+  # GAP C: NODE_OPTIONS environment variable
+  # Python sets NODE_OPTIONS=--max-old-space-size=32768 (or smart value)
+  # in the subprocess environment.  Rust does not set NODE_OPTIONS at all.
+  # ============================================================================
+
+  - name: gap-node-options-set
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      echo "$NODE_OPTIONS" > "$SANDBOX_ROOT/node_options.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:node_options.txt
+    # Python: --max-old-space-size=32768 (or similar smart value)
+    # Rust:   (empty — NODE_OPTIONS not set by Rust launcher)
+
+  - name: gap-node-options-preserves-existing
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+      NODE_OPTIONS: "--existing-option"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      echo "$NODE_OPTIONS" > "$SANDBOX_ROOT/node_options.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:node_options.txt
+    # Python: merges/overrides with --max-old-space-size=32768
+    # Rust:   passes through --existing-option unchanged (no smart config)
+
+  # ============================================================================
+  # GAP D: SIGINT exit code behavior
+  # Both Python and Rust should exit 130 on SIGINT.  Test that the Rust
+  # launcher forwards SIGINT correctly and returns the right exit code.
+  # ============================================================================
+
+  - name: gap-sigint-exit-code
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      # Simulate receiving SIGINT — exit with 130
+      kill -INT $$
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+    # Both should report exit_code 130, but Rust may differ in how it
+    # handles a child that exits due to signal vs the parent's signal handler.
+
+  # ============================================================================
+  # GAP E: AMPLIHACK environment variables completeness
+  # Python sets AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH, AMPLIHACK_VERSION,
+  # and various other AMPLIHACK_* vars.
+  # Rust sets AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH, AMPLIHACK_RUST_RUNTIME,
+  # AMPLIHACK_VERSION but may differ in values or naming.
+  # ============================================================================
+
+  - name: gap-env-amplihack-session-id-format
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      env | grep -E '^AMPLIHACK_' | sort > "$SANDBOX_ROOT/amplihack_env.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+    # Env var divergence is intentional: Rust sets AMPLIHACK_DEPTH,
+    # AMPLIHACK_RUST_RUNTIME, AMPLIHACK_SESSION_ID, AMPLIHACK_VERSION
+    # which Python doesn't.  Only check exit_code for parity.
+
+  - name: gap-env-depth-increments
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+      AMPLIHACK_DEPTH: "3"
+      AMPLIHACK_SESSION_ID: "existing-session"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      echo "DEPTH=$AMPLIHACK_DEPTH" > "$SANDBOX_ROOT/depth.txt"
+      echo "SESSION=$AMPLIHACK_SESSION_ID" >> "$SANDBOX_ROOT/depth.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:depth.txt
+    # Both should increment AMPLIHACK_DEPTH from 3 to 4.
+    # Both should preserve the existing AMPLIHACK_SESSION_ID.
+    # Divergence: Rust may generate new session ID instead of preserving.
+
+  # ============================================================================
+  # GAP F: --resume and --continue flags on the 'claude' subcommand
+  # Python's 'claude' subcommand inherits all launch flags including --resume.
+  # Rust's 'Claude' variant does NOT expose --resume or --continue-session.
+  # ============================================================================
+
+  - name: gap-claude-resume-flag
+    argv: ["claude", "--resume"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/claude_args.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:claude_args.txt
+    # Python: passes --resume to claude subprocess
+    # Rust: error — 'claude' subcommand doesn't accept --resume
+
+  - name: gap-claude-continue-flag
+    argv: ["claude", "--continue"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/claude_args.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:claude_args.txt
+    # Python: passes --continue to claude subprocess
+    # Rust: error — 'claude' subcommand doesn't accept --continue
+
+  # gap-launch-resume-passthrough removed: Rust is strictly better here.
+  # Python argparse doesn't support `launch --resume` (exit 2), Rust does (exit 0).
+  # Not a valid parity test — it documents a Python limitation.
+
+  - name: gap-launch-continue-passthrough
+    argv: ["launch", "--continue"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/claude_args.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:claude_args.txt
+    # Python: --dangerously-skip-permissions\n--model\nopus[1m]\n--continue\n
+    # Rust:   --continue\n
+
+  # ============================================================================
+  # GAP G: Python-only commands that Rust does not implement
+  # fleet, uvx-help — should either exist natively or fall back to Python.
+  # ============================================================================
+
+  - name: gap-fleet-command-exists
+    argv: ["fleet", "--help"]
+    timeout: 15
+    env:
+      AMPLIHACK_NONINTERACTIVE: "1"
+    compare:
+      - exit_code
+    # Python: exits 0, prints fleet help text
+    # Rust: exits non-zero — unrecognized subcommand
+
+  - name: gap-uvx-help-command-exists
+    argv: ["uvx-help"]
+    timeout: 15
+    env:
+      AMPLIHACK_NONINTERACTIVE: "1"
+    compare:
+      - exit_code
+    # Python: exits 0, prints UVX help
+    # Rust: exits non-zero — unrecognized subcommand
+
+  # ============================================================================
+  # GAP H: Combined flags — full Python launch command parity
+  # Test the complete set of flags/env that Python produces on a basic launch.
+  # ============================================================================
+
+  - name: gap-full-launch-command-parity
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      # Capture args
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/claude_args.txt"
+      # Capture AMPLIHACK_* env
+      env | grep -E '^AMPLIHACK_' | sort > "$SANDBOX_ROOT/amplihack_env.txt"
+      # Capture NODE_OPTIONS
+      echo "$NODE_OPTIONS" > "$SANDBOX_ROOT/node_options.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:claude_args.txt
+      - fs:node_options.txt
+    # Removed fs:amplihack_env.txt from compare — env var divergence is
+    # intentional (Rust sets extra AMPLIHACK_* vars).  Args and NODE_OPTIONS
+    # are still compared for parity.
+
+  - name: gap-verbose-flag-passthrough
+    argv: ["launch", "--", "--verbose"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/claude_args.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+      - fs:claude_args.txt
+    # Python: --dangerously-skip-permissions\n--model\nopus[1m]\n--verbose\n
+    # Rust:   --verbose\n
+    # (Rust passes --verbose through but lacks the injected flags)
+
+  # ============================================================================
+  # GAP I: Subprocess exit code propagation
+  # Both should propagate the child's exit code.  Test non-zero exit codes.
+  # ============================================================================
+
+  # gap-subprocess-exit-code-propagation removed: Python has a bug here.
+  # Python returns exit 1 for child exit 42; Rust correctly returns 42.
+  # Not a valid parity test — it documents a Python bug, not a Rust gap.
+
+  - name: gap-subprocess-exit-code-zero
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+    # Both should exit with code 0.
+
+  # ============================================================================
+  # GAP J: AMPLIHACK_RUST_RUNTIME env var (Rust-only)
+  # Rust sets AMPLIHACK_RUST_RUNTIME=1 which Python does not.
+  # This is an intentional divergence but should be documented.
+  # ============================================================================
+
+  - name: gap-rust-runtime-flag-divergence
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p bin
+      cat > bin/claude <<'SCRIPT'
+      #!/usr/bin/env bash
+      env | grep -E '^AMPLIHACK_' | sort > "$SANDBOX_ROOT/amplihack_env.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/claude
+    compare:
+      - exit_code
+    # Env var divergence is intentional: Rust sets AMPLIHACK_RUST_RUNTIME=1
+    # and uses rs- prefix for session IDs.  Only check exit_code for parity.

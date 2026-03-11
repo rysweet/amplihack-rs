@@ -83,6 +83,19 @@ fn build_command(
     extra_args: &[String],
 ) -> Command {
     let mut cmd = Command::new(&binary.path);
+
+    // Always inject --dangerously-skip-permissions (matching Python behavior)
+    cmd.arg("--dangerously-skip-permissions");
+
+    // Inject --model unless user already supplied one
+    let user_has_model = extra_args.iter().any(|a| a == "--model");
+    if !user_has_model {
+        let default_model =
+            std::env::var("AMPLIHACK_DEFAULT_MODEL").unwrap_or_else(|_| "opus[1m]".to_string());
+        cmd.arg("--model");
+        cmd.arg(default_model);
+    }
+
     if resume {
         cmd.arg("--resume");
     }
@@ -102,7 +115,7 @@ fn wait_for_child_or_signal(
         if shutdown.load(Ordering::Relaxed) {
             tracing::info!("shutdown signal received, terminating child process");
             // ManagedChild::drop handles graceful shutdown
-            return Ok(130); // standard SIGINT exit code
+            return Ok(0); // match Python behavior: exit 0 on SIGINT
         }
 
         // Check if child has exited
@@ -131,7 +144,12 @@ mod tests {
         };
         let cmd = build_command(&binary, false, false, &[]);
         assert_eq!(cmd.get_program(), "/usr/bin/claude");
-        assert_eq!(cmd.get_args().count(), 0);
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        // Should inject --dangerously-skip-permissions and --model <default>
+        assert_eq!(args[0], "--dangerously-skip-permissions");
+        assert_eq!(args[1], "--model");
+        // Default model depends on env; just check we have 3 args
+        assert_eq!(args.len(), 3);
     }
 
     #[test]
@@ -141,9 +159,19 @@ mod tests {
             path: PathBuf::from("/usr/bin/claude"),
             version: None,
         };
+        // User supplies --model so we should NOT inject a default --model
         let extra = vec!["--model".to_string(), "opus".to_string()];
         let cmd = build_command(&binary, true, true, &extra);
         let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        assert_eq!(args, &["--resume", "--continue", "--model", "opus"]);
+        assert_eq!(
+            args,
+            &[
+                "--dangerously-skip-permissions",
+                "--resume",
+                "--continue",
+                "--model",
+                "opus"
+            ]
+        );
     }
 }
