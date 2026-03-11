@@ -158,10 +158,10 @@ pub(crate) fn parse_recipe_text(text: &str) -> Result<RecipeDoc> {
     require_field(raw_mapping, "name", "Recipe must have a 'name' field")?;
 
     // Check that name is not null (Python: `if not name:` catches None)
-    if let Some(name_val) = raw_mapping.get(Value::String("name".to_string())) {
-        if name_val.is_null() {
-            anyhow::bail!("Recipe must have a 'name' field");
-        }
+    if let Some(name_val) = raw_mapping.get(Value::String("name".to_string()))
+        && name_val.is_null()
+    {
+        anyhow::bail!("Recipe must have a 'name' field");
     }
 
     require_field(
@@ -172,22 +172,19 @@ pub(crate) fn parse_recipe_text(text: &str) -> Result<RecipeDoc> {
 
     // Validate steps at the raw YAML level before serde deserialization,
     // so we produce Python-matching error messages for null/missing id fields.
-    if let Some(steps_val) = raw_mapping.get(Value::String("steps".to_string())) {
-        if let Some(steps_seq) = steps_val.as_sequence() {
-            for step_val in steps_seq {
-                if let Some(step_map) = step_val.as_mapping() {
-                    let id_key = Value::String("id".to_string());
-                    match step_map.get(&id_key) {
-                        None => {
-                            // Step has no id field at all
-                            anyhow::bail!("Every step must have a non-empty 'id' field");
-                        }
-                        Some(id_val) if id_val.is_null() => {
-                            // Step has id: null
-                            anyhow::bail!("Every step must have a non-empty 'id' field");
-                        }
-                        _ => {}
-                    }
+    if let Some(steps_val) = raw_mapping.get(Value::String("steps".to_string()))
+        && let Some(steps_seq) = steps_val.as_sequence()
+    {
+        for step_val in steps_seq {
+            if let Some(step_map) = step_val.as_mapping() {
+                let id_key = Value::String("id".to_string());
+                let should_bail = match step_map.get(&id_key) {
+                    None => true,
+                    Some(v) if v.is_null() => true,
+                    _ => false,
+                };
+                if should_bail {
+                    anyhow::bail!("Every step must have a non-empty 'id' field");
                 }
             }
         }
