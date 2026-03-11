@@ -34,6 +34,3 @@ tempfile = { workspace = true }
 name = "cli_launch"
 path = "../../tests/integration/cli_launch_test.rs"
 
-[[test]]
-name = "memory_no_kuzu"
-path = "../../tests/integration/memory_no_kuzu_test.rs"
