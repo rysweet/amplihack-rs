@@ -1,8 +1,141 @@
 cases:
+  # ── install-fake-repo-success ────────────────────────────────────────────────
+  # TDD: Updated to require python3 stub + amplihack-hooks stub so the new
+  # validate_python() and deploy_binaries() phases can succeed.
+  # After implementation the golden snapshots must be regenerated:
+  #   cargo test -p parity -- --update-snapshots
+  # Key changes vs old scenario:
+  #   • bin/python3 stub added (validate_python fails fast without it)
+  #   • bin/amplihack-hooks stub added (deploy_binaries needs a source binary)
+  #   • AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH env var wires the binary
+  #   • settings.json golden now uses binary-subcommand format, not Python paths
   - name: install-fake-repo-success
     argv: ["install"]
     env:
       PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH: "${SANDBOX_ROOT}/bin/amplihack-hooks"
+    setup: |
+      mkdir -p bin fake-repo/.claude/agents/amplihack fake-repo/.claude/commands/amplihack
+      mkdir -p fake-repo/.claude/tools/amplihack/hooks fake-repo/.claude/context
+      mkdir -p fake-repo/.claude/workflow fake-repo/.claude/skills fake-repo/.claude/templates
+      mkdir -p fake-repo/.claude/scenarios fake-repo/.claude/docs fake-repo/.claude/schemas fake-repo/.claude/config
+      for hook in session_start.py stop.py pre_tool_use.py post_tool_use.py user_prompt_submit.py workflow_classification_reminder.py pre_compact.py; do
+        printf 'print(1)\n' > "fake-repo/.claude/tools/amplihack/hooks/$hook"
+      done
+      printf '{}\n' > fake-repo/.claude/settings.json
+      printf 'echo statusline\n' > fake-repo/.claude/tools/statusline.sh
+      printf 'framework\n' > fake-repo/.claude/AMPLIHACK.md
+      printf 'claude root\n' > fake-repo/CLAUDE.md
+      # git stub: shallow-clones by copying the fake-repo directory
+      cat > bin/git <<'EOF'
+      #!/usr/bin/env bash
+      set -euo pipefail
+      if [ "$1" = clone ] && [ "$2" = --depth ] && [ "$3" = 1 ]; then
+        cp -R "$SANDBOX_ROOT/fake-repo/." "$5"
+        echo "Cloning into '$5'..." >&2
+      else
+        echo "unexpected git args: $*" >&2
+        exit 2
+      fi
+      EOF
+      # recipe-runner-rs stub
+      cat > bin/recipe-runner-rs <<'EOF'
+      #!/usr/bin/env bash
+      exit 0
+      EOF
+      # python3 stub: exits 0 for all calls (--version and -c 'import amplihack')
+      cat > bin/python3 <<'EOF'
+      #!/usr/bin/env bash
+      exit 0
+      EOF
+      # amplihack-hooks stub: must be > 1024 bytes so deploy_binaries size check passes
+      python3 -c "import sys; sys.stdout.buffer.write(b'#!/usr/bin/env bash\nexit 0\n' + b'x' * 1100 + b'\n')" > bin/amplihack-hooks 2>/dev/null \
+        || printf '#!/usr/bin/env bash\nexit 0\n%s\n' "$(python3 -c 'print("x"*1100)' 2>/dev/null || printf '%0.sx' {1..1100})" > bin/amplihack-hooks
+      chmod +x bin/git bin/recipe-runner-rs bin/python3 bin/amplihack-hooks
+    compare:
+      - stdout
+      - stderr
+      - exit_code
+      - fs:home/.amplihack/.claude/install/amplihack-manifest.json
+      - fs:home/.claude/settings.json
+      - fs:home/.amplihack/.claude/tools/amplihack/hooks
+
+  # ── install-local-path-success ───────────────────────────────────────────────
+  # TDD: New scenario — exercises the --local <PATH> flag (no git required).
+  # Verifies that run_install(Some(path)) installs from a local directory without
+  # invoking git at all.  The amplihack binary must accept `install --local <dir>`.
+  #
+  # FAILS until Commands::Install gains `local: Option<PathBuf>` and run_install
+  # dispatches to local_install directly when Some(path) is provided.
+  - name: install-local-path-success
+    argv: ["install", "--local", "${SANDBOX_ROOT}/local-repo"]
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH: "${SANDBOX_ROOT}/bin/amplihack-hooks"
+    setup: |
+      mkdir -p bin local-repo/.claude/agents/amplihack local-repo/.claude/commands/amplihack
+      mkdir -p local-repo/.claude/tools/amplihack/hooks local-repo/.claude/context
+      mkdir -p local-repo/.claude/workflow local-repo/.claude/skills local-repo/.claude/templates
+      mkdir -p local-repo/.claude/scenarios local-repo/.claude/docs local-repo/.claude/schemas local-repo/.claude/config
+      for hook in session_start.py stop.py pre_tool_use.py post_tool_use.py user_prompt_submit.py workflow_classification_reminder.py pre_compact.py; do
+        printf 'print(1)\n' > "local-repo/.claude/tools/amplihack/hooks/$hook"
+      done
+      printf '{}\n' > local-repo/.claude/settings.json
+      printf 'echo statusline\n' > local-repo/.claude/tools/statusline.sh
+      printf 'framework\n' > local-repo/.claude/AMPLIHACK.md
+      printf 'claude root\n' > local-repo/CLAUDE.md
+      cat > bin/recipe-runner-rs <<'EOF'
+      #!/usr/bin/env bash
+      exit 0
+      EOF
+      cat > bin/python3 <<'EOF'
+      #!/usr/bin/env bash
+      exit 0
+      EOF
+      python3 -c "import sys; sys.stdout.buffer.write(b'#!/usr/bin/env bash\nexit 0\n' + b'x' * 1100 + b'\n')" > bin/amplihack-hooks 2>/dev/null \
+        || printf '#!/usr/bin/env bash\nexit 0\n%s\n' "$(printf '%0.sx' {1..1100})" > bin/amplihack-hooks
+      chmod +x bin/recipe-runner-rs bin/python3 bin/amplihack-hooks
+    compare:
+      - stdout
+      - stderr
+      - exit_code
+      - fs:home/.amplihack/.claude/install/amplihack-manifest.json
+      - fs:home/.claude/settings.json
+      - fs:home/.amplihack/.claude/tools/amplihack/hooks
+
+  # ── install-local-nonexistent-path-error ─────────────────────────────────────
+  # TDD: New scenario — verifies that passing a non-existent path to --local
+  # produces a non-zero exit code and an informative error message.
+  #
+  # FAILS until run_install validates the --local path before proceeding.
+  - name: install-local-nonexistent-path-error
+    argv: ["install", "--local", "/nonexistent/path/does-not-exist"]
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    setup: |
+      mkdir -p bin
+      cat > bin/python3 <<'EOF'
+      #!/usr/bin/env bash
+      exit 0
+      EOF
+      chmod +x bin/python3
+    compare:
+      - stdout
+      - stderr
+      - exit_code
+
+  # ── install-python3-missing-error ────────────────────────────────────────────
+  # TDD: New scenario — verifies that validate_python() fails fast with a clear
+  # error message when python3 is not available in PATH.
+  # Exit code must be non-zero.
+  #
+  # FAILS until validate_python() is implemented and called as the first phase
+  # of local_install.
+  - name: install-python3-missing-error
+    argv: ["install"]
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH: "${SANDBOX_ROOT}/bin/amplihack-hooks"
     setup: |
       mkdir -p bin fake-repo/.claude/agents/amplihack fake-repo/.claude/commands/amplihack
       mkdir -p fake-repo/.claude/tools/amplihack/hooks fake-repo/.claude/context
@@ -26,19 +159,16 @@ cases:
         exit 2
       fi
       EOF
-      cat > bin/recipe-runner-rs <<'EOF'
-      #!/usr/bin/env bash
-      exit 0
-      EOF
-      chmod +x bin/git bin/recipe-runner-rs
+      python3 -c "import sys; sys.stdout.buffer.write(b'#!/usr/bin/env bash\nexit 0\n' + b'x' * 1100 + b'\n')" > bin/amplihack-hooks 2>/dev/null \
+        || printf '#!/usr/bin/env bash\nexit 0\n%s\n' "$(printf '%0.sx' {1..1100})" > bin/amplihack-hooks
+      chmod +x bin/git bin/amplihack-hooks
+      # NOTE: No python3 stub — this is intentional to trigger the failure
     compare:
       - stdout
       - stderr
       - exit_code
-      - fs:home/.claude/install/amplihack-manifest.json
-      - fs:home/.claude/settings.json
-      - fs:home/.claude/tools/amplihack/hooks
 
+  # ── install-git-clone-failure ─────────────────────────────────────────────────
   - name: install-git-clone-failure
     argv: ["install"]
     env:
@@ -56,14 +186,26 @@ cases:
       - stderr
       - exit_code
 
+  # ── uninstall-manifest-success ───────────────────────────────────────────────
+  # TDD: Updated to use new 4-field manifest format (files, dirs, binaries,
+  # hook_registrations).  Also adds an amplihack-hooks binary to ~/.local/bin
+  # so Phase 3 (binary removal) can be exercised.
+  #
+  # FAILS until run_uninstall reads `binaries` from the manifest and removes them.
   - name: uninstall-manifest-success
     argv: ["uninstall"]
     setup: |
-      mkdir -p "$HOME/.claude/install" "$HOME/.claude/agents/amplihack" "$HOME/.claude/commands/amplihack" "$HOME/.claude/tools/amplihack"
-      printf '{}' > "$HOME/.claude/agents/amplihack/a.json"
-      printf '{}' > "$HOME/.claude/commands/amplihack/b.json"
-      printf '{}' > "$HOME/.claude/tools/amplihack/c.json"
-      cat > "$HOME/.claude/install/amplihack-manifest.json" <<'EOF'
+      mkdir -p "$HOME/.amplihack/.claude/install" \
+               "$HOME/.amplihack/.claude/agents/amplihack" \
+               "$HOME/.amplihack/.claude/commands/amplihack" \
+               "$HOME/.amplihack/.claude/tools/amplihack" \
+               "$HOME/.local/bin"
+      printf '{}' > "$HOME/.amplihack/.claude/agents/amplihack/a.json"
+      printf '{}' > "$HOME/.amplihack/.claude/commands/amplihack/b.json"
+      printf '{}' > "$HOME/.amplihack/.claude/tools/amplihack/c.json"
+      printf '#!/usr/bin/env bash\nexit 0\n' > "$HOME/.local/bin/amplihack-hooks"
+      chmod +x "$HOME/.local/bin/amplihack-hooks"
+      cat > "$HOME/.amplihack/.claude/install/amplihack-manifest.json" <<'EOF'
       {
         "files": [
           "agents/amplihack/a.json",
@@ -74,25 +216,134 @@ cases:
           "agents/amplihack",
           "commands/amplihack",
           "tools/amplihack"
-        ]
+        ],
+        "binaries": [],
+        "hook_registrations": []
       }
       EOF
     compare:
       - stdout
       - stderr
       - exit_code
-      - fs:home/.claude/install/amplihack-manifest.json
-      - fs:home/.claude/agents/amplihack
-      - fs:home/.claude/commands/amplihack
-      - fs:home/.claude/tools/amplihack
+      - fs:home/.amplihack/.claude/install/amplihack-manifest.json
+      - fs:home/.amplihack/.claude/agents/amplihack
+      - fs:home/.amplihack/.claude/commands/amplihack
+      - fs:home/.amplihack/.claude/tools/amplihack
 
-  - name: uninstall-invalid-manifest
+  # ── uninstall-removes-binary ──────────────────────────────────────────────────
+  # TDD: New scenario — verifies Phase 3 of uninstall: binaries listed in the
+  # manifest are removed from ~/.local/bin.
+  #
+  # FAILS until run_uninstall implements Phase 3 (binary removal from manifest).
+  - name: uninstall-removes-binary
     argv: ["uninstall"]
     setup: |
-      mkdir -p "$HOME/.claude/install"
-      printf '{invalid json\n' > "$HOME/.claude/install/amplihack-manifest.json"
+      mkdir -p "$HOME/.amplihack/.claude/install" "$HOME/.local/bin"
+      printf '#!/usr/bin/env bash\nexit 0\n' > "$HOME/.local/bin/amplihack-hooks"
+      chmod +x "$HOME/.local/bin/amplihack-hooks"
+      cat > "$HOME/.amplihack/.claude/install/amplihack-manifest.json" <<'EOF'
+      {
+        "files": [],
+        "dirs": [],
+        "binaries": ["${HOME}/.local/bin/amplihack-hooks"],
+        "hook_registrations": []
+      }
+      EOF
     compare:
       - stdout
       - stderr
       - exit_code
-      - fs:home/.claude/install/amplihack-manifest.json
+      - fs:home/.local/bin/amplihack-hooks
+
+  # ── uninstall-removes-hook-registrations ─────────────────────────────────────
+  # TDD: New scenario — verifies Phase 4 of uninstall: hook entries that reference
+  # amplihack-hooks or tools/amplihack/ are removed from ~/.claude/settings.json,
+  # while non-amplihack entries are preserved.
+  #
+  # FAILS until run_uninstall implements Phase 4 (remove_hook_registrations).
+  - name: uninstall-removes-hook-registrations
+    argv: ["uninstall"]
+    setup: |
+      mkdir -p "$HOME/.amplihack/.claude/install" "$HOME/.claude"
+      cat > "$HOME/.claude/settings.json" <<'EOF'
+      {
+        "hooks": {
+          "SessionStart": [
+            {
+              "hooks": [{"type": "command", "command": "/home/user/.local/bin/amplihack-hooks session-start", "timeout": 10}]
+            },
+            {
+              "hooks": [{"type": "command", "command": "/home/user/.local/bin/other-tool start", "timeout": 10}]
+            }
+          ],
+          "UserPromptSubmit": [
+            {
+              "hooks": [{"type": "command", "command": "/home/user/.amplihack/.claude/tools/amplihack/hooks/workflow_classification_reminder.py", "timeout": 5}]
+            }
+          ]
+        }
+      }
+      EOF
+      cat > "$HOME/.amplihack/.claude/install/amplihack-manifest.json" <<'EOF'
+      {
+        "files": [],
+        "dirs": [],
+        "binaries": [],
+        "hook_registrations": ["SessionStart", "Stop", "PreToolUse", "PostToolUse", "UserPromptSubmit", "PreCompact"]
+      }
+      EOF
+    compare:
+      - stdout
+      - stderr
+      - exit_code
+      - fs:home/.claude/settings.json
+
+  # ── uninstall-invalid-manifest ───────────────────────────────────────────────
+  - name: uninstall-invalid-manifest
+    argv: ["uninstall"]
+    setup: |
+      mkdir -p "$HOME/.amplihack/.claude/install"
+      printf '{invalid json\n' > "$HOME/.amplihack/.claude/install/amplihack-manifest.json"
+    compare:
+      - stdout
+      - stderr
+      - exit_code
+      - fs:home/.amplihack/.claude/install/amplihack-manifest.json
+
+  # ── settings-json-uses-binary-subcommand-format ───────────────────────────────
+  # TDD: New scenario — after install, settings.json hook commands must use
+  # binary-subcommand format (`amplihack-hooks session-start`) NOT Python file paths.
+  # Golden snapshot will contain the new format after implementation.
+  #
+  # FAILS until HookSpec uses HookCommandKind::BinarySubcmd for main hooks.
+  - name: settings-json-uses-binary-subcommand-format
+    argv: ["install", "--local", "${SANDBOX_ROOT}/local-repo"]
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH: "${SANDBOX_ROOT}/bin/amplihack-hooks"
+    setup: |
+      mkdir -p bin local-repo/.claude/agents/amplihack local-repo/.claude/commands/amplihack
+      mkdir -p local-repo/.claude/tools/amplihack/hooks local-repo/.claude/context
+      mkdir -p local-repo/.claude/workflow local-repo/.claude/skills local-repo/.claude/templates
+      mkdir -p local-repo/.claude/scenarios local-repo/.claude/docs local-repo/.claude/schemas local-repo/.claude/config
+      for hook in session_start.py stop.py pre_tool_use.py post_tool_use.py user_prompt_submit.py workflow_classification_reminder.py pre_compact.py; do
+        printf 'print(1)\n' > "local-repo/.claude/tools/amplihack/hooks/$hook"
+      done
+      printf '{}\n' > local-repo/.claude/settings.json
+      printf 'echo statusline\n' > local-repo/.claude/tools/statusline.sh
+      printf 'framework\n' > local-repo/.claude/AMPLIHACK.md
+      printf 'claude root\n' > local-repo/CLAUDE.md
+      cat > bin/recipe-runner-rs <<'EOF'
+      #!/usr/bin/env bash
+      exit 0
+      EOF
+      cat > bin/python3 <<'EOF'
+      #!/usr/bin/env bash
+      exit 0
+      EOF
+      python3 -c "import sys; sys.stdout.buffer.write(b'#!/usr/bin/env bash\nexit 0\n' + b'x' * 1100 + b'\n')" > bin/amplihack-hooks 2>/dev/null \
+        || printf '#!/usr/bin/env bash\nexit 0\n%s\n' "$(printf '%0.sx' {1..1100})" > bin/amplihack-hooks
+      chmod +x bin/recipe-runner-rs bin/python3 bin/amplihack-hooks
+    compare:
+      - exit_code
+      - fs:home/.claude/settings.json

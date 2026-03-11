@@ -10,14 +10,18 @@ amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+flate2 = "1"
 libc = { workspace = true }
+semver = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 signal-hook = { workspace = true }
+tar = "0.4"
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+ureq = { version = "2", features = ["json"] }
 kuzu = "0.11.3"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 

@@ -6,6 +6,11 @@ pub(crate) fn home_env_lock() -> &'static Mutex<()> {
     HOME_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+pub(crate) fn cwd_env_lock() -> &'static Mutex<()> {
+    static CWD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    CWD_LOCK.get_or_init(|| Mutex::new(()))
+}
+
 pub(crate) fn set_home(path: &Path) -> Option<std::ffi::OsString> {
     let previous = std::env::var_os("HOME");
     unsafe {
@@ -20,4 +25,14 @@ pub(crate) fn restore_home(previous: Option<std::ffi::OsString>) {
     } else {
         unsafe { std::env::remove_var("HOME") };
     }
+}
+
+pub(crate) fn set_cwd(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    let previous = std::env::current_dir()?;
+    std::env::set_current_dir(path)?;
+    Ok(previous)
+}
+
+pub(crate) fn restore_cwd(previous: &Path) -> std::io::Result<()> {
+    std::env::set_current_dir(previous)
 }

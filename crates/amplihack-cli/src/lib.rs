@@ -5,8 +5,10 @@
 //! handling, and nesting detection.
 
 pub mod binary_finder;
+pub mod bootstrap;
 pub mod command_error;
 pub mod commands;
+pub mod copilot_setup;
 pub mod env_builder;
 pub mod launcher;
 pub mod nesting;
@@ -14,8 +16,10 @@ pub mod settings_manager;
 pub mod signals;
 #[cfg(test)]
 pub mod test_support;
+pub mod update;
 
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 /// amplihack CLI — Rust core runtime.
 #[derive(Parser, Debug)]
@@ -31,8 +35,12 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Install amplihack agents and tools to ~/.claude
-    Install,
+    /// Install amplihack framework assets to ~/.amplihack/.claude and wire ~/.claude/settings.json
+    Install {
+        /// Install from a local directory instead of cloning from git
+        #[arg(long)]
+        local: Option<PathBuf>,
+    },
     /// Remove amplihack agents and tools
     Uninstall,
     /// Launch Claude Code
@@ -93,6 +101,8 @@ pub enum Commands {
     },
     /// Show version information
     Version,
+    /// Download and install the latest released binary
+    Update,
 }
 
 #[derive(Subcommand, Debug)]
