@@ -15,6 +15,7 @@ const NO_UPDATE_CHECK_ENV: &str = "AMPLIHACK_NO_UPDATE_CHECK";
 const UPDATE_CACHE_RELATIVE_PATH: &str = ".config/amplihack/last_update_check";
 const UPDATE_CHECK_COOLDOWN_SECS: u64 = 24 * 60 * 60;
 const NETWORK_TIMEOUT_SECS: u64 = 5;
+const MAX_BODY_SIZE: u64 = 10 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
@@ -119,6 +120,7 @@ fn http_get(url: &str) -> Result<Vec<u8>> {
     let mut body = Vec::new();
     response
         .into_reader()
+        .take(MAX_BODY_SIZE)
         .read_to_end(&mut body)
         .with_context(|| format!("failed to read HTTP response from {url}"))?;
     Ok(body)
