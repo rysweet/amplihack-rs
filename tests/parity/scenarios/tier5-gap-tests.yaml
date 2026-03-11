@@ -16,6 +16,7 @@ cases:
     env:
       AMPLIHACK_DRY_RUN_LAUNCH: "1"
       PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
     timeout: 15
     setup: |
       mkdir -p bin
@@ -33,6 +34,7 @@ cases:
     argv: ["launch"]
     env:
       PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
     timeout: 15
     setup: |
       mkdir -p bin
@@ -49,6 +51,7 @@ cases:
     argv: ["launch"]
     env:
       PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
     timeout: 15
     setup: |
       mkdir -p bin
@@ -69,6 +72,7 @@ cases:
     argv: ["launch"]
     env:
       PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
     timeout: 15
     setup: |
       mkdir -p bin
@@ -85,6 +89,7 @@ cases:
     argv: ["launch"]
     env:
       PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
     timeout: 15
     setup: |
       mkdir -p bin

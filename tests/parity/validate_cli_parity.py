@@ -446,15 +446,23 @@ def run_direct(
     timeout: int,
     sandbox_root: Path,
 ) -> EngineResult:
-    result = subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        input=stdin,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            input=stdin,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as e:
+        return EngineResult(
+            stdout=e.stdout.decode("utf-8", errors="replace") if e.stdout else "",
+            stderr=f"TIMEOUT after {timeout}s: {' '.join(command[:3])}",
+            exit_code=124,
+            sandbox_root=sandbox_root,
+        )
     return EngineResult(
         stdout=result.stdout,
         stderr=result.stderr,
