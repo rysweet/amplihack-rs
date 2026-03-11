@@ -1,16 +1,9 @@
 name: Auto Release
 
-# Trigger on merge to main (push) — creates a release if version changed.
-# Also supports manual dispatch for ad-hoc releases.
 on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      bump:
-        description: "Version bump type (patch/minor/major) — only for manual trigger"
-        required: false
-        default: "patch"
 
 permissions:
   contents: write
@@ -19,42 +12,79 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Step 1: Detect if the workspace version changed vs the latest release tag.
-  detect-version:
-    name: Detect version change
+  # ── Auto-bump patch version on every push to main ─────────────────────
+  version-bump:
+    name: Auto-bump version
     runs-on: ubuntu-latest
+    # Prevent infinite loop: skip if this push is already a version-bump commit
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
     outputs:
-      should_release: ${{ steps.check.outputs.should_release }}
-      version: ${{ steps.check.outputs.version }}
-      tag: ${{ steps.check.outputs.tag }}
+      version: ${{ steps.bump.outputs.version }}
+      sha: ${{ steps.bump.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # need tags
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check if version changed
-        id: check
+      - name: Bump patch version
+        id: bump
         run: |
-          # Get version from Cargo.toml
-          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          TAG="v${VERSION}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
 
-          # Check if this tag already exists
-          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "Tag ${TAG} already exists — no release needed"
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "Current version: ${CURRENT}"
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${CURRENT}"
+
+          # Find latest release tag to determine next patch
+          LATEST_TAG=$(gh release list --limit 50 --json tagName --jq '.[].tagName' \
+            | grep -E "^v${MAJOR}\.${MINOR}\.[0-9]+$" \
+            | sort -t. -k3 -n -r \
+            | head -1 || true)
+
+          if [ -n "${LATEST_TAG}" ]; then
+            LATEST_PATCH=$(echo "${LATEST_TAG}" | sed "s/^v${MAJOR}\.${MINOR}\.\([0-9]*\)/\1/")
+            NEW_PATCH=$((LATEST_PATCH + 1))
+            echo "Latest release: ${LATEST_TAG} → next patch: ${NEW_PATCH}"
           else
-            echo "Tag ${TAG} does not exist — will release"
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            NEW_PATCH="${PATCH}"
+            echo "No prior v${MAJOR}.${MINOR}.x release found"
           fi
 
-  # Step 2: Build release binaries for all platforms
+          NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+
+          if [ "${NEW_VERSION}" = "${CURRENT}" ]; then
+            echo "Version already at ${CURRENT} — no bump needed"
+            echo "version=${CURRENT}" >> "$GITHUB_OUTPUT"
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Bumping: ${CURRENT} → ${NEW_VERSION}"
+
+          # Update Cargo.toml workspace version
+          sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+
+          # Regenerate lockfile
+          cargo generate-lockfile 2>/dev/null || true
+
+          # Commit and push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: auto-bump version ${CURRENT} → ${NEW_VERSION} [skip ci]"
+          git push
+
+          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Build release binaries ────────────────────────────────────────────
   build:
     name: Build ${{ matrix.target }}
-    needs: detect-version
-    if: needs.detect-version.outputs.should_release == 'true'
+    needs: version-bump
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -62,22 +92,20 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
-            cross: false
             gnu_cross_toolchain: false
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
-            cross: false
             gnu_cross_toolchain: true
           - target: x86_64-apple-darwin
             runner: macos-latest
-            cross: false
             gnu_cross_toolchain: false
           - target: aarch64-apple-darwin
             runner: macos-latest
-            cross: false
             gnu_cross_toolchain: false
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version-bump.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -90,10 +118,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-
-      - name: Configure GNU cross toolchain
-        if: matrix.gnu_cross_toolchain
-        run: |
           echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
           echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> "$GITHUB_ENV"
           echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
@@ -108,13 +132,10 @@ jobs:
           mkdir -p dist
           cp target/${{ matrix.target }}/release/amplihack dist/ 2>/dev/null || true
           cp target/${{ matrix.target }}/release/amplihack-hooks dist/ 2>/dev/null || true
-          cd dist
-          tar czf ../amplihack-${{ matrix.target }}.tar.gz *
-          cd ..
-          sha256sum amplihack-${{ matrix.target }}.tar.gz > amplihack-${{ matrix.target }}.tar.gz.sha256
+          cd dist && tar czf ../amplihack-${{ matrix.target }}.tar.gz *
+          cd .. && sha256sum amplihack-${{ matrix.target }}.tar.gz > amplihack-${{ matrix.target }}.tar.gz.sha256
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: amplihack-${{ matrix.target }}
           path: |
@@ -122,67 +143,56 @@ jobs:
             amplihack-${{ matrix.target }}.tar.gz.sha256
           if-no-files-found: error
 
-  # Step 3: Create the release with tag and upload all artifacts
+  # ── Create GitHub Release ─────────────────────────────────────────────
   release:
     name: Create Release
-    needs: [detect-version, build]
-    if: needs.detect-version.outputs.should_release == 'true'
+    needs: [version-bump, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Create tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ needs.detect-version.outputs.tag }}" -m "Release ${{ needs.detect-version.outputs.tag }}"
-          git push origin "${{ needs.detect-version.outputs.tag }}"
+        with:
+          ref: ${{ needs.version-bump.outputs.sha }}
 
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Collect release assets
+      - name: Collect assets
         run: |
           mkdir -p release-assets
           find artifacts -name '*.tar.gz' -exec cp {} release-assets/ \;
           find artifacts -name '*.sha256' -exec cp {} release-assets/ \;
           ls -la release-assets/
 
+      - name: Create tag and release
+        run: |
+          TAG="v${{ needs.version-bump.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "Release ${TAG}" "${{ needs.version-bump.outputs.sha }}" || true
+          git push origin "${TAG}" || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.detect-version.outputs.tag }}
-          name: "amplihack-rs ${{ needs.detect-version.outputs.tag }}"
+          tag_name: v${{ needs.version-bump.outputs.version }}
+          name: "amplihack-rs v${{ needs.version-bump.outputs.version }}"
           files: release-assets/*
           generate_release_notes: true
           body: |
-            ## Installation
-
-            Download the binary for your platform and extract:
+            ## Install
 
             ```bash
             # Linux x86_64
-            curl -fsSL https://github.com/rysweet/amplihack-rs/releases/download/${{ needs.detect-version.outputs.tag }}/amplihack-x86_64-unknown-linux-gnu.tar.gz | tar xz -C ~/.local/bin/
+            curl -fsSL https://github.com/rysweet/amplihack-rs/releases/download/v${{ needs.version-bump.outputs.version }}/amplihack-x86_64-unknown-linux-gnu.tar.gz | tar xz -C ~/.local/bin/
 
             # Linux ARM64
-            curl -fsSL https://github.com/rysweet/amplihack-rs/releases/download/${{ needs.detect-version.outputs.tag }}/amplihack-aarch64-unknown-linux-gnu.tar.gz | tar xz -C ~/.local/bin/
-
-            # macOS x86_64
-            curl -fsSL https://github.com/rysweet/amplihack-rs/releases/download/${{ needs.detect-version.outputs.tag }}/amplihack-x86_64-apple-darwin.tar.gz | tar xz -C ~/.local/bin/
+            curl -fsSL https://github.com/rysweet/amplihack-rs/releases/download/v${{ needs.version-bump.outputs.version }}/amplihack-aarch64-unknown-linux-gnu.tar.gz | tar xz -C ~/.local/bin/
 
             # macOS ARM64 (Apple Silicon)
-            curl -fsSL https://github.com/rysweet/amplihack-rs/releases/download/${{ needs.detect-version.outputs.tag }}/amplihack-aarch64-apple-darwin.tar.gz | tar xz -C ~/.local/bin/
+            curl -fsSL https://github.com/rysweet/amplihack-rs/releases/download/v${{ needs.version-bump.outputs.version }}/amplihack-aarch64-apple-darwin.tar.gz | tar xz -C ~/.local/bin/
             ```
 
-            Or update an existing installation:
-            ```bash
-            amplihack update
-            ```
-
-            ## SHA256 Checksums
-
-            Verify your download:
-            ```bash
-            sha256sum -c amplihack-<target>.tar.gz.sha256
-            ```
+            Or: `amplihack update`
