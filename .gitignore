@@ -9,3 +9,7 @@ __pycache__/
 *.pyc
 *.pyo
 worktrees/
+
+# Amplihack runtime directories (auto-generated)
+.claude/logs/
+.claude/runtime/
