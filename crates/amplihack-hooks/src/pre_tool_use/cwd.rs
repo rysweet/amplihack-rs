@@ -238,6 +238,8 @@ fn resolve_path(p: &str) -> Option<std::path::PathBuf> {
 }
 
 /// Check if `child` is equal to or under `parent`.
+///
+/// Note: This is a best-effort check subject to TOCTOU. It is not a security boundary.
 fn is_path_under(child: &Path, parent: &Path) -> bool {
     child.starts_with(parent)
 }

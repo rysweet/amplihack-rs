@@ -8,11 +8,15 @@ use kuzu::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::io::{self, Write};
 use std::path::Path;
 use std::path::PathBuf;
+
+/// Maximum directory depth to prevent unbounded recursion.
+const MAX_DIR_DEPTH: usize = 64;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct HierarchicalExportData {
@@ -767,14 +771,39 @@ fn copy_hierarchical_storage(src: &Path, dst: &Path) -> Result<()> {
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    let mut seen = HashSet::new();
+    copy_dir_recursive_inner(src, dst, 0, &mut seen)
+}
+
+fn copy_dir_recursive_inner(
+    src: &Path,
+    dst: &Path,
+    depth: usize,
+    seen: &mut HashSet<PathBuf>,
+) -> Result<()> {
+    if depth > MAX_DIR_DEPTH {
+        anyhow::bail!(
+            "copy_dir_recursive exceeded maximum depth ({MAX_DIR_DEPTH}) at {}",
+            src.display()
+        );
+    }
     fs::create_dir_all(dst)?;
+    let canonical = src.canonicalize().unwrap_or_else(|_| src.to_path_buf());
+    if !seen.insert(canonical) {
+        anyhow::bail!("symlink cycle detected at {}", src.display());
+    }
     for entry in fs::read_dir(src)? {
         let entry = entry?;
+        let kind = entry.file_type()?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        if from.is_dir() {
-            copy_dir_recursive(&from, &to)?;
-        } else {
+        if kind.is_symlink() {
+            // Skip symlinks with a warning to prevent directory traversal attacks
+            println!("  ⚠️  Skipping symlink: {}", from.display());
+            continue;
+        } else if kind.is_dir() {
+            copy_dir_recursive_inner(&from, &to, depth + 1, seen)?;
+        } else if kind.is_file() {
             if let Some(parent) = to.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -785,13 +814,23 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 }
 
 fn compute_path_size(path: &Path) -> Result<u64> {
+    compute_path_size_inner(path, 0)
+}
+
+fn compute_path_size_inner(path: &Path, depth: usize) -> Result<u64> {
+    if depth > MAX_DIR_DEPTH {
+        anyhow::bail!(
+            "compute_path_size exceeded maximum depth ({MAX_DIR_DEPTH}) at {}",
+            path.display()
+        );
+    }
     if path.is_file() {
         return Ok(path.metadata()?.len());
     }
     let mut total = 0u64;
     for entry in fs::read_dir(path)? {
         let entry = entry?;
-        total += compute_path_size(&entry.path())?;
+        total += compute_path_size_inner(&entry.path(), depth + 1)?;
     }
     Ok(total)
 }

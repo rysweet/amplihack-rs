@@ -293,7 +293,10 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         let target_path = dst.join(entry.file_name());
         let file_type = entry.file_type()?;
 
-        if file_type.is_dir() {
+        if file_type.is_symlink() {
+            tracing::debug!("Skipping symlink: {}", source_path.display());
+            continue;
+        } else if file_type.is_dir() {
             copy_dir_recursive(&source_path, &target_path)?;
         } else if file_type.is_file() {
             fs::copy(&source_path, &target_path).with_context(|| {
@@ -303,10 +306,6 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
                     target_path.display()
                 )
             })?;
-        } else if file_type.is_symlink() {
-            let target = fs::read_link(&source_path)
-                .with_context(|| format!("failed to read symlink {}", source_path.display()))?;
-            create_symlink(&target, &target_path)?;
         }
     }
 
@@ -314,6 +313,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 }
 
 #[cfg(unix)]
+#[allow(dead_code)]
 fn create_symlink(target: &Path, link: &Path) -> Result<()> {
     std::os::unix::fs::symlink(target, link).with_context(|| {
         format!(
@@ -326,6 +326,7 @@ fn create_symlink(target: &Path, link: &Path) -> Result<()> {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 fn create_symlink(target: &Path, link: &Path) -> Result<()> {
     let metadata = fs::metadata(target)
         .with_context(|| format!("failed to inspect symlink target {}", target.display()))?;

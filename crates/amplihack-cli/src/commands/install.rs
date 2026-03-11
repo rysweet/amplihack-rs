@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -952,7 +953,13 @@ fn read_settings_json(settings_path: &Path) -> Result<Value> {
     match serde_json::from_str::<Value>(&raw) {
         Ok(Value::Object(map)) => Ok(Value::Object(map)),
         Ok(_) => Ok(Value::Object(Map::new())),
-        Err(_) => Ok(Value::Object(Map::new())),
+        Err(_) => {
+            tracing::warn!(
+                "Settings file {} contains invalid JSON, using empty defaults",
+                settings_path.display()
+            );
+            Ok(Value::Object(Map::new()))
+        }
     }
 }
 
@@ -1205,13 +1212,28 @@ fn get_all_files_and_dirs(
     Ok((files, dirs.into_iter().collect()))
 }
 
+const MAX_WALK_DEPTH: usize = 64;
+
 fn walk_dirs(root: &Path) -> Result<Vec<PathBuf>> {
     let mut dirs = vec![root.to_path_buf()];
-    for entry in fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            dirs.extend(walk_dirs(&path)?);
+    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
+    queue.push_back((root.to_path_buf(), 0));
+    while let Some((dir, depth)) = queue.pop_front() {
+        if depth > MAX_WALK_DEPTH {
+            anyhow::bail!(
+                "walk_dirs exceeded maximum depth ({MAX_WALK_DEPTH}) at {}",
+                dir.display()
+            );
+        }
+        for entry in
+            fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path.clone());
+                queue.push_back((path, depth + 1));
+            }
         }
     }
     Ok(dirs)
@@ -1219,12 +1241,24 @@ fn walk_dirs(root: &Path) -> Result<Vec<PathBuf>> {
 
 fn walk_all(root: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = vec![root.to_path_buf()];
-    for entry in fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        paths.push(path.clone());
-        if path.is_dir() {
-            paths.extend(walk_all(&path)?);
+    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
+    queue.push_back((root.to_path_buf(), 0));
+    while let Some((dir, depth)) = queue.pop_front() {
+        if depth > MAX_WALK_DEPTH {
+            anyhow::bail!(
+                "walk_all exceeded maximum depth ({MAX_WALK_DEPTH}) at {}",
+                dir.display()
+            );
+        }
+        for entry in
+            fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            paths.push(path.clone());
+            if path.is_dir() {
+                queue.push_back((path, depth + 1));
+            }
         }
     }
     Ok(paths)
@@ -1801,12 +1835,16 @@ mod tests {
 
         let command = hook["command"].as_str().expect("hook must have command");
         assert!(
-            command.contains("tools/amplihack/"),
+            command
+                .split('/')
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|w| w == ["tools", "amplihack"]),
             "PythonFile command must reference tools/amplihack/ dir, got: {command}"
         );
         assert!(
-            command.contains("workflow_classification_reminder.py"),
-            "PythonFile command must contain filename, got: {command}"
+            command.ends_with("workflow_classification_reminder.py"),
+            "PythonFile command must end with filename, got: {command}"
         );
         assert_eq!(hook["timeout"].as_u64().unwrap(), 5);
 
