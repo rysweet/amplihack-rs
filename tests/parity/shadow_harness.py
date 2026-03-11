@@ -337,7 +337,7 @@ SHADOW_CASES: list[dict[str, Any]] = [
     {
         "name": "shadow-version",
         "category": "cli",
-        "argv": ["--version"],
+        "argv": ["version"],
         "compare": ["exit_code"],
     },
     {
