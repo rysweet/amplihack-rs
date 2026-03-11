@@ -133,6 +133,15 @@ fn is_process_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
+/// Check if a process with the given PID is alive (non-Unix fallback).
+///
+/// # Limitation
+///
+/// On non-Unix platforms (primarily Windows) this always returns `true`,
+/// meaning stale nesting-guard entries will never be detected. To implement
+/// proper detection on Windows, use `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, ...)`
+/// and check the result with `GetExitCodeProcess`.  This is left as a future
+/// improvement since amplihack does not yet actively target Windows.
 #[cfg(not(unix))]
 fn is_process_alive(_pid: u32) -> bool {
     // On non-Unix, assume alive (conservative)

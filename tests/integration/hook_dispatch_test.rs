@@ -70,6 +70,20 @@ fn assert_hook_ok(subcommand: &str, input: &str) {
         stdout,
         stderr
     );
+    let value = parsed.unwrap();
+    // Every non-empty hook response must use a known protocol key:
+    // `hookSpecificOutput` (general), `decision`/`reason` (PreToolUse/Stop).
+    let has_protocol_key = value.as_object().is_some_and(|obj| {
+        obj.is_empty()
+            || obj.contains_key("hookSpecificOutput")
+            || obj.contains_key("decision")
+            || obj.contains_key("reason")
+    });
+    assert!(
+        has_protocol_key,
+        "Hook '{}' JSON must contain a protocol key (hookSpecificOutput, decision, or reason) or be empty. Got: {}",
+        subcommand, value
+    );
 }
 
 // ---------------------------------------------------------------------------

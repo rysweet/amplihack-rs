@@ -39,11 +39,7 @@ fn assert_exit(cmd: &mut Command, expect_success: bool) {
 fn help_exits_zero() {
     let bin = amplihack_bin();
     if !bin.exists() {
-        eprintln!(
-            "Skipping: binary not found at {:?} (run cargo build first)",
-            bin
-        );
-        return;
+        panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
     }
     assert_exit(Command::new(&bin).arg("--help"), true);
 }
@@ -52,8 +48,7 @@ fn help_exits_zero() {
 fn version_exits_zero() {
     let bin = amplihack_bin();
     if !bin.exists() {
-        eprintln!("Skipping: binary not found at {:?}", bin);
-        return;
+        panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
     }
     assert_exit(Command::new(&bin).arg("--version"), true);
 }
@@ -62,8 +57,7 @@ fn version_exits_zero() {
 fn version_subcommand_exits_zero() {
     let bin = amplihack_bin();
     if !bin.exists() {
-        eprintln!("Skipping: binary not found at {:?}", bin);
-        return;
+        panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
     }
     assert_exit(Command::new(&bin).arg("version"), true);
 }
@@ -72,8 +66,7 @@ fn version_subcommand_exits_zero() {
 fn unknown_subcommand_exits_nonzero() {
     let bin = amplihack_bin();
     if !bin.exists() {
-        eprintln!("Skipping: binary not found at {:?}", bin);
-        return;
+        panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
     }
     assert_exit(Command::new(&bin).arg("totally-unknown-subcommand"), false);
 }
@@ -86,8 +79,7 @@ fn unknown_subcommand_exits_nonzero() {
 fn plugin_help_exits_zero() {
     let bin = amplihack_bin();
     if !bin.exists() {
-        eprintln!("Skipping: binary not found at {:?}", bin);
-        return;
+        panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
     }
     assert_exit(Command::new(&bin).args(["plugin", "--help"]), true);
 }
@@ -96,8 +88,7 @@ fn plugin_help_exits_zero() {
 fn memory_help_exits_zero() {
     let bin = amplihack_bin();
     if !bin.exists() {
-        eprintln!("Skipping: binary not found at {:?}", bin);
-        return;
+        panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
     }
     assert_exit(Command::new(&bin).args(["memory", "--help"]), true);
 }
@@ -106,8 +97,7 @@ fn memory_help_exits_zero() {
 fn recipe_help_exits_zero() {
     let bin = amplihack_bin();
     if !bin.exists() {
-        eprintln!("Skipping: binary not found at {:?}", bin);
-        return;
+        panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
     }
     assert_exit(Command::new(&bin).args(["recipe", "--help"]), true);
 }
@@ -116,8 +106,7 @@ fn recipe_help_exits_zero() {
 fn mode_help_exits_zero() {
     let bin = amplihack_bin();
     if !bin.exists() {
-        eprintln!("Skipping: binary not found at {:?}", bin);
-        return;
+        panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
     }
     assert_exit(Command::new(&bin).args(["mode", "--help"]), true);
 }
@@ -130,8 +119,7 @@ fn mode_help_exits_zero() {
 fn version_output_contains_amplihack() {
     let bin = amplihack_bin();
     if !bin.exists() {
-        eprintln!("Skipping: binary not found at {:?}", bin);
-        return;
+        panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
     }
     let output = Command::new(&bin)
         .arg("--version")

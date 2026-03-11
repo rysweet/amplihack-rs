@@ -327,6 +327,12 @@ fn format_recipe_run_table(result: &RecipeRunResult, show_context: bool) -> Stri
 
         if !step.output.is_empty() {
             let output = if step.output.chars().count() > MAX_OUTPUT_LENGTH {
+                tracing::warn!(
+                    step_id = %step.step_id,
+                    original_len = step.output.chars().count(),
+                    max_len = MAX_OUTPUT_LENGTH,
+                    "Step output truncated"
+                );
                 format!(
                     "{}... (truncated)",
                     step.output

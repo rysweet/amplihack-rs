@@ -10,7 +10,7 @@ amplihack registers 7 hooks in `~/.claude/settings.json` when you run `amplihack
 | 2 | `Stop` | Binary subcommand | `amplihack-hooks stop` | 120 s |
 | 3 | `PreToolUse` | Binary subcommand | `amplihack-hooks pre-tool-use` | *(none)* |
 | 4 | `PostToolUse` | Binary subcommand | `amplihack-hooks post-tool-use` | *(none)* |
-| 5 | `UserPromptSubmit` | Python file | `~/.amplihack/.claude/tools/amplihack/hooks/workflow_classification_reminder.py` | 5 s |
+| 5 | `UserPromptSubmit` | Python file | `~/.amplihack/.claude/tools/amplihack/hooks/workflow_classification_reminder.py` **[planned]** | 5 s |
 | 6 | `UserPromptSubmit` | Binary subcommand | `amplihack-hooks user-prompt-submit` | 10 s |
 | 7 | `PreCompact` | Binary subcommand | `amplihack-hooks pre-compact` | 30 s |
 
@@ -48,7 +48,7 @@ Each hook is written as a wrapper object under the event key:
         "hooks": [
           {
             "type": "command",
-            "command": "/home/alice/.amplihack/.claude/tools/amplihack/hooks/workflow_classification_reminder.py",
+            "command": "/home/alice/.amplihack/.claude/tools/amplihack/hooks/workflow_classification_reminder.py [planned]",
             "timeout": 5
           }
         ]
@@ -71,7 +71,7 @@ Each hook is written as a wrapper object under the event key:
 
 - `PreToolUse` and `PostToolUse` have no `timeout` field. Absence means fail-open (no timeout enforced by Claude Code).
 - Both `PreToolUse` and `PostToolUse` use matcher `"*"` to intercept all tool calls.
-- The two `UserPromptSubmit` entries must appear in order: `workflow_classification_reminder.py` first, then `user-prompt-submit`. The installer preserves this order on both fresh install and idempotent update.
+- The two `UserPromptSubmit` entries must appear in order: `workflow_classification_reminder.py` **[planned]** first, then `user-prompt-submit`. The installer preserves this order on both fresh install and idempotent update.
 - Hook commands are written with the **absolute path** to `amplihack-hooks` resolved at install time. If the binary moves, re-run `amplihack install` to update the paths.
 
 ## Hook Descriptions
@@ -92,9 +92,11 @@ Runs before every tool call (matcher `*`). Validates Bash commands against the a
 
 Runs after every tool call (matcher `*`). Records tool usage metrics. No timeout — fail-open.
 
-### 5. UserPromptSubmit — `workflow_classification_reminder.py`
+### 5. UserPromptSubmit — `workflow_classification_reminder.py` **[planned]**
 
 The **first** of two `UserPromptSubmit` hooks. Injects a workflow classification reminder into the prompt context. Runs as a Python script directly (not via `amplihack-hooks`). 5-second timeout.
+
+> **Note:** `workflow_classification_reminder.py` does not exist yet. This hook is planned for a future release. The installer currently does not register it.
 
 ### 6. UserPromptSubmit — `user-prompt-submit`
 
@@ -114,7 +116,7 @@ All Python hook scripts are staged at install time to:
 ├── stop.py
 ├── pre_tool_use.py
 ├── post_tool_use.py
-├── workflow_classification_reminder.py
+├── workflow_classification_reminder.py  [planned — not yet implemented]
 ├── user_prompt_submit.py
 └── pre_compact.py
 ```
@@ -154,7 +156,7 @@ The check matters because Claude Code executes hook command strings directly. A 
 Running `amplihack install` a second time updates hook command strings in place. The installer uses type-directed matching:
 
 - **Binary subcommand hooks** — matched by exe filename (`amplihack-hooks`) plus subcommand argument (`session-start`, `stop`, etc.)
-- **Python file hooks** — matched by filename (`workflow_classification_reminder.py`) and containment in `tools/amplihack/`
+- **Python file hooks** — matched by filename (`workflow_classification_reminder.py` **[planned]**) and containment in `tools/amplihack/`
 
 An existing entry is replaced in place (preserving its array position). A missing entry is appended. No duplicates are created.
 
