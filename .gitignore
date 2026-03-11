@@ -13,3 +13,5 @@ worktrees/
 # Amplihack runtime directories (auto-generated)
 .claude/logs/
 .claude/runtime/
+index.scip
+.amplihack/

@@ -38,19 +38,32 @@ impl EnvBuilder {
     /// Add AMPLIHACK_SESSION_ID (generate a new one if not already set).
     pub fn with_amplihack_session_id(self) -> Self {
         let session_id = env::var("AMPLIHACK_SESSION_ID").unwrap_or_else(|_| generate_session_id());
-        let depth: u32 = env::var("AMPLIHACK_DEPTH")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
+        // Pass depth through unchanged (matching Python behavior)
+        let depth = env::var("AMPLIHACK_DEPTH").unwrap_or_else(|_| "1".to_string());
 
         self.set("AMPLIHACK_SESSION_ID", session_id)
-            .set("AMPLIHACK_DEPTH", (depth + 1).to_string())
+            .set("AMPLIHACK_DEPTH", depth)
     }
 
-    /// Add standard AMPLIHACK_* variables.
+    /// Add standard AMPLIHACK_* variables and NODE_OPTIONS.
     pub fn with_amplihack_vars(self) -> Self {
+        // Merge NODE_OPTIONS: append if existing (and not already present), set fresh otherwise
+        let max_old_space = "--max-old-space-size=32768";
+        let node_opts_value = match env::var("NODE_OPTIONS") {
+            Ok(existing) if !existing.is_empty() => {
+                if existing.contains("--max-old-space-size=") {
+                    // Already has a --max-old-space-size setting, don't duplicate
+                    existing
+                } else {
+                    format!("{existing} {max_old_space}")
+                }
+            }
+            _ => max_old_space.to_string(),
+        };
+
         self.set("AMPLIHACK_RUST_RUNTIME", "1")
             .set("AMPLIHACK_VERSION", env!("CARGO_PKG_VERSION"))
+            .set("NODE_OPTIONS", node_opts_value)
     }
 
     /// Build the final environment as key-value pairs.
