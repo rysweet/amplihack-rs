@@ -10,6 +10,18 @@ Rust core runtime for amplihack's deterministic infrastructure layer.
 - **amplihack (bin)** — CLI binary (Phase 2)
 - **amplihack-hooks (bin)** — Multicall hook binary
 
+## Installation
+
+### Standard (no cmake required)
+```bash
+cargo install --git https://github.com/rysweet/amplihack-rs amplihack --locked
+```
+
+### With Kuzu graph backend (requires cmake)
+```bash
+cargo install --git https://github.com/rysweet/amplihack-rs amplihack --locked --features kuzu-backend
+```
+
 ## Quick Start
 
 ```bash

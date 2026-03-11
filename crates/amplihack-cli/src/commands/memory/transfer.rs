@@ -1,0 +1,884 @@
+//! `memory export` and `memory import` command implementations.
+
+use super::*;
+use crate::command_error::exit_error;
+use anyhow::Result;
+#[cfg(feature = "kuzu-backend")]
+use kuzu::{
+    Connection as KuzuConnection, Database as KuzuDatabase, SystemConfig, Value as KuzuValue,
+};
+#[cfg(feature = "kuzu-backend")]
+use serde::{Deserialize, Serialize};
+#[cfg(feature = "kuzu-backend")]
+use serde_json::Value as JsonValue;
+#[cfg(feature = "kuzu-backend")]
+use std::fs;
+#[cfg(feature = "kuzu-backend")]
+use std::io::Read;
+use std::io::{self, Write};
+#[cfg(feature = "kuzu-backend")]
+use std::path::Path;
+#[cfg(feature = "kuzu-backend")]
+use std::path::PathBuf;
+
+#[cfg(feature = "kuzu-backend")]
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct HierarchicalExportData {
+    pub(crate) agent_name: String,
+    pub(crate) exported_at: String,
+    pub(crate) format_version: String,
+    pub(crate) semantic_nodes: Vec<SemanticNode>,
+    pub(crate) episodic_nodes: Vec<EpisodicNode>,
+    pub(crate) similar_to_edges: Vec<SimilarEdge>,
+    pub(crate) derives_from_edges: Vec<DerivesEdge>,
+    pub(crate) supersedes_edges: Vec<SupersedesEdge>,
+    pub(crate) transitioned_to_edges: Vec<TransitionEdge>,
+    #[serde(default)]
+    pub(crate) statistics: HierarchicalStats,
+}
+
+#[cfg(feature = "kuzu-backend")]
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SemanticNode {
+    pub(crate) memory_id: String,
+    pub(crate) concept: String,
+    pub(crate) content: String,
+    pub(crate) confidence: f64,
+    pub(crate) source_id: String,
+    pub(crate) tags: Vec<String>,
+    pub(crate) metadata: JsonValue,
+    pub(crate) created_at: String,
+    pub(crate) entity_name: String,
+}
+
+#[cfg(feature = "kuzu-backend")]
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct EpisodicNode {
+    pub(crate) memory_id: String,
+    pub(crate) content: String,
+    pub(crate) source_label: String,
+    pub(crate) tags: Vec<String>,
+    pub(crate) metadata: JsonValue,
+    pub(crate) created_at: String,
+}
+
+#[cfg(feature = "kuzu-backend")]
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SimilarEdge {
+    pub(crate) source_id: String,
+    pub(crate) target_id: String,
+    pub(crate) weight: f64,
+    pub(crate) metadata: JsonValue,
+}
+
+#[cfg(feature = "kuzu-backend")]
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct DerivesEdge {
+    pub(crate) source_id: String,
+    pub(crate) target_id: String,
+    pub(crate) extraction_method: String,
+    pub(crate) confidence: f64,
+}
+
+#[cfg(feature = "kuzu-backend")]
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SupersedesEdge {
+    pub(crate) source_id: String,
+    pub(crate) target_id: String,
+    pub(crate) reason: String,
+    pub(crate) temporal_delta: String,
+}
+
+#[cfg(feature = "kuzu-backend")]
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct TransitionEdge {
+    pub(crate) source_id: String,
+    pub(crate) target_id: String,
+    pub(crate) from_value: String,
+    pub(crate) to_value: String,
+    pub(crate) turn: i64,
+    pub(crate) transition_type: String,
+}
+
+#[cfg(feature = "kuzu-backend")]
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct HierarchicalStats {
+    pub(crate) semantic_node_count: usize,
+    pub(crate) episodic_node_count: usize,
+    pub(crate) similar_to_edge_count: usize,
+    pub(crate) derives_from_edge_count: usize,
+    pub(crate) supersedes_edge_count: usize,
+    pub(crate) transitioned_to_edge_count: usize,
+}
+
+#[cfg(feature = "kuzu-backend")]
+#[derive(Debug, Default)]
+pub(crate) struct ImportStats {
+    pub(crate) semantic_nodes_imported: usize,
+    pub(crate) episodic_nodes_imported: usize,
+    pub(crate) edges_imported: usize,
+    pub(crate) skipped: usize,
+    pub(crate) errors: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct ExportResult {
+    pub(crate) agent_name: String,
+    pub(crate) format: String,
+    pub(crate) output_path: String,
+    pub(crate) file_size_bytes: Option<u64>,
+    pub(crate) statistics: Vec<(String, String)>,
+}
+
+impl ExportResult {
+    pub(crate) fn statistics_lines(&self) -> Vec<(String, String)> {
+        self.statistics.clone()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ImportResult {
+    pub(crate) agent_name: String,
+    pub(crate) format: String,
+    pub(crate) source_agent: Option<String>,
+    pub(crate) merge: bool,
+    pub(crate) statistics: Vec<(String, String)>,
+}
+
+impl ImportResult {
+    pub(crate) fn statistics_lines(&self) -> Vec<(String, String)> {
+        self.statistics.clone()
+    }
+}
+
+pub fn run_export(
+    agent_name: &str,
+    output: &str,
+    format: &str,
+    storage_path: Option<&str>,
+) -> Result<()> {
+    let format = TransferFormat::parse(format);
+    match format.and_then(|fmt| export_memory(agent_name, output, fmt, storage_path)) {
+        Ok(result) => {
+            println!("Exported memory for agent '{}'", result.agent_name);
+            println!("  Format: {}", result.format);
+            println!("  Output: {}", result.output_path);
+            if let Some(size_bytes) = result.file_size_bytes {
+                println!("  Size: {:.1} KB", size_bytes as f64 / 1024.0);
+            }
+            for (key, value) in result.statistics_lines() {
+                println!("  {key}: {value}");
+            }
+            Ok(())
+        }
+        Err(error) => {
+            writeln!(io::stderr(), "Error exporting memory: {error}")?;
+            Err(exit_error(1))
+        }
+    }
+}
+
+pub fn run_import(
+    agent_name: &str,
+    input: &str,
+    format: &str,
+    merge: bool,
+    storage_path: Option<&str>,
+) -> Result<()> {
+    let format = TransferFormat::parse(format);
+    match format.and_then(|fmt| import_memory(agent_name, input, fmt, merge, storage_path)) {
+        Ok(result) => {
+            println!("Imported memory into agent '{}'", result.agent_name);
+            println!("  Format: {}", result.format);
+            println!(
+                "  Source agent: {}",
+                result
+                    .source_agent
+                    .clone()
+                    .unwrap_or_else(|| "N/A".to_string())
+            );
+            println!(
+                "  Merge mode: {}",
+                if result.merge { "True" } else { "False" }
+            );
+            for (key, value) in result.statistics_lines() {
+                println!("  {key}: {value}");
+            }
+            Ok(())
+        }
+        Err(error) => {
+            writeln!(io::stderr(), "Error importing memory: {error}")?;
+            Err(exit_error(1))
+        }
+    }
+}
+
+fn export_memory(
+    agent_name: &str,
+    output: &str,
+    format: TransferFormat,
+    storage_path: Option<&str>,
+) -> Result<ExportResult> {
+    match format {
+        TransferFormat::Json => export_hierarchical_json(agent_name, output, storage_path),
+        #[cfg(feature = "kuzu-backend")]
+        TransferFormat::Kuzu => export_hierarchical_kuzu(agent_name, output, storage_path),
+    }
+}
+
+fn import_memory(
+    agent_name: &str,
+    input: &str,
+    format: TransferFormat,
+    merge: bool,
+    storage_path: Option<&str>,
+) -> Result<ImportResult> {
+    match format {
+        TransferFormat::Json => import_hierarchical_json(agent_name, input, merge, storage_path),
+        #[cfg(feature = "kuzu-backend")]
+        TransferFormat::Kuzu => import_hierarchical_kuzu(agent_name, input, merge, storage_path),
+    }
+}
+
+#[cfg(feature = "kuzu-backend")]
+fn export_hierarchical_json(
+    agent_name: &str,
+    output: &str,
+    storage_path: Option<&str>,
+) -> Result<ExportResult> {
+    let db_path = resolve_hierarchical_db_path(agent_name, storage_path)?;
+    let db = KuzuDatabase::new(&db_path, SystemConfig::default())?;
+    let conn = KuzuConnection::new(&db)?;
+    init_hierarchical_schema(&conn)?;
+
+    let semantic_nodes = kuzu_rows(
+        &conn,
+        "MATCH (m:SemanticMemory) WHERE m.agent_id = $agent_id RETURN m.memory_id, m.concept, m.content, m.confidence, m.source_id, m.tags, m.metadata, m.created_at, m.entity_name ORDER BY m.created_at ASC",
+        vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
+    )?
+    .into_iter()
+    .map(|row| -> Result<SemanticNode> {
+        Ok(SemanticNode {
+            memory_id: kuzu_string(row.first())?,
+            concept: kuzu_string(row.get(1))?,
+            content: kuzu_string(row.get(2))?,
+            confidence: kuzu_f64(row.get(3))?,
+            source_id: kuzu_string(row.get(4))?,
+            tags: parse_json_array_of_strings(&kuzu_string(row.get(5))?)?,
+            metadata: parse_json_value(&kuzu_string(row.get(6))?)
+                .unwrap_or(JsonValue::Object(Default::default())),
+            created_at: kuzu_string(row.get(7))?,
+            entity_name: kuzu_string(row.get(8))?,
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
+
+    let episodic_nodes = kuzu_rows(
+        &conn,
+        "MATCH (e:EpisodicMemory) WHERE e.agent_id = $agent_id RETURN e.memory_id, e.content, e.source_label, e.tags, e.metadata, e.created_at ORDER BY e.created_at ASC",
+        vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
+    )?
+    .into_iter()
+    .map(|row| -> Result<EpisodicNode> {
+        Ok(EpisodicNode {
+            memory_id: kuzu_string(row.first())?,
+            content: kuzu_string(row.get(1))?,
+            source_label: kuzu_string(row.get(2))?,
+            tags: parse_json_array_of_strings(&kuzu_string(row.get(3))?)?,
+            metadata: parse_json_value(&kuzu_string(row.get(4))?)
+                .unwrap_or(JsonValue::Object(Default::default())),
+            created_at: kuzu_string(row.get(5))?,
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
+
+    let similar_to_edges = kuzu_rows(
+        &conn,
+        "MATCH (a:SemanticMemory)-[r:SIMILAR_TO]->(b:SemanticMemory) WHERE a.agent_id = $agent_id RETURN a.memory_id, b.memory_id, r.weight, r.metadata",
+        vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
+    )?
+    .into_iter()
+    .map(|row| -> Result<SimilarEdge> {
+        Ok(SimilarEdge {
+            source_id: kuzu_string(row.first())?,
+            target_id: kuzu_string(row.get(1))?,
+            weight: kuzu_f64(row.get(2))?,
+            metadata: parse_json_value(&kuzu_string(row.get(3))?)
+                .unwrap_or(JsonValue::Object(Default::default())),
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
+
+    let derives_from_edges = kuzu_rows(
+        &conn,
+        "MATCH (s:SemanticMemory)-[r:DERIVES_FROM]->(e:EpisodicMemory) WHERE s.agent_id = $agent_id RETURN s.memory_id, e.memory_id, r.extraction_method, r.confidence",
+        vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
+    )?
+    .into_iter()
+    .map(|row| -> Result<DerivesEdge> {
+        Ok(DerivesEdge {
+            source_id: kuzu_string(row.first())?,
+            target_id: kuzu_string(row.get(1))?,
+            extraction_method: kuzu_string(row.get(2))?,
+            confidence: kuzu_f64(row.get(3))?,
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
+
+    let supersedes_edges = kuzu_rows(
+        &conn,
+        "MATCH (newer:SemanticMemory)-[r:SUPERSEDES]->(older:SemanticMemory) WHERE newer.agent_id = $agent_id RETURN newer.memory_id, older.memory_id, r.reason, r.temporal_delta",
+        vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
+    )?
+    .into_iter()
+    .map(|row| -> Result<SupersedesEdge> {
+        Ok(SupersedesEdge {
+            source_id: kuzu_string(row.first())?,
+            target_id: kuzu_string(row.get(1))?,
+            reason: kuzu_string(row.get(2))?,
+            temporal_delta: kuzu_string(row.get(3))?,
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
+
+    let transitioned_to_edges = kuzu_rows(
+        &conn,
+        "MATCH (newer:SemanticMemory)-[r:TRANSITIONED_TO]->(older:SemanticMemory) WHERE newer.agent_id = $agent_id RETURN newer.memory_id, older.memory_id, r.from_value, r.to_value, r.turn, r.transition_type",
+        vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
+    )?
+    .into_iter()
+    .map(|row| -> Result<TransitionEdge> {
+        Ok(TransitionEdge {
+            source_id: kuzu_string(row.first())?,
+            target_id: kuzu_string(row.get(1))?,
+            from_value: kuzu_string(row.get(2))?,
+            to_value: kuzu_string(row.get(3))?,
+            turn: kuzu_i64(row.get(4))?,
+            transition_type: kuzu_string(row.get(5))?,
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
+
+    let export = HierarchicalExportData {
+        agent_name: agent_name.to_string(),
+        exported_at: kuzu_export_timestamp(),
+        format_version: "1.1".to_string(),
+        semantic_nodes,
+        episodic_nodes,
+        similar_to_edges,
+        derives_from_edges,
+        supersedes_edges,
+        transitioned_to_edges,
+        statistics: HierarchicalStats::default(),
+    };
+    let mut export = export;
+    export.statistics = HierarchicalStats {
+        semantic_node_count: export.semantic_nodes.len(),
+        episodic_node_count: export.episodic_nodes.len(),
+        similar_to_edge_count: export.similar_to_edges.len(),
+        derives_from_edge_count: export.derives_from_edges.len(),
+        supersedes_edge_count: export.supersedes_edges.len(),
+        transitioned_to_edge_count: export.transitioned_to_edges.len(),
+    };
+
+    let output_path = PathBuf::from(output);
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let serialized = serde_json::to_string_pretty(&export)?;
+    fs::write(&output_path, serialized)?;
+    let file_size = output_path.metadata()?.len();
+    Ok(ExportResult {
+        agent_name: agent_name.to_string(),
+        format: "json".to_string(),
+        output_path: output_path.canonicalize()?.display().to_string(),
+        file_size_bytes: Some(file_size),
+        statistics: vec![
+            (
+                "semantic_node_count".to_string(),
+                export.statistics.semantic_node_count.to_string(),
+            ),
+            (
+                "episodic_node_count".to_string(),
+                export.statistics.episodic_node_count.to_string(),
+            ),
+            (
+                "similar_to_edge_count".to_string(),
+                export.statistics.similar_to_edge_count.to_string(),
+            ),
+            (
+                "derives_from_edge_count".to_string(),
+                export.statistics.derives_from_edge_count.to_string(),
+            ),
+            (
+                "supersedes_edge_count".to_string(),
+                export.statistics.supersedes_edge_count.to_string(),
+            ),
+            (
+                "transitioned_to_edge_count".to_string(),
+                export.statistics.transitioned_to_edge_count.to_string(),
+            ),
+        ],
+    })
+}
+
+#[cfg(not(feature = "kuzu-backend"))]
+fn export_hierarchical_json(
+    agent_name: &str,
+    output: &str,
+    _storage_path: Option<&str>,
+) -> Result<ExportResult> {
+    // Without kuzu-backend, json export is not supported (requires kuzu DB)
+    anyhow::bail!(
+        "JSON export from hierarchical memory requires the kuzu-backend feature. \
+        Reinstall with: cargo install --git https://github.com/rysweet/amplihack-rs amplihack --locked --features kuzu-backend. \
+        Agent: {agent_name}, output: {output}"
+    )
+}
+
+#[cfg(feature = "kuzu-backend")]
+fn export_hierarchical_kuzu(
+    agent_name: &str,
+    output: &str,
+    storage_path: Option<&str>,
+) -> Result<ExportResult> {
+    let db_path = resolve_hierarchical_db_path(agent_name, storage_path)?;
+    let output_path = PathBuf::from(output);
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if output_path.exists() {
+        if output_path.is_dir() {
+            fs::remove_dir_all(&output_path)?;
+        } else {
+            fs::remove_file(&output_path)?;
+        }
+    }
+    copy_hierarchical_storage(&db_path, &output_path)?;
+    let size = compute_path_size(&output_path)?;
+    Ok(ExportResult {
+        agent_name: agent_name.to_string(),
+        format: "kuzu".to_string(),
+        output_path: output_path.canonicalize()?.display().to_string(),
+        file_size_bytes: Some(size),
+        statistics: vec![(
+            "note".to_string(),
+            "Raw Kuzu DB copy - use JSON format for node/edge counts".to_string(),
+        )],
+    })
+}
+
+#[cfg(feature = "kuzu-backend")]
+fn import_hierarchical_json(
+    agent_name: &str,
+    input: &str,
+    merge: bool,
+    storage_path: Option<&str>,
+) -> Result<ImportResult> {
+    let input_path = PathBuf::from(input);
+    let mut raw = String::new();
+    fs::File::open(&input_path)?.read_to_string(&mut raw)?;
+    let data: HierarchicalExportData = serde_json::from_str(&raw)?;
+    let db_path = resolve_hierarchical_db_path(agent_name, storage_path)?;
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let db = KuzuDatabase::new(&db_path, SystemConfig::default())?;
+    let conn = KuzuConnection::new(&db)?;
+    init_hierarchical_schema(&conn)?;
+    if !merge {
+        clear_hierarchical_agent_data(&conn, agent_name)?;
+    }
+    let existing_ids = if merge {
+        get_existing_hierarchical_ids(&conn, agent_name)?
+    } else {
+        Vec::new()
+    };
+    let mut stats = ImportStats::default();
+
+    for node in &data.episodic_nodes {
+        if node.memory_id.is_empty() {
+            stats.errors += 1;
+            continue;
+        }
+        if merge && existing_ids.contains(&node.memory_id) {
+            stats.skipped += 1;
+            continue;
+        }
+        let mut prepared = conn.prepare(
+            "CREATE (e:EpisodicMemory {memory_id: $memory_id, content: $content, source_label: $source_label, agent_id: $agent_id, tags: $tags, metadata: $metadata, created_at: $created_at})",
+        )?;
+        if conn
+            .execute(
+                &mut prepared,
+                vec![
+                    ("memory_id", KuzuValue::String(node.memory_id.clone())),
+                    ("content", KuzuValue::String(node.content.clone())),
+                    ("source_label", KuzuValue::String(node.source_label.clone())),
+                    ("agent_id", KuzuValue::String(agent_name.to_string())),
+                    (
+                        "tags",
+                        KuzuValue::String(serde_json::to_string(&node.tags)?),
+                    ),
+                    (
+                        "metadata",
+                        KuzuValue::String(serde_json::to_string(&node.metadata)?),
+                    ),
+                    ("created_at", KuzuValue::String(node.created_at.clone())),
+                ],
+            )
+            .is_ok()
+        {
+            stats.episodic_nodes_imported += 1;
+        } else {
+            stats.errors += 1;
+        }
+    }
+
+    for node in &data.semantic_nodes {
+        if node.memory_id.is_empty() {
+            stats.errors += 1;
+            continue;
+        }
+        if merge && existing_ids.contains(&node.memory_id) {
+            stats.skipped += 1;
+            continue;
+        }
+        let mut prepared = conn.prepare(
+            "CREATE (m:SemanticMemory {memory_id: $memory_id, concept: $concept, content: $content, confidence: $confidence, source_id: $source_id, agent_id: $agent_id, tags: $tags, metadata: $metadata, created_at: $created_at, entity_name: $entity_name})",
+        )?;
+        if conn
+            .execute(
+                &mut prepared,
+                vec![
+                    ("memory_id", KuzuValue::String(node.memory_id.clone())),
+                    ("concept", KuzuValue::String(node.concept.clone())),
+                    ("content", KuzuValue::String(node.content.clone())),
+                    ("confidence", KuzuValue::Double(node.confidence)),
+                    ("source_id", KuzuValue::String(node.source_id.clone())),
+                    ("agent_id", KuzuValue::String(agent_name.to_string())),
+                    (
+                        "tags",
+                        KuzuValue::String(serde_json::to_string(&node.tags)?),
+                    ),
+                    (
+                        "metadata",
+                        KuzuValue::String(serde_json::to_string(&node.metadata)?),
+                    ),
+                    ("created_at", KuzuValue::String(node.created_at.clone())),
+                    ("entity_name", KuzuValue::String(node.entity_name.clone())),
+                ],
+            )
+            .is_ok()
+        {
+            stats.semantic_nodes_imported += 1;
+        } else {
+            stats.errors += 1;
+        }
+    }
+
+    for edge in &data.similar_to_edges {
+        if create_hierarchical_edge(
+            &conn,
+            "MATCH (a:SemanticMemory {memory_id: $sid}) MATCH (b:SemanticMemory {memory_id: $tid}) CREATE (a)-[:SIMILAR_TO {weight: $weight, metadata: $metadata}]->(b)",
+            vec![
+                ("sid", KuzuValue::String(edge.source_id.clone())),
+                ("tid", KuzuValue::String(edge.target_id.clone())),
+                ("weight", KuzuValue::Double(edge.weight)),
+                (
+                    "metadata",
+                    KuzuValue::String(serde_json::to_string(&edge.metadata)?),
+                ),
+            ],
+        )? {
+            stats.edges_imported += 1;
+        } else {
+            stats.errors += 1;
+        }
+    }
+    for edge in &data.derives_from_edges {
+        if create_hierarchical_edge(
+            &conn,
+            "MATCH (s:SemanticMemory {memory_id: $sid}) MATCH (e:EpisodicMemory {memory_id: $tid}) CREATE (s)-[:DERIVES_FROM {extraction_method: $method, confidence: $confidence}]->(e)",
+            vec![
+                ("sid", KuzuValue::String(edge.source_id.clone())),
+                ("tid", KuzuValue::String(edge.target_id.clone())),
+                ("method", KuzuValue::String(edge.extraction_method.clone())),
+                ("confidence", KuzuValue::Double(edge.confidence)),
+            ],
+        )? {
+            stats.edges_imported += 1;
+        } else {
+            stats.errors += 1;
+        }
+    }
+    for edge in &data.supersedes_edges {
+        if create_hierarchical_edge(
+            &conn,
+            "MATCH (newer:SemanticMemory {memory_id: $sid}) MATCH (older:SemanticMemory {memory_id: $tid}) CREATE (newer)-[:SUPERSEDES {reason: $reason, temporal_delta: $delta}]->(older)",
+            vec![
+                ("sid", KuzuValue::String(edge.source_id.clone())),
+                ("tid", KuzuValue::String(edge.target_id.clone())),
+                ("reason", KuzuValue::String(edge.reason.clone())),
+                ("delta", KuzuValue::String(edge.temporal_delta.clone())),
+            ],
+        )? {
+            stats.edges_imported += 1;
+        } else {
+            stats.errors += 1;
+        }
+    }
+    for edge in &data.transitioned_to_edges {
+        if create_hierarchical_edge(
+            &conn,
+            "MATCH (newer:SemanticMemory {memory_id: $sid}) MATCH (older:SemanticMemory {memory_id: $tid}) CREATE (newer)-[:TRANSITIONED_TO {from_value: $from_val, to_value: $to_val, turn: $turn, transition_type: $ttype}]->(older)",
+            vec![
+                ("sid", KuzuValue::String(edge.source_id.clone())),
+                ("tid", KuzuValue::String(edge.target_id.clone())),
+                ("from_val", KuzuValue::String(edge.from_value.clone())),
+                ("to_val", KuzuValue::String(edge.to_value.clone())),
+                ("turn", KuzuValue::Int64(edge.turn)),
+                ("ttype", KuzuValue::String(edge.transition_type.clone())),
+            ],
+        )? {
+            stats.edges_imported += 1;
+        } else {
+            stats.errors += 1;
+        }
+    }
+
+    Ok(ImportResult {
+        agent_name: agent_name.to_string(),
+        format: "json".to_string(),
+        source_agent: Some(data.agent_name),
+        merge,
+        statistics: vec![
+            (
+                "semantic_nodes_imported".to_string(),
+                stats.semantic_nodes_imported.to_string(),
+            ),
+            (
+                "episodic_nodes_imported".to_string(),
+                stats.episodic_nodes_imported.to_string(),
+            ),
+            (
+                "edges_imported".to_string(),
+                stats.edges_imported.to_string(),
+            ),
+            ("skipped".to_string(), stats.skipped.to_string()),
+            ("errors".to_string(), stats.errors.to_string()),
+        ],
+    })
+}
+
+#[cfg(not(feature = "kuzu-backend"))]
+fn import_hierarchical_json(
+    agent_name: &str,
+    _input: &str,
+    _merge: bool,
+    _storage_path: Option<&str>,
+) -> Result<ImportResult> {
+    anyhow::bail!(
+        "JSON import into hierarchical memory requires the kuzu-backend feature. \
+        Reinstall with: cargo install --git https://github.com/rysweet/amplihack-rs amplihack --locked --features kuzu-backend. \
+        Agent: {agent_name}"
+    )
+}
+
+#[cfg(feature = "kuzu-backend")]
+fn import_hierarchical_kuzu(
+    agent_name: &str,
+    input: &str,
+    merge: bool,
+    storage_path: Option<&str>,
+) -> Result<ImportResult> {
+    if merge {
+        anyhow::bail!(
+            "Merge mode is not supported for kuzu format. Use JSON format for merge imports, or set merge=False to replace the DB entirely."
+        );
+    }
+    let input_path = PathBuf::from(input);
+    if !input_path.exists() {
+        anyhow::bail!("Input path does not exist: {}", input_path.display());
+    }
+    let target_path = resolve_hierarchical_db_path(agent_name, storage_path)?;
+    if let Some(parent) = target_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if target_path.exists() {
+        let backup_path = target_path.with_extension("bak");
+        if backup_path.exists() {
+            if backup_path.is_dir() {
+                fs::remove_dir_all(&backup_path)?;
+            } else {
+                fs::remove_file(&backup_path)?;
+            }
+        }
+        fs::rename(&target_path, &backup_path)?;
+    }
+    copy_hierarchical_storage(&input_path, &target_path)?;
+    Ok(ImportResult {
+        agent_name: agent_name.to_string(),
+        format: "kuzu".to_string(),
+        source_agent: None,
+        merge: false,
+        statistics: vec![(
+            "note".to_string(),
+            "Raw Kuzu DB replaced - restart agent to use new DB".to_string(),
+        )],
+    })
+}
+
+#[cfg(feature = "kuzu-backend")]
+fn init_hierarchical_schema(conn: &KuzuConnection<'_>) -> Result<()> {
+    for statement in HIERARCHICAL_SCHEMA {
+        conn.query(statement)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "kuzu-backend")]
+fn clear_hierarchical_agent_data(conn: &KuzuConnection<'_>, agent_name: &str) -> Result<()> {
+    for query in [
+        "MATCH (a:SemanticMemory {agent_id: $aid})-[r:SIMILAR_TO]->() DELETE r",
+        "MATCH ()-[r:SIMILAR_TO]->(b:SemanticMemory {agent_id: $aid}) DELETE r",
+        "MATCH (s:SemanticMemory {agent_id: $aid})-[r:DERIVES_FROM]->() DELETE r",
+        "MATCH (n:SemanticMemory {agent_id: $aid})-[r:SUPERSEDES]->() DELETE r",
+        "MATCH ()-[r:SUPERSEDES]->(o:SemanticMemory {agent_id: $aid}) DELETE r",
+        "MATCH (n:SemanticMemory {agent_id: $aid})-[r:TRANSITIONED_TO]->() DELETE r",
+        "MATCH ()-[r:TRANSITIONED_TO]->(o:SemanticMemory {agent_id: $aid}) DELETE r",
+        "MATCH (m:SemanticMemory {agent_id: $aid}) DELETE m",
+        "MATCH (e:EpisodicMemory {agent_id: $aid}) DELETE e",
+    ] {
+        kuzu_rows(
+            conn,
+            query,
+            vec![("aid", KuzuValue::String(agent_name.to_string()))],
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "kuzu-backend")]
+fn get_existing_hierarchical_ids(
+    conn: &KuzuConnection<'_>,
+    agent_name: &str,
+) -> Result<Vec<String>> {
+    let mut ids = Vec::new();
+    for query in [
+        "MATCH (m:SemanticMemory {agent_id: $aid}) RETURN m.memory_id",
+        "MATCH (e:EpisodicMemory {agent_id: $aid}) RETURN e.memory_id",
+    ] {
+        let rows = kuzu_rows(
+            conn,
+            query,
+            vec![("aid", KuzuValue::String(agent_name.to_string()))],
+        )?;
+        for row in rows {
+            ids.push(kuzu_string(row.first())?);
+        }
+    }
+    Ok(ids)
+}
+
+#[cfg(feature = "kuzu-backend")]
+fn create_hierarchical_edge(
+    conn: &KuzuConnection<'_>,
+    query: &str,
+    params: Vec<(&str, KuzuValue)>,
+) -> Result<bool> {
+    let mut prepared = conn.prepare(query)?;
+    Ok(conn.execute(&mut prepared, params).is_ok())
+}
+
+#[cfg(feature = "kuzu-backend")]
+fn resolve_hierarchical_db_path(agent_name: &str, storage_path: Option<&str>) -> Result<PathBuf> {
+    let base = match storage_path {
+        Some(path) => PathBuf::from(path),
+        None => home_dir()?
+            .join(".amplihack")
+            .join("hierarchical_memory")
+            .join(agent_name),
+    };
+    if base.is_dir() && !base.join("kuzu.lock").exists() {
+        return Ok(base.join("kuzu_db"));
+    }
+    if base.join("kuzu_db").is_dir() {
+        return Ok(base.join("kuzu_db"));
+    }
+    Ok(base)
+}
+
+#[cfg(feature = "kuzu-backend")]
+fn copy_hierarchical_storage(src: &Path, dst: &Path) -> Result<()> {
+    use anyhow::Context;
+    if src.is_dir() {
+        copy_dir_recursive(src, dst)?;
+        return Ok(());
+    }
+    fs::copy(src, dst)
+        .with_context(|| format!("failed to copy {} to {}", src.display(), dst.display()))?;
+    Ok(())
+}
+
+#[cfg(feature = "kuzu-backend")]
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            if let Some(parent) = to.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "kuzu-backend")]
+fn compute_path_size(path: &Path) -> Result<u64> {
+    if path.is_file() {
+        return Ok(path.metadata()?.len());
+    }
+    let mut total = 0u64;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        total += compute_path_size(&entry.path())?;
+    }
+    Ok(total)
+}
+
+#[cfg(feature = "kuzu-backend")]
+pub(crate) fn kuzu_export_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Match Python well enough for parity comparisons that normalize timestamps.
+    format!("{}", now)
+}
+
+#[cfg(feature = "kuzu-backend")]
+pub(crate) fn parse_json_array_of_strings(value: &str) -> Result<Vec<String>> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let parsed = parse_json_value(value)?;
+    match parsed {
+        JsonValue::Array(items) => Ok(items
+            .into_iter()
+            .filter_map(|item| match item {
+                JsonValue::String(value) => Some(value),
+                _ => None,
+            })
+            .collect()),
+        _ => Ok(Vec::new()),
+    }
+}

@@ -15,6 +15,9 @@ disabled-strategies = ["quick-install", "compile"]
 name = "amplihack"
 path = "src/main.rs"
 
+[features]
+kuzu-backend = ["amplihack-cli/kuzu-backend"]
+
 [dependencies]
 amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
