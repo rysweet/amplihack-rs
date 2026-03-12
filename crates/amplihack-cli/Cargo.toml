@@ -24,9 +24,15 @@ tar = "0.4"
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+sha2 = { workspace = true }
 ureq = { version = "2", features = ["json"] }
 kuzu = { version = "0.11.3" }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+anyhow = { workspace = true }
+
+[[test]]
+name = "kuzu_ffi"
+path = "../../tests/integration/kuzu_ffi_test.rs"

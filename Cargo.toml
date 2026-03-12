@@ -27,6 +27,7 @@ tempfile = "3"
 shell-words = "1"
 clap = { version = "4", features = ["derive"] }
 signal-hook = "0.3"
+sha2 = "0.10"
 libc = "0.2"
 
 # Workspace crate cross-references

@@ -19,6 +19,7 @@ pub fn run_launch(
     tool: &str,
     resume: bool,
     continue_session: bool,
+    skip_permissions: bool,
     extra_args: Vec<String>,
 ) -> Result<()> {
     bootstrap::prepare_launcher(tool)?;
@@ -58,7 +59,13 @@ pub fn run_launch(
         .build();
 
     // Build command
-    let mut cmd = build_command(&binary, resume, continue_session, &extra_args);
+    let mut cmd = build_command(
+        &binary,
+        resume,
+        continue_session,
+        skip_permissions,
+        &extra_args,
+    );
     cmd.envs(env);
 
     // Register signal handlers
@@ -80,12 +87,17 @@ fn build_command(
     binary: &BinaryInfo,
     resume: bool,
     continue_session: bool,
+    skip_permissions: bool,
     extra_args: &[String],
 ) -> Command {
     let mut cmd = Command::new(&binary.path);
 
-    // Always inject --dangerously-skip-permissions (matching Python behavior)
-    cmd.arg("--dangerously-skip-permissions");
+    // SEC-2: Only inject --dangerously-skip-permissions when the caller has
+    // explicitly opted in via `--skip-permissions`.  This flag bypasses
+    // Claude's interactive confirmation prompts and must not be on by default.
+    if skip_permissions {
+        cmd.arg("--dangerously-skip-permissions");
+    }
 
     // Inject --model unless user already supplied one
     let user_has_model = extra_args.iter().any(|a| a == "--model");
@@ -136,19 +148,34 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn build_command_basic() {
+    fn build_command_basic_no_skip_permissions_by_default() {
         let binary = BinaryInfo {
             name: "claude".to_string(),
             path: PathBuf::from("/usr/bin/claude"),
             version: Some("1.0.0".to_string()),
         };
-        let cmd = build_command(&binary, false, false, &[]);
+        // skip_permissions = false (default): should NOT inject --dangerously-skip-permissions
+        let cmd = build_command(&binary, false, false, false, &[]);
         assert_eq!(cmd.get_program(), "/usr/bin/claude");
         let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        // Should inject --dangerously-skip-permissions and --model <default>
+        // Should inject --model <default> only
+        assert_eq!(args[0], "--model");
+        // Default model depends on env; just check we have 2 args
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn build_command_with_skip_permissions_flag() {
+        let binary = BinaryInfo {
+            name: "claude".to_string(),
+            path: PathBuf::from("/usr/bin/claude"),
+            version: Some("1.0.0".to_string()),
+        };
+        // skip_permissions = true: should inject --dangerously-skip-permissions
+        let cmd = build_command(&binary, false, false, true, &[]);
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
         assert_eq!(args[0], "--dangerously-skip-permissions");
         assert_eq!(args[1], "--model");
-        // Default model depends on env; just check we have 3 args
         assert_eq!(args.len(), 3);
     }
 
@@ -161,7 +188,7 @@ mod tests {
         };
         // User supplies --model so we should NOT inject a default --model
         let extra = vec!["--model".to_string(), "opus".to_string()];
-        let cmd = build_command(&binary, true, true, &extra);
+        let cmd = build_command(&binary, true, true, true, &extra);
         let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
         assert_eq!(
             args,
@@ -173,5 +200,18 @@ mod tests {
                 "opus"
             ]
         );
+    }
+
+    #[test]
+    fn build_command_without_skip_permissions_and_with_flags() {
+        let binary = BinaryInfo {
+            name: "claude".to_string(),
+            path: PathBuf::from("/usr/bin/claude"),
+            version: None,
+        };
+        let extra = vec!["--model".to_string(), "opus".to_string()];
+        let cmd = build_command(&binary, true, true, false, &extra);
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        assert_eq!(args, &["--resume", "--continue", "--model", "opus"]);
     }
 }
