@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn prepare_launcher(tool: &str) -> Result<()> {
+    check_required_tools()?;
     install::ensure_framework_installed()?;
 
     match tool {
@@ -19,6 +20,29 @@ pub fn prepare_launcher(tool: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Check that required system tools are available.
+/// Prints warnings for missing tools but only fails for critical ones.
+fn check_required_tools() -> Result<()> {
+    // tmux is required for recipe runner workflow execution
+    if which("tmux").is_none() {
+        eprintln!("⚠️  tmux is not installed. Recipe workflow execution requires tmux.");
+        eprintln!("   Install it:");
+        eprintln!("     macOS:  brew install tmux");
+        eprintln!("     Ubuntu: sudo apt install tmux");
+        eprintln!("     Fedora: sudo dnf install tmux");
+    }
+    Ok(())
+}
+
+fn which(tool: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).find_map(|dir| {
+            let full = dir.join(tool);
+            if full.is_file() { Some(full) } else { None }
+        })
+    })
 }
 
 pub fn ensure_tool_available(tool: &str) -> Result<BinaryInfo> {
