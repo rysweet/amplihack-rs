@@ -481,6 +481,15 @@ pub fn run_verify(plugin_name: &str) -> Result<()> {
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    // Resolve the source root once so we can validate symlink targets.
+    let src_root = src
+        .canonicalize()
+        .with_context(|| format!("failed to resolve source root {}", src.display()))?;
+
+    copy_dir_recursive_inner(src, dst, &src_root)
+}
+
+fn copy_dir_recursive_inner(src: &Path, dst: &Path, src_root: &Path) -> Result<()> {
     fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
     for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
         let entry = entry?;
@@ -488,7 +497,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         let target = dst.join(entry.file_name());
         let kind = entry.file_type()?;
         if kind.is_dir() {
-            copy_dir_recursive(&source, &target)?;
+            copy_dir_recursive_inner(&source, &target, src_root)?;
         } else if kind.is_file() {
             fs::copy(&source, &target).with_context(|| {
                 format!(
@@ -500,10 +509,62 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         } else if kind.is_symlink() {
             let link_target = fs::read_link(&source)
                 .with_context(|| format!("failed to read {}", source.display()))?;
+
+            // SEC-3: Validate that the symlink target does not escape the plugin
+            // source directory.  An attacker-controlled plugin could include a
+            // symlink like `evil -> ~/.ssh/id_rsa` that would then be reproduced
+            // inside the installation directory, exposing sensitive host files.
+            //
+            // If the target is absolute, reject it outright.
+            // If the target is relative, resolve it against the symlink's parent
+            // and verify the resolved path is still inside src_root.
+            if link_target.is_absolute() {
+                anyhow::bail!(
+                    "plugin contains a symlink with an absolute target, which is not allowed:                     {} -> {}",
+                    source.display(),
+                    link_target.display()
+                );
+            }
+
+            // Compute the hypothetical resolved path without touching the filesystem.
+            let resolved = source.parent().unwrap_or(src).join(&link_target);
+            // Use lexical normalization: canonicalize requires the path to exist,
+            // which it may not in a freshly-extracted archive.
+            let normalized = normalize_path(&resolved);
+            if !normalized.starts_with(src_root) {
+                anyhow::bail!(
+                    "plugin contains a symlink that escapes the plugin directory (path traversal                     attack): {} -> {} (resolves to {})",
+                    source.display(),
+                    link_target.display(),
+                    normalized.display()
+                );
+            }
+
             create_symlink(&link_target, &target)?;
         }
     }
     Ok(())
+}
+
+/// Normalize a path lexically (remove `.` and `..` components) without
+/// requiring the path to exist on disk.
+fn normalize_path(path: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut components: Vec<_> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if components.last() == Some(&Component::Normal(std::ffi::OsStr::new(".."))) {
+                    components.push(component);
+                } else {
+                    components.pop();
+                }
+            }
+            _ => components.push(component),
+        }
+    }
+    components.iter().collect()
 }
 
 #[cfg(unix)]

@@ -168,8 +168,7 @@ fn cxx_and_cxx_build_versions_match() {
         .unwrap_or_else(|| panic!("cxx-build not found in Cargo.lock at {path:?}"));
 
     assert_eq!(
-        cxx,
-        cxx_build,
+        cxx, cxx_build,
         "\n\
         ┌─────────────────────────────────────────────────────────────────────┐\n\
         │  cxx version mismatch detected — kuzu C++ FFI will fail to link!    │\n\
@@ -201,8 +200,7 @@ fn cxxbridge_suite_versions_match_cxx() {
     for component in &["cxxbridge-cmd", "cxxbridge-flags", "cxxbridge-macro"] {
         if let Some(component_version) = versions.get(*component) {
             assert_eq!(
-                cxx,
-                component_version,
+                cxx, component_version,
                 "{component} version ({component_version}) must match cxx ({cxx}).\n\
                 Bridge component drift can cause subtle FFI incompatibilities.\n\
                 See docs/concepts/cxx-version-contract.md"
@@ -247,10 +245,12 @@ fn cxx_build_patch_version_compatible_with_kuzu_0_11_3() {
         .parse()
         .expect("cxx-build patch version must be numeric");
 
-    assert_eq!(major, 1, "cxx-build major must be 1, got: {cxx_build_version}");
     assert_eq!(
-        patch,
-        138,
+        major, 1,
+        "cxx-build major must be 1, got: {cxx_build_version}"
+    );
+    assert_eq!(
+        patch, 138,
         "\n\
         cxx-build patch version must be 138 to be compatible with kuzu 0.11.3.\n\
         Found:    cxx-build = {cxx_build_version} (patch = {patch})\n\
@@ -287,8 +287,7 @@ fn cxx_version_is_kuzu_compatible() {
 
     assert_eq!(major, 1, "cxx major must be 1, got: {cxx_version}");
     assert_eq!(
-        patch,
-        138,
+        patch, 138,
         "cxx patch version must be 138 (kuzu 0.11.3 requires cxx = '=1.0.138').\n\
         If cxx has been upgraded, re-validate kuzu compatibility and update this test.\n\
         See docs/concepts/cxx-version-contract.md for the version compatibility table."
