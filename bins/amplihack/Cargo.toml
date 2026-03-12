@@ -33,3 +33,7 @@ tempfile = { workspace = true }
 [[test]]
 name = "cli_launch"
 path = "../../tests/integration/cli_launch_test.rs"
+
+[[test]]
+name = "cargo_lock_cxx_consistency"
+path = "../../tests/integration/cargo_lock_cxx_consistency_test.rs"

@@ -9,6 +9,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Install amplihack for the First Time](./howto/first-install.md) — Bootstrap from scratch, including Python validation, binary deployment, and hook registration
 - [Install from a Local Repository](./howto/local-install.md) — Install without network access using a local checkout
 - [Uninstall amplihack](./howto/uninstall.md) — Cleanly remove all installed files, binaries, and hook registrations
+- [Resolve kuzu Linker Errors](./howto/resolve-kuzu-linker-errors.md) — Diagnose and fix `undefined reference` errors caused by `cxx`/`cxx-build` version mismatch
 
 ### Reference
 
@@ -21,6 +22,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 
 - [Bootstrap Parity](./concepts/bootstrap-parity.md) — Why the Rust CLI replicates the Python installer's first-install flow and what that means for users
 - [Idempotent Installation](./concepts/idempotent-installation.md) — How repeated installs are safe and how existing hook registrations are updated in place
+- [The cxx/cxx-build Version Contract](./concepts/cxx-version-contract.md) — Why `cxx` and `cxx-build` must share the same minor version and how a mismatch produces linker errors
 
 ## Quick Start
 

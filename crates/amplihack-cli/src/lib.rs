@@ -51,6 +51,11 @@ pub enum Commands {
         /// Continue the previous session
         #[arg(long)]
         continue_session: bool,
+        /// Inject --dangerously-skip-permissions into the claude invocation.
+        /// This bypasses Claude's interactive confirmation prompts.
+        /// Use only in trusted automated environments.
+        #[arg(long = "skip-permissions")]
+        skip_permissions: bool,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true)]
         claude_args: Vec<String>,
@@ -302,4 +307,15 @@ pub enum ModeCommands {
     ToPlugin,
     /// Switch to local mode
     ToLocal,
+}
+
+/// Re-export memory backend utilities for integration tests.
+///
+/// These functions are part of the internal implementation but are exposed
+/// here so that `tests/integration/kuzu_ffi_test.rs` can exercise the kuzu
+/// C++ FFI boundary without embedding integration tests inside production code.
+pub mod memory {
+    pub use crate::commands::memory::{
+        SessionSummary, init_kuzu_backend_schema, kuzu_rows, list_kuzu_sessions_from_conn,
+    };
 }

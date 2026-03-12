@@ -249,9 +249,9 @@ impl TransferFormat {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct SessionSummary {
-    pub(crate) session_id: String,
-    pub(crate) memory_count: usize,
+pub struct SessionSummary {
+    pub session_id: String,
+    pub memory_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -374,7 +374,7 @@ pub(crate) fn open_kuzu_memory_db() -> Result<KuzuDatabase> {
     Ok(KuzuDatabase::new(path, SystemConfig::default())?)
 }
 
-pub(crate) fn init_kuzu_backend_schema(conn: &KuzuConnection<'_>) -> Result<()> {
+pub fn init_kuzu_backend_schema(conn: &KuzuConnection<'_>) -> Result<()> {
     for statement in KUZU_BACKEND_SCHEMA {
         conn.query(statement)?;
     }
@@ -388,9 +388,7 @@ pub(crate) fn list_kuzu_sessions() -> Result<Vec<SessionSummary>> {
     list_kuzu_sessions_from_conn(&conn)
 }
 
-pub(crate) fn list_kuzu_sessions_from_conn(
-    conn: &KuzuConnection<'_>,
-) -> Result<Vec<SessionSummary>> {
+pub fn list_kuzu_sessions_from_conn(conn: &KuzuConnection<'_>) -> Result<Vec<SessionSummary>> {
     let rows = kuzu_rows(
         conn,
         "MATCH (s:Session) RETURN s.session_id, s.created_at, s.last_accessed, s.metadata ORDER BY s.last_accessed DESC",
@@ -493,7 +491,7 @@ pub(crate) fn delete_kuzu_session(session_id: &str) -> Result<bool> {
     Ok(true)
 }
 
-pub(crate) fn kuzu_rows(
+pub fn kuzu_rows(
     conn: &KuzuConnection<'_>,
     query: &str,
     params: Vec<(&str, KuzuValue)>,
@@ -633,6 +631,10 @@ mod tests {
     use super::*;
     use rusqlite::params;
 
+    // -----------------------------------------------------------------------
+    // SQLite tests (existing)
+    // -----------------------------------------------------------------------
+
     #[test]
     fn sqlite_session_listing_reads_schema() -> Result<()> {
         let conn = SqliteConnection::open_in_memory()?;
@@ -653,5 +655,155 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].memory_count, 1);
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // BackendChoice / TransferFormat unit tests
+    // -----------------------------------------------------------------------
+
+    /// BackendChoice::parse must accept "kuzu" and "sqlite" and reject anything else.
+    ///
+    /// These tests are purely logic-level and do not touch the kuzu C++ FFI.
+    /// They document the expected API contract for callers of the memory backend.
+    #[test]
+    fn backend_choice_parse_kuzu() {
+        assert_eq!(BackendChoice::parse("kuzu").unwrap(), BackendChoice::Kuzu);
+    }
+
+    #[test]
+    fn backend_choice_parse_sqlite() {
+        assert_eq!(
+            BackendChoice::parse("sqlite").unwrap(),
+            BackendChoice::Sqlite
+        );
+    }
+
+    #[test]
+    fn backend_choice_parse_invalid_returns_error() {
+        assert!(
+            BackendChoice::parse("postgres").is_err(),
+            "Unknown backend names must be rejected"
+        );
+        assert!(
+            BackendChoice::parse("").is_err(),
+            "Empty string must be rejected"
+        );
+        assert!(
+            BackendChoice::parse("KUZU").is_err(),
+            "Case-sensitive: 'KUZU' is not 'kuzu'"
+        );
+    }
+
+    #[test]
+    fn transfer_format_parse_json() {
+        assert_eq!(TransferFormat::parse("json").unwrap(), TransferFormat::Json);
+    }
+
+    #[test]
+    fn transfer_format_parse_kuzu() {
+        assert_eq!(TransferFormat::parse("kuzu").unwrap(), TransferFormat::Kuzu);
+    }
+
+    #[test]
+    fn transfer_format_parse_invalid_returns_error() {
+        assert!(
+            TransferFormat::parse("csv").is_err(),
+            "Unsupported formats must be rejected"
+        );
+        assert!(
+            TransferFormat::parse("").is_err(),
+            "Empty string must be rejected"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // KuzuValue conversion unit tests
+    // -----------------------------------------------------------------------
+
+    /// kuzu_value_to_string must convert all scalar value variants to strings.
+    /// These tests exercise the Rust-side value marshaling layer.
+    #[test]
+    fn kuzu_value_to_string_handles_string_variant() {
+        let val = KuzuValue::String("hello".to_string());
+        assert_eq!(kuzu_value_to_string(&val), "hello");
+    }
+
+    #[test]
+    fn kuzu_value_to_string_handles_null() {
+        let val = KuzuValue::Null(kuzu::LogicalType::String);
+        assert_eq!(
+            kuzu_value_to_string(&val),
+            "",
+            "Null must convert to empty string"
+        );
+    }
+
+    #[test]
+    fn kuzu_value_to_string_handles_non_string_via_display() {
+        let val = KuzuValue::Int64(42);
+        let s = kuzu_value_to_string(&val);
+        assert!(
+            s.contains("42"),
+            "Int64(42) should display as a string containing '42', got: {s}"
+        );
+    }
+
+    /// kuzu_value_to_i64 must extract integer values from all numeric variants.
+    #[test]
+    fn kuzu_value_to_i64_extracts_int64() {
+        assert_eq!(kuzu_value_to_i64(&KuzuValue::Int64(99)), Some(99));
+    }
+
+    #[test]
+    fn kuzu_value_to_i64_extracts_int32() {
+        assert_eq!(kuzu_value_to_i64(&KuzuValue::Int32(7)), Some(7));
+    }
+
+    #[test]
+    fn kuzu_value_to_i64_extracts_uint32() {
+        assert_eq!(kuzu_value_to_i64(&KuzuValue::UInt32(5)), Some(5));
+    }
+
+    #[test]
+    fn kuzu_value_to_i64_returns_none_for_non_numeric() {
+        let val = KuzuValue::String("abc".to_string());
+        assert_eq!(
+            kuzu_value_to_i64(&val),
+            None,
+            "Non-numeric value must return None"
+        );
+    }
+
+    #[test]
+    fn kuzu_value_to_i64_extracts_double_as_truncated_i64() {
+        assert_eq!(kuzu_value_to_i64(&KuzuValue::Double(3.9)), Some(3));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_json_value unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_json_value_empty_string_returns_empty_object() {
+        let val = parse_json_value("").unwrap();
+        assert!(
+            val.is_object(),
+            "Empty string must parse to empty JSON object"
+        );
+        assert!(val.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_json_value_valid_json_parses_correctly() {
+        let val = parse_json_value(r#"{"key": "value"}"#).unwrap();
+        assert_eq!(val["key"], "value");
+    }
+
+    #[test]
+    fn parse_json_value_invalid_json_returns_error() {
+        assert!(
+            parse_json_value("{not valid json}").is_err(),
+            "Invalid JSON must return an error"
+        );
     }
 }
