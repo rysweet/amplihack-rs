@@ -631,7 +631,13 @@ pub(crate) fn parse_json_value(value: &str) -> Result<JsonValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kuzu::{Connection as KuzuConn, Database as KuzuDb, SystemConfig as KuzuSysCfg};
     use rusqlite::params;
+    use tempfile::TempDir;
+
+    // -----------------------------------------------------------------------
+    // SQLite tests (existing)
+    // -----------------------------------------------------------------------
 
     #[test]
     fn sqlite_session_listing_reads_schema() -> Result<()> {
@@ -652,6 +658,430 @@ mod tests {
         let sessions = list_sqlite_sessions_from_conn(&conn)?;
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].memory_count, 1);
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // BackendChoice / TransferFormat unit tests
+    // -----------------------------------------------------------------------
+
+    /// BackendChoice::parse must accept "kuzu" and "sqlite" and reject anything else.
+    ///
+    /// These tests are purely logic-level and do not touch the kuzu C++ FFI.
+    /// They document the expected API contract for callers of the memory backend.
+    #[test]
+    fn backend_choice_parse_kuzu() {
+        assert_eq!(BackendChoice::parse("kuzu").unwrap(), BackendChoice::Kuzu);
+    }
+
+    #[test]
+    fn backend_choice_parse_sqlite() {
+        assert_eq!(
+            BackendChoice::parse("sqlite").unwrap(),
+            BackendChoice::Sqlite
+        );
+    }
+
+    #[test]
+    fn backend_choice_parse_invalid_returns_error() {
+        assert!(
+            BackendChoice::parse("postgres").is_err(),
+            "Unknown backend names must be rejected"
+        );
+        assert!(
+            BackendChoice::parse("").is_err(),
+            "Empty string must be rejected"
+        );
+        assert!(
+            BackendChoice::parse("KUZU").is_err(),
+            "Case-sensitive: 'KUZU' is not 'kuzu'"
+        );
+    }
+
+    #[test]
+    fn transfer_format_parse_json() {
+        assert_eq!(
+            TransferFormat::parse("json").unwrap(),
+            TransferFormat::Json
+        );
+    }
+
+    #[test]
+    fn transfer_format_parse_kuzu() {
+        assert_eq!(
+            TransferFormat::parse("kuzu").unwrap(),
+            TransferFormat::Kuzu
+        );
+    }
+
+    #[test]
+    fn transfer_format_parse_invalid_returns_error() {
+        assert!(
+            TransferFormat::parse("csv").is_err(),
+            "Unsupported formats must be rejected"
+        );
+        assert!(
+            TransferFormat::parse("").is_err(),
+            "Empty string must be rejected"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // KuzuValue conversion unit tests
+    // -----------------------------------------------------------------------
+
+    /// kuzu_value_to_string must convert all scalar value variants to strings.
+    /// These tests exercise the Rust-side value marshaling layer.
+    #[test]
+    fn kuzu_value_to_string_handles_string_variant() {
+        let val = KuzuValue::String("hello".to_string());
+        assert_eq!(kuzu_value_to_string(&val), "hello");
+    }
+
+    #[test]
+    fn kuzu_value_to_string_handles_null() {
+        let val = KuzuValue::Null(kuzu::LogicalType::String);
+        assert_eq!(
+            kuzu_value_to_string(&val),
+            "",
+            "Null must convert to empty string"
+        );
+    }
+
+    #[test]
+    fn kuzu_value_to_string_handles_non_string_via_display() {
+        let val = KuzuValue::Int64(42);
+        let s = kuzu_value_to_string(&val);
+        assert!(
+            s.contains("42"),
+            "Int64(42) should display as a string containing '42', got: {s}"
+        );
+    }
+
+    /// kuzu_value_to_i64 must extract integer values from all numeric variants.
+    #[test]
+    fn kuzu_value_to_i64_extracts_int64() {
+        assert_eq!(kuzu_value_to_i64(&KuzuValue::Int64(99)), Some(99));
+    }
+
+    #[test]
+    fn kuzu_value_to_i64_extracts_int32() {
+        assert_eq!(kuzu_value_to_i64(&KuzuValue::Int32(7)), Some(7));
+    }
+
+    #[test]
+    fn kuzu_value_to_i64_extracts_uint32() {
+        assert_eq!(kuzu_value_to_i64(&KuzuValue::UInt32(5)), Some(5));
+    }
+
+    #[test]
+    fn kuzu_value_to_i64_returns_none_for_non_numeric() {
+        let val = KuzuValue::String("abc".to_string());
+        assert_eq!(
+            kuzu_value_to_i64(&val),
+            None,
+            "Non-numeric value must return None"
+        );
+    }
+
+    #[test]
+    fn kuzu_value_to_i64_extracts_double_as_truncated_i64() {
+        assert_eq!(kuzu_value_to_i64(&KuzuValue::Double(3.9)), Some(3));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_json_value unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_json_value_empty_string_returns_empty_object() {
+        let val = parse_json_value("").unwrap();
+        assert!(
+            val.is_object(),
+            "Empty string must parse to empty JSON object"
+        );
+        assert!(val.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_json_value_valid_json_parses_correctly() {
+        let val = parse_json_value(r#"{"key": "value"}"#).unwrap();
+        assert_eq!(val["key"], "value");
+    }
+
+    #[test]
+    fn parse_json_value_invalid_json_returns_error() {
+        assert!(
+            parse_json_value("{not valid json}").is_err(),
+            "Invalid JSON must return an error"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Kuzu C++ FFI integration tests
+    //
+    // These tests exercise the actual kuzu C++ FFI through the cxx bridge.
+    // They will FAIL AT LINK TIME if cxx-build has a different minor version
+    // than cxx, producing errors like:
+    //   undefined reference to `cxxbridge1$string$new$1_0_138'
+    //
+    // After the fix (cargo update -p cxx-build --precise 1.0.138), the
+    // linker resolves all symbols and these tests compile and run.
+    //
+    // Closes: https://github.com/rysweet/amplihack-rs/issues/35
+    // -----------------------------------------------------------------------
+
+    /// Helper: create a temporary kuzu database in an isolated directory.
+    ///
+    /// Returns the TempDir (kept alive for the test scope) and the Database.
+    fn temp_kuzu_db() -> Result<(TempDir, KuzuDb)> {
+        let dir = TempDir::new().map_err(|e| anyhow::anyhow!("tempdir: {e}"))?;
+        let db = KuzuDb::new(dir.path().join("test.kuzu"), KuzuSysCfg::default())
+            .map_err(|e| anyhow::anyhow!("kuzu open: {e}"))?;
+        Ok((dir, db))
+    }
+
+    /// Verify that the kuzu Database can be created.
+    ///
+    /// This is the simplest possible kuzu FFI smoke test.  If this test
+    /// fails to compile, the cxx/cxx-build version mismatch is present.
+    #[test]
+    fn kuzu_ffi_database_opens() -> Result<()> {
+        let (_dir, _db) = temp_kuzu_db()?;
+        Ok(())
+    }
+
+    /// Verify that a Connection can be created from a Database.
+    ///
+    /// Connection creation crosses the cxx bridge: it calls the C++ constructor
+    /// via a generated bridge symbol.
+    #[test]
+    fn kuzu_ffi_connection_opens() -> Result<()> {
+        let (_dir, db) = temp_kuzu_db()?;
+        let _conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("connection: {e}"))?;
+        Ok(())
+    }
+
+    /// Verify that a trivial query executes through the C++ query engine.
+    ///
+    /// `RETURN 1` exercises the full Rust→C++ FFI path: query string is passed
+    /// over the bridge, the C++ engine evaluates it, and a QueryResult is
+    /// returned over the bridge back to Rust.
+    #[test]
+    fn kuzu_ffi_basic_query_executes() -> Result<()> {
+        let (_dir, db) = temp_kuzu_db()?;
+        let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let result = conn
+            .query("RETURN 1")
+            .map_err(|e| anyhow::anyhow!("RETURN 1 failed: {e}"))?;
+        let rows: Vec<Vec<KuzuValue>> = result.collect();
+        assert_eq!(rows.len(), 1, "RETURN 1 must yield exactly one row");
+        Ok(())
+    }
+
+    /// Verify that a node table can be defined via DDL.
+    ///
+    /// CREATE NODE TABLE involves schema mutation across the cxx bridge,
+    /// exercising bridge symbols for string-passing and error propagation.
+    #[test]
+    fn kuzu_ffi_node_table_ddl() -> Result<()> {
+        let (_dir, db) = temp_kuzu_db()?;
+        let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Ping(id STRING, PRIMARY KEY (id))",
+        )
+        .map_err(|e| anyhow::anyhow!("CREATE NODE TABLE failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Verify that a relationship table can be defined via DDL.
+    ///
+    /// Relationship tables add an additional level of schema complexity
+    /// and exercise the C++ catalog more deeply than node tables.
+    #[test]
+    fn kuzu_ffi_rel_table_ddl() -> Result<()> {
+        let (_dir, db) = temp_kuzu_db()?;
+        let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.query("CREATE NODE TABLE IF NOT EXISTS SrcNode(id STRING, PRIMARY KEY (id))")
+            .map_err(|e| anyhow::anyhow!("CREATE SrcNode: {e}"))?;
+        conn.query("CREATE NODE TABLE IF NOT EXISTS DstNode(id STRING, PRIMARY KEY (id))")
+            .map_err(|e| anyhow::anyhow!("CREATE DstNode: {e}"))?;
+        conn.query(
+            "CREATE REL TABLE IF NOT EXISTS LINKED(FROM SrcNode TO DstNode, weight DOUBLE)",
+        )
+        .map_err(|e| anyhow::anyhow!("CREATE REL TABLE: {e}"))?;
+        Ok(())
+    }
+
+    /// Verify the full insert → query round-trip through the cxx bridge.
+    ///
+    /// This exercises Rust→C++ value marshaling in both directions:
+    ///   - INSERT: Rust strings are passed to C++ storage
+    ///   - MATCH:  C++ values are returned to Rust as kuzu::Value
+    #[test]
+    fn kuzu_ffi_insert_and_query_round_trip() -> Result<()> {
+        let (_dir, db) = temp_kuzu_db()?;
+        let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Msg(msg_id STRING, body STRING, PRIMARY KEY (msg_id))",
+        )
+        .map_err(|e| anyhow::anyhow!("schema: {e}"))?;
+        conn.query("CREATE (:Msg {msg_id: 'm1', body: 'hello'})")
+            .map_err(|e| anyhow::anyhow!("insert m1: {e}"))?;
+        conn.query("CREATE (:Msg {msg_id: 'm2', body: 'world'})")
+            .map_err(|e| anyhow::anyhow!("insert m2: {e}"))?;
+
+        let result = conn
+            .query("MATCH (m:Msg) RETURN m.msg_id ORDER BY m.msg_id")
+            .map_err(|e| anyhow::anyhow!("MATCH: {e}"))?;
+        let rows: Vec<Vec<KuzuValue>> = result.collect();
+        assert_eq!(rows.len(), 2, "Expected 2 messages, got {}", rows.len());
+        Ok(())
+    }
+
+    /// Verify that parameterized queries work via the cxx bridge.
+    ///
+    /// Parameterized queries involve an extra FFI crossing to pass parameter
+    /// values from Rust into the C++ prepared statement executor.
+    /// This is the same path used by `kuzu_rows()` with non-empty params.
+    #[test]
+    fn kuzu_ffi_parameterized_query_executes() -> Result<()> {
+        let (_dir, db) = temp_kuzu_db()?;
+        let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Tag(id STRING, label STRING, PRIMARY KEY (id))",
+        )
+        .map_err(|e| anyhow::anyhow!("schema: {e}"))?;
+        conn.query("CREATE (:Tag {id: 'a', label: 'alpha'})")
+            .map_err(|e| anyhow::anyhow!("insert a: {e}"))?;
+        conn.query("CREATE (:Tag {id: 'b', label: 'beta'})")
+            .map_err(|e| anyhow::anyhow!("insert b: {e}"))?;
+
+        let mut prepared = conn
+            .prepare("MATCH (t:Tag {label: $label}) RETURN t.id")
+            .map_err(|e| anyhow::anyhow!("prepare: {e}"))?;
+        let result = conn
+            .execute(
+                &mut prepared,
+                vec![("label", KuzuValue::String("alpha".to_string()))],
+            )
+            .map_err(|e| anyhow::anyhow!("execute: {e}"))?;
+        let rows: Vec<Vec<KuzuValue>> = result.collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "Expected 1 result for label='alpha', got {}",
+            rows.len()
+        );
+        Ok(())
+    }
+
+    /// Verify that the full KUZU_BACKEND_SCHEMA initializes in a fresh database.
+    ///
+    /// This is the most comprehensive kuzu FFI smoke test.  It runs all the DDL
+    /// statements used by the memory backend in production, including all node
+    /// tables (Session, Agent, EpisodicMemory, SemanticMemory, ProceduralMemory,
+    /// ProspectiveMemory, WorkingMemory) and all relationship tables.
+    ///
+    /// If this test fails with linker errors, run:
+    ///   `cargo update -p cxx-build --precise 1.0.138`
+    #[test]
+    fn kuzu_ffi_full_backend_schema_initializes() -> Result<()> {
+        let (_dir, db) = temp_kuzu_db()?;
+        let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        init_kuzu_backend_schema(&conn).context(
+            "KUZU_BACKEND_SCHEMA initialization failed.\n\
+            This may indicate a cxx/cxx-build version mismatch.\n\
+            Fix: cargo update -p cxx-build --precise 1.0.138\n\
+            See docs/howto/resolve-kuzu-linker-errors.md",
+        )?;
+        Ok(())
+    }
+
+    /// Verify that kuzu_rows() helper works with an empty params list.
+    ///
+    /// The `params.is_empty()` branch of kuzu_rows() uses the simpler
+    /// `conn.query()` path instead of prepare+execute.
+    #[test]
+    fn kuzu_rows_helper_no_params() -> Result<()> {
+        let (_dir, db) = temp_kuzu_db()?;
+        let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        let rows = kuzu_rows(&conn, "RETURN 42", vec![])?;
+        assert_eq!(rows.len(), 1, "RETURN 42 must produce one row");
+        Ok(())
+    }
+
+    /// Verify that kuzu_rows() helper works with a non-empty params list.
+    ///
+    /// The parameterized branch of kuzu_rows() prepares the statement and
+    /// calls execute() with the provided key-value parameters.
+    #[test]
+    fn kuzu_rows_helper_with_params() -> Result<()> {
+        let (_dir, db) = temp_kuzu_db()?;
+        let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        conn.query(
+            "CREATE NODE TABLE IF NOT EXISTS Kv(k STRING, v STRING, PRIMARY KEY (k))",
+        )
+        .map_err(|e| anyhow::anyhow!("schema: {e}"))?;
+        conn.query("CREATE (:Kv {k: 'key1', v: 'val1'})")
+            .map_err(|e| anyhow::anyhow!("insert: {e}"))?;
+
+        let rows = kuzu_rows(
+            &conn,
+            "MATCH (n:Kv {k: $k}) RETURN n.v",
+            vec![("k", KuzuValue::String("key1".to_string()))],
+        )?;
+        assert_eq!(rows.len(), 1, "Expected 1 row for k='key1'");
+        Ok(())
+    }
+
+    /// Verify that list_kuzu_sessions_from_conn returns empty list for fresh DB.
+    ///
+    /// A freshly initialized schema must contain zero sessions.
+    #[test]
+    fn kuzu_list_sessions_empty_on_fresh_db() -> Result<()> {
+        let (_dir, db) = temp_kuzu_db()?;
+        let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
+        init_kuzu_backend_schema(&conn)?;
+
+        let sessions = list_kuzu_sessions_from_conn(&conn)?;
+        assert!(
+            sessions.is_empty(),
+            "Fresh database must have zero sessions, got {}",
+            sessions.len()
+        );
+        Ok(())
+    }
+
+    /// Verify that a session node can be created and then listed.
+    ///
+    /// This exercises the full Session → EpisodicMemory relationship path
+    /// that the memory commands use in production.
+    #[test]
+    fn kuzu_session_create_and_list() -> Result<()> {
+        let (_dir, db) = temp_kuzu_db()?;
+        let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
+        init_kuzu_backend_schema(&conn)?;
+
+        let now = "2026-01-02T03:04:05";
+        conn.query(&format!(
+            "CREATE (:Session {{session_id: 'sess-test-001', start_time: timestamp('{now}'), end_time: timestamp('{now}'), user_id: 'test-user', context: '', status: 'active', created_at: timestamp('{now}'), last_accessed: timestamp('{now}'), metadata: '{{}}'}})"
+        )).map_err(|e| anyhow::anyhow!("CREATE Session: {e}"))?;
+
+        let sessions = list_kuzu_sessions_from_conn(&conn)?;
+        assert_eq!(
+            sessions.len(),
+            1,
+            "Expected 1 session after insert, got {}",
+            sessions.len()
+        );
+        assert_eq!(sessions[0].session_id, "sess-test-001");
+        assert_eq!(sessions[0].memory_count, 0, "New session must have 0 memories");
         Ok(())
     }
 }
