@@ -536,6 +536,15 @@ fn remove_hook_registrations(settings_path: &Path) -> Result<()> {
                 });
             }
         }
+        // Phase 2: prune event-type keys where every amplihack wrapper was removed,
+        // leaving no empty arrays in settings.json (fixes issue #38).
+        // Non-array values (unlikely but possible) are kept via the unwrap_or(true) guard.
+        hooks_map.retain(|_event, wrappers_val| {
+            wrappers_val
+                .as_array()
+                .map(|a| !a.is_empty())
+                .unwrap_or(true)
+        });
     }
 
     fs::write(
@@ -2688,21 +2697,26 @@ mod tests {
         let updated_raw = fs::read_to_string(&settings_path).unwrap();
         let updated: serde_json::Value = serde_json::from_str(&updated_raw).unwrap();
 
-        let hooks_arr = updated["hooks"]["UserPromptSubmit"].as_array().unwrap();
-        let any_amplihack_path = hooks_arr.iter().any(|wrapper| {
-            wrapper
-                .get("hooks")
-                .and_then(serde_json::Value::as_array)
-                .map(|hooks| {
-                    hooks.iter().any(|h| {
-                        h["command"]
-                            .as_str()
-                            .map(|c| c.contains("tools/amplihack/"))
-                            .unwrap_or(false)
+        // After Phase 2 pruning the UserPromptSubmit key is removed entirely
+        // because its array became empty.  Both outcomes (absent key OR empty
+        // array) mean no amplihack entries remain — test for either case.
+        let any_amplihack_path = match updated["hooks"]["UserPromptSubmit"].as_array() {
+            None => false, // key pruned — no entries remain
+            Some(hooks_arr) => hooks_arr.iter().any(|wrapper| {
+                wrapper
+                    .get("hooks")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|hooks| {
+                        hooks.iter().any(|h| {
+                            h["command"]
+                                .as_str()
+                                .map(|c| c.contains("tools/amplihack/"))
+                                .unwrap_or(false)
+                        })
                     })
-                })
-                .unwrap_or(false)
-        });
+                    .unwrap_or(false)
+            }),
+        };
         assert!(
             !any_amplihack_path,
             "tools/amplihack/ Python hook paths must be removed from settings.json"
@@ -2763,6 +2777,115 @@ mod tests {
         assert!(
             xpia_present,
             "XPIA hook entries must NOT be removed by remove_hook_registrations"
+        );
+    }
+
+    // ─── TDD: Group 16b — remove_hook_registrations prunes empty arrays ─────────
+
+    /// FAILS until `remove_hook_registrations` removes event-type keys from the
+    /// hooks map when their wrapper array becomes empty after amplihack hooks are
+    /// removed.  Without this fix, settings.json ends up with entries like
+    /// `"PreToolUse": []` which is visual noise and may confuse Claude Code.
+    ///
+    /// Acceptance criteria (issue #38):
+    ///   - After uninstall, no event-type key in hooks map has an empty array value
+    ///   - Keys whose arrays still have non-amplihack entries are preserved as-is
+    #[test]
+    fn remove_hook_registrations_leaves_no_empty_arrays() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+
+        // Both events have ONLY amplihack hooks → both arrays become empty after removal
+        let settings = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "*",
+                        "hooks": [{
+                            "type": "command",
+                            "command": "/home/user/.local/bin/amplihack-hooks pre-tool-use"
+                        }]
+                    }
+                ],
+                "SessionStart": [
+                    {
+                        "hooks": [{
+                            "type": "command",
+                            "command": "/home/user/.local/bin/amplihack-hooks session-start",
+                            "timeout": 10
+                        }]
+                    }
+                ]
+            }
+        });
+        fs::write(&settings_path, serde_json::to_string(&settings).unwrap()).unwrap();
+
+        remove_hook_registrations(&settings_path).unwrap();
+
+        let updated_raw = fs::read_to_string(&settings_path).unwrap();
+        let updated: serde_json::Value = serde_json::from_str(&updated_raw).unwrap();
+
+        // The hooks map must not contain any key whose value is an empty array.
+        if let Some(hooks_map) = updated["hooks"].as_object() {
+            for (event, wrappers_val) in hooks_map {
+                if let Some(arr) = wrappers_val.as_array() {
+                    assert!(
+                        !arr.is_empty(),
+                        "Event type '{}' must be removed from hooks map when all its \
+                         wrappers are gone, but found empty array. Full hooks: {}",
+                        event,
+                        serde_json::to_string_pretty(&updated["hooks"]).unwrap()
+                    );
+                }
+            }
+        }
+    }
+
+    /// Verify that a mixed event (amplihack + non-amplihack wrappers) still retains
+    /// the non-amplihack wrapper and does NOT produce an empty array.
+    #[test]
+    fn remove_hook_registrations_mixed_event_keeps_non_amplihack_wrapper() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+
+        let settings = serde_json::json!({
+            "hooks": {
+                "PostToolUse": [
+                    {
+                        "hooks": [{
+                            "type": "command",
+                            "command": "/home/user/.local/bin/amplihack-hooks post-tool-use"
+                        }]
+                    },
+                    {
+                        "hooks": [{
+                            "type": "command",
+                            "command": "/home/user/.local/bin/third-party-tool post"
+                        }]
+                    }
+                ]
+            }
+        });
+        fs::write(&settings_path, serde_json::to_string(&settings).unwrap()).unwrap();
+
+        remove_hook_registrations(&settings_path).unwrap();
+
+        let updated_raw = fs::read_to_string(&settings_path).unwrap();
+        let updated: serde_json::Value = serde_json::from_str(&updated_raw).unwrap();
+
+        // PostToolUse must still exist with one entry (the third-party wrapper)
+        let wrappers = updated["hooks"]["PostToolUse"].as_array().unwrap();
+        assert_eq!(
+            wrappers.len(),
+            1,
+            "PostToolUse must retain the non-amplihack wrapper"
+        );
+
+        // The remaining wrapper must reference the third-party tool
+        let cmd = wrappers[0]["hooks"][0]["command"].as_str().unwrap_or("");
+        assert!(
+            cmd.contains("third-party-tool"),
+            "Remaining wrapper must be the third-party hook, got: {cmd}"
         );
     }
 
