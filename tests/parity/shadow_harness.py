@@ -429,6 +429,36 @@ EOF
         "argv": ["plugin", "verify", "nonexistent"],
         "compare": ["stdout", "stderr", "exit_code"],
     },
+    # ── WS5: New parity cases (issue #39) ──────────────────────────────────
+    # Install — local mode, idempotent.  exit_code only; stdout/stderr differ
+    # across environments (paths, Python versions, package state).
+    {
+        "name": "shadow-install-local",
+        "category": "install",
+        "argv": ["install", "--local"],
+        "compare": ["exit_code"],
+    },
+    # Uninstall — local mode.  exit_code only; same rationale as install.
+    {
+        "name": "shadow-uninstall-local",
+        "category": "uninstall",
+        "argv": ["uninstall", "--local"],
+        "compare": ["exit_code"],
+    },
+    # Plugin list (distinct from verify-missing which tests error paths).
+    {
+        "name": "shadow-plugin-list",
+        "category": "plugin",
+        "argv": ["plugin", "list"],
+        "compare": ["exit_code"],
+    },
+    # Memory status — lightweight query that does not require a running session.
+    {
+        "name": "shadow-memory-status",
+        "category": "memory",
+        "argv": ["memory", "status", "--backend", "sqlite"],
+        "compare": ["exit_code"],
+    },
 ]
 
 
