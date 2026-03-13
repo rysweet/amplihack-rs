@@ -9,6 +9,7 @@
   - [Version compatibility table](#version-compatibility-table)
 - [How the mismatch happens](#how-the-mismatch-happens)
 - [How Cargo.lock prevents the mismatch](#how-cargolock-prevents-the-mismatch)
+- [How the workspace pin prevents drift](#how-the-workspace-pin-prevents-drift)
 - [Related](#related)
 
 ## Why cxx needs two crates
@@ -86,6 +87,84 @@ cargo update -p cxx-build --precise 1.0.138
 ```
 
 If you regenerate `Cargo.lock` (e.g. `cargo update` or `rm Cargo.lock`) without re-pinning, the mismatch can recur. See [Resolve kuzu linker errors](../howto/resolve-kuzu-linker-errors.md) for recovery steps.
+
+## How the workspace pin prevents drift
+
+`Cargo.lock` is sufficient for reproducible builds within a repository — but only if
+the lockfile is never regenerated without re-pinning. `cargo update` and a clean
+checkout with `cargo fetch` will both re-resolve the dependency graph and can silently
+select a newer `cxx-build`, breaking the version contract.
+
+The workspace pin adds a second layer of protection that survives lockfile
+regeneration.
+
+### The workspace dependency pin
+
+`Cargo.toml` (workspace root) declares an exact version pin for `cxx-build`:
+
+```toml
+[workspace.dependencies]
+# Exact pin required: kuzu 0.11.3 pins cxx = "=1.0.138"; cxx-build MUST match.
+# SEC-WS4-01: exact = pin prevents supply chain drift via cargo update.
+cxx-build = "=1.0.138"
+```
+
+The `=` prefix (note: inside the string, not a TOML operator) is the Cargo exact-pin
+syntax. It tells the resolver to accept only `1.0.138` and reject any other version,
+including `1.0.139`. Without the `=`, Cargo treats the string as a semver requirement
+(`^1.0.138`) and may select a newer patch.
+
+### Why amplihack-cli must reference it explicitly
+
+A workspace dependency pin only takes effect for crates that declare a dependency on
+the pinned package. If no crate in the workspace depends on `cxx-build`, the pin is
+irrelevant and Cargo may still resolve a different version for transitive consumers.
+
+`amplihack-cli/Cargo.toml` therefore includes an explicit `[build-dependencies]`
+reference:
+
+```toml
+[build-dependencies]
+cxx-build = { workspace = true }
+```
+
+This forces the resolver to apply the workspace pin when resolving the full dependency
+graph, keeping `cxx-build` at `1.0.138` even after `cargo update`.
+
+### Why a build.rs stub is required
+
+Cargo only activates `[build-dependencies]` for crates that have a `build.rs` file.
+Without one, the `[build-dependencies]` section is silently ignored.
+
+`crates/amplihack-cli/build.rs` is a minimal no-op:
+
+```rust
+// Intentionally empty — activates [build-dependencies] for cxx-build workspace pin.
+// SEC-WS4-02: Do not add logic here without a security review.
+fn main() {}
+```
+
+**Do not add logic to `build.rs`** without a security review. Build scripts run with
+full filesystem access during `cargo build` and are a common supply-chain attack
+surface.
+
+### Verifying the pin is in effect
+
+After any `cargo update` or lockfile regeneration, verify that both crates are at the
+same version:
+
+```sh
+grep -A1 'name = "cxx"' Cargo.lock
+grep -A1 'name = "cxx-build"' Cargo.lock
+```
+
+Both should show `version = "1.0.138"`. A mismatch means the pin did not apply; see
+[Resolve kuzu linker errors](../howto/resolve-kuzu-linker-errors.md) for recovery.
+
+The existing consistency test (`cargo test --test cargo_lock_cxx_consistency`) also
+verifies this automatically on every CI run.
+
+---
 
 ## Related
 
