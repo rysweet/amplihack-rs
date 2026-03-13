@@ -102,6 +102,9 @@ jobs:
           - target: aarch64-apple-darwin
             runner: macos-latest
             gnu_cross_toolchain: false
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            gnu_cross_toolchain: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -128,12 +131,15 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package
+        shell: bash
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/amplihack dist/ 2>/dev/null || true
-          cp target/${{ matrix.target }}/release/amplihack-hooks dist/ 2>/dev/null || true
-          cd dist && tar czf ../amplihack-${{ matrix.target }}.tar.gz *
-          cd .. && sha256sum amplihack-${{ matrix.target }}.tar.gz > amplihack-${{ matrix.target }}.tar.gz.sha256
+          cp "target/${{ matrix.target }}/release/amplihack" dist/ 2>/dev/null || true
+          cp "target/${{ matrix.target }}/release/amplihack.exe" dist/ 2>/dev/null || true
+          cp "target/${{ matrix.target }}/release/amplihack-hooks" dist/ 2>/dev/null || true
+          cp "target/${{ matrix.target }}/release/amplihack-hooks.exe" dist/ 2>/dev/null || true
+          cd dist && tar czf "../amplihack-${{ matrix.target }}.tar.gz" *
+          cd .. && sha256sum "amplihack-${{ matrix.target }}.tar.gz" > "amplihack-${{ matrix.target }}.tar.gz.sha256"
 
       - uses: actions/upload-artifact@v4
         with:

@@ -16,6 +16,10 @@ const NO_UPDATE_CHECK_ENV: &str = "AMPLIHACK_NO_UPDATE_CHECK";
 const UPDATE_CACHE_RELATIVE_PATH: &str = ".config/amplihack/last_update_check";
 const UPDATE_CHECK_COOLDOWN_SECS: u64 = 24 * 60 * 60;
 const NETWORK_TIMEOUT_SECS: u64 = 5;
+/// Number of additional attempts after an initial transient failure.
+const HTTP_MAX_RETRIES: u32 = 2;
+/// Base delay (in milliseconds) for exponential back-off between retries.
+const HTTP_RETRY_BASE_MS: u64 = 500;
 
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
@@ -129,48 +133,92 @@ fn validate_download_url(url: &str) -> Result<()> {
     )
 }
 
+/// Returns `true` for error kinds that are worth retrying (transient faults).
+///
+/// Permanent errors (404, 403, 401, invalid URL) are not retried — they will
+/// not resolve by themselves and a retry would only delay the final error.
+fn is_transient_error(error: &ureq::Error) -> bool {
+    match error {
+        // Transport-layer errors: connection refused, DNS failure, timeout, etc.
+        ureq::Error::Transport(_) => true,
+        // Server-side errors that may be transient (5xx).
+        ureq::Error::Status(code, _) => *code >= 500,
+    }
+}
+
 fn http_get(url: &str) -> Result<Vec<u8>> {
     // SEC-1: Reject URLs from unexpected hosts before making any network call.
     validate_download_url(url)?;
 
     let timeout = Duration::from_secs(NETWORK_TIMEOUT_SECS);
-    let response = match ureq::AgentBuilder::new()
+    let agent = ureq::AgentBuilder::new()
         .timeout_connect(timeout)
         .timeout_read(timeout)
         .timeout_write(timeout)
-        .build()
-        .get(url)
-        .set("Accept", "application/vnd.github+json")
-        .set("User-Agent", &format!("amplihack/{CURRENT_VERSION}"))
-        .call()
-    {
-        Ok(response) => response,
-        Err(ureq::Error::Status(404, _)) if url.ends_with("/releases/latest") => {
-            bail!("no stable v* release has been published for {GITHUB_REPO} yet")
+        .build();
+
+    let mut last_error: Option<ureq::Error> = None;
+
+    for attempt in 0..=HTTP_MAX_RETRIES {
+        if attempt > 0 {
+            // Exponential back-off: 500 ms, 1 000 ms, …
+            let delay_ms = HTTP_RETRY_BASE_MS * (1u64 << (attempt - 1));
+            tracing::debug!(
+                attempt,
+                delay_ms,
+                url,
+                "retrying HTTP request after transient error"
+            );
+            std::thread::sleep(Duration::from_millis(delay_ms));
         }
-        Err(error) => return Err(anyhow!("HTTP request failed for {url}: {error}")),
-    };
 
-    // SEC-4: Use a bounded read to prevent OOM from a malicious server
-    // sending an unbounded response.  Use the larger binary limit for all
-    // requests; the API response limit would suffice for metadata calls but
-    // we cannot cheaply distinguish them here without complicating the API.
-    let limit = MAX_BINARY_DOWNLOAD_BYTES;
-    let mut body = Vec::new();
-    response
-        .into_reader()
-        .take(limit as u64)
-        .read_to_end(&mut body)
-        .with_context(|| format!("failed to read HTTP response from {url}"))?;
+        let response = match agent
+            .get(url)
+            .set("Accept", "application/vnd.github+json")
+            .set("User-Agent", &format!("amplihack/{CURRENT_VERSION}"))
+            .call()
+        {
+            Ok(response) => response,
+            // Permanent: no release published yet — do not retry.
+            Err(ureq::Error::Status(404, _)) if url.ends_with("/releases/latest") => {
+                bail!("no stable v* release has been published for {GITHUB_REPO} yet")
+            }
+            Err(error) if is_transient_error(&error) => {
+                tracing::debug!(%error, attempt, url, "transient HTTP error");
+                last_error = Some(error);
+                continue;
+            }
+            Err(error) => return Err(anyhow!("HTTP request failed for {url}: {error}")),
+        };
 
-    if body.len() == limit {
-        bail!(
-            "HTTP response from {url} exceeded the size limit of {} bytes; aborting to prevent OOM",
-            limit
-        );
+        // SEC-4: Use a bounded read to prevent OOM from a malicious server
+        // sending an unbounded response.  Use the larger binary limit for all
+        // requests; the API response limit would suffice for metadata calls but
+        // we cannot cheaply distinguish them here without complicating the API.
+        let limit = MAX_BINARY_DOWNLOAD_BYTES;
+        let mut body = Vec::new();
+        response
+            .into_reader()
+            .take(limit as u64)
+            .read_to_end(&mut body)
+            .with_context(|| format!("failed to read HTTP response from {url}"))?;
+
+        if body.len() == limit {
+            bail!(
+                "HTTP response from {url} exceeded the size limit of {} bytes; aborting to prevent OOM",
+                limit
+            );
+        }
+
+        return Ok(body);
     }
 
-    Ok(body)
+    // All retry attempts exhausted.
+    Err(anyhow!(
+        "HTTP request failed for {url} after {} attempt(s): {}",
+        HTTP_MAX_RETRIES + 1,
+        last_error.map_or_else(|| "unknown error".to_string(), |e| e.to_string())
+    ))
 }
 
 fn parse_latest_release(body: Vec<u8>, asset_name: &str) -> Result<UpdateRelease> {
@@ -185,29 +233,33 @@ fn parse_latest_release(body: Vec<u8>, asset_name: &str) -> Result<UpdateRelease
     }
 
     let version = normalize_tag(&release.tag_name)?;
-    let asset = release
-        .assets
-        .iter()
-        .find(|asset| asset.name == asset_name)
-        .ok_or_else(|| {
-            anyhow!(
-                "release {} does not contain asset {}",
-                release.tag_name,
-                asset_name
-            )
-        })?;
 
-    // Look for a matching `.sha256` checksum file in the release assets.
+    // Single pass over assets: locate the archive *and* its optional checksum
+    // file in one O(n) iteration instead of two separate `.find()` calls.
     let checksum_asset_name = format!("{asset_name}.sha256");
-    let checksum_url = release
-        .assets
-        .iter()
-        .find(|a| a.name == checksum_asset_name)
-        .map(|a| a.browser_download_url.clone());
+    let mut asset_url: Option<String> = None;
+    let mut checksum_url: Option<String> = None;
+    for a in &release.assets {
+        if a.name == asset_name {
+            asset_url = Some(a.browser_download_url.clone());
+        } else if a.name == checksum_asset_name {
+            checksum_url = Some(a.browser_download_url.clone());
+        }
+        if asset_url.is_some() && checksum_url.is_some() {
+            break; // both found — no need to inspect the rest of the list
+        }
+    }
+    let asset_url = asset_url.ok_or_else(|| {
+        anyhow!(
+            "release {} does not contain asset {}",
+            release.tag_name,
+            asset_name
+        )
+    })?;
 
     Ok(UpdateRelease {
         version,
-        asset_url: asset.browser_download_url.clone(),
+        asset_url,
         checksum_url,
     })
 }
@@ -227,6 +279,9 @@ fn supported_release_target() -> Option<&'static str> {
         Some("x86_64-apple-darwin")
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         Some("aarch64-apple-darwin")
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        // WS3: Windows build target added to CI/release matrix.
+        Some("x86_64-pc-windows-msvc")
     } else {
         None
     }
@@ -235,7 +290,7 @@ fn supported_release_target() -> Option<&'static str> {
 fn required_release_target() -> Result<&'static str> {
     supported_release_target().ok_or_else(|| {
         anyhow!(
-            "self-update is only supported on published release targets (linux/macos x86_64 and aarch64)"
+            "self-update is only supported on published release targets (linux/macos x86_64/aarch64 and windows x86_64)"
         )
     })
 }
@@ -340,7 +395,9 @@ fn verify_sha256(archive_bytes: &[u8], checksum_url: &str) -> Result<()> {
     let actual_bytes = hasher.finalize();
     let actual_hex = format!("{actual_bytes:x}");
 
-    if actual_hex != expected_hex.to_ascii_lowercase() {
+    // Use eq_ignore_ascii_case to avoid allocating a lowercase copy of
+    // expected_hex purely for comparison purposes.
+    if !actual_hex.eq_ignore_ascii_case(expected_hex) {
         bail!(
             "SHA-256 checksum mismatch for downloaded archive:\n  expected: {expected_hex}\n  actual:   {actual_hex}\nAborted to prevent installing a corrupt or tampered binary."
         );
@@ -641,6 +698,37 @@ mod tests {
     #[test]
     fn current_test_platform_has_release_target() {
         assert!(supported_release_target().is_some());
+    }
+
+    // ── Retry classification ──────────────────────────────────────────────────
+
+    #[test]
+    fn transient_error_transport_is_retried() {
+        // ureq::Transport wraps I/O errors (timeout, DNS failure, etc.).
+        // We cannot construct one directly, but we can verify the 5xx path.
+        let server_error = ureq::Error::Status(
+            503,
+            ureq::Response::new(503, "Service Unavailable", "").unwrap(),
+        );
+        assert!(is_transient_error(&server_error), "503 must be retried");
+        let server_error_500 = ureq::Error::Status(
+            500,
+            ureq::Response::new(500, "Internal Server Error", "").unwrap(),
+        );
+        assert!(is_transient_error(&server_error_500), "500 must be retried");
+    }
+
+    #[test]
+    fn permanent_errors_are_not_retried() {
+        let not_found =
+            ureq::Error::Status(404, ureq::Response::new(404, "Not Found", "").unwrap());
+        assert!(!is_transient_error(&not_found), "404 must NOT be retried");
+        let forbidden =
+            ureq::Error::Status(403, ureq::Response::new(403, "Forbidden", "").unwrap());
+        assert!(!is_transient_error(&forbidden), "403 must NOT be retried");
+        let bad_request =
+            ureq::Error::Status(400, ureq::Response::new(400, "Bad Request", "").unwrap());
+        assert!(!is_transient_error(&bad_request), "400 must NOT be retried");
     }
 
     #[test]

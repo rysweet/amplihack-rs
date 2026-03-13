@@ -13,6 +13,7 @@ amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+clap_complete = "4"
 flate2 = "1"
 libc = { workspace = true }
 semver = "1"
