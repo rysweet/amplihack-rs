@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "amplihack-cli",
  "amplihack-hooks",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "amplihack-state",
  "amplihack-types",
@@ -61,7 +61,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "amplihack-state",
  "amplihack-types",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks-bin"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "amplihack-hooks",
  "amplihack-state",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-state"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "amplihack-types",
  "libc",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-types"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
