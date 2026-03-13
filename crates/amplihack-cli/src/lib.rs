@@ -16,6 +16,7 @@ pub mod settings_manager;
 pub mod signals;
 #[cfg(test)]
 pub mod test_support;
+pub mod tool_update_check;
 pub mod update;
 pub mod util;
 
@@ -58,6 +59,10 @@ pub enum Commands {
         /// Use only in trusted automated environments.
         #[arg(long = "skip-permissions")]
         skip_permissions: bool,
+        /// Skip the pre-launch npm update availability check.
+        /// Useful in CI, offline environments, or scripted pipelines.
+        #[arg(long = "skip-update-check")]
+        skip_update_check: bool,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true)]
         claude_args: Vec<String>,

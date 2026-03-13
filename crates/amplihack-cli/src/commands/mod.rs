@@ -22,20 +22,22 @@ pub fn dispatch(command: Commands) -> Result<()> {
             resume,
             continue_session,
             skip_permissions,
+            skip_update_check,
             claude_args,
         } => launch::run_launch(
             "claude",
             resume,
             continue_session,
             skip_permissions,
+            skip_update_check,
             claude_args,
         ),
         Commands::Claude { claude_args } => {
-            launch::run_launch("claude", false, false, false, claude_args)
+            launch::run_launch("claude", false, false, false, false, claude_args)
         }
-        Commands::Copilot { args } => launch::run_launch("copilot", false, false, false, args),
-        Commands::Codex { args } => launch::run_launch("codex", false, false, false, args),
-        Commands::Amplifier { args } => launch::run_launch("amplifier", false, false, false, args),
+        Commands::Copilot { args } => launch::run_launch("copilot", false, false, false, false, args),
+        Commands::Codex { args } => launch::run_launch("codex", false, false, false, false, args),
+        Commands::Amplifier { args } => launch::run_launch("amplifier", false, false, false, false, args),
         Commands::Plugin { command } => dispatch_plugin(command),
         Commands::Memory { command } => dispatch_memory(command),
         Commands::Recipe { command } => dispatch_recipe(command),
