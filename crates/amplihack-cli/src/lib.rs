@@ -19,6 +19,7 @@ pub mod test_support;
 pub mod update;
 
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 use std::path::PathBuf;
 
 /// amplihack CLI — Rust core runtime.
@@ -137,6 +138,12 @@ pub enum Commands {
         /// Arguments forwarded to the Python uvx-help command
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+
+    /// Generate shell completion scripts (bash, zsh, fish, powershell)
+    Completions {
+        /// Shell to generate completions for
+        shell: Shell,
     },
 }
 
