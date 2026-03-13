@@ -10,6 +10,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Install from a Local Repository](./howto/local-install.md) — Install without network access using a local checkout
 - [Uninstall amplihack](./howto/uninstall.md) — Cleanly remove all installed files, binaries, and hook registrations
 - [Resolve kuzu Linker Errors](./howto/resolve-kuzu-linker-errors.md) — Diagnose and fix `undefined reference` errors caused by `cxx`/`cxx-build` version mismatch
+- [Enable Shell Completions](./howto/enable-shell-completions.md) — Install tab-completion for bash, zsh, fish, and PowerShell
 
 ### Reference
 
@@ -17,6 +18,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Install Manifest](./reference/install-manifest.md) — Schema and semantics of the uninstall manifest written at install time
 - [Hook Specifications](./reference/hook-specifications.md) — Canonical table of all 7 Claude Code hooks registered by amplihack
 - [Binary Resolution](./reference/binary-resolution.md) — How `amplihack` locates the `amplihack-hooks` binary at install time
+- [amplihack completions](./reference/completions-command.md) — Full CLI reference for the `completions` subcommand
 
 ### Concepts
 
