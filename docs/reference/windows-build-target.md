@@ -15,7 +15,7 @@ The following targets were already supported before the Windows addition:
 | Target triple | Runner | Compilation |
 |---------------|--------|-------------|
 | `x86_64-unknown-linux-gnu` | `ubuntu-latest` | Native |
-| `aarch64-unknown-linux-gnu` | `ubuntu-latest` | Cross (via `cross`) |
+| `aarch64-unknown-linux-gnu` | `ubuntu-latest` | Cross (GNU toolchain: `gcc-aarch64-linux-gnu`) |
 | `x86_64-apple-darwin` | `macos-latest` | Native |
 | `aarch64-apple-darwin` | `macos-latest` | Native |
 
@@ -25,8 +25,8 @@ Each GitHub release includes the following artifacts for the Windows target:
 
 | File | Contents |
 |------|----------|
-| `amplihack-x86_64-pc-windows-msvc.zip` | `amplihack.exe` and `amplihack-hooks.exe` |
-| `amplihack-x86_64-pc-windows-msvc.zip.sha256` | SHA-256 checksum of the zip |
+| `amplihack-x86_64-pc-windows-msvc.tar.gz` | `amplihack.exe` and `amplihack-hooks.exe` |
+| `amplihack-x86_64-pc-windows-msvc.tar.gz.sha256` | SHA-256 checksum of the tarball |
 
 The checksum is computed on the build runner immediately after packaging, before artifact upload, preserving chain of custody.
 
@@ -37,16 +37,16 @@ The checksum is computed on the build runner immediately after packaging, before
 ```powershell
 # Download the latest release
 $version = "0.9.1"
-$base = "https://github.com/your-org/amplihack-rs/releases/download/v$version"
-Invoke-WebRequest "$base/amplihack-x86_64-pc-windows-msvc.zip" -OutFile amplihack.zip
+$base = "https://github.com/rysweet/amplihack-rs/releases/download/v$version"
+Invoke-WebRequest "$base/amplihack-x86_64-pc-windows-msvc.tar.gz" -OutFile amplihack.tar.gz
 
 # Verify checksum
-$expected = (Invoke-WebRequest "$base/amplihack-x86_64-pc-windows-msvc.zip.sha256").Content.Trim().Split()[0]
-$actual = (Get-FileHash amplihack.zip -Algorithm SHA256).Hash.ToLower()
+$expected = (Invoke-WebRequest "$base/amplihack-x86_64-pc-windows-msvc.tar.gz.sha256").Content.Trim().Split()[0]
+$actual = (Get-FileHash amplihack.tar.gz -Algorithm SHA256).Hash.ToLower()
 if ($expected -ne $actual) { throw "Checksum mismatch" }
 
-# Extract and move to PATH
-Expand-Archive amplihack.zip -DestinationPath $env:USERPROFILE\.local\bin
+# Extract to a directory on PATH (requires tar, available on Windows 10 1803+)
+tar xzf amplihack.tar.gz -C "$env:USERPROFILE\.local\bin"
 ```
 
 ### From Source
@@ -112,18 +112,20 @@ Artifact upload includes both `amplihack.exe` and `amplihack` (for non-Windows t
 
 ### `release.yml` — Release Builds
 
-The release matrix includes `x86_64-pc-windows-msvc`. The Package step uses `shell: bash` (provided by Git for Windows on `windows-latest`) to keep the packaging script consistent across all runners:
+The release matrix includes `x86_64-pc-windows-msvc`. The Package step uses `shell: bash` (provided by Git for Windows on `windows-latest`) to keep the packaging script consistent across all runners. All targets, including Windows, are packaged as `.tar.gz`:
 
 ```yaml
 - name: Package
   shell: bash
   run: |
     mkdir -p dist
-    cp target/${{ "{{" }} matrix.target }}/release/amplihack.exe dist/ 2>/dev/null || \
-    cp target/${{ "{{" }} matrix.target }}/release/amplihack      dist/ 2>/dev/null || true
-    cd dist && zip -r ../amplihack-${{ "{{" }} matrix.target }}.zip .
-    cd .. && sha256sum amplihack-${{ "{{" }} matrix.target }}.zip \
-      > amplihack-${{ "{{" }} matrix.target }}.zip.sha256
+    cp "target/${{ matrix.target }}/release/amplihack" dist/ 2>/dev/null || true
+    cp "target/${{ matrix.target }}/release/amplihack.exe" dist/ 2>/dev/null || true
+    cp "target/${{ matrix.target }}/release/amplihack-hooks" dist/ 2>/dev/null || true
+    cp "target/${{ matrix.target }}/release/amplihack-hooks.exe" dist/ 2>/dev/null || true
+    cd dist && tar czf "../amplihack-${{ matrix.target }}.tar.gz" *
+    cd .. && sha256sum "amplihack-${{ matrix.target }}.tar.gz" \
+      > "amplihack-${{ matrix.target }}.tar.gz.sha256"
 ```
 
 ## Related

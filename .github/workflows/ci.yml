@@ -93,7 +93,7 @@ jobs:
       # Native build
       - name: Build (native)
         if: "!matrix.cross"
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked --target "${{ matrix.target }}"
 
       # Cross build (Linux ARM64)
       - name: Build (cross)
@@ -104,6 +104,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: amplihack-${{ matrix.target }}
+          # Mixed .exe / no-.exe pattern: all four paths are listed regardless
+          # of the target platform.  On Unix targets only the extensionless
+          # binaries will exist; on the Windows (msvc) target only the .exe
+          # variants will exist.  `if-no-files-found: error` ensures at least
+          # one of each pair is present, catching a build failure before upload.
+          # CODE-12.
           path: |
             target/${{ matrix.target }}/release/amplihack
             target/${{ matrix.target }}/release/amplihack.exe
@@ -135,7 +141,7 @@ jobs:
           done
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@da5edbb5e75588e9e88601b4e2e3e74e6e229e0a # v2.1.0
         with:
           files: amplihack-*.tar.gz
           generate_release_notes: true

@@ -9,7 +9,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::util::strip_ansi;
+use crate::util::{MAX_VERSION_LEN, strip_ansi};
 
 /// Metadata about a discovered binary.
 #[derive(Debug, Clone)]
@@ -41,6 +41,15 @@ impl BinaryFinder {
         if let Ok(explicit_path) = env::var(&env_key) {
             let path = PathBuf::from(&explicit_path);
             if path.exists() {
+                // SAFETY: Executing the binary supplied via the env-var override is
+                // an accepted risk documented here (SEC-M1).  The override is
+                // intended for CI and developer environments where the operator
+                // controls the environment.  A malicious caller that can set
+                // arbitrary environment variables already has execution access;
+                // restricting the override would not add meaningful security.
+                // The path is not passed through a shell — it is used directly as
+                // the executable argument to `std::process::Command`, avoiding
+                // shell-injection risks.
                 let version = detect_version(&path);
                 return Ok(BinaryInfo {
                     name: tool.to_string(),
@@ -129,7 +138,9 @@ fn search_path_dirs() -> Vec<PathBuf> {
 ///
 /// `strip_ansi()` is applied to the captured stdout before returning so that
 /// ANSI escape sequences in version output cannot reach the terminal.
-/// See SEC-WS2-02.
+/// The result is then truncated to [`MAX_VERSION_LEN`] characters to prevent
+/// adversarial version strings from flooding logs.
+/// See SEC-WS2-02.  CODE-3.
 fn detect_version(path: &Path) -> Option<String> {
     let output = Command::new(path).arg("--version").output().ok()?;
 
@@ -140,7 +151,13 @@ fn detect_version(path: &Path) -> Option<String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Extract version-like string: first line, stripped of ANSI sequences.
     let first_line = stdout.lines().next()?.trim();
-    Some(strip_ansi(first_line))
+    let stripped = strip_ansi(first_line);
+    // Truncate to MAX_VERSION_LEN character boundary — CODE-3.
+    let truncated = match stripped.char_indices().nth(MAX_VERSION_LEN) {
+        Some((byte_idx, _)) => stripped[..byte_idx].to_string(),
+        None => stripped,
+    };
+    Some(truncated)
 }
 
 /// Check if a path is executable (Unix: has execute bit).

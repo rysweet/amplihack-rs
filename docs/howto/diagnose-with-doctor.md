@@ -171,11 +171,25 @@ tmux -V
 
 ---
 
-### ✗ amplihack version / ✗ recipe-runner-rs version
+### ✗ amplihack version
 
-These two checks are informational and only fail if the binary cannot report its version. If you see these fail on an otherwise working install, the binary may be corrupted or compiled for the wrong architecture.
+This check is informational and only fails if the binary cannot report its own version (which is a compile-time constant). If you see this fail, the binary may be corrupted or compiled for the wrong architecture.
 
 **Fix:** Reinstall from the appropriate release artifact for your platform. See [Install amplihack for the First Time](./first-install.md).
+
+---
+
+### ✗ settings.json path resolution
+
+**What it means:** The `HOME` environment variable is not set, so the path `$HOME/.claude/settings.json` cannot be constructed. This is rare on Unix but can occur in minimal CI containers or when the environment has been stripped.
+
+**Fix:**
+
+```sh
+export HOME="$( cd ~ && pwd )"
+```
+
+Or set `HOME` explicitly in the failing environment's configuration. Re-run `doctor` to confirm the fix.
 
 ---
 

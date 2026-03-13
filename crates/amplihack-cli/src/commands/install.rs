@@ -215,11 +215,17 @@ fn find_hooks_binary() -> Result<PathBuf> {
 
 /// Validate that a hook command string contains no shell metacharacters.
 ///
-/// Blocks: `|`, `&`, `;`, `$`, backtick, `(`, `)`, `{`, `}`, `<`, `!`, `>`, `#`, `~`, `*`,
+/// Blocks: space ` `, single quote `'`, double quote `"`, backslash `\`,
+/// `|`, `&`, `;`, `$`, backtick, `(`, `)`, `{`, `}`, `<`, `!`, `>`, `#`, `~`, `*`,
 /// `\n`, `\r`
+///
+/// Space is blocked because the command string is interpolated unquoted into
+/// the JSON hook config; a path with spaces would split into multiple tokens.
+/// Quotes and backslash are blocked to prevent escaping attacks.
 fn validate_hook_command_string(cmd: &str) -> Result<()> {
     const BLOCKED: &[char] = &[
-        '|', '&', ';', '$', '`', '(', ')', '{', '}', '<', '!', '>', '#', '~', '*', '\n', '\r',
+        ' ', '\'', '"', '\\', '|', '&', ';', '$', '`', '(', ')', '{', '}', '<', '!', '>', '#', '~',
+        '*', '\n', '\r',
     ];
     for ch in BLOCKED {
         if cmd.contains(*ch) {
@@ -964,8 +970,11 @@ fn read_settings_json(settings_path: &Path) -> Result<Value> {
         Ok(Value::Object(map)) => Ok(Value::Object(map)),
         Ok(_) => Ok(Value::Object(Map::new())),
         Err(_) => {
+            // SEC-M3: Warn explicitly before overwriting/resetting settings.json
+            // so operators can detect accidental data loss in logs.
             tracing::warn!(
-                "Settings file {} contains invalid JSON, using empty defaults",
+                "Settings file {} contains invalid JSON and will be reset to empty defaults. \
+                 The original content is preserved in the timestamped backup created earlier.",
                 settings_path.display()
             );
             Ok(Value::Object(Map::new()))
@@ -1034,19 +1043,37 @@ fn update_hook_paths(
 
 /// Build the Claude Code hook wrapper JSON for a given spec.
 ///
-/// For `BinarySubcmd`: command = `"{hooks_bin} {subcmd}"`
+/// For `BinarySubcmd`: command = `'"{hooks_bin}" {subcmd}'`  (path is double-quoted)
 /// For `PythonFile`: command = absolute path to the Python file in tools/amplihack/hooks/
+///
+/// The binary path in `BinarySubcmd` is enclosed in double quotes so that
+/// installations under paths that may contain spaces are passed to the shell
+/// as a single token and cannot be split into multiple arguments.  SEC-H2.
 fn build_hook_wrapper(spec: &HookSpec, hooks_bin: &Path) -> Result<Value> {
-    let command_str = match &spec.cmd {
-        HookCommandKind::BinarySubcmd { subcmd } => format!("{} {}", hooks_bin.display(), subcmd),
+    let command_str: String = match &spec.cmd {
+        HookCommandKind::BinarySubcmd { subcmd } => {
+            // Validate the raw path and subcommand individually (without quotes)
+            // for dangerous metacharacters.  Space is in BLOCKED, so any path
+            // containing a space is rejected here before quoting.  SEC-H1.
+            let bin_str = hooks_bin.display().to_string();
+            validate_hook_command_string(&bin_str)?;
+            validate_hook_command_string(subcmd)?;
+            // Enclose the binary path in double quotes so the shell treats it as
+            // a single token even if future callers supply a path with spaces.
+            // The double-quote character itself is NOT passed through
+            // validate_hook_command_string — it is intentionally added here.
+            // SEC-H2.
+            format!("\"{}\" {}", bin_str, subcmd)
+        }
         HookCommandKind::PythonFile { file } => {
             // Build absolute path: ~/.amplihack/.claude/tools/amplihack/hooks/<file>
-            amplihack_hooks_dir()
+            let path_str = amplihack_hooks_dir()
                 .map(|dir| dir.join(file).to_string_lossy().into_owned())
-                .unwrap_or_else(|_| file.to_string())
+                .unwrap_or_else(|_| (*file).to_string());
+            validate_hook_command_string(&path_str)?;
+            path_str
         }
     };
-    validate_hook_command_string(&command_str)?;
 
     let mut hook = Map::new();
     hook.insert("type".to_string(), Value::String("command".to_string()));
@@ -2039,13 +2066,88 @@ mod tests {
         );
     }
 
-    /// FAILS until `validate_hook_command_string` accepts a clean binary+subcmd string.
+    /// validate_hook_command_string accepts a clean binary path (no space — path only).
     #[test]
-    fn validate_hook_command_string_accepts_valid_binary_subcmd() {
+    fn validate_hook_command_string_accepts_valid_binary_path() {
+        assert!(
+            validate_hook_command_string("/home/user/.local/bin/amplihack-hooks").is_ok(),
+            "must accept plain binary path without a space"
+        );
+    }
+
+    /// validate_hook_command_string rejects a space character (SEC-H1).
+    #[test]
+    fn validate_hook_command_string_rejects_space() {
         assert!(
             validate_hook_command_string("/home/user/.local/bin/amplihack-hooks session-start")
-                .is_ok(),
-            "must accept plain binary + subcommand"
+                .is_err(),
+            "must reject space (present in binary+subcmd combined form)"
+        );
+    }
+
+    /// validate_hook_command_string rejects a single quote (SEC-H1).
+    #[test]
+    fn validate_hook_command_string_rejects_single_quote() {
+        assert!(
+            validate_hook_command_string("/home/user's/.local/bin/amplihack-hooks").is_err(),
+            "must reject single quote in path"
+        );
+    }
+
+    /// validate_hook_command_string rejects a double quote (SEC-H1).
+    #[test]
+    fn validate_hook_command_string_rejects_double_quote() {
+        assert!(
+            validate_hook_command_string("/home/\"user\"/.local/bin/amplihack-hooks").is_err(),
+            "must reject double quote in path"
+        );
+    }
+
+    /// validate_hook_command_string rejects a backslash (SEC-H1).
+    #[test]
+    fn validate_hook_command_string_rejects_backslash() {
+        assert!(
+            validate_hook_command_string("/home/user\\.local/bin/amplihack-hooks").is_err(),
+            "must reject backslash in path"
+        );
+    }
+
+    /// build_hook_wrapper quotes the binary path so paths with spaces are handled
+    /// safely by the shell.  The quoted command must contain the binary name and
+    /// the subcommand, and the binary path must be enclosed in double quotes. SEC-H2.
+    #[test]
+    fn build_hook_wrapper_binary_path_is_quoted_in_command() {
+        let temp = tempfile::tempdir().unwrap();
+        // Create a stub binary whose name contains no spaces (validate_hook_command_string
+        // blocks spaces in the raw path, so the path itself must be space-free).
+        let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
+
+        let spec = HookSpec {
+            event: "SessionStart",
+            cmd: HookCommandKind::BinarySubcmd {
+                subcmd: "session-start",
+            },
+            timeout: Some(10),
+            matcher: None,
+        };
+
+        let wrapper = build_hook_wrapper(&spec, &hooks_bin).unwrap();
+        let hooks_arr = wrapper["hooks"].as_array().expect("hooks array");
+        let hook = hooks_arr[0].as_object().expect("hooks[0] object");
+        let command = hook["command"].as_str().expect("command string");
+
+        // The binary path must be enclosed in double quotes.
+        assert!(
+            command.starts_with('"'),
+            "command must start with '\"' to quote the binary path, got: {command}"
+        );
+        assert!(
+            command.contains("amplihack-hooks"),
+            "command must reference the hooks binary, got: {command}"
+        );
+        assert!(
+            command.ends_with("session-start"),
+            "command must end with subcommand, got: {command}"
         );
     }
 

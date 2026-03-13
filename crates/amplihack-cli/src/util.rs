@@ -5,14 +5,32 @@
 //! * SEC-WS2-02: All externally-sourced strings must pass through [`strip_ansi`]
 //!   before display to prevent terminal injection via crafted external output.
 
+// ── Shared constants ──────────────────────────────────────────────────────────
+
+/// Maximum length of a version string extracted from external tool output.
+///
+/// Applied after [`strip_ansi`] so the bound measures visible characters,
+/// not raw bytes.  Prevents adversarial version strings from allocating
+/// unbounded memory or polluting log output.  See SEC-WS2-02.
+pub const MAX_VERSION_LEN: usize = 80;
+
 // ── ANSI stripping ────────────────────────────────────────────────────────────
 
-/// Remove ANSI escape sequences from `s`.
+/// Remove ANSI CSI escape sequences from `s`.
 ///
-/// Handles CSI sequences of the form `ESC [ <params> <final_byte>` where
-/// `<final_byte>` is any byte in the range `0x40..=0x7E` (e.g. `m` for SGR).
+/// Handles **CSI sequences only** — sequences of the form
+/// `ESC [ <params> <final_byte>` where `<final_byte>` is any byte in the
+/// range `0x40..=0x7E` (e.g. `m` for SGR colour/attribute codes).
+///
+/// Limitations: OSC sequences (`ESC ]`), Fe sequences (`ESC` followed by
+/// bytes `0x40..=0x5F` other than `[`), and C1 control codes
+/// (`0x80..=0x9F`) are **not** stripped by this function.  For the
+/// use-cases in this codebase (sanitising tool version strings before
+/// display) CSI coverage is sufficient.
+///
 /// Applied to all externally-sourced strings before display to prevent
 /// terminal injection via crafted version strings.  See SEC-WS2-02.
+/// CODE-4.
 pub fn strip_ansi(s: &str) -> String {
     // Pre-allocate the full input length — stripped output is always ≤ input.
     // Avoids repeated Vec reallocations for inputs containing many ANSI sequences.

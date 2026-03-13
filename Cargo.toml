@@ -26,6 +26,7 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 tempfile = "3"
 shell-words = "1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 signal-hook = "0.3"
 sha2 = "0.10"
 libc = "0.2"

@@ -177,27 +177,21 @@ mod tests {
         cmd.args(["/C", "timeout", "/T", "60", "/NOBREAK"]);
         let mut child = ManagedChild::spawn(cmd).unwrap();
         let id_before_drop = child.id();
-        assert!(id_before_drop > 0, "PID should be non-zero");
+        assert!(id_before_drop > 0, "PID should be non-zero before drop");
 
         // Drop triggers graceful_shutdown() → Child::kill() on Windows.
+        // Time the drop to verify it completes promptly (kill is synchronous on Windows).
+        let t0 = std::time::Instant::now();
         drop(child);
+        let elapsed = t0.elapsed();
 
-        // Process termination assertion: we cannot call try_wait() on the
-        // moved child after drop, and opening a process handle via WinAPI
-        // (OpenProcess / GetExitCodeProcess) requires an unsafe block plus a
-        // winapi/windows-sys dependency that is not currently in scope.
-        //
-        // The observable guarantee here is:
-        //   1. drop() completes without panicking — kill() did not return an Err.
-        //   2. The child PID (id_before_drop) is no longer scheduled; Windows
-        //      reaps the process synchronously when TerminateProcess() returns.
-        //
-        // A stronger assertion (e.g. WaitForSingleObject with timeout=0 to
-        // confirm WAIT_OBJECT_0) can be added once windows-sys is a declared
-        // dev-dependency.
+        // Post-drop assertion: drop() must complete within 5 seconds.
+        // `TerminateProcess` on Windows is synchronous — if kill() was called
+        // the process is terminated before this returns.  A hang here would
+        // indicate graceful_shutdown() blocked unexpectedly.  CODE-11.
         assert!(
-            id_before_drop > 0,
-            "PID recorded before drop must be non-zero (sanity check)"
+            elapsed < std::time::Duration::from_secs(5),
+            "drop() must complete promptly after killing the child (elapsed: {elapsed:?})"
         );
     }
 

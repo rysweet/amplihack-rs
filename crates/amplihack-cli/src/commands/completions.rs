@@ -61,6 +61,18 @@ mod tests {
         );
     }
 
+    /// Bash completion script must contain the `complete` keyword — the
+    /// standard bash built-in used to register completion functions. CODE-1.
+    #[test]
+    fn test_bash_completions_contains_complete_keyword() {
+        let script = generate_to_string(Shell::Bash);
+        assert!(
+            script.contains("complete"),
+            "bash completion script must contain the 'complete' keyword; got script starting: {}",
+            &script[..script.len().min(200)]
+        );
+    }
+
     // ── WS1-TEST-02: Zsh ──────────────────────────────────────────────────
 
     /// Zsh completion output must be non-empty.
@@ -73,6 +85,19 @@ mod tests {
         );
     }
 
+    /// Zsh completion script must contain either `compdef` or `#compdef` —
+    /// the standard Zsh mechanism for associating a completion function with
+    /// a command. CODE-1.
+    #[test]
+    fn test_zsh_completions_contains_compdef() {
+        let script = generate_to_string(Shell::Zsh);
+        assert!(
+            script.contains("compdef") || script.contains("#compdef"),
+            "zsh completion script must contain 'compdef' or '#compdef'; got script starting: {}",
+            &script[..script.len().min(200)]
+        );
+    }
+
     // ── WS1-TEST-03: Fish ─────────────────────────────────────────────────
 
     /// Fish completion output must be non-empty.
@@ -82,6 +107,18 @@ mod tests {
         assert!(
             !output.is_empty(),
             "fish completion script should not be empty"
+        );
+    }
+
+    /// Fish completion script must contain `complete -c` — the fish
+    /// built-in used to register completions for a command. CODE-1.
+    #[test]
+    fn test_fish_completions_contains_complete_dash_c() {
+        let script = generate_to_string(Shell::Fish);
+        assert!(
+            script.contains("complete -c"),
+            "fish completion script must contain 'complete -c'; got script starting: {}",
+            &script[..script.len().min(200)]
         );
     }
 

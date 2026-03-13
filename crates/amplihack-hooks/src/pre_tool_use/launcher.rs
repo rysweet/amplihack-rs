@@ -66,6 +66,17 @@ pub fn inject_context(dirs: &ProjectDirs, input_data: &Value) {
 }
 
 /// Embedded Python bridge script for Copilot context injection.
+///
+/// SEC-M2: The `except` clause serialises `str(e)` into the JSON response
+/// sent to stdout.  This is acceptable in the current developer/CI context
+/// because:
+///   1. The output is consumed programmatically by the Rust caller, not
+///      rendered to a user-facing terminal.
+///   2. Exception messages from `amplihack.context` are controlled by the
+///      amplihack Python package — not by untrusted external input.
+///   3. If sanitisation is needed in the future, the `error` field should
+///      be run through a length-limit and ANSI-strip step before forwarding
+///      to any terminal or log sink.
 const COPILOT_CONTEXT_BRIDGE: &str = r#"
 import sys
 import json
@@ -80,6 +91,8 @@ try:
     strategy.inject_context()
     json.dump({"injected": True}, sys.stdout)
 except Exception as e:
+    # str(e) is serialised to stdout as part of a structured JSON object.
+    # See SEC-M2 comment above for the accepted-risk rationale.
     json.dump({"injected": False, "error": str(e)}, sys.stdout)
     sys.exit(1)
 "#;

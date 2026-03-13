@@ -63,8 +63,13 @@ jobs:
 
           echo "Bumping: ${CURRENT} → ${NEW_VERSION}"
 
+          # Escape dots in the version strings so sed treats them as literal
+          # characters rather than the regex "match any char" operator. SEC-M4.
+          CURRENT_ESCAPED=$(echo "${CURRENT}" | sed 's/\./\\./g')
+          NEW_VERSION_ESCAPED=$(echo "${NEW_VERSION}" | sed 's/\./\\./g')
+
           # Update Cargo.toml workspace version
-          sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+          sed -i "s/^version = \"${CURRENT_ESCAPED}\"/version = \"${NEW_VERSION_ESCAPED}\"/" Cargo.toml
 
           # Regenerate lockfile
           cargo generate-lockfile 2>/dev/null || true
@@ -175,7 +180,7 @@ jobs:
         # Fail fast if any artifact is missing rather than silently uploading
         # an incomplete release.
         run: |
-          EXPECTED=10
+          EXPECTED=10  # 5 targets × 2 files each (.tar.gz + .sha256) = 10
           ACTUAL=$(ls release-assets/ | wc -l)
           if [ "${ACTUAL}" -ne "${EXPECTED}" ]; then
             echo "ERROR: expected ${EXPECTED} release assets, found ${ACTUAL}"
@@ -195,7 +200,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@da5edbb5e75588e9e88601b4e2e3e74e6e229e0a # v2.1.0
         with:
           tag_name: v${{ needs.version-bump.outputs.version }}
           name: "amplihack-rs v${{ needs.version-bump.outputs.version }}"

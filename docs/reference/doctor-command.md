@@ -36,8 +36,8 @@ amplihack doctor
 Reads `~/.claude/settings.json` and verifies that at least one hook command string contains `"amplihack"`. A passing result means the amplihack hook dispatcher is registered in Claude Code's settings.
 
 ```
-✓ hooks installed
-✗ hooks installed — no amplihack hook found in ~/.claude/settings.json
+✓ amplihack hooks installed
+✗ settings.json: file not found
 ```
 
 ### Check 2 — settings.json valid JSON
@@ -45,17 +45,17 @@ Reads `~/.claude/settings.json` and verifies that at least one hook command stri
 Reads `~/.claude/settings.json` and parses it as JSON. Fails if the file is absent, unreadable, or not valid JSON. This check is independent of Check 1 — both always run.
 
 ```
-✓ settings.json valid JSON
-✗ settings.json valid JSON — expected value at line 14 column 5
+✓ settings.json is valid JSON
+✗ settings.json: invalid JSON
 ```
 
 ### Check 3 — recipe-runner available
 
-Runs `recipe-runner-rs --version` and checks that the command succeeds. Verifies the binary is on `PATH` and executable.
+Runs `recipe-runner-rs --version` and checks that the command succeeds. Verifies the binary is on `PATH` and executable. The version string from the binary is included in the success message.
 
 ```
 ✓ recipe-runner-rs v0.4.2
-✗ recipe-runner available — command not found: recipe-runner-rs
+✗ recipe-runner-rs not found on PATH: No such file or directory (os error 2)
 ```
 
 ### Check 4 — Python bridge working
@@ -63,17 +63,17 @@ Runs `recipe-runner-rs --version` and checks that the command succeeds. Verifies
 Runs `python3 -c "import amplihack"` and checks for a zero exit code. Verifies that Python 3 is present and that the amplihack Python package is importable in the active environment.
 
 ```
-✓ Python bridge working
-✗ Python bridge working — ModuleNotFoundError: No module named 'amplihack'
+✓ python3 amplihack module available
+✗ python bridge: ModuleNotFoundError: No module named 'amplihack'
 ```
 
 ### Check 5 — tmux installed
 
-Runs `tmux -V` and checks for a zero exit code. tmux is required for amplihack's session management features.
+Runs `tmux -V` and checks for a zero exit code. tmux is required for amplihack's session management features. The version string from tmux is included in the success message.
 
 ```
 ✓ tmux 3.4
-✗ tmux installed — command not found: tmux
+✗ tmux not found: No such file or directory (os error 2)
 ```
 
 ### Check 6 — amplihack version
@@ -84,13 +84,13 @@ Reports the amplihack version from the compiled binary. This check always passes
 ✓ amplihack v0.9.1
 ```
 
-### Check 7 — recipe-runner-rs version
+### Check 7 — settings.json path resolution
 
-Runs `recipe-runner-rs --version` and reports the version string. This check reuses the same process spawn as Check 3 but reports the actual version string rather than just pass/fail. If Check 3 failed, Check 7 also fails.
+Verifies that `$HOME` is set and that the path `$HOME/.claude/settings.json` is constructible. Does not check whether the file exists — that is covered by Check 2. This check isolates the environment precondition (`HOME` must be set) from the file-system state.
 
 ```
-✓ recipe-runner-rs v0.4.2
-✗ recipe-runner-rs version — command not found: recipe-runner-rs
+✓ settings.json path: /home/user/.claude/settings.json
+✗ settings.json: $HOME not set — cannot resolve path
 ```
 
 ## Output Format
@@ -123,13 +123,13 @@ ANSI colour codes are always emitted: green for `✓` lines, red for `✗` lines
 
 ```
 $ amplihack doctor
-✓ hooks installed
-✓ settings.json valid JSON
+✓ amplihack hooks installed
+✓ settings.json is valid JSON
 ✓ recipe-runner-rs v0.4.2
-✓ Python bridge working
+✓ python3 amplihack module available
 ✓ tmux 3.4
 ✓ amplihack v0.9.1
-✓ recipe-runner-rs v0.4.2
+✓ settings.json path: /home/user/.claude/settings.json
 
 All checks passed.
 ```
@@ -138,15 +138,15 @@ All checks passed.
 
 ```
 $ amplihack doctor
-✓ hooks installed
-✓ settings.json valid JSON
-✗ recipe-runner available — command not found: recipe-runner-rs
-✗ Python bridge working — ModuleNotFoundError: No module named 'amplihack'
+✓ amplihack hooks installed
+✓ settings.json is valid JSON
+✗ recipe-runner-rs not found on PATH: No such file or directory (os error 2)
+✗ python bridge: ModuleNotFoundError: No module named 'amplihack'
 ✓ tmux 3.4
 ✓ amplihack v0.9.1
-✗ recipe-runner-rs version — command not found: recipe-runner-rs
+✓ settings.json path: /home/user/.claude/settings.json
 
-3 check(s) failed.
+2 check(s) failed.
 $ echo $?
 1
 ```

@@ -3,7 +3,7 @@
 //! Runs a fixed set of checks and prints a pass/fail summary.  Exits with
 //! code 1 if any check fails.
 //!
-//! # Check inventory (6 checks)
+//! # Check inventory (7 checks)
 //!
 //! 1. amplihack hooks installed — reads `$HOME/.claude/settings.json` and
 //!    verifies the `hooks` section contains a value with `"amplihack"`.
@@ -12,6 +12,7 @@
 //! 4. Python bridge working — runs `python3 -c "import amplihack"`.
 //! 5. tmux installed — runs `tmux -V` and extracts version string.
 //! 6. amplihack binary version — compile-time constant; always passes.
+//! 7. settings.json path resolution — verifies HOME is set and path is constructible.
 //!
 //! # Security
 //!
@@ -23,20 +24,17 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
-// Re-export strip_ansi from the shared util module so existing callers within
-// this file continue to work without qualification.  Shared module ensures the
-// SEC-WS2-02 contract is applied consistently across doctor.rs and
-// binary_finder.rs.
-use crate::util::strip_ansi;
+// Re-export shared utilities from the util module so existing callers within
+// this file continue to work without qualification.  Keeping strip_ansi and
+// MAX_VERSION_LEN in the shared util module ensures the SEC-WS2-02 contract
+// is applied consistently across doctor.rs and binary_finder.rs.  PHIL-1.
+use crate::util::{MAX_VERSION_LEN, strip_ansi};
 
 // ── Public constants ──────────────────────────────────────────────────────────
 
 /// Maximum number of characters kept from a subprocess's stderr before
 /// truncation.  Prevents adversarial error output from flooding logs.
 pub const MAX_ERROR_LEN: usize = 200;
-
-/// Maximum length of a version string extracted from external tool output.
-pub const MAX_VERSION_LEN: usize = 80;
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
@@ -81,6 +79,53 @@ fn truncate(s: &str, max_chars: usize) -> &str {
     }
 }
 
+/// Shared result type for [`read_settings_json_for_check`].
+enum SettingsReadResult {
+    /// File read and parsed successfully.
+    Ok(serde_json::Value),
+    /// `$HOME` not set — cannot construct the path.
+    HomeNotSet,
+    /// File does not exist at the expected path.
+    FileNotFound,
+    /// File exists but cannot be read (I/O error).
+    ReadError(String),
+    /// File exists but contains invalid JSON.
+    InvalidJson,
+}
+
+/// Read and parse `$HOME/.claude/settings.json` for use in doctor checks.
+///
+/// Deduplicates the file read that was previously performed independently in
+/// [`check_hooks_installed`] and [`check_settings_valid_json`].  CODE-6.
+///
+/// Returns a [`SettingsReadResult`] that callers map to their respective
+/// `(bool, String)` outcomes.  Content is never logged or printed — the
+/// parsed `Value` is returned as-is so checks can inspect structure without
+/// exposing text.  See SEC-WS2-04.
+fn read_settings_json_for_check() -> SettingsReadResult {
+    let path = match settings_json_path() {
+        None => return SettingsReadResult::HomeNotSet,
+        Some(p) => p,
+    };
+
+    if !path.exists() {
+        return SettingsReadResult::FileNotFound;
+    }
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = truncate(&e.to_string(), MAX_ERROR_LEN).to_string();
+            return SettingsReadResult::ReadError(msg);
+        }
+    };
+
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(v) => SettingsReadResult::Ok(v),
+        Err(_) => SettingsReadResult::InvalidJson,
+    }
+}
+
 // ── Individual checks ─────────────────────────────────────────────────────────
 //
 // Each check returns `(passed: bool, message: String)`.  The message is shown
@@ -93,28 +138,20 @@ fn truncate(s: &str, max_chars: usize) -> &str {
 /// contains at least one entry whose value contains the substring
 /// `"amplihack"`.
 pub fn check_hooks_installed() -> (bool, String) {
-    let path = match settings_json_path() {
-        None => return (false, "hooks: $HOME not set".to_string()),
-        Some(p) => p,
-    };
-
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => {
-            let msg = e.to_string();
-            return (
-                false,
-                format!(
-                    "hooks: cannot read settings.json: {}",
-                    truncate(&msg, MAX_ERROR_LEN)
-                ),
-            );
+    let json = match read_settings_json_for_check() {
+        SettingsReadResult::Ok(v) => v,
+        SettingsReadResult::HomeNotSet => {
+            return (false, "settings.json: $HOME not set".to_string());
         }
-    };
-
-    let json: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return (false, "hooks: settings.json is not valid JSON".to_string()),
+        SettingsReadResult::FileNotFound => {
+            return (false, "settings.json: file not found".to_string());
+        }
+        SettingsReadResult::ReadError(msg) => {
+            return (false, format!("settings.json: cannot read: {msg}"));
+        }
+        SettingsReadResult::InvalidJson => {
+            return (false, "settings.json: invalid JSON".to_string());
+        }
     };
 
     if let Some(hooks) = json.get("hooks")
@@ -136,32 +173,12 @@ pub fn check_hooks_installed() -> (bool, String) {
 /// `"amplihack"` string are reported — content is never printed.  See
 /// SEC-WS2-04.
 pub fn check_settings_valid_json() -> (bool, String) {
-    let path = match settings_json_path() {
-        None => return (false, "settings.json: $HOME not set".to_string()),
-        Some(p) => p,
-    };
-
-    if !path.exists() {
-        return (false, "settings.json: file not found".to_string());
-    }
-
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => {
-            let msg = e.to_string();
-            return (
-                false,
-                format!(
-                    "settings.json: cannot read: {}",
-                    truncate(&msg, MAX_ERROR_LEN)
-                ),
-            );
-        }
-    };
-
-    match serde_json::from_str::<serde_json::Value>(&content) {
-        Ok(_) => (true, "settings.json is valid JSON".to_string()),
-        Err(_) => (false, "settings.json: invalid JSON".to_string()),
+    match read_settings_json_for_check() {
+        SettingsReadResult::Ok(_) => (true, "settings.json is valid JSON".to_string()),
+        SettingsReadResult::HomeNotSet => (false, "settings.json: $HOME not set".to_string()),
+        SettingsReadResult::FileNotFound => (false, "settings.json: file not found".to_string()),
+        SettingsReadResult::ReadError(msg) => (false, format!("settings.json: cannot read: {msg}")),
+        SettingsReadResult::InvalidJson => (false, "settings.json: invalid JSON".to_string()),
     }
 }
 
@@ -292,6 +309,22 @@ pub fn check_amplihack_version() -> (bool, String) {
     (true, format!("amplihack v{version}"))
 }
 
+/// Check 7 — settings.json path resolution.
+///
+/// Verifies that `$HOME` is set and that the path
+/// `$HOME/.claude/settings.json` is constructible.  Does not check whether
+/// the file exists — that is covered by check 2.  This check isolates the
+/// environment precondition (HOME must be set) from the file-system state.
+pub fn check_settings_json_path_resolution() -> (bool, String) {
+    match settings_json_path() {
+        Some(p) => (true, format!("settings.json path: {}", p.display())),
+        None => (
+            false,
+            "settings.json: $HOME not set — cannot resolve path".to_string(),
+        ),
+    }
+}
+
 // ── Summary printer ───────────────────────────────────────────────────────────
 
 /// Print a formatted summary of `results` to stdout and return `(passed,
@@ -340,8 +373,8 @@ pub fn print_summary(results: &[(bool, String)]) -> (usize, usize) {
 /// Checks 3–5 each spawn an external subprocess and dominate wall-clock time
 /// (~100–500 ms each).  They are launched concurrently on dedicated threads so
 /// total doctor time is bounded by the *slowest* single check rather than the
-/// sum.  Checks 1, 2, and 6 (file I/O + compile-time constant) remain on the
-/// calling thread and complete while the subprocess threads are running.
+/// sum.  Checks 1, 2, 6, and 7 (file I/O + compile-time constant + env lookup)
+/// remain on the calling thread and complete while the subprocess threads work.
 pub fn run_doctor() -> Result<()> {
     use std::thread;
 
@@ -354,8 +387,9 @@ pub fn run_doctor() -> Result<()> {
     let r1 = check_hooks_installed();
     let r2 = check_settings_valid_json();
     let r6 = check_amplihack_version();
+    let r7 = check_settings_json_path_resolution();
 
-    // Collect results in canonical display order (1–6), waiting for threads.
+    // Collect results in canonical display order (1–7), waiting for threads.
     let results = vec![
         r1,
         r2,
@@ -370,6 +404,7 @@ pub fn run_doctor() -> Result<()> {
         h5.join()
             .unwrap_or_else(|_| (false, "tmux: internal thread panicked".to_string())),
         r6,
+        r7,
     ];
 
     let (_, failed) = print_summary(&results);
@@ -393,33 +428,106 @@ pub fn run_doctor() -> Result<()> {
 mod tests {
     use super::*;
 
-    // ── WS2-TEST-01: strip_ansi passthrough ───────────────────────────────
+    // ── WS2-TEST-00a: json_contains_amplihack ────────────────────────────
 
-    /// Plain text with no escape sequences should be returned unchanged.
+    /// Valid JSON object with a string value containing "amplihack" must return true.
     #[test]
-    fn test_strip_ansi_passthrough_on_plain_text() {
-        let input = "hello world";
-        assert_eq!(strip_ansi(input), "hello world");
+    fn test_json_contains_amplihack_returns_true_for_matching_string() {
+        let v: serde_json::Value = serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    {"command": "/home/user/.local/bin/amplihack-hooks session-start"}
+                ]
+            }
+        });
+        assert!(
+            json_contains_amplihack(&v),
+            "must return true when 'amplihack' appears in a nested string value"
+        );
     }
 
-    // ── WS2-TEST-02: strip_ansi removal ───────────────────────────────────
-
-    /// ANSI SGR sequences (e.g. bold, colour reset) must be removed.
+    /// Valid JSON object with no string containing "amplihack" must return false.
     #[test]
-    fn test_strip_ansi_removes_sgr_sequences() {
-        // "\x1b[1m" = bold on, "\x1b[0m" = reset
-        let input = "\x1b[1mbold\x1b[0m normal";
-        assert_eq!(strip_ansi(input), "bold normal");
+    fn test_json_contains_amplihack_returns_false_when_absent() {
+        let v: serde_json::Value = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"command": "/usr/local/bin/some-other-hook"}]
+            }
+        });
+        assert!(
+            !json_contains_amplihack(&v),
+            "must return false when 'amplihack' does not appear in any string value"
+        );
     }
 
-    // ── WS2-TEST-03: strip_ansi with nested sequences ─────────────────────
-
-    /// Multiple consecutive escape sequences must all be removed.
+    /// Empty JSON object must return false.
     #[test]
-    fn test_strip_ansi_removes_multiple_sequences() {
-        let input = "\x1b[32m\x1b[1mgreen bold\x1b[0m";
-        assert_eq!(strip_ansi(input), "green bold");
+    fn test_json_contains_amplihack_returns_false_for_empty_object() {
+        let v: serde_json::Value = serde_json::json!({});
+        assert!(
+            !json_contains_amplihack(&v),
+            "must return false for an empty JSON object"
+        );
     }
+
+    /// Numeric and boolean values (no string children) must return false.
+    #[test]
+    fn test_json_contains_amplihack_returns_false_for_non_string_values() {
+        let v: serde_json::Value = serde_json::json!({"count": 42, "enabled": true});
+        assert!(
+            !json_contains_amplihack(&v),
+            "must return false when values are not strings"
+        );
+    }
+
+    /// Array containing "amplihack" string must return true.
+    #[test]
+    fn test_json_contains_amplihack_finds_string_inside_array() {
+        let v: serde_json::Value = serde_json::json!(["other", "amplihack-hooks", "more"]);
+        assert!(
+            json_contains_amplihack(&v),
+            "must return true when 'amplihack' appears inside an array element"
+        );
+    }
+
+    // ── WS2-TEST-00b: truncate helper ─────────────────────────────────────
+
+    /// Truncate a string shorter than max_chars must return the string unchanged.
+    #[test]
+    fn test_truncate_returns_whole_string_when_shorter_than_limit() {
+        let s = "hello";
+        assert_eq!(truncate(s, 10), "hello");
+    }
+
+    /// Truncate at exactly max_chars must return the full string (boundary).
+    #[test]
+    fn test_truncate_returns_full_string_at_exact_boundary() {
+        let s = "hello";
+        assert_eq!(truncate(s, 5), "hello");
+    }
+
+    /// Truncate a string longer than max_chars must cut at the char boundary.
+    #[test]
+    fn test_truncate_cuts_string_over_limit() {
+        let s = "hello world";
+        assert_eq!(truncate(s, 5), "hello");
+    }
+
+    /// Truncate with a multibyte character must respect char boundaries (no panic).
+    #[test]
+    fn test_truncate_handles_multibyte_chars_without_panic() {
+        // "café" is 5 chars (c-a-f-é) but 6 bytes (é is 2 bytes in UTF-8).
+        let s = "café end";
+        let result = truncate(s, 4);
+        // Result must be "café" — a valid UTF-8 string at a char boundary.
+        assert_eq!(result, "café");
+    }
+
+    // ── WS2-TEST-01 through WS2-TEST-03: strip_ansi ──────────────────────
+    //
+    // strip_ansi tests live in `crate::util` (util.rs) which is the canonical
+    // location for that function.  Duplicating them here was identified as
+    // redundant (CODE-7) — the authoritative tests are in util::tests.
 
     // ── WS2-TEST-04: settings_json_path_for appends correct suffix ───────
 
@@ -440,7 +548,7 @@ mod tests {
     /// `settings_json_path_for()` must work with any home directory path,
     /// including deeply nested ones.  Uses a pure function — no env mutation.
     #[test]
-    fn test_settings_json_path_none_when_home_unset() {
+    fn test_settings_json_path_for_returns_expected_path() {
         // Pure function test: verify that a different home root produces
         // the expected path.  (The old test mutated HOME to simulate an unset
         // value; the env-reading wrapper settings_json_path() returns None
@@ -531,6 +639,203 @@ mod tests {
         assert!(
             result.is_ok(),
             "run_doctor should return Ok on healthy machine"
+        );
+    }
+
+    // ── WS2-TEST-11: check_hooks_installed unit tests (CODE-9) ────────────
+
+    /// check_hooks_installed returns (true, _) when settings.json exists and
+    /// contains an "amplihack" string in the hooks section.
+    #[test]
+    fn test_check_hooks_installed_passes_when_amplihack_in_hooks() {
+        let temp = tempfile::tempdir().unwrap();
+        let claude_dir = temp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        let settings_path = claude_dir.join("settings.json");
+        let content = serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    {"command": "/home/user/.local/bin/amplihack-hooks session-start"}
+                ]
+            }
+        });
+        std::fs::write(&settings_path, serde_json::to_string(&content).unwrap()).unwrap();
+
+        // Temporarily override HOME to point to the temp dir.
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", temp.path()) };
+
+        let (passed, _msg) = check_hooks_installed();
+
+        if let Some(h) = prev_home {
+            unsafe { std::env::set_var("HOME", h) };
+        } else {
+            unsafe { std::env::remove_var("HOME") };
+        }
+
+        assert!(
+            passed,
+            "check_hooks_installed must pass when 'amplihack' is in hooks"
+        );
+    }
+
+    /// check_hooks_installed returns (false, _) when settings.json exists but
+    /// does not contain "amplihack" in the hooks section.
+    #[test]
+    fn test_check_hooks_installed_fails_when_amplihack_absent_from_hooks() {
+        let temp = tempfile::tempdir().unwrap();
+        let claude_dir = temp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        let settings_path = claude_dir.join("settings.json");
+        let content = serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    {"command": "/home/user/.local/bin/some-other-tool"}
+                ]
+            }
+        });
+        std::fs::write(&settings_path, serde_json::to_string(&content).unwrap()).unwrap();
+
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", temp.path()) };
+
+        let (passed, msg) = check_hooks_installed();
+
+        if let Some(h) = prev_home {
+            unsafe { std::env::set_var("HOME", h) };
+        } else {
+            unsafe { std::env::remove_var("HOME") };
+        }
+
+        assert!(
+            !passed,
+            "check_hooks_installed must fail when 'amplihack' is absent; msg: {msg}"
+        );
+    }
+
+    /// check_hooks_installed returns (false, _) when settings.json is missing.
+    #[test]
+    fn test_check_hooks_installed_fails_when_settings_json_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let claude_dir = temp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        // Do NOT create settings.json
+
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", temp.path()) };
+
+        let (passed, msg) = check_hooks_installed();
+
+        if let Some(h) = prev_home {
+            unsafe { std::env::set_var("HOME", h) };
+        } else {
+            unsafe { std::env::remove_var("HOME") };
+        }
+
+        assert!(
+            !passed,
+            "check_hooks_installed must fail when settings.json is absent; msg: {msg}"
+        );
+    }
+
+    /// check_hooks_installed returns (false, _) when settings.json contains invalid JSON.
+    #[test]
+    fn test_check_hooks_installed_fails_on_invalid_json() {
+        let temp = tempfile::tempdir().unwrap();
+        let claude_dir = temp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(claude_dir.join("settings.json"), "{invalid json").unwrap();
+
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", temp.path()) };
+
+        let (passed, msg) = check_hooks_installed();
+
+        if let Some(h) = prev_home {
+            unsafe { std::env::set_var("HOME", h) };
+        } else {
+            unsafe { std::env::remove_var("HOME") };
+        }
+
+        assert!(
+            !passed,
+            "check_hooks_installed must fail on invalid JSON; msg: {msg}"
+        );
+    }
+
+    // ── WS2-TEST-12: check_settings_valid_json unit tests (CODE-9) ───────
+
+    /// check_settings_valid_json returns (true, _) when settings.json contains
+    /// valid JSON.
+    #[test]
+    fn test_check_settings_valid_json_passes_for_valid_json() {
+        let temp = tempfile::tempdir().unwrap();
+        let claude_dir = temp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(claude_dir.join("settings.json"), r#"{"hooks": {}}"#).unwrap();
+
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", temp.path()) };
+
+        let (passed, _msg) = check_settings_valid_json();
+
+        if let Some(h) = prev_home {
+            unsafe { std::env::set_var("HOME", h) };
+        } else {
+            unsafe { std::env::remove_var("HOME") };
+        }
+
+        assert!(passed, "check_settings_valid_json must pass for valid JSON");
+    }
+
+    /// check_settings_valid_json returns (false, _) when settings.json contains
+    /// invalid JSON.
+    #[test]
+    fn test_check_settings_valid_json_fails_for_invalid_json() {
+        let temp = tempfile::tempdir().unwrap();
+        let claude_dir = temp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(claude_dir.join("settings.json"), "{not valid json").unwrap();
+
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", temp.path()) };
+
+        let (passed, msg) = check_settings_valid_json();
+
+        if let Some(h) = prev_home {
+            unsafe { std::env::set_var("HOME", h) };
+        } else {
+            unsafe { std::env::remove_var("HOME") };
+        }
+
+        assert!(
+            !passed,
+            "check_settings_valid_json must fail for invalid JSON; msg: {msg}"
+        );
+    }
+
+    /// check_settings_valid_json returns (false, _) when settings.json is absent.
+    #[test]
+    fn test_check_settings_valid_json_fails_when_file_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let claude_dir = temp.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        // Do NOT create settings.json
+
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", temp.path()) };
+
+        let (passed, msg) = check_settings_valid_json();
+
+        if let Some(h) = prev_home {
+            unsafe { std::env::set_var("HOME", h) };
+        } else {
+            unsafe { std::env::remove_var("HOME") };
+        }
+
+        assert!(
+            !passed,
+            "check_settings_valid_json must fail when settings.json is missing; msg: {msg}"
         );
     }
 }
