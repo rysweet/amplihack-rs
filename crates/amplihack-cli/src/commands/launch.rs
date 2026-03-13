@@ -59,6 +59,7 @@ pub fn run_launch(
         .with_amplihack_session_id() // AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH
         .with_amplihack_vars() // AMPLIHACK_RUST_RUNTIME, AMPLIHACK_VERSION, NODE_OPTIONS
         .with_agent_binary(tool) // WS1: AMPLIHACK_AGENT_BINARY
+        .with_amplihack_home() // WS3: AMPLIHACK_HOME
         .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1") // WS2: propagate flag
         .build();
 

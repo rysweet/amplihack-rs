@@ -78,6 +78,85 @@ impl EnvBuilder {
         self.set("AMPLIHACK_AGENT_BINARY", tool)
     }
 
+    /// Resolve and set `AMPLIHACK_HOME` in the child environment.
+    ///
+    /// Resolution order:
+    /// 1. If `AMPLIHACK_HOME` is already set in the current environment → no-op.
+    /// 2. If `HOME` is set → use `$HOME/.amplihack`.
+    /// 3. If `std::env::current_exe()` succeeds → use the parent directory of
+    ///    the running executable.
+    /// 4. All attempts fail → return `self` unchanged (silent degradation).
+    ///
+    /// # Security (SEC-WS3-01/02/03)
+    ///
+    /// Paths containing `..` (parent directory) components are rejected with a
+    /// `tracing::warn!` and the variable is NOT set. This prevents an attacker
+    /// who controls `$HOME` from injecting traversal paths such as
+    /// `/tmp/../../etc`. Non-absolute paths are also rejected.
+    ///
+    /// Note: existence of the path is NOT checked — the consumer (recipe runner)
+    /// creates it on demand. Existence checks are avoided to keep this free of
+    /// filesystem side-effects and to work correctly in test environments.
+    pub fn with_amplihack_home(self) -> Self {
+        use std::path::{Component, Path, PathBuf};
+
+        /// Validate a candidate path and return it as a String if safe,
+        /// or `None` if it fails security checks (SEC-WS3-01/02).
+        fn validate_path(candidate: &Path) -> Option<String> {
+            // SEC-WS3-02: must be absolute.
+            if !candidate.is_absolute() {
+                tracing::warn!(
+                    path = %candidate.display(),
+                    "AMPLIHACK_HOME resolution produced a non-absolute path — skipping"
+                );
+                return None;
+            }
+            // SEC-WS3-01: reject any path containing '..' (ParentDir) components.
+            if candidate.components().any(|c| c == Component::ParentDir) {
+                tracing::warn!(
+                    path = %candidate.display(),
+                    "AMPLIHACK_HOME resolution produced a path with '..' components — skipping (SEC-WS3-01)"
+                );
+                return None;
+            }
+            Some(candidate.to_string_lossy().into_owned())
+        }
+
+        // Step 1: already set in environment — preserve it.
+        if let Ok(existing) = env::var("AMPLIHACK_HOME")
+            && !existing.is_empty()
+        {
+            return self.set("AMPLIHACK_HOME", existing);
+        }
+
+        // Step 2: derive from HOME env var → $HOME/.amplihack
+        if let Ok(home) = env::var("HOME")
+            && !home.is_empty()
+        {
+            let candidate = PathBuf::from(&home).join(".amplihack");
+            if let Some(value) = validate_path(&candidate) {
+                return self.set("AMPLIHACK_HOME", value);
+            }
+            // Path failed security check — do NOT fall through to exe-based
+            // strategy, as a poisoned HOME should not silently resolve to
+            // the binary directory (which may be controlled by the attacker).
+            return self;
+        }
+
+        // Step 3: fall back to the parent directory of the running executable.
+        if let Ok(exe) = env::current_exe()
+            && let Some(parent) = exe.parent()
+        {
+            let candidate = parent.to_path_buf();
+            if let Some(value) = validate_path(&candidate) {
+                return self.set("AMPLIHACK_HOME", value);
+            }
+        }
+
+        // Step 4: all strategies exhausted — return unchanged (SEC-WS3-03 silent).
+        self
+    }
+
     /// Add standard AMPLIHACK_* variables and NODE_OPTIONS.
     pub fn with_amplihack_vars(self) -> Self {
         // Merge NODE_OPTIONS: append if existing (and not already present), set fresh otherwise
@@ -176,6 +255,89 @@ mod tests {
                 "AMPLIHACK_AGENT_BINARY should be '{tool}'"
             );
         }
+    }
+
+    // ── WS3: with_amplihack_home ───────────────────────────────────────────────
+
+    /// WS3-1: with_amplihack_home should derive AMPLIHACK_HOME from HOME when
+    /// AMPLIHACK_HOME is not set.
+    #[test]
+    fn with_amplihack_home_sets_from_home() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let temp = tempfile::tempdir().unwrap();
+        let prev_home = crate::test_support::set_home(temp.path());
+        let prev_amplihack_home = std::env::var_os("AMPLIHACK_HOME");
+        unsafe { std::env::remove_var("AMPLIHACK_HOME") };
+
+        let env = EnvBuilder::new().with_amplihack_home().build();
+
+        crate::test_support::restore_home(prev_home);
+        match prev_amplihack_home {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_HOME", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+        }
+
+        let expected = temp.path().join(".amplihack");
+        assert_eq!(
+            env.get("AMPLIHACK_HOME").map(String::as_str),
+            Some(expected.to_str().unwrap()),
+            "AMPLIHACK_HOME should be <HOME>/.amplihack when unset"
+        );
+    }
+
+    /// WS3-2: with_amplihack_home must not overwrite an AMPLIHACK_HOME that is
+    /// already set in the process environment.
+    #[test]
+    fn with_amplihack_home_does_not_overwrite_existing() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let custom = "/custom/path";
+        let prev = std::env::var_os("AMPLIHACK_HOME");
+        unsafe { std::env::set_var("AMPLIHACK_HOME", custom) };
+
+        let env = EnvBuilder::new().with_amplihack_home().build();
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_HOME", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+        }
+
+        assert_eq!(
+            env.get("AMPLIHACK_HOME").map(String::as_str),
+            Some(custom),
+            "with_amplihack_home must preserve a pre-existing AMPLIHACK_HOME"
+        );
+    }
+
+    /// WS3-3 (SEC-WS3-01): with_amplihack_home must reject a HOME that contains
+    /// path traversal components (e.g. "..") and must NOT set AMPLIHACK_HOME.
+    #[test]
+    fn with_amplihack_home_rejects_traversal_path() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let prev_home = crate::test_support::set_home(std::path::Path::new("/tmp/../../etc"));
+        let prev_amplihack_home = std::env::var_os("AMPLIHACK_HOME");
+        unsafe { std::env::remove_var("AMPLIHACK_HOME") };
+
+        let env = EnvBuilder::new().with_amplihack_home().build();
+
+        crate::test_support::restore_home(prev_home);
+        match prev_amplihack_home {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_HOME", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+        }
+
+        assert!(
+            !env.contains_key("AMPLIHACK_HOME"),
+            "with_amplihack_home must not set AMPLIHACK_HOME when HOME contains path traversal"
+        );
     }
 
     // ── WS2: set_if ────────────────────────────────────────────────────────────
