@@ -29,6 +29,12 @@ clap = { version = "4", features = ["derive"] }
 signal-hook = "0.3"
 sha2 = "0.10"
 libc = "0.2"
+# SEC-WS4-01: Pin cxx-build to the exact version that matches the cxx crate
+# used by kuzu (=1.0.138). Without this pin, Cargo resolves cxx-build to the
+# latest release, which produces ABI-incompatible bridge symbols and causes
+# link-time failures (undefined reference to `cxxbridge1$…`).
+# See docs/howto/resolve-kuzu-linker-errors.md
+cxx-build = "=1.0.138"
 
 # Workspace crate cross-references
 amplihack-types = { path = "crates/amplihack-types" }
