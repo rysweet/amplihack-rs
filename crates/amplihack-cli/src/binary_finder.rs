@@ -3,6 +3,7 @@
 //! Uses `which`-style lookup with version verification. No fallbacks:
 //! if the binary isn't found, we error out.
 
+use crate::util::strip_ansi;
 use anyhow::{Result, bail};
 use std::collections::HashSet;
 use std::env;
@@ -123,6 +124,9 @@ fn search_path_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// Maximum number of characters to retain from a detected version string.
+const MAX_VERSION_LEN: usize = 200;
+
 /// Run `binary --version` and extract a version string.
 fn detect_version(path: &Path) -> Option<String> {
     let output = Command::new(path).arg("--version").output().ok()?;
@@ -132,9 +136,15 @@ fn detect_version(path: &Path) -> Option<String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Extract version-like string: first line, or the part after the last space.
+    // Extract version-like string: first line, stripped of ANSI sequences.
     let first_line = stdout.lines().next()?.trim();
-    Some(first_line.to_string())
+    let version = strip_ansi(first_line);
+    // Truncate to avoid unbounded strings from malicious or misbehaving binaries.
+    if version.len() > MAX_VERSION_LEN {
+        Some(version[..MAX_VERSION_LEN].to_string())
+    } else {
+        Some(version)
+    }
 }
 
 /// Check if a path is executable (Unix: has execute bit).

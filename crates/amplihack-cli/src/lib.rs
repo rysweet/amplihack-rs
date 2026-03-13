@@ -17,6 +17,7 @@ pub mod signals;
 #[cfg(test)]
 pub mod test_support;
 pub mod update;
+pub mod util;
 
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;
@@ -145,6 +146,9 @@ pub enum Commands {
         /// Shell to generate completions for
         shell: Shell,
     },
+
+    /// Run system health checks
+    Doctor,
 }
 
 #[derive(Subcommand, Debug)]

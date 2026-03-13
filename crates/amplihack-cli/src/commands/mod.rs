@@ -1,6 +1,7 @@
 //! Command dispatch for all CLI subcommands.
 
 pub mod completions;
+pub mod doctor;
 pub mod install;
 pub mod launch;
 pub mod memory;
@@ -50,6 +51,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::RustyClawd { args } => python_delegate::delegate_to_python("RustyClawd", &args),
         Commands::UvxHelp { args } => python_delegate::delegate_to_python("uvx-help", &args),
         Commands::Completions { shell } => completions::run_completions(shell),
+        Commands::Doctor => doctor::run_doctor(),
     }
 }
 

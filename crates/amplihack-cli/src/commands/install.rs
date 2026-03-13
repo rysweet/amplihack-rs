@@ -213,6 +213,24 @@ fn find_hooks_binary() -> Result<PathBuf> {
     )
 }
 
+/// Validate that a binary path contains no shell metacharacters that could cause
+/// shell misinterpretation or bypass command-string validation.
+///
+/// Blocks: space (` `), single quote (`'`), double quote (`"`), backslash (`\`),
+/// plus all the shell operator characters blocked by `validate_hook_command_string`.
+fn validate_binary_path(path: &str) -> Result<()> {
+    const BLOCKED: &[char] = &[
+        '|', '&', ';', '$', '`', '(', ')', '{', '}', '<', '!', '>', '#', '~', '*', ' ', '\'', '"',
+        '\\',
+    ];
+    for ch in BLOCKED {
+        if path.contains(*ch) {
+            bail!("binary path contains unsafe character '{ch}': {path}");
+        }
+    }
+    Ok(())
+}
+
 /// Validate that a hook command string contains no shell metacharacters.
 ///
 /// Blocks: `|`, `&`, `;`, `$`, backtick, `(`, `)`, `{`, `}`, `<`, `!`, `>`, `#`, `~`, `*`
@@ -1034,14 +1052,29 @@ fn update_hook_paths(
 ///
 /// For `BinarySubcmd`: command = `"{hooks_bin} {subcmd}"`
 /// For `PythonFile`: command = absolute path to the Python file in tools/amplihack/hooks/
+/// Wrap a path string in double quotes, escaping any embedded double quotes.
+fn shell_quote_path(path_str: &str) -> String {
+    let escaped = path_str.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
 fn build_hook_wrapper(spec: &HookSpec, hooks_bin: &Path) -> Value {
     let command_str = match &spec.cmd {
-        HookCommandKind::BinarySubcmd { subcmd } => format!("{} {}", hooks_bin.display(), subcmd),
+        HookCommandKind::BinarySubcmd { subcmd } => {
+            let bin_str = hooks_bin.display().to_string();
+            validate_binary_path(&bin_str)
+                .expect("hooks binary path must not contain shell-unsafe characters");
+            let quoted_bin = shell_quote_path(&bin_str);
+            format!("{quoted_bin} {subcmd}")
+        }
         HookCommandKind::PythonFile { file } => {
             // Build absolute path: ~/.amplihack/.claude/tools/amplihack/hooks/<file>
-            amplihack_hooks_dir()
+            let path_str = amplihack_hooks_dir()
                 .map(|dir| dir.join(file).to_string_lossy().into_owned())
-                .unwrap_or_else(|_| file.to_string())
+                .unwrap_or_else(|_| file.to_string());
+            validate_binary_path(&path_str)
+                .expect("hook Python file path must not contain shell-unsafe characters");
+            shell_quote_path(&path_str)
         }
     };
     validate_hook_command_string(&command_str)
@@ -1852,8 +1885,8 @@ mod tests {
             "PythonFile command must reference tools/amplihack/ dir, got: {command}"
         );
         assert!(
-            command.ends_with("workflow_classification_reminder.py"),
-            "PythonFile command must end with filename, got: {command}"
+            command.ends_with("workflow_classification_reminder.py\""),
+            "PythonFile command must end with quoted filename, got: {command}"
         );
         assert_eq!(hook["timeout"].as_u64().unwrap(), 5);
 
