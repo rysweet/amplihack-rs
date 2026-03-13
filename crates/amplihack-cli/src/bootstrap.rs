@@ -16,10 +16,7 @@ use std::process::Command;
 /// configuration wizards, etc.).  This is a **UX gate**, not a security gate.
 pub fn prepare_launcher(tool: &str, noninteractive: bool) -> Result<()> {
     if noninteractive {
-        tracing::debug!(
-            tool,
-            "non-interactive mode: skipping bootstrap setup"
-        );
+        tracing::debug!(tool, "non-interactive mode: skipping bootstrap setup");
         return Ok(());
     }
 

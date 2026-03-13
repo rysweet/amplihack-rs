@@ -101,8 +101,7 @@ mod tests {
         // We do this by temporarily forcing it to "0" and checking the var path
         // directly rather than the full function (since stdin state is runner-
         // dependent).
-        let env_triggered =
-            std::env::var("AMPLIHACK_NONINTERACTIVE").as_deref() == Ok("1");
+        let env_triggered = std::env::var("AMPLIHACK_NONINTERACTIVE").as_deref() == Ok("1");
         unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") };
         assert!(!env_triggered);
     }
