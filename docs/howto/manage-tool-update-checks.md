@@ -11,14 +11,21 @@ newer version of the npm-distributed tool is available. When an update is found,
 it prints a one-line notice to stderr and continues. This guide explains how to
 control that behavior.
 
+> **Command scope:** The update check runs **only** for launch commands
+> (`launch`, `claude`, `copilot`, `codex`, `amplifier`). Non-launch subcommands
+> (`mode`, `plugin`, `recipe`, `memory`, `install`, `update`, `doctor`, etc.)
+> never trigger the check, regardless of environment.
+
 ## Contents
 
 - [Default behavior](#default-behavior)
 - [Disable the check for one launch](#disable-the-check-for-one-launch)
 - [Disable the check permanently](#disable-the-check-permanently)
 - [Suppress in CI and pipelines](#suppress-in-ci-and-pipelines)
+- [Suppress in parity tests and automation](#suppress-in-parity-tests-and-automation)
 - [What the check does](#what-the-check-does)
   - [When the check runs](#when-the-check-runs)
+  - [Command allowlist](#command-allowlist)
   - [Tools checked](#tools-checked)
   - [Timeout and failure handling](#timeout-and-failure-handling)
   - [Non-interactive guard](#non-interactive-guard)
@@ -117,27 +124,76 @@ the full CI configuration guide.
 
 ---
 
+## Suppress in parity tests and automation
+
+Test harnesses that compare the Rust and Python CLIs must suppress the update
+check to avoid spurious stderr mismatches. Set `AMPLIHACK_PARITY_TEST=1`:
+
+```sh
+AMPLIHACK_PARITY_TEST=1 amplihack claude --print 'Run tests'
+```
+
+The parity test harness (`tests/parity/parity_audit_cycle.py`) sets this
+variable automatically in every sandbox it creates. You do not need to set it
+manually when running the harness; it is documented here so that custom
+automation scripts know how to replicate the same suppression.
+
+`AMPLIHACK_PARITY_TEST=1` suppresses **only** the update check. It does not
+enable non-interactive mode or change any other launch behaviour. Use
+`AMPLIHACK_NONINTERACTIVE=1` if you also need to suppress interactive bootstrap
+prompts.
+
+> **Isolation:** `AMPLIHACK_PARITY_TEST` is intentionally separate from
+> `AMPLIHACK_NONINTERACTIVE` so that tests can verify interactive-mode behaviour
+> without triggering the update check.
+
+---
+
 ## What the check does
 
 ### When the check runs
 
-The update check runs **after** nested-launch detection and **before** tool
-availability is verified. This ordering has two consequences:
+The update check runs **before** `main()` parses CLI arguments and **before**
+the subcommand dispatch loop. This means it is the first thing that executes on
+every invocation — but it is immediately short-circuited by the [command
+allowlist](#command-allowlist) and the [non-interactive guard](#non-interactive-guard)
+for the vast majority of subcommands.
 
-1. If `amplihack` is called from within a Claude session (nested launch), the
-   update check is automatically suppressed — no `npm` subprocesses are spawned.
-2. If the tool is not installed, you will see the update notice first, followed
-   by the tool-availability prompt. This is expected behaviour, not an error.
-
-In the launch sequence:
+In the full launch sequence for `amplihack claude [args]`:
 
 ```
 amplihack claude [args]
    │
-   ├── 1. Nested-launch detection         ← check suppressed if nested
-   ├── 2. npm tool update check           ← THIS STEP
-   └── 3. bootstrap::ensure_tool_available
+   ├── 1. maybe_print_update_notice_from_args()   ← THIS STEP
+   │      (no-op unless: launch cmd + interactive + not suppressed)
+   ├── 2. Cli::parse_from(args)
+   ├── 3. commands::dispatch()
+   │      └── launch::run_launch("claude", ...)
+   │             ├── a. Nested-launch detection
+   │             ├── b. bootstrap::prepare_launcher()
+   │             └── c. bootstrap::ensure_tool_available()
+   └── (tool starts)
 ```
+
+### Command allowlist
+
+The update check runs **only** when the first argument matches one of these
+launch commands:
+
+| Argument      | Triggers update check |
+|---------------|-----------------------|
+| `launch`      | yes                   |
+| `claude`      | yes                   |
+| `copilot`     | yes                   |
+| `codex`       | yes                   |
+| `amplifier`   | yes                   |
+| anything else | **no**                |
+
+This means `amplihack mode detect`, `amplihack plugin list`, `amplihack recipe
+run`, `amplihack memory tree`, `amplihack install`, `amplihack update`, and
+every other non-launch subcommand never spawn `npm` subprocesses. The check is
+allowlist-based (not denylist-based) so that new subcommands added in the future
+default to the safe, non-checking behaviour.
 
 ### Tools checked
 
@@ -159,13 +215,19 @@ malformed registry response) are silently ignored.
 
 ### Non-interactive guard
 
-The check is skipped unconditionally when:
+The check is skipped unconditionally when **any** of the following conditions is
+true (checked in this order):
 
-1. `AMPLIHACK_NONINTERACTIVE=1` is set in the environment, **or**
-2. `--skip-update-check` is passed on the command line.
+| Condition | Variable / flag | Typical use |
+|-----------|----------------|-------------|
+| Legacy explicit opt-out | `AMPLIHACK_NO_UPDATE_CHECK=1` | permanent per-user disable |
+| Non-interactive mode | `AMPLIHACK_NONINTERACTIVE=1` | CI, pipes, Docker |
+| Parity / automation test | `AMPLIHACK_PARITY_TEST=1` | test harnesses |
+| Per-invocation opt-out | `--skip-update-check` flag | one-off suppression |
 
-The `AMPLIHACK_NONINTERACTIVE` check runs first. If either condition is true no
-`npm` subprocesses are spawned.
+If any condition is true, no `npm` subprocesses are spawned. The conditions are
+evaluated before the command-allowlist check, so a suppressed invocation exits
+the guard immediately without inspecting the subcommand name.
 
 ### Version string sanitisation
 
@@ -199,5 +261,6 @@ visible text.
 ## Related
 
 - [Run amplihack in Non-interactive Mode](./run-in-noninteractive-mode.md) — Full CI and pipeline guide
-- [Environment Variables](../reference/environment-variables.md) — `AMPLIHACK_NONINTERACTIVE` reference
+- [Environment Variables](../reference/environment-variables.md) — `AMPLIHACK_NONINTERACTIVE`, `AMPLIHACK_PARITY_TEST`, and `AMPLIHACK_NO_UPDATE_CHECK` reference
+- [Launch Flag Injection](../reference/launch-flag-injection.md) — How `amplihack` builds the subprocess command line
 - [amplihack launch](../reference/launch-command.md) — Full CLI reference for launch subcommands

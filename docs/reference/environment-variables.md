@@ -16,6 +16,8 @@ All environment variables read or written by `amplihack` during a launch (`ampli
 - [Variables read by amplihack](#variables-read-by-amplihack)
   - [HOME](#home)
   - [AMPLIHACK_DEFAULT_MODEL](#amplihack_default_model)
+  - [AMPLIHACK_NO_UPDATE_CHECK](#amplihack_no_update_check)
+  - [AMPLIHACK_PARITY_TEST](#amplihack_parity_test)
   - [UV_TOOL_BIN_DIR](#uv_tool_bin_dir)
 
 ---
@@ -209,8 +211,81 @@ The `--model` flag passed to the launched tool when the user has not specified o
 
 ```sh
 AMPLIHACK_DEFAULT_MODEL=sonnet amplihack claude
-# Passes: claude --model sonnet
+# Passes: claude --model sonnet --dangerously-skip-permissions
 ```
+
+If the user supplies `--model` explicitly on the command line, this variable is
+ignored entirely — the user-supplied value is used as-is.
+
+```sh
+# User-supplied --model takes priority; AMPLIHACK_DEFAULT_MODEL is ignored
+AMPLIHACK_DEFAULT_MODEL=sonnet amplihack claude --model haiku
+# Passes: claude --model haiku --dangerously-skip-permissions
+```
+
+See [Launch Flag Injection](./launch-flag-injection.md) for the complete rules
+governing how `--model` and other flags are injected into the subprocess
+command line.
+
+---
+
+### AMPLIHACK_NO_UPDATE_CHECK
+
+**Type:** flag
+**Values:** `1` (skip update check) — absence or any other value means check is enabled
+**Used by:** `update::should_skip_update_check()`
+
+Permanently disables the pre-launch npm tool update check for every `amplihack`
+invocation. Unlike `AMPLIHACK_NONINTERACTIVE`, this variable suppresses only the
+update check and has no effect on bootstrap prompts or interactive behaviour.
+
+```sh
+# Add to shell profile for a permanent per-user opt-out
+export AMPLIHACK_NO_UPDATE_CHECK=1
+```
+
+Equivalent to passing `--skip-update-check` on every invocation, but without
+requiring the flag to be typed or aliased.
+
+**When to prefer this over `AMPLIHACK_NONINTERACTIVE`:** Use
+`AMPLIHACK_NO_UPDATE_CHECK=1` when you want to silence the update banner on a
+developer workstation while keeping interactive bootstrap prompts active. Use
+`AMPLIHACK_NONINTERACTIVE=1` in CI environments where all interactive output
+should be suppressed.
+
+---
+
+### AMPLIHACK_PARITY_TEST
+
+**Type:** flag
+**Values:** `1` (parity-test mode active) — absence or any other value has no effect
+**Used by:** `update::should_skip_update_check()`
+
+Suppresses the pre-launch npm update check without enabling full
+non-interactive mode. Set by the parity test harness in every sandbox it
+creates so that update-banner stderr output does not produce spurious
+Python↔Rust divergences.
+
+```sh
+# Set automatically by the parity harness — shown here for documentation only
+AMPLIHACK_PARITY_TEST=1 amplihack claude --print 'run tests'
+```
+
+**Custom automation scripts** that compare `amplihack` output against a known
+baseline should also set this variable:
+
+```sh
+#!/usr/bin/env bash
+# my-output-capture.sh
+export AMPLIHACK_PARITY_TEST=1
+actual=$(amplihack mode detect 2>&1)
+expected="local"
+[[ "$actual" == "$expected" ]] || { echo "FAIL: got $actual"; exit 1; }
+```
+
+**Isolation contract:** `AMPLIHACK_PARITY_TEST=1` suppresses exactly one
+behaviour: the update check. It does not propagate into the child tool process,
+does not affect bootstrap logic, and does not change exit codes or stdout output.
 
 ---
 
