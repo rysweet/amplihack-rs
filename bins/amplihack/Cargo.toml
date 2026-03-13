@@ -38,7 +38,7 @@ path = "../../tests/integration/cli_launch_test.rs"
 name = "cargo_lock_cxx_consistency"
 path = "../../tests/integration/cargo_lock_cxx_consistency_test.rs"
 
-# WS3: --skip-update-check flag integration tests
+# WS1: CI cxx-build pin assertion structural tests
 [[test]]
-name = "skip_update_check_flag"
-path = "../../tests/integration/skip_update_check_flag_test.rs"
+name = "ci_cxx_build_pin"
+path = "../../tests/integration/ci_cxx_build_pin_test.rs"

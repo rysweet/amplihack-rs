@@ -16,6 +16,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify cxx-build pin
+        run: |
+          version=$(grep -A1 'name = "cxx-build"' Cargo.lock | grep version | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$version" != "1.0.138" ]; then
+            echo "ERROR: cxx-build must be pinned to 1.0.138, found $version"
+            echo "Run: cargo update -p cxx-build --precise 1.0.138"
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

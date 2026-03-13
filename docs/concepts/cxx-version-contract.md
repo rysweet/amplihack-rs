@@ -11,6 +11,7 @@
 - [How Cargo.lock prevents the mismatch](#how-cargolock-prevents-the-mismatch)
 - [How the workspace pin prevents drift](#how-the-workspace-pin-prevents-drift)
   - [Verifying the pin is in effect](#verifying-the-pin-is-in-effect)
+- [How CI enforces the pin](#how-ci-enforces-the-pin)
 - [Related](#related)
 
 ## Why cxx needs two crates
@@ -146,9 +147,33 @@ cargo test cargo_lock_cxx_consistency
 # test cargo_lock_cxx_consistency_test ... ok
 ```
 
+## How CI enforces the pin
+
+The `check` CI job runs a shell step before any Rust toolchain setup that reads
+`Cargo.lock` directly and fails the build if `cxx-build` is not exactly
+`1.0.138`:
+
+```yaml
+- name: Verify cxx-build pin
+  run: |
+    version=$(grep -A1 'name = "cxx-build"' Cargo.lock | grep version | head -1 | sed 's/.*"\(.*\)".*//')
+    if [ "$version" != "1.0.138" ]; then
+      echo "ERROR: cxx-build must be pinned to 1.0.138, found $version"
+      echo "Run: cargo update -p cxx-build --precise 1.0.138"
+      exit 1
+    fi
+```
+
+Because `test` and `cross-compile` both declare `needs: check`, a failed pin
+check blocks the entire pipeline before any compilation begins.
+
+If CI fails on this step, follow the [Fix the cxx-build Pin CI Failure](../howto/fix-cxx-build-ci-failure.md)
+guide to restore the correct lockfile entry.
+
 ## Related
 
 - [Resolve kuzu linker errors](../howto/resolve-kuzu-linker-errors.md) — Step-by-step fix when the mismatch occurs
+- [Fix the cxx-build Pin CI Failure](../howto/fix-cxx-build-ci-failure.md) — Restore the Cargo.lock pin after a failed CI check
 - [cxx documentation](https://cxx.rs/) — Official cxx bridge reference
 - [kuzu Rust crate](https://docs.rs/kuzu/0.11.3) — kuzu 0.11.3 API reference
 - [GitHub Issue #35](https://github.com/rysweet/amplihack-rs/issues/35) — Original linker error report
