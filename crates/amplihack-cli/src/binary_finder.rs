@@ -4,6 +4,7 @@
 //! if the binary isn't found, we error out.
 
 use anyhow::{Result, bail};
+use crate::util::strip_ansi;
 use std::collections::HashSet;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -132,9 +133,9 @@ fn detect_version(path: &Path) -> Option<String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Extract version-like string: first line, or the part after the last space.
+    // Extract version-like string: first line, stripped of ANSI sequences.
     let first_line = stdout.lines().next()?.trim();
-    Some(first_line.to_string())
+    Some(strip_ansi(first_line))
 }
 
 /// Check if a path is executable (Unix: has execute bit).

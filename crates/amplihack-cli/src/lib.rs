@@ -145,6 +145,9 @@ pub enum Commands {
         /// Shell to generate completions for
         shell: Shell,
     },
+
+    /// Run system health checks
+    Doctor,
 }
 
 #[derive(Subcommand, Debug)]
