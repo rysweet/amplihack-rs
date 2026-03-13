@@ -9,6 +9,7 @@ use crate::env_builder::EnvBuilder;
 use crate::launcher::ManagedChild;
 use crate::nesting::NestingDetector;
 use crate::signals;
+use crate::tool_update_check::maybe_print_npm_update_notice;
 use crate::util::is_noninteractive;
 use anyhow::{Context, Result};
 use std::process::Command;
@@ -21,8 +22,14 @@ pub fn run_launch(
     resume: bool,
     continue_session: bool,
     skip_permissions: bool,
+    skip_update_check: bool,
     extra_args: Vec<String>,
 ) -> Result<()> {
+    // Check for npm updates before doing anything else.
+    // This is a no-op if skip_update_check is true, AMPLIHACK_NONINTERACTIVE is set,
+    // or the tool has no npm package mapping.
+    maybe_print_npm_update_notice(tool, skip_update_check);
+
     bootstrap::prepare_launcher(tool)?;
 
     // Check nesting

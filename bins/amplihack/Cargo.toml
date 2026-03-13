@@ -37,3 +37,8 @@ path = "../../tests/integration/cli_launch_test.rs"
 [[test]]
 name = "cargo_lock_cxx_consistency"
 path = "../../tests/integration/cargo_lock_cxx_consistency_test.rs"
+
+# WS3: --skip-update-check flag integration tests
+[[test]]
+name = "skip_update_check_flag"
+path = "../../tests/integration/skip_update_check_flag_test.rs"

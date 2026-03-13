@@ -3,12 +3,18 @@
 use crate::binary_finder::{BinaryFinder, BinaryInfo};
 use crate::commands::install;
 use crate::copilot_setup;
-use crate::util::is_noninteractive;
+use crate::util::{is_noninteractive, run_with_timeout};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
+
+/// Timeout for tool installation commands (npm install, uv tool install).
+/// These involve network downloads and can be legitimately slow, so we allow
+/// 5 minutes before treating them as hung.
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub fn prepare_launcher(tool: &str) -> Result<()> {
     // SEC-WS2-02: Non-interactive mode (CI, pipes, AMPLIHACK_NONINTERACTIVE=1)
@@ -89,15 +95,16 @@ fn install_npm_package(tool: &str, package: &str) -> Result<()> {
 
     prepend_path(&bin_dir)?;
     println!("📦 Installing {tool} via npm package {package}...");
-    let status = Command::new(npm)
+    let mut npm_cmd = Command::new(npm);
+    npm_cmd
         .arg("install")
         .arg("-g")
         .arg("--prefix")
         .arg(&prefix)
         .arg(package)
-        .arg("--ignore-scripts")
-        .status()
-        .context("failed to execute npm install")?;
+        .arg("--ignore-scripts");
+    let status =
+        run_with_timeout(npm_cmd, INSTALL_TIMEOUT).context("failed to execute npm install")?;
 
     if !status.success() {
         bail!("npm install failed for package {package}");
@@ -115,12 +122,13 @@ fn install_amplifier() -> Result<()> {
     prepend_path(&bin_dir)?;
 
     println!("📦 Installing amplifier via uv tool...");
-    let status = Command::new(uv)
+    let mut uv_cmd = Command::new(uv);
+    uv_cmd
         .arg("tool")
         .arg("install")
-        .arg("git+https://github.com/microsoft/amplifier")
-        .status()
-        .context("failed to execute uv tool install")?;
+        .arg("git+https://github.com/microsoft/amplifier");
+    let status =
+        run_with_timeout(uv_cmd, INSTALL_TIMEOUT).context("failed to execute uv tool install")?;
 
     if !status.success() {
         bail!("uv tool install failed for amplifier");
@@ -136,29 +144,19 @@ fn configure_codex() -> Result<()> {
         .with_context(|| format!("failed to create {}", config_dir.display()))?;
     let config_path = config_dir.join("config.json");
 
-    let mut value = if config_path.exists() {
-        fs::read_to_string(&config_path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-            .unwrap_or_else(|| json!({}))
-    } else {
-        json!({})
-    };
+    // Load existing config, falling back to an empty object for any error
+    // (missing file, parse error, or non-object JSON value).
+    let mut value = config_path
+        .exists()
+        .then(|| fs::read_to_string(&config_path).ok())
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
 
-    let Some(object) = value.as_object_mut() else {
-        value = json!({});
-        value
-            .as_object_mut()
-            .expect("json object just initialized")
-            .insert(
-                "approval_mode".to_string(),
-                Value::String("auto".to_string()),
-            );
-        fs::write(&config_path, serde_json::to_string_pretty(&value)? + "\n")
-            .with_context(|| format!("failed to write {}", config_path.display()))?;
-        return Ok(());
-    };
-
+    let object = value
+        .as_object_mut()
+        .expect("value is guaranteed an object");
     if object.get("approval_mode").and_then(Value::as_str) != Some("auto") {
         object.insert(
             "approval_mode".to_string(),
