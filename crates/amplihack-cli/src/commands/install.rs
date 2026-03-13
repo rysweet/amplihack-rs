@@ -215,14 +215,15 @@ fn find_hooks_binary() -> Result<PathBuf> {
 
 /// Validate that a hook command string contains no shell metacharacters.
 ///
-/// Blocks: `|`, `&`, `;`, `$`, backtick, `(`, `)`, `{`, `}`, `<`, `!`, `>`, `#`, `~`, `*`
+/// Blocks: `|`, `&`, `;`, `$`, backtick, `(`, `)`, `{`, `}`, `<`, `!`, `>`, `#`, `~`, `*`,
+/// `\n`, `\r`
 fn validate_hook_command_string(cmd: &str) -> Result<()> {
     const BLOCKED: &[char] = &[
-        '|', '&', ';', '$', '`', '(', ')', '{', '}', '<', '!', '>', '#', '~', '*',
+        '|', '&', ';', '$', '`', '(', ')', '{', '}', '<', '!', '>', '#', '~', '*', '\n', '\r',
     ];
     for ch in BLOCKED {
         if cmd.contains(*ch) {
-            bail!("hook command string contains unsafe metacharacter '{ch}': {cmd}");
+            bail!("hook command string contains unsafe metacharacter '{ch:?}': {cmd}");
         }
     }
     Ok(())
@@ -900,11 +901,11 @@ fn ensure_settings_json(
 
     let mut settings = read_settings_json(&settings_path)?;
     ensure_permissions(&mut settings);
-    update_hook_paths(&mut settings, "amplihack", AMPLIHACK_HOOK_SPECS, hooks_bin);
+    update_hook_paths(&mut settings, "amplihack", AMPLIHACK_HOOK_SPECS, hooks_bin)?;
 
     let xpia_dir = xpia_hooks_dir()?;
     if xpia_dir.exists() {
-        update_hook_paths(&mut settings, "xpia", XPIA_HOOK_SPECS, hooks_bin);
+        update_hook_paths(&mut settings, "xpia", XPIA_HOOK_SPECS, hooks_bin)?;
     }
 
     fs::write(
@@ -1005,7 +1006,7 @@ fn update_hook_paths(
     hook_system: &str,
     specs: &[HookSpec],
     hooks_bin: &Path,
-) {
+) -> Result<()> {
     let root = ensure_object(settings);
     let hooks = root
         .entry("hooks")
@@ -1017,7 +1018,7 @@ fn update_hook_paths(
             .entry(spec.event)
             .or_insert_with(|| Value::Array(Vec::new()));
         let wrappers = ensure_array(wrappers);
-        let desired = build_hook_wrapper(spec, hooks_bin);
+        let desired = build_hook_wrapper(spec, hooks_bin)?;
 
         if let Some(existing) = wrappers
             .iter_mut()
@@ -1028,13 +1029,14 @@ fn update_hook_paths(
             wrappers.push(desired);
         }
     }
+    Ok(())
 }
 
 /// Build the Claude Code hook wrapper JSON for a given spec.
 ///
 /// For `BinarySubcmd`: command = `"{hooks_bin} {subcmd}"`
 /// For `PythonFile`: command = absolute path to the Python file in tools/amplihack/hooks/
-fn build_hook_wrapper(spec: &HookSpec, hooks_bin: &Path) -> Value {
+fn build_hook_wrapper(spec: &HookSpec, hooks_bin: &Path) -> Result<Value> {
     let command_str = match &spec.cmd {
         HookCommandKind::BinarySubcmd { subcmd } => format!("{} {}", hooks_bin.display(), subcmd),
         HookCommandKind::PythonFile { file } => {
@@ -1044,8 +1046,7 @@ fn build_hook_wrapper(spec: &HookSpec, hooks_bin: &Path) -> Value {
                 .unwrap_or_else(|_| file.to_string())
         }
     };
-    validate_hook_command_string(&command_str)
-        .expect("hook command strings are built from controlled paths and literals");
+    validate_hook_command_string(&command_str)?;
 
     let mut hook = Map::new();
     hook.insert("type".to_string(), Value::String("command".to_string()));
@@ -1059,7 +1060,7 @@ fn build_hook_wrapper(spec: &HookSpec, hooks_bin: &Path) -> Value {
         wrapper.insert("matcher".to_string(), Value::String(matcher.to_string()));
     }
     wrapper.insert("hooks".to_string(), Value::Array(vec![Value::Object(hook)]));
-    Value::Object(wrapper)
+    Ok(Value::Object(wrapper))
 }
 
 /// Type-directed idempotency check.
@@ -1763,7 +1764,7 @@ mod tests {
             matcher: None,
         };
 
-        let wrapper = build_hook_wrapper(&spec, &hooks_bin);
+        let wrapper = build_hook_wrapper(&spec, &hooks_bin).unwrap();
         let hooks_arr = wrapper["hooks"]
             .as_array()
             .expect("wrapper must have hooks[]");
@@ -1803,7 +1804,7 @@ mod tests {
             matcher: Some("*"),
         };
 
-        let wrapper = build_hook_wrapper(&spec, &hooks_bin);
+        let wrapper = build_hook_wrapper(&spec, &hooks_bin).unwrap();
         let hooks_arr = wrapper["hooks"].as_array().unwrap();
         let hook = hooks_arr[0].as_object().unwrap();
 
@@ -1838,7 +1839,7 @@ mod tests {
             matcher: None,
         };
 
-        let wrapper = build_hook_wrapper(&spec, &hooks_bin);
+        let wrapper = build_hook_wrapper(&spec, &hooks_bin).unwrap();
         let hooks_arr = wrapper["hooks"].as_array().unwrap();
         let hook = hooks_arr[0].as_object().unwrap();
 
@@ -1877,7 +1878,7 @@ mod tests {
             matcher: None,
         };
 
-        let wrapper = build_hook_wrapper(&spec, &hooks_bin);
+        let wrapper = build_hook_wrapper(&spec, &hooks_bin).unwrap();
         assert!(
             wrapper_matches(&wrapper, &spec, "amplihack"),
             "wrapper_matches must return true for an exact BinarySubcmd match"
@@ -1906,7 +1907,7 @@ mod tests {
         };
 
         // Build wrapper for session-start; try to match with stop spec → should fail
-        let wrapper = build_hook_wrapper(&spec_session, &hooks_bin);
+        let wrapper = build_hook_wrapper(&spec_session, &hooks_bin).unwrap();
         assert!(
             !wrapper_matches(&wrapper, &spec_stop, "amplihack"),
             "wrapper_matches must reject wrapper with different subcmd"
@@ -1933,7 +1934,7 @@ mod tests {
             matcher: None,
         };
 
-        let wrapper = build_hook_wrapper(&spec, &hooks_bin);
+        let wrapper = build_hook_wrapper(&spec, &hooks_bin).unwrap();
         assert!(
             wrapper_matches(&wrapper, &spec, "amplihack"),
             "wrapper_matches must return true for a PythonFile wrapper"

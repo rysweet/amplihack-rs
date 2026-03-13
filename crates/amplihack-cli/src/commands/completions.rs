@@ -13,7 +13,9 @@ use crate::Cli;
 /// The completion script is emitted directly to stdout so that the caller can
 /// redirect it to a file or source it in a shell profile.
 pub fn run_completions(shell: Shell) -> Result<()> {
-    // SAFETY: `"amplihack"` is a compile-time literal — no user input involved.
+    // SAFETY: The binary name argument `"amplihack"` is a compile-time literal.
+    // The `shell` argument is a validated `clap_complete::Shell` enum variant
+    // parsed by clap — not a raw user string — so it cannot introduce injection.
     clap_complete::generate(
         shell,
         &mut Cli::command(),
