@@ -9,6 +9,7 @@ use crate::env_builder::EnvBuilder;
 use crate::launcher::ManagedChild;
 use crate::nesting::NestingDetector;
 use crate::signals;
+use crate::util::is_noninteractive;
 use anyhow::{Context, Result};
 use std::process::Command;
 use std::sync::Arc;
@@ -52,10 +53,12 @@ pub fn run_launch(
         "launching {tool}"
     );
 
-    // Build environment
+    // Build environment — canonical chain order per design spec.
+    // SEC-DATA-01: Never log the full env map (may contain inherited secrets).
     let env = EnvBuilder::new()
-        .with_amplihack_session_id()
-        .with_amplihack_vars()
+        .with_amplihack_session_id()                                   // AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH
+        .with_amplihack_vars()                                         // AMPLIHACK_RUST_RUNTIME, AMPLIHACK_VERSION, NODE_OPTIONS
+        .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1") // WS2: propagate flag
         .build();
 
     // Build command
