@@ -57,6 +57,10 @@ jobs:
             runner: macos-latest
             cross: false
             gnu_cross_toolchain: false
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            cross: false
+            gnu_cross_toolchain: false
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -102,7 +106,9 @@ jobs:
           name: amplihack-${{ matrix.target }}
           path: |
             target/${{ matrix.target }}/release/amplihack
+            target/${{ matrix.target }}/release/amplihack.exe
             target/${{ matrix.target }}/release/amplihack-hooks
+            target/${{ matrix.target }}/release/amplihack-hooks.exe
           if-no-files-found: error
 
   release:
@@ -119,14 +125,12 @@ jobs:
           path: artifacts
 
       - name: Package binaries
+        shell: bash
         run: |
           cd artifacts
           for dir in amplihack-*; do
-            target="${dir#amplihack-}"
             mkdir -p "../dist/${dir}"
-            find "$dir" -type f \( -name amplihack -o -name amplihack-hooks \) -exec cp {} "../dist/${dir}/" \;
-            test -f "../dist/${dir}/amplihack"
-            test -f "../dist/${dir}/amplihack-hooks"
+            find "$dir" -type f \( -name amplihack -o -name "amplihack.exe" -o -name amplihack-hooks -o -name "amplihack-hooks.exe" \) -exec cp {} "../dist/${dir}/" \;
             tar czf "../${dir}.tar.gz" -C "../dist/${dir}" .
           done
 
