@@ -111,8 +111,7 @@ fn launch_with_skip_update_check_exits_zero_with_stub_tool() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::write(&stub_bin, b"#!/bin/sh\nexit 0\n")
-            .expect("failed to write stub claude");
+        std::fs::write(&stub_bin, b"#!/bin/sh\nexit 0\n").expect("failed to write stub claude");
         let mut perms = std::fs::metadata(&stub_bin)
             .expect("failed to stat stub")
             .permissions();
@@ -164,8 +163,7 @@ fn launch_without_skip_update_check_is_not_an_error() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::write(&stub_bin, b"#!/bin/sh\nexit 0\n")
-            .expect("failed to write stub claude");
+        std::fs::write(&stub_bin, b"#!/bin/sh\nexit 0\n").expect("failed to write stub claude");
         let mut perms = std::fs::metadata(&stub_bin)
             .expect("failed to stat stub")
             .permissions();
@@ -221,8 +219,7 @@ fn launch_with_skip_update_check_completes_without_npm_subprocess_overhead() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::write(&stub_bin, b"#!/bin/sh\nexit 0\n")
-            .expect("failed to write stub claude");
+        std::fs::write(&stub_bin, b"#!/bin/sh\nexit 0\n").expect("failed to write stub claude");
         let mut perms = std::fs::metadata(&stub_bin)
             .expect("failed to stat stub")
             .permissions();

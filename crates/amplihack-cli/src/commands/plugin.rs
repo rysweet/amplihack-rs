@@ -1,13 +1,18 @@
 //! Native plugin management commands.
 
 use crate::command_error::exit_error;
+use crate::util::run_with_timeout;
 use amplihack_state::AtomicJsonFile;
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 use tempfile::TempDir;
+
+/// Timeout for git clone operations.
+const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(120);
 
 const SUCCESS_ICON: &str = "✅";
 const FAILURE_ICON: &str = "❌";
@@ -77,22 +82,27 @@ impl PluginManager {
 
             let dir = tempfile::tempdir().context("failed to create temp dir for plugin clone")?;
             let clone_path = dir.path().join(&plugin_name);
-            let result = Command::new("git")
-                .arg("clone")
-                .arg(source)
-                .arg(&clone_path)
-                .output()
-                .context("failed to run git clone")?;
 
-            if !result.status.success() {
+            let mut git_cmd = Command::new("git");
+            git_cmd.arg("clone").arg(source).arg(&clone_path);
+            let status = match run_with_timeout(git_cmd, GIT_CLONE_TIMEOUT) {
+                Ok(s) => s,
+                Err(err) => {
+                    return Ok(InstallResult {
+                        success: false,
+                        plugin_name,
+                        installed_path: PathBuf::new(),
+                        message: format!("Git clone error: {err}"),
+                    });
+                }
+            };
+
+            if !status.success() {
                 return Ok(InstallResult {
                     success: false,
                     plugin_name,
                     installed_path: PathBuf::new(),
-                    message: format!(
-                        "Git clone failed: {}",
-                        String::from_utf8_lossy(&result.stderr).trim()
-                    ),
+                    message: "Git clone failed (non-zero exit status)".to_string(),
                 });
             }
 

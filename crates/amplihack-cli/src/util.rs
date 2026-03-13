@@ -8,7 +8,12 @@
 //! * SEC-WS2-02: All externally-sourced strings must pass through [`strip_ansi`]
 //!   before display to prevent terminal injection via crafted external output.
 
+use anyhow::{Context, Result, bail};
 use std::io::IsTerminal;
+use std::process::{Command, ExitStatus};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 // ── Non-interactive mode detection ────────────────────────────────────────────
 
@@ -75,6 +80,38 @@ pub fn strip_ansi(s: &str) -> String {
     }
 
     result
+}
+
+// ── Subprocess with timeout ────────────────────────────────────────────────────
+
+/// Run a pre-built `Command` with a hard wall-clock timeout.
+///
+/// Uses a background thread and `mpsc::recv_timeout` — no async runtime needed.
+/// On timeout, sends SIGTERM to the child (Unix only, best-effort) and returns
+/// an error.  Returns the `ExitStatus` on success.
+pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ExitStatus> {
+    let mut child = cmd.spawn().context("failed to spawn subprocess")?;
+    let pid = child.id();
+
+    let (tx, rx) = mpsc::channel::<std::io::Result<ExitStatus>>();
+    thread::spawn(move || {
+        let _ = tx.send(child.wait());
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result.context("failed to wait for subprocess"),
+        Err(_elapsed) => {
+            #[cfg(unix)]
+            let _ = Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .status();
+            bail!(
+                "subprocess timed out after {} seconds (pid {})",
+                timeout.as_secs(),
+                pid
+            )
+        }
+    }
 }
 
 #[cfg(test)]

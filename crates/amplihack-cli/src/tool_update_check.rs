@@ -1,47 +1,12 @@
 //! Pre-launch npm tool update notice (WS3).
 //!
-//! Before launching an npm-distributed tool (claude, copilot, codex), check
-//! whether a newer version is available from the npm registry and print a
-//! one-line stderr notice if so.
+//! Before launching an npm-distributed tool (claude, copilot, codex), checks
+//! whether a newer version is available and prints a one-line stderr notice.
 //!
-//! ## Design constraints
-//!
-//! - **No new crate dependencies** — stdlib only (`std::process::Command`,
-//!   `std::sync::mpsc`, `std::thread`).
-//! - **Timeout-bounded** — each npm subprocess is limited to 3 seconds.
-//!   If npm is slow, unavailable, or missing, the check is silently skipped.
-//! - **Non-interactive bypass** — when `AMPLIHACK_NONINTERACTIVE=1` or when
-//!   the `skip` parameter is `true`, no subprocesses are spawned.
-//! - **Input sanitization** — all npm output is passed through
-//!   [`sanitize_version`] before printing to prevent ANSI injection attacks
-//!   from a malicious npm registry response.
-//! - **Hardcoded package mapping** — only known tool names are mapped to npm
-//!   packages. User-controlled `tool` strings are never interpolated into
-//!   the npm package argument. See [`npm_package_for_tool`].
-//!
-//! ## Security notes (SEC-WS3)
-//!
-//! - `npm_package_for_tool()` uses a hardcoded `match` — no user input is
-//!   ever interpolated into npm command arguments.
-//! - `sanitize_version()` strips non-semver characters before printing.
-//! - A 3-second `recv_timeout` on a `mpsc::channel` acts as a DoS guard
-//!   against a hung or malicious npm binary on PATH.
-//! - No credentials or secrets are passed to npm subprocesses.
-//!
-//! ## Position in launch sequence
-//!
-//! ```text
-//! amplihack launch <tool>
-//!   → nesting detection
-//!   → maybe_print_npm_update_notice(tool, skip)   ← this module
-//!   → bootstrap::ensure_tool_available(tool)
-//!   → spawn ManagedChild
-//! ```
-//!
-//! Placing the check before `ensure_tool_available` means we skip the notice
-//! entirely when the tool isn't installed yet (nothing to update).
+//! Design constraints: stdlib only, 3-second timeout per npm subprocess,
+//! skipped in non-interactive mode, version output sanitized before printing.
 
-use crate::util::is_noninteractive;
+use crate::util::{is_noninteractive, strip_ansi};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -91,13 +56,16 @@ pub fn maybe_print_npm_update_notice(tool: &str, skip: bool) {
         None => return, // npm registry unavailable or timeout
     };
 
-    // Only print when versions actually differ.
-    if installed != latest {
-        let safe_installed = sanitize_version(&installed);
-        let safe_latest = sanitize_version(&latest);
-        eprintln!(
-            "amplihack: update available: {pkg} {safe_installed} → {safe_latest}"
-        );
+    // Sanitize both versions before comparison — prevents spurious update
+    // notices from whitespace differences (e.g. trailing newlines in npm output)
+    // and ensures ANSI-stripped forms are compared.  SEC-WS3: sanitization runs
+    // before any comparison or display path.
+    let safe_installed = sanitize_version(&installed);
+    let safe_latest = sanitize_version(&latest);
+
+    // Only print when sanitized versions actually differ.
+    if safe_installed != safe_latest {
+        eprintln!("amplihack: update available: {pkg} {safe_installed} → {safe_latest}");
         eprintln!("(run: npm install -g {pkg} to update)");
     }
 }
@@ -134,22 +102,20 @@ pub fn npm_package_for_tool(tool: &str) -> Option<&'static str> {
 /// Returns `None` if npm is unavailable, times out, or the package is not
 /// installed globally.
 pub fn get_installed_version(pkg: &str) -> Option<String> {
-    let output = run_npm_with_timeout(
-        &["list", "-g", "--depth=0", "--json"],
-        NPM_TIMEOUT,
-    )?;
+    let output = run_npm_with_timeout(&["list", "-g", "--depth=0", "--json"], NPM_TIMEOUT)?;
+    parse_version_from_npm_list_json(&output, pkg)
+}
 
-    // JSON structure: {"dependencies": {"@pkg/name": {"version": "1.2.3"}}}
-    // Simple string search to avoid a JSON parsing dependency.
+/// Extract the version string for `pkg` from `npm list -g --depth=0 --json` output.
+///
+/// JSON structure: `{"dependencies": {"@pkg/name": {"version": "1.2.3"}}}`
+/// Uses simple string search to avoid a JSON parsing dependency.
+fn parse_version_from_npm_list_json(output: &str, pkg: &str) -> Option<String> {
     let search_key = format!("\"{}\"", pkg);
     let pkg_pos = output.find(&search_key)?;
     let after_pkg = &output[pkg_pos..];
-
-    // Find "version" key after the package name
     let version_pos = after_pkg.find("\"version\"")?;
     let after_version = &after_pkg[version_pos..];
-
-    // Extract the version value: "version": "1.2.3"
     let colon_pos = after_version.find(':')?;
     let after_colon = after_version[colon_pos + 1..].trim_start();
     if !after_colon.starts_with('"') {
@@ -159,9 +125,10 @@ pub fn get_installed_version(pkg: &str) -> Option<String> {
     let end = inner.find('"')?;
     let version = inner[..end].to_string();
     if version.is_empty() {
-        return None;
+        None
+    } else {
+        Some(version)
     }
-    Some(version)
 }
 
 /// Query the latest published version of an npm package from the registry.
@@ -187,70 +154,25 @@ pub fn get_latest_version(pkg: &str) -> Option<String> {
 
 /// Strip all characters from `s` that are not safe for semver display.
 ///
-/// Allowed character set: `[a-zA-Z0-9.\-+]`
-///
-/// This is a mandatory security control.  A compromised npm registry could
-/// return ANSI escape sequences in a version string, which when printed with
-/// `eprintln!` would corrupt terminal state.  This filter ensures only
-/// semver-safe characters reach the terminal.
-///
-/// **Do not remove or bypass this function** — it is a security boundary.
-///
-/// # Examples
+/// Strips ANSI escape sequences, then applies an allowlist of `[a-zA-Z0-9.\-+]`.
+/// Prevents terminal injection from a malicious npm registry response.
 ///
 /// ```rust
 /// # use amplihack_cli::tool_update_check::sanitize_version;
 /// assert_eq!(sanitize_version("1.2.3"), "1.2.3");
-/// assert_eq!(sanitize_version("1.0.0-beta.1"), "1.0.0-beta.1");
 /// assert_eq!(sanitize_version("\x1b[31m1.2.3\x1b[0m"), "1.2.3");
 /// assert_eq!(sanitize_version("1.2.3\n"), "1.2.3");
 /// ```
 pub fn sanitize_version(s: &str) -> String {
-    // Phase 1: Strip ANSI escape sequences of the form ESC [ ... <letter>.
-    // This must run before character filtering because ANSI sequences contain
-    // alphanumeric characters (e.g., "\x1b[31m" → '3', '1', 'm') which would
-    // otherwise pass the allowlist filter and corrupt the output.
-    let stripped = strip_ansi_escapes(s);
+    // Strip ANSI escape sequences first (ANSI codes contain alphanumeric chars
+    // that would otherwise survive the allowlist filter and corrupt output).
+    let stripped = strip_ansi(s);
 
-    // Phase 2: Allowlist filter — keep only semver-safe characters.
-    // Allowed: [a-zA-Z0-9.\-+]
+    // Allowlist filter — keep only semver-safe characters: [a-zA-Z0-9.\-+]
     stripped
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-' || *c == '+')
         .collect()
-}
-
-/// Remove ANSI CSI escape sequences (ESC [ ... letter) from `s`.
-///
-/// This is a minimal implementation sufficient for stripping terminal colour
-/// codes from npm version output.  It handles the common form:
-///   ESC '[' <parameter bytes 0x30–0x3F>* <intermediate bytes 0x20–0x2F>* <final byte 0x40–0x7E>
-fn strip_ansi_escapes(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            // Start of a potential escape sequence.
-            if chars.peek() == Some(&'[') {
-                // CSI sequence: ESC [ ... <final byte>
-                chars.next(); // consume '['
-                // Consume parameter and intermediate bytes until final byte.
-                // Final byte: 0x40–0x7E ('@' through '~').
-                loop {
-                    match chars.next() {
-                        Some(b) if b as u32 >= 0x40 && b as u32 <= 0x7E => break,
-                        Some(_) => continue, // parameter/intermediate byte
-                        None => break,        // unterminated sequence — end of string
-                    }
-                }
-                // Sequence consumed; emit nothing.
-            }
-            // Other ESC sequences (non-CSI) are dropped by not emitting ESC.
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -378,7 +300,10 @@ mod tests {
     fn sanitize_version_preserves_prerelease_and_build_metadata() {
         assert_eq!(sanitize_version("1.0.0-beta.1"), "1.0.0-beta.1");
         assert_eq!(sanitize_version("2.0.0-rc.3"), "2.0.0-rc.3");
-        assert_eq!(sanitize_version("1.0.0+build.20240101"), "1.0.0+build.20240101");
+        assert_eq!(
+            sanitize_version("1.0.0+build.20240101"),
+            "1.0.0+build.20240101"
+        );
     }
 
     /// WS3-UNIT-9: ANSI escape sequences are stripped (SEC-WS3).
@@ -392,7 +317,10 @@ mod tests {
         // Bold
         assert_eq!(sanitize_version("\x1b[1m2.0.0\x1b[0m"), "2.0.0");
         // Mixed
-        assert_eq!(sanitize_version("\x1b[32;1m1.0.0-beta\x1b[0m"), "1.0.0-beta");
+        assert_eq!(
+            sanitize_version("\x1b[32;1m1.0.0-beta\x1b[0m"),
+            "1.0.0-beta"
+        );
     }
 
     /// WS3-UNIT-10: Newlines and whitespace are stripped.
@@ -546,22 +474,9 @@ mod tests {
 
     // ── Test helpers ───────────────────────────────────────────────────────
 
-    /// Helper that mirrors the JSON parsing logic in `get_installed_version`
+    /// Helper that calls the production JSON parsing logic in `get_installed_version`
     /// for use in unit tests without spawning npm subprocesses.
     fn extract_version_from_npm_list_json(output: &str, pkg: &str) -> Option<String> {
-        let search_key = format!("\"{}\"", pkg);
-        let pkg_pos = output.find(&search_key)?;
-        let after_pkg = &output[pkg_pos..];
-        let version_pos = after_pkg.find("\"version\"")?;
-        let after_version = &after_pkg[version_pos..];
-        let colon_pos = after_version.find(':')?;
-        let after_colon = after_version[colon_pos + 1..].trim_start();
-        if !after_colon.starts_with('"') {
-            return None;
-        }
-        let inner = &after_colon[1..];
-        let end = inner.find('"')?;
-        let version = inner[..end].to_string();
-        if version.is_empty() { None } else { Some(version) }
+        super::parse_version_from_npm_list_json(output, pkg)
     }
 }
