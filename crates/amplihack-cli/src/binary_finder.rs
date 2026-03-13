@@ -124,6 +124,9 @@ fn search_path_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// Maximum number of characters to retain from a detected version string.
+const MAX_VERSION_LEN: usize = 200;
+
 /// Run `binary --version` and extract a version string.
 fn detect_version(path: &Path) -> Option<String> {
     let output = Command::new(path).arg("--version").output().ok()?;
@@ -135,7 +138,13 @@ fn detect_version(path: &Path) -> Option<String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Extract version-like string: first line, stripped of ANSI sequences.
     let first_line = stdout.lines().next()?.trim();
-    Some(strip_ansi(first_line))
+    let version = strip_ansi(first_line);
+    // Truncate to avoid unbounded strings from malicious or misbehaving binaries.
+    if version.len() > MAX_VERSION_LEN {
+        Some(version[..MAX_VERSION_LEN].to_string())
+    } else {
+        Some(version)
+    }
 }
 
 /// Check if a path is executable (Unix: has execute bit).
