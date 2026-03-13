@@ -50,13 +50,12 @@ impl EnvBuilder {
     /// If `condition` is `false` this is a no-op and `self` is returned unchanged.
     /// Used by callers to propagate flags (e.g. `AMPLIHACK_NONINTERACTIVE`) only
     /// when the corresponding condition holds at the call site.
-    pub fn set_if(
-        self,
-        condition: bool,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Self {
-        if condition { self.set(key, value) } else { self }
+    pub fn set_if(self, condition: bool, key: impl Into<String>, value: impl Into<String>) -> Self {
+        if condition {
+            self.set(key, value)
+        } else {
+            self
+        }
     }
 
     /// Add standard AMPLIHACK_* variables and NODE_OPTIONS.
@@ -148,9 +147,7 @@ mod tests {
     /// WS2-2a: set_if must insert the key-value pair when condition is true.
     #[test]
     fn set_if_sets_when_condition_true() {
-        let env = EnvBuilder::new()
-            .set_if(true, "MY_KEY", "MY_VALUE")
-            .build();
+        let env = EnvBuilder::new().set_if(true, "MY_KEY", "MY_VALUE").build();
         assert_eq!(
             env.get("MY_KEY").map(String::as_str),
             Some("MY_VALUE"),

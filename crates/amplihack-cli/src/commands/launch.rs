@@ -56,8 +56,8 @@ pub fn run_launch(
     // Build environment — canonical chain order per design spec.
     // SEC-DATA-01: Never log the full env map (may contain inherited secrets).
     let env = EnvBuilder::new()
-        .with_amplihack_session_id()                                   // AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH
-        .with_amplihack_vars()                                         // AMPLIHACK_RUST_RUNTIME, AMPLIHACK_VERSION, NODE_OPTIONS
+        .with_amplihack_session_id() // AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH
+        .with_amplihack_vars() // AMPLIHACK_RUST_RUNTIME, AMPLIHACK_VERSION, NODE_OPTIONS
         .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1") // WS2: propagate flag
         .build();
 
