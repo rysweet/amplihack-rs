@@ -220,8 +220,8 @@ fn find_hooks_binary() -> Result<PathBuf> {
 /// plus all the shell operator characters blocked by `validate_hook_command_string`.
 fn validate_binary_path(path: &str) -> Result<()> {
     const BLOCKED: &[char] = &[
-        '|', '&', ';', '$', '`', '(', ')', '{', '}', '<', '!', '>', '#', '~', '*',
-        ' ', '\'', '"', '\\',
+        '|', '&', ';', '$', '`', '(', ')', '{', '}', '<', '!', '>', '#', '~', '*', ' ', '\'', '"',
+        '\\',
     ];
     for ch in BLOCKED {
         if path.contains(*ch) {
