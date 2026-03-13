@@ -9,6 +9,8 @@
   - [Version compatibility table](#version-compatibility-table)
 - [How the mismatch happens](#how-the-mismatch-happens)
 - [How Cargo.lock prevents the mismatch](#how-cargolock-prevents-the-mismatch)
+- [How the workspace pin prevents drift](#how-the-workspace-pin-prevents-drift)
+  - [Verifying the pin is in effect](#verifying-the-pin-is-in-effect)
 - [Related](#related)
 
 ## Why cxx needs two crates
@@ -86,6 +88,63 @@ cargo update -p cxx-build --precise 1.0.138
 ```
 
 If you regenerate `Cargo.lock` (e.g. `cargo update` or `rm Cargo.lock`) without re-pinning, the mismatch can recur. See [Resolve kuzu linker errors](../howto/resolve-kuzu-linker-errors.md) for recovery steps.
+
+## How the workspace pin prevents drift
+
+`Cargo.lock` only protects against the mismatch on machines that already have the lock. On a clean checkout — or after `cargo update` — the resolver is free to pick any `cxx-build` version that satisfies kuzu-rs's open-range constraint `^1.0`, potentially bumping past `1.0.138` and reintroducing the linker error.
+
+To prevent this, `amplihack-rs` declares an exact workspace-level pin for `cxx-build`:
+
+```toml
+# Cargo.toml (workspace root)
+[workspace.dependencies]
+# SEC: Exact pin prevents cxx/cxx-build version skew that breaks kuzu FFI.
+# Do not change without verifying kuzu-rs compatibility.
+# See docs/concepts/cxx-version-contract.md.
+cxx-build = "=1.0.138"
+```
+
+The `amplihack-cli` crate references this pin explicitly as a build dependency:
+
+```toml
+# crates/amplihack-cli/Cargo.toml
+[build-dependencies]
+cxx-build = { workspace = true }
+```
+
+This explicit reference forces the Cargo resolver to apply the `=1.0.138` exact constraint to the **entire dependency graph**, including kuzu's transitive pull. Without an explicit reference in at least one crate, a workspace declaration has no effect on purely transitive dependencies.
+
+A no-op `build.rs` in `amplihack-cli` activates the `[build-dependencies]` section (Cargo requires a `build.rs` to process build dependencies):
+
+```rust
+// crates/amplihack-cli/build.rs
+// Intentionally empty — activates [build-dependencies] for cxx-build workspace pin.
+// SEC: Do not add build logic here without a security review.
+fn main() {}
+```
+
+With this in place, `cargo update` will not bump `cxx-build` past `1.0.138` because the `=` prefix denotes an exact version, not a semver range.
+
+### Verifying the pin is in effect
+
+After any `cargo update`, confirm both versions are still pinned:
+
+```sh
+grep -A1 'name = "cxx"' Cargo.lock
+# name = "cxx"
+# version = "1.0.138"
+
+grep -A1 'name = "cxx-build"' Cargo.lock
+# name = "cxx-build"
+# version = "1.0.138"
+```
+
+The `cargo_lock_cxx_consistency_test` integration test enforces this automatically at test time:
+
+```sh
+cargo test cargo_lock_cxx_consistency
+# test cargo_lock_cxx_consistency_test ... ok
+```
 
 ## Related
 

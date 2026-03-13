@@ -34,6 +34,16 @@ rusqlite = { version = "0.38.0", features = ["bundled"] }
 tempfile = { workspace = true }
 anyhow = { workspace = true }
 
+[build-dependencies]
+# SEC-WS4-02: Explicit reference forces the Cargo resolver to apply the
+# workspace exact pin (=1.0.138) across the full dependency graph, including
+# kuzu's transitive pull of cxx-build. build.rs must remain a no-op stub.
+cxx-build = { workspace = true }
+
 [[test]]
 name = "kuzu_ffi"
 path = "../../tests/integration/kuzu_ffi_test.rs"
+
+[[test]]
+name = "cargo_cxx_pin_test"
+path = "tests/cargo_cxx_pin_test.rs"
