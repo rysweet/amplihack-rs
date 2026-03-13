@@ -17,6 +17,7 @@ pub mod signals;
 #[cfg(test)]
 pub mod test_support;
 pub mod update;
+pub mod util;
 
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;

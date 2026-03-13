@@ -128,7 +128,7 @@ jobs:
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
 
       - name: Build release
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked --target "${{ matrix.target }}"
 
       - name: Package
         shell: bash
@@ -170,6 +170,20 @@ jobs:
           find artifacts -name '*.sha256' -exec cp {} release-assets/ \;
           ls -la release-assets/
 
+      - name: Verify asset count
+        # 5 targets × 2 files each (.tar.gz + .sha256) = 10 files expected.
+        # Fail fast if any artifact is missing rather than silently uploading
+        # an incomplete release.
+        run: |
+          EXPECTED=10
+          ACTUAL=$(ls release-assets/ | wc -l)
+          if [ "${ACTUAL}" -ne "${EXPECTED}" ]; then
+            echo "ERROR: expected ${EXPECTED} release assets, found ${ACTUAL}"
+            ls -la release-assets/
+            exit 1
+          fi
+          echo "Asset count OK: ${ACTUAL} files"
+
       - name: Create tag and release
         run: |
           TAG="v${{ needs.version-bump.outputs.version }}"
@@ -185,7 +199,17 @@ jobs:
         with:
           tag_name: v${{ needs.version-bump.outputs.version }}
           name: "amplihack-rs v${{ needs.version-bump.outputs.version }}"
-          files: release-assets/*
+          files: |
+            release-assets/amplihack-x86_64-unknown-linux-gnu.tar.gz
+            release-assets/amplihack-x86_64-unknown-linux-gnu.tar.gz.sha256
+            release-assets/amplihack-aarch64-unknown-linux-gnu.tar.gz
+            release-assets/amplihack-aarch64-unknown-linux-gnu.tar.gz.sha256
+            release-assets/amplihack-x86_64-apple-darwin.tar.gz
+            release-assets/amplihack-x86_64-apple-darwin.tar.gz.sha256
+            release-assets/amplihack-aarch64-apple-darwin.tar.gz
+            release-assets/amplihack-aarch64-apple-darwin.tar.gz.sha256
+            release-assets/amplihack-x86_64-pc-windows-msvc.tar.gz
+            release-assets/amplihack-x86_64-pc-windows-msvc.tar.gz.sha256
           generate_release_notes: true
           body: |
             ## Install

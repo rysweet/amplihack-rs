@@ -23,6 +23,12 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
+// Re-export strip_ansi from the shared util module so existing callers within
+// this file continue to work without qualification.  Shared module ensures the
+// SEC-WS2-02 contract is applied consistently across doctor.rs and
+// binary_finder.rs.
+use crate::util::strip_ansi;
+
 // ── Public constants ──────────────────────────────────────────────────────────
 
 /// Maximum number of characters kept from a subprocess's stderr before
@@ -31,46 +37,6 @@ pub const MAX_ERROR_LEN: usize = 200;
 
 /// Maximum length of a version string extracted from external tool output.
 pub const MAX_VERSION_LEN: usize = 80;
-
-// ── ANSI stripping ────────────────────────────────────────────────────────────
-
-/// Remove ANSI escape sequences from `s`.
-///
-/// Handles CSI sequences of the form `ESC [ <params> <final_byte>` where
-/// `<final_byte>` is any byte in the range `0x40..=0x7E` (e.g. `m` for SGR).
-/// Applied to all externally-sourced strings before display to prevent
-/// terminal injection via crafted version strings.  See SEC-WS2-02.
-pub fn strip_ansi(s: &str) -> String {
-    // Pre-allocate the full input length — stripped output is always ≤ input.
-    // Avoids repeated Vec reallocations for inputs containing many ANSI sequences.
-    let mut result = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        // Detect CSI sequence: ESC (0x1B) followed by '[' (0x5B)
-        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            i += 2; // skip ESC [
-            // Consume bytes until the final byte (0x40–0x7E inclusive)
-            while i < bytes.len() {
-                let b = bytes[i];
-                i += 1;
-                if (0x40..=0x7e).contains(&b) {
-                    break; // final byte consumed — CSI sequence done
-                }
-            }
-        } else {
-            // Regular character — copy it, advancing by its full UTF-8 width.
-            // SAFETY: `s` is valid UTF-8 (guaranteed by `&str`); indexing at a
-            // known byte boundary via `chars().next()` is always safe.
-            let ch = s[i..].chars().next().expect("non-empty slice");
-            result.push(ch);
-            i += ch.len_utf8();
-        }
-    }
-
-    result
-}
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 

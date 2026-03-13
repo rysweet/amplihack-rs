@@ -9,6 +9,8 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::util::strip_ansi;
+
 /// Metadata about a discovered binary.
 #[derive(Debug, Clone)]
 pub struct BinaryInfo {
@@ -124,6 +126,10 @@ fn search_path_dirs() -> Vec<PathBuf> {
 }
 
 /// Run `binary --version` and extract a version string.
+///
+/// `strip_ansi()` is applied to the captured stdout before returning so that
+/// ANSI escape sequences in version output cannot reach the terminal.
+/// See SEC-WS2-02.
 fn detect_version(path: &Path) -> Option<String> {
     let output = Command::new(path).arg("--version").output().ok()?;
 
@@ -132,9 +138,9 @@ fn detect_version(path: &Path) -> Option<String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Extract version-like string: first line, or the part after the last space.
+    // Extract version-like string: first line, stripped of ANSI sequences.
     let first_line = stdout.lines().next()?.trim();
-    Some(first_line.to_string())
+    Some(strip_ansi(first_line))
 }
 
 /// Check if a path is executable (Unix: has execute bit).
