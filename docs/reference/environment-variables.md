@@ -49,10 +49,12 @@ the Rust binary, recipe runner, and Python hooks.
 |----------|-------|
 | Set by | `EnvBuilder::with_amplihack_session_id()` |
 | Format | Decimal integer string |
-| Example | `"0"`, `"1"`, `"2"` |
+| Default | `"1"` (first launch; incremented by each nested spawn) |
+| Example | `"1"`, `"2"`, `"3"` |
 
-Nesting level of the current launch. Incremented each time `amplihack` spawns a child
-`amplihack` process. Prevents runaway recursive launches.
+Nesting level of the current launch. Starts at `"1"` on the first launch and
+is incremented each time `amplihack` spawns a child `amplihack` process.
+Prevents runaway recursive launches.
 
 ---
 

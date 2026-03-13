@@ -42,6 +42,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
+ "cxx-build",
  "flate2",
  "kuzu",
  "libc",

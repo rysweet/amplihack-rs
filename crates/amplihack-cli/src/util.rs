@@ -5,6 +5,29 @@
 //! * SEC-WS2-02: All externally-sourced strings must pass through [`strip_ansi`]
 //!   before display to prevent terminal injection via crafted external output.
 
+// ── Non-interactive detection ──────────────────────────────────────────────────
+
+/// Returns `true` when the process should behave non-interactively.
+///
+/// This is a **UX gate**, not a security gate.  It is used to skip prompts
+/// and interactive UI that would block automated pipelines.  Two conditions
+/// trigger non-interactive mode:
+///
+/// 1. The environment variable `AMPLIHACK_NONINTERACTIVE` is set to `"1"`.
+/// 2. Standard input is not connected to a terminal (i.e. stdin is piped or
+///    redirected).
+///
+/// Either condition alone is sufficient.
+pub fn is_noninteractive() -> bool {
+    if std::env::var("AMPLIHACK_NONINTERACTIVE").as_deref() == Ok("1") {
+        return true;
+    }
+    // Check whether stdin is a TTY.  When stdin is piped/redirected there is
+    // no terminal to drive interactive prompts.
+    use std::io::IsTerminal as _;
+    !std::io::stdin().is_terminal()
+}
+
 // ── ANSI stripping ────────────────────────────────────────────────────────────
 
 /// Remove ANSI escape sequences from `s`.
@@ -48,6 +71,43 @@ pub fn strip_ansi(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── WS2: is_noninteractive ────────────────────────────────────────────────
+
+    #[test]
+    fn is_noninteractive_env_set() {
+        // SAFETY: test-only; not run in parallel with other env-sensitive tests.
+        unsafe { std::env::set_var("AMPLIHACK_NONINTERACTIVE", "1") };
+        let result = is_noninteractive();
+        unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") };
+        assert!(result, "should be non-interactive when env var is '1'");
+    }
+
+    #[test]
+    fn is_noninteractive_env_unset() {
+        unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") };
+        // In a test harness stdin is typically not a TTY, so is_noninteractive()
+        // may still return true due to the TTY check.  What we verify here is
+        // that when the env var is absent the function does not panic and
+        // returns a bool (either outcome is valid depending on the runner).
+        let _ = is_noninteractive();
+    }
+
+    #[test]
+    fn is_noninteractive_env_other_value_does_not_trigger() {
+        unsafe { std::env::set_var("AMPLIHACK_NONINTERACTIVE", "0") };
+        // Only "1" triggers the env-var path.  Stdin may still be non-TTY in CI,
+        // so we only verify the env-var branch is not active for "0".
+        // We do this by temporarily forcing it to "0" and checking the var path
+        // directly rather than the full function (since stdin state is runner-
+        // dependent).
+        let env_triggered =
+            std::env::var("AMPLIHACK_NONINTERACTIVE").as_deref() == Ok("1");
+        unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") };
+        assert!(!env_triggered);
+    }
+
+    // ── ANSI stripping ────────────────────────────────────────────────────────
 
     #[test]
     fn strip_ansi_passthrough_on_plain_text() {

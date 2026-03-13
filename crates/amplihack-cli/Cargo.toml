@@ -30,6 +30,14 @@ ureq = { version = "2", features = ["json"] }
 kuzu = { version = "0.11.3" }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 
+[build-dependencies]
+# SEC-WS4-01: Pin cxx-build to the exact version that matches the cxx crate
+# used by kuzu (=1.0.138). Without this pin, Cargo resolves cxx-build to the
+# latest release, which produces ABI-incompatible bridge symbols and causes
+# link-time failures (undefined reference to `cxxbridge1$…`).
+# See docs/howto/resolve-kuzu-linker-errors.md
+cxx-build = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 anyhow = { workspace = true }

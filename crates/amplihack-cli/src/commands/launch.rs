@@ -9,6 +9,7 @@ use crate::env_builder::EnvBuilder;
 use crate::launcher::ManagedChild;
 use crate::nesting::NestingDetector;
 use crate::signals;
+use crate::util::is_noninteractive;
 use anyhow::{Context, Result};
 use std::process::Command;
 use std::sync::Arc;
@@ -22,7 +23,9 @@ pub fn run_launch(
     skip_permissions: bool,
     extra_args: Vec<String>,
 ) -> Result<()> {
-    bootstrap::prepare_launcher(tool)?;
+    // Compute once; passed to bootstrap and used when building the child env.
+    let noninteractive = is_noninteractive();
+    bootstrap::prepare_launcher(tool, noninteractive)?;
 
     // Check nesting
     let nesting = NestingDetector::detect();
@@ -56,6 +59,9 @@ pub fn run_launch(
     let env = EnvBuilder::new()
         .with_amplihack_session_id()
         .with_amplihack_vars()
+        .with_agent_binary()
+        .with_amplihack_home()
+        .set_if(noninteractive, "CLAUDE_NONINTERACTIVE", "1")
         .build();
 
     // Build command

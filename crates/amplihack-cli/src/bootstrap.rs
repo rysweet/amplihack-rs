@@ -9,7 +9,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub fn prepare_launcher(tool: &str) -> Result<()> {
+/// Prepare the launcher environment for the given tool.
+///
+/// When `noninteractive` is `true` the function returns immediately without
+/// performing any interactive setup steps (framework install prompts, tool
+/// configuration wizards, etc.).  This is a **UX gate**, not a security gate.
+pub fn prepare_launcher(tool: &str, noninteractive: bool) -> Result<()> {
+    if noninteractive {
+        tracing::debug!(
+            tool,
+            "non-interactive mode: skipping bootstrap setup"
+        );
+        return Ok(());
+    }
+
     check_required_tools()?;
     install::ensure_framework_installed()?;
 
@@ -230,6 +243,27 @@ fn home_dir() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── WS2: prepare_launcher noninteractive gate ─────────────────────────────
+
+    #[test]
+    fn bootstrap_skips_when_noninteractive() {
+        // When noninteractive=true, prepare_launcher must return Ok(()) without
+        // touching the filesystem or spawning processes.  No HOME required.
+        let result = prepare_launcher("claude", true);
+        assert!(result.is_ok(), "expected Ok(()), got {result:?}");
+    }
+
+    #[test]
+    fn noninteractive_does_not_block_launch() {
+        // Confirm that the non-interactive early-return path produces Ok(()),
+        // which allows the launch sequence to continue past bootstrap.
+        assert!(prepare_launcher("copilot", true).is_ok());
+        assert!(prepare_launcher("codex", true).is_ok());
+        assert!(prepare_launcher("amplifier", true).is_ok());
+    }
+
+    // ── existing tests ────────────────────────────────────────────────────────
 
     #[test]
     fn configure_codex_sets_auto_mode() {
