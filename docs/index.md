@@ -23,6 +23,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Binary Resolution](./reference/binary-resolution.md) — How `amplihack` locates the `amplihack-hooks` binary at install time
 - [amplihack completions](./reference/completions-command.md) — Full CLI reference for the `completions` subcommand
 - [Environment Variables](./reference/environment-variables.md) — All environment variables read or injected by `amplihack` during a launch
+- [Launch Flag Injection](./reference/launch-flag-injection.md) — How `amplihack` builds the subprocess command line: `--dangerously-skip-permissions`, `--model`, and extra args passthrough
 - [Parity Test Scenarios](./reference/parity-test-scenarios.md) — Every parity tier file, its test cases, and expected Python↔Rust divergence
 
 ### Concepts

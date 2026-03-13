@@ -21,26 +21,27 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Launch {
             resume,
             continue_session,
-            skip_permissions,
+            skip_permissions: _skip_permissions, // always true for Python launcher parity
             skip_update_check,
             claude_args,
         } => launch::run_launch(
             "claude",
             resume,
             continue_session,
-            skip_permissions,
+            true, // always inject --dangerously-skip-permissions (matches Python launcher)
             skip_update_check,
             claude_args,
         ),
         Commands::Claude { claude_args } => {
-            launch::run_launch("claude", false, false, false, false, claude_args)
+            // Always inject --dangerously-skip-permissions to match Python launcher parity.
+            launch::run_launch("claude", false, false, true, false, claude_args)
         }
         Commands::Copilot { args } => {
-            launch::run_launch("copilot", false, false, false, false, args)
+            launch::run_launch("copilot", false, false, true, false, args)
         }
-        Commands::Codex { args } => launch::run_launch("codex", false, false, false, false, args),
+        Commands::Codex { args } => launch::run_launch("codex", false, false, true, false, args),
         Commands::Amplifier { args } => {
-            launch::run_launch("amplifier", false, false, false, false, args)
+            launch::run_launch("amplifier", false, false, true, false, args)
         }
         Commands::Plugin { command } => dispatch_plugin(command),
         Commands::Memory { command } => dispatch_memory(command),

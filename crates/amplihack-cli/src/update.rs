@@ -286,21 +286,69 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-fn should_skip_update_check(args: &[OsString]) -> bool {
+/// Determine whether the update check should be skipped based on the subcommand
+/// name string alone (without needing the full args slice).
+///
+/// Returns `true` (skip the check) when:
+/// - `AMPLIHACK_NONINTERACTIVE=1` is set in the environment
+/// - `AMPLIHACK_PARITY_TEST=1` is set in the environment
+/// - `AMPLIHACK_NO_UPDATE_CHECK=1` is set in the environment
+/// - `subcommand` is not one of the known launch commands
+///   (`launch`, `claude`, `copilot`, `codex`, `amplifier`)
+///
+/// This is the string-oriented companion to `should_skip_update_check` and is
+/// the function that callers with a parsed subcommand name should use.
+///
+pub fn should_skip_update_check_for_subcommand(subcommand: &str) -> bool {
+    // Explicit opt-out via legacy env var.
     if std::env::var(NO_UPDATE_CHECK_ENV).unwrap_or_default() == "1" {
         return true;
     }
 
+    // Non-interactive / scripted environments suppress all update checks.
+    if std::env::var("AMPLIHACK_NONINTERACTIVE").as_deref() == Ok("1") {
+        return true;
+    }
+
+    // Parity test harness — suppress update noise during automated comparison runs.
+    if std::env::var("AMPLIHACK_PARITY_TEST").as_deref() == Ok("1") {
+        return true;
+    }
+
+    // Only show the update notice for known launch commands.
+    // All other subcommands skip the update check.
+    !matches!(
+        subcommand,
+        "launch" | "claude" | "copilot" | "codex" | "amplifier"
+    )
+}
+
+fn should_skip_update_check(args: &[OsString]) -> bool {
+    // Explicit opt-out via legacy env var.
+    if std::env::var(NO_UPDATE_CHECK_ENV).unwrap_or_default() == "1" {
+        return true;
+    }
+
+    // Non-interactive / scripted environments (CI, AMPLIHACK_NONINTERACTIVE=1).
+    // Check the env var directly (not is_noninteractive()) so unit tests that
+    // run with a non-TTY stdin are not affected.
+    if std::env::var("AMPLIHACK_NONINTERACTIVE").as_deref() == Ok("1") {
+        return true;
+    }
+
+    // Parity test harness — suppress update noise during automated comparison runs.
+    if std::env::var("AMPLIHACK_PARITY_TEST").as_deref() == Ok("1") {
+        return true;
+    }
+
     let first_arg = args.get(1).and_then(|arg| arg.to_str());
-    matches!(
+
+    // Only show the update notice when the user is about to launch a tool.
+    // Subcommands like mode, plugin, recipe, memory, install, doctor, version,
+    // and help never trigger an update announcement — only launch commands do.
+    !matches!(
         first_arg,
-        None | Some("help")
-            | Some("update")
-            | Some("version")
-            | Some("-h")
-            | Some("--help")
-            | Some("-V")
-            | Some("--version")
+        Some("launch") | Some("claude") | Some("copilot") | Some("codex") | Some("amplifier")
     )
 }
 
@@ -472,6 +520,136 @@ fn install_binary_atomic(source: &Path, destination: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    // ---------------------------------------------------------------------------
+    // TDD Step 7: Failing tests for update check suppression (Category 1)
+    //
+    // These tests define the contract for a `should_skip_update_check_for_subcommand`
+    // function that accepts a plain subcommand name string instead of the raw
+    // `&[OsString]` args slice. These tests FAIL until the implementation provides
+    // that function with the correct logic.
+    // ---------------------------------------------------------------------------
+
+    /// When AMPLIHACK_NONINTERACTIVE=1 is set, ALL subcommands — including launch
+    /// commands — must skip the update check to avoid polluting scripted output.
+    #[test]
+    fn test_skip_update_check_when_noninteractive_env_set() {
+        // Arrange: set the non-interactive env var
+        // SAFETY: single-threaded test context; env mutation is serialized by the
+        // test runner running this test in isolation.
+        unsafe { std::env::set_var("AMPLIHACK_NONINTERACTIVE", "1") };
+        // Act + Assert: even a launch subcommand should skip
+        let result = should_skip_update_check_for_subcommand("launch");
+        // Cleanup before asserting (so the env is restored even on failure)
+        unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") };
+        assert!(
+            result,
+            "should_skip_update_check_for_subcommand('launch') must return true \
+             when AMPLIHACK_NONINTERACTIVE=1"
+        );
+    }
+
+    /// When AMPLIHACK_PARITY_TEST=1 is set, the update check must be suppressed
+    /// to prevent update noise from polluting automated parity comparison output.
+    #[test]
+    fn test_skip_update_check_when_parity_test_env_set() {
+        // SAFETY: single-threaded test context.
+        unsafe { std::env::set_var("AMPLIHACK_PARITY_TEST", "1") };
+        let result = should_skip_update_check_for_subcommand("launch");
+        unsafe { std::env::remove_var("AMPLIHACK_PARITY_TEST") };
+        assert!(
+            result,
+            "should_skip_update_check_for_subcommand('launch') must return true \
+             when AMPLIHACK_PARITY_TEST=1"
+        );
+    }
+
+    /// The `mode` subcommand is not a launch command — update checks must be
+    /// skipped. Only launch, claude, copilot, codex, amplifier trigger updates.
+    #[test]
+    fn test_skip_update_check_for_mode_subcommand() {
+        // Ensure env vars that would cause early-return are not set
+        // SAFETY: single-threaded test context.
+        unsafe {
+            std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
+            std::env::remove_var("AMPLIHACK_PARITY_TEST");
+            std::env::remove_var(NO_UPDATE_CHECK_ENV);
+        }
+        assert!(
+            should_skip_update_check_for_subcommand("mode"),
+            "should_skip_update_check_for_subcommand('mode') must return true — \
+             'mode' is not a launch command and should never trigger an update notice"
+        );
+    }
+
+    /// The `plugin` subcommand is not a launch command — update checks must be
+    /// skipped.
+    #[test]
+    fn test_skip_update_check_for_plugin_subcommand() {
+        // SAFETY: single-threaded test context.
+        unsafe {
+            std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
+            std::env::remove_var("AMPLIHACK_PARITY_TEST");
+            std::env::remove_var(NO_UPDATE_CHECK_ENV);
+        }
+        assert!(
+            should_skip_update_check_for_subcommand("plugin"),
+            "should_skip_update_check_for_subcommand('plugin') must return true — \
+             'plugin' is not a launch command"
+        );
+    }
+
+    /// Unknown or unrecognised subcommands must skip the update check — only
+    /// the known launch commands should trigger it.
+    #[test]
+    fn test_skip_update_check_for_unknown_subcommand() {
+        // SAFETY: single-threaded test context.
+        unsafe {
+            std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
+            std::env::remove_var("AMPLIHACK_PARITY_TEST");
+            std::env::remove_var(NO_UPDATE_CHECK_ENV);
+        }
+        assert!(
+            should_skip_update_check_for_subcommand("totally-unknown-command"),
+            "should_skip_update_check_for_subcommand('totally-unknown-command') must \
+             return true — unrecognised commands are not launch commands"
+        );
+    }
+
+    /// The `launch` subcommand IS a launch command. With no suppressing env vars,
+    /// `should_skip_update_check_for_subcommand` must return false so the caller
+    /// proceeds with the update check.
+    #[test]
+    fn test_allow_update_check_for_launch_subcommand() {
+        // SAFETY: single-threaded test context.
+        unsafe {
+            std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
+            std::env::remove_var("AMPLIHACK_PARITY_TEST");
+            std::env::remove_var(NO_UPDATE_CHECK_ENV);
+        }
+        assert!(
+            !should_skip_update_check_for_subcommand("launch"),
+            "should_skip_update_check_for_subcommand('launch') must return false \
+             (i.e. do NOT skip) when no suppressing env vars are set"
+        );
+    }
+
+    /// The `claude` subcommand IS a launch command. With no suppressing env vars,
+    /// the update check must proceed (return false).
+    #[test]
+    fn test_allow_update_check_for_claude_subcommand() {
+        // SAFETY: single-threaded test context.
+        unsafe {
+            std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
+            std::env::remove_var("AMPLIHACK_PARITY_TEST");
+            std::env::remove_var(NO_UPDATE_CHECK_ENV);
+        }
+        assert!(
+            !should_skip_update_check_for_subcommand("claude"),
+            "should_skip_update_check_for_subcommand('claude') must return false \
+             (i.e. do NOT skip) when no suppressing env vars are set"
+        );
+    }
+
     #[test]
     fn validate_download_url_accepts_allowed_hosts() {
         assert!(validate_download_url("https://api.github.com/repos/x/y/releases/latest").is_ok());
@@ -537,6 +715,28 @@ mod tests {
             OsString::from("amplihack"),
             OsString::from("copilot")
         ]));
+    }
+
+    #[test]
+    fn should_skip_update_check_for_non_launch_subcommands() {
+        // Mode, plugin, recipe, memory, install, doctor commands should all skip
+        for subcmd in &["mode", "plugin", "recipe", "memory", "install", "doctor"] {
+            assert!(
+                should_skip_update_check(&[OsString::from("amplihack"), OsString::from(*subcmd),]),
+                "expected update check to be skipped for subcommand '{subcmd}'"
+            );
+        }
+    }
+
+    #[test]
+    fn should_not_skip_update_check_for_launch_subcommands() {
+        // Launch commands should run the update check (when interactive and no env overrides)
+        for subcmd in &["launch", "claude", "copilot", "codex", "amplifier"] {
+            assert!(
+                !should_skip_update_check(&[OsString::from("amplihack"), OsString::from(*subcmd),]),
+                "expected update check to NOT be skipped for launch subcommand '{subcmd}'"
+            );
+        }
     }
 
     #[test]
