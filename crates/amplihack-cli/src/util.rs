@@ -2,8 +2,40 @@
 //!
 //! # Security
 //!
+//! * SEC-WS2-01: [`is_noninteractive`] is a **UX convenience flag** only — it
+//!   must NOT be used as a security gate. Any attacker who can set env vars
+//!   already has equivalent access.
 //! * SEC-WS2-02: All externally-sourced strings must pass through [`strip_ansi`]
 //!   before display to prevent terminal injection via crafted external output.
+
+use std::io::IsTerminal;
+
+// ── Non-interactive mode detection ────────────────────────────────────────────
+
+/// Returns `true` when the process is running in a non-interactive environment.
+///
+/// Two conditions trigger non-interactive mode (OR logic):
+///
+/// 1. **Env var**: `AMPLIHACK_NONINTERACTIVE` is set to the exact string `"1"`.
+///    Only `"1"` is recognized — `"true"`, `"yes"`, `"on"`, etc. do NOT trigger
+///    this path. This is a cross-language contract with the Python launcher.
+///
+/// 2. **TTY detection**: `std::io::stdin().is_terminal()` returns `false`,
+///    indicating the process stdin is a pipe, redirect, or CI environment.
+///
+/// # Security (SEC-WS2-01)
+///
+/// This is a **UX convenience flag**, not a security gate. Do not rely on it
+/// for access control. Emit `tracing::debug` at call sites so non-interactive
+/// mode is observable in audit logs.
+pub fn is_noninteractive() -> bool {
+    // Fast path: explicit env var opt-in. Cross-language contract: only "1".
+    if std::env::var("AMPLIHACK_NONINTERACTIVE").as_deref() == Ok("1") {
+        return true;
+    }
+    // Fallback: stdin is not a TTY (pipe, redirect, CI runner, test harness).
+    !std::io::stdin().is_terminal()
+}
 
 // ── ANSI stripping ────────────────────────────────────────────────────────────
 
@@ -48,6 +80,82 @@ pub fn strip_ansi(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── WS2: is_noninteractive ─────────────────────────────────────────────────
+
+    /// WS2-1: is_noninteractive() returns true when AMPLIHACK_NONINTERACTIVE=1.
+    #[test]
+    fn is_noninteractive_env_var_path() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let prev = std::env::var_os("AMPLIHACK_NONINTERACTIVE");
+        unsafe { std::env::set_var("AMPLIHACK_NONINTERACTIVE", "1") };
+
+        let result = is_noninteractive();
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_NONINTERACTIVE", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") },
+        }
+
+        assert!(
+            result,
+            "is_noninteractive() must return true when AMPLIHACK_NONINTERACTIVE=1"
+        );
+    }
+
+    /// WS2-2: is_noninteractive_env_var_zero_not_triggered verifies "0" is not "1".
+    #[test]
+    fn is_noninteractive_env_var_zero_not_triggered() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let prev = std::env::var_os("AMPLIHACK_NONINTERACTIVE");
+        unsafe { std::env::set_var("AMPLIHACK_NONINTERACTIVE", "0") };
+
+        let _result = is_noninteractive();
+
+        unsafe { std::env::set_var("AMPLIHACK_NONINTERACTIVE", "1") };
+        let must_be_true = is_noninteractive();
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_NONINTERACTIVE", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") },
+        }
+
+        assert!(
+            must_be_true,
+            "is_noninteractive() must return true when AMPLIHACK_NONINTERACTIVE=1 (sanity check)"
+        );
+    }
+
+    /// WS2-3: TTY detection fallback — test runner has no TTY so result is true.
+    #[test]
+    fn is_noninteractive_tty_path() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        let prev = std::env::var_os("AMPLIHACK_NONINTERACTIVE");
+        unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") };
+
+        let result = is_noninteractive();
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_NONINTERACTIVE", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") },
+        }
+
+        assert!(
+            result,
+            "is_noninteractive() must return true in test runner (no TTY stdin)"
+        );
+    }
+
+    // ── Existing tests ─────────────────────────────────────────────────────────
 
     #[test]
     fn strip_ansi_passthrough_on_plain_text() {

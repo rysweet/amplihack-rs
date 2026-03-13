@@ -3,6 +3,7 @@
 use crate::binary_finder::{BinaryFinder, BinaryInfo};
 use crate::commands::install;
 use crate::copilot_setup;
+use crate::util::is_noninteractive;
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 use std::fs;
@@ -10,6 +11,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn prepare_launcher(tool: &str) -> Result<()> {
+    // SEC-WS2-02: Non-interactive mode (CI, pipes, AMPLIHACK_NONINTERACTIVE=1)
+    // skips all interactive setup. The environment is assumed pre-provisioned.
+    // This matches Python launcher behavior and prevents hangs in sandboxes.
+    if is_noninteractive() {
+        tracing::debug!(
+            tool,
+            "non-interactive mode detected — skipping interactive bootstrap"
+        );
+        return Ok(());
+    }
+
     check_required_tools()?;
     install::ensure_framework_installed()?;
 
