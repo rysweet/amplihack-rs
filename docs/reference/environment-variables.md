@@ -117,6 +117,8 @@ Condition 2 covers pipe usage without requiring the caller to set the variable m
 
 **Effect on bootstrap:** When non-interactive mode is detected, `prepare_launcher()` returns immediately without running `check_required_tools()` or `ensure_framework_installed()`. The assumption is that CI environments are pre-provisioned and that interactive guidance output would be noise.
 
+**Effect on update check:** Non-interactive mode also suppresses the pre-launch npm update check. No `npm` subprocesses are spawned. This is equivalent to passing `--skip-update-check` on every invocation. See [Manage Tool Update Notifications](../howto/manage-tool-update-checks.md) for details.
+
 **Propagation:** Once detected, `AMPLIHACK_NONINTERACTIVE=1` is written into the child process environment so that nested invocations (e.g. sub-agents spawned by hooks) also behave non-interactively.
 
 **Cross-language contract:** Only the value `"1"` triggers non-interactive mode. The strings `"true"`, `"yes"`, `"on"`, and `"TRUE"` are **not** recognised — this matches the Python launcher's behaviour.

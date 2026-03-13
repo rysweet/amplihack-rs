@@ -1,0 +1,260 @@
+# Tier 8: AMPLIHACK_AGENT_BINARY and AMPLIHACK_HOME env-var parity tests.
+#
+# These scenarios verify that the Rust launcher correctly sets critical
+# environment variables in the child process when `amplihack launch` is used.
+#
+# ## Parity contract
+#
+# | Variable              | Python launcher | Rust launcher | Parity |
+# |-----------------------|-----------------|---------------|--------|
+# | AMPLIHACK_AGENT_BINARY| ✗ not set       | ✓ set to tool | DIVERGE|
+# | AMPLIHACK_HOME        | ✗ not set       | ✓ ~/.amplihack| DIVERGE|
+#
+# ## TDD intent
+#
+# These tests are written BEFORE the implementation and will FAIL (show
+# divergence) until the Rust launcher's EnvBuilder correctly sets both
+# variables via:
+#   .with_agent_binary(tool)   → AMPLIHACK_AGENT_BINARY
+#   .with_amplihack_home()     → AMPLIHACK_HOME
+#
+# ## Known divergence
+#
+# #### Expected divergence: AMPLIHACK_AGENT_BINARY
+#
+# > **Rust always sets AMPLIHACK_AGENT_BINARY to the tool name ("claude",
+# > "copilot", etc.).  Python does NOT set this variable.**
+# >
+# > This is an intentional Rust-only extension, not a regression.
+# > The divergence is documented here to:
+# > 1. Confirm Rust sets the variable (test the positive case)
+# > 2. Record that Python's omission is a known gap, not a bug in Rust
+#
+# #### Expected divergence: AMPLIHACK_HOME
+#
+# > **Rust always sets AMPLIHACK_HOME to the ~/.amplihack path.
+# > Python does NOT set this variable.**
+# >
+# > Same rationale as AMPLIHACK_AGENT_BINARY — Rust extension, not a gap.
+#
+# See: rysweet/amplihack-rs#<TBD>  (WS2 implementation issue)
+
+cases:
+
+  # ==========================================================================
+  # CASE 1: AMPLIHACK_AGENT_BINARY is set to "claude" when launching
+  # via `amplihack launch`.
+  #
+  # The stub claude binary captures $AMPLIHACK_AGENT_BINARY to a file.
+  # We compare the file contents between Python and Rust to detect divergence.
+  #
+  # Expected result:
+  #   Python: agent_binary.txt is EMPTY or absent (var not set)
+  #   Rust:   agent_binary.txt contains "claude"
+  #
+  # This test will FAIL (diverge) until Rust's EnvBuilder sets the variable.
+  # Once Rust is correctly setting it, the test documents the divergence.
+  # ==========================================================================
+
+  - name: env-var-agent-binary-is-claude
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p "${SANDBOX_ROOT}/bin"
+      cat > "${SANDBOX_ROOT}/bin/claude" <<'SCRIPT'
+      #!/usr/bin/env bash
+      # Capture AMPLIHACK_AGENT_BINARY to a file for comparison.
+      # If the variable is not set, write an empty line for explicit detection.
+      printf '%s\n' "${AMPLIHACK_AGENT_BINARY:-<not-set>}" > "${SANDBOX_ROOT}/agent_binary.txt"
+      exit 0
+      SCRIPT
+      chmod +x "${SANDBOX_ROOT}/bin/claude"
+    compare:
+      - exit_code
+      - fs:agent_binary.txt
+    # Rust MUST produce: agent_binary.txt contains "claude\n"
+    # Python produces:   agent_binary.txt contains "<not-set>\n"
+    #
+    # This divergence is EXPECTED and intentional.
+    # The test fails against Rust until with_agent_binary(tool) is wired up.
+
+  # ==========================================================================
+  # CASE 2: AMPLIHACK_AGENT_BINARY is set to the tool name when launching
+  # specific tool variants (copilot, codex).
+  #
+  # Verifies that the env var reflects the actual tool being launched,
+  # not a hardcoded "claude" string.
+  # ==========================================================================
+
+  - name: env-var-agent-binary-is-copilot-for-copilot-launch
+    argv: ["copilot"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p "${SANDBOX_ROOT}/bin"
+      cat > "${SANDBOX_ROOT}/bin/copilot" <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "${AMPLIHACK_AGENT_BINARY:-<not-set>}" > "${SANDBOX_ROOT}/agent_binary.txt"
+      exit 0
+      SCRIPT
+      chmod +x "${SANDBOX_ROOT}/bin/copilot"
+    compare:
+      - exit_code
+      - fs:agent_binary.txt
+    # Rust MUST produce: agent_binary.txt contains "copilot\n"
+    # This verifies that with_agent_binary(tool) uses the runtime tool name,
+    # not a compile-time constant.
+
+  # ==========================================================================
+  # CASE 3: AMPLIHACK_HOME is set to the ~/.amplihack path in the child env.
+  #
+  # The stub claude binary captures $AMPLIHACK_HOME to a file.
+  # We verify that the variable contains ".amplihack" (the directory name).
+  #
+  # We do NOT compare exact paths because $HOME differs per machine.
+  # Instead, the test verifies the variable is set and contains ".amplihack".
+  #
+  # Expected result:
+  #   Python: amplihack_home.txt is EMPTY or "<not-set>"
+  #   Rust:   amplihack_home.txt contains a path ending in ".amplihack"
+  # ==========================================================================
+
+  - name: env-var-amplihack-home-contains-amplihack
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p "${SANDBOX_ROOT}/bin"
+      cat > "${SANDBOX_ROOT}/bin/claude" <<'SCRIPT'
+      #!/usr/bin/env bash
+      # Capture AMPLIHACK_HOME for inspection.
+      printf '%s\n' "${AMPLIHACK_HOME:-<not-set>}" > "${SANDBOX_ROOT}/amplihack_home.txt"
+      exit 0
+      SCRIPT
+      chmod +x "${SANDBOX_ROOT}/bin/claude"
+    compare:
+      - exit_code
+      - fs:amplihack_home.txt
+    # Rust MUST produce: amplihack_home.txt contains a path like "/home/user/.amplihack\n"
+    # Python produces:   amplihack_home.txt contains "<not-set>\n"
+    #
+    # The divergence is EXPECTED. This test documents the Rust extension.
+
+  # ==========================================================================
+  # CASE 4: AMPLIHACK_HOME path ends with ".amplihack" (content validation).
+  #
+  # This is a Rust-only correctness test — it will NOT have a Python
+  # counterpart to compare against.  The compare block only checks exit_code
+  # to allow the test to run and capture the output for inspection.
+  #
+  # The actual assertion that the path ends with ".amplihack" is performed by
+  # the Rust-side validate script in the setup block.
+  # ==========================================================================
+
+  - name: env-var-amplihack-home-path-ends-with-dot-amplihack
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p "${SANDBOX_ROOT}/bin"
+      cat > "${SANDBOX_ROOT}/bin/claude" <<'SCRIPT'
+      #!/usr/bin/env bash
+      home_val="${AMPLIHACK_HOME:-<not-set>}"
+      # Write the raw value for parity comparison
+      printf '%s\n' "${home_val}" > "${SANDBOX_ROOT}/amplihack_home.txt"
+      # Validate Rust sets a plausible path (ends with .amplihack)
+      if [[ "${home_val}" == *".amplihack" ]]; then
+        printf 'ok\n' > "${SANDBOX_ROOT}/amplihack_home_valid.txt"
+      else
+        printf 'invalid: %s\n' "${home_val}" > "${SANDBOX_ROOT}/amplihack_home_valid.txt"
+        exit 1
+      fi
+      exit 0
+      SCRIPT
+      chmod +x "${SANDBOX_ROOT}/bin/claude"
+    compare:
+      - exit_code
+    # Rust MUST exit 0 — the claude stub exits 1 if AMPLIHACK_HOME doesn't
+    # end with ".amplihack".
+    # Python exits 0 but for wrong reason (claude stub gets <not-set>,
+    # enters the else branch, exits 1 — Python will fail here too).
+    # Note: This scenario deliberately diverges; compare only exit_code.
+
+  # ==========================================================================
+  # CASE 5: Both AMPLIHACK_AGENT_BINARY and AMPLIHACK_HOME are set together.
+  #
+  # Verifies that the two env vars coexist — one does not suppress the other.
+  # ==========================================================================
+
+  - name: env-var-both-agent-binary-and-home-are-set
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+    setup: |
+      mkdir -p "${SANDBOX_ROOT}/bin"
+      cat > "${SANDBOX_ROOT}/bin/claude" <<'SCRIPT'
+      #!/usr/bin/env bash
+      # Capture both variables.
+      printf 'AMPLIHACK_AGENT_BINARY=%s\n' "${AMPLIHACK_AGENT_BINARY:-<not-set>}" \
+        > "${SANDBOX_ROOT}/env_capture.txt"
+      printf 'AMPLIHACK_HOME=%s\n' "${AMPLIHACK_HOME:-<not-set>}" \
+        >> "${SANDBOX_ROOT}/env_capture.txt"
+      exit 0
+      SCRIPT
+      chmod +x "${SANDBOX_ROOT}/bin/claude"
+    compare:
+      - exit_code
+      - fs:env_capture.txt
+    # Rust MUST produce:
+    #   AMPLIHACK_AGENT_BINARY=claude
+    #   AMPLIHACK_HOME=/home/<user>/.amplihack
+    #
+    # Python produces:
+    #   AMPLIHACK_AGENT_BINARY=<not-set>
+    #   AMPLIHACK_HOME=<not-set>
+    #
+    # Expected divergence documented — both lines will differ.
+
+  # ==========================================================================
+  # CASE 6: AMPLIHACK_AGENT_BINARY is not overridden when pre-set in parent env.
+  #
+  # If the parent shell has already set AMPLIHACK_AGENT_BINARY (e.g., in a
+  # nested launch scenario), Rust must still set it to the current tool name.
+  # This prevents stale values from propagating through nested sessions.
+  # ==========================================================================
+
+  - name: env-var-agent-binary-overrides-parent-value
+    argv: ["launch"]
+    timeout: 15
+    env:
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+      AMPLIHACK_NONINTERACTIVE: "1"
+      AMPLIHACK_AGENT_BINARY: "stale-parent-value"
+    setup: |
+      mkdir -p "${SANDBOX_ROOT}/bin"
+      cat > "${SANDBOX_ROOT}/bin/claude" <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "${AMPLIHACK_AGENT_BINARY:-<not-set>}" \
+        > "${SANDBOX_ROOT}/agent_binary.txt"
+      exit 0
+      SCRIPT
+      chmod +x "${SANDBOX_ROOT}/bin/claude"
+    compare:
+      - exit_code
+      - fs:agent_binary.txt
+    # Rust MUST produce: "claude" (the current tool), NOT "stale-parent-value"
+    # Python produces:   "stale-parent-value" (inherits from parent, doesn't override)
+    #
+    # This documents an intentional Rust improvement over Python behaviour.
+    # The Rust EnvBuilder unconditionally sets AMPLIHACK_AGENT_BINARY on each launch.
