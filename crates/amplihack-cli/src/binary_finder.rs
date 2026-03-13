@@ -3,8 +3,8 @@
 //! Uses `which`-style lookup with version verification. No fallbacks:
 //! if the binary isn't found, we error out.
 
-use anyhow::{Result, bail};
 use crate::util::strip_ansi;
+use anyhow::{Result, bail};
 use std::collections::HashSet;
 use std::env;
 use std::path::{Path, PathBuf};
