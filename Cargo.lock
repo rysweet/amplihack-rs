@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "amplihack-cli",
  "amplihack-hooks",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-cli"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "amplihack-state",
  "amplihack-types",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "amplihack-state",
  "amplihack-types",
@@ -77,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks-bin"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "amplihack-hooks",
  "amplihack-state",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-state"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "amplihack-types",
  "libc",
@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-types"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -1398,9 +1398,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-subscriber"
-version = "0.3.22"
+version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f30143827ddab0d256fd843b7a66d164e9f271cfa0dde49142c5ca0ca291f1e"
+checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
  "matchers",
  "nu-ansi-term",
