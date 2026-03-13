@@ -56,6 +56,7 @@ pub fn run_launch(
     let env = EnvBuilder::new()
         .with_amplihack_session_id()
         .with_amplihack_vars()
+        .with_agent_binary(tool) // WS1: AMPLIHACK_AGENT_BINARY
         .build();
 
     // Build command

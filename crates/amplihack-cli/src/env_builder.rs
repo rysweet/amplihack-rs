@@ -45,6 +45,26 @@ impl EnvBuilder {
             .set("AMPLIHACK_DEPTH", depth)
     }
 
+    /// Set `AMPLIHACK_AGENT_BINARY` to the name of the CLI binary being launched.
+    ///
+    /// Downstream consumers (recipe runner, hooks) use this to determine which
+    /// agent binary to invoke. The value must be one of the four known tool names:
+    /// `claude`, `copilot`, `codex`, or `amplifier`.
+    ///
+    /// # Security (SEC-WS1-01)
+    ///
+    /// A `debug_assert!` validates the value in debug and test builds. The check
+    /// is compiled out in release builds — callers are responsible for passing a
+    /// valid tool name (controlled by `Commands` dispatch in `launch.rs`).
+    pub fn with_agent_binary(self, tool: impl Into<String>) -> Self {
+        let tool = tool.into();
+        debug_assert!(
+            matches!(tool.as_str(), "claude" | "copilot" | "codex" | "amplifier"),
+            "AMPLIHACK_AGENT_BINARY must be one of: claude, copilot, codex, amplifier; got: {tool}"
+        );
+        self.set("AMPLIHACK_AGENT_BINARY", tool)
+    }
+
     /// Add standard AMPLIHACK_* variables and NODE_OPTIONS.
     pub fn with_amplihack_vars(self) -> Self {
         // Merge NODE_OPTIONS: append if existing (and not already present), set fresh otherwise
@@ -128,6 +148,22 @@ fn generate_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── WS1: with_agent_binary ────────────────────────────────────────────────
+
+    /// WS1-1: with_agent_binary must insert AMPLIHACK_AGENT_BINARY for each
+    /// supported tool name.
+    #[test]
+    fn with_agent_binary_sets_env_var_for_all_tools() {
+        for tool in &["claude", "copilot", "codex", "amplifier"] {
+            let env = EnvBuilder::new().with_agent_binary(*tool).build();
+            assert_eq!(
+                env.get("AMPLIHACK_AGENT_BINARY").map(String::as_str),
+                Some(*tool),
+                "AMPLIHACK_AGENT_BINARY should be '{tool}'"
+            );
+        }
+    }
 
     #[test]
     fn empty_builder_produces_empty_map() {
