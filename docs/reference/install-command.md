@@ -149,9 +149,11 @@ Locates the `amplihack-hooks` binary using a 5-step resolution:
 
 1. `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` environment variable (must point to an existing executable)
 2. Sibling of the currently running `amplihack` executable
-3. `~/.local/bin/amplihack-hooks`
-4. `~/.cargo/bin/amplihack-hooks`
-5. `PATH` lookup via `which amplihack-hooks`
+3. `PATH` lookup via `which amplihack-hooks`
+4. `~/.local/bin/amplihack-hooks`
+5. `~/.cargo/bin/amplihack-hooks`
+
+PATH runs at Step 3 so system-wide installs (e.g. a tarball to `/usr/local/bin`) survive the uninstall→reinstall cycle, since `amplihack uninstall` only removes the `~/.local/bin` copies.
 
 Returns an actionable error if none of the five locations yield an executable.
 

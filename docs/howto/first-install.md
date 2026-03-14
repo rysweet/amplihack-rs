@@ -118,9 +118,9 @@ pip install amplihack
 The installer searches for `amplihack-hooks` in this order:
 1. `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` environment variable
 2. Sibling of the running `amplihack` executable
-3. `~/.local/bin/amplihack-hooks`
-4. `~/.cargo/bin/amplihack-hooks`
-5. `PATH` lookup
+3. `PATH` lookup
+4. `~/.local/bin/amplihack-hooks`
+5. `~/.cargo/bin/amplihack-hooks`
 
 Build `amplihack-hooks` before running the installer:
 

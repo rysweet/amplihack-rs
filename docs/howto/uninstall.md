@@ -69,6 +69,24 @@ amplihack install --local ~/src/amplihack
 
 Hook registrations are fully restored by a subsequent install.
 
+### Why Reinstall Works After Uninstall
+
+`amplihack uninstall` removes only the `~/.local/bin` copies (Phase 3).
+`find_hooks_binary()` reaches PATH at Step 3 — before checking `~/.local/bin` at Step 4 — so
+binaries that survived uninstall (e.g. a system-wide tarball install) are found without requiring a rebuild.
+
+| Install scenario | Lookup step that resolves it |
+|-----------------|------------------------------|
+| Tarball to `/usr/local/bin` | Step 2 (sibling-of-exe) or Step 3 (PATH) |
+| `cargo build --release` + run from `target/release/` | Step 2 (sibling-of-exe) |
+| `cargo install` | Step 5 (`~/.cargo/bin`) |
+
+If the binary is not found after uninstall, rebuild it before reinstalling:
+
+```sh
+cargo build --release --bin amplihack-hooks
+```
+
 ## See Also
 
 - [Install amplihack for the First Time](./first-install.md)
