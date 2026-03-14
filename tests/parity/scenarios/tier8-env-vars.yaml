@@ -169,25 +169,24 @@ cases:
       cat > "${SANDBOX_ROOT}/bin/claude" <<'SCRIPT'
       #!/usr/bin/env bash
       home_val="${AMPLIHACK_HOME:-<not-set>}"
-      # Write the raw value for parity comparison
+      # Write the raw value and validation result for inspection.
+      # Both CLIs should set AMPLIHACK_HOME to a path ending in .amplihack.
       printf '%s\n' "${home_val}" > "${SANDBOX_ROOT}/amplihack_home.txt"
-      # Validate Rust sets a plausible path (ends with .amplihack)
       if [[ "${home_val}" == *".amplihack" ]]; then
         printf 'ok\n' > "${SANDBOX_ROOT}/amplihack_home_valid.txt"
       else
         printf 'invalid: %s\n' "${home_val}" > "${SANDBOX_ROOT}/amplihack_home_valid.txt"
-        exit 1
       fi
+      # Always exit 0 — validation is checked via fs:amplihack_home_valid.txt
       exit 0
       SCRIPT
       chmod +x "${SANDBOX_ROOT}/bin/claude"
     compare:
       - exit_code
-    # Rust MUST exit 0 — the claude stub exits 1 if AMPLIHACK_HOME doesn't
-    # end with ".amplihack".
-    # Python exits 0 but for wrong reason (claude stub gets <not-set>,
-    # enters the else branch, exits 1 — Python will fail here too).
-    # Note: This scenario deliberately diverges; compare only exit_code.
+      - fs:amplihack_home_valid.txt
+    # Both CLIs should set AMPLIHACK_HOME to a path ending in .amplihack.
+    # The stub writes "ok" or "invalid: <value>" to amplihack_home_valid.txt.
+    # Comparing exit_code (both 0) and the validation file ensures parity.
 
   # ==========================================================================
   # CASE 5: Both AMPLIHACK_AGENT_BINARY and AMPLIHACK_HOME are set together.
