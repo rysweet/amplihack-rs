@@ -42,3 +42,11 @@ path = "../../tests/integration/cargo_lock_cxx_consistency_test.rs"
 [[test]]
 name = "ci_cxx_build_pin"
 path = "../../tests/integration/ci_cxx_build_pin_test.rs"
+
+# WS3: Recipe runner E2E integration tests
+# These tests verify the full recipe delegation chain:
+#   amplihack recipe list / validate / run --dry-run
+# Tests recipe_run_dry_run_* FAIL until recipe-runner-rs is installed.
+[[test]]
+name = "recipe_e2e"
+path = "../../tests/integration/recipe_e2e_test.rs"
