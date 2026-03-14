@@ -393,8 +393,8 @@ fn json_scalar_to_string(value: &JsonValue) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use tempfile::NamedTempFile;
     use std::io::Write as IoWrite;
+    use tempfile::NamedTempFile;
 
     // -------------------------------------------------------------------------
     // parse_context_args — key=value parsing
@@ -406,7 +406,10 @@ mod tests {
         let args = vec!["task_description=hello world".to_string()];
         let (ctx, errs) = parse_context_args(&args);
         assert!(errs.is_empty(), "No errors expected. Got: {:?}", errs);
-        assert_eq!(ctx.get("task_description").map(String::as_str), Some("hello world"));
+        assert_eq!(
+            ctx.get("task_description").map(String::as_str),
+            Some("hello world")
+        );
     }
 
     /// Multiple valid key=value pairs must all be parsed correctly.
@@ -511,18 +514,11 @@ mod tests {
     fn test_resolve_binary_path_expands_tilde_to_home_dir() {
         // Create a temp file inside the home directory to test expansion
         let home = std::env::var("HOME").expect("HOME env var must be set");
-        let temp = tempfile::NamedTempFile::new_in(&home)
-            .expect("failed to create temp file in HOME");
+        let temp =
+            tempfile::NamedTempFile::new_in(&home).expect("failed to create temp file in HOME");
 
         // Make it executable so resolve_binary_path treats it as a file candidate
-        let tilde_path = format!(
-            "~/{}",
-            temp.path()
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-        );
+        let tilde_path = format!("~/{}", temp.path().file_name().unwrap().to_str().unwrap());
 
         // resolve_binary_path checks is_file(), which is true for NamedTempFile
         let result = resolve_binary_path(&tilde_path);
@@ -627,14 +623,20 @@ mod tests {
         RecipeRunResult {
             recipe_name: "test-recipe".to_string(),
             success,
-            step_results: vec![
-                RecipeRunStepResult {
-                    step_id: "step-1".to_string(),
-                    status: if success { "completed".to_string() } else { "failed".to_string() },
-                    output: "step output here".to_string(),
-                    error: if success { String::new() } else { "something broke".to_string() },
+            step_results: vec![RecipeRunStepResult {
+                step_id: "step-1".to_string(),
+                status: if success {
+                    "completed".to_string()
+                } else {
+                    "failed".to_string()
                 },
-            ],
+                output: "step output here".to_string(),
+                error: if success {
+                    String::new()
+                } else {
+                    "something broke".to_string()
+                },
+            }],
             context: Default::default(),
         }
     }
@@ -782,7 +784,10 @@ mod tests {
     #[test]
     fn test_find_recipe_runner_binary_ignores_nonexistent_env_path() {
         unsafe {
-            std::env::set_var("RECIPE_RUNNER_RS_PATH", "/nonexistent/path/recipe-runner-rs")
+            std::env::set_var(
+                "RECIPE_RUNNER_RS_PATH",
+                "/nonexistent/path/recipe-runner-rs",
+            )
         };
 
         let result = find_recipe_runner_binary();

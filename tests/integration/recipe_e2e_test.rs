@@ -51,9 +51,15 @@ fn assert_exit(cmd: &mut Command, expect_success: bool, context: &str) {
         .status()
         .unwrap_or_else(|e| panic!("Failed to run command ({context}): {e}"));
     if expect_success {
-        assert!(status.success(), "[{context}] Expected exit 0, got: {status}");
+        assert!(
+            status.success(),
+            "[{context}] Expected exit 0, got: {status}"
+        );
     } else {
-        assert!(!status.success(), "[{context}] Expected non-zero exit, got: {status}");
+        assert!(
+            !status.success(),
+            "[{context}] Expected non-zero exit, got: {status}"
+        );
     }
 }
 
@@ -140,8 +146,7 @@ fn recipe_list_output_contains_at_least_one_recipe() {
 
     // Determine the expected recipes directory
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    let recipes_dir =
-        std::path::Path::new(&home).join(".amplihack/.claude/recipes");
+    let recipes_dir = std::path::Path::new(&home).join(".amplihack/.claude/recipes");
 
     if !recipes_dir.is_dir() {
         // Directory not set up — this is a soft failure (environment not ready)
@@ -180,7 +185,10 @@ fn recipe_list_json_format_is_valid_json() {
         "recipe list --format json",
     );
 
-    assert!(success, "recipe list --format json must exit 0. stderr: {stderr}");
+    assert!(
+        success,
+        "recipe list --format json must exit 0. stderr: {stderr}"
+    );
 
     // Output must be parseable as JSON (array or object)
     let trimmed = stdout.trim();
@@ -228,8 +236,7 @@ fn recipe_validate_exits_nonzero_for_invalid_recipe() {
 
     // A recipe without a 'name' field is invalid
     let mut tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
-    writeln!(tmp, "description: missing name field\nsteps: []")
-        .expect("failed to write bad YAML");
+    writeln!(tmp, "description: missing name field\nsteps: []").expect("failed to write bad YAML");
 
     assert_exit(
         Command::new(&bin).args(["recipe", "validate", tmp.path().to_str().unwrap()]),
@@ -250,8 +257,8 @@ fn recipe_validate_exits_zero_for_default_workflow() {
     }
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    let recipe_path = std::path::Path::new(&home)
-        .join(".amplihack/.claude/recipes/default-workflow.yaml");
+    let recipe_path =
+        std::path::Path::new(&home).join(".amplihack/.claude/recipes/default-workflow.yaml");
 
     if !recipe_path.exists() {
         // Soft skip: recipe not installed in this environment
@@ -330,12 +337,7 @@ fn recipe_run_dry_run_output_contains_recipe_name() {
 
     let tmp = write_temp_recipe("name-check-recipe", true);
     let (stdout, stderr, success) = run_output(
-        Command::new(&bin).args([
-            "recipe",
-            "run",
-            tmp.path().to_str().unwrap(),
-            "--dry-run",
-        ]),
+        Command::new(&bin).args(["recipe", "run", tmp.path().to_str().unwrap(), "--dry-run"]),
         "recipe run --dry-run (name check)",
     );
 
@@ -364,14 +366,11 @@ fn recipe_run_dry_run_default_workflow_exits_zero() {
     }
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    let recipe_path = std::path::Path::new(&home)
-        .join(".amplihack/.claude/recipes/default-workflow.yaml");
+    let recipe_path =
+        std::path::Path::new(&home).join(".amplihack/.claude/recipes/default-workflow.yaml");
 
     if !recipe_path.exists() {
-        println!(
-            "SKIP: default-workflow.yaml not found at {:?}",
-            recipe_path
-        );
+        println!("SKIP: default-workflow.yaml not found at {:?}", recipe_path);
         // Still run a temp recipe to gate the recipe-runner-rs binary
     }
 
