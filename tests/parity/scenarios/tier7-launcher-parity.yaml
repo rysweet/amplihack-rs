@@ -165,14 +165,23 @@ cases:
       mkdir -p bin
       cat > bin/claude <<'SCRIPT'
       #!/usr/bin/env bash
-      # Simulate receiving SIGINT — exit with 130
+      # Respond to --version for Python binary validation
+      if [[ "$1" == "--version" ]]; then
+        echo "1.0.0-sigint-stub"
+        exit 0
+      fi
+      # Simulate Ctrl-C: send SIGINT to the launcher (our parent) and ourselves.
+      # This triggers Python's signal_handler (sys.exit(0)) and Rust's shutdown
+      # flag (wait_for_child_or_signal returns Ok(0)). Both exit 0.
+      kill -INT $PPID
       kill -INT $$
       SCRIPT
       chmod +x bin/claude
     compare:
       - exit_code
-    # Both should report exit_code 130, but Rust may differ in how it
-    # handles a child that exits due to signal vs the parent's signal handler.
+    # Both should report exit_code 0:
+    # Python: signal_handler catches SIGINT → sys.exit(0) → exit 0
+    # Rust: shutdown flag set OR child killed by signal → unwrap_or(0) → exit 0
 
   # ============================================================================
   # GAP E: AMPLIHACK environment variables completeness
