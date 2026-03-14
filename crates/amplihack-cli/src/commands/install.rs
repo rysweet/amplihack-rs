@@ -162,9 +162,9 @@ struct InstallManifest {
 ///
 /// 1. `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` env var (if set AND the path exists)
 /// 2. Sibling of the current executable
-/// 3. `~/.local/bin/amplihack-hooks`
-/// 4. `~/.cargo/bin/amplihack-hooks`
-/// 5. PATH lookup
+/// 3. PATH lookup (handles reinstall after uninstall removes ~/.local/bin copy)
+/// 4. `~/.local/bin/amplihack-hooks`
+/// 5. `~/.cargo/bin/amplihack-hooks`
 fn find_hooks_binary() -> Result<PathBuf> {
     // Step 1: env var override
     if let Some(val) = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") {
@@ -185,21 +185,20 @@ fn find_hooks_binary() -> Result<PathBuf> {
         }
     }
 
-    // Steps 3-4: ~/.local/bin then ~/.cargo/bin (single home_dir() lookup)
+    // Step 3: PATH lookup — finds system-wide installs (e.g. /usr/local/bin) even
+    // after uninstall has removed the ~/.local/bin copy.
+    if let Some(found) = find_binary("amplihack-hooks") {
+        return Ok(found);
+    }
+
+    // Steps 4-5: ~/.local/bin then ~/.cargo/bin — one home_dir() call covers both.
     if let Ok(home) = home_dir() {
-        for (a, b) in &[(".local", "bin"), (".cargo", "bin")] {
-            let candidate = home.join(a).join(b).join("amplihack-hooks");
+        for suffix in &[".local/bin", ".cargo/bin"] {
+            let candidate = home.join(suffix).join("amplihack-hooks");
             if candidate.is_file() {
                 return Ok(candidate);
             }
         }
-    }
-
-    // Step 5: PATH lookup
-    if let Some(found) = find_binary("amplihack-hooks") {
-        // TODO(hardening): validate is_file() + is_executable() on `found` before returning;
-        // a world-writable or non-executable binary at this path is a supply-chain risk.
-        return Ok(found);
     }
 
     bail!(
@@ -1173,7 +1172,10 @@ fn read_manifest(path: &Path) -> Result<InstallManifest> {
         return Ok(InstallManifest::default());
     }
     let Ok(raw) = fs::read_to_string(path) else {
-        tracing::debug!("could not read manifest at {}: returning empty", path.display());
+        tracing::debug!(
+            "could not read manifest at {}: returning empty",
+            path.display()
+        );
         return Ok(InstallManifest::default());
     };
     // A corrupt manifest is treated as an empty one, triggering a clean reinstall.
@@ -2924,28 +2926,32 @@ mod tests {
     /// a freshly-installed copy at `~/.local/bin`.  Placing distinct stubs at both
     /// locations and asserting `~/.local/bin` wins confirms the correct lookup order.
     #[test]
-    fn find_hooks_binary_local_bin_wins_over_path_lookup() {
+    /// PATH lookup is now Step 3, before the explicit ~/.local/bin check.
+    /// This ensures reinstall works even when uninstall has removed ~/.local/bin/amplihack-hooks
+    /// (e.g. the binary is in /usr/local/bin which is in PATH).
+    fn find_hooks_binary_path_lookup_wins_over_local_bin() {
         let _guard = crate::test_support::home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let previous = crate::test_support::set_home(temp.path());
 
-        // Place the "fresh" binary at ~/.local/bin
+        // ~/.local/bin has a binary (e.g. from a previous install)
         let local_bin = temp.path().join(".local").join("bin");
         fs::create_dir_all(&local_bin).unwrap();
-        let local_stub = create_exe_stub(&local_bin, "amplihack-hooks");
+        create_exe_stub(&local_bin, "amplihack-hooks");
 
-        // Place a "stale" binary at a separate PATH dir
+        // A system PATH dir (e.g. /usr/local/bin) also has the binary
         let path_bin = temp.path().join("path_bin");
         fs::create_dir_all(&path_bin).unwrap();
-        create_exe_stub(&path_bin, "amplihack-hooks");
+        let path_stub = create_exe_stub(&path_bin, "amplihack-hooks");
 
         let prev_env = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
         let prev_path = std::env::var_os("PATH");
         unsafe {
             std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
-            // Only PATH dir is on $PATH — not ~/.local/bin (forces resolution via explicit check)
+            // PATH contains the system dir but NOT ~/.local/bin — simulates reinstall
+            // after uninstall removed the ~/.local/bin copy while /usr/local/bin remains.
             std::env::set_var("PATH", &path_bin);
         }
 
@@ -2963,8 +2969,57 @@ mod tests {
 
         let resolved = result.expect("find_hooks_binary must find the binary");
         assert_eq!(
-            resolved, local_stub,
-            "~/.local/bin must win over PATH — find_hooks_binary returned {resolved:?} instead of {local_stub:?}"
+            resolved, path_stub,
+            "PATH lookup (Step 3) must win — find_hooks_binary returned {resolved:?} instead of {path_stub:?}"
+        );
+    }
+
+    /// Reinstall scenario: uninstall has removed ~/.local/bin/amplihack-hooks but the
+    /// system-wide binary at /usr/local/bin is still present (and in PATH).
+    /// find_hooks_binary must recover via the PATH lookup at Step 3.
+    #[test]
+    fn find_hooks_binary_reinstall_after_uninstall_removes_local_bin() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous = crate::test_support::set_home(temp.path());
+
+        // ~/.local/bin exists but has NO amplihack-hooks (it was deleted by uninstall)
+        let local_bin = temp.path().join(".local").join("bin");
+        fs::create_dir_all(&local_bin).unwrap();
+
+        // System /usr/local/bin equivalent has the binary
+        let usr_local_bin = temp.path().join("usr_local_bin");
+        fs::create_dir_all(&usr_local_bin).unwrap();
+        let system_stub = create_exe_stub(&usr_local_bin, "amplihack-hooks");
+
+        let prev_env = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+        let prev_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+            // PATH contains the system dir (simulates /usr/local/bin being in PATH)
+            std::env::set_var("PATH", &usr_local_bin);
+        }
+
+        let result = find_hooks_binary();
+
+        if let Some(v) = prev_env {
+            unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
+        } else {
+            unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") };
+        }
+        if let Some(v) = prev_path {
+            unsafe { std::env::set_var("PATH", v) };
+        }
+        crate::test_support::restore_home(previous);
+
+        let resolved = result.expect(
+            "find_hooks_binary must find the binary via PATH even when ~/.local/bin copy was removed by uninstall",
+        );
+        assert_eq!(
+            resolved, system_stub,
+            "reinstall must find system binary via PATH — got {resolved:?} instead of {system_stub:?}"
         );
     }
 
@@ -3084,11 +3139,7 @@ mod tests {
             binaries: vec![],
             hook_registrations: vec![],
         };
-        write_manifest(
-            &staging.join("install/amplihack-manifest.json"),
-            &manifest,
-        )
-        .unwrap();
+        write_manifest(&staging.join("install/amplihack-manifest.json"), &manifest).unwrap();
 
         // Must not error even though the dir is listed three times
         let result = run_uninstall();
