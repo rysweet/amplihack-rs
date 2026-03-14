@@ -14,6 +14,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Enable Shell Completions](./howto/enable-shell-completions.md) — Install tab-completion for bash, zsh, fish, and PowerShell
 - [Run amplihack in Non-interactive Mode](./howto/run-in-noninteractive-mode.md) — Use amplihack in CI pipelines, Docker containers, and piped scripts without interactive prompts
 - [Manage Tool Update Notifications](./howto/manage-tool-update-checks.md) — Control or disable the pre-launch npm update check for `claude`, `copilot`, and `codex`
+- [Run a Recipe End-to-End](./howto/run-a-recipe.md) — Find, inspect, dry-run, and execute YAML recipes through the Rust CLI
 
 ### Reference
 
@@ -24,6 +25,8 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [amplihack completions](./reference/completions-command.md) — Full CLI reference for the `completions` subcommand
 - [Environment Variables](./reference/environment-variables.md) — All environment variables read or injected by `amplihack` during a launch
 - [Launch Flag Injection](./reference/launch-flag-injection.md) — How `amplihack` builds the subprocess command line: `--dangerously-skip-permissions`, `--model`, and extra args passthrough
+- [Signal Handling and Exit Codes](./reference/signal-handling.md) — SIGINT, SIGTERM, SIGHUP behavior and exit code contract (Python parity)
+- [amplihack recipe](./reference/recipe-command.md) — Full CLI reference for `recipe list`, `recipe show`, `recipe validate`, and `recipe run`
 - [Parity Test Scenarios](./reference/parity-test-scenarios.md) — Every parity tier file, its test cases, and expected Python↔Rust divergence
 
 ### Concepts
