@@ -1367,11 +1367,28 @@ fn find_binary(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(name);
-        if candidate.is_file() {
+        if candidate.is_file() && is_executable(&candidate) {
             return Some(candidate);
         }
     }
     None
+}
+
+/// Returns `true` if the path has at least one executable bit set.
+/// On non-Unix platforms every file is considered executable.
+fn is_executable(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        true
+    }
 }
 
 fn home_dir() -> Result<PathBuf> {
