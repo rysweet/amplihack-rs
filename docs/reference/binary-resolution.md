@@ -9,9 +9,9 @@ During `amplihack install`, the CLI must locate the `amplihack-hooks` binary bef
 ```
 Step 1: AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH env var
 Step 2: Sibling of the running amplihack executable
-Step 3: ~/.local/bin/amplihack-hooks
-Step 4: ~/.cargo/bin/amplihack-hooks
-Step 5: PATH lookup (which amplihack-hooks)
+Step 3: PATH lookup (which amplihack-hooks)
+Step 4: ~/.local/bin/amplihack-hooks
+Step 5: ~/.cargo/bin/amplihack-hooks
 ```
 
 If none of the five steps succeeds, the installer fails with an actionable error message listing what was tried.
@@ -39,17 +39,19 @@ target/release/
 └── amplihack-hooks  ← found here at Step 2
 ```
 
-### Step 3: ~/.local/bin
+### Step 3: PATH Lookup
 
-The standard user-local binary directory on Linux systems. This is where `deploy_binaries()` places the binaries after a successful install, so Step 3 covers the "amplihack is already installed, re-running install" case.
+`find_binary("amplihack-hooks")` walks `$PATH` entries in order and returns the first match. This step runs before `~/.local/bin` because `amplihack uninstall` removes only the `~/.local/bin` copies (Phase 3) — binaries placed in system-wide locations (e.g. `/usr/local/bin`) by a tarball install survive uninstall and must be found on reinstall.
 
-### Step 4: ~/.cargo/bin
+This step also covers the tarball-to-`/usr/local/bin` install pattern where both `amplihack` and `amplihack-hooks` are placed into the same system directory. In that case Step 2 (sibling-of-exe) resolves the binary when running from that directory, but Step 3 provides a reliable fallback when the shell's `PATH` is used instead.
+
+### Step 4: ~/.local/bin
+
+The standard user-local binary directory on Linux systems. This is where `deploy_binaries()` places the binaries after a successful install, so Step 4 covers the "amplihack is already installed, re-running install" case.
+
+### Step 5: ~/.cargo/bin
 
 Where Cargo installs binaries via `cargo install`. Covers the case where a user ran `cargo install --path bins/amplihack-hooks` manually.
-
-### Step 5: PATH Lookup
-
-Falls back to a `PATH` search (`which amplihack-hooks`). Covers custom install locations not covered by the previous steps.
 
 ## Error Output
 
@@ -61,9 +63,9 @@ If resolution fails, the installer prints a structured error:
 Tried:
   1. AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH — not set
   2. /home/alice/src/amplihack-rs-update/target/release/amplihack-hooks — not found
-  3. /home/alice/.local/bin/amplihack-hooks — not found
-  4. /home/alice/.cargo/bin/amplihack-hooks — not found
-  5. PATH lookup — not found
+  3. PATH lookup — not found
+  4. /home/alice/.local/bin/amplihack-hooks — not found
+  5. /home/alice/.cargo/bin/amplihack-hooks — not found
 
 Fix: build the binary first:
   cargo build --release --bin amplihack-hooks
