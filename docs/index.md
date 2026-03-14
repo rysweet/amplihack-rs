@@ -15,6 +15,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Run amplihack in Non-interactive Mode](./howto/run-in-noninteractive-mode.md) — Use amplihack in CI pipelines, Docker containers, and piped scripts without interactive prompts
 - [Manage Tool Update Notifications](./howto/manage-tool-update-checks.md) — Control or disable the pre-launch npm update check for `claude`, `copilot`, and `codex`
 - [Run a Recipe End-to-End](./howto/run-a-recipe.md) — Find, inspect, dry-run, and execute YAML recipes through the Rust CLI
+- [Verify the Install/Uninstall Round-Trip](./howto/verify-install-uninstall-round-trip.md) — Run a full install → uninstall → reinstall cycle on a fresh VM before releasing
 
 ### Reference
 
@@ -28,6 +29,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Signal Handling and Exit Codes](./reference/signal-handling.md) — SIGINT, SIGTERM, SIGHUP behavior and exit code contract (Python parity)
 - [amplihack recipe](./reference/recipe-command.md) — Full CLI reference for `recipe list`, `recipe show`, `recipe validate`, and `recipe run`
 - [Parity Test Scenarios](./reference/parity-test-scenarios.md) — Every parity tier file, its test cases, and expected Python↔Rust divergence
+- [CI E2E Test Job](./reference/ci-e2e-tests.md) — How the `test-e2e` CI job installs `recipe-runner-rs` and runs `#[ignore]`-marked integration tests
 
 ### Concepts
 

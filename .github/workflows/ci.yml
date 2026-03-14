@@ -41,6 +41,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
 
+  test-e2e:
+    name: E2E Tests (recipe-runner-rs)
+    runs-on: ubuntu-latest
+    needs: [check, test]
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e
+      - name: Install recipe-runner-rs
+        run: |
+          cargo install \
+            --git https://github.com/rysweet/amplihack-recipe-runner.git \
+            --rev d8cd0b2d6aff7c52aac77fe0b1b0c97203906bf2 \
+            --locked \
+            recipe-runner-rs
+      - name: Run E2E tests (ignored)
+        run: cargo test --workspace --locked -- --ignored
+
   cross-compile:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}

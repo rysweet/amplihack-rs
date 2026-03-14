@@ -188,10 +188,49 @@ parity work.
 
 ### tier5-launcher.yaml — Launcher flags
 
-Validates `--resume`, `--continue`, `--skip-permissions`, and `--skip-update-check`
-flag behaviour via stub binaries that capture command-line arguments.
+Validates flag injection and extra-args passthrough by spawning a stub `claude`
+binary that writes its received arguments to a file. Python and Rust outputs
+are compared against that file.
 
-**Expected result:** All cases pass (no known gaps).
+| Case | What it validates |
+|------|------------------|
+| `launcher-passthrough-args` | `extra_args` (`--verbose`, `--model sonnet`) are forwarded verbatim after injected flags |
+| `launcher-nesting-detection` | `AMPLIHACK_DEPTH` and `AMPLIHACK_SESSION_ID` are visible inside the child process |
+
+#### launcher-passthrough-args
+
+This case passes `-- --verbose --model sonnet` to `amplihack launch` and
+asserts that the stub `claude` binary receives both flags verbatim after the
+injected `--dangerously-skip-permissions` and `--model opus[1m]`.
+
+```sh
+python tests/parity/validate_cli_parity.py \
+  --scenario tests/parity/scenarios/tier5-launcher.yaml \
+  --case launcher-passthrough-args
+```
+
+The `--model sonnet` in the extra args suppresses the automatic `--model opus[1m]`
+injection — the user-supplied value takes precedence. Expected `claude_args.txt`:
+
+```
+--dangerously-skip-permissions
+--verbose
+--model
+sonnet
+```
+
+This case originally failed when `build_command()` omitted `extra_args` from
+the assembled command line. The fix — appending `extra_args` unconditionally
+after the injected flags — is described in [Launch Flag Injection](./launch-flag-injection.md#extra-args-passthrough).
+
+> **Run twice before acting on results.** The `parity-test-executor` component
+> runs this case twice on each candidate commit to detect flakiness before
+> making the PR #44 close/rebase decision. A case that passes once but fails on
+> the second run is treated as flaky, not passing. See
+> [ci-e2e-tests.md](./ci-e2e-tests.md) for the rationale.
+
+**Expected result:** Both Python and Rust produce identical `claude_args.txt`
+on both runs.
 
 ---
 
