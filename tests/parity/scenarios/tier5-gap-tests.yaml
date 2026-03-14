@@ -46,7 +46,11 @@ cases:
       chmod +x bin/claude
     compare: ["exit_code", "fs:claude_args.txt"]
 
-  # A3: SIGINT exit code — Python returns 0, Rust returns 130
+  # A3: SIGINT exit code — Both Python and Rust should return 0 on SIGINT.
+  # Python's signal_handler catches SIGINT and calls sys.exit(0).
+  # Rust's shutdown flag path returns Ok(0) on SIGINT.
+  # Stub sends SIGINT to its parent (the launcher) then kills itself,
+  # simulating Ctrl-C. --version returns a valid version for binary validation.
   - name: gap-launch-sigint-exit-code
     argv: ["launch"]
     env:
@@ -55,13 +59,24 @@ cases:
     timeout: 15
     setup: |
       mkdir -p bin
-      # Claude binary that sends SIGINT to itself
+      # Claude stub: responds to --version for Python binary validation,
+      # then on actual launch sends SIGINT to parent (launcher) and itself.
       cat > bin/claude <<'SCRIPT'
       #!/usr/bin/env bash
+      if [[ "$1" == "--version" ]]; then
+        echo "1.0.0-sigint-stub"
+        exit 0
+      fi
+      # Simulate Ctrl-C: send SIGINT to the launcher (our parent)
+      kill -INT $PPID
+      # Also send SIGINT to ourselves
       kill -INT $$
       SCRIPT
       chmod +x bin/claude
     compare: ["exit_code"]
+    # Expected: both Python and Rust exit 0
+    # Python: signal_handler catches SIGINT → sys.exit(0)
+    # Rust: shutdown flag set → wait_for_child_or_signal returns Ok(0)
 
   # ============================================================================
   # GAP B: Environment variable divergence
