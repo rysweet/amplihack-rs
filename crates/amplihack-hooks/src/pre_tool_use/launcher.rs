@@ -93,7 +93,7 @@ fn inject_copilot_context(dirs: &ProjectDirs, _input_data: &Value) {
     match PythonBridge::call(COPILOT_CONTEXT_BRIDGE, &input, Duration::from_secs(5)) {
         Ok(_) => {}
         Err(e) => {
-            tracing::debug!("Copilot context injection failed (non-fatal): {}", e);
+            tracing::warn!("Copilot context injection failed (non-fatal): {}", e);
         }
     }
 }

@@ -172,7 +172,10 @@ fn find_hooks_binary() -> Result<PathBuf> {
         if p.exists() {
             return Ok(p);
         }
-        // Non-existent env var path → fall through silently
+        bail!(
+            "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH is set to {:?} but that path does not exist",
+            p
+        );
     }
 
     // Step 2: sibling of current exe
@@ -180,7 +183,7 @@ fn find_hooks_binary() -> Result<PathBuf> {
         && let Some(dir) = exe.parent()
     {
         let candidate = dir.join("amplihack-hooks");
-        if candidate.is_file() {
+        if is_executable(&candidate) {
             return Ok(candidate);
         }
     }
@@ -195,7 +198,7 @@ fn find_hooks_binary() -> Result<PathBuf> {
     if let Ok(home) = home_dir() {
         for suffix in &[".local/bin", ".cargo/bin"] {
             let candidate = home.join(suffix).join("amplihack-hooks");
-            if candidate.is_file() {
+            if is_executable(&candidate) {
                 return Ok(candidate);
             }
         }
@@ -273,11 +276,15 @@ fn deploy_binaries() -> Result<Vec<PathBuf>> {
     // Also copy self (the amplihack binary) if it differs from the destination
     if let Ok(self_exe) = std::env::current_exe() {
         let self_dst = local_bin.join("amplihack");
-        if self_exe != self_dst && fs::copy(&self_exe, &self_dst).is_ok() {
+        if self_exe != self_dst {
+            fs::copy(&self_exe, &self_dst)
+                .with_context(|| format!("failed to copy amplihack binary to {}", self_dst.display()))?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(&self_dst, std::fs::Permissions::from_mode(0o755));
+                if let Err(e) = fs::set_permissions(&self_dst, std::fs::Permissions::from_mode(0o755)) {
+                    tracing::warn!("failed to set executable bit on {}: {}", self_dst.display(), e);
+                }
             }
             deployed.push(self_dst);
         }
@@ -2019,10 +2026,10 @@ mod tests {
         );
     }
 
-    /// FAILS until `find_hooks_binary` silently falls through when env var points
-    /// to a non-existent path (does not error on the bad env var itself).
+    /// Verifies that `find_hooks_binary` returns an error (bails) when
+    /// `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` is set to a non-existent path.
     #[test]
-    fn find_hooks_binary_falls_through_when_env_var_path_nonexistent() {
+    fn find_hooks_binary_errors_when_env_var_path_nonexistent() {
         let _guard = crate::test_support::home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2034,15 +2041,23 @@ mod tests {
             std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &nonexistent);
         }
 
-        // Should not panic; may return Ok or Err depending on remaining resolution steps
-        let _result = find_hooks_binary();
+        let result = find_hooks_binary();
 
         if let Some(v) = prev {
             unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
         } else {
             unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") };
         }
-        // Test passes as long as no panic / no error attributed to bad env var alone
+
+        assert!(
+            result.is_err(),
+            "find_hooks_binary must return an error when env var path does not exist"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH"),
+            "error message must mention the env var name; got: {msg}"
+        );
     }
 
     // ─── TDD: Group 6 — validate_hook_command_string ─────────────────────────
