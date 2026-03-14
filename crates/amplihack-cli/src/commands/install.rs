@@ -277,13 +277,20 @@ fn deploy_binaries() -> Result<Vec<PathBuf>> {
     if let Ok(self_exe) = std::env::current_exe() {
         let self_dst = local_bin.join("amplihack");
         if self_exe != self_dst {
-            fs::copy(&self_exe, &self_dst)
-                .with_context(|| format!("failed to copy amplihack binary to {}", self_dst.display()))?;
+            fs::copy(&self_exe, &self_dst).with_context(|| {
+                format!("failed to copy amplihack binary to {}", self_dst.display())
+            })?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                if let Err(e) = fs::set_permissions(&self_dst, std::fs::Permissions::from_mode(0o755)) {
-                    tracing::warn!("failed to set executable bit on {}: {}", self_dst.display(), e);
+                if let Err(e) =
+                    fs::set_permissions(&self_dst, std::fs::Permissions::from_mode(0o755))
+                {
+                    tracing::warn!(
+                        "failed to set executable bit on {}: {}",
+                        self_dst.display(),
+                        e
+                    );
                 }
             }
             deployed.push(self_dst);
