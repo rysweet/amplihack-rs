@@ -148,7 +148,7 @@ const XPIA_HOOK_SPECS: &[HookSpec] = &[
     },
 ];
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct InstallManifest {
     files: Vec<String>,
     dirs: Vec<String>,
@@ -185,24 +185,20 @@ fn find_hooks_binary() -> Result<PathBuf> {
         }
     }
 
-    // Step 3: ~/.local/bin
+    // Steps 3-4: ~/.local/bin then ~/.cargo/bin (single home_dir() lookup)
     if let Ok(home) = home_dir() {
-        let candidate = home.join(".local").join("bin").join("amplihack-hooks");
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-
-    // Step 4: ~/.cargo/bin
-    if let Ok(home) = home_dir() {
-        let candidate = home.join(".cargo").join("bin").join("amplihack-hooks");
-        if candidate.is_file() {
-            return Ok(candidate);
+        for (a, b) in &[(".local", "bin"), (".cargo", "bin")] {
+            let candidate = home.join(a).join(b).join("amplihack-hooks");
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
         }
     }
 
     // Step 5: PATH lookup
     if let Some(found) = find_binary("amplihack-hooks") {
+        // TODO(hardening): validate is_file() + is_executable() on `found` before returning;
+        // a world-writable or non-executable binary at this path is a supply-chain risk.
         return Ok(found);
     }
 
@@ -450,17 +446,13 @@ pub fn run_uninstall() -> Result<()> {
         }
     }
 
-    // Phase 2: remove dirs tracked in manifest
-    for dir in manifest
-        .dirs
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-    {
-        let target = claude_dir.join(&dir);
+    // Phase 2: remove dirs tracked in manifest (deepest-first to avoid removing a parent
+    // before its children, which would cause remove_dir_all to fail on the children).
+    let mut dirs_sorted = manifest.dirs.clone();
+    dirs_sorted.sort_unstable(); // NOTE: dedup() only removes adjacent duplicates — sort must precede it
+    dirs_sorted.dedup();
+    for dir in dirs_sorted.iter().rev() {
+        let target = claude_dir.join(dir);
         if target.is_dir() && fs::remove_dir_all(&target).is_ok() {
             removed_any = true;
         }
@@ -1175,31 +1167,27 @@ fn manifest_path() -> Result<PathBuf> {
 }
 
 fn read_manifest(path: &Path) -> Result<InstallManifest> {
+    // TODO(hardening): validate that manifest path entries contain no path-traversal
+    // sequences (e.g. "../../../etc") before use; file a follow-up issue for this.
     if !path.exists() {
-        return Ok(InstallManifest {
-            files: Vec::new(),
-            dirs: Vec::new(),
-            binaries: Vec::new(),
-            hook_registrations: Vec::new(),
-        });
+        return Ok(InstallManifest::default());
     }
     let Ok(raw) = fs::read_to_string(path) else {
-        return Ok(InstallManifest {
-            files: Vec::new(),
-            dirs: Vec::new(),
-            binaries: Vec::new(),
-            hook_registrations: Vec::new(),
-        });
+        tracing::debug!("could not read manifest at {}: returning empty", path.display());
+        return Ok(InstallManifest::default());
     };
-    match serde_json::from_str::<InstallManifest>(&raw) {
-        Ok(manifest) => Ok(manifest),
-        Err(_) => Ok(InstallManifest {
-            files: Vec::new(),
-            dirs: Vec::new(),
-            binaries: Vec::new(),
-            hook_registrations: Vec::new(),
-        }),
-    }
+    // A corrupt manifest is treated as an empty one, triggering a clean reinstall.
+    // The inspect_err call surfaces the parse error at debug log level so it is
+    // visible in tracing output without failing the caller.
+    let manifest = serde_json::from_str::<InstallManifest>(&raw)
+        .inspect_err(|e| {
+            tracing::debug!(
+                "corrupt manifest at {}: {e} — treating as empty",
+                path.display()
+            )
+        })
+        .unwrap_or_default();
+    Ok(manifest)
 }
 
 fn write_manifest(path: &Path, manifest: &InstallManifest) -> Result<()> {
@@ -1256,54 +1244,59 @@ fn get_all_files_and_dirs(
 
 const MAX_WALK_DEPTH: usize = 64;
 
-fn walk_dirs(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut dirs = vec![root.to_path_buf()];
+/// BFS directory walk with predicate-based inclusion, symlink guard, and depth limit.
+///
+/// Symlinks are never followed — entries identified as symlinks via `symlink_metadata()`
+/// are silently skipped to prevent directory traversal attacks.
+/// Traversal stops at `MAX_WALK_DEPTH` to guard against pathologically deep trees.
+///
+/// The `include` predicate receives each `DirEntry` and controls whether it appears
+/// in the returned list.  Directories are always queued for traversal regardless of
+/// whether `include` returns `true` for them.  The root itself is always included.
+fn walk_bounded(root: &Path, include: impl Fn(&fs::DirEntry) -> bool) -> Result<Vec<PathBuf>> {
+    let mut results = vec![root.to_path_buf()];
     let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
     queue.push_back((root.to_path_buf(), 0));
+
     while let Some((dir, depth)) = queue.pop_front() {
-        if depth > MAX_WALK_DEPTH {
-            anyhow::bail!(
-                "walk_dirs exceeded maximum depth ({MAX_WALK_DEPTH}) at {}",
-                dir.display()
-            );
+        if depth >= MAX_WALK_DEPTH {
+            // Silently skip entries beyond the depth limit rather than failing the
+            // entire walk; the limit protects against symlink loops and untrusted trees.
+            continue;
         }
         for entry in
             fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
         {
             let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                dirs.push(path.clone());
-                queue.push_back((path, depth + 1));
+            // symlink_metadata() does not follow symlinks — use it to detect them.
+            let meta = entry
+                .path()
+                .symlink_metadata()
+                .with_context(|| format!("failed to stat {}", entry.path().display()))?;
+            if meta.file_type().is_symlink() {
+                continue; // never follow symlinks
+            }
+            if meta.is_dir() {
+                queue.push_back((entry.path(), depth + 1));
+            }
+            if include(&entry) {
+                results.push(entry.path());
             }
         }
     }
-    Ok(dirs)
+    Ok(results)
 }
 
+/// Return the root directory and all subdirectories (no files).
+fn walk_dirs(root: &Path) -> Result<Vec<PathBuf>> {
+    // DirEntry::file_type() does not follow symlinks; symlinks are already
+    // filtered out by walk_bounded, so this predicate safely identifies real dirs.
+    walk_bounded(root, |e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+}
+
+/// Return the root directory and all entries within it (files and directories).
 fn walk_all(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut paths = vec![root.to_path_buf()];
-    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
-    queue.push_back((root.to_path_buf(), 0));
-    while let Some((dir, depth)) = queue.pop_front() {
-        if depth > MAX_WALK_DEPTH {
-            anyhow::bail!(
-                "walk_all exceeded maximum depth ({MAX_WALK_DEPTH}) at {}",
-                dir.display()
-            );
-        }
-        for entry in
-            fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-            paths.push(path.clone());
-            if path.is_dir() {
-                queue.push_back((path, depth + 1));
-            }
-        }
-    }
-    Ok(paths)
+    walk_bounded(root, |_| true)
 }
 
 /// Copy a directory recursively, skipping symlinks with a warning.
@@ -2919,6 +2912,196 @@ mod tests {
         assert!(
             cmd.contains("third-party-tool"),
             "Remaining wrapper must be the third-party hook, got: {cmd}"
+        );
+    }
+
+    // ─── TDD: Group 18 — find_hooks_binary lookup order (Issue #74 regression guard) ──
+
+    /// Verifies that `~/.local/bin` is checked BEFORE PATH in `find_hooks_binary`.
+    ///
+    /// This is the critical regression test for Issue #74: after `amplihack uninstall`
+    /// removes `~/.local/bin/amplihack-hooks`, a stale binary on PATH must not shadow
+    /// a freshly-installed copy at `~/.local/bin`.  Placing distinct stubs at both
+    /// locations and asserting `~/.local/bin` wins confirms the correct lookup order.
+    #[test]
+    fn find_hooks_binary_local_bin_wins_over_path_lookup() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous = crate::test_support::set_home(temp.path());
+
+        // Place the "fresh" binary at ~/.local/bin
+        let local_bin = temp.path().join(".local").join("bin");
+        fs::create_dir_all(&local_bin).unwrap();
+        let local_stub = create_exe_stub(&local_bin, "amplihack-hooks");
+
+        // Place a "stale" binary at a separate PATH dir
+        let path_bin = temp.path().join("path_bin");
+        fs::create_dir_all(&path_bin).unwrap();
+        create_exe_stub(&path_bin, "amplihack-hooks");
+
+        let prev_env = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+        let prev_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+            // Only PATH dir is on $PATH — not ~/.local/bin (forces resolution via explicit check)
+            std::env::set_var("PATH", &path_bin);
+        }
+
+        let result = find_hooks_binary();
+
+        if let Some(v) = prev_env {
+            unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
+        } else {
+            unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") };
+        }
+        if let Some(v) = prev_path {
+            unsafe { std::env::set_var("PATH", v) };
+        }
+        crate::test_support::restore_home(previous);
+
+        let resolved = result.expect("find_hooks_binary must find the binary");
+        assert_eq!(
+            resolved, local_stub,
+            "~/.local/bin must win over PATH — find_hooks_binary returned {resolved:?} instead of {local_stub:?}"
+        );
+    }
+
+    /// Verifies that `~/.cargo/bin` is used as a fallback when `~/.local/bin` has
+    /// no binary.  This closes the coverage gap for the Step 4 lookup chain.
+    #[test]
+    fn find_hooks_binary_falls_through_to_cargo_bin_when_local_bin_absent() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous = crate::test_support::set_home(temp.path());
+
+        // ~/.local/bin exists but contains NO amplihack-hooks
+        let local_bin = temp.path().join(".local").join("bin");
+        fs::create_dir_all(&local_bin).unwrap();
+
+        // ~/.cargo/bin has the binary
+        let cargo_bin = temp.path().join(".cargo").join("bin");
+        fs::create_dir_all(&cargo_bin).unwrap();
+        let cargo_stub = create_exe_stub(&cargo_bin, "amplihack-hooks");
+
+        let prev_env = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+        let prev_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+            // Empty PATH so PATH lookup (Step 5) also fails
+            std::env::set_var("PATH", temp.path().join("empty_bin"));
+        }
+
+        let result = find_hooks_binary();
+
+        if let Some(v) = prev_env {
+            unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
+        } else {
+            unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") };
+        }
+        if let Some(v) = prev_path {
+            unsafe { std::env::set_var("PATH", v) };
+        }
+        crate::test_support::restore_home(previous);
+
+        let resolved = result.expect("find_hooks_binary must fall through to ~/.cargo/bin");
+        assert_eq!(
+            resolved, cargo_stub,
+            "~/.cargo/bin must be used when ~/.local/bin has no binary"
+        );
+    }
+
+    /// Verifies that `find_hooks_binary` returns an informative error mentioning
+    /// `amplihack-hooks` when the binary cannot be found by any lookup step.
+    #[test]
+    fn find_hooks_binary_returns_err_with_helpful_message_when_not_found() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous = crate::test_support::set_home(temp.path());
+
+        let prev_env = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+        let prev_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+            // Empty/nonexistent PATH to ensure all resolution steps fail
+            std::env::set_var("PATH", temp.path().join("empty_bin"));
+        }
+
+        let result = find_hooks_binary();
+
+        if let Some(v) = prev_env {
+            unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
+        } else {
+            unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") };
+        }
+        if let Some(v) = prev_path {
+            unsafe { std::env::set_var("PATH", v) };
+        }
+        crate::test_support::restore_home(previous);
+
+        let err = result.expect_err("find_hooks_binary must return Err when binary is absent");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("amplihack-hooks"),
+            "error message must mention 'amplihack-hooks' to guide the user, got: {msg}"
+        );
+    }
+
+    // ─── TDD: Group 19 — run_uninstall dedup correctness ─────────────────────
+
+    /// Verifies that `run_uninstall` correctly handles manifests with duplicate
+    /// directory entries.  The BTreeSet → sort_unstable+dedup replacement must
+    /// produce the same result: each directory is attempted for removal exactly once.
+    #[test]
+    fn run_uninstall_handles_duplicate_dirs_in_manifest() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous = crate::test_support::set_home(temp.path());
+
+        // Create the directory that the manifest will track
+        let staging = temp.path().join(".amplihack/.claude");
+        let tracked_dir = staging.join("agents/amplihack");
+        fs::create_dir_all(&tracked_dir).unwrap();
+        fs::write(tracked_dir.join("dummy.txt"), "x").unwrap();
+
+        // Write a manifest with three copies of the same dir entry (simulating
+        // a buggy or hand-crafted manifest that contains duplicates).
+        fs::create_dir_all(staging.join("install")).unwrap();
+        let manifest = InstallManifest {
+            files: vec![],
+            dirs: vec![
+                "agents/amplihack".to_string(),
+                "agents/amplihack".to_string(),
+                "agents/amplihack".to_string(),
+            ],
+            binaries: vec![],
+            hook_registrations: vec![],
+        };
+        write_manifest(
+            &staging.join("install/amplihack-manifest.json"),
+            &manifest,
+        )
+        .unwrap();
+
+        // Must not error even though the dir is listed three times
+        let result = run_uninstall();
+
+        crate::test_support::restore_home(previous);
+
+        assert!(
+            result.is_ok(),
+            "run_uninstall must succeed with duplicate dir entries in manifest, got: {result:?}"
+        );
+        assert!(
+            !tracked_dir.exists(),
+            "tracked directory must be removed during uninstall"
         );
     }
 
