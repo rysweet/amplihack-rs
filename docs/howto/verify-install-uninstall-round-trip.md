@@ -126,12 +126,21 @@ failure.
 ### 3a. First install
 
 ```sh
-cd ~/src/amplihack-rs
-amplihack install --local .
+amplihack install
 ```
 
-Expected: exit code `0` and all `✓` lines in the summary (7 hooks registered,
+Expected: exit code `0` and all `✓` lines in the summary (hooks registered,
 manifest written).
+
+> **Note**: `amplihack install` requires the Python `amplihack` package to be
+> importable by `python3`. If you see `ModuleNotFoundError: No module named 'amplihack'`,
+> install it first:
+> ```sh
+> python3 -m venv /tmp/amplihack-venv
+> /tmp/amplihack-venv/bin/pip install git+https://github.com/rysweet/amplihack.git
+> export PYTHONPATH="$(/tmp/amplihack-venv/bin/python3 -c 'import site; print(site.getsitepackages()[0])')"
+> ```
+> Then re-run `PYTHONPATH="$PYTHONPATH" amplihack install`.
 
 ### 3b. Verify with doctor
 
@@ -172,7 +181,7 @@ the file is only present when at least one tool has registered a hook.
 ### 3e. Reinstall
 
 ```sh
-amplihack install --local ~/src/amplihack-rs
+amplihack install
 ```
 
 Expected: same exit code `0` and `✓` summary as step 3a. Install must be
