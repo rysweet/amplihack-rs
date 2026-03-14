@@ -2919,16 +2919,16 @@ mod tests {
 
     // ─── TDD: Group 18 — find_hooks_binary lookup order (Issue #74 regression guard) ──
 
-    /// Verifies that `~/.local/bin` is checked BEFORE PATH in `find_hooks_binary`.
+    /// Verifies that PATH lookup (Step 3) wins over `~/.local/bin` (Step 4) in
+    /// `find_hooks_binary`, fixing Issue #74.
     ///
-    /// This is the critical regression test for Issue #74: after `amplihack uninstall`
-    /// removes `~/.local/bin/amplihack-hooks`, a stale binary on PATH must not shadow
-    /// a freshly-installed copy at `~/.local/bin`.  Placing distinct stubs at both
-    /// locations and asserting `~/.local/bin` wins confirms the correct lookup order.
+    /// After `amplihack uninstall` removes `~/.local/bin/amplihack-hooks`, the binary
+    /// that the user originally placed in `/usr/local/bin` (or any PATH directory) must
+    /// still be found on reinstall.  This test places a stub only in a synthetic PATH
+    /// directory (not in `~/.local/bin`) and asserts that `find_hooks_binary` returns
+    /// the PATH entry — confirming the new lookup order: env var → sibling → PATH →
+    /// ~/.local/bin → ~/.cargo/bin.
     #[test]
-    /// PATH lookup is now Step 3, before the explicit ~/.local/bin check.
-    /// This ensures reinstall works even when uninstall has removed ~/.local/bin/amplihack-hooks
-    /// (e.g. the binary is in /usr/local/bin which is in PATH).
     fn find_hooks_binary_path_lookup_wins_over_local_bin() {
         let _guard = crate::test_support::home_env_lock()
             .lock()
