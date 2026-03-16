@@ -493,7 +493,7 @@ pub(crate) fn open_kuzu_code_graph_db(path_override: Option<&Path>) -> Result<Ku
 }
 
 fn default_code_graph_db_path() -> Result<PathBuf> {
-    default_code_graph_db_path_for_project(
+    resolve_code_graph_db_path_for_project(
         &std::env::current_dir()
             .context("failed to resolve current directory for default code graph path")?,
     )
@@ -501,6 +501,20 @@ fn default_code_graph_db_path() -> Result<PathBuf> {
 
 pub fn default_code_graph_db_path_for_project(project_root: &Path) -> Result<PathBuf> {
     Ok(project_root.join(".amplihack").join("kuzu_db"))
+}
+
+pub fn resolve_code_graph_db_path_for_project(project_root: &Path) -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH")
+        && !path.is_empty()
+    {
+        return Ok(PathBuf::from(path));
+    }
+    if let Some(path) = std::env::var_os("AMPLIHACK_KUZU_DB_PATH")
+        && !path.is_empty()
+    {
+        return Ok(PathBuf::from(path));
+    }
+    default_code_graph_db_path_for_project(project_root)
 }
 
 fn infer_code_graph_db_path_from_input(input_path: &Path) -> Result<PathBuf> {
@@ -515,7 +529,7 @@ fn infer_code_graph_db_path_from_input(input_path: &Path) -> Result<PathBuf> {
         let Some(project_root) = parent.parent() else {
             return default_code_graph_db_path();
         };
-        return default_code_graph_db_path_for_project(project_root);
+        return resolve_code_graph_db_path_for_project(project_root);
     }
     default_code_graph_db_path()
 }
@@ -2011,12 +2025,50 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = TempDir::new().unwrap();
+        let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
+        unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
         let previous = set_cwd(dir.path()).unwrap();
 
         let path = default_code_graph_db_path().unwrap();
 
         restore_cwd(&previous).unwrap();
+        match prev_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match prev_kuzu {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
         assert_eq!(path, dir.path().join(".amplihack").join("kuzu_db"));
+    }
+
+    #[test]
+    fn default_code_graph_db_path_prefers_backend_neutral_override() {
+        let _guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = TempDir::new().unwrap();
+        let previous = set_cwd(dir.path()).unwrap();
+        let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/tmp/graph-override") };
+        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/tmp/kuzu-override") };
+
+        let path = default_code_graph_db_path().unwrap();
+
+        restore_cwd(&previous).unwrap();
+        match prev_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match prev_kuzu {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+        assert_eq!(path, PathBuf::from("/tmp/graph-override"));
     }
 
     #[test]

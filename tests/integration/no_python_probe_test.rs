@@ -151,6 +151,72 @@ fn read_until_quiet(master: &mut fs::File, buffer: &mut Vec<u8>, duration: Durat
     }
 }
 
+/// Poll the PTY master until `needle` appears somewhere in the accumulated
+/// buffer, or the wall-clock deadline is reached.
+///
+/// Unlike `read_until_quiet`, this does not exit as soon as the deadline
+/// passes — it keeps reading until the expected content arrives or time is
+/// truly up.  It is the correct primitive to use when the test needs to
+/// *observe* a specific string rather than merely wait a fixed amount of time.
+///
+/// Returns `true` if the needle was found, `false` on timeout.
+fn poll_until_output_contains(
+    master: &mut fs::File,
+    buffer: &mut Vec<u8>,
+    needle: &str,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut chunk = [0u8; 4096];
+
+    loop {
+        // Check the current accumulated buffer first.
+        let current = strip_ansi(&String::from_utf8_lossy(buffer));
+        if current.contains(needle) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        match master.read(&mut chunk) {
+            Ok(0) => {
+                sleep(Duration::from_millis(20));
+            }
+            Ok(read) => {
+                buffer.extend_from_slice(&chunk[..read]);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                sleep(Duration::from_millis(20));
+            }
+            Err(error) if error.raw_os_error() == Some(libc::EIO) => return false,
+            Err(error) => panic!("failed to read PTY output: {error}"),
+        }
+    }
+}
+
+/// Poll a file path until its contents contain `needle`, or a deadline is
+/// reached.  Used to verify side-effects (e.g. log files written by shims)
+/// that are produced asynchronously by a background thread.
+///
+/// Returns the file contents on success, or panics with a descriptive message
+/// on timeout.
+fn poll_file_for_content(path: &Path, needle: &str, timeout: Duration) -> String {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let contents = fs::read_to_string(path).unwrap_or_default();
+        if contents.contains(needle) {
+            return contents;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out after {timeout:?} waiting for {path:?} to contain {needle:?}; \
+                 got:\n{contents}"
+            );
+        }
+        sleep(Duration::from_millis(50));
+    }
+}
+
 fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> std::process::ExitStatus {
     let deadline = Instant::now() + timeout;
     loop {
@@ -298,7 +364,7 @@ fn tc06_query_code_stats_smoke_on_fresh_db_without_python() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
-    // Create a temp file path for the Kuzu DB.  We pass the path to the
+    // Create a temp file path for the code-graph DB. We pass the path to the
     // binary so it creates a fresh database — we do NOT pre-populate it.
     let temp_dir = tempfile::TempDir::new().expect("failed to create tempdir");
     let db_path = temp_dir.path().join("probe_tc06.kuzu");
@@ -306,7 +372,7 @@ fn tc06_query_code_stats_smoke_on_fresh_db_without_python() {
     let output = cmd_without_python(&bin)
         .args([
             "query-code",
-            "--db",
+            "--db-path",
             db_path.to_str().expect("non-UTF-8 temp path"),
             "stats",
         ])
@@ -403,7 +469,7 @@ fn tc08_index_code_and_query_code_work_without_python() {
         .args([
             "index-code",
             json_path.to_str().expect("non-UTF-8 fixture path"),
-            "--kuzu-path",
+            "--db-path",
             db_path.to_str().expect("non-UTF-8 db path"),
         ])
         .output()
@@ -419,7 +485,7 @@ fn tc08_index_code_and_query_code_work_without_python() {
     let stats_output = cmd_with_failing_python_shims(&bin, &shim_dir, &python_log)
         .args([
             "query-code",
-            "--kuzu-path",
+            "--db-path",
             db_path.to_str().expect("non-UTF-8 db path"),
             "--json",
             "stats",
@@ -442,7 +508,7 @@ fn tc08_index_code_and_query_code_work_without_python() {
     let search_output = cmd_with_failing_python_shims(&bin, &shim_dir, &python_log)
         .args([
             "query-code",
-            "--kuzu-path",
+            "--db-path",
             db_path.to_str().expect("non-UTF-8 db path"),
             "--json",
             "search",
@@ -472,7 +538,7 @@ fn tc08_index_code_and_query_code_work_without_python() {
     let callers_output = cmd_with_failing_python_shims(&bin, &shim_dir, &python_log)
         .args([
             "query-code",
-            "--kuzu-path",
+            "--db-path",
             db_path.to_str().expect("non-UTF-8 db path"),
             "--json",
             "callers",
@@ -578,20 +644,21 @@ fn probe_script_content_contains_tc07_index_scip_help() {
 }
 
 /// TC-08 content gate: the probe script must exercise populated native
-/// `index-code` + `query-code` flows using the real `--kuzu-path` flag.
+/// `index-code` + `query-code` flows using the backend-neutral `--db-path`
+/// flag.
 #[test]
 fn probe_script_content_contains_tc08_populated_code_graph_probe() {
     let script = read_probe_script();
     let has_tc08 = script.contains("TC-08");
     let has_index = script.contains("index-code");
-    let has_kuzu_path = script.contains("--kuzu-path");
-    let has_search = script.contains("query-code --kuzu-path") && script.contains("search helper");
+    let has_db_path = script.contains("--db-path");
+    let has_search = script.contains("query-code --db-path") && script.contains("search helper");
     let has_callers = script.contains("callers helper");
     assert!(
-        has_tc08 && has_index && has_kuzu_path && has_search && has_callers,
+        has_tc08 && has_index && has_db_path && has_search && has_callers,
         "FAIL TC-08 content gate: probe-no-python.sh must include a populated \
-         native code-graph smoke test using --kuzu-path plus search/callers checks.\n\
-         Missing: tc08={has_tc08}, index={has_index}, kuzu_path={has_kuzu_path}, \
+         native code-graph smoke test using --db-path plus search/callers checks.\n\
+         Missing: tc08={has_tc08}, index={has_index}, db_path={has_db_path}, \
          search={has_search}, callers={has_callers}"
     );
 }
@@ -978,6 +1045,16 @@ exit 1
         read_until_quiet(&mut self.master, &mut self.output, duration);
     }
 
+    /// Block until `needle` appears somewhere in the accumulated PTY output,
+    /// or `timeout` elapses.  Returns `true` on success, `false` on timeout.
+    ///
+    /// This is the correct primitive to use instead of `drain(fixed_duration)`
+    /// when the test needs to synchronise on a specific piece of TUI output
+    /// rather than guess how long the binary will take to render it.
+    fn wait_for_output_containing(&mut self, needle: &str, timeout: Duration) -> bool {
+        poll_until_output_contains(&mut self.master, &mut self.output, needle, timeout)
+    }
+
     fn send(&mut self, bytes: &[u8], wait: Duration) {
         self.master
             .write_all(bytes)
@@ -985,8 +1062,25 @@ exit 1
         self.drain(wait);
     }
 
+    /// Send bytes and then wait until `needle` appears in the accumulated PTY
+    /// output.  Panics if `timeout` expires before the expected string arrives.
+    fn send_and_wait_for(&mut self, bytes: &[u8], needle: &str, timeout: Duration) {
+        self.master
+            .write_all(bytes)
+            .unwrap_or_else(|error| panic!("failed to send PTY input {bytes:?}: {error}"));
+        assert!(
+            self.wait_for_output_containing(needle, timeout),
+            "timed out after {timeout:?} waiting for PTY output to contain {needle:?}"
+        );
+    }
+
     fn create_hits(&self) -> String {
         fs::read_to_string(&self.create_log).unwrap_or_default()
+    }
+
+    /// Poll `create_log` until it contains `needle`, or panic after `timeout`.
+    fn wait_for_create_hits_containing(&self, needle: &str, timeout: Duration) -> String {
+        poll_file_for_content(&self.create_log, needle, timeout)
     }
 
     fn queue_contents(&self) -> String {
@@ -1066,7 +1160,7 @@ fn tc09_fleet_tui_editor_apply_blocks_dangerous_input_without_python() {
     probe.send(b"t", Duration::from_millis(300));
     probe.send(b"t", Duration::from_millis(300));
     probe.send(b"i", Duration::from_millis(300));
-    probe.send(b"rm -rf /\n", Duration::from_millis(1200));
+    probe.send(b"rm -rf /", Duration::from_millis(1200));
     probe.send(b"A", Duration::from_millis(2200));
     probe.send(b"q", Duration::from_millis(200));
 
@@ -1075,7 +1169,9 @@ fn tc09_fleet_tui_editor_apply_blocks_dangerous_input_without_python() {
         cleaned.contains("Action Editor")
             && cleaned.contains("Action: send_input")
             && cleaned.contains("Action choices")
-            && cleaned.contains("> send_input"),
+            && cleaned.contains("> send_input")
+            && cleaned.contains("Typing mode")
+            && cleaned.contains("rm -rf /"),
         "expected proposal/editor output in PTY flow:\n{cleaned}"
     );
     assert!(
@@ -1086,21 +1182,59 @@ fn tc09_fleet_tui_editor_apply_blocks_dangerous_input_without_python() {
 
 /// TC-10: the native TUI new-session flow should create a session over azlin
 /// without touching Python or sending tmux input to an existing session.
+///
+/// # Why polling instead of fixed sleeps
+///
+/// Session creation is dispatched to a background thread (via `bg_tx`) and the
+/// azlin shim writes to `create_log` only after that thread processes the
+/// `CreateSession` command.  Under CI parallel load the background thread can
+/// be delayed well beyond any fixed margin.  Doubling the margins only reduces
+/// flake frequency; it cannot eliminate the race.
+///
+/// The fix uses two polling primitives:
+/// - `send_and_wait_for` waits until expected TUI output appears instead of
+///   sleeping a fixed duration after each key press.
+/// - `wait_for_create_hits_containing` retries reading `create_log` until the
+///   expected content arrives or a hard deadline (10 s) is reached.
 #[test]
 fn tc10_fleet_tui_new_session_launches_without_python() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    // Under heavy CI/workspace-parallel load the binary needs extra time to
-    // render the initial frame.  Use conservative delays throughout.
-    probe.drain(Duration::from_millis(2000));
-    probe.send(b"n", Duration::from_millis(1200));
-    probe.send(b"t", Duration::from_millis(600));
-    probe.send(b"\n", Duration::from_millis(2000));
+
+    // Wait for the TUI to render its initial Fleet view before sending keys.
+    // A fixed drain here races against a slow binary start on a loaded CI host;
+    // polling for a known string eliminates that.  "q quit" is part of the
+    // controls line that appears in every frame, making it a stable sentinel.
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    // Press 'n' to open the New Session dialog and wait for it to appear.
+    probe.send_and_wait_for(b"n", "New Session", Duration::from_secs(5));
+
+    // Press 't' to cycle the agent type.  The default is "claude"; after one
+    // press it becomes "copilot".  Wait for the updated label to confirm the
+    // keypress was actually processed and re-rendered.
+    probe.send_and_wait_for(b"t", "Agent type: copilot", Duration::from_secs(3));
+
+    // Submit the form with Enter.  The TUI dispatches CreateSession to the
+    // background thread, which calls azlin and then sends SessionCreated back.
+    // Wait until the TUI has rendered the confirmation message.
+    probe.send_and_wait_for(b"\n", "Created session 'copilot-", Duration::from_secs(10));
+
+    // Quit.
     probe.send(b"q", Duration::from_millis(400));
 
-    let create_hits = probe.create_hits();
+    // The azlin shim writes to create_log inside the background thread.  The
+    // TUI has already rendered "Created session …" at this point, but the file
+    // write is a side-effect of the same shell invocation so it must be present
+    // by now — poll with a short timeout as a safety net.
+    let create_hits =
+        probe.wait_for_create_hits_containing("tmux new-session -d -s", Duration::from_secs(5));
+
     let cleaned = probe.finish();
 
     assert!(
@@ -1298,6 +1432,33 @@ fn tc17_fleet_tui_numeric_tab_hotkeys_follow_python_order_without_python() {
     assert!(
         cleaned.contains("[projects]") && cleaned.contains("No projects registered."),
         "expected projects tab after pressing 4:\n{cleaned}"
+    );
+}
+
+/// TC-24: canceling out of the focused multiline editor should return to Detail
+/// without applying changes or touching Python.
+#[test]
+fn tc24_fleet_tui_editor_cancel_returns_to_detail_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    probe.drain(Duration::from_millis(1200));
+    probe.send(b"d", Duration::from_millis(1500));
+    probe.send(b"e", Duration::from_millis(1200));
+    probe.send(b"i", Duration::from_millis(300));
+    probe.send(b"scratch", Duration::from_millis(800));
+    probe.send(b"\x1b", Duration::from_millis(1200));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Editor changes discarded."),
+        "expected cancel status in PTY output:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("Session Detail"),
+        "expected detail tab after cancel in PTY output:\n{cleaned}"
     );
 }
 

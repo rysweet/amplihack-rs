@@ -133,7 +133,7 @@ run_smoke "TC-04 index-code --help"  "${BINARY}" index-code --help
 # TC-05: query-code --help must render without Python
 run_smoke "TC-05 query-code --help"  "${BINARY}" query-code --help
 
-# TC-06: query-code stats on a fresh empty Kuzu DB — must not crash or call Python.
+# TC-06: query-code stats on a fresh empty code-graph DB — must not crash or call Python.
 # Uses mktemp for a unique temp file and registers a trap to ensure cleanup
 # on both success and failure paths (P2-TEMPFILE security requirement).
 # We use MKTEMP_BIN (captured before PATH stripping) because /usr/bin may have
@@ -151,7 +151,7 @@ else
 fi
 echo -n "  smoke: TC-06 query-code stats (empty DB) ... "
 exit_code_tc06=0
-output_tc06="$("${BINARY}" query-code --kuzu-path "${TEMP_DB}" stats 2>&1)" || exit_code_tc06=$?
+output_tc06="$("${BINARY}" query-code --db-path "${TEMP_DB}" stats 2>&1)" || exit_code_tc06=$?
 # A signal-killed process exits >128.  Treat that as a crash (FAIL).
 if [[ ${exit_code_tc06} -gt 128 ]]; then
     echo "FAIL (binary killed by signal $((exit_code_tc06 - 128)))"
@@ -222,18 +222,18 @@ printf '%s\n' \
     '}' > "${TC08_JSON}"
 TC08_PATH="${TC08_DIR}/bin:${PATH}"
 tc08_fail=0
-tc08_index_output="$(PATH="${TC08_PATH}" "${BINARY}" index-code "${TC08_JSON}" --kuzu-path "${TC08_DB}" 2>&1)" || tc08_fail=1
+tc08_index_output="$(PATH="${TC08_PATH}" "${BINARY}" index-code "${TC08_JSON}" --db-path "${TC08_DB}" 2>&1)" || tc08_fail=1
 tc08_stats_output=""
 tc08_search_output=""
 tc08_callers_output=""
 if [[ ${tc08_fail} -eq 0 ]]; then
-    tc08_stats_output="$(PATH="${TC08_PATH}" "${BINARY}" query-code --kuzu-path "${TC08_DB}" --json stats 2>&1)" || tc08_fail=1
+    tc08_stats_output="$(PATH="${TC08_PATH}" "${BINARY}" query-code --db-path "${TC08_DB}" --json stats 2>&1)" || tc08_fail=1
 fi
 if [[ ${tc08_fail} -eq 0 ]]; then
-    tc08_search_output="$(PATH="${TC08_PATH}" "${BINARY}" query-code --kuzu-path "${TC08_DB}" --json search helper 2>&1)" || tc08_fail=1
+    tc08_search_output="$(PATH="${TC08_PATH}" "${BINARY}" query-code --db-path "${TC08_DB}" --json search helper 2>&1)" || tc08_fail=1
 fi
 if [[ ${tc08_fail} -eq 0 ]]; then
-    tc08_callers_output="$(PATH="${TC08_PATH}" "${BINARY}" query-code --kuzu-path "${TC08_DB}" --json callers helper 2>&1)" || tc08_fail=1
+    tc08_callers_output="$(PATH="${TC08_PATH}" "${BINARY}" query-code --db-path "${TC08_DB}" --json callers helper 2>&1)" || tc08_fail=1
 fi
 tc08_stats_compact="${tc08_stats_output//[[:space:]]/}"
 tc08_search_compact="${tc08_search_output//[[:space:]]/}"

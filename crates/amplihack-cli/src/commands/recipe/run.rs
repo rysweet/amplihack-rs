@@ -381,23 +381,6 @@ fn json_scalar_to_string(value: &JsonValue) -> String {
     }
 }
 
-// =============================================================================
-// TDD Step 7: WS3 — Recipe Runner Unit Tests
-//
-// These tests specify the contract for the recipe run delegation chain.
-// They cover:
-//   - parse_context_args: key=value parsing and error cases
-//   - resolve_binary_path: path resolution with ~ expansion
-//   - infer_missing_context: env var inference and default merging
-//   - format_recipe_run_result: JSON/table output formatting
-//   - find_recipe_runner_binary: error path when binary not present
-//   - execute_recipe_via_rust: integration-level test (FAILS if
-//     recipe-runner-rs binary is not installed or working)
-//
-// FAILING TESTS (fail until recipe-runner-rs E2E is working):
-//   test_execute_recipe_via_rust_dry_run_succeeds_with_known_recipe
-// =============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -831,24 +814,14 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // execute_recipe_via_rust — E2E integration (dry-run)
-    //
-    // *** THIS TEST FAILS until recipe-runner-rs is installed and working. ***
-    //
-    // It is the primary E2E gate for Workstream 3.  Once recipe-runner-rs is
-    // installed (or built locally), this test must pass.
+    // execute_recipe_via_rust — E2E integration (dry-run, requires binary in PATH)
     // -------------------------------------------------------------------------
 
     /// When a valid recipe file is provided with --dry-run, execute_recipe_via_rust
     /// must succeed and return a RecipeRunResult with the correct recipe_name.
     ///
-    /// PRECONDITIONS:
-    ///   - recipe-runner-rs binary must be installed in PATH or ~/.cargo/bin/
-    ///     OR RECIPE_RUNNER_RS_PATH must point to a valid binary
-    ///   - A valid YAML recipe file must exist at the path used below
-    ///
-    /// *** FAILS currently because recipe-runner-rs binary is not installed. ***
-    /// *** PASSES once WS3 fix installs / registers the binary correctly.    ***
+    /// Ignored unless recipe-runner-rs binary is installed in PATH or
+    /// RECIPE_RUNNER_RS_PATH is set.
     #[test]
     #[ignore = "requires recipe-runner-rs binary in PATH"]
     fn test_execute_recipe_via_rust_dry_run_succeeds_with_known_recipe() {
@@ -882,9 +855,9 @@ steps:
 
         assert!(
             result.is_ok(),
-            "execute_recipe_via_rust with --dry-run must succeed. \
-             FIX: install recipe-runner-rs (cargo install --git … or set \
-             RECIPE_RUNNER_RS_PATH). Error: {:?}",
+            "execute_recipe_via_rust with --dry-run must succeed \
+             (requires recipe-runner-rs binary in PATH or RECIPE_RUNNER_RS_PATH). \
+             Error: {:?}",
             result.err()
         );
 

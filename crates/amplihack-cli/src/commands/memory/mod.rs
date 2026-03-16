@@ -11,8 +11,8 @@ pub mod tree;
 
 pub use clean::run_clean;
 pub use code_graph::{
-    CodeGraphSummary, default_code_graph_db_path_for_project, import_scip_file, run_index_code,
-    summarize_code_graph,
+    CodeGraphSummary, default_code_graph_db_path_for_project, import_scip_file,
+    resolve_code_graph_db_path_for_project, run_index_code, summarize_code_graph,
 };
 pub use indexing_job::{
     background_index_job_active, background_index_job_path, record_background_index_pid,
@@ -277,6 +277,7 @@ pub struct SessionSummary {
 
 #[derive(Debug, Clone)]
 pub(crate) struct MemoryRecord {
+    pub(crate) memory_id: String,
     pub(crate) memory_type: String,
     pub(crate) title: String,
     pub(crate) content: String,
@@ -289,6 +290,14 @@ pub(crate) struct MemoryRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptContextMemory {
     pub content: String,
+    pub code_context: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectedPromptContextMemory {
+    memory_id: String,
+    content: String,
+    code_context: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -338,7 +347,7 @@ pub(crate) fn query_sqlite_memories_for_session(
     memory_type: Option<&str>,
 ) -> Result<Vec<MemoryRecord>> {
     let mut sql = String::from(
-        "SELECT memory_type, title, content, metadata, importance, accessed_at, expires_at FROM memory_entries WHERE session_id = ?1 AND (expires_at IS NULL OR expires_at > datetime('now'))",
+        "SELECT id, memory_type, title, content, metadata, importance, accessed_at, expires_at FROM memory_entries WHERE session_id = ?1 AND (expires_at IS NULL OR expires_at > datetime('now'))",
     );
     if memory_type.is_some() {
         sql.push_str(" AND memory_type = ?2");
@@ -346,20 +355,21 @@ pub(crate) fn query_sqlite_memories_for_session(
     sql.push_str(" ORDER BY accessed_at DESC, importance DESC");
     let mut stmt = conn.prepare(&sql)?;
     let mapper = |row: &rusqlite::Row<'_>| -> rusqlite::Result<MemoryRecord> {
-        let metadata_raw: Option<String> = row.get(3)?;
+        let metadata_raw: Option<String> = row.get(4)?;
         Ok(MemoryRecord {
-            memory_type: row.get(0)?,
-            title: row.get(1)?,
-            content: row.get(2)?,
+            memory_id: row.get(0)?,
+            memory_type: row.get(1)?,
+            title: row.get(2)?,
+            content: row.get(3)?,
             metadata: metadata_raw
                 .as_deref()
                 .map(parse_json_value)
                 .transpose()
                 .map_err(to_sqlite_err)?
                 .unwrap_or(JsonValue::Object(Default::default())),
-            importance: row.get(4)?,
-            accessed_at: row.get(5)?,
-            expires_at: row.get(6)?,
+            importance: row.get(5)?,
+            accessed_at: row.get(6)?,
+            expires_at: row.get(7)?,
         })
     };
     let rows = if let Some(memory_type) = memory_type {
@@ -410,6 +420,11 @@ pub(crate) fn open_kuzu_memory_db() -> Result<KuzuDatabase> {
 }
 
 pub(crate) fn resolve_kuzu_memory_db_path() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH")
+        && !path.is_empty()
+    {
+        return Ok(PathBuf::from(path));
+    }
     if let Some(path) = std::env::var_os("AMPLIHACK_KUZU_DB_PATH")
         && !path.is_empty()
     {
@@ -556,6 +571,7 @@ pub(crate) fn memory_from_kuzu_node(
         .or_else(|| property_i64(props, "importance_score"))
         .or_else(|| property_i64(props, "priority"));
     Ok(MemoryRecord {
+        memory_id: property_string(props, "memory_id").unwrap_or_default(),
         memory_type: label
             .strip_suffix("Memory")
             .unwrap_or(label)
@@ -663,18 +679,6 @@ pub(crate) fn parse_json_value(value: &str) -> Result<JsonValue> {
     Ok(serde_json::from_str(value)?)
 }
 
-fn load_memories_for_prompt_context(session_id: &str) -> Result<Vec<MemoryRecord>> {
-    if session_id.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-
-    match resolve_memory_backend_preference() {
-        Some(choice) => load_runtime_memories_from_backend(choice, session_id),
-        None => load_runtime_memories_from_backend(BackendChoice::Kuzu, session_id)
-            .or_else(|_| load_runtime_memories_from_backend(BackendChoice::Sqlite, session_id)),
-    }
-}
-
 fn resolve_memory_backend_preference() -> Option<BackendChoice> {
     match std::env::var("AMPLIHACK_MEMORY_BACKEND").ok().as_deref() {
         Some("sqlite") => Some(BackendChoice::Sqlite),
@@ -751,7 +755,7 @@ fn select_prompt_context_memories(
     memories: Vec<MemoryRecord>,
     query_text: &str,
     token_budget: usize,
-) -> Vec<PromptContextMemory> {
+) -> Vec<SelectedPromptContextMemory> {
     if token_budget == 0 {
         return Vec::new();
     }
@@ -778,8 +782,10 @@ fn select_prompt_context_memories(
         if total_tokens + memory_tokens > token_budget {
             break;
         }
-        selected.push(PromptContextMemory {
+        selected.push(SelectedPromptContextMemory {
+            memory_id: memory.memory_id,
             content: memory.content,
+            code_context: None,
         });
         total_tokens += memory_tokens;
     }
@@ -787,21 +793,169 @@ fn select_prompt_context_memories(
     selected
 }
 
+fn format_code_context(payload: &code_graph::CodeGraphContextPayload) -> Option<String> {
+    if payload.files.is_empty() && payload.functions.is_empty() && payload.classes.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    if !payload.files.is_empty() {
+        lines.push("**Related Files:**".to_string());
+        for file in payload.files.iter().take(5) {
+            lines.push(format!("- {} ({})", file.path, file.language));
+        }
+    }
+
+    if !payload.functions.is_empty() {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push("**Related Functions:**".to_string());
+        for function in payload.functions.iter().take(5) {
+            let signature = if function.signature.trim().is_empty() {
+                function.name.as_str()
+            } else {
+                function.signature.as_str()
+            };
+            lines.push(format!("- `{}`", signature));
+            if !function.docstring.trim().is_empty() {
+                let doc_preview = if function.docstring.chars().count() > 100 {
+                    let truncated = function.docstring.chars().take(100).collect::<String>();
+                    format!("{truncated}...")
+                } else {
+                    function.docstring.clone()
+                };
+                lines.push(format!("  {doc_preview}"));
+            }
+            if function.complexity > 0 {
+                lines.push(format!("  (complexity: {})", function.complexity));
+            }
+        }
+    }
+
+    if !payload.classes.is_empty() {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push("**Related Classes:**".to_string());
+        for class in payload.classes.iter().take(3) {
+            let name = if class.fully_qualified_name.trim().is_empty() {
+                class.name.as_str()
+            } else {
+                class.fully_qualified_name.as_str()
+            };
+            lines.push(format!("- {}", name));
+            if !class.docstring.trim().is_empty() {
+                let doc_preview = if class.docstring.chars().count() > 100 {
+                    let truncated = class.docstring.chars().take(100).collect::<String>();
+                    format!("{truncated}...")
+                } else {
+                    class.docstring.clone()
+                };
+                lines.push(format!("  {doc_preview}"));
+            }
+        }
+    }
+
+    Some(lines.join("\n"))
+}
+
+fn enrich_prompt_context_memories_with_code_context(
+    selected: Vec<SelectedPromptContextMemory>,
+) -> Result<Vec<SelectedPromptContextMemory>> {
+    if selected.is_empty() {
+        return Ok(selected);
+    }
+
+    let db_path = resolve_kuzu_memory_db_path()?;
+    let reader = match code_graph::open_code_graph_reader(Some(&db_path)) {
+        Ok(reader) => reader,
+        Err(error) => {
+            tracing::warn!(
+                db_path = %db_path.display(),
+                "prompt memory code-context enrichment unavailable: {}",
+                error
+            );
+            return Ok(selected);
+        }
+    };
+
+    let mut enriched = Vec::with_capacity(selected.len());
+    for mut memory in selected {
+        if memory.memory_id.trim().is_empty() {
+            enriched.push(memory);
+            continue;
+        }
+
+        match reader.context_payload(&memory.memory_id) {
+            Ok(payload) => {
+                memory.code_context = format_code_context(&payload);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    memory_id = memory.memory_id,
+                    "failed to load prompt memory code context: {}",
+                    error
+                );
+            }
+        }
+        enriched.push(memory);
+    }
+    Ok(enriched)
+}
+
+fn retrieve_prompt_context_memories_from_backend(
+    choice: BackendChoice,
+    session_id: &str,
+    query_text: &str,
+    token_budget: usize,
+) -> Result<Vec<PromptContextMemory>> {
+    let memories = load_runtime_memories_from_backend(choice, session_id)?;
+    let selected = select_prompt_context_memories(memories, query_text, token_budget);
+    let selected = match choice {
+        BackendChoice::Kuzu => enrich_prompt_context_memories_with_code_context(selected)?,
+        BackendChoice::Sqlite => selected,
+    };
+    Ok(selected
+        .into_iter()
+        .map(|memory| PromptContextMemory {
+            content: memory.content,
+            code_context: memory.code_context,
+        })
+        .collect())
+}
+
 pub fn retrieve_prompt_context_memories(
     session_id: &str,
     query_text: &str,
     token_budget: usize,
 ) -> Result<Vec<PromptContextMemory>> {
-    if query_text.trim().is_empty() || token_budget == 0 {
+    if session_id.trim().is_empty() || query_text.trim().is_empty() || token_budget == 0 {
         return Ok(Vec::new());
     }
 
-    let memories = load_memories_for_prompt_context(session_id)?;
-    Ok(select_prompt_context_memories(
-        memories,
-        query_text,
-        token_budget,
-    ))
+    match resolve_memory_backend_preference() {
+        Some(choice) => retrieve_prompt_context_memories_from_backend(
+            choice,
+            session_id,
+            query_text,
+            token_budget,
+        ),
+        None => retrieve_prompt_context_memories_from_backend(
+            BackendChoice::Kuzu,
+            session_id,
+            query_text,
+            token_budget,
+        )
+        .or_else(|_| {
+            retrieve_prompt_context_memories_from_backend(
+                BackendChoice::Sqlite,
+                session_id,
+                query_text,
+                token_budget,
+            )
+        }),
+    }
 }
 
 fn store_learning_sqlite(record: &SessionLearningRecord) -> Result<Option<String>> {
@@ -1193,6 +1347,95 @@ mod tests {
 
         assert_eq!(memories.len(), 1);
         assert!(memories[0].content.contains("rerun cargo fmt"));
+        assert_eq!(memories[0].code_context, None);
+        Ok(())
+    }
+
+    #[test]
+    fn retrieve_prompt_context_memories_enriches_kuzu_code_context() -> Result<()> {
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir()?;
+        let db_path = dir.path().join(".amplihack").join("kuzu_db");
+        let prev_home = std::env::var_os("HOME");
+        let prev_backend = std::env::var_os("AMPLIHACK_MEMORY_BACKEND");
+        let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe {
+            std::env::set_var("HOME", dir.path());
+            std::env::set_var("AMPLIHACK_MEMORY_BACKEND", "kuzu");
+            std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", &db_path);
+            std::env::set_var("AMPLIHACK_KUZU_DB_PATH", &db_path);
+        }
+
+        let record = SessionLearningRecord {
+            session_id: "prompt-session".to_string(),
+            agent_id: "agent1".to_string(),
+            content: "Investigated helper behavior in src/example/module.py.".to_string(),
+            title: "Helper behavior".to_string(),
+            metadata: serde_json::json!({
+                "new_memory_type": "semantic",
+                "file": "src/example/module.py"
+            }),
+            importance: 8,
+        };
+        let memory_id = store_learning_kuzu(&record)?.expect("memory should be stored");
+
+        let json_path = dir.path().join("blarify.json");
+        fs::write(
+            &json_path,
+            serde_json::json!({
+                "files": [
+                    {"path":"src/example/module.py","language":"python","lines_of_code":10},
+                    {"path":"src/example/utils.py","language":"python","lines_of_code":5}
+                ],
+                "classes": [
+                    {"id":"class:Example","name":"Example","file_path":"src/example/module.py","line_number":1}
+                ],
+                "functions": [
+                    {"id":"func:Example.process","name":"process","file_path":"src/example/module.py","line_number":2,"class_id":"class:Example"},
+                    {"id":"func:helper","name":"helper","file_path":"src/example/utils.py","line_number":1,"signature":"def helper()","docstring":"Helper function"}
+                ],
+                "imports": [],
+                "relationships": [
+                    {"type":"CALLS","source_id":"func:Example.process","target_id":"func:helper"}
+                ]
+            })
+            .to_string(),
+        )?;
+        super::code_graph::import_blarify_json(&json_path, Some(&db_path))?;
+
+        let memories = retrieve_prompt_context_memories("prompt-session", "helper", 2000)?;
+
+        match prev_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        match prev_backend {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_MEMORY_BACKEND", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_MEMORY_BACKEND") },
+        }
+        match prev_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match prev_kuzu {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        assert_eq!(memories.len(), 1);
+        assert!(memories[0].content.contains("Investigated helper behavior"));
+        let code_context = memories[0]
+            .code_context
+            .as_deref()
+            .expect("kuzu-backed prompt memory should include code context");
+        assert!(code_context.contains("**Related Files:**"));
+        assert!(code_context.contains("src/example/module.py"));
+        assert!(code_context.contains("**Related Functions:**"));
+        assert!(code_context.contains("helper"));
+        assert!(!memory_id.is_empty());
         Ok(())
     }
 
@@ -1203,11 +1446,44 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir()?;
         let override_path = dir.path().join("project-kuzu");
+        let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
         let previous = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
         unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", &override_path) };
 
         let resolved = resolve_kuzu_memory_db_path()?;
 
+        match previous_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match previous {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        assert_eq!(resolved, override_path);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_kuzu_memory_db_path_prefers_backend_neutral_override() -> Result<()> {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir()?;
+        let override_path = dir.path().join("project-graph");
+        let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let previous = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", &override_path) };
+        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", dir.path().join("project-kuzu")) };
+
+        let resolved = resolve_kuzu_memory_db_path()?;
+
+        match previous_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
         match previous {
             Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
             None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
@@ -1221,6 +1497,7 @@ mod tests {
     fn select_prompt_context_memories_respects_token_budget() {
         let memories = vec![
             MemoryRecord {
+                memory_id: "m-large".to_string(),
                 memory_type: "learning".to_string(),
                 title: "Large".to_string(),
                 content: "x".repeat(200),
@@ -1230,6 +1507,7 @@ mod tests {
                 expires_at: None,
             },
             MemoryRecord {
+                memory_id: "m-small".to_string(),
                 memory_type: "learning".to_string(),
                 title: "Small".to_string(),
                 content: "fix ci quickly".to_string(),
@@ -1243,6 +1521,7 @@ mod tests {
         let selected = select_prompt_context_memories(memories, "fix ci", 10);
 
         assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].memory_id, "m-small");
         assert_eq!(selected[0].content, "fix ci quickly");
     }
 

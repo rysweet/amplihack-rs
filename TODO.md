@@ -311,4 +311,4 @@ See also: [Validate No-Python Compliance](docs/howto/validate-no-python.md)
 
 ---
 
-*Last updated: issue #77 ambiguity-resolution and documentation pass.*
+*Last updated: issue #77 parity audit — added 8 scout/advance report unit tests; 205 fleet tests passing.*

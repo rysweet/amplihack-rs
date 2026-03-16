@@ -17,7 +17,8 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Run a Recipe End-to-End](./howto/run-a-recipe.md) — Find, inspect, dry-run, and execute YAML recipes through the Rust CLI
 - [Index a Project with the Native SCIP Pipeline](./howto/index-a-project.md) — Build the Kuzu code-graph from source using native SCIP indexers
 - [Validate No-Python Compliance](./howto/validate-no-python.md) — Run the AC9 probe to confirm the binary operates without a Python interpreter
-- [Use the Fleet Dashboard](./howto/use-fleet-dashboard.md) — Open the cockpit, start and adopt sessions, manage tracked projects, and exit cleanly
+- [Use the Fleet Dashboard](./howto/use-fleet-dashboard.md) — Open the cockpit, start and adopt sessions, search sessions, run the reasoner from the TUI, and exit cleanly
+- [Run Fleet Scout and Advance on Azure VMs](./howto/run-fleet-scout-and-advance.md) — Discover sessions across VMs, reason about them with the LLM backend, and execute recommended actions
 
 ### Reference
 
@@ -43,6 +44,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Agent Binary Routing](./concepts/agent-binary-routing.md) — How `AMPLIHACK_AGENT_BINARY` lets the recipe runner and hooks call back into the correct AI tool
 - [Kuzu Code Graph](./concepts/kuzu-code-graph.md) — Architecture of the native code-graph store: schema, SCIP pipeline, blarify consumption, and security model
 - [Fleet Dashboard Architecture](./concepts/fleet-dashboard-architecture.md) — Thread model, state design, persistence layer, terminal safety, and security rationale for `amplihack fleet`
+- [Fleet Admiral Reasoning Engine](./concepts/fleet-admiral-reasoning.md) — How the LLM-backed reasoner works: what it sees, the five actions, confidence scoring, failure modes, and design rationale
 
 ## Quick Start
 

@@ -211,6 +211,7 @@ mod backend_tests {
                     memory_count: 1,
                 },
                 vec![MemoryRecord {
+                    memory_id: "m-1".to_string(),
                     memory_type: "learning".to_string(),
                     title: "Remember".to_string(),
                     content: "Use a backend seam".to_string(),
@@ -268,6 +269,7 @@ mod tests {
             session,
             vec![
                 MemoryRecord {
+                    memory_id: "m-1".to_string(),
                     memory_type: "conversation".to_string(),
                     title: "Hello".to_string(),
                     content: "world".to_string(),
@@ -277,6 +279,7 @@ mod tests {
                     expires_at: None,
                 },
                 MemoryRecord {
+                    memory_id: "m-2".to_string(),
                     memory_type: "context".to_string(),
                     title: "Ctx".to_string(),
                     content: "details".to_string(),

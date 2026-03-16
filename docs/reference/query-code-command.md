@@ -1,6 +1,6 @@
 # amplihack query-code
 
-Full CLI reference for `amplihack query-code` — query the native Kuzu
+Full CLI reference for `amplihack query-code` — query the native
 code-graph populated by `index-code` or `index-scip`.
 
 ## Contents
@@ -25,7 +25,7 @@ code-graph populated by `index-code` or `index-scip`.
 ## Synopsis
 
 ```sh
-amplihack query-code [--kuzu-path <PATH>] [--json] [--limit <N>] <SUBCOMMAND>
+amplihack query-code [--db-path <PATH>] [--json] [--limit <N>] <SUBCOMMAND>
 ```
 
 ---
@@ -34,7 +34,7 @@ amplihack query-code [--kuzu-path <PATH>] [--json] [--limit <N>] <SUBCOMMAND>
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--kuzu-path <PATH>` | `<cwd>/.amplihack/kuzu_db` | Path to the Kuzu database directory. |
+| `--db-path <PATH>` | `<cwd>/.amplihack/kuzu_db` | Path to the code-graph database directory. `--kuzu-path` remains as a compatibility alias. |
 | `--json` | false | Emit output as JSON instead of human-readable text. |
 | `--limit <N>` | 50 | Maximum number of rows returned by list subcommands. |
 
@@ -79,7 +79,7 @@ Code Graph Statistics:
 ### context
 
 Show the linked code context for a memory ID. This uses the native
-memory→file and memory→function relationships stored in the same Kuzu DB.
+memory→file and memory→function relationships stored in the same code-graph DB.
 
 ```sh
 amplihack query-code context <MEMORY_ID>

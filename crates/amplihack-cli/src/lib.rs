@@ -109,12 +109,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: MemoryCommands,
     },
-    /// Import blarify code-graph JSON into the native Kuzu store
+    /// Import blarify code-graph JSON into the native code-graph store
     IndexCode {
         /// Path to a blarify JSON export
         input: PathBuf,
-        /// Override the target Kuzu database path
-        #[arg(long = "kuzu-path")]
+        /// Override the target code-graph database path
+        #[arg(long = "db-path", alias = "kuzu-path")]
         kuzu_path: Option<PathBuf>,
     },
     /// Generate native SCIP artifacts for the current project
@@ -128,8 +128,8 @@ pub enum Commands {
     },
     /// Query the native code graph
     QueryCode {
-        /// Override the target Kuzu database path
-        #[arg(long = "kuzu-path")]
+        /// Override the target code-graph database path
+        #[arg(long = "db-path", alias = "kuzu-path")]
         kuzu_path: Option<PathBuf>,
         /// Output as JSON
         #[arg(long)]
@@ -444,6 +444,7 @@ pub mod memory {
         background_index_job_active, background_index_job_path, check_index_status,
         default_code_graph_db_path_for_project, init_kuzu_backend_schema, kuzu_rows,
         list_kuzu_sessions_from_conn, record_background_index_pid,
-        retrieve_prompt_context_memories, store_session_learning, summarize_code_graph,
+        resolve_code_graph_db_path_for_project, retrieve_prompt_context_memories,
+        store_session_learning, summarize_code_graph,
     };
 }

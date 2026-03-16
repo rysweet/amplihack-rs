@@ -8,7 +8,8 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_AGENT_BINARY](#amplihack_agent_binary)
   - [AMPLIHACK_ASSET_RESOLVER](#amplihack_asset_resolver)
   - [AMPLIHACK_HOME](#amplihack_home)
-  - [AMPLIHACK_KUZU_DB_PATH](#amplihack_kuzu_db_path)
+  - [AMPLIHACK_GRAPH_DB_PATH](#amplihack_graph_db_path)
+  - [AMPLIHACK_KUZU_DB_PATH](#amplihack_kuzu_db_path-legacy-alias)
   - [AMPLIHACK_NONINTERACTIVE](#amplihack_noninteractive)
   - [AMPLIHACK_SESSION_ID](#amplihack_session_id)
   - [AMPLIHACK_DEPTH](#amplihack_depth)
@@ -125,30 +126,50 @@ AMPLIHACK_HOME=/opt/amplihack amplihack claude --print-env 2>&1 | grep AMPLIHACK
 
 ---
 
-### AMPLIHACK_KUZU_DB_PATH
+### AMPLIHACK_GRAPH_DB_PATH
 
 **Type:** path
 **Example:** `/work/repo/.amplihack/kuzu_db`
 **Set by:** `EnvBuilder::with_project_kuzu_db()`
 **Read by:** `commands::memory::resolve_kuzu_memory_db_path()`
 
-Overrides the Kuzu database path used by Rust memory operations in launched child
+Overrides the code-graph database path used by Rust memory operations in launched child
 processes. `amplihack launch` and the Rust recipe runner set it to the
 project-local `.amplihack/kuzu_db` so launched sessions, hooks, and native
-code-graph features operate on the same live Kuzu store.
+code-graph features operate on the same live store.
 
 If this variable is absent, Rust memory operations keep using the historical
-global default `~/.amplihack/memory_kuzu.db`.
+global default `~/.amplihack/memory_kuzu.db`, or the legacy
+`AMPLIHACK_KUZU_DB_PATH` override if present.
 
 ```sh
 # Effective child-process environment for a project rooted at /work/repo
-AMPLIHACK_KUZU_DB_PATH=/work/repo/.amplihack/kuzu_db amplihack claude
+AMPLIHACK_GRAPH_DB_PATH=/work/repo/.amplihack/kuzu_db amplihack claude
 ```
 
 **Why it exists:** Issue #77 still has memory/code parity gaps. This override
-lets launched Rust sessions converge on the same project-local Kuzu DB as the
+lets launched Rust sessions converge on the same project-local DB as the
 native code graph without forcing an immediate destructive migration away from
 the legacy global memory path.
+
+---
+
+### AMPLIHACK_KUZU_DB_PATH (legacy alias)
+
+Legacy compatibility alias for `AMPLIHACK_GRAPH_DB_PATH`.
+
+If `AMPLIHACK_GRAPH_DB_PATH` is unset, Rust still reads `AMPLIHACK_KUZU_DB_PATH`
+and also exports it for older child-process consumers. When both are present,
+`AMPLIHACK_GRAPH_DB_PATH` wins.
+
+```sh
+# Backward-compatible older configuration still works
+AMPLIHACK_KUZU_DB_PATH=/work/repo/.amplihack/kuzu_db amplihack claude
+```
+
+The alias remains because internal storage is still Kuzu-backed today, but new
+automation should prefer `AMPLIHACK_GRAPH_DB_PATH` so the public surface stays
+backend-neutral while the LadybugDB migration continues.
 
 ---
 

@@ -3,6 +3,9 @@
 //! The Rust CLI now owns the live `amplihack fleet` runtime surface. This
 //! module preserves the Python behavior where practical while keeping the
 //! implementation explicit, testable, and fully native.
+//!
+//! INVARIANT: All external session name inputs MUST pass `validate_session_name()`
+//! before use in any subprocess or tmux command invocation.
 
 use crate::binary_finder::BinaryFinder;
 use crate::command_error::exit_error;
@@ -14,7 +17,7 @@ use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
@@ -28,6 +31,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 const FLEET_EXISTING_VMS: &[&str] = &[];
 const FLEET_EXISTING_VMS_ENV: &str = "AMPLIHACK_FLEET_EXISTING_VMS";
@@ -71,6 +75,8 @@ const MIN_SUBSTANTIAL_OUTPUT_LEN: usize = 50;
 const SCOUT_REASONER_TIMEOUT: Duration = Duration::from_secs(180);
 // T5: LRU capture cache capacity (64 entries — one per session).
 const CAPTURE_CACHE_CAPACITY: usize = 64;
+const CAPTURE_CACHE_CAPACITY_NONZERO: NonZeroUsize =
+    NonZeroUsize::new(CAPTURE_CACHE_CAPACITY).expect("cache capacity must be nonzero");
 // T4: Two-phase background refresh timing (verified against _tui_refresh.py).
 // Python uses set_interval("refresh", 5) for slow phase and 0.5s for fast.
 const TUI_FAST_REFRESH_INTERVAL_MS: u64 = 500;
@@ -1465,7 +1471,7 @@ fn run_tui(interval: u64, capture_lines: usize) -> Result<()> {
             let fast_interval = Duration::from_millis(TUI_FAST_REFRESH_INTERVAL_MS);
             let mut elapsed = Duration::ZERO;
             loop {
-                if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                if shutdown.load(std::sync::atomic::Ordering::Acquire) {
                     break;
                 }
                 // Drain commands.
@@ -1514,7 +1520,7 @@ fn run_tui(interval: u64, capture_lines: usize) -> Result<()> {
             let slow_interval = Duration::from_millis(TUI_SLOW_REFRESH_INTERVAL_MS);
             let mut elapsed = slow_interval; // trigger first run immediately
             loop {
-                if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                if shutdown.load(std::sync::atomic::Ordering::Acquire) {
                     break;
                 }
                 thread::sleep(sleep_chunk);
@@ -1537,7 +1543,7 @@ fn run_tui(interval: u64, capture_lines: usize) -> Result<()> {
                     }
                 };
                 for (vm_name, session_name) in keys {
-                    if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                    if shutdown.load(std::sync::atomic::Ordering::Acquire) {
                         return;
                     }
                     if let Ok(output) = capture_tmux_output_with_timeout(
@@ -1605,6 +1611,9 @@ fn run_tui(interval: u64, capture_lines: usize) -> Result<()> {
                             handle_tui_inline_input_key(&mut ui_state, extra_key)?;
                         }
                     }
+                    Some(key) if ui_state.tab == FleetTuiTab::Editor && ui_state.editor_active => {
+                        handle_tui_editor_active_key(&azlin, &mut ui_state, key)?;
+                    }
                     // Quit
                     Some(DashboardKey::Char('q')) | Some(DashboardKey::Char('Q')) => {
                         break 'dashboard;
@@ -1630,18 +1639,6 @@ fn run_tui(interval: u64, capture_lines: usize) -> Result<()> {
                     // Force refresh — next loop re-collects state; detail also refreshes full capture.
                     Some(DashboardKey::Char('r')) | Some(DashboardKey::Char('R')) => {
                         refresh_detail_capture = ui_state.tab == FleetTuiTab::Detail;
-                    }
-                    // T3: Multiline editor Up/Down must come before the navigation
-                    // catch-all arms that also handle Up/Down.
-                    Some(DashboardKey::Up)
-                        if ui_state.tab == FleetTuiTab::Editor && ui_state.editor_active =>
-                    {
-                        ui_state.editor_move_up();
-                    }
-                    Some(DashboardKey::Down)
-                        if ui_state.tab == FleetTuiTab::Editor && ui_state.editor_active =>
-                    {
-                        ui_state.editor_move_down();
                     }
                     // Navigation
                     Some(DashboardKey::Char('j'))
@@ -1763,29 +1760,6 @@ fn run_tui(interval: u64, capture_lines: usize) -> Result<()> {
                         run_tui_remove_project(&mut ui_state)?;
                         ui_state.confirm_project_remove();
                     }
-                    // T3: Multiline editor char input (save/backspace handled earlier).
-                    Some(DashboardKey::Char('\x13'))
-                        if ui_state.tab == FleetTuiTab::Editor && ui_state.editor_active =>
-                    {
-                        ui_state.editor_save();
-                    }
-                    Some(DashboardKey::Char('\u{8}')) | Some(DashboardKey::Char('\u{7f}'))
-                        if ui_state.tab == FleetTuiTab::Editor && ui_state.editor_active =>
-                    {
-                        ui_state.editor_backspace();
-                    }
-                    // T3 char input — must come after all specific command keys for the Editor
-                    // tab (like 'A' for apply_edited) to avoid swallowing them.
-                    Some(DashboardKey::Char(ch))
-                        if ui_state.tab == FleetTuiTab::Editor
-                            && ui_state.editor_active
-                            && !ch.is_control()
-                            // Exclude special editor-tab commands from char routing.
-                            && ch != 'A' && ch != 'e' && ch != 'i'
-                            && ch != 'q' && ch != 'Q' && ch != '?' =>
-                    {
-                        ui_state.editor_insert_char(ch);
-                    }
                     // Actions
                     Some(DashboardKey::Char('d')) | Some(DashboardKey::Char('D')) => {
                         run_tui_dry_run(&azlin, &state, &mut ui_state)?;
@@ -1841,7 +1815,7 @@ fn run_tui(interval: u64, capture_lines: usize) -> Result<()> {
     })();
 
     // T4: Signal background threads to stop.
-    shutdown_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    shutdown_flag.store(true, std::sync::atomic::Ordering::Release);
     // Drop the sender so the fast thread's cmd_rx sees Disconnected.
     drop(ui_state.bg_tx.take());
 
@@ -2289,14 +2263,7 @@ fn cockpit_render_fleet_view(
             let none = "  no output captured";
             lines.push(cockpit_boxline(none, none.len(), inner));
         } else {
-            for line in preview
-                .iter()
-                .rev()
-                .take(3)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-            {
+            for line in &preview[preview.len().saturating_sub(3)..] {
                 let line = truncate_chars(line, inner.saturating_sub(4));
                 let raw = 2 + line.len();
                 lines.push(cockpit_boxline(&format!("  {line}"), raw, inner));
@@ -2604,11 +2571,25 @@ fn cockpit_render_editor_view(ui_state: &FleetTuiUiState, lines: &mut Vec<String
     push(lines, &format!("Reasoning: {}", decision.reasoning));
     push(lines, "");
     push(lines, "Edited input");
-    if decision.input_text.is_empty() {
+    let editor_lines = if ui_state.editor_lines.is_empty() {
+        decision
+            .input_text
+            .split('\n')
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    } else {
+        ui_state.editor_lines.clone()
+    };
+    if editor_lines.is_empty() || (editor_lines.len() == 1 && editor_lines[0].is_empty()) {
         push(lines, "(empty)");
     } else {
-        for line in decision.input_text.lines() {
-            let t = truncate_chars(line, inner.saturating_sub(2));
+        for (index, line) in editor_lines.iter().enumerate() {
+            let rendered = if ui_state.editor_active && index == ui_state.editor_cursor_row {
+                format!("{line}_")
+            } else {
+                line.clone()
+            };
+            let t = truncate_chars(&rendered, inner.saturating_sub(2));
             lines.push(cockpit_boxline(&t, t.len(), inner));
         }
     }
@@ -2621,21 +2602,16 @@ fn cockpit_render_editor_view(ui_state: &FleetTuiUiState, lines: &mut Vec<String
         push(lines, &notice.message);
         push(lines, "");
     }
-    if let Some(input) = ui_state
-        .inline_input
-        .as_ref()
-        .filter(|input| input.mode == FleetTuiInlineInputMode::EditProposalInput)
-    {
-        let prompt = format!(
-            "Edit input > {}_",
-            truncate_chars(&input.buffer, inner.saturating_sub(15))
+    if ui_state.editor_active {
+        push(lines, "Typing mode");
+        push(
+            lines,
+            "Enter newline  Ctrl-S save  Esc cancel  Up/Down move  A apply edited",
         );
-        push(lines, &prompt);
-        push(lines, "Enter save  Esc cancel  Backspace delete");
     } else {
         push(
             lines,
-            "e reload  i edit input  t cycle action  A apply edited",
+            "e reload  i focus editor  t cycle action  A apply edited",
         );
     }
 }
@@ -2880,6 +2856,7 @@ fn run_tui_edit(ui_state: &mut FleetTuiUiState) {
         .unwrap_or("")
         .to_string();
     ui_state.enter_multiline_editor(&initial);
+    ui_state.editor_active = false;
 }
 
 fn handle_tui_inline_input_key(ui_state: &mut FleetTuiUiState, key: DashboardKey) -> Result<()> {
@@ -2889,9 +2866,6 @@ fn handle_tui_inline_input_key(ui_state: &mut FleetTuiUiState, key: DashboardKey
                 match mode {
                     FleetTuiInlineInputMode::AddProjectRepo => {
                         add_project_from_repo_input(ui_state, &value)?
-                    }
-                    FleetTuiInlineInputMode::EditProposalInput => {
-                        ui_state.apply_inline_editor_input(&value)
                     }
                     FleetTuiInlineInputMode::SearchSessions => {
                         ui_state.apply_inline_session_search(&value)
@@ -2909,23 +2883,70 @@ fn handle_tui_inline_input_key(ui_state: &mut FleetTuiUiState, key: DashboardKey
     Ok(())
 }
 
+fn handle_tui_editor_active_key(
+    azlin_path: &Path,
+    ui_state: &mut FleetTuiUiState,
+    key: DashboardKey,
+) -> Result<()> {
+    match key {
+        DashboardKey::Char('\u{1b}') => {
+            ui_state.editor_discard();
+            ui_state.tab = FleetTuiTab::Detail;
+            ui_state.status_message = Some("Editor changes discarded.".to_string());
+        }
+        DashboardKey::Char('\x13') => ui_state.editor_save(),
+        DashboardKey::Char('\n') | DashboardKey::Char('\r') => ui_state.editor_insert_char('\n'),
+        DashboardKey::Up => ui_state.editor_move_up(),
+        DashboardKey::Down => ui_state.editor_move_down(),
+        DashboardKey::Char('\u{8}') | DashboardKey::Char('\u{7f}') => ui_state.editor_backspace(),
+        DashboardKey::Char('A') => run_tui_apply_edited(azlin_path, ui_state)?,
+        DashboardKey::Char(ch) if !ch.is_control() => ui_state.editor_insert_char(ch),
+        _ => {}
+    }
+    Ok(())
+}
+
 fn run_tui_edit_input(ui_state: &mut FleetTuiUiState) -> Result<()> {
-    ui_state.start_inline_editor_input();
+    let Some((vm_name, session_name, input_text)) =
+        ui_state.editor_decision.as_ref().map(|decision| {
+            (
+                decision.vm_name.clone(),
+                decision.session_name.clone(),
+                decision.input_text.clone(),
+            )
+        })
+    else {
+        ui_state.status_message = Some("No editor proposal loaded. Press 'e' first.".to_string());
+        return Ok(());
+    };
+    if ui_state.editor_lines.is_empty() {
+        ui_state.enter_multiline_editor(&input_text);
+    }
+    ui_state.editor_active = true;
+    ui_state.status_message = Some(format!(
+        "Editing input for {}/{}. Enter adds lines, Ctrl-S saves, Esc cancels.",
+        vm_name, session_name
+    ));
     Ok(())
 }
 
 fn run_tui_apply_edited(azlin_path: &Path, ui_state: &mut FleetTuiUiState) -> Result<()> {
-    let Some(decision) = ui_state.editor_decision.clone() else {
+    let Some(mut decision) = ui_state.editor_decision.clone() else {
         ui_state.status_message =
             Some("No edited proposal to apply. Press 'e' to open the editor.".to_string());
         return Ok(());
     };
+    if !ui_state.editor_lines.is_empty() {
+        decision.input_text = ui_state.editor_content();
+    }
 
     let reasoner = FleetSessionReasoner::new(azlin_path.to_path_buf(), NativeReasonerBackend::None);
     match reasoner.execute_decision(&decision) {
         Ok(()) => {
             ui_state.proposal_notice = None;
+            ui_state.editor_active = false;
             ui_state.last_decision = Some(decision.clone());
+            ui_state.editor_decision = Some(decision.clone());
             ui_state.tab = FleetTuiTab::Detail;
             ui_state.status_message = Some(format!(
                 "Applied edited {} to {}/{}.",
@@ -2936,6 +2957,7 @@ fn run_tui_apply_edited(azlin_path: &Path, ui_state: &mut FleetTuiUiState) -> Re
             Ok(())
         }
         Err(error) => {
+            ui_state.editor_active = false;
             ui_state.set_proposal_notice_for_session(
                 &decision.vm_name,
                 &decision.session_name,
@@ -3318,9 +3340,7 @@ impl Default for FleetTuiUiState {
             fleet_subview: FleetSubview::default(),
             selected: None,
             selected_project_repo: None,
-            capture_cache: Arc::new(Mutex::new(LruCache::new(
-                NonZeroUsize::new(CAPTURE_CACHE_CAPACITY).unwrap(),
-            ))),
+            capture_cache: Arc::new(Mutex::new(LruCache::new(CAPTURE_CACHE_CAPACITY_NONZERO))),
             detail_capture: None,
             proposal_notice: None,
             last_decision: None,
@@ -3687,21 +3707,6 @@ impl FleetTuiUiState {
         );
     }
 
-    fn start_inline_editor_input(&mut self) {
-        let Some(decision) = self.editor_decision.as_ref() else {
-            self.status_message = Some("No editor proposal loaded. Press 'e' first.".to_string());
-            return;
-        };
-        self.inline_input = Some(FleetTuiInlineInput {
-            mode: FleetTuiInlineInputMode::EditProposalInput,
-            buffer: decision.input_text.replace('\n', "\\n"),
-        });
-        self.status_message = Some(format!(
-            "Editing input for {}/{}. Enter saves, Esc cancels, use \\n for newlines.",
-            decision.vm_name, decision.session_name
-        ));
-    }
-
     fn apply_inline_editor_input(&mut self, edited: &str) {
         let Some(decision) = self.editor_decision.as_mut() else {
             self.status_message = Some("No editor proposal loaded. Press 'e' first.".to_string());
@@ -3756,9 +3761,6 @@ impl FleetTuiUiState {
         };
         self.status_message = Some(match input.mode {
             FleetTuiInlineInputMode::AddProjectRepo => "Project add cancelled.".to_string(),
-            FleetTuiInlineInputMode::EditProposalInput => {
-                "Editor input edit cancelled.".to_string()
-            }
             FleetTuiInlineInputMode::SearchSessions => "Fleet search cancelled.".to_string(),
         });
     }
@@ -4038,7 +4040,6 @@ impl FleetTuiUiState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FleetTuiInlineInputMode {
     AddProjectRepo,
-    EditProposalInput,
     SearchSessions,
 }
 
@@ -4398,6 +4399,7 @@ fn write_json_file(path: &Path, payload: &Value) -> Result<()> {
         .with_context(|| format!("failed to create temp file for {}", path.display()))?;
     temp.write_all(&rendered)
         .with_context(|| format!("failed to write {}", path.display()))?;
+    // SEC-PERM: tempfile guarantees 0o600 on Unix (O_CREAT with mode 0600, unaffected by umask > 0o177)
     temp.persist(path)
         .map_err(|err| err.error)
         .with_context(|| format!("failed to persist {}", path.display()))?;
@@ -4760,11 +4762,7 @@ fn infer_agent_status(tmux_text: &str) -> AgentStatus {
     let lines = tmux_text.trim().lines().collect::<Vec<_>>();
     let combined = lines.join("\n");
     let combined_lower = combined.to_ascii_lowercase();
-    let last_line = lines
-        .last()
-        .map(|line| line.trim())
-        .unwrap_or_default()
-        .to_string();
+    let last_line = lines.last().map(|line| line.trim()).unwrap_or_default();
     let last_line_lower = last_line.to_ascii_lowercase();
 
     let mut prompt_line_text = String::new();
@@ -5509,6 +5507,7 @@ impl TaskQueue {
             serde_json::to_vec_pretty(&payload).context("failed to serialize task queue")?;
         temp.write_all(&bytes)
             .with_context(|| format!("failed to write {}", path.display()))?;
+        // SEC-PERM: tempfile guarantees 0o600 on Unix (O_CREAT with mode 0600, unaffected by umask > 0o177)
         temp.persist(path)
             .map_err(|err| err.error)
             .with_context(|| format!("failed to persist {}", path.display()))?;
@@ -6867,6 +6866,7 @@ impl FleetDashboardSummary {
             serde_json::to_vec_pretty(&payload).context("failed to serialize fleet dashboard")?;
         temp.write_all(&bytes)
             .with_context(|| format!("failed to write {}", path.display()))?;
+        // SEC-PERM: tempfile guarantees 0o600 on Unix (O_CREAT with mode 0600, unaffected by umask > 0o177)
         temp.persist(path)
             .map_err(|err| err.error)
             .with_context(|| format!("failed to persist {}", path.display()))?;
@@ -7275,6 +7275,7 @@ impl DirectorLog {
                 .with_context(|| format!("failed to create temp file for {}", path.display()))?;
         temp.write_all(&bytes)
             .with_context(|| format!("failed to write {}", path.display()))?;
+        // SEC-PERM: tempfile guarantees 0o600 on Unix (O_CREAT with mode 0600, unaffected by umask > 0o177)
         temp.persist(path)
             .map_err(|err| err.error)
             .with_context(|| format!("failed to persist {}", path.display()))?;
@@ -7424,9 +7425,9 @@ impl FleetAdmiral {
                     task.assigned_session.as_deref()?
                 ))
             })
-            .collect::<Vec<_>>();
+            .collect::<HashSet<_>>();
         self.missing_session_counts
-            .retain(|key, _| active_keys.iter().any(|active| active == key));
+            .retain(|key, _| active_keys.contains(key));
 
         let mut actions = Vec::new();
         let active_tasks = self
@@ -7745,7 +7746,12 @@ impl FleetAdmiral {
         );
         let mut cmd = Command::new(&self.azlin_path);
         cmd.args(["connect", vm_name, "--no-tmux", "--", &kill_cmd]);
-        let _ = run_output_with_timeout(cmd, SUBPROCESS_TIMEOUT);
+        if let Err(e) = run_output_with_timeout(cmd, SUBPROCESS_TIMEOUT) {
+            warn!(
+                "Failed to kill old session '{}': {}; zombie agent may persist",
+                session_name, e
+            );
+        }
 
         if let Some(saved_task) = self
             .task_queue
@@ -7840,6 +7846,7 @@ impl FleetAdmiral {
                     })?;
             temp.write_all(&bytes)
                 .with_context(|| format!("failed to write {}", path.display()))?;
+            // SEC-PERM: tempfile guarantees 0o600 on Unix (O_CREAT with mode 0600, unaffected by umask > 0o177)
             temp.persist(&path)
                 .map_err(|err| err.error)
                 .with_context(|| format!("failed to persist {}", path.display()))?;
@@ -8240,7 +8247,7 @@ impl FleetObserver {
     }
 
     fn capture_pane(&self, vm_name: &str, session_name: &str) -> Option<String> {
-        if validate_vm_name(vm_name).is_err() || session_name.is_empty() {
+        if validate_vm_name(vm_name).is_err() || validate_session_name(session_name).is_err() {
             return None;
         }
 
@@ -9928,6 +9935,210 @@ not-json
         );
     }
 
+    // ── render_scout_report tests (mirrors test_fleet_cli_session_ops.py::TestFormatScoutReport) ──
+
+    #[test]
+    fn render_scout_report_contains_header_and_session_info() {
+        let decisions = vec![SessionDecisionRecord {
+            vm: "vm-1".to_string(),
+            session: "work-1".to_string(),
+            status: "idle".to_string(),
+            branch: "feat/login".to_string(),
+            pr: String::new(),
+            action: "wait".to_string(),
+            confidence: 0.9,
+            reasoning: "Session is idle, nothing to do".to_string(),
+            input_text: String::new(),
+            error: None,
+            project: String::new(),
+            objectives: Vec::new(),
+        }];
+        let output = render_scout_report(&decisions, 2, 1, 1, false);
+        assert!(
+            output.contains("FLEET SCOUT REPORT"),
+            "must contain report header"
+        );
+        assert!(output.contains("vm-1/work-1"), "must contain vm/session");
+        assert!(output.contains("wait"), "must contain action");
+        assert!(output.contains("feat/login"), "must contain branch");
+        assert!(
+            output.contains("Sessions analyzed: 1"),
+            "must contain session count"
+        );
+        assert!(
+            output.contains("Adopted sessions: 1"),
+            "must contain adopted count"
+        );
+    }
+
+    #[test]
+    fn render_scout_report_with_error_shows_error_text() {
+        let decisions = vec![SessionDecisionRecord {
+            vm: "vm-2".to_string(),
+            session: "sess-2".to_string(),
+            status: "running".to_string(),
+            branch: String::new(),
+            pr: String::new(),
+            action: "error".to_string(),
+            confidence: 0.0,
+            reasoning: String::new(),
+            input_text: String::new(),
+            error: Some("Connection refused".to_string()),
+            project: String::new(),
+            objectives: Vec::new(),
+        }];
+        let output = render_scout_report(&decisions, 1, 1, 0, false);
+        assert!(
+            output.contains("ERROR"),
+            "must show ERROR label on failed session"
+        );
+        assert!(
+            output.contains("Connection refused"),
+            "must include error message"
+        );
+    }
+
+    #[test]
+    fn render_scout_report_with_skip_adopt_shows_skipped_label() {
+        let output = render_scout_report(&[], 1, 1, 0, true);
+        assert!(
+            output.contains("Adoption: skipped"),
+            "must label adoption as skipped"
+        );
+    }
+
+    #[test]
+    fn render_scout_report_empty_decisions_shows_zero_sessions() {
+        let output = render_scout_report(&[], 3, 2, 0, false);
+        assert!(
+            output.contains("Sessions analyzed: 0"),
+            "must show zero when no decisions"
+        );
+        assert!(
+            output.contains("Running VMs: 2"),
+            "must show running vm count"
+        );
+        assert!(
+            output.contains("VMs discovered: 3"),
+            "must show total vm count"
+        );
+    }
+
+    // ── render_advance_report tests (mirrors test_fleet_cli_session_ops.py::TestFormatAdvanceReport) ──
+
+    #[test]
+    fn render_advance_report_contains_header_and_executed_sessions() {
+        let decisions = vec![SessionDecisionRecord {
+            vm: "vm-1".to_string(),
+            session: "work-1".to_string(),
+            status: "idle".to_string(),
+            branch: String::new(),
+            pr: String::new(),
+            action: "advance".to_string(),
+            confidence: 0.85,
+            reasoning: "Ready to advance".to_string(),
+            input_text: String::new(),
+            error: None,
+            project: String::new(),
+            objectives: Vec::new(),
+        }];
+        let executed = vec![SessionExecutionRecord {
+            vm: "vm-1".to_string(),
+            session: "work-1".to_string(),
+            action: "advance".to_string(),
+            executed: true,
+            error: None,
+        }];
+        let output = render_advance_report(&decisions, &executed);
+        assert!(
+            output.contains("FLEET ADVANCE REPORT"),
+            "must contain report header"
+        );
+        assert!(output.contains("vm-1/work-1"), "must contain vm/session");
+        assert!(output.contains("[OK]"), "must show OK for executed action");
+        assert!(
+            output.contains("Sessions analyzed: 1"),
+            "must contain session count"
+        );
+    }
+
+    #[test]
+    fn render_advance_report_failed_execution_shows_error() {
+        let decisions = vec![SessionDecisionRecord {
+            vm: "vm-3".to_string(),
+            session: "sess-3".to_string(),
+            status: "running".to_string(),
+            branch: String::new(),
+            pr: String::new(),
+            action: "provide_input".to_string(),
+            confidence: 0.7,
+            reasoning: "Needs input".to_string(),
+            input_text: "yes".to_string(),
+            error: None,
+            project: String::new(),
+            objectives: Vec::new(),
+        }];
+        let executed = vec![SessionExecutionRecord {
+            vm: "vm-3".to_string(),
+            session: "sess-3".to_string(),
+            action: "provide_input".to_string(),
+            executed: false,
+            error: Some("Timeout sending input".to_string()),
+        }];
+        let output = render_advance_report(&decisions, &executed);
+        assert!(
+            output.contains("[ERROR]"),
+            "must show ERROR label on failed execution"
+        );
+        assert!(
+            output.contains("Timeout sending input"),
+            "must include error message"
+        );
+    }
+
+    #[test]
+    fn render_advance_report_skipped_execution_shows_skipped() {
+        let decisions = vec![SessionDecisionRecord {
+            vm: "vm-4".to_string(),
+            session: "sess-4".to_string(),
+            status: "idle".to_string(),
+            branch: String::new(),
+            pr: String::new(),
+            action: "wait".to_string(),
+            confidence: 1.0,
+            reasoning: "Nothing to do".to_string(),
+            input_text: String::new(),
+            error: None,
+            project: String::new(),
+            objectives: Vec::new(),
+        }];
+        let executed = vec![SessionExecutionRecord {
+            vm: "vm-4".to_string(),
+            session: "sess-4".to_string(),
+            action: "wait".to_string(),
+            executed: false,
+            error: None,
+        }];
+        let output = render_advance_report(&decisions, &executed);
+        assert!(
+            output.contains("[SKIPPED]"),
+            "must show SKIPPED label for non-executed action"
+        );
+    }
+
+    #[test]
+    fn render_advance_report_empty_executions_still_shows_header() {
+        let output = render_advance_report(&[], &[]);
+        assert!(
+            output.contains("FLEET ADVANCE REPORT"),
+            "header always present"
+        );
+        assert!(
+            output.contains("Sessions analyzed: 0"),
+            "zero count for empty input"
+        );
+    }
+
     #[test]
     fn render_report_matches_python_shape() {
         let state = FleetState {
@@ -10808,11 +11019,11 @@ exit 1
         assert!(rendered.contains("> send_input"));
         assert!(rendered.contains("  wait"));
         assert!(rendered.contains("Needs confirmation."));
-        assert!(rendered.contains("e reload  i edit input"));
+        assert!(rendered.contains("e reload  i focus editor"));
     }
 
     #[test]
-    fn start_inline_editor_input_prefills_existing_text() {
+    fn run_tui_edit_input_activates_multiline_editor() {
         let mut ui_state = FleetTuiUiState {
             tab: FleetTuiTab::Editor,
             ..Default::default()
@@ -10825,17 +11036,19 @@ exit 1
             reasoning: "Needs confirmation.".to_string(),
             confidence: 0.9,
         });
+        ui_state.enter_multiline_editor("y\n");
+        ui_state.editor_active = false;
 
-        ui_state.start_inline_editor_input();
+        let result = run_tui_edit_input(&mut ui_state);
 
-        let input = ui_state.inline_input.as_ref().expect("inline input");
-        assert_eq!(input.mode, FleetTuiInlineInputMode::EditProposalInput);
-        assert_eq!(input.buffer, "y\\n");
+        assert!(result.is_ok());
+        assert!(ui_state.editor_active);
+        assert_eq!(ui_state.editor_content(), "y\n");
         assert!(
             ui_state
                 .status_message
                 .as_deref()
-                .is_some_and(|message| message.contains("Enter saves"))
+                .is_some_and(|message| message.contains("Ctrl-S saves"))
         );
     }
 
@@ -10861,7 +11074,7 @@ exit 1
     }
 
     #[test]
-    fn render_tui_editor_view_shows_inline_edit_prompt() {
+    fn render_tui_editor_view_shows_multiline_editor_focus() {
         let mut ui_state = FleetTuiUiState {
             tab: FleetTuiTab::Editor,
             ..Default::default()
@@ -10874,13 +11087,15 @@ exit 1
             reasoning: "Needs confirmation.".to_string(),
             confidence: 0.9,
         });
-        ui_state.start_inline_editor_input();
+        ui_state.enter_multiline_editor("line one\nline two");
 
         let rendered =
             render_tui_frame(&FleetState::new(PathBuf::from("azlin")), 15, &ui_state).unwrap();
 
-        assert!(rendered.contains("Edit input > y\\n_"));
-        assert!(rendered.contains("Enter save  Esc cancel  Backspace delete"));
+        assert!(rendered.contains("line one"));
+        assert!(rendered.contains("line two_"));
+        assert!(rendered.contains("Typing mode"));
+        assert!(rendered.contains("Enter newline  Ctrl-S save  Esc cancel"));
     }
 
     #[test]
@@ -11648,6 +11863,40 @@ exit 1
     }
 
     #[test]
+    fn handle_tui_editor_active_key_escape_discards_and_returns_detail() {
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Editor,
+            ..Default::default()
+        };
+        ui_state.editor_decision = Some(SessionDecision {
+            session_name: "claude-1".to_string(),
+            vm_name: "vm-1".to_string(),
+            action: SessionAction::SendInput,
+            input_text: "safe".to_string(),
+            reasoning: "testing cancel".to_string(),
+            confidence: 1.0,
+        });
+        ui_state.enter_multiline_editor("edited");
+
+        let result = handle_tui_editor_active_key(
+            Path::new("azlin"),
+            &mut ui_state,
+            DashboardKey::Char('\u{1b}'),
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(ui_state.tab, FleetTuiTab::Detail);
+        assert!(!ui_state.editor_active);
+        assert!(ui_state.editor_lines.is_empty());
+        assert_eq!(
+            ui_state.status_message.as_deref(),
+            Some("Editor changes discarded.")
+        );
+        let decision = ui_state.editor_decision.as_ref().expect("editor decision");
+        assert_eq!(decision.input_text, "safe");
+    }
+
+    #[test]
     fn run_tui_apply_reports_missing_prepared_proposal() {
         let mut ui_state = FleetTuiUiState::default();
 
@@ -11718,6 +11967,38 @@ exit 1
             .as_ref()
             .expect("edited apply failure should leave a persistent notice");
         assert_eq!(notice.title, "Apply status");
+        assert!(notice.message.contains("dangerous-input policy"));
+    }
+
+    #[test]
+    fn run_tui_apply_edited_uses_active_multiline_editor_content() {
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Editor,
+            ..Default::default()
+        };
+        ui_state.editor_decision = Some(SessionDecision {
+            session_name: "claude-1".to_string(),
+            vm_name: "vm-1".to_string(),
+            action: SessionAction::SendInput,
+            input_text: "safe".to_string(),
+            reasoning: "testing dangerous input".to_string(),
+            confidence: 0.95,
+        });
+        ui_state.enter_multiline_editor("rm -rf /");
+
+        let result = run_tui_apply_edited(Path::new("azlin"), &mut ui_state);
+
+        assert!(result.is_ok());
+        assert!(
+            ui_state
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.contains("dangerous-input policy"))
+        );
+        let notice = ui_state
+            .proposal_notice
+            .as_ref()
+            .expect("live editor content should drive apply validation");
         assert!(notice.message.contains("dangerous-input policy"));
     }
 
@@ -13047,129 +13328,5 @@ exit 1
         ui.editor_discard();
         assert!(!ui.editor_active, "editor deactivated after discard");
         assert!(ui.editor_lines.is_empty(), "lines cleared after discard");
-    }
-
-    // ---- render_scout_report tests ----
-
-    fn make_decision(vm: &str, session: &str, action: &str) -> SessionDecisionRecord {
-        SessionDecisionRecord {
-            vm: vm.to_string(),
-            session: session.to_string(),
-            status: "waiting_input".to_string(),
-            branch: String::new(),
-            pr: String::new(),
-            action: action.to_string(),
-            confidence: 0.9,
-            reasoning: "looks good".to_string(),
-            input_text: String::new(),
-            error: None,
-            project: String::new(),
-            objectives: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn render_scout_report_contains_header_and_session_info() {
-        let decisions = vec![make_decision("vm-1", "sess-1", "send_input")];
-        let output = render_scout_report(&decisions, 3, 2, 1, false);
-        assert!(output.contains("FLEET SCOUT REPORT"), "header present");
-        assert!(output.contains("VMs discovered: 3"), "vm count");
-        assert!(output.contains("Running VMs: 2"), "running count");
-        assert!(output.contains("Adopted sessions: 1"), "adopted count");
-        assert!(output.contains("vm-1/sess-1"), "session info");
-        assert!(output.contains("send_input"), "action present");
-        assert!(output.contains("looks good"), "reasoning present");
-    }
-
-    #[test]
-    fn render_scout_report_error_path_shows_error_label() {
-        let mut decision = make_decision("vm-2", "sess-2", "skip");
-        decision.error = Some("connection refused".to_string());
-        let output = render_scout_report(&[decision], 1, 1, 0, false);
-        assert!(
-            output.contains("ERROR: connection refused"),
-            "error label shown"
-        );
-        assert!(!output.contains("Reason:"), "reasoning suppressed on error");
-    }
-
-    #[test]
-    fn render_scout_report_skip_adopt_shows_skipped_label() {
-        let decisions = vec![make_decision("vm-3", "sess-3", "send_input")];
-        let output = render_scout_report(&decisions, 1, 1, 0, true);
-        assert!(
-            output.contains("Adoption: skipped"),
-            "skip-adopt label present"
-        );
-        assert!(
-            !output.contains("Adopted sessions:"),
-            "adopted count suppressed"
-        );
-    }
-
-    #[test]
-    fn render_scout_report_empty_decisions() {
-        let output = render_scout_report(&[], 0, 0, 0, false);
-        assert!(
-            output.contains("FLEET SCOUT REPORT"),
-            "header present for empty"
-        );
-        assert!(output.contains("Sessions analyzed: 0"), "zero sessions");
-    }
-
-    // ---- render_advance_report tests ----
-
-    fn make_execution(
-        vm: &str,
-        session: &str,
-        action: &str,
-        executed: bool,
-    ) -> SessionExecutionRecord {
-        SessionExecutionRecord {
-            vm: vm.to_string(),
-            session: session.to_string(),
-            action: action.to_string(),
-            executed,
-            error: None,
-        }
-    }
-
-    #[test]
-    fn render_advance_report_contains_header_and_session_info() {
-        let decisions = vec![make_decision("vm-1", "sess-1", "send_input")];
-        let executions = vec![make_execution("vm-1", "sess-1", "send_input", true)];
-        let output = render_advance_report(&decisions, &executions);
-        assert!(output.contains("FLEET ADVANCE REPORT"), "header present");
-        assert!(output.contains("Sessions analyzed: 1"), "session count");
-        assert!(output.contains("vm-1/sess-1"), "session info");
-        assert!(output.contains("[OK]"), "executed label");
-        assert!(output.contains("send_input"), "action present");
-    }
-
-    #[test]
-    fn render_advance_report_error_path_shows_error_label() {
-        let decisions = vec![make_decision("vm-2", "sess-2", "skip")];
-        let mut execution = make_execution("vm-2", "sess-2", "skip", false);
-        execution.error = Some("timeout".to_string());
-        let output = render_advance_report(&decisions, &[execution]);
-        assert!(output.contains("[ERROR] timeout"), "error label shown");
-    }
-
-    #[test]
-    fn render_advance_report_skip_adopt_shows_skipped_label() {
-        let decisions = vec![make_decision("vm-3", "sess-3", "send_input")];
-        let execution = make_execution("vm-3", "sess-3", "send_input", false);
-        let output = render_advance_report(&decisions, &[execution]);
-        assert!(output.contains("[SKIPPED]"), "skipped label present");
-    }
-
-    #[test]
-    fn render_advance_report_empty_input() {
-        let output = render_advance_report(&[], &[]);
-        assert!(
-            output.contains("FLEET ADVANCE REPORT"),
-            "header present for empty"
-        );
-        assert!(output.contains("Sessions analyzed: 0"), "zero sessions");
     }
 }

@@ -10,7 +10,7 @@
 use crate::protocol::{FailurePolicy, Hook};
 use amplihack_cli::binary_finder::BinaryFinder;
 use amplihack_cli::memory::{
-    background_index_job_active, check_index_status, default_code_graph_db_path_for_project,
+    background_index_job_active, check_index_status, resolve_code_graph_db_path_for_project,
     summarize_code_graph,
 };
 use amplihack_state::AtomicJsonFile;
@@ -160,7 +160,7 @@ fn check_version(dirs: &ProjectDirs) -> Option<String> {
 }
 
 fn load_code_graph_context(dirs: &ProjectDirs) -> Option<String> {
-    let db_path = default_code_graph_db_path_for_project(&dirs.root).ok()?;
+    let db_path = resolve_code_graph_db_path_for_project(&dirs.root).ok()?;
     let summary = summarize_code_graph(Some(&db_path)).ok().flatten()?;
     let total = summary.files + summary.classes + summary.functions;
     if total == 0 {
@@ -195,7 +195,7 @@ fn setup_blarify_indexing(dirs: &ProjectDirs) -> anyhow::Result<bool> {
     }
 
     let status = check_index_status(&dirs.root)?;
-    let db_path = default_code_graph_db_path_for_project(&dirs.root)?;
+    let db_path = resolve_code_graph_db_path_for_project(&dirs.root)?;
     let code_graph_missing = !db_path.exists();
     if !status.needs_indexing && !code_graph_missing {
         return Ok(false);
@@ -249,8 +249,8 @@ fn build_blarify_index_command(
         BlarifyIndexAction::ImportExistingJson => {
             cmd.arg("index-code")
                 .arg(blarify_json_path(project_root))
-                .arg("--kuzu-path")
-                .arg(default_code_graph_db_path_for_project(project_root)?);
+                .arg("--db-path")
+                .arg(resolve_code_graph_db_path_for_project(project_root)?);
         }
         BlarifyIndexAction::GenerateNativeScip => {
             cmd.arg("index-scip")
@@ -512,7 +512,7 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let db_path = default_code_graph_db_path_for_project(dir.path()).unwrap();
+        let db_path = resolve_code_graph_db_path_for_project(dir.path()).unwrap();
         import_blarify_json(&input, Some(&db_path)).unwrap();
 
         let context = load_code_graph_context(&dirs).expect("code graph context expected");

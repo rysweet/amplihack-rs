@@ -108,7 +108,7 @@ Run the failing command manually with Python stripped:
 
 ```sh
 export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v python | tr '\n' ':')
-./target/debug/amplihack query-code stats --kuzu-path /tmp/test_kuzu
+./target/debug/amplihack query-code --db-path /tmp/test_kuzu stats
 ```
 
 Check the stderr output for the panic message or error.

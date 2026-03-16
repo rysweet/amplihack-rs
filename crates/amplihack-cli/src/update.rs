@@ -129,6 +129,87 @@ pub(crate) fn validate_download_url(url: &str) -> Result<()> {
     )
 }
 
+/// Returns `true` when the error is transient and the request should be retried.
+///
+/// Retryable conditions:
+/// - `429 Too Many Requests` — GitHub rate limit; back off and retry.
+/// - `5xx Server Error` — transient server-side failures.
+/// - `Transport` errors — connection reset, DNS flake, timeout.
+///
+/// Non-retryable conditions (fail fast):
+/// - `4xx` (except 429) — client error; retrying won't help.
+fn is_retryable_error(error: &ureq::Error) -> bool {
+    match error {
+        ureq::Error::Status(status, _) => *status == 429 || *status >= 500,
+        ureq::Error::Transport(_) => true,
+    }
+}
+
+/// User-friendly message for GitHub-specific HTTP error codes.
+fn github_error_message(status: u16, url: &str) -> String {
+    match status {
+        403 => format!(
+            "GitHub returned 403 Forbidden for {url}. \
+            This usually means the API rate limit has been exceeded. \
+            Set AMPLIHACK_NO_UPDATE_CHECK=1 to skip update checks, \
+            or wait ~60 minutes for the rate limit to reset."
+        ),
+        429 => format!(
+            "GitHub rate limit exceeded for {url}. \
+            Please wait a few minutes before retrying."
+        ),
+        _ => format!("HTTP {status} from {url}"),
+    }
+}
+
+/// Maximum number of attempts for retryable HTTP requests.
+const HTTP_MAX_ATTEMPTS: u32 = 3;
+/// Initial backoff delay in milliseconds (doubles on each retry).
+const HTTP_INITIAL_BACKOFF_MS: u64 = 500;
+
+/// Calls [`http_get`] with exponential backoff for transient errors.
+///
+/// Attempts up to [`HTTP_MAX_ATTEMPTS`] times, doubling the delay between
+/// retries starting at [`HTTP_INITIAL_BACKOFF_MS`].  Non-retryable errors
+/// (4xx except 429, parse failures, URL validation) are returned immediately.
+///
+/// Use this for user-initiated operations (e.g. `amplihack update`, binary
+/// downloads) where a brief retry is acceptable.  For background startup
+/// checks, use [`http_get`] directly — failures there are silently ignored.
+pub(crate) fn http_get_with_retry(url: &str) -> Result<Vec<u8>> {
+    let mut delay_ms = HTTP_INITIAL_BACKOFF_MS;
+    for attempt in 1..=HTTP_MAX_ATTEMPTS {
+        match http_get(url) {
+            Ok(body) => return Ok(body),
+            Err(err) => {
+                // http_get wraps ureq errors; inspect the original ureq error
+                // to decide whether to retry.  If the source chain contains a
+                // ureq::Error we can classify it; otherwise treat as retryable
+                // to be conservative.
+                let is_retryable = err
+                    .downcast_ref::<ureq::Error>()
+                    .map(is_retryable_error)
+                    .unwrap_or(true);
+
+                if !is_retryable || attempt == HTTP_MAX_ATTEMPTS {
+                    return Err(err);
+                }
+
+                tracing::debug!(
+                    attempt,
+                    delay_ms,
+                    url,
+                    error = %err,
+                    "HTTP request failed; retrying after backoff"
+                );
+                std::thread::sleep(Duration::from_millis(delay_ms));
+                delay_ms *= 2;
+            }
+        }
+    }
+    unreachable!("loop exits via return inside the body")
+}
+
 pub(crate) fn http_get(url: &str) -> Result<Vec<u8>> {
     // SEC-1: Reject URLs from unexpected hosts before making any network call.
     validate_download_url(url)?;
@@ -150,6 +231,9 @@ pub(crate) fn http_get(url: &str) -> Result<Vec<u8>> {
         Ok(response) => response,
         Err(ureq::Error::Status(404, _)) if url.ends_with("/releases/latest") => {
             bail!("no stable v* release has been published for {GITHUB_REPO} yet")
+        }
+        Err(ureq::Error::Status(status @ (403 | 429), _)) => {
+            bail!("{}", github_error_message(status, url))
         }
         Err(error) => return Err(anyhow!("HTTP request failed for {url}: {error}")),
     };
@@ -424,7 +508,9 @@ fn verify_sha256(archive_bytes: &[u8], checksum_url: &str) -> Result<()> {
 }
 
 fn download_and_replace(release: &UpdateRelease) -> Result<()> {
-    let archive_bytes = http_get(&release.asset_url)?;
+    // Use retry for the binary download: this is an explicit user action where
+    // a brief transient failure should not abort the entire upgrade.
+    let archive_bytes = http_get_with_retry(&release.asset_url)?;
 
     // SEC-1: Verify SHA-256 checksum against the release manifest before
     // extracting or installing anything.  If the release does not publish a
@@ -540,15 +626,6 @@ fn install_binary_atomic(source: &Path, destination: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ---------------------------------------------------------------------------
-    // TDD Step 7: Failing tests for update check suppression (Category 1)
-    //
-    // These tests define the contract for a `should_skip_update_check_for_subcommand`
-    // function that accepts a plain subcommand name string instead of the raw
-    // `&[OsString]` args slice. These tests FAIL until the implementation provides
-    // that function with the correct logic.
-    // ---------------------------------------------------------------------------
 
     /// When AMPLIHACK_NONINTERACTIVE=1 is set, ALL subcommands — including launch
     /// commands — must skip the update check to avoid polluting scripted output.
@@ -668,6 +745,48 @@ mod tests {
             !should_skip_update_check_for_subcommand("claude"),
             "should_skip_update_check_for_subcommand('claude') must return false \
              (i.e. do NOT skip) when no suppressing env vars are set"
+        );
+    }
+
+    #[test]
+    fn is_retryable_error_classifies_status_codes() {
+        // 5xx are retryable
+        for status in [500u16, 502, 503, 504] {
+            let err = ureq::Error::Status(status, ureq::Response::new(status, "err", "").unwrap());
+            assert!(is_retryable_error(&err), "{status} should be retryable");
+        }
+        // 429 is retryable
+        let err = ureq::Error::Status(429, ureq::Response::new(429, "Rate Limited", "").unwrap());
+        assert!(is_retryable_error(&err), "429 should be retryable");
+        // 4xx (except 429) are NOT retryable
+        for status in [400u16, 401, 403, 404, 422] {
+            let err = ureq::Error::Status(
+                status,
+                ureq::Response::new(status, "client err", "").unwrap(),
+            );
+            assert!(
+                !is_retryable_error(&err),
+                "{status} should NOT be retryable"
+            );
+        }
+    }
+
+    #[test]
+    fn github_error_message_contains_actionable_advice() {
+        let msg_403 = github_error_message(403, "https://api.github.com/test");
+        assert!(
+            msg_403.contains("rate limit"),
+            "403 message should mention rate limit"
+        );
+        assert!(
+            msg_403.contains("AMPLIHACK_NO_UPDATE_CHECK"),
+            "403 message should suggest opt-out env var"
+        );
+
+        let msg_429 = github_error_message(429, "https://api.github.com/test");
+        assert!(
+            msg_429.contains("rate limit"),
+            "429 message should mention rate limit"
         );
     }
 

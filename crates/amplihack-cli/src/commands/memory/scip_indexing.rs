@@ -1,4 +1,4 @@
-use super::code_graph::{CodeGraphImportCounts, default_code_graph_db_path_for_project};
+use super::code_graph::{CodeGraphImportCounts, resolve_code_graph_db_path_for_project};
 use super::import_scip_file;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -115,7 +115,7 @@ pub fn run_index_scip(project_path: Option<&Path>, languages: &[String]) -> Resu
     let resolved_project_path = project_path
         .map(Path::to_path_buf)
         .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
-    let kuzu_path = default_code_graph_db_path_for_project(&resolved_project_path)?;
+    let kuzu_path = resolve_code_graph_db_path_for_project(&resolved_project_path)?;
     let mut import_counts = CodeGraphImportCounts::default();
     for (language, artifact) in summary
         .completed_languages

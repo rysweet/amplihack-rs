@@ -70,3 +70,22 @@ path = "../../tests/integration/no_python_probe_test.rs"
 [[test]]
 name = "fleet_probe"
 path = "../../tests/integration/fleet_probe.rs"
+
+# Issue #77 pre-merge security hygiene tests (TC-SEC-01 through TC-SEC-24).
+# These TDD tests define the security contract for the fleet module and drive
+# the four PENDING pre-merge checklist items:
+#   TC-SEC-01:    Cargo.lock present for `cargo audit`
+#   TC-SEC-02–04: No `Command::new("sh")` / `sh -c` patterns
+#   TC-SEC-05–07: tempfile::persist() produces 0o600 files (umask-independent)
+#   TC-SEC-08–14: CLI session-ID and VM-name args validated against allowlist
+#   TC-SEC-15–19: shell_single_quote escaping contract
+#   TC-SEC-20:    No hardcoded high-entropy secrets in source
+#   TC-SEC-21–22: Error messages do not expose absolute filesystem paths
+#   TC-SEC-23:    No wildcard version specifiers in Cargo.toml
+#   TC-SEC-24:    kill(PID) built from numeric type, not user string
+#
+# Tests TC-SEC-07 and TC-SEC-08–14 FAIL until the corresponding implementation
+# work (persist-site annotations, CLI-level input validation) is complete.
+[[test]]
+name = "security_hygiene"
+path = "../../tests/integration/security_hygiene_test.rs"
