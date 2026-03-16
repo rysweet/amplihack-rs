@@ -8757,7 +8757,11 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn write_executable(path: &Path, content: &str) {
-        fs::write(path, content).unwrap();
+        use std::io::Write as _;
+        let mut file = fs::File::create(path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
         let mut perms = fs::metadata(path).unwrap().permissions();
         perms.set_mode(0o755);
         fs::set_permissions(path, perms).unwrap();
@@ -13043,5 +13047,129 @@ exit 1
         ui.editor_discard();
         assert!(!ui.editor_active, "editor deactivated after discard");
         assert!(ui.editor_lines.is_empty(), "lines cleared after discard");
+    }
+
+    // ---- render_scout_report tests ----
+
+    fn make_decision(vm: &str, session: &str, action: &str) -> SessionDecisionRecord {
+        SessionDecisionRecord {
+            vm: vm.to_string(),
+            session: session.to_string(),
+            status: "waiting_input".to_string(),
+            branch: String::new(),
+            pr: String::new(),
+            action: action.to_string(),
+            confidence: 0.9,
+            reasoning: "looks good".to_string(),
+            input_text: String::new(),
+            error: None,
+            project: String::new(),
+            objectives: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn render_scout_report_contains_header_and_session_info() {
+        let decisions = vec![make_decision("vm-1", "sess-1", "send_input")];
+        let output = render_scout_report(&decisions, 3, 2, 1, false);
+        assert!(output.contains("FLEET SCOUT REPORT"), "header present");
+        assert!(output.contains("VMs discovered: 3"), "vm count");
+        assert!(output.contains("Running VMs: 2"), "running count");
+        assert!(output.contains("Adopted sessions: 1"), "adopted count");
+        assert!(output.contains("vm-1/sess-1"), "session info");
+        assert!(output.contains("send_input"), "action present");
+        assert!(output.contains("looks good"), "reasoning present");
+    }
+
+    #[test]
+    fn render_scout_report_error_path_shows_error_label() {
+        let mut decision = make_decision("vm-2", "sess-2", "skip");
+        decision.error = Some("connection refused".to_string());
+        let output = render_scout_report(&[decision], 1, 1, 0, false);
+        assert!(
+            output.contains("ERROR: connection refused"),
+            "error label shown"
+        );
+        assert!(!output.contains("Reason:"), "reasoning suppressed on error");
+    }
+
+    #[test]
+    fn render_scout_report_skip_adopt_shows_skipped_label() {
+        let decisions = vec![make_decision("vm-3", "sess-3", "send_input")];
+        let output = render_scout_report(&decisions, 1, 1, 0, true);
+        assert!(
+            output.contains("Adoption: skipped"),
+            "skip-adopt label present"
+        );
+        assert!(
+            !output.contains("Adopted sessions:"),
+            "adopted count suppressed"
+        );
+    }
+
+    #[test]
+    fn render_scout_report_empty_decisions() {
+        let output = render_scout_report(&[], 0, 0, 0, false);
+        assert!(
+            output.contains("FLEET SCOUT REPORT"),
+            "header present for empty"
+        );
+        assert!(output.contains("Sessions analyzed: 0"), "zero sessions");
+    }
+
+    // ---- render_advance_report tests ----
+
+    fn make_execution(
+        vm: &str,
+        session: &str,
+        action: &str,
+        executed: bool,
+    ) -> SessionExecutionRecord {
+        SessionExecutionRecord {
+            vm: vm.to_string(),
+            session: session.to_string(),
+            action: action.to_string(),
+            executed,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn render_advance_report_contains_header_and_session_info() {
+        let decisions = vec![make_decision("vm-1", "sess-1", "send_input")];
+        let executions = vec![make_execution("vm-1", "sess-1", "send_input", true)];
+        let output = render_advance_report(&decisions, &executions);
+        assert!(output.contains("FLEET ADVANCE REPORT"), "header present");
+        assert!(output.contains("Sessions analyzed: 1"), "session count");
+        assert!(output.contains("vm-1/sess-1"), "session info");
+        assert!(output.contains("[OK]"), "executed label");
+        assert!(output.contains("send_input"), "action present");
+    }
+
+    #[test]
+    fn render_advance_report_error_path_shows_error_label() {
+        let decisions = vec![make_decision("vm-2", "sess-2", "skip")];
+        let mut execution = make_execution("vm-2", "sess-2", "skip", false);
+        execution.error = Some("timeout".to_string());
+        let output = render_advance_report(&decisions, &[execution]);
+        assert!(output.contains("[ERROR] timeout"), "error label shown");
+    }
+
+    #[test]
+    fn render_advance_report_skip_adopt_shows_skipped_label() {
+        let decisions = vec![make_decision("vm-3", "sess-3", "send_input")];
+        let execution = make_execution("vm-3", "sess-3", "send_input", false);
+        let output = render_advance_report(&decisions, &[execution]);
+        assert!(output.contains("[SKIPPED]"), "skipped label present");
+    }
+
+    #[test]
+    fn render_advance_report_empty_input() {
+        let output = render_advance_report(&[], &[]);
+        assert!(
+            output.contains("FLEET ADVANCE REPORT"),
+            "header present for empty"
+        );
+        assert!(output.contains("Sessions analyzed: 0"), "zero sessions");
     }
 }
