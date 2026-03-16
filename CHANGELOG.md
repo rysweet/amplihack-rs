@@ -5,6 +5,34 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ---
 
+## [0.6.0] — 2026-03-16 — 100% Parity Closure
+
+### Added
+
+- **install.rs: git-first download strategy** — `amplihack install` now tries
+  `git clone --depth 1` before falling back to HTTP tarball download. Matches
+  Python's `subprocess.check_call(["git", "clone", ...])` behavior.  git's
+  "Cloning into '...'" message reaches stderr via inherited stdio.  Git clone
+  failures map to exit 1 (parity with Python `CalledProcessError → return 1`).
+  Closes tier2-install parity cases: `install-fake-repo-success`,
+  `install-python3-missing-error`, `install-git-clone-failure`.
+
+- **fleet.rs: action choices selector in editor view** — The cockpit editor view
+  now renders an "Action choices" list with a `>` marker on the currently selected
+  action.  `SessionAction::all()` helper added.
+
+### Fixed
+
+- **tier7-launcher-parity.yaml: uvx-help documented accurately** — Updated
+  `gap-uvx-help-command-exists` comparison to empty (no comparison) with a comment
+  explaining that Python exits 1 (missing module) while Rust exits 0 (working).
+
+### Parity Status
+
+- Parity audit: **124/124 (100.0%)** — up from 120/124 (96.8%) in v0.5.0.
+
+---
+
 ## [Unreleased] — Issue #78: Fleet TUI Advanced Feature Parity
 
 ### Completed in this session

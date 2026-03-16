@@ -2592,6 +2592,11 @@ fn cockpit_render_editor_view(ui_state: &FleetTuiUiState, lines: &mut Vec<String
         &format!("Target: {}/{}", decision.vm_name, decision.session_name),
     );
     push(lines, &format!("Action: {}", decision.action.as_str()));
+    push(lines, "Action choices");
+    for action in SessionAction::all() {
+        let marker = if action == decision.action { ">" } else { " " };
+        push(lines, &format!("  {marker} {}", action.as_str()));
+    }
     push(
         lines,
         &format!("Confidence: {:.0}%", decision.confidence * 100.0),
@@ -5739,6 +5744,16 @@ enum SessionAction {
 }
 
 impl SessionAction {
+    fn all() -> [Self; 5] {
+        [
+            SessionAction::SendInput,
+            SessionAction::Wait,
+            SessionAction::Escalate,
+            SessionAction::MarkComplete,
+            SessionAction::Restart,
+        ]
+    }
+
     fn as_str(self) -> &'static str {
         match self {
             SessionAction::SendInput => "send_input",
@@ -10785,6 +10800,9 @@ exit 1
         assert!(rendered.contains("[editor]"));
         assert!(rendered.contains("Action Editor"));
         assert!(rendered.contains("Action: send_input"));
+        assert!(rendered.contains("Action choices"));
+        assert!(rendered.contains("> send_input"));
+        assert!(rendered.contains("  wait"));
         assert!(rendered.contains("Needs confirmation."));
         assert!(rendered.contains("e reload  i edit input"));
     }

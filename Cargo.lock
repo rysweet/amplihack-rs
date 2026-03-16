@@ -25,7 +25,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "amplihack"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "amplihack-cli",
  "amplihack-hooks",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-asset-resolver-bin"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "amplihack-cli",
  "tracing",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "amplihack-state",
  "amplihack-types",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "amplihack-cli",
  "amplihack-state",
@@ -100,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks-bin"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "amplihack-hooks",
  "amplihack-state",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-state"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "amplihack-types",
  "libc",
@@ -126,7 +126,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-types"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",

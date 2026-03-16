@@ -1072,7 +1072,10 @@ fn tc09_fleet_tui_editor_apply_blocks_dangerous_input_without_python() {
 
     let cleaned = probe.finish();
     assert!(
-        cleaned.contains("Action Editor") && cleaned.contains("Action: send_input"),
+        cleaned.contains("Action Editor")
+            && cleaned.contains("Action: send_input")
+            && cleaned.contains("Action choices")
+            && cleaned.contains("> send_input"),
         "expected proposal/editor output in PTY flow:\n{cleaned}"
     );
     assert!(

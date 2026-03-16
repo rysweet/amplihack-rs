@@ -8,10 +8,12 @@ use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const REPO_ARCHIVE_URL: &str =
     "https://github.com/rysweet/amplihack/archive/refs/heads/main.tar.gz";
+const REPO_GIT_URL: &str = "https://github.com/rysweet/amplihack";
 const ESSENTIAL_DIRS: &[&str] = &[
     "agents/amplihack",
     "commands/amplihack",
@@ -802,7 +804,20 @@ fn prune_legacy_amplihack_hook_assets(claude_dir: &Path) -> Result<usize> {
     Ok(removed)
 }
 
+/// Fetch the framework repository into `destination`.
+///
+/// Strategy (matches Python `amplihack install` behaviour):
+/// 1. If `git` is found on PATH, run `git clone --depth 1 <url> <dest>`.
+///    git writes "Cloning into '...'..." to stderr automatically.
+///    If the clone fails the error is propagated immediately (no fallback).
+/// 2. If `git` is NOT on PATH, fall back to HTTP tarball download.
 fn download_and_extract_framework_repo(destination: &Path) -> Result<PathBuf> {
+    if let Ok(git_path) = which_git() {
+        git_clone_framework_repo(&git_path, destination)?;
+        return find_framework_repo_root(destination);
+    }
+
+    // git not available — fall back to HTTP tarball download
     validate_download_url(REPO_ARCHIVE_URL)?;
     let archive_bytes = http_get(REPO_ARCHIVE_URL)
         .with_context(|| format!("failed to download framework archive from {REPO_ARCHIVE_URL}"))?;
@@ -813,6 +828,65 @@ fn download_and_extract_framework_repo(destination: &Path) -> Result<PathBuf> {
         )
     })?;
     find_framework_repo_root(destination)
+}
+
+/// Resolve the `git` binary path from PATH.
+fn which_git() -> Result<PathBuf> {
+    let output = std::process::Command::new("which")
+        .arg("git")
+        .output()
+        .or_else(|_| {
+            // `which` may not be available on all platforms; fall back to `command -v git`
+            std::process::Command::new("sh")
+                .args(["-c", "command -v git"])
+                .output()
+        })
+        .context("failed to locate git binary")?;
+    if output.status.success() {
+        let path_str = std::str::from_utf8(&output.stdout)
+            .context("git path is not valid UTF-8")?
+            .trim()
+            .to_string();
+        if path_str.is_empty() {
+            bail!("git not found on PATH");
+        }
+        Ok(PathBuf::from(path_str))
+    } else {
+        bail!("git not found on PATH")
+    }
+}
+
+/// Run `git clone --depth 1 <REPO_GIT_URL> <destination>`.
+///
+/// stderr is inherited so git's "Cloning into '...'" message reaches the
+/// terminal (parity with Python's `subprocess.check_call(["git", "clone", ...])`).
+///
+/// On failure, returns `CliExitError` with git's exit code so that the error
+/// message is clean (no extra Rust diagnostic on stderr — parity with Python
+/// which only prints to stdout on failure).
+fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
+    let status = std::process::Command::new(git_path)
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            REPO_GIT_URL,
+            &destination.to_string_lossy(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| format!("failed to spawn git clone for {REPO_GIT_URL}"))?;
+    if !status.success() {
+        // Normalize to exit code 1 for parity with Python:
+        //   Python: CalledProcessError → print(f"Failed to install: {e}") to stdout + return 1
+        //   Rust:   CliExitError(1)    → std::process::exit(1), no extra stderr message
+        // Python always maps any git clone failure to exit 1 regardless of git's
+        // actual exit code.  Rust must match this behaviour.
+        return Err(crate::command_error::exit_error(1));
+    }
+    Ok(())
 }
 
 fn find_framework_repo_root(root: &Path) -> Result<PathBuf> {
