@@ -29,6 +29,7 @@ clap = { workspace = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+libc = { workspace = true }
 
 [[test]]
 name = "cli_launch"
@@ -50,3 +51,11 @@ path = "../../tests/integration/ci_cxx_build_pin_test.rs"
 [[test]]
 name = "recipe_e2e"
 path = "../../tests/integration/recipe_e2e_test.rs"
+
+# Issue #77 AC9: no-Python probe integration tests (TC-04 through TC-07).
+# These tests verify that index-code, index-scip, and query-code subcommands
+# work correctly in a Python-free environment.
+# Tests tc04-tc07 FAIL until the probe script extension is implemented.
+[[test]]
+name = "no_python_probe"
+path = "../../tests/integration/no_python_probe_test.rs"

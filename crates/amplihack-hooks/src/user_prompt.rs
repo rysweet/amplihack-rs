@@ -2,41 +2,17 @@
 //!
 //! On every user message, this hook:
 //! 1. Loads cached user preferences (USER_PREFERENCES.md)
-//! 2. Injects memory context via Python bridge
+//! 2. Injects native Rust memory context for referenced agents
 //! 3. Detects framework injection needs (AMPLIHACK.md vs CLAUDE.md)
 //! 4. Returns modified prompt with injected context
 
+use crate::agent_memory::{detect_agent_references, detect_slash_command_agent};
 use crate::protocol::{FailurePolicy, Hook};
-use amplihack_state::PythonBridge;
+use amplihack_cli::memory::{PromptContextMemory, retrieve_prompt_context_memories};
 use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
-
-/// Embedded Python bridge script for memory injection.
-const MEMORY_INJECT_BRIDGE: &str = r#"
-import sys
-import json
-
-try:
-    input_data = json.load(sys.stdin)
-    action = input_data.get("action", "inject_memory")
-    session_id = input_data.get("session_id", "")
-    prompt = input_data.get("prompt", "")
-
-    from amplihack.memory.coordinator import MemoryCoordinator
-    coordinator = MemoryCoordinator()
-    context = coordinator.inject_memory_for_agents_sync(
-        session_id=session_id,
-        prompt=prompt
-    )
-    result = {"injected_context": context or "", "memory_keys_used": []}
-    json.dump(result, sys.stdout)
-except Exception as e:
-    json.dump({"injected_context": "", "error": str(e)}, sys.stdout)
-    sys.exit(1)
-"#;
 
 pub struct UserPromptSubmitHook;
 
@@ -78,7 +54,7 @@ impl Hook for UserPromptSubmitHook {
             context_parts.push("Has Learned Patterns: Yes".to_string());
         }
 
-        // Inject memory context via bridge.
+        // Inject memory context for referenced agents.
         if let Some(memory_context) = inject_memory(&prompt, session_id.as_deref())
             && !memory_context.is_empty()
         {
@@ -239,31 +215,47 @@ fn build_preference_context(prefs: &[(String, String)]) -> String {
     parts.join("\n")
 }
 
-/// Inject memory context via Python bridge.
 fn inject_memory(prompt: &str, session_id: Option<&str>) -> Option<String> {
-    let input = serde_json::json!({
-        "action": "inject_memory",
-        "session_id": session_id.unwrap_or(""),
-        "prompt": prompt,
-    });
+    let mut agent_types = detect_agent_references(prompt);
+    if let Some(agent) = detect_slash_command_agent(prompt)
+        && !agent_types.iter().any(|existing| existing == agent)
+    {
+        agent_types.push(agent.to_string());
+    }
 
-    match PythonBridge::call(MEMORY_INJECT_BRIDGE, &input, Duration::from_secs(5)) {
-        Ok(result) => {
-            let context = result
-                .get("injected_context")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            if context.is_empty() {
-                None
-            } else {
-                Some(context.to_string())
-            }
+    if agent_types.is_empty() {
+        return None;
+    }
+
+    let session_id = session_id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("hook_session");
+    let query_text = prompt.chars().take(500).collect::<String>();
+
+    match retrieve_prompt_context_memories(session_id, &query_text, 2000) {
+        Ok(memories) if !memories.is_empty() => {
+            Some(format_agent_memory_context(&agent_types, &memories))
         }
-        Err(e) => {
-            tracing::warn!("Memory injection failed: {}", e);
+        Ok(_) => None,
+        Err(error) => {
+            tracing::warn!("Memory injection failed: {}", error);
             None
         }
     }
+}
+
+fn format_agent_memory_context(agent_types: &[String], memories: &[PromptContextMemory]) -> String {
+    agent_types
+        .iter()
+        .map(|agent_type| {
+            let mut lines = vec![format!("\n## Memory for {} Agent\n", agent_type)];
+            for memory in memories {
+                lines.push(format!("- {} (relevance: 0.00)", memory.content));
+            }
+            lines.join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Check if AMPLIHACK.md should be injected (differs from CLAUDE.md).
@@ -306,6 +298,7 @@ fn find_amplihack_md(dirs: &ProjectDirs) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_memory::{detect_agent_references, detect_slash_command_agent};
 
     #[test]
     fn extract_prefs_from_table() {
@@ -353,6 +346,39 @@ casual and direct
         let prefs = vec![("Key".to_string(), "Value".to_string())];
         let ctx = build_preference_context(&prefs);
         assert!(ctx.contains("**Key**: Value"));
+    }
+
+    #[test]
+    fn detects_explicit_agent_references() {
+        let agents = detect_agent_references(
+            "Please inspect @.claude/agents/amplihack/core/architect.md for this task",
+        );
+        assert_eq!(agents, vec!["architect".to_string()]);
+    }
+
+    #[test]
+    fn detects_slash_command_agent() {
+        assert_eq!(
+            detect_slash_command_agent("/analyze auth flow"),
+            Some("analyzer")
+        );
+        assert_eq!(
+            detect_slash_command_agent("please /analyze auth flow"),
+            None
+        );
+    }
+
+    #[test]
+    fn formats_agent_memory_context() {
+        let context = format_agent_memory_context(
+            &[String::from("analyzer")],
+            &[PromptContextMemory {
+                content: String::from("Fix CI by running cargo fmt before push."),
+            }],
+        );
+        assert!(context.contains("## Memory for analyzer Agent"));
+        assert!(context.contains("Fix CI by running cargo fmt before push."));
+        assert!(context.contains("relevance: 0.00"));
     }
 
     #[test]

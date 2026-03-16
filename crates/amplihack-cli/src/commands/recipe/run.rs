@@ -1,4 +1,5 @@
 use super::*;
+use crate::env_builder::EnvBuilder;
 
 const MAX_OUTPUT_LENGTH: usize = 200;
 
@@ -154,6 +155,14 @@ fn execute_recipe_via_rust(
     for (key, value) in context {
         command.arg("--set").arg(format!("{key}={value}"));
     }
+
+    command.envs(
+        EnvBuilder::new()
+            .with_amplihack_home()
+            .with_asset_resolver()
+            .with_project_kuzu_db(&abs_working_dir)
+            .build(),
+    );
 
     let output = command
         .output()
@@ -891,6 +900,90 @@ steps:
             "Dry-run of a valid recipe must report success. \
              step_results: {:?}",
             run_result.step_results
+        );
+    }
+
+    #[test]
+    fn test_execute_recipe_via_rust_propagates_asset_resolver_env() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let runner = temp.path().join("recipe-runner-rs");
+        let resolver = temp.path().join("amplihack-asset-resolver");
+        let amplihack_home = temp.path().join("amplihack-home");
+        std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+        std::fs::write(
+            &runner,
+            "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"resolver\":\"$AMPLIHACK_ASSET_RESOLVER\",\"home\":\"$AMPLIHACK_HOME\"}}\nEOF\n",
+        )
+        .expect("failed to write runner stub");
+        std::fs::write(&resolver, "#!/bin/sh\nexit 0\n").expect("failed to write resolver stub");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+                .expect("failed to chmod runner");
+            std::fs::set_permissions(&resolver, std::fs::Permissions::from_mode(0o755))
+                .expect("failed to chmod resolver");
+        }
+
+        let recipe = temp.path().join("recipe.yaml");
+        std::fs::write(&recipe, "name: env-probe\nsteps: []\n").expect("failed to write recipe");
+
+        let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+        let prev_path = std::env::var_os("PATH");
+        let prev_home = std::env::var_os("AMPLIHACK_HOME");
+        let prev_resolver = std::env::var_os("AMPLIHACK_ASSET_RESOLVER");
+        let new_path = match &prev_path {
+            Some(value) if !value.is_empty() => {
+                format!("{}:{}", temp.path().display(), value.to_string_lossy())
+            }
+            _ => temp.path().display().to_string(),
+        };
+        unsafe {
+            std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+            std::env::set_var("PATH", &new_path);
+            std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+            std::env::remove_var("AMPLIHACK_ASSET_RESOLVER");
+        }
+
+        let result = execute_recipe_via_rust(
+            &recipe,
+            &BTreeMap::new(),
+            true,
+            temp.path().to_str().unwrap(),
+        )
+        .expect("recipe run must succeed");
+
+        match prev_runner {
+            Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+            None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+        }
+        match prev_path {
+            Some(value) => unsafe { std::env::set_var("PATH", value) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+        match prev_home {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_HOME", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+        }
+        match prev_resolver {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_ASSET_RESOLVER", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_ASSET_RESOLVER") },
+        }
+
+        assert_eq!(
+            result.context.get("resolver"),
+            Some(&JsonValue::String(resolver.to_string_lossy().into_owned()))
+        );
+        assert_eq!(
+            result.context.get("home"),
+            Some(&JsonValue::String(
+                amplihack_home.to_string_lossy().into_owned()
+            ))
         );
     }
 

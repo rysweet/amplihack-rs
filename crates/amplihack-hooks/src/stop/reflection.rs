@@ -1,75 +1,126 @@
-//! Reflection: post-session analysis via Python SDK bridge.
+//! Reflection: post-session analysis via native Claude CLI invocation.
 //!
-//! After a session ends (and lock/power-steering don't block),
-//! runs Claude reflection to generate feedback on the work done.
+//! After a session ends (and lock/power-steering don't block), runs a
+//! headless Claude reflection prompt to generate feedback on the work done.
 //! Results are saved to timestamped files for history preservation.
 
-use amplihack_state::PythonBridge;
 use amplihack_types::{ProjectDirs, sanitize_session_id};
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
-use std::time::Duration;
+use std::process::{Command, Stdio};
+
+const AMPLIHACK_REPO_URI: &str = "https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding";
+
+const DEFAULT_FEEDBACK_TEMPLATE: &str = "## Task Summary
+[What was accomplished]
+
+## Feedback Summary
+**User Interactions:** [Observations]
+**Workflow Adherence:** [Did workflow get followed?]
+**Subagent Usage:** [Which agents used?]
+**Learning Opportunities:** [What to improve]
+";
+
+const DEFAULT_REFLECTION_PROMPT_TEMPLATE: &str = r#"# Reflection Prompt Template
+#
+# This prompt is used by claude_reflection.py to analyze Claude Code sessions.
+#
+# Available variables for substitution:
+#   {{user_preferences_context}}  - User preferences and mandatory behavior
+#   {{repository_context}}        - Current repository detection results
+#   {{amplihack_repo_uri}}        - Amplihack framework repository URL
+#   {{message_count}}             - Number of messages in session
+#   {{conversation_summary}}      - Formatted conversation excerpt
+#   {{redirects_context}}         - Power-steering redirect history (if any)
+#   {{template}}                  - FEEDBACK_SUMMARY template to fill out
+#
+# Use {{VARIABLE_NAME}} syntax for substitution.
+#
+
+You are analyzing a completed Claude Code session to provide feedback and identify learning opportunities.
+
+{user_preferences_context}
+{repository_context}
+
+## Critical: Distinguish Problem Sources
+
+When analyzing this session, you MUST clearly distinguish between TWO categories of issues:
+
+### 1. Amplihack Framework Issues
+Problems with the coding tools, agents, workflow, or process itself:
+- Agent behavior, effectiveness, or orchestration
+- Workflow step execution or adherence
+- Tool functionality (hooks, commands, utilities, reflection system)
+- Framework architecture or design decisions
+- UltraThink coordination and delegation
+- Command execution (/amplihack:* commands)
+- Session management and logging
+
+**These issues should be filed against**: {amplihack_repo_uri}
+
+### 2. Project Code Issues
+Problems with the actual application code being developed:
+- Application logic bugs or errors
+- Feature implementation quality
+- Test failures in project-specific tests
+- Project-specific design decisions
+- User-facing functionality
+- Business logic correctness
+
+**These issues should be filed against**: The current project repository (see Repository Context above)
+
+**IMPORTANT**: In your feedback, clearly label each issue as either "[AMPLIHACK]" or "[PROJECT]" so it's obvious which repository should handle it.
+
+## Session Conversation
+
+The session had {message_count} messages. Here are key excerpts:
+
+{conversation_summary}
+
+{redirects_context}
+
+## Your Task
+
+Please analyze this session and fill out the following feedback template:
+
+{template}
+
+## Guidelines
+
+1. **Be specific and actionable** - Reference actual events from the session
+2. **Identify patterns** - What worked well? What could improve?
+3. **Track workflow adherence** - Did Claude follow the DEFAULT_WORKFLOW.md steps?
+4. **Note subagent usage** - Which specialized agents were used (architect, builder, reviewer, etc.)?
+5. **Categorize improvements** - Clearly mark each issue as [AMPLIHACK] or [PROJECT]
+6. **Suggest improvements** - What would make future similar sessions better?
+
+Please provide the filled-out template now.
+"#;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReflectionMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RedirectRecord {
+    redirect_number: Option<u64>,
+    timestamp: Option<String>,
+    failed_considerations: Vec<String>,
+    continuation_prompt: String,
+}
 
 /// Check if reflection should run.
 pub fn should_run(_dirs: &ProjectDirs) -> bool {
-    // Check environment variable.
     match std::env::var("AMPLIHACK_ENABLE_REFLECTION") {
         Ok(val) => matches!(val.to_lowercase().as_str(), "1" | "true" | "yes"),
         Err(_) => false,
     }
 }
-
-/// Embedded Python bridge script for session reflection.
-const REFLECTION_BRIDGE: &str = r#"
-import sys
-import json
-
-try:
-    input_data = json.load(sys.stdin)
-    session_id = input_data.get("session_id", "")
-    project_path = input_data.get("project_path", "")
-    transcript_path = input_data.get("transcript_path", "")
-
-    from amplihack.hooks.stop import run_claude_reflection
-    session_dir = input_data.get("session_dir", "")
-
-    # Load conversation from transcript
-    conversation = []
-    if transcript_path:
-        import os
-        if os.path.exists(transcript_path):
-            with open(transcript_path, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                        if entry.get("type") in ("user", "assistant") and "message" in entry:
-                            msg = entry["message"]
-                            if isinstance(msg, str):
-                                conversation.append({"role": entry["type"], "content": msg})
-                            elif isinstance(msg, list):
-                                text = " ".join(
-                                    b.get("text", "") for b in msg
-                                    if isinstance(b, dict) and b.get("type") == "text"
-                                )
-                                if text:
-                                    conversation.append({"role": entry["type"], "content": text})
-                    except json.JSONDecodeError:
-                        continue
-
-    result = run_claude_reflection(session_dir, project_path, conversation)
-    if result:
-        json.dump({"success": True, "template": result}, sys.stdout)
-    else:
-        json.dump({"success": False, "reason": "empty result"}, sys.stdout)
-        sys.exit(1)
-except Exception as e:
-    json.dump({"success": False, "error": str(e)}, sys.stdout)
-    sys.exit(1)
-"#;
 
 /// Save reflection artifacts to disk.
 ///
@@ -78,19 +129,16 @@ fn save_reflection_artifacts(dirs: &ProjectDirs, session_id: &str, template: &st
     let session_dir = dirs.session_logs(session_id);
     let safe_id = sanitize_session_id(session_id);
 
-    // Generate timestamped filename for history preservation.
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let filename = format!("reflection_{safe_id}_{timestamp}.md");
 
-    // Save feedback to session dir.
     if let Err(e) = fs::write(session_dir.join("FEEDBACK_SUMMARY.md"), template) {
         tracing::warn!("Failed to write FEEDBACK_SUMMARY.md: {}", e);
     }
 
-    // Save timestamped copy for history.
     let reflection_dir = dirs.runtime.join("reflection");
     if let Err(e) = fs::create_dir_all(&reflection_dir) {
         tracing::warn!("Failed to create reflection dir: {}", e);
@@ -98,7 +146,6 @@ fn save_reflection_artifacts(dirs: &ProjectDirs, session_id: &str, template: &st
     if let Err(e) = fs::write(reflection_dir.join(&filename), template) {
         tracing::warn!("Failed to write {}: {}", filename, e);
     }
-    // Also update current_findings.md for backward compat.
     if let Err(e) = fs::write(reflection_dir.join("current_findings.md"), template) {
         tracing::warn!("Failed to write current_findings.md: {}", e);
     }
@@ -112,61 +159,388 @@ pub fn run_reflection(
     dirs: &ProjectDirs,
     session_id: &str,
     transcript_path: Option<&Path>,
-) -> anyhow::Result<Option<Value>> {
+) -> Result<Option<Value>> {
     let session_dir = dirs.session_logs(session_id);
     fs::create_dir_all(&session_dir)?;
 
-    // Per-session semaphore to avoid re-presenting reflection results.
     let safe_id = sanitize_session_id(session_id);
     let semaphore_path = session_dir.join(format!(".reflection_presented_{safe_id}"));
     if semaphore_path.exists() {
         return Ok(None);
     }
 
-    let input = serde_json::json!({
-        "session_id": session_id,
-        "project_path": dirs.root.display().to_string(),
-        "session_dir": session_dir.display().to_string(),
-        "transcript_path": transcript_path.map(|p| p.display().to_string()).unwrap_or_default(),
-    });
-
-    match PythonBridge::call(REFLECTION_BRIDGE, &input, Duration::from_secs(30)) {
-        Ok(result) => {
-            let success = result
-                .get("success")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-
-            if success && let Some(template) = result.get("template").and_then(Value::as_str) {
-                save_reflection_artifacts(dirs, session_id, template);
-
-                // Write semaphore ONLY after all work succeeds.
-                if let Err(e) = fs::write(&semaphore_path, "") {
-                    tracing::warn!("Failed to write reflection semaphore: {}", e);
-                }
-
-                // Block with findings.
-                return Ok(Some(serde_json::json!({
-                    "decision": "block",
-                    "reason": format!(
-                        "📋 Session Reflection\n\n{}\n\nPlease review the findings above.",
-                        template
-                    )
-                })));
+    let conversation = match transcript_path {
+        Some(path) => match load_transcript_conversation(path) {
+            Ok(messages) => messages,
+            Err(error) => {
+                tracing::warn!("Failed to parse reflection transcript: {}", error);
+                Vec::new()
             }
+        },
+        None => Vec::new(),
+    };
 
-            Ok(None)
+    let prompt = build_reflection_prompt(dirs, &session_dir, &conversation)?;
+    let Some(template) = run_claude_reflection(&dirs.root, &prompt)? else {
+        return Ok(None);
+    };
+
+    save_reflection_artifacts(dirs, session_id, &template);
+
+    if let Err(e) = fs::write(&semaphore_path, "") {
+        tracing::warn!("Failed to write reflection semaphore: {}", e);
+    }
+
+    Ok(Some(serde_json::json!({
+        "decision": "block",
+        "reason": format!(
+            "📋 Session Reflection\n\n{}\n\nPlease review the findings above.",
+            template
+        )
+    })))
+}
+
+fn build_reflection_prompt(
+    dirs: &ProjectDirs,
+    session_dir: &Path,
+    conversation: &[ReflectionMessage],
+) -> Result<String> {
+    let mut prompt = load_prompt_template(dirs);
+    for (key, value) in [
+        (
+            "{user_preferences_context}",
+            load_user_preferences_context(dirs).unwrap_or_default(),
+        ),
+        ("{repository_context}", get_repository_context(&dirs.root)),
+        ("{amplihack_repo_uri}", AMPLIHACK_REPO_URI.to_string()),
+        ("{message_count}", conversation.len().to_string()),
+        (
+            "{conversation_summary}",
+            format_conversation_summary(conversation, 5_000),
+        ),
+        (
+            "{redirects_context}",
+            format_redirects_context(load_power_steering_redirects(session_dir)),
+        ),
+        ("{template}", load_feedback_template(dirs)),
+    ] {
+        prompt = prompt.replace(key, &value);
+    }
+    Ok(prompt)
+}
+
+fn load_prompt_template(dirs: &ProjectDirs) -> String {
+    let path = dirs
+        .tools_amplihack
+        .join("hooks")
+        .join("templates")
+        .join("reflection_prompt.txt");
+    fs::read_to_string(&path).unwrap_or_else(|_| DEFAULT_REFLECTION_PROMPT_TEMPLATE.to_string())
+}
+
+fn load_feedback_template(dirs: &ProjectDirs) -> String {
+    let path = dirs.claude.join("templates").join("FEEDBACK_SUMMARY.md");
+    fs::read_to_string(&path).unwrap_or_else(|_| DEFAULT_FEEDBACK_TEMPLATE.to_string())
+}
+
+fn load_user_preferences_context(dirs: &ProjectDirs) -> Option<String> {
+    let candidates = [
+        dirs.user_preferences(),
+        dirs.root.join("USER_PREFERENCES.md"),
+    ];
+    for path in candidates {
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        return Some(format!(
+            "## User Preferences (MANDATORY - MUST FOLLOW)\n\nThe following preferences are REQUIRED and CANNOT be ignored:\n\n{}\n\n**IMPORTANT**: When analyzing this session, consider whether Claude followed these user preferences. Do NOT criticize behavior that aligns with configured preferences.",
+            content
+        ));
+    }
+    None
+}
+
+fn get_repository_context(project_root: &Path) -> String {
+    let result = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(project_root)
+        .output();
+
+    match result {
+        Ok(output) if output.status.success() => {
+            let current_repo = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let current_normalized = normalize_url(&current_repo);
+            let amplihack_normalized = normalize_url(AMPLIHACK_REPO_URI);
+
+            if current_normalized == amplihack_normalized {
+                format!(
+                    "\n## Repository Context\n\n**Current Repository**: {}\n**Context**: Working on Amplihack itself\n\n**IMPORTANT**: Since we're working on the Amplihack framework itself, ALL issues identified in this session are Amplihack framework issues and should be filed against the Amplihack repository.\n",
+                    current_repo
+                )
+            } else {
+                format!(
+                    "\n## Repository Context\n\n**Current Repository**: {}\n**Amplihack Repository**: {}\n**Context**: Working on a user project (not Amplihack itself)\n",
+                    current_repo, AMPLIHACK_REPO_URI
+                )
+            }
         }
-        Err(e) => {
-            tracing::warn!("Reflection bridge failed: {}", e);
-            Ok(None)
+        _ => format!(
+            "\n## Repository Context\n\n**Amplihack Repository**: {}\n**Context**: Repository detection unavailable\n",
+            AMPLIHACK_REPO_URI
+        ),
+    }
+}
+
+fn normalize_url(url: &str) -> String {
+    let normalized = url.trim_end_matches('/').replace(".git", "");
+    normalized
+        .replace("git@github.com:", "https://github.com/")
+        .to_lowercase()
+}
+
+fn load_power_steering_redirects(session_dir: &Path) -> Option<Vec<RedirectRecord>> {
+    let path = session_dir.join("redirects.jsonl");
+    let raw = fs::read_to_string(path).ok()?;
+    let redirects = raw
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let entry: Value = serde_json::from_str(trimmed).ok()?;
+            let failed_considerations = entry
+                .get("failed_considerations")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(ToString::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let continuation_prompt = entry.get("continuation_prompt")?.as_str()?.to_string();
+            Some(RedirectRecord {
+                redirect_number: entry.get("redirect_number").and_then(Value::as_u64),
+                timestamp: entry
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                failed_considerations,
+                continuation_prompt,
+            })
+        })
+        .collect::<Vec<_>>();
+    (!redirects.is_empty()).then_some(redirects)
+}
+
+fn format_redirects_context(redirects: Option<Vec<RedirectRecord>>) -> String {
+    let Some(redirects) = redirects else {
+        return String::new();
+    };
+
+    let redirect_word = if redirects.len() == 1 {
+        "redirect"
+    } else {
+        "redirects"
+    };
+    let mut parts = vec![
+        String::new(),
+        "## Power-Steering Redirect History".to_string(),
+        String::new(),
+        format!(
+            "This session had {} power-steering {} where Claude was blocked from stopping due to incomplete work:",
+            redirects.len(),
+            redirect_word
+        ),
+        String::new(),
+    ];
+
+    for redirect in redirects {
+        parts.push(format!(
+            "### Redirect #{} ({})",
+            redirect
+                .redirect_number
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "?".to_string()),
+            redirect.timestamp.unwrap_or_else(|| "unknown".to_string())
+        ));
+        parts.push(String::new());
+        parts.push(format!(
+            "**Failed Checks:** {}",
+            redirect.failed_considerations.join(", ")
+        ));
+        parts.push(String::new());
+        parts.push("**Continuation Prompt Given:**".to_string());
+        parts.push("```".to_string());
+        parts.push(redirect.continuation_prompt);
+        parts.push("```".to_string());
+        parts.push(String::new());
+    }
+
+    parts.push("**Analysis Note:** These redirects indicate areas where work was incomplete. In your feedback, consider whether the redirects were justified and whether Claude successfully addressed the blockers after being redirected.".to_string());
+    parts.push(String::new());
+    parts.join("\n")
+}
+
+fn format_conversation_summary(conversation: &[ReflectionMessage], max_length: usize) -> String {
+    let mut summary_parts = Vec::new();
+    let mut current_length = 0usize;
+
+    for (index, message) in conversation.iter().enumerate() {
+        let mut content = message.content.clone();
+        if content.len() > 500 {
+            content.truncate(497);
+            content.push_str("...");
+        }
+
+        let snippet = format!(
+            "\n**Message {} ({}):** {}\n",
+            index + 1,
+            message.role,
+            content
+        );
+
+        if current_length + snippet.len() > max_length {
+            summary_parts.push(format!(
+                "\n[... {} more messages ...]",
+                conversation.len().saturating_sub(index)
+            ));
+            break;
+        }
+
+        current_length += snippet.len();
+        summary_parts.push(snippet);
+    }
+
+    summary_parts.join("")
+}
+
+fn load_transcript_conversation(path: &Path) -> Result<Vec<ReflectionMessage>> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read transcript {}", path.display()))?;
+    let mut conversation = Vec::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let entry: Value = serde_json::from_str(trimmed)
+            .with_context(|| format!("invalid transcript JSON in {}", path.display()))?;
+        if let Some(message) = parse_reflection_message(&entry) {
+            conversation.push(message);
         }
     }
+    Ok(conversation)
+}
+
+fn parse_reflection_message(entry: &Value) -> Option<ReflectionMessage> {
+    if let Some(role) = entry.get("role").and_then(Value::as_str) {
+        return Some(ReflectionMessage {
+            role: role.to_string(),
+            content: extract_text_content(entry.get("content")?)?,
+        });
+    }
+
+    let entry_type = entry.get("type").and_then(Value::as_str)?;
+    if !matches!(entry_type, "user" | "assistant") {
+        return None;
+    }
+
+    let message = entry.get("message")?;
+    let role = message
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or(entry_type)
+        .to_string();
+    Some(ReflectionMessage {
+        role,
+        content: extract_text_content(message.get("content")?)?,
+    })
+}
+
+fn extract_text_content(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        Value::Array(blocks) => {
+            let text = blocks
+                .iter()
+                .filter_map(|block| {
+                    if block.get("type").and_then(Value::as_str) == Some("text") {
+                        block.get("text").and_then(Value::as_str)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        _ => None,
+    }
+}
+
+fn run_claude_reflection(project_root: &Path, prompt: &str) -> Result<Option<String>> {
+    let binary = std::env::var("AMPLIHACK_REFLECTION_BINARY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "claude".to_string());
+
+    let mut child = Command::new(&binary)
+        .args([
+            "-p",
+            "--permission-mode",
+            "bypassPermissions",
+            "--tools",
+            "",
+            "--no-session-persistence",
+            "--setting-sources",
+            "user",
+        ])
+        .env_remove("CLAUDECODE")
+        .current_dir(project_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to launch reflection binary '{}'", binary))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(prompt.as_bytes())
+            .context("failed to write reflection prompt to stdin")?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .context("failed waiting for reflection command")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        anyhow::bail!(
+            "reflection command failed with status {}: {}",
+            output
+                .status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "signal".to_string()),
+            stderr
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!stdout.is_empty()).then_some(stdout))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::env_lock;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn not_enabled_by_default() {
@@ -183,13 +557,101 @@ mod tests {
         let session_dir = dirs.session_logs(session_id);
         fs::create_dir_all(&session_dir).unwrap();
         fs::write(
-            session_dir.join(format!(".reflection_presented_{session_id}")),
+            session_dir.join(format!(
+                ".reflection_presented_{}",
+                sanitize_session_id(session_id)
+            )),
             "",
         )
         .unwrap();
 
-        // Should return None even without running bridge.
         let result = run_reflection(&dirs, session_id, None).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn load_transcript_conversation_parses_text_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("transcript.jsonl");
+        fs::write(
+            &transcript,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Investigate auth"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done"}]}}
+"#,
+        )
+        .unwrap();
+
+        let conversation = load_transcript_conversation(&transcript).unwrap();
+
+        assert_eq!(conversation.len(), 2);
+        assert_eq!(conversation[0].content, "Investigate auth");
+        assert_eq!(conversation[1].role, "assistant");
+    }
+
+    #[test]
+    fn run_reflection_invokes_cli_and_writes_artifacts() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        fs::create_dir_all(dirs.tools_amplihack.join("hooks/templates")).unwrap();
+        fs::create_dir_all(dirs.claude.join("templates")).unwrap();
+        fs::write(
+            dirs.tools_amplihack
+                .join("hooks/templates/reflection_prompt.txt"),
+            "Messages: {message_count}\n{conversation_summary}\n{template}\n",
+        )
+        .unwrap();
+        fs::write(
+            dirs.claude.join("templates/FEEDBACK_SUMMARY.md"),
+            "## Task Summary\nplaceholder\n",
+        )
+        .unwrap();
+
+        let transcript = dir.path().join("session.jsonl");
+        fs::write(
+            &transcript,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Ship the fix"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Implemented and tested the change."}]}}
+"#,
+        )
+        .unwrap();
+
+        let fake_cli = dir.path().join("fake-claude.sh");
+        fs::write(
+            &fake_cli,
+            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '## Task Summary\\nReflected session\\n'\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&fake_cli).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_cli, perms).unwrap();
+
+        let previous = std::env::var_os("AMPLIHACK_REFLECTION_BINARY");
+        unsafe { std::env::set_var("AMPLIHACK_REFLECTION_BINARY", &fake_cli) };
+
+        let result = run_reflection(&dirs, "test-session", Some(&transcript)).unwrap();
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_REFLECTION_BINARY", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_REFLECTION_BINARY") },
+        }
+
+        let session_dir = dirs.session_logs("test-session");
+        assert_eq!(result.as_ref().unwrap()["decision"], "block");
+        assert!(
+            result.as_ref().unwrap()["reason"]
+                .as_str()
+                .unwrap()
+                .contains("Reflected session")
+        );
+        assert!(session_dir.join("FEEDBACK_SUMMARY.md").exists());
+        assert!(dirs.runtime.join("reflection/current_findings.md").exists());
+        assert!(
+            session_dir
+                .join(".reflection_presented_test-session")
+                .exists()
+        );
     }
 }

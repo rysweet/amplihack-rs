@@ -1,8 +1,7 @@
-//! File operations, locking, environment configuration, and Python bridge.
+//! File operations, locking, and environment configuration.
 //!
 //! Provides the infrastructure layer for hooks: atomic file operations,
-//! timeout-based locking, typed environment variable parsing, and
-//! subprocess-based Python bridge for SDK calls.
+//! timeout-based locking, and typed environment variable parsing.
 
 /// Atomic JSON file operations with crash-safe writes.
 pub mod atomic_json;
@@ -12,8 +11,6 @@ pub mod counter;
 pub mod env_config;
 /// Timeout-based file locking for session coordination.
 pub mod file_lock;
-/// Subprocess-based Python bridge for SDK calls.
-pub mod python_bridge;
 /// Atomic flag (semaphore) for single-writer coordination.
 pub mod semaphore;
 
@@ -25,7 +22,5 @@ pub use counter::AtomicCounter;
 pub use env_config::EnvVar;
 /// Timeout-based file lock.
 pub use file_lock::FileLock;
-/// Subprocess-based Python bridge.
-pub use python_bridge::PythonBridge;
 /// Atomic boolean flag for coordination.
 pub use semaphore::AtomicFlag;

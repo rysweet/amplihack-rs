@@ -1,0 +1,81 @@
+scenario:
+  name: "Code Graph Query — No-Python Live Path (Issue #77 AC6/AC8/AC9)"
+  description: |
+    Verifies that the Kuzu code-graph (LadybugDB identity) query path runs
+    natively in Rust with no Python interpreter on PATH.  This is an
+    end-to-end exercise of the LadybugDB (AC6), blarify import (AC7), and
+    SCIP index-help (AC8) surfaces, plus the no-Python probe gate (AC9).
+
+    The test:
+      1. Strips python/python3 from PATH to simulate a Python-free host.
+      2. Runs `amplihack query-code stats` — exercises the live Kuzu FFI path.
+      3. Runs `amplihack index-code --help` — confirms blarify import is native.
+      4. Runs `amplihack index-scip --help` — confirms SCIP surface is native.
+      5. Verifies each command exits 0 and produces the expected output.
+  type: cli
+  tags: [regression, code-graph, no-python, ac6, ac7, ac8, ac9, issue-77]
+
+  prerequisites:
+    - "amplihack release binary exists at ./target/release/amplihack"
+    - "PATH manipulation is allowed in the test shell"
+
+  steps:
+    # Step 1 — query-code stats (Kuzu native FFI, AC6)
+    - action: launch
+      target: "./target/release/amplihack"
+      args: ["query-code", "stats"]
+      env:
+        PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      description: "Run query-code stats with Python-free PATH"
+
+    - action: verify_exit_code
+      expected: 0
+      description: "Must succeed even with no Python on PATH (AC9 gate)"
+
+    - action: verify_output
+      contains: "Code Graph Statistics"
+      description: "Must show native Kuzu statistics header"
+
+    - action: verify_output
+      matches: "Files:\\s+\\d+"
+      description: "Must include a Files count (native query, not Python)"
+
+    - action: verify_output
+      matches: "Functions:\\s+\\d+"
+      description: "Must include a Functions count from Kuzu"
+
+    # Step 2 — index-code --help (blarify native import, AC7)
+    - action: launch
+      target: "./target/release/amplihack"
+      args: ["index-code", "--help"]
+      description: "Verify blarify import help is native Rust"
+
+    - action: verify_exit_code
+      expected: 0
+
+    - action: verify_output
+      contains: "blarify"
+      description: "Help text must reference blarify (native schema)"
+
+    - action: verify_output
+      contains: "Kuzu"
+      description: "Help text must reference Kuzu store (native FFI, AC6)"
+
+    # Step 3 — index-scip --help (SCIP native, AC8)
+    - action: launch
+      target: "./target/release/amplihack"
+      args: ["index-scip", "--help"]
+      description: "Verify SCIP indexing surface is native Rust"
+
+    - action: verify_exit_code
+      expected: 0
+
+    - action: verify_output
+      contains: "SCIP"
+      description: "Help text must mention SCIP (native Go-binary orchestration)"
+
+    - action: verify_output
+      contains: "project-path"
+      description: "Explicit project-path flag must exist (no implicit Python cwd assumptions)"
+
+  cleanup: []

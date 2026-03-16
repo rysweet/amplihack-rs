@@ -1,0 +1,15 @@
+[package]
+name = "amplihack-asset-resolver-bin"
+description = "Bundle asset resolver binary for amplihack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "amplihack-asset-resolver"
+path = "src/main.rs"
+
+[dependencies]
+amplihack-cli = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

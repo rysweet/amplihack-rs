@@ -112,7 +112,7 @@ const MAX_BINARY_DOWNLOAD_BYTES: usize = 512 * 1024 * 1024; // 512 MiB
 /// which could be tampered with (MITM or compromised release).  Ensuring
 /// the URL is on github.com / objects.githubusercontent.com limits the blast
 /// radius of such attacks.
-fn validate_download_url(url: &str) -> Result<()> {
+pub(crate) fn validate_download_url(url: &str) -> Result<()> {
     // Accept the GitHub API base and the CDN used for release asset downloads.
     let allowed_hosts = [
         "https://api.github.com/",
@@ -129,7 +129,7 @@ fn validate_download_url(url: &str) -> Result<()> {
     )
 }
 
-fn http_get(url: &str) -> Result<Vec<u8>> {
+pub(crate) fn http_get(url: &str) -> Result<Vec<u8>> {
     // SEC-1: Reject URLs from unexpected hosts before making any network call.
     validate_download_url(url)?;
 
@@ -141,7 +141,10 @@ fn http_get(url: &str) -> Result<Vec<u8>> {
         .build()
         .get(url)
         .set("Accept", "application/vnd.github+json")
-        .set("User-Agent", &format!("amplihack/{CURRENT_VERSION}"))
+        .set(
+            "User-Agent",
+            concat!("amplihack/", env!("CARGO_PKG_VERSION")),
+        )
         .call()
     {
         Ok(response) => response,
@@ -156,7 +159,16 @@ fn http_get(url: &str) -> Result<Vec<u8>> {
     // requests; the API response limit would suffice for metadata calls but
     // we cannot cheaply distinguish them here without complicating the API.
     let limit = MAX_BINARY_DOWNLOAD_BYTES;
-    let mut body = Vec::new();
+
+    // Pre-allocate using Content-Length when available to avoid repeated Vec
+    // reallocations during streaming reads.  Clamp to the security limit so a
+    // malicious Content-Length header cannot trick us into a huge allocation.
+    let capacity = response
+        .header("content-length")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(64 * 1024) // 64 KiB default for API JSON responses
+        .min(limit);
+    let mut body = Vec::with_capacity(capacity);
     response
         .into_reader()
         .take(limit as u64)
@@ -185,25 +197,30 @@ fn parse_latest_release(body: Vec<u8>, asset_name: &str) -> Result<UpdateRelease
     }
 
     let version = normalize_tag(&release.tag_name)?;
-    let asset = release
-        .assets
-        .iter()
-        .find(|asset| asset.name == asset_name)
-        .ok_or_else(|| {
-            anyhow!(
-                "release {} does not contain asset {}",
-                release.tag_name,
-                asset_name
-            )
-        })?;
 
-    // Look for a matching `.sha256` checksum file in the release assets.
+    // Single pass over assets to find both the archive and its checksum file.
+    // This avoids iterating the (small) asset list twice.
     let checksum_asset_name = format!("{asset_name}.sha256");
-    let checksum_url = release
-        .assets
-        .iter()
-        .find(|a| a.name == checksum_asset_name)
-        .map(|a| a.browser_download_url.clone());
+    let mut found_asset: Option<&GithubAsset> = None;
+    let mut checksum_url: Option<String> = None;
+    for a in &release.assets {
+        if a.name == asset_name {
+            found_asset = Some(a);
+        } else if a.name == checksum_asset_name {
+            checksum_url = Some(a.browser_download_url.clone());
+        }
+        // Short-circuit once both are found.
+        if found_asset.is_some() && checksum_url.is_some() {
+            break;
+        }
+    }
+    let asset = found_asset.ok_or_else(|| {
+        anyhow!(
+            "release {} does not contain asset {}",
+            release.tag_name,
+            asset_name
+        )
+    })?;
 
     Ok(UpdateRelease {
         version,
@@ -388,7 +405,11 @@ fn verify_sha256(archive_bytes: &[u8], checksum_url: &str) -> Result<()> {
     let actual_bytes = hasher.finalize();
     let actual_hex = format!("{actual_bytes:x}");
 
-    if actual_hex != expected_hex.to_ascii_lowercase() {
+    // Use case-insensitive comparison instead of allocating a lowercase copy of
+    // expected_hex.  SHA-256 hex digests from sha256sum are always lowercase but
+    // the spec permits uppercase; eq_ignore_ascii_case handles both without a heap
+    // allocation.
+    if !actual_hex.eq_ignore_ascii_case(expected_hex) {
         bail!(
             "SHA-256 checksum mismatch for downloaded archive:\n  expected: {expected_hex}\n  actual:   {actual_hex}\nAborted to prevent installing a corrupt or tampered binary."
         );
@@ -455,7 +476,7 @@ fn binary_filename(name: &'static str) -> &'static str {
     }
 }
 
-fn extract_archive(archive_bytes: &[u8], destination: &Path) -> Result<()> {
+pub(crate) fn extract_archive(archive_bytes: &[u8], destination: &Path) -> Result<()> {
     let decoder = GzDecoder::new(std::io::Cursor::new(archive_bytes));
     let mut archive = Archive::new(decoder);
     archive

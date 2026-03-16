@@ -44,13 +44,12 @@ The installer performs these phases in order:
 
 | Phase | What happens |
 |-------|-------------|
-| **Validate Python** | Runs `python3 --version` then `python3 -c 'import amplihack'`. Fails immediately with an actionable error if either check fails. |
-| **Clone framework** | Clones `https://github.com/rysweet/amplihack` into a temporary directory. |
+| **Obtain framework** | Downloads and extracts the GitHub repository archive, or uses `--local` when requested. |
 | **Deploy binaries** | Copies `amplihack` and `amplihack-hooks` to `~/.local/bin` with `0o755` permissions. |
 | **Stage assets** | Copies framework files (agents, commands, tools, skills, etc.) to `~/.amplihack/.claude/`. |
 | **Create runtime dirs** | Creates `~/.amplihack/.claude/runtime/` subdirectories with `0o755` permissions. |
 | **Wire hooks** | Updates `~/.claude/settings.json` with the [7 amplihack hooks](../reference/hook-specifications.md). Backs up the existing file first. |
-| **Verify** | Confirms all hook scripts are present in `~/.amplihack/.claude/tools/amplihack/hooks/`. |
+| **Verify** | Confirms the required staged framework assets are present. |
 | **Write manifest** | Saves `~/.amplihack/.claude/install/amplihack-manifest.json` for use by `uninstall`. |
 
 ### 3. Verify the install
@@ -80,7 +79,7 @@ Open `~/.claude/settings.json` and confirm the `hooks` section contains entries 
 ├── agents/amplihack/    # agent prompts
 ├── commands/amplihack/  # slash commands
 ├── tools/amplihack/
-│   └── hooks/           # Python hook scripts
+│   └── hooks/           # staged compatibility assets
 ├── context/             # shared context files
 ├── workflow/            # workflow definitions
 ├── skills/              # skill definitions
@@ -99,19 +98,6 @@ Open `~/.claude/settings.json` and confirm the `hooks` section contains entries 
 ```
 
 ## Troubleshooting
-
-**`❌ python3 not found` or `❌ 'import amplihack' failed`**
-
-The installer stops at phase 1 if Python or the amplihack package is missing. Install them before retrying:
-
-```sh
-# Install Python
-sudo apt-get install python3   # Ubuntu/Debian
-brew install python3           # macOS
-
-# Install the amplihack Python package
-pip install amplihack
-```
 
 **`amplihack-hooks not found`**
 

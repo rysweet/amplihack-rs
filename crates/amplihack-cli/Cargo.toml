@@ -14,6 +14,7 @@ amplihack-state = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 clap_complete = "4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 flate2 = "1"
 libc = { workspace = true }
 semver = "1"
@@ -21,14 +22,18 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 signal-hook = { workspace = true }
+time = { version = "0.3", default-features = false, features = ["std"] }
 tar = "0.4"
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 sha2 = { workspace = true }
+toml = "0.8"
+regex = "1"
 ureq = { version = "2", features = ["json"] }
 kuzu = { version = "0.11.3" }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
+prost = "0.13"
 
 [dev-dependencies]
 tempfile = { workspace = true }

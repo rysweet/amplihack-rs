@@ -10,7 +10,7 @@ amplihack registers 7 hooks in `~/.claude/settings.json` when you run `amplihack
 | 2 | `Stop` | Binary subcommand | `amplihack-hooks stop` | 120 s |
 | 3 | `PreToolUse` | Binary subcommand | `amplihack-hooks pre-tool-use` | *(none)* |
 | 4 | `PostToolUse` | Binary subcommand | `amplihack-hooks post-tool-use` | *(none)* |
-| 5 | `UserPromptSubmit` | Python file | `~/.amplihack/.claude/tools/amplihack/hooks/workflow_classification_reminder.py` **[planned]** | 5 s |
+| 5 | `UserPromptSubmit` | Binary subcommand | `amplihack-hooks workflow-classification-reminder` | 5 s |
 | 6 | `UserPromptSubmit` | Binary subcommand | `amplihack-hooks user-prompt-submit` | 10 s |
 | 7 | `PreCompact` | Binary subcommand | `amplihack-hooks pre-compact` | 30 s |
 
@@ -48,7 +48,7 @@ Each hook is written as a wrapper object under the event key:
         "hooks": [
           {
             "type": "command",
-            "command": "/home/alice/.amplihack/.claude/tools/amplihack/hooks/workflow_classification_reminder.py [planned]",
+            "command": "/home/alice/.local/bin/amplihack-hooks workflow-classification-reminder",
             "timeout": 5
           }
         ]
@@ -71,18 +71,18 @@ Each hook is written as a wrapper object under the event key:
 
 - `PreToolUse` and `PostToolUse` have no `timeout` field. Absence means fail-open (no timeout enforced by Claude Code).
 - Both `PreToolUse` and `PostToolUse` use matcher `"*"` to intercept all tool calls.
-- The two `UserPromptSubmit` entries must appear in order: `workflow_classification_reminder.py` **[planned]** first, then `user-prompt-submit`. The installer preserves this order on both fresh install and idempotent update.
+- The two `UserPromptSubmit` entries must appear in order: `workflow-classification-reminder` first, then `user-prompt-submit`. The installer preserves this order on both fresh install and idempotent update.
 - Hook commands are written with the **absolute path** to `amplihack-hooks` resolved at install time. If the binary moves, re-run `amplihack install` to update the paths.
 
 ## Hook Descriptions
 
 ### 1. SessionStart — `session-start`
 
-Runs when Claude Code starts a new session. Initializes session context by calling the Python `MemoryCoordinator.get_context()` bridge and optionally checks for amplihack version mismatches.
+Runs when Claude Code starts a new session. Initializes session context, checks for version mismatches natively in Rust, and migrates stale global amplihack hook registrations out of `~/.claude/settings.json`.
 
 ### 2. Stop — `stop`
 
-Runs when Claude Code stops. Triggers reflection, saves session memory, and handles lock-mode signaling. 120-second timeout allows the reflection write to complete.
+Runs when Claude Code stops. Triggers native Rust reflection prompt assembly plus Claude CLI analysis, saves session memory, and handles lock-mode signaling. 120-second timeout allows the reflection write to complete.
 
 ### 3. PreToolUse — `pre-tool-use`
 
@@ -92,50 +92,39 @@ Runs before every tool call (matcher `*`). Validates Bash commands against the a
 
 Runs after every tool call (matcher `*`). Records tool usage metrics. No timeout — fail-open.
 
-### 5. UserPromptSubmit — `workflow_classification_reminder.py` **[planned]**
+### 5. UserPromptSubmit — `workflow-classification-reminder`
 
-The **first** of two `UserPromptSubmit` hooks. Injects a workflow classification reminder into the prompt context. Runs as a Python script directly (not via `amplihack-hooks`). 5-second timeout.
-
-> **Note:** `workflow_classification_reminder.py` does not exist yet. This hook is planned for a future release. The installer currently does not register it.
+The **first** of two `UserPromptSubmit` hooks. Injects a workflow classification reminder into the prompt context. Runs via `amplihack-hooks`. 5-second timeout.
 
 ### 6. UserPromptSubmit — `user-prompt-submit`
 
-The **second** of two `UserPromptSubmit` hooks. Injects user preferences and memory context into the prompt. Runs via `amplihack-hooks`. 10-second timeout.
+The **second** of two `UserPromptSubmit` hooks. Injects user preferences and native Rust memory context for referenced agents into the prompt. Runs via `amplihack-hooks`. 10-second timeout.
 
 ### 7. PreCompact — `pre-compact`
 
 Runs before Claude Code compacts the context window. Exports the current transcript so it can be referenced after compaction.
 
-## Hook File Locations
+## Hook Runtime Location
 
-All Python hook scripts are staged at install time to:
+Fresh installs register hooks through the native `amplihack-hooks` binary deployed at `~/.local/bin/amplihack-hooks`. The installer writes command strings such as `amplihack-hooks session-start` and `amplihack-hooks user-prompt-submit` into `~/.claude/settings.json`.
 
-```
-~/.amplihack/.claude/tools/amplihack/hooks/
-├── session_start.py
-├── stop.py
-├── pre_tool_use.py
-├── post_tool_use.py
-├── workflow_classification_reminder.py  [planned — not yet implemented]
-├── user_prompt_submit.py
-└── pre_compact.py
-```
-
-The `amplihack-hooks` binary is deployed to `~/.local/bin/amplihack-hooks` and dispatches to the correct Rust implementation based on the subcommand argument.
+Older installs may still contain historical `tools/amplihack/hooks/*.py` command paths in `settings.json`. Reinstalling with the Rust installer upgrades those entries in place to the native binary format, and uninstall continues to recognize and remove the legacy paths.
 
 ## XPIA Hooks
 
-If the XPIA (Cross-Prompt Injection Attack defense) tool is installed alongside amplihack, three additional hooks are registered from `~/.amplihack/.claude/tools/xpia/hooks/`:
+If the XPIA (Cross-Prompt Injection Attack defense) tool is installed alongside amplihack, the Rust installer checks for staged XPIA hook assets at `~/.amplihack/.claude/tools/xpia/hooks/`. Current native installs do **not** add a second set of distinct hook wrappers for XPIA; they keep the unified `amplihack-hooks` entries already used by core amplihack hooks and use XPIA asset presence only as the optional-feature and legacy-upgrade signal.
 
-| Event | Script |
-|-------|--------|
-| `SessionStart` | `session_start.py` |
-| `PreToolUse` | `pre_tool_use.py` |
-| `PostToolUse` | `post_tool_use.py` |
+| Event | Native command |
+|-------|----------------|
+| `SessionStart` | `amplihack-hooks session-start` |
+| `PreToolUse` | `amplihack-hooks pre-tool-use` |
+| `PostToolUse` | `amplihack-hooks post-tool-use` |
 
-XPIA hooks are preserved by `amplihack uninstall` — they are not removed.
+Older installs may still contain historical `tools/xpia/hooks/*.py` command paths. Reinstalling with the Rust installer upgrades those XPIA entries in place to the native binary-subcommand format instead of leaving duplicate legacy and native wrappers side by side.
 
-XPIA hook specs use the `PythonFile` command kind. The `hooks_bin: &Path` parameter is accepted by the hook-writing functions for API uniformity but is intentionally unused for XPIA entries — their commands are absolute paths to Python scripts, not binary subcommands.
+XPIA hook entries are preserved by `amplihack uninstall` — they are not removed.
+
+XPIA remains an optional auxiliary hook surface. amplihack uninstall preserves any XPIA-managed entries rather than treating them as part of the core native amplihack hook registration set.
 
 ## Security
 
@@ -156,7 +145,7 @@ The check matters because Claude Code executes hook command strings directly. A 
 Running `amplihack install` a second time updates hook command strings in place. The installer uses type-directed matching:
 
 - **Binary subcommand hooks** — matched by exe filename (`amplihack-hooks`) plus subcommand argument (`session-start`, `stop`, etc.)
-- **Python file hooks** — matched by filename (`workflow_classification_reminder.py` **[planned]**) and containment in `tools/amplihack/`
+- **Python file hooks** — matched by filename and containment in `tools/amplihack/` (kept for stale-entry cleanup and XPIA compatibility)
 
 An existing entry is replaced in place (preserving its array position). A missing entry is appended. No duplicates are created.
 

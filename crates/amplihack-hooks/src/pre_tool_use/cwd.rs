@@ -276,6 +276,7 @@ fn has_dangerous_expansion(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::env_lock;
     use std::path::PathBuf;
 
     #[test]
@@ -456,6 +457,10 @@ mod tests {
     #[test]
     fn rm_rf_tilde_blocked() {
         // rm -rf ~ should be blocked because ~ expands to $HOME which contains CWD.
+        // Hold env_lock so concurrent HOME mutations don't race with tilde resolution.
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = std::env::var("HOME").unwrap();
         let cwd = std::env::current_dir().unwrap();
         // This test only works when CWD is under $HOME.
@@ -470,6 +475,9 @@ mod tests {
 
     #[test]
     fn rm_rf_tilde_slash_blocked() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = std::env::var("HOME").unwrap();
         let cwd = std::env::current_dir().unwrap();
         if cwd.starts_with(&home) {
@@ -483,6 +491,9 @@ mod tests {
 
     #[test]
     fn mv_tilde_blocked() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = std::env::var("HOME").unwrap();
         let cwd = std::env::current_dir().unwrap();
         if cwd.starts_with(&home) {

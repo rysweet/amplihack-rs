@@ -20,8 +20,7 @@ The match is type-directed, based on the `HookCommandKind` of the spec:
 
 | Kind | Match condition |
 |------|----------------|
-| `BinarySubcmd` | `command` contains both `amplihack-hooks` (the filename) and the subcommand string (e.g., `session-start`) |
-| `PythonFile` | `command` contains both the script filename (e.g., `workflow_classification_reminder.py`) and `tools/amplihack/` |
+| `BinarySubcmd` | `command` contains both `amplihack-hooks` (the filename) and the subcommand string (e.g., `session-start`), or it is a legacy `tools/amplihack/hooks/*.py` path for the same hook |
 
 Matching by semantic identity — not by full absolute path — means that moving the binary (e.g., during a `deploy_binaries()` run that updates `~/.local/bin`) causes the existing entry to be updated with the new path rather than a second entry being appended.
 
@@ -31,7 +30,7 @@ The `BinarySubcmd` match requires **both** the `amplihack-hooks` filename _and_ 
 
 The two `UserPromptSubmit` entries have a required order:
 
-1. `workflow_classification_reminder.py` (timeout 5 s)
+1. `amplihack-hooks workflow-classification-reminder` (timeout 5 s)
 2. `amplihack-hooks user-prompt-submit` (timeout 10 s)
 
 On an idempotent run, each entry is matched and replaced in place, which preserves the original insertion position. Claude Code executes `UserPromptSubmit` hooks in array order, so this ordering guarantee ensures the reminder fires before the preference injection.
@@ -87,7 +86,7 @@ The second run of `amplihack install` produces output identical to the first, bu
 ✓ Runtime directories already exist
 ✓ Backed up ~/.claude/settings.json → settings.json.backup.1741651200
 ✓ Updated 7 Claude Code hook registrations (in place)
-✓ Verified hook scripts
+✓ Verified staged framework assets
 ✓ Updated install manifest
 amplihack installed successfully.
 ```

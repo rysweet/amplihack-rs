@@ -6,11 +6,12 @@ members = [
     "crates/amplihack-hooks",
     "crates/amplihack-cli",
     "bins/amplihack",
+    "bins/amplihack-asset-resolver",
     "bins/amplihack-hooks",
 ]
 
 [workspace.package]
-version = "0.3.13"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/rysweet/amplihack-rs"

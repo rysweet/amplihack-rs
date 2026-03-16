@@ -1,6 +1,6 @@
 # How to Diagnose Problems with amplihack doctor
 
-`amplihack doctor` runs 7 system health checks and reports which prerequisites are satisfied. This guide explains what each failing check means and how to fix it.
+`amplihack doctor` runs 5 system health checks and reports which prerequisites are satisfied. This guide explains what each failing check means and how to fix it.
 
 ## Run doctor first
 
@@ -8,7 +8,7 @@
 amplihack doctor
 ```
 
-Identify which lines start with `✗` and follow the relevant section below. All 7 checks always run, so you will see all failures at once.
+Identify which lines start with `✗` and follow the relevant section below. All 5 checks always run, so you will see all failures at once.
 
 ## Fixing Each Failing Check
 
@@ -102,44 +102,6 @@ export PATH="$HOME/.local/bin:$PATH"
 
 Reload your shell and re-run `doctor`.
 
----
-
-### ✗ Python bridge working
-
-**What it means:** Either `python3` is not on `PATH`, or the `amplihack` Python package is not importable in the active Python environment.
-
-**Check which is failing:**
-
-```sh
-python3 --version       # confirm python3 exists
-python3 -c "import amplihack; print(amplihack.__version__)"
-```
-
-**Fix — python3 not found:**
-
-Install Python 3.11 or later via your system package manager or from [python.org](https://www.python.org/downloads/).
-
-**Fix — amplihack package not found:**
-
-```sh
-pip3 install amplihack
-```
-
-If you are using a virtual environment, activate it first. If `pip3 install amplihack` fails because the package is not on PyPI (for local development), install from source:
-
-```sh
-pip3 install -e /path/to/amplihack-python-package
-```
-
-Confirm the fix:
-
-```sh
-python3 -c "import amplihack; print('OK')"
-# OK
-```
-
----
-
 ### ✗ tmux installed
 
 **What it means:** `tmux` is not on `PATH`. tmux is required for amplihack's session management features.
@@ -171,9 +133,9 @@ tmux -V
 
 ---
 
-### ✗ amplihack version / ✗ recipe-runner-rs version
+### ✗ amplihack version
 
-These two checks are informational and only fail if the binary cannot report its version. If you see these fail on an otherwise working install, the binary may be corrupted or compiled for the wrong architecture.
+This check is informational and only fails if the binary cannot report its version. If you see it fail on an otherwise working install, the binary may be corrupted or compiled for the wrong architecture.
 
 **Fix:** Reinstall from the appropriate release artifact for your platform. See [Install amplihack for the First Time](./first-install.md).
 

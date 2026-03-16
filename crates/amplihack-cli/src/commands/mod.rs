@@ -2,13 +2,17 @@
 
 pub mod completions;
 pub mod doctor;
+pub mod fleet;
 pub mod install;
 pub mod launch;
 pub mod memory;
 pub mod mode;
+pub mod new_agent;
 pub mod plugin;
-pub mod python_delegate;
+pub mod query_code;
 pub mod recipe;
+pub mod rustyclawd;
+pub mod uvx_help;
 
 use crate::{Commands, MemoryCommands, ModeCommands, PluginCommands, RecipeCommands};
 use anyhow::Result;
@@ -45,6 +49,19 @@ pub fn dispatch(command: Commands) -> Result<()> {
         }
         Commands::Plugin { command } => dispatch_plugin(command),
         Commands::Memory { command } => dispatch_memory(command),
+        Commands::IndexCode { input, kuzu_path } => {
+            memory::run_index_code(&input, kuzu_path.as_deref())
+        }
+        Commands::IndexScip {
+            project_path,
+            languages,
+        } => memory::run_index_scip(project_path.as_deref(), &languages),
+        Commands::QueryCode {
+            kuzu_path,
+            json,
+            limit,
+            command,
+        } => query_code::run_query_code(command, kuzu_path.as_deref(), json, limit),
         Commands::Recipe { command } => dispatch_recipe(command),
         Commands::Mode { command } => dispatch_mode(command),
         Commands::Version => {
@@ -52,11 +69,31 @@ pub fn dispatch(command: Commands) -> Result<()> {
             Ok(())
         }
         Commands::Update => crate::update::run_update(),
-        Commands::Fleet { args } => python_delegate::delegate_to_python("fleet", &args),
-        Commands::New { args } => python_delegate::delegate_to_python("new", &args),
+        Commands::Fleet { args } => fleet::run_fleet(args),
+        Commands::New {
+            file,
+            output,
+            name,
+            skills_dir,
+            verbose,
+            enable_memory,
+            sdk,
+            multi_agent,
+            enable_spawning,
+        } => new_agent::run_new(
+            &file,
+            output.as_deref(),
+            name.as_deref(),
+            skills_dir.as_deref(),
+            verbose,
+            enable_memory,
+            &sdk,
+            multi_agent,
+            enable_spawning,
+        ),
         #[allow(non_snake_case)]
-        Commands::RustyClawd { args } => python_delegate::delegate_to_python("RustyClawd", &args),
-        Commands::UvxHelp { args } => python_delegate::delegate_to_python("uvx-help", &args),
+        Commands::RustyClawd { args } => rustyclawd::run_rustyclawd(args),
+        Commands::UvxHelp { find_path, info } => uvx_help::run_uvx_help(find_path, info),
         Commands::Completions { shell } => completions::run_completions(shell),
         Commands::Doctor => doctor::run_doctor(),
     }

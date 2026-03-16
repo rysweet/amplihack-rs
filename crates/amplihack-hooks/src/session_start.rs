@@ -8,52 +8,17 @@
 //! 5. Returns additional context for the session
 
 use crate::protocol::{FailurePolicy, Hook};
-use amplihack_state::PythonBridge;
+use amplihack_cli::binary_finder::BinaryFinder;
+use amplihack_cli::memory::{
+    background_index_job_active, check_index_status, default_code_graph_db_path_for_project,
+    summarize_code_graph,
+};
+use amplihack_state::AtomicJsonFile;
 use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
 use std::fs;
-
-use std::time::Duration;
-
-/// Embedded Python bridge script for memory/context retrieval.
-const MEMORY_CONTEXT_BRIDGE: &str = r#"
-import sys
-import json
-
-try:
-    input_data = json.load(sys.stdin)
-    session_id = input_data.get("session_id", "")
-    project_path = input_data.get("project_path", "")
-
-    from amplihack.memory.coordinator import MemoryCoordinator
-    coordinator = MemoryCoordinator()
-    context = coordinator.get_context(
-        session_id=session_id,
-        project_path=project_path
-    )
-    result = {"context": context or "", "memories": []}
-    json.dump(result, sys.stdout)
-except Exception as e:
-    json.dump({"context": "", "error": str(e)}, sys.stdout)
-    sys.exit(1)
-"#;
-
-/// Embedded Python bridge script for version checking.
-const VERSION_CHECK_BRIDGE: &str = r#"
-import sys
-import json
-
-try:
-    input_data = json.load(sys.stdin)
-    project_path = input_data.get("project_path", "")
-
-    from amplihack.version import check_version_mismatch
-    result = check_version_mismatch(project_path)
-    json.dump(result or {"mismatch": False}, sys.stdout)
-except Exception as e:
-    json.dump({"mismatch": False, "error": str(e)}, sys.stdout)
-    sys.exit(1)
-"#;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 pub struct SessionStartHook;
 
@@ -67,12 +32,10 @@ impl Hook for SessionStartHook {
     }
 
     fn process(&self, input: HookInput) -> anyhow::Result<Value> {
-        let session_id = match &input {
-            HookInput::SessionStart { session_id, .. } => {
-                session_id.clone().unwrap_or_else(generate_session_id)
-            }
+        match &input {
+            HookInput::SessionStart { .. } => {}
             _ => return Ok(Value::Object(serde_json::Map::new())),
-        };
+        }
 
         let dirs = ProjectDirs::from_cwd();
         let mut context_parts: Vec<String> = Vec::new();
@@ -92,14 +55,7 @@ impl Hook for SessionStartHook {
             context_parts.push(prefs);
         }
 
-        // Get memory context via bridge.
-        if let Some(memory_ctx) = get_memory_context(&session_id, &dirs)
-            && !memory_ctx.is_empty()
-        {
-            context_parts.push(memory_ctx);
-        }
-
-        // Check for version mismatch via bridge.
+        // Check for version mismatch natively.
         if let Some(version_notice) = check_version(&dirs) {
             context_parts.push(version_notice);
         }
@@ -107,6 +63,19 @@ impl Hook for SessionStartHook {
         // Migrate global hooks if needed.
         if let Some(migration_notice) = migrate_global_hooks() {
             context_parts.push(migration_notice);
+        }
+
+        let blarify_indexing_active = match setup_blarify_indexing(&dirs) {
+            Ok(active) => active,
+            Err(err) => {
+                tracing::warn!("Blarify setup failed (non-critical): {}", err);
+                false
+            }
+        };
+
+        if !blarify_indexing_active && let Some(code_graph_context) = load_code_graph_context(&dirs)
+        {
+            context_parts.push(code_graph_context);
         }
 
         let additional_context = context_parts.join("\n\n");
@@ -165,165 +134,214 @@ fn load_user_preferences(dirs: &ProjectDirs) -> Option<String> {
     None
 }
 
-fn get_memory_context(session_id: &str, dirs: &ProjectDirs) -> Option<String> {
-    let input = serde_json::json!({
-        "action": "get_context",
-        "session_id": session_id,
-        "project_path": dirs.root.display().to_string(),
-    });
-
-    match PythonBridge::call(MEMORY_CONTEXT_BRIDGE, &input, Duration::from_secs(10)) {
-        Ok(result) => {
-            let context = result.get("context").and_then(Value::as_str).unwrap_or("");
-            if context.is_empty() {
-                None
-            } else {
-                Some(context.to_string())
-            }
-        }
-        Err(e) => {
-            tracing::warn!("Memory context bridge error: {}", e);
-            None
-        }
-    }
-}
-
 fn check_version(dirs: &ProjectDirs) -> Option<String> {
     let version_file = dirs.version_file();
     if !version_file.exists() {
         return None;
     }
 
-    // Delegate full version check to Python bridge.
-    let input = serde_json::json!({
-        "project_path": dirs.root.display().to_string(),
-    });
+    let project_version = fs::read_to_string(&version_file).ok()?.trim().to_string();
+    if project_version.is_empty() {
+        return None;
+    }
 
-    match PythonBridge::call(VERSION_CHECK_BRIDGE, &input, Duration::from_secs(10)) {
-        Ok(result) => {
-            let mismatch = result
-                .get("mismatch")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            if mismatch {
-                let message = result
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Version mismatch detected. Run `amplihack update` to update.");
-                Some(format!("⚠️ {}", message))
-            } else {
-                None
-            }
+    let package_version = std::env::var("AMPLIHACK_VERSION")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+
+    if package_version == project_version {
+        return None;
+    }
+
+    Some(format!(
+        "⚠️ Version mismatch detected: package={package_version}, project={project_version}. Run `amplihack update` to update."
+    ))
+}
+
+fn load_code_graph_context(dirs: &ProjectDirs) -> Option<String> {
+    let db_path = default_code_graph_db_path_for_project(&dirs.root).ok()?;
+    let summary = summarize_code_graph(Some(&db_path)).ok().flatten()?;
+    let total = summary.files + summary.classes + summary.functions;
+    if total == 0 {
+        return None;
+    }
+
+    Some(format!(
+        "## Code Graph (Blarify)\n\n\
+         A code graph is available with {} files, {} classes, and {} functions indexed.\n\
+         To query the code graph, use:\n\
+         ```bash\n\
+         amplihack query-code stats\n\
+         amplihack query-code search <name>\n\
+         amplihack query-code functions --file <path>\n\
+         amplihack query-code classes --file <path>\n\
+         amplihack query-code files --pattern <pattern>\n\
+         amplihack query-code context <memory_id>\n\
+         amplihack query-code callers <function_name>\n\
+         amplihack query-code callees <function_name>\n\
+         ```\n\
+         Use `--json` for machine-readable output and `--limit N` to control result count.",
+        summary.files, summary.classes, summary.functions
+    ))
+}
+
+fn setup_blarify_indexing(dirs: &ProjectDirs) -> anyhow::Result<bool> {
+    if std::env::var("AMPLIHACK_DISABLE_BLARIFY").as_deref() == Ok("1") {
+        return Ok(false);
+    }
+    if background_index_job_active(&dirs.root)? {
+        return Ok(true);
+    }
+
+    let status = check_index_status(&dirs.root)?;
+    let db_path = default_code_graph_db_path_for_project(&dirs.root)?;
+    let code_graph_missing = !db_path.exists();
+    if !status.needs_indexing && !code_graph_missing {
+        return Ok(false);
+    }
+
+    let action = resolve_blarify_index_action(&status, &blarify_json_path(&dirs.root));
+    match blarify_mode() {
+        SessionStartBlarifyMode::Skip => Ok(false),
+        SessionStartBlarifyMode::Sync => {
+            run_blarify_indexing(&dirs.root, action, false)?;
+            Ok(false)
         }
-        Err(e) => {
-            tracing::warn!("Version check bridge error: {}", e);
-            None
+        SessionStartBlarifyMode::Background => {
+            run_blarify_indexing(&dirs.root, action, true)?;
+            Ok(true)
         }
     }
 }
 
-/// Embedded Python bridge script for global hook migration.
-const MIGRATE_HOOKS_BRIDGE: &str = r#"
-import sys
-import json
+fn run_blarify_indexing(
+    project_root: &Path,
+    action: BlarifyIndexAction,
+    background: bool,
+) -> anyhow::Result<()> {
+    let amplihack = find_amplihack_binary()?;
+    let mut cmd = build_blarify_index_command(&amplihack, project_root, action)?;
+    cmd.current_dir(project_root);
+    if background {
+        let child = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        amplihack_cli::memory::record_background_index_pid(project_root, child.id())?;
+    } else {
+        let status = cmd.status()?;
+        if !status.success() {
+            anyhow::bail!("blarify indexing command failed with status {status}");
+        }
+    }
+    Ok(())
+}
 
-try:
-    input_data = json.load(sys.stdin)
-    action = input_data.get("action", "migrate")
+fn build_blarify_index_command(
+    amplihack_binary: &Path,
+    project_root: &Path,
+    action: BlarifyIndexAction,
+) -> anyhow::Result<Command> {
+    let mut cmd = Command::new(amplihack_binary);
+    match action {
+        BlarifyIndexAction::ImportExistingJson => {
+            cmd.arg("index-code")
+                .arg(blarify_json_path(project_root))
+                .arg("--kuzu-path")
+                .arg(default_code_graph_db_path_for_project(project_root)?);
+        }
+        BlarifyIndexAction::GenerateNativeScip => {
+            cmd.arg("index-scip")
+                .arg("--project-path")
+                .arg(project_root);
+        }
+    }
+    Ok(cmd)
+}
 
-    import os
-    home = os.path.expanduser("~")
-    settings_path = os.path.join(home, ".claude", "settings.json")
+fn find_amplihack_binary() -> anyhow::Result<PathBuf> {
+    Ok(BinaryFinder::find("amplihack")?.path)
+}
 
-    if not os.path.exists(settings_path):
-        json.dump({"migrated": False, "reason": "no global settings"}, sys.stdout)
-        sys.exit(0)
+fn blarify_json_path(project_root: &Path) -> PathBuf {
+    project_root.join(".amplihack").join("blarify.json")
+}
 
-    with open(settings_path, "r") as f:
-        settings = json.load(f)
+fn resolve_blarify_index_action(
+    status: &amplihack_cli::memory::IndexStatus,
+    json_path: &Path,
+) -> BlarifyIndexAction {
+    if json_path.exists() && !status.needs_indexing {
+        BlarifyIndexAction::ImportExistingJson
+    } else {
+        BlarifyIndexAction::GenerateNativeScip
+    }
+}
 
-    hooks = settings.get("hooks", {})
-    modified = False
-    for event_type in list(hooks.keys()):
-        hook_list = hooks[event_type]
-        if isinstance(hook_list, list):
-            original_len = len(hook_list)
-            hooks[event_type] = [
-                h for h in hook_list
-                if not (isinstance(h, dict) and "amplihack" in h.get("command", ""))
-            ]
-            if len(hooks[event_type]) < original_len:
-                modified = True
+fn blarify_mode() -> SessionStartBlarifyMode {
+    match std::env::var("AMPLIHACK_BLARIFY_MODE")
+        .unwrap_or_else(|_| "background".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "skip" => SessionStartBlarifyMode::Skip,
+        "sync" => SessionStartBlarifyMode::Sync,
+        _ => SessionStartBlarifyMode::Background,
+    }
+}
 
-    if modified:
-        with open(settings_path, "w") as f:
-            json.dump(settings, f, indent=2)
-        json.dump({"migrated": True, "message": "Removed amplihack hooks from global settings"}, sys.stdout)
-    else:
-        json.dump({"migrated": False, "reason": "no amplihack hooks found"}, sys.stdout)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlarifyIndexAction {
+    ImportExistingJson,
+    GenerateNativeScip,
+}
 
-except Exception as e:
-    json.dump({"migrated": False, "error": str(e)}, sys.stdout)
-"#;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionStartBlarifyMode {
+    Skip,
+    Sync,
+    Background,
+}
 
 fn migrate_global_hooks() -> Option<String> {
-    // Check if global hooks exist that should be migrated.
     let global_settings = ProjectDirs::global_settings()?;
-
     if !global_settings.exists() {
         return None;
     }
 
-    let content = fs::read_to_string(&global_settings).ok()?;
-    let settings: Value = serde_json::from_str(&content).ok()?;
+    let settings_file = AtomicJsonFile::new(&global_settings);
+    let settings: Value = match settings_file.read() {
+        Ok(Some(value)) => value,
+        Ok(None) => return None,
+        Err(e) => {
+            tracing::warn!("Failed to read global settings: {}", e);
+            return Some(
+                "⚠️ Global amplihack hooks may exist in ~/.claude/settings.json. \
+                 Failed to read the file for migration."
+                    .to_string(),
+            );
+        }
+    };
 
-    // Check if there are amplihack hooks in global settings.
-    let hooks = settings.get("hooks")?;
-    let has_amplihack_hooks = hooks
-        .as_object()
-        .map(|obj| {
-            obj.values().any(|v| {
-                v.as_array()
-                    .map(|arr| {
-                        arr.iter().any(|h| {
-                            h.get("command")
-                                .and_then(Value::as_str)
-                                .map(|c| c.contains("amplihack"))
-                                .unwrap_or(false)
-                        })
-                    })
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false);
-
-    if !has_amplihack_hooks {
+    if !contains_amplihack_hooks(&settings) {
         return None;
     }
 
-    // Actually remove the hooks via Python bridge (handles JSON write safely).
-    let input = serde_json::json!({"action": "migrate"});
-    match PythonBridge::call(MIGRATE_HOOKS_BRIDGE, &input, Duration::from_secs(5)) {
-        Ok(result) => {
-            let migrated = result
-                .get("migrated")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            if migrated {
-                Some(
-                    "✅ Migrated amplihack hooks from global ~/.claude/settings.json to project-local hooks."
-                        .to_string(),
-                )
-            } else {
-                Some(
-                    "⚠️ Global amplihack hooks detected in ~/.claude/settings.json. \
-                     These should be migrated to project-local hooks."
-                        .to_string(),
-                )
-            }
-        }
+    match settings_file.update(|settings: &mut Value| remove_amplihack_hooks(settings)) {
+        Ok(updated) if !contains_amplihack_hooks(&updated) => Some(
+            "✅ Migrated amplihack hooks from global ~/.claude/settings.json to project-local hooks."
+                .to_string(),
+        ),
+        Ok(_) => Some(
+            "⚠️ Global amplihack hooks detected in ~/.claude/settings.json. \
+             These should be migrated to project-local hooks."
+                .to_string(),
+        ),
         Err(e) => {
-            tracing::warn!("Hook migration bridge error: {}", e);
+            tracing::warn!("Hook migration failed: {}", e);
             Some(
                 "⚠️ Global amplihack hooks detected in ~/.claude/settings.json. \
                  Migration failed — please remove them manually."
@@ -333,6 +351,58 @@ fn migrate_global_hooks() -> Option<String> {
     }
 }
 
+fn contains_amplihack_hooks(settings: &Value) -> bool {
+    settings
+        .get("hooks")
+        .and_then(Value::as_object)
+        .map(|hooks_map| {
+            hooks_map.values().any(|wrappers| {
+                wrappers
+                    .as_array()
+                    .is_some_and(|wrappers| wrappers.iter().any(wrapper_references_amplihack))
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn wrapper_references_amplihack(wrapper: &Value) -> bool {
+    wrapper
+        .get("hooks")
+        .and_then(Value::as_array)
+        .is_some_and(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(Value::as_str)
+                    .map(|cmd| cmd.contains("amplihack-hooks") || cmd.contains("tools/amplihack/"))
+                    .unwrap_or(false)
+            })
+        })
+}
+
+fn remove_amplihack_hooks(settings: &mut Value) {
+    let Some(root) = settings.as_object_mut() else {
+        *settings = serde_json::json!({});
+        return;
+    };
+    let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return;
+    };
+
+    for wrappers in hooks.values_mut() {
+        if let Some(wrappers) = wrappers.as_array_mut() {
+            wrappers.retain(|wrapper| !wrapper_references_amplihack(wrapper));
+        }
+    }
+
+    hooks.retain(|_, wrappers| {
+        wrappers
+            .as_array()
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(true)
+    });
+}
+
+#[cfg(test)]
 fn generate_session_id() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -343,6 +413,10 @@ fn generate_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::env_lock;
+    use amplihack_cli::commands::memory::code_graph::import_blarify_json;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
 
     #[test]
     fn handles_unknown_events() {
@@ -372,5 +446,277 @@ mod tests {
     fn generate_session_id_format() {
         let id = generate_session_id();
         assert!(id.starts_with("session-"));
+    }
+
+    #[test]
+    fn check_version_returns_none_when_version_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        assert!(check_version(&dirs).is_none());
+    }
+
+    #[test]
+    fn check_version_reports_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        fs::create_dir_all(&dirs.claude).unwrap();
+        fs::write(dirs.version_file(), "different-version\n").unwrap();
+
+        let result = check_version(&dirs).expect("mismatch should be reported");
+        assert!(result.contains("Version mismatch detected"));
+        assert!(result.contains("different-version"));
+    }
+
+    #[test]
+    fn load_code_graph_context_missing_db_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        assert!(load_code_graph_context(&dirs).is_none());
+    }
+
+    #[test]
+    fn load_code_graph_context_describes_native_graph() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        let input = dir.path().join("blarify.json");
+        fs::write(
+            &input,
+            serde_json::json!({
+                "files": [{
+                    "id": "file:src/main.py",
+                    "path": "src/main.py",
+                    "language": "python",
+                    "size_bytes": 12
+                }],
+                "classes": [{
+                    "id": "class:Example",
+                    "name": "Example",
+                    "qualified_name": "pkg.Example",
+                    "file_path": "src/main.py",
+                    "line_number": 3
+                }],
+                "functions": [{
+                    "id": "function:helper",
+                    "name": "helper",
+                    "qualified_name": "pkg.helper",
+                    "signature": "helper()",
+                    "file_path": "src/main.py",
+                    "line_number": 8
+                }],
+                "imports": [],
+                "relationships": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let db_path = default_code_graph_db_path_for_project(dir.path()).unwrap();
+        import_blarify_json(&input, Some(&db_path)).unwrap();
+
+        let context = load_code_graph_context(&dirs).expect("code graph context expected");
+        assert!(context.contains("## Code Graph (Blarify)"));
+        assert!(context.contains("1 files, 1 classes, and 1 functions"));
+        assert!(context.contains("amplihack query-code stats"));
+    }
+
+    #[test]
+    fn setup_blarify_indexing_background_imports_current_json_when_db_missing() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("app.py"), "print('hi')\n").unwrap();
+        let artifact_dir = dir.path().join(".amplihack");
+        fs::create_dir_all(&artifact_dir).unwrap();
+        std::thread::sleep(Duration::from_secs(1));
+        fs::write(artifact_dir.join("blarify.json"), "{}\n").unwrap();
+
+        let stub_log = dir.path().join("amplihack.log");
+        let stub = dir.path().join("amplihack");
+        fs::write(
+            &stub,
+            format!(
+                "#!/usr/bin/env bash\nif [ \"$1\" = \"--version\" ]; then echo amplihack-test; exit 0; fi\nprintf '%s\\n' \"$@\" > \"{}\"\n",
+                stub_log.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        unsafe {
+            std::env::set_var("AMPLIHACK_AMPLIHACK_BINARY_PATH", &stub);
+            std::env::set_var("AMPLIHACK_BLARIFY_MODE", "background");
+        }
+
+        let active = setup_blarify_indexing(&dirs).unwrap();
+
+        let mut attempts = 0;
+        while !stub_log.exists() && attempts < 20 {
+            std::thread::sleep(Duration::from_millis(50));
+            attempts += 1;
+        }
+        let logged = fs::read_to_string(&stub_log).unwrap();
+        unsafe {
+            std::env::remove_var("AMPLIHACK_AMPLIHACK_BINARY_PATH");
+            std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
+        }
+
+        assert!(active);
+        assert!(logged.contains("index-code"));
+        assert!(logged.contains(".amplihack/blarify.json"));
+        assert!(logged.contains(".amplihack/kuzu_db"));
+    }
+
+    #[test]
+    fn setup_blarify_indexing_sync_regenerates_stale_json_with_native_scip() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        let artifact_dir = dir.path().join(".amplihack");
+        fs::create_dir_all(&artifact_dir).unwrap();
+        fs::write(artifact_dir.join("blarify.json"), "{}\n").unwrap();
+        std::thread::sleep(Duration::from_secs(1));
+        fs::write(src_dir.join("app.py"), "print('updated')\n").unwrap();
+
+        let stub_log = dir.path().join("amplihack-sync.log");
+        let stub = dir.path().join("amplihack-sync");
+        fs::write(
+            &stub,
+            format!(
+                "#!/usr/bin/env bash\nif [ \"$1\" = \"--version\" ]; then echo amplihack-test; exit 0; fi\nprintf '%s\\n' \"$@\" > \"{}\"\n",
+                stub_log.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        unsafe {
+            std::env::set_var("AMPLIHACK_AMPLIHACK_BINARY_PATH", &stub);
+            std::env::set_var("AMPLIHACK_BLARIFY_MODE", "sync");
+        }
+
+        let active = setup_blarify_indexing(&dirs).unwrap();
+        let logged = fs::read_to_string(&stub_log).unwrap();
+
+        unsafe {
+            std::env::remove_var("AMPLIHACK_AMPLIHACK_BINARY_PATH");
+            std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
+        }
+
+        assert!(!active);
+        assert!(logged.contains("index-scip"));
+        assert!(logged.contains("--project-path"));
+        assert!(logged.contains(dir.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn setup_blarify_indexing_reuses_existing_background_job() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/app.py"), "print('hi')\n").unwrap();
+        amplihack_cli::memory::record_background_index_pid(dir.path(), std::process::id()).unwrap();
+
+        let active = setup_blarify_indexing(&dirs).unwrap();
+
+        assert!(active);
+    }
+
+    #[test]
+    fn remove_amplihack_hooks_preserves_third_party_entries() {
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {"type": "command", "command": "/home/user/.local/bin/amplihack-hooks session-start"}
+                        ]
+                    },
+                    {
+                        "hooks": [
+                            {"type": "command", "command": "/usr/local/bin/third-party-hook"}
+                        ]
+                    }
+                ],
+                "UserPromptSubmit": [
+                    {
+                        "hooks": [
+                            {"type": "command", "command": "/home/user/.amplihack/.claude/tools/amplihack/hooks/user_prompt_submit.py"}
+                        ]
+                    }
+                ]
+            }
+        });
+
+        remove_amplihack_hooks(&mut settings);
+
+        assert!(!contains_amplihack_hooks(&settings));
+        let session_wrappers = settings["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(session_wrappers.len(), 1);
+        assert_eq!(
+            session_wrappers[0]["hooks"][0]["command"].as_str(),
+            Some("/usr/local/bin/third-party-hook")
+        );
+        assert!(settings["hooks"].get("UserPromptSubmit").is_none());
+    }
+
+    #[test]
+    fn migrate_global_hooks_updates_settings_atomically() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", dir.path()) };
+
+        let settings_path = dir.path().join(".claude/settings.json");
+        fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {"type": "command", "command": "/home/user/.local/bin/amplihack-hooks session-start"}
+                            ]
+                        },
+                        {
+                            "hooks": [
+                                {"type": "command", "command": "/usr/local/bin/third-party-hook"}
+                            ]
+                        }
+                    ]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let message = migrate_global_hooks().expect("migration message expected");
+
+        match prev_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        assert!(message.contains("Migrated amplihack hooks"));
+        let updated: Value =
+            serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert!(!contains_amplihack_hooks(&updated));
+        assert_eq!(
+            updated["hooks"]["SessionStart"][0]["hooks"][0]["command"].as_str(),
+            Some("/usr/local/bin/third-party-hook")
+        );
     }
 }

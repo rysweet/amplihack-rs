@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Builder for constructing the environment passed to child processes.
 #[derive(Debug)]
@@ -76,6 +76,24 @@ impl EnvBuilder {
             "AMPLIHACK_AGENT_BINARY must be one of: claude, copilot, codex, amplifier; got: {tool}"
         );
         self.set("AMPLIHACK_AGENT_BINARY", tool)
+    }
+
+    /// Set `AMPLIHACK_KUZU_DB_PATH` for child processes to a project-local Kuzu DB.
+    ///
+    /// If the parent environment already has `AMPLIHACK_KUZU_DB_PATH`, preserve it.
+    /// Otherwise use `<project_root>/.amplihack/kuzu_db`.
+    pub fn with_project_kuzu_db(self, project_root: &Path) -> Self {
+        if let Ok(existing) = env::var("AMPLIHACK_KUZU_DB_PATH")
+            && !existing.is_empty()
+        {
+            return self.set("AMPLIHACK_KUZU_DB_PATH", existing);
+        }
+
+        let path = project_root.join(".amplihack").join("kuzu_db");
+        self.set(
+            "AMPLIHACK_KUZU_DB_PATH",
+            path.to_string_lossy().into_owned(),
+        )
     }
 
     /// Resolve and set `AMPLIHACK_HOME` in the child environment.
@@ -157,6 +175,31 @@ impl EnvBuilder {
         self
     }
 
+    /// Resolve and set `AMPLIHACK_ASSET_RESOLVER` in the child environment.
+    ///
+    /// Resolution order:
+    /// 1. Preserve a pre-existing `AMPLIHACK_ASSET_RESOLVER`
+    /// 2. Sibling binary next to the running executable
+    /// 3. `amplihack-asset-resolver` on PATH
+    /// 4. `~/.local/bin/amplihack-asset-resolver`
+    /// 5. `~/.cargo/bin/amplihack-asset-resolver`
+    pub fn with_asset_resolver(self) -> Self {
+        if let Ok(existing) = env::var("AMPLIHACK_ASSET_RESOLVER")
+            && !existing.is_empty()
+        {
+            return self.set("AMPLIHACK_ASSET_RESOLVER", existing);
+        }
+
+        if let Some(path) = find_asset_resolver_binary() {
+            return self.set(
+                "AMPLIHACK_ASSET_RESOLVER",
+                path.to_string_lossy().into_owned(),
+            );
+        }
+
+        self
+    }
+
     /// Add standard AMPLIHACK_* variables and NODE_OPTIONS.
     pub fn with_amplihack_vars(self) -> Self {
         // Merge NODE_OPTIONS: append if existing (and not already present), set fresh otherwise
@@ -202,6 +245,39 @@ impl Default for EnvBuilder {
     }
 }
 
+fn find_asset_resolver_binary() -> Option<PathBuf> {
+    if let Ok(exe) = env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        let sibling = parent.join("amplihack-asset-resolver");
+        if sibling.is_file() {
+            return Some(sibling);
+        }
+    }
+
+    if let Ok(path) = env::var("PATH") {
+        for dir in env::split_paths(&path) {
+            let candidate = dir.join("amplihack-asset-resolver");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    if let Ok(home) = env::var("HOME") {
+        for suffix in [".local/bin", ".cargo/bin"] {
+            let candidate = PathBuf::from(&home)
+                .join(suffix)
+                .join("amplihack-asset-resolver");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
 /// Build a PATH string by prepending directories and deduplicating.
 fn build_path(prepend: &[PathBuf], current: &str) -> String {
     let mut seen = HashSet::new();
@@ -240,6 +316,7 @@ fn generate_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::cwd_env_lock;
 
     // ── WS1: with_agent_binary ────────────────────────────────────────────────
 
@@ -255,6 +332,51 @@ mod tests {
                 "AMPLIHACK_AGENT_BINARY should be '{tool}'"
             );
         }
+    }
+
+    #[test]
+    fn with_project_kuzu_db_sets_project_local_path() {
+        let _guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
+
+        let env = EnvBuilder::new().with_project_kuzu_db(temp.path()).build();
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        let expected = temp.path().join(".amplihack").join("kuzu_db");
+        assert_eq!(
+            env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str),
+            Some(expected.to_str().unwrap())
+        );
+    }
+
+    #[test]
+    fn with_project_kuzu_db_preserves_existing_override() {
+        let _guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/custom/kuzu") };
+
+        let env = EnvBuilder::new().with_project_kuzu_db(temp.path()).build();
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        assert_eq!(
+            env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str),
+            Some("/custom/kuzu")
+        );
     }
 
     // ── WS3: with_amplihack_home ───────────────────────────────────────────────
@@ -407,6 +529,41 @@ mod tests {
         let env = EnvBuilder::new().with_amplihack_vars().build();
         assert_eq!(env.get("AMPLIHACK_RUST_RUNTIME").unwrap(), "1");
         assert!(env.contains_key("AMPLIHACK_VERSION"));
+    }
+
+    #[test]
+    fn with_asset_resolver_sets_from_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let resolver = temp.path().join("amplihack-asset-resolver");
+        std::fs::write(&resolver, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&resolver, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let prev_path = env::var_os("PATH");
+        let prev_resolver = env::var_os("AMPLIHACK_ASSET_RESOLVER");
+        unsafe {
+            env::set_var("PATH", temp.path());
+            env::remove_var("AMPLIHACK_ASSET_RESOLVER");
+        }
+
+        let built = EnvBuilder::new().with_asset_resolver().build();
+
+        match prev_path {
+            Some(value) => unsafe { env::set_var("PATH", value) },
+            None => unsafe { env::remove_var("PATH") },
+        }
+        match prev_resolver {
+            Some(value) => unsafe { env::set_var("AMPLIHACK_ASSET_RESOLVER", value) },
+            None => unsafe { env::remove_var("AMPLIHACK_ASSET_RESOLVER") },
+        }
+
+        assert_eq!(
+            built.get("AMPLIHACK_ASSET_RESOLVER").map(String::as_str),
+            Some(resolver.to_str().unwrap())
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@ amplihack uninstall
 
 ## amplihack install
 
-Bootstraps the amplihack environment on the current machine. On first run, it performs full setup: validates Python, deploys native binaries, stages framework assets, and registers Claude Code hooks. Subsequent runs are idempotent — they update existing registrations in place without duplication.
+Bootstraps the amplihack environment on the current machine. On first run, it performs full setup: obtains the framework source, deploys native binaries, stages framework assets, and registers Claude Code hooks. Subsequent runs are idempotent — they update existing registrations in place without duplication.
 
 ### Options
 
@@ -22,28 +22,24 @@ Bootstraps the amplihack environment on the current machine. On first run, it pe
 | Code | Meaning |
 |------|---------|
 | `0` | Install completed successfully |
-| `1` | Python validation failed (see stderr for details) |
 | `1` | `amplihack-hooks` binary not found after 5-step search |
 | `1` | `--local` path does not exist or is not a directory |
 | `1` | `--local` path does not contain a `.claude` directory |
-| `1` | Git clone failed (non-local mode only) |
+| `1` | Framework archive download or extraction failed (non-local mode only) |
 
 ### Install Phases
 
 ```
 amplihack install
 │
-├── 1. validate_python()          — python3 present AND 'import amplihack' works
-├── 2. git clone OR --local path  — obtain framework source
-├── 3. deploy_binaries()          — copy amplihack + amplihack-hooks to ~/.local/bin
-├── 4. copy framework assets      — stage .claude/ tree to ~/.amplihack/.claude/
-├── 5. create_runtime_dirs()      — create runtime/ subdirs with 0o755 permissions
-├── 6. ensure_settings_json()     — backup settings.json, register hooks, set permissions
-├── 7. verify_hooks()             — confirm all 7 hook scripts exist on disk
-└── 8. write_manifest()           — write amplihack-manifest.json for uninstall
+├── 1. GitHub archive OR --local path — obtain framework source
+├── 2. deploy_binaries()          — copy amplihack + amplihack-hooks (+ asset resolver when present) to ~/.local/bin
+├── 3. copy framework assets      — stage .claude/ tree to ~/.amplihack/.claude/
+├── 4. create_runtime_dirs()      — create runtime/ subdirs with 0o755 permissions
+├── 5. ensure_settings_json()     — backup settings.json, register hooks, set permissions
+├── 6. verify_framework_assets()  — confirm required staged framework assets exist
+└── 7. write_manifest()           — write amplihack-manifest.json for uninstall
 ```
-
-Phase 1 (Python validation) is fail-fast: if it fails, no changes are made to disk.
 
 ### Environment Variables
 
@@ -59,11 +55,10 @@ These variables are read during install. All are optional; the installer works w
 Successful install prints a phase-by-phase progress summary:
 
 ```
-✓ Python 3.11.4 detected
-✓ amplihack Python package detected
-✓ Cloning from https://github.com/rysweet/amplihack...
+✓ Downloaded framework archive from https://github.com/rysweet/amplihack
 ✓ Deployed amplihack → ~/.local/bin/amplihack
 ✓ Deployed amplihack-hooks → ~/.local/bin/amplihack-hooks
+✓ Deployed amplihack-asset-resolver → ~/.local/bin/amplihack-asset-resolver
 ✓ Staged framework assets (47 files, 12 directories)
 ✓ Created runtime directories
 ✓ Backed up ~/.claude/settings.json → settings.json.backup.1741651200
@@ -133,7 +128,7 @@ The functions below are in `crates/amplihack-cli/src/commands/install.rs`.
 
 ### `run_install(local: Option<PathBuf>) -> Result<()>`
 
-Entry point called by the command dispatcher. Canonicalizes and validates `--local` path when provided. Delegates to `local_install()` directly (local mode) or after `git clone` (network mode).
+Entry point called by the command dispatcher. Canonicalizes and validates `--local` path when provided. Delegates to `local_install()` directly (local mode) or after downloading and extracting the GitHub repository archive in native Rust (network mode).
 
 ### `run_uninstall() -> Result<()>`
 
@@ -141,7 +136,7 @@ Entry point for uninstall. Reads the manifest, then executes phases 1–4.
 
 ### `local_install(repo_root: &Path) -> Result<()>`
 
-Core install logic. Runs all phases from Python validation through manifest writing. Calls `find_hooks_binary()` to locate `amplihack-hooks` before wiring hooks.
+Core install logic. Runs all install phases through manifest writing. Calls `find_hooks_binary()` to locate `amplihack-hooks` before wiring hooks.
 
 ### `find_hooks_binary() -> Result<PathBuf>`
 
@@ -157,22 +152,11 @@ PATH runs at Step 3 so system-wide installs (e.g. a tarball to `/usr/local/bin`)
 
 Returns an actionable error if none of the five locations yield an executable.
 
-### `deploy_binaries(hooks_bin: &Path) -> Result<Vec<PathBuf>>`
+### `deploy_binaries() -> Result<Vec<PathBuf>>`
 
-Copies `amplihack` (current executable) and `amplihack-hooks` (resolved by `find_hooks_binary`) to `~/.local/bin` with `0o755` permissions. Checks file ownership before overwriting an existing file. Returns the list of deployed paths for inclusion in the manifest.
+Copies `amplihack` (current executable) and `amplihack-hooks` (resolved by `find_hooks_binary`) to `~/.local/bin` with `0o755` permissions. When a sibling `amplihack-asset-resolver` binary is present, it is deployed too so launched tools and recipe runs can resolve bundle assets without falling back to Python. Returns the list of deployed paths for inclusion in the manifest.
 
 > **macOS note:** On macOS with System Integrity Protection (SIP) active, copying the running executable to `~/.local/bin` may produce a quarantined binary. See the [First-time install how-to](../howto/first-install.md#macos-sip-note) for the resolution step.
-
-### `validate_python() -> Result<()>`
-
-Runs two subprocess checks with hardcoded argument arrays (no shell interpolation):
-
-```
-python3 --version
-python3 -c "import amplihack"
-```
-
-Exits with code 1 and a `❌` diagnostic message if either fails.
 
 ### `ensure_settings_json(staging_dir: &Path, timestamp: u64, hooks_bin: &Path) -> Result<(bool, Vec<String>)>`
 
@@ -184,7 +168,9 @@ Validates that a hook command string does not contain shell metacharacters (`|&;
 
 ### `update_hook_paths(settings, hook_system, specs, hooks_dir, hooks_bin)`
 
-Iterates `specs` and calls `validate_hook_command_string()` on each command string before upserting its hook wrapper into `settings["hooks"][event]`. Uses `wrapper_matches()` for idempotency. Preserves order — `workflow_classification_reminder.py` always precedes `user-prompt-submit` in the `UserPromptSubmit` array.
+Iterates `specs` and calls `validate_hook_command_string()` on each command string before upserting its hook wrapper into `settings["hooks"][event]`. Uses `wrapper_matches()` for idempotency. Preserves order — `workflow-classification-reminder` always precedes `user-prompt-submit` in the `UserPromptSubmit` array.
+
+The active amplihack install path registers hook **binary subcommands** such as `"amplihack-hooks post-tool-use"`. Legacy Python hook files may still be staged for compatibility, but they are no longer treated as required runtime hook registrations.
 
 ### `remove_hook_registrations(settings) -> Result<()>`
 

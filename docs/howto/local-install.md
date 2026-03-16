@@ -29,7 +29,7 @@ rsync -a user@remote:~/src/amplihack ~/src/amplihack
 amplihack install --local ~/src/amplihack
 ```
 
-The `--local` flag skips the git clone step and reads framework assets directly from your checkout. All other phases (Python validation, binary deployment, asset staging, hook wiring) run identically to a standard install.
+The `--local` flag skips the default GitHub archive download step and reads framework assets directly from your checkout. All other phases (optional legacy-Python probe, binary deployment, asset staging, hook wiring) run identically to a standard install.
 
 ### 3. Verify
 

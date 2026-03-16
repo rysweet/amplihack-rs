@@ -152,6 +152,7 @@ impl Hook for PreToolUseHook {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::env_lock;
 
     fn make_bash_input(command: &str) -> HookInput {
         HookInput::PreToolUse {
@@ -201,6 +202,11 @@ mod tests {
 
     #[test]
     fn allows_git_commit_on_feature_branch() {
+        // Hold env_lock so concurrent tests can't set GITHUB_COPILOT_AGENT=1
+        // while inject_context runs against the real CWD.
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // This test depends on the current branch not being main/master.
         // In CI, we may be on a feature branch, so this should pass.
         let hook = PreToolUseHook;

@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
+amplihack-cli = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

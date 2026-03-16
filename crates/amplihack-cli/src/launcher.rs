@@ -102,9 +102,18 @@ impl Drop for ManagedChild {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::home_env_lock;
+
+    // These tests spawn system binaries (`echo`, `sleep`, `true`, `false`, `sh`).
+    // They hold `home_env_lock()` to prevent concurrent fleet/install tests from
+    // narrowing PATH (to a temp stub directory) while these tests are running,
+    // which would cause the system-binary lookup to fail.
 
     #[test]
     fn spawn_and_wait_for_exit() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let cmd = Command::new("echo");
         let mut child = ManagedChild::spawn(cmd).unwrap();
         let status = child.wait().unwrap();
@@ -113,6 +122,9 @@ mod tests {
 
     #[test]
     fn try_wait_returns_none_while_running() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut cmd = Command::new("sleep");
         cmd.arg("10");
         let mut child = ManagedChild::spawn(cmd).unwrap();
@@ -126,6 +138,9 @@ mod tests {
 
     #[test]
     fn drop_terminates_running_process() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut cmd = Command::new("sleep");
         cmd.arg("60");
         let child = ManagedChild::spawn(cmd).unwrap();
@@ -146,6 +161,9 @@ mod tests {
 
     #[test]
     fn managed_child_id() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let cmd = Command::new("sleep");
         let mut cmd = cmd;
         cmd.arg("0.1");

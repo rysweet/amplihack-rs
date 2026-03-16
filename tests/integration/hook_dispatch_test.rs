@@ -7,12 +7,15 @@
 ///   - stdout is valid JSON
 ///   - The JSON does not contain error fields that indicate a panic
 ///
-/// The hooks may call Python bridge scripts when the Python SDK is available.
-/// When Python/amplihack is not installed, hooks fall back to non-SDK paths.
+/// The live hook path is native Rust. These tests intentionally do not require
+/// Python to be installed or importable.
 /// All hooks must remain fail-open (exit 0, produce `{}` or valid output).
+use std::fs;
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// Path to the compiled amplihack-hooks binary.
 fn hooks_bin() -> PathBuf {
@@ -174,6 +177,17 @@ fn user_prompt_submit_alias_succeeds() {
 }
 
 #[test]
+fn workflow_classification_reminder_dispatch_succeeds() {
+    let input = r#"{
+    "hook_event_name": "UserPromptSubmit",
+    "user_prompt": "Please investigate this new bug",
+    "session_id": "test-session",
+    "turnCount": 0
+}"#;
+    assert_hook_ok("workflow-classification-reminder", input);
+}
+
+#[test]
 fn pre_compact_dispatch_succeeds() {
     assert_hook_ok("pre-compact", PRE_COMPACT_INPUT);
 }
@@ -206,6 +220,7 @@ fn empty_json_input_is_handled_gracefully() {
         "post-tool-use",
         "session-start",
         "session-stop",
+        "workflow-classification-reminder",
         "user-prompt",
         "pre-compact",
     ] {
@@ -223,4 +238,86 @@ fn empty_json_input_is_handled_gracefully() {
             stdout
         );
     }
+}
+
+#[test]
+fn session_start_dispatches_background_blarify_indexing() {
+    let bin = hooks_bin();
+    if !bin.exists() {
+        eprintln!("Skipping: binary not found");
+        return;
+    }
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .expect("unix epoch")
+        .as_nanos();
+    let project_root = std::env::temp_dir().join(format!("amplihack-hook-probe-{unique}"));
+    if project_root.exists() {
+        fs::remove_dir_all(&project_root).expect("cleanup stale temp dir");
+    }
+    let src_dir = project_root.join("src");
+    let artifact_dir = project_root.join(".amplihack");
+    fs::create_dir_all(&src_dir).expect("src dir");
+    fs::create_dir_all(&artifact_dir).expect("artifact dir");
+    fs::write(src_dir.join("app.py"), "print('hi')\n").expect("source file");
+    std::thread::sleep(Duration::from_secs(1));
+    fs::write(artifact_dir.join("blarify.json"), "{}\n").expect("blarify json");
+
+    let shim_dir = project_root.join("shim");
+    fs::create_dir_all(&shim_dir).expect("shim dir");
+    let log_path = project_root.join("amplihack.log");
+    let stub = shim_dir.join("amplihack");
+    fs::write(
+        &stub,
+        format!(
+            "#!/usr/bin/env bash\nif [ \"${{1:-}}\" = \"--version\" ]; then echo amplihack-test; exit 0; fi\nprintf '%s\\n' \"$@\" > \"{}\"\n",
+            log_path.display()
+        ),
+    )
+    .expect("stub script");
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let mut child = Command::new(&bin)
+        .arg("session-start")
+        .current_dir(&project_root)
+        .env("AMPLIHACK_AMPLIHACK_BINARY_PATH", &stub)
+        .env("AMPLIHACK_BLARIFY_MODE", "background")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn hooks binary");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(SESSION_START_INPUT.as_bytes())
+            .expect("write stdin");
+    }
+
+    let output = child.wait_with_output().expect("wait for hook");
+    assert!(
+        output.status.success(),
+        "session-start hook must succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    assert!(
+        parsed.is_object(),
+        "expected object output from session-start hook, got: {parsed}"
+    );
+
+    for _ in 0..20 {
+        if log_path.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let logged = fs::read_to_string(&log_path).expect("background command log");
+    assert!(logged.contains("index-code"));
+    assert!(logged.contains(".amplihack/blarify.json"));
+    assert!(logged.contains(".amplihack/kuzu_db"));
+
+    fs::remove_dir_all(&project_root).expect("cleanup project root");
 }

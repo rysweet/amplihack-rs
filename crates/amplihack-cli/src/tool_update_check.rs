@@ -169,10 +169,14 @@ pub fn sanitize_version(s: &str) -> String {
     let stripped = strip_ansi(s);
 
     // Allowlist filter — keep only semver-safe characters: [a-zA-Z0-9.\-+]
-    stripped
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-' || *c == '+')
-        .collect()
+    // Pre-allocate to the stripped length; result is always ≤ input length.
+    let mut result = String::with_capacity(stripped.len());
+    result.extend(
+        stripped
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-' || *c == '+'),
+    );
+    result
 }
 
 // ---------------------------------------------------------------------------

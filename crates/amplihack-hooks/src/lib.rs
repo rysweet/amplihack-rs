@@ -3,6 +3,10 @@
 //! All hooks are host-agnostic — they work with Claude Code, Amplifier,
 //! and Copilot via JSON stdin/stdout protocol.
 
+mod agent_memory;
+#[cfg(test)]
+pub(crate) mod test_support;
+
 /// Post-tool-use hook: observes tool results for metrics and validation.
 pub mod post_tool_use;
 /// Pre-compact hook: exports conversation transcript before context compaction.
@@ -19,6 +23,8 @@ pub mod session_stop;
 pub mod stop;
 /// User prompt submission hook: processes user prompt before the LLM call.
 pub mod user_prompt;
+/// Workflow classification reminder hook: injects topic-boundary routing guidance.
+pub mod workflow_classification;
 
 // Re-export hook structs for ergonomic access.
 /// Post-tool-use hook implementation.
@@ -37,3 +43,5 @@ pub use session_stop::SessionStopHook;
 pub use stop::StopHook;
 /// User prompt submission hook implementation.
 pub use user_prompt::UserPromptSubmitHook;
+/// Workflow classification reminder hook implementation.
+pub use workflow_classification::WorkflowClassificationReminderHook;

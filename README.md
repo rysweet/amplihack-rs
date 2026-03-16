@@ -5,7 +5,7 @@ Rust core runtime for amplihack's deterministic infrastructure layer.
 ## Architecture
 
 - **amplihack-types** — Thin IPC boundary types (HookInput, HookOutput, Settings)
-- **amplihack-state** — File ops, locking, env config, Python bridge
+- **amplihack-state** — File ops, locking, env config
 - **amplihack-hooks** — All hook implementations (pre_tool_use, stop, session_start, etc.)
 - **amplihack (bin)** — CLI binary (Phase 2)
 - **amplihack-hooks (bin)** — Multicall hook binary

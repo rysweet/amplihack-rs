@@ -24,12 +24,12 @@ amplihack doctor
 
 | Code | Meaning |
 |------|---------|
-| `0` | All 7 checks passed |
+| `0` | All 5 checks passed |
 | `1` | One or more checks failed |
 
 ## Checks
 
-`doctor` runs 7 checks in order. Each check prints one line of output.
+`doctor` runs 5 checks in order. Each check prints one line of output.
 
 ### Check 1 — hooks installed
 
@@ -58,16 +58,7 @@ Runs `recipe-runner-rs --version` and checks that the command succeeds. Verifies
 ✗ recipe-runner available — command not found: recipe-runner-rs
 ```
 
-### Check 4 — Python bridge working
-
-Runs `python3 -c "import amplihack"` and checks for a zero exit code. Verifies that Python 3 is present and that the amplihack Python package is importable in the active environment.
-
-```
-✓ Python bridge working
-✗ Python bridge working — ModuleNotFoundError: No module named 'amplihack'
-```
-
-### Check 5 — tmux installed
+### Check 4 — tmux installed
 
 Runs `tmux -V` and checks for a zero exit code. tmux is required for amplihack's session management features.
 
@@ -76,21 +67,12 @@ Runs `tmux -V` and checks for a zero exit code. tmux is required for amplihack's
 ✗ tmux installed — command not found: tmux
 ```
 
-### Check 6 — amplihack version
+### Check 5 — amplihack version
 
 Reports the amplihack version from the compiled binary. This check always passes on a valid install; it is informational.
 
 ```
 ✓ amplihack v0.9.1
-```
-
-### Check 7 — recipe-runner-rs version
-
-Runs `recipe-runner-rs --version` and reports the version string. This check reuses the same process spawn as Check 3 but reports the actual version string rather than just pass/fail. If Check 3 failed, Check 7 also fails.
-
-```
-✓ recipe-runner-rs v0.4.2
-✗ recipe-runner-rs version — command not found: recipe-runner-rs
 ```
 
 ## Output Format
@@ -116,7 +98,7 @@ ANSI colour codes are always emitted: green for `✓` lines, red for `✗` lines
 - **No secrets printed.** `settings.json` content is never echoed. Only existence, JSON validity, and the presence of the string `"amplihack"` inside the `hooks` section are reported.
 - **Error messages are truncated.** stderr from subprocess checks is truncated to the first line, maximum 200 characters, before being included in output. This prevents adversarial error output from flooding logs.
 - **ANSI stripped on external output.** Version strings from `tmux -V` and `recipe-runner-rs --version` have ANSI escape codes stripped before display.
-- **Compile-time constants only for self-version.** amplihack's own version (Check 6) uses the `CARGO_PKG_VERSION` compile-time constant; the binary does not spawn itself as a subprocess.
+- **Compile-time constants only for self-version.** amplihack's own version (Check 5) uses the `CARGO_PKG_VERSION` compile-time constant; the binary does not spawn itself as a subprocess.
 - **All subprocess arguments are compile-time literals.** No user input reaches any `Command::new()` call.
 
 ## Example: All Checks Pass
@@ -126,10 +108,8 @@ $ amplihack doctor
 ✓ hooks installed
 ✓ settings.json valid JSON
 ✓ recipe-runner-rs v0.4.2
-✓ Python bridge working
 ✓ tmux 3.4
 ✓ amplihack v0.9.1
-✓ recipe-runner-rs v0.4.2
 
 All checks passed.
 ```
@@ -141,12 +121,10 @@ $ amplihack doctor
 ✓ hooks installed
 ✓ settings.json valid JSON
 ✗ recipe-runner available — command not found: recipe-runner-rs
-✗ Python bridge working — ModuleNotFoundError: No module named 'amplihack'
 ✓ tmux 3.4
 ✓ amplihack v0.9.1
-✗ recipe-runner-rs version — command not found: recipe-runner-rs
 
-3 check(s) failed.
+1 check(s) failed.
 $ echo $?
 1
 ```

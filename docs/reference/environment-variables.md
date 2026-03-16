@@ -6,7 +6,9 @@ All environment variables read or written by `amplihack` during a launch (`ampli
 
 - [Variables set by amplihack](#variables-set-by-amplihack)
   - [AMPLIHACK_AGENT_BINARY](#amplihack_agent_binary)
+  - [AMPLIHACK_ASSET_RESOLVER](#amplihack_asset_resolver)
   - [AMPLIHACK_HOME](#amplihack_home)
+  - [AMPLIHACK_KUZU_DB_PATH](#amplihack_kuzu_db_path)
   - [AMPLIHACK_NONINTERACTIVE](#amplihack_noninteractive)
   - [AMPLIHACK_SESSION_ID](#amplihack_session_id)
   - [AMPLIHACK_DEPTH](#amplihack_depth)
@@ -16,6 +18,8 @@ All environment variables read or written by `amplihack` during a launch (`ampli
 - [Variables read by amplihack](#variables-read-by-amplihack)
   - [HOME](#home)
   - [AMPLIHACK_DEFAULT_MODEL](#amplihack_default_model)
+  - [AMPLIHACK_ENABLE_BLARIFY](#amplihack_enable_blarify)
+  - [AMPLIHACK_BLARIFY_MODE](#amplihack_blarify_mode)
   - [AMPLIHACK_NO_UPDATE_CHECK](#amplihack_no_update_check)
   - [AMPLIHACK_PARITY_TEST](#amplihack_parity_test)
   - [UV_TOOL_BIN_DIR](#uv_tool_bin_dir)
@@ -58,6 +62,36 @@ echo $AMPLIHACK_AGENT_BINARY
 
 ---
 
+### AMPLIHACK_ASSET_RESOLVER
+
+**Type:** path  
+**Example:** `/home/alice/.local/bin/amplihack-asset-resolver`  
+**Set by:** `EnvBuilder::with_asset_resolver()`
+
+Absolute path to the native bundle-asset resolver. Child processes can execute this binary with a single relative asset path argument, for example:
+
+```sh
+"$AMPLIHACK_ASSET_RESOLVER" amplifier-bundle/tools/orch_helper.py
+```
+
+That returns the resolved absolute path on stdout and exits non-zero on invalid input or missing assets.
+
+**Resolution order (first match wins):**
+
+| Priority | Source |
+|----------|--------|
+| 1 | `AMPLIHACK_ASSET_RESOLVER` already set in environment |
+| 2 | Sibling `amplihack-asset-resolver` next to the running `amplihack` executable |
+| 3 | `PATH` lookup |
+| 4 | `~/.local/bin/amplihack-asset-resolver` |
+| 5 | `~/.cargo/bin/amplihack-asset-resolver` |
+
+If no binary is found, the variable is omitted. This is transitional behavior while remaining Issue #77 consumers are being ported; callers that require native resolution should treat absence as a hard setup problem rather than silently degrading.
+
+**Why it exists:** Python's `resolve_bundle_asset.py` was a hidden runtime dependency for recipes and helper scripts. Exposing a dedicated Rust binary makes asset lookup explicit, testable, and reusable by child tools without embedding Python-specific paths.
+
+---
+
 ### AMPLIHACK_HOME
 
 **Type:** path
@@ -88,6 +122,33 @@ AMPLIHACK_HOME=/opt/amplihack amplihack claude --print-env 2>&1 | grep AMPLIHACK
 **Security note:** The resolved path is validated to be absolute and must not contain `..` path components. Paths that fail validation are silently dropped; a warning is emitted to the trace log.
 
 **Python parity:** Corresponds to `AMPLIHACK_HOME` propagation in the Python launcher.
+
+---
+
+### AMPLIHACK_KUZU_DB_PATH
+
+**Type:** path
+**Example:** `/work/repo/.amplihack/kuzu_db`
+**Set by:** `EnvBuilder::with_project_kuzu_db()`
+**Read by:** `commands::memory::resolve_kuzu_memory_db_path()`
+
+Overrides the Kuzu database path used by Rust memory operations in launched child
+processes. `amplihack launch` and the Rust recipe runner set it to the
+project-local `.amplihack/kuzu_db` so launched sessions, hooks, and native
+code-graph features operate on the same live Kuzu store.
+
+If this variable is absent, Rust memory operations keep using the historical
+global default `~/.amplihack/memory_kuzu.db`.
+
+```sh
+# Effective child-process environment for a project rooted at /work/repo
+AMPLIHACK_KUZU_DB_PATH=/work/repo/.amplihack/kuzu_db amplihack claude
+```
+
+**Why it exists:** Issue #77 still has memory/code parity gaps. This override
+lets launched Rust sessions converge on the same project-local Kuzu DB as the
+native code graph without forcing an immediate destructive migration away from
+the legacy global memory path.
 
 ---
 
@@ -226,6 +287,68 @@ AMPLIHACK_DEFAULT_MODEL=sonnet amplihack claude --model haiku
 See [Launch Flag Injection](./launch-flag-injection.md) for the complete rules
 governing how `--model` and other flags are injected into the subprocess
 command line.
+
+---
+
+### AMPLIHACK_ENABLE_BLARIFY
+
+**Type:** flag  
+**Values:** `1` enables launcher-side code-indexing checks; absence or any other value disables them  
+**Read by:** `commands::launch::should_prompt_blarify_indexing()`
+
+Opt-in gate for launcher-side code indexing. When set to `1` for `amplihack claude`, the Rust launcher checks whether code-graph artifacts are missing or stale, and whether the project-local `.amplihack/kuzu_db` store already exists, then either prompts or follows `AMPLIHACK_BLARIFY_MODE` if that mode is set.
+
+Without `AMPLIHACK_BLARIFY_MODE`, interactive launches offer to either:
+
+- import an existing fresh `.amplihack/blarify.json` via `amplihack index-code` when the code-graph DB is missing, or
+- generate fresh native SCIP artifacts via `amplihack index-scip` when the existing artifact is stale or no fresh import input exists.
+
+If the variable is unset, the launcher skips all code-indexing checks and proceeds directly to the target AI tool.
+
+```sh
+# Enable launcher-side code indexing prompts for Claude launches
+AMPLIHACK_ENABLE_BLARIFY=1 amplihack claude
+
+# Generate native SCIP artifacts manually instead of waiting for the prompt
+amplihack index-scip --project-path .
+```
+
+**Artifact locations:**
+
+- `.amplihack/blarify.json` — native Kuzu import input for `amplihack index-code`
+- `.amplihack/indexes/<language>.scip` — per-language native SCIP artifacts from `amplihack index-scip`
+- `.amplihack/kuzu_db` — native Kuzu code-graph store populated by `index-code` or `index-scip`
+
+**Why it exists:** Issue #77 is migrating code-graph features off the Python launcher without forcing indexing on every launch. This flag keeps the new behavior opt-in while broader memory/session parity work is still being finished.
+
+---
+
+### AMPLIHACK_BLARIFY_MODE
+
+**Type:** string  
+**Values:** `skip` | `sync` | `background`  
+**Read by:** `commands::launch::blarify_mode()`
+
+Controls how launcher-side code indexing behaves once `AMPLIHACK_ENABLE_BLARIFY=1` has opted the project in.
+
+- `skip` — suppress indexing work for this launch
+- `sync` — run indexing in the foreground before launching Claude
+- `background` — start indexing in the background and continue launching Claude immediately
+
+If the variable is unset or has any other value, interactive launches fall back to the prompt flow and non-interactive launches do nothing.
+
+```sh
+# Always skip indexing for this launch
+AMPLIHACK_ENABLE_BLARIFY=1 AMPLIHACK_BLARIFY_MODE=skip amplihack claude
+
+# Force synchronous indexing before Claude starts
+AMPLIHACK_ENABLE_BLARIFY=1 AMPLIHACK_BLARIFY_MODE=sync amplihack claude
+
+# Allow non-interactive launches to queue background indexing
+AMPLIHACK_ENABLE_BLARIFY=1 AMPLIHACK_BLARIFY_MODE=background amplihack claude --print 'summarize src'
+```
+
+**Why it exists:** Python session-start integration already used a `skip` / `sync` / `background` contract. Reintroducing the same lifecycle knob in Rust lets automated and non-interactive launches opt into indexing policy without waiting on a TTY prompt.
 
 ---
 

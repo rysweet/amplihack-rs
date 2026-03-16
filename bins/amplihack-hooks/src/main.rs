@@ -17,6 +17,7 @@ use amplihack_hooks::{
     post_tool_use::PostToolUseHook, pre_compact::PreCompactHook, pre_tool_use::PreToolUseHook,
     protocol::run_hook, session_start::SessionStartHook, session_stop::SessionStopHook,
     stop::StopHook, user_prompt::UserPromptSubmitHook,
+    workflow_classification::WorkflowClassificationReminderHook,
 };
 
 fn main() {
@@ -36,6 +37,7 @@ fn main() {
         "stop" => run_hook(StopHook),
         "session-start" => run_hook(SessionStartHook),
         "session-stop" => run_hook(SessionStopHook),
+        "workflow-classification-reminder" => run_hook(WorkflowClassificationReminderHook),
         "user-prompt" | "user-prompt-submit" => run_hook(UserPromptSubmitHook),
         "pre-compact" => run_hook(PreCompactHook),
         other => {
@@ -48,6 +50,7 @@ fn main() {
                 stop\n  \
                 session-start\n  \
                 session-stop\n  \
+                workflow-classification-reminder\n  \
                 user-prompt\n  \
                 pre-compact",
                 other

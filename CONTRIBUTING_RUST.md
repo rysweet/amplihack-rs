@@ -85,7 +85,7 @@ All `HookOutput` includes `version: 1`. Future protocol changes increment this.
 ```
 crates/
 ├── amplihack-types/    # IPC boundary types (HookInput, HookOutput, ToolDecision)
-├── amplihack-state/    # File ops, locking, env config, Python bridge
+├── amplihack-state/    # File ops, locking, env config
 ├── amplihack-hooks/    # Hook implementations + protocol
 └── amplihack-cli/      # CLI commands + launcher
 bins/

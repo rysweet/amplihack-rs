@@ -3,15 +3,14 @@
 //! Runs a fixed set of checks and prints a pass/fail summary.  Exits with
 //! code 1 if any check fails.
 //!
-//! # Check inventory (6 checks)
+//! # Check inventory (5 checks)
 //!
 //! 1. amplihack hooks installed — reads `$HOME/.claude/settings.json` and
 //!    verifies the `hooks` section contains a value with `"amplihack"`.
 //! 2. settings.json valid JSON — parses the file; reports only validity, never content.
 //! 3. recipe-runner-rs available — locates binary on `$PATH` and runs `--version`.
-//! 4. Python bridge working — runs `python3 -c "import amplihack"`.
-//! 5. tmux installed — runs `tmux -V` and extracts version string.
-//! 6. amplihack binary version — compile-time constant; always passes.
+//! 4. tmux installed — runs `tmux -V` and extracts version string.
+//! 5. amplihack binary version — compile-time constant; always passes.
 //!
 //! # Security
 //!
@@ -209,47 +208,7 @@ pub fn check_recipe_runner_available() -> (bool, String) {
     }
 }
 
-/// Check 4 — Python bridge working.
-///
-/// Runs `python3 -c "import amplihack"` and reports success if the exit code
-/// is 0.  On failure the real stderr from the subprocess is captured and
-/// sanitised via `strip_ansi` before display; no fabricated error text is
-/// substituted.  See SEC-WS2-01 and SEC-WS2-02.
-///
-/// SAFETY: all subprocess arguments are compile-time literals.
-pub fn check_python_bridge() -> (bool, String) {
-    // SAFETY: all arguments are compile-time literals — no user input.
-    let result = std::process::Command::new("python3")
-        .args(["-c", "import amplihack"])
-        .output();
-
-    match result {
-        Ok(out) if out.status.success() => (true, "python3 amplihack module available".to_string()),
-        Ok(out) => {
-            let raw = String::from_utf8_lossy(&out.stderr);
-            let first_line = raw.lines().next().unwrap_or("").trim();
-            let stripped = strip_ansi(first_line);
-            let msg = if stripped.is_empty() {
-                "(no output captured)".to_string()
-            } else {
-                truncate(&stripped, MAX_ERROR_LEN).to_string()
-            };
-            (false, format!("python bridge: {msg}"))
-        }
-        Err(e) => {
-            let msg = e.to_string();
-            (
-                false,
-                format!(
-                    "python bridge: python3 not found: {}",
-                    truncate(&msg, MAX_ERROR_LEN)
-                ),
-            )
-        }
-    }
-}
-
-/// Check 5 — tmux installed.
+/// Check 4 — tmux installed.
 ///
 /// Runs `tmux -V` and extracts the version string from the first line of
 /// stdout.  `strip_ansi()` is applied before display.  See SEC-WS2-02.
@@ -337,25 +296,24 @@ pub fn print_summary(results: &[(bool, String)]) -> (usize, usize) {
 ///
 /// # Performance
 ///
-/// Checks 3–5 each spawn an external subprocess and dominate wall-clock time
+/// Checks 3–4 each spawn an external subprocess and dominate wall-clock time
 /// (~100–500 ms each).  They are launched concurrently on dedicated threads so
 /// total doctor time is bounded by the *slowest* single check rather than the
-/// sum.  Checks 1, 2, and 6 (file I/O + compile-time constant) remain on the
+/// sum.  Checks 1, 2, and 5 (file I/O + compile-time constant) remain on the
 /// calling thread and complete while the subprocess threads are running.
 pub fn run_doctor() -> Result<()> {
     use std::thread;
 
     // Spawn subprocess checks in parallel — they are independent and I/O-bound.
     let h3 = thread::spawn(check_recipe_runner_available);
-    let h4 = thread::spawn(check_python_bridge);
-    let h5 = thread::spawn(check_tmux_installed);
+    let h4 = thread::spawn(check_tmux_installed);
 
     // Fast checks run on the current thread while the subprocess threads work.
     let r1 = check_hooks_installed();
     let r2 = check_settings_valid_json();
-    let r6 = check_amplihack_version();
+    let r5 = check_amplihack_version();
 
-    // Collect results in canonical display order (1–6), waiting for threads.
+    // Collect results in canonical display order (1–5), waiting for threads.
     let results = vec![
         r1,
         r2,
@@ -366,10 +324,8 @@ pub fn run_doctor() -> Result<()> {
             )
         }),
         h4.join()
-            .unwrap_or_else(|_| (false, "python bridge: internal thread panicked".to_string())),
-        h5.join()
             .unwrap_or_else(|_| (false, "tmux: internal thread panicked".to_string())),
-        r6,
+        r5,
     ];
 
     let (_, failed) = print_summary(&results);
@@ -501,11 +457,11 @@ mod tests {
         let results = vec![
             (true, "hooks installed".to_string()),
             (false, "recipe-runner-rs not found on PATH".to_string()),
-            (false, "python bridge: ModuleNotFoundError".to_string()),
+            (true, String::from("tmux 3.4")),
         ];
         let (passed, failed) = print_summary(&results);
-        assert_eq!(passed, 1, "one check should be counted as passed");
-        assert_eq!(failed, 2, "two checks should be counted as failed");
+        assert_eq!(passed, 2, "two checks should be counted as passed");
+        assert_eq!(failed, 1, "one check should be counted as failed");
     }
 
     // ── WS2-TEST-09: MAX_ERROR_LEN constant ───────────────────────────────

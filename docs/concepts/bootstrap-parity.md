@@ -9,6 +9,7 @@ Before bootstrap parity, a user installing amplihack-rs had to:
 1. Run `amplihack install` (staged framework assets, wired hooks using Python script paths)
 2. Separately figure out that `amplihack-hooks` also needed to be on `PATH`
 3. Separately understand that hook commands needed to reference the Rust binary, not the Python scripts
+4. Still rely on Python-only helpers such as bundle asset resolution during downstream tool execution
 
 After bootstrap parity, step 1 is the only step. The Rust installer mirrors what the Python `amplihack install` command always did: hand you a working system.
 
@@ -58,21 +59,32 @@ With bootstrap parity, hook commands use the `amplihack-hooks` binary for all ho
 }
 ```
 
-The `workflow_classification_reminder.py` hook is an exception — it remains a Python file because it has no Rust implementation and is invoked as a direct Python script, not via `amplihack-hooks`.
+The workflow-classification reminder is now implemented in Rust and dispatched via `amplihack-hooks workflow-classification-reminder`, preserving the earlier 5-second budget while removing that Python hook from runtime execution.
+
+Fresh native installs no longer need staged `tools/amplihack/hooks/*.py` assets. Reinstall still recognizes those historical Python command paths so older settings files are upgraded in place to the native binary format.
+
+Bundle asset resolution also now has a native path: the Rust installer can deploy `amplihack-asset-resolver`, and launched tools / `amplihack recipe run` now receive `AMPLIHACK_ASSET_RESOLVER` pointing at that binary when it is available.
+
+`session-start` has also shed its Python-only behaviors: version mismatch checks and stale global-hook migration now run natively in Rust, and the stale session-start memory bridge has been removed.
+
+`user-prompt-submit` now performs agent-memory lookup natively in Rust as well, using the existing Rust memory-store readers instead of shelling out through a Python bridge.
+
+`session-stop` now follows the same pattern: instead of delegating to a stale Python `MemoryCoordinator.store()` bridge, the Rust hook derives session-end learnings from explicit hook payload fields or transcript JSONL and writes them through the native SQLite / Kuzu memory backends.
+
+`stop/reflection` is native on the Rust side too: transcript parsing, repository-context detection, redirect-history loading, and reflection-prompt assembly now happen in Rust, and the hook invokes headless Claude CLI directly instead of bouncing through a Python SDK bridge.
 
 ## The Bootstrap Sequence
 
 The install sequence is ordered to prevent the "missing dependency at runtime" failure mode:
 
 ```
-validate_python()           ← fail fast if Python or amplihack SDK is missing
-deploy_binaries()           ← place amplihack-hooks at ~/.local/bin BEFORE writing settings
+deploy_binaries()           ← place amplihack-hooks (+ asset resolver when available) at ~/.local/bin BEFORE writing settings
 ensure_settings_json()      ← now safe to write absolute path to amplihack-hooks
-verify_hooks()              ← confirm all scripts are staged
+verify_framework_assets()   ← confirm required staged framework assets exist
 write_manifest()            ← record what was deployed for uninstall
 ```
 
-Python validation runs first because Python is required at hook runtime (for `workflow_classification_reminder.py` and the Python bridge scripts). Deploying binaries before writing `settings.json` ensures that the path written into `settings.json` already exists on disk.
+The install path is now fully native for the live runtime. `deploy_binaries()` still happens before writing `settings.json` so the hook binary path already exists on disk when registration occurs.
 
 ## Relationship to the Python Installer
 
@@ -82,7 +94,8 @@ Both installers write the same logical hooks. The difference is that the Rust in
 
 1. Validates Python before writing anything
 2. Deploys the `amplihack-hooks` binary
-3. Uses binary subcommand format (`amplihack-hooks session-start`) instead of Python script paths for the Rust-implemented hooks
+3. Deploys `amplihack-asset-resolver` when present
+4. Uses binary subcommand format (`amplihack-hooks session-start`) instead of Python script paths for the Rust-implemented hooks
 
 ## See Also
 

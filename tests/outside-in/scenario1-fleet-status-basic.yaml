@@ -1,0 +1,49 @@
+scenario:
+  name: "Fleet Status — Basic User Flow (Issue #77 Parity)"
+  description: |
+    Verifies that `amplihack fleet status` runs natively in Rust with zero
+    Python interpreter involvement. A real user expects a fleet overview
+    table with VM counts and session info. This is the simplest live-path
+    test for fleet cockpit parity (AC5) and no-Python runtime (AC9).
+  type: cli
+  tags: [smoke, fleet, ac5, ac9, issue-77]
+
+  prerequisites:
+    - "amplihack release binary exists at ./target/release/amplihack"
+    - "No Python interpreter required on PATH"
+
+  environment:
+    variables:
+      PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+  steps:
+    - action: launch
+      target: "./target/release/amplihack"
+      args: ["fleet", "status"]
+      description: "Run `amplihack fleet status` as a real user would"
+
+    - action: verify_exit_code
+      expected: 0
+      description: "Must exit 0 — any non-zero means a runtime panic or delegation error"
+
+    - action: verify_output
+      contains: "Fleet State"
+      description: "Output header must include 'Fleet State' — confirms native Rust path"
+
+    - action: verify_output
+      contains: "Total VMs"
+      description: "Summary line must show VM count"
+
+    - action: verify_output
+      matches: "Running: \\d+"
+      description: "Running count must be a number (even 0 is valid)"
+
+    - action: verify_output
+      matches: "Tmux sessions: \\d+"
+      description: "Tmux session count must be present"
+
+    - action: verify_output
+      matches: "Active agents: \\d+"
+      description: "Active agents line must appear"
+
+  # No cleanup required — read-only status query

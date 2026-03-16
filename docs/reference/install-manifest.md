@@ -28,16 +28,13 @@ Relative paths (from `~/.amplihack/.claude/`) of every file staged by the instal
 ```json
 "files": [
   "AMPLIHACK.md",
-  "tools/amplihack/hooks/session_start.py",
-  "tools/amplihack/hooks/stop.py",
-  "tools/amplihack/hooks/pre_tool_use.py",
-  "tools/amplihack/hooks/post_tool_use.py",
-  "tools/amplihack/hooks/workflow_classification_reminder.py",
-  "tools/amplihack/hooks/user_prompt_submit.py",
-  "tools/amplihack/hooks/pre_compact.py",
+  "agents/amplihack/some-agent.md",
+  "commands/amplihack/analyze.md",
   "tools/statusline.sh"
 ]
 ```
+
+Fresh native installs do not stage `tools/amplihack/hooks/*.py`. Hook execution is registered via `amplihack-hooks <subcommand>` and tracked separately in the `hook_registrations` field. Older manifests from pre-port installs may still contain legacy Python hook paths; uninstall continues to tolerate those historical entries.
 
 During uninstall, each path is resolved as `~/.amplihack/.claude/<relative>`. Paths that resolve outside this base directory are rejected.
 
@@ -52,7 +49,6 @@ Relative paths (from `~/.amplihack/.claude/`) of every directory created by the 
   "runtime/metrics",
   "runtime/logs",
   "runtime",
-  "tools/amplihack/hooks",
   "tools/amplihack",
   "agents/amplihack",
   "commands/amplihack",
@@ -94,13 +90,8 @@ Deduplicated list of Claude Code event names for which amplihack registered hook
 {
   "files": [
     "AMPLIHACK.md",
-    "tools/amplihack/hooks/session_start.py",
-    "tools/amplihack/hooks/stop.py",
-    "tools/amplihack/hooks/pre_tool_use.py",
-    "tools/amplihack/hooks/post_tool_use.py",
-    "tools/amplihack/hooks/workflow_classification_reminder.py",
-    "tools/amplihack/hooks/user_prompt_submit.py",
-    "tools/amplihack/hooks/pre_compact.py",
+    "agents/amplihack/some-agent.md",
+    "commands/amplihack/analyze.md",
     "tools/statusline.sh",
     "install/amplihack-manifest.json"
   ],
@@ -110,7 +101,6 @@ Deduplicated list of Claude Code event names for which amplihack registered hook
     "runtime/metrics",
     "runtime/logs",
     "runtime",
-    "tools/amplihack/hooks",
     "tools/amplihack",
     "agents/amplihack",
     "commands/amplihack",

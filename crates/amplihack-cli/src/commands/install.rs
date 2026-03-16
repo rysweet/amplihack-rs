@@ -1,6 +1,6 @@
 //! Native install and uninstall commands.
 
-use crate::command_error::exit_error;
+use crate::update::{extract_archive, http_get, validate_download_url};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -8,10 +8,10 @@ use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const REPO_URL: &str = "https://github.com/rysweet/amplihack";
+const REPO_ARCHIVE_URL: &str =
+    "https://github.com/rysweet/amplihack/archive/refs/heads/main.tar.gz";
 const ESSENTIAL_DIRS: &[&str] = &[
     "agents/amplihack",
     "commands/amplihack",
@@ -34,15 +34,6 @@ const RUNTIME_DIRS: &[&str] = &[
     "runtime/security",
     "runtime/analysis",
 ];
-const AMPLIHACK_HOOK_FILES: &[&str] = &[
-    "session_start.py",
-    "stop.py",
-    "pre_tool_use.py",
-    "post_tool_use.py",
-    "user_prompt_submit.py",
-    "workflow_classification_reminder.py",
-    "pre_compact.py",
-];
 const XPIA_HOOK_FILES: &[&str] = &["session_start.py", "post_tool_use.py", "pre_tool_use.py"];
 
 /// Discriminates between hook command styles.
@@ -50,8 +41,6 @@ const XPIA_HOOK_FILES: &[&str] = &["session_start.py", "post_tool_use.py", "pre_
 enum HookCommandKind {
     /// Invokes the amplihack-hooks binary with a specific subcommand.
     BinarySubcmd { subcmd: &'static str },
-    /// Invokes a Python file directly by absolute path.
-    PythonFile { file: &'static str },
 }
 
 #[derive(Clone)]
@@ -93,12 +82,12 @@ const AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[
         timeout: None,
         matcher: Some("*"),
     },
-    // PythonFile entry must come BEFORE the BinarySubcmd for UserPromptSubmit
-    // so Claude Code executes the classification reminder (5 s budget) first.
+    // Classification reminder must come BEFORE user-prompt-submit so the
+    // topic-boundary routing guidance is injected first.
     HookSpec {
         event: "UserPromptSubmit",
-        cmd: HookCommandKind::PythonFile {
-            file: "workflow_classification_reminder.py",
+        cmd: HookCommandKind::BinarySubcmd {
+            subcmd: "workflow-classification-reminder",
         },
         timeout: Some(5),
         matcher: None,
@@ -244,7 +233,7 @@ fn validate_hook_command_string(cmd: &str) -> Result<()> {
     Ok(())
 }
 
-/// Copy the amplihack-hooks binary (and self) to `~/.local/bin` with 0o755 perms.
+/// Copy the Rust binaries to `~/.local/bin` with 0o755 perms.
 /// Emits a PATH advisory if `~/.local/bin` is not in `$PATH`.
 /// Returns the list of deployed paths for the manifest.
 fn deploy_binaries() -> Result<Vec<PathBuf>> {
@@ -295,6 +284,31 @@ fn deploy_binaries() -> Result<Vec<PathBuf>> {
             }
             deployed.push(self_dst);
         }
+
+        let resolver_src = self_exe
+            .parent()
+            .map(|dir| dir.join("amplihack-asset-resolver"))
+            .filter(|candidate| is_executable(candidate))
+            .or_else(|| find_binary("amplihack-asset-resolver"));
+        if let Some(resolver_src) = resolver_src {
+            let resolver_dst = local_bin.join("amplihack-asset-resolver");
+            if resolver_src != resolver_dst {
+                fs::copy(&resolver_src, &resolver_dst).with_context(|| {
+                    format!(
+                        "failed to copy {} to {}",
+                        resolver_src.display(),
+                        resolver_dst.display()
+                    )
+                })?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&resolver_dst, std::fs::Permissions::from_mode(0o755))
+                        .with_context(|| format!("failed to chmod {}", resolver_dst.display()))?;
+                }
+                deployed.push(resolver_dst);
+            }
+        }
     }
 
     // PATH advisory
@@ -327,53 +341,6 @@ fn deploy_binaries() -> Result<Vec<PathBuf>> {
     Ok(deployed)
 }
 
-/// Validate that python3 is available and `import amplihack` succeeds.
-///
-/// SAFETY: All subprocess invocations use discrete arg arrays with hardcoded
-/// constants only — no shell=true equivalent, no user-supplied strings in argv.
-fn validate_python() -> Result<()> {
-    // Step 1: python3 --version
-    let version_status = Command::new("python3").arg("--version").status();
-
-    match version_status {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            bail!(
-                "python3 exited with non-zero status {}: Python 3 is required",
-                s.code().unwrap_or(-1)
-            );
-        }
-        Err(e) => {
-            bail!(
-                "python3 not found in PATH: {e}\n\
-                 Python 3 is required for amplihack hooks."
-            );
-        }
-    }
-
-    // Step 2: python3 -c 'import amplihack'
-    // SAFETY: args are hardcoded constants, no user input included.
-    let import_status = Command::new("python3")
-        .arg("-c")
-        .arg("import amplihack")
-        .status();
-
-    match import_status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => {
-            bail!(
-                "python3 -c 'import amplihack' failed (exit {}): \
-                 amplihack Python package not installed.\n\
-                 Install with: pip install amplihack",
-                s.code().unwrap_or(-1)
-            );
-        }
-        Err(e) => {
-            bail!("failed to run python3 import check: {e}");
-        }
-    }
-}
-
 pub fn run_install(local: Option<PathBuf>) -> Result<()> {
     if let Some(local_path) = local {
         // Validate and canonicalize the --local path
@@ -390,36 +357,14 @@ pub fn run_install(local: Option<PathBuf>) -> Result<()> {
     }
 
     let temp_dir = tempfile::tempdir().context("failed to create temp dir for install")?;
-    let status = Command::new("git")
-        .arg("clone")
-        .arg("--depth")
-        .arg("1")
-        .arg(REPO_URL)
-        .arg(temp_dir.path())
-        .status()
-        .context("failed to run git clone")?;
-
-    if !status.success() {
-        let exit_status = status
-            .code()
-            .map(|code| code.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        println!(
-            "Failed to install: Command '['git', 'clone', '--depth', '1', '{}', '{}']' returned non-zero exit status {}.",
-            REPO_URL,
-            temp_dir.path().display(),
-            exit_status,
-        );
-        return Err(exit_error(1));
-    }
-
-    local_install(temp_dir.path())
+    let extracted_root = download_and_extract_framework_repo(temp_dir.path())?;
+    local_install(&extracted_root)
 }
 
 pub(crate) fn ensure_framework_installed() -> Result<()> {
     let staging_dir = staging_claude_dir()?;
     let needs_bootstrap =
-        !staging_dir.exists() || !missing_hook_paths("amplihack", AMPLIHACK_HOOK_FILES)?.is_empty();
+        !staging_dir.exists() || !missing_framework_paths(&staging_dir)?.is_empty();
     if needs_bootstrap {
         println!("🔧 Bootstrapping amplihack framework assets...");
         run_install(None)?;
@@ -591,15 +536,7 @@ fn local_install(repo_root: &Path) -> Result<()> {
     );
     println!();
 
-    // Phase 0: validate python3 first (fail-fast)
-    println!("🐍 Validating Python environment:");
-    if let Err(e) = validate_python() {
-        println!("  ❌ {e}");
-        return Err(exit_error(1));
-    }
-    println!("  ✅ python3 and amplihack module available");
-
-    // Phase 1: deploy binaries
+    // Phase 0: deploy binaries
     println!();
     println!("🦀 Deploying binaries:");
     let deployed_binaries = deploy_binaries()?;
@@ -637,8 +574,8 @@ fn local_install(repo_root: &Path) -> Result<()> {
         ensure_settings_json(&claude_dir, timestamp, &hooks_bin)?;
 
     println!();
-    println!("🔍 Verifying hook files:");
-    let hooks_ok = verify_hooks()?;
+    println!("🔍 Verifying staged framework assets:");
+    let hooks_ok = verify_framework_assets(&claude_dir)?;
 
     println!();
     println!("🦀 Ensuring Rust recipe runner:");
@@ -711,7 +648,7 @@ fn local_install(repo_root: &Path) -> Result<()> {
             println!("   • Settings.json configuration had issues");
         }
         if !hooks_ok {
-            println!("   • Some hook files are missing");
+            println!("   • Some staged framework assets are missing");
         }
         if copied_dirs.is_empty() {
             println!("   • No directories were copied");
@@ -772,6 +709,13 @@ fn copytree_manifest(source_claude: &Path, claude_dir: &Path) -> Result<Vec<Stri
         copied.push((*dir).to_string());
     }
 
+    let removed_legacy_hooks = prune_legacy_amplihack_hook_assets(claude_dir)?;
+    if removed_legacy_hooks > 0 {
+        println!(
+            "  🧹 Removed {removed_legacy_hooks} legacy Python hook asset(s) from staged amplihack tools"
+        );
+    }
+
     let settings_src = source_claude.join("settings.json");
     let settings_dst = claude_dir.join("settings.json");
     if settings_src.exists() && !settings_dst.exists() {
@@ -827,6 +771,71 @@ fn copytree_manifest(source_claude: &Path, claude_dir: &Path) -> Result<Vec<Stri
     }
 
     Ok(copied)
+}
+
+fn prune_legacy_amplihack_hook_assets(claude_dir: &Path) -> Result<usize> {
+    let hooks_dir = claude_dir.join("tools").join("amplihack").join("hooks");
+    if !hooks_dir.exists() {
+        return Ok(0);
+    }
+
+    let mut removed = 0;
+    for entry in fs::read_dir(&hooks_dir)
+        .with_context(|| format!("failed to read {}", hooks_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_file()
+            || path.extension().and_then(|ext| ext.to_str()) != Some("py")
+        {
+            continue;
+        }
+        fs::remove_file(&path).with_context(|| format!("failed to remove {}", path.display()))?;
+        removed += 1;
+    }
+
+    if removed > 0 && fs::read_dir(&hooks_dir)?.next().is_none() {
+        fs::remove_dir(&hooks_dir)
+            .with_context(|| format!("failed to remove {}", hooks_dir.display()))?;
+    }
+
+    Ok(removed)
+}
+
+fn download_and_extract_framework_repo(destination: &Path) -> Result<PathBuf> {
+    validate_download_url(REPO_ARCHIVE_URL)?;
+    let archive_bytes = http_get(REPO_ARCHIVE_URL)
+        .with_context(|| format!("failed to download framework archive from {REPO_ARCHIVE_URL}"))?;
+    extract_archive(&archive_bytes, destination).with_context(|| {
+        format!(
+            "failed to extract framework archive into {}",
+            destination.display()
+        )
+    })?;
+    find_framework_repo_root(destination)
+}
+
+fn find_framework_repo_root(root: &Path) -> Result<PathBuf> {
+    let mut queue = VecDeque::from([root.to_path_buf()]);
+    while let Some(dir) = queue.pop_front() {
+        if dir.join(".claude").is_dir() {
+            return Ok(dir);
+        }
+        for entry in
+            fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
+        {
+            let entry = entry.with_context(|| format!("failed to inspect {}", dir.display()))?;
+            let path = entry.path();
+            if path.is_dir() {
+                queue.push_back(path);
+            }
+        }
+    }
+
+    bail!(
+        "downloaded framework archive did not contain a repository root with .claude under {}",
+        root.display()
+    )
 }
 
 fn initialize_project_md(claude_dir: &Path) -> Result<()> {
@@ -911,16 +920,6 @@ fn ensure_settings_json(
             .with_context(|| format!("failed to write {}", settings_path.display()))?;
     }
 
-    let missing = missing_hook_paths("amplihack", AMPLIHACK_HOOK_FILES)?;
-    if !missing.is_empty() {
-        println!("  ❌ Hook validation failed - missing required hooks:");
-        for missing_hook in missing {
-            println!("     • {missing_hook}");
-        }
-        println!("  💡 Please reinstall amplihack to restore missing hooks");
-        return Ok((false, Vec::new()));
-    }
-
     let mut settings = read_settings_json(&settings_path)?;
     ensure_permissions(&mut settings);
     update_hook_paths(&mut settings, "amplihack", AMPLIHACK_HOOK_SPECS, hooks_bin);
@@ -949,16 +948,14 @@ fn ensure_settings_json(
     Ok((true, registered_events))
 }
 
-fn verify_hooks() -> Result<bool> {
-    let mut all_exist = true;
-    println!("  📋 Amplihack hooks:");
-    for file in AMPLIHACK_HOOK_FILES {
-        let hook_path = amplihack_hooks_dir()?.join(file);
-        if hook_path.exists() {
-            println!("    ✅ {file} found");
-        } else {
-            println!("    ❌ {file} missing");
-            all_exist = false;
+fn verify_framework_assets(claude_dir: &Path) -> Result<bool> {
+    let missing = missing_framework_paths(claude_dir)?;
+    if missing.is_empty() {
+        println!("  ✅ Required framework assets found");
+    } else {
+        println!("  ❌ Missing required framework assets:");
+        for path in missing {
+            println!("     • {path}");
         }
     }
 
@@ -976,7 +973,7 @@ fn verify_hooks() -> Result<bool> {
         }
     }
 
-    Ok(all_exist)
+    Ok(missing_framework_paths(claude_dir)?.is_empty())
 }
 
 fn read_settings_json(settings_path: &Path) -> Result<Value> {
@@ -1056,7 +1053,6 @@ fn update_hook_paths(
 /// Build the Claude Code hook wrapper JSON for a given spec.
 ///
 /// For `BinarySubcmd`: command = `"{hooks_bin} {subcmd}"`
-/// For `PythonFile`: command = absolute path to the Python file in tools/amplihack/hooks/
 /// Wrap a path string in double quotes, escaping any embedded double quotes.
 fn shell_quote_path(path_str: &str) -> String {
     let escaped = path_str.replace('\\', "\\\\").replace('"', "\\\"");
@@ -1071,15 +1067,6 @@ fn build_hook_wrapper(spec: &HookSpec, hooks_bin: &Path) -> Value {
                 .expect("hooks binary path must not contain shell-unsafe characters");
             let quoted_bin = shell_quote_path(&bin_str);
             format!("{quoted_bin} {subcmd}")
-        }
-        HookCommandKind::PythonFile { file } => {
-            // Build absolute path: ~/.amplihack/.claude/tools/amplihack/hooks/<file>
-            let path_str = amplihack_hooks_dir()
-                .map(|dir| dir.join(file).to_string_lossy().into_owned())
-                .unwrap_or_else(|_| file.to_string());
-            validate_binary_path(&path_str)
-                .expect("hook Python file path must not contain shell-unsafe characters");
-            shell_quote_path(&path_str)
         }
     };
     validate_hook_command_string(&command_str)
@@ -1100,10 +1087,25 @@ fn build_hook_wrapper(spec: &HookSpec, hooks_bin: &Path) -> Value {
     Value::Object(wrapper)
 }
 
+fn legacy_hook_script_name(subcmd: &str) -> Option<&'static str> {
+    match subcmd {
+        "session-start" => Some("session_start.py"),
+        "stop" => Some("stop.py"),
+        "pre-tool-use" => Some("pre_tool_use.py"),
+        "post-tool-use" => Some("post_tool_use.py"),
+        "workflow-classification-reminder" => Some("workflow_classification_reminder.py"),
+        "user-prompt-submit" => Some("user_prompt_submit.py"),
+        "pre-compact" => Some("pre_compact.py"),
+        _ => None,
+    }
+}
+
 /// Type-directed idempotency check.
 ///
-/// For `BinarySubcmd`: matches if command contains the hooks binary exe name AND ends with the subcmd.
-/// For `PythonFile`: matches if command contains `tools/amplihack/` AND the filename.
+/// `BinarySubcmd` matches either the native `amplihack-hooks <subcmd>` wrapper or
+/// a legacy staged Python hook path for the corresponding hook. This lets a fresh
+/// Rust reinstall replace older Python registrations in place instead of appending
+/// duplicate wrappers.
 fn wrapper_matches(wrapper: &Value, spec: &HookSpec, hook_system: &str) -> bool {
     let Some(wrapper_obj) = wrapper.as_object() else {
         return false;
@@ -1131,13 +1133,12 @@ fn wrapper_matches(wrapper: &Value, spec: &HookSpec, hook_system: &str) -> bool 
 
     match &spec.cmd {
         HookCommandKind::BinarySubcmd { subcmd } => {
-            // Command must reference the hooks binary name AND end with the subcmd
-            command.contains("amplihack-hooks") && command.ends_with(subcmd)
-        }
-        HookCommandKind::PythonFile { file } => {
-            // Command must reference tools/amplihack/ path AND contain the filename
-            let _ = hook_system; // xpia hooks use a different path
-            command.contains(&format!("tools/{hook_system}/")) && command.contains(file)
+            (command.contains("amplihack-hooks") && command.ends_with(subcmd))
+                || legacy_hook_script_name(subcmd).is_some_and(|legacy_name| {
+                    ((hook_system == "amplihack" && command.contains("tools/amplihack/hooks/"))
+                        || (hook_system == "xpia" && command.contains("tools/xpia/hooks/")))
+                        && command.contains(legacy_name)
+                })
         }
     }
 }
@@ -1156,6 +1157,7 @@ fn ensure_array(value: &mut Value) -> &mut Vec<Value> {
     value.as_array_mut().expect("value converted to array")
 }
 
+#[allow(dead_code)]
 fn missing_hook_paths(system: &str, files: &[&str]) -> Result<Vec<String>> {
     let base = home_dir()?
         .join(".amplihack")
@@ -1169,6 +1171,30 @@ fn missing_hook_paths(system: &str, files: &[&str]) -> Result<Vec<String>> {
         if !path.exists() {
             missing.push(format!("{system}/{file} (expected at {})", path.display()));
         }
+    }
+    Ok(missing)
+}
+
+fn missing_framework_paths(claude_dir: &Path) -> Result<Vec<String>> {
+    let mut missing = Vec::new();
+    for dir in ESSENTIAL_DIRS {
+        let path = claude_dir.join(dir);
+        if !path.exists() {
+            missing.push(format!("{dir} (expected at {})", path.display()));
+        }
+    }
+    for file in ESSENTIAL_FILES {
+        let path = claude_dir.join(file);
+        if !path.exists() {
+            missing.push(format!("{file} (expected at {})", path.display()));
+        }
+    }
+    let claude_md = claude_dir
+        .parent()
+        .context("staging .claude dir missing parent")?
+        .join("CLAUDE.md");
+    if !claude_md.exists() {
+        missing.push(format!("CLAUDE.md (expected at {})", claude_md.display()));
     }
     Ok(missing)
 }
@@ -1424,6 +1450,9 @@ fn global_settings_path() -> Result<PathBuf> {
     Ok(global_claude_dir()?.join("settings.json"))
 }
 
+// Retained for symmetry with `xpia_hooks_dir()` and future install-asset
+// verification cleanup; current install code only reads the optional XPIA path.
+#[allow(dead_code)]
 fn amplihack_hooks_dir() -> Result<PathBuf> {
     Ok(home_dir()?
         .join(".amplihack")
@@ -1433,6 +1462,12 @@ fn amplihack_hooks_dir() -> Result<PathBuf> {
         .join("hooks"))
 }
 
+/// Optional XPIA hook asset directory under the staged install.
+///
+/// Fresh native installs use unified `amplihack-hooks <subcmd>` entries for the
+/// live hook path, but the presence of staged XPIA assets is still used to
+/// verify optional installation state and to upgrade legacy `tools/xpia/hooks/*.py`
+/// settings entries in place during reinstall.
 fn xpia_hooks_dir() -> Result<PathBuf> {
     Ok(home_dir()?
         .join(".amplihack")
@@ -1460,18 +1495,25 @@ mod tests {
         for dir in ESSENTIAL_DIRS {
             fs::create_dir_all(root.join(".claude").join(dir)).unwrap();
         }
-        fs::create_dir_all(root.join(".claude/tools/amplihack/hooks")).unwrap();
-        for hook in AMPLIHACK_HOOK_FILES {
-            fs::write(
-                root.join(".claude/tools/amplihack/hooks").join(hook),
-                "print(1)\n",
-            )
-            .unwrap();
+        let legacy_hooks = root.join(".claude/tools/amplihack/hooks");
+        fs::create_dir_all(&legacy_hooks).unwrap();
+        for hook in ["pre_tool_use.py", "workflow_classification_reminder.py"] {
+            fs::write(legacy_hooks.join(hook), "print(1)\n").unwrap();
         }
         fs::write(root.join(".claude/settings.json"), "{}\n").unwrap();
         fs::write(root.join(".claude/tools/statusline.sh"), "echo hi\n").unwrap();
         fs::write(root.join(".claude/AMPLIHACK.md"), "framework\n").unwrap();
         fs::write(root.join("CLAUDE.md"), "root\n").unwrap();
+    }
+
+    fn create_minimal_staged_assets(root: &Path) {
+        let claude_dir = root.join(".amplihack/.claude");
+        for dir in ESSENTIAL_DIRS {
+            fs::create_dir_all(claude_dir.join(dir)).unwrap();
+        }
+        fs::write(claude_dir.join("tools/statusline.sh"), "echo hi\n").unwrap();
+        fs::write(claude_dir.join("AMPLIHACK.md"), "framework\n").unwrap();
+        fs::write(root.join(".amplihack/CLAUDE.md"), "root\n").unwrap();
     }
 
     /// Creates an executable stub at `dir/name` (755 perms on Unix).
@@ -1505,10 +1547,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let previous = crate::test_support::set_home(temp.path());
 
-        // Stub python3 + amplihack-hooks so validate_python / deploy_binaries succeed.
+        // Stub amplihack-hooks so deploy_binaries succeeds deterministically.
         let bin_dir = temp.path().join("stub_bin");
         fs::create_dir_all(&bin_dir).unwrap();
-        create_exe_stub(&bin_dir, "python3");
         let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
 
         let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
@@ -1545,10 +1586,17 @@ mod tests {
                 .join(".amplihack/.claude/install/amplihack-manifest.json")
                 .exists()
         );
-        // Hook files must be deployed
+        // Legacy Python hook files must NOT be staged on fresh native installs.
         assert!(
-            temp.path()
+            !temp
+                .path()
                 .join(".amplihack/.claude/tools/amplihack/hooks/pre_tool_use.py")
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(".amplihack/.claude/tools/amplihack/hooks")
                 .exists()
         );
 
@@ -1634,12 +1682,17 @@ mod tests {
         };
     }
 
-    /// FAILS until `HookCommandKind` enum is defined with `PythonFile` variant.
     #[test]
-    fn hook_command_kind_python_file_variant_exists() {
-        let _kind = HookCommandKind::PythonFile {
-            file: "workflow_classification_reminder.py",
-        };
+    fn legacy_hook_script_name_maps_known_binary_subcommands() {
+        assert_eq!(
+            legacy_hook_script_name("workflow-classification-reminder"),
+            Some("workflow_classification_reminder.py")
+        );
+        assert_eq!(
+            legacy_hook_script_name("user-prompt-submit"),
+            Some("user_prompt_submit.py")
+        );
+        assert_eq!(legacy_hook_script_name("unknown"), None);
     }
 
     // ─── TDD: Group 2 — AMPLIHACK_HOOK_SPECS canonical entries ───────────────
@@ -1651,12 +1704,8 @@ mod tests {
             .iter()
             .find(|s| s.event == "SessionStart")
             .expect("SessionStart spec must exist");
-        match &spec.cmd {
-            HookCommandKind::BinarySubcmd { subcmd } => {
-                assert_eq!(*subcmd, "session-start");
-            }
-            _ => panic!("SessionStart must use HookCommandKind::BinarySubcmd"),
-        }
+        let HookCommandKind::BinarySubcmd { subcmd } = &spec.cmd;
+        assert_eq!(*subcmd, "session-start");
         assert_eq!(spec.timeout, Some(10));
         assert!(spec.matcher.is_none());
     }
@@ -1668,10 +1717,8 @@ mod tests {
             .iter()
             .find(|s| s.event == "Stop")
             .expect("Stop spec must exist");
-        match &spec.cmd {
-            HookCommandKind::BinarySubcmd { subcmd } => assert_eq!(*subcmd, "stop"),
-            _ => panic!("Stop must use HookCommandKind::BinarySubcmd"),
-        }
+        let HookCommandKind::BinarySubcmd { subcmd } = &spec.cmd;
+        assert_eq!(*subcmd, "stop");
         assert_eq!(spec.timeout, Some(120));
         assert!(spec.matcher.is_none());
     }
@@ -1683,10 +1730,8 @@ mod tests {
             .iter()
             .find(|s| s.event == "PreToolUse")
             .expect("PreToolUse spec must exist");
-        match &spec.cmd {
-            HookCommandKind::BinarySubcmd { subcmd } => assert_eq!(*subcmd, "pre-tool-use"),
-            _ => panic!("PreToolUse must use HookCommandKind::BinarySubcmd"),
-        }
+        let HookCommandKind::BinarySubcmd { subcmd } = &spec.cmd;
+        assert_eq!(*subcmd, "pre-tool-use");
         // PreToolUse must have NO timeout (fail-open per spec)
         assert!(
             spec.timeout.is_none(),
@@ -1702,10 +1747,8 @@ mod tests {
             .iter()
             .find(|s| s.event == "PostToolUse")
             .expect("PostToolUse spec must exist");
-        match &spec.cmd {
-            HookCommandKind::BinarySubcmd { subcmd } => assert_eq!(*subcmd, "post-tool-use"),
-            _ => panic!("PostToolUse must use HookCommandKind::BinarySubcmd"),
-        }
+        let HookCommandKind::BinarySubcmd { subcmd } = &spec.cmd;
+        assert_eq!(*subcmd, "post-tool-use");
         assert!(
             spec.timeout.is_none(),
             "PostToolUse must omit timeout (fail-open)"
@@ -1713,19 +1756,19 @@ mod tests {
         assert_eq!(spec.matcher, Some("*"));
     }
 
-    /// FAILS until workflow_classification_reminder uses `PythonFile` kind with 5s timeout.
+    /// FAILS until workflow classification reminder uses a Rust binary subcommand.
     #[test]
-    fn amplihack_hook_specs_workflow_classification_uses_python_file() {
+    fn amplihack_hook_specs_workflow_classification_uses_binary_subcmd() {
         let spec = AMPLIHACK_HOOK_SPECS
             .iter()
             .find(|s| {
                 matches!(
                     &s.cmd,
-                    HookCommandKind::PythonFile { file }
-                        if *file == "workflow_classification_reminder.py"
+                    HookCommandKind::BinarySubcmd { subcmd }
+                        if *subcmd == "workflow-classification-reminder"
                 )
             })
-            .expect("workflow_classification_reminder.py PythonFile spec must exist");
+            .expect("workflow-classification-reminder BinarySubcmd spec must exist");
         assert_eq!(spec.event, "UserPromptSubmit");
         assert_eq!(spec.timeout, Some(5));
         assert!(spec.matcher.is_none());
@@ -1738,20 +1781,19 @@ mod tests {
             .iter()
             .filter(|s| {
                 s.event == "UserPromptSubmit"
-                    && matches!(&s.cmd, HookCommandKind::BinarySubcmd { .. })
+                    && matches!(
+                        &s.cmd,
+                        HookCommandKind::BinarySubcmd { subcmd } if *subcmd == "user-prompt-submit"
+                    )
             })
             .collect();
         assert_eq!(
             specs.len(),
             1,
-            "Exactly one UserPromptSubmit BinarySubcmd spec expected"
+            "Exactly one user-prompt-submit BinarySubcmd spec expected"
         );
-        match &specs[0].cmd {
-            HookCommandKind::BinarySubcmd { subcmd } => {
-                assert_eq!(*subcmd, "user-prompt-submit")
-            }
-            _ => unreachable!(),
-        }
+        let HookCommandKind::BinarySubcmd { subcmd } = &specs[0].cmd;
+        assert_eq!(*subcmd, "user-prompt-submit");
         assert_eq!(specs[0].timeout, Some(10));
     }
 
@@ -1762,18 +1804,16 @@ mod tests {
             .iter()
             .find(|s| s.event == "PreCompact")
             .expect("PreCompact spec must exist");
-        match &spec.cmd {
-            HookCommandKind::BinarySubcmd { subcmd } => assert_eq!(*subcmd, "pre-compact"),
-            _ => panic!("PreCompact must use HookCommandKind::BinarySubcmd"),
-        }
+        let HookCommandKind::BinarySubcmd { subcmd } = &spec.cmd;
+        assert_eq!(*subcmd, "pre-compact");
         assert_eq!(spec.timeout, Some(30));
         assert!(spec.matcher.is_none());
     }
 
-    /// FAILS until workflow_classification_reminder appears before user-prompt-submit in spec slice.
+    /// FAILS until workflow-classification-reminder appears before user-prompt-submit in spec slice.
     ///
-    /// Claude Code executes UserPromptSubmit hooks in array order; the Python stub
-    /// (5 s budget) must run before the Rust binary (10 s budget).
+    /// Claude Code executes UserPromptSubmit hooks in array order; the reminder
+    /// (5 s budget) must run before the full user-prompt-submit hook (10 s budget).
     #[test]
     fn user_prompt_submit_workflow_classification_precedes_user_prompt_submit() {
         let python_pos = AMPLIHACK_HOOK_SPECS
@@ -1781,11 +1821,11 @@ mod tests {
             .position(|s| {
                 matches!(
                     &s.cmd,
-                    HookCommandKind::PythonFile { file }
-                        if *file == "workflow_classification_reminder.py"
+                    HookCommandKind::BinarySubcmd { subcmd }
+                        if *subcmd == "workflow-classification-reminder"
                 )
             })
-            .expect("PythonFile spec must exist");
+            .expect("workflow-classification-reminder BinarySubcmd must exist");
         let binary_pos = AMPLIHACK_HOOK_SPECS
             .iter()
             .position(|s| {
@@ -1799,7 +1839,7 @@ mod tests {
             .expect("BinarySubcmd user-prompt-submit must exist");
         assert!(
             python_pos < binary_pos,
-            "workflow_classification_reminder (pos {python_pos}) must precede \
+            "workflow-classification-reminder (pos {python_pos}) must precede \
              user-prompt-submit (pos {binary_pos}) in AMPLIHACK_HOOK_SPECS"
         );
     }
@@ -1877,21 +1917,15 @@ mod tests {
         );
     }
 
-    /// FAILS until `PythonFile` kind generates an absolute path to the `.py` file
-    /// inside `tools/amplihack/hooks/`.
     #[test]
-    fn build_hook_wrapper_python_file_generates_absolute_path() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    fn build_hook_wrapper_binary_subcmd_quotes_binary_path() {
         let temp = tempfile::tempdir().unwrap();
-        let previous = crate::test_support::set_home(temp.path());
         let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
 
         let spec = HookSpec {
             event: "UserPromptSubmit",
-            cmd: HookCommandKind::PythonFile {
-                file: "workflow_classification_reminder.py",
+            cmd: HookCommandKind::BinarySubcmd {
+                subcmd: "workflow-classification-reminder",
             },
             timeout: Some(5),
             matcher: None,
@@ -1903,20 +1937,14 @@ mod tests {
 
         let command = hook["command"].as_str().expect("hook must have command");
         assert!(
-            command
-                .split('/')
-                .collect::<Vec<_>>()
-                .windows(2)
-                .any(|w| w == ["tools", "amplihack"]),
-            "PythonFile command must reference tools/amplihack/ dir, got: {command}"
+            command.contains("amplihack-hooks"),
+            "binary-subcommand command must reference the hooks binary, got: {command}"
         );
         assert!(
-            command.ends_with("workflow_classification_reminder.py\""),
-            "PythonFile command must end with quoted filename, got: {command}"
+            command.ends_with("workflow-classification-reminder"),
+            "binary-subcommand command must end with the Rust subcommand, got: {command}"
         );
         assert_eq!(hook["timeout"].as_u64().unwrap(), 5);
-
-        crate::test_support::restore_home(previous);
     }
 
     // ─── TDD: Group 4 — wrapper_matches type-directed idempotency ────────────
@@ -1972,32 +2000,129 @@ mod tests {
         );
     }
 
-    /// FAILS until `wrapper_matches` correctly identifies a PythonFile wrapper
-    /// via filename + `tools/amplihack/` containment.
     #[test]
-    fn wrapper_matches_returns_true_for_python_file_wrapper() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    fn wrapper_matches_returns_true_for_legacy_python_hook_wrapper() {
         let temp = tempfile::tempdir().unwrap();
-        let previous = crate::test_support::set_home(temp.path());
-        let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
+        let _hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
 
         let spec = HookSpec {
             event: "UserPromptSubmit",
-            cmd: HookCommandKind::PythonFile {
-                file: "workflow_classification_reminder.py",
+            cmd: HookCommandKind::BinarySubcmd {
+                subcmd: "workflow-classification-reminder",
             },
             timeout: Some(5),
             matcher: None,
         };
 
-        let wrapper = build_hook_wrapper(&spec, &hooks_bin);
+        let wrapper = serde_json::json!({
+            "hooks": [{
+                "type": "command",
+                "command": "/home/user/.amplihack/.claude/tools/amplihack/hooks/workflow_classification_reminder.py",
+                "timeout": 5
+            }]
+        });
         assert!(
             wrapper_matches(&wrapper, &spec, "amplihack"),
-            "wrapper_matches must return true for a PythonFile wrapper"
+            "wrapper_matches must return true for a legacy Python hook wrapper so install upgrades replace it in place"
         );
-        crate::test_support::restore_home(previous);
+    }
+
+    #[test]
+    fn update_hook_paths_replaces_legacy_python_hook_in_place() {
+        let temp = tempfile::tempdir().unwrap();
+        let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/home/user/.amplihack/.claude/tools/amplihack/hooks/workflow_classification_reminder.py",
+                        "timeout": 5
+                    }]
+                }]
+            }
+        });
+
+        let specs = [HookSpec {
+            event: "UserPromptSubmit",
+            cmd: HookCommandKind::BinarySubcmd {
+                subcmd: "workflow-classification-reminder",
+            },
+            timeout: Some(5),
+            matcher: None,
+        }];
+        update_hook_paths(&mut settings, "amplihack", &specs, &hooks_bin);
+
+        let wrappers = settings["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert_eq!(
+            wrappers.len(),
+            1,
+            "legacy wrapper must be replaced, not duplicated"
+        );
+        let command = wrappers[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(command.contains("amplihack-hooks"));
+        assert!(command.ends_with("workflow-classification-reminder"));
+    }
+
+    #[test]
+    fn wrapper_matches_recognizes_legacy_xpia_python_hook() {
+        let spec = HookSpec {
+            event: "PreToolUse",
+            cmd: HookCommandKind::BinarySubcmd {
+                subcmd: "pre-tool-use",
+            },
+            timeout: None,
+            matcher: Some("*"),
+        };
+
+        let wrapper = serde_json::json!({
+            "matcher": "*",
+            "hooks": [{
+                "type": "command",
+                "command": "/home/user/.amplihack/.claude/tools/xpia/hooks/pre_tool_use.py"
+            }]
+        });
+        assert!(
+            wrapper_matches(&wrapper, &spec, "xpia"),
+            "wrapper_matches must return true for legacy XPIA Python hook wrappers so install upgrades replace them in place"
+        );
+    }
+
+    #[test]
+    fn update_hook_paths_replaces_legacy_xpia_python_hook_in_place() {
+        let temp = tempfile::tempdir().unwrap();
+        let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "*",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "/home/user/.amplihack/.claude/tools/xpia/hooks/pre_tool_use.py"
+                    }]
+                }]
+            }
+        });
+
+        let specs = [HookSpec {
+            event: "PreToolUse",
+            cmd: HookCommandKind::BinarySubcmd {
+                subcmd: "pre-tool-use",
+            },
+            timeout: None,
+            matcher: Some("*"),
+        }];
+        update_hook_paths(&mut settings, "xpia", &specs, &hooks_bin);
+
+        let wrappers = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(
+            wrappers.len(),
+            1,
+            "legacy XPIA wrapper must be replaced, not duplicated"
+        );
+        let command = wrappers[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(command.contains("amplihack-hooks"));
+        assert!(command.ends_with("pre-tool-use"));
     }
 
     // ─── TDD: Group 5 — find_hooks_binary resolution ─────────────────────────
@@ -2211,89 +2336,7 @@ mod tests {
         );
     }
 
-    // ─── TDD: Group 8 — validate_python ──────────────────────────────────────
-
-    /// FAILS until `validate_python` is defined and succeeds when a stub `python3`
-    /// exits 0 (and `import amplihack` is treated as available).
-    #[test]
-    fn validate_python_succeeds_with_stub_python3() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let temp = tempfile::tempdir().unwrap();
-        // Stub exits 0 for all invocations (including python3 -c 'import amplihack')
-        create_exe_stub(temp.path(), "python3");
-
-        let orig_path = std::env::var_os("PATH").unwrap_or_default();
-        let new_path = format!("{}:{}", temp.path().display(), orig_path.to_string_lossy());
-        unsafe { std::env::set_var("PATH", &new_path) };
-
-        let result = validate_python();
-
-        unsafe { std::env::set_var("PATH", orig_path) };
-
-        assert!(
-            result.is_ok(),
-            "validate_python must succeed when python3 stub exits 0"
-        );
-    }
-
-    /// FAILS until `validate_python` returns Err when `python3` is absent from PATH.
-    #[test]
-    fn validate_python_fails_when_python3_not_in_path() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let temp = tempfile::tempdir().unwrap(); // empty dir, no python3
-        let orig_path = std::env::var_os("PATH").unwrap_or_default();
-        unsafe { std::env::set_var("PATH", temp.path()) };
-
-        let result = validate_python();
-
-        unsafe { std::env::set_var("PATH", orig_path) };
-
-        assert!(
-            result.is_err(),
-            "validate_python must return Err when python3 is missing"
-        );
-    }
-
-    /// FAILS until `validate_python` returns Err when `import amplihack` fails
-    /// (python3 exits non-zero for the import check).
-    #[test]
-    fn validate_python_fails_when_amplihack_module_not_importable() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let temp = tempfile::tempdir().unwrap();
-        // Stub exits 0 for --version but 1 for any `-c` arg (import check)
-        let python3 = temp.path().join("python3");
-        fs::write(
-            &python3,
-            "#!/usr/bin/env bash\nif [[ \"$*\" == *\"-c\"* ]]; then exit 1; fi\nexit 0\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&python3, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
-        let orig_path = std::env::var_os("PATH").unwrap_or_default();
-        let new_path = format!("{}:{}", temp.path().display(), orig_path.to_string_lossy());
-        unsafe { std::env::set_var("PATH", &new_path) };
-
-        let result = validate_python();
-
-        unsafe { std::env::set_var("PATH", orig_path) };
-
-        assert!(
-            result.is_err(),
-            "validate_python must return Err when `import amplihack` fails"
-        );
-    }
-
-    // ─── TDD: Group 9 — InstallManifest extended fields ──────────────────────
+    // ─── TDD: Group 8 — InstallManifest extended fields ──────────────────────
 
     /// FAILS until `InstallManifest` has `binaries` and `hook_registrations` fields.
     #[test]
@@ -2442,13 +2485,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let previous = crate::test_support::set_home(temp.path());
 
-        // Populate staging dir with all required hook files
+        // Staging dir no longer needs legacy Python hook files for native installs.
         let staging_dir = temp.path().join(".amplihack/.claude");
-        let hooks_dir = staging_dir.join("tools/amplihack/hooks");
-        fs::create_dir_all(&hooks_dir).unwrap();
-        for hook in AMPLIHACK_HOOK_FILES {
-            fs::write(hooks_dir.join(hook), "print(1)\n").unwrap();
-        }
+        fs::create_dir_all(&staging_dir).unwrap();
 
         let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
 
@@ -2484,6 +2523,91 @@ mod tests {
                 "events must include '{expected}', got: {events:?}"
             );
         }
+    }
+
+    #[test]
+    fn ensure_settings_json_succeeds_without_legacy_python_hook_files() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous = crate::test_support::set_home(temp.path());
+
+        let staging_dir = temp.path().join(".amplihack/.claude");
+        fs::create_dir_all(&staging_dir).unwrap();
+        let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
+
+        let result = ensure_settings_json(&staging_dir, 99999, &hooks_bin)
+            .expect("settings setup should not depend on legacy python hook files");
+
+        assert!(
+            result.0,
+            "settings setup must succeed with binary hook registrations"
+        );
+        assert!(temp.path().join(".claude/settings.json").exists());
+
+        crate::test_support::restore_home(previous);
+    }
+
+    #[test]
+    fn ensure_settings_json_with_xpia_assets_keeps_unified_native_wrappers() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous = crate::test_support::set_home(temp.path());
+
+        let staging_dir = temp.path().join(".amplihack/.claude");
+        let xpia_hooks = staging_dir.join("tools/xpia/hooks");
+        fs::create_dir_all(&xpia_hooks).unwrap();
+        for file in XPIA_HOOK_FILES {
+            fs::write(xpia_hooks.join(file), "print(1)\n").unwrap();
+        }
+        let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
+
+        let result = ensure_settings_json(&staging_dir, 99999, &hooks_bin)
+            .expect("settings setup should succeed with staged xpia assets");
+        assert!(result.0, "settings setup must succeed");
+
+        let settings_raw = fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap();
+        let settings: Value = serde_json::from_str(&settings_raw).unwrap();
+        let pre_tool_use = settings["hooks"]["PreToolUse"].as_array().unwrap();
+
+        assert_eq!(
+            pre_tool_use.len(),
+            1,
+            "xpia staging should not duplicate native PreToolUse wrappers"
+        );
+        let command = pre_tool_use[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(
+            command.contains("amplihack-hooks") && command.ends_with("pre-tool-use"),
+            "xpia-enabled install must keep the unified native hook wrapper, got: {command}"
+        );
+        assert!(
+            !command.contains("tools/xpia/"),
+            "fresh native settings must not retain legacy xpia python paths: {command}"
+        );
+
+        crate::test_support::restore_home(previous);
+    }
+
+    #[test]
+    fn missing_framework_paths_does_not_require_legacy_python_hook_files() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous = crate::test_support::set_home(temp.path());
+        create_minimal_staged_assets(temp.path());
+
+        let missing = missing_framework_paths(&temp.path().join(".amplihack/.claude")).unwrap();
+
+        assert!(
+            missing.is_empty(),
+            "legacy python hook files must not be treated as required staged assets: {missing:?}"
+        );
+
+        crate::test_support::restore_home(previous);
     }
 
     // ─── TDD: Group 13 — local_install writes 4-field manifest ───────────────
@@ -2631,6 +2755,31 @@ mod tests {
         assert!(
             result.is_err(),
             "run_install must return Err for a non-existent --local path"
+        );
+    }
+
+    #[test]
+    fn find_framework_repo_root_finds_github_tarball_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let extracted = temp.path().join("amplihack-main");
+        create_source_repo(&extracted);
+
+        let found = find_framework_repo_root(temp.path()).unwrap();
+
+        assert_eq!(found, extracted);
+    }
+
+    #[test]
+    fn find_framework_repo_root_errors_when_archive_lacks_claude_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("archive-root/empty")).unwrap();
+
+        let err = find_framework_repo_root(temp.path()).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("did not contain a repository root"),
+            "unexpected error: {err}"
         );
     }
 

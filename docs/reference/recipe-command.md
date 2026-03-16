@@ -206,6 +206,8 @@ amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
 | `--format <FORMAT>` | `table` | Output format for results: `table`, `json`, or `yaml` |
 | `--working-dir <DIR>` | `.` | Working directory for step execution |
 
+Before spawning `recipe-runner-rs`, the Rust CLI injects `AMPLIHACK_HOME` and, when available, `AMPLIHACK_ASSET_RESOLVER` into the child environment. That gives recipes a stable native way to resolve `amplifier-bundle/...` assets without assuming the Python package layout.
+
 ```sh
 # Dry run — inspect the plan before executing
 amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \

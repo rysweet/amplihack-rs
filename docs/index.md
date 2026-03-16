@@ -6,7 +6,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 
 ### How-To Guides
 
-- [Install amplihack for the First Time](./howto/first-install.md) — Bootstrap from scratch, including Python validation, binary deployment, and hook registration
+- [Install amplihack for the First Time](./howto/first-install.md) — Bootstrap from scratch, including optional legacy-Python checks, binary deployment, and hook registration
 - [Install from a Local Repository](./howto/local-install.md) — Install without network access using a local checkout
 - [Uninstall amplihack](./howto/uninstall.md) — Cleanly remove all installed files, binaries, and hook registrations
 - [Resolve kuzu Linker Errors](./howto/resolve-kuzu-linker-errors.md) — Diagnose and fix `undefined reference` errors caused by `cxx`/`cxx-build` version mismatch
@@ -15,6 +15,8 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Run amplihack in Non-interactive Mode](./howto/run-in-noninteractive-mode.md) — Use amplihack in CI pipelines, Docker containers, and piped scripts without interactive prompts
 - [Manage Tool Update Notifications](./howto/manage-tool-update-checks.md) — Control or disable the pre-launch npm update check for `claude`, `copilot`, and `codex`
 - [Run a Recipe End-to-End](./howto/run-a-recipe.md) — Find, inspect, dry-run, and execute YAML recipes through the Rust CLI
+- [Index a Project with the Native SCIP Pipeline](./howto/index-a-project.md) — Build the Kuzu code-graph from source using native SCIP indexers
+- [Validate No-Python Compliance](./howto/validate-no-python.md) — Run the AC9 probe to confirm the binary operates without a Python interpreter
 
 ### Reference
 
@@ -28,6 +30,8 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Signal Handling and Exit Codes](./reference/signal-handling.md) — SIGINT, SIGTERM, SIGHUP behavior and exit code contract (Python parity)
 - [amplihack recipe](./reference/recipe-command.md) — Full CLI reference for `recipe list`, `recipe show`, `recipe validate`, and `recipe run`
 - [Parity Test Scenarios](./reference/parity-test-scenarios.md) — Every parity tier file, its test cases, and expected Python↔Rust divergence
+- [amplihack index-code and index-scip](./reference/memory-index-command.md) — Full CLI reference for code-graph ingestion commands
+- [amplihack query-code](./reference/query-code-command.md) — Full CLI reference for querying the native Kuzu code-graph
 
 ### Concepts
 
@@ -35,6 +39,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Idempotent Installation](./concepts/idempotent-installation.md) — How repeated installs are safe and how existing hook registrations are updated in place
 - [The cxx/cxx-build Version Contract](./concepts/cxx-version-contract.md) — Why `cxx` and `cxx-build` must share the same minor version and how a mismatch produces linker errors
 - [Agent Binary Routing](./concepts/agent-binary-routing.md) — How `AMPLIHACK_AGENT_BINARY` lets the recipe runner and hooks call back into the correct AI tool
+- [Kuzu Code Graph](./concepts/kuzu-code-graph.md) — Architecture of the native code-graph store: schema, SCIP pipeline, blarify consumption, and security model
 
 ## Quick Start
 

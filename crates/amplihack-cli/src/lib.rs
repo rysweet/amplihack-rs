@@ -12,6 +12,7 @@ pub mod copilot_setup;
 pub mod env_builder;
 pub mod launcher;
 pub mod nesting;
+pub mod resolve_bundle_asset;
 pub mod settings_manager;
 pub mod signals;
 #[cfg(test)]
@@ -101,6 +102,37 @@ pub enum Commands {
         #[command(subcommand)]
         command: MemoryCommands,
     },
+    /// Import blarify code-graph JSON into the native Kuzu store
+    IndexCode {
+        /// Path to a blarify JSON export
+        input: PathBuf,
+        /// Override the target Kuzu database path
+        #[arg(long = "kuzu-path")]
+        kuzu_path: Option<PathBuf>,
+    },
+    /// Generate native SCIP artifacts for the current project
+    IndexScip {
+        /// Project path to index (defaults to current working directory)
+        #[arg(long = "project-path")]
+        project_path: Option<PathBuf>,
+        /// Restrict indexing to specific languages
+        #[arg(long = "language")]
+        languages: Vec<String>,
+    },
+    /// Query the native code graph
+    QueryCode {
+        /// Override the target Kuzu database path
+        #[arg(long = "kuzu-path")]
+        kuzu_path: Option<PathBuf>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Maximum number of rows to return
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+        #[command(subcommand)]
+        command: QueryCodeCommands,
+    },
     /// Recipe management
     Recipe {
         #[command(subcommand)]
@@ -116,34 +148,59 @@ pub enum Commands {
     /// Download and install the latest released binary
     Update,
 
-    // ------------------------------------------------------------------
-    // Python-only subcommands — delegated to `python3 -m amplihack.cli`
-    // ------------------------------------------------------------------
-    /// Fleet orchestration (delegated to Python)
+    /// Fleet orchestration (native Rust runtime)
     Fleet {
-        /// Arguments forwarded to the Python fleet command
+        /// Arguments forwarded to the fleet dispatcher
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Goal agent generator (delegated to Python)
+    /// Generate a new goal-seeking agent from a prompt file (native Rust)
     New {
-        /// Arguments forwarded to the Python new command
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
+        /// Path to prompt.md file containing the goal description
+        #[arg(short = 'f', long = "file", required = true)]
+        file: std::path::PathBuf,
+        /// Output directory for the goal agent (default: ./goal_agents)
+        #[arg(short = 'o', long = "output")]
+        output: Option<std::path::PathBuf>,
+        /// Custom name for the goal agent (auto-generated if not provided)
+        #[arg(short = 'n', long = "name")]
+        name: Option<String>,
+        /// Custom skills directory (default: .claude/agents/amplihack)
+        #[arg(long = "skills-dir")]
+        skills_dir: Option<std::path::PathBuf>,
+        /// Enable verbose output
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+        /// Enable memory/learning capabilities
+        #[arg(long = "enable-memory")]
+        enable_memory: bool,
+        /// SDK to use for agent execution
+        #[arg(long = "sdk", default_value = "copilot",
+              value_parser = ["copilot", "claude", "microsoft", "mini"])]
+        sdk: String,
+        /// Enable multi-agent architecture
+        #[arg(long = "multi-agent")]
+        multi_agent: bool,
+        /// Enable dynamic sub-agent spawning (auto-enables --multi-agent)
+        #[arg(long = "enable-spawning")]
+        enable_spawning: bool,
     },
-    /// RustyClawd tool (delegated to Python)
+    /// RustyClawd tool (native Rust launcher path)
     #[command(name = "RustyClawd")]
     RustyClawd {
-        /// Arguments forwarded to the Python RustyClawd command
+        /// Arguments forwarded to the RustyClawd/Claude binary
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// UVX help information (delegated to Python)
+    /// UVX help information
     #[command(name = "uvx-help")]
     UvxHelp {
-        /// Arguments forwarded to the Python uvx-help command
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
+        /// Find the detected UVX installation path
+        #[arg(long)]
+        find_path: bool,
+        /// Show UVX staging information
+        #[arg(long)]
+        info: bool,
     },
 
     /// Generate shell completion scripts (bash, zsh, fish, powershell)
@@ -316,6 +373,50 @@ pub enum RecipeCommands {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum QueryCodeCommands {
+    /// Show code graph statistics
+    Stats,
+    /// Show related code context for a memory
+    Context {
+        /// Memory identifier
+        memory_id: String,
+    },
+    /// List indexed files
+    Files {
+        /// Optional path substring filter
+        #[arg(long)]
+        pattern: Option<String>,
+    },
+    /// List indexed functions
+    Functions {
+        /// Optional file substring filter
+        #[arg(long)]
+        file: Option<String>,
+    },
+    /// List indexed classes
+    Classes {
+        /// Optional file substring filter
+        #[arg(long)]
+        file: Option<String>,
+    },
+    /// Search files, functions, and classes by name
+    Search {
+        /// Search term
+        name: String,
+    },
+    /// Find functions calling a given function
+    Callers {
+        /// Function name substring
+        name: String,
+    },
+    /// Find functions called by a given function
+    Callees {
+        /// Function name substring
+        name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum ModeCommands {
     /// Detect current mode
     Detect,
@@ -332,6 +433,10 @@ pub enum ModeCommands {
 /// C++ FFI boundary without embedding integration tests inside production code.
 pub mod memory {
     pub use crate::commands::memory::{
-        SessionSummary, init_kuzu_backend_schema, kuzu_rows, list_kuzu_sessions_from_conn,
+        CodeGraphSummary, IndexStatus, PromptContextMemory, SessionSummary,
+        background_index_job_active, background_index_job_path, check_index_status,
+        default_code_graph_db_path_for_project, init_kuzu_backend_schema, kuzu_rows,
+        list_kuzu_sessions_from_conn, record_background_index_pid,
+        retrieve_prompt_context_memories, store_session_learning, summarize_code_graph,
     };
 }
