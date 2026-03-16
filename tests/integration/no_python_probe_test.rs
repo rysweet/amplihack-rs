@@ -1092,11 +1092,13 @@ fn tc10_fleet_tui_new_session_launches_without_python() {
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    probe.drain(Duration::from_millis(1200));
-    probe.send(b"n", Duration::from_millis(800));
-    probe.send(b"t", Duration::from_millis(300));
-    probe.send(b"\n", Duration::from_millis(1200));
-    probe.send(b"q", Duration::from_millis(200));
+    // Under heavy CI/workspace-parallel load the binary needs extra time to
+    // render the initial frame.  Use conservative delays throughout.
+    probe.drain(Duration::from_millis(2000));
+    probe.send(b"n", Duration::from_millis(1200));
+    probe.send(b"t", Duration::from_millis(600));
+    probe.send(b"\n", Duration::from_millis(2000));
+    probe.send(b"q", Duration::from_millis(400));
 
     let create_hits = probe.create_hits();
     let cleaned = probe.finish();

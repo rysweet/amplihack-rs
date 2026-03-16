@@ -5,6 +5,23 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ---
 
+## [0.6.1] — 2026-03-16 — Test stability fixes
+
+### Fixed
+
+- **post_tool_use.rs: race condition in cwd-mutating tests** — Added `env_lock()`
+  guards to `blarify_stale_marker_written_for_code_file_edit` and
+  `blarify_stale_marker_not_written_for_non_code_file`. Both tests call
+  `set_current_dir()`, which is process-global state; the lock prevents flaky
+  failures when other tests run in parallel.
+
+- **no_python_probe_test.rs: tc10 PTY timing** — Doubled PTY drain/wait delays
+  in `tc10_fleet_tui_new_session_launches_without_python` to prevent spurious
+  failures under heavy CI/workspace-parallel load (initial drain 1200 ms →
+  2000 ms; send waits scaled proportionally).
+
+---
+
 ## [0.6.0] — 2026-03-16 — 100% Parity Closure
 
 ### Added
@@ -33,9 +50,9 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ---
 
-## [Unreleased] — Issue #78: Fleet TUI Advanced Feature Parity
+## [0.5.0] — 2026-03-16 — Issue #78: Fleet TUI Advanced Feature Parity
 
-### Completed in this session
+### Completed in this release
 
 #### T5 — Per-session tmux capture cache (LRU, 64 entries)
 
@@ -146,9 +163,9 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ---
 
-## [Unreleased] — Issue #77: Python-to-Rust Port Parity Work
+## [0.5.0-rc] — 2026-03-16 — Issue #77: Python-to-Rust Port Parity Work
 
-### Completed in this session
+### Completed in this release (merged into v0.5.0)
 
 #### Fleet TUI — Cockpit Parity Improvements (R1 / AC5)
 - **Status aggregation header**: Fleet dashboard now shows a live count of

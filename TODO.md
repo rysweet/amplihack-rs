@@ -248,6 +248,29 @@ path does not invoke Python to generate blarify JSON.
 
 ---
 
+## COMPLETED (continuation session — v0.6.1)
+
+- [x] Fixed race condition in `post_tool_use.rs` cwd-mutating tests — added
+  `env_lock()` guards to prevent flaky failures when tests run in parallel
+  (`blarify_stale_marker_written_for_code_file_edit`,
+  `blarify_stale_marker_not_written_for_non_code_file`).
+- [x] Increased PTY timing in tc10 (`tc10_fleet_tui_new_session_launches_without_python`)
+  from 1200/800/300/1200/200ms to 2000/1200/600/2000/400ms to prevent spurious
+  failures under heavy parallel load.
+- [x] Cleaned up CHANGELOG.md: versioned the two `[Unreleased]` sections (v0.5.0,
+  v0.5.0-rc) and added v0.6.1 entry.
+- [x] Updated TODO.md (this file) with this session's work.
+- [x] Version bumped 0.6.0 → 0.6.1 (PATCH: test stability fixes, no user-facing changes).
+
+### Verification (v0.6.1)
+- `cargo test --workspace`: all tests pass (2 consecutive runs, 0 failures)
+- `scripts/probe-no-python.sh`: 10/10 smoke tests pass
+- `cargo fmt --check`: clean
+- `cargo clippy -- -D warnings`: zero warnings
+- `parity_audit_cycle.py --validate-only`: 124/124 (100.0%)
+
+---
+
 ## HOW TO VERIFY NO-PYTHON COMPLIANCE
 
 ```bash

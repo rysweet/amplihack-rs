@@ -267,6 +267,7 @@ fn now_iso8601() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::env_lock;
 
     #[test]
     fn categorizes_tools_correctly() {
@@ -358,6 +359,11 @@ mod tests {
 
     #[test]
     fn blarify_stale_marker_written_for_code_file_edit() {
+        // cwd is process-global state; hold env_lock to prevent races with
+        // other tests that also call set_current_dir() in parallel.
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();
         // Temporarily change cwd for ProjectDirs resolution.
         let original = std::env::current_dir().ok();
@@ -385,6 +391,11 @@ mod tests {
 
     #[test]
     fn blarify_stale_marker_not_written_for_non_code_file() {
+        // cwd is process-global state; hold env_lock to prevent races with
+        // other tests that also call set_current_dir() in parallel.
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let original = std::env::current_dir().ok();
         let _ = std::env::set_current_dir(dir.path());
