@@ -1,5 +1,6 @@
 //! Native memory commands (`tree`, `export`, `import`, `clean`).
 
+pub mod backend;
 pub mod clean;
 pub mod code_graph;
 pub mod indexing_job;
@@ -32,7 +33,7 @@ use rusqlite::{Connection as SqliteConnection, params};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use time::OffsetDateTime;
@@ -291,7 +292,7 @@ pub struct PromptContextMemory {
 }
 
 #[derive(Debug, Clone)]
-struct SessionLearningRecord {
+pub(crate) struct SessionLearningRecord {
     session_id: String,
     agent_id: String,
     content: String,
@@ -308,11 +309,6 @@ pub(crate) fn open_sqlite_memory_db() -> Result<SqliteConnection> {
     let conn = SqliteConnection::open(path)?;
     conn.execute_batch(SQLITE_SCHEMA)?;
     Ok(conn)
-}
-
-pub(crate) fn list_sqlite_sessions() -> Result<Vec<SessionSummary>> {
-    let conn = open_sqlite_memory_db()?;
-    list_sqlite_sessions_from_conn(&conn)
 }
 
 pub(crate) fn list_sqlite_sessions_from_conn(
@@ -388,11 +384,6 @@ pub(crate) fn collect_sqlite_agent_counts(conn: &SqliteConnection) -> Result<Vec
     Ok(rows)
 }
 
-fn load_sqlite_session_memories(session_id: &str) -> Result<Vec<MemoryRecord>> {
-    let conn = open_sqlite_memory_db()?;
-    query_sqlite_memories_for_session(&conn, session_id, None)
-}
-
 pub(crate) fn delete_sqlite_session(session_id: &str) -> Result<bool> {
     let conn = open_sqlite_memory_db()?;
     conn.execute(
@@ -433,13 +424,6 @@ pub fn init_kuzu_backend_schema(conn: &KuzuConnection<'_>) -> Result<()> {
         conn.query(statement)?;
     }
     Ok(())
-}
-
-pub(crate) fn list_kuzu_sessions() -> Result<Vec<SessionSummary>> {
-    let db = open_kuzu_memory_db()?;
-    let conn = KuzuConnection::new(&db)?;
-    init_kuzu_backend_schema(&conn)?;
-    list_kuzu_sessions_from_conn(&conn)
 }
 
 pub fn list_kuzu_sessions_from_conn(conn: &KuzuConnection<'_>) -> Result<Vec<SessionSummary>> {
@@ -483,38 +467,28 @@ pub(crate) fn query_kuzu_memories_for_session(
     Ok(memories)
 }
 
-fn load_kuzu_session_memories(session_id: &str) -> Result<Vec<MemoryRecord>> {
-    let db = open_kuzu_memory_db()?;
-    let conn = KuzuConnection::new(&db)?;
-    init_kuzu_backend_schema(&conn)?;
-    query_kuzu_memories_for_session(&conn, session_id)
-}
-
 pub(crate) fn collect_kuzu_agent_counts(conn: &KuzuConnection<'_>) -> Result<Vec<(String, usize)>> {
-    let rows = kuzu_rows(
-        conn,
-        "MATCH (a:Agent) RETURN a.agent_id ORDER BY a.agent_id ASC",
-        vec![],
-    )?;
-    let mut counts = Vec::new();
-    for row in rows {
-        let agent_id = kuzu_string(row.first())?;
-        let mut total = 0usize;
-        for (label, _) in KUZU_MEMORY_TABLES {
-            let query = format!("MATCH (m:{label} {{agent_id: $agent_id}}) RETURN COUNT(m)");
-            let count_rows = kuzu_rows(
-                conn,
-                &query,
-                vec![("agent_id", KuzuValue::String(agent_id.clone()))],
-            )?;
-            if let Some(first_row) = count_rows.first() {
-                total += kuzu_i64(first_row.first())? as usize;
-            }
-        }
-        if total > 0 {
-            counts.push((agent_id, total));
+    // One bulk query per memory type returns (agent_id, count) for ALL agents at
+    // once.  This reduces from O(5n) round-trips (5 per-agent COUNT queries) to
+    // O(5) total — a constant number of DB calls regardless of agent count.
+    let mut totals: HashMap<String, usize> = HashMap::new();
+    for (label, _) in KUZU_MEMORY_TABLES {
+        let rows = kuzu_rows(
+            conn,
+            &format!("MATCH (m:{label}) RETURN m.agent_id, COUNT(m)"),
+            vec![],
+        )?;
+        for row in rows {
+            let agent_id = kuzu_string(row.first())?;
+            let count = kuzu_i64(row.get(1))? as usize;
+            *totals.entry(agent_id).or_insert(0) += count;
         }
     }
+
+    // Filter zero-count agents and restore the original ascending sort order.
+    let mut counts: Vec<(String, usize)> =
+        totals.into_iter().filter(|(_, total)| *total > 0).collect();
+    counts.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(counts)
 }
 
@@ -694,11 +668,10 @@ fn load_memories_for_prompt_context(session_id: &str) -> Result<Vec<MemoryRecord
         return Ok(Vec::new());
     }
 
-    match std::env::var("AMPLIHACK_MEMORY_BACKEND").ok().as_deref() {
-        Some("sqlite") => load_sqlite_session_memories(session_id),
-        Some("kuzu") => load_kuzu_session_memories(session_id),
-        Some(_) | None => load_kuzu_session_memories(session_id)
-            .or_else(|_| load_sqlite_session_memories(session_id)),
+    match resolve_memory_backend_preference() {
+        Some(choice) => load_runtime_memories_from_backend(choice, session_id),
+        None => load_runtime_memories_from_backend(BackendChoice::Kuzu, session_id)
+            .or_else(|_| load_runtime_memories_from_backend(BackendChoice::Sqlite, session_id)),
     }
 }
 
@@ -708,6 +681,13 @@ fn resolve_memory_backend_preference() -> Option<BackendChoice> {
         Some("kuzu") => Some(BackendChoice::Kuzu),
         _ => None,
     }
+}
+
+fn load_runtime_memories_from_backend(
+    choice: BackendChoice,
+    session_id: &str,
+) -> Result<Vec<MemoryRecord>> {
+    self::backend::open_runtime_backend(choice)?.load_prompt_context_memories(session_id)
 }
 
 fn is_prompt_context_memory(memory: &MemoryRecord) -> bool {
@@ -736,12 +716,16 @@ fn parse_memory_timestamp(value: &str) -> Option<DateTime<Utc>> {
         })
 }
 
-fn memory_relevance_score(memory: &MemoryRecord, query_text: &str) -> f64 {
-    let query_lower = query_text.to_lowercase();
+/// Score a single memory record against a pre-lowercased query string.
+///
+/// `query_lower` **must** already be lowercase; callers are responsible for
+/// converting once before iterating over many records (avoids O(n) repeated
+/// allocations for the same query).
+fn memory_relevance_score(memory: &MemoryRecord, query_lower: &str) -> f64 {
     let content_lower = memory.content.to_lowercase();
     let mut score = 0.0;
 
-    if !query_lower.is_empty() && content_lower.contains(&query_lower) {
+    if !query_lower.is_empty() && content_lower.contains(query_lower) {
         score += 10.0;
     }
 
@@ -772,11 +756,15 @@ fn select_prompt_context_memories(
         return Vec::new();
     }
 
+    // Pre-compute once; `memory_relevance_score` expects a pre-lowercased string
+    // so we don't re-allocate the lowercase form on every memory record.
+    let query_lower = query_text.to_lowercase();
+
     let mut ranked = memories
         .into_iter()
         .filter(is_prompt_context_memory)
         .map(|memory| {
-            let score = memory_relevance_score(&memory, query_text);
+            let score = memory_relevance_score(&memory, &query_lower);
             (memory, score)
         })
         .collect::<Vec<_>>();
@@ -1089,10 +1077,17 @@ pub fn store_session_learning(
     };
 
     match resolve_memory_backend_preference() {
-        Some(BackendChoice::Sqlite) => store_learning_sqlite(&record),
-        Some(BackendChoice::Kuzu) => store_learning_kuzu(&record),
-        None => store_learning_kuzu(&record).or_else(|_| store_learning_sqlite(&record)),
+        Some(choice) => store_learning_with_backend(choice, &record),
+        None => store_learning_with_backend(BackendChoice::Kuzu, &record)
+            .or_else(|_| store_learning_with_backend(BackendChoice::Sqlite, &record)),
     }
+}
+
+fn store_learning_with_backend(
+    choice: BackendChoice,
+    record: &SessionLearningRecord,
+) -> Result<Option<String>> {
+    self::backend::open_runtime_backend(choice)?.store_session_learning(record)
 }
 
 #[cfg(test)]

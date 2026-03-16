@@ -1,8 +1,8 @@
 //! `memory tree` command implementation.
 
+use super::backend::MemoryTreeBackend;
 use super::*;
 use anyhow::Result;
-use kuzu::Connection as KuzuConnection;
 
 pub fn run_tree(
     session_id: Option<&str>,
@@ -10,79 +10,27 @@ pub fn run_tree(
     depth: Option<u32>,
     backend: &str,
 ) -> Result<()> {
-    let backend = BackendChoice::parse(backend)?;
-    let output = match backend {
-        BackendChoice::Sqlite => render_sqlite_tree(session_id, memory_type, depth)?,
-        BackendChoice::Kuzu => render_kuzu_tree(session_id, memory_type, depth)?,
-    };
+    let backend = super::backend::open_tree_backend(BackendChoice::parse(backend)?)?;
+    let output = render_tree_from_backend(backend.as_ref(), session_id, memory_type, depth)?;
     println!("{output}");
     Ok(())
 }
 
-fn render_sqlite_tree(
+fn render_tree_from_backend(
+    backend: &dyn MemoryTreeBackend,
     session_id: Option<&str>,
     memory_type: Option<&str>,
     depth: Option<u32>,
 ) -> Result<String> {
-    let conn = open_sqlite_memory_db()?;
-    let mut sessions = list_sqlite_sessions_from_conn(&conn)?;
-    if let Some(session_id) = session_id {
-        sessions.retain(|session| session.session_id == session_id);
-    }
-
-    let mut session_rows = Vec::new();
-    for session in sessions {
-        let memories = query_sqlite_memories_for_session(&conn, &session.session_id, memory_type)?;
-        session_rows.push((session, memories));
-    }
-
+    let session_rows = backend.load_session_rows(session_id, memory_type)?;
     let agent_counts = if session_id.is_none() && depth.map(|value| value > 2).unwrap_or(true) {
-        collect_sqlite_agent_counts(&conn)?
+        backend.collect_agent_counts()?
     } else {
         Vec::new()
     };
 
     Ok(render_tree(
-        SQLITE_TREE_BACKEND_NAME,
-        &session_rows,
-        &agent_counts,
-        session_id.is_none(),
-        depth,
-    ))
-}
-
-fn render_kuzu_tree(
-    session_id: Option<&str>,
-    _memory_type: Option<&str>,
-    depth: Option<u32>,
-) -> Result<String> {
-    use anyhow::Context;
-    let db = open_kuzu_memory_db()?;
-    let conn = KuzuConnection::new(&db).context("failed to connect to Kùzu memory DB")?;
-    init_kuzu_backend_schema(&conn)?;
-
-    let mut sessions = list_kuzu_sessions_from_conn(&conn)?;
-    if let Some(session_id) = session_id {
-        sessions.retain(|session| session.session_id == session_id);
-    }
-
-    let mut session_rows = Vec::new();
-    for session in sessions {
-        let memories = query_kuzu_memories_for_session(&conn, &session.session_id)?;
-        let memory_count = memories.len();
-        let mut session = session;
-        session.memory_count = memory_count;
-        session_rows.push((session, memories));
-    }
-
-    let agent_counts = if session_id.is_none() && depth.map(|value| value > 2).unwrap_or(true) {
-        collect_kuzu_agent_counts(&conn)?
-    } else {
-        Vec::new()
-    };
-
-    Ok(render_tree(
-        KUZU_TREE_BACKEND_NAME,
+        backend.backend_name(),
         &session_rows,
         &agent_counts,
         session_id.is_none(),
@@ -218,6 +166,91 @@ fn json_scalar(value: &serde_json::Value) -> String {
         serde_json::Value::Number(v) => v.to_string(),
         serde_json::Value::String(v) => v.clone(),
         other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod backend_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    struct FakeBackend {
+        name: &'static str,
+        session_rows: Vec<(SessionSummary, Vec<MemoryRecord>)>,
+        agent_counts: Vec<(String, usize)>,
+        agent_count_calls: Cell<usize>,
+    }
+
+    impl MemoryTreeBackend for FakeBackend {
+        fn backend_name(&self) -> &'static str {
+            self.name
+        }
+
+        fn load_session_rows(
+            &self,
+            _session_id: Option<&str>,
+            _memory_type: Option<&str>,
+        ) -> Result<Vec<(SessionSummary, Vec<MemoryRecord>)>> {
+            Ok(self.session_rows.clone())
+        }
+
+        fn collect_agent_counts(&self) -> Result<Vec<(String, usize)>> {
+            self.agent_count_calls
+                .set(self.agent_count_calls.get().saturating_add(1));
+            Ok(self.agent_counts.clone())
+        }
+    }
+
+    #[test]
+    fn render_tree_from_backend_uses_backend_name_and_rows() {
+        let backend = FakeBackend {
+            name: "ladybug-preview",
+            session_rows: vec![(
+                SessionSummary {
+                    session_id: "sess-1".to_string(),
+                    memory_count: 1,
+                },
+                vec![MemoryRecord {
+                    memory_type: "learning".to_string(),
+                    title: "Remember".to_string(),
+                    content: "Use a backend seam".to_string(),
+                    metadata: serde_json::json!({"confidence": 0.9}),
+                    importance: Some(7),
+                    accessed_at: None,
+                    expires_at: None,
+                }],
+            )],
+            agent_counts: vec![("claude".to_string(), 1)],
+            agent_count_calls: Cell::new(0),
+        };
+
+        let rendered = render_tree_from_backend(&backend, None, None, Some(3)).unwrap();
+
+        assert!(rendered.contains("Backend: ladybug-preview"));
+        assert!(rendered.contains("sess-1 (1 memories)"));
+        assert!(rendered.contains("Learning: Remember"));
+        assert_eq!(backend.agent_count_calls.get(), 1);
+    }
+
+    #[test]
+    fn render_tree_from_backend_skips_agent_counts_for_shallow_depth() {
+        let backend = FakeBackend {
+            name: "ladybug-preview",
+            session_rows: vec![(
+                SessionSummary {
+                    session_id: "sess-1".to_string(),
+                    memory_count: 0,
+                },
+                Vec::new(),
+            )],
+            agent_counts: vec![("claude".to_string(), 2)],
+            agent_count_calls: Cell::new(0),
+        };
+
+        let rendered = render_tree_from_backend(&backend, None, None, Some(2)).unwrap();
+
+        assert!(!rendered.contains("👥 Agents"));
+        assert_eq!(backend.agent_count_calls.get(), 0);
     }
 }
 

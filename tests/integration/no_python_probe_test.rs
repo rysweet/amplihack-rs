@@ -6,9 +6,10 @@
 ///
 /// # Status
 ///
-/// All tests TC-01 through TC-07 pass.  The probe script
-/// (`scripts/probe-no-python.sh`) has been extended to cover TC-04 through
-/// TC-07.  AC9 is fully satisfied.
+/// All tests TC-01 through TC-08 pass. The probe script
+/// (`scripts/probe-no-python.sh`) now covers TC-04 through TC-08, including
+/// the populated native code-graph path. AC9 is satisfied for the currently
+/// modeled no-Python CLI scenarios.
 ///
 /// TC-06 (`query-code stats` on a fresh Kuzu DB) verifies no-crash and
 /// no-Python-invocation; a non-zero exit code from Kuzu on an empty DB
@@ -49,6 +50,37 @@ fn clean_path_without_python() -> String {
 fn cmd_without_python(bin: &PathBuf) -> Command {
     let mut cmd = Command::new(bin);
     cmd.env("PATH", clean_path_without_python());
+    cmd
+}
+
+fn cmd_with_failing_python_shims(bin: &PathBuf, shim_dir: &Path, python_log: &Path) -> Command {
+    fs::create_dir_all(shim_dir).unwrap_or_else(|error| {
+        panic!("failed to create shim dir {shim_dir:?}: {error}");
+    });
+    write_executable(
+        &shim_dir.join("python"),
+        &format!(
+            "#!/bin/sh\necho python >> {}\nexit 97\n",
+            python_log.display()
+        ),
+    );
+    write_executable(
+        &shim_dir.join("python3"),
+        &format!(
+            "#!/bin/sh\necho python3 >> {}\nexit 97\n",
+            python_log.display()
+        ),
+    );
+
+    let clean_path = clean_path_without_python();
+    let path = if clean_path.is_empty() {
+        shim_dir.display().to_string()
+    } else {
+        format!("{}:{clean_path}", shim_dir.display())
+    };
+
+    let mut cmd = Command::new(bin);
+    cmd.env("PATH", path);
     cmd
 }
 
@@ -331,6 +363,149 @@ fn tc07_index_scip_help_exits_zero_without_python() {
     );
 }
 
+/// TC-08: native code-graph import and query must work end-to-end with Python
+/// forcibly broken on PATH.
+#[test]
+fn tc08_index_code_and_query_code_work_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let temp_dir = tempfile::TempDir::new().expect("failed to create tempdir");
+    let shim_dir = temp_dir.path().join("bin");
+    let python_log = temp_dir.path().join("python.log");
+    let db_path = temp_dir.path().join("probe_tc08.kuzu");
+    let json_path = temp_dir.path().join("blarify.json");
+
+    fs::write(
+        &json_path,
+        serde_json::json!({
+            "files": [
+                {"path":"src/example/module.py","language":"python","lines_of_code":10},
+                {"path":"src/example/utils.py","language":"python","lines_of_code":5}
+            ],
+            "classes": [
+                {"id":"class:Example","name":"Example","file_path":"src/example/module.py","line_number":1}
+            ],
+            "functions": [
+                {"id":"func:Example.process","name":"process","file_path":"src/example/module.py","line_number":2,"class_id":"class:Example"},
+                {"id":"func:helper","name":"helper","file_path":"src/example/utils.py","line_number":1}
+            ],
+            "imports": [],
+            "relationships": [
+                {"type":"CALLS","source_id":"func:Example.process","target_id":"func:helper"}
+            ]
+        })
+        .to_string(),
+    )
+    .expect("failed to write blarify fixture");
+
+    let index_output = cmd_with_failing_python_shims(&bin, &shim_dir, &python_log)
+        .args([
+            "index-code",
+            json_path.to_str().expect("non-UTF-8 fixture path"),
+            "--kuzu-path",
+            db_path.to_str().expect("non-UTF-8 db path"),
+        ])
+        .output()
+        .expect("failed to run index-code");
+    assert!(
+        index_output.status.success(),
+        "TC-08 FAIL: `index-code` exited {:?}.\nstdout: {}\nstderr: {}",
+        index_output.status.code(),
+        String::from_utf8_lossy(&index_output.stdout),
+        String::from_utf8_lossy(&index_output.stderr)
+    );
+
+    let stats_output = cmd_with_failing_python_shims(&bin, &shim_dir, &python_log)
+        .args([
+            "query-code",
+            "--kuzu-path",
+            db_path.to_str().expect("non-UTF-8 db path"),
+            "--json",
+            "stats",
+        ])
+        .output()
+        .expect("failed to run query-code stats");
+    assert!(
+        stats_output.status.success(),
+        "TC-08 FAIL: `query-code stats` exited {:?}.\nstdout: {}\nstderr: {}",
+        stats_output.status.code(),
+        String::from_utf8_lossy(&stats_output.stdout),
+        String::from_utf8_lossy(&stats_output.stderr)
+    );
+    let stats_json: serde_json::Value =
+        serde_json::from_slice(&stats_output.stdout).expect("stats output must be valid JSON");
+    assert_eq!(stats_json["files"], 2);
+    assert_eq!(stats_json["classes"], 1);
+    assert_eq!(stats_json["functions"], 2);
+
+    let search_output = cmd_with_failing_python_shims(&bin, &shim_dir, &python_log)
+        .args([
+            "query-code",
+            "--kuzu-path",
+            db_path.to_str().expect("non-UTF-8 db path"),
+            "--json",
+            "search",
+            "helper",
+        ])
+        .output()
+        .expect("failed to run query-code search");
+    assert!(
+        search_output.status.success(),
+        "TC-08 FAIL: `query-code search helper` exited {:?}.\nstdout: {}\nstderr: {}",
+        search_output.status.code(),
+        String::from_utf8_lossy(&search_output.stdout),
+        String::from_utf8_lossy(&search_output.stderr)
+    );
+    let search_json: serde_json::Value =
+        serde_json::from_slice(&search_output.stdout).expect("search output must be valid JSON");
+    assert!(
+        search_json
+            .as_array()
+            .expect("search output must be an array")
+            .iter()
+            .any(|entry| entry["type"] == "function" && entry["name"] == "helper"),
+        "TC-08 FAIL: query-code search did not return helper.\n{}",
+        String::from_utf8_lossy(&search_output.stdout)
+    );
+
+    let callers_output = cmd_with_failing_python_shims(&bin, &shim_dir, &python_log)
+        .args([
+            "query-code",
+            "--kuzu-path",
+            db_path.to_str().expect("non-UTF-8 db path"),
+            "--json",
+            "callers",
+            "helper",
+        ])
+        .output()
+        .expect("failed to run query-code callers");
+    assert!(
+        callers_output.status.success(),
+        "TC-08 FAIL: `query-code callers helper` exited {:?}.\nstdout: {}\nstderr: {}",
+        callers_output.status.code(),
+        String::from_utf8_lossy(&callers_output.stdout),
+        String::from_utf8_lossy(&callers_output.stderr)
+    );
+    let callers_json: serde_json::Value =
+        serde_json::from_slice(&callers_output.stdout).expect("callers output must be valid JSON");
+    assert!(
+        callers_json
+            .as_array()
+            .expect("callers output must be an array")
+            .iter()
+            .any(|entry| entry["caller"] == "process" && entry["callee"] == "helper"),
+        "TC-08 FAIL: query-code callers did not return process -> helper.\n{}",
+        String::from_utf8_lossy(&callers_output.stdout)
+    );
+
+    let python_hits = fs::read_to_string(&python_log).unwrap_or_default();
+    assert!(
+        python_hits.trim().is_empty(),
+        "TC-08 FAIL: native code-graph path touched python unexpectedly:\n{python_hits}"
+    );
+}
+
 // ── Probe script execution test ───────────────────────────────────────────
 
 // ── Probe script CONTENT checks (AC9 extension validation) ───────────────
@@ -402,16 +577,35 @@ fn probe_script_content_contains_tc07_index_scip_help() {
     );
 }
 
-/// Validate that the probe shell script exits 0 and covers TC-04 through TC-07.
+/// TC-08 content gate: the probe script must exercise populated native
+/// `index-code` + `query-code` flows using the real `--kuzu-path` flag.
+#[test]
+fn probe_script_content_contains_tc08_populated_code_graph_probe() {
+    let script = read_probe_script();
+    let has_tc08 = script.contains("TC-08");
+    let has_index = script.contains("index-code");
+    let has_kuzu_path = script.contains("--kuzu-path");
+    let has_search = script.contains("query-code --kuzu-path") && script.contains("search helper");
+    let has_callers = script.contains("callers helper");
+    assert!(
+        has_tc08 && has_index && has_kuzu_path && has_search && has_callers,
+        "FAIL TC-08 content gate: probe-no-python.sh must include a populated \
+         native code-graph smoke test using --kuzu-path plus search/callers checks.\n\
+         Missing: tc08={has_tc08}, index={has_index}, kuzu_path={has_kuzu_path}, \
+         search={has_search}, callers={has_callers}"
+    );
+}
+
+/// Validate that the probe shell script exits 0 and covers TC-04 through TC-08.
 ///
 /// Checks both:
 ///   1. The script exits 0 (all smoke tests pass)
-///   2. The output proves TC-04 through TC-07 were exercised
+///   2. The output proves TC-04 through TC-08 were exercised
 ///
 /// Skipped when the script is not executable (e.g., fresh clone without
 /// execute bit set).
 #[test]
-fn probe_script_exits_zero_and_covers_tc04_through_tc07() {
+fn probe_script_exits_zero_and_covers_tc04_through_tc08() {
     let script = {
         let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         p.pop(); // tests/
@@ -452,16 +646,18 @@ fn probe_script_exits_zero_and_covers_tc04_through_tc07() {
         output.status.code()
     );
 
-    // Gate 2: script output proves it ran TC-04 through TC-07.
+    // Gate 2: script output proves it ran TC-04 through TC-08.
     let has_tc04 = combined.contains("index-code");
     let has_tc05 = combined.contains("query-code");
     let has_tc06 = combined.contains("mktemp") || combined.contains("stats");
     let has_tc07 = combined.contains("index-scip");
+    let has_tc08 = combined.contains("TC-08") && combined.contains("populated graph");
     assert!(
-        has_tc04 && has_tc05 && has_tc06 && has_tc07,
-        "FAIL: probe script ran successfully but did not exercise TC-04 through TC-07.\n\
+        has_tc04 && has_tc05 && has_tc06 && has_tc07 && has_tc08,
+        "FAIL: probe script ran successfully but did not exercise TC-04 through TC-08.\n\
          Missing: tc04(index-code)={has_tc04}, tc05(query-code)={has_tc05}, \
-         tc06(stats/mktemp)={has_tc06}, tc07(index-scip)={has_tc07}\n\
+         tc06(stats/mktemp)={has_tc06}, tc07(index-scip)={has_tc07}, \
+         tc08(populated graph)={has_tc08}\n\
          Full output:\n{combined}"
     );
 }
@@ -474,18 +670,66 @@ struct FleetTuiProbe {
     send_log: PathBuf,
     create_log: PathBuf,
     queue_path: PathBuf,
+    dashboard_path: PathBuf,
     output: Vec<u8>,
 }
 
 impl FleetTuiProbe {
     fn new(bin: &Path, reasoner_json: Option<&str>) -> Self {
-        Self::new_with_existing_vms(bin, reasoner_json, None)
+        Self::new_with_existing_vms_vm2_delay_and_reasoner_script(
+            bin,
+            reasoner_json,
+            None,
+            None,
+            None,
+        )
     }
 
     fn new_with_existing_vms(
         bin: &Path,
         reasoner_json: Option<&str>,
         existing_vms: Option<&str>,
+    ) -> Self {
+        Self::new_with_existing_vms_vm2_delay_and_reasoner_script(
+            bin,
+            reasoner_json,
+            existing_vms,
+            None,
+            None,
+        )
+    }
+
+    fn new_with_existing_vms_and_vm2_delay(
+        bin: &Path,
+        reasoner_json: Option<&str>,
+        existing_vms: Option<&str>,
+        vm2_delay_seconds: Option<f32>,
+    ) -> Self {
+        Self::new_with_existing_vms_vm2_delay_and_reasoner_script(
+            bin,
+            reasoner_json,
+            existing_vms,
+            vm2_delay_seconds,
+            None,
+        )
+    }
+
+    fn new_with_reasoner_script(bin: &Path, reasoner_script: &str) -> Self {
+        Self::new_with_existing_vms_vm2_delay_and_reasoner_script(
+            bin,
+            None,
+            None,
+            None,
+            Some(reasoner_script),
+        )
+    }
+
+    fn new_with_existing_vms_vm2_delay_and_reasoner_script(
+        bin: &Path,
+        reasoner_json: Option<&str>,
+        existing_vms: Option<&str>,
+        vm2_delay_seconds: Option<f32>,
+        reasoner_script: Option<&str>,
     ) -> Self {
         let temp_dir = tempfile::TempDir::new().expect("failed to create tempdir");
         let fake_bin = temp_dir.path().join("bin");
@@ -495,17 +739,23 @@ impl FleetTuiProbe {
         let send_log = temp_dir.path().join("send.log");
         let create_log = temp_dir.path().join("create.log");
         let queue_path = temp_dir.path().join(".amplihack/fleet/task_queue.json");
+        let dashboard_path = temp_dir.path().join(".amplihack/fleet/dashboard.json");
         let azlin = temp_dir.path().join("azlin");
         let list_json = if existing_vms.is_some() {
             r#"[{"name":"vm-1","status":"Running","region":"westus2","session_name":"vm-1"},{"name":"vm-2","status":"Running","region":"eastus","session_name":"vm-2"}]"#
         } else {
             r#"[{"name":"vm-1","status":"Running","region":"westus2","session_name":"vm-1"}]"#
         };
+        let vm2_delay = vm2_delay_seconds
+            .map(|seconds| format!("sleep {seconds}\n"))
+            .unwrap_or_default();
         let vm2_block = if existing_vms.is_some() {
-            r#"
+            format!(
+                r#"
 if [ "$1" = "connect" ] && [ "$2" = "vm-2" ]; then
   case "$*" in
     *"PANE_START"*)
+      {vm2_delay}\
       printf '%s\n' \
         '===SESSION:copilot-9===' \
         'CWD:/tmp/excluded' \
@@ -517,10 +767,12 @@ if [ "$1" = "connect" ] && [ "$2" = "vm-2" ]; then
       exit 0
       ;;
     *"tmux list-sessions"*)
+      {vm2_delay}\
       printf '%s\n' 'copilot-9|||1|||0'
       exit 0
       ;;
     *"===TMUX==="*)
+      {vm2_delay}\
       cat <<'EOF'
 ===TMUX===
 Working outside fleet
@@ -543,14 +795,17 @@ EOF
       exit 0
       ;;
     *"tmux capture-pane"*)
+      {vm2_delay}\
       printf '%s\n' 'Working outside fleet'
       exit 0
       ;;
   esac
 fi
-"#
+ "#,
+                vm2_delay = vm2_delay
+            )
         } else {
-            ""
+            String::new()
         };
 
         write_executable(
@@ -615,7 +870,9 @@ EOF
       exit 0
       ;;
     *"tmux capture-pane"*)
-      printf '%s\n' 'Proceed with deploy? [y/n]'
+      printf '%s\n' \
+        'FULL DETAIL: deployment checklist open' \
+        'Line 2: awaiting explicit operator input'
       exit 0
       ;;
     *"tmux send-keys"*)
@@ -686,13 +943,21 @@ exit 1
             command.env("AMPLIHACK_FLEET_EXISTING_VMS", existing_vms);
         }
 
-        if let Some(json) = reasoner_json {
-            let reasoner = fake_bin.join("claude");
-            write_executable(&reasoner, &format!("#!/bin/sh\ncat <<'EOF'\n{json}\nEOF\n"));
-            command
-                .env("AMPLIHACK_FLEET_REASONER_BINARY_PATH", &reasoner)
-                .env("AMPLIHACK_CLAUDE_BINARY_PATH", reasoner);
+        let default_reasoner_json = r#"{"action":"wait","confidence":0.85,"reasoning":"Need operator confirmation","input_text":"y\n"}"#;
+        let reasoner = fake_bin.join("claude");
+        if let Some(script) = reasoner_script {
+            write_executable(&reasoner, script);
+        } else if let Some(json) = reasoner_json {
+            write_executable(&reasoner, &format!("#!/bin/sh\nprintf '%s\\n' '{json}'\n"));
+        } else {
+            write_executable(
+                &reasoner,
+                &format!("#!/bin/sh\nprintf '%s\\n' '{default_reasoner_json}'\n"),
+            );
         }
+        command
+            .env("AMPLIHACK_FLEET_REASONER_BINARY_PATH", &reasoner)
+            .env("AMPLIHACK_CLAUDE_BINARY_PATH", reasoner);
 
         let child = command.spawn().expect("failed to spawn fleet tui");
 
@@ -704,6 +969,7 @@ exit 1
             send_log,
             create_log,
             queue_path,
+            dashboard_path,
             output: Vec::new(),
         }
     }
@@ -725,6 +991,10 @@ exit 1
 
     fn queue_contents(&self) -> String {
         fs::read_to_string(&self.queue_path).unwrap_or_default()
+    }
+
+    fn dashboard_contents(&self) -> String {
+        fs::read_to_string(&self.dashboard_path).unwrap_or_default()
     }
 
     fn finish(mut self) -> String {
@@ -797,7 +1067,7 @@ fn tc09_fleet_tui_editor_apply_blocks_dangerous_input_without_python() {
     probe.send(b"t", Duration::from_millis(300));
     probe.send(b"i", Duration::from_millis(300));
     probe.send(b"rm -rf /\n", Duration::from_millis(1200));
-    probe.send(b"A", Duration::from_millis(1200));
+    probe.send(b"A", Duration::from_millis(2200));
     probe.send(b"q", Duration::from_millis(200));
 
     let cleaned = probe.finish();
@@ -806,7 +1076,7 @@ fn tc09_fleet_tui_editor_apply_blocks_dangerous_input_without_python() {
         "expected proposal/editor output in PTY flow:\n{cleaned}"
     );
     assert!(
-        cleaned.contains("dangerous-input policy"),
+        cleaned.contains("Apply status") && cleaned.contains("dangerous-input policy"),
         "expected dangerous-input block in PTY output:\n{cleaned}"
     );
 }
@@ -916,5 +1186,263 @@ fn tc13_fleet_tui_selected_preview_tracks_visible_selection_without_python() {
             && cleaned.contains("cwd: /tmp/excluded")
             && cleaned.contains("Working outside fleet"),
         "expected selected-session preview body in PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-14: the native detail tab should surface the selected session's metadata
+/// from native discovery without touching Python.
+#[test]
+fn tc14_fleet_tui_detail_view_shows_session_metadata_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    probe.drain(Duration::from_millis(1200));
+    probe.send(b"\x1b[C", Duration::from_millis(1200));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Session Detail"),
+        "expected detail tab in PTY output:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("branch: main")
+            && cleaned.contains("repo: https://github.com/org/demo.git")
+            && cleaned.contains("cwd: /tmp/demo")
+            && cleaned.contains("task: Awaiting operator confirmation"),
+        "expected discovered session metadata in detail PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-15: the native projects tab should add and remove projects interactively
+/// without touching Python.
+#[test]
+fn tc15_fleet_tui_projects_tab_adds_and_removes_projects_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    probe.drain(Duration::from_millis(1200));
+    probe.send(b"p", Duration::from_millis(800));
+    probe.send(b"i", Duration::from_millis(300));
+    probe.send(
+        b"https://github.com/org/new-repo\n",
+        Duration::from_millis(1200),
+    );
+    probe.send(b"x", Duration::from_millis(1200));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let dashboard = probe.dashboard_contents();
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Removed project 'new-repo' from the dashboard."),
+        "expected project removal status in PTY output:\n{cleaned}"
+    );
+    assert!(
+        !dashboard.contains("new-repo"),
+        "expected removed project to be absent from dashboard file:\n{dashboard}"
+    );
+}
+
+/// TC-16: the native dry-run path should render a proposal in the detail view
+/// without touching Python.
+#[test]
+fn tc16_fleet_tui_dry_run_shows_proposal_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    probe.drain(Duration::from_millis(1200));
+    probe.send(b"d", Duration::from_millis(1500));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Prepared proposal for vm-1/claude-1:"),
+        "expected dry-run status in PTY output:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("Prepared proposal")
+            && cleaned.contains("Session Detail")
+            && cleaned.contains("Action:")
+            && cleaned.contains("Confidence:")
+            && cleaned.contains("Reasoning:"),
+        "expected proposal detail in PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-17: numeric tab hotkeys should follow the Python dashboard order without
+/// touching Python: `3` opens the editor and `4` opens projects.
+#[test]
+fn tc17_fleet_tui_numeric_tab_hotkeys_follow_python_order_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    probe.drain(Duration::from_millis(1200));
+    probe.send(b"3", Duration::from_millis(800));
+    probe.send(b"4", Duration::from_millis(800));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Action Editor"),
+        "expected editor tab after pressing 3:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("[projects]") && cleaned.contains("No projects registered."),
+        "expected projects tab after pressing 4:\n{cleaned}"
+    );
+}
+
+/// TC-18: entering the detail tab should fetch a fresh tmux capture immediately
+/// instead of only showing the observer summary lines.
+#[test]
+fn tc18_fleet_tui_detail_tab_fetches_fresh_tmux_capture_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    probe.drain(Duration::from_millis(1200));
+    probe.send(b"2", Duration::from_millis(1200));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Session Detail"),
+        "expected detail tab in PTY output:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("FULL DETAIL: deployment checklist open")
+            && cleaned.contains("Line 2: awaiting explicit operator input"),
+        "expected fresh tmux capture in detail PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-19: the Python dashboard's fleet logo should render by default and hide
+/// after pressing `l`, without any Python fallback.
+#[test]
+fn tc19_fleet_tui_logo_toggle_hides_logo_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    probe.drain(Duration::from_millis(1200));
+    probe.send(b"l", Duration::from_millis(800));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("A M P L I H A C K   F L E E T"),
+        "expected logo in initial PTY output:\n{cleaned}"
+    );
+    let last_frame_body = cleaned
+        .rsplit_once('╔')
+        .map(|(_, tail)| tail)
+        .unwrap_or(cleaned.as_str());
+    let last_frame = format!("╔{last_frame_body}");
+    assert!(
+        !last_frame.contains("A M P L I H A C K   F L E E T") && !last_frame.contains("|  ☠  |"),
+        "expected logo to be hidden after pressing l:\n{last_frame}"
+    );
+}
+
+/// TC-20: the native fleet tab should support inline session search in a real
+/// PTY without touching Python.
+#[test]
+fn tc20_fleet_tui_session_search_filters_by_vm_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
+    probe.drain(Duration::from_millis(1200));
+    probe.send(b"t", Duration::from_millis(1200));
+    probe.send(b"/", Duration::from_millis(300));
+    probe.send(b"vm-2\n", Duration::from_millis(1200));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Search: vm-2 (press / to edit, Esc to clear)")
+            || cleaned.contains("search: vm-2"),
+        "expected active fleet search in PTY output:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("Selected session: vm-2/copilot-9"),
+        "expected search-filtered selected preview in PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-21: the native fleet TUI should stream partial refresh progress instead of
+/// waiting for every VM poll to finish before the first repaint.
+#[test]
+fn tc21_fleet_tui_refresh_streams_partial_results_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe =
+        FleetTuiProbe::new_with_existing_vms_and_vm2_delay(&bin, None, Some("vm-2"), Some(2.0));
+    probe.drain(Duration::from_millis(1200));
+
+    let partial = strip_ansi(&String::from_utf8_lossy(&probe.output));
+    assert!(
+        partial.contains("refresh: 1/2 polling vm-2"),
+        "expected in-flight refresh progress before vm-2 finished:\n{partial}"
+    );
+    assert!(
+        partial.contains("vm-1") && partial.contains("claude-1"),
+        "expected first VM to render before the slow second VM completed:\n{partial}"
+    );
+
+    probe.send(b"q", Duration::from_millis(2500));
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("refresh: 2/2 complete") || cleaned.contains("claude-1"),
+        "expected the refresh to complete cleanly after the streamed partial output:\n{cleaned}"
+    );
+}
+
+/// TC-22: skipping a prepared proposal should leave visible proposal feedback in
+/// the detail pane without touching Python.
+#[test]
+fn tc22_fleet_tui_skip_keeps_detail_feedback_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    probe.drain(Duration::from_millis(1200));
+    probe.send(b"d", Duration::from_millis(1500));
+    probe.send(b"x", Duration::from_millis(1200));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Proposal status") && cleaned.contains("Skipped."),
+        "expected persisted skip feedback in detail output:\n{cleaned}"
+    );
+}
+
+/// TC-23: a native reasoner failure should stay in the dashboard and surface a
+/// visible notice instead of degrading silently.
+#[test]
+fn tc23_fleet_tui_reasoner_failure_is_visible_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new_with_reasoner_script(
+        &bin,
+        "#!/bin/sh\necho 'ANTHROPIC_API_KEY missing' >&2\nexit 1\n",
+    );
+    probe.drain(Duration::from_millis(1200));
+    probe.send(b"d", Duration::from_millis(1500));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Reasoner status")
+            && cleaned.contains("ANTHROPIC_API_KEY missing")
+            && cleaned.contains("heuristic proposal"),
+        "expected visible reasoner failure notice in detail output:\n{cleaned}"
     );
 }

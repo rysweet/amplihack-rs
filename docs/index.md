@@ -17,6 +17,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Run a Recipe End-to-End](./howto/run-a-recipe.md) — Find, inspect, dry-run, and execute YAML recipes through the Rust CLI
 - [Index a Project with the Native SCIP Pipeline](./howto/index-a-project.md) — Build the Kuzu code-graph from source using native SCIP indexers
 - [Validate No-Python Compliance](./howto/validate-no-python.md) — Run the AC9 probe to confirm the binary operates without a Python interpreter
+- [Use the Fleet Dashboard](./howto/use-fleet-dashboard.md) — Open the cockpit, start and adopt sessions, manage tracked projects, and exit cleanly
 
 ### Reference
 
@@ -32,6 +33,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Parity Test Scenarios](./reference/parity-test-scenarios.md) — Every parity tier file, its test cases, and expected Python↔Rust divergence
 - [amplihack index-code and index-scip](./reference/memory-index-command.md) — Full CLI reference for code-graph ingestion commands
 - [amplihack query-code](./reference/query-code-command.md) — Full CLI reference for querying the native Kuzu code-graph
+- [amplihack fleet](./reference/fleet-command.md) — Full CLI reference for the fleet dashboard: key bindings, refresh architecture, persistent state schema, and security properties
 
 ### Concepts
 
@@ -40,6 +42,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [The cxx/cxx-build Version Contract](./concepts/cxx-version-contract.md) — Why `cxx` and `cxx-build` must share the same minor version and how a mismatch produces linker errors
 - [Agent Binary Routing](./concepts/agent-binary-routing.md) — How `AMPLIHACK_AGENT_BINARY` lets the recipe runner and hooks call back into the correct AI tool
 - [Kuzu Code Graph](./concepts/kuzu-code-graph.md) — Architecture of the native code-graph store: schema, SCIP pipeline, blarify consumption, and security model
+- [Fleet Dashboard Architecture](./concepts/fleet-dashboard-architecture.md) — Thread model, state design, persistence layer, terminal safety, and security rationale for `amplihack fleet`
 
 ## Quick Start
 

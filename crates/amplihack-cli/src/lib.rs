@@ -10,6 +10,13 @@ pub mod command_error;
 pub mod commands;
 pub mod copilot_setup;
 pub mod env_builder;
+/// Local session management dashboard (fleet_local).
+///
+/// Python-to-Rust port of the amploxy local session TUI.
+/// Reads `~/.claude/runtime/locks/*` to discover and manage active Claude
+/// sessions on the local machine.  Separate from Azure-VM fleet orchestration
+/// in `commands/fleet.rs`.
+pub mod fleet_local;
 pub mod launcher;
 pub mod nesting;
 pub mod resolve_bundle_asset;

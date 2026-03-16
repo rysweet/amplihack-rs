@@ -34,6 +34,7 @@ ureq = { version = "2", features = ["json"] }
 kuzu = { version = "0.11.3" }
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 prost = "0.13"
+lru = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

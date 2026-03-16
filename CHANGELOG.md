@@ -5,6 +5,119 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ---
 
+## [Unreleased] — Issue #78: Fleet TUI Advanced Feature Parity
+
+### Completed in this session
+
+#### T5 — Per-session tmux capture cache (LRU, 64 entries)
+
+- Replaced single-entry `detail_capture: Option<FleetDetailCapture>` with an
+  `Arc<Mutex<LruCache<(String, String), FleetDetailCapture>>>` (capacity 64)
+  shared between the main thread and background worker threads.
+- Added `put_capture` / `get_capture` / `clear_capture_cache` helpers on
+  `FleetTuiUiState`. `get_capture` promotes the key to MRU and falls back to
+  the compatibility `detail_capture` field so that pre-existing tests continue
+  to pass without modification.
+- Depends on `lru = "0.12"` (added to workspace dependencies).
+- New constant: `CAPTURE_CACHE_CAPACITY = 64`.
+
+#### T4 — Two-phase background refresh (`std::thread` + `mpsc`)
+
+- `run_tui()` now spawns two long-lived background threads:
+  - **Fast thread** (500 ms interval, `TUI_FAST_REFRESH_INTERVAL_MS`): handles
+    `BackgroundCommand::ForceStatusRefresh` and `BackgroundCommand::CreateSession`
+    by calling the azlin fleet-status path and pushing a `BackgroundMessage::FastStatusUpdate`.
+  - **Slow thread** (5 000 ms interval, `TUI_SLOW_REFRESH_INTERVAL_MS`): iterates
+    the cached sessions and pushes `BackgroundMessage::SlowCaptureUpdate` entries
+    (tmux capture per session).
+- Channels: `mpsc::Sender<BackgroundCommand>` for commands down; `mpsc::Receiver<BackgroundMessage>`
+  for results up. The receiver is wrapped in `Arc<Mutex<>>` so it can be stored in
+  `FleetTuiUiState` for testing.
+- Shutdown: `Arc<AtomicBool>` flag signalled on TUI exit; `bg_tx` is dropped to
+  unblock `recv()` calls in the fast thread.
+- `drain_bg_messages()` is called at the top of every render loop iteration to
+  apply pending updates to `FleetTuiUiState` without blocking.
+- New types: `BackgroundCommand { ForceStatusRefresh, CreateSession { ... } }`,
+  `BackgroundMessage { FastStatusUpdate, SlowCaptureUpdate, SessionCreated, Error }`.
+
+#### T1 — Non-blocking session creation from TUI
+
+- `run_tui_create_session()` dispatches `BackgroundCommand::CreateSession` when
+  a background channel is present, sets `create_session_pending = true`, and
+  returns immediately with a "Creating... (background)" status message.
+- Synchronous fallback (no channel): calls `background_create_session()` directly,
+  same behavior as before. This preserves test compatibility.
+- New standalone helper `background_create_session(azlin, vm_name, agent) -> String`
+  contains the blocking azlin invocation logic extracted from the old inline code.
+
+#### T2 — Post-adoption fast-status refresh
+
+- `run_tui_adopt_selected_session()` calls
+  `ui_state.send_bg_cmd(BackgroundCommand::ForceStatusRefresh)` after a
+  successful adoption to ensure the Fleet view refreshes within the next 500 ms.
+
+#### T6 — Interactive project management sub-modes
+
+- `ProjectManagementMode` enum with three variants: `List` (default), `Add`, `Remove`.
+- `FleetTuiUiState` gains `project_mode: ProjectManagementMode`.
+- Helper methods: `enter_project_add_mode()`, `enter_project_remove_mode()`,
+  `confirm_project_remove()`, `cancel_project_mode()`.
+- `run_tui_add_project()` now calls `enter_project_add_mode()`. Remove mode is
+  triggered from the Projects tab with `'n'`/`'N'` keys when a project is selected.
+- Key handler ordering ensures guarded T6 arms precede tab-switch catch-all arms.
+
+#### T3 — Multiline proposal editor (internal state machine)
+
+- `FleetTuiUiState` gains `editor_lines: Vec<String>`, `editor_cursor_row: usize`,
+  and `editor_active: bool`.
+- Methods: `enter_multiline_editor(initial_text)`, `editor_insert_char(ch)`,
+  `editor_backspace()`, `editor_move_up()`, `editor_move_down()`, `editor_content()`,
+  `editor_save()`, `editor_discard()`.
+- No external crate dependency (`tui-textarea` not used).
+- `editor_save()` joins lines and writes content into the active `editor_decision`.
+- Key handler routes `Up`/`Down` to cursor movement when `editor_active`, prevents
+  reserved command keys (`'A'`, `'e'`, `'i'`, `'q'`, `'Q'`, `'?'`) from being swallowed
+  by the catch-all character-insert arm.
+
+#### Local Fleet Dashboard (`fleet_local.rs`)
+
+- Ported the amploxy local session TUI to Rust as `fleet_local.rs`.
+- Reads `~/.claude/runtime/locks/*` to discover and display active Claude
+  sessions on the local machine (distinct from Azure-VM fleet in `fleet.rs`).
+- `LocalFleetDashboardSummary`: JSON-serialisable state snapshot with
+  `version` field and `extras` pass-through map for forward compatibility.
+- `TmuxCaptureCache`: fixed-capacity LRU cache (64 entries) for per-session
+  tmux output to avoid redundant subprocess calls.
+- OSC-sequence stripping (`strip_osc_sequences`) for clean terminal output.
+- `collect_observed_fleet_state`: reads lock-file directory to produce a
+  typed `Vec<LocalFleetSession>` without spawning any Python.
+- `run_fleet_dashboard`: entry point supporting interactive (raw-mode) and
+  non-interactive (CI/test) execution paths.
+- 38 unit tests covering cache eviction, serde round-trip, OSC stripping,
+  lock-file parsing, and error-category display.
+
+#### Memory Backend Trait Seam
+
+- Introduced `crates/amplihack-cli/src/commands/memory/backend/mod.rs` with
+  three narrow traits: `MemoryTreeBackend`, `MemorySessionBackend`,
+  `MemoryRuntimeBackend`.
+- `SqliteBackend` and `KuzuBackend` private structs implement all three traits,
+  eliminating duplicated match arms in `tree.rs`, `clean.rs`, and `code_graph.rs`.
+- `open_tree_backend`, `open_cleanup_backend`, `open_runtime_backend` factory
+  functions return `Box<dyn Trait>` so callers are fully decoupled from storage.
+- `query_code.rs` refactored to use `CodeGraphReaderBackend` trait from
+  `code_graph.rs`; direct Kuzu connection and hand-rolled Cypher removed.
+
+#### Build / Dependencies
+
+- `lru = "0.12"` added to `[workspace.dependencies]` in `Cargo.toml`.
+- `lru = { workspace = true }` added to `crates/amplihack-cli/Cargo.toml`.
+- 37 new unit tests covering T1-T6 added to `fleet.rs` test module.
+- All 5 validation gates pass: `cargo build`, `cargo clippy -- -D warnings`,
+  `cargo fmt --check`, `cargo test --workspace`, `bash scripts/probe-no-python.sh`.
+
+---
+
 ## [Unreleased] — Issue #77: Python-to-Rust Port Parity Work
 
 ### Completed in this session

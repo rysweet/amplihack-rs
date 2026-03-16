@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/rysweet/amplihack-rs"
@@ -30,6 +30,7 @@ clap = { version = "4", features = ["derive"] }
 signal-hook = "0.3"
 sha2 = "0.10"
 libc = "0.2"
+lru = "0.12"
 # SEC-WS4-01: Exact pin prevents cargo update from pulling versions that break
 # kuzu's C++ FFI ABI. Do NOT change to a range specifier (e.g. "^1.0.138").
 cxx-build = "=1.0.138"

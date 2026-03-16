@@ -9,6 +9,7 @@ use crate::command_error::exit_error;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Local};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use lru::LruCache;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,11 +19,13 @@ use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::iter;
+use std::num::NonZeroUsize;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -66,6 +69,12 @@ const MIN_CONFIDENCE_SEND: f64 = 0.6;
 const MIN_CONFIDENCE_RESTART: f64 = 0.8;
 const MIN_SUBSTANTIAL_OUTPUT_LEN: usize = 50;
 const SCOUT_REASONER_TIMEOUT: Duration = Duration::from_secs(180);
+// T5: LRU capture cache capacity (64 entries — one per session).
+const CAPTURE_CACHE_CAPACITY: usize = 64;
+// T4: Two-phase background refresh timing (verified against _tui_refresh.py).
+// Python uses set_interval("refresh", 5) for slow phase and 0.5s for fast.
+const TUI_FAST_REFRESH_INTERVAL_MS: u64 = 500;
+const TUI_SLOW_REFRESH_INTERVAL_MS: u64 = 5_000;
 const CLEAR_SCREEN: &str = "\x1b[2J\x1b[H";
 const HIDE_CURSOR: &str = "\x1b[?25l";
 const SHOW_CURSOR: &str = "\x1b[?25h";
@@ -1374,8 +1383,6 @@ fn run_watch_with_timeout(
     lines: u32,
     timeout: Duration,
 ) -> Result<()> {
-    validate_vm_name(vm_name)?;
-    validate_session_name(session_name)?;
     let azlin = match get_azlin_path() {
         Ok(path) => path,
         Err(_) => {
@@ -1383,33 +1390,45 @@ fn run_watch_with_timeout(
             return Err(exit_error(1));
         }
     };
+    let output = capture_tmux_output_with_timeout(&azlin, vm_name, session_name, lines, timeout)?;
+    println!("--- {vm_name}/{session_name} ---");
+    print!("{output}");
+    if !output.ends_with('\n') {
+        println!();
+    }
+    println!("--- end ---");
 
+    Ok(())
+}
+
+fn capture_tmux_output_with_timeout(
+    azlin_path: &Path,
+    vm_name: &str,
+    session_name: &str,
+    lines: u32,
+    timeout: Duration,
+) -> Result<String> {
+    validate_vm_name(vm_name)?;
+    validate_session_name(session_name)?;
     let lines = lines.clamp(1, 10_000);
     let command = format!("tmux capture-pane -t {session_name} -p -S -{lines}");
-    let mut cmd = Command::new(azlin);
+    let mut cmd = Command::new(azlin_path);
     cmd.args(["connect", vm_name, "--no-tmux", "--", &command]);
 
     match run_output_with_timeout(cmd, timeout) {
-        Ok(output) if output.status.success() => {
-            println!("--- {vm_name}/{session_name} ---");
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            print!("{stdout}");
-            if !stdout.ends_with('\n') {
-                println!();
-            }
-            println!("--- end ---");
-        }
+        Ok(output) if output.status.success() => Ok(String::from_utf8_lossy(&output.stdout).into()),
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            println!("Failed to capture: {}", truncate_chars(stderr.trim(), 200));
+            Ok(format!(
+                "Failed to capture: {}",
+                truncate_chars(stderr.trim(), 200)
+            ))
         }
         Err(error) if error.to_string().contains("timed out after") => {
-            println!("Timeout connecting to VM");
+            Ok("Timeout connecting to VM".to_string())
         }
-        Err(error) => return Err(error),
+        Err(error) => Err(error),
     }
-
-    Ok(())
 }
 
 fn run_tui(interval: u64, capture_lines: usize) -> Result<()> {
@@ -1430,7 +1449,120 @@ fn run_tui(interval: u64, capture_lines: usize) -> Result<()> {
         return Ok(());
     }
 
-    let terminal_guard = DashboardTerminalGuard::activate()?;
+    // T4: Set up background channels and spawn fast/slow refresh threads.
+    let (cmd_tx, cmd_rx) = mpsc::channel::<BackgroundCommand>();
+    let (msg_tx, msg_rx) = mpsc::channel::<BackgroundMessage>();
+    let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Fast-status thread: wakes every TUI_FAST_REFRESH_INTERVAL_MS, processes
+    // CreateSession commands, responds to ForceStatusRefresh requests.
+    {
+        let msg_tx = msg_tx.clone();
+        let shutdown = Arc::clone(&shutdown_flag);
+        let azlin_path = azlin.clone();
+        thread::spawn(move || {
+            let sleep_chunk = Duration::from_millis(50);
+            let fast_interval = Duration::from_millis(TUI_FAST_REFRESH_INTERVAL_MS);
+            let mut elapsed = Duration::ZERO;
+            loop {
+                if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                // Drain commands.
+                loop {
+                    match cmd_rx.try_recv() {
+                        Ok(BackgroundCommand::ForceStatusRefresh) => {
+                            elapsed = fast_interval; // trigger immediate poll
+                        }
+                        Ok(BackgroundCommand::CreateSession {
+                            azlin_path: ref ap,
+                            ref vm_name,
+                            ref agent,
+                        }) => {
+                            let result = background_create_session(ap, vm_name, agent);
+                            let _ =
+                                msg_tx.send(BackgroundMessage::SessionCreated { message: result });
+                        }
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => return,
+                    }
+                }
+                thread::sleep(sleep_chunk);
+                elapsed += sleep_chunk;
+                if elapsed >= fast_interval {
+                    elapsed = Duration::ZERO;
+                    // Re-poll fleet state (best-effort; errors are non-fatal).
+                    if let Ok(state) =
+                        collect_observed_fleet_state(&azlin_path, DEFAULT_CAPTURE_LINES)
+                    {
+                        let _ = msg_tx.send(BackgroundMessage::FastStatusUpdate(state));
+                    }
+                }
+            }
+        });
+    }
+
+    // Slow-capture thread: wakes every TUI_SLOW_REFRESH_INTERVAL_MS and pushes
+    // tmux captures for background sessions into the capture cache.
+    {
+        let msg_tx = msg_tx.clone();
+        let shutdown = Arc::clone(&shutdown_flag);
+        let azlin_path = azlin.clone();
+        let capture_cache = Arc::clone(&ui_state.capture_cache);
+        thread::spawn(move || {
+            let sleep_chunk = Duration::from_millis(200);
+            let slow_interval = Duration::from_millis(TUI_SLOW_REFRESH_INTERVAL_MS);
+            let mut elapsed = slow_interval; // trigger first run immediately
+            loop {
+                if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                thread::sleep(sleep_chunk);
+                elapsed += sleep_chunk;
+                if elapsed < slow_interval {
+                    continue;
+                }
+                elapsed = Duration::ZERO;
+                // Snapshot which sessions are currently cached so we can refresh
+                // their captures in the background.
+                let keys: Vec<(String, String)> = {
+                    match capture_cache.lock() {
+                        Ok(cache) => cache.iter().map(|(k, _)| k.clone()).collect(),
+                        Err(e) => {
+                            let _ = msg_tx.send(BackgroundMessage::Error(format!(
+                                "capture cache lock poisoned: {e}"
+                            )));
+                            Vec::new()
+                        }
+                    }
+                };
+                for (vm_name, session_name) in keys {
+                    if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    if let Ok(output) = capture_tmux_output_with_timeout(
+                        &azlin_path,
+                        &vm_name,
+                        &session_name,
+                        DEFAULT_CAPTURE_LINES as u32,
+                        CLI_WATCH_TIMEOUT,
+                    ) {
+                        let _ = msg_tx.send(BackgroundMessage::SlowCaptureUpdate {
+                            vm_name,
+                            session_name,
+                            output,
+                        });
+                    }
+                }
+            }
+        });
+    }
+
+    // Wire channels into ui_state.
+    ui_state.bg_tx = Some(cmd_tx);
+    ui_state.bg_rx = Some(Arc::new(Mutex::new(msg_rx)));
+
+    let _terminal_guard = DashboardTerminalGuard::activate()?;
     let mut stdout = io::stdout();
     write!(stdout, "{HIDE_CURSOR}")?;
     stdout
@@ -1438,121 +1570,320 @@ fn run_tui(interval: u64, capture_lines: usize) -> Result<()> {
         .context("failed to flush dashboard prelude")?;
 
     let result = (|| -> Result<()> {
-        loop {
-            let state = collect_observed_fleet_state(&azlin, capture_lines)?;
+        'dashboard: loop {
+            // Drain any messages from background threads each frame.
+            ui_state.drain_bg_messages();
+
+            let state = collect_observed_fleet_state_with_progress(
+                &azlin,
+                capture_lines,
+                |state, progress| {
+                    ui_state.refresh_progress = Some(progress);
+                    let frame = render_tui_frame(state, interval, &ui_state)?;
+                    write!(stdout, "{CLEAR_SCREEN}{frame}")?;
+                    stdout.flush().context("failed to flush dashboard frame")?;
+                    Ok(())
+                },
+            )?;
+            ui_state.refresh_progress = None;
             ui_state.sync_to_state(&state);
             let frame = render_tui_frame(&state, interval, &ui_state)?;
             write!(stdout, "{CLEAR_SCREEN}{frame}")?;
             stdout.flush().context("failed to flush dashboard frame")?;
 
-            match read_dashboard_key(Duration::from_secs(interval)) {
-                // Quit
-                Some(DashboardKey::Char('q')) | Some(DashboardKey::Char('Q')) => break,
-                // Toggle help overlay
-                Some(DashboardKey::Char('?')) => ui_state.show_help = !ui_state.show_help,
-                Some(DashboardKey::Char('\u{1b}'))
-                | Some(DashboardKey::Char('b'))
-                | Some(DashboardKey::Char('B'))
-                    if !ui_state.show_help =>
-                {
-                    ui_state.navigate_back();
+            let mut refresh_detail_capture = false;
+            let mut pending_key = read_dashboard_key(Duration::from_secs(interval));
+            while let Some(key) = pending_key {
+                match Some(key) {
+                    Some(key) if ui_state.inline_input.is_some() => {
+                        handle_tui_inline_input_key(&mut ui_state, key)?;
+                        while ui_state.inline_input.is_some() {
+                            let Some(extra_key) = read_dashboard_key(Duration::from_millis(0))
+                            else {
+                                break;
+                            };
+                            handle_tui_inline_input_key(&mut ui_state, extra_key)?;
+                        }
+                    }
+                    // Quit
+                    Some(DashboardKey::Char('q')) | Some(DashboardKey::Char('Q')) => {
+                        break 'dashboard;
+                    }
+                    // Toggle help overlay
+                    Some(DashboardKey::Char('?')) => ui_state.show_help = !ui_state.show_help,
+                    Some(DashboardKey::Char('l')) | Some(DashboardKey::Char('L')) => {
+                        ui_state.show_logo = !ui_state.show_logo;
+                    }
+                    Some(DashboardKey::Char('\u{1b}'))
+                        if ui_state.tab == FleetTuiTab::Fleet
+                            && ui_state.session_search.is_some() =>
+                    {
+                        ui_state.clear_session_search();
+                    }
+                    Some(DashboardKey::Char('\u{1b}'))
+                    | Some(DashboardKey::Char('b'))
+                    | Some(DashboardKey::Char('B'))
+                        if !ui_state.show_help =>
+                    {
+                        ui_state.navigate_back();
+                    }
+                    // Force refresh — next loop re-collects state; detail also refreshes full capture.
+                    Some(DashboardKey::Char('r')) | Some(DashboardKey::Char('R')) => {
+                        refresh_detail_capture = ui_state.tab == FleetTuiTab::Detail;
+                    }
+                    // T3: Multiline editor Up/Down must come before the navigation
+                    // catch-all arms that also handle Up/Down.
+                    Some(DashboardKey::Up)
+                        if ui_state.tab == FleetTuiTab::Editor && ui_state.editor_active =>
+                    {
+                        ui_state.editor_move_up();
+                    }
+                    Some(DashboardKey::Down)
+                        if ui_state.tab == FleetTuiTab::Editor && ui_state.editor_active =>
+                    {
+                        ui_state.editor_move_down();
+                    }
+                    // Navigation
+                    Some(DashboardKey::Char('j'))
+                    | Some(DashboardKey::Char('J'))
+                    | Some(DashboardKey::Down) => {
+                        ui_state.move_selection(&state, 1);
+                        refresh_detail_capture = ui_state.tab == FleetTuiTab::Detail;
+                    }
+                    Some(DashboardKey::Char('k'))
+                    | Some(DashboardKey::Char('K'))
+                    | Some(DashboardKey::Up) => {
+                        ui_state.move_selection(&state, -1);
+                        refresh_detail_capture = ui_state.tab == FleetTuiTab::Detail;
+                    }
+                    // Tab cycling: Tab key = '\t' (forward), '[' = backward substitute.
+                    Some(DashboardKey::Char('\t')) | Some(DashboardKey::Right) => {
+                        ui_state.cycle_tab_forward();
+                        refresh_detail_capture = ui_state.tab == FleetTuiTab::Detail;
+                    }
+                    Some(DashboardKey::Char('[')) | Some(DashboardKey::Left) => {
+                        ui_state.cycle_tab_backward();
+                        refresh_detail_capture = ui_state.tab == FleetTuiTab::Detail;
+                    }
+                    // Direct tab jumps
+                    Some(DashboardKey::Char('1'))
+                    | Some(DashboardKey::Char('f'))
+                    | Some(DashboardKey::Char('F')) => ui_state.tab = FleetTuiTab::Fleet,
+                    Some(DashboardKey::Char('2'))
+                    | Some(DashboardKey::Char('s'))
+                    | Some(DashboardKey::Char('S')) => {
+                        ui_state.tab = FleetTuiTab::Detail;
+                        refresh_detail_capture = true;
+                    }
+                    Some(DashboardKey::Char('\n')) | Some(DashboardKey::Char('\r'))
+                        if ui_state.tab == FleetTuiTab::NewSession =>
+                    {
+                        run_tui_create_session(&azlin, &mut ui_state)?;
+                    }
+                    Some(DashboardKey::Char('\n')) | Some(DashboardKey::Char('\r')) => {
+                        ui_state.tab = FleetTuiTab::Detail;
+                        refresh_detail_capture = true;
+                    }
+                    Some(DashboardKey::Char('3')) => ui_state.tab = FleetTuiTab::Editor,
+                    Some(DashboardKey::Char('4'))
+                    | Some(DashboardKey::Char('p'))
+                    | Some(DashboardKey::Char('P')) => ui_state.tab = FleetTuiTab::Projects,
+                    // T6: 'n' cancels remove sub-mode. Must come before the 'n'/'N' tab-5 binding.
+                    Some(DashboardKey::Char('n')) | Some(DashboardKey::Char('N'))
+                        if ui_state.tab == FleetTuiTab::Projects
+                            && ui_state.project_mode == ProjectManagementMode::Remove =>
+                    {
+                        ui_state.cancel_project_mode();
+                    }
+                    Some(DashboardKey::Char('5'))
+                    | Some(DashboardKey::Char('n'))
+                    | Some(DashboardKey::Char('N')) => ui_state.tab = FleetTuiTab::NewSession,
+                    Some(DashboardKey::Char('/')) if ui_state.tab == FleetTuiTab::Fleet => {
+                        ui_state.start_inline_session_search();
+                        while ui_state.inline_input.is_some() {
+                            let Some(extra_key) = read_dashboard_key(Duration::from_millis(0))
+                            else {
+                                break;
+                            };
+                            handle_tui_inline_input_key(&mut ui_state, extra_key)?;
+                        }
+                    }
+                    Some(DashboardKey::Char('e')) => run_tui_edit(&mut ui_state),
+                    Some(DashboardKey::Char('i')) | Some(DashboardKey::Char('I'))
+                        if ui_state.tab == FleetTuiTab::Projects =>
+                    {
+                        run_tui_add_project(&mut ui_state)?;
+                        while ui_state.inline_input.is_some() {
+                            let Some(extra_key) = read_dashboard_key(Duration::from_millis(0))
+                            else {
+                                break;
+                            };
+                            handle_tui_inline_input_key(&mut ui_state, extra_key)?;
+                        }
+                    }
+                    Some(DashboardKey::Char('i')) | Some(DashboardKey::Char('I')) => {
+                        run_tui_edit_input(&mut ui_state)?;
+                        while ui_state.inline_input.is_some() {
+                            let Some(extra_key) = read_dashboard_key(Duration::from_millis(0))
+                            else {
+                                break;
+                            };
+                            handle_tui_inline_input_key(&mut ui_state, extra_key)?;
+                        }
+                    }
+                    Some(DashboardKey::Char('t')) | Some(DashboardKey::Char('T'))
+                        if ui_state.tab == FleetTuiTab::NewSession =>
+                    {
+                        ui_state.cycle_new_session_agent()
+                    }
+                    Some(DashboardKey::Char('t')) | Some(DashboardKey::Char('T'))
+                        if ui_state.tab == FleetTuiTab::Fleet =>
+                    {
+                        ui_state.cycle_fleet_subview(&state)
+                    }
+                    Some(DashboardKey::Char('t')) | Some(DashboardKey::Char('T')) => {
+                        ui_state.cycle_editor_action()
+                    }
+                    // T6: Projects tab — 'd' enters remove sub-mode, 'y' confirms,
+                    // 'n' cancels. These guards must come before the catch-all 'd' arm.
+                    Some(DashboardKey::Char('d')) | Some(DashboardKey::Char('D'))
+                        if ui_state.tab == FleetTuiTab::Projects =>
+                    {
+                        if ui_state.project_mode == ProjectManagementMode::Remove {
+                            run_tui_remove_project(&mut ui_state)?;
+                            ui_state.confirm_project_remove();
+                        } else {
+                            ui_state.enter_project_remove_mode();
+                        }
+                    }
+                    Some(DashboardKey::Char('y')) | Some(DashboardKey::Char('Y'))
+                        if ui_state.tab == FleetTuiTab::Projects
+                            && ui_state.project_mode == ProjectManagementMode::Remove =>
+                    {
+                        run_tui_remove_project(&mut ui_state)?;
+                        ui_state.confirm_project_remove();
+                    }
+                    // T3: Multiline editor char input (save/backspace handled earlier).
+                    Some(DashboardKey::Char('\x13'))
+                        if ui_state.tab == FleetTuiTab::Editor && ui_state.editor_active =>
+                    {
+                        ui_state.editor_save();
+                    }
+                    Some(DashboardKey::Char('\u{8}')) | Some(DashboardKey::Char('\u{7f}'))
+                        if ui_state.tab == FleetTuiTab::Editor && ui_state.editor_active =>
+                    {
+                        ui_state.editor_backspace();
+                    }
+                    // T3 char input — must come after all specific command keys for the Editor
+                    // tab (like 'A' for apply_edited) to avoid swallowing them.
+                    Some(DashboardKey::Char(ch))
+                        if ui_state.tab == FleetTuiTab::Editor
+                            && ui_state.editor_active
+                            && !ch.is_control()
+                            // Exclude special editor-tab commands from char routing.
+                            && ch != 'A' && ch != 'e' && ch != 'i'
+                            && ch != 'q' && ch != 'Q' && ch != '?' =>
+                    {
+                        ui_state.editor_insert_char(ch);
+                    }
+                    // Actions
+                    Some(DashboardKey::Char('d')) | Some(DashboardKey::Char('D')) => {
+                        run_tui_dry_run(&azlin, &state, &mut ui_state)?;
+                        refresh_detail_capture = ui_state.tab == FleetTuiTab::Detail;
+                    }
+                    Some(DashboardKey::Char('a')) => {
+                        run_tui_apply(&azlin, &mut ui_state)?;
+                    }
+                    Some(DashboardKey::Char('A')) if ui_state.tab == FleetTuiTab::Editor => {
+                        run_tui_apply_edited(&azlin, &mut ui_state)?;
+                    }
+                    Some(DashboardKey::Char('A')) => {
+                        run_tui_adopt_selected_session(&azlin, &state, &mut ui_state)?;
+                    }
+                    Some(DashboardKey::Char('x')) | Some(DashboardKey::Char('X'))
+                        if ui_state.tab == FleetTuiTab::Projects =>
+                    {
+                        run_tui_remove_project(&mut ui_state)?;
+                    }
+                    Some(DashboardKey::Char('x')) | Some(DashboardKey::Char('X')) => {
+                        ui_state.skip_selected_proposal();
+                    }
+                    // Status filters (toggle — press same key again to clear)
+                    Some(DashboardKey::Char('E')) => ui_state.toggle_filter(StatusFilter::Errors),
+                    Some(DashboardKey::Char('w')) | Some(DashboardKey::Char('W')) => {
+                        ui_state.toggle_filter(StatusFilter::Waiting)
+                    }
+                    Some(DashboardKey::Char('c')) | Some(DashboardKey::Char('C')) => {
+                        ui_state.toggle_filter(StatusFilter::Active)
+                    }
+                    // Clear filter
+                    Some(DashboardKey::Char('*')) | Some(DashboardKey::Char('0')) => {
+                        ui_state.status_filter = None
+                    }
+                    _ => {}
                 }
-                // Force refresh — just fall through to re-collect state (next loop iter)
-                Some(DashboardKey::Char('r')) | Some(DashboardKey::Char('R')) => continue,
-                // Navigation
-                Some(DashboardKey::Char('j'))
-                | Some(DashboardKey::Char('J'))
-                | Some(DashboardKey::Down) => ui_state.move_selection(&state, 1),
-                Some(DashboardKey::Char('k'))
-                | Some(DashboardKey::Char('K'))
-                | Some(DashboardKey::Up) => ui_state.move_selection(&state, -1),
-                // Tab cycling: Tab key = '\t' (forward), '[' = backward substitute.
-                Some(DashboardKey::Char('\t')) | Some(DashboardKey::Right) => {
-                    ui_state.cycle_tab_forward();
-                }
-                Some(DashboardKey::Char('[')) | Some(DashboardKey::Left) => {
-                    ui_state.cycle_tab_backward();
-                }
-                // Direct tab jumps
-                Some(DashboardKey::Char('1'))
-                | Some(DashboardKey::Char('f'))
-                | Some(DashboardKey::Char('F')) => ui_state.tab = FleetTuiTab::Fleet,
-                Some(DashboardKey::Char('2'))
-                | Some(DashboardKey::Char('s'))
-                | Some(DashboardKey::Char('S')) => {
-                    ui_state.tab = FleetTuiTab::Detail;
-                }
-                Some(DashboardKey::Char('\n')) | Some(DashboardKey::Char('\r'))
-                    if ui_state.tab == FleetTuiTab::NewSession =>
-                {
-                    run_tui_create_session(&azlin, &mut ui_state)?;
-                }
-                Some(DashboardKey::Char('\n')) | Some(DashboardKey::Char('\r')) => {
-                    ui_state.tab = FleetTuiTab::Detail;
-                }
-                Some(DashboardKey::Char('3'))
-                | Some(DashboardKey::Char('p'))
-                | Some(DashboardKey::Char('P')) => ui_state.tab = FleetTuiTab::Projects,
-                Some(DashboardKey::Char('4')) => ui_state.tab = FleetTuiTab::Editor,
-                Some(DashboardKey::Char('5'))
-                | Some(DashboardKey::Char('n'))
-                | Some(DashboardKey::Char('N')) => ui_state.tab = FleetTuiTab::NewSession,
-                Some(DashboardKey::Char('e')) => run_tui_edit(&mut ui_state),
-                Some(DashboardKey::Char('i')) | Some(DashboardKey::Char('I')) => {
-                    run_tui_edit_input(&mut ui_state, &terminal_guard)?
-                }
-                Some(DashboardKey::Char('t')) | Some(DashboardKey::Char('T'))
-                    if ui_state.tab == FleetTuiTab::NewSession =>
-                {
-                    ui_state.cycle_new_session_agent()
-                }
-                Some(DashboardKey::Char('t')) | Some(DashboardKey::Char('T'))
-                    if ui_state.tab == FleetTuiTab::Fleet =>
-                {
-                    ui_state.cycle_fleet_subview(&state)
-                }
-                Some(DashboardKey::Char('t')) | Some(DashboardKey::Char('T')) => {
-                    ui_state.cycle_editor_action()
-                }
-                // Actions
-                Some(DashboardKey::Char('d')) | Some(DashboardKey::Char('D')) => {
-                    run_tui_dry_run(&azlin, &state, &mut ui_state)?;
-                }
-                Some(DashboardKey::Char('a')) => {
-                    run_tui_apply(&azlin, &mut ui_state)?;
-                }
-                Some(DashboardKey::Char('A')) if ui_state.tab == FleetTuiTab::Editor => {
-                    run_tui_apply_edited(&azlin, &mut ui_state)?;
-                }
-                Some(DashboardKey::Char('A')) => {
-                    run_tui_adopt_selected_session(&azlin, &state, &mut ui_state)?;
-                }
-                Some(DashboardKey::Char('x')) | Some(DashboardKey::Char('X')) => {
-                    ui_state.skip_selected_proposal();
-                }
-                // Status filters (toggle — press same key again to clear)
-                Some(DashboardKey::Char('E')) => ui_state.toggle_filter(StatusFilter::Errors),
-                Some(DashboardKey::Char('w')) | Some(DashboardKey::Char('W')) => {
-                    ui_state.toggle_filter(StatusFilter::Waiting)
-                }
-                Some(DashboardKey::Char('c')) | Some(DashboardKey::Char('C')) => {
-                    ui_state.toggle_filter(StatusFilter::Active)
-                }
-                // Clear filter
-                Some(DashboardKey::Char('*')) | Some(DashboardKey::Char('0')) => {
-                    ui_state.status_filter = None
-                }
-                _ => {}
+                let frame = render_tui_frame(&state, interval, &ui_state)?;
+                write!(stdout, "{CLEAR_SCREEN}{frame}")?;
+                stdout.flush().context("failed to flush dashboard frame")?;
+                pending_key = read_dashboard_key(Duration::from_millis(0));
+            }
+
+            if refresh_detail_capture {
+                run_tui_refresh_detail_capture(
+                    &azlin,
+                    &state,
+                    &mut ui_state,
+                    capture_lines as u32,
+                )?;
             }
         }
         Ok(())
     })();
+
+    // T4: Signal background threads to stop.
+    shutdown_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    // Drop the sender so the fast thread's cmd_rx sees Disconnected.
+    drop(ui_state.bg_tx.take());
 
     writeln!(stdout, "{SHOW_CURSOR}")?;
     stdout
         .flush()
         .context("failed to flush dashboard teardown")?;
     result
+}
+
+/// T1: Background helper to create a tmux session.  Returns a human-readable
+/// status message (success or error) rather than a Result so it can be sent
+/// through an mpsc channel.
+fn background_create_session(azlin_path: &Path, vm_name: &str, agent: &str) -> String {
+    let session_suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        % 10_000;
+    let session_name = format!("{agent}-{session_suffix:04}");
+    let remote_cmd = format!(
+        "tmux new-session -d -s {} {}",
+        shell_single_quote(&session_name),
+        shell_single_quote(&format!("amplihack {agent}"))
+    );
+    let mut cmd = Command::new(azlin_path);
+    cmd.args(["connect", vm_name, "--no-tmux", "--", &remote_cmd]);
+    match run_output_with_timeout(cmd, SUBPROCESS_TIMEOUT) {
+        Ok(output) if output.status.success() => {
+            format!("Created session '{session_name}' on {vm_name} running {agent}.")
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = stderr.trim();
+            if detail.is_empty() {
+                format!("Failed to create {agent} session on {vm_name}.")
+            } else {
+                format!("Failed to create {agent} session on {vm_name}: {detail}")
+            }
+        }
+        Err(e) => format!("Failed to create {agent} session on {vm_name}: {e}"),
+    }
 }
 
 fn render_tui_once(azlin_path: &Path, interval: u64, capture_lines: usize) -> Result<String> {
@@ -1652,8 +1983,8 @@ fn render_tui_frame(
     let tab_labels: Vec<String> = [
         FleetTuiTab::Fleet,
         FleetTuiTab::Detail,
-        FleetTuiTab::Projects,
         FleetTuiTab::Editor,
+        FleetTuiTab::Projects,
         FleetTuiTab::NewSession,
     ]
     .iter()
@@ -1669,8 +2000,8 @@ fn render_tui_frame(
     let tab_bar_raw: usize = [
         FleetTuiTab::Fleet,
         FleetTuiTab::Detail,
-        FleetTuiTab::Projects,
         FleetTuiTab::Editor,
+        FleetTuiTab::Projects,
         FleetTuiTab::NewSession,
     ]
     .iter()
@@ -1679,9 +2010,11 @@ fn render_tui_frame(
         + 4 * 3; // 4 " | " separators
 
     // ---------- status summary line ------------------------------------------
-    let filter_hint = ui_state
-        .status_filter
-        .map(|f| format!("  [filter: {}]", f.label()))
+    let filter_hint = ui_state.fleet_filter_summary();
+    let refresh_hint = ui_state
+        .refresh_progress
+        .as_ref()
+        .map(|progress| format!("  [refresh: {}]", progress.label()))
         .unwrap_or_default();
     // Unicode status icons used inline (must be string literals in format! args).
     let icon_filled = "\u{25c9}"; // ◉
@@ -1691,16 +2024,18 @@ fn render_tui_frame(
         "{ANSI_GREEN}{icon_filled} active: {active}{ANSI_RESET}  \
          {ANSI_YELLOW}{icon_circle} idle: {idle}{ANSI_RESET}  \
          {ANSI_CYAN}{icon_filled} waiting: {waiting}{ANSI_RESET}  \
-         {ANSI_RED}{icon_cross} error: {errors}{ANSI_RESET}{filter_hint}"
+         {ANSI_RED}{icon_cross} error: {errors}{ANSI_RESET}{filter_hint}{refresh_hint}"
     );
     let status_raw =
-        format!("active: {active}  idle: {idle}  waiting: {waiting}  error: {errors}{filter_hint}")
+        format!(
+            "active: {active}  idle: {idle}  waiting: {waiting}  error: {errors}{filter_hint}{refresh_hint}"
+        )
             .len()
             + 4 * 2; // icon + space per segment
 
     // ---------- controls line -------------------------------------------------
     let controls_text = format!(
-        "  q quit  b back  r refresh  t view/action  d dry-run  a apply  A adopt/apply-edited  ? help  ({}s)",
+        "  q quit  b back  r refresh  l logo  t view/action  d dry-run  a apply  A adopt/apply-edited  ? help  ({}s)",
         interval.max(1)
     );
     let controls_raw = controls_text.len();
@@ -1718,6 +2053,12 @@ fn render_tui_frame(
         title_raw + stats_raw + gap + 2,
         inner,
     ));
+    if ui_state.show_logo {
+        for logo_line in fleet_logo_lines() {
+            lines.push(cockpit_boxline(logo_line, logo_line.chars().count(), inner));
+        }
+        lines.push(cockpit_boxline("", 0, inner));
+    }
     lines.push(sep.clone());
     lines.push(cockpit_boxline(&tab_labels.join(" | "), tab_bar_raw, inner));
     lines.push(cockpit_boxline(&status_parts, status_raw, inner));
@@ -1744,7 +2085,7 @@ fn render_tui_frame(
         match ui_state.tab {
             FleetTuiTab::Fleet => cockpit_render_fleet_view(state, ui_state, &mut lines, inner),
             FleetTuiTab::Detail => cockpit_render_detail_view(state, ui_state, &mut lines, inner),
-            FleetTuiTab::Projects => cockpit_render_projects_view(&mut lines, inner)?,
+            FleetTuiTab::Projects => cockpit_render_projects_view(ui_state, &mut lines, inner)?,
             FleetTuiTab::Editor => cockpit_render_editor_view(ui_state, &mut lines, inner),
             FleetTuiTab::NewSession => {
                 cockpit_render_new_session_view(state, ui_state, &mut lines, inner)
@@ -1760,6 +2101,23 @@ fn render_tui_frame(
 
     lines.push(bot_border);
     Ok(lines.join("\n"))
+}
+
+fn fleet_logo_lines() -> &'static [&'static str] {
+    &[
+        "              _~",
+        "             /~   \\",
+        "            |  ☠  |",
+        "             \\_~_/",
+        "        |    |    |",
+        "        )_)  )_)  )_)",
+        "       )___))___))___)\\",
+        "      )____)____)_____)\\\\",
+        "    _____|____|____|____\\\\\\__",
+        "---\\                   /------",
+        "    \\_________________/",
+        "~~~  A M P L I H A C K   F L E E T  ~~~",
+    ]
 }
 
 // ── Cockpit boxed-content render helpers ─────────────────────────────────────
@@ -1779,20 +2137,23 @@ fn cockpit_render_help_overlay(lines: &mut Vec<String>, inner: usize) {
     push("  [ / Left       Cycle tabs backward");
     push("  1 / f / F      Jump to Fleet tab");
     push("  2 / s / S      Jump to Detail tab");
-    push("  3 / p / P      Jump to Projects tab");
-    push("  4              Jump to Editor tab");
+    push("  3              Jump to Editor tab");
+    push("  4 / p / P      Jump to Projects tab");
     push("  5 / n / N      Jump to New Session tab");
     push("  Esc / b / B    Back: editor->detail, detail/projects->fleet");
     push("");
     push("Actions");
     push("  e              Load selected proposal into the editor");
-    push("  i / I          Edit editor input text (inline prompt)");
+    push("  i / I          Edit editor input or add a project repo (projects)");
     push("  t / T          Cycle fleet subview, editor action, or new-session agent type");
     push("  d / D          Dry-run reasoner on selected session");
     push("  a              Apply last prepared proposal to session");
     push("  A              Adopt selected session (fleet) or apply edited proposal (editor)");
-    push("  x / X          Skip (discard) the current prepared proposal");
+    push("  x / X          Skip proposal or remove selected project (projects)");
     push("  Enter          Open detail tab or create new session");
+    push("  l / L          Toggle fleet logo");
+    push("  /              Search fleet sessions by VM or session name");
+    push("  Esc            Clear fleet search (fleet) or go back");
     push("");
     push("Filters — fleet view (press same key again to clear)");
     push("  E              Show only Error/Stuck sessions");
@@ -1815,7 +2176,7 @@ fn cockpit_render_fleet_view(
         .filter(|vm| vm.is_running())
     {
         if vm.tmux_sessions.is_empty() {
-            if ui_state.status_filter.is_none() {
+            if ui_state.status_filter.is_none() && ui_state.matches_vm_search(&vm.name) {
                 rows.push(FleetTuiRow::Placeholder(vm));
             }
             continue;
@@ -1827,6 +2188,7 @@ fn cockpit_render_fleet_view(
                     ui_state
                         .status_filter
                         .is_none_or(|f| f.matches(session.agent_status))
+                        && ui_state.matches_session_search(&vm.name, &session.session_name)
                 })
                 .map(|session| FleetTuiRow::Session(vm, session)),
         );
@@ -1868,10 +2230,31 @@ fn cockpit_render_fleet_view(
     lines.push(cockpit_boxline(&subviews, subviews_raw, inner));
     let heading = format!("{}{}", ui_state.fleet_subview.title(), filter_label);
     lines.push(cockpit_boxline(&heading, heading.len(), inner));
+    if let Some(input) = ui_state
+        .inline_input
+        .as_ref()
+        .filter(|input| input.mode == FleetTuiInlineInputMode::SearchSessions)
+    {
+        let prompt = format!(
+            "Search sessions > {}_",
+            truncate_chars(&input.buffer, inner.saturating_sub(24))
+        );
+        lines.push(cockpit_boxline(&prompt, prompt.len(), inner));
+        let controls = "Enter apply | Esc cancel | Backspace delete";
+        lines.push(cockpit_boxline(controls, controls.len(), inner));
+    } else if let Some(search) = ui_state.session_search.as_deref() {
+        let active = format!("Search: {search} (press / to edit, Esc to clear)");
+        let active = truncate_chars(&active, inner);
+        lines.push(cockpit_boxline(&active, active.len(), inner));
+    }
     lines.push(cockpit_boxline("", 0, inner));
 
     if rows.is_empty() {
-        let msg = if ui_state.status_filter.is_some() {
+        let msg = if ui_state.status_filter.is_some() && ui_state.session_search.is_some() {
+            "No sessions match the current filter/search. Press Esc or '*' to clear."
+        } else if ui_state.session_search.is_some() {
+            "No sessions match the current search. Press Esc to clear."
+        } else if ui_state.status_filter.is_some() {
             "No sessions match the current filter.  Press '*' to clear."
         } else {
             "No running tmux session output available."
@@ -1892,17 +2275,7 @@ fn cockpit_render_fleet_view(
             selected_heading.len(),
             inner,
         ));
-        for metadata in [
-            (!session.git_branch.is_empty()).then(|| format!("  branch: {}", session.git_branch)),
-            (!session.repo_url.is_empty()).then(|| format!("  repo: {}", session.repo_url)),
-            (!session.working_directory.is_empty())
-                .then(|| format!("  cwd: {}", session.working_directory)),
-            (!session.pr_url.is_empty()).then(|| format!("  pr: {}", session.pr_url)),
-            (!session.task_summary.is_empty()).then(|| format!("  task: {}", session.task_summary)),
-        ]
-        .into_iter()
-        .flatten()
-        {
+        for metadata in session_metadata_lines(session, "  ") {
             let line = truncate_chars(&metadata, inner.saturating_sub(2));
             lines.push(cockpit_boxline(&line, line.len(), inner));
         }
@@ -2051,13 +2424,23 @@ fn cockpit_render_detail_view(
         lines,
         &format!("Attached: {}", if session.attached { "yes" } else { "no" }),
     );
+    for metadata in session_metadata_lines(session, "") {
+        push(lines, &metadata);
+    }
     push(lines, "");
     push(lines, "Captured output");
 
-    if session.last_output.trim().is_empty() {
+    // T5: Prefer the LRU cache entry; fall back to single-entry compat field, then
+    // fall back to the session's last_output if neither is available.
+    let cached_output = ui_state.get_capture(&vm.name, &session.session_name);
+    let detail_output: &str = cached_output
+        .as_deref()
+        .unwrap_or(session.last_output.as_str());
+
+    if detail_output.trim().is_empty() {
         push(lines, "(no output captured)");
     } else {
-        for line in session.last_output.lines() {
+        for line in detail_output.lines() {
             let t = truncate_chars(line, inner.saturating_sub(2));
             lines.push(cockpit_boxline(&t, t.len(), inner));
         }
@@ -2073,14 +2456,117 @@ fn cockpit_render_detail_view(
             push(lines, line);
         }
     }
+
+    if let Some(notice) = &ui_state.proposal_notice
+        && notice.vm_name == vm.name
+        && notice.session_name == session.session_name
+    {
+        push(lines, "");
+        push(lines, &notice.title);
+        push(lines, &notice.message);
+    }
 }
 
-fn cockpit_render_projects_view(lines: &mut Vec<String>, inner: usize) -> Result<()> {
+fn session_metadata_lines(session: &TmuxSessionInfo, prefix: &str) -> Vec<String> {
+    [
+        (!session.git_branch.is_empty()).then(|| format!("{prefix}branch: {}", session.git_branch)),
+        (!session.repo_url.is_empty()).then(|| format!("{prefix}repo: {}", session.repo_url)),
+        (!session.working_directory.is_empty())
+            .then(|| format!("{prefix}cwd: {}", session.working_directory)),
+        (!session.pr_url.is_empty()).then(|| format!("{prefix}pr: {}", session.pr_url)),
+        (!session.task_summary.is_empty())
+            .then(|| format!("{prefix}task: {}", session.task_summary)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+fn cockpit_render_projects_view(
+    ui_state: &FleetTuiUiState,
+    lines: &mut Vec<String>,
+    inner: usize,
+) -> Result<()> {
     let dashboard = FleetDashboardSummary::load(Some(default_dashboard_path()))?;
-    let text = render_project_list(&dashboard);
-    for line in text.lines() {
-        lines.push(cockpit_boxline(line, line.len(), inner));
+    if dashboard.projects.is_empty() {
+        let text = render_project_list(&dashboard);
+        for line in text.lines() {
+            lines.push(cockpit_boxline(line, line.len(), inner));
+        }
+        lines.push(cockpit_boxline("", 0, inner));
+        if let Some(input) = ui_state
+            .inline_input
+            .as_ref()
+            .filter(|input| input.mode == FleetTuiInlineInputMode::AddProjectRepo)
+        {
+            let prompt = format!(
+                "Add project repo > {}_",
+                truncate_chars(&input.buffer, inner.saturating_sub(20))
+            );
+            lines.push(cockpit_boxline(&prompt, prompt.len(), inner));
+            let controls = "Enter add | Esc cancel | Backspace delete";
+            lines.push(cockpit_boxline(controls, controls.len(), inner));
+            return Ok(());
+        }
+        let controls = "i add project repo";
+        lines.push(cockpit_boxline(controls, controls.len(), inner));
+        return Ok(());
     }
+
+    let heading = format!("Fleet Projects ({})", dashboard.projects.len());
+    lines.push(cockpit_boxline(&heading, heading.len(), inner));
+    lines.push(cockpit_boxline("", 0, inner));
+    for project in &dashboard.projects {
+        let marker = if ui_state.selected_project_repo.as_deref() == Some(project.repo_url.as_str())
+        {
+            ">"
+        } else {
+            " "
+        };
+        let prio_label = match project.priority.as_str() {
+            "high" => "!!!",
+            "low" => "!",
+            _ => "!!",
+        };
+        let summary = format!("  {marker} [{prio_label}] {}", project.name);
+        lines.push(cockpit_boxline(&summary, summary.len(), inner));
+        let repo = format!("      Repo: {}", project.repo_url);
+        lines.push(cockpit_boxline(&repo, repo.len(), inner));
+        if !project.github_identity.is_empty() {
+            let identity = format!("      Identity: {}", project.github_identity);
+            lines.push(cockpit_boxline(&identity, identity.len(), inner));
+        }
+        let stats = format!(
+            "      Priority: {} | VMs: {} | Tasks: {}/{} | PRs: {}",
+            project.priority,
+            project.vms.len(),
+            project.tasks_completed,
+            project.tasks_total,
+            project.prs_created.len()
+        );
+        lines.push(cockpit_boxline(&stats, stats.len(), inner));
+        if !project.notes.is_empty() {
+            let notes = format!("      Notes: {}", project.notes);
+            lines.push(cockpit_boxline(&notes, notes.len(), inner));
+        }
+        lines.push(cockpit_boxline("", 0, inner));
+    }
+    if let Some(input) = ui_state
+        .inline_input
+        .as_ref()
+        .filter(|input| input.mode == FleetTuiInlineInputMode::AddProjectRepo)
+    {
+        let prompt = format!(
+            "Add project repo > {}_",
+            truncate_chars(&input.buffer, inner.saturating_sub(20))
+        );
+        lines.push(cockpit_boxline(&prompt, prompt.len(), inner));
+        let controls = "Enter add | Esc cancel | Backspace delete";
+        lines.push(cockpit_boxline(controls, controls.len(), inner));
+        return Ok(());
+    }
+    let controls = "j/k choose project | i add project repo | x remove selected";
+    lines.push(cockpit_boxline(controls, controls.len(), inner));
     Ok(())
 }
 
@@ -2122,10 +2608,31 @@ fn cockpit_render_editor_view(ui_state: &FleetTuiUiState, lines: &mut Vec<String
         }
     }
     push(lines, "");
-    push(
-        lines,
-        "e reload  i edit input  t cycle action  A apply edited",
-    );
+    if let Some(notice) = &ui_state.proposal_notice
+        && notice.vm_name == decision.vm_name
+        && notice.session_name == decision.session_name
+    {
+        push(lines, &notice.title);
+        push(lines, &notice.message);
+        push(lines, "");
+    }
+    if let Some(input) = ui_state
+        .inline_input
+        .as_ref()
+        .filter(|input| input.mode == FleetTuiInlineInputMode::EditProposalInput)
+    {
+        let prompt = format!(
+            "Edit input > {}_",
+            truncate_chars(&input.buffer, inner.saturating_sub(15))
+        );
+        push(lines, &prompt);
+        push(lines, "Enter save  Esc cancel  Backspace delete");
+    } else {
+        push(
+            lines,
+            "e reload  i edit input  t cycle action  A apply edited",
+        );
+    }
 }
 
 fn cockpit_render_new_session_view(
@@ -2169,42 +2676,91 @@ fn cockpit_render_new_session_view(
 }
 
 fn collect_observed_fleet_state(azlin_path: &Path, capture_lines: usize) -> Result<FleetState> {
+    collect_observed_fleet_state_with_progress(azlin_path, capture_lines, |_, _| Ok(()))
+}
+
+fn collect_observed_fleet_state_with_progress<F>(
+    azlin_path: &Path,
+    capture_lines: usize,
+    mut on_update: F,
+) -> Result<FleetState>
+where
+    F: FnMut(&FleetState, FleetRefreshProgress) -> Result<()>,
+{
     let mut state = FleetState::new(azlin_path.to_path_buf());
     let existing_vms = configured_existing_vms();
     let existing_refs: Vec<&str> = existing_vms.iter().map(String::as_str).collect();
     state.exclude_vms(&existing_refs);
-    state.refresh();
+    state.refresh_inventory();
 
-    for vm in state
+    let running_indices = state
         .vms
-        .iter_mut()
-        .filter(|vm| vm.is_running() && existing_vms.iter().any(|name| name == &vm.name))
-    {
-        vm.tmux_sessions = FleetState::poll_tmux_sessions_with_path(azlin_path, &vm.name);
-    }
+        .iter()
+        .enumerate()
+        .filter(|(_, vm)| vm.is_running())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let total_running = running_indices.len();
+    on_update(
+        &state,
+        FleetRefreshProgress {
+            completed_vms: 0,
+            total_vms: total_running,
+            current_vm: running_indices
+                .first()
+                .and_then(|index| state.vms.get(*index))
+                .map(|vm| vm.name.clone()),
+        },
+    )?;
 
     let mut observer = FleetObserver::new(azlin_path.to_path_buf());
     observer.capture_lines = capture_lines.clamp(1, MAX_CAPTURE_LINES);
     let adopter = SessionAdopter::new(azlin_path.to_path_buf());
-    for vm in state.vms.iter_mut().filter(|vm| vm.is_running()) {
-        let discovered = adopter.discover_sessions(&vm.name);
-        for session in &mut vm.tmux_sessions {
-            if let Some(metadata) = discovered
-                .iter()
-                .find(|candidate| candidate.session_name == session.session_name)
-            {
-                session.working_directory = metadata.working_directory.clone();
-                session.repo_url = metadata.inferred_repo.clone();
-                session.git_branch = metadata.inferred_branch.clone();
-                session.pr_url = metadata.inferred_pr.clone();
-                session.task_summary = metadata.inferred_task.clone();
+    for (position, vm_index) in running_indices.iter().copied().enumerate() {
+        let vm_name = state
+            .vms
+            .get(vm_index)
+            .map(|vm| vm.name.clone())
+            .unwrap_or_default();
+        let should_poll_tmux = state.is_managed_vm(&vm_name)
+            || existing_vms.iter().any(|existing| existing == &vm_name);
+
+        if let Some(vm) = state.vms.get_mut(vm_index) {
+            if should_poll_tmux {
+                vm.tmux_sessions = FleetState::poll_tmux_sessions_with_path(azlin_path, &vm.name);
+            }
+
+            let discovered = adopter.discover_sessions(&vm.name);
+            for session in &mut vm.tmux_sessions {
+                if let Some(metadata) = discovered
+                    .iter()
+                    .find(|candidate| candidate.session_name == session.session_name)
+                {
+                    session.working_directory = metadata.working_directory.clone();
+                    session.repo_url = metadata.inferred_repo.clone();
+                    session.git_branch = metadata.inferred_branch.clone();
+                    session.pr_url = metadata.inferred_pr.clone();
+                    session.task_summary = metadata.inferred_task.clone();
+                }
+            }
+            for session in &mut vm.tmux_sessions {
+                let observation = observer.observe_session(&vm.name, &session.session_name)?;
+                session.agent_status = observation.status;
+                session.last_output = observation.last_output_lines.join("\n");
             }
         }
-        for session in &mut vm.tmux_sessions {
-            let observation = observer.observe_session(&vm.name, &session.session_name)?;
-            session.agent_status = observation.status;
-            session.last_output = observation.last_output_lines.join("\n");
-        }
+
+        on_update(
+            &state,
+            FleetRefreshProgress {
+                completed_vms: position + 1,
+                total_vms: total_running,
+                current_vm: running_indices
+                    .get(position + 1)
+                    .and_then(|index| state.vms.get(*index))
+                    .map(|vm| vm.name.clone()),
+            },
+        )?;
     }
 
     Ok(state)
@@ -2236,9 +2792,45 @@ fn run_tui_dry_run(
         analysis.decision.action.as_str(),
         analysis.decision.confidence * 100.0
     );
+    ui_state.proposal_notice = analysis
+        .diagnostic
+        .as_ref()
+        .map(|diagnostic| FleetProposalNotice {
+            vm_name: analysis.decision.vm_name.clone(),
+            session_name: analysis.decision.session_name.clone(),
+            title: "Reasoner status".to_string(),
+            message: diagnostic.clone(),
+        });
     ui_state.last_decision = Some(analysis.decision);
     ui_state.status_message = Some(summary);
     ui_state.tab = FleetTuiTab::Detail;
+    Ok(())
+}
+
+fn run_tui_refresh_detail_capture(
+    azlin_path: &Path,
+    state: &FleetState,
+    ui_state: &mut FleetTuiUiState,
+    capture_lines: u32,
+) -> Result<()> {
+    let Some((vm, session)) = ui_state.selected_session(state) else {
+        // Nothing selected; leave cache as-is (stale entries are harmless).
+        return Ok(());
+    };
+    let output = capture_tmux_output_with_timeout(
+        azlin_path,
+        &vm.name,
+        &session.session_name,
+        capture_lines,
+        CLI_WATCH_TIMEOUT,
+    )?;
+    // T5: Store into the LRU cache (and keep compat field in sync).
+    ui_state.put_capture(&vm.name, &session.session_name, output.clone());
+    ui_state.detail_capture = Some(FleetDetailCapture {
+        vm_name: vm.name.clone(),
+        session_name: session.session_name.clone(),
+        output,
+    });
     Ok(())
 }
 
@@ -2251,6 +2843,7 @@ fn run_tui_apply(azlin_path: &Path, ui_state: &mut FleetTuiUiState) -> Result<()
     let reasoner = FleetSessionReasoner::new(azlin_path.to_path_buf(), NativeReasonerBackend::None);
     match reasoner.execute_decision(&decision) {
         Ok(()) => {
+            ui_state.proposal_notice = None;
             ui_state.status_message = Some(format!(
                 "Applied {} to {}/{}.",
                 decision.action.as_str(),
@@ -2260,6 +2853,12 @@ fn run_tui_apply(azlin_path: &Path, ui_state: &mut FleetTuiUiState) -> Result<()
             Ok(())
         }
         Err(error) => {
+            ui_state.set_proposal_notice_for_session(
+                &decision.vm_name,
+                &decision.session_name,
+                "Apply status",
+                format!("Apply failed: {error}"),
+            );
             ui_state.status_message = Some(format!("Apply failed: {error}"));
             Ok(())
         }
@@ -2268,32 +2867,45 @@ fn run_tui_apply(azlin_path: &Path, ui_state: &mut FleetTuiUiState) -> Result<()
 
 fn run_tui_edit(ui_state: &mut FleetTuiUiState) {
     ui_state.load_selected_proposal_into_editor();
-}
-
-fn run_tui_edit_input(
-    ui_state: &mut FleetTuiUiState,
-    terminal_guard: &DashboardTerminalGuard,
-) -> Result<()> {
-    let Some(current_text) = ui_state
+    // T3: Also populate the multiline editor buffer with the existing proposal input.
+    let initial = ui_state
         .editor_decision
         .as_ref()
-        .map(|decision| decision.input_text.clone())
-    else {
-        ui_state.status_message = Some("No editor proposal loaded. Press 'e' first.".to_string());
-        return Ok(());
-    };
+        .map(|d| d.input_text.as_str())
+        .unwrap_or("")
+        .to_string();
+    ui_state.enter_multiline_editor(&initial);
+}
 
-    let edited = terminal_guard.prompt_line(&format!(
-        "Edit input for the prepared proposal. Use \\n for newlines.\nCurrent: {}\nNew input: ",
-        truncate_chars(&current_text.replace('\n', "\\n"), 120)
-    ))?;
-    if let Some(decision) = ui_state.editor_decision.as_mut() {
-        decision.input_text = edited.replace("\\n", "\n");
-        ui_state.status_message = Some(format!(
-            "Updated editor input for {}/{}.",
-            decision.vm_name, decision.session_name
-        ));
+fn handle_tui_inline_input_key(ui_state: &mut FleetTuiUiState, key: DashboardKey) -> Result<()> {
+    match key {
+        DashboardKey::Char('\n') | DashboardKey::Char('\r') => {
+            if let Some((mode, value)) = ui_state.finish_inline_input() {
+                match mode {
+                    FleetTuiInlineInputMode::AddProjectRepo => {
+                        add_project_from_repo_input(ui_state, &value)?
+                    }
+                    FleetTuiInlineInputMode::EditProposalInput => {
+                        ui_state.apply_inline_editor_input(&value)
+                    }
+                    FleetTuiInlineInputMode::SearchSessions => {
+                        ui_state.apply_inline_session_search(&value)
+                    }
+                }
+            }
+        }
+        DashboardKey::Char('\u{1b}') => ui_state.cancel_inline_input(),
+        DashboardKey::Char('\u{8}') | DashboardKey::Char('\u{7f}') => {
+            ui_state.pop_inline_input_char()
+        }
+        DashboardKey::Char(ch) if !ch.is_control() => ui_state.push_inline_input_char(ch),
+        _ => {}
     }
+    Ok(())
+}
+
+fn run_tui_edit_input(ui_state: &mut FleetTuiUiState) -> Result<()> {
+    ui_state.start_inline_editor_input();
     Ok(())
 }
 
@@ -2307,6 +2919,7 @@ fn run_tui_apply_edited(azlin_path: &Path, ui_state: &mut FleetTuiUiState) -> Re
     let reasoner = FleetSessionReasoner::new(azlin_path.to_path_buf(), NativeReasonerBackend::None);
     match reasoner.execute_decision(&decision) {
         Ok(()) => {
+            ui_state.proposal_notice = None;
             ui_state.last_decision = Some(decision.clone());
             ui_state.tab = FleetTuiTab::Detail;
             ui_state.status_message = Some(format!(
@@ -2318,6 +2931,12 @@ fn run_tui_apply_edited(azlin_path: &Path, ui_state: &mut FleetTuiUiState) -> Re
             Ok(())
         }
         Err(error) => {
+            ui_state.set_proposal_notice_for_session(
+                &decision.vm_name,
+                &decision.session_name,
+                "Apply status",
+                format!("Edited apply failed: {error}"),
+            );
             ui_state.status_message = Some(format!("Edited apply failed: {error}"));
             Ok(())
         }
@@ -2361,9 +2980,16 @@ fn run_tui_adopt_selected_session(
         "Adopted {}/{} into the fleet queue.",
         vm.name, session.session_name
     ));
+
+    // T2: After adoption, trigger a fast-status refresh.
+    ui_state.send_bg_cmd(BackgroundCommand::ForceStatusRefresh);
+
     Ok(())
 }
 
+/// T1: Dispatch session creation to the background worker thread.
+/// When background threads are not available (tests, non-interactive mode),
+/// falls back to a synchronous blocking call.
 fn run_tui_create_session(azlin_path: &Path, ui_state: &mut FleetTuiUiState) -> Result<()> {
     let Some(vm_name) = ui_state.new_session_vm.as_deref() else {
         ui_state.status_message = Some("No running VM selected for session creation.".to_string());
@@ -2371,37 +2997,87 @@ fn run_tui_create_session(azlin_path: &Path, ui_state: &mut FleetTuiUiState) -> 
     };
     validate_vm_name(vm_name)?;
 
-    let session_suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        % 10_000;
-    let agent = ui_state.new_session_agent.as_str();
-    let session_name = format!("{agent}-{session_suffix:04}");
-    validate_session_name(&session_name)?;
+    let agent = ui_state.new_session_agent.as_str().to_string();
+    let vm_name_owned = vm_name.to_string();
 
-    let remote_cmd = format!(
-        "tmux new-session -d -s {} {}",
-        shell_single_quote(&session_name),
-        shell_single_quote(&format!("amplihack {agent}"))
-    );
-    let mut cmd = Command::new(azlin_path);
-    cmd.args(["connect", vm_name, "--no-tmux", "--", &remote_cmd]);
-    let output = run_output_with_timeout(cmd, SUBPROCESS_TIMEOUT)?;
-    if output.status.success() {
-        ui_state.status_message = Some(format!(
-            "Created session '{session_name}' on {vm_name} running {agent}."
-        ));
-        ui_state.tab = FleetTuiTab::Fleet;
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = stderr.trim();
-        ui_state.status_message = Some(if detail.is_empty() {
-            format!("Failed to create {agent} session on {vm_name}.")
-        } else {
-            format!("Failed to create {agent} session on {vm_name}: {detail}")
+    // Prefer background dispatch (T1 goal: non-blocking).
+    if ui_state.bg_tx.is_some() {
+        ui_state.send_bg_cmd(BackgroundCommand::CreateSession {
+            azlin_path: azlin_path.to_path_buf(),
+            vm_name: vm_name_owned.clone(),
+            agent: agent.clone(),
         });
+        ui_state.create_session_pending = true;
+        ui_state.status_message = Some(format!(
+            "Creating {agent} session on {vm_name_owned}... (background)"
+        ));
+    } else {
+        // Synchronous fallback (tests / non-interactive).
+        let msg = background_create_session(azlin_path, &vm_name_owned, &agent);
+        ui_state.status_message = Some(msg);
+        ui_state.tab = FleetTuiTab::Fleet;
     }
+    Ok(())
+}
+
+/// T6: Wrapper that enters project Add sub-mode.
+fn run_tui_add_project(ui_state: &mut FleetTuiUiState) -> Result<()> {
+    ui_state.enter_project_add_mode();
+    Ok(())
+}
+
+fn add_project_from_repo_input(ui_state: &mut FleetTuiUiState, repo_url: &str) -> Result<()> {
+    let repo_url = repo_url.trim();
+    if repo_url.is_empty() {
+        ui_state.status_message = Some("Project add cancelled.".to_string());
+        return Ok(());
+    }
+
+    let mut dashboard = FleetDashboardSummary::load(Some(default_dashboard_path()))?;
+    if let Some(existing) = dashboard.get_project(repo_url) {
+        ui_state.selected_project_repo = Some(existing.repo_url.clone());
+        ui_state.status_message = Some(format!(
+            "Project '{}' already exists in the dashboard.",
+            existing.name
+        ));
+        return Ok(());
+    }
+
+    let index = dashboard.add_project(repo_url, "", "", "medium");
+    dashboard.save()?;
+    let project = &dashboard.projects[index];
+    ui_state.selected_project_repo = Some(project.repo_url.clone());
+    ui_state.status_message = Some(format!(
+        "Added project '{}' to the dashboard.",
+        project.name
+    ));
+    Ok(())
+}
+
+fn run_tui_remove_project(ui_state: &mut FleetTuiUiState) -> Result<()> {
+    let Some(selected_repo) = ui_state.selected_project_repo.clone() else {
+        ui_state.status_message = Some("No project selected to remove.".to_string());
+        return Ok(());
+    };
+
+    let mut dashboard = FleetDashboardSummary::load(Some(default_dashboard_path()))?;
+    let removed_name = dashboard
+        .get_project(&selected_repo)
+        .map(|project| project.name.clone())
+        .unwrap_or_else(|| selected_repo.clone());
+    if !dashboard.remove_project(&selected_repo) {
+        ui_state.status_message = Some(format!(
+            "Selected project '{removed_name}' is no longer present."
+        ));
+        ui_state.sync_project_selection();
+        return Ok(());
+    }
+
+    dashboard.save()?;
+    ui_state.sync_project_selection();
+    ui_state.status_message = Some(format!(
+        "Removed project '{removed_name}' from the dashboard."
+    ));
     Ok(())
 }
 
@@ -2521,26 +3197,147 @@ impl StatusFilter {
     }
 }
 
+/// T4: Commands sent from the render loop to background worker threads.
+#[derive(Debug)]
+enum BackgroundCommand {
+    /// Fast-status: re-poll fleet state (used by T2 adoption refresh trigger).
+    ForceStatusRefresh,
+    /// T1: Create a new tmux session on the given VM.
+    CreateSession {
+        azlin_path: PathBuf,
+        vm_name: String,
+        agent: String,
+    },
+}
+
+/// T4: Messages sent back from background threads to the render loop.
+#[derive(Debug)]
+enum BackgroundMessage {
+    /// Fast background status refresh completed.
+    FastStatusUpdate(FleetState),
+    /// Slow background capture refresh completed for one session.
+    SlowCaptureUpdate {
+        vm_name: String,
+        session_name: String,
+        output: String,
+    },
+    /// T1: Session creation completed.
+    SessionCreated { message: String },
+    /// Any background error worth surfacing.
+    Error(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FleetTuiSelection {
     vm_name: String,
     session_name: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FleetDetailCapture {
+    vm_name: String,
+    session_name: String,
+    output: String,
+}
+
+/// T6: Sub-modes for the Projects tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ProjectManagementMode {
+    /// Viewing the project list.
+    #[default]
+    List,
+    /// Adding a new project (inline input active).
+    Add,
+    /// Confirming removal of selected project.
+    Remove,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FleetProposalNotice {
+    vm_name: String,
+    session_name: String,
+    title: String,
+    message: String,
+}
+
+#[derive(Debug, Clone)]
 struct FleetTuiUiState {
     tab: FleetTuiTab,
     fleet_subview: FleetSubview,
     selected: Option<FleetTuiSelection>,
+    selected_project_repo: Option<String>,
+    /// T5: Per-session tmux capture cache (LRU, 64 entries).
+    /// Key: (vm_name, session_name), Value: FleetDetailCapture.
+    /// Wrapped in Arc<Mutex<>> so it is Clone and shareable with background threads.
+    capture_cache: Arc<Mutex<LruCache<(String, String), FleetDetailCapture>>>,
+    /// Kept for backward compatibility — tests may set this; it is promoted into
+    /// capture_cache on first access via `detail_capture_output()`.
+    detail_capture: Option<FleetDetailCapture>,
+    proposal_notice: Option<FleetProposalNotice>,
     last_decision: Option<SessionDecision>,
     editor_decision: Option<SessionDecision>,
     new_session_vm: Option<String>,
     new_session_agent: FleetNewSessionAgent,
     status_message: Option<String>,
+    inline_input: Option<FleetTuiInlineInput>,
+    show_logo: bool,
     /// When true, the `?` help overlay is shown instead of the normal content.
     show_help: bool,
     /// Optional filter applied to the fleet view (shows only matching sessions).
     status_filter: Option<StatusFilter>,
+    /// Optional case-insensitive search applied to VM/session names in the fleet view.
+    session_search: Option<String>,
+    /// Temporary progress indicator while refresh is still enriching running VMs.
+    refresh_progress: Option<FleetRefreshProgress>,
+    /// T4: Channel for sending commands to the background refresh worker.
+    /// None when background threads are not running (tests, non-interactive mode).
+    bg_tx: Option<mpsc::Sender<BackgroundCommand>>,
+    /// T4: Channel for receiving messages from background threads.
+    bg_rx: Option<Arc<Mutex<mpsc::Receiver<BackgroundMessage>>>>,
+    /// T6: Current project management sub-mode.
+    project_mode: ProjectManagementMode,
+    /// T1: Whether a session create is in-flight.
+    create_session_pending: bool,
+    /// T3: Multiline proposal editor buffer (lines, cursor row).
+    editor_lines: Vec<String>,
+    /// T3: Current cursor row in the multiline editor.
+    editor_cursor_row: usize,
+    /// T3: Whether the multiline editor is active.
+    editor_active: bool,
+}
+
+impl Default for FleetTuiUiState {
+    fn default() -> Self {
+        Self {
+            tab: FleetTuiTab::default(),
+            fleet_subview: FleetSubview::default(),
+            selected: None,
+            selected_project_repo: None,
+            capture_cache: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(CAPTURE_CACHE_CAPACITY).unwrap(),
+            ))),
+            detail_capture: None,
+            proposal_notice: None,
+            last_decision: None,
+            editor_decision: None,
+            new_session_vm: None,
+            new_session_agent: FleetNewSessionAgent::default(),
+            status_message: None,
+            inline_input: None,
+            show_logo: true,
+            show_help: false,
+            status_filter: None,
+            session_search: None,
+            refresh_progress: None,
+            bg_tx: None,
+            bg_rx: None,
+            project_mode: ProjectManagementMode::default(),
+            create_session_pending: false,
+            editor_lines: Vec::new(),
+            editor_cursor_row: 0,
+            editor_active: false,
+        }
+    }
 }
 
 impl FleetTuiUiState {
@@ -2557,6 +3354,13 @@ impl FleetTuiUiState {
                 self.selected = sessions.into_iter().next();
             }
         }
+        if self.detail_capture.as_ref().is_some_and(|capture| {
+            self.selected.as_ref().is_none_or(|selected| {
+                capture.vm_name != selected.vm_name || capture.session_name != selected.session_name
+            })
+        }) {
+            self.detail_capture = None;
+        }
 
         let running_vms = Self::new_session_vm_refs(state);
         if running_vms.is_empty() {
@@ -2570,11 +3374,17 @@ impl FleetTuiUiState {
                 self.new_session_vm = running_vms.into_iter().next();
             }
         }
+
+        self.sync_project_selection();
     }
 
     fn move_selection(&mut self, state: &FleetState, delta: isize) {
         if self.tab == FleetTuiTab::NewSession {
             self.move_new_session_target(state, delta);
+            return;
+        }
+        if self.tab == FleetTuiTab::Projects {
+            self.move_project_selection(delta);
             return;
         }
 
@@ -2615,10 +3425,79 @@ impl FleetTuiUiState {
         self.new_session_vm = running_vms.get(next).cloned();
     }
 
+    fn sync_project_selection(&mut self) {
+        let project_refs = Self::project_refs();
+        if project_refs.is_empty() {
+            self.selected_project_repo = None;
+            return;
+        }
+
+        let selected_exists = self
+            .selected_project_repo
+            .as_ref()
+            .is_some_and(|selected| project_refs.iter().any(|candidate| candidate == selected));
+        if !selected_exists {
+            self.selected_project_repo = project_refs.into_iter().next();
+        }
+    }
+
+    fn move_project_selection(&mut self, delta: isize) {
+        let project_refs = Self::project_refs();
+        if project_refs.is_empty() {
+            self.selected_project_repo = None;
+            return;
+        }
+
+        let current_index = self
+            .selected_project_repo
+            .as_ref()
+            .and_then(|selected| {
+                project_refs
+                    .iter()
+                    .position(|candidate| candidate == selected)
+            })
+            .unwrap_or(0);
+        let len = project_refs.len() as isize;
+        let next = (current_index as isize + delta).rem_euclid(len) as usize;
+        self.selected_project_repo = project_refs.get(next).cloned();
+    }
+
     fn selection_matches(&self, vm_name: &str, session_name: &str) -> bool {
         self.selected.as_ref().is_some_and(|selected| {
             selected.vm_name == vm_name && selected.session_name == session_name
         })
+    }
+
+    fn fleet_filter_summary(&self) -> String {
+        let mut filters = Vec::new();
+        if let Some(filter) = self.status_filter {
+            filters.push(format!("filter: {}", filter.label()));
+        }
+        if let Some(search) = self.session_search.as_deref() {
+            filters.push(format!("search: {search}"));
+        }
+        if filters.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", filters.join(", "))
+        }
+    }
+
+    fn matches_vm_search(&self, vm_name: &str) -> bool {
+        let Some(search) = self.normalized_session_search() else {
+            return true;
+        };
+        let search = search.to_ascii_lowercase();
+        vm_name.to_ascii_lowercase().contains(&search)
+    }
+
+    fn matches_session_search(&self, vm_name: &str, session_name: &str) -> bool {
+        let Some(search) = self.normalized_session_search() else {
+            return true;
+        };
+        let search = search.to_ascii_lowercase();
+        vm_name.to_ascii_lowercase().contains(&search)
+            || session_name.to_ascii_lowercase().contains(&search)
     }
 
     fn selected_session<'a>(
@@ -2657,6 +3536,9 @@ impl FleetTuiUiState {
                 {
                     continue;
                 }
+                if !self.matches_session_search(&vm.name, &session.session_name) {
+                    continue;
+                }
                 sessions.push(FleetTuiSelection {
                     vm_name: vm.name.clone(),
                     session_name: session.session_name.clone(),
@@ -2682,13 +3564,25 @@ impl FleetTuiUiState {
             .collect()
     }
 
+    fn project_refs() -> Vec<String> {
+        FleetDashboardSummary::load(Some(default_dashboard_path()))
+            .map(|dashboard| {
+                dashboard
+                    .projects
+                    .into_iter()
+                    .map(|project| project.repo_url)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Advance to the next tab, wrapping around.
     fn cycle_tab_forward(&mut self) {
         self.tab = match self.tab {
             FleetTuiTab::Fleet => FleetTuiTab::Detail,
-            FleetTuiTab::Detail => FleetTuiTab::Projects,
-            FleetTuiTab::Projects => FleetTuiTab::Editor,
-            FleetTuiTab::Editor => FleetTuiTab::NewSession,
+            FleetTuiTab::Detail => FleetTuiTab::Editor,
+            FleetTuiTab::Editor => FleetTuiTab::Projects,
+            FleetTuiTab::Projects => FleetTuiTab::NewSession,
             FleetTuiTab::NewSession => FleetTuiTab::Fleet,
         };
     }
@@ -2698,9 +3592,9 @@ impl FleetTuiUiState {
         self.tab = match self.tab {
             FleetTuiTab::Fleet => FleetTuiTab::NewSession,
             FleetTuiTab::Detail => FleetTuiTab::Fleet,
-            FleetTuiTab::Projects => FleetTuiTab::Detail,
-            FleetTuiTab::Editor => FleetTuiTab::Projects,
-            FleetTuiTab::NewSession => FleetTuiTab::Editor,
+            FleetTuiTab::Editor => FleetTuiTab::Detail,
+            FleetTuiTab::Projects => FleetTuiTab::Editor,
+            FleetTuiTab::NewSession => FleetTuiTab::Projects,
         };
     }
 
@@ -2713,7 +3607,42 @@ impl FleetTuiUiState {
         }
     }
 
+    fn normalized_session_search(&self) -> Option<&str> {
+        self.session_search
+            .as_deref()
+            .map(str::trim)
+            .filter(|search| !search.is_empty())
+    }
+
+    fn set_selected_proposal_notice(&mut self, title: &str, message: impl Into<String>) {
+        let Some((vm_name, session_name)) = self
+            .selected
+            .as_ref()
+            .map(|selected| (selected.vm_name.clone(), selected.session_name.clone()))
+        else {
+            return;
+        };
+        self.set_proposal_notice_for_session(&vm_name, &session_name, title, message);
+    }
+
+    fn set_proposal_notice_for_session(
+        &mut self,
+        vm_name: &str,
+        session_name: &str,
+        title: &str,
+        message: impl Into<String>,
+    ) {
+        self.proposal_notice = Some(FleetProposalNotice {
+            vm_name: vm_name.to_string(),
+            session_name: session_name.to_string(),
+            title: title.to_string(),
+            message: message.into(),
+        });
+    }
+
     fn load_selected_proposal_into_editor(&mut self) {
+        self.inline_input = None;
+        self.proposal_notice = None;
         let Some(selected) = self.selected.as_ref() else {
             self.status_message = Some("No session selected for editing.".to_string());
             return;
@@ -2733,7 +3662,104 @@ impl FleetTuiUiState {
         ));
     }
 
+    fn start_inline_project_input(&mut self) {
+        self.inline_input = Some(FleetTuiInlineInput {
+            mode: FleetTuiInlineInputMode::AddProjectRepo,
+            buffer: String::new(),
+        });
+        self.status_message =
+            Some("Adding project repo inline. Type URL, Enter adds, Esc cancels.".to_string());
+    }
+
+    fn start_inline_session_search(&mut self) {
+        self.inline_input = Some(FleetTuiInlineInput {
+            mode: FleetTuiInlineInputMode::SearchSessions,
+            buffer: self.session_search.clone().unwrap_or_default(),
+        });
+        self.status_message = Some(
+            "Searching fleet sessions inline. Type VM/session text, Enter applies, Esc cancels."
+                .to_string(),
+        );
+    }
+
+    fn start_inline_editor_input(&mut self) {
+        let Some(decision) = self.editor_decision.as_ref() else {
+            self.status_message = Some("No editor proposal loaded. Press 'e' first.".to_string());
+            return;
+        };
+        self.inline_input = Some(FleetTuiInlineInput {
+            mode: FleetTuiInlineInputMode::EditProposalInput,
+            buffer: decision.input_text.replace('\n', "\\n"),
+        });
+        self.status_message = Some(format!(
+            "Editing input for {}/{}. Enter saves, Esc cancels, use \\n for newlines.",
+            decision.vm_name, decision.session_name
+        ));
+    }
+
+    fn apply_inline_editor_input(&mut self, edited: &str) {
+        let Some(decision) = self.editor_decision.as_mut() else {
+            self.status_message = Some("No editor proposal loaded. Press 'e' first.".to_string());
+            return;
+        };
+        self.proposal_notice = None;
+        decision.input_text = edited.replace("\\n", "\n");
+        self.status_message = Some(format!(
+            "Updated editor input for {}/{}.",
+            decision.vm_name, decision.session_name
+        ));
+    }
+
+    fn apply_inline_session_search(&mut self, search: &str) {
+        let search = search.trim();
+        if search.is_empty() {
+            self.session_search = None;
+            self.status_message = Some("Cleared fleet session search.".to_string());
+            return;
+        }
+        self.session_search = Some(search.to_string());
+        self.status_message = Some(format!("Searching fleet sessions for '{search}'."));
+    }
+
+    fn clear_session_search(&mut self) {
+        if self.session_search.take().is_some() {
+            self.status_message = Some("Cleared fleet session search.".to_string());
+        }
+    }
+
+    fn push_inline_input_char(&mut self, ch: char) {
+        if let Some(input) = self.inline_input.as_mut() {
+            input.buffer.push(ch);
+        }
+    }
+
+    fn pop_inline_input_char(&mut self) {
+        if let Some(input) = self.inline_input.as_mut() {
+            input.buffer.pop();
+        }
+    }
+
+    fn finish_inline_input(&mut self) -> Option<(FleetTuiInlineInputMode, String)> {
+        self.inline_input
+            .take()
+            .map(|input| (input.mode, input.buffer))
+    }
+
+    fn cancel_inline_input(&mut self) {
+        let Some(input) = self.inline_input.take() else {
+            return;
+        };
+        self.status_message = Some(match input.mode {
+            FleetTuiInlineInputMode::AddProjectRepo => "Project add cancelled.".to_string(),
+            FleetTuiInlineInputMode::EditProposalInput => {
+                "Editor input edit cancelled.".to_string()
+            }
+            FleetTuiInlineInputMode::SearchSessions => "Fleet search cancelled.".to_string(),
+        });
+    }
+
     fn cycle_editor_action(&mut self) {
+        self.proposal_notice = None;
         let Some(decision) = self.editor_decision.as_mut() else {
             self.status_message = Some("No editor proposal loaded. Press 'e' first.".to_string());
             return;
@@ -2770,6 +3796,211 @@ impl FleetTuiUiState {
         };
     }
 
+    // ── T5: Per-session LRU capture cache helpers ──────────────────────────
+
+    /// Store a capture output into the LRU cache.
+    fn put_capture(&self, vm_name: &str, session_name: &str, output: String) {
+        let key = (vm_name.to_string(), session_name.to_string());
+        if let Ok(mut cache) = self.capture_cache.lock() {
+            cache.put(
+                key,
+                FleetDetailCapture {
+                    vm_name: vm_name.to_string(),
+                    session_name: session_name.to_string(),
+                    output,
+                },
+            );
+        }
+    }
+
+    /// Look up a capture from the LRU cache.  Falls back to the compatibility
+    /// `detail_capture` field so that tests that pre-populate it still work.
+    fn get_capture(&self, vm_name: &str, session_name: &str) -> Option<String> {
+        // Check LRU cache first.
+        let key = (vm_name.to_string(), session_name.to_string());
+        if let Ok(mut cache) = self.capture_cache.lock()
+            && let Some(entry) = cache.get(&key)
+        {
+            return Some(entry.output.clone());
+        }
+        // Fall back to the compatibility single-entry field.
+        self.detail_capture
+            .as_ref()
+            .filter(|c| c.vm_name == vm_name && c.session_name == session_name)
+            .map(|c| c.output.clone())
+    }
+
+    /// Remove all cached captures (e.g. on state reset).
+    #[allow(dead_code)]
+    fn clear_capture_cache(&self) {
+        if let Ok(mut cache) = self.capture_cache.lock() {
+            cache.clear();
+        }
+    }
+
+    // ── T4: Background channel helpers ─────────────────────────────────────
+
+    /// Send a command to the background worker (best-effort; ignores broken channel).
+    fn send_bg_cmd(&self, cmd: BackgroundCommand) {
+        if let Some(tx) = &self.bg_tx {
+            let _ = tx.send(cmd);
+        }
+    }
+
+    /// Drain all pending background messages and apply them to state.
+    fn drain_bg_messages(&mut self) {
+        let rx_arc = match self.bg_rx.as_ref() {
+            Some(arc) => arc.clone(),
+            None => return,
+        };
+        let Ok(rx) = rx_arc.try_lock() else { return };
+        loop {
+            match rx.try_recv() {
+                Ok(BackgroundMessage::FastStatusUpdate(_state)) => {
+                    // State update from background; the render loop re-collects
+                    // state synchronously on each iteration, so we just note it.
+                }
+                Ok(BackgroundMessage::SlowCaptureUpdate {
+                    vm_name,
+                    session_name,
+                    output,
+                }) => {
+                    self.put_capture(&vm_name, &session_name, output);
+                }
+                Ok(BackgroundMessage::SessionCreated { message }) => {
+                    self.status_message = Some(message);
+                    self.create_session_pending = false;
+                    self.tab = FleetTuiTab::Fleet;
+                }
+                Ok(BackgroundMessage::Error(msg)) => {
+                    self.status_message = Some(format!("[bg error] {msg}"));
+                    self.create_session_pending = false;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.bg_rx = None;
+                    break;
+                }
+            }
+        }
+    }
+
+    // ── T3: Multiline proposal editor helpers ───────────────────────────────
+
+    /// Enter the multiline editor, populating it with `initial_text`.
+    fn enter_multiline_editor(&mut self, initial_text: &str) {
+        self.editor_lines = initial_text
+            .split('\n')
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        if self.editor_lines.is_empty() {
+            self.editor_lines.push(String::new());
+        }
+        self.editor_cursor_row = self.editor_lines.len().saturating_sub(1);
+        self.editor_active = true;
+    }
+
+    /// Insert a character at the end of the current cursor line.
+    fn editor_insert_char(&mut self, ch: char) {
+        if !self.editor_active {
+            return;
+        }
+        if ch == '\n' {
+            let row = self.editor_cursor_row;
+            self.editor_lines.insert(row + 1, String::new());
+            self.editor_cursor_row += 1;
+        } else {
+            let row = self.editor_cursor_row;
+            if let Some(line) = self.editor_lines.get_mut(row) {
+                line.push(ch);
+            }
+        }
+    }
+
+    /// Delete the last character from the current cursor line (Backspace).
+    fn editor_backspace(&mut self) {
+        if !self.editor_active {
+            return;
+        }
+        let row = self.editor_cursor_row;
+        if let Some(line) = self.editor_lines.get_mut(row)
+            && !line.is_empty()
+        {
+            line.pop();
+            return;
+        }
+        // Empty line — merge with previous.
+        if row > 0 {
+            self.editor_lines.remove(row);
+            self.editor_cursor_row -= 1;
+        }
+    }
+
+    /// Move cursor up one line.
+    fn editor_move_up(&mut self) {
+        if self.editor_cursor_row > 0 {
+            self.editor_cursor_row -= 1;
+        }
+    }
+
+    /// Move cursor down one line.
+    fn editor_move_down(&mut self) {
+        if self.editor_cursor_row + 1 < self.editor_lines.len() {
+            self.editor_cursor_row += 1;
+        }
+    }
+
+    /// Extract the editor content as a single string (lines joined with `\n`).
+    fn editor_content(&self) -> String {
+        self.editor_lines.join("\n")
+    }
+
+    /// Save the editor content into `inline_input` buffer and exit editor.
+    fn editor_save(&mut self) {
+        let content = self.editor_content();
+        self.apply_inline_editor_input(&content);
+        self.editor_active = false;
+        self.editor_lines.clear();
+        self.editor_cursor_row = 0;
+    }
+
+    /// Discard the editor content without saving.
+    #[allow(dead_code)]
+    fn editor_discard(&mut self) {
+        self.editor_active = false;
+        self.editor_lines.clear();
+        self.editor_cursor_row = 0;
+    }
+
+    // ── T6: Project management mode helpers ────────────────────────────────
+
+    /// Transition project tab to Add sub-mode.
+    fn enter_project_add_mode(&mut self) {
+        self.project_mode = ProjectManagementMode::Add;
+        self.start_inline_project_input();
+    }
+
+    /// Transition project tab to Remove sub-mode (requires selected project).
+    fn enter_project_remove_mode(&mut self) {
+        if self.selected_project_repo.is_none() {
+            self.status_message = Some("No project selected to remove.".to_string());
+            return;
+        }
+        self.project_mode = ProjectManagementMode::Remove;
+    }
+
+    /// Confirm project removal and return to List mode.
+    fn confirm_project_remove(&mut self) {
+        // Actual file I/O is handled by run_tui_remove_project; here we just
+        // transition the mode back to List so the TUI is consistent.
+        self.project_mode = ProjectManagementMode::List;
+    }
+
+    /// Cancel project operation and return to List mode.
+    fn cancel_project_mode(&mut self) {
+        self.project_mode = ProjectManagementMode::List;
+    }
+
     fn skip_selected_proposal(&mut self) {
         let Some(selected) = self.selected.as_ref() else {
             self.status_message = Some("No session selected to skip.".to_string());
@@ -2793,8 +4024,44 @@ impl FleetTuiUiState {
         if self.editor_decision.as_ref().is_some_and(matches_selected) {
             self.editor_decision = None;
         }
+        self.set_selected_proposal_notice("Proposal status", "Skipped.");
         self.tab = FleetTuiTab::Detail;
         self.status_message = Some("Skipped.".to_string());
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FleetTuiInlineInputMode {
+    AddProjectRepo,
+    EditProposalInput,
+    SearchSessions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FleetTuiInlineInput {
+    mode: FleetTuiInlineInputMode,
+    buffer: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FleetRefreshProgress {
+    completed_vms: usize,
+    total_vms: usize,
+    current_vm: Option<String>,
+}
+
+impl FleetRefreshProgress {
+    fn label(&self) -> String {
+        match (self.total_vms, self.current_vm.as_deref()) {
+            (0, _) => "0/0".to_string(),
+            (_, Some(vm_name)) => {
+                format!(
+                    "{}/{} polling {}",
+                    self.completed_vms, self.total_vms, vm_name
+                )
+            }
+            _ => format!("{}/{} complete", self.completed_vms, self.total_vms),
+        }
     }
 }
 
@@ -2879,40 +4146,6 @@ impl DashboardTerminalGuard {
             original: Some(original),
         })
     }
-
-    fn prompt_line(&self, prompt: &str) -> Result<String> {
-        if let Some(original) = self.original
-            && unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &original) } != 0
-        {
-            bail!("failed to restore dashboard terminal mode for prompt");
-        }
-
-        let mut stdout = io::stdout();
-        write!(stdout, "{SHOW_CURSOR}\r\n{prompt}")?;
-        stdout.flush().context("failed to flush dashboard prompt")?;
-
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .context("failed to read dashboard prompt input")?;
-
-        if let Some(original) = self.original {
-            let mut raw = original;
-            raw.c_lflag &= !(libc::ICANON | libc::ECHO);
-            raw.c_cc[libc::VMIN] = 0;
-            raw.c_cc[libc::VTIME] = 0;
-            if unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &raw) } != 0 {
-                bail!("failed to restore dashboard raw mode after prompt");
-            }
-        }
-
-        write!(stdout, "{HIDE_CURSOR}")?;
-        stdout
-            .flush()
-            .context("failed to flush dashboard prompt cleanup")?;
-
-        Ok(input.trim_end_matches(&['\r', '\n'][..]).to_string())
-    }
 }
 
 #[cfg(unix)]
@@ -2931,17 +4164,6 @@ struct DashboardTerminalGuard;
 impl DashboardTerminalGuard {
     fn activate() -> Result<Self> {
         Ok(Self)
-    }
-
-    fn prompt_line(&self, prompt: &str) -> Result<String> {
-        let mut stdout = io::stdout();
-        write!(stdout, "\r\n{prompt}")?;
-        stdout.flush().context("failed to flush dashboard prompt")?;
-        let mut input = String::new();
-        io::stdin()
-            .read_line(&mut input)
-            .context("failed to read dashboard prompt input")?;
-        Ok(input.trim_end_matches(&['\r', '\n'][..]).to_string())
     }
 }
 
@@ -4682,6 +5904,7 @@ impl SessionContext {
 struct SessionAnalysis {
     context: SessionContext,
     decision: SessionDecision,
+    diagnostic: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -4767,21 +5990,29 @@ impl FleetSessionReasoner {
             project_priorities,
             cached_tmux_capture,
         )?;
-        let decision = self.reason(&context);
+        let (decision, diagnostic) = self.reason(&context);
         self.decisions.push(decision.clone());
-        Ok(SessionAnalysis { context, decision })
+        Ok(SessionAnalysis {
+            context,
+            decision,
+            diagnostic,
+        })
     }
 
-    fn reason(&self, context: &SessionContext) -> SessionDecision {
+    fn reason(&self, context: &SessionContext) -> (SessionDecision, Option<String>) {
         if context.agent_status == AgentStatus::Thinking {
-            return SessionDecision {
-                session_name: context.session_name.clone(),
-                vm_name: context.vm_name.clone(),
-                action: SessionAction::Wait,
-                input_text: String::new(),
-                reasoning: "Agent is actively thinking/processing -- do not interrupt".to_string(),
-                confidence: 1.0,
-            };
+            return (
+                SessionDecision {
+                    session_name: context.session_name.clone(),
+                    vm_name: context.vm_name.clone(),
+                    action: SessionAction::Wait,
+                    input_text: String::new(),
+                    reasoning: "Agent is actively thinking/processing -- do not interrupt"
+                        .to_string(),
+                    confidence: 1.0,
+                },
+                None,
+            );
         }
         if context.appears_dead()
             || matches!(
@@ -4789,36 +6020,59 @@ impl FleetSessionReasoner {
                 AgentStatus::Unknown | AgentStatus::NoSession | AgentStatus::Unreachable
             )
         {
-            return SessionDecision {
-                session_name: context.session_name.clone(),
-                vm_name: context.vm_name.clone(),
-                action: SessionAction::Wait,
-                input_text: String::new(),
-                reasoning: "Session is empty or unreachable; no intervention taken".to_string(),
-                confidence: CONFIDENCE_UNKNOWN,
-            };
+            return (
+                SessionDecision {
+                    session_name: context.session_name.clone(),
+                    vm_name: context.vm_name.clone(),
+                    action: SessionAction::Wait,
+                    input_text: String::new(),
+                    reasoning: "Session is empty or unreachable; no intervention taken".to_string(),
+                    confidence: CONFIDENCE_UNKNOWN,
+                },
+                None,
+            );
         }
         if context.agent_status == AgentStatus::Completed {
-            return SessionDecision {
-                session_name: context.session_name.clone(),
-                vm_name: context.vm_name.clone(),
-                action: SessionAction::MarkComplete,
-                input_text: String::new(),
-                reasoning: "Session output indicates completion".to_string(),
-                confidence: CONFIDENCE_COMPLETION,
-            };
+            return (
+                SessionDecision {
+                    session_name: context.session_name.clone(),
+                    vm_name: context.vm_name.clone(),
+                    action: SessionAction::MarkComplete,
+                    input_text: String::new(),
+                    reasoning: "Session output indicates completion".to_string(),
+                    confidence: CONFIDENCE_COMPLETION,
+                },
+                None,
+            );
         }
 
-        if let Ok(response_text) = self.backend.complete(&format!(
+        let prompt = format!(
             "{}\n\n{}\n\nRespond with JSON only.",
             SESSION_REASONER_SYSTEM_PROMPT,
             context.to_prompt_context()
-        )) && let Some(decision) = parse_reasoner_response(&response_text, context)
-        {
-            return decision;
+        );
+        match self.backend.complete(&prompt) {
+            Ok(response_text) => {
+                if let Some(decision) = parse_reasoner_response(&response_text, context) {
+                    return (decision, None);
+                }
+                (
+                    heuristic_decision(context),
+                    Some(format!(
+                        "Native {} reasoner returned an invalid response; showing a heuristic proposal instead.",
+                        self.backend.label()
+                    )),
+                )
+            }
+            Err(error) => (
+                heuristic_decision(context),
+                Some(format!(
+                    "Native {} reasoner failed: {}. Showing a heuristic proposal instead.",
+                    self.backend.label(),
+                    error
+                )),
+            ),
         }
-
-        heuristic_decision(context)
     }
 
     fn execute_decision(&self, decision: &SessionDecision) -> Result<()> {
@@ -7165,8 +8419,7 @@ impl FleetState {
     }
 
     fn refresh(&mut self) {
-        self.vms = self.poll_vms();
-        self.timestamp = Some(Local::now());
+        self.refresh_inventory();
         let azlin_path = self.azlin_path.clone();
         let excluded = self.exclude_vms.clone();
 
@@ -7175,6 +8428,11 @@ impl FleetState {
                 vm.tmux_sessions = Self::poll_tmux_sessions_with_path(&azlin_path, &vm.name);
             }
         }
+    }
+
+    fn refresh_inventory(&mut self) {
+        self.vms = self.poll_vms();
+        self.timestamp = Some(Local::now());
     }
 
     fn summary(&self) -> String {
@@ -8867,6 +10125,102 @@ exit 1
     }
 
     #[test]
+    fn collect_observed_fleet_state_reports_progress_per_vm() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let azlin = dir.path().join("azlin");
+        write_executable(
+            &azlin,
+            r#"#!/bin/sh
+if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+  printf '%s\n' '[{"name":"vm-1","status":"Running","region":"westus2","session_name":"vm-1"},{"name":"vm-2","status":"Running","region":"eastus","session_name":"vm-2"}]'
+  exit 0
+fi
+if [ "$1" = "connect" ] && [ "$2" = "vm-1" ]; then
+  case "$5" in
+    *"PANE_START"*)
+      printf '%s\n' \
+        '===SESSION:claude-1===' \
+        'CWD:/tmp/demo' \
+        'CMD:claude' \
+        'REPO:https://github.com/org/demo.git' \
+        'BRANCH:main' \
+        'LAST_MSG:Awaiting operator confirmation' \
+        '===DONE==='
+      exit 0
+      ;;
+    *"tmux list-sessions"*)
+      printf '%s\n' 'claude-1|||1|||0'
+      exit 0
+      ;;
+    *"tmux capture-pane"*)
+      printf '%s\n' 'Proceed with deploy? [y/n]'
+      exit 0
+      ;;
+  esac
+fi
+if [ "$1" = "connect" ] && [ "$2" = "vm-2" ]; then
+  case "$5" in
+    *"PANE_START"*)
+      printf '%s\n' \
+        '===SESSION:copilot-9===' \
+        'CWD:/tmp/excluded' \
+        'CMD:copilot' \
+        'REPO:https://github.com/org/excluded.git' \
+        'BRANCH:side-quest' \
+        'LAST_MSG:Waiting for operator review' \
+        '===DONE==='
+      exit 0
+      ;;
+    *"tmux list-sessions"*)
+      printf '%s\n' 'copilot-9|||1|||0'
+      exit 0
+      ;;
+    *"tmux capture-pane"*)
+      printf '%s\n' 'Working outside fleet'
+      exit 0
+      ;;
+  esac
+fi
+exit 1
+"#,
+        );
+
+        let mut snapshots = Vec::new();
+        let state = collect_observed_fleet_state_with_progress(&azlin, 10, |state, progress| {
+            snapshots.push((
+                progress.completed_vms,
+                progress.total_vms,
+                progress.current_vm.clone(),
+                state
+                    .vms
+                    .iter()
+                    .map(|vm| format!("{}:{}", vm.name, vm.tmux_sessions.len()))
+                    .collect::<Vec<_>>(),
+            ));
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(snapshots.len(), 3);
+        assert_eq!(snapshots[0].0, 0);
+        assert_eq!(snapshots[0].1, 2);
+        assert_eq!(snapshots[0].2.as_deref(), Some("vm-1"));
+        assert_eq!(snapshots[0].3, vec!["vm-1:0", "vm-2:0"]);
+        assert_eq!(snapshots[1].0, 1);
+        assert_eq!(snapshots[1].2.as_deref(), Some("vm-2"));
+        assert_eq!(snapshots[1].3, vec!["vm-1:1", "vm-2:0"]);
+        assert_eq!(snapshots[2].0, 2);
+        assert!(snapshots[2].2.is_none());
+        assert_eq!(snapshots[2].3, vec!["vm-1:1", "vm-2:1"]);
+        assert_eq!(state.vms.len(), 2);
+        assert_eq!(state.vms[0].tmux_sessions.len(), 1);
+        assert_eq!(state.vms[1].tmux_sessions.len(), 1);
+    }
+
+    #[test]
     fn fleet_tui_ui_state_tracks_selection() {
         let state = FleetState {
             vms: vec![VmInfo {
@@ -8977,6 +10331,70 @@ exit 1
     }
 
     #[test]
+    fn fleet_tui_ui_state_tracks_only_visible_search_sessions() {
+        let state = FleetState {
+            vms: vec![
+                VmInfo {
+                    name: "vm-1".to_string(),
+                    session_name: "vm-1".to_string(),
+                    os: "linux".to_string(),
+                    status: "Running".to_string(),
+                    ip: String::new(),
+                    region: "westus2".to_string(),
+                    tmux_sessions: vec![TmuxSessionInfo {
+                        session_name: "claude-1".to_string(),
+                        vm_name: "vm-1".to_string(),
+                        windows: 1,
+                        attached: false,
+                        agent_status: AgentStatus::Running,
+                        last_output: "first".to_string(),
+                        working_directory: String::new(),
+                        repo_url: String::new(),
+                        git_branch: String::new(),
+                        pr_url: String::new(),
+                        task_summary: String::new(),
+                    }],
+                },
+                VmInfo {
+                    name: "vm-2".to_string(),
+                    session_name: "vm-2".to_string(),
+                    os: "linux".to_string(),
+                    status: "Running".to_string(),
+                    ip: String::new(),
+                    region: "eastus".to_string(),
+                    tmux_sessions: vec![TmuxSessionInfo {
+                        session_name: "copilot-9".to_string(),
+                        vm_name: "vm-2".to_string(),
+                        windows: 1,
+                        attached: false,
+                        agent_status: AgentStatus::WaitingInput,
+                        last_output: "second".to_string(),
+                        working_directory: String::new(),
+                        repo_url: String::new(),
+                        git_branch: String::new(),
+                        pr_url: String::new(),
+                        task_summary: String::new(),
+                    }],
+                },
+            ],
+            timestamp: None,
+            azlin_path: PathBuf::from("azlin"),
+            exclude_vms: Vec::new(),
+        };
+        let mut ui_state = FleetTuiUiState {
+            session_search: Some("VM-2".to_string()),
+            fleet_subview: FleetSubview::AllSessions,
+            ..Default::default()
+        };
+
+        ui_state.sync_to_state(&state);
+        assert!(ui_state.selection_matches("vm-2", "copilot-9"));
+
+        ui_state.move_selection(&state, 1);
+        assert!(ui_state.selection_matches("vm-2", "copilot-9"));
+    }
+
+    #[test]
     fn fleet_tui_ui_state_tracks_new_session_vm_selection() {
         let state = FleetState {
             vms: vec![
@@ -9028,6 +10446,80 @@ exit 1
 
         ui_state.move_selection(&state, 1);
         assert_eq!(ui_state.new_session_vm.as_deref(), Some("vm-1"));
+    }
+
+    #[test]
+    fn fleet_tui_ui_state_tracks_project_selection() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let previous_home = env::var_os("HOME");
+        unsafe { env::set_var("HOME", home.path()) };
+        let dashboard_path = home.path().join(".amplihack/fleet/dashboard.json");
+        fs::create_dir_all(dashboard_path.parent().unwrap()).unwrap();
+        fs::write(
+            &dashboard_path,
+            serde_json::json!([
+                {
+                    "repo_url": "https://github.com/org/repo-a",
+                    "name": "repo-a",
+                    "github_identity": "",
+                    "priority": "medium",
+                    "notes": "",
+                    "vms": [],
+                    "tasks_total": 0,
+                    "tasks_completed": 0,
+                    "tasks_failed": 0,
+                    "tasks_in_progress": 0,
+                    "prs_created": [],
+                    "estimated_cost_usd": 0.0,
+                    "started_at": now_isoformat(),
+                    "last_activity": null
+                },
+                {
+                    "repo_url": "https://github.com/org/repo-b",
+                    "name": "repo-b",
+                    "github_identity": "",
+                    "priority": "high",
+                    "notes": "",
+                    "vms": [],
+                    "tasks_total": 0,
+                    "tasks_completed": 0,
+                    "tasks_failed": 0,
+                    "tasks_in_progress": 0,
+                    "prs_created": [],
+                    "estimated_cost_usd": 0.0,
+                    "started_at": now_isoformat(),
+                    "last_activity": null
+                }
+            ])
+            .to_string(),
+        )
+        .unwrap();
+
+        let state = FleetState::new(PathBuf::from("azlin"));
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Projects,
+            ..Default::default()
+        };
+
+        ui_state.sync_to_state(&state);
+        assert_eq!(
+            ui_state.selected_project_repo.as_deref(),
+            Some("https://github.com/org/repo-a")
+        );
+
+        ui_state.move_selection(&state, 1);
+        assert_eq!(
+            ui_state.selected_project_repo.as_deref(),
+            Some("https://github.com/org/repo-b")
+        );
+
+        match previous_home {
+            Some(value) => unsafe { env::set_var("HOME", value) },
+            None => unsafe { env::remove_var("HOME") },
+        }
     }
 
     #[test]
@@ -9090,11 +10582,11 @@ exit 1
                     attached: true,
                     agent_status: AgentStatus::WaitingInput,
                     last_output: "Need instruction\nWaiting for confirmation".to_string(),
-                    working_directory: String::new(),
-                    repo_url: String::new(),
-                    git_branch: String::new(),
-                    pr_url: String::new(),
-                    task_summary: String::new(),
+                    working_directory: "/tmp/demo".to_string(),
+                    repo_url: "https://github.com/org/demo.git".to_string(),
+                    git_branch: "main".to_string(),
+                    pr_url: "https://github.com/org/demo/pull/42".to_string(),
+                    task_summary: "Awaiting operator confirmation".to_string(),
                 }],
             }],
             timestamp: None,
@@ -9119,9 +10611,60 @@ exit 1
 
         assert!(rendered.contains("[detail]"));
         assert!(rendered.contains("Session Detail"));
+        assert!(rendered.contains("branch: main"));
+        assert!(rendered.contains("repo: https://github.com/org/demo.git"));
+        assert!(rendered.contains("cwd: /tmp/demo"));
+        assert!(rendered.contains("pr: https://github.com/org/demo/pull/42"));
+        assert!(rendered.contains("task: Awaiting operator confirmation"));
         assert!(rendered.contains("Need instruction"));
         assert!(rendered.contains("Prepared proposal"));
         assert!(rendered.contains("Run cargo test"));
+    }
+
+    #[test]
+    fn render_tui_detail_view_prefers_refreshed_tmux_capture() {
+        let state = FleetState {
+            vms: vec![VmInfo {
+                name: "vm-1".to_string(),
+                session_name: "vm-1".to_string(),
+                os: "linux".to_string(),
+                status: "Running".to_string(),
+                ip: String::new(),
+                region: "westus2".to_string(),
+                tmux_sessions: vec![TmuxSessionInfo {
+                    session_name: "claude-1".to_string(),
+                    vm_name: "vm-1".to_string(),
+                    windows: 1,
+                    attached: false,
+                    agent_status: AgentStatus::WaitingInput,
+                    last_output: "summary line".to_string(),
+                    working_directory: String::new(),
+                    repo_url: String::new(),
+                    git_branch: String::new(),
+                    pr_url: String::new(),
+                    task_summary: String::new(),
+                }],
+            }],
+            timestamp: None,
+            azlin_path: PathBuf::from("azlin"),
+            exclude_vms: Vec::new(),
+        };
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Detail,
+            detail_capture: Some(FleetDetailCapture {
+                vm_name: "vm-1".to_string(),
+                session_name: "claude-1".to_string(),
+                output: "full capture line 1\nfull capture line 2".to_string(),
+            }),
+            ..Default::default()
+        };
+        ui_state.sync_to_state(&state);
+
+        let rendered = render_tui_frame(&state, 15, &ui_state).unwrap();
+
+        assert!(rendered.contains("full capture line 1"));
+        assert!(rendered.contains("full capture line 2"));
+        assert!(!rendered.contains("summary line"));
     }
 
     #[test]
@@ -9247,6 +10790,151 @@ exit 1
     }
 
     #[test]
+    fn start_inline_editor_input_prefills_existing_text() {
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Editor,
+            ..Default::default()
+        };
+        ui_state.editor_decision = Some(SessionDecision {
+            session_name: "claude-1".to_string(),
+            vm_name: "vm-1".to_string(),
+            action: SessionAction::SendInput,
+            input_text: "y\n".to_string(),
+            reasoning: "Needs confirmation.".to_string(),
+            confidence: 0.9,
+        });
+
+        ui_state.start_inline_editor_input();
+
+        let input = ui_state.inline_input.as_ref().expect("inline input");
+        assert_eq!(input.mode, FleetTuiInlineInputMode::EditProposalInput);
+        assert_eq!(input.buffer, "y\\n");
+        assert!(
+            ui_state
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.contains("Enter saves"))
+        );
+    }
+
+    #[test]
+    fn start_inline_session_search_prefills_existing_text() {
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Fleet,
+            session_search: Some("copilot".to_string()),
+            ..Default::default()
+        };
+
+        ui_state.start_inline_session_search();
+
+        let input = ui_state.inline_input.as_ref().expect("inline input");
+        assert_eq!(input.mode, FleetTuiInlineInputMode::SearchSessions);
+        assert_eq!(input.buffer, "copilot");
+        assert!(
+            ui_state
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.contains("Searching fleet sessions inline"))
+        );
+    }
+
+    #[test]
+    fn render_tui_editor_view_shows_inline_edit_prompt() {
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Editor,
+            ..Default::default()
+        };
+        ui_state.editor_decision = Some(SessionDecision {
+            session_name: "claude-1".to_string(),
+            vm_name: "vm-1".to_string(),
+            action: SessionAction::SendInput,
+            input_text: "y\n".to_string(),
+            reasoning: "Needs confirmation.".to_string(),
+            confidence: 0.9,
+        });
+        ui_state.start_inline_editor_input();
+
+        let rendered =
+            render_tui_frame(&FleetState::new(PathBuf::from("azlin")), 15, &ui_state).unwrap();
+
+        assert!(rendered.contains("Edit input > y\\n_"));
+        assert!(rendered.contains("Enter save  Esc cancel  Backspace delete"));
+    }
+
+    #[test]
+    fn apply_inline_editor_input_expands_newline_escapes() {
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Editor,
+            ..Default::default()
+        };
+        ui_state.editor_decision = Some(SessionDecision {
+            session_name: "claude-1".to_string(),
+            vm_name: "vm-1".to_string(),
+            action: SessionAction::SendInput,
+            input_text: String::new(),
+            reasoning: "Needs confirmation.".to_string(),
+            confidence: 0.9,
+        });
+
+        ui_state.apply_inline_editor_input("line one\\nline two");
+
+        let decision = ui_state.editor_decision.as_ref().expect("editor decision");
+        assert_eq!(decision.input_text, "line one\nline two");
+        assert_eq!(
+            ui_state.status_message.as_deref(),
+            Some("Updated editor input for vm-1/claude-1.")
+        );
+    }
+
+    #[test]
+    fn apply_inline_session_search_trims_and_clears_empty_value() {
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Fleet,
+            ..Default::default()
+        };
+
+        ui_state.apply_inline_session_search("  vm-2  ");
+        assert_eq!(ui_state.session_search.as_deref(), Some("vm-2"));
+        assert_eq!(
+            ui_state.status_message.as_deref(),
+            Some("Searching fleet sessions for 'vm-2'.")
+        );
+
+        ui_state.apply_inline_session_search("   ");
+        assert!(ui_state.session_search.is_none());
+        assert_eq!(
+            ui_state.status_message.as_deref(),
+            Some("Cleared fleet session search.")
+        );
+    }
+
+    #[test]
+    fn render_tui_frame_shows_logo_by_default() {
+        let rendered = render_tui_frame(
+            &FleetState::new(PathBuf::from("azlin")),
+            15,
+            &FleetTuiUiState::default(),
+        )
+        .unwrap();
+
+        assert!(rendered.contains("A M P L I H A C K   F L E E T"));
+        assert!(rendered.contains("|  ☠  |"));
+    }
+
+    #[test]
+    fn render_tui_frame_hides_logo_when_toggled_off() {
+        let ui_state = FleetTuiUiState {
+            show_logo: false,
+            ..Default::default()
+        };
+        let rendered =
+            render_tui_frame(&FleetState::new(PathBuf::from("azlin")), 15, &ui_state).unwrap();
+
+        assert!(!rendered.contains("A M P L I H A C K   F L E E T"));
+        assert!(!rendered.contains("|  ☠  |"));
+    }
+
+    #[test]
     fn render_tui_fleet_view_shows_placeholder_for_running_vm_without_sessions() {
         let state = FleetState {
             vms: vec![VmInfo {
@@ -9268,6 +10956,155 @@ exit 1
         assert!(rendered.contains("empty-vm/(no sessions)"));
         // new cockpit renderer shows "empty" label instead of "no tmux sessions detected"
         assert!(rendered.contains("(no sessions)"));
+    }
+
+    #[test]
+    fn render_tui_fleet_view_shows_inline_search_prompt() {
+        let state = FleetState {
+            vms: vec![VmInfo {
+                name: "vm-1".to_string(),
+                session_name: "vm-1".to_string(),
+                os: "linux".to_string(),
+                status: "Running".to_string(),
+                ip: String::new(),
+                region: "westus2".to_string(),
+                tmux_sessions: vec![TmuxSessionInfo {
+                    session_name: "claude-1".to_string(),
+                    vm_name: "vm-1".to_string(),
+                    windows: 1,
+                    attached: false,
+                    agent_status: AgentStatus::Running,
+                    last_output: "first".to_string(),
+                    working_directory: String::new(),
+                    repo_url: String::new(),
+                    git_branch: String::new(),
+                    pr_url: String::new(),
+                    task_summary: String::new(),
+                }],
+            }],
+            timestamp: None,
+            azlin_path: PathBuf::from("azlin"),
+            exclude_vms: Vec::new(),
+        };
+        let ui_state = FleetTuiUiState {
+            inline_input: Some(FleetTuiInlineInput {
+                mode: FleetTuiInlineInputMode::SearchSessions,
+                buffer: "cla".to_string(),
+            }),
+            ..Default::default()
+        };
+
+        let rendered = render_tui_frame(&state, 15, &ui_state).unwrap();
+
+        assert!(rendered.contains("Search sessions > cla_"));
+        assert!(rendered.contains("Enter apply | Esc cancel | Backspace delete"));
+    }
+
+    #[test]
+    fn render_tui_fleet_view_search_matches_vm_name_case_insensitively() {
+        let state = FleetState {
+            vms: vec![
+                VmInfo {
+                    name: "vm-1".to_string(),
+                    session_name: "vm-1".to_string(),
+                    os: "linux".to_string(),
+                    status: "Running".to_string(),
+                    ip: String::new(),
+                    region: "westus2".to_string(),
+                    tmux_sessions: vec![TmuxSessionInfo {
+                        session_name: "claude-1".to_string(),
+                        vm_name: "vm-1".to_string(),
+                        windows: 1,
+                        attached: false,
+                        agent_status: AgentStatus::Running,
+                        last_output: "first".to_string(),
+                        working_directory: String::new(),
+                        repo_url: String::new(),
+                        git_branch: String::new(),
+                        pr_url: String::new(),
+                        task_summary: String::new(),
+                    }],
+                },
+                VmInfo {
+                    name: "vm-2".to_string(),
+                    session_name: "vm-2".to_string(),
+                    os: "linux".to_string(),
+                    status: "Running".to_string(),
+                    ip: String::new(),
+                    region: "eastus".to_string(),
+                    tmux_sessions: vec![TmuxSessionInfo {
+                        session_name: "copilot-9".to_string(),
+                        vm_name: "vm-2".to_string(),
+                        windows: 1,
+                        attached: false,
+                        agent_status: AgentStatus::WaitingInput,
+                        last_output: "second".to_string(),
+                        working_directory: String::new(),
+                        repo_url: String::new(),
+                        git_branch: String::new(),
+                        pr_url: String::new(),
+                        task_summary: String::new(),
+                    }],
+                },
+            ],
+            timestamp: None,
+            azlin_path: PathBuf::from("azlin"),
+            exclude_vms: Vec::new(),
+        };
+        let mut ui_state = FleetTuiUiState {
+            session_search: Some("VM-2".to_string()),
+            fleet_subview: FleetSubview::AllSessions,
+            ..Default::default()
+        };
+        ui_state.sync_to_state(&state);
+
+        let rendered = render_tui_frame(&state, 15, &ui_state).unwrap();
+
+        assert!(rendered.contains("Search: VM-2 (press / to edit, Esc to clear)"));
+        assert!(rendered.contains("Selected session: vm-2/copilot-9"));
+        assert!(rendered.contains("[search: VM-2]"));
+    }
+
+    #[test]
+    fn render_tui_frame_shows_refresh_progress() {
+        let state = FleetState {
+            vms: vec![VmInfo {
+                name: "vm-1".to_string(),
+                session_name: "vm-1".to_string(),
+                os: "linux".to_string(),
+                status: "Running".to_string(),
+                ip: String::new(),
+                region: "westus2".to_string(),
+                tmux_sessions: vec![TmuxSessionInfo {
+                    session_name: "claude-1".to_string(),
+                    vm_name: "vm-1".to_string(),
+                    windows: 1,
+                    attached: false,
+                    agent_status: AgentStatus::Running,
+                    last_output: "first".to_string(),
+                    working_directory: String::new(),
+                    repo_url: String::new(),
+                    git_branch: String::new(),
+                    pr_url: String::new(),
+                    task_summary: String::new(),
+                }],
+            }],
+            timestamp: None,
+            azlin_path: PathBuf::from("azlin"),
+            exclude_vms: Vec::new(),
+        };
+        let ui_state = FleetTuiUiState {
+            refresh_progress: Some(FleetRefreshProgress {
+                completed_vms: 1,
+                total_vms: 2,
+                current_vm: Some("vm-2".to_string()),
+            }),
+            ..Default::default()
+        };
+
+        let rendered = render_tui_frame(&state, 15, &ui_state).unwrap();
+
+        assert!(rendered.contains("[refresh: 1/2 polling vm-2]"));
     }
 
     #[test]
@@ -9304,10 +11141,10 @@ exit 1
         assert_eq!(ui_state.tab, FleetTuiTab::Detail);
 
         ui_state.cycle_tab_forward();
-        assert_eq!(ui_state.tab, FleetTuiTab::Projects);
+        assert_eq!(ui_state.tab, FleetTuiTab::Editor);
 
         ui_state.cycle_tab_forward();
-        assert_eq!(ui_state.tab, FleetTuiTab::Editor);
+        assert_eq!(ui_state.tab, FleetTuiTab::Projects);
 
         ui_state.cycle_tab_forward();
         assert_eq!(ui_state.tab, FleetTuiTab::NewSession);
@@ -9319,10 +11156,10 @@ exit 1
         assert_eq!(ui_state.tab, FleetTuiTab::NewSession);
 
         ui_state.cycle_tab_backward();
-        assert_eq!(ui_state.tab, FleetTuiTab::Editor);
+        assert_eq!(ui_state.tab, FleetTuiTab::Projects);
 
         ui_state.cycle_tab_backward();
-        assert_eq!(ui_state.tab, FleetTuiTab::Projects);
+        assert_eq!(ui_state.tab, FleetTuiTab::Editor);
 
         ui_state.cycle_tab_backward();
         assert_eq!(ui_state.tab, FleetTuiTab::Detail);
@@ -9362,6 +11199,7 @@ exit 1
         assert!(rendered.contains("5 / n / N"));
         assert!(rendered.contains("Esc / b / B"));
         assert!(rendered.contains("x / X"));
+        assert!(rendered.contains("/              Search fleet sessions"));
         assert!(rendered.contains("Filters"));
     }
 
@@ -9605,6 +11443,162 @@ exit 1
     }
 
     #[test]
+    fn render_tui_detail_view_shows_skipped_proposal_notice() {
+        let state = FleetState {
+            vms: vec![VmInfo {
+                name: "vm-1".to_string(),
+                session_name: "vm-1".to_string(),
+                os: "linux".to_string(),
+                status: "Running".to_string(),
+                ip: String::new(),
+                region: "westus2".to_string(),
+                tmux_sessions: vec![TmuxSessionInfo {
+                    session_name: "claude-1".to_string(),
+                    vm_name: "vm-1".to_string(),
+                    windows: 1,
+                    attached: false,
+                    agent_status: AgentStatus::WaitingInput,
+                    last_output: "waiting".to_string(),
+                    working_directory: String::new(),
+                    repo_url: String::new(),
+                    git_branch: String::new(),
+                    pr_url: String::new(),
+                    task_summary: String::new(),
+                }],
+            }],
+            timestamp: None,
+            azlin_path: PathBuf::from("azlin"),
+            exclude_vms: Vec::new(),
+        };
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Detail,
+            proposal_notice: Some(FleetProposalNotice {
+                vm_name: "vm-1".to_string(),
+                session_name: "claude-1".to_string(),
+                title: "Proposal status".to_string(),
+                message: "Skipped.".to_string(),
+            }),
+            ..Default::default()
+        };
+        ui_state.sync_to_state(&state);
+
+        let rendered = render_tui_frame(&state, 15, &ui_state).unwrap();
+
+        assert!(rendered.contains("Proposal status"));
+        assert!(rendered.contains("Skipped."));
+    }
+
+    #[test]
+    fn render_tui_detail_view_shows_reasoner_notice_alongside_proposal() {
+        let state = FleetState {
+            vms: vec![VmInfo {
+                name: "vm-1".to_string(),
+                session_name: "vm-1".to_string(),
+                os: "linux".to_string(),
+                status: "Running".to_string(),
+                ip: String::new(),
+                region: "westus2".to_string(),
+                tmux_sessions: vec![TmuxSessionInfo {
+                    session_name: "claude-1".to_string(),
+                    vm_name: "vm-1".to_string(),
+                    windows: 1,
+                    attached: false,
+                    agent_status: AgentStatus::WaitingInput,
+                    last_output: "waiting".to_string(),
+                    working_directory: String::new(),
+                    repo_url: String::new(),
+                    git_branch: String::new(),
+                    pr_url: String::new(),
+                    task_summary: String::new(),
+                }],
+            }],
+            timestamp: None,
+            azlin_path: PathBuf::from("azlin"),
+            exclude_vms: Vec::new(),
+        };
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Detail,
+            last_decision: Some(SessionDecision {
+                session_name: "claude-1".to_string(),
+                vm_name: "vm-1".to_string(),
+                action: SessionAction::Wait,
+                input_text: String::new(),
+                reasoning: "Waiting for confirmation.".to_string(),
+                confidence: 0.6,
+            }),
+            proposal_notice: Some(FleetProposalNotice {
+                vm_name: "vm-1".to_string(),
+                session_name: "claude-1".to_string(),
+                title: "Reasoner status".to_string(),
+                message: "Native claude reasoner failed: ANTHROPIC_API_KEY missing.".to_string(),
+            }),
+            ..Default::default()
+        };
+        ui_state.sync_to_state(&state);
+
+        let rendered = render_tui_frame(&state, 15, &ui_state).unwrap();
+
+        assert!(rendered.contains("Prepared proposal"));
+        assert!(rendered.contains("Reasoner status"));
+        assert!(rendered.contains("ANTHROPIC_API_KEY missing"));
+    }
+
+    #[test]
+    fn render_tui_editor_view_shows_apply_failure_notice() {
+        let state = FleetState {
+            vms: vec![VmInfo {
+                name: "vm-1".to_string(),
+                session_name: "vm-1".to_string(),
+                os: "linux".to_string(),
+                status: "Running".to_string(),
+                ip: String::new(),
+                region: "westus2".to_string(),
+                tmux_sessions: vec![TmuxSessionInfo {
+                    session_name: "claude-1".to_string(),
+                    vm_name: "vm-1".to_string(),
+                    windows: 1,
+                    attached: false,
+                    agent_status: AgentStatus::WaitingInput,
+                    last_output: "waiting".to_string(),
+                    working_directory: String::new(),
+                    repo_url: String::new(),
+                    git_branch: String::new(),
+                    pr_url: String::new(),
+                    task_summary: String::new(),
+                }],
+            }],
+            timestamp: None,
+            azlin_path: PathBuf::from("azlin"),
+            exclude_vms: Vec::new(),
+        };
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Editor,
+            editor_decision: Some(SessionDecision {
+                session_name: "claude-1".to_string(),
+                vm_name: "vm-1".to_string(),
+                action: SessionAction::SendInput,
+                input_text: "rm -rf /".to_string(),
+                reasoning: "testing dangerous input".to_string(),
+                confidence: 0.95,
+            }),
+            proposal_notice: Some(FleetProposalNotice {
+                vm_name: "vm-1".to_string(),
+                session_name: "claude-1".to_string(),
+                title: "Apply status".to_string(),
+                message: "Edited apply failed: blocked by dangerous-input policy.".to_string(),
+            }),
+            ..Default::default()
+        };
+        ui_state.sync_to_state(&state);
+
+        let rendered = render_tui_frame(&state, 15, &ui_state).unwrap();
+
+        assert!(rendered.contains("Action Editor"));
+        assert!(rendered.contains("Apply status"));
+        assert!(rendered.contains("dangerous-input policy"));
+    }
+
+    #[test]
     fn run_tui_apply_edited_returns_to_detail_on_success() {
         let mut ui_state = FleetTuiUiState {
             tab: FleetTuiTab::Editor,
@@ -9665,6 +11659,12 @@ exit 1
                 .as_deref()
                 .is_some_and(|message| message.contains("dangerous-input policy"))
         );
+        let notice = ui_state
+            .proposal_notice
+            .as_ref()
+            .expect("apply failure should leave a persistent notice");
+        assert_eq!(notice.title, "Apply status");
+        assert!(notice.message.contains("dangerous-input policy"));
     }
 
     #[test]
@@ -9691,6 +11691,12 @@ exit 1
                 .as_deref()
                 .is_some_and(|message| message.contains("dangerous-input policy"))
         );
+        let notice = ui_state
+            .proposal_notice
+            .as_ref()
+            .expect("edited apply failure should leave a persistent notice");
+        assert_eq!(notice.title, "Apply status");
+        assert!(notice.message.contains("dangerous-input policy"));
     }
 
     #[test]
@@ -9889,6 +11895,73 @@ exit 1
         assert!(rendered.contains("[projects]"));
         assert!(rendered.contains("Fleet Projects (1)"));
         assert!(rendered.contains("https://github.com/org/repo"));
+        assert!(rendered.contains("i add project repo"));
+    }
+
+    #[test]
+    fn run_tui_add_and_remove_project_updates_dashboard_file() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let previous_home = env::var_os("HOME");
+        unsafe { env::set_var("HOME", home.path()) };
+
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Projects,
+            ..Default::default()
+        };
+
+        add_project_from_repo_input(&mut ui_state, "https://github.com/org/new-repo").unwrap();
+        let dashboard = FleetDashboardSummary::load(Some(default_dashboard_path())).unwrap();
+        assert_eq!(dashboard.projects.len(), 1);
+        assert_eq!(dashboard.projects[0].name, "new-repo");
+        assert_eq!(
+            ui_state.selected_project_repo.as_deref(),
+            Some("https://github.com/org/new-repo")
+        );
+
+        run_tui_remove_project(&mut ui_state).unwrap();
+        let dashboard = FleetDashboardSummary::load(Some(default_dashboard_path())).unwrap();
+        assert!(dashboard.projects.is_empty());
+        assert!(ui_state.selected_project_repo.is_none());
+
+        match previous_home {
+            Some(value) => unsafe { env::set_var("HOME", value) },
+            None => unsafe { env::remove_var("HOME") },
+        }
+    }
+
+    #[test]
+    fn render_tui_projects_view_shows_inline_add_prompt() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let previous_home = env::var_os("HOME");
+        unsafe { env::set_var("HOME", home.path()) };
+
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Projects,
+            ..Default::default()
+        };
+        ui_state.start_inline_project_input();
+        ui_state.push_inline_input_char('h');
+        ui_state.push_inline_input_char('t');
+        ui_state.push_inline_input_char('t');
+        ui_state.push_inline_input_char('p');
+        ui_state.push_inline_input_char('s');
+
+        let rendered = render_tui_frame(&FleetState::new(PathBuf::from("azlin")), 20, &ui_state)
+            .expect("rendered projects view");
+
+        match previous_home {
+            Some(value) => unsafe { env::set_var("HOME", value) },
+            None => unsafe { env::remove_var("HOME") },
+        }
+
+        assert!(rendered.contains("Add project repo > https_"));
+        assert!(rendered.contains("Enter add | Esc cancel | Backspace delete"));
     }
 
     #[test]
@@ -10336,6 +12409,58 @@ exit 1
     }
 
     #[test]
+    fn run_tui_refresh_detail_capture_reads_fresh_tmux_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let azlin = dir.path().join("azlin");
+        write_executable(
+            &azlin,
+            "#!/bin/sh\nif [ \"$1\" = connect ]; then\n  printf \"fresh detail line 1\\nfresh detail line 2\\n\";\nelse\n  exit 1\nfi\n",
+        );
+        let state = FleetState {
+            vms: vec![VmInfo {
+                name: "vm-1".to_string(),
+                session_name: "vm-1".to_string(),
+                os: "linux".to_string(),
+                status: "Running".to_string(),
+                ip: String::new(),
+                region: "westus2".to_string(),
+                tmux_sessions: vec![TmuxSessionInfo {
+                    session_name: "claude-1".to_string(),
+                    vm_name: "vm-1".to_string(),
+                    windows: 1,
+                    attached: false,
+                    agent_status: AgentStatus::WaitingInput,
+                    last_output: "summary line".to_string(),
+                    working_directory: String::new(),
+                    repo_url: String::new(),
+                    git_branch: String::new(),
+                    pr_url: String::new(),
+                    task_summary: String::new(),
+                }],
+            }],
+            timestamp: None,
+            azlin_path: azlin.clone(),
+            exclude_vms: Vec::new(),
+        };
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Detail,
+            ..Default::default()
+        };
+        ui_state.sync_to_state(&state);
+
+        run_tui_refresh_detail_capture(&azlin, &state, &mut ui_state, 10).unwrap();
+
+        let capture = ui_state
+            .detail_capture
+            .as_ref()
+            .expect("expected refreshed detail capture");
+        assert_eq!(capture.vm_name, "vm-1");
+        assert_eq!(capture.session_name, "claude-1");
+        assert!(capture.output.contains("fresh detail line 1"));
+        assert!(capture.output.contains("fresh detail line 2"));
+    }
+
+    #[test]
     fn run_watch_failure_is_nonfatal() {
         let _guard = home_env_lock()
             .lock()
@@ -10417,5 +12542,488 @@ exit 1
         let err = run_watch("bad vm!@#", "session-1", 30).expect_err("invalid VM should fail");
         assert_eq!(command_error::exit_code(&err), None);
         assert!(err.to_string().contains("Invalid VM name"));
+    }
+
+    // ── T5: Per-session LRU capture cache ─────────────────────────────────
+
+    #[test]
+    fn capture_cache_insert_and_hit() {
+        let ui = FleetTuiUiState::default();
+        assert!(
+            ui.get_capture("vm-1", "sess-1").is_none(),
+            "empty cache should miss"
+        );
+        ui.put_capture("vm-1", "sess-1", "line1\nline2".to_string());
+        let got = ui
+            .get_capture("vm-1", "sess-1")
+            .expect("cache should hit after insert");
+        assert!(got.contains("line1"), "cached output should match");
+    }
+
+    #[test]
+    fn capture_cache_miss_on_different_key() {
+        let ui = FleetTuiUiState::default();
+        ui.put_capture("vm-1", "sess-1", "output-a".to_string());
+        assert!(
+            ui.get_capture("vm-1", "sess-2").is_none(),
+            "different session should miss"
+        );
+        assert!(
+            ui.get_capture("vm-2", "sess-1").is_none(),
+            "different vm should miss"
+        );
+    }
+
+    #[test]
+    fn capture_cache_evicts_lru_when_at_capacity() {
+        let ui = FleetTuiUiState::default();
+        // Fill cache to capacity (64 entries).
+        for i in 0..CAPTURE_CACHE_CAPACITY {
+            ui.put_capture("vm", &format!("s{i}"), format!("out{i}"));
+        }
+        // Touch the first entry so it becomes most recently used.
+        assert!(
+            ui.get_capture("vm", "s0").is_some(),
+            "s0 should still be cached"
+        );
+        // Insert one more — s1 is now least-recently-used, so it should be evicted.
+        ui.put_capture("vm", "s_new", "new".to_string());
+        assert!(
+            ui.get_capture("vm", "s1").is_none(),
+            "s1 should be evicted after capacity overflow"
+        );
+        assert!(
+            ui.get_capture("vm", "s_new").is_some(),
+            "new entry should exist"
+        );
+    }
+
+    #[test]
+    fn capture_cache_compat_detail_capture_field_falls_through() {
+        // Tests that pre-existing `detail_capture` field still works.
+        let ui = FleetTuiUiState {
+            detail_capture: Some(FleetDetailCapture {
+                vm_name: "vm-1".to_string(),
+                session_name: "sess-1".to_string(),
+                output: "compat-output".to_string(),
+            }),
+            ..Default::default()
+        };
+        let got = ui
+            .get_capture("vm-1", "sess-1")
+            .expect("compat field should fall through");
+        assert_eq!(got, "compat-output");
+    }
+
+    // ── T4: Background channel helpers ────────────────────────────────────
+
+    #[test]
+    fn drain_bg_messages_handles_session_created() {
+        let (tx, rx) = mpsc::channel::<BackgroundMessage>();
+        let mut ui = FleetTuiUiState::default();
+        ui.bg_rx = Some(Arc::new(Mutex::new(rx)));
+
+        tx.send(BackgroundMessage::SessionCreated {
+            message: "Created session 'claude-1234' on vm-1 running claude.".to_string(),
+        })
+        .unwrap();
+
+        ui.drain_bg_messages();
+
+        assert_eq!(ui.create_session_pending, false, "pending flag cleared");
+        assert_eq!(
+            ui.tab,
+            FleetTuiTab::Fleet,
+            "tab switched to fleet on created"
+        );
+        assert!(
+            ui.status_message
+                .as_deref()
+                .unwrap_or("")
+                .contains("Created session"),
+            "status message set"
+        );
+    }
+
+    #[test]
+    fn drain_bg_messages_handles_slow_capture_update() {
+        let (tx, rx) = mpsc::channel::<BackgroundMessage>();
+        let mut ui = FleetTuiUiState::default();
+        ui.bg_rx = Some(Arc::new(Mutex::new(rx)));
+
+        tx.send(BackgroundMessage::SlowCaptureUpdate {
+            vm_name: "vm-bg".to_string(),
+            session_name: "sess-bg".to_string(),
+            output: "bg capture line".to_string(),
+        })
+        .unwrap();
+
+        ui.drain_bg_messages();
+
+        let got = ui
+            .get_capture("vm-bg", "sess-bg")
+            .expect("cache should be populated");
+        assert!(got.contains("bg capture line"));
+    }
+
+    #[test]
+    fn drain_bg_messages_handles_background_error() {
+        let (tx, rx) = mpsc::channel::<BackgroundMessage>();
+        let mut ui = FleetTuiUiState::default();
+        ui.bg_rx = Some(Arc::new(Mutex::new(rx)));
+
+        tx.send(BackgroundMessage::Error("disk full".to_string()))
+            .unwrap();
+        ui.drain_bg_messages();
+
+        assert!(
+            ui.status_message
+                .as_deref()
+                .unwrap_or("")
+                .contains("[bg error]"),
+            "error message surfaced"
+        );
+    }
+
+    #[test]
+    fn drain_bg_messages_noop_without_channel() {
+        let mut ui = FleetTuiUiState::default();
+        // Should not panic when bg_rx is None.
+        ui.drain_bg_messages();
+    }
+
+    // ── T1: Session creation dispatch ─────────────────────────────────────
+
+    #[test]
+    fn run_tui_create_session_dispatches_to_background_when_channel_available() {
+        let (cmd_tx, cmd_rx) = mpsc::channel::<BackgroundCommand>();
+        let (_msg_tx, msg_rx) = mpsc::channel::<BackgroundMessage>();
+        let state = FleetState {
+            vms: vec![VmInfo {
+                name: "vm-1".to_string(),
+                session_name: "vm-1".to_string(),
+                os: "linux".to_string(),
+                status: "Running".to_string(),
+                ip: String::new(),
+                region: "westus2".to_string(),
+                tmux_sessions: Vec::new(),
+            }],
+            timestamp: None,
+            azlin_path: PathBuf::from("azlin"),
+            exclude_vms: Vec::new(),
+        };
+        let mut ui = FleetTuiUiState {
+            tab: FleetTuiTab::NewSession,
+            bg_tx: Some(cmd_tx),
+            bg_rx: Some(Arc::new(Mutex::new(msg_rx))),
+            ..Default::default()
+        };
+        ui.sync_to_state(&state);
+        // Ensure a VM is selected.
+        ui.new_session_vm = Some("vm-1".to_string());
+
+        run_tui_create_session(&PathBuf::from("azlin"), &mut ui).unwrap();
+
+        // Should be pending.
+        assert!(ui.create_session_pending, "pending flag set");
+        assert!(
+            ui.status_message
+                .as_deref()
+                .unwrap_or("")
+                .contains("background"),
+            "status mentions background"
+        );
+
+        // Background command should have been sent.
+        let cmd = cmd_rx
+            .try_recv()
+            .expect("CreateSession command should have been sent");
+        assert!(
+            matches!(cmd, BackgroundCommand::CreateSession { .. }),
+            "expected CreateSession command"
+        );
+    }
+
+    #[test]
+    fn run_tui_create_session_falls_back_to_sync_without_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        let azlin = dir.path().join("azlin");
+        // Azlin that fails (no connect support).
+        write_executable(&azlin, "#!/bin/sh\nprintf 'no connection' >&2\nexit 1\n");
+        let mut ui = FleetTuiUiState {
+            tab: FleetTuiTab::NewSession,
+            ..Default::default()
+        };
+        ui.new_session_vm = Some("vm-1".to_string());
+
+        run_tui_create_session(&azlin, &mut ui).unwrap();
+
+        // Should not be pending (synchronous fallback).
+        assert!(
+            !ui.create_session_pending,
+            "pending flag not set in sync mode"
+        );
+        assert_eq!(
+            ui.tab,
+            FleetTuiTab::Fleet,
+            "tab switched to fleet on completion"
+        );
+    }
+
+    // ── T2: Adoption refresh trigger ──────────────────────────────────────
+
+    #[test]
+    fn run_tui_adopt_triggers_force_refresh_on_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let azlin = dir.path().join("azlin");
+        write_executable(
+            &azlin,
+            r#"#!/bin/sh
+if [ "$1" = "connect" ] && [ "$2" = "vm-1" ]; then
+  printf '%s\n' \
+    "===SESSION:work-1===" \
+    "CWD:/workspace/repo" \
+    "CMD:claude" \
+    "REPO:https://github.com/org/repo.git" \
+    "BRANCH:feat/login" \
+    "LAST_MSG:Resume work on auth" \
+    "===DONE==="
+  exit 0
+fi
+exit 1
+"#,
+        );
+
+        let (cmd_tx, cmd_rx) = mpsc::channel::<BackgroundCommand>();
+        let (_msg_tx, msg_rx) = mpsc::channel::<BackgroundMessage>();
+
+        let state = FleetState {
+            vms: vec![VmInfo {
+                name: "vm-1".to_string(),
+                session_name: "vm-1".to_string(),
+                os: "linux".to_string(),
+                status: "Running".to_string(),
+                ip: String::new(),
+                region: "westus2".to_string(),
+                tmux_sessions: vec![TmuxSessionInfo {
+                    session_name: "work-1".to_string(),
+                    vm_name: "vm-1".to_string(),
+                    windows: 1,
+                    attached: false,
+                    agent_status: AgentStatus::Running,
+                    last_output: String::new(),
+                    working_directory: String::new(),
+                    repo_url: String::new(),
+                    git_branch: String::new(),
+                    pr_url: String::new(),
+                    task_summary: String::new(),
+                }],
+            }],
+            timestamp: None,
+            azlin_path: azlin.clone(),
+            exclude_vms: Vec::new(),
+        };
+
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prev_home = env::var_os("HOME");
+        let prev_queue = env::var_os("AMPLIHACK_QUEUE_PATH");
+        unsafe {
+            env::set_var("HOME", home.path());
+            env::remove_var("AMPLIHACK_QUEUE_PATH");
+        }
+
+        let mut ui = FleetTuiUiState {
+            fleet_subview: FleetSubview::AllSessions,
+            bg_tx: Some(cmd_tx),
+            bg_rx: Some(Arc::new(Mutex::new(msg_rx))),
+            ..Default::default()
+        };
+        ui.sync_to_state(&state);
+
+        let result = run_tui_adopt_selected_session(&azlin, &state, &mut ui);
+
+        unsafe {
+            match prev_home {
+                Some(v) => env::set_var("HOME", v),
+                None => env::remove_var("HOME"),
+            }
+            match prev_queue {
+                Some(v) => env::set_var("AMPLIHACK_QUEUE_PATH", v),
+                None => env::remove_var("AMPLIHACK_QUEUE_PATH"),
+            }
+        }
+
+        result.unwrap();
+
+        // Verify ForceStatusRefresh was sent.
+        let cmd = cmd_rx
+            .try_recv()
+            .expect("ForceStatusRefresh should have been sent after adopt");
+        assert!(
+            matches!(cmd, BackgroundCommand::ForceStatusRefresh),
+            "expected ForceStatusRefresh, got {cmd:?}"
+        );
+    }
+
+    // ── T6: Project management mode ───────────────────────────────────────
+
+    #[test]
+    fn project_mode_default_is_list() {
+        let ui = FleetTuiUiState::default();
+        assert_eq!(ui.project_mode, ProjectManagementMode::List);
+    }
+
+    #[test]
+    fn enter_project_remove_mode_requires_selection() {
+        let mut ui = FleetTuiUiState::default();
+        // No selected project — should not enter Remove mode.
+        ui.enter_project_remove_mode();
+        assert_eq!(ui.project_mode, ProjectManagementMode::List);
+        assert!(ui.status_message.is_some(), "error message set");
+    }
+
+    #[test]
+    fn enter_project_remove_mode_transitions_when_selected() {
+        let mut ui = FleetTuiUiState {
+            selected_project_repo: Some("https://github.com/org/repo".to_string()),
+            ..Default::default()
+        };
+        ui.enter_project_remove_mode();
+        assert_eq!(ui.project_mode, ProjectManagementMode::Remove);
+    }
+
+    #[test]
+    fn cancel_project_mode_returns_to_list() {
+        let mut ui = FleetTuiUiState {
+            project_mode: ProjectManagementMode::Remove,
+            selected_project_repo: Some("https://github.com/org/repo".to_string()),
+            ..Default::default()
+        };
+        ui.cancel_project_mode();
+        assert_eq!(ui.project_mode, ProjectManagementMode::List);
+    }
+
+    #[test]
+    fn confirm_project_remove_returns_to_list() {
+        let mut ui = FleetTuiUiState {
+            project_mode: ProjectManagementMode::Remove,
+            selected_project_repo: Some("https://github.com/org/repo".to_string()),
+            ..Default::default()
+        };
+        ui.confirm_project_remove();
+        assert_eq!(ui.project_mode, ProjectManagementMode::List);
+    }
+
+    // ── T3: Multiline editor ──────────────────────────────────────────────
+
+    #[test]
+    fn enter_multiline_editor_populates_lines() {
+        let mut ui = FleetTuiUiState::default();
+        assert!(!ui.editor_active);
+        ui.enter_multiline_editor("line one\nline two");
+        assert!(ui.editor_active, "editor should be active after entry");
+        assert_eq!(ui.editor_lines, vec!["line one", "line two"]);
+        assert_eq!(ui.editor_cursor_row, 1, "cursor on last row");
+    }
+
+    #[test]
+    fn enter_multiline_editor_with_empty_string_creates_one_line() {
+        let mut ui = FleetTuiUiState::default();
+        ui.enter_multiline_editor("");
+        assert!(ui.editor_active);
+        assert_eq!(ui.editor_lines.len(), 1);
+        assert_eq!(ui.editor_lines[0], "");
+    }
+
+    #[test]
+    fn editor_insert_char_appends_to_current_line() {
+        let mut ui = FleetTuiUiState::default();
+        ui.enter_multiline_editor("hel");
+        ui.editor_insert_char('l');
+        ui.editor_insert_char('o');
+        assert_eq!(ui.editor_content(), "hello");
+    }
+
+    #[test]
+    fn editor_insert_newline_adds_line() {
+        let mut ui = FleetTuiUiState::default();
+        ui.enter_multiline_editor("line1");
+        ui.editor_insert_char('\n');
+        assert_eq!(ui.editor_lines.len(), 2);
+        assert_eq!(ui.editor_cursor_row, 1);
+    }
+
+    #[test]
+    fn editor_backspace_removes_char() {
+        let mut ui = FleetTuiUiState::default();
+        ui.enter_multiline_editor("hello");
+        ui.editor_backspace();
+        assert_eq!(ui.editor_content(), "hell");
+    }
+
+    #[test]
+    fn editor_backspace_merges_empty_line_with_previous() {
+        let mut ui = FleetTuiUiState::default();
+        ui.enter_multiline_editor("line1\n");
+        // cursor is on line 1 (empty), backspace should merge with line 0.
+        assert_eq!(ui.editor_cursor_row, 1);
+        ui.editor_backspace();
+        assert_eq!(ui.editor_lines.len(), 1, "lines merged");
+        assert_eq!(ui.editor_cursor_row, 0);
+    }
+
+    #[test]
+    fn editor_cursor_navigation() {
+        let mut ui = FleetTuiUiState::default();
+        ui.enter_multiline_editor("line1\nline2\nline3");
+        assert_eq!(ui.editor_cursor_row, 2);
+        ui.editor_move_up();
+        assert_eq!(ui.editor_cursor_row, 1);
+        ui.editor_move_up();
+        assert_eq!(ui.editor_cursor_row, 0);
+        // Cannot go above row 0.
+        ui.editor_move_up();
+        assert_eq!(ui.editor_cursor_row, 0);
+        ui.editor_move_down();
+        assert_eq!(ui.editor_cursor_row, 1);
+    }
+
+    #[test]
+    fn editor_save_extracts_content() {
+        let mut ui = FleetTuiUiState {
+            tab: FleetTuiTab::Editor,
+            ..Default::default()
+        };
+        // Set up a decision so apply_inline_editor_input has something to update.
+        ui.editor_decision = Some(SessionDecision {
+            session_name: "sess-1".to_string(),
+            vm_name: "vm-1".to_string(),
+            action: SessionAction::SendInput,
+            input_text: "old text".to_string(),
+            reasoning: "test".to_string(),
+            confidence: 0.9,
+        });
+        ui.enter_multiline_editor("new\ncontent");
+        ui.editor_save();
+        assert!(!ui.editor_active, "editor deactivated after save");
+        assert!(ui.editor_lines.is_empty(), "lines cleared after save");
+        // The saved content should have been applied to editor_decision.
+        let saved_input = ui
+            .editor_decision
+            .as_ref()
+            .and_then(|d| Some(d.input_text.as_str()));
+        assert_eq!(saved_input, Some("new\ncontent"), "content saved");
+    }
+
+    #[test]
+    fn editor_discard_clears_without_saving() {
+        let mut ui = FleetTuiUiState::default();
+        ui.enter_multiline_editor("discard me");
+        ui.editor_discard();
+        assert!(!ui.editor_active, "editor deactivated after discard");
+        assert!(ui.editor_lines.is_empty(), "lines cleared after discard");
     }
 }

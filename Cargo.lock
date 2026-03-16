@@ -18,8 +18,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocator-api2"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+
+[[package]]
 name = "amplihack"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "amplihack-cli",
  "amplihack-hooks",
@@ -36,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-asset-resolver-bin"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "amplihack-cli",
  "tracing",
@@ -45,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "amplihack-state",
  "amplihack-types",
@@ -57,6 +63,7 @@ dependencies = [
  "flate2",
  "kuzu",
  "libc",
+ "lru",
  "prost",
  "regex",
  "rusqlite",
@@ -77,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "amplihack-cli",
  "amplihack-state",
@@ -93,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks-bin"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "amplihack-hooks",
  "amplihack-state",
@@ -106,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-state"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "amplihack-types",
  "libc",
@@ -119,7 +126,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-types"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -589,6 +596,8 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
+ "allocator-api2",
+ "equivalent",
  "foldhash 0.1.5",
 ]
 
@@ -873,6 +882,15 @@ name = "log"
 version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
+
+[[package]]
+name = "lru"
+version = "0.12.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38"
+dependencies = [
+ "hashbrown 0.15.5",
+]
 
 [[package]]
 name = "matchers"

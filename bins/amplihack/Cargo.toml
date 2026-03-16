@@ -59,3 +59,14 @@ path = "../../tests/integration/recipe_e2e_test.rs"
 [[test]]
 name = "no_python_probe"
 path = "../../tests/integration/no_python_probe_test.rs"
+
+# Issue #78 / v0.5.0: Fleet local dashboard probe tests (TC-09 through TC-12).
+# These tests validate the local session management dashboard:
+#   TC-09: fleet --help exits 0
+#   TC-10: no crash on empty locks directory
+#   TC-11: FleetDashboardSummary JSON schema roundtrip
+#   TC-12: run_fleet_dashboard(None) completes inline without spawning threads
+# Tests TC-10 and TC-12 FAIL until fleet_local implementation is complete.
+[[test]]
+name = "fleet_probe"
+path = "../../tests/integration/fleet_probe.rs"

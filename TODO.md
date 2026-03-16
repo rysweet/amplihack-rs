@@ -1,8 +1,8 @@
-# TODO — amplihack-rs Issue #77 Remaining Scope
+# TODO — amplihack-rs
 
-This file documents the honest state of remaining work for issue #77
-(Python-to-Rust port parity).  Items are marked with their acceptance-criteria
-reference so it is clear what is blocking issue closure.
+This file documents the resolved state for issues #77 and #78
+(Python-to-Rust port parity and Fleet TUI feature parity).
+Both issues are fully closed with all acceptance criteria satisfied.
 
 ---
 
@@ -141,19 +141,19 @@ Fleet TUI **core parity** is complete (AC5 satisfied):
 | Dry-run preview | ✅ Done |
 | Apply confirmation | ✅ Done |
 
-The following **advanced** features are deferred to **issue #78**
-("Full fleet TUI feature parity"):
+The following **advanced** features were deferred to **issue #78**
+("Full fleet TUI feature parity") and are now complete:
 
-| ID | Feature | Python source | Issue |
-|----|---------|---------------|-------|
-| T1 | Session creation from TUI | `_tui_workers.py:114-153` | #78 |
-| T2 | Session adoption from TUI | `_tui_actions.py:88-108` | #78 |
-| T3 | Proposal editor textarea | `_tui_actions.py:220-295` | #78 |
-| T4 | Two-phase background refresh | `_tui_refresh.py:124-188` | #78 |
-| T5 | Per-session tmux capture cache | `_tui_refresh.py:28-109` | #78 |
-| T6 | Interactive project management | `_tui_workers.py:177-212` | #78 |
+| ID | Feature | Python source | Status |
+|----|---------|---------------|--------|
+| T1 | Session creation from TUI | `_tui_workers.py:114-153` | ✅ Done (#78) |
+| T2 | Session adoption from TUI | `_tui_actions.py:88-108` | ✅ Done (#78) |
+| T3 | Proposal editor textarea | `_tui_actions.py:220-295` | ✅ Done (#78) |
+| T4 | Two-phase background refresh | `_tui_refresh.py:124-188` | ✅ Done (#78) |
+| T5 | Per-session tmux capture cache | `_tui_refresh.py:28-109` | ✅ Done (#78) |
+| T6 | Interactive project management | `_tui_workers.py:177-212` | ✅ Done (#78) |
 
-These are explicitly not blocking issue #77.
+All T1-T6 items are implemented and validated. Issue #78 Fleet TUI work is complete.
 
 ---
 

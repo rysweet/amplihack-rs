@@ -211,6 +211,208 @@ pub struct CodeGraphSummary {
     pub functions: i64,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+pub struct CodeGraphStats {
+    pub files: i64,
+    pub classes: i64,
+    pub functions: i64,
+    pub memory_file_links: i64,
+    pub memory_function_links: i64,
+}
+
+impl From<CodeGraphStats> for CodeGraphSummary {
+    fn from(value: CodeGraphStats) -> Self {
+        Self {
+            files: value.files,
+            classes: value.classes,
+            functions: value.functions,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct CodeGraphContextPayload {
+    pub memory_id: String,
+    pub files: Vec<CodeGraphContextFile>,
+    pub functions: Vec<CodeGraphContextFunction>,
+    pub classes: Vec<CodeGraphContextClass>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct CodeGraphContextFile {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub path: String,
+    pub language: String,
+    pub size_bytes: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct CodeGraphContextFunction {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub name: String,
+    pub signature: String,
+    pub docstring: String,
+    pub complexity: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct CodeGraphContextClass {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub name: String,
+    pub fully_qualified_name: String,
+    pub docstring: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct CodeGraphNamedEntry {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct CodeGraphSearchEntry {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct CodeGraphEdgeEntry {
+    pub caller: String,
+    pub callee: String,
+}
+
+pub(crate) trait CodeGraphReaderBackend {
+    fn stats(&self) -> Result<CodeGraphStats>;
+    fn context_payload(&self, memory_id: &str) -> Result<CodeGraphContextPayload>;
+    fn files(&self, pattern: Option<&str>, limit: u32) -> Result<Vec<String>>;
+    fn functions(&self, file: Option<&str>, limit: u32) -> Result<Vec<CodeGraphNamedEntry>>;
+    fn classes(&self, file: Option<&str>, limit: u32) -> Result<Vec<CodeGraphNamedEntry>>;
+    fn search(&self, name: &str, limit: u32) -> Result<Vec<CodeGraphSearchEntry>>;
+    fn callers(&self, name: &str, limit: u32) -> Result<Vec<CodeGraphEdgeEntry>>;
+    fn callees(&self, name: &str, limit: u32) -> Result<Vec<CodeGraphEdgeEntry>>;
+}
+
+pub(crate) fn open_code_graph_reader(
+    path_override: Option<&Path>,
+) -> Result<Box<dyn CodeGraphReaderBackend>> {
+    Ok(Box::new(KuzuCodeGraphReader::open(path_override)?))
+}
+
+struct KuzuCodeGraphReader {
+    db: KuzuDatabase,
+}
+
+impl KuzuCodeGraphReader {
+    fn open(path_override: Option<&Path>) -> Result<Self> {
+        Ok(Self {
+            db: open_kuzu_code_graph_db(path_override)?,
+        })
+    }
+
+    fn with_conn<T>(&self, f: impl FnOnce(&KuzuConnection<'_>) -> Result<T>) -> Result<T> {
+        let conn = KuzuConnection::new(&self.db)?;
+        ensure_memory_code_link_schema(&conn)?;
+        f(&conn)
+    }
+}
+
+impl CodeGraphReaderBackend for KuzuCodeGraphReader {
+    fn stats(&self) -> Result<CodeGraphStats> {
+        self.with_conn(read_code_graph_stats_in_conn)
+    }
+
+    fn context_payload(&self, memory_id: &str) -> Result<CodeGraphContextPayload> {
+        self.with_conn(|conn| query_code_context_in_conn(conn, memory_id))
+    }
+
+    fn files(&self, pattern: Option<&str>, limit: u32) -> Result<Vec<String>> {
+        self.with_conn(|conn| list_code_files_in_conn(conn, pattern, limit))
+    }
+
+    fn functions(&self, file: Option<&str>, limit: u32) -> Result<Vec<CodeGraphNamedEntry>> {
+        self.with_conn(|conn| list_code_functions_in_conn(conn, file, limit))
+    }
+
+    fn classes(&self, file: Option<&str>, limit: u32) -> Result<Vec<CodeGraphNamedEntry>> {
+        self.with_conn(|conn| list_code_classes_in_conn(conn, file, limit))
+    }
+
+    fn search(&self, name: &str, limit: u32) -> Result<Vec<CodeGraphSearchEntry>> {
+        self.with_conn(|conn| search_code_graph_in_conn(conn, name, limit))
+    }
+
+    fn callers(&self, name: &str, limit: u32) -> Result<Vec<CodeGraphEdgeEntry>> {
+        self.with_conn(|conn| query_code_edges_in_conn(
+            conn,
+            "MATCH (caller:CodeFunction)-[:CALLS]->(callee:CodeFunction) WHERE callee.function_name CONTAINS $name RETURN caller.function_name, callee.function_name LIMIT $lim",
+            name,
+            limit,
+        ))
+    }
+
+    fn callees(&self, name: &str, limit: u32) -> Result<Vec<CodeGraphEdgeEntry>> {
+        self.with_conn(|conn| query_code_edges_in_conn(
+            conn,
+            "MATCH (caller:CodeFunction)-[:CALLS]->(callee:CodeFunction) WHERE caller.function_name CONTAINS $name RETURN caller.function_name, callee.function_name LIMIT $lim",
+            name,
+            limit,
+        ))
+    }
+}
+
+trait CodeGraphWriterBackend {
+    fn import_blarify_output(&self, payload: &BlarifyOutput) -> Result<CodeGraphImportCounts>;
+}
+
+fn open_code_graph_writer(path_override: Option<&Path>) -> Result<Box<dyn CodeGraphWriterBackend>> {
+    Ok(Box::new(KuzuCodeGraphWriter::open(path_override)?))
+}
+
+struct KuzuCodeGraphWriter {
+    db: KuzuDatabase,
+}
+
+impl KuzuCodeGraphWriter {
+    fn open(path_override: Option<&Path>) -> Result<Self> {
+        Ok(Self {
+            db: open_kuzu_code_graph_db(path_override)?,
+        })
+    }
+
+    fn with_conn<T>(&self, f: impl FnOnce(&KuzuConnection<'_>) -> Result<T>) -> Result<T> {
+        let conn = KuzuConnection::new(&self.db)?;
+        ensure_memory_code_link_schema(&conn)?;
+        f(&conn)
+    }
+}
+
+impl CodeGraphWriterBackend for KuzuCodeGraphWriter {
+    fn import_blarify_output(&self, payload: &BlarifyOutput) -> Result<CodeGraphImportCounts> {
+        self.with_conn(|conn| {
+            let counts = CodeGraphImportCounts {
+                files: import_files(conn, &payload.files)?,
+                classes: import_classes(conn, &payload.classes)?,
+                functions: import_functions(conn, &payload.functions)?,
+                imports: import_imports(conn, &payload.imports)?,
+                relationships: import_relationships(conn, &payload.relationships)?,
+            };
+            let linked_memories = link_memories_to_code_files_in_conn(conn)?;
+            if linked_memories > 0 {
+                tracing::info!(
+                    count = linked_memories,
+                    "linked existing memories to code graph after import"
+                );
+            }
+            Ok(counts)
+        })
+    }
+}
+
 pub fn run_index_code(input: &Path, kuzu_path: Option<&Path>) -> Result<()> {
     let counts = import_blarify_json(input, kuzu_path)?;
     println!("{}", serde_json::to_string_pretty(&counts)?);
@@ -236,31 +438,14 @@ pub fn import_scip_file(
     let payload = convert_scip_to_blarify(&index, &project_root, language_hint);
 
     let default_db_path;
-    let db = open_kuzu_code_graph_db(match kuzu_path {
+    let path_override = match kuzu_path {
         Some(path) => Some(path),
         None => {
             default_db_path = default_code_graph_db_path_for_project(&project_root)?;
             Some(default_db_path.as_path())
         }
-    })?;
-    let conn = KuzuConnection::new(&db)?;
-    init_kuzu_code_graph_schema(&conn)?;
-    let counts = CodeGraphImportCounts {
-        files: import_files(&conn, &payload.files)?,
-        classes: import_classes(&conn, &payload.classes)?,
-        functions: import_functions(&conn, &payload.functions)?,
-        imports: import_imports(&conn, &payload.imports)?,
-        relationships: import_relationships(&conn, &payload.relationships)?,
     };
-    let linked_memories = link_memories_to_code_files_in_conn(&conn)?;
-    if linked_memories > 0 {
-        tracing::info!(
-            count = linked_memories,
-            "linked existing memories to code files after SCIP import"
-        );
-    }
-
-    Ok(counts)
+    open_code_graph_writer(path_override)?.import_blarify_output(&payload)
 }
 
 pub fn import_blarify_json(
@@ -283,31 +468,15 @@ pub fn import_blarify_json(
         .with_context(|| format!("invalid JSON in {}", input_path.display()))?;
 
     let inferred_db_path;
-    let db = open_kuzu_code_graph_db(match kuzu_path {
+    let path_override = match kuzu_path {
         Some(path) => Some(path),
         None => {
             inferred_db_path = infer_code_graph_db_path_from_input(&input_path)?;
             Some(inferred_db_path.as_path())
         }
-    })?;
-    let conn = KuzuConnection::new(&db)?;
-    init_kuzu_code_graph_schema(&conn)?;
-    let counts = CodeGraphImportCounts {
-        files: import_files(&conn, &payload.files)?,
-        classes: import_classes(&conn, &payload.classes)?,
-        functions: import_functions(&conn, &payload.functions)?,
-        imports: import_imports(&conn, &payload.imports)?,
-        relationships: import_relationships(&conn, &payload.relationships)?,
     };
-    let linked_memories = link_memories_to_code_files_in_conn(&conn)?;
-    if linked_memories > 0 {
-        tracing::info!(
-            count = linked_memories,
-            "linked existing memories to code files after blarify import"
-        );
-    }
 
-    Ok(counts)
+    open_code_graph_writer(path_override)?.import_blarify_output(&payload)
 }
 
 pub(crate) fn open_kuzu_code_graph_db(path_override: Option<&Path>) -> Result<KuzuDatabase> {
@@ -577,20 +746,271 @@ pub fn summarize_code_graph(kuzu_path: Option<&Path>) -> Result<Option<CodeGraph
         return Ok(None);
     }
 
-    let db = open_kuzu_code_graph_db(Some(&path))?;
-    let conn = KuzuConnection::new(&db)?;
-    init_kuzu_code_graph_schema(&conn)?;
-
-    Ok(Some(CodeGraphSummary {
-        files: scalar_count(&conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)")?,
-        classes: scalar_count(&conn, "MATCH (c:CodeClass) RETURN COUNT(c)")?,
-        functions: scalar_count(&conn, "MATCH (f:CodeFunction) RETURN COUNT(f)")?,
-    }))
+    let stats = open_code_graph_reader(Some(&path))?.stats()?;
+    Ok(Some(stats.into()))
 }
 
 fn scalar_count(conn: &KuzuConnection<'_>, query: &str) -> Result<i64> {
     let rows = kuzu_rows(conn, query, vec![])?;
     kuzu_i64(rows.first().and_then(|row| row.first()))
+}
+
+fn read_code_graph_stats_in_conn(conn: &KuzuConnection<'_>) -> Result<CodeGraphStats> {
+    let (memory_file_links, memory_function_links) = code_memory_link_counts(conn)?;
+    Ok(CodeGraphStats {
+        files: scalar_count(conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)")?,
+        classes: scalar_count(conn, "MATCH (c:CodeClass) RETURN COUNT(c)")?,
+        functions: scalar_count(conn, "MATCH (f:CodeFunction) RETURN COUNT(f)")?,
+        memory_file_links,
+        memory_function_links,
+    })
+}
+
+fn query_code_context_in_conn(
+    conn: &KuzuConnection<'_>,
+    memory_id: &str,
+) -> Result<CodeGraphContextPayload> {
+    let Some((memory_type, file_rel, function_rel)) =
+        resolve_memory_link_tables_in_conn(conn, memory_id)?
+    else {
+        return Ok(CodeGraphContextPayload {
+            memory_id: memory_id.to_string(),
+            ..Default::default()
+        });
+    };
+
+    let files = kuzu_rows(
+        conn,
+        &format!(
+            "MATCH (m:{memory_type} {{memory_id: $memory_id}})-[:{file_rel}]->(cf:CodeFile) RETURN cf.file_path, cf.language, cf.size_bytes ORDER BY cf.file_path"
+        ),
+        vec![("memory_id", KuzuValue::String(memory_id.to_string()))],
+    )?;
+    let functions = kuzu_rows(
+        conn,
+        &format!(
+            "MATCH (m:{memory_type} {{memory_id: $memory_id}})-[:{function_rel}]->(f:CodeFunction) RETURN f.function_name, f.signature, f.docstring, f.cyclomatic_complexity ORDER BY f.function_name"
+        ),
+        vec![("memory_id", KuzuValue::String(memory_id.to_string()))],
+    )?;
+    let classes = kuzu_rows(
+        conn,
+        &format!(
+            "MATCH (m:{memory_type} {{memory_id: $memory_id}})-[:{function_rel}]->(f:CodeFunction)-[:METHOD_OF]->(c:CodeClass) RETURN DISTINCT c.class_name, c.fully_qualified_name, c.docstring ORDER BY c.class_name"
+        ),
+        vec![("memory_id", KuzuValue::String(memory_id.to_string()))],
+    )?;
+
+    Ok(CodeGraphContextPayload {
+        memory_id: memory_id.to_string(),
+        files: files
+            .iter()
+            .map(|row| CodeGraphContextFile {
+                kind: "file".to_string(),
+                path: kuzu_string(row.first()).unwrap_or_default(),
+                language: kuzu_string(row.get(1)).unwrap_or_default(),
+                size_bytes: kuzu_i64(row.get(2)).unwrap_or_default(),
+            })
+            .collect(),
+        functions: functions
+            .iter()
+            .map(|row| CodeGraphContextFunction {
+                kind: "function".to_string(),
+                name: kuzu_string(row.first()).unwrap_or_default(),
+                signature: kuzu_string(row.get(1)).unwrap_or_default(),
+                docstring: kuzu_string(row.get(2)).unwrap_or_default(),
+                complexity: kuzu_i64(row.get(3)).unwrap_or_default(),
+            })
+            .collect(),
+        classes: classes
+            .iter()
+            .map(|row| CodeGraphContextClass {
+                kind: "class".to_string(),
+                name: kuzu_string(row.first()).unwrap_or_default(),
+                fully_qualified_name: kuzu_string(row.get(1)).unwrap_or_default(),
+                docstring: kuzu_string(row.get(2)).unwrap_or_default(),
+            })
+            .collect(),
+    })
+}
+
+fn resolve_memory_link_tables_in_conn(
+    conn: &KuzuConnection<'_>,
+    memory_id: &str,
+) -> Result<Option<(&'static str, &'static str, &'static str)>> {
+    for ((memory_type, file_rel), (paired_type, function_rel)) in KUZU_MEMORY_FILE_LINK_TABLES
+        .iter()
+        .zip(KUZU_MEMORY_FUNCTION_LINK_TABLES.iter())
+    {
+        debug_assert_eq!(memory_type, paired_type);
+        let rows = kuzu_rows(
+            conn,
+            &format!("MATCH (m:{memory_type} {{memory_id: $memory_id}}) RETURN COUNT(m)"),
+            vec![("memory_id", KuzuValue::String(memory_id.to_string()))],
+        )?;
+        if kuzu_i64(rows.first().and_then(|row| row.first()))? > 0 {
+            return Ok(Some((memory_type, file_rel, function_rel)));
+        }
+    }
+
+    Ok(None)
+}
+
+fn list_code_files_in_conn(
+    conn: &KuzuConnection<'_>,
+    pattern: Option<&str>,
+    limit: u32,
+) -> Result<Vec<String>> {
+    let rows = if let Some(pattern) = pattern {
+        kuzu_rows(
+            conn,
+            "MATCH (cf:CodeFile) WHERE cf.file_path CONTAINS $pattern RETURN cf.file_path ORDER BY cf.file_path LIMIT $lim",
+            vec![
+                ("pattern", KuzuValue::String(pattern.to_string())),
+                ("lim", KuzuValue::UInt64(u64::from(limit))),
+            ],
+        )?
+    } else {
+        kuzu_rows(
+            conn,
+            "MATCH (cf:CodeFile) RETURN cf.file_path ORDER BY cf.file_path LIMIT $lim",
+            vec![("lim", KuzuValue::UInt64(u64::from(limit)))],
+        )?
+    };
+
+    Ok(rows
+        .iter()
+        .map(|row| kuzu_string(row.first()).unwrap_or_default())
+        .collect())
+}
+
+fn list_code_functions_in_conn(
+    conn: &KuzuConnection<'_>,
+    file: Option<&str>,
+    limit: u32,
+) -> Result<Vec<CodeGraphNamedEntry>> {
+    let rows = if let Some(file) = file {
+        kuzu_rows(
+            conn,
+            "MATCH (f:CodeFunction)-[:DEFINED_IN]->(cf:CodeFile) WHERE cf.file_path CONTAINS $file AND NOT f.function_name CONTAINS '().(' RETURN f.function_name, cf.file_path ORDER BY cf.file_path, f.function_name LIMIT $lim",
+            vec![
+                ("file", KuzuValue::String(file.to_string())),
+                ("lim", KuzuValue::UInt64(u64::from(limit))),
+            ],
+        )?
+    } else {
+        kuzu_rows(
+            conn,
+            "MATCH (f:CodeFunction) WHERE NOT f.function_name CONTAINS '().(' RETURN f.function_name ORDER BY f.function_name LIMIT $lim",
+            vec![("lim", KuzuValue::UInt64(u64::from(limit)))],
+        )?
+    };
+
+    Ok(rows
+        .iter()
+        .map(|row| CodeGraphNamedEntry {
+            name: kuzu_string(row.first()).unwrap_or_default(),
+            file: row
+                .get(1)
+                .map(|value| kuzu_string(Some(value)).unwrap_or_default()),
+        })
+        .collect())
+}
+
+fn list_code_classes_in_conn(
+    conn: &KuzuConnection<'_>,
+    file: Option<&str>,
+    limit: u32,
+) -> Result<Vec<CodeGraphNamedEntry>> {
+    let rows = if let Some(file) = file {
+        kuzu_rows(
+            conn,
+            "MATCH (c:CodeClass)-[:CLASS_DEFINED_IN]->(cf:CodeFile) WHERE cf.file_path CONTAINS $file RETURN c.class_name, cf.file_path ORDER BY cf.file_path, c.class_name LIMIT $lim",
+            vec![
+                ("file", KuzuValue::String(file.to_string())),
+                ("lim", KuzuValue::UInt64(u64::from(limit))),
+            ],
+        )?
+    } else {
+        kuzu_rows(
+            conn,
+            "MATCH (c:CodeClass) RETURN c.class_name ORDER BY c.class_name LIMIT $lim",
+            vec![("lim", KuzuValue::UInt64(u64::from(limit)))],
+        )?
+    };
+
+    Ok(rows
+        .iter()
+        .map(|row| CodeGraphNamedEntry {
+            name: kuzu_string(row.first()).unwrap_or_default(),
+            file: row
+                .get(1)
+                .map(|value| kuzu_string(Some(value)).unwrap_or_default()),
+        })
+        .collect())
+}
+
+fn search_code_graph_in_conn(
+    conn: &KuzuConnection<'_>,
+    name: &str,
+    limit: u32,
+) -> Result<Vec<CodeGraphSearchEntry>> {
+    let searches = [
+        (
+            "function",
+            "MATCH (f:CodeFunction) WHERE f.function_name CONTAINS $name AND NOT f.function_name CONTAINS '().(' RETURN f.function_name LIMIT $lim",
+        ),
+        (
+            "class",
+            "MATCH (c:CodeClass) WHERE c.class_name CONTAINS $name RETURN c.class_name LIMIT $lim",
+        ),
+        (
+            "file",
+            "MATCH (cf:CodeFile) WHERE cf.file_path CONTAINS $name RETURN cf.file_path LIMIT $lim",
+        ),
+    ];
+
+    let mut payload = Vec::new();
+    for (kind, query) in searches {
+        let rows = kuzu_rows(
+            conn,
+            query,
+            vec![
+                ("name", KuzuValue::String(name.to_string())),
+                ("lim", KuzuValue::UInt64(u64::from(limit))),
+            ],
+        )?;
+        payload.extend(rows.into_iter().map(|row| CodeGraphSearchEntry {
+            kind: kind.to_string(),
+            name: kuzu_string(row.first()).unwrap_or_default(),
+        }));
+    }
+
+    Ok(payload)
+}
+
+fn query_code_edges_in_conn(
+    conn: &KuzuConnection<'_>,
+    query: &str,
+    name: &str,
+    limit: u32,
+) -> Result<Vec<CodeGraphEdgeEntry>> {
+    let rows = kuzu_rows(
+        conn,
+        query,
+        vec![
+            ("name", KuzuValue::String(name.to_string())),
+            ("lim", KuzuValue::UInt64(u64::from(limit))),
+        ],
+    )?;
+
+    Ok(rows
+        .iter()
+        .map(|row| CodeGraphEdgeEntry {
+            caller: kuzu_string(row.first()).unwrap_or_default(),
+            callee: kuzu_string(row.get(1)).unwrap_or_default(),
+        })
+        .collect())
 }
 
 fn import_files(conn: &KuzuConnection<'_>, files: &[BlarifyFile]) -> Result<usize> {
