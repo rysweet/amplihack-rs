@@ -1773,3 +1773,47 @@ fn tc28_fleet_tui_letter_tab_hotkeys_follow_python_order_without_python() {
         "expected detail tab after pressing s:\n{cleaned}"
     );
 }
+
+/// TC-29: a successful edited apply should stay Python-free, surface visible
+/// success feedback, and send the expected tmux input via the editor-tab `A`
+/// path rather than only through prepared-apply.
+#[test]
+fn tc29_fleet_tui_apply_edited_proposal_sends_tmux_input_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(
+        &bin,
+        Some(
+            r#"{"action":"send_input","confidence":0.85,"reasoning":"Need operator confirmation","input_text":"y"}"#,
+        ),
+    );
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    probe.send_and_wait_for(
+        b"d",
+        "Prepared proposal for vm-1/claude-1:",
+        Duration::from_secs(5),
+    );
+    probe.send_and_wait_for(b"e", "Action Editor", Duration::from_secs(5));
+    probe.send(b"A", Duration::from_millis(1500));
+    let send_hits = probe.wait_for_send_hits_containing(
+        "tmux send-keys -t 'claude-1' 'y' Enter",
+        Duration::from_secs(5),
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish_allowing_tmux_input();
+    assert!(
+        cleaned.contains("Apply status")
+            && cleaned.contains("Applied edited send_input to vm-1/claude-1."),
+        "expected persistent edited-apply success notice in PTY output:\n{cleaned}"
+    );
+    assert!(
+        send_hits.contains("tmux send-keys -t 'claude-1' 'y' Enter"),
+        "expected azlin tmux send-keys command for edited apply flow, got:\n{send_hits}"
+    );
+}
