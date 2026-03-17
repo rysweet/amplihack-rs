@@ -1,14 +1,17 @@
 scenario:
   name: "Code Graph Query — No-Python Live Path (Issue #77 AC6/AC8/AC9)"
   description: |
-    Verifies that the Kuzu code-graph (LadybugDB identity) query path runs
+    Verifies that the native code-graph (LadybugDB identity) query path runs
     natively in Rust with no Python interpreter on PATH.  This is an
     end-to-end exercise of the LadybugDB (AC6), blarify import (AC7), and
     SCIP index-help (AC8) surfaces, plus the no-Python probe gate (AC9).
 
+    The test uses backend-neutral terminology in external verification steps
+    (graph_db / code-graph store) per the Issue #77 naming contract.
+
     The test:
       1. Strips python/python3 from PATH to simulate a Python-free host.
-      2. Runs `amplihack query-code stats` — exercises the live Kuzu FFI path.
+      2. Runs `amplihack query-code stats` — exercises the live code-graph store path.
       3. Runs `amplihack index-code --help` — confirms blarify import is native.
       4. Runs `amplihack index-scip --help` — confirms SCIP surface is native.
       5. Verifies each command exits 0 and produces the expected output.
@@ -20,7 +23,7 @@ scenario:
     - "PATH manipulation is allowed in the test shell"
 
   steps:
-    # Step 1 — query-code stats (Kuzu native FFI, AC6)
+    # Step 1 — query-code stats (native code-graph FFI, AC6)
     - action: launch
       target: "./target/release/amplihack"
       args: ["query-code", "stats"]
@@ -34,7 +37,7 @@ scenario:
 
     - action: verify_output
       contains: "Code Graph Statistics"
-      description: "Must show native Kuzu statistics header"
+      description: "Must show native code-graph statistics header"
 
     - action: verify_output
       matches: "Files:\\s+\\d+"
@@ -42,7 +45,7 @@ scenario:
 
     - action: verify_output
       matches: "Functions:\\s+\\d+"
-      description: "Must include a Functions count from Kuzu"
+      description: "Must include a Functions count from native code-graph store"
 
     # Step 2 — index-code --help (blarify native import, AC7)
     - action: launch
@@ -58,8 +61,8 @@ scenario:
       description: "Help text must reference blarify (native schema)"
 
     - action: verify_output
-      contains: "Kuzu"
-      description: "Help text must reference Kuzu store (native FFI, AC6)"
+      contains: "code-graph store"
+      description: "Help text must reference native code-graph store (backend-neutral, AC6)"
 
     # Step 3 — index-scip --help (SCIP native, AC8)
     - action: launch
