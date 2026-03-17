@@ -1,7 +1,7 @@
 //! SQLite backend implementation for the memory subsystem.
 //!
 //! All rusqlite-specific code lives here, symmetric with the Kùzu backend in
-//! `backend/kuzu.rs`. This provides the insertion point for future backends
+//! `backend/graph_db.rs`. This provides the insertion point for future backends
 //! (e.g. LadybugDB) without requiring surgery to the rest of the memory
 //! subsystem.
 
@@ -191,25 +191,44 @@ pub(crate) fn collect_sqlite_agent_counts(conn: &SqliteConnection) -> Result<Vec
 }
 
 /// Delete a session using a pre-existing connection (avoids opening a new one).
+///
+/// All three DELETEs (memory_entries, session_agents, sessions) are wrapped in
+/// a single `BEGIN IMMEDIATE` transaction so a crash or error between statements
+/// cannot leave orphaned rows.  We use explicit SQL transaction control rather
+/// than `rusqlite::Transaction` because this function takes `&SqliteConnection`
+/// (shared reference), which does not allow `conn.transaction()`.
 pub(crate) fn delete_sqlite_session_with_conn(
     conn: &SqliteConnection,
     session_id: &str,
 ) -> Result<bool> {
-    conn.execute(
-        "DELETE FROM memory_entries WHERE session_id = ?1",
-        params![session_id],
-    )?;
-    conn.execute(
-        "DELETE FROM session_agents WHERE session_id = ?1",
-        params![session_id],
-    )?;
-    let deleted = conn.execute(
-        "DELETE FROM sessions WHERE session_id = ?1",
-        params![session_id],
-    )?;
-    Ok(deleted > 0)
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let outcome = (|| -> Result<bool> {
+        conn.execute(
+            "DELETE FROM memory_entries WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        conn.execute(
+            "DELETE FROM session_agents WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        let deleted = conn.execute(
+            "DELETE FROM sessions WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        Ok(deleted > 0)
+    })();
+    match outcome {
+        Ok(deleted) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(deleted)
+        }
+        Err(e) => {
+            // Best-effort rollback; ignore secondary errors.
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
 }
-
 
 /// Store a learning record using a pre-existing connection (avoids opening a new one).
 ///
@@ -264,7 +283,6 @@ pub(crate) fn store_learning_sqlite_with_conn(
     )?;
     Ok(Some(memory_id))
 }
-
 
 pub(crate) fn to_sqlite_err(error: anyhow::Error) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(

@@ -756,8 +756,8 @@ pub(crate) fn validate_blarify_json_size(path: &Path, max_bytes: u64) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::memory::backend::kuzu::{
-        KuzuValue, init_kuzu_backend_schema, kuzu_i64, kuzu_rows,
+    use crate::commands::memory::backend::graph_db::{
+        KuzuValue, graph_i64, graph_rows, init_graph_backend_schema,
     };
     use crate::commands::memory::code_graph::backend::{
         initialize_test_code_graph_db, with_test_code_graph_conn,
@@ -832,12 +832,12 @@ mod tests {
 
     fn temp_code_graph_db() -> Result<(TempDir, PathBuf)> {
         let dir = TempDir::new().map_err(|e| anyhow::anyhow!("tempdir: {e}"))?;
-        let db_path = dir.path().join("code-graph.kuzu");
+        let db_path = dir.path().join("code-graph.graph_db");
         Ok((dir, db_path))
     }
 
     #[test]
-    fn import_blarify_json_populates_kuzu_code_graph() {
+    fn import_blarify_json_populates_graph_db_code_graph() {
         let (_dir, db_path) = temp_code_graph_db().unwrap();
         let json_dir = TempDir::new().unwrap();
         let json_path = json_dir.path().join("blarify.json");
@@ -861,9 +861,9 @@ mod tests {
         );
 
         with_test_code_graph_conn(Some(&db_path), |conn| {
-            let rows = kuzu_rows(conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)", vec![])?;
-            assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 2);
-            let rows = kuzu_rows(
+            let rows = graph_rows(conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)", vec![])?;
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 2);
+            let rows = graph_rows(
                 conn,
                 "MATCH (source:CodeFunction {function_id: $source_id})-[r:CALLS]->(target:CodeFunction {function_id: $target_id}) RETURN COUNT(r)",
                 vec![
@@ -871,7 +871,7 @@ mod tests {
                     ("target_id", KuzuValue::String("func:helper".to_string())),
                 ],
             )?;
-            assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 1);
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 1);
             Ok(())
         })
         .unwrap();
@@ -895,8 +895,8 @@ mod tests {
         assert_eq!(second.files, 2);
 
         with_test_code_graph_conn(Some(&db_path), |conn| {
-            let rows = kuzu_rows(conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)", vec![])?;
-            assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 2);
+            let rows = graph_rows(conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)", vec![])?;
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 2);
             Ok(())
         })
         .unwrap();
@@ -906,7 +906,7 @@ mod tests {
     fn import_blarify_json_links_semantic_memory_by_metadata_file() {
         let (_dir, db_path) = temp_code_graph_db().unwrap();
         with_test_code_graph_conn(Some(&db_path), |conn| {
-            init_kuzu_backend_schema(conn)?;
+            init_graph_backend_schema(conn)?;
             let now = OffsetDateTime::now_utc();
 
             let mut create_memory = conn.prepare(
@@ -952,7 +952,7 @@ mod tests {
         import_blarify_json(&json_path, Some(&db_path)).unwrap();
 
         with_test_code_graph_conn(Some(&db_path), |conn| {
-            let rows = kuzu_rows(
+            let rows = graph_rows(
                 conn,
                 "MATCH (m:SemanticMemory {memory_id: $memory_id})-[r:RELATES_TO_FILE_SEMANTIC]->(cf:CodeFile {file_id: $file_id}) RETURN COUNT(r)",
                 vec![
@@ -963,7 +963,7 @@ mod tests {
                     ),
                 ],
             )?;
-            assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 1);
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 1);
             Ok(())
         })
         .unwrap();
@@ -973,7 +973,7 @@ mod tests {
     fn import_blarify_json_links_semantic_memory_by_function_name() {
         let (_dir, db_path) = temp_code_graph_db().unwrap();
         with_test_code_graph_conn(Some(&db_path), |conn| {
-            init_kuzu_backend_schema(conn)?;
+            init_graph_backend_schema(conn)?;
             let now = OffsetDateTime::now_utc();
 
             let mut create_memory = conn.prepare(
@@ -1016,7 +1016,7 @@ mod tests {
         import_blarify_json(&json_path, Some(&db_path)).unwrap();
 
         with_test_code_graph_conn(Some(&db_path), |conn| {
-            let rows = kuzu_rows(
+            let rows = graph_rows(
                 conn,
                 "MATCH (m:SemanticMemory {memory_id: $memory_id})-[r:RELATES_TO_FUNCTION_SEMANTIC]->(f:CodeFunction {function_id: $function_id}) RETURN COUNT(r)",
                 vec![
@@ -1024,7 +1024,7 @@ mod tests {
                     ("function_id", KuzuValue::String("func:helper".to_string())),
                 ],
             )?;
-            assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 1);
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 1);
             Ok(())
         })
         .unwrap();
@@ -1177,7 +1177,7 @@ mod tests {
     }
 
     #[test]
-    fn import_scip_file_populates_kuzu_code_graph() {
+    fn import_scip_file_populates_graph_db_code_graph() {
         let (_dir, db_path) = temp_code_graph_db().unwrap();
         let project_dir = TempDir::new().unwrap();
         let src_dir = project_dir.path().join("src/example");
@@ -1201,12 +1201,12 @@ mod tests {
         assert_eq!(counts.functions, 1);
 
         with_test_code_graph_conn(Some(&db_path), |conn| {
-            let rows = kuzu_rows(conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)", vec![])?;
-            assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 1);
-            let rows = kuzu_rows(conn, "MATCH (f:CodeFunction) RETURN COUNT(f)", vec![])?;
-            assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 1);
-            let rows = kuzu_rows(conn, "MATCH (c:CodeClass) RETURN COUNT(c)", vec![])?;
-            assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 1);
+            let rows = graph_rows(conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)", vec![])?;
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 1);
+            let rows = graph_rows(conn, "MATCH (f:CodeFunction) RETURN COUNT(f)", vec![])?;
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 1);
+            let rows = graph_rows(conn, "MATCH (c:CodeClass) RETURN COUNT(c)", vec![])?;
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 1);
             Ok(())
         })
         .unwrap();
@@ -1268,7 +1268,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = TempDir::new().unwrap();
-        let db_path = dir.path().join("secured.kuzu");
+        let db_path = dir.path().join("secured.graph_db");
 
         // Initialise the DB so the path exists on disk.
         initialize_test_code_graph_db(Some(&db_path)).unwrap();

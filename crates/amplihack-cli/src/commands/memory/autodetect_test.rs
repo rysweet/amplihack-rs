@@ -77,15 +77,15 @@ fn autodetect_uses_env_var_first() -> anyhow::Result<()> {
 }
 
 /// When no env var is set but `~/.amplihack/hierarchical_memory` contains a
-/// Kuzu-style graph DB directory, autodetect must return Kuzu.
+/// graph-db-style graph DB directory, autodetect must return graph-db.
 #[test]
-fn autodetect_falls_back_to_kuzu_if_graph_db_path_exists() -> anyhow::Result<()> {
+fn autodetect_falls_back_to_graph_db_if_graph_db_path_exists() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    // Create the probe path that signals an existing Kuzu installation.
-    let kuzu_probe = dir.path().join(".amplihack").join("hierarchical_memory");
-    fs::create_dir_all(&kuzu_probe)?;
-    // Create a subdirectory that looks like an agent graph DB (kuzu marker).
-    let agent_db = kuzu_probe.join("default-agent").join("graph_db");
+    // Create the probe path that signals an existing graph-db installation.
+    let graph_probe = dir.path().join(".amplihack").join("hierarchical_memory");
+    fs::create_dir_all(&graph_probe)?;
+    // Create a subdirectory that looks like an agent graph DB (graph-db marker).
+    let agent_db = graph_probe.join("default-agent").join("graph_db");
     fs::create_dir_all(&agent_db)?;
 
     let _guard = AutodetectEnvGuard::setup(dir.path(), None);
@@ -94,7 +94,7 @@ fn autodetect_falls_back_to_kuzu_if_graph_db_path_exists() -> anyhow::Result<()>
     assert_eq!(
         choice,
         BackendChoice::GraphDb,
-        "existing graph_db directory must cause autodetect to return Kuzu"
+        "existing graph_db directory must cause autodetect to return graph-db"
     );
     Ok(())
 }
@@ -179,6 +179,29 @@ fn autodetect_errors_when_home_unavailable() -> anyhow::Result<()> {
     assert!(
         result.is_err(),
         "resolve_backend_with_autodetect must return Err when HOME is unavailable"
+    );
+    Ok(())
+}
+
+/// A typo in `AMPLIHACK_MEMORY_BACKEND` (e.g. `sqllite`) must return `Err`
+/// rather than silently activating the wrong backend.  Allowing silent fallback
+/// would route data to an unexpected location without any operator signal.
+#[test]
+fn autodetect_errors_on_unrecognized_backend_value() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let _guard = AutodetectEnvGuard::setup(dir.path(), Some("sqllite")); // deliberate typo
+
+    let result = resolve_backend_with_autodetect();
+    assert!(
+        result.is_err(),
+        "resolve_backend_with_autodetect must return Err for unrecognized \
+         AMPLIHACK_MEMORY_BACKEND value 'sqllite', got: {:?}",
+        result
+    );
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("sqllite"),
+        "error message should echo the bad value; got: {err_msg}"
     );
     Ok(())
 }

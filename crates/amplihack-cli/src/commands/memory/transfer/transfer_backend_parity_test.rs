@@ -119,12 +119,12 @@ fn export_empty_agent_sqlite() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Exporting an empty agent via the Kuzu transfer backend must succeed.
+/// Exporting an empty agent via the graph-db transfer backend must succeed.
 #[test]
-fn export_empty_agent_kuzu() -> anyhow::Result<()> {
+fn export_empty_agent_graph_db() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let _guard = EnvGuard::setup(dir.path(), "kuzu");
-    let db_path = dir.path().join("agent.kuzu");
+    let _guard = EnvGuard::setup(dir.path(), "graph-db");
+    let db_path = dir.path().join("agent.graph_db");
     let out_path = dir.path().join("empty_export.json");
 
     let backend = open_hierarchical_transfer_backend_for(BackendChoice::GraphDb);
@@ -208,12 +208,12 @@ fn import_json_round_trip_sqlite() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Import + export round-trip via Kuzu.
+/// Import + export round-trip via graph-db.
 #[test]
-fn import_json_round_trip_kuzu() -> anyhow::Result<()> {
+fn import_json_round_trip_graph_db() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let _guard = EnvGuard::setup(dir.path(), "kuzu");
-    let db_path = dir.path().join("rt.kuzu");
+    let _guard = EnvGuard::setup(dir.path(), "graph-db");
+    let db_path = dir.path().join("rt.graph_db");
     let input_path = dir.path().join("input.json");
     let output_path = dir.path().join("output.json");
 
@@ -223,8 +223,8 @@ fn import_json_round_trip_kuzu() -> anyhow::Result<()> {
         format_version: "1.1".to_string(),
         semantic_nodes: vec![crate::commands::memory::transfer::SemanticNode {
             memory_id: "sem-rt-k1".to_string(),
-            concept: "round-trip-kuzu".to_string(),
-            content: "Kuzu round-trip content".to_string(),
+            concept: "round-trip-graph-db".to_string(),
+            content: "Graph DB round-trip content".to_string(),
             confidence: 0.85,
             source_id: "".to_string(),
             tags: vec![],
@@ -275,7 +275,7 @@ fn assert_merge_skips_existing(choice: BackendChoice) -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let backend_str = match choice {
         BackendChoice::Sqlite => "sqlite",
-        BackendChoice::GraphDb => "kuzu",
+        BackendChoice::GraphDb => "graph-db",
     };
     let _guard = EnvGuard::setup(dir.path(), backend_str);
     let db_path = dir.path().join("merge.db");
@@ -324,7 +324,7 @@ fn import_merge_skips_existing_sqlite() -> anyhow::Result<()> {
 }
 
 #[test]
-fn import_merge_skips_existing_kuzu() -> anyhow::Result<()> {
+fn import_merge_skips_existing_graph_db() -> anyhow::Result<()> {
     assert_merge_skips_existing(BackendChoice::GraphDb)
 }
 
@@ -336,7 +336,7 @@ fn assert_no_merge_clears(choice: BackendChoice) -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let backend_str = match choice {
         BackendChoice::Sqlite => "sqlite",
-        BackendChoice::GraphDb => "kuzu",
+        BackendChoice::GraphDb => "graph-db",
     };
     let _guard = EnvGuard::setup(dir.path(), backend_str);
     let db_path = dir.path().join("replace.db");
@@ -408,7 +408,7 @@ fn import_no_merge_clears_sqlite() -> anyhow::Result<()> {
 }
 
 #[test]
-fn import_no_merge_clears_kuzu() -> anyhow::Result<()> {
+fn import_no_merge_clears_graph_db() -> anyhow::Result<()> {
     assert_no_merge_clears(BackendChoice::GraphDb)
 }
 
@@ -420,7 +420,7 @@ fn assert_derives_from_edge_preserved(choice: BackendChoice) -> anyhow::Result<(
     let dir = tempfile::tempdir()?;
     let backend_str = match choice {
         BackendChoice::Sqlite => "sqlite",
-        BackendChoice::GraphDb => "kuzu",
+        BackendChoice::GraphDb => "graph-db",
     };
     let _guard = EnvGuard::setup(dir.path(), backend_str);
     let db_path = dir.path().join("derives.db");
@@ -495,7 +495,7 @@ fn derives_from_edge_preserved_sqlite() -> anyhow::Result<()> {
 }
 
 #[test]
-fn derives_from_edge_preserved_kuzu() -> anyhow::Result<()> {
+fn derives_from_edge_preserved_graph_db() -> anyhow::Result<()> {
     assert_derives_from_edge_preserved(BackendChoice::GraphDb)
 }
 
@@ -507,7 +507,7 @@ fn assert_raw_db_replace(choice: BackendChoice) -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let backend_str = match choice {
         BackendChoice::Sqlite => "sqlite",
-        BackendChoice::GraphDb => "kuzu",
+        BackendChoice::GraphDb => "graph-db",
     };
     let _guard = EnvGuard::setup(dir.path(), backend_str);
     let src_db = dir.path().join("source.db");
@@ -552,7 +552,7 @@ fn raw_db_replace_sqlite() -> anyhow::Result<()> {
 }
 
 #[test]
-fn raw_db_replace_kuzu() -> anyhow::Result<()> {
+fn raw_db_replace_graph_db() -> anyhow::Result<()> {
     assert_raw_db_replace(BackendChoice::GraphDb)
 }
 
@@ -564,7 +564,7 @@ fn assert_raw_db_merge_rejected(choice: BackendChoice) -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let backend_str = match choice {
         BackendChoice::Sqlite => "sqlite",
-        BackendChoice::GraphDb => "kuzu",
+        BackendChoice::GraphDb => "graph-db",
     };
     let _guard = EnvGuard::setup(dir.path(), backend_str);
     let db_path = dir.path().join("any.db");
@@ -593,6 +593,6 @@ fn raw_db_merge_rejected_sqlite() -> anyhow::Result<()> {
 }
 
 #[test]
-fn raw_db_merge_rejected_kuzu() -> anyhow::Result<()> {
+fn raw_db_merge_rejected_graph_db() -> anyhow::Result<()> {
     assert_raw_db_merge_rejected(BackendChoice::GraphDb)
 }

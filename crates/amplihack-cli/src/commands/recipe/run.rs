@@ -502,6 +502,12 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_resolve_binary_path_expands_tilde_to_home_dir() {
+        // Hold the home_env_lock so that tests which temporarily override HOME
+        // cannot race with this test and corrupt its view of the HOME env var.
+        let _home_guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         // Create a temp file inside the home directory to test expansion
         let home = std::env::var("HOME").expect("HOME env var must be set");
         let temp =

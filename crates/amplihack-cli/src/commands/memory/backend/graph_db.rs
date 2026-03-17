@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use time::OffsetDateTime;
 
-pub(crate) const KUZU_BACKEND_SCHEMA: &[&str] = &[
+pub(crate) const GRAPH_BACKEND_SCHEMA: &[&str] = &[
     r#"CREATE NODE TABLE IF NOT EXISTS Session(
         session_id STRING,
         start_time TIMESTAMP,
@@ -126,7 +126,7 @@ pub(crate) const KUZU_BACKEND_SCHEMA: &[&str] = &[
 /// `has_expires_at` is true when the node table includes an `expires_at`
 /// TIMESTAMP column in the schema.  SemanticMemory and ProceduralMemory
 /// represent long-lived facts with no TTL, so they never expire.
-pub(crate) const KUZU_MEMORY_TABLES: &[(&str, &str, bool)] = &[
+pub(crate) const GRAPH_MEMORY_TABLES: &[(&str, &str, bool)] = &[
     ("EpisodicMemory", "CONTAINS_EPISODIC", true),
     ("SemanticMemory", "CONTRIBUTES_TO_SEMANTIC", false),
     ("ProceduralMemory", "USES_PROCEDURE", false),
@@ -142,7 +142,7 @@ impl GraphDbBackend {
     pub(crate) fn open() -> Result<Self> {
         let db = open_graph_db_memory_db()?;
         let backend = Self { db };
-        backend.with_conn(init_kuzu_backend_schema)?;
+        backend.with_conn(init_graph_backend_schema)?;
         Ok(backend)
     }
 
@@ -163,7 +163,7 @@ impl MemoryTreeBackend for GraphDbBackend {
         memory_type: Option<&str>,
     ) -> Result<Vec<(SessionSummary, Vec<MemoryRecord>)>> {
         self.with_conn(|conn| {
-            let mut sessions = list_kuzu_sessions_from_conn(conn)?;
+            let mut sessions = list_graph_sessions_from_conn(conn)?;
             if let Some(session_id) = session_id {
                 sessions.retain(|session| session.session_id == session_id);
             }
@@ -171,7 +171,7 @@ impl MemoryTreeBackend for GraphDbBackend {
             let mut session_rows = Vec::new();
             for session in sessions {
                 let memories =
-                    query_kuzu_memories_for_session(conn, &session.session_id, memory_type)?;
+                    query_graph_memories_for_session(conn, &session.session_id, memory_type)?;
                 let memory_count = memories.len();
                 let mut session = session;
                 session.memory_count = memory_count;
@@ -188,21 +188,21 @@ impl MemoryTreeBackend for GraphDbBackend {
 
 impl MemorySessionBackend for GraphDbBackend {
     fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
-        self.with_conn(list_kuzu_sessions_from_conn)
+        self.with_conn(list_graph_sessions_from_conn)
     }
 
     fn delete_session(&self, session_id: &str) -> Result<bool> {
-        self.with_conn(|conn| delete_kuzu_session_with_conn(conn, session_id))
+        self.with_conn(|conn| delete_graph_session_with_conn(conn, session_id))
     }
 }
 
 impl MemoryRuntimeBackend for GraphDbBackend {
     fn load_prompt_context_memories(&self, session_id: &str) -> Result<Vec<MemoryRecord>> {
-        self.with_conn(|conn| query_kuzu_memories_for_session(conn, session_id, None))
+        self.with_conn(|conn| query_graph_memories_for_session(conn, session_id, None))
     }
 
     fn store_session_learning(&self, record: &SessionLearningRecord) -> Result<Option<String>> {
-        self.with_conn(|conn| store_learning_kuzu_with_conn(conn, record))
+        self.with_conn(|conn| store_learning_graph_with_conn(conn, record))
     }
 }
 
@@ -263,23 +263,23 @@ pub(crate) fn resolve_memory_graph_db_path() -> Result<PathBuf> {
     Ok(neutral)
 }
 
-pub fn init_kuzu_backend_schema(conn: &KuzuConnection<'_>) -> Result<()> {
-    for statement in KUZU_BACKEND_SCHEMA {
+pub fn init_graph_backend_schema(conn: &KuzuConnection<'_>) -> Result<()> {
+    for statement in GRAPH_BACKEND_SCHEMA {
         conn.query(statement)?;
     }
     Ok(())
 }
 
-pub fn list_kuzu_sessions_from_conn(conn: &KuzuConnection<'_>) -> Result<Vec<SessionSummary>> {
-    let rows = kuzu_rows(
+pub fn list_graph_sessions_from_conn(conn: &KuzuConnection<'_>) -> Result<Vec<SessionSummary>> {
+    let rows = graph_rows(
         conn,
         "MATCH (s:Session) RETURN s.session_id, s.created_at, s.last_accessed, s.metadata ORDER BY s.last_accessed DESC",
         vec![],
     )?;
     let mut sessions = Vec::new();
     for row in rows {
-        let session_id = kuzu_string(row.first())?;
-        let memories = query_kuzu_memories_for_session(conn, &session_id, None)?;
+        let session_id = graph_string(row.first())?;
+        let memories = query_graph_memories_for_session(conn, &session_id, None)?;
         sessions.push(SessionSummary {
             session_id,
             memory_count: memories.len(),
@@ -288,14 +288,14 @@ pub fn list_kuzu_sessions_from_conn(conn: &KuzuConnection<'_>) -> Result<Vec<Ses
     Ok(sessions)
 }
 
-pub(crate) fn query_kuzu_memories_for_session(
+pub(crate) fn query_graph_memories_for_session(
     conn: &KuzuConnection<'_>,
     session_id: &str,
     memory_type: Option<&str>,
 ) -> Result<Vec<MemoryRecord>> {
     let now = Utc::now();
     let mut memories = Vec::new();
-    for (label, rel_name, _has_expires_at) in KUZU_MEMORY_TABLES {
+    for (label, rel_name, _has_expires_at) in GRAPH_MEMORY_TABLES {
         // When a memory_type filter is requested, skip tables whose normalised
         // type name (label stripped of "Memory" suffix, lowercased) does not
         // match.  This mirrors the SQLite `AND memory_type = ?2` clause.
@@ -312,14 +312,14 @@ pub(crate) fn query_kuzu_memories_for_session(
         let query = format!(
             "MATCH (s:Session {{session_id: $session_id}})-[:{rel_name}]->(m:{label}) RETURN m ORDER BY m.accessed_at DESC"
         );
-        let rows = kuzu_rows(
+        let rows = graph_rows(
             conn,
             &query,
             vec![("session_id", KuzuValue::String(session_id.to_string()))],
         )?;
         for row in rows {
             if let Some(value) = row.first() {
-                let record = memory_from_kuzu_node(value, session_id, label)?;
+                let record = memory_from_graph_node(value, session_id, label)?;
                 // Apply Rust-side expiry filter.  Records whose `expires_at`
                 // timestamp is in the past are discarded; records with no
                 // `expires_at` (or an unparseable value) are kept.
@@ -338,27 +338,29 @@ pub(crate) fn query_kuzu_memories_for_session(
     Ok(memories)
 }
 
-pub(crate) fn collect_graph_db_agent_counts(conn: &KuzuConnection<'_>) -> Result<Vec<(String, usize)>> {
+pub(crate) fn collect_graph_db_agent_counts(
+    conn: &KuzuConnection<'_>,
+) -> Result<Vec<(String, usize)>> {
     let now = Utc::now();
     let mut totals: HashMap<String, usize> = HashMap::new();
-    for (label, _, has_expires_at) in KUZU_MEMORY_TABLES {
+    for (label, _, has_expires_at) in GRAPH_MEMORY_TABLES {
         if *has_expires_at {
             // For tables that carry an `expires_at` timestamp, fetch individual
             // records and apply Rust-side expiry filtering before counting.
             // This mirrors the SQLite `WHERE expires_at IS NULL OR expires_at >
             // datetime('now')` clause without relying on a Kùzu Cypher
             // timestamp function whose exact name is unstable.
-            let rows = kuzu_rows(
+            let rows = graph_rows(
                 conn,
                 &format!("MATCH (m:{label}) RETURN m.agent_id, m.expires_at"),
                 vec![],
             )?;
             for row in rows {
-                let agent_id = kuzu_string(row.first())?;
+                let agent_id = graph_string(row.first())?;
                 if agent_id.is_empty() {
                     continue;
                 }
-                let expires_at_str = row.get(1).map(kuzu_value_to_string).unwrap_or_default();
+                let expires_at_str = row.get(1).map(graph_value_to_string).unwrap_or_default();
                 let is_expired = if expires_at_str.is_empty() {
                     false
                 } else {
@@ -371,14 +373,14 @@ pub(crate) fn collect_graph_db_agent_counts(conn: &KuzuConnection<'_>) -> Result
         } else {
             // Tables without `expires_at` (SemanticMemory, ProceduralMemory)
             // hold long-lived facts that never expire; COUNT directly.
-            let rows = kuzu_rows(
+            let rows = graph_rows(
                 conn,
                 &format!("MATCH (m:{label}) RETURN m.agent_id, COUNT(m)"),
                 vec![],
             )?;
             for row in rows {
-                let agent_id = kuzu_string(row.first())?;
-                let count = kuzu_i64(row.get(1))? as usize;
+                let agent_id = graph_string(row.first())?;
+                let count = graph_i64(row.get(1))? as usize;
                 *totals.entry(agent_id).or_insert(0) += count;
             }
         }
@@ -390,30 +392,30 @@ pub(crate) fn collect_graph_db_agent_counts(conn: &KuzuConnection<'_>) -> Result
     Ok(counts)
 }
 
-fn delete_kuzu_session_with_conn(conn: &KuzuConnection<'_>, session_id: &str) -> Result<bool> {
-    let exists = kuzu_rows(
+fn delete_graph_session_with_conn(conn: &KuzuConnection<'_>, session_id: &str) -> Result<bool> {
+    let exists = graph_rows(
         conn,
         "MATCH (s:Session {session_id: $session_id}) RETURN COUNT(s)",
         vec![("session_id", KuzuValue::String(session_id.to_string()))],
     )?;
     let existing = exists
         .first()
-        .map(|row| kuzu_i64(row.first()).unwrap_or(0))
+        .map(|row| graph_i64(row.first()).unwrap_or(0))
         .unwrap_or(0);
     if existing == 0 {
         return Ok(false);
     }
-    for (label, rel_name, _) in KUZU_MEMORY_TABLES {
+    for (label, rel_name, _) in GRAPH_MEMORY_TABLES {
         let query = format!(
             "MATCH (s:Session {{session_id: $session_id}})-[:{rel_name}]->(m:{label}) DETACH DELETE m"
         );
-        kuzu_rows(
+        graph_rows(
             conn,
             &query,
             vec![("session_id", KuzuValue::String(session_id.to_string()))],
         )?;
     }
-    kuzu_rows(
+    graph_rows(
         conn,
         "MATCH (s:Session {session_id: $session_id}) DETACH DELETE s",
         vec![("session_id", KuzuValue::String(session_id.to_string()))],
@@ -421,7 +423,7 @@ fn delete_kuzu_session_with_conn(conn: &KuzuConnection<'_>, session_id: &str) ->
     Ok(true)
 }
 
-pub fn kuzu_rows(
+pub fn graph_rows(
     conn: &KuzuConnection<'_>,
     query: &str,
     params: Vec<(&str, KuzuValue)>,
@@ -433,7 +435,7 @@ pub fn kuzu_rows(
     Ok(conn.execute(&mut prepared, params)?.collect())
 }
 
-pub(crate) fn memory_from_kuzu_node(
+pub(crate) fn memory_from_graph_node(
     value: &KuzuValue,
     _session_id: &str,
     label: &str,
@@ -471,7 +473,7 @@ pub(crate) fn memory_from_kuzu_node(
 pub(crate) fn property_string(props: &[(String, KuzuValue)], key: &str) -> Option<String> {
     props.iter().find_map(|(name, value)| {
         if name == key {
-            Some(kuzu_value_to_string(value))
+            Some(graph_value_to_string(value))
         } else {
             None
         }
@@ -481,14 +483,14 @@ pub(crate) fn property_string(props: &[(String, KuzuValue)], key: &str) -> Optio
 pub(crate) fn property_i64(props: &[(String, KuzuValue)], key: &str) -> Option<i64> {
     props.iter().find_map(|(name, value)| {
         if name == key {
-            kuzu_value_to_i64(value)
+            graph_value_to_i64(value)
         } else {
             None
         }
     })
 }
 
-pub(crate) fn kuzu_value_to_string(value: &KuzuValue) -> String {
+pub(crate) fn graph_value_to_string(value: &KuzuValue) -> String {
     match value {
         KuzuValue::Null(_) => String::new(),
         KuzuValue::String(v) => v.clone(),
@@ -501,7 +503,7 @@ pub(crate) fn kuzu_value_to_string(value: &KuzuValue) -> String {
     }
 }
 
-pub(crate) fn kuzu_value_to_i64(value: &KuzuValue) -> Option<i64> {
+pub(crate) fn graph_value_to_i64(value: &KuzuValue) -> Option<i64> {
     match value {
         KuzuValue::Int64(v) => Some(*v),
         KuzuValue::Int32(v) => Some(i64::from(*v)),
@@ -517,17 +519,17 @@ pub(crate) fn kuzu_value_to_i64(value: &KuzuValue) -> Option<i64> {
     }
 }
 
-pub(crate) fn kuzu_string(value: Option<&KuzuValue>) -> Result<String> {
-    Ok(value.map(kuzu_value_to_string).unwrap_or_default())
+pub(crate) fn graph_string(value: Option<&KuzuValue>) -> Result<String> {
+    Ok(value.map(graph_value_to_string).unwrap_or_default())
 }
 
-pub(crate) fn kuzu_i64(value: Option<&KuzuValue>) -> Result<i64> {
+pub(crate) fn graph_i64(value: Option<&KuzuValue>) -> Result<i64> {
     value
-        .and_then(kuzu_value_to_i64)
+        .and_then(graph_value_to_i64)
         .context("expected integer Kùzu value")
 }
 
-pub(crate) fn kuzu_f64(value: Option<&KuzuValue>) -> Result<f64> {
+pub(crate) fn graph_f64(value: Option<&KuzuValue>) -> Result<f64> {
     match value {
         Some(KuzuValue::Double(v)) => Ok(*v),
         Some(KuzuValue::Float(v)) => Ok(f64::from(*v)),
@@ -540,11 +542,11 @@ pub(crate) fn kuzu_f64(value: Option<&KuzuValue>) -> Result<f64> {
     }
 }
 
-fn store_learning_kuzu_with_conn(
+fn store_learning_graph_with_conn(
     conn: &KuzuConnection<'_>,
     record: &SessionLearningRecord,
 ) -> Result<Option<String>> {
-    let duplicate_rows = kuzu_rows(
+    let duplicate_rows = graph_rows(
         conn,
         "MATCH (s:Session {session_id: $session_id})-[:CONTRIBUTES_TO_SEMANTIC]->(m:SemanticMemory) WHERE m.agent_id = $agent_id AND m.content = $content RETURN COUNT(m)",
         vec![
@@ -555,7 +557,7 @@ fn store_learning_kuzu_with_conn(
     )?;
     let duplicate_count = duplicate_rows
         .first()
-        .map(|row| kuzu_i64(row.first()).unwrap_or(0))
+        .map(|row| graph_i64(row.first()).unwrap_or(0))
         .unwrap_or(0);
     if duplicate_count > 0 {
         return Ok(None);
@@ -573,8 +575,8 @@ fn store_learning_kuzu_with_conn(
     let metadata = serde_json::to_string(&record.metadata)?;
     let tags = serde_json::to_string(&["learning", "session_end"])?;
 
-    ensure_kuzu_session(conn, &record.session_id, now)?;
-    ensure_kuzu_agent(conn, &record.agent_id, now)?;
+    ensure_graph_session(conn, &record.session_id, now)?;
+    ensure_graph_agent(conn, &record.agent_id, now)?;
 
     let mut create_memory = conn.prepare(
         "CREATE (m:SemanticMemory {memory_id: $memory_id, concept: $concept, content: $content, category: $category, confidence_score: $confidence_score, last_updated: $last_updated, version: $version, title: $title, metadata: $metadata, tags: $tags, created_at: $created_at, accessed_at: $accessed_at, agent_id: $agent_id})",
@@ -618,19 +620,19 @@ fn store_learning_kuzu_with_conn(
     Ok(Some(memory_id))
 }
 
-fn ensure_kuzu_session(
+fn ensure_graph_session(
     conn: &KuzuConnection<'_>,
     session_id: &str,
     now: OffsetDateTime,
 ) -> Result<()> {
-    let count_rows = kuzu_rows(
+    let count_rows = graph_rows(
         conn,
         "MATCH (s:Session {session_id: $session_id}) RETURN COUNT(s)",
         vec![("session_id", KuzuValue::String(session_id.to_string()))],
     )?;
     let count = count_rows
         .first()
-        .map(|row| kuzu_i64(row.first()).unwrap_or(0))
+        .map(|row| graph_i64(row.first()).unwrap_or(0))
         .unwrap_or(0);
 
     if count == 0 {
@@ -664,15 +666,19 @@ fn ensure_kuzu_session(
     Ok(())
 }
 
-fn ensure_kuzu_agent(conn: &KuzuConnection<'_>, agent_id: &str, now: OffsetDateTime) -> Result<()> {
-    let count_rows = kuzu_rows(
+fn ensure_graph_agent(
+    conn: &KuzuConnection<'_>,
+    agent_id: &str,
+    now: OffsetDateTime,
+) -> Result<()> {
+    let count_rows = graph_rows(
         conn,
         "MATCH (a:Agent {agent_id: $agent_id}) RETURN COUNT(a)",
         vec![("agent_id", KuzuValue::String(agent_id.to_string()))],
     )?;
     let count = count_rows
         .first()
-        .map(|row| kuzu_i64(row.first()).unwrap_or(0))
+        .map(|row| graph_i64(row.first()).unwrap_or(0))
         .unwrap_or(0);
 
     if count == 0 {
@@ -708,25 +714,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kuzu_value_to_string_handles_string_variant() {
+    fn graph_value_to_string_handles_string_variant() {
         let val = KuzuValue::String("hello".to_string());
-        assert_eq!(kuzu_value_to_string(&val), "hello");
+        assert_eq!(graph_value_to_string(&val), "hello");
     }
 
     #[test]
-    fn kuzu_value_to_string_handles_null() {
+    fn graph_value_to_string_handles_null() {
         let val = KuzuValue::Null(kuzu::LogicalType::String);
         assert_eq!(
-            kuzu_value_to_string(&val),
+            graph_value_to_string(&val),
             "",
             "Null must convert to empty string"
         );
     }
 
     #[test]
-    fn kuzu_value_to_string_handles_non_string_via_display() {
+    fn graph_value_to_string_handles_non_string_via_display() {
         let val = KuzuValue::Int64(42);
-        let s = kuzu_value_to_string(&val);
+        let s = graph_value_to_string(&val);
         assert!(
             s.contains("42"),
             "Int64(42) should display as a string containing '42', got: {s}"
@@ -734,32 +740,32 @@ mod tests {
     }
 
     #[test]
-    fn kuzu_value_to_i64_extracts_int64() {
-        assert_eq!(kuzu_value_to_i64(&KuzuValue::Int64(99)), Some(99));
+    fn graph_value_to_i64_extracts_int64() {
+        assert_eq!(graph_value_to_i64(&KuzuValue::Int64(99)), Some(99));
     }
 
     #[test]
-    fn kuzu_value_to_i64_extracts_int32() {
-        assert_eq!(kuzu_value_to_i64(&KuzuValue::Int32(7)), Some(7));
+    fn graph_value_to_i64_extracts_int32() {
+        assert_eq!(graph_value_to_i64(&KuzuValue::Int32(7)), Some(7));
     }
 
     #[test]
-    fn kuzu_value_to_i64_extracts_uint32() {
-        assert_eq!(kuzu_value_to_i64(&KuzuValue::UInt32(5)), Some(5));
+    fn graph_value_to_i64_extracts_uint32() {
+        assert_eq!(graph_value_to_i64(&KuzuValue::UInt32(5)), Some(5));
     }
 
     #[test]
-    fn kuzu_value_to_i64_returns_none_for_non_numeric() {
+    fn graph_value_to_i64_returns_none_for_non_numeric() {
         let val = KuzuValue::String("abc".to_string());
         assert_eq!(
-            kuzu_value_to_i64(&val),
+            graph_value_to_i64(&val),
             None,
             "Non-numeric value must return None"
         );
     }
 
     #[test]
-    fn kuzu_value_to_i64_extracts_double_as_truncated_i64() {
-        assert_eq!(kuzu_value_to_i64(&KuzuValue::Double(3.9)), Some(3));
+    fn graph_value_to_i64_extracts_double_as_truncated_i64() {
+        assert_eq!(graph_value_to_i64(&KuzuValue::Double(3.9)), Some(3));
     }
 }

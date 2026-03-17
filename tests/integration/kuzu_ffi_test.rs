@@ -173,7 +173,7 @@ fn kuzu_ffi_parameterized_query_executes() -> Result<()> {
     Ok(())
 }
 
-/// Verify that the full KUZU_BACKEND_SCHEMA initializes in a fresh database.
+/// Verify that the full graph backend schema initializes in a fresh database.
 ///
 /// This is the most comprehensive kuzu FFI smoke test.  It runs all the DDL
 /// statements used by the memory backend in production, including all node
@@ -189,7 +189,7 @@ fn kuzu_ffi_full_backend_schema_initializes() -> Result<()> {
     let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     init_graph_backend_schema(&conn).context(
-        "KUZU_BACKEND_SCHEMA initialization failed.\n\
+        "graph backend schema initialization failed.\n\
         This may indicate a cxx/cxx-build version mismatch.\n\
         Fix: cargo update -p cxx-build --precise 1.0.138\n\
         See docs/howto/resolve-kuzu-linker-errors.md",
@@ -202,7 +202,7 @@ fn kuzu_ffi_full_backend_schema_initializes() -> Result<()> {
 /// The `params.is_empty()` branch of `graph_rows()` uses the simpler
 /// `conn.query()` path instead of prepare+execute.
 #[test]
-fn kuzu_rows_helper_no_params() -> Result<()> {
+fn graph_rows_helper_no_params() -> Result<()> {
     let (_dir, db) = temp_kuzu_db()?;
     let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -216,7 +216,7 @@ fn kuzu_rows_helper_no_params() -> Result<()> {
 /// The parameterized branch of `graph_rows()` prepares the statement and
 /// calls execute() with the provided key-value parameters.
 #[test]
-fn kuzu_rows_helper_with_params() -> Result<()> {
+fn graph_rows_helper_with_params() -> Result<()> {
     let (_dir, db) = temp_kuzu_db()?;
     let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
 

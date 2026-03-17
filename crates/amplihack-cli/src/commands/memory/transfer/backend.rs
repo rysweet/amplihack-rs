@@ -1,12 +1,17 @@
 use super::*;
+use anyhow::Context as _;
 use crate::commands::memory::BackendChoice;
-use crate::commands::memory::backend::kuzu::{kuzu_f64, kuzu_i64, kuzu_rows, kuzu_string};
+use crate::commands::memory::backend::graph_db::{graph_f64, graph_i64, graph_rows, graph_string};
 use kuzu::{
     Connection as KuzuConnection, Database as KuzuDatabase, SystemConfig, Value as KuzuValue,
 };
 use serde_json::Value as JsonValue;
 use std::fs;
 use std::io::Read;
+
+/// Maximum allowed JSON file size for Kuzu imports: 500 MiB.
+/// Mirrors the same guard in the SQLite backend.
+const MAX_JSON_FILE_SIZE: u64 = 500 * 1024 * 1024;
 
 pub(super) trait HierarchicalTransferBackend {
     fn export_hierarchical_json(
@@ -154,7 +159,7 @@ fn export_hierarchical_json_impl(
     let conn = KuzuConnection::new(&db)?;
     init_hierarchical_schema(&conn)?;
 
-    let semantic_nodes = kuzu_rows(
+    let semantic_nodes = graph_rows(
         &conn,
         "MATCH (m:SemanticMemory) WHERE m.agent_id = $agent_id RETURN m.memory_id, m.concept, m.content, m.confidence, m.source_id, m.tags, m.metadata, m.created_at, m.entity_name ORDER BY m.created_at ASC",
         vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
@@ -162,21 +167,21 @@ fn export_hierarchical_json_impl(
     .into_iter()
     .map(|row| -> Result<SemanticNode> {
         Ok(SemanticNode {
-            memory_id: kuzu_string(row.first())?,
-            concept: kuzu_string(row.get(1))?,
-            content: kuzu_string(row.get(2))?,
-            confidence: kuzu_f64(row.get(3))?,
-            source_id: kuzu_string(row.get(4))?,
-            tags: parse_json_array_of_strings(&kuzu_string(row.get(5))?)?,
-            metadata: parse_json_value(&kuzu_string(row.get(6))?)
+            memory_id: graph_string(row.first())?,
+            concept: graph_string(row.get(1))?,
+            content: graph_string(row.get(2))?,
+            confidence: graph_f64(row.get(3))?,
+            source_id: graph_string(row.get(4))?,
+            tags: parse_json_array_of_strings(&graph_string(row.get(5))?)?,
+            metadata: parse_json_value(&graph_string(row.get(6))?)
                 .unwrap_or(JsonValue::Object(Default::default())),
-            created_at: kuzu_string(row.get(7))?,
-            entity_name: kuzu_string(row.get(8))?,
+            created_at: graph_string(row.get(7))?,
+            entity_name: graph_string(row.get(8))?,
         })
     })
     .collect::<Result<Vec<_>>>()?;
 
-    let episodic_nodes = kuzu_rows(
+    let episodic_nodes = graph_rows(
         &conn,
         "MATCH (e:EpisodicMemory) WHERE e.agent_id = $agent_id RETURN e.memory_id, e.content, e.source_label, e.tags, e.metadata, e.created_at ORDER BY e.created_at ASC",
         vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
@@ -184,18 +189,18 @@ fn export_hierarchical_json_impl(
     .into_iter()
     .map(|row| -> Result<EpisodicNode> {
         Ok(EpisodicNode {
-            memory_id: kuzu_string(row.first())?,
-            content: kuzu_string(row.get(1))?,
-            source_label: kuzu_string(row.get(2))?,
-            tags: parse_json_array_of_strings(&kuzu_string(row.get(3))?)?,
-            metadata: parse_json_value(&kuzu_string(row.get(4))?)
+            memory_id: graph_string(row.first())?,
+            content: graph_string(row.get(1))?,
+            source_label: graph_string(row.get(2))?,
+            tags: parse_json_array_of_strings(&graph_string(row.get(3))?)?,
+            metadata: parse_json_value(&graph_string(row.get(4))?)
                 .unwrap_or(JsonValue::Object(Default::default())),
-            created_at: kuzu_string(row.get(5))?,
+            created_at: graph_string(row.get(5))?,
         })
     })
     .collect::<Result<Vec<_>>>()?;
 
-    let similar_to_edges = kuzu_rows(
+    let similar_to_edges = graph_rows(
         &conn,
         "MATCH (a:SemanticMemory)-[r:SIMILAR_TO]->(b:SemanticMemory) WHERE a.agent_id = $agent_id RETURN a.memory_id, b.memory_id, r.weight, r.metadata",
         vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
@@ -203,16 +208,16 @@ fn export_hierarchical_json_impl(
     .into_iter()
     .map(|row| -> Result<SimilarEdge> {
         Ok(SimilarEdge {
-            source_id: kuzu_string(row.first())?,
-            target_id: kuzu_string(row.get(1))?,
-            weight: kuzu_f64(row.get(2))?,
-            metadata: parse_json_value(&kuzu_string(row.get(3))?)
+            source_id: graph_string(row.first())?,
+            target_id: graph_string(row.get(1))?,
+            weight: graph_f64(row.get(2))?,
+            metadata: parse_json_value(&graph_string(row.get(3))?)
                 .unwrap_or(JsonValue::Object(Default::default())),
         })
     })
     .collect::<Result<Vec<_>>>()?;
 
-    let derives_from_edges = kuzu_rows(
+    let derives_from_edges = graph_rows(
         &conn,
         "MATCH (s:SemanticMemory)-[r:DERIVES_FROM]->(e:EpisodicMemory) WHERE s.agent_id = $agent_id RETURN s.memory_id, e.memory_id, r.extraction_method, r.confidence",
         vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
@@ -220,15 +225,15 @@ fn export_hierarchical_json_impl(
     .into_iter()
     .map(|row| -> Result<DerivesEdge> {
         Ok(DerivesEdge {
-            source_id: kuzu_string(row.first())?,
-            target_id: kuzu_string(row.get(1))?,
-            extraction_method: kuzu_string(row.get(2))?,
-            confidence: kuzu_f64(row.get(3))?,
+            source_id: graph_string(row.first())?,
+            target_id: graph_string(row.get(1))?,
+            extraction_method: graph_string(row.get(2))?,
+            confidence: graph_f64(row.get(3))?,
         })
     })
     .collect::<Result<Vec<_>>>()?;
 
-    let supersedes_edges = kuzu_rows(
+    let supersedes_edges = graph_rows(
         &conn,
         "MATCH (newer:SemanticMemory)-[r:SUPERSEDES]->(older:SemanticMemory) WHERE newer.agent_id = $agent_id RETURN newer.memory_id, older.memory_id, r.reason, r.temporal_delta",
         vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
@@ -236,15 +241,15 @@ fn export_hierarchical_json_impl(
     .into_iter()
     .map(|row| -> Result<SupersedesEdge> {
         Ok(SupersedesEdge {
-            source_id: kuzu_string(row.first())?,
-            target_id: kuzu_string(row.get(1))?,
-            reason: kuzu_string(row.get(2))?,
-            temporal_delta: kuzu_string(row.get(3))?,
+            source_id: graph_string(row.first())?,
+            target_id: graph_string(row.get(1))?,
+            reason: graph_string(row.get(2))?,
+            temporal_delta: graph_string(row.get(3))?,
         })
     })
     .collect::<Result<Vec<_>>>()?;
 
-    let transitioned_to_edges = kuzu_rows(
+    let transitioned_to_edges = graph_rows(
         &conn,
         "MATCH (newer:SemanticMemory)-[r:TRANSITIONED_TO]->(older:SemanticMemory) WHERE newer.agent_id = $agent_id RETURN newer.memory_id, older.memory_id, r.from_value, r.to_value, r.turn, r.transition_type",
         vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
@@ -252,19 +257,19 @@ fn export_hierarchical_json_impl(
     .into_iter()
     .map(|row| -> Result<TransitionEdge> {
         Ok(TransitionEdge {
-            source_id: kuzu_string(row.first())?,
-            target_id: kuzu_string(row.get(1))?,
-            from_value: kuzu_string(row.get(2))?,
-            to_value: kuzu_string(row.get(3))?,
-            turn: kuzu_i64(row.get(4))?,
-            transition_type: kuzu_string(row.get(5))?,
+            source_id: graph_string(row.first())?,
+            target_id: graph_string(row.get(1))?,
+            from_value: graph_string(row.get(2))?,
+            to_value: graph_string(row.get(3))?,
+            turn: graph_i64(row.get(4))?,
+            transition_type: graph_string(row.get(5))?,
         })
     })
     .collect::<Result<Vec<_>>>()?;
 
     let export = HierarchicalExportData {
         agent_name: agent_name.to_string(),
-        exported_at: kuzu_export_timestamp(),
+        exported_at: graph_export_timestamp(),
         format_version: "1.1".to_string(),
         semantic_nodes,
         episodic_nodes,
@@ -288,8 +293,14 @@ fn export_hierarchical_json_impl(
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }
+    // Write to a .tmp file first, then atomically rename — mirrors the SQLite
+    // backend's behaviour so both backends provide the same crash-safety guarantee.
+    let tmp_path = output_path.with_extension("json.tmp");
     let serialized = serde_json::to_string_pretty(&export)?;
-    fs::write(&output_path, serialized)?;
+    fs::write(&tmp_path, &serialized)
+        .with_context(|| format!("failed to write tmp file {}", tmp_path.display()))?;
+    fs::rename(&tmp_path, &output_path)
+        .with_context(|| format!("failed to rename tmp to {}", output_path.display()))?;
     let file_size = output_path.metadata()?.len();
     Ok(ExportResult {
         agent_name: agent_name.to_string(),
@@ -332,6 +343,19 @@ fn import_hierarchical_json_impl(
     storage_path: Option<&str>,
 ) -> Result<ImportResult> {
     let input_path = PathBuf::from(input);
+
+    // Guard against OOM from giant files — mirrors the 500 MiB check in the
+    // SQLite backend so both backends have equivalent input validation.
+    let file_meta = input_path
+        .metadata()
+        .with_context(|| format!("cannot stat input file {}", input_path.display()))?;
+    if file_meta.len() > MAX_JSON_FILE_SIZE {
+        anyhow::bail!(
+            "input file exceeds maximum allowed size ({} bytes > {MAX_JSON_FILE_SIZE} bytes)",
+            file_meta.len()
+        );
+    }
+
     let mut raw = String::new();
     fs::File::open(&input_path)?.read_to_string(&mut raw)?;
     let data: HierarchicalExportData = serde_json::from_str(&raw)?;
@@ -621,7 +645,7 @@ fn clear_hierarchical_agent_data(conn: &KuzuConnection<'_>, agent_name: &str) ->
         "MATCH (m:SemanticMemory {agent_id: $aid}) DELETE m",
         "MATCH (e:EpisodicMemory {agent_id: $aid}) DELETE e",
     ] {
-        kuzu_rows(
+        graph_rows(
             conn,
             query,
             vec![("aid", KuzuValue::String(agent_name.to_string()))],
@@ -639,13 +663,13 @@ fn get_existing_hierarchical_ids(
         "MATCH (m:SemanticMemory {agent_id: $aid}) RETURN m.memory_id",
         "MATCH (e:EpisodicMemory {agent_id: $aid}) RETURN e.memory_id",
     ] {
-        let rows = kuzu_rows(
+        let rows = graph_rows(
             conn,
             query,
             vec![("aid", KuzuValue::String(agent_name.to_string()))],
         )?;
         for row in rows {
-            ids.push(kuzu_string(row.first())?);
+            ids.push(graph_string(row.first())?);
         }
     }
     Ok(ids)

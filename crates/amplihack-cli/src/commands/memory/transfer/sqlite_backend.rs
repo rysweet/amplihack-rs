@@ -9,7 +9,7 @@ use super::backend::HierarchicalTransferBackend;
 use super::{
     DerivesEdge, EpisodicNode, ExportResult, HierarchicalExportData, HierarchicalStats,
     ImportResult, ImportStats, SemanticNode, SimilarEdge, SupersedesEdge, TransitionEdge,
-    kuzu_export_timestamp,
+    graph_export_timestamp,
 };
 use anyhow::{Context, Result};
 use rusqlite::{Connection as SqliteConnection, params};
@@ -17,6 +17,7 @@ use serde_json::Value as JsonValue;
 use std::fs;
 use std::io::Read;
 use std::path::PathBuf;
+use tracing;
 
 /// Maximum allowed JSON file size: 500 MiB.
 const MAX_JSON_FILE_SIZE: u64 = 500 * 1024 * 1024;
@@ -199,13 +200,22 @@ pub(crate) fn resolve_hierarchical_sqlite_path(
 #[cfg(unix)]
 pub(crate) fn enforce_hierarchical_db_permissions(path: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    if path.exists() {
+    // Use symlink_metadata() (not exists()) so we detect symlinks without
+    // following them.  Refuse to set permissions on a symlink — that would
+    // redirect set_permissions to an attacker-controlled target file.
+    if path.symlink_metadata().is_ok() {
+        if path.is_symlink() {
+            anyhow::bail!(
+                "symlink detected at database path {}; refusing to set permissions",
+                path.display()
+            );
+        }
         let perms = std::fs::Permissions::from_mode(0o600);
         std::fs::set_permissions(path, perms)
             .with_context(|| format!("failed to set 0o600 on {}", path.display()))?;
     }
     if let Some(parent) = path.parent()
-        && parent.exists()
+        && parent.symlink_metadata().is_ok()
     {
         let dir_perms = std::fs::Permissions::from_mode(0o700);
         std::fs::set_permissions(parent, dir_perms)
@@ -264,7 +274,7 @@ impl HierarchicalTransferBackend for SqliteHierarchicalTransferBackend {
 
         let export = HierarchicalExportData {
             agent_name: agent_name.to_string(),
-            exported_at: kuzu_export_timestamp(),
+            exported_at: graph_export_timestamp(),
             format_version: "1.1".to_string(),
             semantic_nodes,
             episodic_nodes,
@@ -352,142 +362,30 @@ impl HierarchicalTransferBackend for SqliteHierarchicalTransferBackend {
             serde_json::from_str(&raw).context("failed to deserialize hierarchical export JSON")?;
 
         let db_path = resolve_hierarchical_sqlite_path(agent_name, storage_path)?;
-        let conn = open_hierarchical_sqlite_conn(&db_path)?;
+        // `mut` required to start a rusqlite Transaction for the non-merge path.
+        let mut conn = open_hierarchical_sqlite_conn(&db_path)?;
 
-        if !merge {
-            clear_agent_data(&conn, agent_name)?;
-        }
-
-        let existing_ids: std::collections::HashSet<String> = if merge {
-            get_existing_ids(&conn, agent_name)?.into_iter().collect()
+        let stats = if !merge {
+            // Wrap clear_agent_data + all inserts in a single IMMEDIATE
+            // transaction.  If the process dies between the clear and the
+            // first insert – or any fatal error occurs – the transaction
+            // rolls back automatically on drop, leaving original data intact.
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            clear_agent_data(&tx, agent_name)?;
+            let s = insert_nodes_and_edges(
+                &tx,
+                agent_name,
+                &data,
+                false,
+                &std::collections::HashSet::new(),
+            )?;
+            tx.commit()?;
+            s
         } else {
-            std::collections::HashSet::new()
+            let existing_ids: std::collections::HashSet<String> =
+                get_existing_ids(&conn, agent_name)?.into_iter().collect();
+            insert_nodes_and_edges(&conn, agent_name, &data, true, &existing_ids)?
         };
-
-        let mut stats = ImportStats::default();
-
-        for node in &data.episodic_nodes {
-            if node.memory_id.is_empty() {
-                stats.errors += 1;
-                continue;
-            }
-            if merge && existing_ids.contains(&node.memory_id) {
-                stats.skipped += 1;
-                continue;
-            }
-            let result = conn.execute(
-                "INSERT OR IGNORE INTO episodic_memories (memory_id, agent_id, content, source_label, tags, metadata, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    node.memory_id,
-                    agent_name,
-                    node.content,
-                    node.source_label,
-                    serde_json::to_string(&node.tags)?,
-                    serde_json::to_string(&node.metadata)?,
-                    node.created_at,
-                ],
-            );
-            match result {
-                Ok(_) => stats.episodic_nodes_imported += 1,
-                Err(_) => stats.errors += 1,
-            }
-        }
-
-        for node in &data.semantic_nodes {
-            if node.memory_id.is_empty() {
-                stats.errors += 1;
-                continue;
-            }
-            if merge && existing_ids.contains(&node.memory_id) {
-                stats.skipped += 1;
-                continue;
-            }
-            let result = conn.execute(
-                "INSERT OR IGNORE INTO semantic_memories (memory_id, agent_id, concept, content, confidence, source_id, tags, metadata, created_at, entity_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![
-                    node.memory_id,
-                    agent_name,
-                    node.concept,
-                    node.content,
-                    node.confidence,
-                    node.source_id,
-                    serde_json::to_string(&node.tags)?,
-                    serde_json::to_string(&node.metadata)?,
-                    node.created_at,
-                    node.entity_name,
-                ],
-            );
-            match result {
-                Ok(_) => stats.semantic_nodes_imported += 1,
-                Err(_) => stats.errors += 1,
-            }
-        }
-
-        for edge in &data.similar_to_edges {
-            let result = conn.execute(
-                "INSERT INTO similar_to_edges (source_id, target_id, weight, metadata) VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    edge.source_id,
-                    edge.target_id,
-                    edge.weight,
-                    serde_json::to_string(&edge.metadata)?,
-                ],
-            );
-            match result {
-                Ok(_) => stats.edges_imported += 1,
-                Err(_) => stats.errors += 1,
-            }
-        }
-
-        for edge in &data.derives_from_edges {
-            let result = conn.execute(
-                "INSERT INTO derives_from_edges (source_id, target_id, extraction_method, confidence) VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    edge.source_id,
-                    edge.target_id,
-                    edge.extraction_method,
-                    edge.confidence,
-                ],
-            );
-            match result {
-                Ok(_) => stats.edges_imported += 1,
-                Err(_) => stats.errors += 1,
-            }
-        }
-
-        for edge in &data.supersedes_edges {
-            let result = conn.execute(
-                "INSERT INTO supersedes_edges (source_id, target_id, reason, temporal_delta) VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    edge.source_id,
-                    edge.target_id,
-                    edge.reason,
-                    edge.temporal_delta,
-                ],
-            );
-            match result {
-                Ok(_) => stats.edges_imported += 1,
-                Err(_) => stats.errors += 1,
-            }
-        }
-
-        for edge in &data.transitioned_to_edges {
-            let result = conn.execute(
-                "INSERT INTO transitioned_to_edges (source_id, target_id, from_value, to_value, turn, transition_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    edge.source_id,
-                    edge.target_id,
-                    edge.from_value,
-                    edge.to_value,
-                    edge.turn,
-                    edge.transition_type,
-                ],
-            );
-            match result {
-                Ok(_) => stats.edges_imported += 1,
-                Err(_) => stats.errors += 1,
-            }
-        }
 
         Ok(ImportResult {
             agent_name: agent_name.to_string(),
@@ -844,6 +742,145 @@ fn load_transitioned_to_edges(
         .collect()
 }
 
+/// Insert all nodes and edges from `data` into `conn`, respecting merge semantics.
+///
+/// Accepts any `&rusqlite::Connection` (including `&*Transaction` via Deref) so
+/// callers can wrap this in an explicit transaction without changing the signature.
+fn insert_nodes_and_edges(
+    conn: &SqliteConnection,
+    agent_name: &str,
+    data: &HierarchicalExportData,
+    merge: bool,
+    existing_ids: &std::collections::HashSet<String>,
+) -> Result<ImportStats> {
+    let mut stats = ImportStats::default();
+
+    for node in &data.episodic_nodes {
+        if node.memory_id.is_empty() {
+            stats.errors += 1;
+            continue;
+        }
+        if merge && existing_ids.contains(&node.memory_id) {
+            stats.skipped += 1;
+            continue;
+        }
+        let result = conn.execute(
+            "INSERT OR IGNORE INTO episodic_memories (memory_id, agent_id, content, source_label, tags, metadata, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                node.memory_id,
+                agent_name,
+                node.content,
+                node.source_label,
+                serde_json::to_string(&node.tags)?,
+                serde_json::to_string(&node.metadata)?,
+                node.created_at,
+            ],
+        );
+        match result {
+            Ok(_) => stats.episodic_nodes_imported += 1,
+            Err(_) => stats.errors += 1,
+        }
+    }
+
+    for node in &data.semantic_nodes {
+        if node.memory_id.is_empty() {
+            stats.errors += 1;
+            continue;
+        }
+        if merge && existing_ids.contains(&node.memory_id) {
+            stats.skipped += 1;
+            continue;
+        }
+        let result = conn.execute(
+            "INSERT OR IGNORE INTO semantic_memories (memory_id, agent_id, concept, content, confidence, source_id, tags, metadata, created_at, entity_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                node.memory_id,
+                agent_name,
+                node.concept,
+                node.content,
+                node.confidence,
+                node.source_id,
+                serde_json::to_string(&node.tags)?,
+                serde_json::to_string(&node.metadata)?,
+                node.created_at,
+                node.entity_name,
+            ],
+        );
+        match result {
+            Ok(_) => stats.semantic_nodes_imported += 1,
+            Err(_) => stats.errors += 1,
+        }
+    }
+
+    for edge in &data.similar_to_edges {
+        let result = conn.execute(
+            "INSERT INTO similar_to_edges (source_id, target_id, weight, metadata) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                edge.source_id,
+                edge.target_id,
+                edge.weight,
+                serde_json::to_string(&edge.metadata)?,
+            ],
+        );
+        match result {
+            Ok(_) => stats.edges_imported += 1,
+            Err(_) => stats.errors += 1,
+        }
+    }
+
+    for edge in &data.derives_from_edges {
+        let result = conn.execute(
+            "INSERT INTO derives_from_edges (source_id, target_id, extraction_method, confidence) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                edge.source_id,
+                edge.target_id,
+                edge.extraction_method,
+                edge.confidence,
+            ],
+        );
+        match result {
+            Ok(_) => stats.edges_imported += 1,
+            Err(_) => stats.errors += 1,
+        }
+    }
+
+    for edge in &data.supersedes_edges {
+        let result = conn.execute(
+            "INSERT INTO supersedes_edges (source_id, target_id, reason, temporal_delta) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                edge.source_id,
+                edge.target_id,
+                edge.reason,
+                edge.temporal_delta,
+            ],
+        );
+        match result {
+            Ok(_) => stats.edges_imported += 1,
+            Err(_) => stats.errors += 1,
+        }
+    }
+
+    for edge in &data.transitioned_to_edges {
+        let result = conn.execute(
+            "INSERT INTO transitioned_to_edges (source_id, target_id, from_value, to_value, turn, transition_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                edge.source_id,
+                edge.target_id,
+                edge.from_value,
+                edge.to_value,
+                edge.turn,
+                edge.transition_type,
+            ],
+        );
+        match result {
+            Ok(_) => stats.edges_imported += 1,
+            Err(_) => stats.errors += 1,
+        }
+    }
+
+    Ok(stats)
+}
+
 fn clear_agent_data(conn: &SqliteConnection, agent_name: &str) -> Result<()> {
     // Delete edges whose source node belongs to this agent.
     conn.execute(
@@ -895,7 +932,14 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
         let entry = entry?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        let file_type = entry.file_type()?;
+        // Skip symlinks to prevent directory-traversal attacks, mirroring the
+        // behaviour of copy_dir_recursive_inner in the Kuzu backend.
+        if file_type.is_symlink() {
+            tracing::warn!("Skipping symlink during copy: {}", from.display());
+            continue;
+        }
+        if file_type.is_dir() {
             copy_dir(&from, &to)?;
         } else {
             fs::copy(&from, &to)?;

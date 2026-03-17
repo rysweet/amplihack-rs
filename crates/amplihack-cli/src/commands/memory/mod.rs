@@ -29,7 +29,7 @@ pub use staleness_detector::{IndexStatus, check_index_status};
 pub use transfer::{run_export, run_import};
 pub use tree::run_tree;
 
-use self::backend::kuzu::resolve_memory_graph_db_path;
+use self::backend::graph_db::resolve_memory_graph_db_path;
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -172,11 +172,25 @@ pub(crate) fn parse_json_value(value: &str) -> Result<JsonValue> {
     Ok(serde_json::from_str(value)?)
 }
 
-fn resolve_memory_backend_preference() -> Option<BackendChoice> {
+/// Resolve the memory backend from `AMPLIHACK_MEMORY_BACKEND`.
+///
+/// Returns:
+/// - `Ok(Some(choice))` — recognised value.
+/// - `Ok(None)`         — env var not set; caller picks a default.
+/// - `Err(...)`         — env var is set but the value is not recognised.
+///                        This is a hard error: silently activating the wrong
+///                        backend on a typo (e.g. `sqllite`) risks routing data
+///                        to an unexpected location.
+fn resolve_memory_backend_preference() -> Result<Option<BackendChoice>> {
     match std::env::var("AMPLIHACK_MEMORY_BACKEND").ok().as_deref() {
-        Some("sqlite") => Some(BackendChoice::Sqlite),
-        Some("graph-db") | Some("kuzu") => Some(BackendChoice::GraphDb),
-        _ => None,
+        Some("sqlite") => Ok(Some(BackendChoice::Sqlite)),
+        Some("graph-db") | Some("kuzu") => Ok(Some(BackendChoice::GraphDb)),
+        Some(other) => Err(anyhow::anyhow!(
+            "Unrecognized AMPLIHACK_MEMORY_BACKEND value {:?}. \
+             Valid values: sqlite, kuzu, graph-db",
+            other
+        )),
+        None => Ok(None),
     }
 }
 
@@ -230,8 +244,8 @@ pub(crate) fn memory_graph_compatibility_notice(choice: BackendChoice) -> Option
 /// Returns `Err` if `HOME` is unavailable (only checked when the env var
 /// shortcut is not used).
 pub(crate) fn resolve_backend_with_autodetect() -> Result<BackendChoice> {
-    // Step 1: env var takes priority.
-    if let Some(choice) = resolve_memory_backend_preference() {
+    // Step 1: env var takes priority (returns Err on unrecognised value).
+    if let Some(choice) = resolve_memory_backend_preference()? {
         return Ok(choice);
     }
 
@@ -434,7 +448,7 @@ fn format_code_context(payload: &code_graph::CodeGraphContextPayload) -> Option<
             };
             lines.push(format!("- `{}`", signature));
             if !function.docstring.trim().is_empty() {
-                let doc_preview = if function.docstring.chars().count() > 100 {
+                let doc_preview = if function.docstring.len() > 100 {
                     let truncated = function.docstring.chars().take(100).collect::<String>();
                     format!("{truncated}...")
                 } else {
@@ -461,7 +475,7 @@ fn format_code_context(payload: &code_graph::CodeGraphContextPayload) -> Option<
             };
             lines.push(format!("- {}", name));
             if !class.docstring.trim().is_empty() {
-                let doc_preview = if class.docstring.chars().count() > 100 {
+                let doc_preview = if class.docstring.len() > 100 {
                     let truncated = class.docstring.chars().take(100).collect::<String>();
                     format!("{truncated}...")
                 } else {
@@ -552,20 +566,8 @@ pub fn retrieve_prompt_context_memories(
         return Ok(Vec::new());
     }
 
-    match resolve_memory_backend_preference() {
-        Some(choice) => retrieve_prompt_context_memories_from_backend(
-            choice,
-            session_id,
-            query_text,
-            token_budget,
-        ),
-        None => retrieve_prompt_context_memories_from_backend(
-            BackendChoice::GraphDb,
-            session_id,
-            query_text,
-            token_budget,
-        ),
-    }
+    let choice = resolve_memory_backend_preference()?.unwrap_or(BackendChoice::GraphDb);
+    retrieve_prompt_context_memories_from_backend(choice, session_id, query_text, token_budget)
 }
 
 fn build_memory_id(record: &SessionLearningRecord, timestamp: &str) -> String {
@@ -636,10 +638,8 @@ pub fn store_session_learning(
         return Ok(None);
     };
 
-    match resolve_memory_backend_preference() {
-        Some(choice) => store_learning_with_backend(choice, &record),
-        None => store_learning_with_backend(BackendChoice::GraphDb, &record),
-    }
+    let choice = resolve_memory_backend_preference()?.unwrap_or(BackendChoice::GraphDb);
+    store_learning_with_backend(choice, &record)
 }
 
 fn store_learning_with_backend(
@@ -1355,7 +1355,10 @@ mod tests {
             BackendChoice::parse("graph-db").unwrap(),
             BackendChoice::GraphDb
         );
-        assert_eq!(BackendChoice::parse("kuzu").unwrap(), BackendChoice::GraphDb);
+        assert_eq!(
+            BackendChoice::parse("kuzu").unwrap(),
+            BackendChoice::GraphDb
+        );
     }
 
     #[test]

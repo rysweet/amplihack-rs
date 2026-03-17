@@ -297,6 +297,7 @@ mod backend_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::home_env_lock;
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -378,6 +379,9 @@ mod tests {
 
     #[test]
     fn memory_graph_compatibility_notice_surfaces_legacy_store() {
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -422,6 +426,9 @@ mod tests {
     /// message, not an empty result or a panic.
     #[test]
     fn run_tree_with_unavailable_sqlite_returns_structured_error() {
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // Override HOME to a path that cannot contain a valid SQLite file so
         // that `open_sqlite_memory_db()` is guaranteed to fail.
         let tmp = tempfile::tempdir().unwrap();

@@ -250,7 +250,7 @@ fn print_limit_hint(actual_len: usize, limit: u32) {
 mod tests {
     use super::*;
     use crate::commands::memory::{
-        backend::kuzu::{KuzuValue, init_kuzu_backend_schema},
+        backend::graph_db::{KuzuValue, init_graph_backend_schema},
         code_graph::{
             CodeGraphContextPayload, CodeGraphImportCounts, CodeGraphSearchEntry, CodeGraphStats,
             backend::with_test_code_graph_conn, import_blarify_json,
@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn query_code_stats_reads_seeded_graph() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("code-graph.kuzu");
+        let db_path = dir.path().join("code-graph.graph_db");
         seed_code_graph(&db_path);
 
         let backend = open_code_graph_reader(Some(&db_path)).unwrap();
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn query_code_search_finds_seeded_symbols() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("code-graph.kuzu");
+        let db_path = dir.path().join("code-graph.graph_db");
         seed_code_graph(&db_path);
 
         let backend = open_code_graph_reader(Some(&db_path)).unwrap();
@@ -338,10 +338,10 @@ mod tests {
     #[test]
     fn query_code_context_returns_linked_code_entities() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("code-graph.kuzu");
+        let db_path = dir.path().join("code-graph.graph_db");
         seed_code_graph(&db_path);
         with_test_code_graph_conn(Some(&db_path), |conn| {
-            init_kuzu_backend_schema(conn)?;
+            init_graph_backend_schema(conn)?;
             let now = OffsetDateTime::now_utc();
 
             let mut create_memory = conn.prepare(
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn query_code_context_returns_empty_for_unknown_memory() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("code-graph.kuzu");
+        let db_path = dir.path().join("code-graph.graph_db");
         seed_code_graph(&db_path);
 
         let backend = open_code_graph_reader(Some(&db_path)).unwrap();

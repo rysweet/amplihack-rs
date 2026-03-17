@@ -5,7 +5,7 @@
 //! (for example LadybugDB) a real insertion point without rewriting the rest of
 //! the memory subsystem up front.
 
-pub(crate) mod kuzu;
+pub(crate) mod graph_db;
 pub(crate) mod sqlite;
 
 #[cfg(test)]
@@ -14,7 +14,7 @@ mod memory_backend_parity_test;
 #[cfg(test)]
 mod sqlite_tree_backend_name_test;
 
-use self::kuzu::GraphDbBackend;
+use self::graph_db::GraphDbBackend;
 use self::sqlite::SqliteBackend;
 use super::*;
 use anyhow::Result;

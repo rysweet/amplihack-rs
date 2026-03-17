@@ -303,6 +303,9 @@ fn import_memory(
 }
 
 fn resolve_hierarchical_db_path(agent_name: &str, storage_path: Option<&str>) -> Result<PathBuf> {
+    // Validate agent name to prevent path traversal (e.g. "../evil") in the
+    // Kuzu/graph-db backend, mirroring the check in resolve_hierarchical_sqlite_path.
+    sqlite_backend::validate_agent_name(agent_name)?;
     let base = match storage_path {
         Some(path) => PathBuf::from(path),
         None => home_dir()?
@@ -403,7 +406,7 @@ fn compute_path_size_inner(path: &Path, depth: usize) -> Result<u64> {
     Ok(total)
 }
 
-pub(crate) fn kuzu_export_timestamp() -> String {
+pub(crate) fn graph_export_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -438,7 +441,7 @@ mod tests {
     #[test]
     fn hierarchical_json_round_trip_uses_public_transfer_flow() -> Result<()> {
         let temp = tempdir()?;
-        let db_path = temp.path().join("roundtrip.kuzu");
+        let db_path = temp.path().join("roundtrip.graph_db");
         let input_path = temp.path().join("input.json");
         let output_path = temp.path().join("output.json");
 

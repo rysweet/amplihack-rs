@@ -140,7 +140,7 @@ fn sqlite_insert_memory(
 ///
 /// We open a **fresh** backend for the read so that both backends see
 /// committed data regardless of whether the write path uses a different
-/// internal database handle (as Kùzu's `store_learning_kuzu` does).
+/// internal database handle (as Kùzu's `store_learning_graph` does).
 fn assert_runtime_round_trip(choice: BackendChoice) -> anyhow::Result<()> {
     let content =
         "Agent analyzer: parity test content — confirm round trip for backend round-trip test.";
@@ -177,10 +177,10 @@ fn sqlite_runtime_round_trip() -> anyhow::Result<()> {
 }
 
 #[test]
-fn kuzu_runtime_round_trip() -> anyhow::Result<()> {
+fn graph_db_runtime_round_trip() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.db");
-    let _guard = EnvGuard::setup(dir.path(), &graph, "kuzu");
+    let _guard = EnvGuard::setup(dir.path(), &graph, "graph-db");
     assert_runtime_round_trip(BackendChoice::GraphDb)
 }
 
@@ -221,10 +221,10 @@ fn sqlite_duplicate_returns_none() -> anyhow::Result<()> {
 }
 
 #[test]
-fn kuzu_duplicate_returns_none() -> anyhow::Result<()> {
+fn graph_db_duplicate_returns_none() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.db");
-    let _guard = EnvGuard::setup(dir.path(), &graph, "kuzu");
+    let _guard = EnvGuard::setup(dir.path(), &graph, "graph-db");
     assert_duplicate_returns_none(BackendChoice::GraphDb)
 }
 
@@ -284,10 +284,10 @@ fn sqlite_session_id_filter() -> anyhow::Result<()> {
 }
 
 #[test]
-fn kuzu_session_id_filter() -> anyhow::Result<()> {
+fn graph_db_session_id_filter() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.db");
-    let _guard = EnvGuard::setup(dir.path(), &graph, "kuzu");
+    let _guard = EnvGuard::setup(dir.path(), &graph, "graph-db");
     assert_session_id_filter(BackendChoice::GraphDb)
 }
 
@@ -361,22 +361,22 @@ fn sqlite_memory_type_filter_episodic() -> anyhow::Result<()> {
 }
 
 #[test]
-fn kuzu_memory_type_filter_episodic() -> anyhow::Result<()> {
-    use crate::commands::memory::backend::kuzu::{
-        KuzuConnection, KuzuDatabase, KuzuValue, init_kuzu_backend_schema, kuzu_rows,
+fn graph_db_memory_type_filter_episodic() -> anyhow::Result<()> {
+    use crate::commands::memory::backend::graph_db::{
+        KuzuConnection, KuzuDatabase, KuzuValue, graph_rows, init_graph_backend_schema,
     };
 
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.db");
-    let _guard = EnvGuard::setup(dir.path(), &graph, "kuzu");
+    let _guard = EnvGuard::setup(dir.path(), &graph, "graph-db");
 
     // Seed EpisodicMemory and SemanticMemory directly.
     let db = KuzuDatabase::new(&graph, kuzu::SystemConfig::default())?;
     let conn = KuzuConnection::new(&db)?;
-    init_kuzu_backend_schema(&conn)?;
+    init_graph_backend_schema(&conn)?;
 
     // Seed a Session node.
-    kuzu_rows(
+    graph_rows(
         &conn,
         "CREATE (s:Session {session_id: $sid, start_time: $t, end_time: NULL, user_id: '', context: '', status: 'active', created_at: $t, last_accessed: $t, metadata: '{}'})",
         vec![
@@ -386,12 +386,12 @@ fn kuzu_memory_type_filter_episodic() -> anyhow::Result<()> {
     )?;
 
     // Seed an EpisodicMemory node.
-    kuzu_rows(
+    graph_rows(
         &conn,
         "CREATE (m:EpisodicMemory {memory_id: 'm-ep-kuzu', timestamp: $t, content: 'episodic parity content', event_type: 'test', emotional_valence: 0.0, importance_score: 6.0, title: 'ep title', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, expires_at: NULL, agent_id: 'ag1'})",
         vec![("t", KuzuValue::Timestamp(time::OffsetDateTime::now_utc()))],
     )?;
-    kuzu_rows(
+    graph_rows(
         &conn,
         "MATCH (s:Session {session_id: 'sess-kf'}), (m:EpisodicMemory {memory_id: 'm-ep-kuzu'}) CREATE (s)-[:CONTAINS_EPISODIC {sequence_number: 1}]->(m)",
         vec![],
@@ -400,12 +400,12 @@ fn kuzu_memory_type_filter_episodic() -> anyhow::Result<()> {
     // Seed a SemanticMemory node.
     let now_str = chrono::Utc::now().to_rfc3339();
     let now_ts = time::OffsetDateTime::now_utc();
-    kuzu_rows(
+    graph_rows(
         &conn,
         "CREATE (m:SemanticMemory {memory_id: 'm-sem-kuzu', concept: 'test concept', content: 'semantic parity content', category: 'test', confidence_score: 1.0, last_updated: $t, version: 1, title: 'sem title', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, agent_id: 'ag1'})",
         vec![("t", KuzuValue::Timestamp(now_ts))],
     )?;
-    kuzu_rows(
+    graph_rows(
         &conn,
         "MATCH (s:Session {session_id: 'sess-kf'}), (m:SemanticMemory {memory_id: 'm-sem-kuzu'}) CREATE (s)-[:CONTRIBUTES_TO_SEMANTIC {contribution_type: 'created', timestamp: $t, delta: 'initial'}]->(m)",
         vec![("t", KuzuValue::Timestamp(now_ts))],
@@ -504,10 +504,10 @@ fn sqlite_collect_agent_counts() -> anyhow::Result<()> {
 }
 
 #[test]
-fn kuzu_collect_agent_counts() -> anyhow::Result<()> {
+fn graph_db_collect_agent_counts() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.db");
-    let _guard = EnvGuard::setup(dir.path(), &graph, "kuzu");
+    let _guard = EnvGuard::setup(dir.path(), &graph, "graph-db");
     assert_collect_agent_counts(BackendChoice::GraphDb)
 }
 
@@ -581,10 +581,10 @@ fn sqlite_list_and_delete_session() -> anyhow::Result<()> {
 }
 
 #[test]
-fn kuzu_list_and_delete_session() -> anyhow::Result<()> {
+fn graph_db_list_and_delete_session() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.db");
-    let _guard = EnvGuard::setup(dir.path(), &graph, "kuzu");
+    let _guard = EnvGuard::setup(dir.path(), &graph, "graph-db");
     assert_list_and_delete_session(BackendChoice::GraphDb)
 }
 
@@ -649,22 +649,22 @@ fn sqlite_expired_records_not_returned() -> anyhow::Result<()> {
 /// the past; verify they are excluded from `load_session_rows` and
 /// `collect_agent_counts`.
 #[test]
-fn kuzu_expired_records_not_returned() -> anyhow::Result<()> {
-    use crate::commands::memory::backend::kuzu::{
-        KuzuConnection, KuzuDatabase, KuzuValue, init_kuzu_backend_schema, kuzu_rows,
+fn graph_db_expired_records_not_returned() -> anyhow::Result<()> {
+    use crate::commands::memory::backend::graph_db::{
+        KuzuConnection, KuzuDatabase, KuzuValue, graph_rows, init_graph_backend_schema,
     };
 
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.db");
-    let _guard = EnvGuard::setup(dir.path(), &graph, "kuzu");
+    let _guard = EnvGuard::setup(dir.path(), &graph, "graph-db");
 
     let db = KuzuDatabase::new(&graph, kuzu::SystemConfig::default())?;
     let conn = KuzuConnection::new(&db)?;
-    init_kuzu_backend_schema(&conn)?;
+    init_graph_backend_schema(&conn)?;
 
     let now_ts = time::OffsetDateTime::now_utc();
     // Seed the session.
-    kuzu_rows(
+    graph_rows(
         &conn,
         "CREATE (s:Session {session_id: 'sess-exp-k', start_time: $t, end_time: NULL, user_id: '', context: '', status: 'active', created_at: $t, last_accessed: $t, metadata: '{}'})",
         vec![("t", KuzuValue::Timestamp(now_ts))],
@@ -674,7 +674,7 @@ fn kuzu_expired_records_not_returned() -> anyhow::Result<()> {
     let past: time::OffsetDateTime = time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(365); // 1971-01-01
 
     // Expired EpisodicMemory.
-    kuzu_rows(
+    graph_rows(
         &conn,
         "CREATE (m:EpisodicMemory {memory_id: 'ep-expired', timestamp: $t, content: 'expired ep', event_type: 'test', emotional_valence: 0.0, importance_score: 5.0, title: 'expired', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, expires_at: $exp, agent_id: 'exp-agent'})",
         vec![
@@ -682,19 +682,19 @@ fn kuzu_expired_records_not_returned() -> anyhow::Result<()> {
             ("exp", KuzuValue::Timestamp(past)),
         ],
     )?;
-    kuzu_rows(
+    graph_rows(
         &conn,
         "MATCH (s:Session {session_id: 'sess-exp-k'}), (m:EpisodicMemory {memory_id: 'ep-expired'}) CREATE (s)-[:CONTAINS_EPISODIC {sequence_number: 1}]->(m)",
         vec![],
     )?;
 
     // Valid EpisodicMemory (no expires_at = never expires).
-    kuzu_rows(
+    graph_rows(
         &conn,
         "CREATE (m:EpisodicMemory {memory_id: 'ep-valid', timestamp: $t, content: 'valid ep', event_type: 'test', emotional_valence: 0.0, importance_score: 6.0, title: 'valid', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, expires_at: NULL, agent_id: 'exp-agent'})",
         vec![("t", KuzuValue::Timestamp(now_ts))],
     )?;
-    kuzu_rows(
+    graph_rows(
         &conn,
         "MATCH (s:Session {session_id: 'sess-exp-k'}), (m:EpisodicMemory {memory_id: 'ep-valid'}) CREATE (s)-[:CONTAINS_EPISODIC {sequence_number: 2}]->(m)",
         vec![],
