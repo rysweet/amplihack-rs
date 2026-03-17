@@ -82,20 +82,13 @@ pub fn run_launch(
         .with_amplihack_home() // WS3: AMPLIHACK_HOME
         .with_asset_resolver(); // Rust-native bundle asset resolver
     if let Some(project_path) = current_dir.as_deref() {
-        env_builder = env_builder.with_project_kuzu_db(project_path);
+        env_builder = env_builder.with_project_graph_db(project_path);
     }
     let env = env_builder
         .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1") // WS2: propagate flag
         .build();
 
-    if should_prompt_blarify_indexing(tool, is_noninteractive()) {
-        let project_path = current_dir
-            .as_ref()
-            .context("failed to resolve current directory")?;
-        if let Err(err) = maybe_prompt_blarify_indexing(project_path) {
-            tracing::warn!(error = %err, "code graph indexing prompt failed (continuing)");
-        }
-    }
+    maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), current_dir.as_deref())?;
 
     // Build command
     let mut cmd = build_command(
@@ -185,6 +178,41 @@ fn should_prompt_blarify_indexing(tool: &str, noninteractive: bool) -> bool {
     tool == "claude"
         && std::env::var("AMPLIHACK_ENABLE_BLARIFY").as_deref() == Ok("1")
         && (!noninteractive || blarify_mode() != BlarifyMode::Prompt)
+}
+
+fn maybe_run_blarify_indexing_prompt(
+    tool: &str,
+    noninteractive: bool,
+    current_dir: Option<&Path>,
+) -> Result<()> {
+    maybe_run_blarify_indexing_prompt_with(
+        tool,
+        noninteractive,
+        current_dir,
+        maybe_prompt_blarify_indexing,
+    )
+}
+
+fn maybe_run_blarify_indexing_prompt_with<F>(
+    tool: &str,
+    noninteractive: bool,
+    current_dir: Option<&Path>,
+    prompt_runner: F,
+) -> Result<()>
+where
+    F: FnOnce(&Path) -> Result<()>,
+{
+    if !should_prompt_blarify_indexing(tool, noninteractive) {
+        return Ok(());
+    }
+
+    let project_path = current_dir.context("failed to resolve current directory")?;
+    prompt_runner(project_path).with_context(|| {
+        format!(
+            "code graph indexing prompt failed for {}",
+            project_path.display()
+        )
+    })
 }
 
 fn maybe_prompt_blarify_indexing(project_path: &Path) -> Result<()> {
@@ -288,7 +316,7 @@ fn run_code_indexing(
     action: BlarifyIndexAction,
     background: bool,
 ) -> Result<()> {
-    let kuzu_path = resolve_code_graph_db_path_for_project(project_path)?;
+    let db_path = resolve_code_graph_db_path_for_project(project_path)?;
     if background {
         let current_exe =
             std::env::current_exe().context("failed to resolve current executable")?;
@@ -298,7 +326,7 @@ fn run_code_indexing(
                 cmd.arg("index-code")
                     .arg(json_path)
                     .arg("--db-path")
-                    .arg(&kuzu_path);
+                    .arg(&db_path);
                 cmd.current_dir(project_path)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
@@ -336,7 +364,7 @@ fn run_code_indexing(
     match action {
         BlarifyIndexAction::ImportExistingJson => {
             println!("\n📊 Importing code graph data...\n");
-            run_index_code(json_path, Some(&kuzu_path))?;
+            run_index_code(json_path, Some(&db_path))?;
             println!("\n✅ Code graph import complete.\n");
         }
         BlarifyIndexAction::GenerateNativeScip => {
@@ -446,7 +474,9 @@ fn manual_indexing_hint(
         BlarifyIndexAction::ImportExistingJson => format!(
             "amplihack index-code {} --db-path {}",
             json_path.display(),
-            project_path.join(".amplihack").join("kuzu_db").display()
+            resolve_code_graph_db_path_for_project(project_path)
+                .unwrap_or_else(|_| project_path.join(".amplihack").join("graph_db"))
+                .display()
         ),
         BlarifyIndexAction::GenerateNativeScip => format!(
             "amplihack index-scip --project-path {}",
@@ -893,6 +923,45 @@ mod tests {
             std::env::remove_var("AMPLIHACK_ENABLE_BLARIFY");
             std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
         }
+    }
+
+    #[test]
+    fn maybe_run_blarify_indexing_prompt_surfaces_prompt_failure() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let project = tempfile::tempdir().unwrap();
+
+        unsafe {
+            std::env::set_var("AMPLIHACK_ENABLE_BLARIFY", "1");
+            std::env::set_var("AMPLIHACK_BLARIFY_MODE", "background");
+        }
+
+        let result =
+            maybe_run_blarify_indexing_prompt_with("claude", true, Some(project.path()), |_path| {
+                Err(anyhow::anyhow!("synthetic prompt failure"))
+            });
+
+        unsafe {
+            std::env::remove_var("AMPLIHACK_ENABLE_BLARIFY");
+            std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
+        }
+
+        let error = result.expect_err("prompt failure should stop launch");
+        let error_message = error.to_string();
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_message.contains("code graph indexing prompt failed for"),
+            "expected launch-side prompt failure context, got: {error_message}"
+        );
+        assert!(
+            error_chain.contains("synthetic prompt failure"),
+            "expected root-cause prompt failure, got: {error_chain}"
+        );
+        assert!(
+            error_chain.contains(&project.path().display().to_string()),
+            "expected project path in error chain, got: {error_chain}"
+        );
     }
 
     #[test]

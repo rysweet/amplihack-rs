@@ -215,7 +215,7 @@ After running `amplihack index-scip` in a project:
 ```
 <project>/
 └── .amplihack/
-    ├── kuzu_db/          ← Kuzu database directory (0700)
+    ├── graph_db/         ← Graph database directory (0700)
     │   ├── data.kz       ← graph data (0600)
     │   └── ...
     └── indexes/
@@ -224,7 +224,7 @@ After running `amplihack index-scip` in a project:
         └── ...
 ```
 
-The `kuzu_db` directory and its contents are created with restrictive
+The `graph_db` directory and its contents are created with restrictive
 permissions (`0700` / `0600`) to prevent other users on a shared system from
 reading graph data that may include sensitive symbol names or docstrings.
 

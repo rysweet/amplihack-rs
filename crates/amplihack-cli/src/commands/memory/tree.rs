@@ -301,4 +301,47 @@ mod tests {
         assert!(output.contains("📝 Conversation: Hello (★★★★★★★★☆☆ 8/10) (confidence: 0.9)"));
         assert!(output.contains("🔧 Context: Ctx (used: 3x)"));
     }
+
+    /// AC: memory tree must return a *non-empty structured error* (not silent
+    /// empty output) when the requested backend is unavailable.
+    ///
+    /// This confirms the no-silent-degradation contract: a caller that cannot
+    /// open the SQLite database gets an explicit `Err` with a meaningful
+    /// message, not an empty result or a panic.
+    #[test]
+    fn run_tree_with_unavailable_sqlite_returns_structured_error() {
+        // Override HOME to a path that cannot contain a valid SQLite file so
+        // that `open_sqlite_memory_db()` is guaranteed to fail.
+        let tmp = tempfile::tempdir().unwrap();
+        let _fake_home = tmp.path().join("no-home");
+        // Intentionally do NOT create `_fake_home` — the SQLite open will fail
+        // because fs::create_dir_all cannot create it inside a read-only root
+        // (or, more practically, the subsequent open will fail on a bad path).
+        // We use a path that is a *file* (not a directory) so that
+        // `fs::create_dir_all(parent)` or `SqliteConnection::open` returns Err.
+        std::fs::write(tmp.path().join("not-a-dir"), b"x").unwrap();
+        let fake_home_path = tmp.path().join("not-a-dir"); // file, not dir
+
+        let prev_home = std::env::var_os("HOME");
+        // Safety: single-threaded test body; env var restored before return.
+        unsafe {
+            std::env::set_var("HOME", &fake_home_path);
+        }
+
+        let result = run_tree(None, None, None, "sqlite");
+
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        let err = result.expect_err(
+            "run_tree must return Err when SQLite is unavailable (non-silent degradation)",
+        );
+        let msg = format!("{err:#}");
+        assert!(
+            !msg.is_empty(),
+            "error message from unavailable SQLite backend must be non-empty"
+        );
+    }
 }

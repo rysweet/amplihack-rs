@@ -115,7 +115,7 @@ pub enum Commands {
         input: PathBuf,
         /// Override the target code-graph database path
         #[arg(long = "db-path", alias = "kuzu-path")]
-        kuzu_path: Option<PathBuf>,
+        db_path: Option<PathBuf>,
     },
     /// Generate native SCIP artifacts for the current project
     IndexScip {
@@ -130,7 +130,7 @@ pub enum Commands {
     QueryCode {
         /// Override the target code-graph database path
         #[arg(long = "db-path", alias = "kuzu-path")]
-        kuzu_path: Option<PathBuf>,
+        db_path: Option<PathBuf>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -263,7 +263,7 @@ pub enum MemoryCommands {
         #[arg(long)]
         depth: Option<u32>,
         /// Memory backend to use
-        #[arg(long, default_value = "kuzu", value_parser = ["kuzu", "sqlite"])]
+        #[arg(long, default_value = "graph-db", value_parser = ["graph-db", "kuzu", "sqlite"])]
         backend: String,
     },
     /// Export memory to file
@@ -271,13 +271,13 @@ pub enum MemoryCommands {
         /// Name of the agent whose memory to export
         #[arg(long)]
         agent: String,
-        /// Output file path (.json) or directory (kuzu)
+        /// Output file path (.json) or directory (raw-db; compatibility alias: kuzu)
         #[arg(short, long)]
         output: String,
         /// Export format
-        #[arg(short = 'f', long = "format", default_value = "json", value_parser = ["json", "kuzu"])]
+        #[arg(short = 'f', long = "format", default_value = "json", value_parser = ["json", "raw-db", "kuzu"])]
         format: String,
-        /// Custom storage path for the agent's Kuzu DB
+        /// Custom storage path for the agent's graph DB
         #[arg(long = "storage-path")]
         storage_path: Option<String>,
     },
@@ -286,16 +286,16 @@ pub enum MemoryCommands {
         /// Name of the target agent to import into
         #[arg(long)]
         agent: String,
-        /// Input file path (.json) or directory (kuzu)
+        /// Input file path (.json) or directory (raw-db; compatibility alias: kuzu)
         #[arg(short, long)]
         input: String,
         /// Import format
-        #[arg(short = 'f', long = "format", default_value = "json", value_parser = ["json", "kuzu"])]
+        #[arg(short = 'f', long = "format", default_value = "json", value_parser = ["json", "raw-db", "kuzu"])]
         format: String,
         /// Merge into existing memory
         #[arg(long)]
         merge: bool,
-        /// Custom storage path for the agent's Kuzu DB
+        /// Custom storage path for the agent's graph DB
         #[arg(long = "storage-path")]
         storage_path: Option<String>,
     },
@@ -305,7 +305,7 @@ pub enum MemoryCommands {
         #[arg(long, default_value = "test_*")]
         pattern: String,
         /// Memory backend to use
-        #[arg(long, default_value = "kuzu", value_parser = ["kuzu", "sqlite"])]
+        #[arg(long, default_value = "graph-db", value_parser = ["graph-db", "kuzu", "sqlite"])]
         backend: String,
         /// Actually delete sessions instead of dry-run
         #[arg(long = "no-dry-run")]
@@ -439,11 +439,13 @@ pub enum ModeCommands {
 /// here so that `tests/integration/kuzu_ffi_test.rs` can exercise the kuzu
 /// C++ FFI boundary without embedding integration tests inside production code.
 pub mod memory {
+    pub use crate::commands::memory::backend::kuzu::{
+        init_kuzu_backend_schema, kuzu_rows, list_kuzu_sessions_from_conn,
+    };
     pub use crate::commands::memory::{
         CodeGraphSummary, IndexStatus, PromptContextMemory, SessionSummary,
         background_index_job_active, background_index_job_path, check_index_status,
-        default_code_graph_db_path_for_project, init_kuzu_backend_schema, kuzu_rows,
-        list_kuzu_sessions_from_conn, record_background_index_pid,
+        default_code_graph_db_path_for_project, record_background_index_pid,
         resolve_code_graph_db_path_for_project, retrieve_prompt_context_memories,
         store_session_learning, summarize_code_graph,
     };

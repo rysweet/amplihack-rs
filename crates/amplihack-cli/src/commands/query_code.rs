@@ -7,11 +7,11 @@ use std::path::Path;
 
 pub fn run_query_code(
     command: QueryCodeCommands,
-    kuzu_path: Option<&Path>,
+    db_path: Option<&Path>,
     json_output: bool,
     limit: u32,
 ) -> Result<()> {
-    let backend = open_code_graph_reader(kuzu_path)?;
+    let backend = open_code_graph_reader(db_path)?;
 
     match command {
         QueryCodeCommands::Stats => run_stats(backend.as_ref(), json_output),
@@ -241,14 +241,12 @@ fn print_limit_hint(actual_len: usize, limit: u32) {
 mod tests {
     use super::*;
     use crate::commands::memory::{
+        backend::kuzu::{KuzuValue, init_kuzu_backend_schema},
         code_graph::{
             CodeGraphContextPayload, CodeGraphImportCounts, CodeGraphSearchEntry, CodeGraphStats,
-            import_blarify_json, open_kuzu_code_graph_db,
+            backend::with_test_code_graph_conn, import_blarify_json,
         },
-        init_kuzu_backend_schema,
     };
-    use kuzu::Connection as KuzuConnection;
-    use kuzu::Value as KuzuValue;
     use std::fs;
     use time::OffsetDateTime;
 
@@ -327,38 +325,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("code-graph.kuzu");
         seed_code_graph(&db_path);
-        let db = open_kuzu_code_graph_db(Some(&db_path)).unwrap();
-        let conn = KuzuConnection::new(&db).unwrap();
-        init_kuzu_backend_schema(&conn).unwrap();
-        let now = OffsetDateTime::now_utc();
+        with_test_code_graph_conn(Some(&db_path), |conn| {
+            init_kuzu_backend_schema(conn)?;
+            let now = OffsetDateTime::now_utc();
 
-        let mut create_memory = conn.prepare(
-            "CREATE (m:SemanticMemory {memory_id: $memory_id, concept: $concept, content: $content, category: $category, confidence_score: $confidence_score, last_updated: $last_updated, version: $version, title: $title, metadata: $metadata, tags: $tags, created_at: $created_at, accessed_at: $accessed_at, agent_id: $agent_id})",
-        ).unwrap();
-        conn.execute(
-            &mut create_memory,
-            vec![
-                ("memory_id", KuzuValue::String("mem-query".to_string())),
-                ("concept", KuzuValue::String("Query context".to_string())),
-                (
-                    "content",
-                    KuzuValue::String("helper is relevant here".to_string()),
-                ),
-                ("category", KuzuValue::String("session_end".to_string())),
-                ("confidence_score", KuzuValue::Double(1.0)),
-                ("last_updated", KuzuValue::Timestamp(now)),
-                ("version", KuzuValue::Int64(1)),
-                ("title", KuzuValue::String("Helper context".to_string())),
-                (
-                    "metadata",
-                    KuzuValue::String(r#"{"file":"src/example/module.py"}"#.to_string()),
-                ),
-                ("tags", KuzuValue::String(r#"["learning"]"#.to_string())),
-                ("created_at", KuzuValue::Timestamp(now)),
-                ("accessed_at", KuzuValue::Timestamp(now)),
-                ("agent_id", KuzuValue::String("agent-1".to_string())),
-            ],
-        )
+            let mut create_memory = conn.prepare(
+                "CREATE (m:SemanticMemory {memory_id: $memory_id, concept: $concept, content: $content, category: $category, confidence_score: $confidence_score, last_updated: $last_updated, version: $version, title: $title, metadata: $metadata, tags: $tags, created_at: $created_at, accessed_at: $accessed_at, agent_id: $agent_id})",
+            )?;
+            conn.execute(
+                &mut create_memory,
+                vec![
+                    ("memory_id", KuzuValue::String("mem-query".to_string())),
+                    ("concept", KuzuValue::String("Query context".to_string())),
+                    (
+                        "content",
+                        KuzuValue::String("helper is relevant here".to_string()),
+                    ),
+                    ("category", KuzuValue::String("session_end".to_string())),
+                    ("confidence_score", KuzuValue::Double(1.0)),
+                    ("last_updated", KuzuValue::Timestamp(now)),
+                    ("version", KuzuValue::Int64(1)),
+                    ("title", KuzuValue::String("Helper context".to_string())),
+                    (
+                        "metadata",
+                        KuzuValue::String(r#"{"file":"src/example/module.py"}"#.to_string()),
+                    ),
+                    ("tags", KuzuValue::String(r#"["learning"]"#.to_string())),
+                    ("created_at", KuzuValue::Timestamp(now)),
+                    ("accessed_at", KuzuValue::Timestamp(now)),
+                    ("agent_id", KuzuValue::String("agent-1".to_string())),
+                ],
+            )?;
+            Ok(())
+        })
         .unwrap();
 
         let import_dir = tempfile::tempdir().unwrap();

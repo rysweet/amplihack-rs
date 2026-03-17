@@ -129,22 +129,22 @@ AMPLIHACK_HOME=/opt/amplihack amplihack claude --print-env 2>&1 | grep AMPLIHACK
 ### AMPLIHACK_GRAPH_DB_PATH
 
 **Type:** path
-**Example:** `/work/repo/.amplihack/kuzu_db`
-**Set by:** `EnvBuilder::with_project_kuzu_db()`
-**Read by:** `commands::memory::resolve_kuzu_memory_db_path()`
+**Example:** `/work/repo/.amplihack/graph_db`
+**Set by:** `EnvBuilder::with_project_graph_db()`
+**Read by:** `commands::memory::resolve_memory_graph_db_path()`
 
 Overrides the code-graph database path used by Rust memory operations in launched child
 processes. `amplihack launch` and the Rust recipe runner set it to the
-project-local `.amplihack/kuzu_db` so launched sessions, hooks, and native
+project-local `.amplihack/graph_db` so launched sessions, hooks, and native
 code-graph features operate on the same live store.
 
-If this variable is absent, Rust memory operations keep using the historical
-global default `~/.amplihack/memory_kuzu.db`, or the legacy
+If this variable is absent, Rust memory operations keep using the current
+default `~/.amplihack/memory_graph.db`, or the legacy
 `AMPLIHACK_KUZU_DB_PATH` override if present.
 
 ```sh
 # Effective child-process environment for a project rooted at /work/repo
-AMPLIHACK_GRAPH_DB_PATH=/work/repo/.amplihack/kuzu_db amplihack claude
+AMPLIHACK_GRAPH_DB_PATH=/work/repo/.amplihack/graph_db amplihack claude
 ```
 
 **Why it exists:** Issue #77 still has memory/code parity gaps. This override
@@ -164,7 +164,7 @@ and also exports it for older child-process consumers. When both are present,
 
 ```sh
 # Backward-compatible older configuration still works
-AMPLIHACK_KUZU_DB_PATH=/work/repo/.amplihack/kuzu_db amplihack claude
+AMPLIHACK_KUZU_DB_PATH=/work/repo/.amplihack/graph_db amplihack claude
 ```
 
 The alias remains because internal storage is still Kuzu-backed today, but new
@@ -317,7 +317,7 @@ command line.
 **Values:** `1` enables launcher-side code-indexing checks; absence or any other value disables them  
 **Read by:** `commands::launch::should_prompt_blarify_indexing()`
 
-Opt-in gate for launcher-side code indexing. When set to `1` for `amplihack claude`, the Rust launcher checks whether code-graph artifacts are missing or stale, and whether the project-local `.amplihack/kuzu_db` store already exists, then either prompts or follows `AMPLIHACK_BLARIFY_MODE` if that mode is set.
+Opt-in gate for launcher-side code indexing. When set to `1` for `amplihack claude`, the Rust launcher checks whether code-graph artifacts are missing or stale, and whether the project-local `.amplihack/graph_db` store already exists, then either prompts or follows `AMPLIHACK_BLARIFY_MODE` if that mode is set.
 
 Without `AMPLIHACK_BLARIFY_MODE`, interactive launches offer to either:
 
@@ -338,7 +338,7 @@ amplihack index-scip --project-path .
 
 - `.amplihack/blarify.json` — native Kuzu import input for `amplihack index-code`
 - `.amplihack/indexes/<language>.scip` — per-language native SCIP artifacts from `amplihack index-scip`
-- `.amplihack/kuzu_db` — native Kuzu code-graph store populated by `index-code` or `index-scip`
+- `.amplihack/graph_db` — native code-graph store populated by `index-code` or `index-scip`
 
 **Why it exists:** Issue #77 is migrating code-graph features off the Python launcher without forcing indexing on every launch. This flag keeps the new behavior opt-in while broader memory/session parity work is still being finished.
 

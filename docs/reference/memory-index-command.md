@@ -34,7 +34,7 @@ amplihack index-code <INPUT> [--db-path <PATH>]
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `<INPUT>` | yes | Path to a blarify JSON export (`blarify.json`) |
-| `--db-path <PATH>` | no | Override the code-graph database directory. Defaults to `<project>/.amplihack/kuzu_db` inferred from the input path location. `--kuzu-path` remains as a compatibility alias. |
+| `--db-path <PATH>` | no | Override the code-graph database directory. Defaults to `<project>/.amplihack/graph_db` inferred from the input path location. `--kuzu-path` remains as a compatibility alias. |
 
 ### Behavior
 
@@ -49,10 +49,8 @@ amplihack index-code <INPUT> [--db-path <PATH>]
    relationship edges from the JSON.
 7. Prints an import-counts summary to stdout and exits 0.
 
-If `<INPUT>` does not exist, `index-code` logs a warning at `WARN` level and
-exits 0 with zero counts — it does **not** abort the process. This allows
-pipelines that conditionally produce `blarify.json` to invoke `index-code`
-unconditionally.
+If `<INPUT>` does not exist, `index-code` returns an error instead of producing
+a success-shaped zero-count import.
 
 ### Example
 
@@ -72,7 +70,7 @@ amplihack index-code /workspace/myproject/.amplihack/blarify.json
 
 ```sh
 # Point at a custom database location
-amplihack index-code /tmp/analysis/blarify.json --db-path /var/cache/myproject/kuzu
+amplihack index-code /tmp/analysis/blarify.json --db-path /var/cache/myproject/graph_db
 ```
 
 ---
@@ -171,11 +169,11 @@ by default.
 
 ## Database location
 
-The default code-graph database path is `<project-root>/.amplihack/kuzu_db`.
+The default code-graph database path is `<project-root>/.amplihack/graph_db`.
 
 For `index-code`, the project root is inferred from the input path: if the
 input is `<project>/.amplihack/blarify.json`, the database will be
-`<project>/.amplihack/kuzu_db`. Otherwise the current directory is used.
+`<project>/.amplihack/graph_db`. Otherwise the current directory is used.
 
 Use `--db-path` on `index-code` to override. `--kuzu-path` remains accepted as a compatibility alias.
 

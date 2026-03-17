@@ -115,7 +115,7 @@ pub fn run_index_scip(project_path: Option<&Path>, languages: &[String]) -> Resu
     let resolved_project_path = project_path
         .map(Path::to_path_buf)
         .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
-    let kuzu_path = resolve_code_graph_db_path_for_project(&resolved_project_path)?;
+    let db_path = resolve_code_graph_db_path_for_project(&resolved_project_path)?;
     let mut import_counts = CodeGraphImportCounts::default();
     for (language, artifact) in summary
         .completed_languages
@@ -126,7 +126,7 @@ pub fn run_index_scip(project_path: Option<&Path>, languages: &[String]) -> Resu
             artifact,
             &resolved_project_path,
             Some(language),
-            Some(&kuzu_path),
+            Some(&db_path),
         )?;
         import_counts.files += counts.files;
         import_counts.classes += counts.classes;

@@ -34,7 +34,7 @@ amplihack query-code [--db-path <PATH>] [--json] [--limit <N>] <SUBCOMMAND>
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--db-path <PATH>` | `<cwd>/.amplihack/kuzu_db` | Path to the code-graph database directory. `--kuzu-path` remains as a compatibility alias. |
+| `--db-path <PATH>` | `<cwd>/.amplihack/graph_db` | Path to the code-graph database directory. `--kuzu-path` remains as a compatibility alias. |
 | `--json` | false | Emit output as JSON instead of human-readable text. |
 | `--limit <N>` | 50 | Maximum number of rows returned by list subcommands. |
 
