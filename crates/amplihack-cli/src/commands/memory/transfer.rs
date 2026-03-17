@@ -453,10 +453,7 @@ fn import_hierarchical_json(
     let input_path = PathBuf::from(input);
 
     // P1-4: Check file size before reading to prevent OOM from adversarially crafted payloads.
-    let file_size = input_path
-        .metadata()
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let file_size = input_path.metadata().map(|m| m.len()).unwrap_or(0);
     if file_size > IMPORT_JSON_MAX_BYTES {
         anyhow::bail!(
             "Import file is too large ({:.1} MB, maximum is {:.1} MB): {}",
