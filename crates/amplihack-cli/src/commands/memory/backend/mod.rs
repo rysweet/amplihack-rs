@@ -11,7 +11,10 @@ pub(crate) mod sqlite;
 #[cfg(test)]
 mod memory_backend_parity_test;
 
-use self::kuzu::KuzuBackend;
+#[cfg(test)]
+mod sqlite_tree_backend_name_test;
+
+use self::kuzu::GraphDbBackend;
 use self::sqlite::SqliteBackend;
 use super::*;
 use anyhow::Result;
@@ -39,20 +42,20 @@ pub(crate) trait MemoryRuntimeBackend {
 pub(crate) fn open_tree_backend(choice: BackendChoice) -> Result<Box<dyn MemoryTreeBackend>> {
     match choice {
         BackendChoice::Sqlite => Ok(Box::new(SqliteBackend::open()?)),
-        BackendChoice::Kuzu => Ok(Box::new(KuzuBackend::open()?)),
+        BackendChoice::GraphDb => Ok(Box::new(GraphDbBackend::open()?)),
     }
 }
 
 pub(crate) fn open_cleanup_backend(choice: BackendChoice) -> Result<Box<dyn MemorySessionBackend>> {
     match choice {
         BackendChoice::Sqlite => Ok(Box::new(SqliteBackend::open()?)),
-        BackendChoice::Kuzu => Ok(Box::new(KuzuBackend::open()?)),
+        BackendChoice::GraphDb => Ok(Box::new(GraphDbBackend::open()?)),
     }
 }
 
 pub(crate) fn open_runtime_backend(choice: BackendChoice) -> Result<Box<dyn MemoryRuntimeBackend>> {
     match choice {
         BackendChoice::Sqlite => Ok(Box::new(SqliteBackend::open()?)),
-        BackendChoice::Kuzu => Ok(Box::new(KuzuBackend::open()?)),
+        BackendChoice::GraphDb => Ok(Box::new(GraphDbBackend::open()?)),
     }
 }

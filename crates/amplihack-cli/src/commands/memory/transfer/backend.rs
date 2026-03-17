@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::memory::BackendChoice;
 use crate::commands::memory::backend::kuzu::{kuzu_f64, kuzu_i64, kuzu_rows, kuzu_string};
 use kuzu::{
     Connection as KuzuConnection, Database as KuzuDatabase, SystemConfig, Value as KuzuValue,
@@ -7,7 +8,7 @@ use serde_json::Value as JsonValue;
 use std::fs;
 use std::io::Read;
 
-trait HierarchicalTransferBackend {
+pub(super) trait HierarchicalTransferBackend {
     fn export_hierarchical_json(
         &self,
         agent_name: &str,
@@ -36,18 +37,28 @@ trait HierarchicalTransferBackend {
     ) -> Result<ImportResult>;
 }
 
-struct KuzuHierarchicalTransferBackend;
+pub(super) struct GraphDbHierarchicalTransferBackend;
 
-fn open_hierarchical_transfer_backend() -> Box<dyn HierarchicalTransferBackend> {
-    Box::new(KuzuHierarchicalTransferBackend)
+pub(super) fn open_hierarchical_transfer_backend_for(
+    choice: BackendChoice,
+) -> Box<dyn HierarchicalTransferBackend> {
+    match choice {
+        BackendChoice::Sqlite => Box::new(super::sqlite_backend::SqliteHierarchicalTransferBackend),
+        BackendChoice::GraphDb => Box::new(GraphDbHierarchicalTransferBackend),
+    }
 }
 
 pub(super) fn export_hierarchical_json(
     agent_name: &str,
     output: &str,
     storage_path: Option<&str>,
+    choice: BackendChoice,
 ) -> Result<ExportResult> {
-    open_hierarchical_transfer_backend().export_hierarchical_json(agent_name, output, storage_path)
+    open_hierarchical_transfer_backend_for(choice).export_hierarchical_json(
+        agent_name,
+        output,
+        storage_path,
+    )
 }
 
 pub(super) fn import_hierarchical_json(
@@ -55,8 +66,9 @@ pub(super) fn import_hierarchical_json(
     input: &str,
     merge: bool,
     storage_path: Option<&str>,
+    choice: BackendChoice,
 ) -> Result<ImportResult> {
-    open_hierarchical_transfer_backend().import_hierarchical_json(
+    open_hierarchical_transfer_backend_for(choice).import_hierarchical_json(
         agent_name,
         input,
         merge,
@@ -68,8 +80,9 @@ pub(super) fn export_hierarchical_raw_db(
     agent_name: &str,
     output: &str,
     storage_path: Option<&str>,
+    choice: BackendChoice,
 ) -> Result<ExportResult> {
-    open_hierarchical_transfer_backend().export_hierarchical_raw_db(
+    open_hierarchical_transfer_backend_for(choice).export_hierarchical_raw_db(
         agent_name,
         output,
         storage_path,
@@ -81,8 +94,9 @@ pub(super) fn import_hierarchical_raw_db(
     input: &str,
     merge: bool,
     storage_path: Option<&str>,
+    choice: BackendChoice,
 ) -> Result<ImportResult> {
-    open_hierarchical_transfer_backend().import_hierarchical_raw_db(
+    open_hierarchical_transfer_backend_for(choice).import_hierarchical_raw_db(
         agent_name,
         input,
         merge,
@@ -90,7 +104,7 @@ pub(super) fn import_hierarchical_raw_db(
     )
 }
 
-impl HierarchicalTransferBackend for KuzuHierarchicalTransferBackend {
+impl HierarchicalTransferBackend for GraphDbHierarchicalTransferBackend {
     fn export_hierarchical_json(
         &self,
         agent_name: &str,

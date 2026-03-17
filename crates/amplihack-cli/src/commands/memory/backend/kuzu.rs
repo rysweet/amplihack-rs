@@ -1,7 +1,7 @@
 use super::super::*;
 use super::{MemoryRuntimeBackend, MemorySessionBackend, MemoryTreeBackend};
-use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use anyhow::{Context, Result, bail};
+use chrono::{DateTime, TimeZone as _, Utc};
 use kuzu::SystemConfig;
 pub(crate) use kuzu::{Connection as KuzuConnection, Database as KuzuDatabase, Value as KuzuValue};
 use std::collections::HashMap;
@@ -134,13 +134,13 @@ pub(crate) const KUZU_MEMORY_TABLES: &[(&str, &str, bool)] = &[
     ("WorkingMemory", "CONTAINS_WORKING", true),
 ];
 
-pub(crate) struct KuzuBackend {
+pub(crate) struct GraphDbBackend {
     db: KuzuDatabase,
 }
 
-impl KuzuBackend {
+impl GraphDbBackend {
     pub(crate) fn open() -> Result<Self> {
-        let db = open_kuzu_memory_db()?;
+        let db = open_graph_db_memory_db()?;
         let backend = Self { db };
         backend.with_conn(init_kuzu_backend_schema)?;
         Ok(backend)
@@ -152,9 +152,9 @@ impl KuzuBackend {
     }
 }
 
-impl MemoryTreeBackend for KuzuBackend {
+impl MemoryTreeBackend for GraphDbBackend {
     fn backend_name(&self) -> &'static str {
-        KUZU_TREE_BACKEND_NAME
+        GRAPH_DB_TREE_BACKEND_NAME
     }
 
     fn load_session_rows(
@@ -182,11 +182,11 @@ impl MemoryTreeBackend for KuzuBackend {
     }
 
     fn collect_agent_counts(&self) -> Result<Vec<(String, usize)>> {
-        self.with_conn(collect_kuzu_agent_counts)
+        self.with_conn(collect_graph_db_agent_counts)
     }
 }
 
-impl MemorySessionBackend for KuzuBackend {
+impl MemorySessionBackend for GraphDbBackend {
     fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
         self.with_conn(list_kuzu_sessions_from_conn)
     }
@@ -196,7 +196,7 @@ impl MemorySessionBackend for KuzuBackend {
     }
 }
 
-impl MemoryRuntimeBackend for KuzuBackend {
+impl MemoryRuntimeBackend for GraphDbBackend {
     fn load_prompt_context_memories(&self, session_id: &str) -> Result<Vec<MemoryRecord>> {
         self.with_conn(|conn| query_kuzu_memories_for_session(conn, session_id, None))
     }
@@ -206,7 +206,7 @@ impl MemoryRuntimeBackend for KuzuBackend {
     }
 }
 
-pub(crate) fn open_kuzu_memory_db() -> Result<KuzuDatabase> {
+pub(crate) fn open_graph_db_memory_db() -> Result<KuzuDatabase> {
     let path = resolve_memory_graph_db_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -215,53 +215,43 @@ pub(crate) fn open_kuzu_memory_db() -> Result<KuzuDatabase> {
 }
 
 pub(crate) fn resolve_memory_graph_db_path() -> Result<PathBuf> {
-    fn validate_graph_db_override(path: PathBuf, env_var: &str) -> Option<PathBuf> {
+    fn validate_graph_db_override(path: PathBuf, env_var: &str) -> Result<PathBuf> {
         if !path.is_absolute() {
-            tracing::warn!(
-                env_var,
-                path = %path.display(),
-                "ignoring non-absolute memory graph DB override"
+            bail!(
+                "invalid {env_var} override: memory graph DB path must be absolute: {}",
+                path.display()
             );
-            return None;
         }
         if path
             .components()
             .any(|component| matches!(component, Component::ParentDir))
         {
-            tracing::warn!(
-                env_var,
-                path = %path.display(),
-                "ignoring memory graph DB override with parent traversal"
+            bail!(
+                "invalid {env_var} override: memory graph DB path must not contain parent traversal: {}",
+                path.display()
             );
-            return None;
         }
         for blocked in [Path::new("/proc"), Path::new("/sys"), Path::new("/dev")] {
             if path.starts_with(blocked) {
-                tracing::warn!(
-                    env_var,
-                    path = %path.display(),
-                    blocked = %blocked.display(),
-                    "ignoring memory graph DB override with unsafe path prefix"
+                bail!(
+                    "invalid {env_var} override: memory graph DB path uses blocked prefix {}: {}",
+                    blocked.display(),
+                    path.display()
                 );
-                return None;
             }
         }
-        Some(path)
+        Ok(path)
     }
 
     if let Some(path) = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH")
         && !path.is_empty()
-        && let Some(path) =
-            validate_graph_db_override(PathBuf::from(path), "AMPLIHACK_GRAPH_DB_PATH")
     {
-        return Ok(path);
+        return validate_graph_db_override(PathBuf::from(path), "AMPLIHACK_GRAPH_DB_PATH");
     }
     if let Some(path) = std::env::var_os("AMPLIHACK_KUZU_DB_PATH")
         && !path.is_empty()
-        && let Some(path) =
-            validate_graph_db_override(PathBuf::from(path), "AMPLIHACK_KUZU_DB_PATH")
     {
-        return Ok(path);
+        return validate_graph_db_override(PathBuf::from(path), "AMPLIHACK_KUZU_DB_PATH");
     }
 
     let home = home_dir()?;
@@ -348,7 +338,7 @@ pub(crate) fn query_kuzu_memories_for_session(
     Ok(memories)
 }
 
-pub(crate) fn collect_kuzu_agent_counts(conn: &KuzuConnection<'_>) -> Result<Vec<(String, usize)>> {
+pub(crate) fn collect_graph_db_agent_counts(conn: &KuzuConnection<'_>) -> Result<Vec<(String, usize)>> {
     let now = Utc::now();
     let mut totals: HashMap<String, usize> = HashMap::new();
     for (label, _, has_expires_at) in KUZU_MEMORY_TABLES {
@@ -571,8 +561,14 @@ fn store_learning_kuzu_with_conn(
         return Ok(None);
     }
 
+    // Single clock read: derive the RFC3339 string from the same OffsetDateTime used for
+    // Kuzu TIMESTAMP parameters rather than taking a second snapshot with Utc::now().
     let now = OffsetDateTime::now_utc();
-    let now_str = Utc::now().to_rfc3339();
+    let now_str = chrono::Utc
+        .timestamp_opt(now.unix_timestamp(), now.nanosecond())
+        .single()
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_else(|| Utc::now().to_rfc3339());
     let memory_id = build_memory_id(record, &now_str);
     let metadata = serde_json::to_string(&record.metadata)?;
     let tags = serde_json::to_string(&["learning", "session_end"])?;

@@ -433,15 +433,7 @@ pub enum ModeCommands {
     ToLocal,
 }
 
-/// Re-export memory backend utilities for integration tests.
-///
-/// These functions are part of the internal implementation but are exposed
-/// here so that `tests/integration/kuzu_ffi_test.rs` can exercise the kuzu
-/// C++ FFI boundary without embedding integration tests inside production code.
 pub mod memory {
-    pub use crate::commands::memory::backend::kuzu::{
-        init_kuzu_backend_schema, kuzu_rows, list_kuzu_sessions_from_conn,
-    };
     pub use crate::commands::memory::{
         CodeGraphSummary, IndexStatus, PromptContextMemory, SessionSummary,
         background_index_job_active, background_index_job_path, check_index_status,
@@ -449,4 +441,14 @@ pub mod memory {
         resolve_code_graph_db_path_for_project, retrieve_prompt_context_memories,
         store_session_learning, summarize_code_graph,
     };
+
+    /// Hidden integration-test-only Kuzu FFI exports.
+    #[doc(hidden)]
+    pub mod ffi_test_support {
+        pub use crate::commands::memory::backend::kuzu::{
+            init_kuzu_backend_schema as init_graph_backend_schema,
+            kuzu_rows as graph_rows,
+            list_kuzu_sessions_from_conn as list_graph_sessions_from_conn,
+        };
+    }
 }

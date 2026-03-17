@@ -10,8 +10,20 @@ pub fn run_tree(
     depth: Option<u32>,
     backend: &str,
 ) -> Result<()> {
-    let backend = super::backend::open_tree_backend(BackendChoice::parse(backend)?)?;
-    let output = render_tree_from_backend(backend.as_ref(), session_id, memory_type, depth)?;
+    let choice = if backend == "auto" {
+        resolve_backend_with_autodetect()?
+    } else {
+        BackendChoice::parse(backend)?
+    };
+    let compatibility_notice = memory_graph_compatibility_notice(choice);
+    let backend = super::backend::open_tree_backend(choice)?;
+    let output = render_tree_from_backend(
+        backend.as_ref(),
+        session_id,
+        memory_type,
+        depth,
+        compatibility_notice.as_deref(),
+    )?;
     println!("{output}");
     Ok(())
 }
@@ -21,6 +33,7 @@ fn render_tree_from_backend(
     session_id: Option<&str>,
     memory_type: Option<&str>,
     depth: Option<u32>,
+    compatibility_notice: Option<&str>,
 ) -> Result<String> {
     let session_rows = backend.load_session_rows(session_id, memory_type)?;
     let agent_counts = if session_id.is_none() && depth.map(|value| value > 2).unwrap_or(true) {
@@ -35,6 +48,7 @@ fn render_tree_from_backend(
         &agent_counts,
         session_id.is_none(),
         depth,
+        compatibility_notice,
     ))
 }
 
@@ -44,10 +58,14 @@ fn render_tree(
     agent_counts: &[(String, usize)],
     include_agents: bool,
     depth: Option<u32>,
+    compatibility_notice: Option<&str>,
 ) -> String {
     let show_agents =
         include_agents && depth.map(|value| value > 2).unwrap_or(true) && !agent_counts.is_empty();
     let mut lines = vec![format!("🧠 Memory Graph (Backend: {backend_name})")];
+    if let Some(notice) = compatibility_notice {
+        lines.push(format!("⚠️ Compatibility mode: {notice}"));
+    }
     if session_rows.is_empty() {
         lines.push("└── (empty - no memories found)".to_string());
         return lines.join("\n");
@@ -225,7 +243,7 @@ mod backend_tests {
             agent_count_calls: Cell::new(0),
         };
 
-        let rendered = render_tree_from_backend(&backend, None, None, Some(3)).unwrap();
+        let rendered = render_tree_from_backend(&backend, None, None, Some(3), None).unwrap();
 
         assert!(rendered.contains("Backend: ladybug-preview"));
         assert!(rendered.contains("sess-1 (1 memories)"));
@@ -248,16 +266,43 @@ mod backend_tests {
             agent_count_calls: Cell::new(0),
         };
 
-        let rendered = render_tree_from_backend(&backend, None, None, Some(2)).unwrap();
+        let rendered = render_tree_from_backend(&backend, None, None, Some(2), None).unwrap();
 
         assert!(!rendered.contains("👥 Agents"));
         assert_eq!(backend.agent_count_calls.get(), 0);
+    }
+
+    #[test]
+    fn render_tree_from_backend_includes_compatibility_notice() {
+        let backend = FakeBackend {
+            name: "graph-db",
+            session_rows: Vec::new(),
+            agent_counts: Vec::new(),
+            agent_count_calls: Cell::new(0),
+        };
+
+        let rendered = render_tree_from_backend(
+            &backend,
+            None,
+            None,
+            Some(3),
+            Some("using legacy `AMPLIHACK_KUZU_DB_PATH`; prefer `AMPLIHACK_GRAPH_DB_PATH`."),
+        )
+        .unwrap();
+
+        assert!(rendered.contains("⚠️ Compatibility mode: using legacy `AMPLIHACK_KUZU_DB_PATH`"));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn render_tree_matches_python_shape() {
@@ -296,10 +341,77 @@ mod tests {
             &[("agent1".to_string(), 2)],
             true,
             None,
+            None,
         );
-        assert!(output.contains("🧠 Memory Graph (Backend: unknown)"));
+        assert!(output.contains("🧠 Memory Graph (Backend: sqlite)"));
         assert!(output.contains("📝 Conversation: Hello (★★★★★★★★☆☆ 8/10) (confidence: 0.9)"));
         assert!(output.contains("🔧 Context: Ctx (used: 3x)"));
+    }
+
+    #[test]
+    fn memory_graph_compatibility_notice_surfaces_legacy_env_alias() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let previous_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe {
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/tmp/legacy-memory-alias");
+        }
+
+        let notice = memory_graph_compatibility_notice(BackendChoice::GraphDb)
+            .expect("legacy alias notice expected");
+
+        match previous_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match previous_kuzu {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        assert!(notice.contains("AMPLIHACK_KUZU_DB_PATH"));
+        assert!(notice.contains("AMPLIHACK_GRAPH_DB_PATH"));
+    }
+
+    #[test]
+    fn memory_graph_compatibility_notice_surfaces_legacy_store() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("HOME");
+        let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let previous_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        let legacy_store = home.path().join(".amplihack").join("memory_kuzu.db");
+        std::fs::create_dir_all(legacy_store.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_store, "legacy-memory").unwrap();
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
+        }
+
+        let notice = memory_graph_compatibility_notice(BackendChoice::GraphDb)
+            .expect("legacy store notice expected");
+
+        match previous_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        match previous_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match previous_kuzu {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        assert!(notice.contains("memory_kuzu.db"));
+        assert!(notice.contains("memory_graph.db"));
     }
 
     /// AC: memory tree must return a *non-empty structured error* (not silent

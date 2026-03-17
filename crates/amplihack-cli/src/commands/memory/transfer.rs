@@ -11,7 +11,17 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::path::PathBuf;
 
-mod backend;
+pub(crate) mod backend;
+pub(crate) mod sqlite_backend;
+
+#[cfg(test)]
+mod backend_choice_test;
+#[cfg(test)]
+mod sqlite_backend_security_test;
+#[cfg(test)]
+mod sqlite_schema_test;
+#[cfg(test)]
+mod transfer_backend_parity_test;
 
 /// Maximum directory depth to prevent unbounded recursion.
 const MAX_DIR_DEPTH: usize = 64;
@@ -138,14 +148,42 @@ impl ImportResult {
     }
 }
 
+/// Resolve the backend choice for transfer operations from the environment.
+///
+/// Resolution order:
+/// - `AMPLIHACK_MEMORY_BACKEND=sqlite` → `BackendChoice::Sqlite`
+/// - `AMPLIHACK_MEMORY_BACKEND=kuzu` → `BackendChoice::GraphDb`
+/// - `AMPLIHACK_MEMORY_BACKEND=graph-db` → `BackendChoice::GraphDb` (alias)
+/// - Unrecognized value → warn and default to the `graph-db` backend
+/// - Not set → default to the `graph-db` backend
+pub(crate) fn resolve_transfer_backend_choice() -> BackendChoice {
+    match std::env::var("AMPLIHACK_MEMORY_BACKEND").ok().as_deref() {
+        Some("sqlite") => BackendChoice::Sqlite,
+        Some("kuzu") | Some("graph-db") => BackendChoice::GraphDb,
+        Some(other) => {
+            tracing::warn!(
+                "Unrecognized AMPLIHACK_MEMORY_BACKEND value {other:?}; defaulting to graph-db"
+            );
+            BackendChoice::GraphDb
+        }
+        None => BackendChoice::GraphDb,
+    }
+}
+
 pub fn run_export(
     agent_name: &str,
     output: &str,
     format: &str,
     storage_path: Option<&str>,
 ) -> Result<()> {
+    let choice = resolve_transfer_backend_choice();
+    if let Some(notice) =
+        hierarchical_storage_compatibility_notice(agent_name, storage_path, choice)?
+    {
+        println!("⚠️ Compatibility mode: {notice}");
+    }
     let format = TransferFormat::parse(format);
-    match format.and_then(|fmt| export_memory(agent_name, output, fmt, storage_path)) {
+    match format.and_then(|fmt| export_memory(agent_name, output, fmt, storage_path, choice)) {
         Ok(result) => {
             println!("Exported memory for agent '{}'", result.agent_name);
             println!("  Format: {}", result.format);
@@ -172,8 +210,15 @@ pub fn run_import(
     merge: bool,
     storage_path: Option<&str>,
 ) -> Result<()> {
+    let choice = resolve_transfer_backend_choice();
+    if let Some(notice) =
+        hierarchical_storage_compatibility_notice(agent_name, storage_path, choice)?
+    {
+        println!("⚠️ Compatibility mode: {notice}");
+    }
     let format = TransferFormat::parse(format);
-    match format.and_then(|fmt| import_memory(agent_name, input, fmt, merge, storage_path)) {
+    match format.and_then(|fmt| import_memory(agent_name, input, fmt, merge, storage_path, choice))
+    {
         Ok(result) => {
             println!("Imported memory into agent '{}'", result.agent_name);
             println!("  Format: {}", result.format);
@@ -200,16 +245,41 @@ pub fn run_import(
     }
 }
 
+fn hierarchical_storage_compatibility_notice(
+    agent_name: &str,
+    storage_path: Option<&str>,
+    choice: BackendChoice,
+) -> Result<Option<String>> {
+    if !matches!(choice, BackendChoice::GraphDb) {
+        return Ok(None);
+    }
+
+    let resolved = resolve_hierarchical_db_path(agent_name, storage_path)?;
+    if resolved.file_name().and_then(|name| name.to_str()) != Some("kuzu_db") {
+        return Ok(None);
+    }
+
+    let neutral = resolved.with_file_name("graph_db");
+    Ok(Some(format!(
+        "using legacy hierarchical store `{}` because `{}` is not active; migrate to `graph_db`.",
+        resolved.display(),
+        neutral.display()
+    )))
+}
+
 fn export_memory(
     agent_name: &str,
     output: &str,
     format: TransferFormat,
     storage_path: Option<&str>,
+    choice: BackendChoice,
 ) -> Result<ExportResult> {
     match format {
-        TransferFormat::Json => backend::export_hierarchical_json(agent_name, output, storage_path),
+        TransferFormat::Json => {
+            backend::export_hierarchical_json(agent_name, output, storage_path, choice)
+        }
         TransferFormat::RawDb => {
-            backend::export_hierarchical_raw_db(agent_name, output, storage_path)
+            backend::export_hierarchical_raw_db(agent_name, output, storage_path, choice)
         }
     }
 }
@@ -220,13 +290,14 @@ fn import_memory(
     format: TransferFormat,
     merge: bool,
     storage_path: Option<&str>,
+    choice: BackendChoice,
 ) -> Result<ImportResult> {
     match format {
         TransferFormat::Json => {
-            backend::import_hierarchical_json(agent_name, input, merge, storage_path)
+            backend::import_hierarchical_json(agent_name, input, merge, storage_path, choice)
         }
         TransferFormat::RawDb => {
-            backend::import_hierarchical_raw_db(agent_name, input, merge, storage_path)
+            backend::import_hierarchical_raw_db(agent_name, input, merge, storage_path, choice)
         }
     }
 }
@@ -296,7 +367,7 @@ fn copy_dir_recursive_inner(
         let to = dst.join(entry.file_name());
         if kind.is_symlink() {
             // Skip symlinks with a warning to prevent directory traversal attacks
-            println!("  ⚠️  Skipping symlink: {}", from.display());
+            println!("  Skipping symlink: {}", from.display());
             continue;
         } else if kind.is_dir() {
             copy_dir_recursive_inner(&from, &to, depth + 1, seen)?;
@@ -424,6 +495,7 @@ mod tests {
             TransferFormat::Json,
             false,
             Some(&db_path_str),
+            BackendChoice::GraphDb,
         )?;
         assert_eq!(import.source_agent.as_deref(), Some("source-agent"));
         assert!(
@@ -438,6 +510,7 @@ mod tests {
             &output_path_str,
             TransferFormat::Json,
             Some(&db_path_str),
+            BackendChoice::GraphDb,
         )?;
         assert_eq!(export.format, "json");
 

@@ -10,7 +10,7 @@ use super::{MemoryRuntimeBackend, MemorySessionBackend, MemoryTreeBackend};
 use anyhow::Result;
 use rusqlite::{Connection as SqliteConnection, params};
 
-pub(crate) const SQLITE_TREE_BACKEND_NAME: &str = "unknown";
+pub(crate) const SQLITE_TREE_BACKEND_NAME: &str = "sqlite";
 
 pub(crate) const SQLITE_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS memory_entries (
@@ -91,7 +91,7 @@ impl MemorySessionBackend for SqliteBackend {
     }
 
     fn delete_session(&self, session_id: &str) -> Result<bool> {
-        delete_sqlite_session(session_id)
+        delete_sqlite_session_with_conn(&self.conn, session_id)
     }
 }
 
@@ -101,7 +101,7 @@ impl MemoryRuntimeBackend for SqliteBackend {
     }
 
     fn store_session_learning(&self, record: &SessionLearningRecord) -> Result<Option<String>> {
-        store_learning_sqlite(record)
+        store_learning_sqlite_with_conn(&self.conn, record)
     }
 }
 
@@ -118,21 +118,22 @@ pub(crate) fn open_sqlite_memory_db() -> Result<SqliteConnection> {
 pub(crate) fn list_sqlite_sessions_from_conn(
     conn: &SqliteConnection,
 ) -> Result<Vec<SessionSummary>> {
-    let mut stmt = conn.prepare("SELECT session_id FROM sessions ORDER BY last_accessed DESC")?;
-    let mut rows = stmt.query([])?;
-    let mut sessions = Vec::new();
-    while let Some(row) = rows.next()? {
-        let session_id: String = row.get(0)?;
-        let memory_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM memory_entries WHERE session_id = ?1",
-            params![session_id],
-            |row| row.get(0),
-        )?;
-        sessions.push(SessionSummary {
-            session_id,
-            memory_count: memory_count as usize,
-        });
-    }
+    // Single JOIN eliminates the N+1 query pattern (one COUNT per session).
+    let mut stmt = conn.prepare(
+        "SELECT s.session_id, COUNT(me.id) \
+         FROM sessions s \
+         LEFT JOIN memory_entries me ON s.session_id = me.session_id \
+         GROUP BY s.session_id \
+         ORDER BY s.last_accessed DESC",
+    )?;
+    let sessions = stmt
+        .query_map([], |row| {
+            Ok(SessionSummary {
+                session_id: row.get(0)?,
+                memory_count: row.get::<_, i64>(1)? as usize,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(sessions)
 }
 
@@ -189,8 +190,11 @@ pub(crate) fn collect_sqlite_agent_counts(conn: &SqliteConnection) -> Result<Vec
     Ok(rows)
 }
 
-pub(crate) fn delete_sqlite_session(session_id: &str) -> Result<bool> {
-    let conn = open_sqlite_memory_db()?;
+/// Delete a session using a pre-existing connection (avoids opening a new one).
+pub(crate) fn delete_sqlite_session_with_conn(
+    conn: &SqliteConnection,
+    session_id: &str,
+) -> Result<bool> {
     conn.execute(
         "DELETE FROM memory_entries WHERE session_id = ?1",
         params![session_id],
@@ -206,8 +210,16 @@ pub(crate) fn delete_sqlite_session(session_id: &str) -> Result<bool> {
     Ok(deleted > 0)
 }
 
-pub(crate) fn store_learning_sqlite(record: &SessionLearningRecord) -> Result<Option<String>> {
-    let conn = open_sqlite_memory_db()?;
+
+/// Store a learning record using a pre-existing connection (avoids opening a new one).
+///
+/// Uses `ON CONFLICT DO UPDATE` (SQLite 3.24+) to collapse the previous
+/// INSERT-OR-IGNORE + UPDATE pair into a single statement each for `sessions`
+/// and `session_agents`, halving the number of writes on the hot path.
+pub(crate) fn store_learning_sqlite_with_conn(
+    conn: &SqliteConnection,
+    record: &SessionLearningRecord,
+) -> Result<Option<String>> {
     let now = chrono::Utc::now().to_rfc3339();
     let memory_id = build_memory_id(record, &now);
 
@@ -220,24 +232,23 @@ pub(crate) fn store_learning_sqlite(record: &SessionLearningRecord) -> Result<Op
         return Ok(None);
     }
 
+    // Single UPSERT per table instead of INSERT-OR-IGNORE + UPDATE.
     conn.execute(
-        "INSERT OR IGNORE INTO sessions (session_id, created_at, last_accessed, metadata) VALUES (?1, ?2, ?3, '{}')",
+        "INSERT INTO sessions (session_id, created_at, last_accessed, metadata) \
+         VALUES (?1, ?2, ?3, '{}') \
+         ON CONFLICT(session_id) DO UPDATE SET last_accessed = excluded.last_accessed",
         params![record.session_id, now, now],
     )?;
     conn.execute(
-        "UPDATE sessions SET last_accessed = ?2 WHERE session_id = ?1",
-        params![record.session_id, now],
-    )?;
-    conn.execute(
-        "INSERT OR IGNORE INTO session_agents (session_id, agent_id, first_used, last_used) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO session_agents (session_id, agent_id, first_used, last_used) \
+         VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT(session_id, agent_id) DO UPDATE SET last_used = excluded.last_used",
         params![record.session_id, record.agent_id, now, now],
     )?;
     conn.execute(
-        "UPDATE session_agents SET last_used = ?3 WHERE session_id = ?1 AND agent_id = ?2",
-        params![record.session_id, record.agent_id, now],
-    )?;
-    conn.execute(
-        "INSERT INTO memory_entries (id, session_id, agent_id, memory_type, title, content, metadata, importance, created_at, accessed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO memory_entries \
+         (id, session_id, agent_id, memory_type, title, content, metadata, importance, created_at, accessed_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             memory_id,
             record.session_id,
@@ -253,6 +264,7 @@ pub(crate) fn store_learning_sqlite(record: &SessionLearningRecord) -> Result<Op
     )?;
     Ok(Some(memory_id))
 }
+
 
 pub(crate) fn to_sqlite_err(error: anyhow::Error) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(

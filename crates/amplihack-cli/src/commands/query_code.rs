@@ -1,6 +1,7 @@
 use crate::QueryCodeCommands;
 use crate::commands::memory::code_graph::{
-    CodeGraphEdgeEntry, CodeGraphNamedEntry, CodeGraphReaderBackend, open_code_graph_reader,
+    CodeGraphEdgeEntry, CodeGraphNamedEntry, CodeGraphReaderBackend,
+    code_graph_compatibility_notice_for_project, open_code_graph_reader,
 };
 use anyhow::Result;
 use std::path::Path;
@@ -11,7 +12,15 @@ pub fn run_query_code(
     json_output: bool,
     limit: u32,
 ) -> Result<()> {
+    let compatibility_notice = if json_output {
+        None
+    } else {
+        code_graph_compatibility_notice_for_project(&std::env::current_dir()?, db_path)?
+    };
     let backend = open_code_graph_reader(db_path)?;
+    if let Some(notice) = compatibility_notice {
+        println!("⚠️ Compatibility mode: {notice}");
+    }
 
     match command {
         QueryCodeCommands::Stats => run_stats(backend.as_ref(), json_output),
@@ -248,7 +257,13 @@ mod tests {
         },
     };
     use std::fs;
+    use std::sync::{Mutex, OnceLock};
     use time::OffsetDateTime;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn seed_code_graph(db_path: &Path) {
         let dir = tempfile::tempdir().unwrap();
@@ -403,5 +418,72 @@ mod tests {
         assert!(payload.files.is_empty());
         assert!(payload.functions.is_empty());
         assert!(payload.classes.is_empty());
+    }
+
+    #[test]
+    fn code_graph_compatibility_notice_surfaces_legacy_env_alias() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let previous_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe {
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/tmp/legacy-code-graph");
+        }
+
+        let notice = code_graph_compatibility_notice_for_project(
+            &std::env::current_dir().expect("current_dir must succeed"),
+            None,
+        )
+        .expect("legacy alias notice lookup must work");
+
+        match previous_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match previous_kuzu {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        let notice = notice.expect("legacy alias notice expected");
+        assert!(notice.contains("AMPLIHACK_KUZU_DB_PATH"));
+        assert!(notice.contains("AMPLIHACK_GRAPH_DB_PATH"));
+    }
+
+    #[test]
+    fn code_graph_compatibility_notice_surfaces_legacy_store() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let previous_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        let original_cwd = std::env::current_dir().unwrap();
+        let legacy_store = dir.path().join(".amplihack").join("kuzu_db");
+        std::fs::create_dir_all(&legacy_store).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        unsafe {
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
+        }
+
+        let notice = code_graph_compatibility_notice_for_project(dir.path(), None)
+            .expect("legacy store notice lookup must work");
+
+        std::env::set_current_dir(original_cwd).unwrap();
+        match previous_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match previous_kuzu {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        let notice = notice.expect("legacy store notice expected");
+        assert!(notice.contains(".amplihack/kuzu_db"));
+        assert!(notice.contains("graph_db"));
     }
 }

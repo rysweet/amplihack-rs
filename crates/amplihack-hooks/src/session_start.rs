@@ -10,8 +10,8 @@
 use crate::protocol::{FailurePolicy, Hook};
 use amplihack_cli::binary_finder::BinaryFinder;
 use amplihack_cli::memory::{
-    background_index_job_active, check_index_status, resolve_code_graph_db_path_for_project,
-    summarize_code_graph,
+    background_index_job_active, check_index_status, default_code_graph_db_path_for_project,
+    resolve_code_graph_db_path_for_project, summarize_code_graph,
 };
 use amplihack_state::AtomicJsonFile;
 use amplihack_types::{HookInput, ProjectDirs};
@@ -102,11 +102,23 @@ impl Hook for SessionStartHook {
         if let Some(status_context) = blarify_setup.status_context {
             context_parts.push(status_context);
         }
+        if let Some(compatibility_notice) = code_graph_compatibility_notice(&dirs)? {
+            context_parts.push(compatibility_notice);
+        }
+        if let Some(memory_notice) = memory_graph_compatibility_notice() {
+            context_parts.push(memory_notice);
+        }
 
-        if !blarify_setup.indexing_active
-            && let Some(code_graph_context) = load_code_graph_context(&dirs)
-        {
-            context_parts.push(code_graph_context);
+        if !blarify_setup.indexing_active {
+            match load_code_graph_context(&dirs) {
+                Ok(Some(code_graph_context)) => context_parts.push(code_graph_context),
+                Ok(None) => {}
+                Err(err) => {
+                    let error_msg = format!("Code-graph context unavailable: {err}");
+                    warnings.push(error_msg.clone());
+                    context_parts.push(format_code_graph_status(error_msg));
+                }
+            }
         }
 
         let additional_context = context_parts.join("\n\n");
@@ -198,15 +210,17 @@ fn check_version(dirs: &ProjectDirs) -> Option<String> {
     ))
 }
 
-fn load_code_graph_context(dirs: &ProjectDirs) -> Option<String> {
-    let db_path = resolve_code_graph_db_path_for_project(&dirs.root).ok()?;
-    let summary = summarize_code_graph(Some(&db_path)).ok().flatten()?;
+fn load_code_graph_context(dirs: &ProjectDirs) -> anyhow::Result<Option<String>> {
+    let db_path = resolve_code_graph_db_path_for_project(&dirs.root)?;
+    let Some(summary) = summarize_code_graph(Some(&db_path))? else {
+        return Ok(None);
+    };
     let total = summary.files + summary.classes + summary.functions;
     if total == 0 {
-        return None;
+        return Ok(None);
     }
 
-    Some(format!(
+    Ok(Some(format!(
         "## Code Graph (Blarify)\n\n\
          A code graph is available with {} files, {} classes, and {} functions indexed.\n\
          To query the code graph, use:\n\
@@ -222,7 +236,76 @@ fn load_code_graph_context(dirs: &ProjectDirs) -> Option<String> {
          ```\n\
          Use `--json` for machine-readable output and `--limit N` to control result count.",
         summary.files, summary.classes, summary.functions
-    ))
+    )))
+}
+
+fn code_graph_compatibility_notice(dirs: &ProjectDirs) -> anyhow::Result<Option<String>> {
+    let graph_override = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+    if graph_override
+        .as_ref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Ok(None);
+    }
+
+    let legacy_override = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+    if legacy_override
+        .as_ref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Ok(Some(format_code_graph_status(
+            "Using legacy `AMPLIHACK_KUZU_DB_PATH` compatibility alias for the code graph. Prefer `AMPLIHACK_GRAPH_DB_PATH`.".to_string(),
+        )));
+    }
+
+    let neutral = default_code_graph_db_path_for_project(&dirs.root)?;
+    let legacy = dirs.root.join(".amplihack").join("kuzu_db");
+    if legacy.exists() && !neutral.exists() {
+        return Ok(Some(format_code_graph_status(format!(
+            "Using legacy code-graph store `{}` because `{}` is absent. Migrate to the neutral `graph_db` path to leave compatibility mode.",
+            legacy.display(),
+            neutral.display()
+        ))));
+    }
+
+    Ok(None)
+}
+
+fn memory_graph_compatibility_notice() -> Option<String> {
+    if std::env::var("AMPLIHACK_MEMORY_BACKEND").ok().as_deref() == Some("sqlite") {
+        return None;
+    }
+
+    let graph_override = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+    if graph_override
+        .as_ref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return None;
+    }
+
+    let legacy_override = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+    if legacy_override
+        .as_ref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Some(format_memory_status(
+            "Using legacy `AMPLIHACK_KUZU_DB_PATH` compatibility alias for the memory graph. Prefer `AMPLIHACK_GRAPH_DB_PATH`.".to_string(),
+        ));
+    }
+
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let neutral = home.join(".amplihack").join("memory_graph.db");
+    let legacy = home.join(".amplihack").join("memory_kuzu.db");
+    if legacy.exists() && !neutral.exists() {
+        return Some(format_memory_status(format!(
+            "Using legacy memory graph store `{}` because `{}` is absent. Migrate to `memory_graph.db` to leave compatibility mode.",
+            legacy.display(),
+            neutral.display()
+        )));
+    }
+
+    None
 }
 
 fn setup_blarify_indexing(dirs: &ProjectDirs) -> anyhow::Result<BlarifySetupResult> {
@@ -273,11 +356,11 @@ fn setup_blarify_indexing(dirs: &ProjectDirs) -> anyhow::Result<BlarifySetupResu
             )),
         )),
         SessionStartBlarifyMode::Sync => {
-            run_blarify_indexing(&dirs.root, action, false)?;
+            run_blarify_indexing(&dirs.root, action, false, &db_path)?;
             Ok(BlarifySetupResult::ready())
         }
         SessionStartBlarifyMode::Background => {
-            run_blarify_indexing(&dirs.root, action, true)?;
+            run_blarify_indexing(&dirs.root, action, true, &db_path)?;
             Ok(BlarifySetupResult::with_notice(
                 true,
                 format_code_graph_status(format!(
@@ -296,9 +379,10 @@ fn run_blarify_indexing(
     project_root: &Path,
     action: BlarifyIndexAction,
     background: bool,
+    db_path: &Path,
 ) -> anyhow::Result<()> {
     let amplihack = find_amplihack_binary()?;
-    let mut cmd = build_blarify_index_command(&amplihack, project_root, action)?;
+    let mut cmd = build_blarify_index_command(&amplihack, project_root, action, db_path)?;
     cmd.current_dir(project_root);
     if background {
         let child = cmd
@@ -320,6 +404,7 @@ fn build_blarify_index_command(
     amplihack_binary: &Path,
     project_root: &Path,
     action: BlarifyIndexAction,
+    db_path: &Path,
 ) -> anyhow::Result<Command> {
     let mut cmd = Command::new(amplihack_binary);
     match action {
@@ -327,7 +412,7 @@ fn build_blarify_index_command(
             cmd.arg("index-code")
                 .arg(blarify_json_path(project_root))
                 .arg("--db-path")
-                .arg(resolve_code_graph_db_path_for_project(project_root)?);
+                .arg(db_path);
         }
         BlarifyIndexAction::GenerateNativeScip => {
             cmd.arg("index-scip")
@@ -407,6 +492,10 @@ impl BlarifySetupResult {
 
 fn format_code_graph_status(body: String) -> String {
     format!("## Code Graph Status\n\n{body}")
+}
+
+fn format_memory_status(body: String) -> String {
+    format!("## Memory Store Status\n\n{body}")
 }
 
 fn describe_blarify_need(
@@ -600,7 +689,7 @@ mod tests {
     fn load_code_graph_context_missing_db_returns_none() {
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
-        assert!(load_code_graph_context(&dirs).is_none());
+        assert!(load_code_graph_context(&dirs).unwrap().is_none());
     }
 
     #[test]
@@ -644,10 +733,232 @@ mod tests {
         let db_path = resolve_code_graph_db_path_for_project(dir.path()).unwrap();
         import_blarify_json(&input, Some(&db_path)).unwrap();
 
-        let context = load_code_graph_context(&dirs).expect("code graph context expected");
+        let context = load_code_graph_context(&dirs)
+            .unwrap()
+            .expect("code graph context expected");
         assert!(context.contains("## Code Graph (Blarify)"));
         assert!(context.contains("1 files, 1 classes, and 1 functions"));
         assert!(context.contains("amplihack query-code stats"));
+    }
+
+    #[test]
+    fn session_start_process_surfaces_code_graph_context_failure_notice() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let broken_db = dir.path().join("broken-graph-db");
+        fs::write(&broken_db, "not a graph db").unwrap();
+        unsafe {
+            std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", &broken_db);
+            std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
+            std::env::set_var("AMPLIHACK_BLARIFY_MODE", "skip");
+        }
+
+        let hook = SessionStartHook;
+        let result = hook
+            .process(HookInput::SessionStart {
+                session_id: Some("test-session".to_string()),
+                cwd: Some(dir.path().to_path_buf()),
+                extra: Value::Object(serde_json::Map::new()),
+            })
+            .unwrap();
+
+        let _ = std::env::set_current_dir(&original);
+        unsafe {
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
+            std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
+        }
+
+        let context = result["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .expect("additional context");
+        assert!(context.contains("## Code Graph Status"));
+        assert!(context.contains("Code-graph context unavailable"));
+
+        let warnings = result["warnings"]
+            .as_array()
+            .expect("warnings array expected");
+        assert!(warnings.iter().any(|warning| {
+            warning
+                .as_str()
+                .unwrap_or("")
+                .contains("Code-graph context unavailable")
+        }));
+    }
+
+    #[test]
+    fn session_start_process_surfaces_legacy_graph_env_alias_notice() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let legacy_override = dir.path().join("legacy-graph-db");
+        unsafe {
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::set_var("AMPLIHACK_KUZU_DB_PATH", &legacy_override);
+            std::env::set_var("AMPLIHACK_BLARIFY_MODE", "skip");
+        }
+
+        let hook = SessionStartHook;
+        let result = hook
+            .process(HookInput::SessionStart {
+                session_id: Some("test-session".to_string()),
+                cwd: Some(dir.path().to_path_buf()),
+                extra: Value::Object(serde_json::Map::new()),
+            })
+            .unwrap();
+
+        let _ = std::env::set_current_dir(&original);
+        unsafe {
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
+            std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
+        }
+
+        let context = result["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .expect("additional context");
+        assert!(context.contains("## Code Graph Status"));
+        assert!(context.contains("AMPLIHACK_KUZU_DB_PATH"));
+        assert!(context.contains("AMPLIHACK_GRAPH_DB_PATH"));
+    }
+
+    #[test]
+    fn session_start_process_surfaces_legacy_graph_store_notice() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let legacy_store = dir.path().join(".amplihack").join("kuzu_db");
+        fs::create_dir_all(&legacy_store).unwrap();
+        unsafe {
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
+            std::env::set_var("AMPLIHACK_BLARIFY_MODE", "skip");
+        }
+
+        let hook = SessionStartHook;
+        let result = hook
+            .process(HookInput::SessionStart {
+                session_id: Some("test-session".to_string()),
+                cwd: Some(dir.path().to_path_buf()),
+                extra: Value::Object(serde_json::Map::new()),
+            })
+            .unwrap();
+
+        let _ = std::env::set_current_dir(&original);
+        unsafe {
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
+            std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
+        }
+
+        let context = result["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .expect("additional context");
+        assert!(context.contains("## Code Graph Status"));
+        assert!(context.contains(".amplihack/kuzu_db"));
+        assert!(context.contains("graph_db"));
+    }
+
+    #[test]
+    fn session_start_process_surfaces_legacy_memory_env_alias_notice() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let legacy_override = dir.path().join("legacy-memory-db");
+        unsafe {
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::set_var("AMPLIHACK_KUZU_DB_PATH", &legacy_override);
+            std::env::set_var("AMPLIHACK_BLARIFY_MODE", "skip");
+        }
+
+        let hook = SessionStartHook;
+        let result = hook
+            .process(HookInput::SessionStart {
+                session_id: Some("test-session".to_string()),
+                cwd: Some(dir.path().to_path_buf()),
+                extra: Value::Object(serde_json::Map::new()),
+            })
+            .unwrap();
+
+        let _ = std::env::set_current_dir(&original);
+        unsafe {
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
+            std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
+        }
+
+        let context = result["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .expect("additional context");
+        assert!(context.contains("## Memory Store Status"));
+        assert!(context.contains("AMPLIHACK_KUZU_DB_PATH"));
+        assert!(context.contains("AMPLIHACK_GRAPH_DB_PATH"));
+    }
+
+    #[test]
+    fn session_start_process_surfaces_legacy_memory_store_notice() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let legacy_store = home.path().join(".amplihack").join("memory_kuzu.db");
+        fs::create_dir_all(legacy_store.parent().unwrap()).unwrap();
+        fs::write(&legacy_store, "legacy-memory").unwrap();
+        let previous_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
+            std::env::set_var("AMPLIHACK_BLARIFY_MODE", "skip");
+        }
+
+        let hook = SessionStartHook;
+        let result = hook
+            .process(HookInput::SessionStart {
+                session_id: Some("test-session".to_string()),
+                cwd: Some(dir.path().to_path_buf()),
+                extra: Value::Object(serde_json::Map::new()),
+            })
+            .unwrap();
+
+        let _ = std::env::set_current_dir(&original);
+        match previous_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        unsafe {
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
+            std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
+        }
+
+        let context = result["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .expect("additional context");
+        assert!(context.contains("## Memory Store Status"));
+        assert!(context.contains("memory_kuzu.db"));
+        assert!(context.contains("memory_graph.db"));
     }
 
     #[test]

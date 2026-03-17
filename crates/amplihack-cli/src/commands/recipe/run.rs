@@ -159,7 +159,7 @@ fn execute_recipe_via_rust(
     EnvBuilder::new()
         .with_amplihack_home()
         .with_asset_resolver()
-        .with_project_graph_db(&abs_working_dir)
+        .with_project_graph_db(&abs_working_dir)?
         .apply_to_command(&mut command);
 
     let output = command

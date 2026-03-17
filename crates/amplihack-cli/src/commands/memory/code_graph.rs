@@ -15,13 +15,6 @@ use time::OffsetDateTime;
 
 const BLARIFY_JSON_MAX_BYTES: u64 = 500 * 1024 * 1024;
 
-/// Filesystem path prefixes that are never valid graph DB locations.
-///
-/// These are pseudo-filesystems or device paths on Linux — writing a graph DB
-/// here would be a security or correctness bug.  Used by
-/// `validate_graph_db_env_path()` to enforce the blocked-prefix contract.
-const BLOCKED_PATH_PREFIXES: &[&str] = &["/proc", "/sys", "/dev"];
-
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct BlarifyOutput {
     #[serde(default)]
@@ -227,6 +220,9 @@ fn open_code_graph_writer(path_override: Option<&Path>) -> Result<Box<dyn CodeGr
 }
 
 pub fn run_index_code(input: &Path, db_path: Option<&Path>) -> Result<()> {
+    if let Some(notice) = code_graph_compatibility_notice_for_input(input, db_path)? {
+        eprintln!("⚠️ Compatibility mode: {notice}");
+    }
     let counts = import_blarify_json(input, db_path)?;
     println!("{}", serde_json::to_string_pretty(&counts)?);
     Ok(())
@@ -299,6 +295,74 @@ pub fn default_code_graph_db_path_for_project(project_root: &Path) -> Result<Pat
     Ok(project_root.join(".amplihack").join("graph_db"))
 }
 
+pub fn code_graph_compatibility_notice_for_project(
+    project_root: &Path,
+    db_path_override: Option<&Path>,
+) -> Result<Option<String>> {
+    if db_path_override.is_some() {
+        return Ok(None);
+    }
+
+    let graph_override = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+    if graph_override
+        .as_ref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Ok(None);
+    }
+
+    let legacy_override = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+    if legacy_override
+        .as_ref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Ok(Some(
+            "using legacy `AMPLIHACK_KUZU_DB_PATH`; prefer `AMPLIHACK_GRAPH_DB_PATH`.".to_string(),
+        ));
+    }
+
+    let neutral = default_code_graph_db_path_for_project(project_root)?;
+    let legacy = project_root.join(".amplihack").join("kuzu_db");
+    if legacy.exists() && !neutral.exists() {
+        return Ok(Some(format!(
+            "using legacy code-graph store `{}` because `{}` is absent; migrate to `graph_db`.",
+            legacy.display(),
+            neutral.display()
+        )));
+    }
+
+    Ok(None)
+}
+
+pub fn code_graph_compatibility_notice_for_input(
+    input_path: &Path,
+    db_path_override: Option<&Path>,
+) -> Result<Option<String>> {
+    let Some(parent) = input_path.parent() else {
+        return code_graph_compatibility_notice_for_project(
+            &std::env::current_dir().context(
+                "failed to resolve current directory for code graph compatibility notice",
+            )?,
+            db_path_override,
+        );
+    };
+    let is_blarify_json =
+        input_path.file_name().and_then(|name| name.to_str()) == Some("blarify.json");
+    let is_project_amplihack_dir =
+        parent.file_name().and_then(|name| name.to_str()) == Some(".amplihack");
+    if is_blarify_json
+        && is_project_amplihack_dir
+        && let Some(project_root) = parent.parent()
+    {
+        return code_graph_compatibility_notice_for_project(project_root, db_path_override);
+    }
+    code_graph_compatibility_notice_for_project(
+        &std::env::current_dir()
+            .context("failed to resolve current directory for code graph compatibility notice")?,
+        db_path_override,
+    )
+}
+
 fn validate_graph_db_env_path(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() {
         bail!("graph DB path must be absolute: {}", path.display());
@@ -312,84 +376,67 @@ fn validate_graph_db_env_path(path: &Path) -> Result<PathBuf> {
             path.display()
         );
     }
-    for blocked in BLOCKED_PATH_PREFIXES {
+    for blocked in ["/proc", "/sys", "/dev"] {
         if path.starts_with(blocked) {
-            bail!("blocked unsafe path prefix: {}", blocked);
+            bail!("blocked unsafe path prefix: {blocked}");
         }
     }
     Ok(path.to_path_buf())
 }
 
-fn graph_db_env_override(var_name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os(var_name)?;
+fn graph_db_env_override(var_name: &str) -> Result<Option<PathBuf>> {
+    let Some(path) = std::env::var_os(var_name) else {
+        return Ok(None);
+    };
     if path.is_empty() {
-        return None;
+        return Ok(None);
     }
     let path = PathBuf::from(path);
-    match validate_graph_db_env_path(&path) {
-        Ok(path) => Some(path),
-        Err(err) => {
-            tracing::warn!(
-                env_var = var_name,
-                path = %path.display(),
-                error = %err,
-                "ignoring unsafe graph DB override"
-            );
-            None
-        }
-    }
+    let validated = validate_graph_db_env_path(&path)
+        .with_context(|| format!("invalid {var_name} override: {}", path.display()))?;
+    Ok(Some(validated))
 }
 
-fn safe_legacy_graph_db_path(project_root: &Path, neutral: &Path) -> Option<PathBuf> {
+fn safe_legacy_graph_db_path(project_root: &Path, neutral: &Path) -> Result<Option<PathBuf>> {
     let legacy = project_root.join(".amplihack").join("kuzu_db");
     if !legacy.exists() || neutral.exists() {
-        return None;
+        return Ok(None);
     }
 
-    let canonical_project_root = match project_root.canonicalize() {
-        Ok(path) => path,
-        Err(err) => {
-            tracing::warn!(
-                project_root = %project_root.display(),
-                error = %err,
-                "ignoring legacy graph DB shim because project root could not be canonicalized"
-            );
-            return None;
-        }
-    };
+    let canonical_project_root = project_root.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize project root while validating legacy graph DB shim: {}",
+            project_root.display()
+        )
+    })?;
     match legacy.canonicalize() {
         Ok(canonical_legacy) if canonical_legacy.starts_with(&canonical_project_root) => {
-            Some(legacy)
+            Ok(Some(legacy))
         }
-        Ok(canonical_legacy) => {
-            tracing::warn!(
-                legacy_path = %legacy.display(),
-                canonical_legacy = %canonical_legacy.display(),
-                project_root = %canonical_project_root.display(),
-                "ignoring legacy graph DB shim because path escapes project root"
-            );
-            None
-        }
-        Err(err) => {
-            tracing::warn!(
-                legacy_path = %legacy.display(),
-                error = %err,
-                "ignoring legacy graph DB shim because canonicalization failed"
-            );
-            None
-        }
+        Ok(canonical_legacy) => bail!(
+            "legacy graph DB shim escapes project root: {} -> {} (project root: {})",
+            legacy.display(),
+            canonical_legacy.display(),
+            canonical_project_root.display()
+        ),
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "failed to canonicalize legacy graph DB shim: {}",
+                legacy.display()
+            )
+        }),
     }
 }
 
 pub fn resolve_code_graph_db_path_for_project(project_root: &Path) -> Result<PathBuf> {
-    if let Some(path) = graph_db_env_override("AMPLIHACK_GRAPH_DB_PATH") {
+    if let Some(path) = graph_db_env_override("AMPLIHACK_GRAPH_DB_PATH")? {
         return Ok(path);
     }
-    if let Some(path) = graph_db_env_override("AMPLIHACK_KUZU_DB_PATH") {
+    if let Some(path) = graph_db_env_override("AMPLIHACK_KUZU_DB_PATH")? {
         return Ok(path);
     }
     let neutral = default_code_graph_db_path_for_project(project_root)?;
-    if let Some(legacy) = safe_legacy_graph_db_path(project_root, &neutral) {
+    if let Some(legacy) = safe_legacy_graph_db_path(project_root, &neutral)? {
         return Ok(legacy);
     }
     Ok(neutral)
@@ -1462,9 +1509,8 @@ mod tests {
     }
 
     /// I77-SEC-TRAVERSE: An env var whose value contains a path-traversal component
-    /// (`..`) must be REJECTED.  resolve_code_graph_db_path_for_project() must fall
-    /// through to the default `.amplihack/graph_db` path rather than accepting the
-    /// unsafe value.
+    /// (`..`) must be REJECTED. resolve_code_graph_db_path_for_project() must
+    /// surface an error instead of silently falling through to the default path.
     ///
     /// Security reference: design spec validate_graph_db_env_path() requirement —
     /// "must not contain '..' components".
@@ -1481,7 +1527,7 @@ mod tests {
         unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/tmp/../etc/shadow") };
         unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
 
-        let path = resolve_code_graph_db_path_for_project(dir.path()).unwrap();
+        let error = resolve_code_graph_db_path_for_project(dir.path()).unwrap_err();
 
         match prev_graph {
             Some(v) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", v) },
@@ -1492,17 +1538,14 @@ mod tests {
             None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
         }
 
-        assert_eq!(
-            path,
-            dir.path().join(".amplihack").join("graph_db"),
-            "AMPLIHACK_GRAPH_DB_PATH containing '..' must be rejected; expected fallthrough to \
-             default .amplihack/graph_db"
-        );
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("invalid AMPLIHACK_GRAPH_DB_PATH override"));
+        assert!(rendered.contains("graph DB path must not contain parent traversal"));
     }
 
     /// I77-SEC-RELATIVE: A non-absolute path in AMPLIHACK_GRAPH_DB_PATH must be
-    /// rejected.  resolve_code_graph_db_path_for_project() must fall through to the
-    /// default `.amplihack/graph_db` path instead of accepting a relative value.
+    /// rejected. resolve_code_graph_db_path_for_project() must surface an error
+    /// instead of silently falling through to the default path.
     ///
     /// Security reference: design spec validate_graph_db_env_path() requirement —
     /// "must be absolute".
@@ -1519,7 +1562,7 @@ mod tests {
         unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "relative/path/to/graph_db") };
         unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
 
-        let path = resolve_code_graph_db_path_for_project(dir.path()).unwrap();
+        let error = resolve_code_graph_db_path_for_project(dir.path()).unwrap_err();
 
         match prev_graph {
             Some(v) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", v) },
@@ -1530,17 +1573,14 @@ mod tests {
             None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
         }
 
-        assert_eq!(
-            path,
-            dir.path().join(".amplihack").join("graph_db"),
-            "AMPLIHACK_GRAPH_DB_PATH with a relative path must be rejected; expected fallthrough \
-             to default .amplihack/graph_db"
-        );
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("invalid AMPLIHACK_GRAPH_DB_PATH override"));
+        assert!(rendered.contains("graph DB path must be absolute"));
     }
 
     /// I77-SEC-PROC: A `/proc`-prefixed path in AMPLIHACK_GRAPH_DB_PATH must be
-    /// rejected.  resolve_code_graph_db_path_for_project() must fall through to the
-    /// default `.amplihack/graph_db` path.
+    /// rejected. resolve_code_graph_db_path_for_project() must surface an error
+    /// instead of silently falling through to the default path.
     ///
     /// Security reference: design spec validate_graph_db_env_path() requirement —
     /// "must not start with /proc, /sys, or /dev".
@@ -1556,7 +1596,7 @@ mod tests {
         unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/proc/1/mem") };
         unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
 
-        let path = resolve_code_graph_db_path_for_project(dir.path()).unwrap();
+        let error = resolve_code_graph_db_path_for_project(dir.path()).unwrap_err();
 
         match prev_graph {
             Some(v) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", v) },
@@ -1567,18 +1607,15 @@ mod tests {
             None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
         }
 
-        assert_eq!(
-            path,
-            dir.path().join(".amplihack").join("graph_db"),
-            "AMPLIHACK_GRAPH_DB_PATH with /proc prefix must be rejected; expected fallthrough to \
-             default .amplihack/graph_db"
-        );
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("invalid AMPLIHACK_GRAPH_DB_PATH override"));
+        assert!(rendered.contains("blocked unsafe path prefix"));
     }
 
     /// I77-SEC-SYMLINK: The legacy `kuzu_db` disk-shim must NOT activate when the
     /// `kuzu_db` path is a symbolic link whose canonical target resolves outside the
-    /// project root.  The shim must fall through to the default `.amplihack/graph_db`
-    /// path and emit a tracing::warn! instead.
+    /// project root. The shim must surface an error instead of silently falling
+    /// through to the default path.
     ///
     /// Security reference: design spec — "Symlink attack on disk probe: legacy
     /// kuzu_db path canonicalized and verified to start_with(project_root) before
@@ -1607,7 +1644,7 @@ mod tests {
         let kuzu_symlink = amplihack_dir.join("kuzu_db");
         std::os::unix::fs::symlink(outside.path(), &kuzu_symlink).unwrap();
 
-        let path = resolve_code_graph_db_path_for_project(dir.path()).unwrap();
+        let error = resolve_code_graph_db_path_for_project(dir.path()).unwrap_err();
 
         match prev_graph {
             Some(v) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", v) },
@@ -1618,11 +1655,8 @@ mod tests {
             None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
         }
 
-        assert_eq!(
-            path,
-            dir.path().join(".amplihack").join("graph_db"),
-            "disk-shim must not activate when kuzu_db is a symlink escaping the project root; \
-             expected fallthrough to default .amplihack/graph_db"
-        );
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("legacy graph DB shim escapes project root"));
+        assert!(rendered.contains(kuzu_symlink.to_string_lossy().as_ref()));
     }
 }

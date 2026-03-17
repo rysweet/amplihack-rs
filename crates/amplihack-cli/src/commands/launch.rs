@@ -6,8 +6,9 @@
 use crate::binary_finder::BinaryInfo;
 use crate::bootstrap;
 use crate::commands::memory::{
-    background_index_job_active, check_index_status, record_background_index_pid,
-    resolve_code_graph_db_path_for_project, run_index_code, run_index_scip,
+    background_index_job_active, check_index_status, code_graph_compatibility_notice_for_project,
+    record_background_index_pid, resolve_code_graph_db_path_for_project, run_index_code,
+    run_index_scip,
 };
 use crate::env_builder::EnvBuilder;
 use crate::launcher::ManagedChild;
@@ -82,7 +83,7 @@ pub fn run_launch(
         .with_amplihack_home() // WS3: AMPLIHACK_HOME
         .with_asset_resolver(); // Rust-native bundle asset resolver
     if let Some(project_path) = current_dir.as_deref() {
-        env_builder = env_builder.with_project_graph_db(project_path);
+        env_builder = env_builder.with_project_graph_db(project_path)?;
     }
     let env_builder = env_builder.set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1"); // WS2: propagate flag
 
@@ -205,6 +206,9 @@ where
     }
 
     let project_path = current_dir.context("failed to resolve current directory")?;
+    if let Some(notice) = code_graph_compatibility_notice_for_project(project_path, None)? {
+        println!("⚠️ Compatibility mode: {notice}");
+    }
     prompt_runner(project_path).with_context(|| {
         format!(
             "code graph indexing prompt failed for {}",

@@ -1,5 +1,5 @@
 //! Backend parity tests: every trait method exercised against both
-//! `SqliteBackend` and `KuzuBackend` to confirm identical semantics.
+//! `SqliteBackend` and `GraphDbBackend` to confirm identical semantics.
 //!
 //! Each test is parameterised over a pair of temporary databases – one per
 //! backend – and asserts that the observable behaviour is the same for both.
@@ -181,7 +181,7 @@ fn kuzu_runtime_round_trip() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.db");
     let _guard = EnvGuard::setup(dir.path(), &graph, "kuzu");
-    assert_runtime_round_trip(BackendChoice::Kuzu)
+    assert_runtime_round_trip(BackendChoice::GraphDb)
 }
 
 // ---------------------------------------------------------------------------
@@ -225,7 +225,7 @@ fn kuzu_duplicate_returns_none() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.db");
     let _guard = EnvGuard::setup(dir.path(), &graph, "kuzu");
-    assert_duplicate_returns_none(BackendChoice::Kuzu)
+    assert_duplicate_returns_none(BackendChoice::GraphDb)
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +288,7 @@ fn kuzu_session_id_filter() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.db");
     let _guard = EnvGuard::setup(dir.path(), &graph, "kuzu");
-    assert_session_id_filter(BackendChoice::Kuzu)
+    assert_session_id_filter(BackendChoice::GraphDb)
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +414,7 @@ fn kuzu_memory_type_filter_episodic() -> anyhow::Result<()> {
     drop(db);
 
     // Now use the tree backend to filter.
-    let tree = open_tree_backend(BackendChoice::Kuzu)?;
+    let tree = open_tree_backend(BackendChoice::GraphDb)?;
 
     let episodic_rows = tree.load_session_rows(None, Some("episodic"))?;
     for (_, memories) in &episodic_rows {
@@ -508,7 +508,7 @@ fn kuzu_collect_agent_counts() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.db");
     let _guard = EnvGuard::setup(dir.path(), &graph, "kuzu");
-    assert_collect_agent_counts(BackendChoice::Kuzu)
+    assert_collect_agent_counts(BackendChoice::GraphDb)
 }
 
 // ---------------------------------------------------------------------------
@@ -585,7 +585,7 @@ fn kuzu_list_and_delete_session() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.db");
     let _guard = EnvGuard::setup(dir.path(), &graph, "kuzu");
-    assert_list_and_delete_session(BackendChoice::Kuzu)
+    assert_list_and_delete_session(BackendChoice::GraphDb)
 }
 
 // ---------------------------------------------------------------------------
@@ -703,7 +703,7 @@ fn kuzu_expired_records_not_returned() -> anyhow::Result<()> {
     drop(conn);
     drop(db);
 
-    let tree = open_tree_backend(BackendChoice::Kuzu)?;
+    let tree = open_tree_backend(BackendChoice::GraphDb)?;
     let rows = tree.load_session_rows(Some("sess-exp-k"), None)?;
     let all_memories: Vec<_> = rows.iter().flat_map(|(_, mems)| mems.iter()).collect();
 

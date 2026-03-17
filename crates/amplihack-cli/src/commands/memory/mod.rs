@@ -15,7 +15,8 @@ pub(crate) use backend::sqlite::{
 };
 pub use clean::run_clean;
 pub use code_graph::{
-    CodeGraphSummary, default_code_graph_db_path_for_project, import_scip_file,
+    CodeGraphSummary, code_graph_compatibility_notice_for_project,
+    default_code_graph_db_path_for_project, import_scip_file,
     resolve_code_graph_db_path_for_project, run_index_code, summarize_code_graph,
 };
 pub use indexing_job::{
@@ -37,7 +38,7 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-pub(crate) const KUZU_TREE_BACKEND_NAME: &str = "graph-db";
+pub(crate) const GRAPH_DB_TREE_BACKEND_NAME: &str = "graph-db";
 pub(crate) const HIERARCHICAL_SCHEMA: &[&str] = &[
     r#"CREATE NODE TABLE IF NOT EXISTS SemanticMemory(
         memory_id STRING,
@@ -87,14 +88,14 @@ pub(crate) const HIERARCHICAL_SCHEMA: &[&str] = &[
 ];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BackendChoice {
-    Kuzu,
+    GraphDb,
     Sqlite,
 }
 
 impl BackendChoice {
     pub(crate) fn parse(value: &str) -> Result<Self> {
         match value {
-            "graph-db" | "kuzu" => Ok(Self::Kuzu),
+            "graph-db" | "kuzu" => Ok(Self::GraphDb),
             "sqlite" => Ok(Self::Sqlite),
             other => anyhow::bail!("Invalid backend: {other}. Must be graph-db or sqlite"),
         }
@@ -174,9 +175,107 @@ pub(crate) fn parse_json_value(value: &str) -> Result<JsonValue> {
 fn resolve_memory_backend_preference() -> Option<BackendChoice> {
     match std::env::var("AMPLIHACK_MEMORY_BACKEND").ok().as_deref() {
         Some("sqlite") => Some(BackendChoice::Sqlite),
-        Some("graph-db") | Some("kuzu") => Some(BackendChoice::Kuzu),
+        Some("graph-db") | Some("kuzu") => Some(BackendChoice::GraphDb),
         _ => None,
     }
+}
+
+pub(crate) fn memory_graph_compatibility_notice(choice: BackendChoice) -> Option<String> {
+    if !matches!(choice, BackendChoice::GraphDb) {
+        return None;
+    }
+
+    let graph_override = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+    if graph_override
+        .as_ref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return None;
+    }
+
+    let legacy_override = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+    if legacy_override
+        .as_ref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Some(
+            "using legacy `AMPLIHACK_KUZU_DB_PATH`; prefer `AMPLIHACK_GRAPH_DB_PATH`.".to_string(),
+        );
+    }
+
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let neutral = home.join(".amplihack").join("memory_graph.db");
+    let legacy = home.join(".amplihack").join("memory_kuzu.db");
+    if legacy.exists() && !neutral.exists() {
+        return Some(format!(
+            "using legacy store `{}` because `{}` is absent; migrate to `memory_graph.db`.",
+            legacy.display(),
+            neutral.display()
+        ));
+    }
+
+    None
+}
+
+/// Resolve the memory backend with autodetection.
+///
+/// Resolution order:
+/// 1. `AMPLIHACK_MEMORY_BACKEND` env var (if set and recognized).
+/// 2. Probe `~/.amplihack/hierarchical_memory/` for existing Kuzu `graph_db`
+///    directories using `symlink_metadata()` (not `exists()`).
+///    - If a symlink is found inside the probe directory → return `Err`.
+///    - If a `graph_db` subdirectory is found → `BackendChoice::GraphDb`.
+/// 3. Default to `BackendChoice::Sqlite` for new installs.
+///
+/// Returns `Err` if `HOME` is unavailable (only checked when the env var
+/// shortcut is not used).
+pub(crate) fn resolve_backend_with_autodetect() -> Result<BackendChoice> {
+    // Step 1: env var takes priority.
+    if let Some(choice) = resolve_memory_backend_preference() {
+        return Ok(choice);
+    }
+
+    // Step 2: probe the filesystem.
+    let home = home_dir()?;
+    let hmem_dir = home.join(".amplihack").join("hierarchical_memory");
+
+    // If the directory doesn't exist at all, this is a fresh install.
+    if hmem_dir.symlink_metadata().is_err() {
+        return Ok(BackendChoice::Sqlite);
+    }
+
+    // Scan the hierarchical_memory directory for agent subdirectories.
+    // Use symlink_metadata() on each entry to detect symlinks.
+    for entry_result in std::fs::read_dir(&hmem_dir)
+        .with_context(|| format!("failed to read directory {}", hmem_dir.display()))?
+    {
+        let entry = entry_result
+            .with_context(|| format!("failed to read entry in {}", hmem_dir.display()))?;
+        let entry_path = entry.path();
+
+        // Use symlink_metadata() to detect symlinks without following them.
+        let meta = entry_path
+            .symlink_metadata()
+            .with_context(|| format!("failed to stat {}", entry_path.display()))?;
+
+        if meta.file_type().is_symlink() {
+            anyhow::bail!(
+                "symlink detected in backend probe path {}; refusing to follow for security",
+                entry_path.display()
+            );
+        }
+
+        if meta.is_dir() {
+            // Check if this agent directory contains a graph_db subdirectory.
+            let graph_db = entry_path.join("graph_db");
+            if graph_db.symlink_metadata().is_ok() {
+                return Ok(BackendChoice::GraphDb);
+            }
+        }
+    }
+
+    // Step 3: No Kuzu markers found → default to SQLite.
+    Ok(BackendChoice::Sqlite)
 }
 
 fn load_runtime_memories_from_backend(
@@ -231,10 +330,14 @@ pub(crate) fn parse_memory_timestamp(value: &str) -> Option<DateTime<Utc>> {
 
 /// Score a single memory record against a pre-lowercased query string.
 ///
-/// `query_lower` **must** already be lowercase; callers are responsible for
-/// converting once before iterating over many records (avoids O(n) repeated
-/// allocations for the same query).
-fn memory_relevance_score(memory: &MemoryRecord, query_lower: &str) -> f64 {
+/// `query_lower` **must** already be lowercase.  `query_words` must be the
+/// set of whitespace-split tokens from `query_lower`, also pre-computed by
+/// the caller so it is not re-allocated once per memory record.
+fn memory_relevance_score(
+    memory: &MemoryRecord,
+    query_lower: &str,
+    query_words: &HashSet<&str>,
+) -> f64 {
     let content_lower = memory.content.to_lowercase();
     let mut score = 0.0;
 
@@ -242,7 +345,6 @@ fn memory_relevance_score(memory: &MemoryRecord, query_lower: &str) -> f64 {
         score += 10.0;
     }
 
-    let query_words: HashSet<&str> = query_lower.split_whitespace().collect();
     let content_words: HashSet<&str> = content_lower.split_whitespace().collect();
     score += query_words.intersection(&content_words).count() as f64 * 2.0;
 
@@ -269,15 +371,16 @@ fn select_prompt_context_memories(
         return Vec::new();
     }
 
-    // Pre-compute once; `memory_relevance_score` expects a pre-lowercased string
-    // so we don't re-allocate the lowercase form on every memory record.
+    // Pre-compute once: lower-cased query string and its word set.
+    // `memory_relevance_score` accepts both so neither is rebuilt per record.
     let query_lower = query_text.to_lowercase();
+    let query_words: HashSet<&str> = query_lower.split_whitespace().collect();
 
     let mut ranked = memories
         .into_iter()
         .filter(is_prompt_context_memory)
         .map(|memory| {
-            let score = memory_relevance_score(&memory, &query_lower);
+            let score = memory_relevance_score(&memory, &query_lower, &query_words);
             (memory, score)
         })
         .collect::<Vec<_>>();
@@ -287,7 +390,10 @@ fn select_prompt_context_memories(
     let mut total_tokens = 0usize;
     let mut selected = Vec::new();
     for (memory, _) in ranked {
-        let memory_tokens = memory.content.chars().count() / 4;
+        // Use byte length / 4 as a token budget approximation — identical to
+        // the previous chars().count() / 4 for ASCII, a slight overestimate
+        // for multibyte UTF-8, and O(1) instead of O(n).
+        let memory_tokens = memory.content.len() / 4;
         if total_tokens + memory_tokens > token_budget {
             break;
         }
@@ -425,7 +531,7 @@ fn retrieve_prompt_context_memories_from_backend(
     let memories = load_runtime_memories_from_backend(choice, session_id)?;
     let selected = select_prompt_context_memories(memories, query_text, token_budget);
     let selected = match choice {
-        BackendChoice::Kuzu => enrich_prompt_context_memories_with_code_context(selected)?,
+        BackendChoice::GraphDb => enrich_prompt_context_memories_with_code_context(selected)?,
         BackendChoice::Sqlite => selected,
     };
     Ok(selected
@@ -454,7 +560,7 @@ pub fn retrieve_prompt_context_memories(
             token_budget,
         ),
         None => retrieve_prompt_context_memories_from_backend(
-            BackendChoice::Kuzu,
+            BackendChoice::GraphDb,
             session_id,
             query_text,
             token_budget,
@@ -476,7 +582,9 @@ fn build_memory_id(record: &SessionLearningRecord, timestamp: &str) -> String {
 }
 
 fn heuristic_importance(content: &str) -> i64 {
-    let len = content.trim().chars().count();
+    // Byte length as a proxy for character count — same result for ASCII,
+    // slight overestimate for multibyte UTF-8, and O(1).
+    let len = content.trim().len();
     match len {
         0..=99 => 5,
         100..=199 => 6,
@@ -530,7 +638,7 @@ pub fn store_session_learning(
 
     match resolve_memory_backend_preference() {
         Some(choice) => store_learning_with_backend(choice, &record),
-        None => store_learning_with_backend(BackendChoice::Kuzu, &record),
+        None => store_learning_with_backend(BackendChoice::GraphDb, &record),
     }
 }
 
@@ -540,6 +648,9 @@ fn store_learning_with_backend(
 ) -> Result<Option<String>> {
     self::backend::open_runtime_backend(choice)?.store_session_learning(record)
 }
+
+#[cfg(test)]
+mod autodetect_test;
 
 #[cfg(test)]
 mod tests {
@@ -678,7 +789,7 @@ mod tests {
             }),
             importance: 8,
         };
-        let memory_id = store_learning_with_backend(BackendChoice::Kuzu, &record)?
+        let memory_id = store_learning_with_backend(BackendChoice::GraphDb, &record)?
             .expect("memory should be stored");
 
         let json_path = dir.path().join("blarify.json");
@@ -1081,7 +1192,7 @@ mod tests {
         unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "relative/graph.db") };
         unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
 
-        let resolved = resolve_memory_graph_db_path()?;
+        let error = resolve_memory_graph_db_path().unwrap_err();
 
         match prev_home {
             Some(value) => unsafe { std::env::set_var("HOME", value) },
@@ -1096,10 +1207,9 @@ mod tests {
             None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
         }
 
-        assert_eq!(
-            resolved,
-            dir.path().join(".amplihack").join("memory_graph.db")
-        );
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("invalid AMPLIHACK_GRAPH_DB_PATH override"));
+        assert!(rendered.contains("memory graph DB path must be absolute"));
         Ok(())
     }
 
@@ -1116,7 +1226,7 @@ mod tests {
         unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/proc/1/mem") };
         unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
 
-        let resolved = resolve_memory_graph_db_path()?;
+        let error = resolve_memory_graph_db_path().unwrap_err();
 
         match prev_home {
             Some(value) => unsafe { std::env::set_var("HOME", value) },
@@ -1131,15 +1241,14 @@ mod tests {
             None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
         }
 
-        assert_eq!(
-            resolved,
-            dir.path().join(".amplihack").join("memory_graph.db")
-        );
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("invalid AMPLIHACK_GRAPH_DB_PATH override"));
+        assert!(rendered.contains("blocked prefix /proc"));
         Ok(())
     }
 
     #[test]
-    fn resolve_memory_graph_db_path_uses_valid_kuzu_override_when_graph_override_is_invalid()
+    fn resolve_memory_graph_db_path_invalid_graph_override_does_not_fall_through_to_kuzu_alias()
     -> Result<()> {
         let _guard = home_env_lock()
             .lock()
@@ -1153,7 +1262,7 @@ mod tests {
         unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/tmp/../etc/shadow") };
         unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", &kuzu_override) };
 
-        let resolved = resolve_memory_graph_db_path()?;
+        let error = resolve_memory_graph_db_path().unwrap_err();
 
         match prev_home {
             Some(value) => unsafe { std::env::set_var("HOME", value) },
@@ -1168,7 +1277,9 @@ mod tests {
             None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
         }
 
-        assert_eq!(resolved, kuzu_override);
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("invalid AMPLIHACK_GRAPH_DB_PATH override"));
+        assert!(rendered.contains("/tmp/../etc/shadow"));
         Ok(())
     }
 
@@ -1242,9 +1353,9 @@ mod tests {
     fn backend_choice_parse_graph_db_and_kuzu_alias() {
         assert_eq!(
             BackendChoice::parse("graph-db").unwrap(),
-            BackendChoice::Kuzu
+            BackendChoice::GraphDb
         );
-        assert_eq!(BackendChoice::parse("kuzu").unwrap(), BackendChoice::Kuzu);
+        assert_eq!(BackendChoice::parse("kuzu").unwrap(), BackendChoice::GraphDb);
     }
 
     #[test]
