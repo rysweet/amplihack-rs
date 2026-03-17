@@ -10,11 +10,10 @@
 ```json
 {
   "tool_input": {
-    "path": "/tmp/file.txt"
+    "command": "git commit --no-verify -m 'test'"
   },
-  "tool_name": "Read"
+  "tool_name": "Bash"
 }
 ```
 
 <!-- AMPLIHACK_CONTEXT_END -->
-IHACK_CONTEXT_END -->
