@@ -1817,3 +1817,80 @@ fn tc29_fleet_tui_apply_edited_proposal_sends_tmux_input_without_python() {
         "expected azlin tmux send-keys command for edited apply flow, got:\n{send_hits}"
     );
 }
+
+/// TC-30: raw left/right arrow tab navigation should follow the same wrap order
+/// as the Python dashboard, not just the letter/numeric hotkeys.
+#[test]
+fn tc30_fleet_tui_arrow_tab_navigation_wraps_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    probe.output.clear();
+    probe.send_and_wait_for(b"\x1b[D", "New Session", Duration::from_secs(3));
+    probe.output.clear();
+    probe.send_and_wait_for(
+        b"\x1b[C",
+        "Selected session: vm-1/claude-1",
+        Duration::from_secs(3),
+    );
+    probe.output.clear();
+    probe.send_and_wait_for(b"\x1b[C", "Session Detail", Duration::from_secs(3));
+    probe.output.clear();
+    probe.send_and_wait_for(b"\x1b[C", "Action Editor", Duration::from_secs(3));
+    probe.output.clear();
+    probe.send_and_wait_for(b"\x1b[C", "[projects]", Duration::from_secs(3));
+    probe.output.clear();
+    probe.send_and_wait_for(b"\x1b[C", "New Session", Duration::from_secs(3));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("New Session"),
+        "expected final wrapped arrow traversal to land on New Session:\n{cleaned}"
+    );
+}
+
+/// TC-31: pressing Enter after filtering the fleet list down to zero visible
+/// sessions should still stay in the native TUI, switch to Detail, and show the
+/// explicit no-selection state instead of falling through silently.
+#[test]
+fn tc31_fleet_tui_enter_with_no_visible_selection_shows_detail_notice_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    probe.send(b"/", Duration::from_millis(300));
+    probe.send_and_wait_for(
+        b"missing-session\n",
+        "No sessions match the current search. Press Esc to clear.",
+        Duration::from_secs(5),
+    );
+    probe.send_and_wait_for(b"\n", "No session selected.", Duration::from_secs(3));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Search: missing-session (press / to edit, Esc to clear)")
+            || cleaned.contains("search: missing-session"),
+        "expected active empty-result search in PTY output:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("No sessions match the current search. Press Esc to clear."),
+        "expected explicit empty-result fleet message in PTY output:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("No session selected."),
+        "expected detail-tab no-selection message after pressing Enter:\n{cleaned}"
+    );
+}

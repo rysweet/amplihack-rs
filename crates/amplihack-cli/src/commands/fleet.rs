@@ -11938,6 +11938,94 @@ exit 1
     }
 
     #[test]
+    fn run_tui_dry_run_surfaces_reasoner_api_key_failure_notice() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let azlin = dir.path().join("azlin");
+        let claude = dir.path().join("claude");
+        write_executable(&azlin, "#!/bin/sh\nexit 0\n");
+        write_executable(
+            &claude,
+            "#!/bin/sh\nprintf '%s\\n' 'ANTHROPIC_API_KEY missing.' >&2\nexit 1\n",
+        );
+
+        let state = FleetState {
+            vms: vec![VmInfo {
+                name: "vm-1".to_string(),
+                session_name: "vm-1".to_string(),
+                os: "linux".to_string(),
+                status: "Running".to_string(),
+                ip: String::new(),
+                region: "westus2".to_string(),
+                tmux_sessions: vec![TmuxSessionInfo {
+                    session_name: "claude-1".to_string(),
+                    vm_name: "vm-1".to_string(),
+                    windows: 1,
+                    attached: false,
+                    agent_status: AgentStatus::WaitingInput,
+                    last_output: "Proceed with deploy? [y/n]".to_string(),
+                    working_directory: String::new(),
+                    repo_url: String::new(),
+                    git_branch: String::new(),
+                    pr_url: String::new(),
+                    task_summary: String::new(),
+                }],
+            }],
+            timestamp: None,
+            azlin_path: azlin.clone(),
+            exclude_vms: Vec::new(),
+        };
+        let mut ui_state = FleetTuiUiState::default();
+        ui_state.sync_to_state(&state);
+
+        let previous_path = env::var_os("PATH");
+        let previous_home = env::var_os("HOME");
+        let previous_reasoner = env::var_os("AMPLIHACK_FLEET_REASONER_BINARY_PATH");
+        unsafe {
+            env::set_var("PATH", dir.path());
+            env::set_var("HOME", home.path());
+            env::set_var("AMPLIHACK_FLEET_REASONER_BINARY_PATH", &claude);
+        }
+        let result = run_tui_dry_run(&azlin, &state, &mut ui_state);
+        match previous_path {
+            Some(value) => unsafe { env::set_var("PATH", value) },
+            None => unsafe { env::remove_var("PATH") },
+        }
+        match previous_home {
+            Some(value) => unsafe { env::set_var("HOME", value) },
+            None => unsafe { env::remove_var("HOME") },
+        }
+        match previous_reasoner {
+            Some(value) => unsafe { env::set_var("AMPLIHACK_FLEET_REASONER_BINARY_PATH", value) },
+            None => unsafe { env::remove_var("AMPLIHACK_FLEET_REASONER_BINARY_PATH") },
+        }
+
+        assert!(result.is_ok());
+        assert_eq!(ui_state.tab, FleetTuiTab::Detail);
+        assert!(
+            ui_state
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.starts_with("Prepared proposal for vm-1/claude-1:"))
+        );
+        let notice = ui_state
+            .proposal_notice
+            .as_ref()
+            .expect("expected reasoner failure notice");
+        assert_eq!(notice.title, "Reasoner status");
+        assert!(notice.message.contains("ANTHROPIC_API_KEY missing"));
+        assert!(
+            notice
+                .message
+                .contains("Showing a heuristic proposal instead.")
+        );
+        assert!(ui_state.last_decision.is_some());
+    }
+
+    #[test]
     fn render_tui_editor_view_shows_apply_failure_notice() {
         let state = FleetState {
             vms: vec![VmInfo {
