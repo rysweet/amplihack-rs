@@ -84,9 +84,7 @@ pub fn run_launch(
     if let Some(project_path) = current_dir.as_deref() {
         env_builder = env_builder.with_project_graph_db(project_path);
     }
-    let env = env_builder
-        .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1") // WS2: propagate flag
-        .build();
+    let env_builder = env_builder.set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1"); // WS2: propagate flag
 
     maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), current_dir.as_deref())?;
 
@@ -98,7 +96,7 @@ pub fn run_launch(
         skip_permissions,
         &extra_args,
     );
-    cmd.envs(env);
+    env_builder.apply_to_command(&mut cmd);
 
     // Register signal handlers
     let shutdown = signals::register_handlers()?;

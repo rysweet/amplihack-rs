@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::memory::backend::kuzu::kuzu_rows;
+use crate::commands::memory::backend::kuzu::{kuzu_f64, kuzu_i64, kuzu_rows, kuzu_string};
 use kuzu::{
     Connection as KuzuConnection, Database as KuzuDatabase, SystemConfig, Value as KuzuValue,
 };

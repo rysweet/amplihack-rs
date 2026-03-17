@@ -15,6 +15,13 @@ use time::OffsetDateTime;
 
 const BLARIFY_JSON_MAX_BYTES: u64 = 500 * 1024 * 1024;
 
+/// Filesystem path prefixes that are never valid graph DB locations.
+///
+/// These are pseudo-filesystems or device paths on Linux — writing a graph DB
+/// here would be a security or correctness bug.  Used by
+/// `validate_graph_db_env_path()` to enforce the blocked-prefix contract.
+const BLOCKED_PATH_PREFIXES: &[&str] = &["/proc", "/sys", "/dev"];
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct BlarifyOutput {
     #[serde(default)]
@@ -305,9 +312,9 @@ fn validate_graph_db_env_path(path: &Path) -> Result<PathBuf> {
             path.display()
         );
     }
-    for blocked in [Path::new("/proc"), Path::new("/sys"), Path::new("/dev")] {
+    for blocked in BLOCKED_PATH_PREFIXES {
         if path.starts_with(blocked) {
-            bail!("blocked unsafe path prefix: {}", blocked.display());
+            bail!("blocked unsafe path prefix: {}", blocked);
         }
     }
     Ok(path.to_path_buf())

@@ -156,13 +156,11 @@ fn execute_recipe_via_rust(
         command.arg("--set").arg(format!("{key}={value}"));
     }
 
-    command.envs(
-        EnvBuilder::new()
-            .with_amplihack_home()
-            .with_asset_resolver()
-            .with_project_graph_db(&abs_working_dir)
-            .build(),
-    );
+    EnvBuilder::new()
+        .with_amplihack_home()
+        .with_asset_resolver()
+        .with_project_graph_db(&abs_working_dir)
+        .apply_to_command(&mut command);
 
     let output = command
         .output()
@@ -889,7 +887,7 @@ steps:
 
         std::fs::write(
             &runner,
-            "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"resolver\":\"$AMPLIHACK_ASSET_RESOLVER\",\"home\":\"$AMPLIHACK_HOME\"}}\nEOF\n",
+            "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"resolver\":\"$AMPLIHACK_ASSET_RESOLVER\",\"home\":\"$AMPLIHACK_HOME\",\"graph\":\"$AMPLIHACK_GRAPH_DB_PATH\",\"kuzu\":\"$AMPLIHACK_KUZU_DB_PATH\"}}\nEOF\n",
         )
         .expect("failed to write runner stub");
         std::fs::write(&resolver, "#!/bin/sh\nexit 0\n").expect("failed to write resolver stub");
@@ -910,6 +908,8 @@ steps:
         let prev_path = std::env::var_os("PATH");
         let prev_home = std::env::var_os("AMPLIHACK_HOME");
         let prev_resolver = std::env::var_os("AMPLIHACK_ASSET_RESOLVER");
+        let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
         let new_path = match &prev_path {
             Some(value) if !value.is_empty() => {
                 format!("{}:{}", temp.path().display(), value.to_string_lossy())
@@ -920,6 +920,8 @@ steps:
             std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
             std::env::set_var("PATH", &new_path);
             std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+            std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/custom/graph");
+            std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/custom/legacy");
             std::env::remove_var("AMPLIHACK_ASSET_RESOLVER");
         }
 
@@ -947,6 +949,14 @@ steps:
             Some(value) => unsafe { std::env::set_var("AMPLIHACK_ASSET_RESOLVER", value) },
             None => unsafe { std::env::remove_var("AMPLIHACK_ASSET_RESOLVER") },
         }
+        match prev_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match prev_kuzu {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
 
         assert_eq!(
             result.context.get("resolver"),
@@ -957,6 +967,14 @@ steps:
             Some(&JsonValue::String(
                 amplihack_home.to_string_lossy().into_owned()
             ))
+        );
+        assert_eq!(
+            result.context.get("graph"),
+            Some(&JsonValue::String("/custom/graph".to_string()))
+        );
+        assert_eq!(
+            result.context.get("kuzu"),
+            Some(&JsonValue::String(String::new()))
         );
     }
 

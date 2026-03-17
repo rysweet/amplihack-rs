@@ -7,11 +7,13 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 /// Builder for constructing the environment passed to child processes.
 #[derive(Debug)]
 pub struct EnvBuilder {
     vars: HashMap<String, String>,
+    removed_vars: HashSet<String>,
     path_prepend: Vec<PathBuf>,
 }
 
@@ -19,6 +21,7 @@ impl EnvBuilder {
     pub fn new() -> Self {
         Self {
             vars: HashMap::new(),
+            removed_vars: HashSet::new(),
             path_prepend: Vec::new(),
         }
     }
@@ -26,6 +29,14 @@ impl EnvBuilder {
     /// Set a specific environment variable.
     pub fn set(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.vars.insert(key.into(), value.into());
+        self
+    }
+
+    /// Remove a specific environment variable from child processes.
+    pub fn unset(mut self, key: impl Into<String>) -> Self {
+        let key = key.into();
+        self.vars.remove(&key);
+        self.removed_vars.insert(key);
         self
     }
 
@@ -78,12 +89,18 @@ impl EnvBuilder {
         self.set("AMPLIHACK_AGENT_BINARY", tool)
     }
 
-    /// Set code-graph DB path env vars for child processes.
+    /// Set the backend-neutral code-graph DB path for child processes.
     ///
-    /// Prefer an existing backend-neutral `AMPLIHACK_GRAPH_DB_PATH`, then preserve
-    /// a legacy `AMPLIHACK_KUZU_DB_PATH`. Otherwise use
-    /// `<project_root>/.amplihack/graph_db` and set both names for compatibility.
+    /// Prefer an existing backend-neutral `AMPLIHACK_GRAPH_DB_PATH`, then accept
+    /// a legacy `AMPLIHACK_KUZU_DB_PATH` as input-only compatibility. Child
+    /// processes receive `AMPLIHACK_GRAPH_DB_PATH` and have the legacy alias
+    /// explicitly removed so the neutral contract is what propagates forward.
     pub fn with_project_graph_db(self, project_root: &Path) -> Self {
+        debug_assert!(
+            project_root.is_absolute(),
+            "project_root must be an absolute path; got: {}",
+            project_root.display()
+        );
         fn validate_graph_db_path(candidate: &str, env_var: &str) -> Option<String> {
             let path = Path::new(candidate);
             if !path.is_absolute() {
@@ -124,22 +141,34 @@ impl EnvBuilder {
             && let Some(existing) = validate_graph_db_path(&existing, "AMPLIHACK_GRAPH_DB_PATH")
         {
             return self
-                .set("AMPLIHACK_GRAPH_DB_PATH", existing.clone())
-                .set("AMPLIHACK_KUZU_DB_PATH", existing);
+                .unset("AMPLIHACK_KUZU_DB_PATH")
+                .set("AMPLIHACK_GRAPH_DB_PATH", existing);
         }
         if let Ok(existing) = env::var("AMPLIHACK_KUZU_DB_PATH")
             && !existing.is_empty()
             && let Some(existing) = validate_graph_db_path(&existing, "AMPLIHACK_KUZU_DB_PATH")
         {
             return self
-                .set("AMPLIHACK_GRAPH_DB_PATH", existing.clone())
-                .set("AMPLIHACK_KUZU_DB_PATH", existing);
+                .unset("AMPLIHACK_KUZU_DB_PATH")
+                .set("AMPLIHACK_GRAPH_DB_PATH", existing);
         }
 
         let path = project_root.join(".amplihack").join("graph_db");
         let path = path.to_string_lossy().into_owned();
-        self.set("AMPLIHACK_GRAPH_DB_PATH", path.clone())
-            .set("AMPLIHACK_KUZU_DB_PATH", path)
+        self.unset("AMPLIHACK_KUZU_DB_PATH")
+            .set("AMPLIHACK_GRAPH_DB_PATH", path)
+    }
+
+    /// Set the project-local Kuzu database path.
+    ///
+    /// # Deprecation
+    ///
+    /// This method is a compatibility shim. Use [`with_project_graph_db`] instead.
+    /// The backend-neutral `AMPLIHACK_GRAPH_DB_PATH` variable is now the canonical
+    /// contract; this method delegates directly to `with_project_graph_db`.
+    #[deprecated(since = "0.7.0", note = "use with_project_graph_db instead")]
+    pub fn with_project_kuzu_db(self, project_root: &Path) -> Self {
+        self.with_project_graph_db(project_root)
     }
 
     /// Resolve and set `AMPLIHACK_HOME` in the child environment.
@@ -283,6 +312,16 @@ impl EnvBuilder {
 
         result
     }
+
+    /// Apply the builder's overrides and removals to a child process command.
+    pub fn apply_to_command(self, command: &mut Command) {
+        let removed_vars = self.removed_vars.clone();
+        let vars = self.build();
+        for key in removed_vars {
+            command.env_remove(key);
+        }
+        command.envs(vars);
+    }
 }
 
 impl Default for EnvBuilder {
@@ -407,10 +446,7 @@ mod tests {
             env.get("AMPLIHACK_GRAPH_DB_PATH").map(String::as_str),
             Some(expected.to_str().unwrap())
         );
-        assert_eq!(
-            env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str),
-            Some(expected.to_str().unwrap())
-        );
+        assert_eq!(env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str), None);
     }
 
     #[test]
@@ -439,20 +475,14 @@ mod tests {
             env.get("AMPLIHACK_GRAPH_DB_PATH").map(String::as_str),
             Some("/custom/kuzu")
         );
-        assert_eq!(
-            env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str),
-            Some("/custom/kuzu")
-        );
+        assert_eq!(env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str), None);
     }
 
-    /// I77-ENV-GRAPH-ONLY: When only AMPLIHACK_GRAPH_DB_PATH is set (AMPLIHACK_KUZU_DB_PATH
-    /// absent), with_project_graph_db() must propagate that value to BOTH env vars so
-    /// Python consumers of the legacy name continue to see the correct path.
-    ///
-    /// This is distinct from with_project_graph_db_prefers_backend_neutral_override which
-    /// tests the case where BOTH env vars are present.
+    /// I77-ENV-GRAPH-ONLY: When only AMPLIHACK_GRAPH_DB_PATH is set,
+    /// with_project_graph_db() must preserve the backend-neutral name and avoid
+    /// re-emitting the legacy Kuzu alias into child process overrides.
     #[test]
-    fn with_project_graph_db_propagates_graph_db_env_to_both_vars_when_kuzu_unset() {
+    fn with_project_graph_db_preserves_graph_db_env_without_emitting_legacy_alias() {
         let _guard = cwd_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -480,9 +510,8 @@ mod tests {
         );
         assert_eq!(
             env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str),
-            Some("/custom/graph-only"),
-            "AMPLIHACK_KUZU_DB_PATH must be set to the same value as AMPLIHACK_GRAPH_DB_PATH \
-             for Python consumer compatibility"
+            None,
+            "AMPLIHACK_KUZU_DB_PATH must not be re-emitted into child overrides"
         );
     }
 
@@ -512,10 +541,7 @@ mod tests {
             env.get("AMPLIHACK_GRAPH_DB_PATH").map(String::as_str),
             Some("/custom/graph")
         );
-        assert_eq!(
-            env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str),
-            Some("/custom/graph")
-        );
+        assert_eq!(env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str), None);
     }
 
     #[test]
@@ -545,10 +571,7 @@ mod tests {
             env.get("AMPLIHACK_GRAPH_DB_PATH").map(String::as_str),
             Some(expected.to_str().unwrap())
         );
-        assert_eq!(
-            env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str),
-            Some(expected.to_str().unwrap())
-        );
+        assert_eq!(env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str), None);
     }
 
     #[test]
@@ -578,10 +601,7 @@ mod tests {
             env.get("AMPLIHACK_GRAPH_DB_PATH").map(String::as_str),
             Some(expected.to_str().unwrap())
         );
-        assert_eq!(
-            env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str),
-            Some(expected.to_str().unwrap())
-        );
+        assert_eq!(env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str), None);
     }
 
     #[test]
@@ -610,9 +630,59 @@ mod tests {
             env.get("AMPLIHACK_GRAPH_DB_PATH").map(String::as_str),
             Some("/custom/kuzu")
         );
+        assert_eq!(env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str), None);
+    }
+
+    #[test]
+    fn apply_to_command_translates_kuzu_alias_to_graph_db_path_and_removes_kuzu_var() {
+        // When only AMPLIHACK_KUZU_DB_PATH is set (legacy alias), apply_to_command must:
+        //   1. Translate the value to AMPLIHACK_GRAPH_DB_PATH (backend-neutral name)
+        //   2. Explicitly remove AMPLIHACK_KUZU_DB_PATH so child processes receive
+        //      only the backend-neutral contract and cannot observe the legacy alias.
+        let _guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let prev = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
+        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/inherited/legacy") };
+
+        let mut cmd = Command::new("true");
+        EnvBuilder::new()
+            .with_project_graph_db(temp.path())
+            .apply_to_command(&mut cmd);
+
+        match prev_graph {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match prev {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        let envs: HashMap<_, _> = cmd
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        // KUZU_DB_PATH="/inherited/legacy" is valid → translated to GRAPH_DB_PATH
         assert_eq!(
-            env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str),
-            Some("/custom/kuzu")
+            envs.get("AMPLIHACK_GRAPH_DB_PATH")
+                .and_then(|value| value.as_deref()),
+            Some("/inherited/legacy"),
+            "Legacy KUZU_DB_PATH must be translated to GRAPH_DB_PATH in child env"
+        );
+        assert_eq!(
+            envs.get("AMPLIHACK_KUZU_DB_PATH")
+                .and_then(|value| value.as_deref()),
+            None,
+            "Command must explicitly remove inherited AMPLIHACK_KUZU_DB_PATH"
         );
     }
 

@@ -9,7 +9,7 @@
 
 use crate::binary_finder::BinaryFinder;
 use crate::command_error::exit_error;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Local};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use lru::LruCache;
@@ -3451,7 +3451,14 @@ impl FleetTuiUiState {
     }
 
     fn sync_project_selection(&mut self) {
-        let project_refs = Self::project_refs();
+        let project_refs = match Self::project_refs() {
+            Ok(project_refs) => project_refs,
+            Err(error) => {
+                self.selected_project_repo = None;
+                self.status_message = Some(error.to_string());
+                return;
+            }
+        };
         if project_refs.is_empty() {
             self.selected_project_repo = None;
             return;
@@ -3467,7 +3474,14 @@ impl FleetTuiUiState {
     }
 
     fn move_project_selection(&mut self, delta: isize) {
-        let project_refs = Self::project_refs();
+        let project_refs = match Self::project_refs() {
+            Ok(project_refs) => project_refs,
+            Err(error) => {
+                self.selected_project_repo = None;
+                self.status_message = Some(error.to_string());
+                return;
+            }
+        };
         if project_refs.is_empty() {
             self.selected_project_repo = None;
             return;
@@ -3589,16 +3603,14 @@ impl FleetTuiUiState {
             .collect()
     }
 
-    fn project_refs() -> Vec<String> {
-        FleetDashboardSummary::load(Some(default_dashboard_path()))
-            .map(|dashboard| {
-                dashboard
-                    .projects
-                    .into_iter()
-                    .map(|project| project.repo_url)
-                    .collect()
-            })
-            .unwrap_or_default()
+    fn project_refs() -> Result<Vec<String>> {
+        FleetDashboardSummary::load(Some(default_dashboard_path())).map(|dashboard| {
+            dashboard
+                .projects
+                .into_iter()
+                .map(|project| project.repo_url)
+                .collect()
+        })
     }
 
     /// Advance to the next tab, wrapping around.
@@ -5387,7 +5399,11 @@ impl TaskQueue {
             Err(_) => {
                 let backup = path.with_extension("json.bak");
                 let _ = fs::copy(&path, &backup);
-                queue.load_failed = true;
+                bail!(
+                    "failed to parse {} as fleet task queue JSON; copied corrupt file to {}",
+                    path.display(),
+                    backup.display()
+                );
             }
         }
 
@@ -6665,7 +6681,11 @@ impl FleetDashboardSummary {
             Err(_) => {
                 let backup = path.with_extension("json.bak");
                 let _ = fs::copy(&path, &backup);
-                dashboard.load_failed = true;
+                bail!(
+                    "failed to parse {} as fleet dashboard JSON; copied corrupt file to {}",
+                    path.display(),
+                    backup.display()
+                );
             }
         }
 
@@ -6917,7 +6937,15 @@ fn load_projects_registry(path: &Path) -> Result<BTreeMap<String, ProjectRegistr
 
     let raw =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let doc = toml::from_str::<ProjectRegistryDoc>(&raw).unwrap_or_default();
+    let doc = toml::from_str::<ProjectRegistryDoc>(&raw).map_err(|error| {
+        let backup = path.with_extension("toml.bak");
+        let _ = fs::copy(path, &backup);
+        anyhow!(
+            "failed to parse {} as fleet projects registry TOML; copied corrupt file to {}: {error}",
+            path.display(),
+            backup.display()
+        )
+    })?;
     Ok(doc.project)
 }
 
@@ -7015,10 +7043,11 @@ impl FleetGraphSummary {
             Err(_) => {
                 let backup = path.with_extension("json.bak");
                 let _ = fs::copy(&path, &backup);
-                return Ok(Self {
-                    node_types: Vec::new(),
-                    edge_types: Vec::new(),
-                });
+                bail!(
+                    "failed to parse {} as fleet graph JSON; copied corrupt file to {}",
+                    path.display(),
+                    backup.display()
+                );
             }
         };
 
@@ -9445,6 +9474,21 @@ mod tests {
     }
 
     #[test]
+    fn task_queue_load_surfaces_corrupt_json_and_keeps_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("task_queue.json");
+        fs::write(&path, "{not json").unwrap();
+
+        let error = TaskQueue::load(Some(path.clone())).unwrap_err();
+        let backup = path.with_extension("json.bak");
+
+        assert!(error.to_string().contains("failed to parse"));
+        assert!(error.to_string().contains("fleet task queue JSON"));
+        assert!(backup.exists());
+        assert_eq!(fs::read_to_string(&backup).unwrap(), "{not json");
+    }
+
+    #[test]
     fn run_add_task_creates_default_queue_file() {
         let _guard = home_env_lock()
             .lock()
@@ -9517,6 +9561,21 @@ mod tests {
         let graph = FleetGraphSummary::load(Some(path)).unwrap();
         assert_eq!(graph.node_types.len(), 2);
         assert_eq!(graph.edge_types, vec!["contains".to_string()]);
+    }
+
+    #[test]
+    fn fleet_graph_load_surfaces_corrupt_json_and_keeps_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.json");
+        fs::write(&path, "{bad graph").unwrap();
+
+        let error = FleetGraphSummary::load(Some(path.clone())).unwrap_err();
+        let backup = path.with_extension("json.bak");
+
+        assert!(error.to_string().contains("failed to parse"));
+        assert!(error.to_string().contains("fleet graph JSON"));
+        assert!(backup.exists());
+        assert_eq!(fs::read_to_string(&backup).unwrap(), "{bad graph");
     }
 
     #[test]
@@ -9601,6 +9660,21 @@ mod tests {
     }
 
     #[test]
+    fn fleet_dashboard_load_surfaces_corrupt_json_and_keeps_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dashboard.json");
+        fs::write(&path, "{bad dashboard").unwrap();
+
+        let error = FleetDashboardSummary::load(Some(path.clone())).unwrap_err();
+        let backup = path.with_extension("json.bak");
+
+        assert!(error.to_string().contains("failed to parse"));
+        assert!(error.to_string().contains("fleet dashboard JSON"));
+        assert!(backup.exists());
+        assert_eq!(fs::read_to_string(&backup).unwrap(), "{bad dashboard");
+    }
+
+    #[test]
     fn run_project_add_persists_dashboard_and_projects_toml() {
         let _guard = home_env_lock()
             .lock()
@@ -9666,6 +9740,21 @@ mod tests {
         let projects =
             load_projects_registry(&home.path().join(".amplihack/fleet/projects.toml")).unwrap();
         assert!(projects.contains_key("my-repo"));
+    }
+
+    #[test]
+    fn load_projects_registry_surfaces_corrupt_toml_and_keeps_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("projects.toml");
+        fs::write(&path, "[project\nbroken").unwrap();
+
+        let error = load_projects_registry(&path).unwrap_err();
+        let backup = path.with_extension("toml.bak");
+
+        assert!(error.to_string().contains("failed to parse"));
+        assert!(error.to_string().contains("fleet projects registry TOML"));
+        assert!(backup.exists());
+        assert_eq!(fs::read_to_string(&backup).unwrap(), "[project\nbroken");
     }
 
     #[test]
@@ -10750,6 +10839,47 @@ exit 1
             Some(value) => unsafe { env::set_var("HOME", value) },
             None => unsafe { env::remove_var("HOME") },
         }
+    }
+
+    #[test]
+    fn projects_tab_sync_surfaces_corrupt_dashboard_load() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let fleet_dir = home.path().join(".amplihack/fleet");
+        fs::create_dir_all(&fleet_dir).unwrap();
+        fs::write(fleet_dir.join("dashboard.json"), "{broken dashboard").unwrap();
+
+        let previous_home = env::var_os("HOME");
+        unsafe { env::set_var("HOME", home.path()) };
+
+        let state = FleetState::new(PathBuf::from("azlin"));
+        let mut ui_state = FleetTuiUiState {
+            tab: FleetTuiTab::Projects,
+            ..Default::default()
+        };
+
+        ui_state.sync_to_state(&state);
+
+        match previous_home {
+            Some(value) => unsafe { env::set_var("HOME", value) },
+            None => unsafe { env::remove_var("HOME") },
+        }
+
+        assert!(ui_state.selected_project_repo.is_none());
+        assert!(
+            ui_state
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.contains("failed to parse"))
+        );
+        assert!(
+            ui_state
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.contains("fleet dashboard JSON"))
+        );
     }
 
     #[test]

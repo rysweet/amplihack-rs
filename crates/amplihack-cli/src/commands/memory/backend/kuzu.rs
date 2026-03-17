@@ -6,7 +6,7 @@ use kuzu::SystemConfig;
 pub(crate) use kuzu::{Connection as KuzuConnection, Database as KuzuDatabase, Value as KuzuValue};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use time::OffsetDateTime;
 
 pub(crate) const KUZU_BACKEND_SCHEMA: &[&str] = &[
@@ -215,15 +215,53 @@ pub(crate) fn open_kuzu_memory_db() -> Result<KuzuDatabase> {
 }
 
 pub(crate) fn resolve_memory_graph_db_path() -> Result<PathBuf> {
+    fn validate_graph_db_override(path: PathBuf, env_var: &str) -> Option<PathBuf> {
+        if !path.is_absolute() {
+            tracing::warn!(
+                env_var,
+                path = %path.display(),
+                "ignoring non-absolute memory graph DB override"
+            );
+            return None;
+        }
+        if path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+        {
+            tracing::warn!(
+                env_var,
+                path = %path.display(),
+                "ignoring memory graph DB override with parent traversal"
+            );
+            return None;
+        }
+        for blocked in [Path::new("/proc"), Path::new("/sys"), Path::new("/dev")] {
+            if path.starts_with(blocked) {
+                tracing::warn!(
+                    env_var,
+                    path = %path.display(),
+                    blocked = %blocked.display(),
+                    "ignoring memory graph DB override with unsafe path prefix"
+                );
+                return None;
+            }
+        }
+        Some(path)
+    }
+
     if let Some(path) = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH")
         && !path.is_empty()
+        && let Some(path) =
+            validate_graph_db_override(PathBuf::from(path), "AMPLIHACK_GRAPH_DB_PATH")
     {
-        return Ok(PathBuf::from(path));
+        return Ok(path);
     }
     if let Some(path) = std::env::var_os("AMPLIHACK_KUZU_DB_PATH")
         && !path.is_empty()
+        && let Some(path) =
+            validate_graph_db_override(PathBuf::from(path), "AMPLIHACK_KUZU_DB_PATH")
     {
-        return Ok(PathBuf::from(path));
+        return Ok(path);
     }
 
     let home = home_dir()?;

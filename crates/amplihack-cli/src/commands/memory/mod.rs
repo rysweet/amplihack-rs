@@ -28,7 +28,7 @@ pub use staleness_detector::{IndexStatus, check_index_status};
 pub use transfer::{run_export, run_import};
 pub use tree::run_tree;
 
-use self::backend::kuzu::{kuzu_f64, kuzu_i64, kuzu_string, resolve_memory_graph_db_path};
+use self::backend::kuzu::resolve_memory_graph_db_path;
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -1065,6 +1065,110 @@ mod tests {
         }
 
         assert_eq!(resolved, override_path);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_memory_graph_db_path_rejects_relative_graph_override() -> Result<()> {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir()?;
+        let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let previous = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", dir.path()) };
+        unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "relative/graph.db") };
+        unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
+
+        let resolved = resolve_memory_graph_db_path()?;
+
+        match prev_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        match previous_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match previous {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        assert_eq!(
+            resolved,
+            dir.path().join(".amplihack").join("memory_graph.db")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_memory_graph_db_path_rejects_proc_prefixed_graph_override() -> Result<()> {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir()?;
+        let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let previous = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", dir.path()) };
+        unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/proc/1/mem") };
+        unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
+
+        let resolved = resolve_memory_graph_db_path()?;
+
+        match prev_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        match previous_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match previous {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        assert_eq!(
+            resolved,
+            dir.path().join(".amplihack").join("memory_graph.db")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_memory_graph_db_path_uses_valid_kuzu_override_when_graph_override_is_invalid()
+    -> Result<()> {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir()?;
+        let kuzu_override = dir.path().join("project-kuzu");
+        let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let previous = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        let prev_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", dir.path()) };
+        unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/tmp/../etc/shadow") };
+        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", &kuzu_override) };
+
+        let resolved = resolve_memory_graph_db_path()?;
+
+        match prev_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        match previous_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match previous {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        assert_eq!(resolved, kuzu_override);
         Ok(())
     }
 
