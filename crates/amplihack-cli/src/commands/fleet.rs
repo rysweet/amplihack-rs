@@ -1383,6 +1383,8 @@ fn run_watch_with_timeout(
     lines: u32,
     timeout: Duration,
 ) -> Result<()> {
+    validate_vm_name(vm_name)?;
+    validate_session_name(session_name)?;
     let azlin = match get_azlin_path() {
         Ok(path) => path,
         Err(_) => {

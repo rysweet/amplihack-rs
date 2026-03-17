@@ -18,6 +18,9 @@ use std::path::PathBuf;
 /// Maximum directory depth to prevent unbounded recursion.
 const MAX_DIR_DEPTH: usize = 64;
 
+/// Maximum import JSON file size (500 MB) — prevents OOM from adversarially crafted payloads.
+const IMPORT_JSON_MAX_BYTES: u64 = 500 * 1024 * 1024;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct HierarchicalExportData {
     pub(crate) agent_name: String,
@@ -233,6 +236,8 @@ fn export_hierarchical_json(
     storage_path: Option<&str>,
 ) -> Result<ExportResult> {
     let db_path = resolve_hierarchical_db_path(agent_name, storage_path)?;
+    // P1-1: Enforce restrictive permissions before opening the DB.
+    enforce_hierarchical_db_permissions(&db_path)?;
     let db = KuzuDatabase::new(&db_path, SystemConfig::default())?;
     let conn = KuzuConnection::new(&db)?;
     init_hierarchical_schema(&conn)?;
@@ -446,6 +451,18 @@ fn import_hierarchical_json(
     storage_path: Option<&str>,
 ) -> Result<ImportResult> {
     let input_path = PathBuf::from(input);
+
+    // P1-4: Check file size before reading to prevent OOM from adversarially crafted payloads.
+    let file_size = input_path.metadata().map(|m| m.len()).unwrap_or(0);
+    if file_size > IMPORT_JSON_MAX_BYTES {
+        anyhow::bail!(
+            "Import file is too large ({:.1} MB, maximum is {:.1} MB): {}",
+            file_size as f64 / (1024.0 * 1024.0),
+            IMPORT_JSON_MAX_BYTES as f64 / (1024.0 * 1024.0),
+            input_path.display()
+        );
+    }
+
     let mut raw = String::new();
     fs::File::open(&input_path)?.read_to_string(&mut raw)?;
     let data: HierarchicalExportData = serde_json::from_str(&raw)?;
@@ -453,6 +470,8 @@ fn import_hierarchical_json(
     if let Some(parent) = db_path.parent() {
         fs::create_dir_all(parent)?;
     }
+    // P1-1: Enforce restrictive permissions before opening the DB.
+    enforce_hierarchical_db_permissions(&db_path)?;
     let db = KuzuDatabase::new(&db_path, SystemConfig::default())?;
     let conn = KuzuConnection::new(&db)?;
     init_hierarchical_schema(&conn)?;
@@ -742,7 +761,68 @@ fn create_hierarchical_edge(
     Ok(conn.execute(&mut prepared, params).is_ok())
 }
 
+/// P1-3: Validate that `agent_name` cannot be used for path traversal.
+///
+/// Rejects empty names, names exceeding 128 characters, and names containing
+/// path separator characters (`/`, `\`) or the `..` component.
+fn validate_agent_name(agent_name: &str) -> Result<()> {
+    if agent_name.is_empty() {
+        anyhow::bail!("agent_name must not be empty");
+    }
+    if agent_name.len() > 128 {
+        anyhow::bail!(
+            "agent_name must not exceed 128 characters, got {} characters",
+            agent_name.len()
+        );
+    }
+    // Reject any path component separators to prevent traversal attacks.
+    if agent_name.contains('/') || agent_name.contains('\\') {
+        anyhow::bail!("agent_name contains invalid path separator characters: {agent_name:?}");
+    }
+    // Reject explicit traversal sequences even without separators.
+    if agent_name == ".." {
+        anyhow::bail!("agent_name must not be '..'");
+    }
+    Ok(())
+}
+
+/// P1-1: Set restrictive filesystem permissions on a hierarchical DB path.
+///
+/// Rejects symlinks before touching permissions to prevent an attacker from
+/// pointing the path at a sensitive file and having its permissions changed.
+/// On Unix, files receive mode 0o600 and directories 0o700.
+/// On non-Unix platforms this is a no-op (permissions are managed by the OS).
+fn enforce_hierarchical_db_permissions(path: &Path) -> Result<()> {
+    // Check for symlink first — never follow a symlink here.
+    match path.symlink_metadata() {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            anyhow::bail!(
+                "Refusing to set permissions on symlink at {}: symlink-based attack detected",
+                path.display()
+            );
+        }
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            // A real I/O error — surface it.
+            return Err(e.into());
+        }
+        _ => {}
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if path.is_file() {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        } else if path.is_dir() {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    Ok(())
+}
+
 fn resolve_hierarchical_db_path(agent_name: &str, storage_path: Option<&str>) -> Result<PathBuf> {
+    // P1-3: Validate agent_name before any PathBuf construction.
+    validate_agent_name(agent_name)?;
     let base = match storage_path {
         Some(path) => PathBuf::from(path),
         None => home_dir()?
@@ -761,7 +841,18 @@ fn resolve_hierarchical_db_path(agent_name: &str, storage_path: Option<&str>) ->
 
 fn copy_hierarchical_storage(src: &Path, dst: &Path) -> Result<()> {
     use anyhow::Context;
-    if src.is_dir() {
+    // P1-2: Use symlink_metadata (not is_dir/is_file) so we never silently follow
+    // an attacker-placed symlink. Reject symlinks outright.
+    let src_meta = src
+        .symlink_metadata()
+        .with_context(|| format!("failed to read metadata for {}", src.display()))?;
+    if src_meta.file_type().is_symlink() {
+        anyhow::bail!(
+            "Refusing to copy symlink at {}: symlink traversal rejected",
+            src.display()
+        );
+    }
+    if src_meta.is_dir() {
         copy_dir_recursive(src, dst)?;
         return Ok(());
     }
