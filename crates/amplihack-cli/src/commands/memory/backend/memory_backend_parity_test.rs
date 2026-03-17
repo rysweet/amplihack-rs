@@ -363,7 +363,8 @@ fn sqlite_memory_type_filter_episodic() -> anyhow::Result<()> {
 #[test]
 fn graph_db_memory_type_filter_episodic() -> anyhow::Result<()> {
     use crate::commands::memory::backend::graph_db::{
-        KuzuConnection, KuzuDatabase, KuzuValue, graph_rows, init_graph_backend_schema,
+        GraphDbConnection, GraphDbDatabase, GraphDbSystemConfig, GraphDbValue, graph_rows,
+        init_graph_backend_schema,
     };
 
     let dir = tempfile::tempdir()?;
@@ -371,8 +372,8 @@ fn graph_db_memory_type_filter_episodic() -> anyhow::Result<()> {
     let _guard = EnvGuard::setup(dir.path(), &graph, "graph-db");
 
     // Seed EpisodicMemory and SemanticMemory directly.
-    let db = KuzuDatabase::new(&graph, kuzu::SystemConfig::default())?;
-    let conn = KuzuConnection::new(&db)?;
+    let db = GraphDbDatabase::new(&graph, GraphDbSystemConfig::default())?;
+    let conn = GraphDbConnection::new(&db)?;
     init_graph_backend_schema(&conn)?;
 
     // Seed a Session node.
@@ -380,20 +381,26 @@ fn graph_db_memory_type_filter_episodic() -> anyhow::Result<()> {
         &conn,
         "CREATE (s:Session {session_id: $sid, start_time: $t, end_time: NULL, user_id: '', context: '', status: 'active', created_at: $t, last_accessed: $t, metadata: '{}'})",
         vec![
-            ("sid", KuzuValue::String("sess-kf".to_string())),
-            ("t", KuzuValue::Timestamp(time::OffsetDateTime::now_utc())),
+            ("sid", GraphDbValue::String("sess-kf".to_string())),
+            (
+                "t",
+                GraphDbValue::Timestamp(time::OffsetDateTime::now_utc()),
+            ),
         ],
     )?;
 
     // Seed an EpisodicMemory node.
     graph_rows(
         &conn,
-        "CREATE (m:EpisodicMemory {memory_id: 'm-ep-kuzu', timestamp: $t, content: 'episodic parity content', event_type: 'test', emotional_valence: 0.0, importance_score: 6.0, title: 'ep title', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, expires_at: NULL, agent_id: 'ag1'})",
-        vec![("t", KuzuValue::Timestamp(time::OffsetDateTime::now_utc()))],
+        "CREATE (m:EpisodicMemory {memory_id: 'm-ep-graph-db', timestamp: $t, content: 'episodic parity content', event_type: 'test', emotional_valence: 0.0, importance_score: 6.0, title: 'ep title', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, expires_at: NULL, agent_id: 'ag1'})",
+        vec![(
+            "t",
+            GraphDbValue::Timestamp(time::OffsetDateTime::now_utc()),
+        )],
     )?;
     graph_rows(
         &conn,
-        "MATCH (s:Session {session_id: 'sess-kf'}), (m:EpisodicMemory {memory_id: 'm-ep-kuzu'}) CREATE (s)-[:CONTAINS_EPISODIC {sequence_number: 1}]->(m)",
+        "MATCH (s:Session {session_id: 'sess-kf'}), (m:EpisodicMemory {memory_id: 'm-ep-graph-db'}) CREATE (s)-[:CONTAINS_EPISODIC {sequence_number: 1}]->(m)",
         vec![],
     )?;
 
@@ -402,13 +409,13 @@ fn graph_db_memory_type_filter_episodic() -> anyhow::Result<()> {
     let now_ts = time::OffsetDateTime::now_utc();
     graph_rows(
         &conn,
-        "CREATE (m:SemanticMemory {memory_id: 'm-sem-kuzu', concept: 'test concept', content: 'semantic parity content', category: 'test', confidence_score: 1.0, last_updated: $t, version: 1, title: 'sem title', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, agent_id: 'ag1'})",
-        vec![("t", KuzuValue::Timestamp(now_ts))],
+        "CREATE (m:SemanticMemory {memory_id: 'm-sem-graph-db', concept: 'test concept', content: 'semantic parity content', category: 'test', confidence_score: 1.0, last_updated: $t, version: 1, title: 'sem title', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, agent_id: 'ag1'})",
+        vec![("t", GraphDbValue::Timestamp(now_ts))],
     )?;
     graph_rows(
         &conn,
-        "MATCH (s:Session {session_id: 'sess-kf'}), (m:SemanticMemory {memory_id: 'm-sem-kuzu'}) CREATE (s)-[:CONTRIBUTES_TO_SEMANTIC {contribution_type: 'created', timestamp: $t, delta: 'initial'}]->(m)",
-        vec![("t", KuzuValue::Timestamp(now_ts))],
+        "MATCH (s:Session {session_id: 'sess-kf'}), (m:SemanticMemory {memory_id: 'm-sem-graph-db'}) CREATE (s)-[:CONTRIBUTES_TO_SEMANTIC {contribution_type: 'created', timestamp: $t, delta: 'initial'}]->(m)",
+        vec![("t", GraphDbValue::Timestamp(now_ts))],
     )?;
     drop(conn);
     drop(db);
@@ -421,34 +428,34 @@ fn graph_db_memory_type_filter_episodic() -> anyhow::Result<()> {
         for m in memories {
             assert_eq!(
                 m.memory_type, "episodic",
-                "Kuzu filter returned non-episodic record: {:?}",
+                "Graph DB filter returned non-episodic record: {:?}",
                 m.memory_type
             );
         }
     }
     let has_ep = episodic_rows
         .iter()
-        .any(|(_, mems)| mems.iter().any(|m| m.memory_id == "m-ep-kuzu"));
+        .any(|(_, mems)| mems.iter().any(|m| m.memory_id == "m-ep-graph-db"));
     assert!(
         has_ep,
-        "Kuzu episodic filter did not return seeded episodic memory"
+        "Graph DB episodic filter did not return seeded episodic memory"
     );
 
     let semantic_rows = tree.load_session_rows(None, Some("semantic"))?;
     let has_sem = semantic_rows
         .iter()
-        .any(|(_, mems)| mems.iter().any(|m| m.memory_id == "m-sem-kuzu"));
+        .any(|(_, mems)| mems.iter().any(|m| m.memory_id == "m-sem-graph-db"));
     assert!(
         has_sem,
-        "Kuzu semantic filter did not return seeded semantic memory"
+        "Graph DB semantic filter did not return seeded semantic memory"
     );
 
     // Cross-check: no episodic memory should appear in semantic results.
     for (_, memories) in &semantic_rows {
         for m in memories {
             assert_ne!(
-                m.memory_id, "m-ep-kuzu",
-                "Kuzu semantic filter leaked episodic record"
+                m.memory_id, "m-ep-graph-db",
+                "Graph DB semantic filter leaked episodic record"
             );
         }
     }
@@ -651,15 +658,16 @@ fn sqlite_expired_records_not_returned() -> anyhow::Result<()> {
 #[test]
 fn graph_db_expired_records_not_returned() -> anyhow::Result<()> {
     use crate::commands::memory::backend::graph_db::{
-        KuzuConnection, KuzuDatabase, KuzuValue, graph_rows, init_graph_backend_schema,
+        GraphDbConnection, GraphDbDatabase, GraphDbSystemConfig, GraphDbValue, graph_rows,
+        init_graph_backend_schema,
     };
 
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.db");
     let _guard = EnvGuard::setup(dir.path(), &graph, "graph-db");
 
-    let db = KuzuDatabase::new(&graph, kuzu::SystemConfig::default())?;
-    let conn = KuzuConnection::new(&db)?;
+    let db = GraphDbDatabase::new(&graph, GraphDbSystemConfig::default())?;
+    let conn = GraphDbConnection::new(&db)?;
     init_graph_backend_schema(&conn)?;
 
     let now_ts = time::OffsetDateTime::now_utc();
@@ -667,7 +675,7 @@ fn graph_db_expired_records_not_returned() -> anyhow::Result<()> {
     graph_rows(
         &conn,
         "CREATE (s:Session {session_id: 'sess-exp-k', start_time: $t, end_time: NULL, user_id: '', context: '', status: 'active', created_at: $t, last_accessed: $t, metadata: '{}'})",
-        vec![("t", KuzuValue::Timestamp(now_ts))],
+        vec![("t", GraphDbValue::Timestamp(now_ts))],
     )?;
 
     // Past timestamp for expires_at.
@@ -678,8 +686,8 @@ fn graph_db_expired_records_not_returned() -> anyhow::Result<()> {
         &conn,
         "CREATE (m:EpisodicMemory {memory_id: 'ep-expired', timestamp: $t, content: 'expired ep', event_type: 'test', emotional_valence: 0.0, importance_score: 5.0, title: 'expired', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, expires_at: $exp, agent_id: 'exp-agent'})",
         vec![
-            ("t", KuzuValue::Timestamp(now_ts)),
-            ("exp", KuzuValue::Timestamp(past)),
+            ("t", GraphDbValue::Timestamp(now_ts)),
+            ("exp", GraphDbValue::Timestamp(past)),
         ],
     )?;
     graph_rows(
@@ -692,7 +700,7 @@ fn graph_db_expired_records_not_returned() -> anyhow::Result<()> {
     graph_rows(
         &conn,
         "CREATE (m:EpisodicMemory {memory_id: 'ep-valid', timestamp: $t, content: 'valid ep', event_type: 'test', emotional_valence: 0.0, importance_score: 6.0, title: 'valid', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, expires_at: NULL, agent_id: 'exp-agent'})",
-        vec![("t", KuzuValue::Timestamp(now_ts))],
+        vec![("t", GraphDbValue::Timestamp(now_ts))],
     )?;
     graph_rows(
         &conn,

@@ -757,7 +757,7 @@ pub(crate) fn validate_blarify_json_size(path: &Path, max_bytes: u64) -> Result<
 mod tests {
     use super::*;
     use crate::commands::memory::backend::graph_db::{
-        KuzuValue, graph_i64, graph_rows, init_graph_backend_schema,
+        GraphDbValue, graph_i64, graph_rows, init_graph_backend_schema,
     };
     use crate::commands::memory::code_graph::backend::{
         initialize_test_code_graph_db, with_test_code_graph_conn,
@@ -867,8 +867,11 @@ mod tests {
                 conn,
                 "MATCH (source:CodeFunction {function_id: $source_id})-[r:CALLS]->(target:CodeFunction {function_id: $target_id}) RETURN COUNT(r)",
                 vec![
-                    ("source_id", KuzuValue::String("func:Example.process".to_string())),
-                    ("target_id", KuzuValue::String("func:helper".to_string())),
+                    (
+                        "source_id",
+                        GraphDbValue::String("func:Example.process".to_string()),
+                    ),
+                    ("target_id", GraphDbValue::String("func:helper".to_string())),
                 ],
             )?;
             assert_eq!(graph_i64(rows[0].first()).unwrap(), 1);
@@ -915,25 +918,25 @@ mod tests {
             conn.execute(
                 &mut create_memory,
                 vec![
-                    ("memory_id", KuzuValue::String("mem-1".to_string())),
-                    ("concept", KuzuValue::String("Example memory".to_string())),
+                    ("memory_id", GraphDbValue::String("mem-1".to_string())),
+                    ("concept", GraphDbValue::String("Example memory".to_string())),
                     (
                         "content",
-                        KuzuValue::String("Remember module.py".to_string()),
+                        GraphDbValue::String("Remember module.py".to_string()),
                     ),
-                    ("category", KuzuValue::String("session_end".to_string())),
-                    ("confidence_score", KuzuValue::Double(1.0)),
-                    ("last_updated", KuzuValue::Timestamp(now)),
-                    ("version", KuzuValue::Int64(1)),
-                    ("title", KuzuValue::String("Example".to_string())),
+                    ("category", GraphDbValue::String("session_end".to_string())),
+                    ("confidence_score", GraphDbValue::Double(1.0)),
+                    ("last_updated", GraphDbValue::Timestamp(now)),
+                    ("version", GraphDbValue::Int64(1)),
+                    ("title", GraphDbValue::String("Example".to_string())),
                     (
                         "metadata",
-                        KuzuValue::String(r#"{"file":"src/example/module.py"}"#.to_string()),
+                        GraphDbValue::String(r#"{"file":"src/example/module.py"}"#.to_string()),
                     ),
-                    ("tags", KuzuValue::String(r#"["learning"]"#.to_string())),
-                    ("created_at", KuzuValue::Timestamp(now)),
-                    ("accessed_at", KuzuValue::Timestamp(now)),
-                    ("agent_id", KuzuValue::String("agent-1".to_string())),
+                    ("tags", GraphDbValue::String(r#"["learning"]"#.to_string())),
+                    ("created_at", GraphDbValue::Timestamp(now)),
+                    ("accessed_at", GraphDbValue::Timestamp(now)),
+                    ("agent_id", GraphDbValue::String("agent-1".to_string())),
                 ],
             )?;
             Ok(())
@@ -956,10 +959,10 @@ mod tests {
                 conn,
                 "MATCH (m:SemanticMemory {memory_id: $memory_id})-[r:RELATES_TO_FILE_SEMANTIC]->(cf:CodeFile {file_id: $file_id}) RETURN COUNT(r)",
                 vec![
-                    ("memory_id", KuzuValue::String("mem-1".to_string())),
+                    ("memory_id", GraphDbValue::String("mem-1".to_string())),
                     (
                         "file_id",
-                        KuzuValue::String("src/example/module.py".to_string()),
+                        GraphDbValue::String("src/example/module.py".to_string()),
                     ),
                 ],
             )?;
@@ -982,22 +985,24 @@ mod tests {
             conn.execute(
                 &mut create_memory,
                 vec![
-                    ("memory_id", KuzuValue::String("mem-func".to_string())),
-                    ("concept", KuzuValue::String("Helper memory".to_string())),
+                    ("memory_id", GraphDbValue::String("mem-func".to_string())),
+                    ("concept", GraphDbValue::String("Helper memory".to_string())),
                     (
                         "content",
-                        KuzuValue::String("Remember to call helper before returning.".to_string()),
+                        GraphDbValue::String(
+                            "Remember to call helper before returning.".to_string(),
+                        ),
                     ),
-                    ("category", KuzuValue::String("session_end".to_string())),
-                    ("confidence_score", KuzuValue::Double(1.0)),
-                    ("last_updated", KuzuValue::Timestamp(now)),
-                    ("version", KuzuValue::Int64(1)),
-                    ("title", KuzuValue::String("Helper".to_string())),
-                    ("metadata", KuzuValue::String("{}".to_string())),
-                    ("tags", KuzuValue::String(r#"["learning"]"#.to_string())),
-                    ("created_at", KuzuValue::Timestamp(now)),
-                    ("accessed_at", KuzuValue::Timestamp(now)),
-                    ("agent_id", KuzuValue::String("agent-1".to_string())),
+                    ("category", GraphDbValue::String("session_end".to_string())),
+                    ("confidence_score", GraphDbValue::Double(1.0)),
+                    ("last_updated", GraphDbValue::Timestamp(now)),
+                    ("version", GraphDbValue::Int64(1)),
+                    ("title", GraphDbValue::String("Helper".to_string())),
+                    ("metadata", GraphDbValue::String("{}".to_string())),
+                    ("tags", GraphDbValue::String(r#"["learning"]"#.to_string())),
+                    ("created_at", GraphDbValue::Timestamp(now)),
+                    ("accessed_at", GraphDbValue::Timestamp(now)),
+                    ("agent_id", GraphDbValue::String("agent-1".to_string())),
                 ],
             )?;
             Ok(())
@@ -1020,8 +1025,8 @@ mod tests {
                 conn,
                 "MATCH (m:SemanticMemory {memory_id: $memory_id})-[r:RELATES_TO_FUNCTION_SEMANTIC]->(f:CodeFunction {function_id: $function_id}) RETURN COUNT(r)",
                 vec![
-                    ("memory_id", KuzuValue::String("mem-func".to_string())),
-                    ("function_id", KuzuValue::String("func:helper".to_string())),
+                    ("memory_id", GraphDbValue::String("mem-func".to_string())),
+                    ("function_id", GraphDbValue::String("func:helper".to_string())),
                 ],
             )?;
             assert_eq!(graph_i64(rows[0].first()).unwrap(), 1);

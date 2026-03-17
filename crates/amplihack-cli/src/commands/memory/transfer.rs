@@ -17,6 +17,8 @@ pub(crate) mod sqlite_backend;
 #[cfg(test)]
 mod backend_choice_test;
 #[cfg(test)]
+mod sqlite_backend_atomicity_test;
+#[cfg(test)]
 mod sqlite_backend_security_test;
 #[cfg(test)]
 mod sqlite_schema_test;

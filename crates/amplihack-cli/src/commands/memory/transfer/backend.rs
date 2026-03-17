@@ -1,10 +1,10 @@
 use super::*;
-use anyhow::Context as _;
 use crate::commands::memory::BackendChoice;
-use crate::commands::memory::backend::graph_db::{graph_f64, graph_i64, graph_rows, graph_string};
-use kuzu::{
-    Connection as KuzuConnection, Database as KuzuDatabase, SystemConfig, Value as KuzuValue,
+use crate::commands::memory::backend::graph_db::{
+    GraphDbConnection, GraphDbDatabase, GraphDbSystemConfig, GraphDbValue, graph_f64, graph_i64,
+    graph_rows, graph_string,
 };
+use anyhow::Context as _;
 use serde_json::Value as JsonValue;
 use std::fs;
 use std::io::Read;
@@ -155,14 +155,14 @@ fn export_hierarchical_json_impl(
     storage_path: Option<&str>,
 ) -> Result<ExportResult> {
     let db_path = resolve_hierarchical_db_path(agent_name, storage_path)?;
-    let db = KuzuDatabase::new(&db_path, SystemConfig::default())?;
-    let conn = KuzuConnection::new(&db)?;
+    let db = GraphDbDatabase::new(&db_path, GraphDbSystemConfig::default())?;
+    let conn = GraphDbConnection::new(&db)?;
     init_hierarchical_schema(&conn)?;
 
     let semantic_nodes = graph_rows(
         &conn,
         "MATCH (m:SemanticMemory) WHERE m.agent_id = $agent_id RETURN m.memory_id, m.concept, m.content, m.confidence, m.source_id, m.tags, m.metadata, m.created_at, m.entity_name ORDER BY m.created_at ASC",
-        vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
+        vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
     )?
     .into_iter()
     .map(|row| -> Result<SemanticNode> {
@@ -184,7 +184,7 @@ fn export_hierarchical_json_impl(
     let episodic_nodes = graph_rows(
         &conn,
         "MATCH (e:EpisodicMemory) WHERE e.agent_id = $agent_id RETURN e.memory_id, e.content, e.source_label, e.tags, e.metadata, e.created_at ORDER BY e.created_at ASC",
-        vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
+        vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
     )?
     .into_iter()
     .map(|row| -> Result<EpisodicNode> {
@@ -203,7 +203,7 @@ fn export_hierarchical_json_impl(
     let similar_to_edges = graph_rows(
         &conn,
         "MATCH (a:SemanticMemory)-[r:SIMILAR_TO]->(b:SemanticMemory) WHERE a.agent_id = $agent_id RETURN a.memory_id, b.memory_id, r.weight, r.metadata",
-        vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
+        vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
     )?
     .into_iter()
     .map(|row| -> Result<SimilarEdge> {
@@ -220,7 +220,7 @@ fn export_hierarchical_json_impl(
     let derives_from_edges = graph_rows(
         &conn,
         "MATCH (s:SemanticMemory)-[r:DERIVES_FROM]->(e:EpisodicMemory) WHERE s.agent_id = $agent_id RETURN s.memory_id, e.memory_id, r.extraction_method, r.confidence",
-        vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
+        vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
     )?
     .into_iter()
     .map(|row| -> Result<DerivesEdge> {
@@ -236,7 +236,7 @@ fn export_hierarchical_json_impl(
     let supersedes_edges = graph_rows(
         &conn,
         "MATCH (newer:SemanticMemory)-[r:SUPERSEDES]->(older:SemanticMemory) WHERE newer.agent_id = $agent_id RETURN newer.memory_id, older.memory_id, r.reason, r.temporal_delta",
-        vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
+        vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
     )?
     .into_iter()
     .map(|row| -> Result<SupersedesEdge> {
@@ -252,7 +252,7 @@ fn export_hierarchical_json_impl(
     let transitioned_to_edges = graph_rows(
         &conn,
         "MATCH (newer:SemanticMemory)-[r:TRANSITIONED_TO]->(older:SemanticMemory) WHERE newer.agent_id = $agent_id RETURN newer.memory_id, older.memory_id, r.from_value, r.to_value, r.turn, r.transition_type",
-        vec![("agent_id", KuzuValue::String(agent_name.to_string()))],
+        vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
     )?
     .into_iter()
     .map(|row| -> Result<TransitionEdge> {
@@ -363,8 +363,8 @@ fn import_hierarchical_json_impl(
     if let Some(parent) = db_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let db = KuzuDatabase::new(&db_path, SystemConfig::default())?;
-    let conn = KuzuConnection::new(&db)?;
+    let db = GraphDbDatabase::new(&db_path, GraphDbSystemConfig::default())?;
+    let conn = GraphDbConnection::new(&db)?;
     init_hierarchical_schema(&conn)?;
     if !merge {
         clear_hierarchical_agent_data(&conn, agent_name)?;
@@ -392,19 +392,22 @@ fn import_hierarchical_json_impl(
             .execute(
                 &mut prepared,
                 vec![
-                    ("memory_id", KuzuValue::String(node.memory_id.clone())),
-                    ("content", KuzuValue::String(node.content.clone())),
-                    ("source_label", KuzuValue::String(node.source_label.clone())),
-                    ("agent_id", KuzuValue::String(agent_name.to_string())),
+                    ("memory_id", GraphDbValue::String(node.memory_id.clone())),
+                    ("content", GraphDbValue::String(node.content.clone())),
+                    (
+                        "source_label",
+                        GraphDbValue::String(node.source_label.clone()),
+                    ),
+                    ("agent_id", GraphDbValue::String(agent_name.to_string())),
                     (
                         "tags",
-                        KuzuValue::String(serde_json::to_string(&node.tags)?),
+                        GraphDbValue::String(serde_json::to_string(&node.tags)?),
                     ),
                     (
                         "metadata",
-                        KuzuValue::String(serde_json::to_string(&node.metadata)?),
+                        GraphDbValue::String(serde_json::to_string(&node.metadata)?),
                     ),
-                    ("created_at", KuzuValue::String(node.created_at.clone())),
+                    ("created_at", GraphDbValue::String(node.created_at.clone())),
                 ],
             )
             .is_ok()
@@ -431,22 +434,25 @@ fn import_hierarchical_json_impl(
             .execute(
                 &mut prepared,
                 vec![
-                    ("memory_id", KuzuValue::String(node.memory_id.clone())),
-                    ("concept", KuzuValue::String(node.concept.clone())),
-                    ("content", KuzuValue::String(node.content.clone())),
-                    ("confidence", KuzuValue::Double(node.confidence)),
-                    ("source_id", KuzuValue::String(node.source_id.clone())),
-                    ("agent_id", KuzuValue::String(agent_name.to_string())),
+                    ("memory_id", GraphDbValue::String(node.memory_id.clone())),
+                    ("concept", GraphDbValue::String(node.concept.clone())),
+                    ("content", GraphDbValue::String(node.content.clone())),
+                    ("confidence", GraphDbValue::Double(node.confidence)),
+                    ("source_id", GraphDbValue::String(node.source_id.clone())),
+                    ("agent_id", GraphDbValue::String(agent_name.to_string())),
                     (
                         "tags",
-                        KuzuValue::String(serde_json::to_string(&node.tags)?),
+                        GraphDbValue::String(serde_json::to_string(&node.tags)?),
                     ),
                     (
                         "metadata",
-                        KuzuValue::String(serde_json::to_string(&node.metadata)?),
+                        GraphDbValue::String(serde_json::to_string(&node.metadata)?),
                     ),
-                    ("created_at", KuzuValue::String(node.created_at.clone())),
-                    ("entity_name", KuzuValue::String(node.entity_name.clone())),
+                    ("created_at", GraphDbValue::String(node.created_at.clone())),
+                    (
+                        "entity_name",
+                        GraphDbValue::String(node.entity_name.clone()),
+                    ),
                 ],
             )
             .is_ok()
@@ -462,12 +468,12 @@ fn import_hierarchical_json_impl(
             &conn,
             "MATCH (a:SemanticMemory {memory_id: $sid}) MATCH (b:SemanticMemory {memory_id: $tid}) CREATE (a)-[:SIMILAR_TO {weight: $weight, metadata: $metadata}]->(b)",
             vec![
-                ("sid", KuzuValue::String(edge.source_id.clone())),
-                ("tid", KuzuValue::String(edge.target_id.clone())),
-                ("weight", KuzuValue::Double(edge.weight)),
+                ("sid", GraphDbValue::String(edge.source_id.clone())),
+                ("tid", GraphDbValue::String(edge.target_id.clone())),
+                ("weight", GraphDbValue::Double(edge.weight)),
                 (
                     "metadata",
-                    KuzuValue::String(serde_json::to_string(&edge.metadata)?),
+                    GraphDbValue::String(serde_json::to_string(&edge.metadata)?),
                 ),
             ],
         )? {
@@ -481,10 +487,13 @@ fn import_hierarchical_json_impl(
             &conn,
             "MATCH (s:SemanticMemory {memory_id: $sid}) MATCH (e:EpisodicMemory {memory_id: $tid}) CREATE (s)-[:DERIVES_FROM {extraction_method: $method, confidence: $confidence}]->(e)",
             vec![
-                ("sid", KuzuValue::String(edge.source_id.clone())),
-                ("tid", KuzuValue::String(edge.target_id.clone())),
-                ("method", KuzuValue::String(edge.extraction_method.clone())),
-                ("confidence", KuzuValue::Double(edge.confidence)),
+                ("sid", GraphDbValue::String(edge.source_id.clone())),
+                ("tid", GraphDbValue::String(edge.target_id.clone())),
+                (
+                    "method",
+                    GraphDbValue::String(edge.extraction_method.clone()),
+                ),
+                ("confidence", GraphDbValue::Double(edge.confidence)),
             ],
         )? {
             stats.edges_imported += 1;
@@ -497,10 +506,10 @@ fn import_hierarchical_json_impl(
             &conn,
             "MATCH (newer:SemanticMemory {memory_id: $sid}) MATCH (older:SemanticMemory {memory_id: $tid}) CREATE (newer)-[:SUPERSEDES {reason: $reason, temporal_delta: $delta}]->(older)",
             vec![
-                ("sid", KuzuValue::String(edge.source_id.clone())),
-                ("tid", KuzuValue::String(edge.target_id.clone())),
-                ("reason", KuzuValue::String(edge.reason.clone())),
-                ("delta", KuzuValue::String(edge.temporal_delta.clone())),
+                ("sid", GraphDbValue::String(edge.source_id.clone())),
+                ("tid", GraphDbValue::String(edge.target_id.clone())),
+                ("reason", GraphDbValue::String(edge.reason.clone())),
+                ("delta", GraphDbValue::String(edge.temporal_delta.clone())),
             ],
         )? {
             stats.edges_imported += 1;
@@ -513,12 +522,12 @@ fn import_hierarchical_json_impl(
             &conn,
             "MATCH (newer:SemanticMemory {memory_id: $sid}) MATCH (older:SemanticMemory {memory_id: $tid}) CREATE (newer)-[:TRANSITIONED_TO {from_value: $from_val, to_value: $to_val, turn: $turn, transition_type: $ttype}]->(older)",
             vec![
-                ("sid", KuzuValue::String(edge.source_id.clone())),
-                ("tid", KuzuValue::String(edge.target_id.clone())),
-                ("from_val", KuzuValue::String(edge.from_value.clone())),
-                ("to_val", KuzuValue::String(edge.to_value.clone())),
-                ("turn", KuzuValue::Int64(edge.turn)),
-                ("ttype", KuzuValue::String(edge.transition_type.clone())),
+                ("sid", GraphDbValue::String(edge.source_id.clone())),
+                ("tid", GraphDbValue::String(edge.target_id.clone())),
+                ("from_val", GraphDbValue::String(edge.from_value.clone())),
+                ("to_val", GraphDbValue::String(edge.to_value.clone())),
+                ("turn", GraphDbValue::Int64(edge.turn)),
+                ("ttype", GraphDbValue::String(edge.transition_type.clone())),
             ],
         )? {
             stats.edges_imported += 1;
@@ -626,14 +635,14 @@ fn import_hierarchical_raw_db_impl(
     })
 }
 
-fn init_hierarchical_schema(conn: &KuzuConnection<'_>) -> Result<()> {
+fn init_hierarchical_schema(conn: &GraphDbConnection<'_>) -> Result<()> {
     for statement in HIERARCHICAL_SCHEMA {
         conn.query(statement)?;
     }
     Ok(())
 }
 
-fn clear_hierarchical_agent_data(conn: &KuzuConnection<'_>, agent_name: &str) -> Result<()> {
+fn clear_hierarchical_agent_data(conn: &GraphDbConnection<'_>, agent_name: &str) -> Result<()> {
     for query in [
         "MATCH (a:SemanticMemory {agent_id: $aid})-[r:SIMILAR_TO]->() DELETE r",
         "MATCH ()-[r:SIMILAR_TO]->(b:SemanticMemory {agent_id: $aid}) DELETE r",
@@ -648,14 +657,14 @@ fn clear_hierarchical_agent_data(conn: &KuzuConnection<'_>, agent_name: &str) ->
         graph_rows(
             conn,
             query,
-            vec![("aid", KuzuValue::String(agent_name.to_string()))],
+            vec![("aid", GraphDbValue::String(agent_name.to_string()))],
         )?;
     }
     Ok(())
 }
 
 fn get_existing_hierarchical_ids(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     agent_name: &str,
 ) -> Result<Vec<String>> {
     let mut ids = Vec::new();
@@ -666,7 +675,7 @@ fn get_existing_hierarchical_ids(
         let rows = graph_rows(
             conn,
             query,
-            vec![("aid", KuzuValue::String(agent_name.to_string()))],
+            vec![("aid", GraphDbValue::String(agent_name.to_string()))],
         )?;
         for row in rows {
             ids.push(graph_string(row.first())?);
@@ -676,9 +685,9 @@ fn get_existing_hierarchical_ids(
 }
 
 fn create_hierarchical_edge(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     query: &str,
-    params: Vec<(&str, KuzuValue)>,
+    params: Vec<(&str, GraphDbValue)>,
 ) -> Result<bool> {
     let mut prepared = conn.prepare(query)?;
     Ok(conn.execute(&mut prepared, params).is_ok())

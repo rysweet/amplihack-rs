@@ -2432,6 +2432,17 @@ fn cockpit_render_detail_view(
         push(lines, &notice.title);
         push(lines, &notice.message);
     }
+
+    push(lines, "");
+    push(lines, "Detail actions");
+    let detail_controls = if ui_state.last_decision.as_ref().is_some_and(|decision| {
+        decision.vm_name == vm.name && decision.session_name == session.session_name
+    }) {
+        "d rerun proposal | e edit | a apply | x skip"
+    } else {
+        "d prepare proposal"
+    };
+    push(lines, detail_controls);
 }
 
 fn session_metadata_lines(session: &TmuxSessionInfo, prefix: &str) -> Vec<String> {
@@ -2824,13 +2835,19 @@ fn run_tui_apply(azlin_path: &Path, ui_state: &mut FleetTuiUiState) -> Result<()
     let reasoner = FleetSessionReasoner::new(azlin_path.to_path_buf(), NativeReasonerBackend::None);
     match reasoner.execute_decision(&decision) {
         Ok(()) => {
-            ui_state.proposal_notice = None;
-            ui_state.status_message = Some(format!(
+            let message = format!(
                 "Applied {} to {}/{}.",
                 decision.action.as_str(),
                 decision.vm_name,
                 decision.session_name
-            ));
+            );
+            ui_state.set_proposal_notice_for_session(
+                &decision.vm_name,
+                &decision.session_name,
+                "Apply status",
+                message.clone(),
+            );
+            ui_state.status_message = Some(message);
             Ok(())
         }
         Err(error) => {
@@ -2943,17 +2960,23 @@ fn run_tui_apply_edited(azlin_path: &Path, ui_state: &mut FleetTuiUiState) -> Re
     let reasoner = FleetSessionReasoner::new(azlin_path.to_path_buf(), NativeReasonerBackend::None);
     match reasoner.execute_decision(&decision) {
         Ok(()) => {
-            ui_state.proposal_notice = None;
-            ui_state.editor_active = false;
-            ui_state.last_decision = Some(decision.clone());
-            ui_state.editor_decision = Some(decision.clone());
-            ui_state.tab = FleetTuiTab::Detail;
-            ui_state.status_message = Some(format!(
+            let message = format!(
                 "Applied edited {} to {}/{}.",
                 decision.action.as_str(),
                 decision.vm_name,
                 decision.session_name
-            ));
+            );
+            ui_state.set_proposal_notice_for_session(
+                &decision.vm_name,
+                &decision.session_name,
+                "Apply status",
+                message.clone(),
+            );
+            ui_state.editor_active = false;
+            ui_state.last_decision = Some(decision.clone());
+            ui_state.editor_decision = Some(decision.clone());
+            ui_state.tab = FleetTuiTab::Detail;
+            ui_state.status_message = Some(message);
             Ok(())
         }
         Err(error) => {
@@ -10979,6 +11002,8 @@ exit 1
         assert!(rendered.contains("Need instruction"));
         assert!(rendered.contains("Prepared proposal"));
         assert!(rendered.contains("Run cargo test"));
+        assert!(rendered.contains("Detail actions"));
+        assert!(rendered.contains("d rerun proposal | e edit | a apply | x skip"));
     }
 
     #[test]
@@ -11025,6 +11050,8 @@ exit 1
         assert!(rendered.contains("full capture line 1"));
         assert!(rendered.contains("full capture line 2"));
         assert!(!rendered.contains("summary line"));
+        assert!(rendered.contains("Detail actions"));
+        assert!(rendered.contains("d prepare proposal"));
     }
 
     #[test]
@@ -11966,6 +11993,35 @@ exit 1
     }
 
     #[test]
+    fn run_tui_apply_sets_persistent_success_notice() {
+        let mut ui_state = FleetTuiUiState::default();
+        ui_state.last_decision = Some(SessionDecision {
+            session_name: "claude-1".to_string(),
+            vm_name: "vm-1".to_string(),
+            action: SessionAction::Wait,
+            input_text: String::new(),
+            reasoning: "testing apply".to_string(),
+            confidence: 1.0,
+        });
+
+        let result = run_tui_apply(Path::new("azlin"), &mut ui_state);
+
+        assert!(result.is_ok());
+        assert!(
+            ui_state
+                .status_message
+                .as_deref()
+                .is_some_and(|message| message.contains("Applied wait"))
+        );
+        let notice = ui_state
+            .proposal_notice
+            .as_ref()
+            .expect("apply success should leave a persistent notice");
+        assert_eq!(notice.title, "Apply status");
+        assert!(notice.message.contains("Applied wait"));
+    }
+
+    #[test]
     fn run_tui_apply_edited_returns_to_detail_on_success() {
         let mut ui_state = FleetTuiUiState {
             tab: FleetTuiTab::Editor,
@@ -11990,6 +12046,12 @@ exit 1
                 .as_deref()
                 .is_some_and(|message| message.contains("Applied edited wait"))
         );
+        let notice = ui_state
+            .proposal_notice
+            .as_ref()
+            .expect("edited apply success should leave a persistent notice");
+        assert_eq!(notice.title, "Apply status");
+        assert!(notice.message.contains("Applied edited wait"));
     }
 
     #[test]

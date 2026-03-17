@@ -1,11 +1,13 @@
-//! TDD tests for S-2a security functions in `transfer/sqlite_backend.rs`.
+//! Security tests for `transfer/sqlite_backend.rs`.
 //!
-//! All referenced functions do NOT exist yet. These tests will fail to compile
-//! (or fail at runtime) until the implementation is added — that is the
-//! intended TDD state.
+//! Covers:
+//! - `validate_agent_name` — path traversal protection
+//! - `resolve_hierarchical_sqlite_path` — path construction
+//! - `enforce_hierarchical_db_permissions` — symlink swap attack prevention
+//! - Kuzu `resolve_hierarchical_db_path` — validate_agent_name parity
 
 use crate::commands::memory::transfer::sqlite_backend::{
-    resolve_hierarchical_sqlite_path, validate_agent_name,
+    enforce_hierarchical_db_permissions, resolve_hierarchical_sqlite_path, validate_agent_name,
 };
 use crate::test_support::home_env_lock;
 
@@ -171,5 +173,117 @@ fn resolve_hierarchical_sqlite_path_defaults_to_home() {
         "resolved path {:?} must be under ~/.amplihack/hierarchical_memory/, expected prefix {:?}",
         resolved,
         expected_prefix
+    );
+}
+
+// ---------------------------------------------------------------------------
+// enforce_hierarchical_db_permissions — symlink swap attack prevention
+// ---------------------------------------------------------------------------
+
+/// When the database path IS a symlink, `enforce_hierarchical_db_permissions`
+/// must return `Err` rather than calling `set_permissions` on the symlink
+/// target (which could be an attacker-controlled file).
+#[cfg(unix)]
+#[test]
+fn enforce_permissions_rejects_symlink_at_db_path() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // Create a real file that the symlink will point to.
+    let real_file = dir.path().join("real.db");
+    std::fs::write(&real_file, b"").expect("create real file");
+
+    // Place a symlink where the DB path would be.
+    let symlink_path = dir.path().join("agent.db");
+    symlink(&real_file, &symlink_path).expect("create symlink");
+
+    let result = enforce_hierarchical_db_permissions(&symlink_path);
+    assert!(
+        result.is_err(),
+        "enforce_hierarchical_db_permissions must return Err when db path is a symlink, got Ok"
+    );
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("symlink"),
+        "error must mention 'symlink'; got: {err_msg}"
+    );
+}
+
+/// When the database path is a regular file (not a symlink),
+/// `enforce_hierarchical_db_permissions` must succeed.
+#[cfg(unix)]
+#[test]
+fn enforce_permissions_accepts_regular_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("agent.db");
+    std::fs::write(&db_path, b"").expect("create regular file");
+
+    let result = enforce_hierarchical_db_permissions(&db_path);
+    assert!(
+        result.is_ok(),
+        "enforce_hierarchical_db_permissions must succeed for a regular file, got: {:?}",
+        result
+    );
+}
+
+/// When the database path does not yet exist (new agent),
+/// `enforce_hierarchical_db_permissions` must succeed without error (no-op).
+#[cfg(unix)]
+#[test]
+fn enforce_permissions_accepts_nonexistent_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("new_agent.db");
+    // Do NOT create the file — it doesn't exist yet.
+
+    let result = enforce_hierarchical_db_permissions(&db_path);
+    assert!(
+        result.is_ok(),
+        "enforce_hierarchical_db_permissions must succeed for non-existent path, got: {:?}",
+        result
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Kuzu resolve_hierarchical_db_path — validate_agent_name parity
+// ---------------------------------------------------------------------------
+
+/// The Kuzu `resolve_hierarchical_db_path` (in transfer.rs) must call
+/// `validate_agent_name`, so that path-traversal agent names like `"../evil"`
+/// are rejected just as they are in the SQLite backend.
+#[test]
+fn kuzu_resolve_hierarchical_db_path_rejects_traversal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _guard = EnvGuard::with_home(dir.path());
+
+    // Use the public transfer API which delegates through the Kuzu backend's
+    // resolve_hierarchical_db_path.  An unrecognised format string is
+    // intentionally used to trigger the path-resolution code path before any
+    // actual DB I/O.  We exercise export so we can call with storage_path
+    // pointing to a temp dir — this surfaces the validate_agent_name call.
+    use crate::commands::memory::transfer;
+
+    // Call run_export with a traversal agent name and a temp output path.
+    // We set AMPLIHACK_MEMORY_BACKEND=kuzu so the legacy compatibility alias
+    // still exercises the graph-db export path.
+    let prev_backend = std::env::var_os("AMPLIHACK_MEMORY_BACKEND");
+    unsafe {
+        std::env::set_var("AMPLIHACK_MEMORY_BACKEND", "kuzu");
+    }
+
+    let output = dir.path().join("out.json").to_string_lossy().into_owned();
+    let storage = dir.path().to_string_lossy().into_owned();
+    let result = transfer::run_export("../evil", &output, "json", Some(&storage));
+
+    unsafe {
+        match prev_backend {
+            Some(v) => std::env::set_var("AMPLIHACK_MEMORY_BACKEND", v),
+            None => std::env::remove_var("AMPLIHACK_MEMORY_BACKEND"),
+        }
+    }
+
+    assert!(
+        result.is_err(),
+        "run_export with traversal agent name '../evil' must return Err (Kuzu path), got Ok"
     );
 }

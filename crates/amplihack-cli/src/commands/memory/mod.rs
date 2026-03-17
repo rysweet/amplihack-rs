@@ -176,11 +176,10 @@ pub(crate) fn parse_json_value(value: &str) -> Result<JsonValue> {
 ///
 /// Returns:
 /// - `Ok(Some(choice))` — recognised value.
-/// - `Ok(None)`         — env var not set; caller picks a default.
-/// - `Err(...)`         — env var is set but the value is not recognised.
-///                        This is a hard error: silently activating the wrong
-///                        backend on a typo (e.g. `sqllite`) risks routing data
-///                        to an unexpected location.
+/// - `Ok(None)` — env var not set; caller picks a default.
+/// - `Err(...)` — env var is set but unrecognised. This is a hard error:
+///   silently activating the wrong backend on a typo (e.g. `sqllite`)
+///   risks routing data to an unexpected location.
 fn resolve_memory_backend_preference() -> Result<Option<BackendChoice>> {
     match std::env::var("AMPLIHACK_MEMORY_BACKEND").ok().as_deref() {
         Some("sqlite") => Ok(Some(BackendChoice::Sqlite)),

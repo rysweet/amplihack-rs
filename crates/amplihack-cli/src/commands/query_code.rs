@@ -250,7 +250,7 @@ fn print_limit_hint(actual_len: usize, limit: u32) {
 mod tests {
     use super::*;
     use crate::commands::memory::{
-        backend::graph_db::{KuzuValue, init_graph_backend_schema},
+        backend::graph_db::{GraphDbValue, init_graph_backend_schema},
         code_graph::{
             CodeGraphContextPayload, CodeGraphImportCounts, CodeGraphSearchEntry, CodeGraphStats,
             backend::with_test_code_graph_conn, import_blarify_json,
@@ -350,25 +350,25 @@ mod tests {
             conn.execute(
                 &mut create_memory,
                 vec![
-                    ("memory_id", KuzuValue::String("mem-query".to_string())),
-                    ("concept", KuzuValue::String("Query context".to_string())),
+                    ("memory_id", GraphDbValue::String("mem-query".to_string())),
+                    ("concept", GraphDbValue::String("Query context".to_string())),
                     (
                         "content",
-                        KuzuValue::String("helper is relevant here".to_string()),
+                        GraphDbValue::String("helper is relevant here".to_string()),
                     ),
-                    ("category", KuzuValue::String("session_end".to_string())),
-                    ("confidence_score", KuzuValue::Double(1.0)),
-                    ("last_updated", KuzuValue::Timestamp(now)),
-                    ("version", KuzuValue::Int64(1)),
-                    ("title", KuzuValue::String("Helper context".to_string())),
+                    ("category", GraphDbValue::String("session_end".to_string())),
+                    ("confidence_score", GraphDbValue::Double(1.0)),
+                    ("last_updated", GraphDbValue::Timestamp(now)),
+                    ("version", GraphDbValue::Int64(1)),
+                    ("title", GraphDbValue::String("Helper context".to_string())),
                     (
                         "metadata",
-                        KuzuValue::String(r#"{"file":"src/example/module.py"}"#.to_string()),
+                        GraphDbValue::String(r#"{"file":"src/example/module.py"}"#.to_string()),
                     ),
-                    ("tags", KuzuValue::String(r#"["learning"]"#.to_string())),
-                    ("created_at", KuzuValue::Timestamp(now)),
-                    ("accessed_at", KuzuValue::Timestamp(now)),
-                    ("agent_id", KuzuValue::String("agent-1".to_string())),
+                    ("tags", GraphDbValue::String(r#"["learning"]"#.to_string())),
+                    ("created_at", GraphDbValue::Timestamp(now)),
+                    ("accessed_at", GraphDbValue::Timestamp(now)),
+                    ("agent_id", GraphDbValue::String("agent-1".to_string())),
                 ],
             )?;
             Ok(())

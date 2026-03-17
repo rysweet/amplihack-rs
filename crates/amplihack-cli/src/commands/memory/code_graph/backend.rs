@@ -1,11 +1,9 @@
 use super::super::backend::graph_db::{
-    graph_i64, graph_rows, graph_string, init_graph_backend_schema,
+    GraphDbConnection, GraphDbDatabase, GraphDbSystemConfig, GraphDbValue, graph_i64, graph_rows,
+    graph_string, init_graph_backend_schema,
 };
 use super::*;
 use chrono::DateTime;
-use kuzu::{
-    Connection as KuzuConnection, Database as KuzuDatabase, SystemConfig, Value as KuzuValue,
-};
 use std::fs;
 use std::path::Path;
 use time::OffsetDateTime;
@@ -108,7 +106,7 @@ pub(super) fn open_code_graph_reader(
 }
 
 struct GraphDbCodeGraphReader {
-    db: KuzuDatabase,
+    db: GraphDbDatabase,
 }
 
 impl GraphDbCodeGraphReader {
@@ -118,8 +116,8 @@ impl GraphDbCodeGraphReader {
         })
     }
 
-    fn with_conn<T>(&self, f: impl FnOnce(&KuzuConnection<'_>) -> Result<T>) -> Result<T> {
-        let conn = KuzuConnection::new(&self.db)?;
+    fn with_conn<T>(&self, f: impl FnOnce(&GraphDbConnection<'_>) -> Result<T>) -> Result<T> {
+        let conn = GraphDbConnection::new(&self.db)?;
         ensure_memory_code_link_schema(&conn)?;
         f(&conn)
     }
@@ -176,7 +174,7 @@ pub(super) fn open_code_graph_writer(
 }
 
 struct GraphDbCodeGraphWriter {
-    db: KuzuDatabase,
+    db: GraphDbDatabase,
 }
 
 impl GraphDbCodeGraphWriter {
@@ -186,8 +184,8 @@ impl GraphDbCodeGraphWriter {
         })
     }
 
-    fn with_conn<T>(&self, f: impl FnOnce(&KuzuConnection<'_>) -> Result<T>) -> Result<T> {
-        let conn = KuzuConnection::new(&self.db)?;
+    fn with_conn<T>(&self, f: impl FnOnce(&GraphDbConnection<'_>) -> Result<T>) -> Result<T> {
+        let conn = GraphDbConnection::new(&self.db)?;
         ensure_memory_code_link_schema(&conn)?;
         f(&conn)
     }
@@ -215,7 +213,7 @@ impl CodeGraphWriterBackend for GraphDbCodeGraphWriter {
     }
 }
 
-pub(super) fn open_graph_db_code_graph_db(path_override: Option<&Path>) -> Result<KuzuDatabase> {
+pub(super) fn open_graph_db_code_graph_db(path_override: Option<&Path>) -> Result<GraphDbDatabase> {
     let path = match path_override {
         Some(path) => path.to_path_buf(),
         None => default_code_graph_db_path()?,
@@ -223,7 +221,7 @@ pub(super) fn open_graph_db_code_graph_db(path_override: Option<&Path>) -> Resul
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let db = KuzuDatabase::new(&path, SystemConfig::default())?;
+    let db = GraphDbDatabase::new(&path, GraphDbSystemConfig::default())?;
     enforce_db_permissions(&path)?;
     Ok(db)
 }
@@ -231,10 +229,10 @@ pub(super) fn open_graph_db_code_graph_db(path_override: Option<&Path>) -> Resul
 #[cfg(test)]
 pub(crate) fn with_test_code_graph_conn<T>(
     path_override: Option<&Path>,
-    f: impl FnOnce(&KuzuConnection<'_>) -> Result<T>,
+    f: impl FnOnce(&GraphDbConnection<'_>) -> Result<T>,
 ) -> Result<T> {
     let db = open_graph_db_code_graph_db(path_override)?;
-    let conn = KuzuConnection::new(&db)?;
+    let conn = GraphDbConnection::new(&db)?;
     ensure_memory_code_link_schema(&conn)?;
     f(&conn)
 }
@@ -244,14 +242,14 @@ pub(crate) fn initialize_test_code_graph_db(path_override: Option<&Path>) -> Res
     with_test_code_graph_conn(path_override, |_| Ok(()))
 }
 
-fn init_graph_db_code_graph_schema(conn: &KuzuConnection<'_>) -> Result<()> {
+fn init_graph_db_code_graph_schema(conn: &GraphDbConnection<'_>) -> Result<()> {
     for statement in GRAPH_CODE_GRAPH_SCHEMA {
         conn.query(statement)?;
     }
     Ok(())
 }
 
-pub(super) fn ensure_memory_code_link_schema(conn: &KuzuConnection<'_>) -> Result<()> {
+pub(super) fn ensure_memory_code_link_schema(conn: &GraphDbConnection<'_>) -> Result<()> {
     init_graph_backend_schema(conn)?;
     init_graph_db_code_graph_schema(conn)?;
     for (memory_type, rel_table) in GRAPH_MEMORY_FILE_LINK_TABLES {
@@ -267,7 +265,7 @@ pub(super) fn ensure_memory_code_link_schema(conn: &KuzuConnection<'_>) -> Resul
     Ok(())
 }
 
-fn code_memory_link_counts(conn: &KuzuConnection<'_>) -> Result<(i64, i64)> {
+fn code_memory_link_counts(conn: &GraphDbConnection<'_>) -> Result<(i64, i64)> {
     ensure_memory_code_link_schema(conn)?;
 
     let file_links =
@@ -296,12 +294,12 @@ fn code_memory_link_counts(conn: &KuzuConnection<'_>) -> Result<(i64, i64)> {
     Ok((file_links, function_links))
 }
 
-fn scalar_count(conn: &KuzuConnection<'_>, query: &str) -> Result<i64> {
+fn scalar_count(conn: &GraphDbConnection<'_>, query: &str) -> Result<i64> {
     let rows = graph_rows(conn, query, vec![])?;
     graph_i64(rows.first().and_then(|row| row.first()))
 }
 
-fn read_code_graph_stats_in_conn(conn: &KuzuConnection<'_>) -> Result<CodeGraphStats> {
+fn read_code_graph_stats_in_conn(conn: &GraphDbConnection<'_>) -> Result<CodeGraphStats> {
     let (memory_file_links, memory_function_links) = code_memory_link_counts(conn)?;
     Ok(CodeGraphStats {
         files: scalar_count(conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)")?,
@@ -313,7 +311,7 @@ fn read_code_graph_stats_in_conn(conn: &KuzuConnection<'_>) -> Result<CodeGraphS
 }
 
 fn query_code_context_in_conn(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     memory_id: &str,
 ) -> Result<CodeGraphContextPayload> {
     let Some((memory_type, file_rel, function_rel)) =
@@ -330,21 +328,21 @@ fn query_code_context_in_conn(
         &format!(
             "MATCH (m:{memory_type} {{memory_id: $memory_id}})-[:{file_rel}]->(cf:CodeFile) RETURN cf.file_path, cf.language, cf.size_bytes ORDER BY cf.file_path"
         ),
-        vec![("memory_id", KuzuValue::String(memory_id.to_string()))],
+        vec![("memory_id", GraphDbValue::String(memory_id.to_string()))],
     )?;
     let functions = graph_rows(
         conn,
         &format!(
             "MATCH (m:{memory_type} {{memory_id: $memory_id}})-[:{function_rel}]->(f:CodeFunction) RETURN f.function_name, f.signature, f.docstring, f.cyclomatic_complexity ORDER BY f.function_name"
         ),
-        vec![("memory_id", KuzuValue::String(memory_id.to_string()))],
+        vec![("memory_id", GraphDbValue::String(memory_id.to_string()))],
     )?;
     let classes = graph_rows(
         conn,
         &format!(
             "MATCH (m:{memory_type} {{memory_id: $memory_id}})-[:{function_rel}]->(f:CodeFunction)-[:METHOD_OF]->(c:CodeClass) RETURN DISTINCT c.class_name, c.fully_qualified_name, c.docstring ORDER BY c.class_name"
         ),
-        vec![("memory_id", KuzuValue::String(memory_id.to_string()))],
+        vec![("memory_id", GraphDbValue::String(memory_id.to_string()))],
     )?;
 
     Ok(CodeGraphContextPayload {
@@ -381,7 +379,7 @@ fn query_code_context_in_conn(
 }
 
 fn resolve_memory_link_tables_in_conn(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     memory_id: &str,
 ) -> Result<Option<(&'static str, &'static str, &'static str)>> {
     for ((memory_type, file_rel), (paired_type, function_rel)) in GRAPH_MEMORY_FILE_LINK_TABLES
@@ -392,7 +390,7 @@ fn resolve_memory_link_tables_in_conn(
         let rows = graph_rows(
             conn,
             &format!("MATCH (m:{memory_type} {{memory_id: $memory_id}}) RETURN COUNT(m)"),
-            vec![("memory_id", KuzuValue::String(memory_id.to_string()))],
+            vec![("memory_id", GraphDbValue::String(memory_id.to_string()))],
         )?;
         if graph_i64(rows.first().and_then(|row| row.first()))? > 0 {
             return Ok(Some((memory_type, file_rel, function_rel)));
@@ -403,7 +401,7 @@ fn resolve_memory_link_tables_in_conn(
 }
 
 fn list_code_files_in_conn(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     pattern: Option<&str>,
     limit: u32,
 ) -> Result<Vec<String>> {
@@ -412,15 +410,15 @@ fn list_code_files_in_conn(
             conn,
             "MATCH (cf:CodeFile) WHERE cf.file_path CONTAINS $pattern RETURN cf.file_path ORDER BY cf.file_path LIMIT $lim",
             vec![
-                ("pattern", KuzuValue::String(pattern.to_string())),
-                ("lim", KuzuValue::UInt64(u64::from(limit))),
+                ("pattern", GraphDbValue::String(pattern.to_string())),
+                ("lim", GraphDbValue::UInt64(u64::from(limit))),
             ],
         )?
     } else {
         graph_rows(
             conn,
             "MATCH (cf:CodeFile) RETURN cf.file_path ORDER BY cf.file_path LIMIT $lim",
-            vec![("lim", KuzuValue::UInt64(u64::from(limit)))],
+            vec![("lim", GraphDbValue::UInt64(u64::from(limit)))],
         )?
     };
 
@@ -431,7 +429,7 @@ fn list_code_files_in_conn(
 }
 
 fn list_code_functions_in_conn(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     file: Option<&str>,
     limit: u32,
 ) -> Result<Vec<CodeGraphNamedEntry>> {
@@ -440,15 +438,15 @@ fn list_code_functions_in_conn(
             conn,
             "MATCH (f:CodeFunction)-[:DEFINED_IN]->(cf:CodeFile) WHERE cf.file_path CONTAINS $file AND NOT f.function_name CONTAINS '().(' RETURN f.function_name, cf.file_path ORDER BY cf.file_path, f.function_name LIMIT $lim",
             vec![
-                ("file", KuzuValue::String(file.to_string())),
-                ("lim", KuzuValue::UInt64(u64::from(limit))),
+                ("file", GraphDbValue::String(file.to_string())),
+                ("lim", GraphDbValue::UInt64(u64::from(limit))),
             ],
         )?
     } else {
         graph_rows(
             conn,
             "MATCH (f:CodeFunction) WHERE NOT f.function_name CONTAINS '().(' RETURN f.function_name ORDER BY f.function_name LIMIT $lim",
-            vec![("lim", KuzuValue::UInt64(u64::from(limit)))],
+            vec![("lim", GraphDbValue::UInt64(u64::from(limit)))],
         )?
     };
 
@@ -464,7 +462,7 @@ fn list_code_functions_in_conn(
 }
 
 fn list_code_classes_in_conn(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     file: Option<&str>,
     limit: u32,
 ) -> Result<Vec<CodeGraphNamedEntry>> {
@@ -473,15 +471,15 @@ fn list_code_classes_in_conn(
             conn,
             "MATCH (c:CodeClass)-[:CLASS_DEFINED_IN]->(cf:CodeFile) WHERE cf.file_path CONTAINS $file RETURN c.class_name, cf.file_path ORDER BY cf.file_path, c.class_name LIMIT $lim",
             vec![
-                ("file", KuzuValue::String(file.to_string())),
-                ("lim", KuzuValue::UInt64(u64::from(limit))),
+                ("file", GraphDbValue::String(file.to_string())),
+                ("lim", GraphDbValue::UInt64(u64::from(limit))),
             ],
         )?
     } else {
         graph_rows(
             conn,
             "MATCH (c:CodeClass) RETURN c.class_name ORDER BY c.class_name LIMIT $lim",
-            vec![("lim", KuzuValue::UInt64(u64::from(limit)))],
+            vec![("lim", GraphDbValue::UInt64(u64::from(limit)))],
         )?
     };
 
@@ -497,7 +495,7 @@ fn list_code_classes_in_conn(
 }
 
 fn search_code_graph_in_conn(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     name: &str,
     limit: u32,
 ) -> Result<Vec<CodeGraphSearchEntry>> {
@@ -522,8 +520,8 @@ fn search_code_graph_in_conn(
             conn,
             query,
             vec![
-                ("name", KuzuValue::String(name.to_string())),
-                ("lim", KuzuValue::UInt64(u64::from(limit))),
+                ("name", GraphDbValue::String(name.to_string())),
+                ("lim", GraphDbValue::UInt64(u64::from(limit))),
             ],
         )?;
         payload.extend(rows.into_iter().map(|row| CodeGraphSearchEntry {
@@ -536,7 +534,7 @@ fn search_code_graph_in_conn(
 }
 
 fn query_code_edges_in_conn(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     query: &str,
     name: &str,
     limit: u32,
@@ -545,8 +543,8 @@ fn query_code_edges_in_conn(
         conn,
         query,
         vec![
-            ("name", KuzuValue::String(name.to_string())),
-            ("lim", KuzuValue::UInt64(u64::from(limit))),
+            ("name", GraphDbValue::String(name.to_string())),
+            ("lim", GraphDbValue::UInt64(u64::from(limit))),
         ],
     )?;
 
@@ -559,7 +557,7 @@ fn query_code_edges_in_conn(
         .collect())
 }
 
-fn import_files(conn: &KuzuConnection<'_>, files: &[BlarifyFile]) -> Result<usize> {
+fn import_files(conn: &GraphDbConnection<'_>, files: &[BlarifyFile]) -> Result<usize> {
     let now = OffsetDateTime::now_utc();
     let mut imported = 0usize;
 
@@ -572,7 +570,7 @@ fn import_files(conn: &KuzuConnection<'_>, files: &[BlarifyFile]) -> Result<usiz
         let exists = node_exists(
             conn,
             "MATCH (cf:CodeFile {file_id: $file_id}) RETURN COUNT(cf)",
-            vec![("file_id", KuzuValue::String(file.path.clone()))],
+            vec![("file_id", GraphDbValue::String(file.path.clone()))],
         )?;
 
         if exists {
@@ -580,11 +578,11 @@ fn import_files(conn: &KuzuConnection<'_>, files: &[BlarifyFile]) -> Result<usiz
                 conn,
                 "MATCH (cf:CodeFile {file_id: $file_id}) SET cf.file_path = $file_path, cf.language = $language, cf.size_bytes = $size_bytes, cf.last_modified = $last_modified",
                 vec![
-                    ("file_id", KuzuValue::String(file.path.clone())),
-                    ("file_path", KuzuValue::String(file.path.clone())),
-                    ("language", KuzuValue::String(file.language.clone())),
-                    ("size_bytes", KuzuValue::Int64(file.lines_of_code)),
-                    ("last_modified", KuzuValue::Timestamp(last_modified)),
+                    ("file_id", GraphDbValue::String(file.path.clone())),
+                    ("file_path", GraphDbValue::String(file.path.clone())),
+                    ("language", GraphDbValue::String(file.language.clone())),
+                    ("size_bytes", GraphDbValue::Int64(file.lines_of_code)),
+                    ("last_modified", GraphDbValue::Timestamp(last_modified)),
                 ],
             )?;
         } else {
@@ -592,13 +590,13 @@ fn import_files(conn: &KuzuConnection<'_>, files: &[BlarifyFile]) -> Result<usiz
                 conn,
                 "CREATE (cf:CodeFile {file_id: $file_id, file_path: $file_path, language: $language, size_bytes: $size_bytes, last_modified: $last_modified, created_at: $created_at, metadata: $metadata})",
                 vec![
-                    ("file_id", KuzuValue::String(file.path.clone())),
-                    ("file_path", KuzuValue::String(file.path.clone())),
-                    ("language", KuzuValue::String(file.language.clone())),
-                    ("size_bytes", KuzuValue::Int64(file.lines_of_code)),
-                    ("last_modified", KuzuValue::Timestamp(last_modified)),
-                    ("created_at", KuzuValue::Timestamp(now)),
-                    ("metadata", KuzuValue::String("{}".to_string())),
+                    ("file_id", GraphDbValue::String(file.path.clone())),
+                    ("file_path", GraphDbValue::String(file.path.clone())),
+                    ("language", GraphDbValue::String(file.language.clone())),
+                    ("size_bytes", GraphDbValue::Int64(file.lines_of_code)),
+                    ("last_modified", GraphDbValue::Timestamp(last_modified)),
+                    ("created_at", GraphDbValue::Timestamp(now)),
+                    ("metadata", GraphDbValue::String("{}".to_string())),
                 ],
             )?;
         }
@@ -609,7 +607,7 @@ fn import_files(conn: &KuzuConnection<'_>, files: &[BlarifyFile]) -> Result<usiz
     Ok(imported)
 }
 
-fn import_classes(conn: &KuzuConnection<'_>, classes: &[BlarifyClass]) -> Result<usize> {
+fn import_classes(conn: &GraphDbConnection<'_>, classes: &[BlarifyClass]) -> Result<usize> {
     let now = OffsetDateTime::now_utc();
     let mut imported = 0usize;
 
@@ -622,7 +620,7 @@ fn import_classes(conn: &KuzuConnection<'_>, classes: &[BlarifyClass]) -> Result
         let exists = node_exists(
             conn,
             "MATCH (c:CodeClass {class_id: $class_id}) RETURN COUNT(c)",
-            vec![("class_id", KuzuValue::String(class.id.clone()))],
+            vec![("class_id", GraphDbValue::String(class.id.clone()))],
         )?;
 
         if exists {
@@ -630,14 +628,17 @@ fn import_classes(conn: &KuzuConnection<'_>, classes: &[BlarifyClass]) -> Result
                 conn,
                 "MATCH (c:CodeClass {class_id: $class_id}) SET c.class_name = $class_name, c.fully_qualified_name = $fully_qualified_name, c.file_path = $file_path, c.line_number = $line_number, c.docstring = $docstring, c.is_abstract = $is_abstract, c.metadata = $metadata",
                 vec![
-                    ("class_id", KuzuValue::String(class.id.clone())),
-                    ("class_name", KuzuValue::String(class.name.clone())),
-                    ("fully_qualified_name", KuzuValue::String(class.id.clone())),
-                    ("file_path", KuzuValue::String(class.file_path.clone())),
-                    ("line_number", KuzuValue::Int64(class.line_number)),
-                    ("docstring", KuzuValue::String(class.docstring.clone())),
-                    ("is_abstract", KuzuValue::Bool(class.is_abstract)),
-                    ("metadata", KuzuValue::String(metadata.clone())),
+                    ("class_id", GraphDbValue::String(class.id.clone())),
+                    ("class_name", GraphDbValue::String(class.name.clone())),
+                    (
+                        "fully_qualified_name",
+                        GraphDbValue::String(class.id.clone()),
+                    ),
+                    ("file_path", GraphDbValue::String(class.file_path.clone())),
+                    ("line_number", GraphDbValue::Int64(class.line_number)),
+                    ("docstring", GraphDbValue::String(class.docstring.clone())),
+                    ("is_abstract", GraphDbValue::Bool(class.is_abstract)),
+                    ("metadata", GraphDbValue::String(metadata.clone())),
                 ],
             )?;
         } else {
@@ -645,15 +646,18 @@ fn import_classes(conn: &KuzuConnection<'_>, classes: &[BlarifyClass]) -> Result
                 conn,
                 "CREATE (c:CodeClass {class_id: $class_id, class_name: $class_name, fully_qualified_name: $fully_qualified_name, file_path: $file_path, line_number: $line_number, docstring: $docstring, is_abstract: $is_abstract, created_at: $created_at, metadata: $metadata})",
                 vec![
-                    ("class_id", KuzuValue::String(class.id.clone())),
-                    ("class_name", KuzuValue::String(class.name.clone())),
-                    ("fully_qualified_name", KuzuValue::String(class.id.clone())),
-                    ("file_path", KuzuValue::String(class.file_path.clone())),
-                    ("line_number", KuzuValue::Int64(class.line_number)),
-                    ("docstring", KuzuValue::String(class.docstring.clone())),
-                    ("is_abstract", KuzuValue::Bool(class.is_abstract)),
-                    ("created_at", KuzuValue::Timestamp(now)),
-                    ("metadata", KuzuValue::String(metadata)),
+                    ("class_id", GraphDbValue::String(class.id.clone())),
+                    ("class_name", GraphDbValue::String(class.name.clone())),
+                    (
+                        "fully_qualified_name",
+                        GraphDbValue::String(class.id.clone()),
+                    ),
+                    ("file_path", GraphDbValue::String(class.file_path.clone())),
+                    ("line_number", GraphDbValue::Int64(class.line_number)),
+                    ("docstring", GraphDbValue::String(class.docstring.clone())),
+                    ("is_abstract", GraphDbValue::Bool(class.is_abstract)),
+                    ("created_at", GraphDbValue::Timestamp(now)),
+                    ("metadata", GraphDbValue::String(metadata)),
                 ],
             )?;
         }
@@ -663,8 +667,8 @@ fn import_classes(conn: &KuzuConnection<'_>, classes: &[BlarifyClass]) -> Result
                 conn,
                 "MATCH (c:CodeClass {class_id: $class_id})-[r:CLASS_DEFINED_IN]->(cf:CodeFile {file_id: $file_id}) RETURN COUNT(r)",
                 vec![
-                    ("class_id", KuzuValue::String(class.id.clone())),
-                    ("file_id", KuzuValue::String(class.file_path.clone())),
+                    ("class_id", GraphDbValue::String(class.id.clone())),
+                    ("file_id", GraphDbValue::String(class.file_path.clone())),
                 ],
             )?
         {
@@ -672,9 +676,9 @@ fn import_classes(conn: &KuzuConnection<'_>, classes: &[BlarifyClass]) -> Result
                 conn,
                 "MATCH (c:CodeClass {class_id: $class_id}) MATCH (cf:CodeFile {file_id: $file_id}) CREATE (c)-[:CLASS_DEFINED_IN {line_number: $line_number}]->(cf)",
                 vec![
-                    ("class_id", KuzuValue::String(class.id.clone())),
-                    ("file_id", KuzuValue::String(class.file_path.clone())),
-                    ("line_number", KuzuValue::Int64(class.line_number)),
+                    ("class_id", GraphDbValue::String(class.id.clone())),
+                    ("file_id", GraphDbValue::String(class.file_path.clone())),
+                    ("line_number", GraphDbValue::Int64(class.line_number)),
                 ],
             )?;
         }
@@ -685,7 +689,7 @@ fn import_classes(conn: &KuzuConnection<'_>, classes: &[BlarifyClass]) -> Result
     Ok(imported)
 }
 
-fn import_functions(conn: &KuzuConnection<'_>, functions: &[BlarifyFunction]) -> Result<usize> {
+fn import_functions(conn: &GraphDbConnection<'_>, functions: &[BlarifyFunction]) -> Result<usize> {
     let now = OffsetDateTime::now_utc();
     let mut imported = 0usize;
 
@@ -705,7 +709,7 @@ fn import_functions(conn: &KuzuConnection<'_>, functions: &[BlarifyFunction]) ->
         let exists = node_exists(
             conn,
             "MATCH (f:CodeFunction {function_id: $function_id}) RETURN COUNT(f)",
-            vec![("function_id", KuzuValue::String(function.id.clone()))],
+            vec![("function_id", GraphDbValue::String(function.id.clone()))],
         )?;
 
         if exists {
@@ -713,27 +717,33 @@ fn import_functions(conn: &KuzuConnection<'_>, functions: &[BlarifyFunction]) ->
                 conn,
                 "MATCH (f:CodeFunction {function_id: $function_id}) SET f.function_name = $function_name, f.fully_qualified_name = $fully_qualified_name, f.signature = $signature, f.file_path = $file_path, f.line_number = $line_number, f.parameters = $parameters, f.return_type = $return_type, f.docstring = $docstring, f.is_async = $is_async, f.cyclomatic_complexity = $cyclomatic_complexity, f.metadata = $metadata",
                 vec![
-                    ("function_id", KuzuValue::String(function.id.clone())),
-                    ("function_name", KuzuValue::String(function.name.clone())),
+                    ("function_id", GraphDbValue::String(function.id.clone())),
+                    ("function_name", GraphDbValue::String(function.name.clone())),
                     (
                         "fully_qualified_name",
-                        KuzuValue::String(function.id.clone()),
+                        GraphDbValue::String(function.id.clone()),
                     ),
-                    ("signature", KuzuValue::String(signature.clone())),
-                    ("file_path", KuzuValue::String(function.file_path.clone())),
-                    ("line_number", KuzuValue::Int64(function.line_number)),
-                    ("parameters", KuzuValue::String(parameters_json.clone())),
+                    ("signature", GraphDbValue::String(signature.clone())),
+                    (
+                        "file_path",
+                        GraphDbValue::String(function.file_path.clone()),
+                    ),
+                    ("line_number", GraphDbValue::Int64(function.line_number)),
+                    ("parameters", GraphDbValue::String(parameters_json.clone())),
                     (
                         "return_type",
-                        KuzuValue::String(function.return_type.clone()),
+                        GraphDbValue::String(function.return_type.clone()),
                     ),
-                    ("docstring", KuzuValue::String(function.docstring.clone())),
-                    ("is_async", KuzuValue::Bool(function.is_async)),
+                    (
+                        "docstring",
+                        GraphDbValue::String(function.docstring.clone()),
+                    ),
+                    ("is_async", GraphDbValue::Bool(function.is_async)),
                     (
                         "cyclomatic_complexity",
-                        KuzuValue::Int64(function.complexity),
+                        GraphDbValue::Int64(function.complexity),
                     ),
-                    ("metadata", KuzuValue::String(metadata.clone())),
+                    ("metadata", GraphDbValue::String(metadata.clone())),
                 ],
             )?;
         } else {
@@ -741,28 +751,34 @@ fn import_functions(conn: &KuzuConnection<'_>, functions: &[BlarifyFunction]) ->
                 conn,
                 "CREATE (f:CodeFunction {function_id: $function_id, function_name: $function_name, fully_qualified_name: $fully_qualified_name, signature: $signature, file_path: $file_path, line_number: $line_number, parameters: $parameters, return_type: $return_type, docstring: $docstring, is_async: $is_async, cyclomatic_complexity: $cyclomatic_complexity, created_at: $created_at, metadata: $metadata})",
                 vec![
-                    ("function_id", KuzuValue::String(function.id.clone())),
-                    ("function_name", KuzuValue::String(function.name.clone())),
+                    ("function_id", GraphDbValue::String(function.id.clone())),
+                    ("function_name", GraphDbValue::String(function.name.clone())),
                     (
                         "fully_qualified_name",
-                        KuzuValue::String(function.id.clone()),
+                        GraphDbValue::String(function.id.clone()),
                     ),
-                    ("signature", KuzuValue::String(signature)),
-                    ("file_path", KuzuValue::String(function.file_path.clone())),
-                    ("line_number", KuzuValue::Int64(function.line_number)),
-                    ("parameters", KuzuValue::String(parameters_json)),
+                    ("signature", GraphDbValue::String(signature)),
+                    (
+                        "file_path",
+                        GraphDbValue::String(function.file_path.clone()),
+                    ),
+                    ("line_number", GraphDbValue::Int64(function.line_number)),
+                    ("parameters", GraphDbValue::String(parameters_json)),
                     (
                         "return_type",
-                        KuzuValue::String(function.return_type.clone()),
+                        GraphDbValue::String(function.return_type.clone()),
                     ),
-                    ("docstring", KuzuValue::String(function.docstring.clone())),
-                    ("is_async", KuzuValue::Bool(function.is_async)),
+                    (
+                        "docstring",
+                        GraphDbValue::String(function.docstring.clone()),
+                    ),
+                    ("is_async", GraphDbValue::Bool(function.is_async)),
                     (
                         "cyclomatic_complexity",
-                        KuzuValue::Int64(function.complexity),
+                        GraphDbValue::Int64(function.complexity),
                     ),
-                    ("created_at", KuzuValue::Timestamp(now)),
-                    ("metadata", KuzuValue::String(metadata)),
+                    ("created_at", GraphDbValue::Timestamp(now)),
+                    ("metadata", GraphDbValue::String(metadata)),
                 ],
             )?;
         }
@@ -772,8 +788,8 @@ fn import_functions(conn: &KuzuConnection<'_>, functions: &[BlarifyFunction]) ->
                 conn,
                 "MATCH (f:CodeFunction {function_id: $function_id})-[r:DEFINED_IN]->(cf:CodeFile {file_id: $file_id}) RETURN COUNT(r)",
                 vec![
-                    ("function_id", KuzuValue::String(function.id.clone())),
-                    ("file_id", KuzuValue::String(function.file_path.clone())),
+                    ("function_id", GraphDbValue::String(function.id.clone())),
+                    ("file_id", GraphDbValue::String(function.file_path.clone())),
                 ],
             )?
         {
@@ -781,10 +797,10 @@ fn import_functions(conn: &KuzuConnection<'_>, functions: &[BlarifyFunction]) ->
                 conn,
                 "MATCH (f:CodeFunction {function_id: $function_id}) MATCH (cf:CodeFile {file_id: $file_id}) CREATE (f)-[:DEFINED_IN {line_number: $line_number, end_line: $end_line}]->(cf)",
                 vec![
-                    ("function_id", KuzuValue::String(function.id.clone())),
-                    ("file_id", KuzuValue::String(function.file_path.clone())),
-                    ("line_number", KuzuValue::Int64(function.line_number)),
-                    ("end_line", KuzuValue::Int64(function.line_number)),
+                    ("function_id", GraphDbValue::String(function.id.clone())),
+                    ("file_id", GraphDbValue::String(function.file_path.clone())),
+                    ("line_number", GraphDbValue::Int64(function.line_number)),
+                    ("end_line", GraphDbValue::Int64(function.line_number)),
                 ],
             )?;
         }
@@ -794,8 +810,8 @@ fn import_functions(conn: &KuzuConnection<'_>, functions: &[BlarifyFunction]) ->
                 conn,
                 "MATCH (f:CodeFunction {function_id: $function_id})-[r:METHOD_OF]->(c:CodeClass {class_id: $class_id}) RETURN COUNT(r)",
                 vec![
-                    ("function_id", KuzuValue::String(function.id.clone())),
-                    ("class_id", KuzuValue::String(class_id.clone())),
+                    ("function_id", GraphDbValue::String(function.id.clone())),
+                    ("class_id", GraphDbValue::String(class_id.clone())),
                 ],
             )?
         {
@@ -803,10 +819,10 @@ fn import_functions(conn: &KuzuConnection<'_>, functions: &[BlarifyFunction]) ->
                 conn,
                 "MATCH (f:CodeFunction {function_id: $function_id}) MATCH (c:CodeClass {class_id: $class_id}) CREATE (f)-[:METHOD_OF {method_type: $method_type, visibility: $visibility}]->(c)",
                 vec![
-                    ("function_id", KuzuValue::String(function.id.clone())),
-                    ("class_id", KuzuValue::String(class_id.clone())),
-                    ("method_type", KuzuValue::String("instance".to_string())),
-                    ("visibility", KuzuValue::String("public".to_string())),
+                    ("function_id", GraphDbValue::String(function.id.clone())),
+                    ("class_id", GraphDbValue::String(class_id.clone())),
+                    ("method_type", GraphDbValue::String("instance".to_string())),
+                    ("visibility", GraphDbValue::String("public".to_string())),
                 ],
             )?;
         }
@@ -817,7 +833,7 @@ fn import_functions(conn: &KuzuConnection<'_>, functions: &[BlarifyFunction]) ->
     Ok(imported)
 }
 
-fn import_imports(conn: &KuzuConnection<'_>, imports: &[BlarifyImport]) -> Result<usize> {
+fn import_imports(conn: &GraphDbConnection<'_>, imports: &[BlarifyImport]) -> Result<usize> {
     let mut imported = 0usize;
 
     for import in imports {
@@ -829,9 +845,15 @@ fn import_imports(conn: &KuzuConnection<'_>, imports: &[BlarifyImport]) -> Resul
             conn,
             "MATCH (source:CodeFile {file_id: $source_file})-[r:IMPORTS]->(target:CodeFile {file_id: $target_file}) WHERE r.import_type = $import_type RETURN COUNT(r)",
             vec![
-                ("source_file", KuzuValue::String(import.source_file.clone())),
-                ("target_file", KuzuValue::String(import.target_file.clone())),
-                ("import_type", KuzuValue::String(import.symbol.clone())),
+                (
+                    "source_file",
+                    GraphDbValue::String(import.source_file.clone()),
+                ),
+                (
+                    "target_file",
+                    GraphDbValue::String(import.target_file.clone()),
+                ),
+                ("import_type", GraphDbValue::String(import.symbol.clone())),
             ],
         )? {
             continue;
@@ -841,12 +863,18 @@ fn import_imports(conn: &KuzuConnection<'_>, imports: &[BlarifyImport]) -> Resul
             conn,
             "MATCH (source:CodeFile {file_id: $source_file}) MATCH (target:CodeFile {file_id: $target_file}) CREATE (source)-[:IMPORTS {import_type: $import_type, alias: $alias}]->(target)",
             vec![
-                ("source_file", KuzuValue::String(import.source_file.clone())),
-                ("target_file", KuzuValue::String(import.target_file.clone())),
-                ("import_type", KuzuValue::String(import.symbol.clone())),
+                (
+                    "source_file",
+                    GraphDbValue::String(import.source_file.clone()),
+                ),
+                (
+                    "target_file",
+                    GraphDbValue::String(import.target_file.clone()),
+                ),
+                ("import_type", GraphDbValue::String(import.symbol.clone())),
                 (
                     "alias",
-                    KuzuValue::String(import.alias.clone().unwrap_or_default()),
+                    GraphDbValue::String(import.alias.clone().unwrap_or_default()),
                 ),
             ],
         )?;
@@ -857,7 +885,7 @@ fn import_imports(conn: &KuzuConnection<'_>, imports: &[BlarifyImport]) -> Resul
 }
 
 fn import_relationships(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     relationships: &[BlarifyRelationship],
 ) -> Result<usize> {
     let mut imported = 0usize;
@@ -892,7 +920,7 @@ fn normalize_match_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-fn link_memories_to_code_files_in_conn(conn: &KuzuConnection<'_>) -> Result<usize> {
+fn link_memories_to_code_files_in_conn(conn: &GraphDbConnection<'_>) -> Result<usize> {
     ensure_memory_code_link_schema(conn)?;
 
     let mut created = 0usize;
@@ -940,7 +968,7 @@ fn link_memories_to_code_files_in_conn(conn: &KuzuConnection<'_>) -> Result<usiz
             let matching_files = graph_rows(
                 conn,
                 "MATCH (cf:CodeFile) WHERE cf.file_path CONTAINS $file_path OR $file_path CONTAINS cf.file_path RETURN cf.file_id",
-                vec![("file_path", KuzuValue::String(file_path))],
+                vec![("file_path", GraphDbValue::String(file_path))],
             )?;
 
             for file_row in matching_files {
@@ -951,8 +979,8 @@ fn link_memories_to_code_files_in_conn(conn: &KuzuConnection<'_>) -> Result<usiz
                         "MATCH (m:{memory_type} {{memory_id: $memory_id}})-[r:{rel_table}]->(cf:CodeFile {{file_id: $file_id}}) RETURN COUNT(r)"
                     ),
                     vec![
-                        ("memory_id", KuzuValue::String(memory_id.clone())),
-                        ("file_id", KuzuValue::String(file_id.clone())),
+                        ("memory_id", GraphDbValue::String(memory_id.clone())),
+                        ("file_id", GraphDbValue::String(file_id.clone())),
                     ],
                 )?;
                 let existing_count = existing
@@ -969,14 +997,14 @@ fn link_memories_to_code_files_in_conn(conn: &KuzuConnection<'_>) -> Result<usiz
                 conn.execute(
                     &mut create,
                     vec![
-                        ("memory_id", KuzuValue::String(memory_id.clone())),
-                        ("file_id", KuzuValue::String(file_id)),
-                        ("relevance_score", KuzuValue::Double(1.0)),
+                        ("memory_id", GraphDbValue::String(memory_id.clone())),
+                        ("file_id", GraphDbValue::String(file_id)),
+                        ("relevance_score", GraphDbValue::Double(1.0)),
                         (
                             "context",
-                            KuzuValue::String("metadata_file_match".to_string()),
+                            GraphDbValue::String("metadata_file_match".to_string()),
                         ),
-                        ("timestamp", KuzuValue::Timestamp(now)),
+                        ("timestamp", GraphDbValue::Timestamp(now)),
                     ],
                 )?;
                 created += 1;
@@ -1006,7 +1034,7 @@ fn link_memories_to_code_files_in_conn(conn: &KuzuConnection<'_>) -> Result<usiz
             let matching_functions = graph_rows(
                 conn,
                 "MATCH (f:CodeFunction) WHERE $content CONTAINS f.function_name RETURN f.function_id",
-                vec![("content", KuzuValue::String(content))],
+                vec![("content", GraphDbValue::String(content))],
             )?;
 
             for function_row in matching_functions {
@@ -1017,8 +1045,8 @@ fn link_memories_to_code_files_in_conn(conn: &KuzuConnection<'_>) -> Result<usiz
                         "MATCH (m:{memory_type} {{memory_id: $memory_id}})-[r:{rel_table}]->(f:CodeFunction {{function_id: $function_id}}) RETURN COUNT(r)"
                     ),
                     vec![
-                        ("memory_id", KuzuValue::String(memory_id.clone())),
-                        ("function_id", KuzuValue::String(function_id.clone())),
+                        ("memory_id", GraphDbValue::String(memory_id.clone())),
+                        ("function_id", GraphDbValue::String(function_id.clone())),
                     ],
                 )?;
                 let existing_count = existing
@@ -1035,14 +1063,14 @@ fn link_memories_to_code_files_in_conn(conn: &KuzuConnection<'_>) -> Result<usiz
                 conn.execute(
                     &mut create,
                     vec![
-                        ("memory_id", KuzuValue::String(memory_id.clone())),
-                        ("function_id", KuzuValue::String(function_id)),
-                        ("relevance_score", KuzuValue::Double(0.8)),
+                        ("memory_id", GraphDbValue::String(memory_id.clone())),
+                        ("function_id", GraphDbValue::String(function_id)),
+                        ("relevance_score", GraphDbValue::Double(0.8)),
                         (
                             "context",
-                            KuzuValue::String("content_name_match".to_string()),
+                            GraphDbValue::String("content_name_match".to_string()),
                         ),
-                        ("timestamp", KuzuValue::Timestamp(now)),
+                        ("timestamp", GraphDbValue::Timestamp(now)),
                     ],
                 )?;
                 created += 1;
@@ -1054,7 +1082,7 @@ fn link_memories_to_code_files_in_conn(conn: &KuzuConnection<'_>) -> Result<usiz
 }
 
 fn create_calls_relationship(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     source_id: &str,
     target_id: &str,
 ) -> Result<usize> {
@@ -1062,8 +1090,8 @@ fn create_calls_relationship(
         conn,
         "MATCH (source:CodeFunction {function_id: $source_id})-[r:CALLS]->(target:CodeFunction {function_id: $target_id}) RETURN COUNT(r)",
         vec![
-            ("source_id", KuzuValue::String(source_id.to_string())),
-            ("target_id", KuzuValue::String(target_id.to_string())),
+            ("source_id", GraphDbValue::String(source_id.to_string())),
+            ("target_id", GraphDbValue::String(target_id.to_string())),
         ],
     )? {
         return Ok(0);
@@ -1073,17 +1101,17 @@ fn create_calls_relationship(
         conn,
         "MATCH (source:CodeFunction {function_id: $source_id}) MATCH (target:CodeFunction {function_id: $target_id}) CREATE (source)-[:CALLS {call_count: $call_count, context: $context}]->(target)",
         vec![
-            ("source_id", KuzuValue::String(source_id.to_string())),
-            ("target_id", KuzuValue::String(target_id.to_string())),
-            ("call_count", KuzuValue::Int64(1)),
-            ("context", KuzuValue::String(String::new())),
+            ("source_id", GraphDbValue::String(source_id.to_string())),
+            ("target_id", GraphDbValue::String(target_id.to_string())),
+            ("call_count", GraphDbValue::Int64(1)),
+            ("context", GraphDbValue::String(String::new())),
         ],
     )?;
     Ok(1)
 }
 
 fn create_inherits_relationship(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     source_id: &str,
     target_id: &str,
 ) -> Result<usize> {
@@ -1091,8 +1119,8 @@ fn create_inherits_relationship(
         conn,
         "MATCH (source:CodeClass {class_id: $source_id})-[r:INHERITS]->(target:CodeClass {class_id: $target_id}) RETURN COUNT(r)",
         vec![
-            ("source_id", KuzuValue::String(source_id.to_string())),
-            ("target_id", KuzuValue::String(target_id.to_string())),
+            ("source_id", GraphDbValue::String(source_id.to_string())),
+            ("target_id", GraphDbValue::String(target_id.to_string())),
         ],
     )? {
         return Ok(0);
@@ -1102,17 +1130,20 @@ fn create_inherits_relationship(
         conn,
         "MATCH (source:CodeClass {class_id: $source_id}) MATCH (target:CodeClass {class_id: $target_id}) CREATE (source)-[:INHERITS {inheritance_order: $inheritance_order, inheritance_type: $inheritance_type}]->(target)",
         vec![
-            ("source_id", KuzuValue::String(source_id.to_string())),
-            ("target_id", KuzuValue::String(target_id.to_string())),
-            ("inheritance_order", KuzuValue::Int64(0)),
-            ("inheritance_type", KuzuValue::String("single".to_string())),
+            ("source_id", GraphDbValue::String(source_id.to_string())),
+            ("target_id", GraphDbValue::String(target_id.to_string())),
+            ("inheritance_order", GraphDbValue::Int64(0)),
+            (
+                "inheritance_type",
+                GraphDbValue::String("single".to_string()),
+            ),
         ],
     )?;
     Ok(1)
 }
 
 fn create_references_relationship(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     source_id: &str,
     target_id: &str,
 ) -> Result<usize> {
@@ -1120,8 +1151,8 @@ fn create_references_relationship(
         conn,
         "MATCH (source:CodeFunction {function_id: $source_id})-[r:REFERENCES_CLASS]->(target:CodeClass {class_id: $target_id}) RETURN COUNT(r)",
         vec![
-            ("source_id", KuzuValue::String(source_id.to_string())),
-            ("target_id", KuzuValue::String(target_id.to_string())),
+            ("source_id", GraphDbValue::String(source_id.to_string())),
+            ("target_id", GraphDbValue::String(target_id.to_string())),
         ],
     )? {
         return Ok(0);
@@ -1131,27 +1162,27 @@ fn create_references_relationship(
         conn,
         "MATCH (source:CodeFunction {function_id: $source_id}) MATCH (target:CodeClass {class_id: $target_id}) CREATE (source)-[:REFERENCES_CLASS {reference_type: $reference_type, context: $context}]->(target)",
         vec![
-            ("source_id", KuzuValue::String(source_id.to_string())),
-            ("target_id", KuzuValue::String(target_id.to_string())),
-            ("reference_type", KuzuValue::String("usage".to_string())),
-            ("context", KuzuValue::String(String::new())),
+            ("source_id", GraphDbValue::String(source_id.to_string())),
+            ("target_id", GraphDbValue::String(target_id.to_string())),
+            ("reference_type", GraphDbValue::String("usage".to_string())),
+            ("context", GraphDbValue::String(String::new())),
         ],
     )?;
     Ok(1)
 }
 
 fn node_exists(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     query: &str,
-    params: Vec<(&str, KuzuValue)>,
+    params: Vec<(&str, GraphDbValue)>,
 ) -> Result<bool> {
     relationship_exists(conn, query, params)
 }
 
 fn relationship_exists(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     query: &str,
-    params: Vec<(&str, KuzuValue)>,
+    params: Vec<(&str, GraphDbValue)>,
 ) -> Result<bool> {
     let rows = graph_rows(conn, query, params)?;
     Ok(rows

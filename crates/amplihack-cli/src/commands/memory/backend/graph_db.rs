@@ -2,8 +2,10 @@ use super::super::*;
 use super::{MemoryRuntimeBackend, MemorySessionBackend, MemoryTreeBackend};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, TimeZone as _, Utc};
-use kuzu::SystemConfig;
-pub(crate) use kuzu::{Connection as KuzuConnection, Database as KuzuDatabase, Value as KuzuValue};
+pub(crate) use kuzu::{
+    Connection as GraphDbConnection, Database as GraphDbDatabase,
+    SystemConfig as GraphDbSystemConfig, Value as GraphDbValue,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -135,7 +137,7 @@ pub(crate) const GRAPH_MEMORY_TABLES: &[(&str, &str, bool)] = &[
 ];
 
 pub(crate) struct GraphDbBackend {
-    db: KuzuDatabase,
+    db: GraphDbDatabase,
 }
 
 impl GraphDbBackend {
@@ -146,8 +148,9 @@ impl GraphDbBackend {
         Ok(backend)
     }
 
-    fn with_conn<T>(&self, f: impl FnOnce(&KuzuConnection<'_>) -> Result<T>) -> Result<T> {
-        let conn = KuzuConnection::new(&self.db).context("failed to connect to Kùzu memory DB")?;
+    fn with_conn<T>(&self, f: impl FnOnce(&GraphDbConnection<'_>) -> Result<T>) -> Result<T> {
+        let conn =
+            GraphDbConnection::new(&self.db).context("failed to connect to Kùzu memory DB")?;
         f(&conn)
     }
 }
@@ -206,12 +209,12 @@ impl MemoryRuntimeBackend for GraphDbBackend {
     }
 }
 
-pub(crate) fn open_graph_db_memory_db() -> Result<KuzuDatabase> {
+pub(crate) fn open_graph_db_memory_db() -> Result<GraphDbDatabase> {
     let path = resolve_memory_graph_db_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    Ok(KuzuDatabase::new(path, SystemConfig::default())?)
+    Ok(GraphDbDatabase::new(path, GraphDbSystemConfig::default())?)
 }
 
 pub(crate) fn resolve_memory_graph_db_path() -> Result<PathBuf> {
@@ -263,14 +266,14 @@ pub(crate) fn resolve_memory_graph_db_path() -> Result<PathBuf> {
     Ok(neutral)
 }
 
-pub fn init_graph_backend_schema(conn: &KuzuConnection<'_>) -> Result<()> {
+pub fn init_graph_backend_schema(conn: &GraphDbConnection<'_>) -> Result<()> {
     for statement in GRAPH_BACKEND_SCHEMA {
         conn.query(statement)?;
     }
     Ok(())
 }
 
-pub fn list_graph_sessions_from_conn(conn: &KuzuConnection<'_>) -> Result<Vec<SessionSummary>> {
+pub fn list_graph_sessions_from_conn(conn: &GraphDbConnection<'_>) -> Result<Vec<SessionSummary>> {
     let rows = graph_rows(
         conn,
         "MATCH (s:Session) RETURN s.session_id, s.created_at, s.last_accessed, s.metadata ORDER BY s.last_accessed DESC",
@@ -289,7 +292,7 @@ pub fn list_graph_sessions_from_conn(conn: &KuzuConnection<'_>) -> Result<Vec<Se
 }
 
 pub(crate) fn query_graph_memories_for_session(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     session_id: &str,
     memory_type: Option<&str>,
 ) -> Result<Vec<MemoryRecord>> {
@@ -315,7 +318,7 @@ pub(crate) fn query_graph_memories_for_session(
         let rows = graph_rows(
             conn,
             &query,
-            vec![("session_id", KuzuValue::String(session_id.to_string()))],
+            vec![("session_id", GraphDbValue::String(session_id.to_string()))],
         )?;
         for row in rows {
             if let Some(value) = row.first() {
@@ -339,7 +342,7 @@ pub(crate) fn query_graph_memories_for_session(
 }
 
 pub(crate) fn collect_graph_db_agent_counts(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
 ) -> Result<Vec<(String, usize)>> {
     let now = Utc::now();
     let mut totals: HashMap<String, usize> = HashMap::new();
@@ -392,11 +395,11 @@ pub(crate) fn collect_graph_db_agent_counts(
     Ok(counts)
 }
 
-fn delete_graph_session_with_conn(conn: &KuzuConnection<'_>, session_id: &str) -> Result<bool> {
+fn delete_graph_session_with_conn(conn: &GraphDbConnection<'_>, session_id: &str) -> Result<bool> {
     let exists = graph_rows(
         conn,
         "MATCH (s:Session {session_id: $session_id}) RETURN COUNT(s)",
-        vec![("session_id", KuzuValue::String(session_id.to_string()))],
+        vec![("session_id", GraphDbValue::String(session_id.to_string()))],
     )?;
     let existing = exists
         .first()
@@ -412,22 +415,22 @@ fn delete_graph_session_with_conn(conn: &KuzuConnection<'_>, session_id: &str) -
         graph_rows(
             conn,
             &query,
-            vec![("session_id", KuzuValue::String(session_id.to_string()))],
+            vec![("session_id", GraphDbValue::String(session_id.to_string()))],
         )?;
     }
     graph_rows(
         conn,
         "MATCH (s:Session {session_id: $session_id}) DETACH DELETE s",
-        vec![("session_id", KuzuValue::String(session_id.to_string()))],
+        vec![("session_id", GraphDbValue::String(session_id.to_string()))],
     )?;
     Ok(true)
 }
 
 pub fn graph_rows(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     query: &str,
-    params: Vec<(&str, KuzuValue)>,
-) -> Result<Vec<Vec<KuzuValue>>> {
+    params: Vec<(&str, GraphDbValue)>,
+) -> Result<Vec<Vec<GraphDbValue>>> {
     if params.is_empty() {
         return Ok(conn.query(query)?.collect());
     }
@@ -436,12 +439,12 @@ pub fn graph_rows(
 }
 
 pub(crate) fn memory_from_graph_node(
-    value: &KuzuValue,
+    value: &GraphDbValue,
     _session_id: &str,
     label: &str,
 ) -> Result<MemoryRecord> {
     let props = match value {
-        KuzuValue::Node(node) => node.get_properties(),
+        GraphDbValue::Node(node) => node.get_properties(),
         other => anyhow::bail!("expected Kùzu node, got {other}"),
     };
     let metadata = property_string(props, "metadata")
@@ -470,7 +473,7 @@ pub(crate) fn memory_from_graph_node(
     })
 }
 
-pub(crate) fn property_string(props: &[(String, KuzuValue)], key: &str) -> Option<String> {
+pub(crate) fn property_string(props: &[(String, GraphDbValue)], key: &str) -> Option<String> {
     props.iter().find_map(|(name, value)| {
         if name == key {
             Some(graph_value_to_string(value))
@@ -480,7 +483,7 @@ pub(crate) fn property_string(props: &[(String, KuzuValue)], key: &str) -> Optio
     })
 }
 
-pub(crate) fn property_i64(props: &[(String, KuzuValue)], key: &str) -> Option<i64> {
+pub(crate) fn property_i64(props: &[(String, GraphDbValue)], key: &str) -> Option<i64> {
     props.iter().find_map(|(name, value)| {
         if name == key {
             graph_value_to_i64(value)
@@ -490,11 +493,11 @@ pub(crate) fn property_i64(props: &[(String, KuzuValue)], key: &str) -> Option<i
     })
 }
 
-pub(crate) fn graph_value_to_string(value: &KuzuValue) -> String {
+pub(crate) fn graph_value_to_string(value: &GraphDbValue) -> String {
     match value {
-        KuzuValue::Null(_) => String::new(),
-        KuzuValue::String(v) => v.clone(),
-        KuzuValue::Timestamp(v) => {
+        GraphDbValue::Null(_) => String::new(),
+        GraphDbValue::String(v) => v.clone(),
+        GraphDbValue::Timestamp(v) => {
             DateTime::<Utc>::from_timestamp(v.unix_timestamp(), v.nanosecond())
                 .map(|dt| dt.to_rfc3339())
                 .unwrap_or_else(|| v.to_string())
@@ -503,56 +506,59 @@ pub(crate) fn graph_value_to_string(value: &KuzuValue) -> String {
     }
 }
 
-pub(crate) fn graph_value_to_i64(value: &KuzuValue) -> Option<i64> {
+pub(crate) fn graph_value_to_i64(value: &GraphDbValue) -> Option<i64> {
     match value {
-        KuzuValue::Int64(v) => Some(*v),
-        KuzuValue::Int32(v) => Some(i64::from(*v)),
-        KuzuValue::Int16(v) => Some(i64::from(*v)),
-        KuzuValue::Int8(v) => Some(i64::from(*v)),
-        KuzuValue::UInt64(v) => i64::try_from(*v).ok(),
-        KuzuValue::UInt32(v) => Some(i64::from(*v)),
-        KuzuValue::UInt16(v) => Some(i64::from(*v)),
-        KuzuValue::UInt8(v) => Some(i64::from(*v)),
-        KuzuValue::Double(v) => Some(*v as i64),
-        KuzuValue::Float(v) => Some(*v as i64),
+        GraphDbValue::Int64(v) => Some(*v),
+        GraphDbValue::Int32(v) => Some(i64::from(*v)),
+        GraphDbValue::Int16(v) => Some(i64::from(*v)),
+        GraphDbValue::Int8(v) => Some(i64::from(*v)),
+        GraphDbValue::UInt64(v) => i64::try_from(*v).ok(),
+        GraphDbValue::UInt32(v) => Some(i64::from(*v)),
+        GraphDbValue::UInt16(v) => Some(i64::from(*v)),
+        GraphDbValue::UInt8(v) => Some(i64::from(*v)),
+        GraphDbValue::Double(v) => Some(*v as i64),
+        GraphDbValue::Float(v) => Some(*v as i64),
         _ => None,
     }
 }
 
-pub(crate) fn graph_string(value: Option<&KuzuValue>) -> Result<String> {
+pub(crate) fn graph_string(value: Option<&GraphDbValue>) -> Result<String> {
     Ok(value.map(graph_value_to_string).unwrap_or_default())
 }
 
-pub(crate) fn graph_i64(value: Option<&KuzuValue>) -> Result<i64> {
+pub(crate) fn graph_i64(value: Option<&GraphDbValue>) -> Result<i64> {
     value
         .and_then(graph_value_to_i64)
         .context("expected integer Kùzu value")
 }
 
-pub(crate) fn graph_f64(value: Option<&KuzuValue>) -> Result<f64> {
+pub(crate) fn graph_f64(value: Option<&GraphDbValue>) -> Result<f64> {
     match value {
-        Some(KuzuValue::Double(v)) => Ok(*v),
-        Some(KuzuValue::Float(v)) => Ok(f64::from(*v)),
-        Some(KuzuValue::Int64(v)) => Ok(*v as f64),
-        Some(KuzuValue::Int32(v)) => Ok(f64::from(*v)),
-        Some(KuzuValue::UInt64(v)) => Ok(*v as f64),
-        Some(KuzuValue::UInt32(v)) => Ok(f64::from(*v)),
-        Some(KuzuValue::Null(_)) | None => Ok(0.0),
+        Some(GraphDbValue::Double(v)) => Ok(*v),
+        Some(GraphDbValue::Float(v)) => Ok(f64::from(*v)),
+        Some(GraphDbValue::Int64(v)) => Ok(*v as f64),
+        Some(GraphDbValue::Int32(v)) => Ok(f64::from(*v)),
+        Some(GraphDbValue::UInt64(v)) => Ok(*v as f64),
+        Some(GraphDbValue::UInt32(v)) => Ok(f64::from(*v)),
+        Some(GraphDbValue::Null(_)) | None => Ok(0.0),
         Some(other) => anyhow::bail!("expected numeric Kùzu value, got {other}"),
     }
 }
 
 fn store_learning_graph_with_conn(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     record: &SessionLearningRecord,
 ) -> Result<Option<String>> {
     let duplicate_rows = graph_rows(
         conn,
         "MATCH (s:Session {session_id: $session_id})-[:CONTRIBUTES_TO_SEMANTIC]->(m:SemanticMemory) WHERE m.agent_id = $agent_id AND m.content = $content RETURN COUNT(m)",
         vec![
-            ("session_id", KuzuValue::String(record.session_id.clone())),
-            ("agent_id", KuzuValue::String(record.agent_id.clone())),
-            ("content", KuzuValue::String(record.content.clone())),
+            (
+                "session_id",
+                GraphDbValue::String(record.session_id.clone()),
+            ),
+            ("agent_id", GraphDbValue::String(record.agent_id.clone())),
+            ("content", GraphDbValue::String(record.content.clone())),
         ],
     )?;
     let duplicate_count = duplicate_rows
@@ -584,19 +590,19 @@ fn store_learning_graph_with_conn(
     conn.execute(
         &mut create_memory,
         vec![
-            ("memory_id", KuzuValue::String(memory_id.clone())),
-            ("concept", KuzuValue::String(record.title.clone())),
-            ("content", KuzuValue::String(record.content.clone())),
-            ("category", KuzuValue::String("session_end".to_string())),
-            ("confidence_score", KuzuValue::Double(1.0)),
-            ("last_updated", KuzuValue::Timestamp(now)),
-            ("version", KuzuValue::Int64(1)),
-            ("title", KuzuValue::String(record.title.clone())),
-            ("metadata", KuzuValue::String(metadata)),
-            ("tags", KuzuValue::String(tags)),
-            ("created_at", KuzuValue::Timestamp(now)),
-            ("accessed_at", KuzuValue::Timestamp(now)),
-            ("agent_id", KuzuValue::String(record.agent_id.clone())),
+            ("memory_id", GraphDbValue::String(memory_id.clone())),
+            ("concept", GraphDbValue::String(record.title.clone())),
+            ("content", GraphDbValue::String(record.content.clone())),
+            ("category", GraphDbValue::String("session_end".to_string())),
+            ("confidence_score", GraphDbValue::Double(1.0)),
+            ("last_updated", GraphDbValue::Timestamp(now)),
+            ("version", GraphDbValue::Int64(1)),
+            ("title", GraphDbValue::String(record.title.clone())),
+            ("metadata", GraphDbValue::String(metadata)),
+            ("tags", GraphDbValue::String(tags)),
+            ("created_at", GraphDbValue::Timestamp(now)),
+            ("accessed_at", GraphDbValue::Timestamp(now)),
+            ("agent_id", GraphDbValue::String(record.agent_id.clone())),
         ],
     )?;
 
@@ -606,14 +612,20 @@ fn store_learning_graph_with_conn(
     conn.execute(
         &mut create_link,
         vec![
-            ("session_id", KuzuValue::String(record.session_id.clone())),
-            ("memory_id", KuzuValue::String(memory_id.clone())),
+            (
+                "session_id",
+                GraphDbValue::String(record.session_id.clone()),
+            ),
+            ("memory_id", GraphDbValue::String(memory_id.clone())),
             (
                 "contribution_type",
-                KuzuValue::String("created".to_string()),
+                GraphDbValue::String("created".to_string()),
             ),
-            ("timestamp", KuzuValue::Timestamp(now)),
-            ("delta", KuzuValue::String("initial_creation".to_string())),
+            ("timestamp", GraphDbValue::Timestamp(now)),
+            (
+                "delta",
+                GraphDbValue::String("initial_creation".to_string()),
+            ),
         ],
     )?;
 
@@ -621,14 +633,14 @@ fn store_learning_graph_with_conn(
 }
 
 fn ensure_graph_session(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     session_id: &str,
     now: OffsetDateTime,
 ) -> Result<()> {
     let count_rows = graph_rows(
         conn,
         "MATCH (s:Session {session_id: $session_id}) RETURN COUNT(s)",
-        vec![("session_id", KuzuValue::String(session_id.to_string()))],
+        vec![("session_id", GraphDbValue::String(session_id.to_string()))],
     )?;
     let count = count_rows
         .first()
@@ -642,12 +654,12 @@ fn ensure_graph_session(
         conn.execute(
             &mut create,
             vec![
-                ("session_id", KuzuValue::String(session_id.to_string())),
-                ("start_time", KuzuValue::Timestamp(now)),
-                ("status", KuzuValue::String("active".to_string())),
-                ("created_at", KuzuValue::Timestamp(now)),
-                ("last_accessed", KuzuValue::Timestamp(now)),
-                ("metadata", KuzuValue::String("{}".to_string())),
+                ("session_id", GraphDbValue::String(session_id.to_string())),
+                ("start_time", GraphDbValue::Timestamp(now)),
+                ("status", GraphDbValue::String("active".to_string())),
+                ("created_at", GraphDbValue::Timestamp(now)),
+                ("last_accessed", GraphDbValue::Timestamp(now)),
+                ("metadata", GraphDbValue::String("{}".to_string())),
             ],
         )?;
     } else {
@@ -657,8 +669,8 @@ fn ensure_graph_session(
         conn.execute(
             &mut update,
             vec![
-                ("session_id", KuzuValue::String(session_id.to_string())),
-                ("last_accessed", KuzuValue::Timestamp(now)),
+                ("session_id", GraphDbValue::String(session_id.to_string())),
+                ("last_accessed", GraphDbValue::Timestamp(now)),
             ],
         )?;
     }
@@ -667,14 +679,14 @@ fn ensure_graph_session(
 }
 
 fn ensure_graph_agent(
-    conn: &KuzuConnection<'_>,
+    conn: &GraphDbConnection<'_>,
     agent_id: &str,
     now: OffsetDateTime,
 ) -> Result<()> {
     let count_rows = graph_rows(
         conn,
         "MATCH (a:Agent {agent_id: $agent_id}) RETURN COUNT(a)",
-        vec![("agent_id", KuzuValue::String(agent_id.to_string()))],
+        vec![("agent_id", GraphDbValue::String(agent_id.to_string()))],
     )?;
     let count = count_rows
         .first()
@@ -688,10 +700,10 @@ fn ensure_graph_agent(
         conn.execute(
             &mut create,
             vec![
-                ("agent_id", KuzuValue::String(agent_id.to_string())),
-                ("name", KuzuValue::String(agent_id.to_string())),
-                ("first_used", KuzuValue::Timestamp(now)),
-                ("last_used", KuzuValue::Timestamp(now)),
+                ("agent_id", GraphDbValue::String(agent_id.to_string())),
+                ("name", GraphDbValue::String(agent_id.to_string())),
+                ("first_used", GraphDbValue::Timestamp(now)),
+                ("last_used", GraphDbValue::Timestamp(now)),
             ],
         )?;
     } else {
@@ -700,8 +712,8 @@ fn ensure_graph_agent(
         conn.execute(
             &mut update,
             vec![
-                ("agent_id", KuzuValue::String(agent_id.to_string())),
-                ("last_used", KuzuValue::Timestamp(now)),
+                ("agent_id", GraphDbValue::String(agent_id.to_string())),
+                ("last_used", GraphDbValue::Timestamp(now)),
             ],
         )?;
     }
@@ -715,13 +727,13 @@ mod tests {
 
     #[test]
     fn graph_value_to_string_handles_string_variant() {
-        let val = KuzuValue::String("hello".to_string());
+        let val = GraphDbValue::String("hello".to_string());
         assert_eq!(graph_value_to_string(&val), "hello");
     }
 
     #[test]
     fn graph_value_to_string_handles_null() {
-        let val = KuzuValue::Null(kuzu::LogicalType::String);
+        let val = GraphDbValue::Null(kuzu::LogicalType::String);
         assert_eq!(
             graph_value_to_string(&val),
             "",
@@ -731,7 +743,7 @@ mod tests {
 
     #[test]
     fn graph_value_to_string_handles_non_string_via_display() {
-        let val = KuzuValue::Int64(42);
+        let val = GraphDbValue::Int64(42);
         let s = graph_value_to_string(&val);
         assert!(
             s.contains("42"),
@@ -741,22 +753,22 @@ mod tests {
 
     #[test]
     fn graph_value_to_i64_extracts_int64() {
-        assert_eq!(graph_value_to_i64(&KuzuValue::Int64(99)), Some(99));
+        assert_eq!(graph_value_to_i64(&GraphDbValue::Int64(99)), Some(99));
     }
 
     #[test]
     fn graph_value_to_i64_extracts_int32() {
-        assert_eq!(graph_value_to_i64(&KuzuValue::Int32(7)), Some(7));
+        assert_eq!(graph_value_to_i64(&GraphDbValue::Int32(7)), Some(7));
     }
 
     #[test]
     fn graph_value_to_i64_extracts_uint32() {
-        assert_eq!(graph_value_to_i64(&KuzuValue::UInt32(5)), Some(5));
+        assert_eq!(graph_value_to_i64(&GraphDbValue::UInt32(5)), Some(5));
     }
 
     #[test]
     fn graph_value_to_i64_returns_none_for_non_numeric() {
-        let val = KuzuValue::String("abc".to_string());
+        let val = GraphDbValue::String("abc".to_string());
         assert_eq!(
             graph_value_to_i64(&val),
             None,
@@ -766,6 +778,6 @@ mod tests {
 
     #[test]
     fn graph_value_to_i64_extracts_double_as_truncated_i64() {
-        assert_eq!(graph_value_to_i64(&KuzuValue::Double(3.9)), Some(3));
+        assert_eq!(graph_value_to_i64(&GraphDbValue::Double(3.9)), Some(3));
     }
 }
