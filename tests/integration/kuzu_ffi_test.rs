@@ -15,7 +15,9 @@
 //! from production code and follow the standard Rust integration test
 //! layout (one test per concern, outside the library under test).
 
-use amplihack_cli::memory::{init_kuzu_backend_schema, kuzu_rows, list_kuzu_sessions_from_conn};
+use amplihack_cli::memory::ffi_test_support::{
+    graph_rows, init_graph_backend_schema, list_graph_sessions_from_conn,
+};
 use anyhow::Result;
 use kuzu::{
     Connection as KuzuConn, Database as KuzuDb, SystemConfig as KuzuSysCfg, Value as KuzuValue,
@@ -139,7 +141,7 @@ fn kuzu_ffi_insert_and_query_round_trip() -> Result<()> {
 ///
 /// Parameterized queries involve an extra FFI crossing to pass parameter
 /// values from Rust into the C++ prepared statement executor.
-/// This is the same path used by `kuzu_rows()` with non-empty params.
+/// This is the same path used by `graph_rows()` with non-empty params.
 #[test]
 fn kuzu_ffi_parameterized_query_executes() -> Result<()> {
     let (_dir, db) = temp_kuzu_db()?;
@@ -171,7 +173,7 @@ fn kuzu_ffi_parameterized_query_executes() -> Result<()> {
     Ok(())
 }
 
-/// Verify that the full KUZU_BACKEND_SCHEMA initializes in a fresh database.
+/// Verify that the full graph backend schema initializes in a fresh database.
 ///
 /// This is the most comprehensive kuzu FFI smoke test.  It runs all the DDL
 /// statements used by the memory backend in production, including all node
@@ -186,8 +188,8 @@ fn kuzu_ffi_full_backend_schema_initializes() -> Result<()> {
     let (_dir, db) = temp_kuzu_db()?;
     let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    init_kuzu_backend_schema(&conn).context(
-        "KUZU_BACKEND_SCHEMA initialization failed.\n\
+    init_graph_backend_schema(&conn).context(
+        "graph backend schema initialization failed.\n\
         This may indicate a cxx/cxx-build version mismatch.\n\
         Fix: cargo update -p cxx-build --precise 1.0.138\n\
         See docs/howto/resolve-kuzu-linker-errors.md",
@@ -195,26 +197,26 @@ fn kuzu_ffi_full_backend_schema_initializes() -> Result<()> {
     Ok(())
 }
 
-/// Verify that kuzu_rows() helper works with an empty params list.
+/// Verify that the generic graph row helper works with an empty params list.
 ///
-/// The `params.is_empty()` branch of kuzu_rows() uses the simpler
+/// The `params.is_empty()` branch of `graph_rows()` uses the simpler
 /// `conn.query()` path instead of prepare+execute.
 #[test]
-fn kuzu_rows_helper_no_params() -> Result<()> {
+fn graph_rows_helper_no_params() -> Result<()> {
     let (_dir, db) = temp_kuzu_db()?;
     let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let rows = kuzu_rows(&conn, "RETURN 42", vec![])?;
+    let rows = graph_rows(&conn, "RETURN 42", vec![])?;
     assert_eq!(rows.len(), 1, "RETURN 42 must produce one row");
     Ok(())
 }
 
-/// Verify that kuzu_rows() helper works with a non-empty params list.
+/// Verify that the generic graph row helper works with a non-empty params list.
 ///
-/// The parameterized branch of kuzu_rows() prepares the statement and
+/// The parameterized branch of `graph_rows()` prepares the statement and
 /// calls execute() with the provided key-value parameters.
 #[test]
-fn kuzu_rows_helper_with_params() -> Result<()> {
+fn graph_rows_helper_with_params() -> Result<()> {
     let (_dir, db) = temp_kuzu_db()?;
     let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -223,7 +225,7 @@ fn kuzu_rows_helper_with_params() -> Result<()> {
     conn.query("CREATE (:Kv {k: 'key1', v: 'val1'})")
         .map_err(|e| anyhow::anyhow!("insert: {e}"))?;
 
-    let rows = kuzu_rows(
+    let rows = graph_rows(
         &conn,
         "MATCH (n:Kv {k: $k}) RETURN n.v",
         vec![("k", KuzuValue::String("key1".to_string()))],
@@ -232,16 +234,16 @@ fn kuzu_rows_helper_with_params() -> Result<()> {
     Ok(())
 }
 
-/// Verify that list_kuzu_sessions_from_conn returns empty list for fresh DB.
+/// Verify that the generic graph session lister returns empty list for fresh DB.
 ///
 /// A freshly initialized schema must contain zero sessions.
 #[test]
 fn kuzu_list_sessions_empty_on_fresh_db() -> Result<()> {
     let (_dir, db) = temp_kuzu_db()?;
     let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
-    init_kuzu_backend_schema(&conn)?;
+    init_graph_backend_schema(&conn)?;
 
-    let sessions = list_kuzu_sessions_from_conn(&conn)?;
+    let sessions = list_graph_sessions_from_conn(&conn)?;
     assert!(
         sessions.is_empty(),
         "Fresh database must have zero sessions, got {}",
@@ -258,7 +260,7 @@ fn kuzu_list_sessions_empty_on_fresh_db() -> Result<()> {
 fn kuzu_session_create_and_list() -> Result<()> {
     let (_dir, db) = temp_kuzu_db()?;
     let conn = KuzuConn::new(&db).map_err(|e| anyhow::anyhow!("{e}"))?;
-    init_kuzu_backend_schema(&conn)?;
+    init_graph_backend_schema(&conn)?;
 
     let now = "2026-01-02T03:04:05";
     conn.query(&format!(
@@ -266,7 +268,7 @@ fn kuzu_session_create_and_list() -> Result<()> {
     ))
     .map_err(|e| anyhow::anyhow!("CREATE Session: {e}"))?;
 
-    let sessions = list_kuzu_sessions_from_conn(&conn)?;
+    let sessions = list_graph_sessions_from_conn(&conn)?;
     assert_eq!(
         sessions.len(),
         1,

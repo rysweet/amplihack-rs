@@ -7,7 +7,15 @@ use anyhow::Result;
 use std::io::{self, Write};
 
 pub fn run_clean(pattern: &str, backend: &str, dry_run: bool, confirm: bool) -> Result<()> {
-    let backend = super::backend::open_cleanup_backend(BackendChoice::parse(backend)?)?;
+    let choice = if backend == "auto" {
+        resolve_backend_with_autodetect()?
+    } else {
+        BackendChoice::parse(backend)?
+    };
+    if let Some(notice) = memory_graph_compatibility_notice(choice) {
+        println!("⚠️ Compatibility mode: {notice}");
+    }
+    let backend = super::backend::open_cleanup_backend(choice)?;
     run_clean_with_backend(backend.as_ref(), pattern, dry_run, confirm)
 }
 

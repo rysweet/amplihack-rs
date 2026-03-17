@@ -1,17 +1,26 @@
 use crate::QueryCodeCommands;
 use crate::commands::memory::code_graph::{
-    CodeGraphEdgeEntry, CodeGraphNamedEntry, CodeGraphReaderBackend, open_code_graph_reader,
+    CodeGraphEdgeEntry, CodeGraphNamedEntry, CodeGraphReaderBackend,
+    code_graph_compatibility_notice_for_project, open_code_graph_reader,
 };
 use anyhow::Result;
 use std::path::Path;
 
 pub fn run_query_code(
     command: QueryCodeCommands,
-    kuzu_path: Option<&Path>,
+    db_path: Option<&Path>,
     json_output: bool,
     limit: u32,
 ) -> Result<()> {
-    let backend = open_code_graph_reader(kuzu_path)?;
+    let compatibility_notice = if json_output {
+        None
+    } else {
+        code_graph_compatibility_notice_for_project(&std::env::current_dir()?, db_path)?
+    };
+    let backend = open_code_graph_reader(db_path)?;
+    if let Some(notice) = compatibility_notice {
+        println!("⚠️ Compatibility mode: {notice}");
+    }
 
     match command {
         QueryCodeCommands::Stats => run_stats(backend.as_ref(), json_output),
@@ -241,16 +250,20 @@ fn print_limit_hint(actual_len: usize, limit: u32) {
 mod tests {
     use super::*;
     use crate::commands::memory::{
+        backend::graph_db::{GraphDbValue, init_graph_backend_schema},
         code_graph::{
             CodeGraphContextPayload, CodeGraphImportCounts, CodeGraphSearchEntry, CodeGraphStats,
-            import_blarify_json, open_kuzu_code_graph_db,
+            backend::with_test_code_graph_conn, import_blarify_json,
         },
-        init_kuzu_backend_schema,
     };
-    use kuzu::Connection as KuzuConnection;
-    use kuzu::Value as KuzuValue;
     use std::fs;
+    use std::sync::{Mutex, OnceLock};
     use time::OffsetDateTime;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn seed_code_graph(db_path: &Path) {
         let dir = tempfile::tempdir().unwrap();
@@ -293,7 +306,7 @@ mod tests {
     #[test]
     fn query_code_stats_reads_seeded_graph() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("code-graph.kuzu");
+        let db_path = dir.path().join("code-graph.graph_db");
         seed_code_graph(&db_path);
 
         let backend = open_code_graph_reader(Some(&db_path)).unwrap();
@@ -309,7 +322,7 @@ mod tests {
     #[test]
     fn query_code_search_finds_seeded_symbols() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("code-graph.kuzu");
+        let db_path = dir.path().join("code-graph.graph_db");
         seed_code_graph(&db_path);
 
         let backend = open_code_graph_reader(Some(&db_path)).unwrap();
@@ -325,40 +338,41 @@ mod tests {
     #[test]
     fn query_code_context_returns_linked_code_entities() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("code-graph.kuzu");
+        let db_path = dir.path().join("code-graph.graph_db");
         seed_code_graph(&db_path);
-        let db = open_kuzu_code_graph_db(Some(&db_path)).unwrap();
-        let conn = KuzuConnection::new(&db).unwrap();
-        init_kuzu_backend_schema(&conn).unwrap();
-        let now = OffsetDateTime::now_utc();
+        with_test_code_graph_conn(Some(&db_path), |conn| {
+            init_graph_backend_schema(conn)?;
+            let now = OffsetDateTime::now_utc();
 
-        let mut create_memory = conn.prepare(
-            "CREATE (m:SemanticMemory {memory_id: $memory_id, concept: $concept, content: $content, category: $category, confidence_score: $confidence_score, last_updated: $last_updated, version: $version, title: $title, metadata: $metadata, tags: $tags, created_at: $created_at, accessed_at: $accessed_at, agent_id: $agent_id})",
-        ).unwrap();
-        conn.execute(
-            &mut create_memory,
-            vec![
-                ("memory_id", KuzuValue::String("mem-query".to_string())),
-                ("concept", KuzuValue::String("Query context".to_string())),
-                (
-                    "content",
-                    KuzuValue::String("helper is relevant here".to_string()),
-                ),
-                ("category", KuzuValue::String("session_end".to_string())),
-                ("confidence_score", KuzuValue::Double(1.0)),
-                ("last_updated", KuzuValue::Timestamp(now)),
-                ("version", KuzuValue::Int64(1)),
-                ("title", KuzuValue::String("Helper context".to_string())),
-                (
-                    "metadata",
-                    KuzuValue::String(r#"{"file":"src/example/module.py"}"#.to_string()),
-                ),
-                ("tags", KuzuValue::String(r#"["learning"]"#.to_string())),
-                ("created_at", KuzuValue::Timestamp(now)),
-                ("accessed_at", KuzuValue::Timestamp(now)),
-                ("agent_id", KuzuValue::String("agent-1".to_string())),
-            ],
-        )
+            let mut create_memory = conn.prepare(
+                "CREATE (m:SemanticMemory {memory_id: $memory_id, concept: $concept, content: $content, category: $category, confidence_score: $confidence_score, last_updated: $last_updated, version: $version, title: $title, metadata: $metadata, tags: $tags, created_at: $created_at, accessed_at: $accessed_at, agent_id: $agent_id})",
+            )?;
+            conn.execute(
+                &mut create_memory,
+                vec![
+                    ("memory_id", GraphDbValue::String("mem-query".to_string())),
+                    ("concept", GraphDbValue::String("Query context".to_string())),
+                    (
+                        "content",
+                        GraphDbValue::String("helper is relevant here".to_string()),
+                    ),
+                    ("category", GraphDbValue::String("session_end".to_string())),
+                    ("confidence_score", GraphDbValue::Double(1.0)),
+                    ("last_updated", GraphDbValue::Timestamp(now)),
+                    ("version", GraphDbValue::Int64(1)),
+                    ("title", GraphDbValue::String("Helper context".to_string())),
+                    (
+                        "metadata",
+                        GraphDbValue::String(r#"{"file":"src/example/module.py"}"#.to_string()),
+                    ),
+                    ("tags", GraphDbValue::String(r#"["learning"]"#.to_string())),
+                    ("created_at", GraphDbValue::Timestamp(now)),
+                    ("accessed_at", GraphDbValue::Timestamp(now)),
+                    ("agent_id", GraphDbValue::String("agent-1".to_string())),
+                ],
+            )?;
+            Ok(())
+        })
         .unwrap();
 
         let import_dir = tempfile::tempdir().unwrap();
@@ -395,7 +409,7 @@ mod tests {
     #[test]
     fn query_code_context_returns_empty_for_unknown_memory() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("code-graph.kuzu");
+        let db_path = dir.path().join("code-graph.graph_db");
         seed_code_graph(&db_path);
 
         let backend = open_code_graph_reader(Some(&db_path)).unwrap();
@@ -404,5 +418,72 @@ mod tests {
         assert!(payload.files.is_empty());
         assert!(payload.functions.is_empty());
         assert!(payload.classes.is_empty());
+    }
+
+    #[test]
+    fn code_graph_compatibility_notice_surfaces_legacy_env_alias() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let previous_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe {
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/tmp/legacy-code-graph");
+        }
+
+        let notice = code_graph_compatibility_notice_for_project(
+            &std::env::current_dir().expect("current_dir must succeed"),
+            None,
+        )
+        .expect("legacy alias notice lookup must work");
+
+        match previous_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match previous_kuzu {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        let notice = notice.expect("legacy alias notice expected");
+        assert!(notice.contains("AMPLIHACK_KUZU_DB_PATH"));
+        assert!(notice.contains("AMPLIHACK_GRAPH_DB_PATH"));
+    }
+
+    #[test]
+    fn code_graph_compatibility_notice_surfaces_legacy_store() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let previous_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        let original_cwd = std::env::current_dir().unwrap();
+        let legacy_store = dir.path().join(".amplihack").join("kuzu_db");
+        std::fs::create_dir_all(&legacy_store).unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        unsafe {
+            std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
+            std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
+        }
+
+        let notice = code_graph_compatibility_notice_for_project(dir.path(), None)
+            .expect("legacy store notice lookup must work");
+
+        std::env::set_current_dir(original_cwd).unwrap();
+        match previous_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match previous_kuzu {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        let notice = notice.expect("legacy store notice expected");
+        assert!(notice.contains(".amplihack/kuzu_db"));
+        assert!(notice.contains("graph_db"));
     }
 }

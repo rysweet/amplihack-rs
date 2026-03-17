@@ -251,6 +251,11 @@ fn format_agent_memory_context(agent_types: &[String], memories: &[PromptContext
             let mut lines = vec![format!("\n## Memory for {} Agent\n", agent_type)];
             for memory in memories {
                 lines.push(format!("- {} (relevance: 0.00)", memory.content));
+                if let Some(code_context) = memory.code_context.as_deref()
+                    && !code_context.trim().is_empty()
+                {
+                    lines.push(code_context.to_string());
+                }
             }
             lines.join("\n")
         })
@@ -374,11 +379,16 @@ casual and direct
             &[String::from("analyzer")],
             &[PromptContextMemory {
                 content: String::from("Fix CI by running cargo fmt before push."),
+                code_context: Some(String::from(
+                    "**Related Files:**\n- src/example/module.py (python)",
+                )),
             }],
         );
         assert!(context.contains("## Memory for analyzer Agent"));
         assert!(context.contains("Fix CI by running cargo fmt before push."));
         assert!(context.contains("relevance: 0.00"));
+        assert!(context.contains("**Related Files:**"));
+        assert!(context.contains("src/example/module.py"));
     }
 
     #[test]

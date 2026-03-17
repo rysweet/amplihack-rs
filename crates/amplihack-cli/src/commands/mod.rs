@@ -49,19 +49,19 @@ pub fn dispatch(command: Commands) -> Result<()> {
         }
         Commands::Plugin { command } => dispatch_plugin(command),
         Commands::Memory { command } => dispatch_memory(command),
-        Commands::IndexCode { input, kuzu_path } => {
-            memory::run_index_code(&input, kuzu_path.as_deref())
+        Commands::IndexCode { input, db_path } => {
+            memory::run_index_code(&input, db_path.as_deref())
         }
         Commands::IndexScip {
             project_path,
             languages,
         } => memory::run_index_scip(project_path.as_deref(), &languages),
         Commands::QueryCode {
-            kuzu_path,
+            db_path,
             json,
             limit,
             command,
-        } => query_code::run_query_code(command, kuzu_path.as_deref(), json, limit),
+        } => query_code::run_query_code(command, db_path.as_deref(), json, limit),
         Commands::Recipe { command } => dispatch_recipe(command),
         Commands::Mode { command } => dispatch_mode(command),
         Commands::Version => {

@@ -6,8 +6,9 @@
 use crate::binary_finder::BinaryInfo;
 use crate::bootstrap;
 use crate::commands::memory::{
-    background_index_job_active, check_index_status, default_code_graph_db_path_for_project,
-    record_background_index_pid, run_index_code, run_index_scip,
+    background_index_job_active, check_index_status, code_graph_compatibility_notice_for_project,
+    record_background_index_pid, resolve_code_graph_db_path_for_project, run_index_code,
+    run_index_scip,
 };
 use crate::env_builder::EnvBuilder;
 use crate::launcher::ManagedChild;
@@ -82,20 +83,11 @@ pub fn run_launch(
         .with_amplihack_home() // WS3: AMPLIHACK_HOME
         .with_asset_resolver(); // Rust-native bundle asset resolver
     if let Some(project_path) = current_dir.as_deref() {
-        env_builder = env_builder.with_project_kuzu_db(project_path);
+        env_builder = env_builder.with_project_graph_db(project_path)?;
     }
-    let env = env_builder
-        .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1") // WS2: propagate flag
-        .build();
+    let env_builder = env_builder.set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1"); // WS2: propagate flag
 
-    if should_prompt_blarify_indexing(tool, is_noninteractive()) {
-        let project_path = current_dir
-            .as_ref()
-            .context("failed to resolve current directory")?;
-        if let Err(err) = maybe_prompt_blarify_indexing(project_path) {
-            tracing::warn!(error = %err, "code graph indexing prompt failed (continuing)");
-        }
-    }
+    maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), current_dir.as_deref())?;
 
     // Build command
     let mut cmd = build_command(
@@ -105,7 +97,7 @@ pub fn run_launch(
         skip_permissions,
         &extra_args,
     );
-    cmd.envs(env);
+    env_builder.apply_to_command(&mut cmd);
 
     // Register signal handlers
     let shutdown = signals::register_handlers()?;
@@ -187,6 +179,44 @@ fn should_prompt_blarify_indexing(tool: &str, noninteractive: bool) -> bool {
         && (!noninteractive || blarify_mode() != BlarifyMode::Prompt)
 }
 
+fn maybe_run_blarify_indexing_prompt(
+    tool: &str,
+    noninteractive: bool,
+    current_dir: Option<&Path>,
+) -> Result<()> {
+    maybe_run_blarify_indexing_prompt_with(
+        tool,
+        noninteractive,
+        current_dir,
+        maybe_prompt_blarify_indexing,
+    )
+}
+
+fn maybe_run_blarify_indexing_prompt_with<F>(
+    tool: &str,
+    noninteractive: bool,
+    current_dir: Option<&Path>,
+    prompt_runner: F,
+) -> Result<()>
+where
+    F: FnOnce(&Path) -> Result<()>,
+{
+    if !should_prompt_blarify_indexing(tool, noninteractive) {
+        return Ok(());
+    }
+
+    let project_path = current_dir.context("failed to resolve current directory")?;
+    if let Some(notice) = code_graph_compatibility_notice_for_project(project_path, None)? {
+        println!("⚠️ Compatibility mode: {notice}");
+    }
+    prompt_runner(project_path).with_context(|| {
+        format!(
+            "code graph indexing prompt failed for {}",
+            project_path.display()
+        )
+    })
+}
+
 fn maybe_prompt_blarify_indexing(project_path: &Path) -> Result<()> {
     if has_blarify_consent(project_path)? {
         tracing::debug!(project = %project_path.display(), "skipping code graph prompt due to saved consent");
@@ -198,7 +228,7 @@ fn maybe_prompt_blarify_indexing(project_path: &Path) -> Result<()> {
     }
 
     let status = check_index_status(project_path)?;
-    let db_path = default_code_graph_db_path_for_project(project_path)?;
+    let db_path = resolve_code_graph_db_path_for_project(project_path)?;
     let code_graph_missing = !db_path.exists();
     if !status.needs_indexing && !code_graph_missing {
         tracing::debug!(reason = %status.reason, "code graph artifact is current");
@@ -288,7 +318,7 @@ fn run_code_indexing(
     action: BlarifyIndexAction,
     background: bool,
 ) -> Result<()> {
-    let kuzu_path = default_code_graph_db_path_for_project(project_path)?;
+    let db_path = resolve_code_graph_db_path_for_project(project_path)?;
     if background {
         let current_exe =
             std::env::current_exe().context("failed to resolve current executable")?;
@@ -297,8 +327,8 @@ fn run_code_indexing(
             BlarifyIndexAction::ImportExistingJson => {
                 cmd.arg("index-code")
                     .arg(json_path)
-                    .arg("--kuzu-path")
-                    .arg(&kuzu_path);
+                    .arg("--db-path")
+                    .arg(&db_path);
                 cmd.current_dir(project_path)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
@@ -336,7 +366,7 @@ fn run_code_indexing(
     match action {
         BlarifyIndexAction::ImportExistingJson => {
             println!("\n📊 Importing code graph data...\n");
-            run_index_code(json_path, Some(&kuzu_path))?;
+            run_index_code(json_path, Some(&db_path))?;
             println!("\n✅ Code graph import complete.\n");
         }
         BlarifyIndexAction::GenerateNativeScip => {
@@ -444,9 +474,11 @@ fn manual_indexing_hint(
 ) -> String {
     match action {
         BlarifyIndexAction::ImportExistingJson => format!(
-            "amplihack index-code {} --kuzu-path {}",
+            "amplihack index-code {} --db-path {}",
             json_path.display(),
-            project_path.join(".amplihack").join("kuzu_db").display()
+            resolve_code_graph_db_path_for_project(project_path)
+                .unwrap_or_else(|_| project_path.join(".amplihack").join("graph_db"))
+                .display()
         ),
         BlarifyIndexAction::GenerateNativeScip => format!(
             "amplihack index-scip --project-path {}",
@@ -507,14 +539,6 @@ mod tests {
     use super::*;
     use crate::test_support::{home_env_lock, restore_home, set_home};
     use std::path::PathBuf;
-
-    // ---------------------------------------------------------------------------
-    // TDD Step 7: Failing tests for flag injection (Category 2)
-    //
-    // These tests specify the expected behaviour for --dangerously-skip-permissions
-    // and --model injection in build_command. They are written to FAIL until the
-    // implementation matches the Python launcher parity requirements.
-    // ---------------------------------------------------------------------------
 
     fn make_binary(path: &str) -> BinaryInfo {
         BinaryInfo {
@@ -736,30 +760,7 @@ mod tests {
         assert_eq!(args, &["--resume", "--continue", "--model", "opus"]);
     }
 
-    // ---------------------------------------------------------------------------
-    // TDD Step 7: WS1 — SIGINT Exit Code Parity Tests
-    //
-    // These tests specify the required behaviour when the child process is killed
-    // by SIGINT (Ctrl-C).  Python's `signal_handler` unconditionally calls
-    // `sys.exit(0)` after receiving SIGINT; the Rust launcher must match.
-    //
-    // ROOT CAUSE: wait_for_child_or_signal() line 148 uses:
-    //   status.code().unwrap_or(1)
-    // On Unix a signal-killed process has no numeric exit code, so
-    // status.code() returns None.  unwrap_or(1) maps that to 1; the correct
-    // mapping is unwrap_or(0) to match Python.
-    //
-    // FIX REQUIRED: change `unwrap_or(1)` → `unwrap_or(0)` at line 148.
-    //
-    // PARITY TESTS UNBLOCKED BY THIS FIX:
-    //   gap-launch-sigint-exit-code  (tier5-gap-tests.yaml)
-    //   gap-sigint-exit-code         (tier7-launcher-parity.yaml)
-    // ---------------------------------------------------------------------------
-
-    /// Sanity check: when child exits normally with code 0, wait_for_child_or_signal
-    /// must return 0.  This verifies the happy path is not broken by the SIGINT fix.
-    ///
-    /// Expected: PASSES both before and after the fix.
+    /// When child exits normally with code 0, wait_for_child_or_signal must return 0.
     #[test]
     fn test_wait_for_child_returns_zero_on_normal_success() {
         let _guard = home_env_lock()
@@ -826,33 +827,14 @@ mod tests {
         assert!(
             status.code().is_none(),
             "A process killed by SIGINT must have no numeric exit code \
-             (status.code() returns None on Unix). \
-             This is why unwrap_or matters: unwrap_or(1) → 1 (wrong), \
-             unwrap_or(0) → 0 (correct). Got: {:?}",
+             (status.code() returns None on Unix). Got: {:?}",
             status.code()
         );
     }
 
     /// SIGINT exit code parity with Python: when the child process is killed by
-    /// SIGINT, wait_for_child_or_signal MUST return exit code 0.
-    ///
-    /// Python launcher behaviour (src/amplihack/launcher/core.py):
-    ///   signal_handler(sig, frame):
-    ///       ...
-    ///       sys.exit(0)  ← exits 0 unconditionally on SIGINT
-    ///
-    /// Rust broken behaviour (launch.rs:148):
-    ///   status.code().unwrap_or(1)  → None.unwrap_or(1) = 1  ← WRONG
-    ///
-    /// Rust required behaviour after fix:
-    ///   status.code().unwrap_or(0)  → None.unwrap_or(0) = 0  ← CORRECT
-    ///
-    /// PARITY AUDIT TARGETS:
-    ///   gap-launch-sigint-exit-code  (tier5-gap-tests.yaml  — Python exits 0)
-    ///   gap-sigint-exit-code         (tier7-launcher-parity.yaml)
-    ///
-    /// *** THIS TEST FAILS until the fix: change `unwrap_or(1)` → `unwrap_or(0)`
-    ///     at line 148 of wait_for_child_or_signal() in this file. ***
+    /// SIGINT, wait_for_child_or_signal must return exit code 0, matching Python's
+    /// `signal_handler → sys.exit(0)` behaviour.
     #[test]
     #[cfg(unix)]
     fn test_wait_for_child_returns_zero_when_killed_by_sigint() {
@@ -872,15 +854,11 @@ mod tests {
         let exit_code = wait_for_child_or_signal(&mut child, &shutdown)
             .expect("wait_for_child_or_signal returned an error");
 
-        // Python: sys.exit(0) on SIGINT  →  exit code 0
-        // Broken: status.code().unwrap_or(1)  →  1
-        // Fixed:  status.code().unwrap_or(0)  →  0
+        // Python: sys.exit(0) on SIGINT → exit code 0. unwrap_or(0) matches this.
         assert_eq!(
             exit_code, 0,
             "SIGINT-killed child must produce exit code 0 (parity with Python \
-             signal_handler → sys.exit(0)). Got exit code {exit_code}. \
-             FIX: change `unwrap_or(1)` to `unwrap_or(0)` at launch.rs:148 \
-             in wait_for_child_or_signal()."
+             signal_handler → sys.exit(0)). Got exit code {exit_code}."
         );
     }
 
@@ -947,6 +925,45 @@ mod tests {
             std::env::remove_var("AMPLIHACK_ENABLE_BLARIFY");
             std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
         }
+    }
+
+    #[test]
+    fn maybe_run_blarify_indexing_prompt_surfaces_prompt_failure() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let project = tempfile::tempdir().unwrap();
+
+        unsafe {
+            std::env::set_var("AMPLIHACK_ENABLE_BLARIFY", "1");
+            std::env::set_var("AMPLIHACK_BLARIFY_MODE", "background");
+        }
+
+        let result =
+            maybe_run_blarify_indexing_prompt_with("claude", true, Some(project.path()), |_path| {
+                Err(anyhow::anyhow!("synthetic prompt failure"))
+            });
+
+        unsafe {
+            std::env::remove_var("AMPLIHACK_ENABLE_BLARIFY");
+            std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
+        }
+
+        let error = result.expect_err("prompt failure should stop launch");
+        let error_message = error.to_string();
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_message.contains("code graph indexing prompt failed for"),
+            "expected launch-side prompt failure context, got: {error_message}"
+        );
+        assert!(
+            error_chain.contains("synthetic prompt failure"),
+            "expected root-cause prompt failure, got: {error_chain}"
+        );
+        assert!(
+            error_chain.contains(&project.path().display().to_string()),
+            "expected project path in error chain, got: {error_chain}"
+        );
     }
 
     #[test]

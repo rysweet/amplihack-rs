@@ -1,109 +1,17 @@
-//! Native blarify JSON → Kuzu code-graph import.
+//! Native blarify JSON → graph-db code-graph import.
 
-use super::{init_kuzu_backend_schema, kuzu_i64, kuzu_rows, kuzu_string};
+pub(crate) mod backend;
+
 use anyhow::{Context, Result, bail};
-use chrono::DateTime;
-use kuzu::{
-    Connection as KuzuConnection, Database as KuzuDatabase, SystemConfig, Value as KuzuValue,
-};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::path::Component;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use time::OffsetDateTime;
-
-const KUZU_CODE_GRAPH_SCHEMA: &[&str] = &[
-    r#"CREATE NODE TABLE IF NOT EXISTS CodeFile(
-        file_id STRING,
-        file_path STRING,
-        language STRING,
-        size_bytes INT64,
-        last_modified TIMESTAMP,
-        created_at TIMESTAMP,
-        metadata STRING,
-        PRIMARY KEY (file_id)
-    )"#,
-    r#"CREATE NODE TABLE IF NOT EXISTS CodeClass(
-        class_id STRING,
-        class_name STRING,
-        fully_qualified_name STRING,
-        file_path STRING,
-        line_number INT64,
-        docstring STRING,
-        is_abstract BOOL,
-        created_at TIMESTAMP,
-        metadata STRING,
-        PRIMARY KEY (class_id)
-    )"#,
-    r#"CREATE NODE TABLE IF NOT EXISTS CodeFunction(
-        function_id STRING,
-        function_name STRING,
-        fully_qualified_name STRING,
-        signature STRING,
-        file_path STRING,
-        line_number INT64,
-        parameters STRING,
-        return_type STRING,
-        docstring STRING,
-        is_async BOOL,
-        cyclomatic_complexity INT64,
-        created_at TIMESTAMP,
-        metadata STRING,
-        PRIMARY KEY (function_id)
-    )"#,
-    r#"CREATE REL TABLE IF NOT EXISTS DEFINED_IN(
-        FROM CodeFunction TO CodeFile,
-        line_number INT64,
-        end_line INT64
-    )"#,
-    r#"CREATE REL TABLE IF NOT EXISTS CLASS_DEFINED_IN(
-        FROM CodeClass TO CodeFile,
-        line_number INT64
-    )"#,
-    r#"CREATE REL TABLE IF NOT EXISTS METHOD_OF(
-        FROM CodeFunction TO CodeClass,
-        method_type STRING,
-        visibility STRING
-    )"#,
-    r#"CREATE REL TABLE IF NOT EXISTS CALLS(
-        FROM CodeFunction TO CodeFunction,
-        call_count INT64,
-        context STRING
-    )"#,
-    r#"CREATE REL TABLE IF NOT EXISTS INHERITS(
-        FROM CodeClass TO CodeClass,
-        inheritance_order INT64,
-        inheritance_type STRING
-    )"#,
-    r#"CREATE REL TABLE IF NOT EXISTS REFERENCES_CLASS(
-        FROM CodeFunction TO CodeClass,
-        reference_type STRING,
-        context STRING
-    )"#,
-    r#"CREATE REL TABLE IF NOT EXISTS IMPORTS(
-        FROM CodeFile TO CodeFile,
-        import_type STRING,
-        alias STRING
-    )"#,
-];
-
-const KUZU_MEMORY_FILE_LINK_TABLES: &[(&str, &str)] = &[
-    ("EpisodicMemory", "RELATES_TO_FILE_EPISODIC"),
-    ("SemanticMemory", "RELATES_TO_FILE_SEMANTIC"),
-    ("ProceduralMemory", "RELATES_TO_FILE_PROCEDURAL"),
-    ("ProspectiveMemory", "RELATES_TO_FILE_PROSPECTIVE"),
-    ("WorkingMemory", "RELATES_TO_FILE_WORKING"),
-];
-
-const KUZU_MEMORY_FUNCTION_LINK_TABLES: &[(&str, &str)] = &[
-    ("EpisodicMemory", "RELATES_TO_FUNCTION_EPISODIC"),
-    ("SemanticMemory", "RELATES_TO_FUNCTION_SEMANTIC"),
-    ("ProceduralMemory", "RELATES_TO_FUNCTION_PROCEDURAL"),
-    ("ProspectiveMemory", "RELATES_TO_FUNCTION_PROSPECTIVE"),
-    ("WorkingMemory", "RELATES_TO_FUNCTION_WORKING"),
-];
 
 const BLARIFY_JSON_MAX_BYTES: u64 = 500 * 1024 * 1024;
 
@@ -300,69 +208,7 @@ pub(crate) trait CodeGraphReaderBackend {
 pub(crate) fn open_code_graph_reader(
     path_override: Option<&Path>,
 ) -> Result<Box<dyn CodeGraphReaderBackend>> {
-    Ok(Box::new(KuzuCodeGraphReader::open(path_override)?))
-}
-
-struct KuzuCodeGraphReader {
-    db: KuzuDatabase,
-}
-
-impl KuzuCodeGraphReader {
-    fn open(path_override: Option<&Path>) -> Result<Self> {
-        Ok(Self {
-            db: open_kuzu_code_graph_db(path_override)?,
-        })
-    }
-
-    fn with_conn<T>(&self, f: impl FnOnce(&KuzuConnection<'_>) -> Result<T>) -> Result<T> {
-        let conn = KuzuConnection::new(&self.db)?;
-        ensure_memory_code_link_schema(&conn)?;
-        f(&conn)
-    }
-}
-
-impl CodeGraphReaderBackend for KuzuCodeGraphReader {
-    fn stats(&self) -> Result<CodeGraphStats> {
-        self.with_conn(read_code_graph_stats_in_conn)
-    }
-
-    fn context_payload(&self, memory_id: &str) -> Result<CodeGraphContextPayload> {
-        self.with_conn(|conn| query_code_context_in_conn(conn, memory_id))
-    }
-
-    fn files(&self, pattern: Option<&str>, limit: u32) -> Result<Vec<String>> {
-        self.with_conn(|conn| list_code_files_in_conn(conn, pattern, limit))
-    }
-
-    fn functions(&self, file: Option<&str>, limit: u32) -> Result<Vec<CodeGraphNamedEntry>> {
-        self.with_conn(|conn| list_code_functions_in_conn(conn, file, limit))
-    }
-
-    fn classes(&self, file: Option<&str>, limit: u32) -> Result<Vec<CodeGraphNamedEntry>> {
-        self.with_conn(|conn| list_code_classes_in_conn(conn, file, limit))
-    }
-
-    fn search(&self, name: &str, limit: u32) -> Result<Vec<CodeGraphSearchEntry>> {
-        self.with_conn(|conn| search_code_graph_in_conn(conn, name, limit))
-    }
-
-    fn callers(&self, name: &str, limit: u32) -> Result<Vec<CodeGraphEdgeEntry>> {
-        self.with_conn(|conn| query_code_edges_in_conn(
-            conn,
-            "MATCH (caller:CodeFunction)-[:CALLS]->(callee:CodeFunction) WHERE callee.function_name CONTAINS $name RETURN caller.function_name, callee.function_name LIMIT $lim",
-            name,
-            limit,
-        ))
-    }
-
-    fn callees(&self, name: &str, limit: u32) -> Result<Vec<CodeGraphEdgeEntry>> {
-        self.with_conn(|conn| query_code_edges_in_conn(
-            conn,
-            "MATCH (caller:CodeFunction)-[:CALLS]->(callee:CodeFunction) WHERE caller.function_name CONTAINS $name RETURN caller.function_name, callee.function_name LIMIT $lim",
-            name,
-            limit,
-        ))
-    }
+    self::backend::open_code_graph_reader(path_override)
 }
 
 trait CodeGraphWriterBackend {
@@ -370,51 +216,14 @@ trait CodeGraphWriterBackend {
 }
 
 fn open_code_graph_writer(path_override: Option<&Path>) -> Result<Box<dyn CodeGraphWriterBackend>> {
-    Ok(Box::new(KuzuCodeGraphWriter::open(path_override)?))
+    self::backend::open_code_graph_writer(path_override)
 }
 
-struct KuzuCodeGraphWriter {
-    db: KuzuDatabase,
-}
-
-impl KuzuCodeGraphWriter {
-    fn open(path_override: Option<&Path>) -> Result<Self> {
-        Ok(Self {
-            db: open_kuzu_code_graph_db(path_override)?,
-        })
+pub fn run_index_code(input: &Path, db_path: Option<&Path>) -> Result<()> {
+    if let Some(notice) = code_graph_compatibility_notice_for_input(input, db_path)? {
+        eprintln!("⚠️ Compatibility mode: {notice}");
     }
-
-    fn with_conn<T>(&self, f: impl FnOnce(&KuzuConnection<'_>) -> Result<T>) -> Result<T> {
-        let conn = KuzuConnection::new(&self.db)?;
-        ensure_memory_code_link_schema(&conn)?;
-        f(&conn)
-    }
-}
-
-impl CodeGraphWriterBackend for KuzuCodeGraphWriter {
-    fn import_blarify_output(&self, payload: &BlarifyOutput) -> Result<CodeGraphImportCounts> {
-        self.with_conn(|conn| {
-            let counts = CodeGraphImportCounts {
-                files: import_files(conn, &payload.files)?,
-                classes: import_classes(conn, &payload.classes)?,
-                functions: import_functions(conn, &payload.functions)?,
-                imports: import_imports(conn, &payload.imports)?,
-                relationships: import_relationships(conn, &payload.relationships)?,
-            };
-            let linked_memories = link_memories_to_code_files_in_conn(conn)?;
-            if linked_memories > 0 {
-                tracing::info!(
-                    count = linked_memories,
-                    "linked existing memories to code graph after import"
-                );
-            }
-            Ok(counts)
-        })
-    }
-}
-
-pub fn run_index_code(input: &Path, kuzu_path: Option<&Path>) -> Result<()> {
-    let counts = import_blarify_json(input, kuzu_path)?;
+    let counts = import_blarify_json(input, db_path)?;
     println!("{}", serde_json::to_string_pretty(&counts)?);
     Ok(())
 }
@@ -423,7 +232,7 @@ pub fn import_scip_file(
     input_path: &Path,
     project_root: &Path,
     language_hint: Option<&str>,
-    kuzu_path: Option<&Path>,
+    db_path: Option<&Path>,
 ) -> Result<CodeGraphImportCounts> {
     if !input_path.exists() {
         bail!("SCIP index not found: {}", input_path.display());
@@ -438,7 +247,7 @@ pub fn import_scip_file(
     let payload = convert_scip_to_blarify(&index, &project_root, language_hint);
 
     let default_db_path;
-    let path_override = match kuzu_path {
+    let path_override = match db_path {
         Some(path) => Some(path),
         None => {
             default_db_path = default_code_graph_db_path_for_project(&project_root)?;
@@ -450,14 +259,10 @@ pub fn import_scip_file(
 
 pub fn import_blarify_json(
     input_path: &Path,
-    kuzu_path: Option<&Path>,
+    db_path: Option<&Path>,
 ) -> Result<CodeGraphImportCounts> {
     if !input_path.exists() {
-        tracing::warn!(
-            file = %input_path.file_name().unwrap_or_default().to_string_lossy(),
-            "blarify JSON not found; skipping import"
-        );
-        return Ok(CodeGraphImportCounts::default());
+        bail!("blarify JSON not found: {}", input_path.display());
     }
     let input_path = validate_index_path(input_path)?;
     validate_blarify_json_size(&input_path, BLARIFY_JSON_MAX_BYTES)?;
@@ -468,7 +273,7 @@ pub fn import_blarify_json(
         .with_context(|| format!("invalid JSON in {}", input_path.display()))?;
 
     let inferred_db_path;
-    let path_override = match kuzu_path {
+    let path_override = match db_path {
         Some(path) => Some(path),
         None => {
             inferred_db_path = infer_code_graph_db_path_from_input(&input_path)?;
@@ -479,28 +284,162 @@ pub fn import_blarify_json(
     open_code_graph_writer(path_override)?.import_blarify_output(&payload)
 }
 
-pub(crate) fn open_kuzu_code_graph_db(path_override: Option<&Path>) -> Result<KuzuDatabase> {
-    let path = match path_override {
-        Some(path) => path.to_path_buf(),
-        None => default_code_graph_db_path()?,
-    };
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let db = KuzuDatabase::new(&path, SystemConfig::default())?;
-    enforce_db_permissions(&path)?;
-    Ok(db)
-}
-
 fn default_code_graph_db_path() -> Result<PathBuf> {
-    default_code_graph_db_path_for_project(
+    resolve_code_graph_db_path_for_project(
         &std::env::current_dir()
             .context("failed to resolve current directory for default code graph path")?,
     )
 }
 
 pub fn default_code_graph_db_path_for_project(project_root: &Path) -> Result<PathBuf> {
-    Ok(project_root.join(".amplihack").join("kuzu_db"))
+    Ok(project_root.join(".amplihack").join("graph_db"))
+}
+
+pub fn code_graph_compatibility_notice_for_project(
+    project_root: &Path,
+    db_path_override: Option<&Path>,
+) -> Result<Option<String>> {
+    if db_path_override.is_some() {
+        return Ok(None);
+    }
+
+    let graph_override = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+    if graph_override
+        .as_ref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Ok(None);
+    }
+
+    let legacy_override = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+    if legacy_override
+        .as_ref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Ok(Some(
+            "using legacy `AMPLIHACK_KUZU_DB_PATH`; prefer `AMPLIHACK_GRAPH_DB_PATH`.".to_string(),
+        ));
+    }
+
+    let neutral = default_code_graph_db_path_for_project(project_root)?;
+    let legacy = project_root.join(".amplihack").join("kuzu_db");
+    if legacy.exists() && !neutral.exists() {
+        return Ok(Some(format!(
+            "using legacy code-graph store `{}` because `{}` is absent; migrate to `graph_db`.",
+            legacy.display(),
+            neutral.display()
+        )));
+    }
+
+    Ok(None)
+}
+
+pub fn code_graph_compatibility_notice_for_input(
+    input_path: &Path,
+    db_path_override: Option<&Path>,
+) -> Result<Option<String>> {
+    let Some(parent) = input_path.parent() else {
+        return code_graph_compatibility_notice_for_project(
+            &std::env::current_dir().context(
+                "failed to resolve current directory for code graph compatibility notice",
+            )?,
+            db_path_override,
+        );
+    };
+    let is_blarify_json =
+        input_path.file_name().and_then(|name| name.to_str()) == Some("blarify.json");
+    let is_project_amplihack_dir =
+        parent.file_name().and_then(|name| name.to_str()) == Some(".amplihack");
+    if is_blarify_json
+        && is_project_amplihack_dir
+        && let Some(project_root) = parent.parent()
+    {
+        return code_graph_compatibility_notice_for_project(project_root, db_path_override);
+    }
+    code_graph_compatibility_notice_for_project(
+        &std::env::current_dir()
+            .context("failed to resolve current directory for code graph compatibility notice")?,
+        db_path_override,
+    )
+}
+
+fn validate_graph_db_env_path(path: &Path) -> Result<PathBuf> {
+    if !path.is_absolute() {
+        bail!("graph DB path must be absolute: {}", path.display());
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        bail!(
+            "graph DB path must not contain parent traversal: {}",
+            path.display()
+        );
+    }
+    for blocked in ["/proc", "/sys", "/dev"] {
+        if path.starts_with(blocked) {
+            bail!("blocked unsafe path prefix: {blocked}");
+        }
+    }
+    Ok(path.to_path_buf())
+}
+
+fn graph_db_env_override(var_name: &str) -> Result<Option<PathBuf>> {
+    let Some(path) = std::env::var_os(var_name) else {
+        return Ok(None);
+    };
+    if path.is_empty() {
+        return Ok(None);
+    }
+    let path = PathBuf::from(path);
+    let validated = validate_graph_db_env_path(&path)
+        .with_context(|| format!("invalid {var_name} override: {}", path.display()))?;
+    Ok(Some(validated))
+}
+
+fn safe_legacy_graph_db_path(project_root: &Path, neutral: &Path) -> Result<Option<PathBuf>> {
+    let legacy = project_root.join(".amplihack").join("kuzu_db");
+    if !legacy.exists() || neutral.exists() {
+        return Ok(None);
+    }
+
+    let canonical_project_root = project_root.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize project root while validating legacy graph DB shim: {}",
+            project_root.display()
+        )
+    })?;
+    match legacy.canonicalize() {
+        Ok(canonical_legacy) if canonical_legacy.starts_with(&canonical_project_root) => {
+            Ok(Some(legacy))
+        }
+        Ok(canonical_legacy) => bail!(
+            "legacy graph DB shim escapes project root: {} -> {} (project root: {})",
+            legacy.display(),
+            canonical_legacy.display(),
+            canonical_project_root.display()
+        ),
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "failed to canonicalize legacy graph DB shim: {}",
+                legacy.display()
+            )
+        }),
+    }
+}
+
+pub fn resolve_code_graph_db_path_for_project(project_root: &Path) -> Result<PathBuf> {
+    if let Some(path) = graph_db_env_override("AMPLIHACK_GRAPH_DB_PATH")? {
+        return Ok(path);
+    }
+    if let Some(path) = graph_db_env_override("AMPLIHACK_KUZU_DB_PATH")? {
+        return Ok(path);
+    }
+    let neutral = default_code_graph_db_path_for_project(project_root)?;
+    if let Some(legacy) = safe_legacy_graph_db_path(project_root, &neutral)? {
+        return Ok(legacy);
+    }
+    Ok(neutral)
 }
 
 fn infer_code_graph_db_path_from_input(input_path: &Path) -> Result<PathBuf> {
@@ -515,230 +454,13 @@ fn infer_code_graph_db_path_from_input(input_path: &Path) -> Result<PathBuf> {
         let Some(project_root) = parent.parent() else {
             return default_code_graph_db_path();
         };
-        return default_code_graph_db_path_for_project(project_root);
+        return resolve_code_graph_db_path_for_project(project_root);
     }
     default_code_graph_db_path()
 }
 
-pub(crate) fn init_kuzu_code_graph_schema(conn: &KuzuConnection<'_>) -> Result<()> {
-    for statement in KUZU_CODE_GRAPH_SCHEMA {
-        conn.query(statement)?;
-    }
-    Ok(())
-}
-
-pub(crate) fn ensure_memory_code_link_schema(conn: &KuzuConnection<'_>) -> Result<()> {
-    init_kuzu_backend_schema(conn)?;
-    init_kuzu_code_graph_schema(conn)?;
-    for (memory_type, rel_table) in KUZU_MEMORY_FILE_LINK_TABLES {
-        conn.query(&format!(
-            "CREATE REL TABLE IF NOT EXISTS {rel_table}(FROM {memory_type} TO CodeFile, relevance_score DOUBLE, context STRING, timestamp TIMESTAMP)"
-        ))?;
-    }
-    for (memory_type, rel_table) in KUZU_MEMORY_FUNCTION_LINK_TABLES {
-        conn.query(&format!(
-            "CREATE REL TABLE IF NOT EXISTS {rel_table}(FROM {memory_type} TO CodeFunction, relevance_score DOUBLE, context STRING, timestamp TIMESTAMP)"
-        ))?;
-    }
-    Ok(())
-}
-
-fn normalize_match_path(path: &str) -> String {
-    path.replace('\\', "/")
-}
-
-pub(crate) fn code_memory_link_counts(conn: &KuzuConnection<'_>) -> Result<(i64, i64)> {
-    ensure_memory_code_link_schema(conn)?;
-
-    let file_links =
-        KUZU_MEMORY_FILE_LINK_TABLES
-            .iter()
-            .try_fold(0i64, |acc, (_, rel_table)| {
-                Ok::<i64, anyhow::Error>(
-                    acc + scalar_count(
-                        conn,
-                        &format!("MATCH ()-[r:{rel_table}]->(:CodeFile) RETURN COUNT(r)"),
-                    )?,
-                )
-            })?;
-    let function_links =
-        KUZU_MEMORY_FUNCTION_LINK_TABLES
-            .iter()
-            .try_fold(0i64, |acc, (_, rel_table)| {
-                Ok::<i64, anyhow::Error>(
-                    acc + scalar_count(
-                        conn,
-                        &format!("MATCH ()-[r:{rel_table}]->(:CodeFunction) RETURN COUNT(r)"),
-                    )?,
-                )
-            })?;
-
-    Ok((file_links, function_links))
-}
-
-fn link_memories_to_code_files_in_conn(conn: &KuzuConnection<'_>) -> Result<usize> {
-    ensure_memory_code_link_schema(conn)?;
-
-    let mut created = 0usize;
-    let now = OffsetDateTime::now_utc();
-
-    for (memory_type, rel_table) in KUZU_MEMORY_FILE_LINK_TABLES {
-        let memories = kuzu_rows(
-            conn,
-            &format!(
-                "MATCH (m:{memory_type}) WHERE m.metadata IS NOT NULL RETURN m.memory_id, m.metadata"
-            ),
-            vec![],
-        )?;
-
-        for row in memories {
-            let memory_id = kuzu_string(row.first())?;
-            let metadata_raw = match row.get(1) {
-                Some(value) => kuzu_string(Some(value))?,
-                None => continue,
-            };
-            if metadata_raw.trim().is_empty() {
-                continue;
-            }
-
-            let metadata = match serde_json::from_str::<serde_json::Value>(&metadata_raw) {
-                Ok(metadata) => metadata,
-                Err(error) => {
-                    tracing::warn!(
-                        %memory_id,
-                        memory_type,
-                        %error,
-                        "invalid memory metadata JSON; skipping code-file linking"
-                    );
-                    continue;
-                }
-            };
-            let Some(file_path) = metadata.get("file").and_then(|value| value.as_str()) else {
-                continue;
-            };
-            let file_path = normalize_match_path(file_path);
-            if file_path.trim().is_empty() {
-                continue;
-            }
-
-            let matching_files = kuzu_rows(
-                conn,
-                "MATCH (cf:CodeFile) WHERE cf.file_path CONTAINS $file_path OR $file_path CONTAINS cf.file_path RETURN cf.file_id",
-                vec![("file_path", KuzuValue::String(file_path))],
-            )?;
-
-            for file_row in matching_files {
-                let file_id = kuzu_string(file_row.first())?;
-                let existing = kuzu_rows(
-                    conn,
-                    &format!(
-                        "MATCH (m:{memory_type} {{memory_id: $memory_id}})-[r:{rel_table}]->(cf:CodeFile {{file_id: $file_id}}) RETURN COUNT(r)"
-                    ),
-                    vec![
-                        ("memory_id", KuzuValue::String(memory_id.clone())),
-                        ("file_id", KuzuValue::String(file_id.clone())),
-                    ],
-                )?;
-                let existing_count = existing
-                    .first()
-                    .map(|row| kuzu_i64(row.first()).unwrap_or(0))
-                    .unwrap_or(0);
-                if existing_count > 0 {
-                    continue;
-                }
-
-                let mut create = conn.prepare(&format!(
-                    "MATCH (m:{memory_type} {{memory_id: $memory_id}}) MATCH (cf:CodeFile {{file_id: $file_id}}) CREATE (m)-[:{rel_table} {{relevance_score: $relevance_score, context: $context, timestamp: $timestamp}}]->(cf)"
-                ))?;
-                conn.execute(
-                    &mut create,
-                    vec![
-                        ("memory_id", KuzuValue::String(memory_id.clone())),
-                        ("file_id", KuzuValue::String(file_id)),
-                        ("relevance_score", KuzuValue::Double(1.0)),
-                        (
-                            "context",
-                            KuzuValue::String("metadata_file_match".to_string()),
-                        ),
-                        ("timestamp", KuzuValue::Timestamp(now)),
-                    ],
-                )?;
-                created += 1;
-            }
-        }
-    }
-
-    for (memory_type, rel_table) in KUZU_MEMORY_FUNCTION_LINK_TABLES {
-        let memories = kuzu_rows(
-            conn,
-            &format!(
-                "MATCH (m:{memory_type}) WHERE m.content IS NOT NULL RETURN m.memory_id, m.content"
-            ),
-            vec![],
-        )?;
-
-        for row in memories {
-            let memory_id = kuzu_string(row.first())?;
-            let content = match row.get(1) {
-                Some(value) => kuzu_string(Some(value))?,
-                None => continue,
-            };
-            if content.trim().is_empty() {
-                continue;
-            }
-
-            let matching_functions = kuzu_rows(
-                conn,
-                "MATCH (f:CodeFunction) WHERE $content CONTAINS f.function_name RETURN f.function_id",
-                vec![("content", KuzuValue::String(content))],
-            )?;
-
-            for function_row in matching_functions {
-                let function_id = kuzu_string(function_row.first())?;
-                let existing = kuzu_rows(
-                    conn,
-                    &format!(
-                        "MATCH (m:{memory_type} {{memory_id: $memory_id}})-[r:{rel_table}]->(f:CodeFunction {{function_id: $function_id}}) RETURN COUNT(r)"
-                    ),
-                    vec![
-                        ("memory_id", KuzuValue::String(memory_id.clone())),
-                        ("function_id", KuzuValue::String(function_id.clone())),
-                    ],
-                )?;
-                let existing_count = existing
-                    .first()
-                    .map(|row| kuzu_i64(row.first()).unwrap_or(0))
-                    .unwrap_or(0);
-                if existing_count > 0 {
-                    continue;
-                }
-
-                let mut create = conn.prepare(&format!(
-                    "MATCH (m:{memory_type} {{memory_id: $memory_id}}) MATCH (f:CodeFunction {{function_id: $function_id}}) CREATE (m)-[:{rel_table} {{relevance_score: $relevance_score, context: $context, timestamp: $timestamp}}]->(f)"
-                ))?;
-                conn.execute(
-                    &mut create,
-                    vec![
-                        ("memory_id", KuzuValue::String(memory_id.clone())),
-                        ("function_id", KuzuValue::String(function_id)),
-                        ("relevance_score", KuzuValue::Double(0.8)),
-                        (
-                            "context",
-                            KuzuValue::String("content_name_match".to_string()),
-                        ),
-                        ("timestamp", KuzuValue::Timestamp(now)),
-                    ],
-                )?;
-                created += 1;
-            }
-        }
-    }
-
-    Ok(created)
-}
-
-pub fn summarize_code_graph(kuzu_path: Option<&Path>) -> Result<Option<CodeGraphSummary>> {
-    let path = match kuzu_path {
+pub fn summarize_code_graph(db_path: Option<&Path>) -> Result<Option<CodeGraphSummary>> {
+    let path = match db_path {
         Some(path) => path.to_path_buf(),
         None => default_code_graph_db_path()?,
     };
@@ -748,711 +470,6 @@ pub fn summarize_code_graph(kuzu_path: Option<&Path>) -> Result<Option<CodeGraph
 
     let stats = open_code_graph_reader(Some(&path))?.stats()?;
     Ok(Some(stats.into()))
-}
-
-fn scalar_count(conn: &KuzuConnection<'_>, query: &str) -> Result<i64> {
-    let rows = kuzu_rows(conn, query, vec![])?;
-    kuzu_i64(rows.first().and_then(|row| row.first()))
-}
-
-fn read_code_graph_stats_in_conn(conn: &KuzuConnection<'_>) -> Result<CodeGraphStats> {
-    let (memory_file_links, memory_function_links) = code_memory_link_counts(conn)?;
-    Ok(CodeGraphStats {
-        files: scalar_count(conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)")?,
-        classes: scalar_count(conn, "MATCH (c:CodeClass) RETURN COUNT(c)")?,
-        functions: scalar_count(conn, "MATCH (f:CodeFunction) RETURN COUNT(f)")?,
-        memory_file_links,
-        memory_function_links,
-    })
-}
-
-fn query_code_context_in_conn(
-    conn: &KuzuConnection<'_>,
-    memory_id: &str,
-) -> Result<CodeGraphContextPayload> {
-    let Some((memory_type, file_rel, function_rel)) =
-        resolve_memory_link_tables_in_conn(conn, memory_id)?
-    else {
-        return Ok(CodeGraphContextPayload {
-            memory_id: memory_id.to_string(),
-            ..Default::default()
-        });
-    };
-
-    let files = kuzu_rows(
-        conn,
-        &format!(
-            "MATCH (m:{memory_type} {{memory_id: $memory_id}})-[:{file_rel}]->(cf:CodeFile) RETURN cf.file_path, cf.language, cf.size_bytes ORDER BY cf.file_path"
-        ),
-        vec![("memory_id", KuzuValue::String(memory_id.to_string()))],
-    )?;
-    let functions = kuzu_rows(
-        conn,
-        &format!(
-            "MATCH (m:{memory_type} {{memory_id: $memory_id}})-[:{function_rel}]->(f:CodeFunction) RETURN f.function_name, f.signature, f.docstring, f.cyclomatic_complexity ORDER BY f.function_name"
-        ),
-        vec![("memory_id", KuzuValue::String(memory_id.to_string()))],
-    )?;
-    let classes = kuzu_rows(
-        conn,
-        &format!(
-            "MATCH (m:{memory_type} {{memory_id: $memory_id}})-[:{function_rel}]->(f:CodeFunction)-[:METHOD_OF]->(c:CodeClass) RETURN DISTINCT c.class_name, c.fully_qualified_name, c.docstring ORDER BY c.class_name"
-        ),
-        vec![("memory_id", KuzuValue::String(memory_id.to_string()))],
-    )?;
-
-    Ok(CodeGraphContextPayload {
-        memory_id: memory_id.to_string(),
-        files: files
-            .iter()
-            .map(|row| CodeGraphContextFile {
-                kind: "file".to_string(),
-                path: kuzu_string(row.first()).unwrap_or_default(),
-                language: kuzu_string(row.get(1)).unwrap_or_default(),
-                size_bytes: kuzu_i64(row.get(2)).unwrap_or_default(),
-            })
-            .collect(),
-        functions: functions
-            .iter()
-            .map(|row| CodeGraphContextFunction {
-                kind: "function".to_string(),
-                name: kuzu_string(row.first()).unwrap_or_default(),
-                signature: kuzu_string(row.get(1)).unwrap_or_default(),
-                docstring: kuzu_string(row.get(2)).unwrap_or_default(),
-                complexity: kuzu_i64(row.get(3)).unwrap_or_default(),
-            })
-            .collect(),
-        classes: classes
-            .iter()
-            .map(|row| CodeGraphContextClass {
-                kind: "class".to_string(),
-                name: kuzu_string(row.first()).unwrap_or_default(),
-                fully_qualified_name: kuzu_string(row.get(1)).unwrap_or_default(),
-                docstring: kuzu_string(row.get(2)).unwrap_or_default(),
-            })
-            .collect(),
-    })
-}
-
-fn resolve_memory_link_tables_in_conn(
-    conn: &KuzuConnection<'_>,
-    memory_id: &str,
-) -> Result<Option<(&'static str, &'static str, &'static str)>> {
-    for ((memory_type, file_rel), (paired_type, function_rel)) in KUZU_MEMORY_FILE_LINK_TABLES
-        .iter()
-        .zip(KUZU_MEMORY_FUNCTION_LINK_TABLES.iter())
-    {
-        debug_assert_eq!(memory_type, paired_type);
-        let rows = kuzu_rows(
-            conn,
-            &format!("MATCH (m:{memory_type} {{memory_id: $memory_id}}) RETURN COUNT(m)"),
-            vec![("memory_id", KuzuValue::String(memory_id.to_string()))],
-        )?;
-        if kuzu_i64(rows.first().and_then(|row| row.first()))? > 0 {
-            return Ok(Some((memory_type, file_rel, function_rel)));
-        }
-    }
-
-    Ok(None)
-}
-
-fn list_code_files_in_conn(
-    conn: &KuzuConnection<'_>,
-    pattern: Option<&str>,
-    limit: u32,
-) -> Result<Vec<String>> {
-    let rows = if let Some(pattern) = pattern {
-        kuzu_rows(
-            conn,
-            "MATCH (cf:CodeFile) WHERE cf.file_path CONTAINS $pattern RETURN cf.file_path ORDER BY cf.file_path LIMIT $lim",
-            vec![
-                ("pattern", KuzuValue::String(pattern.to_string())),
-                ("lim", KuzuValue::UInt64(u64::from(limit))),
-            ],
-        )?
-    } else {
-        kuzu_rows(
-            conn,
-            "MATCH (cf:CodeFile) RETURN cf.file_path ORDER BY cf.file_path LIMIT $lim",
-            vec![("lim", KuzuValue::UInt64(u64::from(limit)))],
-        )?
-    };
-
-    Ok(rows
-        .iter()
-        .map(|row| kuzu_string(row.first()).unwrap_or_default())
-        .collect())
-}
-
-fn list_code_functions_in_conn(
-    conn: &KuzuConnection<'_>,
-    file: Option<&str>,
-    limit: u32,
-) -> Result<Vec<CodeGraphNamedEntry>> {
-    let rows = if let Some(file) = file {
-        kuzu_rows(
-            conn,
-            "MATCH (f:CodeFunction)-[:DEFINED_IN]->(cf:CodeFile) WHERE cf.file_path CONTAINS $file AND NOT f.function_name CONTAINS '().(' RETURN f.function_name, cf.file_path ORDER BY cf.file_path, f.function_name LIMIT $lim",
-            vec![
-                ("file", KuzuValue::String(file.to_string())),
-                ("lim", KuzuValue::UInt64(u64::from(limit))),
-            ],
-        )?
-    } else {
-        kuzu_rows(
-            conn,
-            "MATCH (f:CodeFunction) WHERE NOT f.function_name CONTAINS '().(' RETURN f.function_name ORDER BY f.function_name LIMIT $lim",
-            vec![("lim", KuzuValue::UInt64(u64::from(limit)))],
-        )?
-    };
-
-    Ok(rows
-        .iter()
-        .map(|row| CodeGraphNamedEntry {
-            name: kuzu_string(row.first()).unwrap_or_default(),
-            file: row
-                .get(1)
-                .map(|value| kuzu_string(Some(value)).unwrap_or_default()),
-        })
-        .collect())
-}
-
-fn list_code_classes_in_conn(
-    conn: &KuzuConnection<'_>,
-    file: Option<&str>,
-    limit: u32,
-) -> Result<Vec<CodeGraphNamedEntry>> {
-    let rows = if let Some(file) = file {
-        kuzu_rows(
-            conn,
-            "MATCH (c:CodeClass)-[:CLASS_DEFINED_IN]->(cf:CodeFile) WHERE cf.file_path CONTAINS $file RETURN c.class_name, cf.file_path ORDER BY cf.file_path, c.class_name LIMIT $lim",
-            vec![
-                ("file", KuzuValue::String(file.to_string())),
-                ("lim", KuzuValue::UInt64(u64::from(limit))),
-            ],
-        )?
-    } else {
-        kuzu_rows(
-            conn,
-            "MATCH (c:CodeClass) RETURN c.class_name ORDER BY c.class_name LIMIT $lim",
-            vec![("lim", KuzuValue::UInt64(u64::from(limit)))],
-        )?
-    };
-
-    Ok(rows
-        .iter()
-        .map(|row| CodeGraphNamedEntry {
-            name: kuzu_string(row.first()).unwrap_or_default(),
-            file: row
-                .get(1)
-                .map(|value| kuzu_string(Some(value)).unwrap_or_default()),
-        })
-        .collect())
-}
-
-fn search_code_graph_in_conn(
-    conn: &KuzuConnection<'_>,
-    name: &str,
-    limit: u32,
-) -> Result<Vec<CodeGraphSearchEntry>> {
-    let searches = [
-        (
-            "function",
-            "MATCH (f:CodeFunction) WHERE f.function_name CONTAINS $name AND NOT f.function_name CONTAINS '().(' RETURN f.function_name LIMIT $lim",
-        ),
-        (
-            "class",
-            "MATCH (c:CodeClass) WHERE c.class_name CONTAINS $name RETURN c.class_name LIMIT $lim",
-        ),
-        (
-            "file",
-            "MATCH (cf:CodeFile) WHERE cf.file_path CONTAINS $name RETURN cf.file_path LIMIT $lim",
-        ),
-    ];
-
-    let mut payload = Vec::new();
-    for (kind, query) in searches {
-        let rows = kuzu_rows(
-            conn,
-            query,
-            vec![
-                ("name", KuzuValue::String(name.to_string())),
-                ("lim", KuzuValue::UInt64(u64::from(limit))),
-            ],
-        )?;
-        payload.extend(rows.into_iter().map(|row| CodeGraphSearchEntry {
-            kind: kind.to_string(),
-            name: kuzu_string(row.first()).unwrap_or_default(),
-        }));
-    }
-
-    Ok(payload)
-}
-
-fn query_code_edges_in_conn(
-    conn: &KuzuConnection<'_>,
-    query: &str,
-    name: &str,
-    limit: u32,
-) -> Result<Vec<CodeGraphEdgeEntry>> {
-    let rows = kuzu_rows(
-        conn,
-        query,
-        vec![
-            ("name", KuzuValue::String(name.to_string())),
-            ("lim", KuzuValue::UInt64(u64::from(limit))),
-        ],
-    )?;
-
-    Ok(rows
-        .iter()
-        .map(|row| CodeGraphEdgeEntry {
-            caller: kuzu_string(row.first()).unwrap_or_default(),
-            callee: kuzu_string(row.get(1)).unwrap_or_default(),
-        })
-        .collect())
-}
-
-fn import_files(conn: &KuzuConnection<'_>, files: &[BlarifyFile]) -> Result<usize> {
-    let now = OffsetDateTime::now_utc();
-    let mut imported = 0usize;
-
-    for file in files {
-        if file.path.trim().is_empty() {
-            continue;
-        }
-
-        let last_modified = parse_blarify_timestamp(file.last_modified.as_deref()).unwrap_or(now);
-        let exists = node_exists(
-            conn,
-            "MATCH (cf:CodeFile {file_id: $file_id}) RETURN COUNT(cf)",
-            vec![("file_id", KuzuValue::String(file.path.clone()))],
-        )?;
-
-        if exists {
-            kuzu_rows(
-                conn,
-                "MATCH (cf:CodeFile {file_id: $file_id}) SET cf.file_path = $file_path, cf.language = $language, cf.size_bytes = $size_bytes, cf.last_modified = $last_modified",
-                vec![
-                    ("file_id", KuzuValue::String(file.path.clone())),
-                    ("file_path", KuzuValue::String(file.path.clone())),
-                    ("language", KuzuValue::String(file.language.clone())),
-                    ("size_bytes", KuzuValue::Int64(file.lines_of_code)),
-                    ("last_modified", KuzuValue::Timestamp(last_modified)),
-                ],
-            )?;
-        } else {
-            kuzu_rows(
-                conn,
-                "CREATE (cf:CodeFile {file_id: $file_id, file_path: $file_path, language: $language, size_bytes: $size_bytes, last_modified: $last_modified, created_at: $created_at, metadata: $metadata})",
-                vec![
-                    ("file_id", KuzuValue::String(file.path.clone())),
-                    ("file_path", KuzuValue::String(file.path.clone())),
-                    ("language", KuzuValue::String(file.language.clone())),
-                    ("size_bytes", KuzuValue::Int64(file.lines_of_code)),
-                    ("last_modified", KuzuValue::Timestamp(last_modified)),
-                    ("created_at", KuzuValue::Timestamp(now)),
-                    ("metadata", KuzuValue::String("{}".to_string())),
-                ],
-            )?;
-        }
-
-        imported += 1;
-    }
-
-    Ok(imported)
-}
-
-fn import_classes(conn: &KuzuConnection<'_>, classes: &[BlarifyClass]) -> Result<usize> {
-    let now = OffsetDateTime::now_utc();
-    let mut imported = 0usize;
-
-    for class in classes {
-        if class.id.trim().is_empty() {
-            continue;
-        }
-
-        let metadata = serde_json::json!({ "line_number": class.line_number }).to_string();
-        let exists = node_exists(
-            conn,
-            "MATCH (c:CodeClass {class_id: $class_id}) RETURN COUNT(c)",
-            vec![("class_id", KuzuValue::String(class.id.clone()))],
-        )?;
-
-        if exists {
-            kuzu_rows(
-                conn,
-                "MATCH (c:CodeClass {class_id: $class_id}) SET c.class_name = $class_name, c.fully_qualified_name = $fully_qualified_name, c.file_path = $file_path, c.line_number = $line_number, c.docstring = $docstring, c.is_abstract = $is_abstract, c.metadata = $metadata",
-                vec![
-                    ("class_id", KuzuValue::String(class.id.clone())),
-                    ("class_name", KuzuValue::String(class.name.clone())),
-                    ("fully_qualified_name", KuzuValue::String(class.id.clone())),
-                    ("file_path", KuzuValue::String(class.file_path.clone())),
-                    ("line_number", KuzuValue::Int64(class.line_number)),
-                    ("docstring", KuzuValue::String(class.docstring.clone())),
-                    ("is_abstract", KuzuValue::Bool(class.is_abstract)),
-                    ("metadata", KuzuValue::String(metadata.clone())),
-                ],
-            )?;
-        } else {
-            kuzu_rows(
-                conn,
-                "CREATE (c:CodeClass {class_id: $class_id, class_name: $class_name, fully_qualified_name: $fully_qualified_name, file_path: $file_path, line_number: $line_number, docstring: $docstring, is_abstract: $is_abstract, created_at: $created_at, metadata: $metadata})",
-                vec![
-                    ("class_id", KuzuValue::String(class.id.clone())),
-                    ("class_name", KuzuValue::String(class.name.clone())),
-                    ("fully_qualified_name", KuzuValue::String(class.id.clone())),
-                    ("file_path", KuzuValue::String(class.file_path.clone())),
-                    ("line_number", KuzuValue::Int64(class.line_number)),
-                    ("docstring", KuzuValue::String(class.docstring.clone())),
-                    ("is_abstract", KuzuValue::Bool(class.is_abstract)),
-                    ("created_at", KuzuValue::Timestamp(now)),
-                    ("metadata", KuzuValue::String(metadata)),
-                ],
-            )?;
-        }
-
-        if !class.file_path.is_empty()
-            && !relationship_exists(
-                conn,
-                "MATCH (c:CodeClass {class_id: $class_id})-[r:CLASS_DEFINED_IN]->(cf:CodeFile {file_id: $file_id}) RETURN COUNT(r)",
-                vec![
-                    ("class_id", KuzuValue::String(class.id.clone())),
-                    ("file_id", KuzuValue::String(class.file_path.clone())),
-                ],
-            )?
-        {
-            kuzu_rows(
-                conn,
-                "MATCH (c:CodeClass {class_id: $class_id}) MATCH (cf:CodeFile {file_id: $file_id}) CREATE (c)-[:CLASS_DEFINED_IN {line_number: $line_number}]->(cf)",
-                vec![
-                    ("class_id", KuzuValue::String(class.id.clone())),
-                    ("file_id", KuzuValue::String(class.file_path.clone())),
-                    ("line_number", KuzuValue::Int64(class.line_number)),
-                ],
-            )?;
-        }
-
-        imported += 1;
-    }
-
-    Ok(imported)
-}
-
-fn import_functions(conn: &KuzuConnection<'_>, functions: &[BlarifyFunction]) -> Result<usize> {
-    let now = OffsetDateTime::now_utc();
-    let mut imported = 0usize;
-
-    for function in functions {
-        if function.id.trim().is_empty() {
-            continue;
-        }
-
-        let parameters_json = serde_json::to_string(&function.parameters)?;
-        let signature = format!("{}({})", function.name, function.parameters.join(", "));
-        let metadata = serde_json::json!({
-            "line_number": function.line_number,
-            "parameters": function.parameters,
-            "return_type": function.return_type,
-        })
-        .to_string();
-        let exists = node_exists(
-            conn,
-            "MATCH (f:CodeFunction {function_id: $function_id}) RETURN COUNT(f)",
-            vec![("function_id", KuzuValue::String(function.id.clone()))],
-        )?;
-
-        if exists {
-            kuzu_rows(
-                conn,
-                "MATCH (f:CodeFunction {function_id: $function_id}) SET f.function_name = $function_name, f.fully_qualified_name = $fully_qualified_name, f.signature = $signature, f.file_path = $file_path, f.line_number = $line_number, f.parameters = $parameters, f.return_type = $return_type, f.docstring = $docstring, f.is_async = $is_async, f.cyclomatic_complexity = $cyclomatic_complexity, f.metadata = $metadata",
-                vec![
-                    ("function_id", KuzuValue::String(function.id.clone())),
-                    ("function_name", KuzuValue::String(function.name.clone())),
-                    (
-                        "fully_qualified_name",
-                        KuzuValue::String(function.id.clone()),
-                    ),
-                    ("signature", KuzuValue::String(signature.clone())),
-                    ("file_path", KuzuValue::String(function.file_path.clone())),
-                    ("line_number", KuzuValue::Int64(function.line_number)),
-                    ("parameters", KuzuValue::String(parameters_json.clone())),
-                    (
-                        "return_type",
-                        KuzuValue::String(function.return_type.clone()),
-                    ),
-                    ("docstring", KuzuValue::String(function.docstring.clone())),
-                    ("is_async", KuzuValue::Bool(function.is_async)),
-                    (
-                        "cyclomatic_complexity",
-                        KuzuValue::Int64(function.complexity),
-                    ),
-                    ("metadata", KuzuValue::String(metadata.clone())),
-                ],
-            )?;
-        } else {
-            kuzu_rows(
-                conn,
-                "CREATE (f:CodeFunction {function_id: $function_id, function_name: $function_name, fully_qualified_name: $fully_qualified_name, signature: $signature, file_path: $file_path, line_number: $line_number, parameters: $parameters, return_type: $return_type, docstring: $docstring, is_async: $is_async, cyclomatic_complexity: $cyclomatic_complexity, created_at: $created_at, metadata: $metadata})",
-                vec![
-                    ("function_id", KuzuValue::String(function.id.clone())),
-                    ("function_name", KuzuValue::String(function.name.clone())),
-                    (
-                        "fully_qualified_name",
-                        KuzuValue::String(function.id.clone()),
-                    ),
-                    ("signature", KuzuValue::String(signature)),
-                    ("file_path", KuzuValue::String(function.file_path.clone())),
-                    ("line_number", KuzuValue::Int64(function.line_number)),
-                    ("parameters", KuzuValue::String(parameters_json)),
-                    (
-                        "return_type",
-                        KuzuValue::String(function.return_type.clone()),
-                    ),
-                    ("docstring", KuzuValue::String(function.docstring.clone())),
-                    ("is_async", KuzuValue::Bool(function.is_async)),
-                    (
-                        "cyclomatic_complexity",
-                        KuzuValue::Int64(function.complexity),
-                    ),
-                    ("created_at", KuzuValue::Timestamp(now)),
-                    ("metadata", KuzuValue::String(metadata)),
-                ],
-            )?;
-        }
-
-        if !function.file_path.is_empty()
-            && !relationship_exists(
-                conn,
-                "MATCH (f:CodeFunction {function_id: $function_id})-[r:DEFINED_IN]->(cf:CodeFile {file_id: $file_id}) RETURN COUNT(r)",
-                vec![
-                    ("function_id", KuzuValue::String(function.id.clone())),
-                    ("file_id", KuzuValue::String(function.file_path.clone())),
-                ],
-            )?
-        {
-            kuzu_rows(
-                conn,
-                "MATCH (f:CodeFunction {function_id: $function_id}) MATCH (cf:CodeFile {file_id: $file_id}) CREATE (f)-[:DEFINED_IN {line_number: $line_number, end_line: $end_line}]->(cf)",
-                vec![
-                    ("function_id", KuzuValue::String(function.id.clone())),
-                    ("file_id", KuzuValue::String(function.file_path.clone())),
-                    ("line_number", KuzuValue::Int64(function.line_number)),
-                    ("end_line", KuzuValue::Int64(function.line_number)),
-                ],
-            )?;
-        }
-
-        if let Some(class_id) = function.class_id.as_ref()
-            && !relationship_exists(
-                conn,
-                "MATCH (f:CodeFunction {function_id: $function_id})-[r:METHOD_OF]->(c:CodeClass {class_id: $class_id}) RETURN COUNT(r)",
-                vec![
-                    ("function_id", KuzuValue::String(function.id.clone())),
-                    ("class_id", KuzuValue::String(class_id.clone())),
-                ],
-            )?
-        {
-            kuzu_rows(
-                conn,
-                "MATCH (f:CodeFunction {function_id: $function_id}) MATCH (c:CodeClass {class_id: $class_id}) CREATE (f)-[:METHOD_OF {method_type: $method_type, visibility: $visibility}]->(c)",
-                vec![
-                    ("function_id", KuzuValue::String(function.id.clone())),
-                    ("class_id", KuzuValue::String(class_id.clone())),
-                    ("method_type", KuzuValue::String("instance".to_string())),
-                    ("visibility", KuzuValue::String("public".to_string())),
-                ],
-            )?;
-        }
-
-        imported += 1;
-    }
-
-    Ok(imported)
-}
-
-fn import_imports(conn: &KuzuConnection<'_>, imports: &[BlarifyImport]) -> Result<usize> {
-    let mut imported = 0usize;
-
-    for import in imports {
-        if import.source_file.trim().is_empty() || import.target_file.trim().is_empty() {
-            continue;
-        }
-
-        if relationship_exists(
-            conn,
-            "MATCH (source:CodeFile {file_id: $source_file})-[r:IMPORTS]->(target:CodeFile {file_id: $target_file}) WHERE r.import_type = $import_type RETURN COUNT(r)",
-            vec![
-                ("source_file", KuzuValue::String(import.source_file.clone())),
-                ("target_file", KuzuValue::String(import.target_file.clone())),
-                ("import_type", KuzuValue::String(import.symbol.clone())),
-            ],
-        )? {
-            continue;
-        }
-
-        kuzu_rows(
-            conn,
-            "MATCH (source:CodeFile {file_id: $source_file}) MATCH (target:CodeFile {file_id: $target_file}) CREATE (source)-[:IMPORTS {import_type: $import_type, alias: $alias}]->(target)",
-            vec![
-                ("source_file", KuzuValue::String(import.source_file.clone())),
-                ("target_file", KuzuValue::String(import.target_file.clone())),
-                ("import_type", KuzuValue::String(import.symbol.clone())),
-                (
-                    "alias",
-                    KuzuValue::String(import.alias.clone().unwrap_or_default()),
-                ),
-            ],
-        )?;
-        imported += 1;
-    }
-
-    Ok(imported)
-}
-
-fn import_relationships(
-    conn: &KuzuConnection<'_>,
-    relationships: &[BlarifyRelationship],
-) -> Result<usize> {
-    let mut imported = 0usize;
-
-    for relationship in relationships {
-        if relationship.source_id.trim().is_empty() || relationship.target_id.trim().is_empty() {
-            continue;
-        }
-
-        imported += match relationship.relationship_type.as_str() {
-            "CALLS" => {
-                create_calls_relationship(conn, &relationship.source_id, &relationship.target_id)?
-            }
-            "INHERITS" => create_inherits_relationship(
-                conn,
-                &relationship.source_id,
-                &relationship.target_id,
-            )?,
-            "REFERENCES" => create_references_relationship(
-                conn,
-                &relationship.source_id,
-                &relationship.target_id,
-            )?,
-            _ => 0,
-        };
-    }
-
-    Ok(imported)
-}
-
-fn create_calls_relationship(
-    conn: &KuzuConnection<'_>,
-    source_id: &str,
-    target_id: &str,
-) -> Result<usize> {
-    if relationship_exists(
-        conn,
-        "MATCH (source:CodeFunction {function_id: $source_id})-[r:CALLS]->(target:CodeFunction {function_id: $target_id}) RETURN COUNT(r)",
-        vec![
-            ("source_id", KuzuValue::String(source_id.to_string())),
-            ("target_id", KuzuValue::String(target_id.to_string())),
-        ],
-    )? {
-        return Ok(0);
-    }
-
-    kuzu_rows(
-        conn,
-        "MATCH (source:CodeFunction {function_id: $source_id}) MATCH (target:CodeFunction {function_id: $target_id}) CREATE (source)-[:CALLS {call_count: $call_count, context: $context}]->(target)",
-        vec![
-            ("source_id", KuzuValue::String(source_id.to_string())),
-            ("target_id", KuzuValue::String(target_id.to_string())),
-            ("call_count", KuzuValue::Int64(1)),
-            ("context", KuzuValue::String(String::new())),
-        ],
-    )?;
-    Ok(1)
-}
-
-fn create_inherits_relationship(
-    conn: &KuzuConnection<'_>,
-    source_id: &str,
-    target_id: &str,
-) -> Result<usize> {
-    if relationship_exists(
-        conn,
-        "MATCH (source:CodeClass {class_id: $source_id})-[r:INHERITS]->(target:CodeClass {class_id: $target_id}) RETURN COUNT(r)",
-        vec![
-            ("source_id", KuzuValue::String(source_id.to_string())),
-            ("target_id", KuzuValue::String(target_id.to_string())),
-        ],
-    )? {
-        return Ok(0);
-    }
-
-    kuzu_rows(
-        conn,
-        "MATCH (source:CodeClass {class_id: $source_id}) MATCH (target:CodeClass {class_id: $target_id}) CREATE (source)-[:INHERITS {inheritance_order: $inheritance_order, inheritance_type: $inheritance_type}]->(target)",
-        vec![
-            ("source_id", KuzuValue::String(source_id.to_string())),
-            ("target_id", KuzuValue::String(target_id.to_string())),
-            ("inheritance_order", KuzuValue::Int64(0)),
-            ("inheritance_type", KuzuValue::String("single".to_string())),
-        ],
-    )?;
-    Ok(1)
-}
-
-fn create_references_relationship(
-    conn: &KuzuConnection<'_>,
-    source_id: &str,
-    target_id: &str,
-) -> Result<usize> {
-    if relationship_exists(
-        conn,
-        "MATCH (source:CodeFunction {function_id: $source_id})-[r:REFERENCES_CLASS]->(target:CodeClass {class_id: $target_id}) RETURN COUNT(r)",
-        vec![
-            ("source_id", KuzuValue::String(source_id.to_string())),
-            ("target_id", KuzuValue::String(target_id.to_string())),
-        ],
-    )? {
-        return Ok(0);
-    }
-
-    kuzu_rows(
-        conn,
-        "MATCH (source:CodeFunction {function_id: $source_id}) MATCH (target:CodeClass {class_id: $target_id}) CREATE (source)-[:REFERENCES_CLASS {reference_type: $reference_type, context: $context}]->(target)",
-        vec![
-            ("source_id", KuzuValue::String(source_id.to_string())),
-            ("target_id", KuzuValue::String(target_id.to_string())),
-            ("reference_type", KuzuValue::String("usage".to_string())),
-            ("context", KuzuValue::String(String::new())),
-        ],
-    )?;
-    Ok(1)
-}
-
-fn node_exists(
-    conn: &KuzuConnection<'_>,
-    query: &str,
-    params: Vec<(&str, KuzuValue)>,
-) -> Result<bool> {
-    relationship_exists(conn, query, params)
-}
-
-fn relationship_exists(
-    conn: &KuzuConnection<'_>,
-    query: &str,
-    params: Vec<(&str, KuzuValue)>,
-) -> Result<bool> {
-    let rows = kuzu_rows(conn, query, params)?;
-    Ok(rows
-        .first()
-        .map(|row| kuzu_i64(row.first()).unwrap_or(0))
-        .unwrap_or(0)
-        > 0)
-}
-
-fn parse_blarify_timestamp(value: Option<&str>) -> Option<OffsetDateTime> {
-    let parsed = DateTime::parse_from_rfc3339(value?).ok()?;
-    OffsetDateTime::from_unix_timestamp(parsed.timestamp()).ok()
 }
 
 fn convert_scip_to_blarify(
@@ -1691,8 +708,8 @@ pub(crate) fn validate_index_path(path: &Path) -> Result<PathBuf> {
 /// - If Kuzu created a DB *file* (not a directory), that file must be `0o600`.
 /// - On non-Unix platforms this is a no-op (returns `Ok(())`).
 ///
-/// Must be called *after* `open_kuzu_code_graph_db()` has initialised the DB
-/// so the path exists on disk.
+/// Must be called after the code-graph DB has been initialised so the path
+/// exists on disk.
 #[cfg_attr(not(unix), allow(unused_variables))]
 pub(crate) fn enforce_db_permissions(db_path: &Path) -> Result<()> {
     #[cfg(unix)]
@@ -1739,8 +756,13 @@ pub(crate) fn validate_blarify_json_size(path: &Path, max_bytes: u64) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::memory::backend::graph_db::{
+        GraphDbValue, graph_i64, graph_rows, init_graph_backend_schema,
+    };
+    use crate::commands::memory::code_graph::backend::{
+        initialize_test_code_graph_db, with_test_code_graph_conn,
+    };
     use crate::test_support::{cwd_env_lock, restore_cwd, set_cwd};
-    use kuzu::Connection as KuzuConnection;
     use tempfile::TempDir;
 
     fn sample_blarify_output() -> BlarifyOutput {
@@ -1810,12 +832,12 @@ mod tests {
 
     fn temp_code_graph_db() -> Result<(TempDir, PathBuf)> {
         let dir = TempDir::new().map_err(|e| anyhow::anyhow!("tempdir: {e}"))?;
-        let db_path = dir.path().join("code-graph.kuzu");
+        let db_path = dir.path().join("code-graph.graph_db");
         Ok((dir, db_path))
     }
 
     #[test]
-    fn import_blarify_json_populates_kuzu_code_graph() {
+    fn import_blarify_json_populates_graph_db_code_graph() {
         let (_dir, db_path) = temp_code_graph_db().unwrap();
         let json_dir = TempDir::new().unwrap();
         let json_path = json_dir.path().join("blarify.json");
@@ -1838,20 +860,24 @@ mod tests {
             }
         );
 
-        let db = open_kuzu_code_graph_db(Some(&db_path)).unwrap();
-        let conn = KuzuConnection::new(&db).unwrap();
-        let rows = kuzu_rows(&conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)", vec![]).unwrap();
-        assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 2);
-        let rows = kuzu_rows(
-            &conn,
-            "MATCH (source:CodeFunction {function_id: $source_id})-[r:CALLS]->(target:CodeFunction {function_id: $target_id}) RETURN COUNT(r)",
-            vec![
-                ("source_id", KuzuValue::String("func:Example.process".to_string())),
-                ("target_id", KuzuValue::String("func:helper".to_string())),
-            ],
-        )
+        with_test_code_graph_conn(Some(&db_path), |conn| {
+            let rows = graph_rows(conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)", vec![])?;
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 2);
+            let rows = graph_rows(
+                conn,
+                "MATCH (source:CodeFunction {function_id: $source_id})-[r:CALLS]->(target:CodeFunction {function_id: $target_id}) RETURN COUNT(r)",
+                vec![
+                    (
+                        "source_id",
+                        GraphDbValue::String("func:Example.process".to_string()),
+                    ),
+                    ("target_id", GraphDbValue::String("func:helper".to_string())),
+                ],
+            )?;
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 1);
+            Ok(())
+        })
         .unwrap();
-        assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 1);
     }
 
     #[test]
@@ -1871,49 +897,50 @@ mod tests {
         assert_eq!(first.files, 2);
         assert_eq!(second.files, 2);
 
-        let db = open_kuzu_code_graph_db(Some(&db_path)).unwrap();
-        let conn = KuzuConnection::new(&db).unwrap();
-        let rows = kuzu_rows(&conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)", vec![]).unwrap();
-        assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 2);
+        with_test_code_graph_conn(Some(&db_path), |conn| {
+            let rows = graph_rows(conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)", vec![])?;
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 2);
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]
     fn import_blarify_json_links_semantic_memory_by_metadata_file() {
         let (_dir, db_path) = temp_code_graph_db().unwrap();
-        let db = open_kuzu_code_graph_db(Some(&db_path)).unwrap();
-        let conn = KuzuConnection::new(&db).unwrap();
-        init_kuzu_backend_schema(&conn).unwrap();
-        let now = OffsetDateTime::now_utc();
+        with_test_code_graph_conn(Some(&db_path), |conn| {
+            init_graph_backend_schema(conn)?;
+            let now = OffsetDateTime::now_utc();
 
-        let mut create_memory = conn
-            .prepare(
+            let mut create_memory = conn.prepare(
                 "CREATE (m:SemanticMemory {memory_id: $memory_id, concept: $concept, content: $content, category: $category, confidence_score: $confidence_score, last_updated: $last_updated, version: $version, title: $title, metadata: $metadata, tags: $tags, created_at: $created_at, accessed_at: $accessed_at, agent_id: $agent_id})",
-            )
-            .unwrap();
-        conn.execute(
-            &mut create_memory,
-            vec![
-                ("memory_id", KuzuValue::String("mem-1".to_string())),
-                ("concept", KuzuValue::String("Example memory".to_string())),
-                (
-                    "content",
-                    KuzuValue::String("Remember module.py".to_string()),
-                ),
-                ("category", KuzuValue::String("session_end".to_string())),
-                ("confidence_score", KuzuValue::Double(1.0)),
-                ("last_updated", KuzuValue::Timestamp(now)),
-                ("version", KuzuValue::Int64(1)),
-                ("title", KuzuValue::String("Example".to_string())),
-                (
-                    "metadata",
-                    KuzuValue::String(r#"{"file":"src/example/module.py"}"#.to_string()),
-                ),
-                ("tags", KuzuValue::String(r#"["learning"]"#.to_string())),
-                ("created_at", KuzuValue::Timestamp(now)),
-                ("accessed_at", KuzuValue::Timestamp(now)),
-                ("agent_id", KuzuValue::String("agent-1".to_string())),
-            ],
-        )
+            )?;
+            conn.execute(
+                &mut create_memory,
+                vec![
+                    ("memory_id", GraphDbValue::String("mem-1".to_string())),
+                    ("concept", GraphDbValue::String("Example memory".to_string())),
+                    (
+                        "content",
+                        GraphDbValue::String("Remember module.py".to_string()),
+                    ),
+                    ("category", GraphDbValue::String("session_end".to_string())),
+                    ("confidence_score", GraphDbValue::Double(1.0)),
+                    ("last_updated", GraphDbValue::Timestamp(now)),
+                    ("version", GraphDbValue::Int64(1)),
+                    ("title", GraphDbValue::String("Example".to_string())),
+                    (
+                        "metadata",
+                        GraphDbValue::String(r#"{"file":"src/example/module.py"}"#.to_string()),
+                    ),
+                    ("tags", GraphDbValue::String(r#"["learning"]"#.to_string())),
+                    ("created_at", GraphDbValue::Timestamp(now)),
+                    ("accessed_at", GraphDbValue::Timestamp(now)),
+                    ("agent_id", GraphDbValue::String("agent-1".to_string())),
+                ],
+            )?;
+            Ok(())
+        })
         .unwrap();
 
         let json_dir = TempDir::new().unwrap();
@@ -1927,57 +954,59 @@ mod tests {
         import_blarify_json(&json_path, Some(&db_path)).unwrap();
         import_blarify_json(&json_path, Some(&db_path)).unwrap();
 
-        let db = open_kuzu_code_graph_db(Some(&db_path)).unwrap();
-        let conn = KuzuConnection::new(&db).unwrap();
-        let rows = kuzu_rows(
-            &conn,
-            "MATCH (m:SemanticMemory {memory_id: $memory_id})-[r:RELATES_TO_FILE_SEMANTIC]->(cf:CodeFile {file_id: $file_id}) RETURN COUNT(r)",
-            vec![
-                ("memory_id", KuzuValue::String("mem-1".to_string())),
-                (
-                    "file_id",
-                    KuzuValue::String("src/example/module.py".to_string()),
-                ),
-            ],
-        )
+        with_test_code_graph_conn(Some(&db_path), |conn| {
+            let rows = graph_rows(
+                conn,
+                "MATCH (m:SemanticMemory {memory_id: $memory_id})-[r:RELATES_TO_FILE_SEMANTIC]->(cf:CodeFile {file_id: $file_id}) RETURN COUNT(r)",
+                vec![
+                    ("memory_id", GraphDbValue::String("mem-1".to_string())),
+                    (
+                        "file_id",
+                        GraphDbValue::String("src/example/module.py".to_string()),
+                    ),
+                ],
+            )?;
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 1);
+            Ok(())
+        })
         .unwrap();
-        assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 1);
     }
 
     #[test]
     fn import_blarify_json_links_semantic_memory_by_function_name() {
         let (_dir, db_path) = temp_code_graph_db().unwrap();
-        let db = open_kuzu_code_graph_db(Some(&db_path)).unwrap();
-        let conn = KuzuConnection::new(&db).unwrap();
-        init_kuzu_backend_schema(&conn).unwrap();
-        let now = OffsetDateTime::now_utc();
+        with_test_code_graph_conn(Some(&db_path), |conn| {
+            init_graph_backend_schema(conn)?;
+            let now = OffsetDateTime::now_utc();
 
-        let mut create_memory = conn
-            .prepare(
+            let mut create_memory = conn.prepare(
                 "CREATE (m:SemanticMemory {memory_id: $memory_id, concept: $concept, content: $content, category: $category, confidence_score: $confidence_score, last_updated: $last_updated, version: $version, title: $title, metadata: $metadata, tags: $tags, created_at: $created_at, accessed_at: $accessed_at, agent_id: $agent_id})",
-            )
-            .unwrap();
-        conn.execute(
-            &mut create_memory,
-            vec![
-                ("memory_id", KuzuValue::String("mem-func".to_string())),
-                ("concept", KuzuValue::String("Helper memory".to_string())),
-                (
-                    "content",
-                    KuzuValue::String("Remember to call helper before returning.".to_string()),
-                ),
-                ("category", KuzuValue::String("session_end".to_string())),
-                ("confidence_score", KuzuValue::Double(1.0)),
-                ("last_updated", KuzuValue::Timestamp(now)),
-                ("version", KuzuValue::Int64(1)),
-                ("title", KuzuValue::String("Helper".to_string())),
-                ("metadata", KuzuValue::String("{}".to_string())),
-                ("tags", KuzuValue::String(r#"["learning"]"#.to_string())),
-                ("created_at", KuzuValue::Timestamp(now)),
-                ("accessed_at", KuzuValue::Timestamp(now)),
-                ("agent_id", KuzuValue::String("agent-1".to_string())),
-            ],
-        )
+            )?;
+            conn.execute(
+                &mut create_memory,
+                vec![
+                    ("memory_id", GraphDbValue::String("mem-func".to_string())),
+                    ("concept", GraphDbValue::String("Helper memory".to_string())),
+                    (
+                        "content",
+                        GraphDbValue::String(
+                            "Remember to call helper before returning.".to_string(),
+                        ),
+                    ),
+                    ("category", GraphDbValue::String("session_end".to_string())),
+                    ("confidence_score", GraphDbValue::Double(1.0)),
+                    ("last_updated", GraphDbValue::Timestamp(now)),
+                    ("version", GraphDbValue::Int64(1)),
+                    ("title", GraphDbValue::String("Helper".to_string())),
+                    ("metadata", GraphDbValue::String("{}".to_string())),
+                    ("tags", GraphDbValue::String(r#"["learning"]"#.to_string())),
+                    ("created_at", GraphDbValue::Timestamp(now)),
+                    ("accessed_at", GraphDbValue::Timestamp(now)),
+                    ("agent_id", GraphDbValue::String("agent-1".to_string())),
+                ],
+            )?;
+            Ok(())
+        })
         .unwrap();
 
         let json_dir = TempDir::new().unwrap();
@@ -1991,18 +1020,19 @@ mod tests {
         import_blarify_json(&json_path, Some(&db_path)).unwrap();
         import_blarify_json(&json_path, Some(&db_path)).unwrap();
 
-        let db = open_kuzu_code_graph_db(Some(&db_path)).unwrap();
-        let conn = KuzuConnection::new(&db).unwrap();
-        let rows = kuzu_rows(
-            &conn,
-            "MATCH (m:SemanticMemory {memory_id: $memory_id})-[r:RELATES_TO_FUNCTION_SEMANTIC]->(f:CodeFunction {function_id: $function_id}) RETURN COUNT(r)",
-            vec![
-                ("memory_id", KuzuValue::String("mem-func".to_string())),
-                ("function_id", KuzuValue::String("func:helper".to_string())),
-            ],
-        )
+        with_test_code_graph_conn(Some(&db_path), |conn| {
+            let rows = graph_rows(
+                conn,
+                "MATCH (m:SemanticMemory {memory_id: $memory_id})-[r:RELATES_TO_FUNCTION_SEMANTIC]->(f:CodeFunction {function_id: $function_id}) RETURN COUNT(r)",
+                vec![
+                    ("memory_id", GraphDbValue::String("mem-func".to_string())),
+                    ("function_id", GraphDbValue::String("func:helper".to_string())),
+                ],
+            )?;
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 1);
+            Ok(())
+        })
         .unwrap();
-        assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 1);
     }
 
     #[test]
@@ -2011,12 +1041,78 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = TempDir::new().unwrap();
+        let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
+        unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
         let previous = set_cwd(dir.path()).unwrap();
 
         let path = default_code_graph_db_path().unwrap();
 
         restore_cwd(&previous).unwrap();
-        assert_eq!(path, dir.path().join(".amplihack").join("kuzu_db"));
+        match prev_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match prev_kuzu {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+        assert_eq!(path, dir.path().join(".amplihack").join("graph_db"));
+    }
+
+    #[test]
+    fn default_code_graph_db_path_prefers_existing_legacy_project_store() {
+        let _guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = TempDir::new().unwrap();
+        let previous = set_cwd(dir.path()).unwrap();
+        let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
+        unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
+        let legacy = dir.path().join(".amplihack").join("kuzu_db");
+        fs::create_dir_all(&legacy).unwrap();
+
+        let path = default_code_graph_db_path().unwrap();
+
+        restore_cwd(&previous).unwrap();
+        match prev_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match prev_kuzu {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+        assert_eq!(path, legacy);
+    }
+
+    #[test]
+    fn default_code_graph_db_path_prefers_backend_neutral_override() {
+        let _guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = TempDir::new().unwrap();
+        let previous = set_cwd(dir.path()).unwrap();
+        let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/tmp/graph-override") };
+        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/tmp/kuzu-override") };
+
+        let path = default_code_graph_db_path().unwrap();
+
+        restore_cwd(&previous).unwrap();
+        match prev_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match prev_kuzu {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+        assert_eq!(path, PathBuf::from("/tmp/graph-override"));
     }
 
     #[test]
@@ -2086,7 +1182,7 @@ mod tests {
     }
 
     #[test]
-    fn import_scip_file_populates_kuzu_code_graph() {
+    fn import_scip_file_populates_graph_db_code_graph() {
         let (_dir, db_path) = temp_code_graph_db().unwrap();
         let project_dir = TempDir::new().unwrap();
         let src_dir = project_dir.path().join("src/example");
@@ -2109,14 +1205,16 @@ mod tests {
         assert_eq!(counts.classes, 1);
         assert_eq!(counts.functions, 1);
 
-        let db = open_kuzu_code_graph_db(Some(&db_path)).unwrap();
-        let conn = KuzuConnection::new(&db).unwrap();
-        let rows = kuzu_rows(&conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)", vec![]).unwrap();
-        assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 1);
-        let rows = kuzu_rows(&conn, "MATCH (f:CodeFunction) RETURN COUNT(f)", vec![]).unwrap();
-        assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 1);
-        let rows = kuzu_rows(&conn, "MATCH (c:CodeClass) RETURN COUNT(c)", vec![]).unwrap();
-        assert_eq!(kuzu_i64(rows[0].first()).unwrap(), 1);
+        with_test_code_graph_conn(Some(&db_path), |conn| {
+            let rows = graph_rows(conn, "MATCH (cf:CodeFile) RETURN COUNT(cf)", vec![])?;
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 1);
+            let rows = graph_rows(conn, "MATCH (f:CodeFunction) RETURN COUNT(f)", vec![])?;
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 1);
+            let rows = graph_rows(conn, "MATCH (c:CodeClass) RETURN COUNT(c)", vec![])?;
+            assert_eq!(graph_i64(rows[0].first()).unwrap(), 1);
+            Ok(())
+        })
+        .unwrap();
     }
 
     // ── Issue #77 security & validation tests ─────────────────────────────
@@ -2124,8 +1222,8 @@ mod tests {
     // These tests verify the security and validation behaviour implemented for
     // Issue #77.  All four groups pass with the current implementation:
     //
-    //   1. `import_blarify_json_absent_returns_ok_with_empty_counts` — PASSES:
-    //      absent blarify.json returns Ok(empty counts) with a tracing::warn!.
+    //   1. `import_blarify_json_absent_returns_error` — PASS:
+    //      absent blarify.json now returns an explicit error.
     //
     //   2. `enforce_db_permissions_sets_restrictive_unix_modes` — PASSES:
     //      `enforce_db_permissions()` sets 0o700/0o600 on DB paths (Unix).
@@ -2136,16 +1234,13 @@ mod tests {
     //   4. `validate_blarify_json_size_*` — PASS: size guard rejects files
     //      exceeding BLARIFY_JSON_MAX_BYTES before deserialization.
 
-    // ── (1) Blarify fallback: absent file → Ok(empty) not Err ─────────────
+    // ── (1) Missing blarify JSON must fail explicitly ──────────────────────
 
-    /// AC7 / R5: When blarify.json does not exist the live path must degrade
-    /// gracefully (log a warning, return empty counts) rather than aborting
-    /// with an error.  Silent failure is prohibited — tracing::warn! fires.
-    ///
-    /// AC7 blarify fallback: absent blarify.json returns Ok(empty counts)
-    /// with a tracing::warn! emitted (graceful degradation, not hard failure).
+    /// AC7 / R5 hardening: when blarify.json does not exist, direct import must
+    /// return an error instead of a success-shaped empty result. Missing input
+    /// is a real failure that callers must surface or handle deliberately.
     #[test]
-    fn import_blarify_json_absent_returns_ok_with_empty_counts() {
+    fn import_blarify_json_absent_returns_error() {
         let (_dir, db_path) = temp_code_graph_db().unwrap();
         // Use a path that is guaranteed not to exist.
         let missing = PathBuf::from("/tmp/__amplihack_tdd_absent_blarify_i77__.json");
@@ -2154,22 +1249,14 @@ mod tests {
         let result = import_blarify_json(&missing, Some(&db_path));
 
         assert!(
-            result.is_ok(),
-            "Expected Ok(empty counts) when blarify.json is absent \
-             (graceful fallback), but got Err: {:?}",
-            result.err()
+            result.is_err(),
+            "Expected Err when blarify.json is absent, but got Ok: {:?}",
+            result.ok()
         );
-        let counts = result.unwrap();
-        assert_eq!(
-            counts,
-            CodeGraphImportCounts {
-                files: 0,
-                classes: 0,
-                functions: 0,
-                imports: 0,
-                relationships: 0,
-            },
-            "Expected all-zero counts for absent blarify.json"
+        let error = result.err().unwrap();
+        assert!(
+            error.to_string().contains("blarify JSON not found"),
+            "missing-file error should be explicit, got: {error}"
         );
     }
 
@@ -2186,11 +1273,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = TempDir::new().unwrap();
-        let db_path = dir.path().join("secured.kuzu");
+        let db_path = dir.path().join("secured.graph_db");
 
         // Initialise the DB so the path exists on disk.
-        let _db = open_kuzu_code_graph_db(Some(&db_path)).unwrap();
-        drop(_db);
+        initialize_test_code_graph_db(Some(&db_path)).unwrap();
 
         // Call the enforcement function under test.
         enforce_db_permissions(&db_path).expect("enforce_db_permissions should succeed");
@@ -2366,5 +1452,216 @@ mod tests {
             result.is_err(),
             "Expected Err for a missing file in validate_blarify_json_size, got Ok"
         );
+    }
+
+    // ── (5) resolve_code_graph_db_path_for_project — I77 path resolution ────────
+    //
+    // These tests define the full behavior contract for the two public path
+    // resolution functions introduced in Issue #77:
+    //
+    //   default_code_graph_db_path_for_project()  — returns .amplihack/graph_db
+    //   resolve_code_graph_db_path_for_project()  — 4-level precedence resolver
+    //
+    // These tests lock the hardening contract for graph DB path resolution:
+    // unsafe env overrides are rejected, and the legacy disk shim must remain
+    // contained within the project root before it can activate.
+
+    /// I77-DEFAULT: default_code_graph_db_path_for_project() must return
+    /// `.amplihack/graph_db` regardless of env vars — it is a pure default query
+    /// with no env-var override semantics.
+    #[test]
+    fn default_code_graph_db_path_for_project_returns_graph_db() {
+        let dir = TempDir::new().unwrap();
+        let result = default_code_graph_db_path_for_project(dir.path()).unwrap();
+        assert_eq!(
+            result,
+            dir.path().join(".amplihack").join("graph_db"),
+            "default_code_graph_db_path_for_project must return .amplihack/graph_db (not kuzu_db)"
+        );
+    }
+
+    /// I77-KUZU-ENV: When only AMPLIHACK_KUZU_DB_PATH is set (the legacy alias)
+    /// and AMPLIHACK_GRAPH_DB_PATH is absent, resolve_code_graph_db_path_for_project
+    /// must accept the legacy env var as the active path.
+    #[test]
+    fn resolve_code_graph_db_path_for_project_uses_kuzu_env_as_legacy_alias() {
+        let _guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = TempDir::new().unwrap();
+        let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
+        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/tmp/legacy-kuzu-alias") };
+
+        let path = resolve_code_graph_db_path_for_project(dir.path()).unwrap();
+
+        match prev_graph {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match prev_kuzu {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/legacy-kuzu-alias"),
+            "AMPLIHACK_KUZU_DB_PATH must be used as a legacy alias when AMPLIHACK_GRAPH_DB_PATH \
+             is unset"
+        );
+    }
+
+    /// I77-SEC-TRAVERSE: An env var whose value contains a path-traversal component
+    /// (`..`) must be REJECTED. resolve_code_graph_db_path_for_project() must
+    /// surface an error instead of silently falling through to the default path.
+    ///
+    /// Security reference: design spec validate_graph_db_env_path() requirement —
+    /// "must not contain '..' components".
+    ///
+    #[test]
+    fn resolve_code_graph_db_path_for_project_env_var_traversal_rejected() {
+        let _guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = TempDir::new().unwrap();
+        let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        // Env var value contains a ".." path traversal component.
+        unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/tmp/../etc/shadow") };
+        unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
+
+        let error = resolve_code_graph_db_path_for_project(dir.path()).unwrap_err();
+
+        match prev_graph {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match prev_kuzu {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("invalid AMPLIHACK_GRAPH_DB_PATH override"));
+        assert!(rendered.contains("graph DB path must not contain parent traversal"));
+    }
+
+    /// I77-SEC-RELATIVE: A non-absolute path in AMPLIHACK_GRAPH_DB_PATH must be
+    /// rejected. resolve_code_graph_db_path_for_project() must surface an error
+    /// instead of silently falling through to the default path.
+    ///
+    /// Security reference: design spec validate_graph_db_env_path() requirement —
+    /// "must be absolute".
+    ///
+    #[test]
+    fn resolve_code_graph_db_path_for_project_env_var_relative_path_rejected() {
+        let _guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = TempDir::new().unwrap();
+        let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        // Relative (non-absolute) path — should be rejected.
+        unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "relative/path/to/graph_db") };
+        unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
+
+        let error = resolve_code_graph_db_path_for_project(dir.path()).unwrap_err();
+
+        match prev_graph {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match prev_kuzu {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("invalid AMPLIHACK_GRAPH_DB_PATH override"));
+        assert!(rendered.contains("graph DB path must be absolute"));
+    }
+
+    /// I77-SEC-PROC: A `/proc`-prefixed path in AMPLIHACK_GRAPH_DB_PATH must be
+    /// rejected. resolve_code_graph_db_path_for_project() must surface an error
+    /// instead of silently falling through to the default path.
+    ///
+    /// Security reference: design spec validate_graph_db_env_path() requirement —
+    /// "must not start with /proc, /sys, or /dev".
+    ///
+    #[test]
+    fn resolve_code_graph_db_path_for_project_env_var_proc_prefix_rejected() {
+        let _guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = TempDir::new().unwrap();
+        let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/proc/1/mem") };
+        unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
+
+        let error = resolve_code_graph_db_path_for_project(dir.path()).unwrap_err();
+
+        match prev_graph {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match prev_kuzu {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("invalid AMPLIHACK_GRAPH_DB_PATH override"));
+        assert!(rendered.contains("blocked unsafe path prefix"));
+    }
+
+    /// I77-SEC-SYMLINK: The legacy `kuzu_db` disk-shim must NOT activate when the
+    /// `kuzu_db` path is a symbolic link whose canonical target resolves outside the
+    /// project root. The shim must surface an error instead of silently falling
+    /// through to the default path.
+    ///
+    /// Security reference: design spec — "Symlink attack on disk probe: legacy
+    /// kuzu_db path canonicalized and verified to start_with(project_root) before
+    /// the shim activates".
+    ///
+    #[test]
+    #[cfg(unix)]
+    fn resolve_code_graph_db_path_for_project_disk_shim_blocks_escaping_symlink() {
+        let _guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
+        unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
+        unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") };
+
+        // Create .amplihack/ inside the project root.
+        let amplihack_dir = dir.path().join(".amplihack");
+        fs::create_dir_all(&amplihack_dir).unwrap();
+
+        // Create a symlink: <project>/.amplihack/kuzu_db → <outside tempdir>
+        // The symlink resolves OUTSIDE the project root, simulating a symlink
+        // escape / TOCTOU attack.
+        let kuzu_symlink = amplihack_dir.join("kuzu_db");
+        std::os::unix::fs::symlink(outside.path(), &kuzu_symlink).unwrap();
+
+        let error = resolve_code_graph_db_path_for_project(dir.path()).unwrap_err();
+
+        match prev_graph {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match prev_kuzu {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("legacy graph DB shim escapes project root"));
+        assert!(rendered.contains(kuzu_symlink.to_string_lossy().as_ref()));
     }
 }

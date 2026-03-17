@@ -19,14 +19,14 @@ two commands that build the native Kuzu code-graph from source.
 
 ## index-code
 
-Import a pre-generated blarify JSON file into the native Kuzu code-graph store.
+Import a pre-generated blarify JSON file into the native code-graph store.
 Use this when you already have a `blarify.json` on disk (for example, from a CI
 artifact) and want to ingest it without running the SCIP pipeline.
 
 ### Synopsis
 
 ```sh
-amplihack index-code <INPUT> [--kuzu-path <PATH>]
+amplihack index-code <INPUT> [--db-path <PATH>]
 ```
 
 ### Arguments
@@ -34,14 +34,14 @@ amplihack index-code <INPUT> [--kuzu-path <PATH>]
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `<INPUT>` | yes | Path to a blarify JSON export (`blarify.json`) |
-| `--kuzu-path <PATH>` | no | Override the Kuzu database directory. Defaults to `<project>/.amplihack/kuzu_db` inferred from the input path location. |
+| `--db-path <PATH>` | no | Override the code-graph database directory. Defaults to `<project>/.amplihack/graph_db` inferred from the input path location. `--kuzu-path` remains as a compatibility alias. |
 
 ### Behavior
 
 1. Validates that `<INPUT>` exists and is below 500 MB.
 2. Canonicalizes the input path and rejects paths under `/proc`, `/sys`, or
    `/dev`.
-3. Opens (or creates) the Kuzu database at the resolved `--kuzu-path`.
+3. Opens (or creates) the code-graph database at the resolved `--db-path`.
 4. On Unix, enforces `0600` permissions on the database file and `0700` on its
    parent directory after first open.
 5. Applies the schema (idempotent — uses `CREATE IF NOT EXISTS`).
@@ -49,10 +49,8 @@ amplihack index-code <INPUT> [--kuzu-path <PATH>]
    relationship edges from the JSON.
 7. Prints an import-counts summary to stdout and exits 0.
 
-If `<INPUT>` does not exist, `index-code` logs a warning at `WARN` level and
-exits 0 with zero counts — it does **not** abort the process. This allows
-pipelines that conditionally produce `blarify.json` to invoke `index-code`
-unconditionally.
+If `<INPUT>` does not exist, `index-code` returns an error instead of producing
+a success-shaped zero-count import.
 
 ### Example
 
@@ -72,7 +70,7 @@ amplihack index-code /workspace/myproject/.amplihack/blarify.json
 
 ```sh
 # Point at a custom database location
-amplihack index-code /tmp/analysis/blarify.json --kuzu-path /var/cache/myproject/kuzu
+amplihack index-code /tmp/analysis/blarify.json --db-path /var/cache/myproject/graph_db
 ```
 
 ---
@@ -80,7 +78,7 @@ amplihack index-code /tmp/analysis/blarify.json --kuzu-path /var/cache/myproject
 ## index-scip
 
 Auto-detect project languages, run the appropriate native SCIP indexers, and
-import the resulting SCIP protobuf artifacts into the Kuzu code-graph.
+import the resulting SCIP protobuf artifacts into the native code-graph.
 
 No Python interpreter is invoked. Each language uses its own compiled SCIP
 indexer binary (e.g. `scip-python` is a Go binary, not a Python script).
@@ -115,7 +113,7 @@ Accepted language values: `python`, `typescript`, `javascript`, `go`, `rust`,
 5. Backs up any existing `index.scip` at the project root and restores it when
    each indexer finishes (indexers write to `index.scip` by convention; the
    backup/restore prevents cross-contamination).
-6. Imports each `.scip` artifact into Kuzu via `import_scip_file`.
+6. Imports each `.scip` artifact into the code-graph store via `import_scip_file`.
 7. Prints a summary to stdout and exits 0 if at least one language succeeded.
 
 Languages whose indexer binary is absent are silently skipped with a note in
@@ -171,13 +169,13 @@ by default.
 
 ## Database location
 
-The default Kuzu database path is `<project-root>/.amplihack/kuzu_db`.
+The default code-graph database path is `<project-root>/.amplihack/graph_db`.
 
 For `index-code`, the project root is inferred from the input path: if the
 input is `<project>/.amplihack/blarify.json`, the database will be
-`<project>/.amplihack/kuzu_db`. Otherwise the current directory is used.
+`<project>/.amplihack/graph_db`. Otherwise the current directory is used.
 
-Use `--kuzu-path` on either command to override.
+Use `--db-path` on `index-code` to override. `--kuzu-path` remains accepted as a compatibility alias.
 
 ---
 
@@ -186,7 +184,7 @@ Use `--kuzu-path` on either command to override.
 | Constraint | Detail |
 |-----------|--------|
 | 500 MB size guard | `index-code` reads the blarify JSON file size before parsing. Files ≥ 500 MB are rejected with a clear error. |
-| Path canonicalization | Both `--project-path` and `--kuzu-path` are canonicalized via `std::fs::canonicalize`. Symlinks are followed; a `WARN` log entry is emitted if the input or DB path is a symlink. |
+| Path canonicalization | Both `--project-path` and `--db-path` are canonicalized via `std::fs::canonicalize`. Symlinks are followed; a `WARN` log entry is emitted if the input or DB path is a symlink. |
 | Blocked path prefixes | Paths under `/proc`, `/sys`, or `/dev` are rejected immediately. |
 | DB file permissions (Unix) | After the Kuzu database is initialized, the DB file is `chmod 0600` and its parent directory is `chmod 0700`. |
 | No shell expansion | All external tool invocations (SCIP indexers) pass arguments as discrete `Vec<String>` elements — never via a shell string. |

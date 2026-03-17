@@ -215,7 +215,7 @@ After running `amplihack index-scip` in a project:
 ```
 <project>/
 └── .amplihack/
-    ├── kuzu_db/          ← Kuzu database directory (0700)
+    ├── graph_db/         ← Graph database directory (0700)
     │   ├── data.kz       ← graph data (0600)
     │   └── ...
     └── indexes/
@@ -224,7 +224,7 @@ After running `amplihack index-scip` in a project:
         └── ...
 ```
 
-The `kuzu_db` directory and its contents are created with restrictive
+The `graph_db` directory and its contents are created with restrictive
 permissions (`0700` / `0600`) to prevent other users on a shared system from
 reading graph data that may include sensitive symbol names or docstrings.
 
@@ -236,7 +236,7 @@ reading graph data that may include sensitive symbol names or docstrings.
 |----------|---------------|
 | No interpreter subprocess | All SCIP indexers are binary executables; `python3` is never launched |
 | Parameterized queries | All Kuzu Cypher statements use parameter binding; no string interpolation |
-| Path canonicalization | `--project-path` and `--kuzu-path` are canonicalized; symlinks emit `WARN` |
+| Path canonicalization | `--project-path` and `--db-path` are canonicalized; symlinks emit `WARN` |
 | Blocked prefixes | `/proc`, `/sys`, `/dev` are rejected immediately |
 | DB file permissions | `0600` file / `0700` directory enforced after first open (Unix only) |
 | JSON size guard | `blarify.json` ≥ 500 MB is rejected before parsing |
