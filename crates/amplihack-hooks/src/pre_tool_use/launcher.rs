@@ -36,7 +36,7 @@ pub fn detect_launcher() -> LauncherType {
     detect_launcher_for_dirs(&ProjectDirs::from_cwd())
 }
 
-fn detect_launcher_for_dirs(dirs: &ProjectDirs) -> LauncherType {
+pub(crate) fn detect_launcher_for_dirs(dirs: &ProjectDirs) -> LauncherType {
     // Copilot sets specific env vars.
     if std::env::var("GITHUB_COPILOT_AGENT").is_ok() || std::env::var("COPILOT_AGENT").is_ok() {
         return LauncherType::Copilot;

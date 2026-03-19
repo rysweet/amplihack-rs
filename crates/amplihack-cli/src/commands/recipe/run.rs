@@ -40,8 +40,18 @@ pub fn run_recipe(
             )?;
         }
     }
-    let result =
-        execute_recipe_via_rust(&validated_path, &merged_context, dry_run, &abs_working_dir)?;
+    let result = match execute_recipe_via_rust(
+        &validated_path,
+        &merged_context,
+        dry_run,
+        &abs_working_dir,
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            writeln!(io::stderr(), "Error: {error}")?;
+            return Err(exit_error(1));
+        }
+    };
 
     println!("{}", format_recipe_run_result(&result, format, false)?);
 
@@ -172,25 +182,25 @@ fn execute_recipe_via_rust(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let parsed: RecipeRunResult = serde_json::from_str(&stdout).map_err(|_| {
-        anyhow::anyhow!(
-            "Rust recipe runner returned unparseable output (exit {}): {}",
-            output.status,
-            format_unparseable_output_detail(&output.status, &stdout, &stderr)
-        )
+        if output.status.success() {
+            anyhow::anyhow!(
+                "Rust recipe runner returned unparseable output (exit {}): {}",
+                exit_status_label(&output.status),
+                stdout.chars().take(500).collect::<String>()
+            )
+        } else {
+            anyhow::anyhow!(
+                "Rust recipe runner failed (exit {}): {}",
+                exit_status_label(&output.status),
+                format_runner_failure_detail(&output.status, &stderr)
+            )
+        }
     })?;
 
     Ok(parsed)
 }
 
-fn format_unparseable_output_detail(
-    status: &std::process::ExitStatus,
-    stdout: &str,
-    stderr: &str,
-) -> String {
-    if status.success() {
-        return stdout.chars().take(500).collect::<String>();
-    }
-
+fn format_runner_failure_detail(status: &std::process::ExitStatus, stderr: &str) -> String {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
@@ -209,6 +219,21 @@ fn format_unparseable_output_detail(
     }
 
     meaningful_stderr_tail(stderr)
+}
+
+fn exit_status_label(status: &std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("signal {signal}");
+        }
+    }
+
+    status
+        .code()
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn meaningful_stderr_tail(stderr: &str) -> String {
@@ -1114,6 +1139,45 @@ steps:
         );
 
         assert_eq!(tail, "real error one\nreal error two");
+    }
+
+    #[test]
+    fn test_execute_recipe_via_rust_reports_nonzero_exit_with_stderr() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let runner = temp.path().join("recipe-runner-rs");
+        std::fs::write(&runner, "#!/bin/sh\necho \"runner exploded\" >&2\nexit 2\n")
+            .expect("failed to write runner stub");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+                .expect("failed to chmod runner");
+        }
+
+        let recipe = temp.path().join("recipe.yaml");
+        std::fs::write(&recipe, "name: env-probe\nsteps: []\n").expect("failed to write recipe");
+
+        let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+        unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+
+        let result = execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, temp.path());
+
+        match prev_runner {
+            Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+            None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+        }
+
+        let error = result.expect_err("nonzero runner exit must return an error");
+        assert!(
+            error
+                .to_string()
+                .contains("Rust recipe runner failed (exit 2): runner exploded"),
+            "nonzero exit must surface stderr clearly. Got: {error}"
+        );
     }
 
     #[test]

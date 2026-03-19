@@ -173,7 +173,6 @@ fn extract_memory_limit(options: &str) -> Option<u64> {
 fn merge_node_options(existing_options: &str, new_limit_mb: u64) -> String {
     let tokens = tokenize_node_options(existing_options);
     let mut merged = Vec::new();
-    merged.push(format!("--max-old-space-size={new_limit_mb}"));
 
     let mut skip_next = false;
     for token in tokens {
@@ -190,6 +189,8 @@ fn merge_node_options(existing_options: &str, new_limit_mb: u64) -> String {
         }
         merged.push(token);
     }
+
+    merged.push(format!("--max-old-space-size={new_limit_mb}"));
 
     merged.join(" ").trim().to_string()
 }
@@ -336,8 +337,15 @@ mod tests {
             merge_node_options("--max-old-space-size=4096 --inspect --trace-warnings", 8192);
         assert_eq!(
             merged,
-            "--max-old-space-size=8192 --inspect --trace-warnings"
+            "--inspect --trace-warnings --max-old-space-size=8192"
         );
+    }
+
+    #[test]
+    fn merge_node_options_preserves_existing_option_order() {
+        let merged = merge_node_options("--existing-option", 32768);
+
+        assert_eq!(merged, "--existing-option --max-old-space-size=32768");
     }
 
     #[test]

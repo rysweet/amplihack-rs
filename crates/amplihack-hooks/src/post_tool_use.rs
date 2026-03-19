@@ -14,6 +14,8 @@
 //!
 //! None of these operations block the tool — failure policy is `Open`.
 
+mod launcher;
+
 use crate::protocol::{FailurePolicy, Hook};
 use amplihack_types::{HookInput, ProjectDirs, sanitize_session_id};
 use serde::{Deserialize, Serialize};
@@ -351,6 +353,11 @@ impl Hook for PostToolUseHook {
 
         // Blarify staleness detection (parity with blarify_staleness_hook.py).
         mark_blarify_stale_if_needed(&tool_name, &tool_input);
+
+        let dirs = ProjectDirs::from_cwd();
+        if let Some(message) = launcher::copilot_post_tool_use_message(&dirs, &tool_name) {
+            tracing::info!("{}", message);
+        }
 
         let workflow_warning =
             update_workflow_enforcement(&tool_name, &tool_input, session_id.as_deref());
