@@ -36,6 +36,7 @@ const BLARIFY_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 const POWER_STEERING_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Launch a tool binary (claude, copilot, codex, amplifier).
+#[allow(clippy::too_many_arguments)]
 pub fn run_launch(
     tool: &str,
     resume: bool,
@@ -88,12 +89,7 @@ pub fn run_launch(
     let execution_dir = resolve_checkout_repo(checkout_repo.as_deref())?
         .or_else(|| current_dir.clone())
         .unwrap_or_else(|| PathBuf::from("."));
-    let node_options = if !subprocess_safe {
-        let existing = std::env::var("NODE_OPTIONS").ok();
-        Some(prepare_memory_config(existing.as_deref())?.node_options)
-    } else {
-        None
-    };
+    let node_options = resolve_launch_node_options(subprocess_safe)?;
     if !subprocess_safe {
         maybe_prompt_re_enable_power_steering(&execution_dir)?;
     }
@@ -121,7 +117,7 @@ pub fn run_launch(
         let mut env_builder = EnvBuilder::new()
             .with_amplihack_session_id() // AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH
             .with_session_tree_context() // preserve orchestration tree vars if present
-            .with_amplihack_vars_with_node_options(node_options.as_deref()) // AMPLIHACK_RUST_RUNTIME, AMPLIHACK_VERSION, NODE_OPTIONS
+            .with_amplihack_vars_with_node_options(Some(node_options.as_str())) // AMPLIHACK_RUST_RUNTIME, AMPLIHACK_VERSION, NODE_OPTIONS
             .with_agent_binary(tool) // WS1: AMPLIHACK_AGENT_BINARY
             .with_amplihack_home() // WS3: AMPLIHACK_HOME
             .with_asset_resolver(); // Rust-native bundle asset resolver
@@ -163,6 +159,18 @@ pub fn run_launch(
         let _ = tracker.crash_session(&session_id);
     }
     result
+}
+
+fn resolve_launch_node_options(subprocess_safe: bool) -> Result<String> {
+    if subprocess_safe {
+        // Passthrough: forward parent's NODE_OPTIONS unchanged without calling
+        // prepare_memory_config(). The top-level launcher already applied
+        // memory configuration; re-applying it in a nested subprocess would
+        // overwrite the parent's carefully-set value.
+        return Ok(std::env::var("NODE_OPTIONS").unwrap_or_default());
+    }
+    let existing = std::env::var("NODE_OPTIONS").ok();
+    Ok(prepare_memory_config(existing.as_deref())?.node_options)
 }
 
 fn render_session_argv(
@@ -323,10 +331,10 @@ fn inject_uvx_plugin_args(
 }
 
 fn resolve_uvx_add_dir(add_dir_override: Option<&Path>) -> Option<PathBuf> {
-    if std::env::var_os("AMPLIHACK_IS_STAGED").as_deref() == Some(std::ffi::OsStr::new("1")) {
-        if let Some(original_cwd) = std::env::var_os("AMPLIHACK_ORIGINAL_CWD").map(PathBuf::from) {
-            return Some(original_cwd);
-        }
+    if std::env::var_os("AMPLIHACK_IS_STAGED").as_deref() == Some(std::ffi::OsStr::new("1"))
+        && let Some(original_cwd) = std::env::var_os("AMPLIHACK_ORIGINAL_CWD").map(PathBuf::from)
+    {
+        return Some(original_cwd);
     }
     add_dir_override
         .map(PathBuf::from)
@@ -1032,6 +1040,135 @@ mod tests {
                 .get("AMPLIHACK_LAUNCHER")
                 .map(String::as_str),
             Some("copilot")
+        );
+    }
+
+    #[test]
+    fn resolve_launch_node_options_subprocess_safe_passthrough_differs_from_normal() {
+        // subprocess-safe launches pass through NODE_OPTIONS unchanged.
+        // A normal (top-level) launch runs prepare_memory_config(), which may
+        // augment or replace the value.  The two code paths are deliberately
+        // different; this test confirms they diverge so that a nested subprocess
+        // does not overwrite the parent launcher's carefully-set memory limit.
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let original_home = set_home(home.path());
+        fs::create_dir_all(home.path().join(".amplihack")).unwrap();
+        fs::write(
+            home.path().join(".amplihack/config"),
+            r#"{"node_options_consent":true,"node_options_limit_mb":16384}"#,
+        )
+        .unwrap();
+        let previous_node_options = std::env::var_os("NODE_OPTIONS");
+        unsafe { std::env::set_var("NODE_OPTIONS", "--trace-warnings") };
+
+        let top_level = resolve_launch_node_options(false).unwrap();
+        let subprocess_safe = resolve_launch_node_options(true).unwrap();
+
+        restore_home(original_home);
+        match previous_node_options {
+            Some(value) => unsafe { std::env::set_var("NODE_OPTIONS", value) },
+            None => unsafe { std::env::remove_var("NODE_OPTIONS") },
+        }
+
+        // Correct behavior: subprocess-safe result is the raw parent value;
+        // normal result is the prepare_memory_config()-processed value.
+        // They must differ (passthrough vs. processed).
+        assert_ne!(subprocess_safe, top_level);
+        // subprocess-safe returns the parent value verbatim
+        assert_eq!(subprocess_safe, "--trace-warnings");
+        // normal launch augments with --max-old-space-size
+        assert!(top_level.contains("--max-old-space-size="));
+    }
+
+    #[test]
+    fn test_subprocess_safe_preserves_node_options() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_node_options = std::env::var_os("NODE_OPTIONS");
+        unsafe { std::env::set_var("NODE_OPTIONS", "--max-old-space-size=16384") };
+
+        let result = resolve_launch_node_options(true).unwrap();
+
+        match previous_node_options {
+            Some(value) => unsafe { std::env::set_var("NODE_OPTIONS", value) },
+            None => unsafe { std::env::remove_var("NODE_OPTIONS") },
+        }
+
+        // Pass the result through EnvBuilder as the actual launch path does.
+        let env = EnvBuilder::new()
+            .with_amplihack_vars_with_node_options(Some(result.as_str()))
+            .build();
+
+        // The child env must see exactly the parent's value, unchanged.
+        assert_eq!(
+            env.get("NODE_OPTIONS").map(String::as_str),
+            Some("--max-old-space-size=16384"),
+            "subprocess-safe launch must preserve parent NODE_OPTIONS verbatim"
+        );
+    }
+
+    #[test]
+    fn test_subprocess_safe_no_node_options_when_parent_unset() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_node_options = std::env::var_os("NODE_OPTIONS");
+        unsafe { std::env::remove_var("NODE_OPTIONS") };
+
+        let result = resolve_launch_node_options(true).unwrap();
+
+        match previous_node_options {
+            Some(value) => unsafe { std::env::set_var("NODE_OPTIONS", value) },
+            None => unsafe { std::env::remove_var("NODE_OPTIONS") },
+        }
+
+        // Pass the result through EnvBuilder as the actual launch path does.
+        let env = EnvBuilder::new()
+            .with_amplihack_vars_with_node_options(Some(result.as_str()))
+            .build();
+
+        // When parent has no NODE_OPTIONS, subprocess-safe must NOT inject the
+        // static 32768 MB default that a normal launch would add.
+        let node_opts = env.get("NODE_OPTIONS").map(String::as_str).unwrap_or("");
+        assert!(
+            !node_opts.contains("--max-old-space-size=32768"),
+            "subprocess-safe launch must not inject 32768 MB default when parent has no \
+             NODE_OPTIONS; got: {:?}",
+            node_opts
+        );
+    }
+
+    #[test]
+    fn test_normal_launch_applies_smart_node_options() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let original_home = set_home(home.path());
+        fs::create_dir_all(home.path().join(".amplihack")).unwrap();
+        let previous_node_options = std::env::var_os("NODE_OPTIONS");
+        unsafe { std::env::remove_var("NODE_OPTIONS") };
+
+        let result = resolve_launch_node_options(false);
+
+        restore_home(original_home);
+        match previous_node_options {
+            Some(value) => unsafe { std::env::set_var("NODE_OPTIONS", value) },
+            None => unsafe { std::env::remove_var("NODE_OPTIONS") },
+        }
+
+        // Normal (non-subprocess-safe) launch must run prepare_memory_config()
+        // and produce a NODE_OPTIONS value containing --max-old-space-size.
+        let node_options = result.unwrap();
+        assert!(
+            node_options.contains("--max-old-space-size"),
+            "normal launch must apply smart NODE_OPTIONS via prepare_memory_config(); \
+             got: {:?}",
+            node_options
         );
     }
 

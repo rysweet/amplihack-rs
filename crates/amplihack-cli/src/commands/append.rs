@@ -219,7 +219,7 @@ fn write_instruction_file(filepath: &Path, instruction: &str) -> Result<()> {
             instruction
         );
         file.write_all(content.as_bytes())?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(unix))]
@@ -236,7 +236,7 @@ fn write_instruction_file(filepath: &Path, instruction: &str) -> Result<()> {
             instruction
         );
         file.write_all(content.as_bytes())?;
-        return Ok(());
+        Ok(())
     }
 }
 

@@ -279,6 +279,7 @@ struct AutoModeSession<E: PromptExecutor> {
 }
 
 impl<E: PromptExecutor> AutoModeSession<E> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         tool: AutoModeTool,
         prompt: String,
