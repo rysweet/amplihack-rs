@@ -2,12 +2,13 @@ use super::super::*;
 use super::{MemoryRuntimeBackend, MemorySessionBackend, MemoryTreeBackend};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, TimeZone as _, Utc};
+#[cfg(test)]
+pub(crate) use kuzu::LogicalType as GraphDbLogicalType;
 pub(crate) use kuzu::{
     Connection as GraphDbConnection, Database as GraphDbDatabase,
     SystemConfig as GraphDbSystemConfig, Value as GraphDbValue,
 };
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Component, Path, PathBuf};
 use time::OffsetDateTime;
 
@@ -136,22 +137,63 @@ pub(crate) const GRAPH_MEMORY_TABLES: &[(&str, &str, bool)] = &[
     ("WorkingMemory", "CONTAINS_WORKING", true),
 ];
 
-pub(crate) struct GraphDbBackend {
+pub(crate) struct GraphDbHandle {
     db: GraphDbDatabase,
+}
+
+impl GraphDbHandle {
+    pub(crate) fn open_memory_db() -> Result<Self> {
+        let path = resolve_memory_graph_db_path()?;
+        Self::open_at_path(&path)
+    }
+
+    pub(crate) fn open_at_path(path: &Path) -> Result<Self> {
+        Ok(Self {
+            db: open_graph_db_at_path(path)?,
+        })
+    }
+
+    pub(crate) fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&GraphDbConnection<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let conn = connect_graph_db(&self.db)?;
+        f(&conn)
+    }
+
+    pub(crate) fn initialize(
+        &self,
+        init: impl FnOnce(&GraphDbConnection<'_>) -> Result<()>,
+    ) -> Result<()> {
+        self.with_conn(init)
+    }
+
+    pub(crate) fn with_initialized_conn<T>(
+        &self,
+        init: impl FnOnce(&GraphDbConnection<'_>) -> Result<()>,
+        f: impl FnOnce(&GraphDbConnection<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.with_conn(|conn| {
+            init(conn)?;
+            f(conn)
+        })
+    }
+}
+
+pub(crate) struct GraphDbBackend {
+    handle: GraphDbHandle,
 }
 
 impl GraphDbBackend {
     pub(crate) fn open() -> Result<Self> {
-        let db = open_graph_db_memory_db()?;
-        let backend = Self { db };
-        backend.with_conn(init_graph_backend_schema)?;
+        let handle = GraphDbHandle::open_memory_db()?;
+        let backend = Self { handle };
+        backend.handle.initialize(init_graph_backend_schema)?;
         Ok(backend)
     }
 
     fn with_conn<T>(&self, f: impl FnOnce(&GraphDbConnection<'_>) -> Result<T>) -> Result<T> {
-        let conn =
-            GraphDbConnection::new(&self.db).context("failed to connect to Kùzu memory DB")?;
-        f(&conn)
+        self.handle.with_conn(f)
     }
 }
 
@@ -209,12 +251,13 @@ impl MemoryRuntimeBackend for GraphDbBackend {
     }
 }
 
-pub(crate) fn open_graph_db_memory_db() -> Result<GraphDbDatabase> {
-    let path = resolve_memory_graph_db_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+pub(crate) fn open_graph_db_at_path(path: &Path) -> Result<GraphDbDatabase> {
+    ensure_parent_dir(path)?;
     Ok(GraphDbDatabase::new(path, GraphDbSystemConfig::default())?)
+}
+
+pub(crate) fn connect_graph_db<'a>(db: &'a GraphDbDatabase) -> Result<GraphDbConnection<'a>> {
+    GraphDbConnection::new(db).context("failed to connect to graph-backed memory DB")
 }
 
 pub(crate) fn resolve_memory_graph_db_path() -> Result<PathBuf> {
@@ -257,13 +300,11 @@ pub(crate) fn resolve_memory_graph_db_path() -> Result<PathBuf> {
         return validate_graph_db_override(PathBuf::from(path), "AMPLIHACK_KUZU_DB_PATH");
     }
 
-    let home = home_dir()?;
-    let neutral = home.join(".amplihack").join("memory_graph.db");
-    let legacy = home.join(".amplihack").join("memory_kuzu.db");
-    if legacy.exists() && !neutral.exists() {
-        return Ok(legacy);
+    let paths = memory_home_paths()?;
+    if paths.legacy_graph_db.exists() && !paths.graph_db.exists() {
+        return Ok(paths.legacy_graph_db);
     }
-    Ok(neutral)
+    Ok(paths.graph_db)
 }
 
 pub fn init_graph_backend_schema(conn: &GraphDbConnection<'_>) -> Result<()> {
@@ -445,7 +486,7 @@ pub(crate) fn memory_from_graph_node(
 ) -> Result<MemoryRecord> {
     let props = match value {
         GraphDbValue::Node(node) => node.get_properties(),
-        other => anyhow::bail!("expected Kùzu node, got {other}"),
+        other => anyhow::bail!("expected graph node, got {other}"),
     };
     let metadata = property_string(props, "metadata")
         .as_deref()
@@ -529,7 +570,7 @@ pub(crate) fn graph_string(value: Option<&GraphDbValue>) -> Result<String> {
 pub(crate) fn graph_i64(value: Option<&GraphDbValue>) -> Result<i64> {
     value
         .and_then(graph_value_to_i64)
-        .context("expected integer Kùzu value")
+        .context("expected integer graph value")
 }
 
 pub(crate) fn graph_f64(value: Option<&GraphDbValue>) -> Result<f64> {
@@ -541,7 +582,7 @@ pub(crate) fn graph_f64(value: Option<&GraphDbValue>) -> Result<f64> {
         Some(GraphDbValue::UInt64(v)) => Ok(*v as f64),
         Some(GraphDbValue::UInt32(v)) => Ok(f64::from(*v)),
         Some(GraphDbValue::Null(_)) | None => Ok(0.0),
-        Some(other) => anyhow::bail!("expected numeric Kùzu value, got {other}"),
+        Some(other) => anyhow::bail!("expected numeric graph value, got {other}"),
     }
 }
 
@@ -733,7 +774,7 @@ mod tests {
 
     #[test]
     fn graph_value_to_string_handles_null() {
-        let val = GraphDbValue::Null(kuzu::LogicalType::String);
+        let val = GraphDbValue::Null(GraphDbLogicalType::String);
         assert_eq!(
             graph_value_to_string(&val),
             "",
@@ -779,5 +820,33 @@ mod tests {
     #[test]
     fn graph_value_to_i64_extracts_double_as_truncated_i64() {
         assert_eq!(graph_value_to_i64(&GraphDbValue::Double(3.9)), Some(3));
+    }
+
+    #[test]
+    fn memory_from_graph_node_uses_graph_neutral_error_wording() {
+        let err = memory_from_graph_node(
+            &GraphDbValue::String("oops".to_string()),
+            "session-1",
+            "SemanticMemory",
+        )
+        .expect_err("non-node value must fail");
+        assert!(err.to_string().contains("expected graph node"));
+        assert!(!err.to_string().contains("Kùzu"));
+    }
+
+    #[test]
+    fn graph_i64_uses_graph_neutral_error_wording() {
+        let err = graph_i64(Some(&GraphDbValue::String("oops".to_string())))
+            .expect_err("non-integer value must fail");
+        assert!(err.to_string().contains("expected integer graph value"));
+        assert!(!err.to_string().contains("Kùzu"));
+    }
+
+    #[test]
+    fn graph_f64_uses_graph_neutral_error_wording() {
+        let err = graph_f64(Some(&GraphDbValue::String("oops".to_string())))
+            .expect_err("non-numeric value must fail");
+        assert!(err.to_string().contains("expected numeric graph value"));
+        assert!(!err.to_string().contains("Kùzu"));
     }
 }

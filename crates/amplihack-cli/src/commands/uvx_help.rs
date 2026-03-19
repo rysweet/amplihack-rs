@@ -49,7 +49,7 @@ fn find_uvx_installation_path() -> Option<PathBuf> {
     None
 }
 
-fn is_uvx_deployment() -> bool {
+pub(crate) fn is_uvx_deployment() -> bool {
     if env::current_dir()
         .ok()
         .map(|cwd| cwd.join(".claude").exists())

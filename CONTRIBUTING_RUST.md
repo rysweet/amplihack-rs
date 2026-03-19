@@ -18,6 +18,16 @@ cargo clippy -- -D warnings        # lint (zero warnings policy)
 cargo fmt --check                  # format check
 ```
 
+For local development on disk-constrained machines, prefer the wrapper below.
+It keeps build artifacts in `/tmp/amplihack-rs-target-$USER`, prunes stale temp
+targets older than 3 days by default, and exposes repo/worktree disk usage:
+
+```bash
+scripts/dev-space.sh cargo test --workspace
+scripts/dev-space.sh status
+scripts/dev-space.sh prune-targets --repo-target
+```
+
 ### Golden file tests
 
 610 golden test cases validate hook parity with Python:

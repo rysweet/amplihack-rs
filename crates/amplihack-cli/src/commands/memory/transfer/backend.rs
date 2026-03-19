@@ -1,15 +1,15 @@
 use super::*;
 use crate::commands::memory::BackendChoice;
 use crate::commands::memory::backend::graph_db::{
-    GraphDbConnection, GraphDbDatabase, GraphDbSystemConfig, GraphDbValue, graph_f64, graph_i64,
-    graph_rows, graph_string,
+    GraphDbConnection, GraphDbHandle, GraphDbValue, graph_f64, graph_i64, graph_rows, graph_string,
 };
 use anyhow::Context as _;
 use serde_json::Value as JsonValue;
 use std::fs;
 use std::io::Read;
+use tracing;
 
-/// Maximum allowed JSON file size for Kuzu imports: 500 MiB.
+/// Maximum allowed JSON file size for graph-db imports: 500 MiB.
 /// Mirrors the same guard in the SQLite backend.
 const MAX_JSON_FILE_SIZE: u64 = 500 * 1024 * 1024;
 
@@ -149,17 +149,21 @@ impl HierarchicalTransferBackend for GraphDbHierarchicalTransferBackend {
     }
 }
 
+fn with_hierarchical_graph_conn<T>(
+    db_path: &Path,
+    f: impl FnOnce(&GraphDbConnection<'_>) -> Result<T>,
+) -> Result<T> {
+    GraphDbHandle::open_at_path(db_path)?.with_initialized_conn(init_hierarchical_schema, f)
+}
+
 fn export_hierarchical_json_impl(
     agent_name: &str,
     output: &str,
     storage_path: Option<&str>,
 ) -> Result<ExportResult> {
     let db_path = resolve_hierarchical_db_path(agent_name, storage_path)?;
-    let db = GraphDbDatabase::new(&db_path, GraphDbSystemConfig::default())?;
-    let conn = GraphDbConnection::new(&db)?;
-    init_hierarchical_schema(&conn)?;
-
-    let semantic_nodes = graph_rows(
+    with_hierarchical_graph_conn(&db_path, |conn| {
+        let semantic_nodes = graph_rows(
         &conn,
         "MATCH (m:SemanticMemory) WHERE m.agent_id = $agent_id RETURN m.memory_id, m.concept, m.content, m.confidence, m.source_id, m.tags, m.metadata, m.created_at, m.entity_name ORDER BY m.created_at ASC",
         vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
@@ -181,7 +185,7 @@ fn export_hierarchical_json_impl(
     })
     .collect::<Result<Vec<_>>>()?;
 
-    let episodic_nodes = graph_rows(
+        let episodic_nodes = graph_rows(
         &conn,
         "MATCH (e:EpisodicMemory) WHERE e.agent_id = $agent_id RETURN e.memory_id, e.content, e.source_label, e.tags, e.metadata, e.created_at ORDER BY e.created_at ASC",
         vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
@@ -200,7 +204,7 @@ fn export_hierarchical_json_impl(
     })
     .collect::<Result<Vec<_>>>()?;
 
-    let similar_to_edges = graph_rows(
+        let similar_to_edges = graph_rows(
         &conn,
         "MATCH (a:SemanticMemory)-[r:SIMILAR_TO]->(b:SemanticMemory) WHERE a.agent_id = $agent_id RETURN a.memory_id, b.memory_id, r.weight, r.metadata",
         vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
@@ -217,7 +221,7 @@ fn export_hierarchical_json_impl(
     })
     .collect::<Result<Vec<_>>>()?;
 
-    let derives_from_edges = graph_rows(
+        let derives_from_edges = graph_rows(
         &conn,
         "MATCH (s:SemanticMemory)-[r:DERIVES_FROM]->(e:EpisodicMemory) WHERE s.agent_id = $agent_id RETURN s.memory_id, e.memory_id, r.extraction_method, r.confidence",
         vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
@@ -233,7 +237,7 @@ fn export_hierarchical_json_impl(
     })
     .collect::<Result<Vec<_>>>()?;
 
-    let supersedes_edges = graph_rows(
+        let supersedes_edges = graph_rows(
         &conn,
         "MATCH (newer:SemanticMemory)-[r:SUPERSEDES]->(older:SemanticMemory) WHERE newer.agent_id = $agent_id RETURN newer.memory_id, older.memory_id, r.reason, r.temporal_delta",
         vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
@@ -249,7 +253,7 @@ fn export_hierarchical_json_impl(
     })
     .collect::<Result<Vec<_>>>()?;
 
-    let transitioned_to_edges = graph_rows(
+        let transitioned_to_edges = graph_rows(
         &conn,
         "MATCH (newer:SemanticMemory)-[r:TRANSITIONED_TO]->(older:SemanticMemory) WHERE newer.agent_id = $agent_id RETURN newer.memory_id, older.memory_id, r.from_value, r.to_value, r.turn, r.transition_type",
         vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
@@ -267,72 +271,71 @@ fn export_hierarchical_json_impl(
     })
     .collect::<Result<Vec<_>>>()?;
 
-    let export = HierarchicalExportData {
-        agent_name: agent_name.to_string(),
-        exported_at: graph_export_timestamp(),
-        format_version: "1.1".to_string(),
-        semantic_nodes,
-        episodic_nodes,
-        similar_to_edges,
-        derives_from_edges,
-        supersedes_edges,
-        transitioned_to_edges,
-        statistics: HierarchicalStats::default(),
-    };
-    let mut export = export;
-    export.statistics = HierarchicalStats {
-        semantic_node_count: export.semantic_nodes.len(),
-        episodic_node_count: export.episodic_nodes.len(),
-        similar_to_edge_count: export.similar_to_edges.len(),
-        derives_from_edge_count: export.derives_from_edges.len(),
-        supersedes_edge_count: export.supersedes_edges.len(),
-        transitioned_to_edge_count: export.transitioned_to_edges.len(),
-    };
+        let export = HierarchicalExportData {
+            agent_name: agent_name.to_string(),
+            exported_at: graph_export_timestamp(),
+            format_version: "1.1".to_string(),
+            semantic_nodes,
+            episodic_nodes,
+            similar_to_edges,
+            derives_from_edges,
+            supersedes_edges,
+            transitioned_to_edges,
+            statistics: HierarchicalStats::default(),
+        };
+        let mut export = export;
+        export.statistics = HierarchicalStats {
+            semantic_node_count: export.semantic_nodes.len(),
+            episodic_node_count: export.episodic_nodes.len(),
+            similar_to_edge_count: export.similar_to_edges.len(),
+            derives_from_edge_count: export.derives_from_edges.len(),
+            supersedes_edge_count: export.supersedes_edges.len(),
+            transitioned_to_edge_count: export.transitioned_to_edges.len(),
+        };
 
-    let output_path = PathBuf::from(output);
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    // Write to a .tmp file first, then atomically rename — mirrors the SQLite
-    // backend's behaviour so both backends provide the same crash-safety guarantee.
-    let tmp_path = output_path.with_extension("json.tmp");
-    let serialized = serde_json::to_string_pretty(&export)?;
-    fs::write(&tmp_path, &serialized)
-        .with_context(|| format!("failed to write tmp file {}", tmp_path.display()))?;
-    fs::rename(&tmp_path, &output_path)
-        .with_context(|| format!("failed to rename tmp to {}", output_path.display()))?;
-    let file_size = output_path.metadata()?.len();
-    Ok(ExportResult {
-        agent_name: agent_name.to_string(),
-        format: "json".to_string(),
-        output_path: output_path.canonicalize()?.display().to_string(),
-        file_size_bytes: Some(file_size),
-        statistics: vec![
-            (
-                "semantic_node_count".to_string(),
-                export.statistics.semantic_node_count.to_string(),
-            ),
-            (
-                "episodic_node_count".to_string(),
-                export.statistics.episodic_node_count.to_string(),
-            ),
-            (
-                "similar_to_edge_count".to_string(),
-                export.statistics.similar_to_edge_count.to_string(),
-            ),
-            (
-                "derives_from_edge_count".to_string(),
-                export.statistics.derives_from_edge_count.to_string(),
-            ),
-            (
-                "supersedes_edge_count".to_string(),
-                export.statistics.supersedes_edge_count.to_string(),
-            ),
-            (
-                "transitioned_to_edge_count".to_string(),
-                export.statistics.transitioned_to_edge_count.to_string(),
-            ),
-        ],
+        let output_path = PathBuf::from(output);
+        ensure_parent_dir(&output_path)?;
+        // Write to a .tmp file first, then atomically rename — mirrors the SQLite
+        // backend's behaviour so both backends provide the same crash-safety guarantee.
+        let tmp_path = output_path.with_extension("json.tmp");
+        let serialized = serde_json::to_string_pretty(&export)?;
+        fs::write(&tmp_path, &serialized)
+            .with_context(|| format!("failed to write tmp file {}", tmp_path.display()))?;
+        fs::rename(&tmp_path, &output_path)
+            .with_context(|| format!("failed to rename tmp to {}", output_path.display()))?;
+        let file_size = output_path.metadata()?.len();
+        Ok(ExportResult {
+            agent_name: agent_name.to_string(),
+            format: "json".to_string(),
+            output_path: output_path.canonicalize()?.display().to_string(),
+            file_size_bytes: Some(file_size),
+            statistics: vec![
+                (
+                    "semantic_node_count".to_string(),
+                    export.statistics.semantic_node_count.to_string(),
+                ),
+                (
+                    "episodic_node_count".to_string(),
+                    export.statistics.episodic_node_count.to_string(),
+                ),
+                (
+                    "similar_to_edge_count".to_string(),
+                    export.statistics.similar_to_edge_count.to_string(),
+                ),
+                (
+                    "derives_from_edge_count".to_string(),
+                    export.statistics.derives_from_edge_count.to_string(),
+                ),
+                (
+                    "supersedes_edge_count".to_string(),
+                    export.statistics.supersedes_edge_count.to_string(),
+                ),
+                (
+                    "transitioned_to_edge_count".to_string(),
+                    export.statistics.transitioned_to_edge_count.to_string(),
+                ),
+            ],
+        })
     })
 }
 
@@ -360,36 +363,27 @@ fn import_hierarchical_json_impl(
     fs::File::open(&input_path)?.read_to_string(&mut raw)?;
     let data: HierarchicalExportData = serde_json::from_str(&raw)?;
     let db_path = resolve_hierarchical_db_path(agent_name, storage_path)?;
-    if let Some(parent) = db_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let db = GraphDbDatabase::new(&db_path, GraphDbSystemConfig::default())?;
-    let conn = GraphDbConnection::new(&db)?;
-    init_hierarchical_schema(&conn)?;
-    if !merge {
-        clear_hierarchical_agent_data(&conn, agent_name)?;
-    }
-    let existing_ids = if merge {
-        get_existing_hierarchical_ids(&conn, agent_name)?
-    } else {
-        Vec::new()
-    };
-    let mut stats = ImportStats::default();
+    with_hierarchical_graph_conn(&db_path, |conn| {
+        if !merge {
+            clear_hierarchical_agent_data(&conn, agent_name)?;
+        }
+        let existing_ids: std::collections::HashSet<String> = if merge {
+            get_existing_hierarchical_ids(&conn, agent_name)?
+                .into_iter()
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+        let mut plan = build_hierarchical_import_plan(&data, merge, |memory_id| {
+            existing_ids.contains(memory_id)
+        });
+        let mut stats = std::mem::take(&mut plan.stats);
 
-    for node in &data.episodic_nodes {
-        if node.memory_id.is_empty() {
-            stats.errors += 1;
-            continue;
-        }
-        if merge && existing_ids.contains(&node.memory_id) {
-            stats.skipped += 1;
-            continue;
-        }
-        let mut prepared = conn.prepare(
+        for node in plan.episodic_nodes {
+            let mut prepared = conn.prepare(
             "CREATE (e:EpisodicMemory {memory_id: $memory_id, content: $content, source_label: $source_label, agent_id: $agent_id, tags: $tags, metadata: $metadata, created_at: $created_at})",
         )?;
-        if conn
-            .execute(
+            let ep_result = conn.execute(
                 &mut prepared,
                 vec![
                     ("memory_id", GraphDbValue::String(node.memory_id.clone())),
@@ -409,154 +403,136 @@ fn import_hierarchical_json_impl(
                     ),
                     ("created_at", GraphDbValue::String(node.created_at.clone())),
                 ],
-            )
-            .is_ok()
-        {
-            stats.episodic_nodes_imported += 1;
-        } else {
-            stats.errors += 1;
+            );
+            if ep_result.is_ok() {
+                stats.episodic_nodes_imported += 1;
+            } else {
+                tracing::warn!(memory_id = %node.memory_id, "failed to insert episodic node into graph-db");
+                stats.errors += 1;
+            }
         }
-    }
 
-    for node in &data.semantic_nodes {
-        if node.memory_id.is_empty() {
-            stats.errors += 1;
-            continue;
-        }
-        if merge && existing_ids.contains(&node.memory_id) {
-            stats.skipped += 1;
-            continue;
-        }
-        let mut prepared = conn.prepare(
+        for node in plan.semantic_nodes {
+            let mut prepared = conn.prepare(
             "CREATE (m:SemanticMemory {memory_id: $memory_id, concept: $concept, content: $content, confidence: $confidence, source_id: $source_id, agent_id: $agent_id, tags: $tags, metadata: $metadata, created_at: $created_at, entity_name: $entity_name})",
         )?;
-        if conn
-            .execute(
-                &mut prepared,
+            if conn
+                .execute(
+                    &mut prepared,
+                    vec![
+                        ("memory_id", GraphDbValue::String(node.memory_id.clone())),
+                        ("concept", GraphDbValue::String(node.concept.clone())),
+                        ("content", GraphDbValue::String(node.content.clone())),
+                        ("confidence", GraphDbValue::Double(node.confidence)),
+                        ("source_id", GraphDbValue::String(node.source_id.clone())),
+                        ("agent_id", GraphDbValue::String(agent_name.to_string())),
+                        (
+                            "tags",
+                            GraphDbValue::String(serde_json::to_string(&node.tags)?),
+                        ),
+                        (
+                            "metadata",
+                            GraphDbValue::String(serde_json::to_string(&node.metadata)?),
+                        ),
+                        ("created_at", GraphDbValue::String(node.created_at.clone())),
+                        (
+                            "entity_name",
+                            GraphDbValue::String(node.entity_name.clone()),
+                        ),
+                    ],
+                )
+                .is_ok()
+            {
+                stats.semantic_nodes_imported += 1;
+            } else {
+                tracing::warn!(memory_id = %node.memory_id, "failed to insert semantic node into graph-db");
+                stats.errors += 1;
+            }
+        }
+
+        for edge in plan.similar_to_edges {
+            if create_hierarchical_edge(
+                &conn,
+                "MATCH (a:SemanticMemory {memory_id: $sid}) MATCH (b:SemanticMemory {memory_id: $tid}) CREATE (a)-[:SIMILAR_TO {weight: $weight, metadata: $metadata}]->(b)",
                 vec![
-                    ("memory_id", GraphDbValue::String(node.memory_id.clone())),
-                    ("concept", GraphDbValue::String(node.concept.clone())),
-                    ("content", GraphDbValue::String(node.content.clone())),
-                    ("confidence", GraphDbValue::Double(node.confidence)),
-                    ("source_id", GraphDbValue::String(node.source_id.clone())),
-                    ("agent_id", GraphDbValue::String(agent_name.to_string())),
-                    (
-                        "tags",
-                        GraphDbValue::String(serde_json::to_string(&node.tags)?),
-                    ),
+                    ("sid", GraphDbValue::String(edge.source_id.clone())),
+                    ("tid", GraphDbValue::String(edge.target_id.clone())),
+                    ("weight", GraphDbValue::Double(edge.weight)),
                     (
                         "metadata",
-                        GraphDbValue::String(serde_json::to_string(&node.metadata)?),
-                    ),
-                    ("created_at", GraphDbValue::String(node.created_at.clone())),
-                    (
-                        "entity_name",
-                        GraphDbValue::String(node.entity_name.clone()),
+                        GraphDbValue::String(serde_json::to_string(&edge.metadata)?),
                     ),
                 ],
-            )
-            .is_ok()
-        {
-            stats.semantic_nodes_imported += 1;
-        } else {
-            stats.errors += 1;
+            )? {
+                stats.edges_imported += 1;
+            } else {
+                tracing::warn!(source = %edge.source_id, target = %edge.target_id, "failed to insert SIMILAR_TO edge into graph-db");
+                stats.errors += 1;
+            }
         }
-    }
+        for edge in plan.derives_from_edges {
+            if create_hierarchical_edge(
+                &conn,
+                "MATCH (s:SemanticMemory {memory_id: $sid}) MATCH (e:EpisodicMemory {memory_id: $tid}) CREATE (s)-[:DERIVES_FROM {extraction_method: $method, confidence: $confidence}]->(e)",
+                vec![
+                    ("sid", GraphDbValue::String(edge.source_id.clone())),
+                    ("tid", GraphDbValue::String(edge.target_id.clone())),
+                    (
+                        "method",
+                        GraphDbValue::String(edge.extraction_method.clone()),
+                    ),
+                    ("confidence", GraphDbValue::Double(edge.confidence)),
+                ],
+            )? {
+                stats.edges_imported += 1;
+            } else {
+                tracing::warn!(source = %edge.source_id, target = %edge.target_id, "failed to insert DERIVES_FROM edge into graph-db");
+                stats.errors += 1;
+            }
+        }
+        for edge in plan.supersedes_edges {
+            if create_hierarchical_edge(
+                &conn,
+                "MATCH (newer:SemanticMemory {memory_id: $sid}) MATCH (older:SemanticMemory {memory_id: $tid}) CREATE (newer)-[:SUPERSEDES {reason: $reason, temporal_delta: $delta}]->(older)",
+                vec![
+                    ("sid", GraphDbValue::String(edge.source_id.clone())),
+                    ("tid", GraphDbValue::String(edge.target_id.clone())),
+                    ("reason", GraphDbValue::String(edge.reason.clone())),
+                    ("delta", GraphDbValue::String(edge.temporal_delta.clone())),
+                ],
+            )? {
+                stats.edges_imported += 1;
+            } else {
+                tracing::warn!(source = %edge.source_id, target = %edge.target_id, "failed to insert SUPERSEDES edge into graph-db");
+                stats.errors += 1;
+            }
+        }
+        for edge in plan.transitioned_to_edges {
+            if create_hierarchical_edge(
+                &conn,
+                "MATCH (newer:SemanticMemory {memory_id: $sid}) MATCH (older:SemanticMemory {memory_id: $tid}) CREATE (newer)-[:TRANSITIONED_TO {from_value: $from_val, to_value: $to_val, turn: $turn, transition_type: $ttype}]->(older)",
+                vec![
+                    ("sid", GraphDbValue::String(edge.source_id.clone())),
+                    ("tid", GraphDbValue::String(edge.target_id.clone())),
+                    ("from_val", GraphDbValue::String(edge.from_value.clone())),
+                    ("to_val", GraphDbValue::String(edge.to_value.clone())),
+                    ("turn", GraphDbValue::Int64(edge.turn)),
+                    ("ttype", GraphDbValue::String(edge.transition_type.clone())),
+                ],
+            )? {
+                stats.edges_imported += 1;
+            } else {
+                tracing::warn!(source = %edge.source_id, target = %edge.target_id, "failed to insert TRANSITIONED_TO edge into graph-db");
+                stats.errors += 1;
+            }
+        }
 
-    for edge in &data.similar_to_edges {
-        if create_hierarchical_edge(
-            &conn,
-            "MATCH (a:SemanticMemory {memory_id: $sid}) MATCH (b:SemanticMemory {memory_id: $tid}) CREATE (a)-[:SIMILAR_TO {weight: $weight, metadata: $metadata}]->(b)",
-            vec![
-                ("sid", GraphDbValue::String(edge.source_id.clone())),
-                ("tid", GraphDbValue::String(edge.target_id.clone())),
-                ("weight", GraphDbValue::Double(edge.weight)),
-                (
-                    "metadata",
-                    GraphDbValue::String(serde_json::to_string(&edge.metadata)?),
-                ),
-            ],
-        )? {
-            stats.edges_imported += 1;
-        } else {
-            stats.errors += 1;
-        }
-    }
-    for edge in &data.derives_from_edges {
-        if create_hierarchical_edge(
-            &conn,
-            "MATCH (s:SemanticMemory {memory_id: $sid}) MATCH (e:EpisodicMemory {memory_id: $tid}) CREATE (s)-[:DERIVES_FROM {extraction_method: $method, confidence: $confidence}]->(e)",
-            vec![
-                ("sid", GraphDbValue::String(edge.source_id.clone())),
-                ("tid", GraphDbValue::String(edge.target_id.clone())),
-                (
-                    "method",
-                    GraphDbValue::String(edge.extraction_method.clone()),
-                ),
-                ("confidence", GraphDbValue::Double(edge.confidence)),
-            ],
-        )? {
-            stats.edges_imported += 1;
-        } else {
-            stats.errors += 1;
-        }
-    }
-    for edge in &data.supersedes_edges {
-        if create_hierarchical_edge(
-            &conn,
-            "MATCH (newer:SemanticMemory {memory_id: $sid}) MATCH (older:SemanticMemory {memory_id: $tid}) CREATE (newer)-[:SUPERSEDES {reason: $reason, temporal_delta: $delta}]->(older)",
-            vec![
-                ("sid", GraphDbValue::String(edge.source_id.clone())),
-                ("tid", GraphDbValue::String(edge.target_id.clone())),
-                ("reason", GraphDbValue::String(edge.reason.clone())),
-                ("delta", GraphDbValue::String(edge.temporal_delta.clone())),
-            ],
-        )? {
-            stats.edges_imported += 1;
-        } else {
-            stats.errors += 1;
-        }
-    }
-    for edge in &data.transitioned_to_edges {
-        if create_hierarchical_edge(
-            &conn,
-            "MATCH (newer:SemanticMemory {memory_id: $sid}) MATCH (older:SemanticMemory {memory_id: $tid}) CREATE (newer)-[:TRANSITIONED_TO {from_value: $from_val, to_value: $to_val, turn: $turn, transition_type: $ttype}]->(older)",
-            vec![
-                ("sid", GraphDbValue::String(edge.source_id.clone())),
-                ("tid", GraphDbValue::String(edge.target_id.clone())),
-                ("from_val", GraphDbValue::String(edge.from_value.clone())),
-                ("to_val", GraphDbValue::String(edge.to_value.clone())),
-                ("turn", GraphDbValue::Int64(edge.turn)),
-                ("ttype", GraphDbValue::String(edge.transition_type.clone())),
-            ],
-        )? {
-            stats.edges_imported += 1;
-        } else {
-            stats.errors += 1;
-        }
-    }
-
-    Ok(ImportResult {
-        agent_name: agent_name.to_string(),
-        format: "json".to_string(),
-        source_agent: Some(data.agent_name),
-        merge,
-        statistics: vec![
-            (
-                "semantic_nodes_imported".to_string(),
-                stats.semantic_nodes_imported.to_string(),
-            ),
-            (
-                "episodic_nodes_imported".to_string(),
-                stats.episodic_nodes_imported.to_string(),
-            ),
-            (
-                "edges_imported".to_string(),
-                stats.edges_imported.to_string(),
-            ),
-            ("skipped".to_string(), stats.skipped.to_string()),
-            ("errors".to_string(), stats.errors.to_string()),
-        ],
+        Ok(build_hierarchical_import_result(
+            agent_name,
+            data.agent_name.clone(),
+            merge,
+            stats,
+        ))
     })
 }
 
@@ -567,9 +543,7 @@ fn export_hierarchical_raw_db_impl(
 ) -> Result<ExportResult> {
     let db_path = resolve_hierarchical_db_path(agent_name, storage_path)?;
     let output_path = PathBuf::from(output);
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    ensure_parent_dir(&output_path)?;
     if output_path.exists() {
         if output_path.is_dir() {
             fs::remove_dir_all(&output_path)?;
@@ -586,8 +560,7 @@ fn export_hierarchical_raw_db_impl(
         file_size_bytes: Some(size),
         statistics: vec![(
             "note".to_string(),
-            "Raw graph DB copy (compat alias: kuzu) - use JSON format for node/edge counts"
-                .to_string(),
+            "Raw graph DB copy - use JSON format for node/edge counts".to_string(),
         )],
     })
 }
@@ -608,9 +581,7 @@ fn import_hierarchical_raw_db_impl(
         anyhow::bail!("Input path does not exist: {}", input_path.display());
     }
     let target_path = resolve_hierarchical_db_path(agent_name, storage_path)?;
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    ensure_parent_dir(&target_path)?;
     if target_path.exists() {
         let backup_path = target_path.with_extension("bak");
         if backup_path.exists() {
@@ -630,7 +601,7 @@ fn import_hierarchical_raw_db_impl(
         merge: false,
         statistics: vec![(
             "note".to_string(),
-            "Raw graph DB replaced (compat alias: kuzu) - restart agent to use new DB".to_string(),
+            "Raw graph DB replaced - restart agent to use new DB".to_string(),
         )],
     })
 }

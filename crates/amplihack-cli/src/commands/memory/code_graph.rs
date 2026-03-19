@@ -1,5 +1,7 @@
 //! Native blarify JSON → graph-db code-graph import.
 
+use super::project_artifact_paths;
+
 pub(crate) mod backend;
 
 use anyhow::{Context, Result, bail};
@@ -219,7 +221,16 @@ fn open_code_graph_writer(path_override: Option<&Path>) -> Result<Box<dyn CodeGr
     self::backend::open_code_graph_writer(path_override)
 }
 
-pub fn run_index_code(input: &Path, db_path: Option<&Path>) -> Result<()> {
+pub fn run_index_code(
+    input: &Path,
+    db_path: Option<&Path>,
+    legacy_kuzu_path_used: bool,
+) -> Result<()> {
+    if legacy_kuzu_path_used {
+        eprintln!(
+            "⚠️ Compatibility mode: CLI flag `--kuzu-path` is a legacy compatibility alias; prefer `--db-path`."
+        );
+    }
     if let Some(notice) = code_graph_compatibility_notice_for_input(input, db_path)? {
         eprintln!("⚠️ Compatibility mode: {notice}");
     }
@@ -291,8 +302,57 @@ fn default_code_graph_db_path() -> Result<PathBuf> {
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectCodeGraphPaths {
+    neutral: PathBuf,
+    legacy: PathBuf,
+    resolved: PathBuf,
+}
+
+fn project_code_graph_paths(project_root: &Path) -> ProjectCodeGraphPaths {
+    let neutral = project_root.join(".amplihack").join("graph_db");
+    let legacy = project_root.join(".amplihack").join("kuzu_db");
+    ProjectCodeGraphPaths {
+        resolved: neutral.clone(),
+        neutral,
+        legacy,
+    }
+}
+
+fn resolve_project_code_graph_paths(project_root: &Path) -> Result<ProjectCodeGraphPaths> {
+    let mut paths = project_code_graph_paths(project_root);
+    if !paths.legacy.exists() || paths.neutral.exists() {
+        return Ok(paths);
+    }
+
+    let canonical_project_root = project_root.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize project root while validating legacy graph DB shim: {}",
+            project_root.display()
+        )
+    })?;
+    match paths.legacy.canonicalize() {
+        Ok(canonical_legacy) if canonical_legacy.starts_with(&canonical_project_root) => {
+            paths.resolved = paths.legacy.clone();
+            Ok(paths)
+        }
+        Ok(canonical_legacy) => bail!(
+            "legacy graph DB shim escapes project root: {} -> {} (project root: {})",
+            paths.legacy.display(),
+            canonical_legacy.display(),
+            canonical_project_root.display()
+        ),
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "failed to canonicalize legacy graph DB shim: {}",
+                paths.legacy.display()
+            )
+        }),
+    }
+}
+
 pub fn default_code_graph_db_path_for_project(project_root: &Path) -> Result<PathBuf> {
-    Ok(project_root.join(".amplihack").join("graph_db"))
+    Ok(project_code_graph_paths(project_root).neutral)
 }
 
 pub fn code_graph_compatibility_notice_for_project(
@@ -321,13 +381,12 @@ pub fn code_graph_compatibility_notice_for_project(
         ));
     }
 
-    let neutral = default_code_graph_db_path_for_project(project_root)?;
-    let legacy = project_root.join(".amplihack").join("kuzu_db");
-    if legacy.exists() && !neutral.exists() {
+    let paths = project_code_graph_paths(project_root);
+    if paths.legacy.exists() && !paths.neutral.exists() {
         return Ok(Some(format!(
             "using legacy code-graph store `{}` because `{}` is absent; migrate to `graph_db`.",
-            legacy.display(),
-            neutral.display()
+            paths.legacy.display(),
+            paths.neutral.display()
         )));
     }
 
@@ -338,22 +397,7 @@ pub fn code_graph_compatibility_notice_for_input(
     input_path: &Path,
     db_path_override: Option<&Path>,
 ) -> Result<Option<String>> {
-    let Some(parent) = input_path.parent() else {
-        return code_graph_compatibility_notice_for_project(
-            &std::env::current_dir().context(
-                "failed to resolve current directory for code graph compatibility notice",
-            )?,
-            db_path_override,
-        );
-    };
-    let is_blarify_json =
-        input_path.file_name().and_then(|name| name.to_str()) == Some("blarify.json");
-    let is_project_amplihack_dir =
-        parent.file_name().and_then(|name| name.to_str()) == Some(".amplihack");
-    if is_blarify_json
-        && is_project_amplihack_dir
-        && let Some(project_root) = parent.parent()
-    {
+    if let Some(project_root) = project_root_for_blarify_input(input_path) {
         return code_graph_compatibility_notice_for_project(project_root, db_path_override);
     }
     code_graph_compatibility_notice_for_project(
@@ -397,37 +441,6 @@ fn graph_db_env_override(var_name: &str) -> Result<Option<PathBuf>> {
     Ok(Some(validated))
 }
 
-fn safe_legacy_graph_db_path(project_root: &Path, neutral: &Path) -> Result<Option<PathBuf>> {
-    let legacy = project_root.join(".amplihack").join("kuzu_db");
-    if !legacy.exists() || neutral.exists() {
-        return Ok(None);
-    }
-
-    let canonical_project_root = project_root.canonicalize().with_context(|| {
-        format!(
-            "failed to canonicalize project root while validating legacy graph DB shim: {}",
-            project_root.display()
-        )
-    })?;
-    match legacy.canonicalize() {
-        Ok(canonical_legacy) if canonical_legacy.starts_with(&canonical_project_root) => {
-            Ok(Some(legacy))
-        }
-        Ok(canonical_legacy) => bail!(
-            "legacy graph DB shim escapes project root: {} -> {} (project root: {})",
-            legacy.display(),
-            canonical_legacy.display(),
-            canonical_project_root.display()
-        ),
-        Err(err) => Err(err).with_context(|| {
-            format!(
-                "failed to canonicalize legacy graph DB shim: {}",
-                legacy.display()
-            )
-        }),
-    }
-}
-
 pub fn resolve_code_graph_db_path_for_project(project_root: &Path) -> Result<PathBuf> {
     if let Some(path) = graph_db_env_override("AMPLIHACK_GRAPH_DB_PATH")? {
         return Ok(path);
@@ -435,25 +448,16 @@ pub fn resolve_code_graph_db_path_for_project(project_root: &Path) -> Result<Pat
     if let Some(path) = graph_db_env_override("AMPLIHACK_KUZU_DB_PATH")? {
         return Ok(path);
     }
-    let neutral = default_code_graph_db_path_for_project(project_root)?;
-    if let Some(legacy) = safe_legacy_graph_db_path(project_root, &neutral)? {
-        return Ok(legacy);
-    }
-    Ok(neutral)
+    Ok(resolve_project_code_graph_paths(project_root)?.resolved)
+}
+
+fn project_root_for_blarify_input(input_path: &Path) -> Option<&Path> {
+    let project_root = input_path.parent()?.parent()?;
+    (input_path == project_artifact_paths(project_root).blarify_json).then_some(project_root)
 }
 
 fn infer_code_graph_db_path_from_input(input_path: &Path) -> Result<PathBuf> {
-    let Some(parent) = input_path.parent() else {
-        return default_code_graph_db_path();
-    };
-    let is_blarify_json =
-        input_path.file_name().and_then(|name| name.to_str()) == Some("blarify.json");
-    let is_project_amplihack_dir =
-        parent.file_name().and_then(|name| name.to_str()) == Some(".amplihack");
-    if is_blarify_json && is_project_amplihack_dir {
-        let Some(project_root) = parent.parent() else {
-            return default_code_graph_db_path();
-        };
+    if let Some(project_root) = project_root_for_blarify_input(input_path) {
         return resolve_code_graph_db_path_for_project(project_root);
     }
     default_code_graph_db_path()
@@ -701,11 +705,11 @@ pub(crate) fn validate_index_path(path: &Path) -> Result<PathBuf> {
     Ok(canonical)
 }
 
-/// Assert that the Kuzu DB directory has restrictive Unix permissions.
+/// Assert that the graph DB directory has restrictive Unix permissions.
 ///
 /// Contract (P1-PERM, Unix only):
 /// - The DB *parent* directory must be mode `0o700`.
-/// - If Kuzu created a DB *file* (not a directory), that file must be `0o600`.
+/// - If the backend created a DB *file* (not a directory), that file must be `0o600`.
 /// - On non-Unix platforms this is a no-op (returns `Ok(())`).
 ///
 /// Must be called after the code-graph DB has been initialised so the path
@@ -762,7 +766,7 @@ mod tests {
     use crate::commands::memory::code_graph::backend::{
         initialize_test_code_graph_db, with_test_code_graph_conn,
     };
-    use crate::test_support::{cwd_env_lock, restore_cwd, set_cwd};
+    use crate::test_support::{cwd_env_lock, home_env_lock, restore_cwd, set_cwd};
     use tempfile::TempDir;
 
     fn sample_blarify_output() -> BlarifyOutput {
@@ -1037,7 +1041,10 @@ mod tests {
 
     #[test]
     fn default_code_graph_db_path_uses_project_local_store() {
-        let _guard = cwd_env_lock()
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home_guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = TempDir::new().unwrap();
@@ -1063,7 +1070,10 @@ mod tests {
 
     #[test]
     fn default_code_graph_db_path_prefers_existing_legacy_project_store() {
-        let _guard = cwd_env_lock()
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home_guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = TempDir::new().unwrap();
@@ -1091,7 +1101,10 @@ mod tests {
 
     #[test]
     fn default_code_graph_db_path_prefers_backend_neutral_override() {
-        let _guard = cwd_env_lock()
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home_guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = TempDir::new().unwrap();
@@ -1099,7 +1112,7 @@ mod tests {
         let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
         let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
         unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/tmp/graph-override") };
-        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/tmp/kuzu-override") };
+        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/tmp/legacy-graph-alias-override") };
 
         let path = default_code_graph_db_path().unwrap();
 
@@ -1262,8 +1275,8 @@ mod tests {
 
     // ── (2) DB permissions enforcement ────────────────────────────────────
 
-    /// P1-PERM: After Kuzu initialises the database the parent directory must
-    /// be mode 0o700 and the DB path itself 0o600 (or 0o700 if Kuzu creates a
+    /// P1-PERM: After the graph backend initialises the database the parent directory must
+    /// be mode 0o700 and the DB path itself 0o600 (or 0o700 if the backend creates a
     /// directory rather than a flat file).
     ///
     /// P1-PERM: DB parent directory must be 0o700; DB file/dir must be 0o600/0o700.
@@ -1289,7 +1302,7 @@ mod tests {
             "parent directory should be mode 0o700, got 0o{parent_mode:o}"
         );
 
-        // The DB itself (file or directory Kuzu creates) must be 0o600 / 0o700.
+        // The DB itself (file or directory the backend creates) must be 0o600 / 0o700.
         if db_path.exists() {
             let db_meta = fs::metadata(&db_path).unwrap();
             let db_mode = db_meta.permissions().mode() & 0o777;
@@ -1480,19 +1493,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resolve_project_code_graph_paths_prefers_valid_legacy_shim_when_neutral_missing() {
+        let dir = TempDir::new().unwrap();
+        let amplihack_dir = dir.path().join(".amplihack");
+        fs::create_dir_all(amplihack_dir.join("kuzu_db")).unwrap();
+
+        let paths = resolve_project_code_graph_paths(dir.path()).unwrap();
+
+        assert_eq!(
+            paths.neutral,
+            dir.path().join(".amplihack").join("graph_db")
+        );
+        assert_eq!(paths.legacy, dir.path().join(".amplihack").join("kuzu_db"));
+        assert_eq!(paths.resolved, paths.legacy);
+    }
+
+    #[test]
+    fn resolve_project_code_graph_paths_prefers_neutral_when_both_paths_exist() {
+        let dir = TempDir::new().unwrap();
+        let amplihack_dir = dir.path().join(".amplihack");
+        fs::create_dir_all(amplihack_dir.join("graph_db")).unwrap();
+        fs::create_dir_all(amplihack_dir.join("kuzu_db")).unwrap();
+
+        let paths = resolve_project_code_graph_paths(dir.path()).unwrap();
+
+        assert_eq!(
+            paths.neutral,
+            dir.path().join(".amplihack").join("graph_db")
+        );
+        assert_eq!(paths.legacy, dir.path().join(".amplihack").join("kuzu_db"));
+        assert_eq!(paths.resolved, paths.neutral);
+    }
+
     /// I77-KUZU-ENV: When only AMPLIHACK_KUZU_DB_PATH is set (the legacy alias)
     /// and AMPLIHACK_GRAPH_DB_PATH is absent, resolve_code_graph_db_path_for_project
     /// must accept the legacy env var as the active path.
     #[test]
     fn resolve_code_graph_db_path_for_project_uses_kuzu_env_as_legacy_alias() {
-        let _guard = cwd_env_lock()
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home_guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = TempDir::new().unwrap();
         let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
         let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
         unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
-        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/tmp/legacy-kuzu-alias") };
+        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/tmp/legacy-graph-alias") };
 
         let path = resolve_code_graph_db_path_for_project(dir.path()).unwrap();
 
@@ -1507,7 +1556,7 @@ mod tests {
 
         assert_eq!(
             path,
-            PathBuf::from("/tmp/legacy-kuzu-alias"),
+            PathBuf::from("/tmp/legacy-graph-alias"),
             "AMPLIHACK_KUZU_DB_PATH must be used as a legacy alias when AMPLIHACK_GRAPH_DB_PATH \
              is unset"
         );
@@ -1522,7 +1571,10 @@ mod tests {
     ///
     #[test]
     fn resolve_code_graph_db_path_for_project_env_var_traversal_rejected() {
-        let _guard = cwd_env_lock()
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home_guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = TempDir::new().unwrap();
@@ -1557,7 +1609,10 @@ mod tests {
     ///
     #[test]
     fn resolve_code_graph_db_path_for_project_env_var_relative_path_rejected() {
-        let _guard = cwd_env_lock()
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home_guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = TempDir::new().unwrap();
@@ -1592,7 +1647,10 @@ mod tests {
     ///
     #[test]
     fn resolve_code_graph_db_path_for_project_env_var_proc_prefix_rejected() {
-        let _guard = cwd_env_lock()
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home_guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = TempDir::new().unwrap();
@@ -1629,7 +1687,10 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn resolve_code_graph_db_path_for_project_disk_shim_blocks_escaping_symlink() {
-        let _guard = cwd_env_lock()
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _home_guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = TempDir::new().unwrap();

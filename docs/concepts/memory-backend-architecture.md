@@ -45,8 +45,8 @@ variable switches between them at any time.
 ## Backend trait seams
 
 Three traits define the memory backend contract. All three are implemented
-by both `SqliteBackend` and `KuzuBackend` in `backend/sqlite.rs` and
-`backend/kuzu.rs`.
+by both `SqliteBackend` and `GraphDbBackend` in `backend/sqlite.rs` and
+`backend/graph_db.rs`.
 
 ### `MemoryTreeBackend`
 
@@ -99,12 +99,13 @@ match:
 | Priority | Condition | Result |
 |----------|-----------|--------|
 | 1 | `AMPLIHACK_MEMORY_BACKEND` is set to a recognised value | That backend |
-| 2 | `AMPLIHACK_GRAPH_DB_PATH` path exists on disk (symlink-safe probe) | `graph-db` |
-| 3 | `~/.amplihack/memory_graph.db` exists | `graph-db` |
-| 4 | None of the above | `sqlite` (default for new installs) |
+| 2 | `~/.amplihack/hierarchical_memory/<agent>/graph_db/` directory found (symlink-safe probe) | `graph-db` |
+| 3 | None of the above | `sqlite` (default for new installs) |
 
 The probe uses `symlink_metadata()`, not `Path::exists()`, so a dangling
-symlink does **not** silently select the graph-db backend.
+symlink does **not** silently select the graph-db backend. If a symlink is
+detected inside the probe directory, `resolve_backend_with_autodetect()`
+returns `Err` for security — it refuses to follow the symlink.
 
 If `HOME` is unavailable, `resolve_backend_with_autodetect()` returns `Err`
 rather than guessing. The caller surfaces a clear error; there is no silent
@@ -145,7 +146,7 @@ degradation.
 | Store | Path |
 |-------|------|
 | Flat memory (sessions, learnings) | `~/.amplihack/memory.db` |
-| Hierarchical memory per agent | `~/.amplihack/hierarchical_memory/<agent>/sqlite_hierarchical.db` |
+| Hierarchical memory per agent | `~/.amplihack/hierarchical_memory/<agent_name>.db` |
 
 `<agent>` is validated against a strict allowlist before any filesystem path
 is constructed. Names containing path separators (`/`, `\`) or `..`
@@ -204,8 +205,8 @@ export_hierarchical_raw_db(agent, output, storage_path) -> ExportResult
 import_hierarchical_raw_db(agent, input, merge, storage_path) -> ImportResult
 ```
 
-`open_hierarchical_transfer_backend(BackendChoice)` dispatches to either
-`SqliteHierarchicalTransferBackend` or `KuzuHierarchicalTransferBackend`.
+`open_hierarchical_transfer_backend_for(BackendChoice)` dispatches to either
+`SqliteHierarchicalTransferBackend` or `GraphDbHierarchicalTransferBackend`.
 `resolve_transfer_backend_choice()` reads `AMPLIHACK_MEMORY_BACKEND` (with
 allowlist validation) to select the backend; it warns on unrecognised values
 and defaults to graph-db for backward compatibility.

@@ -9,6 +9,8 @@
 
 use crate::binary_finder::BinaryFinder;
 use crate::command_error::exit_error;
+use crate::env_builder::EnvBuilder;
+use crate::util::run_output_with_timeout;
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Local};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -724,7 +726,7 @@ fn run_scout(
     let mut adopted_count = 0usize;
     if !skip_adopt {
         println!("\nPhase 2: Adopting sessions...");
-        let mut queue = TaskQueue::load(Some(default_queue_path()))?;
+        let mut queue = TaskQueue::load_default()?;
         let adopter = SessionAdopter::new(azlin.clone());
         let mut vm_sessions = BTreeMap::<String, Vec<String>>::new();
         for session in &discovery.sessions {
@@ -755,7 +757,7 @@ fn run_scout(
     if incremental {
         let last_scout_path = default_last_scout_path();
         if last_scout_path.exists() {
-            match load_previous_scout(&last_scout_path) {
+            match load_default_previous_scout() {
                 Ok((statuses, decisions)) => {
                     previous_statuses = statuses;
                     previous_decisions = decisions;
@@ -855,7 +857,7 @@ fn run_scout(
         decisions.clone(),
         &discovery.sessions,
     );
-    snapshot.save(&default_last_scout_path())?;
+    snapshot.save_default()?;
     if let Some(path) = save_path {
         snapshot.save(path)?;
         println!("\nJSON report saved to: {}", path.display());
@@ -1056,11 +1058,7 @@ fn run_start(
         }
     };
 
-    let queue = TaskQueue::load(Some(default_queue_path()))?;
-    let mut admiral = FleetAdmiral::new(azlin, queue, Some(default_log_dir()))?;
-    let existing_vms = configured_existing_vms();
-    let existing_refs: Vec<&str> = existing_vms.iter().map(String::as_str).collect();
-    admiral.exclude_vms(&existing_refs);
+    let (mut admiral, existing_vms) = open_default_fleet_admiral(azlin)?;
     admiral.poll_interval_seconds = interval;
     admiral.max_agents_per_vm = max_agents_per_vm;
     admiral.observer.stuck_threshold_seconds = stuck_threshold;
@@ -1099,11 +1097,7 @@ fn run_run_once() -> Result<()> {
         }
     };
 
-    let queue = TaskQueue::load(Some(default_queue_path()))?;
-    let mut admiral = FleetAdmiral::new(azlin, queue, Some(default_log_dir()))?;
-    let existing_vms = configured_existing_vms();
-    let existing_refs: Vec<&str> = existing_vms.iter().map(String::as_str).collect();
-    admiral.exclude_vms(&existing_refs);
+    let (mut admiral, _) = open_default_fleet_admiral(azlin)?;
 
     let actions = admiral.run_once()?;
     println!("Cycle completed: {} actions taken", actions.len());
@@ -1111,6 +1105,15 @@ fn run_run_once() -> Result<()> {
         println!("  {}: {}", action.action_type.as_str(), action.reason);
     }
     Ok(())
+}
+
+fn open_default_fleet_admiral(azlin: PathBuf) -> Result<(FleetAdmiral, Vec<String>)> {
+    let queue = TaskQueue::load_default()?;
+    let mut admiral = FleetAdmiral::new(azlin, queue, Some(default_log_dir()))?;
+    let existing_vms = configured_existing_vms();
+    let existing_refs: Vec<&str> = existing_vms.iter().map(String::as_str).collect();
+    admiral.exclude_vms(&existing_refs);
+    Ok((admiral, existing_vms))
 }
 
 fn run_auth(vm_name: &str, services: &[String]) -> Result<()> {
@@ -1164,7 +1167,7 @@ fn run_adopt(vm_name: &str, sessions: &[String]) -> Result<()> {
     };
 
     let adopter = SessionAdopter::new(azlin);
-    let mut queue = TaskQueue::load(Some(default_queue_path()))?;
+    let mut queue = TaskQueue::load_default()?;
 
     println!("Discovering sessions on {vm_name}...");
     let discovered = adopter.discover_sessions(vm_name);
@@ -1209,7 +1212,7 @@ fn run_report() -> Result<()> {
         }
     };
 
-    let queue = TaskQueue::load(Some(default_queue_path()))?;
+    let queue = TaskQueue::load_default()?;
     let state = perceive_fleet_state(azlin)?;
     println!("{}", render_report(&state, &queue));
     Ok(())
@@ -1244,7 +1247,7 @@ fn run_observe(vm_name: &str) -> Result<()> {
 }
 
 fn run_queue() -> Result<()> {
-    let queue = TaskQueue::load(Some(default_queue_path()))?;
+    let queue = TaskQueue::load_default()?;
     println!("{}", queue.summary());
     Ok(())
 }
@@ -1259,7 +1262,7 @@ fn run_add_task(
     protected: bool,
 ) -> Result<()> {
     let _ = protected;
-    let mut queue = TaskQueue::load(Some(default_queue_path()))?;
+    let mut queue = TaskQueue::load_default()?;
     let task = queue.add_task(
         prompt,
         repo,
@@ -1280,14 +1283,14 @@ fn run_add_task(
 }
 
 fn run_graph() -> Result<()> {
-    let graph = FleetGraphSummary::load(Some(default_graph_path()))?;
+    let graph = FleetGraphSummary::load_default()?;
     println!("{}", graph.summary());
     Ok(())
 }
 
 fn run_dashboard() -> Result<()> {
-    let queue = TaskQueue::load(Some(default_queue_path()))?;
-    let mut dashboard = FleetDashboardSummary::load(Some(default_dashboard_path()))?;
+    let queue = TaskQueue::load_default()?;
+    let mut dashboard = FleetDashboardSummary::load_default()?;
     dashboard.update_from_queue(&queue)?;
     println!("{}", dashboard.summary());
     Ok(())
@@ -1307,7 +1310,7 @@ fn run_project(command: NativeFleetProjectCommand) -> Result<()> {
 }
 
 fn run_project_add(repo_url: &str, identity: &str, priority: &str, name: &str) -> Result<()> {
-    let mut dashboard = FleetDashboardSummary::load(Some(default_dashboard_path()))?;
+    let mut dashboard = FleetDashboardSummary::load_default()?;
     let existing = dashboard.get_project(repo_url).or_else(|| {
         (!name.is_empty())
             .then(|| dashboard.get_project(name))
@@ -1321,23 +1324,18 @@ fn run_project_add(repo_url: &str, identity: &str, priority: &str, name: &str) -
         return Ok(());
     }
 
-    let index = dashboard.add_project(repo_url, identity, name, priority);
-    dashboard.save()?;
+    let index = dashboard.add_project_and_save(repo_url, identity, name, priority)?;
     let project = dashboard.projects[index].clone();
 
-    let mut projects = load_projects_registry(&default_projects_path())?;
-    if !projects.contains_key(&project.name) {
-        projects.insert(
-            project.name.clone(),
-            ProjectRegistryEntry {
-                repo_url: repo_url.to_string(),
-                identity: identity.to_string(),
-                priority: priority.to_string(),
-                objectives: Vec::new(),
-            },
-        );
-        save_projects_registry(&projects, &default_projects_path())?;
-    }
+    let _ = ensure_default_project_registry_entry(
+        &project.name,
+        ProjectRegistryEntry {
+            repo_url: repo_url.to_string(),
+            identity: identity.to_string(),
+            priority: priority.to_string(),
+            objectives: Vec::new(),
+        },
+    )?;
 
     println!("Added project: {}", project.name);
     println!("  Repo: {}", project.repo_url);
@@ -1349,15 +1347,14 @@ fn run_project_add(repo_url: &str, identity: &str, priority: &str, name: &str) -
 }
 
 fn run_project_list() -> Result<()> {
-    let dashboard = FleetDashboardSummary::load(Some(default_dashboard_path()))?;
+    let dashboard = FleetDashboardSummary::load_default()?;
     println!("{}", render_project_list(&dashboard));
     Ok(())
 }
 
 fn run_project_remove(name: &str) -> Result<()> {
-    let mut dashboard = FleetDashboardSummary::load(Some(default_dashboard_path()))?;
-    if dashboard.remove_project(name) {
-        dashboard.save()?;
+    let mut dashboard = FleetDashboardSummary::load_default()?;
+    if dashboard.remove_project_and_save(name)? {
         println!("Removed project: {name}");
     } else {
         println!("Project not found: {name}");
@@ -2465,7 +2462,7 @@ fn cockpit_render_projects_view(
     lines: &mut Vec<String>,
     inner: usize,
 ) -> Result<()> {
-    let dashboard = FleetDashboardSummary::load(Some(default_dashboard_path()))?;
+    let dashboard = FleetDashboardSummary::load_default()?;
     if dashboard.projects.is_empty() {
         let text = render_project_list(&dashboard);
         for line in text.lines() {
@@ -2827,7 +2824,13 @@ fn run_tui_refresh_detail_capture(
 }
 
 fn run_tui_apply(azlin_path: &Path, ui_state: &mut FleetTuiUiState) -> Result<()> {
-    let Some(decision) = ui_state.last_decision.clone() else {
+    let Some(selected) = ui_state.selected.as_ref() else {
+        ui_state.status_message = Some("No session selected to apply.".to_string());
+        return Ok(());
+    };
+    let Some(decision) = ui_state.last_decision.clone().filter(|decision| {
+        decision.vm_name == selected.vm_name && decision.session_name == selected.session_name
+    }) else {
         ui_state.status_message = Some("No prepared proposal to apply.".to_string());
         return Ok(());
     };
@@ -3003,7 +3006,7 @@ fn run_tui_adopt_selected_session(
         return Ok(());
     };
 
-    let mut queue = TaskQueue::load(Some(default_queue_path()))?;
+    let mut queue = TaskQueue::load_default()?;
     if queue.has_active_assignment(&vm.name, &session.session_name) {
         ui_state.status_message = Some(format!(
             "{}/{} is already adopted into the active fleet queue.",
@@ -3083,7 +3086,7 @@ fn add_project_from_repo_input(ui_state: &mut FleetTuiUiState, repo_url: &str) -
         return Ok(());
     }
 
-    let mut dashboard = FleetDashboardSummary::load(Some(default_dashboard_path()))?;
+    let mut dashboard = FleetDashboardSummary::load_default()?;
     if let Some(existing) = dashboard.get_project(repo_url) {
         ui_state.selected_project_repo = Some(existing.repo_url.clone());
         ui_state.status_message = Some(format!(
@@ -3093,8 +3096,7 @@ fn add_project_from_repo_input(ui_state: &mut FleetTuiUiState, repo_url: &str) -
         return Ok(());
     }
 
-    let index = dashboard.add_project(repo_url, "", "", "medium");
-    dashboard.save()?;
+    let index = dashboard.add_project_and_save(repo_url, "", "", "medium")?;
     let project = &dashboard.projects[index];
     ui_state.selected_project_repo = Some(project.repo_url.clone());
     ui_state.status_message = Some(format!(
@@ -3110,20 +3112,18 @@ fn run_tui_remove_project(ui_state: &mut FleetTuiUiState) -> Result<()> {
         return Ok(());
     };
 
-    let mut dashboard = FleetDashboardSummary::load(Some(default_dashboard_path()))?;
+    let mut dashboard = FleetDashboardSummary::load_default()?;
     let removed_name = dashboard
         .get_project(&selected_repo)
         .map(|project| project.name.clone())
         .unwrap_or_else(|| selected_repo.clone());
-    if !dashboard.remove_project(&selected_repo) {
+    if !dashboard.remove_project_and_save(&selected_repo)? {
         ui_state.status_message = Some(format!(
             "Selected project '{removed_name}' is no longer present."
         ));
         ui_state.sync_project_selection();
         return Ok(());
     }
-
-    dashboard.save()?;
     ui_state.sync_project_selection();
     ui_state.status_message = Some(format!(
         "Removed project '{removed_name}' from the dashboard."
@@ -3627,13 +3627,7 @@ impl FleetTuiUiState {
     }
 
     fn project_refs() -> Result<Vec<String>> {
-        FleetDashboardSummary::load(Some(default_dashboard_path())).map(|dashboard| {
-            dashboard
-                .projects
-                .into_iter()
-                .map(|project| project.repo_url)
-                .collect()
-        })
+        FleetDashboardSummary::project_repo_refs_default()
     }
 
     /// Advance to the next tab, wrapping around.
@@ -4424,6 +4418,10 @@ fn load_previous_scout(
     Ok((statuses, decisions))
 }
 
+fn load_default_previous_scout() -> Result<(BTreeMap<String, String>, Vec<SessionDecisionRecord>)> {
+    load_previous_scout(&default_last_scout_path())
+}
+
 fn write_json_file(path: &Path, payload: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -4575,7 +4573,7 @@ fn find_reasoner_binary() -> Option<PathBuf> {
 }
 
 fn match_project(repo_url: &str) -> Result<(String, Vec<ProjectObjective>)> {
-    let projects = load_projects_registry(&default_projects_path())?;
+    let projects = load_default_projects_registry()?;
     for (name, project) in projects {
         if !project.repo_url.is_empty()
             && project.repo_url.trim_end_matches('/') == repo_url.trim_end_matches('/')
@@ -5391,15 +5389,22 @@ impl FleetTask {
 struct TaskQueue {
     tasks: Vec<FleetTask>,
     persist_path: Option<PathBuf>,
-    load_failed: bool,
+}
+
+trait FleetAdoptionBackend {
+    fn record_adopted_session(&mut self, vm_name: &str, session: &mut AdoptedSession)
+    -> Result<()>;
 }
 
 impl TaskQueue {
+    fn load_default() -> Result<Self> {
+        Self::load(Some(default_queue_path()))
+    }
+
     fn load(persist_path: Option<PathBuf>) -> Result<Self> {
         let mut queue = Self {
             tasks: Vec::new(),
             persist_path,
-            load_failed: false,
         };
 
         let Some(path) = queue.persist_path.clone() else {
@@ -5453,6 +5458,86 @@ impl TaskQueue {
         self.tasks.push(task.clone());
         self.save()?;
         Ok(task)
+    }
+
+    fn task_by_id_mut(&mut self, task_id: &str) -> Option<&mut FleetTask> {
+        self.tasks
+            .iter_mut()
+            .find(|candidate| candidate.id == task_id)
+    }
+
+    fn adopt_discovered_session(
+        &mut self,
+        vm_name: &str,
+        session: &mut AdoptedSession,
+    ) -> Result<()> {
+        let prompt = if session.inferred_task.is_empty() {
+            format!("Adopted session: {}", session.session_name)
+        } else {
+            session.inferred_task.clone()
+        };
+        let task = self.add_task(
+            &prompt,
+            &session.inferred_repo,
+            TaskPriority::Medium,
+            if session.agent_type.is_empty() {
+                "claude"
+            } else {
+                &session.agent_type
+            },
+            "auto",
+            DEFAULT_MAX_TURNS,
+        )?;
+        if let Some(saved_task) = self
+            .tasks
+            .iter_mut()
+            .find(|candidate| candidate.id == task.id)
+        {
+            saved_task.assigned_vm = Some(vm_name.to_string());
+            saved_task.assigned_session = Some(session.session_name.clone());
+            saved_task.assigned_at = Some(now_isoformat());
+            saved_task.started_at = Some(now_isoformat());
+            saved_task.status = TaskStatus::Running;
+        }
+        self.save()?;
+
+        session.task_id = Some(task.id);
+        session.adopted_at = Some(now_isoformat());
+        Ok(())
+    }
+
+    fn mark_task_running(
+        &mut self,
+        task_id: &str,
+        vm_name: &str,
+        session_name: &str,
+    ) -> Result<()> {
+        if let Some(saved_task) = self.task_by_id_mut(task_id) {
+            saved_task.assign(vm_name, session_name);
+            saved_task.start();
+        }
+        self.save()
+    }
+
+    fn mark_task_complete(&mut self, task_id: &str, result: &str) -> Result<()> {
+        if let Some(saved_task) = self.task_by_id_mut(task_id) {
+            saved_task.complete(result, None);
+        }
+        self.save()
+    }
+
+    fn mark_task_failed(&mut self, task_id: &str, reason: &str) -> Result<()> {
+        if let Some(saved_task) = self.task_by_id_mut(task_id) {
+            saved_task.fail(reason);
+        }
+        self.save()
+    }
+
+    fn requeue_task(&mut self, task_id: &str) -> Result<()> {
+        if let Some(saved_task) = self.task_by_id_mut(task_id) {
+            saved_task.requeue();
+        }
+        self.save()
     }
 
     fn next_task(&self) -> Option<&FleetTask> {
@@ -5525,13 +5610,6 @@ impl TaskQueue {
         let Some(path) = &self.persist_path else {
             return Ok(());
         };
-        if self.load_failed {
-            eprintln!(
-                "Refusing to save — load failed for {}. Fix the .bak file manually.",
-                path.display()
-            );
-            return Ok(());
-        }
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -5551,6 +5629,16 @@ impl TaskQueue {
             .map_err(|err| err.error)
             .with_context(|| format!("failed to persist {}", path.display()))?;
         Ok(())
+    }
+}
+
+impl FleetAdoptionBackend for TaskQueue {
+    fn record_adopted_session(
+        &mut self,
+        vm_name: &str,
+        session: &mut AdoptedSession,
+    ) -> Result<()> {
+        self.adopt_discovered_session(vm_name, session)
     }
 }
 
@@ -5993,7 +6081,20 @@ impl NativeReasonerBackend {
             }
             NativeReasonerBackend::Claude(path) => {
                 let mut cmd = Command::new(path);
+                cmd.stdin(Stdio::null());
                 cmd.args(["--dangerously-skip-permissions", "-p", prompt]);
+                let mut env_builder = EnvBuilder::new()
+                    .with_amplihack_session_id()
+                    .with_session_tree_context()
+                    .with_amplihack_vars()
+                    .with_agent_binary("claude")
+                    .with_amplihack_home()
+                    .with_asset_resolver()
+                    .set("AMPLIHACK_NONINTERACTIVE", "1");
+                if let Ok(current_dir) = env::current_dir() {
+                    env_builder = env_builder.with_project_graph_db(&current_dir)?;
+                }
+                env_builder.apply_to_command(&mut cmd);
                 let output = run_output_with_timeout(cmd, SCOUT_REASONER_TIMEOUT)?;
                 if !output.status.success() {
                     bail!(
@@ -6351,6 +6452,10 @@ impl LastScoutSnapshot {
         let payload = serde_json::to_value(self).context("failed to serialize scout snapshot")?;
         write_json_file(path, &payload)
     }
+
+    fn save_default(&self) -> Result<()> {
+        self.save(&default_last_scout_path())
+    }
 }
 
 fn discover_dry_run_sessions(azlin: &Path, vm_names: &[String]) -> Result<Vec<DryRunSession>> {
@@ -6673,15 +6778,17 @@ impl ProjectInfo {
 struct FleetDashboardSummary {
     projects: Vec<ProjectInfo>,
     persist_path: Option<PathBuf>,
-    load_failed: bool,
 }
 
 impl FleetDashboardSummary {
+    fn load_default() -> Result<Self> {
+        Self::load(Some(default_dashboard_path()))
+    }
+
     fn load(persist_path: Option<PathBuf>) -> Result<Self> {
         let mut dashboard = Self {
             projects: Vec::new(),
             persist_path,
-            load_failed: false,
         };
 
         let Some(path) = dashboard.persist_path.clone() else {
@@ -6735,6 +6842,18 @@ impl FleetDashboardSummary {
         self.projects.len() - 1
     }
 
+    fn add_project_and_save(
+        &mut self,
+        repo_url: &str,
+        github_identity: &str,
+        name: &str,
+        priority: &str,
+    ) -> Result<usize> {
+        let index = self.add_project(repo_url, github_identity, name, priority);
+        self.save()?;
+        Ok(index)
+    }
+
     fn get_project(&self, name_or_url: &str) -> Option<&ProjectInfo> {
         self.projects
             .iter()
@@ -6752,6 +6871,14 @@ impl FleetDashboardSummary {
 
         self.projects.remove(index);
         true
+    }
+
+    fn remove_project_and_save(&mut self, name_or_url: &str) -> Result<bool> {
+        let removed = self.remove_project(name_or_url);
+        if removed {
+            self.save()?;
+        }
+        Ok(removed)
     }
 
     fn update_from_queue(&mut self, queue: &TaskQueue) -> Result<()> {
@@ -6883,13 +7010,6 @@ impl FleetDashboardSummary {
         let Some(path) = &self.persist_path else {
             return Ok(());
         };
-        if self.load_failed {
-            eprintln!(
-                "Refusing to save — load failed for {}. Fix the .bak file manually.",
-                path.display()
-            );
-            return Ok(());
-        }
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -6914,6 +7034,16 @@ impl FleetDashboardSummary {
             .map_err(|err| err.error)
             .with_context(|| format!("failed to persist {}", path.display()))?;
         Ok(())
+    }
+
+    fn project_repo_refs_default() -> Result<Vec<String>> {
+        Self::load_default().map(|dashboard| {
+            dashboard
+                .projects
+                .into_iter()
+                .map(|project| project.repo_url)
+                .collect()
+        })
     }
 }
 
@@ -6972,6 +7102,10 @@ fn load_projects_registry(path: &Path) -> Result<BTreeMap<String, ProjectRegistr
     Ok(doc.project)
 }
 
+fn load_default_projects_registry() -> Result<BTreeMap<String, ProjectRegistryEntry>> {
+    load_projects_registry(&default_projects_path())
+}
+
 fn save_projects_registry(
     projects: &BTreeMap<String, ProjectRegistryEntry>,
     path: &Path,
@@ -6991,6 +7125,20 @@ fn save_projects_registry(
     let rendered = toml::to_string(&doc).context("failed to serialize project registry")?;
     fs::write(path, rendered).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
+}
+
+fn save_default_projects_registry(projects: &BTreeMap<String, ProjectRegistryEntry>) -> Result<()> {
+    save_projects_registry(projects, &default_projects_path())
+}
+
+fn ensure_default_project_registry_entry(name: &str, entry: ProjectRegistryEntry) -> Result<bool> {
+    let mut projects = load_default_projects_registry()?;
+    if projects.contains_key(name) {
+        return Ok(false);
+    }
+    projects.insert(name.to_string(), entry);
+    save_default_projects_registry(&projects)?;
+    Ok(true)
 }
 
 fn validate_project_name(name: &str) -> Result<()> {
@@ -7045,6 +7193,10 @@ fn render_project_list(dashboard: &FleetDashboardSummary) -> String {
 }
 
 impl FleetGraphSummary {
+    fn load_default() -> Result<Self> {
+        Self::load(Some(default_graph_path()))
+    }
+
     fn load(persist_path: Option<PathBuf>) -> Result<Self> {
         let Some(path) = persist_path else {
             return Ok(Self {
@@ -7732,16 +7884,8 @@ impl FleetAdmiral {
         cmd.args(["connect", vm_name, "--no-tmux", "--", &setup_cmd]);
         let output = run_output_with_timeout(cmd, SUBPROCESS_TIMEOUT)?;
         if output.status.success() {
-            if let Some(saved_task) = self
-                .task_queue
-                .tasks
-                .iter_mut()
-                .find(|candidate| candidate.id == task.id)
-            {
-                saved_task.assign(vm_name, session_name);
-                saved_task.start();
-            }
-            self.task_queue.save()?;
+            self.task_queue
+                .mark_task_running(&task.id, vm_name, session_name)?;
             return Ok(format!("Agent started: {} on {}", session_name, vm_name));
         }
 
@@ -7753,30 +7897,15 @@ impl FleetAdmiral {
 
     fn mark_complete(&mut self, action: &DirectorAction) -> Result<String> {
         if let Some(task) = action.task.as_ref() {
-            if let Some(saved_task) = self
-                .task_queue
-                .tasks
-                .iter_mut()
-                .find(|candidate| candidate.id == task.id)
-            {
-                saved_task.complete("Detected as completed by observer", None);
-            }
-            self.task_queue.save()?;
+            self.task_queue
+                .mark_task_complete(&task.id, "Detected as completed by observer")?;
         }
         Ok("Task marked complete".to_string())
     }
 
     fn mark_failed(&mut self, action: &DirectorAction) -> Result<String> {
         if let Some(task) = action.task.as_ref() {
-            if let Some(saved_task) = self
-                .task_queue
-                .tasks
-                .iter_mut()
-                .find(|candidate| candidate.id == task.id)
-            {
-                saved_task.fail(&action.reason);
-            }
-            self.task_queue.save()?;
+            self.task_queue.mark_task_failed(&task.id, &action.reason)?;
         }
         Ok(format!("Task marked failed: {}", action.reason))
     }
@@ -7805,15 +7934,7 @@ impl FleetAdmiral {
             );
         }
 
-        if let Some(saved_task) = self
-            .task_queue
-            .tasks
-            .iter_mut()
-            .find(|candidate| candidate.id == task.id)
-        {
-            saved_task.requeue();
-        }
-        self.task_queue.save()?;
+        self.task_queue.requeue_task(&task.id)?;
         Ok("Stuck agent killed, task requeued".to_string())
     }
 
@@ -8102,13 +8223,23 @@ impl SessionAdopter {
         }
     }
 
-    fn adopt_sessions(
+    fn adopt_sessions<B: FleetAdoptionBackend>(
         &self,
         vm_name: &str,
-        queue: &mut TaskQueue,
+        backend: &mut B,
         sessions: Option<&[String]>,
     ) -> Result<Vec<AdoptedSession>> {
-        let mut discovered = self.discover_sessions(vm_name);
+        let discovered = self.discover_sessions(vm_name);
+        self.adopt_discovered_sessions(vm_name, discovered, backend, sessions)
+    }
+
+    fn adopt_discovered_sessions<B: FleetAdoptionBackend>(
+        &self,
+        vm_name: &str,
+        mut discovered: Vec<AdoptedSession>,
+        backend: &mut B,
+        sessions: Option<&[String]>,
+    ) -> Result<Vec<AdoptedSession>> {
         if let Some(session_names) = sessions {
             discovered.retain(|session| {
                 session_names
@@ -8119,38 +8250,7 @@ impl SessionAdopter {
 
         let mut adopted = Vec::new();
         for mut session in discovered {
-            let prompt = if session.inferred_task.is_empty() {
-                format!("Adopted session: {}", session.session_name)
-            } else {
-                session.inferred_task.clone()
-            };
-            let task = queue.add_task(
-                &prompt,
-                &session.inferred_repo,
-                TaskPriority::Medium,
-                if session.agent_type.is_empty() {
-                    "claude"
-                } else {
-                    &session.agent_type
-                },
-                "auto",
-                DEFAULT_MAX_TURNS,
-            )?;
-            if let Some(saved_task) = queue
-                .tasks
-                .iter_mut()
-                .find(|candidate| candidate.id == task.id)
-            {
-                saved_task.assigned_vm = Some(vm_name.to_string());
-                saved_task.assigned_session = Some(session.session_name.clone());
-                saved_task.assigned_at = Some(now_isoformat());
-                saved_task.started_at = Some(now_isoformat());
-                saved_task.status = TaskStatus::Running;
-            }
-            queue.save()?;
-
-            session.task_id = Some(task.id);
-            session.adopted_at = Some(now_isoformat());
+            backend.record_adopted_session(vm_name, &mut session)?;
             adopted.push(session);
         }
 
@@ -8780,40 +8880,20 @@ fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
-fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    let child = cmd.spawn().context("failed to spawn subprocess")?;
-    let pid = child.id();
-    let (tx, rx) = mpsc::channel::<std::io::Result<Output>>();
-
-    thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
-    });
-
-    match rx.recv_timeout(timeout) {
-        Ok(result) => result.context("failed to wait for subprocess output"),
-        Err(_elapsed) => {
-            #[cfg(unix)]
-            let _ = Command::new("kill")
-                .args(["-TERM", &pid.to_string()])
-                .status();
-            bail!(
-                "subprocess timed out after {} seconds (pid {})",
-                timeout.as_secs(),
-                pid
-            )
-        }
-    }
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::command_error;
-    use crate::test_support::home_env_lock;
+    use crate::test_support::{cwd_env_lock, home_env_lock, restore_cwd, set_cwd};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+
+    fn restore_var(name: &str, previous: Option<std::ffi::OsString>) {
+        match previous {
+            Some(value) => unsafe { env::set_var(name, value) },
+            None => unsafe { env::remove_var(name) },
+        }
+    }
 
     fn write_executable(path: &Path, content: &str) {
         use std::io::Write as _;
@@ -8824,6 +8904,58 @@ mod tests {
         let mut perms = fs::metadata(path).unwrap().permissions();
         perms.set_mode(0o755);
         fs::set_permissions(path, perms).unwrap();
+    }
+
+    #[test]
+    fn native_reasoner_backend_propagates_shared_env_context() {
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let reasoner = temp.path().join("claude");
+        let amplihack_home = temp.path().join("amplihack-home");
+        fs::create_dir_all(&amplihack_home).unwrap();
+        write_executable(
+            &reasoner,
+            "#!/bin/sh\nprintf '%s\\n' \"$AMPLIHACK_AGENT_BINARY|$AMPLIHACK_NONINTERACTIVE|$AMPLIHACK_TREE_ID|$AMPLIHACK_SESSION_DEPTH|$AMPLIHACK_MAX_DEPTH|$AMPLIHACK_MAX_SESSIONS|$AMPLIHACK_HOME|$AMPLIHACK_GRAPH_DB_PATH\"\n",
+        );
+
+        let prev_home = env::var_os("AMPLIHACK_HOME");
+        let prev_tree = env::var_os("AMPLIHACK_TREE_ID");
+        let prev_depth = env::var_os("AMPLIHACK_SESSION_DEPTH");
+        let prev_max_depth = env::var_os("AMPLIHACK_MAX_DEPTH");
+        let prev_max_sessions = env::var_os("AMPLIHACK_MAX_SESSIONS");
+        let previous_cwd = set_cwd(temp.path()).unwrap();
+        unsafe {
+            env::set_var("AMPLIHACK_HOME", &amplihack_home);
+            env::set_var("AMPLIHACK_TREE_ID", "tree1234");
+            env::set_var("AMPLIHACK_SESSION_DEPTH", "2");
+            env::set_var("AMPLIHACK_MAX_DEPTH", "4");
+            env::set_var("AMPLIHACK_MAX_SESSIONS", "12");
+        }
+
+        let output = NativeReasonerBackend::Claude(reasoner)
+            .complete("inspect")
+            .unwrap();
+
+        restore_cwd(&previous_cwd).unwrap();
+        restore_var("AMPLIHACK_HOME", prev_home);
+        restore_var("AMPLIHACK_TREE_ID", prev_tree);
+        restore_var("AMPLIHACK_SESSION_DEPTH", prev_depth);
+        restore_var("AMPLIHACK_MAX_DEPTH", prev_max_depth);
+        restore_var("AMPLIHACK_MAX_SESSIONS", prev_max_sessions);
+
+        assert_eq!(
+            output.trim(),
+            format!(
+                "claude|1|tree1234|2|4|12|{}|{}",
+                amplihack_home.display(),
+                temp.path().join(".amplihack").join("graph_db").display()
+            )
+        );
     }
 
     #[test]
@@ -9459,7 +9591,6 @@ mod tests {
                 },
             ],
             persist_path: None,
-            load_failed: false,
         };
 
         let summary = queue.summary();
@@ -9621,7 +9752,6 @@ mod tests {
                 last_activity: Some(now_isoformat()),
             }],
             persist_path: None,
-            load_failed: false,
         };
 
         let summary = dashboard.summary();
@@ -9639,12 +9769,10 @@ mod tests {
         let mut dashboard = FleetDashboardSummary {
             projects: Vec::new(),
             persist_path: None,
-            load_failed: false,
         };
         let mut queue = TaskQueue {
             tasks: Vec::new(),
             persist_path: None,
-            load_failed: false,
         };
         let mut completed = FleetTask::new(
             "Fix bug",
@@ -9800,7 +9928,6 @@ mod tests {
                 last_activity: None,
             }],
             persist_path: None,
-            load_failed: false,
         };
 
         let rendered = render_project_list(&dashboard);
@@ -9991,37 +10118,13 @@ not-json
         let mut queue = TaskQueue {
             tasks: Vec::new(),
             persist_path: None,
-            load_failed: false,
         };
         let output = "===SESSION:work-1===\nCMD:claude\nREPO:https://github.com/org/repo.git\nLAST_MSG:Working on feature X\n===DONE===\n";
         let sessions = adopter.parse_discovery_output("vm-01", output);
 
-        let mut adopted = Vec::new();
-        for mut session in sessions {
-            let task = queue
-                .add_task(
-                    &session.inferred_task,
-                    &session.inferred_repo,
-                    TaskPriority::Medium,
-                    "claude",
-                    "auto",
-                    DEFAULT_MAX_TURNS,
-                )
-                .unwrap();
-            if let Some(saved_task) = queue
-                .tasks
-                .iter_mut()
-                .find(|candidate| candidate.id == task.id)
-            {
-                saved_task.assigned_vm = Some("vm-01".to_string());
-                saved_task.assigned_session = Some(session.session_name.clone());
-                saved_task.assigned_at = Some(now_isoformat());
-                saved_task.started_at = Some(now_isoformat());
-                saved_task.status = TaskStatus::Running;
-            }
-            session.task_id = Some(task.id);
-            adopted.push(session);
-        }
+        let adopted = adopter
+            .adopt_discovered_sessions("vm-01", sessions, &mut queue, None)
+            .unwrap();
 
         assert_eq!(adopted.len(), 1);
         assert!(adopted[0].task_id.is_some());
@@ -10289,7 +10392,6 @@ not-json
                 DEFAULT_MAX_TURNS,
             )],
             persist_path: None,
-            load_failed: false,
         };
 
         let rendered = render_report(&state, &queue);
@@ -11353,6 +11455,73 @@ exit 1
     }
 
     #[test]
+    fn render_tui_fleet_view_shows_row_status_icons() {
+        let state = FleetState {
+            vms: vec![VmInfo {
+                name: "vm-1".to_string(),
+                session_name: "vm-1".to_string(),
+                os: "linux".to_string(),
+                status: "Running".to_string(),
+                ip: String::new(),
+                region: "westus2".to_string(),
+                tmux_sessions: vec![
+                    TmuxSessionInfo {
+                        session_name: "claude-1".to_string(),
+                        vm_name: "vm-1".to_string(),
+                        windows: 1,
+                        attached: false,
+                        agent_status: AgentStatus::Running,
+                        last_output: "actively working".to_string(),
+                        working_directory: String::new(),
+                        repo_url: String::new(),
+                        git_branch: String::new(),
+                        pr_url: String::new(),
+                        task_summary: String::new(),
+                    },
+                    TmuxSessionInfo {
+                        session_name: "claude-2".to_string(),
+                        vm_name: "vm-1".to_string(),
+                        windows: 1,
+                        attached: false,
+                        agent_status: AgentStatus::Idle,
+                        last_output: String::new(),
+                        working_directory: String::new(),
+                        repo_url: String::new(),
+                        git_branch: String::new(),
+                        pr_url: String::new(),
+                        task_summary: String::new(),
+                    },
+                    TmuxSessionInfo {
+                        session_name: "claude-3".to_string(),
+                        vm_name: "vm-1".to_string(),
+                        windows: 1,
+                        attached: false,
+                        agent_status: AgentStatus::Error,
+                        last_output: "Traceback: boom".to_string(),
+                        working_directory: String::new(),
+                        repo_url: String::new(),
+                        git_branch: String::new(),
+                        pr_url: String::new(),
+                        task_summary: String::new(),
+                    },
+                ],
+            }],
+            timestamp: None,
+            azlin_path: PathBuf::from("azlin"),
+            exclude_vms: Vec::new(),
+        };
+
+        let rendered = render_tui_frame(&state, 15, &FleetTuiUiState::default()).unwrap();
+
+        assert!(rendered.contains("◉"));
+        assert!(rendered.contains("●"));
+        assert!(rendered.contains("✗"));
+        assert!(rendered.contains("RUNNING"));
+        assert!(rendered.contains("IDLE"));
+        assert!(rendered.contains("ERROR"));
+    }
+
+    #[test]
     fn render_tui_fleet_view_shows_inline_search_prompt() {
         let state = FleetState {
             vms: vec![VmInfo {
@@ -11714,6 +11883,43 @@ exit 1
         assert!(rendered.contains("vm-2"));
         assert!(rendered.contains("unmanaged"));
         assert!(rendered.contains("copilot-1"));
+    }
+
+    #[test]
+    fn render_tui_fleet_view_shows_managed_subview_header() {
+        let state = FleetState {
+            vms: vec![VmInfo {
+                name: "vm-1".to_string(),
+                session_name: "vm-1".to_string(),
+                os: "linux".to_string(),
+                status: "Running".to_string(),
+                ip: String::new(),
+                region: "westus2".to_string(),
+                tmux_sessions: vec![TmuxSessionInfo {
+                    session_name: "claude-1".to_string(),
+                    vm_name: "vm-1".to_string(),
+                    windows: 1,
+                    attached: false,
+                    agent_status: AgentStatus::Running,
+                    last_output: "shipping".to_string(),
+                    working_directory: String::new(),
+                    repo_url: String::new(),
+                    git_branch: String::new(),
+                    pr_url: String::new(),
+                    task_summary: String::new(),
+                }],
+            }],
+            timestamp: None,
+            azlin_path: PathBuf::from("azlin"),
+            exclude_vms: Vec::new(),
+        };
+
+        let rendered = render_tui_frame(&state, 15, &FleetTuiUiState::default()).unwrap();
+
+        assert!(rendered.contains("[managed]"));
+        assert!(rendered.contains("Managed Sessions"));
+        assert!(rendered.contains("vm-1"));
+        assert!(rendered.contains("claude-1"));
     }
 
     #[test]
@@ -12083,6 +12289,10 @@ exit 1
     #[test]
     fn run_tui_apply_sets_persistent_success_notice() {
         let mut ui_state = FleetTuiUiState::default();
+        ui_state.selected = Some(FleetTuiSelection {
+            vm_name: "vm-1".to_string(),
+            session_name: "claude-1".to_string(),
+        });
         ui_state.last_decision = Some(SessionDecision {
             session_name: "claude-1".to_string(),
             vm_name: "vm-1".to_string(),
@@ -12179,6 +12389,56 @@ exit 1
     #[test]
     fn run_tui_apply_reports_missing_prepared_proposal() {
         let mut ui_state = FleetTuiUiState::default();
+        ui_state.selected = Some(FleetTuiSelection {
+            vm_name: "vm-1".to_string(),
+            session_name: "claude-1".to_string(),
+        });
+
+        let result = run_tui_apply(Path::new("azlin"), &mut ui_state);
+
+        assert!(result.is_ok());
+        assert_eq!(
+            ui_state.status_message.as_deref(),
+            Some("No prepared proposal to apply.")
+        );
+    }
+
+    #[test]
+    fn run_tui_apply_reports_missing_selection_even_with_stale_proposal() {
+        let mut ui_state = FleetTuiUiState::default();
+        ui_state.last_decision = Some(SessionDecision {
+            session_name: "claude-1".to_string(),
+            vm_name: "vm-1".to_string(),
+            action: SessionAction::SendInput,
+            input_text: "y".to_string(),
+            reasoning: "stale prepared proposal".to_string(),
+            confidence: 0.95,
+        });
+
+        let result = run_tui_apply(Path::new("azlin"), &mut ui_state);
+
+        assert!(result.is_ok());
+        assert_eq!(
+            ui_state.status_message.as_deref(),
+            Some("No session selected to apply.")
+        );
+    }
+
+    #[test]
+    fn run_tui_apply_requires_proposal_for_current_selection() {
+        let mut ui_state = FleetTuiUiState::default();
+        ui_state.selected = Some(FleetTuiSelection {
+            vm_name: "vm-2".to_string(),
+            session_name: "copilot-9".to_string(),
+        });
+        ui_state.last_decision = Some(SessionDecision {
+            session_name: "claude-1".to_string(),
+            vm_name: "vm-1".to_string(),
+            action: SessionAction::SendInput,
+            input_text: "y".to_string(),
+            reasoning: "proposal belongs to another session".to_string(),
+            confidence: 0.95,
+        });
 
         let result = run_tui_apply(Path::new("azlin"), &mut ui_state);
 
@@ -12192,6 +12452,10 @@ exit 1
     #[test]
     fn run_tui_apply_reports_dangerous_input_block() {
         let mut ui_state = FleetTuiUiState::default();
+        ui_state.selected = Some(FleetTuiSelection {
+            vm_name: "vm-1".to_string(),
+            session_name: "claude-1".to_string(),
+        });
         ui_state.last_decision = Some(SessionDecision {
             session_name: "claude-1".to_string(),
             vm_name: "vm-1".to_string(),
@@ -12397,7 +12661,6 @@ exit 1
         let mut queue = TaskQueue {
             tasks: Vec::new(),
             persist_path: Some(queue_path.clone()),
-            load_failed: false,
         };
         let mut task = FleetTask::new(
             "Resume work on auth",
@@ -12752,7 +13015,6 @@ exit 1
                     },
                 ],
                 persist_path: None,
-                load_failed: false,
             },
             Some(temp.path().join("logs")),
         )
@@ -12837,7 +13099,6 @@ exit 1
             TaskQueue {
                 tasks: vec![task.clone()],
                 persist_path: Some(temp.path().join("task_queue.json")),
-                load_failed: false,
             },
             Some(temp.path().join("logs")),
         )

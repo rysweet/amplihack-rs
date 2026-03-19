@@ -6,6 +6,7 @@ pub mod code_graph;
 pub mod indexing_job;
 pub mod scip_indexing;
 pub mod staleness_detector;
+pub mod time_estimator;
 pub mod transfer;
 pub mod tree;
 
@@ -26,6 +27,7 @@ pub use scip_indexing::{
     check_prerequisites, detect_project_languages, run_index_scip, run_native_scip_indexing,
 };
 pub use staleness_detector::{IndexStatus, check_index_status};
+pub use time_estimator::{IndexTimeEstimate, estimate_indexing_time};
 pub use transfer::{run_export, run_import};
 pub use tree::run_tree;
 
@@ -36,6 +38,7 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(crate) const GRAPH_DB_TREE_BACKEND_NAME: &str = "graph-db";
@@ -118,6 +121,22 @@ impl TransferFormat {
     }
 }
 
+pub(crate) fn backend_cli_compatibility_notice(backend: &str) -> Option<String> {
+    (backend == "kuzu")
+        .then(|| "CLI value `kuzu` is a legacy compatibility alias; prefer `graph-db`.".to_string())
+}
+
+pub(crate) fn transfer_format_cli_compatibility_notice(format: &str) -> Option<String> {
+    (format == "kuzu")
+        .then(|| "CLI value `kuzu` is a legacy compatibility alias; prefer `raw-db`.".to_string())
+}
+
+pub(crate) struct ResolvedMemoryCliBackend {
+    pub(crate) choice: BackendChoice,
+    pub(crate) cli_notice: Option<String>,
+    pub(crate) graph_notice: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
     pub session_id: String,
@@ -165,11 +184,90 @@ pub(crate) fn home_dir() -> Result<PathBuf> {
         .context("HOME environment variable is not set")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MemoryHomePaths {
+    pub(crate) root_dir: PathBuf,
+    pub(crate) graph_db: PathBuf,
+    pub(crate) legacy_graph_db: PathBuf,
+    pub(crate) sqlite_db: PathBuf,
+    pub(crate) hierarchical_memory_dir: PathBuf,
+}
+
+pub(crate) fn memory_home_paths() -> Result<MemoryHomePaths> {
+    let root_dir = home_dir()?.join(".amplihack");
+    Ok(MemoryHomePaths {
+        graph_db: root_dir.join("memory_graph.db"),
+        legacy_graph_db: root_dir.join("memory_kuzu.db"),
+        sqlite_db: root_dir.join("memory.db"),
+        hierarchical_memory_dir: root_dir.join("hierarchical_memory"),
+        root_dir,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectArtifactPaths {
+    pub(crate) artifact_dir: PathBuf,
+    pub(crate) indexes_dir: PathBuf,
+    pub(crate) blarify_json: PathBuf,
+    pub(crate) root_index_scip: PathBuf,
+    pub(crate) index_scip: PathBuf,
+    pub(crate) index_scip_backup: PathBuf,
+    pub(crate) indexing_pid: PathBuf,
+}
+
+pub(crate) fn project_artifact_paths(project_path: &Path) -> ProjectArtifactPaths {
+    let artifact_dir = project_path.join(".amplihack");
+    ProjectArtifactPaths {
+        indexes_dir: artifact_dir.join("indexes"),
+        blarify_json: artifact_dir.join("blarify.json"),
+        root_index_scip: project_path.join("index.scip"),
+        index_scip: artifact_dir.join("index.scip"),
+        index_scip_backup: artifact_dir.join("index.scip.backup"),
+        indexing_pid: artifact_dir.join("indexing.pid"),
+        artifact_dir,
+    }
+}
+
+fn parent_dir(path: &Path) -> Option<&Path> {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+}
+
+pub(crate) fn required_parent_dir(path: &Path) -> Result<&Path> {
+    parent_dir(path).with_context(|| format!("path {} has no parent directory", path.display()))
+}
+
+pub(crate) fn ensure_parent_dir(path: &Path) -> Result<()> {
+    let Some(parent) = parent_dir(path) else {
+        return Ok(());
+    };
+    fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "failed to create parent directory {} for {}",
+            parent.display(),
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
 pub(crate) fn parse_json_value(value: &str) -> Result<JsonValue> {
     if value.is_empty() {
         return Ok(JsonValue::Object(Default::default()));
     }
     Ok(serde_json::from_str(value)?)
+}
+
+pub(crate) fn parse_backend_choice_env_value(value: &str) -> Result<BackendChoice> {
+    match value {
+        "sqlite" => Ok(BackendChoice::Sqlite),
+        "graph-db" | "kuzu" => Ok(BackendChoice::GraphDb),
+        other => Err(anyhow::anyhow!(
+            "Unrecognized AMPLIHACK_MEMORY_BACKEND value {:?}. \
+             Valid values: sqlite, graph-db. Legacy compatibility value: kuzu",
+            other
+        )),
+    }
 }
 
 /// Resolve the memory backend from `AMPLIHACK_MEMORY_BACKEND`.
@@ -182,15 +280,22 @@ pub(crate) fn parse_json_value(value: &str) -> Result<JsonValue> {
 ///   risks routing data to an unexpected location.
 fn resolve_memory_backend_preference() -> Result<Option<BackendChoice>> {
     match std::env::var("AMPLIHACK_MEMORY_BACKEND").ok().as_deref() {
-        Some("sqlite") => Ok(Some(BackendChoice::Sqlite)),
-        Some("graph-db") | Some("kuzu") => Ok(Some(BackendChoice::GraphDb)),
-        Some(other) => Err(anyhow::anyhow!(
-            "Unrecognized AMPLIHACK_MEMORY_BACKEND value {:?}. \
-             Valid values: sqlite, kuzu, graph-db",
-            other
-        )),
+        Some(value) => Ok(Some(parse_backend_choice_env_value(value)?)),
         None => Ok(None),
     }
+}
+
+pub(crate) fn resolve_memory_cli_backend(backend: &str) -> Result<ResolvedMemoryCliBackend> {
+    let choice = if backend == "auto" {
+        resolve_backend_with_autodetect()?
+    } else {
+        BackendChoice::parse(backend)?
+    };
+    Ok(ResolvedMemoryCliBackend {
+        choice,
+        cli_notice: backend_cli_compatibility_notice(backend),
+        graph_notice: memory_graph_compatibility_notice(choice),
+    })
 }
 
 pub(crate) fn memory_graph_compatibility_notice(choice: BackendChoice) -> Option<String> {
@@ -216,14 +321,12 @@ pub(crate) fn memory_graph_compatibility_notice(choice: BackendChoice) -> Option
         );
     }
 
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let neutral = home.join(".amplihack").join("memory_graph.db");
-    let legacy = home.join(".amplihack").join("memory_kuzu.db");
-    if legacy.exists() && !neutral.exists() {
+    let paths = memory_home_paths().ok()?;
+    if paths.legacy_graph_db.exists() && !paths.graph_db.exists() {
         return Some(format!(
             "using legacy store `{}` because `{}` is absent; migrate to `memory_graph.db`.",
-            legacy.display(),
-            neutral.display()
+            paths.legacy_graph_db.display(),
+            paths.graph_db.display()
         ));
     }
 
@@ -234,7 +337,7 @@ pub(crate) fn memory_graph_compatibility_notice(choice: BackendChoice) -> Option
 ///
 /// Resolution order:
 /// 1. `AMPLIHACK_MEMORY_BACKEND` env var (if set and recognized).
-/// 2. Probe `~/.amplihack/hierarchical_memory/` for existing Kuzu `graph_db`
+/// 2. Probe `~/.amplihack/hierarchical_memory/` for existing legacy graph-db
 ///    directories using `symlink_metadata()` (not `exists()`).
 ///    - If a symlink is found inside the probe directory → return `Err`.
 ///    - If a `graph_db` subdirectory is found → `BackendChoice::GraphDb`.
@@ -249,8 +352,7 @@ pub(crate) fn resolve_backend_with_autodetect() -> Result<BackendChoice> {
     }
 
     // Step 2: probe the filesystem.
-    let home = home_dir()?;
-    let hmem_dir = home.join(".amplihack").join("hierarchical_memory");
+    let hmem_dir = memory_home_paths()?.hierarchical_memory_dir;
 
     // If the directory doesn't exist at all, this is a fresh install.
     if hmem_dir.symlink_metadata().is_err() {
@@ -287,7 +389,7 @@ pub(crate) fn resolve_backend_with_autodetect() -> Result<BackendChoice> {
         }
     }
 
-    // Step 3: No Kuzu markers found → default to SQLite.
+    // Step 3: No legacy graph-db markers found -> default to SQLite.
     Ok(BackendChoice::Sqlite)
 }
 
@@ -556,6 +658,10 @@ fn retrieve_prompt_context_memories_from_backend(
         .collect())
 }
 
+fn resolve_runtime_memory_backend_choice() -> Result<BackendChoice> {
+    Ok(resolve_memory_backend_preference()?.unwrap_or(BackendChoice::GraphDb))
+}
+
 pub fn retrieve_prompt_context_memories(
     session_id: &str,
     query_text: &str,
@@ -565,7 +671,7 @@ pub fn retrieve_prompt_context_memories(
         return Ok(Vec::new());
     }
 
-    let choice = resolve_memory_backend_preference()?.unwrap_or(BackendChoice::GraphDb);
+    let choice = resolve_runtime_memory_backend_choice()?;
     retrieve_prompt_context_memories_from_backend(choice, session_id, query_text, token_budget)
 }
 
@@ -637,7 +743,7 @@ pub fn store_session_learning(
         return Ok(None);
     };
 
-    let choice = resolve_memory_backend_preference()?.unwrap_or(BackendChoice::GraphDb);
+    let choice = resolve_runtime_memory_backend_choice()?;
     store_learning_with_backend(choice, &record)
 }
 
@@ -756,6 +862,51 @@ mod tests {
         assert_eq!(memories.len(), 1);
         assert!(memories[0].content.contains("rerun cargo fmt"));
         assert_eq!(memories[0].code_context, None);
+        Ok(())
+    }
+
+    #[test]
+    fn project_artifact_paths_include_root_and_artifact_index_paths() {
+        let project = Path::new("/tmp/example-project");
+        let paths = project_artifact_paths(project);
+
+        assert_eq!(paths.artifact_dir, project.join(".amplihack"));
+        assert_eq!(
+            paths.indexes_dir,
+            project.join(".amplihack").join("indexes")
+        );
+        assert_eq!(
+            paths.blarify_json,
+            project.join(".amplihack").join("blarify.json")
+        );
+        assert_eq!(paths.root_index_scip, project.join("index.scip"));
+        assert_eq!(
+            paths.index_scip,
+            project.join(".amplihack").join("index.scip")
+        );
+        assert_eq!(
+            paths.index_scip_backup,
+            project.join(".amplihack").join("index.scip.backup")
+        );
+        assert_eq!(
+            paths.indexing_pid,
+            project.join(".amplihack").join("indexing.pid")
+        );
+    }
+
+    #[test]
+    fn required_parent_dir_rejects_paths_without_parent_directory() {
+        let err = required_parent_dir(Path::new("index.scip")).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("path index.scip has no parent directory")
+        );
+    }
+
+    #[test]
+    fn ensure_parent_dir_allows_current_directory_relative_paths() -> Result<()> {
+        ensure_parent_dir(Path::new("index.scip"))?;
         Ok(())
     }
 
@@ -888,7 +1039,7 @@ mod tests {
                 "agent1",
                 "learning",
                 "Fix CI",
-                "SQLite memory should not be used when default Kuzu setup fails.",
+                "SQLite memory should not be used when default graph-db setup fails.",
                 r#"{"new_memory_type":"semantic"}"#,
                 8,
                 "2026-01-02T03:04:05",
@@ -1056,7 +1207,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir()?;
-        let override_path = dir.path().join("project-kuzu");
+        let override_path = dir.path().join("project-legacy-graph-alias");
         let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
         let previous = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
         unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
@@ -1101,9 +1252,7 @@ mod tests {
         }
 
         let sqlite_path = dir.path().join(".amplihack").join("memory.db");
-        if let Some(parent) = sqlite_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        ensure_parent_dir(&sqlite_path)?;
         let conn = open_sqlite_memory_db()?;
         conn.execute_batch(SQLITE_SCHEMA)?;
 
@@ -1161,7 +1310,12 @@ mod tests {
         let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
         let previous = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
         unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", &override_path) };
-        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", dir.path().join("project-kuzu")) };
+        unsafe {
+            std::env::set_var(
+                "AMPLIHACK_KUZU_DB_PATH",
+                dir.path().join("project-legacy-graph-alias"),
+            )
+        };
 
         let resolved = resolve_memory_graph_db_path()?;
 
@@ -1253,7 +1407,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir()?;
-        let kuzu_override = dir.path().join("project-kuzu");
+        let kuzu_override = dir.path().join("project-legacy-graph-alias");
         let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
         let previous = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
         let prev_home = std::env::var_os("HOME");
@@ -1385,6 +1539,16 @@ mod tests {
     }
 
     #[test]
+    fn backend_cli_compatibility_notice_only_for_kuzu_alias() {
+        assert_eq!(
+            backend_cli_compatibility_notice("kuzu").as_deref(),
+            Some("CLI value `kuzu` is a legacy compatibility alias; prefer `graph-db`.")
+        );
+        assert_eq!(backend_cli_compatibility_notice("graph-db"), None);
+        assert_eq!(backend_cli_compatibility_notice("auto"), None);
+    }
+
+    #[test]
     fn transfer_format_parse_json() {
         assert_eq!(TransferFormat::parse("json").unwrap(), TransferFormat::Json);
     }
@@ -1402,6 +1566,16 @@ mod tests {
     }
 
     #[test]
+    fn transfer_format_cli_compatibility_notice_only_for_kuzu_alias() {
+        assert_eq!(
+            transfer_format_cli_compatibility_notice("kuzu").as_deref(),
+            Some("CLI value `kuzu` is a legacy compatibility alias; prefer `raw-db`.")
+        );
+        assert_eq!(transfer_format_cli_compatibility_notice("raw-db"), None);
+        assert_eq!(transfer_format_cli_compatibility_notice("json"), None);
+    }
+
+    #[test]
     fn transfer_format_parse_invalid_returns_error() {
         assert!(
             TransferFormat::parse("csv").is_err(),
@@ -1411,6 +1585,21 @@ mod tests {
             TransferFormat::parse("").is_err(),
             "Empty string must be rejected"
         );
+    }
+
+    #[test]
+    fn resolve_memory_backend_preference_invalid_message_uses_neutral_values() {
+        let previous = std::env::var("AMPLIHACK_MEMORY_BACKEND").ok();
+        unsafe { std::env::set_var("AMPLIHACK_MEMORY_BACKEND", "postgres") };
+        let error = resolve_memory_backend_preference().unwrap_err();
+        match previous {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_MEMORY_BACKEND", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_MEMORY_BACKEND") },
+        }
+        let message = error.to_string();
+        assert!(message.contains("Valid values: sqlite, graph-db."));
+        assert!(message.contains("Legacy compatibility value: kuzu"));
+        assert!(!message.contains("sqlite, kuzu, graph-db"));
     }
 
     // -----------------------------------------------------------------------

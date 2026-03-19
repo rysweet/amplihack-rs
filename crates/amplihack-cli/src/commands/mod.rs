@@ -1,5 +1,7 @@
 //! Command dispatch for all CLI subcommands.
 
+pub mod append;
+pub mod auto_mode;
 pub mod completions;
 pub mod doctor;
 pub mod fleet;
@@ -27,41 +29,209 @@ pub fn dispatch(command: Commands) -> Result<()> {
             continue_session,
             skip_permissions: _skip_permissions, // always true for Python launcher parity
             skip_update_check,
+            no_reflection,
+            subprocess_safe,
+            checkout_repo,
+            append,
+            auto,
+            max_turns,
+            ui,
             claude_args,
-        } => launch::run_launch(
-            "claude",
-            resume,
-            continue_session,
-            true, // always inject --dangerously-skip-permissions (matches Python launcher)
-            skip_update_check,
+        } => {
+            if let Some(instruction) = append {
+                return append::run_append(&instruction);
+            }
+            if auto {
+                let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
+                return auto_mode::run_auto_mode(
+                    auto_mode::AutoModeTool::Claude,
+                    max_turns,
+                    ui,
+                    claude_args,
+                    checkout_repo,
+                    working_dir,
+                );
+            }
+            launch::run_launch(
+                "claude",
+                resume,
+                continue_session,
+                true, // always inject --dangerously-skip-permissions (matches Python launcher)
+                skip_update_check,
+                no_reflection,
+                subprocess_safe,
+                checkout_repo,
+                claude_args,
+            )
+        }
+        Commands::Claude {
+            no_reflection,
+            subprocess_safe,
+            checkout_repo,
+            append,
+            auto,
+            max_turns,
+            ui,
             claude_args,
-        ),
-        Commands::Claude { claude_args } => {
+        } => {
+            if let Some(instruction) = append {
+                return append::run_append(&instruction);
+            }
+            if auto {
+                let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
+                return auto_mode::run_auto_mode(
+                    auto_mode::AutoModeTool::Claude,
+                    max_turns,
+                    ui,
+                    claude_args,
+                    checkout_repo,
+                    working_dir,
+                );
+            }
             // Always inject --dangerously-skip-permissions to match Python launcher parity.
-            launch::run_launch("claude", false, false, true, false, claude_args)
+            launch::run_launch(
+                "claude",
+                false,
+                false,
+                true,
+                false,
+                no_reflection,
+                subprocess_safe,
+                checkout_repo,
+                claude_args,
+            )
         }
-        Commands::Copilot { args } => {
-            launch::run_launch("copilot", false, false, true, false, args)
+        Commands::Copilot {
+            no_reflection,
+            subprocess_safe,
+            append,
+            auto,
+            max_turns,
+            ui,
+            args,
+        } => {
+            if let Some(instruction) = append {
+                return append::run_append(&instruction);
+            }
+            if auto {
+                return auto_mode::run_auto_mode(
+                    auto_mode::AutoModeTool::Copilot,
+                    max_turns,
+                    ui,
+                    args,
+                    None,
+                    None,
+                );
+            }
+            launch::run_launch(
+                "copilot",
+                false,
+                false,
+                true,
+                false,
+                no_reflection,
+                subprocess_safe,
+                None,
+                args,
+            )
         }
-        Commands::Codex { args } => launch::run_launch("codex", false, false, true, false, args),
-        Commands::Amplifier { args } => {
-            launch::run_launch("amplifier", false, false, true, false, args)
+        Commands::Codex {
+            no_reflection,
+            subprocess_safe,
+            append,
+            auto,
+            max_turns,
+            ui,
+            args,
+        } => {
+            if let Some(instruction) = append {
+                return append::run_append(&instruction);
+            }
+            if auto {
+                return auto_mode::run_auto_mode(
+                    auto_mode::AutoModeTool::Codex,
+                    max_turns,
+                    ui,
+                    args,
+                    None,
+                    None,
+                );
+            }
+            launch::run_launch(
+                "codex",
+                false,
+                false,
+                true,
+                false,
+                no_reflection,
+                subprocess_safe,
+                None,
+                args,
+            )
+        }
+        Commands::Amplifier {
+            no_reflection,
+            subprocess_safe,
+            append,
+            auto,
+            max_turns,
+            ui,
+            args,
+        } => {
+            if let Some(instruction) = append {
+                return append::run_append(&instruction);
+            }
+            if auto {
+                return auto_mode::run_auto_mode(
+                    auto_mode::AutoModeTool::Amplifier,
+                    max_turns,
+                    ui,
+                    args,
+                    None,
+                    None,
+                );
+            }
+            launch::run_launch(
+                "amplifier",
+                false,
+                false,
+                true,
+                false,
+                no_reflection,
+                subprocess_safe,
+                None,
+                args,
+            )
         }
         Commands::Plugin { command } => dispatch_plugin(command),
         Commands::Memory { command } => dispatch_memory(command),
-        Commands::IndexCode { input, db_path } => {
-            memory::run_index_code(&input, db_path.as_deref())
-        }
+        Commands::IndexCode {
+            input,
+            db_path,
+            legacy_kuzu_path,
+        } => memory::run_index_code(
+            &input,
+            db_path.as_deref().or(legacy_kuzu_path.as_deref()),
+            legacy_kuzu_path.is_some(),
+        ),
+
         Commands::IndexScip {
             project_path,
             languages,
         } => memory::run_index_scip(project_path.as_deref(), &languages),
         Commands::QueryCode {
             db_path,
+            legacy_kuzu_path,
             json,
             limit,
             command,
-        } => query_code::run_query_code(command, db_path.as_deref(), json, limit),
+        } => query_code::run_query_code(
+            command,
+            db_path.as_deref().or(legacy_kuzu_path.as_deref()),
+            legacy_kuzu_path.is_some(),
+            json,
+            limit,
+        ),
         Commands::Recipe { command } => dispatch_recipe(command),
         Commands::Mode { command } => dispatch_mode(command),
         Commands::Version => {
@@ -92,7 +262,30 @@ pub fn dispatch(command: Commands) -> Result<()> {
             enable_spawning,
         ),
         #[allow(non_snake_case)]
-        Commands::RustyClawd { args } => rustyclawd::run_rustyclawd(args),
+        Commands::RustyClawd {
+            append,
+            no_reflection,
+            subprocess_safe,
+            auto,
+            max_turns,
+            ui,
+            args,
+        } => {
+            if let Some(instruction) = append {
+                return append::run_append(&instruction);
+            }
+            if auto {
+                return auto_mode::run_auto_mode(
+                    auto_mode::AutoModeTool::RustyClawd,
+                    max_turns,
+                    ui,
+                    args,
+                    None,
+                    None,
+                );
+            }
+            rustyclawd::run_rustyclawd(args, no_reflection, subprocess_safe)
+        }
         Commands::UvxHelp { find_path, info } => uvx_help::run_uvx_help(find_path, info),
         Commands::Completions { shell } => completions::run_completions(shell),
         Commands::Doctor => doctor::run_doctor(),

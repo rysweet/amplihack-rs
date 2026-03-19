@@ -39,23 +39,41 @@ pub(crate) trait MemoryRuntimeBackend {
     fn store_session_learning(&self, record: &SessionLearningRecord) -> Result<Option<String>>;
 }
 
-pub(crate) fn open_tree_backend(choice: BackendChoice) -> Result<Box<dyn MemoryTreeBackend>> {
+fn open_backend_with<T, FSqlite, FGraph>(
+    choice: BackendChoice,
+    sqlite: FSqlite,
+    graph_db: FGraph,
+) -> Result<T>
+where
+    FSqlite: FnOnce(SqliteBackend) -> T,
+    FGraph: FnOnce(GraphDbBackend) -> T,
+{
     match choice {
-        BackendChoice::Sqlite => Ok(Box::new(SqliteBackend::open()?)),
-        BackendChoice::GraphDb => Ok(Box::new(GraphDbBackend::open()?)),
+        BackendChoice::Sqlite => Ok(sqlite(SqliteBackend::open()?)),
+        BackendChoice::GraphDb => Ok(graph_db(GraphDbBackend::open()?)),
     }
+}
+
+pub(crate) fn open_tree_backend(choice: BackendChoice) -> Result<Box<dyn MemoryTreeBackend>> {
+    open_backend_with(
+        choice,
+        |backend| -> Box<dyn MemoryTreeBackend> { Box::new(backend) },
+        |backend| -> Box<dyn MemoryTreeBackend> { Box::new(backend) },
+    )
 }
 
 pub(crate) fn open_cleanup_backend(choice: BackendChoice) -> Result<Box<dyn MemorySessionBackend>> {
-    match choice {
-        BackendChoice::Sqlite => Ok(Box::new(SqliteBackend::open()?)),
-        BackendChoice::GraphDb => Ok(Box::new(GraphDbBackend::open()?)),
-    }
+    open_backend_with(
+        choice,
+        |backend| -> Box<dyn MemorySessionBackend> { Box::new(backend) },
+        |backend| -> Box<dyn MemorySessionBackend> { Box::new(backend) },
+    )
 }
 
 pub(crate) fn open_runtime_backend(choice: BackendChoice) -> Result<Box<dyn MemoryRuntimeBackend>> {
-    match choice {
-        BackendChoice::Sqlite => Ok(Box::new(SqliteBackend::open()?)),
-        BackendChoice::GraphDb => Ok(Box::new(GraphDbBackend::open()?)),
-    }
+    open_backend_with(
+        choice,
+        |backend| -> Box<dyn MemoryRuntimeBackend> { Box::new(backend) },
+        |backend| -> Box<dyn MemoryRuntimeBackend> { Box::new(backend) },
+    )
 }

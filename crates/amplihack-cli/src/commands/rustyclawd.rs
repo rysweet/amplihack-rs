@@ -9,13 +9,30 @@ use anyhow::Result;
 use std::env;
 use std::path::{Path, PathBuf};
 
-pub fn run_rustyclawd(args: Vec<String>) -> Result<()> {
-    if let Some(path) = find_preferred_rustyclawd_binary() {
-        unsafe { env::set_var("AMPLIHACK_CLAUDE_BINARY_PATH", &path) };
+pub fn run_rustyclawd(args: Vec<String>, no_reflection: bool, subprocess_safe: bool) -> Result<()> {
+    if configure_preferred_rustyclawd_binary() {
         println!("Using RustyClawd (Rust implementation)");
     }
 
-    launch::run_launch("claude", false, false, true, false, args)
+    launch::run_launch(
+        "claude",
+        false,
+        false,
+        true,
+        false,
+        no_reflection,
+        subprocess_safe,
+        None,
+        args,
+    )
+}
+
+pub(crate) fn configure_preferred_rustyclawd_binary() -> bool {
+    if let Some(path) = find_preferred_rustyclawd_binary() {
+        unsafe { env::set_var("AMPLIHACK_CLAUDE_BINARY_PATH", &path) };
+        return true;
+    }
+    false
 }
 
 fn find_preferred_rustyclawd_binary() -> Option<PathBuf> {

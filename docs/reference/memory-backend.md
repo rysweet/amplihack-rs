@@ -120,7 +120,7 @@ amplihack memory export my-agent export.json \
 | File | Purpose | Default path |
 |------|---------|--------------|
 | `memory.db` | Sessions, learnings, context memories | `~/.amplihack/memory.db` |
-| `sqlite_hierarchical.db` | Hierarchical semantic/episodic graph per agent | `~/.amplihack/hierarchical_memory/<agent>/sqlite_hierarchical.db` |
+| `<agent_name>.db` | Hierarchical semantic/episodic graph per agent | `~/.amplihack/hierarchical_memory/<agent_name>.db` |
 
 Both files are created automatically on first use. Parent directories are
 created with `fs::create_dir_all`.

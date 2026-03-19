@@ -10,19 +10,17 @@ pub fn run_tree(
     depth: Option<u32>,
     backend: &str,
 ) -> Result<()> {
-    let choice = if backend == "auto" {
-        resolve_backend_with_autodetect()?
-    } else {
-        BackendChoice::parse(backend)?
-    };
-    let compatibility_notice = memory_graph_compatibility_notice(choice);
-    let backend = super::backend::open_tree_backend(choice)?;
+    let resolved = resolve_memory_cli_backend(backend)?;
+    if let Some(notice) = resolved.cli_notice.as_deref() {
+        println!("⚠️ Compatibility mode: {notice}");
+    }
+    let backend = super::backend::open_tree_backend(resolved.choice)?;
     let output = render_tree_from_backend(
         backend.as_ref(),
         session_id,
         memory_type,
         depth,
-        compatibility_notice.as_deref(),
+        resolved.graph_notice.as_deref(),
     )?;
     println!("{output}");
     Ok(())

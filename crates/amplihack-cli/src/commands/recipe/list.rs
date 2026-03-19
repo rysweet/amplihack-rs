@@ -7,48 +7,11 @@ pub fn run_list(
     verbose: bool,
 ) -> Result<()> {
     let format = OutputFormat::parse(format)?;
-    let search_dirs = build_search_dirs(recipe_dir)?;
+    let search_dirs = recipe_search_dirs(recipe_dir, ".")?;
     let recipes = discover_recipes(&search_dirs)?;
     let filtered = filter_by_tags(recipes, tags);
     println!("{}", format_recipe_list(&filtered, format, verbose)?);
     Ok(())
-}
-
-fn build_search_dirs(recipe_dir: Option<&str>) -> Result<Vec<PathBuf>> {
-    if let Some(dir) = recipe_dir {
-        return Ok(vec![validate_path(dir, false)?]);
-    }
-
-    let mut dirs = vec![
-        home_dir()?
-            .join(".amplihack")
-            .join(".claude")
-            .join("recipes"),
-        PathBuf::from("amplifier-bundle").join("recipes"),
-        PathBuf::from("src")
-            .join("amplihack")
-            .join("amplifier-bundle")
-            .join("recipes"),
-        PathBuf::from(".claude").join("recipes"),
-    ];
-
-    if let Some(repo_root) = repo_root_from_cwd()? {
-        dirs.insert(0, repo_root.join("amplifier-bundle").join("recipes"));
-    }
-
-    Ok(dirs)
-}
-
-fn repo_root_from_cwd() -> Result<Option<PathBuf>> {
-    let mut current = std::env::current_dir().context("failed to read current directory")?;
-    loop {
-        if current.join(".git").exists() {
-            return Ok(Some(current));
-        }
-        if !current.pop() {
-            return Ok(None);
-        }
-    }
 }
 
 pub(crate) fn discover_recipes(search_dirs: &[PathBuf]) -> Result<Vec<RecipeInfo>> {

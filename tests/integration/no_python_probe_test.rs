@@ -743,13 +743,7 @@ struct FleetTuiProbe {
 
 impl FleetTuiProbe {
     fn new(bin: &Path, reasoner_json: Option<&str>) -> Self {
-        Self::new_with_existing_vms_vm2_delay_and_reasoner_script(
-            bin,
-            reasoner_json,
-            None,
-            None,
-            None,
-        )
+        Self::new_with_fixture(bin, reasoner_json, None, None, None, None)
     }
 
     fn new_with_existing_vms(
@@ -757,13 +751,7 @@ impl FleetTuiProbe {
         reasoner_json: Option<&str>,
         existing_vms: Option<&str>,
     ) -> Self {
-        Self::new_with_existing_vms_vm2_delay_and_reasoner_script(
-            bin,
-            reasoner_json,
-            existing_vms,
-            None,
-            None,
-        )
+        Self::new_with_fixture(bin, reasoner_json, existing_vms, None, None, None)
     }
 
     fn new_with_existing_vms_and_vm2_delay(
@@ -772,31 +760,35 @@ impl FleetTuiProbe {
         existing_vms: Option<&str>,
         vm2_delay_seconds: Option<f32>,
     ) -> Self {
-        Self::new_with_existing_vms_vm2_delay_and_reasoner_script(
+        Self::new_with_fixture(
             bin,
             reasoner_json,
             existing_vms,
             vm2_delay_seconds,
             None,
+            None,
         )
     }
 
     fn new_with_reasoner_script(bin: &Path, reasoner_script: &str) -> Self {
-        Self::new_with_existing_vms_vm2_delay_and_reasoner_script(
-            bin,
-            None,
-            None,
-            None,
-            Some(reasoner_script),
-        )
+        Self::new_with_fixture(bin, None, None, None, Some(reasoner_script), None)
     }
 
-    fn new_with_existing_vms_vm2_delay_and_reasoner_script(
+    fn new_with_custom_azlin_script(
+        bin: &Path,
+        reasoner_json: Option<&str>,
+        azlin_script: &str,
+    ) -> Self {
+        Self::new_with_fixture(bin, reasoner_json, None, None, None, Some(azlin_script))
+    }
+
+    fn new_with_fixture(
         bin: &Path,
         reasoner_json: Option<&str>,
         existing_vms: Option<&str>,
         vm2_delay_seconds: Option<f32>,
         reasoner_script: Option<&str>,
+        azlin_script_override: Option<&str>,
     ) -> Self {
         let temp_dir = tempfile::TempDir::new().expect("failed to create tempdir");
         let fake_bin = temp_dir.path().join("bin");
@@ -889,10 +881,8 @@ fi
                 python_log.display()
             ),
         );
-        write_executable(
-            &azlin,
-            &format!(
-                r#"#!/bin/sh
+        let default_azlin_script = format!(
+            r#"#!/bin/sh
 if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
   printf '%s\n' '{}'
   exit 0
@@ -955,11 +945,14 @@ fi
 {}
 exit 1
 "#,
-                list_json,
-                send_log.display(),
-                create_log.display(),
-                vm2_block
-            ),
+            list_json,
+            send_log.display(),
+            create_log.display(),
+            vm2_block
+        );
+        write_executable(
+            &azlin,
+            azlin_script_override.unwrap_or(&default_azlin_script),
         );
 
         let clean_path = clean_path_without_python();
@@ -1892,5 +1885,278 @@ fn tc31_fleet_tui_enter_with_no_visible_selection_shows_detail_notice_without_py
     assert!(
         cleaned.contains("No session selected."),
         "expected detail-tab no-selection message after pressing Enter:\n{cleaned}"
+    );
+}
+
+/// TC-32: raw up/down cursor navigation on the Fleet session table should
+/// update the selected-session preview, matching the Python outside-in session
+/// table cursor navigation contract without touching Python.
+#[test]
+fn tc32_fleet_tui_up_down_cursor_navigation_updates_preview_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
+    assert!(
+        probe
+            .wait_for_output_containing("Selected session: vm-1/claude-1", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet selection to render"
+    );
+
+    probe.output.clear();
+    probe.send_and_wait_for(b"t", "vm-2", Duration::from_secs(3));
+    probe.output.clear();
+    probe.send_and_wait_for(
+        b"\x1b[B",
+        "Selected session: vm-2/copilot-9",
+        Duration::from_secs(3),
+    );
+    let down_frame = strip_ansi(&String::from_utf8_lossy(&probe.output));
+    assert!(
+        down_frame.contains("Working outside fleet")
+            && down_frame.contains("branch: side-quest")
+            && down_frame.contains("repo: https://github.com/org/excluded.git"),
+        "expected down-arrow preview update for vm-2/copilot-9:\n{down_frame}"
+    );
+
+    probe.output.clear();
+    probe.send_and_wait_for(
+        b"\x1b[A",
+        "Selected session: vm-1/claude-1",
+        Duration::from_secs(3),
+    );
+    let up_frame = strip_ansi(&String::from_utf8_lossy(&probe.output));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        up_frame.contains("Awaiting operator confirmation")
+            && up_frame.contains("branch: main")
+            && up_frame.contains("repo: https://github.com/org/demo.git"),
+        "expected up-arrow preview update for vm-1/claude-1:\n{up_frame}"
+    );
+    assert!(
+        cleaned.contains("Selected session: vm-1/claude-1"),
+        "expected final PTY output to end back on vm-1/claude-1:\n{cleaned}"
+    );
+}
+
+/// TC-33: a stale prepared proposal must not apply after the current fleet
+/// selection disappears; the native TUI should surface an explicit no-selection
+/// notice instead of sending tmux input.
+#[test]
+fn tc33_fleet_tui_stale_proposal_does_not_apply_when_selection_disappears_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    probe.send_and_wait_for(
+        b"d",
+        "Prepared proposal for vm-1/claude-1:",
+        Duration::from_secs(5),
+    );
+    probe.send(b"\x1b", Duration::from_millis(1200));
+    probe.send(b"/", Duration::from_millis(300));
+    probe.send_and_wait_for(
+        b"missing-session\n",
+        "No sessions match the current search. Press Esc to clear.",
+        Duration::from_secs(5),
+    );
+    probe.send_and_wait_for(
+        b"a",
+        "No session selected to apply.",
+        Duration::from_secs(3),
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Prepared proposal for vm-1/claude-1:")
+            && cleaned.contains("No session selected to apply."),
+        "expected stale-proposal apply guard in PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-34: pressing `e` without a prepared proposal should stay on the current
+/// fleet view and surface the explicit no-proposal notice rather than switching
+/// into the editor.
+#[test]
+fn tc34_fleet_tui_edit_without_proposal_stays_out_of_editor_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    probe.send_and_wait_for(
+        b"e",
+        "No prepared proposal for the selected session.",
+        Duration::from_secs(3),
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    let last_frame_body = cleaned
+        .rsplit_once('╔')
+        .map(|(_, tail)| tail)
+        .unwrap_or(cleaned.as_str());
+    let last_frame = format!("╔{last_frame_body}");
+    assert!(
+        last_frame.contains("Fleet Overview") || last_frame.contains("[fleet]"),
+        "expected to remain on the fleet tab after pressing e without a proposal:\n{last_frame}"
+    );
+    assert!(
+        cleaned.contains("No prepared proposal for the selected session.")
+            && !cleaned.contains("Loaded proposal into editor for"),
+        "expected explicit no-proposal notice without editor activation:\n{cleaned}"
+    );
+}
+
+/// TC-35: a running VM with no tmux sessions should still render the explicit
+/// placeholder row in the live raw-terminal fleet view without touching Python.
+#[test]
+fn tc35_fleet_tui_running_vm_with_no_sessions_shows_placeholder_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let azlin_script = r#"#!/bin/sh
+if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+  printf '%s\n' '[{"name":"empty-vm","status":"Running","region":"westus","session_name":"empty-vm"}]'
+  exit 0
+fi
+if [ "$1" = "connect" ] && [ "$2" = "empty-vm" ]; then
+  case "$*" in
+    *"tmux list-sessions"*)
+      exit 0
+      ;;
+  esac
+fi
+exit 1
+"#;
+
+    let mut probe = FleetTuiProbe::new_with_custom_azlin_script(&bin, None, azlin_script);
+    assert!(
+        probe.wait_for_output_containing("empty-vm/(no sessions)", Duration::from_secs(10)),
+        "timed out waiting for placeholder row to render"
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("empty-vm/(no sessions)") && cleaned.contains("(empty)"),
+        "expected running-empty-vm placeholder row in PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-36: pressing `a` when the fleet view has no current selection should stay
+/// native and surface the explicit apply warning instead of crashing or silently
+/// doing nothing.
+#[test]
+fn tc36_fleet_tui_apply_without_selection_shows_warning_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    probe.send(b"/", Duration::from_millis(300));
+    probe.send_and_wait_for(
+        b"missing-session\n",
+        "No sessions match the current search. Press Esc to clear.",
+        Duration::from_secs(5),
+    );
+    probe.send_and_wait_for(
+        b"a",
+        "No session selected to apply.",
+        Duration::from_secs(3),
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("No sessions match the current search. Press Esc to clear."),
+        "expected explicit empty-result fleet message in PTY output:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("No session selected to apply."),
+        "expected visible apply warning in PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-37: the live raw-terminal fleet view should render the visible summary bar
+/// with the same operator-facing status buckets that Python exposes.
+#[test]
+fn tc37_fleet_tui_shows_status_summary_bar_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
+    assert!(
+        probe.wait_for_output_containing("active:", Duration::from_secs(10)),
+        "timed out waiting for summary bar to render"
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("active:")
+            && cleaned.contains("idle:")
+            && cleaned.contains("waiting:")
+            && cleaned.contains("error:"),
+        "expected visible fleet status summary bar in PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-38: the live raw-terminal fleet view should render the visible footer
+/// control strip so the operator can discover keybindings without Python.
+#[test]
+fn tc38_fleet_tui_shows_footer_keybindings_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for footer keybindings to render"
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("q quit") && cleaned.contains("r refresh") && cleaned.contains("? help"),
+        "expected visible fleet footer keybindings in PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-39: the live raw-terminal fleet dashboard should render its default
+/// managed-subview chrome so operators can tell which fleet slice they are in
+/// without relying on Python/Textual scaffolding.
+#[test]
+fn tc39_fleet_tui_shows_managed_subview_header_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    assert!(
+        probe.wait_for_output_containing("Managed Sessions", Duration::from_secs(10)),
+        "timed out waiting for managed subview header to render"
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("[managed]") && cleaned.contains("Managed Sessions"),
+        "expected visible managed fleet subview header in PTY output:\n{cleaned}"
     );
 }

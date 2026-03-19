@@ -89,3 +89,7 @@ path = "../../tests/integration/fleet_probe.rs"
 [[test]]
 name = "security_hygiene"
 path = "../../tests/integration/security_hygiene_test.rs"
+
+[[test]]
+name = "kuzu_path_notice"
+path = "../../tests/integration/kuzu_path_notice_test.rs"

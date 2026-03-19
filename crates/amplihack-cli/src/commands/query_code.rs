@@ -9,9 +9,15 @@ use std::path::Path;
 pub fn run_query_code(
     command: QueryCodeCommands,
     db_path: Option<&Path>,
+    legacy_kuzu_path_used: bool,
     json_output: bool,
     limit: u32,
 ) -> Result<()> {
+    if legacy_kuzu_path_used {
+        eprintln!(
+            "⚠️ Compatibility mode: CLI flag `--kuzu-path` is a legacy compatibility alias; prefer `--db-path`."
+        );
+    }
     let compatibility_notice = if json_output {
         None
     } else {

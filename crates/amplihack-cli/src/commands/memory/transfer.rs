@@ -120,6 +120,16 @@ pub(crate) struct ImportStats {
     pub(crate) errors: usize,
 }
 
+pub(crate) struct HierarchicalImportPlan<'a> {
+    pub(crate) episodic_nodes: Vec<&'a EpisodicNode>,
+    pub(crate) semantic_nodes: Vec<&'a SemanticNode>,
+    pub(crate) similar_to_edges: &'a [SimilarEdge],
+    pub(crate) derives_from_edges: &'a [DerivesEdge],
+    pub(crate) supersedes_edges: &'a [SupersedesEdge],
+    pub(crate) transitioned_to_edges: &'a [TransitionEdge],
+    pub(crate) stats: ImportStats,
+}
+
 #[derive(Debug)]
 pub(crate) struct ExportResult {
     pub(crate) agent_name: String,
@@ -150,6 +160,82 @@ impl ImportResult {
     }
 }
 
+pub(crate) fn build_hierarchical_import_plan<'a, F>(
+    data: &'a HierarchicalExportData,
+    merge: bool,
+    mut has_existing_id: F,
+) -> HierarchicalImportPlan<'a>
+where
+    F: FnMut(&str) -> bool,
+{
+    let mut stats = ImportStats::default();
+    let mut episodic_nodes = Vec::new();
+    for node in &data.episodic_nodes {
+        if node.memory_id.is_empty() {
+            stats.errors += 1;
+            continue;
+        }
+        if merge && has_existing_id(&node.memory_id) {
+            stats.skipped += 1;
+            continue;
+        }
+        episodic_nodes.push(node);
+    }
+
+    let mut semantic_nodes = Vec::new();
+    for node in &data.semantic_nodes {
+        if node.memory_id.is_empty() {
+            stats.errors += 1;
+            continue;
+        }
+        if merge && has_existing_id(&node.memory_id) {
+            stats.skipped += 1;
+            continue;
+        }
+        semantic_nodes.push(node);
+    }
+
+    HierarchicalImportPlan {
+        episodic_nodes,
+        semantic_nodes,
+        similar_to_edges: &data.similar_to_edges,
+        derives_from_edges: &data.derives_from_edges,
+        supersedes_edges: &data.supersedes_edges,
+        transitioned_to_edges: &data.transitioned_to_edges,
+        stats,
+    }
+}
+
+pub(crate) fn build_hierarchical_import_result(
+    agent_name: &str,
+    source_agent: String,
+    merge: bool,
+    stats: ImportStats,
+) -> ImportResult {
+    ImportResult {
+        agent_name: agent_name.to_string(),
+        format: "json".to_string(),
+        source_agent: Some(source_agent),
+        merge,
+        statistics: vec![
+            (
+                "semantic_nodes_imported".to_string(),
+                stats.semantic_nodes_imported.to_string(),
+            ),
+            (
+                "episodic_nodes_imported".to_string(),
+                stats.episodic_nodes_imported.to_string(),
+            ),
+            (
+                "edges_imported".to_string(),
+                stats.edges_imported.to_string(),
+            ),
+            ("skipped".to_string(), stats.skipped.to_string()),
+            ("errors".to_string(), stats.errors.to_string()),
+        ],
+    }
+}
+
 /// Resolve the backend choice for transfer operations from the environment.
 ///
 /// Resolution order:
@@ -159,17 +245,41 @@ impl ImportResult {
 /// - Unrecognized value → warn and default to the `graph-db` backend
 /// - Not set → default to the `graph-db` backend
 pub(crate) fn resolve_transfer_backend_choice() -> BackendChoice {
-    match std::env::var("AMPLIHACK_MEMORY_BACKEND").ok().as_deref() {
-        Some("sqlite") => BackendChoice::Sqlite,
-        Some("kuzu") | Some("graph-db") => BackendChoice::GraphDb,
-        Some(other) => {
-            tracing::warn!(
-                "Unrecognized AMPLIHACK_MEMORY_BACKEND value {other:?}; defaulting to graph-db"
-            );
-            BackendChoice::GraphDb
-        }
-        None => BackendChoice::GraphDb,
+    match std::env::var("AMPLIHACK_MEMORY_BACKEND") {
+        Ok(value) => match parse_backend_choice_env_value(&value) {
+            Ok(choice) => choice,
+            Err(err) => {
+                tracing::warn!("{err}; defaulting to graph-db");
+                BackendChoice::GraphDb
+            }
+        },
+        Err(_) => BackendChoice::GraphDb,
     }
+}
+
+struct ResolvedTransferCliPolicy {
+    choice: BackendChoice,
+    format: TransferFormat,
+    format_notice: Option<String>,
+    storage_notice: Option<String>,
+}
+
+fn resolve_transfer_cli_policy(
+    agent_name: &str,
+    format: &str,
+    storage_path: Option<&str>,
+) -> Result<ResolvedTransferCliPolicy> {
+    let choice = resolve_transfer_backend_choice();
+    Ok(ResolvedTransferCliPolicy {
+        choice,
+        format: TransferFormat::parse(format)?,
+        format_notice: transfer_format_cli_compatibility_notice(format),
+        storage_notice: hierarchical_storage_compatibility_notice(
+            agent_name,
+            storage_path,
+            choice,
+        )?,
+    })
 }
 
 pub fn run_export(
@@ -178,14 +288,20 @@ pub fn run_export(
     format: &str,
     storage_path: Option<&str>,
 ) -> Result<()> {
-    let choice = resolve_transfer_backend_choice();
-    if let Some(notice) =
-        hierarchical_storage_compatibility_notice(agent_name, storage_path, choice)?
-    {
+    let resolved = resolve_transfer_cli_policy(agent_name, format, storage_path)?;
+    if let Some(notice) = resolved.format_notice.as_deref() {
         println!("⚠️ Compatibility mode: {notice}");
     }
-    let format = TransferFormat::parse(format);
-    match format.and_then(|fmt| export_memory(agent_name, output, fmt, storage_path, choice)) {
+    if let Some(notice) = resolved.storage_notice.as_deref() {
+        println!("⚠️ Compatibility mode: {notice}");
+    }
+    match export_memory(
+        agent_name,
+        output,
+        resolved.format,
+        storage_path,
+        resolved.choice,
+    ) {
         Ok(result) => {
             println!("Exported memory for agent '{}'", result.agent_name);
             println!("  Format: {}", result.format);
@@ -212,15 +328,21 @@ pub fn run_import(
     merge: bool,
     storage_path: Option<&str>,
 ) -> Result<()> {
-    let choice = resolve_transfer_backend_choice();
-    if let Some(notice) =
-        hierarchical_storage_compatibility_notice(agent_name, storage_path, choice)?
-    {
+    let resolved = resolve_transfer_cli_policy(agent_name, format, storage_path)?;
+    if let Some(notice) = resolved.format_notice.as_deref() {
         println!("⚠️ Compatibility mode: {notice}");
     }
-    let format = TransferFormat::parse(format);
-    match format.and_then(|fmt| import_memory(agent_name, input, fmt, merge, storage_path, choice))
-    {
+    if let Some(notice) = resolved.storage_notice.as_deref() {
+        println!("⚠️ Compatibility mode: {notice}");
+    }
+    match import_memory(
+        agent_name,
+        input,
+        resolved.format,
+        merge,
+        storage_path,
+        resolved.choice,
+    ) {
         Ok(result) => {
             println!("Imported memory into agent '{}'", result.agent_name);
             println!("  Format: {}", result.format);
@@ -304,32 +426,66 @@ fn import_memory(
     }
 }
 
-fn resolve_hierarchical_db_path(agent_name: &str, storage_path: Option<&str>) -> Result<PathBuf> {
-    // Validate agent name to prevent path traversal (e.g. "../evil") in the
-    // Kuzu/graph-db backend, mirroring the check in resolve_hierarchical_sqlite_path.
-    sqlite_backend::validate_agent_name(agent_name)?;
-    let base = match storage_path {
-        Some(path) => PathBuf::from(path),
-        None => home_dir()?
-            .join(".amplihack")
-            .join("hierarchical_memory")
-            .join(agent_name),
-    };
-    if base.is_dir() && !base.join("kuzu.lock").exists() {
-        let neutral = base.join("graph_db");
-        let legacy = base.join("kuzu_db");
-        if legacy.is_dir() && !neutral.exists() {
-            return Ok(legacy);
+struct HierarchicalMemoryPaths {
+    graph_base: PathBuf,
+    sqlite_db: PathBuf,
+}
+
+impl HierarchicalMemoryPaths {
+    fn neutral_graph_db(&self) -> PathBuf {
+        self.graph_base.join("graph_db")
+    }
+
+    fn legacy_graph_db(&self) -> PathBuf {
+        self.graph_base.join("kuzu_db")
+    }
+
+    fn resolved_graph_db(&self) -> PathBuf {
+        if self.graph_base.is_dir() && !self.graph_base.join("kuzu.lock").exists() {
+            let neutral = self.neutral_graph_db();
+            let legacy = self.legacy_graph_db();
+            if legacy.is_dir() && !neutral.exists() {
+                return legacy;
+            }
+            return neutral;
         }
-        return Ok(neutral);
+
+        let neutral = self.neutral_graph_db();
+        if neutral.is_dir() {
+            return neutral;
+        }
+
+        let legacy = self.legacy_graph_db();
+        if legacy.is_dir() {
+            return legacy;
+        }
+
+        self.graph_base.clone()
     }
-    if base.join("graph_db").is_dir() {
-        return Ok(base.join("graph_db"));
-    }
-    if base.join("kuzu_db").is_dir() {
-        return Ok(base.join("kuzu_db"));
-    }
-    Ok(base)
+}
+
+fn resolve_hierarchical_memory_paths(
+    agent_name: &str,
+    storage_path: Option<&str>,
+) -> Result<HierarchicalMemoryPaths> {
+    sqlite_backend::validate_agent_name(agent_name)?;
+    let storage_root = match storage_path {
+        Some(path) => PathBuf::from(path),
+        None => memory_home_paths()?.hierarchical_memory_dir,
+    };
+    let graph_base = match storage_path {
+        Some(_) => storage_root.clone(),
+        None => storage_root.join(agent_name),
+    };
+    let sqlite_db = storage_root.join(format!("{agent_name}.db"));
+    Ok(HierarchicalMemoryPaths {
+        graph_base,
+        sqlite_db,
+    })
+}
+
+fn resolve_hierarchical_db_path(agent_name: &str, storage_path: Option<&str>) -> Result<PathBuf> {
+    Ok(resolve_hierarchical_memory_paths(agent_name, storage_path)?.resolved_graph_db())
 }
 
 fn copy_hierarchical_storage(src: &Path, dst: &Path) -> Result<()> {
@@ -377,9 +533,7 @@ fn copy_dir_recursive_inner(
         } else if kind.is_dir() {
             copy_dir_recursive_inner(&from, &to, depth + 1, seen)?;
         } else if kind.is_file() {
-            if let Some(parent) = to.parent() {
-                fs::create_dir_all(parent)?;
-            }
+            ensure_parent_dir(&to)?;
             fs::copy(&from, &to)?;
         }
     }
@@ -438,6 +592,8 @@ pub(crate) fn parse_json_array_of_strings(value: &str) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{home_env_lock, restore_home, set_home};
+    use std::collections::HashSet;
     use tempfile::tempdir;
 
     #[test]
@@ -560,5 +716,163 @@ mod tests {
 
         assert_eq!(resolved, legacy);
         Ok(())
+    }
+
+    #[test]
+    fn resolve_hierarchical_memory_paths_defaults_to_shared_home_root() -> Result<()> {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempdir()?;
+        let previous_home = set_home(temp.path());
+
+        let paths = resolve_hierarchical_memory_paths("agent-a", None)?;
+        let expected_root = memory_home_paths()?.hierarchical_memory_dir;
+
+        restore_home(previous_home);
+        assert_eq!(paths.graph_base, expected_root.join("agent-a"));
+        assert_eq!(paths.sqlite_db, expected_root.join("agent-a.db"));
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_hierarchical_memory_paths_uses_storage_override_for_both_backends() -> Result<()> {
+        let temp = tempdir()?;
+        let override_root = temp.path().join("override");
+        fs::create_dir_all(&override_root)?;
+        let override_str = override_root.to_string_lossy().into_owned();
+
+        let paths = resolve_hierarchical_memory_paths("agent-a", Some(&override_str))?;
+
+        assert_eq!(paths.graph_base, override_root);
+        assert_eq!(paths.sqlite_db, override_root.join("agent-a.db"));
+        Ok(())
+    }
+
+    #[test]
+    fn hierarchical_import_plan_applies_shared_validation_and_merge_policy() {
+        let data = HierarchicalExportData {
+            agent_name: "source-agent".to_string(),
+            exported_at: "1704067200".to_string(),
+            format_version: "1.1".to_string(),
+            semantic_nodes: vec![
+                SemanticNode {
+                    memory_id: "semantic-keep".to_string(),
+                    concept: "repo".to_string(),
+                    content: "Keep this semantic node".to_string(),
+                    confidence: 0.9,
+                    source_id: "episode-keep".to_string(),
+                    tags: vec![],
+                    metadata: serde_json::json!({}),
+                    created_at: "1704067200".to_string(),
+                    entity_name: "amplihack".to_string(),
+                },
+                SemanticNode {
+                    memory_id: "semantic-skip".to_string(),
+                    concept: "repo".to_string(),
+                    content: "Skip on merge".to_string(),
+                    confidence: 0.8,
+                    source_id: "episode-keep".to_string(),
+                    tags: vec![],
+                    metadata: serde_json::json!({}),
+                    created_at: "1704067200".to_string(),
+                    entity_name: "amplihack".to_string(),
+                },
+                SemanticNode {
+                    memory_id: String::new(),
+                    concept: "repo".to_string(),
+                    content: "Invalid".to_string(),
+                    confidence: 0.7,
+                    source_id: "episode-keep".to_string(),
+                    tags: vec![],
+                    metadata: serde_json::json!({}),
+                    created_at: "1704067200".to_string(),
+                    entity_name: "amplihack".to_string(),
+                },
+            ],
+            episodic_nodes: vec![
+                EpisodicNode {
+                    memory_id: "episode-keep".to_string(),
+                    content: "Keep this episodic node".to_string(),
+                    source_label: "session".to_string(),
+                    tags: vec![],
+                    metadata: serde_json::json!({}),
+                    created_at: "1704067200".to_string(),
+                },
+                EpisodicNode {
+                    memory_id: "episode-skip".to_string(),
+                    content: "Skip on merge".to_string(),
+                    source_label: "session".to_string(),
+                    tags: vec![],
+                    metadata: serde_json::json!({}),
+                    created_at: "1704067200".to_string(),
+                },
+                EpisodicNode {
+                    memory_id: String::new(),
+                    content: "Invalid".to_string(),
+                    source_label: "session".to_string(),
+                    tags: vec![],
+                    metadata: serde_json::json!({}),
+                    created_at: "1704067200".to_string(),
+                },
+            ],
+            similar_to_edges: vec![SimilarEdge {
+                source_id: "semantic-keep".to_string(),
+                target_id: "semantic-skip".to_string(),
+                weight: 0.4,
+                metadata: serde_json::json!({}),
+            }],
+            derives_from_edges: vec![DerivesEdge {
+                source_id: "semantic-keep".to_string(),
+                target_id: "episode-keep".to_string(),
+                extraction_method: "unit-test".to_string(),
+                confidence: 0.7,
+            }],
+            supersedes_edges: vec![SupersedesEdge {
+                source_id: "semantic-keep".to_string(),
+                target_id: "semantic-skip".to_string(),
+                reason: "new".to_string(),
+                temporal_delta: "1".to_string(),
+            }],
+            transitioned_to_edges: vec![TransitionEdge {
+                source_id: "semantic-keep".to_string(),
+                target_id: "semantic-skip".to_string(),
+                from_value: "old".to_string(),
+                to_value: "new".to_string(),
+                turn: 2,
+                transition_type: "status".to_string(),
+            }],
+            statistics: HierarchicalStats {
+                semantic_node_count: 3,
+                episodic_node_count: 3,
+                similar_to_edge_count: 1,
+                derives_from_edge_count: 1,
+                supersedes_edge_count: 1,
+                transitioned_to_edge_count: 1,
+            },
+        };
+
+        let existing_ids: HashSet<String> = ["semantic-skip", "episode-skip"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        let plan = build_hierarchical_import_plan(&data, true, |memory_id| {
+            existing_ids.contains(memory_id)
+        });
+
+        assert_eq!(plan.episodic_nodes.len(), 1);
+        assert_eq!(plan.semantic_nodes.len(), 1);
+        assert_eq!(plan.episodic_nodes[0].memory_id, "episode-keep");
+        assert_eq!(plan.semantic_nodes[0].memory_id, "semantic-keep");
+        assert_eq!(plan.similar_to_edges.len(), 1);
+        assert_eq!(plan.derives_from_edges.len(), 1);
+        assert_eq!(plan.supersedes_edges.len(), 1);
+        assert_eq!(plan.transitioned_to_edges.len(), 1);
+        assert_eq!(plan.stats.skipped, 2);
+        assert_eq!(plan.stats.errors, 2);
+        assert_eq!(plan.stats.episodic_nodes_imported, 0);
+        assert_eq!(plan.stats.semantic_nodes_imported, 0);
+        assert_eq!(plan.stats.edges_imported, 0);
     }
 }

@@ -4,6 +4,14 @@
 //! binary discovery, environment construction, process management with signal
 //! handling, and nesting detection.
 
+pub mod auto_mode_append;
+pub mod auto_mode_completion_signals;
+pub mod auto_mode_completion_verifier;
+pub mod auto_mode_state;
+pub mod auto_mode_ui;
+pub mod auto_mode_work_summary;
+pub mod auto_mode_work_summary_generator;
+pub mod auto_stager;
 pub mod binary_finder;
 pub mod bootstrap;
 pub mod command_error;
@@ -18,8 +26,11 @@ pub mod env_builder;
 /// in `commands/fleet.rs`.
 pub mod fleet_local;
 pub mod launcher;
+pub mod launcher_context;
+pub mod memory_config;
 pub mod nesting;
 pub mod resolve_bundle_asset;
+pub mod session_tracker;
 pub mod settings_manager;
 pub mod signals;
 #[cfg(test)]
@@ -28,9 +39,28 @@ pub mod tool_update_check;
 pub mod update;
 pub mod util;
 
-use clap::{Parser, Subcommand};
+use clap::{
+    Parser, Subcommand,
+    builder::{PossibleValue, PossibleValuesParser},
+};
 use clap_complete::Shell;
 use std::path::PathBuf;
+
+fn graph_db_backend_value_parser() -> PossibleValuesParser {
+    PossibleValuesParser::new([
+        PossibleValue::new("graph-db"),
+        PossibleValue::new("kuzu").hide(true),
+        PossibleValue::new("sqlite"),
+    ])
+}
+
+fn raw_db_format_value_parser() -> PossibleValuesParser {
+    PossibleValuesParser::new([
+        PossibleValue::new("json"),
+        PossibleValue::new("raw-db"),
+        PossibleValue::new("kuzu").hide(true),
+    ])
+}
 
 /// amplihack CLI — Rust core runtime.
 #[derive(Parser, Debug)]
@@ -71,30 +101,126 @@ pub enum Commands {
         /// Useful in CI, offline environments, or scripted pipelines.
         #[arg(long = "skip-update-check")]
         skip_update_check: bool,
+        /// Disable post-session reflection analysis.
+        #[arg(long = "no-reflection")]
+        no_reflection: bool,
+        /// Skip shared launcher staging/env updates for subprocess delegates.
+        #[arg(long = "subprocess-safe")]
+        subprocess_safe: bool,
+        /// Clone a GitHub repository and launch Claude in that checkout.
+        #[arg(long = "checkout-repo", value_name = "GITHUB_URI")]
+        checkout_repo: Option<String>,
+        /// Append instructions to a running auto mode session and exit.
+        #[arg(long = "append")]
+        append: Option<String>,
+        /// Run in autonomous agentic mode with iterative loop execution.
+        #[arg(long = "auto")]
+        auto: bool,
+        /// Max turns for auto mode.
+        #[arg(long = "max-turns", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+        max_turns: u32,
+        /// Enable interactive UI mode for auto mode.
+        #[arg(long = "ui")]
+        ui: bool,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true)]
         claude_args: Vec<String>,
     },
     /// Launch Claude Code (alias)
     Claude {
+        /// Disable post-session reflection analysis.
+        #[arg(long = "no-reflection")]
+        no_reflection: bool,
+        /// Skip shared launcher staging/env updates for subprocess delegates.
+        #[arg(long = "subprocess-safe")]
+        subprocess_safe: bool,
+        /// Clone a GitHub repository and launch Claude in that checkout.
+        #[arg(long = "checkout-repo", value_name = "GITHUB_URI")]
+        checkout_repo: Option<String>,
+        /// Append instructions to a running auto mode session and exit.
+        #[arg(long = "append")]
+        append: Option<String>,
+        /// Run in autonomous agentic mode with iterative loop execution.
+        #[arg(long = "auto")]
+        auto: bool,
+        /// Max turns for auto mode.
+        #[arg(long = "max-turns", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+        max_turns: u32,
+        /// Enable interactive UI mode for auto mode.
+        #[arg(long = "ui")]
+        ui: bool,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true)]
         claude_args: Vec<String>,
     },
     /// Launch GitHub Copilot CLI
     Copilot {
+        /// Disable post-session reflection analysis.
+        #[arg(long = "no-reflection")]
+        no_reflection: bool,
+        /// Skip shared launcher staging/env updates for subprocess delegates.
+        #[arg(long = "subprocess-safe")]
+        subprocess_safe: bool,
+        /// Append instructions to a running auto mode session and exit.
+        #[arg(long = "append")]
+        append: Option<String>,
+        /// Run in autonomous agentic mode with iterative loop execution.
+        #[arg(long = "auto")]
+        auto: bool,
+        /// Max turns for auto mode.
+        #[arg(long = "max-turns", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+        max_turns: u32,
+        /// Enable interactive UI mode for auto mode.
+        #[arg(long = "ui")]
+        ui: bool,
         /// Extra args passed to copilot
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
     /// Launch OpenAI Codex CLI
     Codex {
+        /// Disable post-session reflection analysis.
+        #[arg(long = "no-reflection")]
+        no_reflection: bool,
+        /// Skip shared launcher staging/env updates for subprocess delegates.
+        #[arg(long = "subprocess-safe")]
+        subprocess_safe: bool,
+        /// Append instructions to a running auto mode session and exit.
+        #[arg(long = "append")]
+        append: Option<String>,
+        /// Run in autonomous agentic mode with iterative loop execution.
+        #[arg(long = "auto")]
+        auto: bool,
+        /// Max turns for auto mode.
+        #[arg(long = "max-turns", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+        max_turns: u32,
+        /// Enable interactive UI mode for auto mode.
+        #[arg(long = "ui")]
+        ui: bool,
         /// Extra args passed to codex
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
     },
     /// Launch Amplifier
     Amplifier {
+        /// Disable post-session reflection analysis.
+        #[arg(long = "no-reflection")]
+        no_reflection: bool,
+        /// Skip shared launcher staging/env updates for subprocess delegates.
+        #[arg(long = "subprocess-safe")]
+        subprocess_safe: bool,
+        /// Append instructions to a running auto mode session and exit.
+        #[arg(long = "append")]
+        append: Option<String>,
+        /// Run in autonomous agentic mode with iterative loop execution.
+        #[arg(long = "auto")]
+        auto: bool,
+        /// Max turns for auto mode.
+        #[arg(long = "max-turns", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+        max_turns: u32,
+        /// Enable interactive UI mode for auto mode.
+        #[arg(long = "ui")]
+        ui: bool,
         /// Extra args passed to amplifier
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
@@ -114,8 +240,11 @@ pub enum Commands {
         /// Path to a blarify JSON export
         input: PathBuf,
         /// Override the target code-graph database path
-        #[arg(long = "db-path", alias = "kuzu-path")]
+        #[arg(long = "db-path")]
         db_path: Option<PathBuf>,
+        /// Legacy compatibility alias for `--db-path`
+        #[arg(long = "kuzu-path", hide = true)]
+        legacy_kuzu_path: Option<PathBuf>,
     },
     /// Generate native SCIP artifacts for the current project
     IndexScip {
@@ -129,8 +258,11 @@ pub enum Commands {
     /// Query the native code graph
     QueryCode {
         /// Override the target code-graph database path
-        #[arg(long = "db-path", alias = "kuzu-path")]
+        #[arg(long = "db-path")]
         db_path: Option<PathBuf>,
+        /// Legacy compatibility alias for `--db-path`
+        #[arg(long = "kuzu-path", hide = true)]
+        legacy_kuzu_path: Option<PathBuf>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -195,6 +327,24 @@ pub enum Commands {
     /// RustyClawd tool (native Rust launcher path)
     #[command(name = "RustyClawd")]
     RustyClawd {
+        /// Append instructions to a running auto mode session and exit.
+        #[arg(long = "append")]
+        append: Option<String>,
+        /// Disable post-session reflection analysis.
+        #[arg(long = "no-reflection")]
+        no_reflection: bool,
+        /// Skip shared launcher staging/env updates for subprocess delegates.
+        #[arg(long = "subprocess-safe")]
+        subprocess_safe: bool,
+        /// Run in autonomous agentic mode with iterative loop execution.
+        #[arg(long = "auto")]
+        auto: bool,
+        /// Max turns for auto mode.
+        #[arg(long = "max-turns", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..))]
+        max_turns: u32,
+        /// Enable interactive UI mode for auto mode.
+        #[arg(long = "ui")]
+        ui: bool,
         /// Arguments forwarded to the RustyClawd/Claude binary
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -263,7 +413,7 @@ pub enum MemoryCommands {
         #[arg(long)]
         depth: Option<u32>,
         /// Memory backend to use
-        #[arg(long, default_value = "graph-db", value_parser = ["graph-db", "kuzu", "sqlite"])]
+        #[arg(long, default_value = "graph-db", value_parser = graph_db_backend_value_parser())]
         backend: String,
     },
     /// Export memory to file
@@ -271,11 +421,11 @@ pub enum MemoryCommands {
         /// Name of the agent whose memory to export
         #[arg(long)]
         agent: String,
-        /// Output file path (.json) or directory (raw-db; compatibility alias: kuzu)
+        /// Output file path (.json) or directory (raw-db)
         #[arg(short, long)]
         output: String,
         /// Export format
-        #[arg(short = 'f', long = "format", default_value = "json", value_parser = ["json", "raw-db", "kuzu"])]
+        #[arg(short = 'f', long = "format", default_value = "json", value_parser = raw_db_format_value_parser())]
         format: String,
         /// Custom storage path for the agent's graph DB
         #[arg(long = "storage-path")]
@@ -286,11 +436,11 @@ pub enum MemoryCommands {
         /// Name of the target agent to import into
         #[arg(long)]
         agent: String,
-        /// Input file path (.json) or directory (raw-db; compatibility alias: kuzu)
+        /// Input file path (.json) or directory (raw-db)
         #[arg(short, long)]
         input: String,
         /// Import format
-        #[arg(short = 'f', long = "format", default_value = "json", value_parser = ["json", "raw-db", "kuzu"])]
+        #[arg(short = 'f', long = "format", default_value = "json", value_parser = raw_db_format_value_parser())]
         format: String,
         /// Merge into existing memory
         #[arg(long)]
@@ -305,7 +455,7 @@ pub enum MemoryCommands {
         #[arg(long, default_value = "test_*")]
         pattern: String,
         /// Memory backend to use
-        #[arg(long, default_value = "graph-db", value_parser = ["graph-db", "kuzu", "sqlite"])]
+        #[arg(long, default_value = "graph-db", value_parser = graph_db_backend_value_parser())]
         backend: String,
         /// Actually delete sessions instead of dry-run
         #[arg(long = "no-dry-run")]
@@ -421,6 +571,302 @@ pub enum QueryCodeCommands {
         /// Function name substring
         name: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn memory_tree_help_hides_kuzu_backend_alias() {
+        let mut cmd = Cli::command();
+        let memory = cmd
+            .find_subcommand_mut("memory")
+            .expect("memory command should exist");
+        let tree = memory
+            .find_subcommand_mut("tree")
+            .expect("memory tree command should exist");
+        let mut help = Vec::new();
+        tree.write_long_help(&mut help).unwrap();
+        let rendered = String::from_utf8(help).unwrap();
+
+        assert!(rendered.contains("[possible values: graph-db, sqlite]"));
+        assert!(!rendered.contains("graph-db, kuzu, sqlite"));
+    }
+
+    #[test]
+    fn memory_export_help_hides_kuzu_format_alias() {
+        let mut cmd = Cli::command();
+        let memory = cmd
+            .find_subcommand_mut("memory")
+            .expect("memory command should exist");
+        let export = memory
+            .find_subcommand_mut("export")
+            .expect("memory export command should exist");
+        let mut help = Vec::new();
+        export.write_long_help(&mut help).unwrap();
+        let rendered = String::from_utf8(help).unwrap();
+
+        assert!(rendered.contains("[possible values: json, raw-db]"));
+        assert!(!rendered.contains("json, raw-db, kuzu"));
+        assert!(!rendered.contains("compatibility alias: kuzu"));
+    }
+
+    #[test]
+    fn memory_cli_still_accepts_kuzu_compat_values() {
+        let cli = Cli::try_parse_from(["amplihack", "memory", "tree", "--backend", "kuzu"])
+            .expect("legacy backend alias should still parse");
+        match cli.command {
+            Commands::Memory {
+                command: MemoryCommands::Tree { backend, .. },
+            } => assert_eq!(backend, "kuzu"),
+            other => panic!("expected memory tree command, got {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "memory",
+            "export",
+            "--agent",
+            "demo",
+            "--output",
+            "demo.json",
+            "--format",
+            "kuzu",
+        ])
+        .expect("legacy raw-db format alias should still parse");
+        match cli.command {
+            Commands::Memory {
+                command: MemoryCommands::Export { format, .. },
+            } => assert_eq!(format, "kuzu"),
+            other => panic!("expected memory export command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_graph_help_hides_kuzu_path_alias() {
+        let mut cmd = Cli::command();
+        let index = cmd
+            .find_subcommand_mut("index-code")
+            .expect("index-code command should exist");
+        let mut help = Vec::new();
+        index.write_long_help(&mut help).unwrap();
+        let rendered = String::from_utf8(help).unwrap();
+        assert!(rendered.contains("--db-path"));
+        assert!(!rendered.contains("--kuzu-path"));
+
+        let mut cmd = Cli::command();
+        let query = cmd
+            .find_subcommand_mut("query-code")
+            .expect("query-code command should exist");
+        let mut help = Vec::new();
+        query.write_long_help(&mut help).unwrap();
+        let rendered = String::from_utf8(help).unwrap();
+        assert!(rendered.contains("--db-path"));
+        assert!(!rendered.contains("--kuzu-path"));
+    }
+
+    #[test]
+    fn code_graph_cli_still_accepts_kuzu_path_compat_flag() {
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "index-code",
+            "graph.json",
+            "--kuzu-path",
+            "/tmp/legacy-graph-db",
+        ])
+        .expect("legacy kuzu-path alias should still parse for index-code");
+        match cli.command {
+            Commands::IndexCode {
+                db_path,
+                legacy_kuzu_path,
+                ..
+            } => {
+                assert!(db_path.is_none());
+                assert_eq!(
+                    legacy_kuzu_path,
+                    Some(PathBuf::from("/tmp/legacy-graph-db"))
+                );
+            }
+            other => panic!("expected index-code command, got {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "query-code",
+            "--kuzu-path",
+            "/tmp/legacy-graph-db",
+            "stats",
+        ])
+        .expect("legacy kuzu-path alias should still parse for query-code");
+        match cli.command {
+            Commands::QueryCode {
+                db_path,
+                legacy_kuzu_path,
+                ..
+            } => {
+                assert!(db_path.is_none());
+                assert_eq!(
+                    legacy_kuzu_path,
+                    Some(PathBuf::from("/tmp/legacy-graph-db"))
+                );
+            }
+            other => panic!("expected query-code command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn launch_cli_parses_common_sdk_flags() {
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "launch",
+            "--no-reflection",
+            "--subprocess-safe",
+            "--auto",
+            "--max-turns",
+            "12",
+            "--ui",
+            "--",
+            "-p",
+            "task",
+        ])
+        .expect("launch should parse common sdk flags");
+        match cli.command {
+            Commands::Launch {
+                no_reflection,
+                subprocess_safe,
+                auto,
+                max_turns,
+                ui,
+                claude_args,
+                ..
+            } => {
+                assert!(no_reflection);
+                assert!(subprocess_safe);
+                assert!(auto);
+                assert_eq!(max_turns, 12);
+                assert!(ui);
+                assert_eq!(claude_args, vec!["-p", "task"]);
+            }
+            other => panic!("expected launch command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn copilot_cli_parses_common_sdk_flags() {
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "copilot",
+            "--no-reflection",
+            "--subprocess-safe",
+            "--auto",
+            "--max-turns",
+            "9",
+            "--ui",
+            "--",
+            "chat",
+        ])
+        .expect("copilot should parse common sdk flags");
+        match cli.command {
+            Commands::Copilot {
+                no_reflection,
+                subprocess_safe,
+                auto,
+                max_turns,
+                ui,
+                args,
+                ..
+            } => {
+                assert!(no_reflection);
+                assert!(subprocess_safe);
+                assert!(auto);
+                assert_eq!(max_turns, 9);
+                assert!(ui);
+                assert_eq!(args, vec!["chat"]);
+            }
+            other => panic!("expected copilot command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn claude_cli_parses_append_flag() {
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "claude",
+            "--append",
+            "Continue with parity audit",
+        ])
+        .expect("claude should parse append flag");
+        match cli.command {
+            Commands::Claude { append, .. } => {
+                assert_eq!(append.as_deref(), Some("Continue with parity audit"));
+            }
+            other => panic!("expected claude command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn claude_cli_parses_checkout_repo_flag() {
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "claude",
+            "--checkout-repo",
+            "owner/repo",
+            "--",
+            "-p",
+            "audit parity",
+        ])
+        .expect("claude should parse checkout-repo flag");
+        match cli.command {
+            Commands::Claude {
+                checkout_repo,
+                claude_args,
+                ..
+            } => {
+                assert_eq!(checkout_repo.as_deref(), Some("owner/repo"));
+                assert_eq!(claude_args, vec!["-p", "audit parity"]);
+            }
+            other => panic!("expected claude command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rustyclawd_cli_parses_auto_flags() {
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "RustyClawd",
+            "--no-reflection",
+            "--subprocess-safe",
+            "--auto",
+            "--max-turns",
+            "7",
+            "--ui",
+            "--",
+            "-p",
+            "continue parity",
+        ])
+        .expect("RustyClawd should parse auto flags");
+        match cli.command {
+            Commands::RustyClawd {
+                no_reflection,
+                subprocess_safe,
+                auto,
+                max_turns,
+                ui,
+                args,
+                ..
+            } => {
+                assert!(no_reflection);
+                assert!(subprocess_safe);
+                assert!(auto);
+                assert_eq!(max_turns, 7);
+                assert!(ui);
+                assert_eq!(args, vec!["-p", "continue parity"]);
+            }
+            other => panic!("expected RustyClawd command, got {other:?}"),
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]

@@ -10,6 +10,18 @@ use std::env;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+pub fn active_agent_binary() -> String {
+    match env::var("AMPLIHACK_AGENT_BINARY") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => {
+            tracing::warn!(
+                "AMPLIHACK_AGENT_BINARY not set; defaulting to 'claude'. This usually means a subprocess was launched outside the amplihack CLI dispatcher."
+            );
+            "claude".to_string()
+        }
+    }
+}
+
 /// Builder for constructing the environment passed to child processes.
 #[derive(Debug)]
 pub struct EnvBuilder {
@@ -55,6 +67,42 @@ impl EnvBuilder {
 
         self.set("AMPLIHACK_SESSION_ID", session_id)
             .set("AMPLIHACK_DEPTH", depth)
+    }
+
+    /// Propagate orchestration tree context without changing depth.
+    pub fn with_session_tree_context(self) -> Self {
+        if !session_tree_context_present() {
+            return self;
+        }
+
+        self.set("AMPLIHACK_TREE_ID", resolve_session_tree_id())
+            .set("AMPLIHACK_SESSION_DEPTH", resolve_session_tree_depth(false))
+            .set(
+                "AMPLIHACK_MAX_DEPTH",
+                env::var("AMPLIHACK_MAX_DEPTH").unwrap_or_else(|_| "3".to_string()),
+            )
+            .set(
+                "AMPLIHACK_MAX_SESSIONS",
+                env::var("AMPLIHACK_MAX_SESSIONS").unwrap_or_else(|_| "10".to_string()),
+            )
+    }
+
+    /// Propagate orchestration tree context while incrementing child session depth.
+    pub fn with_incremented_session_tree_context(self) -> Self {
+        if !session_tree_context_present() {
+            return self;
+        }
+
+        self.set("AMPLIHACK_TREE_ID", resolve_session_tree_id())
+            .set("AMPLIHACK_SESSION_DEPTH", resolve_session_tree_depth(true))
+            .set(
+                "AMPLIHACK_MAX_DEPTH",
+                env::var("AMPLIHACK_MAX_DEPTH").unwrap_or_else(|_| "3".to_string()),
+            )
+            .set(
+                "AMPLIHACK_MAX_SESSIONS",
+                env::var("AMPLIHACK_MAX_SESSIONS").unwrap_or_else(|_| "10".to_string()),
+            )
     }
 
     /// Conditionally set an environment variable.
@@ -262,16 +310,23 @@ impl EnvBuilder {
     /// Add standard AMPLIHACK_* variables and NODE_OPTIONS.
     pub fn with_amplihack_vars(self) -> Self {
         // Merge NODE_OPTIONS: append if existing (and not already present), set fresh otherwise
+        let ambient_node_options = env::var("NODE_OPTIONS").ok();
+        self.with_amplihack_vars_with_node_options(ambient_node_options.as_deref())
+    }
+
+    /// Add standard AMPLIHACK_* variables with an explicit NODE_OPTIONS value.
+    pub fn with_amplihack_vars_with_node_options(self, node_options: Option<&str>) -> Self {
         let max_old_space = "--max-old-space-size=32768";
-        let node_opts_value = match env::var("NODE_OPTIONS") {
-            Ok(existing) if !existing.is_empty() => {
+        let node_opts_value = match node_options {
+            Some(existing) if !existing.is_empty() => {
                 if existing.contains("--max-old-space-size=") {
                     // Already has a --max-old-space-size setting, don't duplicate
-                    existing
+                    existing.to_string()
                 } else {
                     format!("{existing} {max_old_space}")
                 }
             }
+            Some(_) => String::new(),
             _ => max_old_space.to_string(),
         };
 
@@ -381,10 +436,66 @@ fn generate_session_id() -> String {
     format!("rs-{}-{}", ts, std::process::id())
 }
 
+fn session_tree_context_present() -> bool {
+    [
+        "AMPLIHACK_TREE_ID",
+        "AMPLIHACK_SESSION_DEPTH",
+        "AMPLIHACK_MAX_DEPTH",
+        "AMPLIHACK_MAX_SESSIONS",
+    ]
+    .iter()
+    .any(|key| env::var_os(key).is_some())
+}
+
+fn resolve_session_tree_id() -> String {
+    env::var("AMPLIHACK_TREE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            generate_session_id()
+                .chars()
+                .filter(|ch| *ch != '-')
+                .take(8)
+                .collect()
+        })
+}
+
+fn resolve_session_tree_depth(increment: bool) -> String {
+    let base = match env::var("AMPLIHACK_SESSION_DEPTH") {
+        Ok(raw) if !raw.trim().is_empty() => match raw.parse::<u32>() {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                tracing::warn!(
+                    value = raw,
+                    "invalid AMPLIHACK_SESSION_DEPTH, defaulting to 0: {error}"
+                );
+                0
+            }
+        },
+        _ => 0,
+    };
+    let depth = if increment {
+        base.saturating_add(1)
+    } else {
+        base
+    };
+    depth.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::cwd_env_lock;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn restore_var(name: &str, previous: Option<std::ffi::OsString>) {
+        match previous {
+            Some(value) => unsafe { env::set_var(name, value) },
+            None => unsafe { env::remove_var(name) },
+        }
+    }
 
     // ── WS1: with_agent_binary ────────────────────────────────────────────────
 
@@ -400,6 +511,21 @@ mod tests {
                 "AMPLIHACK_AGENT_BINARY should be '{tool}'"
             );
         }
+    }
+
+    #[test]
+    fn active_agent_binary_reads_env_override() {
+        let previous = env::var_os("AMPLIHACK_AGENT_BINARY");
+        unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", "copilot") };
+
+        let binary = active_agent_binary();
+
+        match previous {
+            Some(value) => unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", value) },
+            None => unsafe { env::remove_var("AMPLIHACK_AGENT_BINARY") },
+        }
+
+        assert_eq!(binary, "copilot");
     }
 
     #[test]
@@ -444,7 +570,7 @@ mod tests {
         let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
         let prev = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
         unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
-        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/custom/kuzu") };
+        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/custom/legacy-graph-alias") };
 
         let env = EnvBuilder::new()
             .with_project_graph_db(temp.path())
@@ -462,7 +588,7 @@ mod tests {
 
         assert_eq!(
             env.get("AMPLIHACK_GRAPH_DB_PATH").map(String::as_str),
-            Some("/custom/kuzu")
+            Some("/custom/legacy-graph-alias")
         );
         assert_eq!(env.get("AMPLIHACK_KUZU_DB_PATH").map(String::as_str), None);
     }
@@ -516,7 +642,7 @@ mod tests {
         let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
         let prev = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
         unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/custom/graph") };
-        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/custom/kuzu") };
+        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/custom/legacy-graph-alias") };
 
         let env = EnvBuilder::new()
             .with_project_graph_db(temp.path())
@@ -606,7 +732,7 @@ mod tests {
         let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
         let prev = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
         unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/tmp/../etc/shadow") };
-        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/custom/kuzu") };
+        unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/custom/legacy-graph-alias") };
 
         let error = EnvBuilder::new()
             .with_project_graph_db(temp.path())
@@ -826,10 +952,97 @@ mod tests {
     }
 
     #[test]
+    fn with_session_tree_context_preserves_existing_values() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prev_tree = env::var_os("AMPLIHACK_TREE_ID");
+        let prev_depth = env::var_os("AMPLIHACK_SESSION_DEPTH");
+        let prev_max_depth = env::var_os("AMPLIHACK_MAX_DEPTH");
+        let prev_max_sessions = env::var_os("AMPLIHACK_MAX_SESSIONS");
+        unsafe {
+            env::set_var("AMPLIHACK_TREE_ID", "tree1234");
+            env::set_var("AMPLIHACK_SESSION_DEPTH", "2");
+            env::set_var("AMPLIHACK_MAX_DEPTH", "4");
+            env::set_var("AMPLIHACK_MAX_SESSIONS", "12");
+        }
+
+        let built = EnvBuilder::new().with_session_tree_context().build();
+
+        restore_var("AMPLIHACK_TREE_ID", prev_tree);
+        restore_var("AMPLIHACK_SESSION_DEPTH", prev_depth);
+        restore_var("AMPLIHACK_MAX_DEPTH", prev_max_depth);
+        restore_var("AMPLIHACK_MAX_SESSIONS", prev_max_sessions);
+
+        assert_eq!(
+            built.get("AMPLIHACK_TREE_ID").map(String::as_str),
+            Some("tree1234")
+        );
+        assert_eq!(
+            built.get("AMPLIHACK_SESSION_DEPTH").map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(
+            built.get("AMPLIHACK_MAX_DEPTH").map(String::as_str),
+            Some("4")
+        );
+        assert_eq!(
+            built.get("AMPLIHACK_MAX_SESSIONS").map(String::as_str),
+            Some("12")
+        );
+    }
+
+    #[test]
+    fn with_incremented_session_tree_context_increments_depth() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prev_tree = env::var_os("AMPLIHACK_TREE_ID");
+        let prev_depth = env::var_os("AMPLIHACK_SESSION_DEPTH");
+        let prev_max_depth = env::var_os("AMPLIHACK_MAX_DEPTH");
+        let prev_max_sessions = env::var_os("AMPLIHACK_MAX_SESSIONS");
+        unsafe {
+            env::set_var("AMPLIHACK_TREE_ID", "tree1234");
+            env::set_var("AMPLIHACK_SESSION_DEPTH", "2");
+            env::set_var("AMPLIHACK_MAX_DEPTH", "4");
+            env::set_var("AMPLIHACK_MAX_SESSIONS", "12");
+        }
+
+        let built = EnvBuilder::new()
+            .with_incremented_session_tree_context()
+            .build();
+
+        restore_var("AMPLIHACK_TREE_ID", prev_tree);
+        restore_var("AMPLIHACK_SESSION_DEPTH", prev_depth);
+        restore_var("AMPLIHACK_MAX_DEPTH", prev_max_depth);
+        restore_var("AMPLIHACK_MAX_SESSIONS", prev_max_sessions);
+
+        assert_eq!(
+            built.get("AMPLIHACK_SESSION_DEPTH").map(String::as_str),
+            Some("3")
+        );
+        assert_eq!(
+            built.get("AMPLIHACK_TREE_ID").map(String::as_str),
+            Some("tree1234")
+        );
+    }
+
+    #[test]
     fn with_amplihack_vars_sets_runtime_flag() {
         let env = EnvBuilder::new().with_amplihack_vars().build();
         assert_eq!(env.get("AMPLIHACK_RUST_RUNTIME").unwrap(), "1");
         assert!(env.contains_key("AMPLIHACK_VERSION"));
+    }
+
+    #[test]
+    fn with_amplihack_vars_with_node_options_uses_explicit_value() {
+        let env = EnvBuilder::new()
+            .with_amplihack_vars_with_node_options(Some("--max-old-space-size=16384 --inspect"))
+            .build();
+        assert_eq!(
+            env.get("NODE_OPTIONS").map(String::as_str),
+            Some("--max-old-space-size=16384 --inspect")
+        );
     }
 
     #[test]

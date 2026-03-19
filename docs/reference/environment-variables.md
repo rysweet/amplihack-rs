@@ -265,9 +265,11 @@ The version of the `amplihack-cli` crate that launched the session. Taken from `
 ### NODE_OPTIONS
 
 **Type:** space-separated Node.js CLI flags
-**Set by:** `EnvBuilder::with_amplihack_vars()`
+**Set by:** launcher startup via `memory_config.rs`, then propagated by `EnvBuilder::with_amplihack_vars()`
 
-`amplihack` injects `--max-old-space-size=32768` to raise the Node.js heap limit for Claude Code's large context operations. If `NODE_OPTIONS` is already set in the environment, `amplihack` appends the flag rather than replacing it, unless `--max-old-space-size=` is already present.
+`amplihack` now computes a smart `--max-old-space-size=<mb>` value at top-level launcher startup based on detected system RAM, persists the consent choice in `~/.amplihack/config`, and displays the active choice on launch. The resolved value is then propagated through `EnvBuilder`.
+
+When startup does not supply an explicit value, `EnvBuilder` still falls back to `--max-old-space-size=32768`, and if ambient `NODE_OPTIONS` already contains `--max-old-space-size=` it is preserved rather than duplicated.
 
 ---
 

@@ -1,15 +1,15 @@
 //! SQLite hierarchical transfer backend.
 //!
-//! Implements `HierarchicalTransferBackend` for SQLite, mirroring the Kuzu
+//! Implements `HierarchicalTransferBackend` for SQLite, mirroring the graph-db
 //! implementation semantics so both backends are interchangeable for
 //! export/import workflows.
 
-use super::super::parse_json_value;
+use super::super::{ensure_parent_dir, parse_json_value};
 use super::backend::HierarchicalTransferBackend;
 use super::{
     DerivesEdge, EpisodicNode, ExportResult, HierarchicalExportData, HierarchicalStats,
     ImportResult, ImportStats, SemanticNode, SimilarEdge, SupersedesEdge, TransitionEdge,
-    graph_export_timestamp,
+    build_hierarchical_import_plan, build_hierarchical_import_result, graph_export_timestamp,
 };
 use anyhow::{Context, Result};
 use rusqlite::{Connection as SqliteConnection, params};
@@ -27,7 +27,7 @@ const MAX_AGENT_NAME_LEN: usize = 255;
 
 /// CREATE TABLE statements for the hierarchical SQLite schema.
 ///
-/// Six tables matching the Kuzu node/rel tables:
+/// Six tables matching the graph-db node/rel tables:
 ///   semantic_memories, episodic_memories, similar_to_edges, derives_from_edges,
 ///   supersedes_edges, transitioned_to_edges
 pub(crate) const SQLITE_HIERARCHICAL_SCHEMA: &str = r#"
@@ -178,19 +178,7 @@ pub(crate) fn resolve_hierarchical_sqlite_path(
     agent_name: &str,
     storage_path: Option<&str>,
 ) -> Result<PathBuf> {
-    validate_agent_name(agent_name)?;
-
-    let base = match storage_path {
-        Some(path) => PathBuf::from(path),
-        None => {
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .context("HOME environment variable is not set")?;
-            home.join(".amplihack").join("hierarchical_memory")
-        }
-    };
-
-    Ok(base.join(format!("{agent_name}.db")))
+    Ok(super::resolve_hierarchical_memory_paths(agent_name, storage_path)?.sqlite_db)
 }
 
 /// Enforce restrictive filesystem permissions on a SQLite database file.
@@ -232,10 +220,7 @@ pub(crate) fn enforce_hierarchical_db_permissions(_path: &std::path::Path) -> Re
 /// Open a SQLite connection to the hierarchical database and initialise the
 /// schema.
 fn open_hierarchical_sqlite_conn(db_path: &std::path::Path) -> Result<SqliteConnection> {
-    if let Some(parent) = db_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create directory {}", parent.display()))?;
-    }
+    ensure_parent_dir(db_path)?;
     let conn = SqliteConnection::open(db_path)
         .with_context(|| format!("failed to open SQLite at {}", db_path.display()))?;
     enforce_hierarchical_db_permissions(db_path)?;
@@ -286,9 +271,7 @@ impl HierarchicalTransferBackend for SqliteHierarchicalTransferBackend {
         };
 
         let output_path = PathBuf::from(output);
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        ensure_parent_dir(&output_path)?;
 
         // Write to a .tmp file, then atomically rename.
         let tmp_path = output_path.with_extension("json.tmp");
@@ -387,28 +370,12 @@ impl HierarchicalTransferBackend for SqliteHierarchicalTransferBackend {
             insert_nodes_and_edges(&conn, agent_name, &data, true, &existing_ids)?
         };
 
-        Ok(ImportResult {
-            agent_name: agent_name.to_string(),
-            format: "json".to_string(),
-            source_agent: Some(data.agent_name),
+        Ok(build_hierarchical_import_result(
+            agent_name,
+            data.agent_name,
             merge,
-            statistics: vec![
-                (
-                    "semantic_nodes_imported".to_string(),
-                    stats.semantic_nodes_imported.to_string(),
-                ),
-                (
-                    "episodic_nodes_imported".to_string(),
-                    stats.episodic_nodes_imported.to_string(),
-                ),
-                (
-                    "edges_imported".to_string(),
-                    stats.edges_imported.to_string(),
-                ),
-                ("skipped".to_string(), stats.skipped.to_string()),
-                ("errors".to_string(), stats.errors.to_string()),
-            ],
-        })
+            stats,
+        ))
     }
 
     fn export_hierarchical_raw_db(
@@ -420,9 +387,7 @@ impl HierarchicalTransferBackend for SqliteHierarchicalTransferBackend {
         let db_path = resolve_hierarchical_sqlite_path(agent_name, storage_path)?;
         let output_path = PathBuf::from(output);
 
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        ensure_parent_dir(&output_path)?;
 
         // Remove existing output.
         if output_path.symlink_metadata().is_ok() {
@@ -486,9 +451,7 @@ impl HierarchicalTransferBackend for SqliteHierarchicalTransferBackend {
         }
 
         let target_path = resolve_hierarchical_sqlite_path(agent_name, storage_path)?;
-        if let Some(parent) = target_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        ensure_parent_dir(&target_path)?;
 
         // Backup existing target if present.
         if target_path.symlink_metadata().is_ok() {
@@ -753,17 +716,11 @@ fn insert_nodes_and_edges(
     merge: bool,
     existing_ids: &std::collections::HashSet<String>,
 ) -> Result<ImportStats> {
-    let mut stats = ImportStats::default();
+    let mut plan =
+        build_hierarchical_import_plan(data, merge, |memory_id| existing_ids.contains(memory_id));
+    let mut stats = std::mem::take(&mut plan.stats);
 
-    for node in &data.episodic_nodes {
-        if node.memory_id.is_empty() {
-            stats.errors += 1;
-            continue;
-        }
-        if merge && existing_ids.contains(&node.memory_id) {
-            stats.skipped += 1;
-            continue;
-        }
+    for node in plan.episodic_nodes {
         let result = conn.execute(
             "INSERT OR IGNORE INTO episodic_memories (memory_id, agent_id, content, source_label, tags, metadata, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
@@ -778,19 +735,14 @@ fn insert_nodes_and_edges(
         );
         match result {
             Ok(_) => stats.episodic_nodes_imported += 1,
-            Err(_) => stats.errors += 1,
+            Err(e) => {
+                tracing::warn!(memory_id = %node.memory_id, error = %e, "failed to insert episodic node");
+                stats.errors += 1;
+            }
         }
     }
 
-    for node in &data.semantic_nodes {
-        if node.memory_id.is_empty() {
-            stats.errors += 1;
-            continue;
-        }
-        if merge && existing_ids.contains(&node.memory_id) {
-            stats.skipped += 1;
-            continue;
-        }
+    for node in plan.semantic_nodes {
         let result = conn.execute(
             "INSERT OR IGNORE INTO semantic_memories (memory_id, agent_id, concept, content, confidence, source_id, tags, metadata, created_at, entity_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
@@ -808,11 +760,14 @@ fn insert_nodes_and_edges(
         );
         match result {
             Ok(_) => stats.semantic_nodes_imported += 1,
-            Err(_) => stats.errors += 1,
+            Err(e) => {
+                tracing::warn!(memory_id = %node.memory_id, error = %e, "failed to insert semantic node");
+                stats.errors += 1;
+            }
         }
     }
 
-    for edge in &data.similar_to_edges {
+    for edge in plan.similar_to_edges {
         let result = conn.execute(
             "INSERT INTO similar_to_edges (source_id, target_id, weight, metadata) VALUES (?1, ?2, ?3, ?4)",
             params![
@@ -824,11 +779,14 @@ fn insert_nodes_and_edges(
         );
         match result {
             Ok(_) => stats.edges_imported += 1,
-            Err(_) => stats.errors += 1,
+            Err(e) => {
+                tracing::warn!(source = %edge.source_id, target = %edge.target_id, error = %e, "failed to insert similar_to edge");
+                stats.errors += 1;
+            }
         }
     }
 
-    for edge in &data.derives_from_edges {
+    for edge in plan.derives_from_edges {
         let result = conn.execute(
             "INSERT INTO derives_from_edges (source_id, target_id, extraction_method, confidence) VALUES (?1, ?2, ?3, ?4)",
             params![
@@ -840,11 +798,14 @@ fn insert_nodes_and_edges(
         );
         match result {
             Ok(_) => stats.edges_imported += 1,
-            Err(_) => stats.errors += 1,
+            Err(e) => {
+                tracing::warn!(source = %edge.source_id, target = %edge.target_id, error = %e, "failed to insert derives_from edge");
+                stats.errors += 1;
+            }
         }
     }
 
-    for edge in &data.supersedes_edges {
+    for edge in plan.supersedes_edges {
         let result = conn.execute(
             "INSERT INTO supersedes_edges (source_id, target_id, reason, temporal_delta) VALUES (?1, ?2, ?3, ?4)",
             params![
@@ -856,11 +817,14 @@ fn insert_nodes_and_edges(
         );
         match result {
             Ok(_) => stats.edges_imported += 1,
-            Err(_) => stats.errors += 1,
+            Err(e) => {
+                tracing::warn!(source = %edge.source_id, target = %edge.target_id, error = %e, "failed to insert supersedes edge");
+                stats.errors += 1;
+            }
         }
     }
 
-    for edge in &data.transitioned_to_edges {
+    for edge in plan.transitioned_to_edges {
         let result = conn.execute(
             "INSERT INTO transitioned_to_edges (source_id, target_id, from_value, to_value, turn, transition_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
@@ -874,7 +838,10 @@ fn insert_nodes_and_edges(
         );
         match result {
             Ok(_) => stats.edges_imported += 1,
-            Err(_) => stats.errors += 1,
+            Err(e) => {
+                tracing::warn!(source = %edge.source_id, target = %edge.target_id, error = %e, "failed to insert transitioned_to edge");
+                stats.errors += 1;
+            }
         }
     }
 
@@ -934,7 +901,7 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
         let to = dst.join(entry.file_name());
         let file_type = entry.file_type()?;
         // Skip symlinks to prevent directory-traversal attacks, mirroring the
-        // behaviour of copy_dir_recursive_inner in the Kuzu backend.
+        // behaviour of copy_dir_recursive_inner in the graph-db backend.
         if file_type.is_symlink() {
             tracing::warn!("Skipping symlink during copy: {}", from.display());
             continue;

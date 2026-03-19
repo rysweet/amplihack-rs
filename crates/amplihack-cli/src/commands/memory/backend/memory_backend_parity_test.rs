@@ -363,8 +363,7 @@ fn sqlite_memory_type_filter_episodic() -> anyhow::Result<()> {
 #[test]
 fn graph_db_memory_type_filter_episodic() -> anyhow::Result<()> {
     use crate::commands::memory::backend::graph_db::{
-        GraphDbConnection, GraphDbDatabase, GraphDbSystemConfig, GraphDbValue, graph_rows,
-        init_graph_backend_schema,
+        GraphDbHandle, GraphDbValue, graph_rows, init_graph_backend_schema,
     };
 
     let dir = tempfile::tempdir()?;
@@ -372,53 +371,53 @@ fn graph_db_memory_type_filter_episodic() -> anyhow::Result<()> {
     let _guard = EnvGuard::setup(dir.path(), &graph, "graph-db");
 
     // Seed EpisodicMemory and SemanticMemory directly.
-    let db = GraphDbDatabase::new(&graph, GraphDbSystemConfig::default())?;
-    let conn = GraphDbConnection::new(&db)?;
-    init_graph_backend_schema(&conn)?;
+    GraphDbHandle::open_at_path(&graph)?.with_conn(|conn| {
+        init_graph_backend_schema(conn)?;
 
-    // Seed a Session node.
-    graph_rows(
-        &conn,
-        "CREATE (s:Session {session_id: $sid, start_time: $t, end_time: NULL, user_id: '', context: '', status: 'active', created_at: $t, last_accessed: $t, metadata: '{}'})",
-        vec![
-            ("sid", GraphDbValue::String("sess-kf".to_string())),
-            (
+        // Seed a Session node.
+        graph_rows(
+            conn,
+            "CREATE (s:Session {session_id: $sid, start_time: $t, end_time: NULL, user_id: '', context: '', status: 'active', created_at: $t, last_accessed: $t, metadata: '{}'})",
+            vec![
+                ("sid", GraphDbValue::String("sess-kf".to_string())),
+                (
+                    "t",
+                    GraphDbValue::Timestamp(time::OffsetDateTime::now_utc()),
+                ),
+            ],
+        )?;
+
+        // Seed an EpisodicMemory node.
+        graph_rows(
+            conn,
+            "CREATE (m:EpisodicMemory {memory_id: 'm-ep-graph-db', timestamp: $t, content: 'episodic parity content', event_type: 'test', emotional_valence: 0.0, importance_score: 6.0, title: 'ep title', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, expires_at: NULL, agent_id: 'ag1'})",
+            vec![(
                 "t",
                 GraphDbValue::Timestamp(time::OffsetDateTime::now_utc()),
-            ),
-        ],
-    )?;
+            )],
+        )?;
+        graph_rows(
+            conn,
+            "MATCH (s:Session {session_id: 'sess-kf'}), (m:EpisodicMemory {memory_id: 'm-ep-graph-db'}) CREATE (s)-[:CONTAINS_EPISODIC {sequence_number: 1}]->(m)",
+            vec![],
+        )?;
 
-    // Seed an EpisodicMemory node.
-    graph_rows(
-        &conn,
-        "CREATE (m:EpisodicMemory {memory_id: 'm-ep-graph-db', timestamp: $t, content: 'episodic parity content', event_type: 'test', emotional_valence: 0.0, importance_score: 6.0, title: 'ep title', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, expires_at: NULL, agent_id: 'ag1'})",
-        vec![(
-            "t",
-            GraphDbValue::Timestamp(time::OffsetDateTime::now_utc()),
-        )],
-    )?;
-    graph_rows(
-        &conn,
-        "MATCH (s:Session {session_id: 'sess-kf'}), (m:EpisodicMemory {memory_id: 'm-ep-graph-db'}) CREATE (s)-[:CONTAINS_EPISODIC {sequence_number: 1}]->(m)",
-        vec![],
-    )?;
-
-    // Seed a SemanticMemory node.
-    let now_str = chrono::Utc::now().to_rfc3339();
-    let now_ts = time::OffsetDateTime::now_utc();
-    graph_rows(
-        &conn,
-        "CREATE (m:SemanticMemory {memory_id: 'm-sem-graph-db', concept: 'test concept', content: 'semantic parity content', category: 'test', confidence_score: 1.0, last_updated: $t, version: 1, title: 'sem title', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, agent_id: 'ag1'})",
-        vec![("t", GraphDbValue::Timestamp(now_ts))],
-    )?;
-    graph_rows(
-        &conn,
-        "MATCH (s:Session {session_id: 'sess-kf'}), (m:SemanticMemory {memory_id: 'm-sem-graph-db'}) CREATE (s)-[:CONTRIBUTES_TO_SEMANTIC {contribution_type: 'created', timestamp: $t, delta: 'initial'}]->(m)",
-        vec![("t", GraphDbValue::Timestamp(now_ts))],
-    )?;
-    drop(conn);
-    drop(db);
+        // Seed a SemanticMemory node.
+        let now_str = chrono::Utc::now().to_rfc3339();
+        let now_ts = time::OffsetDateTime::now_utc();
+        graph_rows(
+            conn,
+            "CREATE (m:SemanticMemory {memory_id: 'm-sem-graph-db', concept: 'test concept', content: 'semantic parity content', category: 'test', confidence_score: 1.0, last_updated: $t, version: 1, title: 'sem title', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, agent_id: 'ag1'})",
+            vec![("t", GraphDbValue::Timestamp(now_ts))],
+        )?;
+        graph_rows(
+            conn,
+            "MATCH (s:Session {session_id: 'sess-kf'}), (m:SemanticMemory {memory_id: 'm-sem-graph-db'}) CREATE (s)-[:CONTRIBUTES_TO_SEMANTIC {contribution_type: 'created', timestamp: $t, delta: 'initial'}]->(m)",
+            vec![("t", GraphDbValue::Timestamp(now_ts))],
+        )?;
+        drop(now_str);
+        Ok(())
+    })?;
 
     // Now use the tree backend to filter.
     let tree = open_tree_backend(BackendChoice::GraphDb)?;
@@ -459,7 +458,6 @@ fn graph_db_memory_type_filter_episodic() -> anyhow::Result<()> {
             );
         }
     }
-    let _ = now_str;
     Ok(())
 }
 
@@ -658,58 +656,56 @@ fn sqlite_expired_records_not_returned() -> anyhow::Result<()> {
 #[test]
 fn graph_db_expired_records_not_returned() -> anyhow::Result<()> {
     use crate::commands::memory::backend::graph_db::{
-        GraphDbConnection, GraphDbDatabase, GraphDbSystemConfig, GraphDbValue, graph_rows,
-        init_graph_backend_schema,
+        GraphDbHandle, GraphDbValue, graph_rows, init_graph_backend_schema,
     };
 
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.db");
     let _guard = EnvGuard::setup(dir.path(), &graph, "graph-db");
 
-    let db = GraphDbDatabase::new(&graph, GraphDbSystemConfig::default())?;
-    let conn = GraphDbConnection::new(&db)?;
-    init_graph_backend_schema(&conn)?;
-
     let now_ts = time::OffsetDateTime::now_utc();
-    // Seed the session.
-    graph_rows(
-        &conn,
-        "CREATE (s:Session {session_id: 'sess-exp-k', start_time: $t, end_time: NULL, user_id: '', context: '', status: 'active', created_at: $t, last_accessed: $t, metadata: '{}'})",
-        vec![("t", GraphDbValue::Timestamp(now_ts))],
-    )?;
+    GraphDbHandle::open_at_path(&graph)?.with_conn(|conn| {
+        init_graph_backend_schema(conn)?;
 
-    // Past timestamp for expires_at.
-    let past: time::OffsetDateTime = time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(365); // 1971-01-01
+        // Seed the session.
+        graph_rows(
+            conn,
+            "CREATE (s:Session {session_id: 'sess-exp-k', start_time: $t, end_time: NULL, user_id: '', context: '', status: 'active', created_at: $t, last_accessed: $t, metadata: '{}'})",
+            vec![("t", GraphDbValue::Timestamp(now_ts))],
+        )?;
 
-    // Expired EpisodicMemory.
-    graph_rows(
-        &conn,
-        "CREATE (m:EpisodicMemory {memory_id: 'ep-expired', timestamp: $t, content: 'expired ep', event_type: 'test', emotional_valence: 0.0, importance_score: 5.0, title: 'expired', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, expires_at: $exp, agent_id: 'exp-agent'})",
-        vec![
-            ("t", GraphDbValue::Timestamp(now_ts)),
-            ("exp", GraphDbValue::Timestamp(past)),
-        ],
-    )?;
-    graph_rows(
-        &conn,
-        "MATCH (s:Session {session_id: 'sess-exp-k'}), (m:EpisodicMemory {memory_id: 'ep-expired'}) CREATE (s)-[:CONTAINS_EPISODIC {sequence_number: 1}]->(m)",
-        vec![],
-    )?;
+        // Past timestamp for expires_at.
+        let past: time::OffsetDateTime =
+            time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(365); // 1971-01-01
 
-    // Valid EpisodicMemory (no expires_at = never expires).
-    graph_rows(
-        &conn,
-        "CREATE (m:EpisodicMemory {memory_id: 'ep-valid', timestamp: $t, content: 'valid ep', event_type: 'test', emotional_valence: 0.0, importance_score: 6.0, title: 'valid', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, expires_at: NULL, agent_id: 'exp-agent'})",
-        vec![("t", GraphDbValue::Timestamp(now_ts))],
-    )?;
-    graph_rows(
-        &conn,
-        "MATCH (s:Session {session_id: 'sess-exp-k'}), (m:EpisodicMemory {memory_id: 'ep-valid'}) CREATE (s)-[:CONTAINS_EPISODIC {sequence_number: 2}]->(m)",
-        vec![],
-    )?;
+        // Expired EpisodicMemory.
+        graph_rows(
+            conn,
+            "CREATE (m:EpisodicMemory {memory_id: 'ep-expired', timestamp: $t, content: 'expired ep', event_type: 'test', emotional_valence: 0.0, importance_score: 5.0, title: 'expired', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, expires_at: $exp, agent_id: 'exp-agent'})",
+            vec![
+                ("t", GraphDbValue::Timestamp(now_ts)),
+                ("exp", GraphDbValue::Timestamp(past)),
+            ],
+        )?;
+        graph_rows(
+            conn,
+            "MATCH (s:Session {session_id: 'sess-exp-k'}), (m:EpisodicMemory {memory_id: 'ep-expired'}) CREATE (s)-[:CONTAINS_EPISODIC {sequence_number: 1}]->(m)",
+            vec![],
+        )?;
 
-    drop(conn);
-    drop(db);
+        // Valid EpisodicMemory (no expires_at = never expires).
+        graph_rows(
+            conn,
+            "CREATE (m:EpisodicMemory {memory_id: 'ep-valid', timestamp: $t, content: 'valid ep', event_type: 'test', emotional_valence: 0.0, importance_score: 6.0, title: 'valid', metadata: '{}', tags: '[]', created_at: $t, accessed_at: $t, expires_at: NULL, agent_id: 'exp-agent'})",
+            vec![("t", GraphDbValue::Timestamp(now_ts))],
+        )?;
+        graph_rows(
+            conn,
+            "MATCH (s:Session {session_id: 'sess-exp-k'}), (m:EpisodicMemory {memory_id: 'ep-valid'}) CREATE (s)-[:CONTAINS_EPISODIC {sequence_number: 2}]->(m)",
+            vec![],
+        )?;
+        Ok(())
+    })?;
 
     let tree = open_tree_backend(BackendChoice::GraphDb)?;
     let rows = tree.load_session_rows(Some("sess-exp-k"), None)?;
@@ -720,13 +716,16 @@ fn graph_db_expired_records_not_returned() -> anyhow::Result<()> {
 
     assert!(
         !expired_present,
-        "Kuzu returned expired record ep-expired; memories: {:?}",
+        "graph-db backend returned expired record ep-expired; memories: {:?}",
         all_memories
             .iter()
             .map(|m| &m.memory_id)
             .collect::<Vec<_>>()
     );
-    assert!(valid_present, "Kuzu did not return valid record ep-valid");
+    assert!(
+        valid_present,
+        "graph-db backend did not return valid record ep-valid"
+    );
 
     // collect_agent_counts should exclude expired.
     let counts = tree.collect_agent_counts()?;
@@ -734,7 +733,7 @@ fn graph_db_expired_records_not_returned() -> anyhow::Result<()> {
     if let Some((_, count)) = exp_agent_count {
         assert_eq!(
             *count, 1,
-            "Kuzu agent count should be 1 (only valid ep), got {}",
+            "graph-db agent count should be 1 (only valid ep), got {}",
             count
         );
     }

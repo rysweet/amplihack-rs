@@ -7,6 +7,8 @@
 //! 4. Returns modified prompt with injected context
 
 use crate::agent_memory::{detect_agent_references, detect_slash_command_agent};
+use crate::post_tool_use::begin_workflow_enforcement_tracking;
+use crate::prompt_input::extract_user_prompt;
 use crate::protocol::{FailurePolicy, Hook};
 use amplihack_cli::memory::{PromptContextMemory, retrieve_prompt_context_memories};
 use amplihack_types::{HookInput, ProjectDirs};
@@ -26,16 +28,16 @@ impl Hook for UserPromptSubmitHook {
     }
 
     fn process(&self, input: HookInput) -> anyhow::Result<Value> {
-        let (user_prompt, session_id) = match input {
+        let (user_prompt, session_id, extra) = match input {
             HookInput::UserPromptSubmit {
                 user_prompt,
                 session_id,
-                ..
-            } => (user_prompt, session_id),
+                extra,
+            } => (user_prompt, session_id, extra),
             _ => return Ok(Value::Object(serde_json::Map::new())),
         };
 
-        let prompt = user_prompt.unwrap_or_default();
+        let prompt = extract_user_prompt(user_prompt.as_deref(), &extra);
         if prompt.is_empty() {
             return Ok(Value::Object(serde_json::Map::new()));
         }
@@ -70,6 +72,12 @@ impl Hook for UserPromptSubmitHook {
 
         // Detect /dev invocations and inject workflow enforcement context.
         if is_dev_invocation(&prompt) {
+            if let Err(error) = begin_workflow_enforcement_tracking(session_id.as_deref()) {
+                tracing::warn!(
+                    "workflow enforcement: failed to initialize state from user prompt: {}",
+                    error
+                );
+            }
             context_parts.push(
                 "🔧 /dev workflow detected. Follow DEFAULT_WORKFLOW steps. \
                  Track progress with TodoWrite."
@@ -81,14 +89,12 @@ impl Hook for UserPromptSubmitHook {
             return Ok(Value::Object(serde_json::Map::new()));
         }
 
-        // Build the modified prompt with injected context.
         let additional_context = context_parts.join("\n\n");
-        let new_prompt = format!("{}\n\n{}", additional_context, prompt);
 
         Ok(serde_json::json!({
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
-                "userPromptContent": new_prompt
+                "additionalContext": additional_context
             }
         }))
     }
@@ -97,10 +103,11 @@ impl Hook for UserPromptSubmitHook {
 /// Load user preferences from USER_PREFERENCES.md.
 /// Also detects `## Learned Patterns` section.
 fn load_user_preferences_with_patterns(dirs: &ProjectDirs) -> (Option<String>, bool) {
-    let candidates = [
-        dirs.user_preferences(),
-        dirs.root.join("USER_PREFERENCES.md"),
-    ];
+    let mut candidates = Vec::new();
+    if let Some(path) = dirs.resolve_preferences_file() {
+        candidates.push(path);
+    }
+    candidates.push(dirs.root.join("USER_PREFERENCES.md"));
 
     for path in &candidates {
         if path.exists() {
@@ -133,12 +140,15 @@ fn load_user_preferences_with_patterns(dirs: &ProjectDirs) -> (Option<String>, b
 
 /// Check if the user prompt is a /dev invocation.
 fn is_dev_invocation(prompt: &str) -> bool {
-    let trimmed = prompt.trim();
-    trimmed == "/dev"
-        || trimmed.starts_with("/dev ")
-        || trimmed.starts_with("/dev\n")
-        || trimmed.contains("\n/dev ")
-        || trimmed.contains("\n/dev\n")
+    let lowered = prompt.trim().to_ascii_lowercase();
+    lowered == "/dev"
+        || lowered.starts_with("/dev ")
+        || lowered.starts_with("/dev\n")
+        || lowered.contains("\n/dev ")
+        || lowered.contains("\n/dev\n")
+        || lowered.contains("dev-orchestrator")
+        || lowered.starts_with("/amplihack:dev")
+        || lowered.starts_with("/.claude:amplihack:dev")
 }
 
 /// Extract preference key-value pairs from markdown content.
@@ -304,6 +314,8 @@ fn find_amplihack_md(dirs: &ProjectDirs) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::agent_memory::{detect_agent_references, detect_slash_command_agent};
+    use crate::post_tool_use::PostToolUseHook;
+    use crate::test_support::env_lock;
 
     #[test]
     fn extract_prefs_from_table() {
@@ -396,5 +408,196 @@ casual and direct
         let hook = UserPromptSubmitHook;
         let result = hook.process(HookInput::Unknown).unwrap();
         assert!(result.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn returns_additional_context_without_mutating_prompt() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let hook = UserPromptSubmitHook;
+        let result = hook
+            .process(HookInput::UserPromptSubmit {
+                user_prompt: Some("/dev continue parity audit".to_string()),
+                session_id: Some("test-session".to_string()),
+                extra: Value::Null,
+            })
+            .unwrap();
+
+        let _ = std::env::set_current_dir(&original);
+
+        assert_eq!(
+            result["hookSpecificOutput"]["hookEventName"],
+            "UserPromptSubmit"
+        );
+        let context = result["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(context.contains("/dev workflow detected"));
+        assert!(
+            result["hookSpecificOutput"]
+                .get("userPromptContent")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn detects_python_parity_dev_variants_case_insensitively() {
+        assert!(is_dev_invocation("/DEV implement caching"));
+        assert!(is_dev_invocation("/Dev add logging middleware"));
+        assert!(is_dev_invocation("/amplihack:dev continue parity"));
+        assert!(is_dev_invocation("Please use dev-orchestrator for this"));
+        assert!(!is_dev_invocation("/review this change"));
+    }
+
+    #[test]
+    fn extracts_prompt_from_extra_prompt_key() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let hook = UserPromptSubmitHook;
+        let result = hook
+            .process(HookInput::UserPromptSubmit {
+                user_prompt: None,
+                session_id: Some("prompt-extra".to_string()),
+                extra: serde_json::json!({ "prompt": "/dev continue parity audit" }),
+            })
+            .unwrap();
+
+        let _ = std::env::set_current_dir(&original);
+
+        assert!(
+            result["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap()
+                .contains("/dev workflow detected")
+        );
+    }
+
+    #[test]
+    fn extracts_prompt_from_user_message_dict() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let hook = UserPromptSubmitHook;
+        let result = hook
+            .process(HookInput::UserPromptSubmit {
+                user_prompt: None,
+                session_id: Some("message-dict".to_string()),
+                extra: serde_json::json!({
+                    "userMessage": { "text": "/Dev implement auth", "metadata": { "source": "cli" } }
+                }),
+            })
+            .unwrap();
+
+        let _ = std::env::set_current_dir(&original);
+
+        assert!(
+            result["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap()
+                .contains("/dev workflow detected")
+        );
+    }
+
+    #[test]
+    fn dev_prompt_initializes_workflow_enforcement_state_and_warning_path() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+
+        let hook = UserPromptSubmitHook;
+        let result = hook
+            .process(HookInput::UserPromptSubmit {
+                user_prompt: Some("/dev continue parity audit".to_string()),
+                session_id: Some("workflow-session".to_string()),
+                extra: Value::Null,
+            })
+            .unwrap();
+
+        let workflow_state = dir
+            .path()
+            .join(".claude/runtime/workflow_state/workflow-session.json");
+        assert!(workflow_state.exists());
+        assert!(
+            result["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap()
+                .contains("/dev workflow detected")
+        );
+
+        let post_tool_use = PostToolUseHook;
+        for path in ["src/main.rs", "src/lib.rs"] {
+            let result = post_tool_use
+                .process(HookInput::PostToolUse {
+                    tool_name: "Read".to_string(),
+                    tool_input: serde_json::json!({ "path": path }),
+                    tool_result: None,
+                    session_id: Some("workflow-session".to_string()),
+                })
+                .unwrap();
+            assert!(result.as_object().unwrap().get("warnings").is_none());
+        }
+
+        let warning = post_tool_use
+            .process(HookInput::PostToolUse {
+                tool_name: "Read".to_string(),
+                tool_input: serde_json::json!({ "path": "src/extra.rs" }),
+                tool_result: None,
+                session_id: Some("workflow-session".to_string()),
+            })
+            .unwrap();
+
+        let _ = std::env::set_current_dir(&original);
+
+        assert!(
+            warning["warnings"][0]
+                .as_str()
+                .unwrap()
+                .contains("WORKFLOW BYPASS DETECTED")
+        );
+    }
+
+    #[test]
+    fn load_user_preferences_uses_amplihack_root_override() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let project = tempfile::tempdir().unwrap();
+        let framework = tempfile::tempdir().unwrap();
+        fs::create_dir_all(framework.path().join(".claude/context")).unwrap();
+        fs::write(
+            framework.path().join(".claude/context/USER_PREFERENCES.md"),
+            "| Setting | Value |\n| --- | --- |\n| Verbosity | concise |\n",
+        )
+        .unwrap();
+        let previous = std::env::var_os("AMPLIHACK_ROOT");
+        unsafe { std::env::set_var("AMPLIHACK_ROOT", framework.path()) };
+
+        let (context, has_learned_patterns) =
+            load_user_preferences_with_patterns(&ProjectDirs::new(project.path()));
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_ROOT", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_ROOT") },
+        }
+
+        assert!(!has_learned_patterns);
+        assert!(context.unwrap().contains("**Verbosity**: concise"));
     }
 }

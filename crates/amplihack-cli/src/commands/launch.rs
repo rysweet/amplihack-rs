@@ -7,17 +7,23 @@ use crate::binary_finder::BinaryInfo;
 use crate::bootstrap;
 use crate::commands::memory::{
     background_index_job_active, check_index_status, code_graph_compatibility_notice_for_project,
-    record_background_index_pid, resolve_code_graph_db_path_for_project, run_index_code,
-    run_index_scip,
+    estimate_indexing_time, record_background_index_pid, resolve_code_graph_db_path_for_project,
+    run_index_code, run_index_scip,
 };
+use crate::commands::uvx_help::is_uvx_deployment;
 use crate::env_builder::EnvBuilder;
 use crate::launcher::ManagedChild;
+use crate::launcher_context::{LauncherKind, write_launcher_context};
+use crate::memory_config::prepare_memory_config;
 use crate::nesting::NestingDetector;
+use crate::session_tracker::SessionTracker;
 use crate::signals;
 use crate::tool_update_check::maybe_print_npm_update_notice;
-use crate::util::is_noninteractive;
-use anyhow::{Context, Result};
+use crate::util::{is_noninteractive, read_user_input_with_timeout};
+use amplihack_types::ProjectDirs;
+use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -27,6 +33,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 const BLARIFY_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
+const POWER_STEERING_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Launch a tool binary (claude, copilot, codex, amplifier).
 pub fn run_launch(
@@ -35,6 +42,9 @@ pub fn run_launch(
     continue_session: bool,
     skip_permissions: bool,
     skip_update_check: bool,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    checkout_repo: Option<String>,
     extra_args: Vec<String>,
 ) -> Result<()> {
     // Check for npm updates before doing anything else.
@@ -42,7 +52,9 @@ pub fn run_launch(
     // or the tool has no npm package mapping.
     maybe_print_npm_update_notice(tool, skip_update_check);
 
-    bootstrap::prepare_launcher(tool)?;
+    if !subprocess_safe {
+        bootstrap::prepare_launcher(tool)?;
+    }
 
     // Check nesting
     let nesting = NestingDetector::detect();
@@ -73,53 +85,188 @@ pub fn run_launch(
     );
 
     let current_dir = std::env::current_dir().ok();
-
-    // Build environment — canonical chain order per design spec.
-    // SEC-DATA-01: Never log the full env map (may contain inherited secrets).
-    let mut env_builder = EnvBuilder::new()
-        .with_amplihack_session_id() // AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH
-        .with_amplihack_vars() // AMPLIHACK_RUST_RUNTIME, AMPLIHACK_VERSION, NODE_OPTIONS
-        .with_agent_binary(tool) // WS1: AMPLIHACK_AGENT_BINARY
-        .with_amplihack_home() // WS3: AMPLIHACK_HOME
-        .with_asset_resolver(); // Rust-native bundle asset resolver
-    if let Some(project_path) = current_dir.as_deref() {
-        env_builder = env_builder.with_project_graph_db(project_path)?;
+    let execution_dir = resolve_checkout_repo(checkout_repo.as_deref())?
+        .or_else(|| current_dir.clone())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let node_options = if !subprocess_safe {
+        let existing = std::env::var("NODE_OPTIONS").ok();
+        Some(prepare_memory_config(existing.as_deref())?.node_options)
+    } else {
+        None
+    };
+    if !subprocess_safe {
+        maybe_prompt_re_enable_power_steering(&execution_dir)?;
     }
-    let env_builder = env_builder.set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1"); // WS2: propagate flag
-
-    maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), current_dir.as_deref())?;
-
-    // Build command
-    let mut cmd = build_command(
-        &binary,
+    persist_launcher_context(tool, Some(&execution_dir), &extra_args)?;
+    let launch_dir = execution_dir.clone();
+    let tracker = SessionTracker::new(&launch_dir)?;
+    let tracker_args = render_session_argv(
+        tool,
         resume,
         continue_session,
-        skip_permissions,
+        checkout_repo.as_deref(),
         &extra_args,
     );
-    env_builder.apply_to_command(&mut cmd);
+    let session_id = tracker.start_session(
+        std::process::id(),
+        &launch_dir,
+        &tracker_args,
+        false,
+        &nesting,
+    )?;
 
-    // Register signal handlers
-    let shutdown = signals::register_handlers()?;
+    let result = (|| -> Result<()> {
+        // Build environment — canonical chain order per design spec.
+        // SEC-DATA-01: Never log the full env map (may contain inherited secrets).
+        let mut env_builder = EnvBuilder::new()
+            .with_amplihack_session_id() // AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH
+            .with_session_tree_context() // preserve orchestration tree vars if present
+            .with_amplihack_vars_with_node_options(node_options.as_deref()) // AMPLIHACK_RUST_RUNTIME, AMPLIHACK_VERSION, NODE_OPTIONS
+            .with_agent_binary(tool) // WS1: AMPLIHACK_AGENT_BINARY
+            .with_amplihack_home() // WS3: AMPLIHACK_HOME
+            .with_asset_resolver(); // Rust-native bundle asset resolver
+        env_builder = env_builder.with_project_graph_db(&execution_dir)?;
+        let env_builder = augment_claude_launch_env(env_builder, tool)
+            .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1")
+            .set_if(no_reflection, "AMPLIHACK_SKIP_REFLECTION", "1"); // WS2: propagate flags
 
-    // Spawn child in its own process group
-    let mut child = ManagedChild::spawn(cmd)?;
+        maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), Some(&execution_dir))?;
 
-    // Wait for child or signal
-    let exit_code = wait_for_child_or_signal(&mut child, &shutdown)?;
+        // Build command
+        let mut cmd = build_command_for_dir(
+            &binary,
+            resume,
+            continue_session,
+            skip_permissions,
+            &extra_args,
+            Some(&execution_dir),
+        );
+        cmd.current_dir(&execution_dir);
+        env_builder.apply_to_command(&mut cmd);
 
-    if exit_code != 0 {
-        std::process::exit(exit_code);
+        // Register signal handlers
+        let shutdown = signals::register_handlers()?;
+
+        // Spawn child in its own process group
+        let mut child = ManagedChild::spawn(cmd)?;
+
+        // Wait for child or signal
+        let exit_code = wait_for_child_or_signal(&mut child, &shutdown)?;
+        tracker.complete_session(&session_id)?;
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = tracker.crash_session(&session_id);
     }
+    result
+}
+
+fn render_session_argv(
+    tool: &str,
+    resume: bool,
+    continue_session: bool,
+    checkout_repo: Option<&str>,
+    extra_args: &[String],
+) -> Vec<String> {
+    let mut argv = vec!["amplihack".to_string(), tool.to_string()];
+    if resume {
+        argv.push("--resume".to_string());
+    }
+    if continue_session {
+        argv.push("--continue".to_string());
+    }
+    if let Some(repo) = checkout_repo {
+        argv.push("--checkout-repo".to_string());
+        argv.push(repo.to_string());
+    }
+    argv.extend(extra_args.iter().cloned());
+    argv
+}
+
+fn persist_launcher_context(
+    tool: &str,
+    project_root: Option<&Path>,
+    extra_args: &[String],
+) -> Result<()> {
+    if tool != "copilot" {
+        return Ok(());
+    }
+    let Some(project_root) = project_root else {
+        tracing::warn!(
+            "skipping launcher context persistence because current directory is unavailable"
+        );
+        return Ok(());
+    };
+
+    let mut environment = BTreeMap::new();
+    environment.insert("AMPLIHACK_LAUNCHER".to_string(), "copilot".to_string());
+    write_launcher_context(
+        project_root,
+        LauncherKind::Copilot,
+        render_launcher_command("copilot", extra_args),
+        environment,
+    )?;
     Ok(())
 }
 
+fn render_launcher_command(subcommand: &str, extra_args: &[String]) -> String {
+    if extra_args.is_empty() {
+        return format!("amplihack {subcommand}");
+    }
+    let rendered_args = extra_args
+        .iter()
+        .map(|arg| shell_quote(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("amplihack {subcommand} {rendered_args}")
+}
+
+fn shell_quote(arg: &str) -> String {
+    if arg.is_empty() {
+        return "''".to_string();
+    }
+    let is_safe = arg.chars().all(|ch| {
+        ch.is_ascii_alphanumeric()
+            || matches!(
+                ch,
+                '@' | '%' | '_' | '-' | '+' | '=' | ':' | ',' | '.' | '/'
+            )
+    });
+    if is_safe {
+        return arg.to_string();
+    }
+    format!("'{}'", arg.replace('\'', r#"'"'"'"#))
+}
+
+#[cfg(test)]
 fn build_command(
     binary: &BinaryInfo,
     resume: bool,
     continue_session: bool,
     skip_permissions: bool,
     extra_args: &[String],
+) -> Command {
+    build_command_for_dir(
+        binary,
+        resume,
+        continue_session,
+        skip_permissions,
+        extra_args,
+        None,
+    )
+}
+
+fn build_command_for_dir(
+    binary: &BinaryInfo,
+    resume: bool,
+    continue_session: bool,
+    skip_permissions: bool,
+    extra_args: &[String],
+    add_dir_override: Option<&Path>,
 ) -> Command {
     let mut cmd = Command::new(&binary.path);
 
@@ -129,6 +276,8 @@ fn build_command(
     if skip_permissions {
         cmd.arg("--dangerously-skip-permissions");
     }
+
+    inject_uvx_plugin_args(&mut cmd, &binary.name, extra_args, add_dir_override);
 
     // Inject --model unless user already supplied one
     let user_has_model = extra_args.iter().any(|a| a == "--model");
@@ -147,6 +296,148 @@ fn build_command(
     }
     cmd.args(extra_args);
     cmd
+}
+
+fn inject_uvx_plugin_args(
+    cmd: &mut Command,
+    tool: &str,
+    extra_args: &[String],
+    add_dir_override: Option<&Path>,
+) {
+    if tool != "claude" || !is_uvx_deployment() {
+        return;
+    }
+
+    if !extra_args.iter().any(|arg| arg == "--plugin-dir")
+        && let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
+    {
+        cmd.arg("--plugin-dir")
+            .arg(home.join(".amplihack").join(".claude"));
+    }
+
+    if !extra_args.iter().any(|arg| arg == "--add-dir")
+        && let Some(original_cwd) = resolve_uvx_add_dir(add_dir_override)
+    {
+        cmd.arg("--add-dir").arg(original_cwd);
+    }
+}
+
+fn resolve_uvx_add_dir(add_dir_override: Option<&Path>) -> Option<PathBuf> {
+    if std::env::var_os("AMPLIHACK_IS_STAGED").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        if let Some(original_cwd) = std::env::var_os("AMPLIHACK_ORIGINAL_CWD").map(PathBuf::from) {
+            return Some(original_cwd);
+        }
+    }
+    add_dir_override
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("AMPLIHACK_ORIGINAL_CWD").map(PathBuf::from))
+        .or_else(|| std::env::current_dir().ok())
+}
+
+fn augment_claude_launch_env(env_builder: EnvBuilder, tool: &str) -> EnvBuilder {
+    if tool != "claude" {
+        return env_builder;
+    }
+
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return env_builder;
+    };
+
+    let env_builder = env_builder.prepend_path(home.join(".npm-global").join("bin"));
+    if std::env::var("AMPLIHACK_PLUGIN_INSTALLED").as_deref() == Ok("true") {
+        return env_builder.set(
+            "CLAUDE_PLUGIN_ROOT",
+            home.join(".claude")
+                .join("plugins")
+                .join("cache")
+                .join("amplihack")
+                .join("amplihack")
+                .join("0.9.0")
+                .display()
+                .to_string(),
+        );
+    }
+
+    let plugin_root = home.join(".amplihack").join(".claude");
+    if plugin_root.exists() {
+        env_builder.set("CLAUDE_PLUGIN_ROOT", plugin_root.display().to_string())
+    } else {
+        env_builder
+    }
+}
+
+pub(crate) fn resolve_checkout_repo(repo_uri: Option<&str>) -> Result<Option<PathBuf>> {
+    let Some(repo_uri) = repo_uri else {
+        return Ok(None);
+    };
+    resolve_checkout_repo_in(repo_uri, &std::env::temp_dir().join("claude-checkouts")).map(Some)
+}
+
+fn resolve_checkout_repo_in(repo_uri: &str, base_dir: &Path) -> Result<PathBuf> {
+    let (owner, repo) = parse_github_repo_uri(repo_uri)?;
+    let target_dir = base_dir.join(format!("{owner}-{repo}"));
+
+    fs::create_dir_all(base_dir)
+        .with_context(|| format!("failed to create checkout directory {}", base_dir.display()))?;
+
+    if target_dir.join(".git").is_dir() {
+        println!("Using existing repository: {}", target_dir.display());
+        return Ok(target_dir);
+    }
+
+    if target_dir.exists() {
+        fs::remove_dir_all(&target_dir)
+            .with_context(|| format!("failed to remove {}", target_dir.display()))?;
+    }
+
+    let clone_url = format!("https://github.com/{owner}/{repo}.git");
+    let output = Command::new("git")
+        .args(["clone", &clone_url, &target_dir.to_string_lossy()])
+        .stdin(Stdio::null())
+        .output()
+        .context("failed to spawn git clone")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        let detail = if stderr.is_empty() {
+            "git clone failed"
+        } else {
+            stderr
+        };
+        bail!("failed to checkout repository {repo_uri}: {detail}");
+    }
+
+    println!("Cloned repository to: {}", target_dir.display());
+    Ok(target_dir)
+}
+
+fn parse_github_repo_uri(repo_uri: &str) -> Result<(String, String)> {
+    let trimmed = repo_uri.trim();
+    if trimmed.is_empty() {
+        bail!("invalid GitHub repository URI: empty value");
+    }
+
+    let repo = trimmed
+        .strip_prefix("https://github.com/")
+        .or_else(|| trimmed.strip_prefix("git@github.com:"))
+        .unwrap_or(trimmed);
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+
+    let mut parts = repo.split('/');
+    let owner = parts.next().unwrap_or_default();
+    let name = parts.next().unwrap_or_default();
+    if parts.next().is_some() || !is_valid_github_segment(owner) || !is_valid_github_segment(name) {
+        bail!("invalid GitHub repository URI: {repo_uri}");
+    }
+
+    Ok((owner.to_string(), name.to_string()))
+}
+
+fn is_valid_github_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
 }
 
 fn wait_for_child_or_signal(
@@ -169,6 +460,79 @@ fn wait_for_child_or_signal(
             None => {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
+        }
+    }
+}
+
+pub(crate) fn maybe_prompt_re_enable_power_steering(project_path: &Path) -> Result<()> {
+    maybe_prompt_re_enable_power_steering_with(project_path, read_user_input_with_timeout)
+}
+
+fn maybe_prompt_re_enable_power_steering_with<F>(
+    project_path: &Path,
+    prompt_reader: F,
+) -> Result<()>
+where
+    F: FnOnce(&str, Duration) -> Result<Option<String>>,
+{
+    if std::env::var_os("AMPLIHACK_SKIP_POWER_STEERING").is_some() {
+        return Ok(());
+    }
+
+    let dirs = ProjectDirs::from_root(project_path);
+    let disabled_file = dirs.power_steering.join(".disabled");
+    if !disabled_file.exists() {
+        return Ok(());
+    }
+
+    println!("\nPower-Steering is currently disabled.");
+    let prompt = "Would you like to re-enable it? [Y/n] (30s timeout, defaults to YES): ";
+    let response = match prompt_reader(prompt, POWER_STEERING_PROMPT_TIMEOUT) {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(
+                project = %project_path.display(),
+                "power-steering re-enable prompt failed: {error}; defaulting to YES"
+            );
+            None
+        }
+    };
+
+    let normalized = response
+        .as_deref()
+        .unwrap_or("y")
+        .trim()
+        .to_ascii_lowercase();
+    if normalized == "n" || normalized == "no" {
+        println!(
+            "\nPower-Steering remains disabled. You can re-enable it by removing:\n{}\n",
+            disabled_file.display()
+        );
+        return Ok(());
+    }
+    if !normalized.is_empty() && normalized != "y" && normalized != "yes" {
+        tracing::warn!(
+            project = %project_path.display(),
+            input = %response.as_deref().unwrap_or_default(),
+            "invalid power-steering re-enable response; defaulting to YES"
+        );
+    }
+
+    remove_disabled_file_with_warning(&disabled_file);
+    Ok(())
+}
+
+fn remove_disabled_file_with_warning(disabled_file: &Path) {
+    match fs::remove_file(disabled_file) {
+        Ok(()) => {
+            println!("\nPower-Steering re-enabled.\n");
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(
+                path = %disabled_file.display(),
+                "failed to re-enable power-steering by removing .disabled: {error}"
+            );
         }
     }
 }
@@ -294,13 +658,38 @@ fn print_blarify_prompt_banner(
     json_path: &Path,
     action: BlarifyIndexAction,
 ) -> Result<()> {
+    let estimate = estimate_indexing_time(project_path, &[]);
     println!();
     println!("{}", "=".repeat(60));
-    println!("Code Indexing");
+    println!("Code Indexing with Blarify");
     println!("{}", "=".repeat(60));
     println!("Project: {}", project_path.display());
     println!("Status: {}", status_reason);
     println!("Files to index: {}", estimated_files);
+    println!(
+        "Estimated time: {}",
+        format_duration_seconds(estimate.total_seconds)
+    );
+    println!();
+    println!("Language breakdown:");
+    for (language, seconds) in &estimate.by_language {
+        let file_count = estimate.file_counts.get(language).copied().unwrap_or(0);
+        if file_count == 0 {
+            continue;
+        }
+        println!(
+            "  • {}: {} files ({})",
+            language_label(language),
+            file_count,
+            format_duration_seconds(*seconds)
+        );
+    }
+    println!();
+    println!("Blarify enables code-aware features:");
+    println!("  • Code context in memory retrieval");
+    println!("  • Function and class awareness");
+    println!("  • Automatic code-memory linking");
+    println!();
     if json_path.exists() && action == BlarifyIndexAction::ImportExistingJson {
         println!("Native import input: {}", json_path.display());
     } else {
@@ -310,6 +699,35 @@ fn print_blarify_prompt_banner(
     io::stdout()
         .flush()
         .context("failed to flush prompt banner")
+}
+
+fn format_duration_seconds(seconds: f64) -> String {
+    if seconds < 60.0 {
+        format!("{seconds:.0}s")
+    } else {
+        let minutes = (seconds / 60.0).floor() as u64;
+        let remaining_seconds = (seconds % 60.0).floor() as u64;
+        format!("{minutes}m {remaining_seconds}s")
+    }
+}
+
+fn language_label(language: &str) -> String {
+    match language {
+        "typescript" => "TypeScript".to_string(),
+        "javascript" => "JavaScript".to_string(),
+        "go" => "Go".to_string(),
+        "rust" => "Rust".to_string(),
+        "csharp" => "Csharp".to_string(),
+        "cpp" => "Cpp".to_string(),
+        "python" => "Python".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        }
+    }
 }
 
 fn run_code_indexing(
@@ -366,7 +784,7 @@ fn run_code_indexing(
     match action {
         BlarifyIndexAction::ImportExistingJson => {
             println!("\n📊 Importing code graph data...\n");
-            run_index_code(json_path, Some(&db_path))?;
+            run_index_code(json_path, Some(&db_path), false)?;
             println!("\n✅ Code graph import complete.\n");
         }
         BlarifyIndexAction::GenerateNativeScip => {
@@ -389,45 +807,6 @@ fn parse_blarify_prompt_choice(response: Option<&str>) -> BlarifyPromptChoice {
         "y" | "yes" => BlarifyPromptChoice::Foreground,
         _ => BlarifyPromptChoice::Skip,
     }
-}
-
-fn read_user_input_with_timeout(prompt: &str, timeout: Duration) -> Result<Option<String>> {
-    print!("{prompt}");
-    io::stdout().flush().context("failed to flush prompt")?;
-
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-
-        let fd = io::stdin().as_raw_fd();
-        let mut pollfd = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
-        let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
-        if ready < 0 {
-            return Err(io::Error::last_os_error()).context("failed waiting for prompt input");
-        }
-        if ready == 0 {
-            println!();
-            return Ok(None);
-        }
-    }
-
-    #[cfg(not(unix))]
-    {
-        if !std::io::stdin().is_terminal() {
-            return Ok(None);
-        }
-    }
-
-    let mut response = String::new();
-    io::stdin()
-        .read_line(&mut response)
-        .context("failed to read prompt input")?;
-    Ok(Some(response.trim().to_string()))
 }
 
 fn has_blarify_consent(project_path: &Path) -> Result<bool> {
@@ -537,7 +916,11 @@ fn resolve_blarify_index_action(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{home_env_lock, restore_home, set_home};
+    use crate::launcher_context::{LauncherKind, read_launcher_context};
+    use crate::test_support::{
+        cwd_env_lock, home_env_lock, restore_cwd, restore_home, set_cwd, set_home,
+    };
+    use std::fs;
     use std::path::PathBuf;
 
     fn make_binary(path: &str) -> BinaryInfo {
@@ -546,6 +929,38 @@ mod tests {
             path: PathBuf::from(path),
             version: Some("1.0.0".to_string()),
         }
+    }
+
+    fn with_uvx_detection_disabled<T>(f: impl FnOnce() -> T) -> T {
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cwd = tempfile::tempdir().unwrap();
+        fs::create_dir_all(cwd.path().join(".claude")).unwrap();
+        let original_cwd = set_cwd(cwd.path()).unwrap();
+        let previous_uv_python = std::env::var_os("UV_PYTHON");
+        let previous_root = std::env::var_os("AMPLIHACK_ROOT");
+        unsafe {
+            std::env::remove_var("UV_PYTHON");
+            std::env::remove_var("AMPLIHACK_ROOT");
+        }
+
+        let result = f();
+
+        restore_cwd(&original_cwd).unwrap();
+        match previous_uv_python {
+            Some(value) => unsafe { std::env::set_var("UV_PYTHON", value) },
+            None => unsafe { std::env::remove_var("UV_PYTHON") },
+        }
+        match previous_root {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_ROOT", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_ROOT") },
+        }
+
+        result
     }
 
     /// When skip_permissions=true, --dangerously-skip-permissions MUST be the
@@ -562,6 +977,61 @@ mod tests {
             "Expected '--dangerously-skip-permissions' in args when skip_permissions=true, \
              got: {:?}",
             args
+        );
+    }
+
+    #[test]
+    fn render_launcher_command_quotes_prompt_args() {
+        let args = vec![
+            "--model".to_string(),
+            "gpt-5".to_string(),
+            "-p".to_string(),
+            "fix spaces and '$PATH'".to_string(),
+        ];
+        assert_eq!(
+            render_launcher_command("copilot", &args),
+            "amplihack copilot --model gpt-5 -p 'fix spaces and '\"'\"'$PATH'\"'\"''"
+        );
+    }
+
+    #[test]
+    fn render_session_argv_includes_checkout_repo_flag() {
+        assert_eq!(
+            render_session_argv(
+                "claude",
+                true,
+                false,
+                Some("owner/repo"),
+                &["-p".to_string(), "continue parity".to_string()]
+            ),
+            vec![
+                "amplihack",
+                "claude",
+                "--resume",
+                "--checkout-repo",
+                "owner/repo",
+                "-p",
+                "continue parity",
+            ]
+        );
+    }
+
+    #[test]
+    fn persist_launcher_context_writes_copilot_context_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = vec!["--model".to_string(), "opus".to_string()];
+
+        persist_launcher_context("copilot", Some(dir.path()), &args).unwrap();
+
+        let context = read_launcher_context(dir.path()).unwrap();
+        assert_eq!(context.launcher, LauncherKind::Copilot);
+        assert_eq!(context.command, "amplihack copilot --model opus");
+        assert_eq!(
+            context
+                .environment
+                .get("AMPLIHACK_LAUNCHER")
+                .map(String::as_str),
+            Some("copilot")
         );
     }
 
@@ -694,70 +1164,426 @@ mod tests {
 
     #[test]
     fn build_command_basic_no_skip_permissions_by_default() {
-        let binary = BinaryInfo {
-            name: "claude".to_string(),
-            path: PathBuf::from("/usr/bin/claude"),
-            version: Some("1.0.0".to_string()),
-        };
-        // skip_permissions = false (default): should NOT inject --dangerously-skip-permissions
-        let cmd = build_command(&binary, false, false, false, &[]);
-        assert_eq!(cmd.get_program(), "/usr/bin/claude");
-        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        // Should inject --model <default> only
-        assert_eq!(args[0], "--model");
-        // Default model depends on env; just check we have 2 args
-        assert_eq!(args.len(), 2);
+        with_uvx_detection_disabled(|| {
+            let binary = BinaryInfo {
+                name: "claude".to_string(),
+                path: PathBuf::from("/usr/bin/claude"),
+                version: Some("1.0.0".to_string()),
+            };
+            // skip_permissions = false (default): should NOT inject --dangerously-skip-permissions
+            let cmd = build_command(&binary, false, false, false, &[]);
+            assert_eq!(cmd.get_program(), "/usr/bin/claude");
+            let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+            // Should inject --model <default> only
+            assert_eq!(args[0], "--model");
+            // Default model depends on env; just check we have 2 args
+            assert_eq!(args.len(), 2);
+        });
     }
 
     #[test]
     fn build_command_with_skip_permissions_flag() {
-        let binary = BinaryInfo {
-            name: "claude".to_string(),
-            path: PathBuf::from("/usr/bin/claude"),
-            version: Some("1.0.0".to_string()),
-        };
-        // skip_permissions = true: should inject --dangerously-skip-permissions
-        let cmd = build_command(&binary, false, false, true, &[]);
-        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        assert_eq!(args[0], "--dangerously-skip-permissions");
-        assert_eq!(args[1], "--model");
-        assert_eq!(args.len(), 3);
+        with_uvx_detection_disabled(|| {
+            let binary = BinaryInfo {
+                name: "claude".to_string(),
+                path: PathBuf::from("/usr/bin/claude"),
+                version: Some("1.0.0".to_string()),
+            };
+            // skip_permissions = true: should inject --dangerously-skip-permissions
+            let cmd = build_command(&binary, false, false, true, &[]);
+            let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+            assert_eq!(args[0], "--dangerously-skip-permissions");
+            assert_eq!(args[1], "--model");
+            assert_eq!(args.len(), 3);
+        });
     }
 
     #[test]
     fn build_command_with_flags() {
+        with_uvx_detection_disabled(|| {
+            let binary = BinaryInfo {
+                name: "claude".to_string(),
+                path: PathBuf::from("/usr/bin/claude"),
+                version: None,
+            };
+            // User supplies --model so we should NOT inject a default --model
+            let extra = vec!["--model".to_string(), "opus".to_string()];
+            let cmd = build_command(&binary, true, true, true, &extra);
+            let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+            assert_eq!(
+                args,
+                &[
+                    "--dangerously-skip-permissions",
+                    "--resume",
+                    "--continue",
+                    "--model",
+                    "opus"
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn build_command_without_skip_permissions_and_with_flags() {
+        with_uvx_detection_disabled(|| {
+            let binary = BinaryInfo {
+                name: "claude".to_string(),
+                path: PathBuf::from("/usr/bin/claude"),
+                version: None,
+            };
+            let extra = vec!["--model".to_string(), "opus".to_string()];
+            let cmd = build_command(&binary, true, true, false, &extra);
+            let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+            assert_eq!(args, &["--resume", "--continue", "--model", "opus"]);
+        });
+    }
+
+    #[test]
+    fn build_command_injects_uvx_plugin_and_project_args_for_claude() {
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let execution_dir = tempfile::tempdir().unwrap();
+        let original_home = set_home(home.path());
+        let original_cwd = set_cwd(cwd.path()).unwrap();
+        let previous_uv_python = std::env::var_os("UV_PYTHON");
+        let previous_original_cwd = std::env::var_os("AMPLIHACK_ORIGINAL_CWD");
+        unsafe {
+            std::env::set_var("UV_PYTHON", "1");
+            std::env::remove_var("AMPLIHACK_ORIGINAL_CWD");
+        }
+
         let binary = BinaryInfo {
             name: "claude".to_string(),
             path: PathBuf::from("/usr/bin/claude"),
             version: None,
         };
-        // User supplies --model so we should NOT inject a default --model
-        let extra = vec!["--model".to_string(), "opus".to_string()];
-        let cmd = build_command(&binary, true, true, true, &extra);
-        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        let cmd = build_command_for_dir(
+            &binary,
+            false,
+            false,
+            false,
+            &[],
+            Some(execution_dir.path()),
+        );
+        let args = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        restore_cwd(&original_cwd).unwrap();
+        restore_home(original_home);
+        match previous_uv_python {
+            Some(value) => unsafe { std::env::set_var("UV_PYTHON", value) },
+            None => unsafe { std::env::remove_var("UV_PYTHON") },
+        }
+        match previous_original_cwd {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_ORIGINAL_CWD", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_ORIGINAL_CWD") },
+        }
+
+        assert_eq!(args[0], "--plugin-dir");
+        assert_eq!(
+            args[1],
+            home.path()
+                .join(".amplihack")
+                .join(".claude")
+                .display()
+                .to_string()
+        );
+        assert_eq!(args[2], "--add-dir");
+        assert_eq!(args[3], execution_dir.path().display().to_string());
+        assert_eq!(args[4], "--model");
+    }
+
+    #[test]
+    fn build_command_prefers_original_cwd_for_staged_uvx_launches() {
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let execution_dir = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
+        let original_home = set_home(home.path());
+        let original_cwd = set_cwd(cwd.path()).unwrap();
+        let previous_uv_python = std::env::var_os("UV_PYTHON");
+        let previous_original_cwd = std::env::var_os("AMPLIHACK_ORIGINAL_CWD");
+        let previous_is_staged = std::env::var_os("AMPLIHACK_IS_STAGED");
+        unsafe {
+            std::env::set_var("UV_PYTHON", "1");
+            std::env::set_var("AMPLIHACK_ORIGINAL_CWD", project_dir.path());
+            std::env::set_var("AMPLIHACK_IS_STAGED", "1");
+        }
+
+        let binary = BinaryInfo {
+            name: "claude".to_string(),
+            path: PathBuf::from("/usr/bin/claude"),
+            version: None,
+        };
+        let cmd = build_command_for_dir(
+            &binary,
+            false,
+            false,
+            false,
+            &[],
+            Some(execution_dir.path()),
+        );
+        let args = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        restore_cwd(&original_cwd).unwrap();
+        restore_home(original_home);
+        match previous_uv_python {
+            Some(value) => unsafe { std::env::set_var("UV_PYTHON", value) },
+            None => unsafe { std::env::remove_var("UV_PYTHON") },
+        }
+        match previous_original_cwd {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_ORIGINAL_CWD", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_ORIGINAL_CWD") },
+        }
+        match previous_is_staged {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_IS_STAGED", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_IS_STAGED") },
+        }
+
+        assert_eq!(args[0], "--plugin-dir");
+        assert_eq!(args[2], "--add-dir");
+        assert_eq!(args[3], project_dir.path().display().to_string());
+    }
+
+    #[test]
+    fn maybe_prompt_re_enable_power_steering_removes_disabled_file_on_yes_default() {
+        let project = tempfile::tempdir().unwrap();
+        let disabled_file = project
+            .path()
+            .join(".claude/runtime/power-steering/.disabled");
+        fs::create_dir_all(disabled_file.parent().unwrap()).unwrap();
+        fs::write(&disabled_file, "").unwrap();
+
+        maybe_prompt_re_enable_power_steering_with(project.path(), |_prompt, _timeout| Ok(None))
+            .unwrap();
+
+        assert!(!disabled_file.exists());
+    }
+
+    #[test]
+    fn maybe_prompt_re_enable_power_steering_keeps_disabled_file_on_no() {
+        let project = tempfile::tempdir().unwrap();
+        let disabled_file = project
+            .path()
+            .join(".claude/runtime/power-steering/.disabled");
+        fs::create_dir_all(disabled_file.parent().unwrap()).unwrap();
+        fs::write(&disabled_file, "").unwrap();
+
+        maybe_prompt_re_enable_power_steering_with(project.path(), |_prompt, _timeout| {
+            Ok(Some("n".to_string()))
+        })
+        .unwrap();
+
+        assert!(disabled_file.exists());
+    }
+
+    #[test]
+    fn build_command_does_not_duplicate_uvx_plugin_or_add_dir_args() {
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let original_home = set_home(home.path());
+        let original_cwd = set_cwd(cwd.path()).unwrap();
+        let previous_uv_python = std::env::var_os("UV_PYTHON");
+        unsafe { std::env::set_var("UV_PYTHON", "1") };
+
+        let binary = BinaryInfo {
+            name: "claude".to_string(),
+            path: PathBuf::from("/usr/bin/claude"),
+            version: None,
+        };
+        let extra = vec![
+            "--plugin-dir".to_string(),
+            "/custom/plugin".to_string(),
+            "--add-dir".to_string(),
+            "/custom/project".to_string(),
+        ];
+        let cmd = build_command(&binary, false, false, false, &extra);
+        let args = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        restore_cwd(&original_cwd).unwrap();
+        restore_home(original_home);
+        match previous_uv_python {
+            Some(value) => unsafe { std::env::set_var("UV_PYTHON", value) },
+            None => unsafe { std::env::remove_var("UV_PYTHON") },
+        }
+
         assert_eq!(
             args,
-            &[
-                "--dangerously-skip-permissions",
-                "--resume",
-                "--continue",
+            vec![
                 "--model",
-                "opus"
+                "opus[1m]",
+                "--plugin-dir",
+                "/custom/plugin",
+                "--add-dir",
+                "/custom/project",
             ]
         );
     }
 
     #[test]
-    fn build_command_without_skip_permissions_and_with_flags() {
-        let binary = BinaryInfo {
-            name: "claude".to_string(),
-            path: PathBuf::from("/usr/bin/claude"),
-            version: None,
-        };
-        let extra = vec!["--model".to_string(), "opus".to_string()];
-        let cmd = build_command(&binary, true, true, false, &extra);
-        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        assert_eq!(args, &["--resume", "--continue", "--model", "opus"]);
+    fn augment_claude_launch_env_sets_directory_copy_plugin_root_and_npm_bin() {
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".amplihack/.claude")).unwrap();
+        let original_home = set_home(home.path());
+        let previous_plugin_installed = std::env::var_os("AMPLIHACK_PLUGIN_INSTALLED");
+        unsafe { std::env::remove_var("AMPLIHACK_PLUGIN_INSTALLED") };
+
+        let env = augment_claude_launch_env(EnvBuilder::new(), "claude").build();
+
+        restore_home(original_home);
+        match previous_plugin_installed {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_PLUGIN_INSTALLED", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_PLUGIN_INSTALLED") },
+        }
+
+        let expected_plugin_root = home.path().join(".amplihack").join(".claude");
+        let expected_plugin_root = expected_plugin_root.display().to_string();
+        assert_eq!(
+            env.get("CLAUDE_PLUGIN_ROOT").map(String::as_str),
+            Some(expected_plugin_root.as_str())
+        );
+        let path = env.get("PATH").expect("PATH should be populated");
+        assert!(
+            path.split(':')
+                .next()
+                .unwrap_or_default()
+                .ends_with(".npm-global/bin"),
+            "expected ~/.npm-global/bin to be prepended to PATH, got {path}"
+        );
+    }
+
+    #[test]
+    fn augment_claude_launch_env_prefers_installed_plugin_cache_path() {
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let original_home = set_home(home.path());
+        let previous_plugin_installed = std::env::var_os("AMPLIHACK_PLUGIN_INSTALLED");
+        unsafe { std::env::set_var("AMPLIHACK_PLUGIN_INSTALLED", "true") };
+
+        let env = augment_claude_launch_env(EnvBuilder::new(), "claude").build();
+
+        restore_home(original_home);
+        match previous_plugin_installed {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_PLUGIN_INSTALLED", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_PLUGIN_INSTALLED") },
+        }
+
+        let expected_plugin_root = home
+            .path()
+            .join(".claude")
+            .join("plugins")
+            .join("cache")
+            .join("amplihack")
+            .join("amplihack")
+            .join("0.9.0");
+        let expected_plugin_root = expected_plugin_root.display().to_string();
+        assert_eq!(
+            env.get("CLAUDE_PLUGIN_ROOT").map(String::as_str),
+            Some(expected_plugin_root.as_str())
+        );
+    }
+
+    #[test]
+    fn parse_github_repo_uri_accepts_supported_formats() {
+        assert_eq!(
+            parse_github_repo_uri("owner/repo").unwrap(),
+            ("owner".to_string(), "repo".to_string())
+        );
+        assert_eq!(
+            parse_github_repo_uri("https://github.com/owner/repo.git").unwrap(),
+            ("owner".to_string(), "repo".to_string())
+        );
+        assert_eq!(
+            parse_github_repo_uri("git@github.com:owner/repo.git").unwrap(),
+            ("owner".to_string(), "repo".to_string())
+        );
+        assert!(parse_github_repo_uri("https://example.com/owner/repo").is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn resolve_checkout_repo_in_uses_git_clone_stub() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let bin_dir = temp.path().join("bin");
+        let base_dir = temp.path().join("checkouts");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let git_path = bin_dir.join("git");
+        fs::write(
+            &git_path,
+            "#!/bin/sh\nif [ \"$1\" = \"clone\" ]; then\n  /bin/mkdir -p \"$3/.git\"\n  exit 0\nfi\nexit 1\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&git_path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&git_path, permissions).unwrap();
+
+        let previous_path = std::env::var_os("PATH");
+        unsafe { std::env::set_var("PATH", &bin_dir) };
+
+        let checkout = resolve_checkout_repo_in("owner/repo", &base_dir).unwrap();
+
+        match previous_path {
+            Some(value) => unsafe { std::env::set_var("PATH", value) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+
+        assert_eq!(checkout, base_dir.join("owner-repo"));
+        assert!(checkout.join(".git").is_dir());
+    }
+
+    #[test]
+    fn env_builder_sets_skip_reflection_when_requested() {
+        let env = EnvBuilder::new()
+            .set_if(true, "AMPLIHACK_SKIP_REFLECTION", "1")
+            .build();
+        assert_eq!(
+            env.get("AMPLIHACK_SKIP_REFLECTION").map(String::as_str),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn env_builder_omits_skip_reflection_when_not_requested() {
+        let env = EnvBuilder::new()
+            .set_if(false, "AMPLIHACK_SKIP_REFLECTION", "1")
+            .build();
+        assert!(!env.contains_key("AMPLIHACK_SKIP_REFLECTION"));
     }
 
     /// When child exits normally with code 0, wait_for_child_or_signal must return 0.

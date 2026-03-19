@@ -1,10 +1,9 @@
 use super::super::backend::graph_db::{
-    GraphDbConnection, GraphDbDatabase, GraphDbSystemConfig, GraphDbValue, graph_i64, graph_rows,
-    graph_string, init_graph_backend_schema,
+    GraphDbConnection, GraphDbHandle, GraphDbValue, graph_i64, graph_rows, graph_string,
+    init_graph_backend_schema,
 };
 use super::*;
 use chrono::DateTime;
-use std::fs;
 use std::path::Path;
 use time::OffsetDateTime;
 
@@ -106,20 +105,19 @@ pub(super) fn open_code_graph_reader(
 }
 
 struct GraphDbCodeGraphReader {
-    db: GraphDbDatabase,
+    handle: GraphDbHandle,
 }
 
 impl GraphDbCodeGraphReader {
     fn open(path_override: Option<&Path>) -> Result<Self> {
         Ok(Self {
-            db: open_graph_db_code_graph_db(path_override)?,
+            handle: open_graph_db_code_graph_db(path_override)?,
         })
     }
 
     fn with_conn<T>(&self, f: impl FnOnce(&GraphDbConnection<'_>) -> Result<T>) -> Result<T> {
-        let conn = GraphDbConnection::new(&self.db)?;
-        ensure_memory_code_link_schema(&conn)?;
-        f(&conn)
+        self.handle
+            .with_initialized_conn(ensure_memory_code_link_schema, f)
     }
 }
 
@@ -174,20 +172,19 @@ pub(super) fn open_code_graph_writer(
 }
 
 struct GraphDbCodeGraphWriter {
-    db: GraphDbDatabase,
+    handle: GraphDbHandle,
 }
 
 impl GraphDbCodeGraphWriter {
     fn open(path_override: Option<&Path>) -> Result<Self> {
         Ok(Self {
-            db: open_graph_db_code_graph_db(path_override)?,
+            handle: open_graph_db_code_graph_db(path_override)?,
         })
     }
 
     fn with_conn<T>(&self, f: impl FnOnce(&GraphDbConnection<'_>) -> Result<T>) -> Result<T> {
-        let conn = GraphDbConnection::new(&self.db)?;
-        ensure_memory_code_link_schema(&conn)?;
-        f(&conn)
+        self.handle
+            .with_initialized_conn(ensure_memory_code_link_schema, f)
     }
 }
 
@@ -213,15 +210,12 @@ impl CodeGraphWriterBackend for GraphDbCodeGraphWriter {
     }
 }
 
-pub(super) fn open_graph_db_code_graph_db(path_override: Option<&Path>) -> Result<GraphDbDatabase> {
+pub(super) fn open_graph_db_code_graph_db(path_override: Option<&Path>) -> Result<GraphDbHandle> {
     let path = match path_override {
         Some(path) => path.to_path_buf(),
         None => default_code_graph_db_path()?,
     };
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let db = GraphDbDatabase::new(&path, GraphDbSystemConfig::default())?;
+    let db = GraphDbHandle::open_at_path(&path)?;
     enforce_db_permissions(&path)?;
     Ok(db)
 }
@@ -231,10 +225,8 @@ pub(crate) fn with_test_code_graph_conn<T>(
     path_override: Option<&Path>,
     f: impl FnOnce(&GraphDbConnection<'_>) -> Result<T>,
 ) -> Result<T> {
-    let db = open_graph_db_code_graph_db(path_override)?;
-    let conn = GraphDbConnection::new(&db)?;
-    ensure_memory_code_link_schema(&conn)?;
-    f(&conn)
+    let handle = open_graph_db_code_graph_db(path_override)?;
+    handle.with_initialized_conn(ensure_memory_code_link_schema, f)
 }
 
 #[cfg(test)]

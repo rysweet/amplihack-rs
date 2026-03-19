@@ -1,6 +1,6 @@
 //! SQLite backend implementation for the memory subsystem.
 //!
-//! All rusqlite-specific code lives here, symmetric with the Kùzu backend in
+//! All rusqlite-specific code lives here, symmetric with the graph-db backend in
 //! `backend/graph_db.rs`. This provides the insertion point for future backends
 //! (e.g. LadybugDB) without requiring surgery to the rest of the memory
 //! subsystem.
@@ -106,10 +106,8 @@ impl MemoryRuntimeBackend for SqliteBackend {
 }
 
 pub(crate) fn open_sqlite_memory_db() -> Result<SqliteConnection> {
-    let path = home_dir()?.join(".amplihack").join("memory.db");
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let path = memory_home_paths()?.sqlite_db;
+    ensure_parent_dir(&path)?;
     let conn = SqliteConnection::open(path)?;
     conn.execute_batch(SQLITE_SCHEMA)?;
     Ok(conn)

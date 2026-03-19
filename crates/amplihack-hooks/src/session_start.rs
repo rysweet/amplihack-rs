@@ -7,6 +7,7 @@
 //! 4. Injects project context, learnings, and preferences
 //! 5. Returns additional context for the session
 
+use crate::original_request::{capture_original_request, format_original_request_context};
 use crate::protocol::{FailurePolicy, Hook};
 use amplihack_cli::binary_finder::BinaryFinder;
 use amplihack_cli::memory::{
@@ -32,10 +33,12 @@ impl Hook for SessionStartHook {
     }
 
     fn process(&self, input: HookInput) -> anyhow::Result<Value> {
-        match &input {
-            HookInput::SessionStart { .. } => {}
+        let (session_id, extra) = match input {
+            HookInput::SessionStart {
+                session_id, extra, ..
+            } => (session_id, extra),
             _ => return Ok(Value::Object(serde_json::Map::new())),
-        }
+        };
 
         let dirs = ProjectDirs::from_cwd();
         let mut context_parts: Vec<String> = Vec::new();
@@ -43,6 +46,12 @@ impl Hook for SessionStartHook {
         // These surface errors that did not block session start (fail-open) but that
         // the host should be aware of — e.g. code-graph setup failures.
         let mut warnings: Vec<String> = Vec::new();
+
+        if let Some(original_request_context) =
+            maybe_capture_original_request(&dirs, session_id.as_deref(), &extra)?
+        {
+            context_parts.push(original_request_context);
+        }
 
         // Load project context (PROJECT.md).
         if let Some(ctx) = load_project_context(&dirs) {
@@ -58,6 +67,8 @@ impl Hook for SessionStartHook {
         if let Some(prefs) = load_user_preferences(&dirs) {
             context_parts.push(prefs);
         }
+
+        context_parts.push(load_workflow_context(&dirs));
 
         // Check for version mismatch natively.
         if let Some(version_notice) = check_version(&dirs) {
@@ -169,10 +180,11 @@ fn load_discoveries(dirs: &ProjectDirs) -> Option<String> {
 }
 
 fn load_user_preferences(dirs: &ProjectDirs) -> Option<String> {
-    let candidates = [
-        dirs.user_preferences(),
-        dirs.root.join("USER_PREFERENCES.md"),
-    ];
+    let mut candidates = Vec::new();
+    if let Some(path) = dirs.resolve_preferences_file() {
+        candidates.push(path);
+    }
+    candidates.push(dirs.root.join("USER_PREFERENCES.md"));
 
     for path in &candidates {
         if let Ok(content) = fs::read_to_string(path)
@@ -183,6 +195,42 @@ fn load_user_preferences(dirs: &ProjectDirs) -> Option<String> {
     }
 
     None
+}
+
+fn load_workflow_context(dirs: &ProjectDirs) -> String {
+    let mut parts = vec![
+        "## Default Workflow".to_string(),
+        "The multi-step workflow is automatically followed by `/ultrathink`".to_string(),
+    ];
+
+    if let Some(path) = dirs.resolve_workflow_file() {
+        parts.push(format!("• To view the workflow: Read {}", path.display()));
+        parts.push("• To customize: Edit the workflow file directly".to_string());
+    } else {
+        parts.push("• To view the workflow: Read .claude/workflow/DEFAULT_WORKFLOW.md".to_string());
+        parts.push("• To customize: Edit the workflow file directly".to_string());
+    }
+
+    parts.push(
+        "• Steps include: Requirements → Issue → Branch → Design → Implement → Review → Merge"
+            .to_string(),
+    );
+
+    parts.join("\n")
+}
+
+fn maybe_capture_original_request(
+    dirs: &ProjectDirs,
+    session_id: Option<&str>,
+    extra: &Value,
+) -> anyhow::Result<Option<String>> {
+    let Some(prompt) = extra.get("prompt").and_then(Value::as_str).map(str::trim) else {
+        return Ok(None);
+    };
+
+    Ok(capture_original_request(dirs, session_id, prompt)?
+        .as_ref()
+        .map(format_original_request_context))
 }
 
 fn check_version(dirs: &ProjectDirs) -> Option<String> {
@@ -683,6 +731,86 @@ mod tests {
         let result = check_version(&dirs).expect("mismatch should be reported");
         assert!(result.contains("Version mismatch detected"));
         assert!(result.contains("different-version"));
+    }
+
+    #[test]
+    fn load_workflow_context_uses_amplihack_root_override() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let project = tempfile::tempdir().unwrap();
+        let framework = tempfile::tempdir().unwrap();
+        fs::create_dir_all(framework.path().join(".claude/workflow")).unwrap();
+        fs::write(
+            framework
+                .path()
+                .join(".claude/workflow/DEFAULT_WORKFLOW.md"),
+            "# Default Workflow\n",
+        )
+        .unwrap();
+        let previous = std::env::var_os("AMPLIHACK_ROOT");
+        unsafe { std::env::set_var("AMPLIHACK_ROOT", framework.path()) };
+
+        let context = load_workflow_context(&ProjectDirs::new(project.path()));
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_ROOT", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_ROOT") },
+        }
+
+        assert!(context.contains("## Default Workflow"));
+        assert!(
+            context.contains(
+                framework
+                    .path()
+                    .join(".claude/workflow/DEFAULT_WORKFLOW.md")
+                    .display()
+                    .to_string()
+                    .as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn session_start_captures_original_request_context() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        unsafe { std::env::set_var("AMPLIHACK_BLARIFY_MODE", "skip") };
+
+        let hook = SessionStartHook;
+        let result = hook
+            .process(HookInput::SessionStart {
+                session_id: Some("test-session".to_string()),
+                cwd: None,
+                extra: serde_json::json!({
+                    "prompt": "Implement complete hook parity. Do not regress tests. Ensure every user-visible hook output matches Python."
+                }),
+            })
+            .unwrap();
+
+        unsafe { std::env::remove_var("AMPLIHACK_BLARIFY_MODE") };
+        let _ = std::env::set_current_dir(&original);
+
+        let context = result["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(context.contains("## 🎯 ORIGINAL USER REQUEST - PRESERVE THESE REQUIREMENTS"));
+        assert!(context.contains("**Constraints**:"));
+        assert!(context.contains("**Success Criteria**:"));
+        assert!(
+            dir.path()
+                .join(".claude/runtime/logs/test-session/ORIGINAL_REQUEST.md")
+                .exists()
+        );
+        assert!(
+            dir.path()
+                .join(".claude/runtime/logs/test-session/original_request.json")
+                .exists()
+        );
     }
 
     #[test]

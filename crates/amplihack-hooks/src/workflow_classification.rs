@@ -4,6 +4,7 @@
 //! agent classifies the request and routes non-trivial work through the
 //! dev-orchestrator workflow.
 
+use crate::prompt_input::extract_user_prompt;
 use crate::protocol::{FailurePolicy, Hook};
 use amplihack_types::{HookInput, ProjectDirs, sanitize_session_id};
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,9 @@ use std::fs;
 use std::path::PathBuf;
 
 pub struct WorkflowClassificationReminderHook;
+
+const DEFAULT_ROUTING_PROMPT: &str =
+    include_str!("../../../.claude/tools/amplihack/hooks/templates/routing_prompt.txt");
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ClassificationState {
@@ -53,39 +57,17 @@ impl Hook for WorkflowClassificationReminderHook {
 
         save_classification_state(&dirs, &session_id, turn_count)?;
 
+        let reminder = load_routing_prompt(&dirs);
+        if reminder.trim().is_empty() {
+            return Ok(Value::Object(serde_json::Map::new()));
+        }
+
         Ok(json!({
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
-                "additionalContext": format!(
-                    "<system-reminder source=\"hooks-workflow-classification\">\n{}\n</system-reminder>",
-                    build_reminder(&prompt)
-                )
+                "additionalContext": reminder
             }
         }))
-    }
-}
-
-fn extract_user_prompt(user_prompt: Option<&str>, extra: &Value) -> String {
-    if let Some(prompt) = user_prompt
-        && !prompt.trim().is_empty()
-    {
-        return prompt.to_string();
-    }
-
-    if let Some(prompt) = extra.get("prompt").and_then(Value::as_str)
-        && !prompt.trim().is_empty()
-    {
-        return prompt.to_string();
-    }
-
-    match extra.get("userMessage") {
-        Some(Value::String(prompt)) if !prompt.trim().is_empty() => prompt.clone(),
-        Some(Value::Object(obj)) => obj
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        _ => String::new(),
     }
 }
 
@@ -188,36 +170,25 @@ fn save_classification_state(
     Ok(())
 }
 
-fn build_reminder(user_prompt: &str) -> String {
-    let truncated = if user_prompt.chars().count() > 100 {
-        let prefix = user_prompt.chars().take(100).collect::<String>();
-        format!("{prefix}...")
-    } else {
-        user_prompt.to_string()
+fn load_routing_prompt(dirs: &ProjectDirs) -> String {
+    let Some(path) =
+        dirs.resolve_framework_file(".claude/tools/amplihack/hooks/templates/routing_prompt.txt")
+    else {
+        return DEFAULT_ROUTING_PROMPT.to_string();
     };
-
-    format!(
-        "NEW TOPIC DETECTED - Classify and Route\n\n\
-         Request: \"{truncated}\"\n\n\
-         Classify (choose ONE):\n\
-           Q&A         -> \"what is\", \"explain\", \"how do I\"        -> respond directly\n\
-           OPERATIONS  -> \"cleanup\", \"delete\", \"git status\"       -> execute directly\n\
-           INVESTIGATION/DEVELOPMENT -> all other non-trivial work -> use dev-orchestrator\n\n\
-         For INVESTIGATION or DEVELOPMENT tasks:\n\
-           Invoke Skill(skill=\"dev-orchestrator\") -- the smart-orchestrator will:\n\
-             - Classify the task and formulate a clear goal\n\
-             - Detect parallel workstreams if task has independent components\n\
-             - Execute via recipe runner (single task or parallel workstreams)\n\
-             - Reflect on goal achievement\n\n\
-           Entry point: /dev <task description>\n\
-           (Legacy: /ultrathink is deprecated -- use /dev)\n\n\
-         DO NOT start implementation without invoking dev-orchestrator first."
-    )
+    fs::read_to_string(&path).unwrap_or_else(|_| DEFAULT_ROUTING_PROMPT.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn explicit_dev_command_skips_reminder() {
@@ -273,10 +244,20 @@ mod tests {
     }
 
     #[test]
-    fn build_reminder_mentions_dev_orchestrator() {
-        let reminder = build_reminder("Port this Python hook to Rust");
+    fn load_routing_prompt_mentions_dev_orchestrator() {
+        let dirs = ProjectDirs::new("/tmp/project");
+        let reminder = load_routing_prompt(&dirs);
         assert!(reminder.contains("dev-orchestrator"));
-        assert!(reminder.contains("NEW TOPIC DETECTED"));
+        assert!(reminder.contains("parallel signal evaluation"));
+        assert!(reminder.contains("flowchart TD"));
+    }
+
+    #[test]
+    fn default_routing_prompt_matches_richer_parallel_contract() {
+        assert!(DEFAULT_ROUTING_PROMPT.contains("parallel signal evaluation"));
+        assert!(DEFAULT_ROUTING_PROMPT.contains("flowchart TD"));
+        assert!(DEFAULT_ROUTING_PROMPT.contains("UNDERSTAND + IMPLEMENT"));
+        assert!(DEFAULT_ROUTING_PROMPT.contains("False positive costs minutes"));
     }
 
     #[test]
@@ -287,5 +268,38 @@ mod tests {
         });
         assert_eq!(extract_user_prompt(None, &extra), "hello");
         assert_eq!(extract_turn_count(&extra), Some(3));
+    }
+
+    #[test]
+    fn load_routing_prompt_uses_amplihack_root_override() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let project = tempfile::tempdir().unwrap();
+        let framework = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(project.path());
+        let template_dir = framework
+            .path()
+            .join(".claude/tools/amplihack/hooks/templates");
+        fs::create_dir_all(&template_dir).unwrap();
+        fs::write(
+            template_dir.join("routing_prompt.txt"),
+            "<system-reminder source=\"auto-intent-router\">Framework override</system-reminder>",
+        )
+        .unwrap();
+        let previous = std::env::var_os("AMPLIHACK_ROOT");
+        unsafe { std::env::set_var("AMPLIHACK_ROOT", framework.path()) };
+
+        let reminder = load_routing_prompt(&dirs);
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_ROOT", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_ROOT") },
+        }
+
+        assert_eq!(
+            reminder,
+            "<system-reminder source=\"auto-intent-router\">Framework override</system-reminder>"
+        );
     }
 }
