@@ -164,7 +164,7 @@ fn export_hierarchical_json_impl(
     let db_path = resolve_hierarchical_db_path(agent_name, storage_path)?;
     with_hierarchical_graph_conn(&db_path, |conn| {
         let semantic_nodes = graph_rows(
-        &conn,
+        conn,
         "MATCH (m:SemanticMemory) WHERE m.agent_id = $agent_id RETURN m.memory_id, m.concept, m.content, m.confidence, m.source_id, m.tags, m.metadata, m.created_at, m.entity_name ORDER BY m.created_at ASC",
         vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
     )?
@@ -186,7 +186,7 @@ fn export_hierarchical_json_impl(
     .collect::<Result<Vec<_>>>()?;
 
         let episodic_nodes = graph_rows(
-        &conn,
+        conn,
         "MATCH (e:EpisodicMemory) WHERE e.agent_id = $agent_id RETURN e.memory_id, e.content, e.source_label, e.tags, e.metadata, e.created_at ORDER BY e.created_at ASC",
         vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
     )?
@@ -205,7 +205,7 @@ fn export_hierarchical_json_impl(
     .collect::<Result<Vec<_>>>()?;
 
         let similar_to_edges = graph_rows(
-        &conn,
+        conn,
         "MATCH (a:SemanticMemory)-[r:SIMILAR_TO]->(b:SemanticMemory) WHERE a.agent_id = $agent_id RETURN a.memory_id, b.memory_id, r.weight, r.metadata",
         vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
     )?
@@ -222,7 +222,7 @@ fn export_hierarchical_json_impl(
     .collect::<Result<Vec<_>>>()?;
 
         let derives_from_edges = graph_rows(
-        &conn,
+        conn,
         "MATCH (s:SemanticMemory)-[r:DERIVES_FROM]->(e:EpisodicMemory) WHERE s.agent_id = $agent_id RETURN s.memory_id, e.memory_id, r.extraction_method, r.confidence",
         vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
     )?
@@ -238,7 +238,7 @@ fn export_hierarchical_json_impl(
     .collect::<Result<Vec<_>>>()?;
 
         let supersedes_edges = graph_rows(
-        &conn,
+        conn,
         "MATCH (newer:SemanticMemory)-[r:SUPERSEDES]->(older:SemanticMemory) WHERE newer.agent_id = $agent_id RETURN newer.memory_id, older.memory_id, r.reason, r.temporal_delta",
         vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
     )?
@@ -254,7 +254,7 @@ fn export_hierarchical_json_impl(
     .collect::<Result<Vec<_>>>()?;
 
         let transitioned_to_edges = graph_rows(
-        &conn,
+        conn,
         "MATCH (newer:SemanticMemory)-[r:TRANSITIONED_TO]->(older:SemanticMemory) WHERE newer.agent_id = $agent_id RETURN newer.memory_id, older.memory_id, r.from_value, r.to_value, r.turn, r.transition_type",
         vec![("agent_id", GraphDbValue::String(agent_name.to_string()))],
     )?
@@ -365,10 +365,10 @@ fn import_hierarchical_json_impl(
     let db_path = resolve_hierarchical_db_path(agent_name, storage_path)?;
     with_hierarchical_graph_conn(&db_path, |conn| {
         if !merge {
-            clear_hierarchical_agent_data(&conn, agent_name)?;
+            clear_hierarchical_agent_data(conn, agent_name)?;
         }
         let existing_ids: std::collections::HashSet<String> = if merge {
-            get_existing_hierarchical_ids(&conn, agent_name)?
+            get_existing_hierarchical_ids(conn, agent_name)?
                 .into_iter()
                 .collect()
         } else {
@@ -452,7 +452,7 @@ fn import_hierarchical_json_impl(
 
         for edge in plan.similar_to_edges {
             if create_hierarchical_edge(
-                &conn,
+                conn,
                 "MATCH (a:SemanticMemory {memory_id: $sid}) MATCH (b:SemanticMemory {memory_id: $tid}) CREATE (a)-[:SIMILAR_TO {weight: $weight, metadata: $metadata}]->(b)",
                 vec![
                     ("sid", GraphDbValue::String(edge.source_id.clone())),
@@ -472,7 +472,7 @@ fn import_hierarchical_json_impl(
         }
         for edge in plan.derives_from_edges {
             if create_hierarchical_edge(
-                &conn,
+                conn,
                 "MATCH (s:SemanticMemory {memory_id: $sid}) MATCH (e:EpisodicMemory {memory_id: $tid}) CREATE (s)-[:DERIVES_FROM {extraction_method: $method, confidence: $confidence}]->(e)",
                 vec![
                     ("sid", GraphDbValue::String(edge.source_id.clone())),
@@ -492,7 +492,7 @@ fn import_hierarchical_json_impl(
         }
         for edge in plan.supersedes_edges {
             if create_hierarchical_edge(
-                &conn,
+                conn,
                 "MATCH (newer:SemanticMemory {memory_id: $sid}) MATCH (older:SemanticMemory {memory_id: $tid}) CREATE (newer)-[:SUPERSEDES {reason: $reason, temporal_delta: $delta}]->(older)",
                 vec![
                     ("sid", GraphDbValue::String(edge.source_id.clone())),
@@ -509,7 +509,7 @@ fn import_hierarchical_json_impl(
         }
         for edge in plan.transitioned_to_edges {
             if create_hierarchical_edge(
-                &conn,
+                conn,
                 "MATCH (newer:SemanticMemory {memory_id: $sid}) MATCH (older:SemanticMemory {memory_id: $tid}) CREATE (newer)-[:TRANSITIONED_TO {from_value: $from_val, to_value: $to_val, turn: $turn, transition_type: $ttype}]->(older)",
                 vec![
                     ("sid", GraphDbValue::String(edge.source_id.clone())),
