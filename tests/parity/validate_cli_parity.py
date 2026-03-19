@@ -546,10 +546,14 @@ def render_tmux_script(
 def compare_case(case: dict[str, Any], py: EngineResult, rust: EngineResult) -> tuple[bool, dict[str, Any]]:
     details: dict[str, Any] = {}
     success = True
+    stdout_normalize = case.get("stdout_normalize_patterns", [])
 
     for item in case.get("compare", ["stdout", "stderr", "exit_code"]):
         if item == "stdout":
-            ok, reason = compare_text(py.stdout, rust.stdout, py.sandbox_root, rust.sandbox_root)
+            ok, reason = compare_text(
+                py.stdout, rust.stdout, py.sandbox_root, rust.sandbox_root,
+                normalize_patterns=stdout_normalize,
+            )
             details["stdout"] = reason
             success &= ok
         elif item == "stderr":
@@ -586,9 +590,18 @@ def compare_case(case: dict[str, Any], py: EngineResult, rust: EngineResult) -> 
     return success, details
 
 
-def compare_text(left: str, right: str, left_root: Path, right_root: Path) -> tuple[bool, dict[str, Any]]:
+def compare_text(
+    left: str,
+    right: str,
+    left_root: Path,
+    right_root: Path,
+    normalize_patterns: list[dict[str, str]] | None = None,
+) -> tuple[bool, dict[str, Any]]:
     left = normalize_text(left, left_root)
     right = normalize_text(right, right_root)
+    if normalize_patterns:
+        left = apply_normalize_patterns(left, normalize_patterns)
+        right = apply_normalize_patterns(right, normalize_patterns)
     left_json = try_json(left)
     right_json = try_json(right)
     if left_json is not None and right_json is not None:
@@ -597,6 +610,20 @@ def compare_text(left: str, right: str, left_root: Path, right_root: Path) -> tu
 
     ok = left == right
     return ok, {"mode": "text", "match": ok, "python": left, "rust": right}
+
+
+def apply_normalize_patterns(value: str, patterns: list[dict[str, str]]) -> str:
+    """Apply a list of regex substitution patterns to normalize text before comparison.
+
+    Each pattern entry must have 'match' (regex) and 'replace' (replacement string).
+    Example: {"match": "Backend: (sqlite|unknown)", "replace": "Backend: <backend>"}
+    """
+    for entry in patterns:
+        pattern = entry.get("match", "")
+        replacement = entry.get("replace", "")
+        if pattern:
+            value = re.sub(pattern, replacement, value)
+    return value
 
 
 def try_json(value: str) -> Any | None:
