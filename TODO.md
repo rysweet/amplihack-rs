@@ -311,4 +311,40 @@ See also: [Validate No-Python Compliance](docs/howto/validate-no-python.md)
 
 ---
 
-*Last updated: issue #77 parity audit — added 8 scout/advance report unit tests; 205 fleet tests passing.*
+---
+
+## COMPLETED (continuation session — memory-export-json parity fix)
+
+- [x] **123/123 parity achieved** (was 122/123, 99.2%)
+
+### Root cause
+
+`memory-export-json` parity gap: the Rust `resolved_graph_db()` function used
+`legacy.is_dir()` to detect the legacy `kuzu_db` store, but kuzu stores its
+database as a single **file** (not a directory). When the parity test's Python
+setup created `hier/source_agent/kuzu_db` as a kuzu file, `is_dir()` returned
+false, so the Rust code silently opened a new empty `graph_db` store instead of
+reading the existing data — reporting 0 nodes and edges rather than the expected
+1 semantic node, 1 episodic node, and 1 `DERIVES_FROM` edge.
+
+### Fix
+
+1. **`transfer.rs` — `resolved_graph_db()`**: changed all three `legacy.is_dir()`
+   and `neutral.is_dir()` checks to `legacy.exists()` / `neutral.exists()` so
+   that both file-backed (kuzu) and directory-backed graph stores are detected
+   correctly.
+
+2. **`transfer.rs` — `run_export()` / `run_import()`**: moved compatibility-mode
+   notices from `println!` (stdout) to `eprintln!` (stderr). Python never prints
+   these notices; they were landing on stdout and causing a stdout mismatch.
+
+3. **`launch.rs`**: reverted a pre-existing broken edit that changed
+   `node_options.as_deref()` to `Some(node_options.as_str())` — `as_str()` does
+   not exist on `Option<String>`, causing a compile error.
+
+### Verification
+
+- `parity_audit_cycle.py`: **123/123 (100.0%)**
+- `cargo test -p amplihack-cli --lib`: **761 passed; 0 failed**
+
+*Last updated: memory-export-json parity fix — 123/123 (100.0%)*

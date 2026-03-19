@@ -11,6 +11,7 @@ use crate::commands::memory::{
     run_index_code, run_index_scip,
 };
 use crate::commands::uvx_help::is_uvx_deployment;
+use crate::docker::{DockerDetector, DockerManager};
 use crate::env_builder::EnvBuilder;
 use crate::launcher::ManagedChild;
 use crate::launcher_context::{LauncherKind, write_launcher_context};
@@ -39,6 +40,8 @@ const POWER_STEERING_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 #[allow(clippy::too_many_arguments)]
 pub fn run_launch(
     tool: &str,
+    launcher_command: &str,
+    docker: bool,
     resume: bool,
     continue_session: bool,
     skip_permissions: bool,
@@ -48,6 +51,28 @@ pub fn run_launch(
     checkout_repo: Option<String>,
     extra_args: Vec<String>,
 ) -> Result<()> {
+    let current_dir = std::env::current_dir()
+        .ok()
+        .unwrap_or_else(|| PathBuf::from("."));
+    if let Some(activation) = DockerDetector.activation_source(docker) {
+        println!("{}", activation.message());
+        let docker_args = build_docker_launcher_args(
+            launcher_command,
+            resume,
+            continue_session,
+            skip_update_check,
+            no_reflection,
+            subprocess_safe,
+            checkout_repo.as_deref(),
+            &extra_args,
+        );
+        let exit_code = DockerManager::default().run_command(&docker_args, &current_dir)?;
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+        return Ok(());
+    }
+
     // Check for npm updates before doing anything else.
     // This is a no-op if skip_update_check is true, AMPLIHACK_NONINTERACTIVE is set,
     // or the tool has no npm package mapping.
@@ -85,9 +110,8 @@ pub fn run_launch(
         "launching {tool}"
     );
 
-    let current_dir = std::env::current_dir().ok();
     let execution_dir = resolve_checkout_repo(checkout_repo.as_deref())?
-        .or_else(|| current_dir.clone())
+        .or(Some(current_dir.clone()))
         .unwrap_or_else(|| PathBuf::from("."));
     let node_options = resolve_launch_node_options(subprocess_safe)?;
     if !subprocess_safe {
@@ -193,6 +217,43 @@ fn render_session_argv(
     }
     argv.extend(extra_args.iter().cloned());
     argv
+}
+
+fn build_docker_launcher_args(
+    launcher_command: &str,
+    resume: bool,
+    continue_session: bool,
+    skip_update_check: bool,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    checkout_repo: Option<&str>,
+    extra_args: &[String],
+) -> Vec<String> {
+    let mut args = vec![launcher_command.to_string()];
+    if resume {
+        args.push("--resume".to_string());
+    }
+    if continue_session {
+        args.push("--continue".to_string());
+    }
+    if skip_update_check && launcher_command == "launch" {
+        args.push("--skip-update-check".to_string());
+    }
+    if no_reflection {
+        args.push("--no-reflection".to_string());
+    }
+    if subprocess_safe {
+        args.push("--subprocess-safe".to_string());
+    }
+    if let Some(repo) = checkout_repo {
+        args.push("--checkout-repo".to_string());
+        args.push(repo.to_string());
+    }
+    if !extra_args.is_empty() {
+        args.push("--".to_string());
+        args.extend(extra_args.iter().cloned());
+    }
+    args
 }
 
 fn persist_launcher_context(
@@ -1021,6 +1082,43 @@ mod tests {
                 "-p",
                 "continue parity",
             ]
+        );
+    }
+
+    #[test]
+    fn build_docker_launcher_args_preserves_shared_launcher_flags() {
+        assert_eq!(
+            build_docker_launcher_args(
+                "launch",
+                true,
+                true,
+                true,
+                true,
+                true,
+                Some("owner/repo"),
+                &["-p".to_string(), "audit parity".to_string()]
+            ),
+            vec![
+                "launch",
+                "--resume",
+                "--continue",
+                "--skip-update-check",
+                "--no-reflection",
+                "--subprocess-safe",
+                "--checkout-repo",
+                "owner/repo",
+                "--",
+                "-p",
+                "audit parity",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_docker_launcher_args_omits_launch_only_flags_for_other_surfaces() {
+        assert_eq!(
+            build_docker_launcher_args("copilot", false, false, true, false, false, None, &[]),
+            vec!["copilot"]
         );
     }
 

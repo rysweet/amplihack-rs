@@ -596,3 +596,93 @@ fn raw_db_merge_rejected_sqlite() -> anyhow::Result<()> {
 fn raw_db_merge_rejected_graph_db() -> anyhow::Result<()> {
     assert_raw_db_merge_rejected(BackendChoice::GraphDb)
 }
+
+#[test]
+fn export_graph_db_agent_root_prefers_populated_legacy_store() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let _guard = EnvGuard::setup(dir.path(), "graph-db");
+    let agent_root = dir.path().join("agent-root");
+    let legacy_db = agent_root.join("kuzu_db");
+    let output_path = dir.path().join("legacy-export.json");
+    let input_path = dir.path().join("legacy-input.json");
+
+    fs::create_dir_all(&agent_root)?;
+    write_export_file(
+        &input_path,
+        &HierarchicalExportData {
+            agent_name: "source-agent".to_string(),
+            exported_at: "1704067200".to_string(),
+            format_version: "1.1".to_string(),
+            semantic_nodes: vec![crate::commands::memory::transfer::SemanticNode {
+                memory_id: "sem-legacy-root".to_string(),
+                concept: "legacy-root".to_string(),
+                content: "export via agent root".to_string(),
+                confidence: 0.9,
+                source_id: "ep-legacy-root".to_string(),
+                tags: vec![],
+                metadata: serde_json::json!({}),
+                created_at: "1704067200".to_string(),
+                entity_name: "test".to_string(),
+            }],
+            episodic_nodes: vec![crate::commands::memory::transfer::EpisodicNode {
+                memory_id: "ep-legacy-root".to_string(),
+                content: "legacy episodic".to_string(),
+                source_label: "session".to_string(),
+                tags: vec![],
+                metadata: serde_json::json!({}),
+                created_at: "1704067200".to_string(),
+            }],
+            similar_to_edges: vec![],
+            derives_from_edges: vec![crate::commands::memory::transfer::DerivesEdge {
+                source_id: "sem-legacy-root".to_string(),
+                target_id: "ep-legacy-root".to_string(),
+                extraction_method: "test".to_string(),
+                confidence: 0.75,
+            }],
+            supersedes_edges: vec![],
+            transitioned_to_edges: vec![],
+            statistics: HierarchicalStats {
+                semantic_node_count: 1,
+                episodic_node_count: 1,
+                similar_to_edge_count: 0,
+                derives_from_edge_count: 1,
+                supersedes_edge_count: 0,
+                transitioned_to_edge_count: 0,
+            },
+        },
+    );
+
+    let backend = open_hierarchical_transfer_backend_for(BackendChoice::GraphDb);
+    backend.import_hierarchical_json(
+        "agent",
+        input_path.to_str().unwrap(),
+        false,
+        Some(legacy_db.to_str().unwrap()),
+    )?;
+
+    let neutral_db = agent_root.join("graph_db");
+    assert!(legacy_db.exists(), "legacy kuzu_db should be populated");
+    assert!(
+        !neutral_db.exists(),
+        "regression case requires kuzu_db without graph_db"
+    );
+
+    let export = backend.export_hierarchical_json(
+        "agent",
+        output_path.to_str().unwrap(),
+        Some(agent_root.to_str().unwrap()),
+    )?;
+    assert_eq!(export.format, "json");
+    assert!(
+        !neutral_db.exists(),
+        "export should not create an empty graph_db sibling when kuzu_db is populated"
+    );
+
+    let exported: HierarchicalExportData =
+        serde_json::from_str(&fs::read_to_string(&output_path)?)?;
+    assert_eq!(exported.semantic_nodes.len(), 1);
+    assert_eq!(exported.episodic_nodes.len(), 1);
+    assert_eq!(exported.derives_from_edges.len(), 1);
+    assert_eq!(exported.semantic_nodes[0].memory_id, "sem-legacy-root");
+    Ok(())
+}
