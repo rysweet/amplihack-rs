@@ -40,14 +40,12 @@ impl EnvBuilder {
     /// Add AMPLIHACK_SESSION_ID (generate a new one if not already set).
     pub fn with_amplihack_session_id(self) -> Self {
         let session_id = env::var("AMPLIHACK_SESSION_ID").unwrap_or_else(|_| generate_session_id());
-        let depth = env::var("AMPLIHACK_DEPTH")
-            .ok()
-            .and_then(|value| value.parse::<u32>().ok())
-            .map(|value| value.saturating_add(1))
-            .unwrap_or(1);
+        // Python launch preserves an existing depth as-is and initializes
+        // the root session to depth 1.
+        let depth = env::var("AMPLIHACK_DEPTH").unwrap_or_else(|_| "1".to_string());
 
         self.set("AMPLIHACK_SESSION_ID", session_id)
-            .set("AMPLIHACK_DEPTH", depth.to_string())
+            .set("AMPLIHACK_DEPTH", depth)
     }
 
     /// Conditionally set an environment variable.
@@ -535,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn with_amplihack_session_id_increments_existing_depth() {
+    fn with_amplihack_session_id_preserves_existing_depth() {
         let _guard = launch_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -557,7 +555,7 @@ mod tests {
             None => unsafe { env::remove_var("AMPLIHACK_SESSION_ID") },
         }
 
-        assert_eq!(built.get("AMPLIHACK_DEPTH").map(String::as_str), Some("4"));
+        assert_eq!(built.get("AMPLIHACK_DEPTH").map(String::as_str), Some("3"));
         assert_eq!(
             built.get("AMPLIHACK_SESSION_ID").map(String::as_str),
             Some("existing-session")
