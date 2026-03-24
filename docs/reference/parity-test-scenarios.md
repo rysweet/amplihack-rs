@@ -35,6 +35,8 @@ and what behaviour each tier validates.
   - [tier13-xpia-timeout.yaml — XPIA timeout behavior](#tier13-xpia-timeoutyaml--xpia-timeout-behavior)
   - [tier14-xpia-logging.yaml — XPIA hook logging](#tier14-xpia-loggingyaml--xpia-hook-logging)
   - [tier15-session-start-hook.yaml — Copilot session-start hook](#tier15-session-start-hookyaml--copilot-session-start-hook)
+  - [tier16-user-prompt-submit-hook.yaml — Copilot user-prompt-submit hook](#tier16-user-prompt-submit-hookyaml--copilot-user-prompt-submit-hook)
+  - [tier17-session-stop-hook.yaml — Copilot session-stop hook](#tier17-session-stop-hookyaml--copilot-session-stop-hook)
   - [Related](#related)
 
 ---
@@ -365,6 +367,35 @@ supported hook-engine modes. The current cases compare:
 
 **Expected result:** All cases pass. This tier extends runtime parity from
 artifact staging into actual session-start wrapper execution.
+
+---
+
+### tier16-user-prompt-submit-hook.yaml — Copilot user-prompt-submit hook
+
+Exercises the staged `.github/hooks/user-prompt-submit` wrapper end to end
+under both supported hook-engine modes. The current cases compare:
+
+- `AMPLIHACK_HOOK_ENGINE=rust`: wrapper runs native `user-prompt-submit` plus the Python `workflow_classification_reminder.py`
+- `AMPLIHACK_HOOK_ENGINE=python`: wrapper runs both Python hook scripts in order
+
+**Expected result:** All cases pass. This tier extends runtime parity into the
+multi-hook composition contract used for prompt-time workflow guidance.
+
+---
+
+### tier17-session-stop-hook.yaml — Copilot session-stop hook
+
+Exercises the staged `.github/hooks/session-stop` wrapper end to end under
+both supported hook-engine modes. The current cases compare:
+
+- `AMPLIHACK_HOOK_ENGINE=rust`: wrapper runs native `stop` and `session-stop`
+  subcommands with the same stdin payload
+- `AMPLIHACK_HOOK_ENGINE=python`: wrapper runs both `stop.py` and
+  `session_stop.py` with forwarded stdin
+
+**Expected result:** All cases pass. This tier extends runtime parity into the
+multi-hook shutdown contract used for power-steering and session-finalization
+behavior.
 
 ---
 
