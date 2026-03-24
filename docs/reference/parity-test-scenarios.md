@@ -33,6 +33,7 @@ and what behaviour each tier validates.
   - [tier11-xpia-fail-closed.yaml — XPIA fail-closed behavior](#tier11-xpia-fail-closedyaml--xpia-fail-closed-behavior)
   - [tier12-xpia-malformed-output.yaml — XPIA malformed output](#tier12-xpia-malformed-outputyaml--xpia-malformed-output)
   - [tier13-xpia-timeout.yaml — XPIA timeout behavior](#tier13-xpia-timeoutyaml--xpia-timeout-behavior)
+  - [tier14-xpia-logging.yaml — XPIA hook logging](#tier14-xpia-loggingyaml--xpia-hook-logging)
   - [Related](#related)
 
 ---
@@ -336,6 +337,20 @@ compares:
 
 **Expected result:** All cases pass. This tier extends degraded-runtime parity
 from missing/malformed binaries into timeout handling.
+
+---
+
+### tier14-xpia-logging.yaml — XPIA hook logging
+
+Exercises the staged Copilot `pre-tool-use` wrapper's Rust-backed audit logging.
+Instead of comparing raw log lines with timestamps, the scenarios normalize the
+last log entry into a stable JSON summary. The current cases compare:
+
+- allowed command logging with custom `session_id` passthrough
+- denied command logging with threat count and risk metadata
+
+**Expected result:** All cases pass. This tier extends outside-in parity into
+the staged hook's security audit trail.
 
 ---
 
