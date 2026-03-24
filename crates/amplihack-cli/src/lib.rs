@@ -90,7 +90,7 @@ pub enum Commands {
     /// Launch GitHub Copilot CLI
     Copilot {
         /// Extra args passed to copilot
-        #[arg(trailing_var_arg = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Launch OpenAI Codex CLI

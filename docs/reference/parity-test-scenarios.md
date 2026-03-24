@@ -28,7 +28,8 @@ and what behaviour each tier validates.
   - [tier6-qa-bugfixes.yaml — QA regressions](#tier6-qa-bugfixesyaml--qa-regressions)
   - [tier7-launcher-parity.yaml — Launcher gaps](#tier7-launcher-parityyaml--launcher-gaps)
   - [tier8-env-vars.yaml — Environment variable injection](#tier8-env-varsyaml--environment-variable-injection)
-- [Related](#related)
+  - [tier9-copilot-control-plane.yaml — Copilot control plane](#tier9-copilot-control-planeyaml--copilot-control-plane)
+  - [Related](#related)
 
 ---
 
@@ -178,11 +179,12 @@ its arguments and environment. Covers the complete `EnvBuilder` chain output.
 
 ### tier5-gap-tests.yaml — Known gaps
 
-Documents Python launcher behaviours not yet ported to Rust. Cases in this file
-are **expected to show divergence**. Kept as a living record of outstanding
-parity work.
+Historically documented Python launcher behaviours that had not yet been ported
+to Rust. The current cases now pass and serve as regression coverage for those
+formerly divergent seams.
 
-**Expected result:** Divergence is expected and documented in YAML comments.
+**Expected result:** All cases pass; comments may describe the historical gap
+that motivated the regression.
 
 ---
 
@@ -227,11 +229,11 @@ is confirmed on both Python and Rust.
 
 ### tier7-launcher-parity.yaml — Launcher gaps
 
-Documents launcher-level gaps: flags that the Python launcher injects into the
-child process (`--dangerously-skip-permissions`, `--model`) that the Rust
-launcher did not inject at the time of writing. See [GitHub Issue #25].
+Historically tracked launcher-level gaps around injected child-process flags,
+session env handling, and alias parity. The current tier is green and now acts
+as launcher regression coverage rather than a gap ledger.
 
-**Expected result:** Divergence is expected and documented in YAML comments.
+**Expected result:** All cases pass.
 
 ---
 
@@ -247,25 +249,8 @@ then compared between Python and Rust.
 | `env-var-agent-binary-is-claude` | `AMPLIHACK_AGENT_BINARY=claude` is set for `amplihack claude` |
 | `env-var-amplihack-home-contains-amplihack` | `AMPLIHACK_HOME` is set to a path containing `.amplihack` |
 
-#### Expected divergence: AMPLIHACK_AGENT_BINARY
-
-> **The `env-var-agent-binary-is-claude` case will show a mismatch between
-> Python and Rust outputs. This divergence is intentional.**
->
-> - **Rust launcher**: always sets `AMPLIHACK_AGENT_BINARY` before exec.
-> - **Python launcher**: does not set `AMPLIHACK_AGENT_BINARY`.
->
-> The `fs:agent_binary.txt` comparison will therefore show an empty file from
-> the Python run against `claude` from the Rust run. This is not a regression —
-> it documents a known behavioral gap. The Rust implementation reflects the
-> correct intended behavior. The Python implementation is expected to be updated
-> to match.
-
-This divergence is also recorded as a YAML comment in `tier8-env-vars.yaml`
-alongside the `env-var-agent-binary-is-claude` case definition.
-
-Both cases set `AMPLIHACK_NONINTERACTIVE=1` in the `env:` block to prevent
-bootstrap prompts from interfering with the captured output.
+All current tier-8 cases pass. They remain important because they verify the
+launcher env contract that nested workflows and tool wrappers rely on.
 
 **Example run:**
 
@@ -273,11 +258,27 @@ bootstrap prompts from interfering with the captured output.
 python tests/parity/validate_cli_parity.py \
   --scenario tests/parity/scenarios/tier8-env-vars.yaml
 
-# Expected output (Rust passes, Python may show divergence):
-# PASS [rust] env-var-agent-binary-is-claude
-# PASS [rust] env-var-amplihack-home-contains-amplihack
-# DIVERGE [python] env-var-agent-binary-is-claude  (AMPLIHACK_AGENT_BINARY not set)
+# Expected output:
+# PASS env-var-agent-binary-is-claude
+# PASS env-var-amplihack-home-contains-amplihack
 ```
+
+---
+
+### tier9-copilot-control-plane.yaml — Copilot control plane
+
+Validates the dedicated `amplihack copilot` runtime surface beyond the generic
+launcher contract. These cases compare:
+
+- default Copilot launch argv
+- explicit-args override behavior
+- generated `.github/hooks` artifacts
+- staged `~/.copilot/copilot-instructions.md`
+- local plugin registration under `~/.copilot/installed-plugins/`
+- Copilot MCP config staging under `~/.copilot/github-copilot/mcp.json`
+
+**Expected result:** All cases pass. This tier now serves as regression coverage
+for the dedicated Copilot control-plane contract.
 
 ---
 

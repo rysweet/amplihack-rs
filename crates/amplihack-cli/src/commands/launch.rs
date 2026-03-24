@@ -9,6 +9,7 @@ use crate::commands::memory::{
     background_index_job_active, check_index_status, default_code_graph_db_path_for_project,
     record_background_index_pid, run_index_code, run_index_scip,
 };
+use crate::copilot_setup;
 use crate::env_builder::EnvBuilder;
 use crate::launcher::ManagedChild;
 use crate::nesting::NestingDetector;
@@ -122,6 +123,47 @@ pub fn run_launch(
     Ok(())
 }
 
+pub fn run_copilot(extra_args: Vec<String>) -> Result<()> {
+    maybe_print_npm_update_notice("copilot", false);
+    bootstrap::prepare_launcher("copilot")?;
+    copilot_setup::ensure_copilot_home_staged()?;
+    copilot_setup::disable_github_mcp_server()?;
+
+    let binary = bootstrap::ensure_tool_available("copilot")
+        .with_context(|| "could not find 'copilot' binary in PATH".to_string())?;
+
+    tracing::info!(
+        binary = %binary.path.display(),
+        version = binary.version.as_deref().unwrap_or("unknown"),
+        "launching copilot"
+    );
+
+    let current_dir = std::env::current_dir().ok();
+    let mut env_builder = EnvBuilder::new()
+        .with_amplihack_session_id()
+        .with_amplihack_vars()
+        .with_agent_binary("copilot")
+        .with_amplihack_home()
+        .with_asset_resolver();
+    if let Some(project_path) = current_dir.as_deref() {
+        env_builder = env_builder.with_project_kuzu_db(project_path);
+    }
+    let env = env_builder
+        .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1")
+        .build();
+
+    let mut cmd = build_copilot_command(&binary, &extra_args);
+    cmd.envs(env);
+
+    let shutdown = signals::register_handlers()?;
+    let mut child = ManagedChild::spawn(cmd)?;
+    let exit_code = wait_for_child_or_signal(&mut child, &shutdown)?;
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
+    Ok(())
+}
+
 fn build_command(
     binary: &BinaryInfo,
     resume: bool,
@@ -155,6 +197,44 @@ fn build_command(
     }
     cmd.args(extra_args);
     cmd
+}
+
+fn build_copilot_command(binary: &BinaryInfo, extra_args: &[String]) -> Command {
+    let mut cmd = Command::new(&binary.path);
+    cmd.arg("--allow-all-tools");
+
+    if extra_args.is_empty() {
+        cmd.arg("--autopilot")
+            .arg("--yolo")
+            .arg("--max-autopilot-continues")
+            .arg("100");
+    }
+
+    for directory in get_copilot_directories() {
+        cmd.arg("--add-dir").arg(directory);
+    }
+
+    cmd.arg("--disable-mcp-server")
+        .arg("github-mcp-server")
+        .args(extra_args);
+    cmd
+}
+
+fn get_copilot_directories() -> Vec<String> {
+    let mut directories = Vec::new();
+    let candidates = [
+        std::env::var_os("HOME").map(PathBuf::from),
+        Some(std::env::temp_dir()),
+        std::env::current_dir().ok(),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.is_dir() {
+            directories.push(candidate.to_string_lossy().into_owned());
+        }
+    }
+
+    directories
 }
 
 fn wait_for_child_or_signal(

@@ -44,9 +44,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             // Always inject --dangerously-skip-permissions to match Python launcher parity.
             launch::run_launch("claude", resume, continue_session, true, false, claude_args)
         }
-        Commands::Copilot { args } => {
-            launch::run_launch("copilot", false, false, true, false, args)
-        }
+        Commands::Copilot { args } => launch::run_copilot(args),
         Commands::Codex { args } => launch::run_launch("codex", false, false, true, false, args),
         Commands::Amplifier { args } => {
             launch::run_launch("amplifier", false, false, true, false, args)
