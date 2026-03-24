@@ -30,6 +30,7 @@ and what behaviour each tier validates.
   - [tier8-env-vars.yaml — Environment variable injection](#tier8-env-varsyaml--environment-variable-injection)
   - [tier9-copilot-control-plane.yaml — Copilot control plane](#tier9-copilot-control-planeyaml--copilot-control-plane)
   - [tier10-pre-tool-use-hook.yaml — Copilot pre-tool-use hook](#tier10-pre-tool-use-hookyaml--copilot-pre-tool-use-hook)
+  - [tier11-xpia-fail-closed.yaml — XPIA fail-closed behavior](#tier11-xpia-fail-closedyaml--xpia-fail-closed-behavior)
   - [Related](#related)
 
 ---
@@ -293,6 +294,19 @@ Exercises the staged `.github/hooks/pre-tool-use` wrapper end-to-end through the
 
 **Expected result:** All cases pass. This tier acts as outside-in regression
 coverage for the staged Copilot pre-tool-use hook contract.
+
+---
+
+### tier11-xpia-fail-closed.yaml — XPIA fail-closed behavior
+
+Exercises the staged Copilot `pre-tool-use` wrapper when the Rust-backed XPIA
+binary is unavailable or misbehaves. The current cases compare:
+
+- missing `xpia-defend` on `PATH`
+- fake `xpia-defend` that returns exit code `2` despite valid-looking JSON
+
+**Expected result:** All cases pass. This tier acts as regression coverage for
+the fail-closed XPIA contract that must hold even under degraded runtime conditions.
 
 ---
 

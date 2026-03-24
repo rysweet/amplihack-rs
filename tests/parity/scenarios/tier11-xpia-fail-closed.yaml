@@ -1,0 +1,64 @@
+cases:
+  - name: copilot-pre-tool-use-denies-when-xpia-binary-missing
+    argv: ["copilot"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      PATH: "${SANDBOX_ROOT}/bin:/usr/bin:/bin"
+    setup: |
+      mkdir -p bin .claude/tools/xpia/hooks
+      cp /tmp/amploxy-copilot-3336-parity-pr/.claude/tools/xpia/hooks/pre_tool_use.py .claude/tools/xpia/hooks/pre_tool_use.py
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      cat > "$SANDBOX_ROOT/pre-tool-input.json" <<'JSON'
+      {"session_id":"test-session-000","transcript_path":"/tmp/test-transcript.jsonl","cwd":".","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo safe"},"tool_use_id":"toolu_test_000"}
+      JSON
+      .github/hooks/pre-tool-use < "$SANDBOX_ROOT/pre-tool-input.json" > "$SANDBOX_ROOT/pre_tool_use_output.json"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - jsonfs:pre_tool_use_output.json
+
+  - name: copilot-pre-tool-use-denies-when-xpia-exits-2
+    argv: ["copilot"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      PATH: "${SANDBOX_ROOT}/bin:/usr/bin:/bin"
+    setup: |
+      mkdir -p bin .claude/tools/xpia/hooks
+      cp /tmp/amploxy-copilot-3336-parity-pr/.claude/tools/xpia/hooks/pre_tool_use.py .claude/tools/xpia/hooks/pre_tool_use.py
+      cat > bin/xpia-defend <<'SCRIPT'
+      #!/usr/bin/env bash
+      echo '{"is_valid": true, "risk_level": "none"}'
+      exit 2
+      SCRIPT
+      chmod +x bin/xpia-defend
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      cat > "$SANDBOX_ROOT/pre-tool-input.json" <<'JSON'
+      {"session_id":"test-session-000","transcript_path":"/tmp/test-transcript.jsonl","cwd":".","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo safe"},"tool_use_id":"toolu_test_000"}
+      JSON
+      .github/hooks/pre-tool-use < "$SANDBOX_ROOT/pre-tool-input.json" > "$SANDBOX_ROOT/pre_tool_use_output.json"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - jsonfs:pre_tool_use_output.json
