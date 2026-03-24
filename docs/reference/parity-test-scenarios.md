@@ -34,6 +34,7 @@ and what behaviour each tier validates.
   - [tier12-xpia-malformed-output.yaml — XPIA malformed output](#tier12-xpia-malformed-outputyaml--xpia-malformed-output)
   - [tier13-xpia-timeout.yaml — XPIA timeout behavior](#tier13-xpia-timeoutyaml--xpia-timeout-behavior)
   - [tier14-xpia-logging.yaml — XPIA hook logging](#tier14-xpia-loggingyaml--xpia-hook-logging)
+  - [tier15-session-start-hook.yaml — Copilot session-start hook](#tier15-session-start-hookyaml--copilot-session-start-hook)
   - [Related](#related)
 
 ---
@@ -351,6 +352,19 @@ last log entry into a stable JSON summary. The current cases compare:
 
 **Expected result:** All cases pass. This tier extends outside-in parity into
 the staged hook's security audit trail.
+
+---
+
+### tier15-session-start-hook.yaml — Copilot session-start hook
+
+Exercises the staged `.github/hooks/session-start` wrapper end to end under both
+supported hook-engine modes. The current cases compare:
+
+- `AMPLIHACK_HOOK_ENGINE=rust`: wrapper forwards stdin JSON into `amplihack-hooks session-start`
+- `AMPLIHACK_HOOK_ENGINE=python`: wrapper forwards stdin JSON into `session_start.py`
+
+**Expected result:** All cases pass. This tier extends runtime parity from
+artifact staging into actual session-start wrapper execution.
 
 ---
 
