@@ -1,0 +1,80 @@
+cases:
+  - name: copilot-default-launch-command
+    argv: ["copilot"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    setup: |
+      mkdir -p bin
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/copilot_args.txt"
+      env | grep -E '^(AMPLIHACK_AGENT_BINARY|AMPLIHACK_HOME)$' | sort > "$SANDBOX_ROOT/copilot_env.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - fs:copilot_args.txt
+      - fs:copilot_env.txt
+
+  - name: copilot-explicit-args-override-default-autopilot
+    argv: ["copilot", "--resume"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    setup: |
+      mkdir -p bin
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/copilot_args.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - fs:copilot_args.txt
+
+  - name: copilot-stages-hooks-and-instructions
+    argv: ["copilot"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    setup: |
+      mkdir -p bin
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - fs:.github/hooks
+      - fs:home/.copilot/copilot-instructions.md
+      - fs:home/.copilot/installed-plugins/amplihack@local/commands
+      - jsonfs:home/.copilot/config.json
+      - jsonfs:home/.copilot/github-copilot/mcp.json

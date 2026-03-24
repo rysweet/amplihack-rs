@@ -1,0 +1,82 @@
+cases:
+  - name: copilot-session-start-rust-wrapper-pipes-stdin
+    argv: ["copilot"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      AMPLIHACK_HOOK_ENGINE: "rust"
+      PATH: "${SANDBOX_ROOT}/bin:/usr/bin:/bin"
+    setup: |
+      mkdir -p bin
+      cat > bin/amplihack-hooks <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/hook_args.txt"
+      cat > "$SANDBOX_ROOT/hook_stdin.json"
+      printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"stubbed-session-context"}}'
+      SCRIPT
+      chmod +x bin/amplihack-hooks
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      cat > "$SANDBOX_ROOT/session-start-input.json" <<'JSON'
+      {"hook_event_name":"SessionStart","session_id":"test-session-123"}
+      JSON
+      .github/hooks/session-start < "$SANDBOX_ROOT/session-start-input.json" > "$SANDBOX_ROOT/session_start_output.json"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - fs:hook_args.txt
+      - jsonfs:hook_stdin.json
+      - jsonfs:session_start_output.json
+
+  - name: copilot-session-start-python-wrapper-pipes-stdin
+    argv: ["copilot"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      AMPLIHACK_HOOK_ENGINE: "python"
+      PATH: "${SANDBOX_ROOT}/bin:/usr/bin:/bin"
+    setup: |
+      mkdir -p bin .claude/tools/amplihack/hooks
+      cat > .claude/tools/amplihack/hooks/session_start.py <<'SCRIPT'
+      #!/usr/bin/env python3
+      import json
+      from pathlib import Path
+      import sys
+      raw = sys.stdin.read()
+      Path("python_hook_stdin.json").write_text(raw)
+      print(json.dumps({
+          "status": "success",
+          "xpia_health": {"status": "not_available", "message": "stubbed"},
+          "message": "stubbed-session-start"
+      }))
+      SCRIPT
+      chmod +x .claude/tools/amplihack/hooks/session_start.py
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      cat > "$SANDBOX_ROOT/session-start-input.json" <<'JSON'
+      {"hook_event_name":"SessionStart","session_id":"test-session-py-456"}
+      JSON
+      .github/hooks/session-start < "$SANDBOX_ROOT/session-start-input.json" > "$SANDBOX_ROOT/session_start_output.json"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - jsonfs:python_hook_stdin.json
+      - jsonfs:session_start_output.json

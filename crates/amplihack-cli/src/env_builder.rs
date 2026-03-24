@@ -7,6 +7,8 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 
 /// Builder for constructing the environment passed to child processes.
 #[derive(Debug)]
@@ -38,7 +40,8 @@ impl EnvBuilder {
     /// Add AMPLIHACK_SESSION_ID (generate a new one if not already set).
     pub fn with_amplihack_session_id(self) -> Self {
         let session_id = env::var("AMPLIHACK_SESSION_ID").unwrap_or_else(|_| generate_session_id());
-        // Pass depth through unchanged (matching Python behavior)
+        // Python launch preserves an existing depth as-is and initializes
+        // the root session to depth 1.
         let depth = env::var("AMPLIHACK_DEPTH").unwrap_or_else(|_| "1".to_string());
 
         self.set("AMPLIHACK_SESSION_ID", session_id)
@@ -318,6 +321,11 @@ mod tests {
     use super::*;
     use crate::test_support::cwd_env_lock;
 
+    fn launch_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
     // ── WS1: with_agent_binary ────────────────────────────────────────────────
 
     /// WS1-1: with_agent_binary must insert AMPLIHACK_AGENT_BINARY for each
@@ -522,6 +530,36 @@ mod tests {
         let env = EnvBuilder::new().with_amplihack_session_id().build();
         assert!(env.contains_key("AMPLIHACK_SESSION_ID"));
         assert!(env.contains_key("AMPLIHACK_DEPTH"));
+    }
+
+    #[test]
+    fn with_amplihack_session_id_preserves_existing_depth() {
+        let _guard = launch_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_depth = env::var_os("AMPLIHACK_DEPTH");
+        let previous_session = env::var_os("AMPLIHACK_SESSION_ID");
+        unsafe {
+            env::set_var("AMPLIHACK_DEPTH", "3");
+            env::set_var("AMPLIHACK_SESSION_ID", "existing-session");
+        }
+
+        let built = EnvBuilder::new().with_amplihack_session_id().build();
+
+        match previous_depth {
+            Some(value) => unsafe { env::set_var("AMPLIHACK_DEPTH", value) },
+            None => unsafe { env::remove_var("AMPLIHACK_DEPTH") },
+        }
+        match previous_session {
+            Some(value) => unsafe { env::set_var("AMPLIHACK_SESSION_ID", value) },
+            None => unsafe { env::remove_var("AMPLIHACK_SESSION_ID") },
+        }
+
+        assert_eq!(built.get("AMPLIHACK_DEPTH").map(String::as_str), Some("3"));
+        assert_eq!(
+            built.get("AMPLIHACK_SESSION_ID").map(String::as_str),
+            Some("existing-session")
+        );
     }
 
     #[test]

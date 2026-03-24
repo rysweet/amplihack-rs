@@ -60,7 +60,7 @@ pub enum Commands {
         #[arg(long)]
         resume: bool,
         /// Continue the previous session
-        #[arg(long)]
+        #[arg(long = "continue")]
         continue_session: bool,
         /// Inject --dangerously-skip-permissions into the claude invocation.
         /// This bypasses Claude's interactive confirmation prompts.
@@ -77,6 +77,12 @@ pub enum Commands {
     },
     /// Launch Claude Code (alias)
     Claude {
+        /// Resume the previous session
+        #[arg(long)]
+        resume: bool,
+        /// Continue the previous session
+        #[arg(long = "continue")]
+        continue_session: bool,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true)]
         claude_args: Vec<String>,
@@ -84,7 +90,7 @@ pub enum Commands {
     /// Launch GitHub Copilot CLI
     Copilot {
         /// Extra args passed to copilot
-        #[arg(trailing_var_arg = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Launch OpenAI Codex CLI
@@ -247,6 +253,37 @@ pub enum PluginCommands {
         #[arg(default_value = "amplihack")]
         plugin_name: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_alias_accepts_resume_and_continue_flags() {
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "claude",
+            "--resume",
+            "--continue",
+            "--",
+            "--verbose",
+        ])
+        .expect("claude alias should parse launch-style flags");
+
+        match cli.command {
+            Commands::Claude {
+                resume,
+                continue_session,
+                claude_args,
+            } => {
+                assert!(resume);
+                assert!(continue_session);
+                assert_eq!(claude_args, vec!["--verbose"]);
+            }
+            other => panic!("expected Commands::Claude, got {other:?}"),
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]

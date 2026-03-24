@@ -28,7 +28,18 @@ and what behaviour each tier validates.
   - [tier6-qa-bugfixes.yaml — QA regressions](#tier6-qa-bugfixesyaml--qa-regressions)
   - [tier7-launcher-parity.yaml — Launcher gaps](#tier7-launcher-parityyaml--launcher-gaps)
   - [tier8-env-vars.yaml — Environment variable injection](#tier8-env-varsyaml--environment-variable-injection)
-- [Related](#related)
+  - [tier9-copilot-control-plane.yaml — Copilot control plane](#tier9-copilot-control-planeyaml--copilot-control-plane)
+  - [tier10-pre-tool-use-hook.yaml — Copilot pre-tool-use hook](#tier10-pre-tool-use-hookyaml--copilot-pre-tool-use-hook)
+  - [tier11-xpia-fail-closed.yaml — XPIA fail-closed behavior](#tier11-xpia-fail-closedyaml--xpia-fail-closed-behavior)
+  - [tier12-xpia-malformed-output.yaml — XPIA malformed output](#tier12-xpia-malformed-outputyaml--xpia-malformed-output)
+  - [tier13-xpia-timeout.yaml — XPIA timeout behavior](#tier13-xpia-timeoutyaml--xpia-timeout-behavior)
+  - [tier14-xpia-logging.yaml — XPIA hook logging](#tier14-xpia-loggingyaml--xpia-hook-logging)
+  - [tier15-session-start-hook.yaml — Copilot session-start hook](#tier15-session-start-hookyaml--copilot-session-start-hook)
+  - [tier16-user-prompt-submit-hook.yaml — Copilot user-prompt-submit hook](#tier16-user-prompt-submit-hookyaml--copilot-user-prompt-submit-hook)
+  - [tier17-session-stop-hook.yaml — Copilot session-stop hook](#tier17-session-stop-hookyaml--copilot-session-stop-hook)
+  - [tier18-post-tool-use-hook.yaml — Copilot post-tool-use hook](#tier18-post-tool-use-hookyaml--copilot-post-tool-use-hook)
+  - [tier19-pre-compact-legacy-runtime.yaml — PreCompact legacy runtime](#tier19-pre-compact-legacy-runtimeyaml--precompact-legacy-runtime)
+  - [Related](#related)
 
 ---
 
@@ -178,11 +189,12 @@ its arguments and environment. Covers the complete `EnvBuilder` chain output.
 
 ### tier5-gap-tests.yaml — Known gaps
 
-Documents Python launcher behaviours not yet ported to Rust. Cases in this file
-are **expected to show divergence**. Kept as a living record of outstanding
-parity work.
+Historically documented Python launcher behaviours that had not yet been ported
+to Rust. The current cases now pass and serve as regression coverage for those
+formerly divergent seams.
 
-**Expected result:** Divergence is expected and documented in YAML comments.
+**Expected result:** All cases pass; comments may describe the historical gap
+that motivated the regression.
 
 ---
 
@@ -227,11 +239,11 @@ is confirmed on both Python and Rust.
 
 ### tier7-launcher-parity.yaml — Launcher gaps
 
-Documents launcher-level gaps: flags that the Python launcher injects into the
-child process (`--dangerously-skip-permissions`, `--model`) that the Rust
-launcher did not inject at the time of writing. See [GitHub Issue #25].
+Historically tracked launcher-level gaps around injected child-process flags,
+session env handling, and alias parity. The current tier is green and now acts
+as launcher regression coverage rather than a gap ledger.
 
-**Expected result:** Divergence is expected and documented in YAML comments.
+**Expected result:** All cases pass.
 
 ---
 
@@ -247,25 +259,8 @@ then compared between Python and Rust.
 | `env-var-agent-binary-is-claude` | `AMPLIHACK_AGENT_BINARY=claude` is set for `amplihack claude` |
 | `env-var-amplihack-home-contains-amplihack` | `AMPLIHACK_HOME` is set to a path containing `.amplihack` |
 
-#### Expected divergence: AMPLIHACK_AGENT_BINARY
-
-> **The `env-var-agent-binary-is-claude` case will show a mismatch between
-> Python and Rust outputs. This divergence is intentional.**
->
-> - **Rust launcher**: always sets `AMPLIHACK_AGENT_BINARY` before exec.
-> - **Python launcher**: does not set `AMPLIHACK_AGENT_BINARY`.
->
-> The `fs:agent_binary.txt` comparison will therefore show an empty file from
-> the Python run against `claude` from the Rust run. This is not a regression —
-> it documents a known behavioral gap. The Rust implementation reflects the
-> correct intended behavior. The Python implementation is expected to be updated
-> to match.
-
-This divergence is also recorded as a YAML comment in `tier8-env-vars.yaml`
-alongside the `env-var-agent-binary-is-claude` case definition.
-
-Both cases set `AMPLIHACK_NONINTERACTIVE=1` in the `env:` block to prevent
-bootstrap prompts from interfering with the captured output.
+All current tier-8 cases pass. They remain important because they verify the
+launcher env contract that nested workflows and tool wrappers rely on.
 
 **Example run:**
 
@@ -273,11 +268,168 @@ bootstrap prompts from interfering with the captured output.
 python tests/parity/validate_cli_parity.py \
   --scenario tests/parity/scenarios/tier8-env-vars.yaml
 
-# Expected output (Rust passes, Python may show divergence):
-# PASS [rust] env-var-agent-binary-is-claude
-# PASS [rust] env-var-amplihack-home-contains-amplihack
-# DIVERGE [python] env-var-agent-binary-is-claude  (AMPLIHACK_AGENT_BINARY not set)
+# Expected output:
+# PASS env-var-agent-binary-is-claude
+# PASS env-var-amplihack-home-contains-amplihack
 ```
+
+---
+
+### tier9-copilot-control-plane.yaml — Copilot control plane
+
+Validates the dedicated `amplihack copilot` runtime surface beyond the generic
+launcher contract. These cases compare:
+
+- default Copilot launch argv
+- explicit-args override behavior
+- generated `.github/hooks` artifacts
+- staged `~/.copilot/copilot-instructions.md`
+- local plugin registration under `~/.copilot/installed-plugins/`
+- Copilot MCP config staging under `~/.copilot/github-copilot/mcp.json`
+
+**Expected result:** All cases pass. This tier now serves as regression coverage
+for the dedicated Copilot control-plane contract.
+
+---
+
+### tier10-pre-tool-use-hook.yaml — Copilot pre-tool-use hook
+
+Exercises the staged `.github/hooks/pre-tool-use` wrapper end-to-end through the
+`amplihack copilot` launch path. The current cases compare:
+
+- safe Bash input that should pass with an empty JSON response
+- blocked Bash input (`git commit --no-verify ...`) that should return a deny payload
+
+**Expected result:** All cases pass. This tier acts as outside-in regression
+coverage for the staged Copilot pre-tool-use hook contract.
+
+---
+
+### tier11-xpia-fail-closed.yaml — XPIA fail-closed behavior
+
+Exercises the staged Copilot `pre-tool-use` wrapper when the Rust-backed XPIA
+binary is unavailable or misbehaves. The current cases compare:
+
+- missing `xpia-defend` on `PATH`
+- fake `xpia-defend` that returns exit code `2` despite valid-looking JSON
+
+**Expected result:** All cases pass. This tier acts as regression coverage for
+the fail-closed XPIA contract that must hold even under degraded runtime conditions.
+
+---
+
+### tier12-xpia-malformed-output.yaml — XPIA malformed output
+
+Exercises the staged Copilot `pre-tool-use` wrapper when `xpia-defend` returns
+syntactically or structurally invalid output. The current cases compare:
+
+- fake `xpia-defend` that prints non-JSON output and exits `0`
+- fake `xpia-defend` that exits `0` but produces no stdout
+
+**Expected result:** All cases pass. This tier extends the fail-closed parity
+matrix from "binary missing/internal error" into malformed-output behavior.
+
+---
+
+### tier13-xpia-timeout.yaml — XPIA timeout behavior
+
+Exercises the staged Copilot `pre-tool-use` wrapper when `xpia-defend` hangs.
+For deterministic test runtime, the sandbox copy of the Python hook lowers the
+bridge timeout before invoking the real validation flow. The current tier
+compares:
+
+- fake `xpia-defend` that sleeps past the shortened timeout and must yield a deny payload
+
+**Expected result:** All cases pass. This tier extends degraded-runtime parity
+from missing/malformed binaries into timeout handling.
+
+---
+
+### tier14-xpia-logging.yaml — XPIA hook logging
+
+Exercises the staged Copilot `pre-tool-use` wrapper's Rust-backed audit logging.
+Instead of comparing raw log lines with timestamps, the scenarios normalize the
+last log entry into a stable JSON summary. The current cases compare:
+
+- allowed command logging with custom `session_id` passthrough
+- denied command logging with threat count and risk metadata
+
+**Expected result:** All cases pass. This tier extends outside-in parity into
+the staged hook's security audit trail.
+
+---
+
+### tier15-session-start-hook.yaml — Copilot session-start hook
+
+Exercises the staged `.github/hooks/session-start` wrapper end to end under both
+supported hook-engine modes. The current cases compare:
+
+- `AMPLIHACK_HOOK_ENGINE=rust`: wrapper forwards stdin JSON into `amplihack-hooks session-start`
+- `AMPLIHACK_HOOK_ENGINE=python`: wrapper forwards stdin JSON into `session_start.py`
+
+**Expected result:** All cases pass. This tier extends runtime parity from
+artifact staging into actual session-start wrapper execution.
+
+---
+
+### tier16-user-prompt-submit-hook.yaml — Copilot user-prompt-submit hook
+
+Exercises the staged `.github/hooks/user-prompt-submit` wrapper end to end
+under both supported hook-engine modes. The current cases compare:
+
+- `AMPLIHACK_HOOK_ENGINE=rust`: wrapper runs native `user-prompt-submit` plus the Python `workflow_classification_reminder.py`
+- `AMPLIHACK_HOOK_ENGINE=python`: wrapper runs both Python hook scripts in order
+
+**Expected result:** All cases pass. This tier extends runtime parity into the
+multi-hook composition contract used for prompt-time workflow guidance.
+
+---
+
+### tier17-session-stop-hook.yaml — Copilot session-stop hook
+
+Exercises the staged `.github/hooks/session-stop` wrapper end to end under
+both supported hook-engine modes. The current cases compare:
+
+- `AMPLIHACK_HOOK_ENGINE=rust`: wrapper runs native `stop` and `session-stop`
+  subcommands with the same stdin payload
+- `AMPLIHACK_HOOK_ENGINE=python`: wrapper runs both `stop.py` and
+  `session_stop.py` with forwarded stdin
+
+**Expected result:** All cases pass. This tier extends runtime parity into the
+multi-hook shutdown contract used for power-steering and session-finalization
+behavior.
+
+---
+
+### tier18-post-tool-use-hook.yaml — Copilot post-tool-use hook
+
+Exercises the staged `.github/hooks/post-tool-use` wrapper end to end under
+both supported hook-engine modes. The current cases compare:
+
+- `AMPLIHACK_HOOK_ENGINE=rust`: wrapper `exec`s native `post-tool-use` with the
+  original stdin payload
+- `AMPLIHACK_HOOK_ENGINE=python`: wrapper `exec`s `post_tool_use.py` with the
+  same stdin payload and argv forwarding
+
+**Expected result:** All cases pass. This tier extends runtime parity into the
+post-tool execution path rather than only checking staged artifact contents.
+
+---
+
+### tier19-pre-compact-legacy-runtime.yaml — PreCompact legacy runtime
+
+Exercises the direct `PreCompact` hook runtime against the legacy
+conversation-payload shape used by the Python hook. The case bypasses the
+top-level CLI and invokes the Python hook script and native Rust hooks binary
+directly, then compares normalized session artifacts:
+
+- `CONVERSATION_TRANSCRIPT.md`
+- `ORIGINAL_REQUEST.md`
+- `compaction_events.json`
+- transcript copy creation under `transcripts/`
+
+**Expected result:** All cases pass. This tier extends parity beyond Copilot
+wrappers into the non-Copilot hook runtime used before context compaction.
 
 ---
 

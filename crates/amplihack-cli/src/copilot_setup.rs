@@ -7,17 +7,55 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+const INSTRUCTIONS_WORKFLOW_DESC: &str = "Standard development workflow";
+
 const INSTRUCTIONS_MARKER_START: &str = "<!-- AMPLIHACK_INSTRUCTIONS_START -->";
 const INSTRUCTIONS_MARKER_END: &str = "<!-- AMPLIHACK_INSTRUCTIONS_END -->";
 const COPILOT_HOOKS_MANIFEST: &str = r#"{
   "version": 1,
   "hooks": {
-    "sessionStart": [{"type": "command", "bash": ".github/hooks/session-start", "timeoutSec": 30}],
-    "sessionEnd": [{"type": "command", "bash": ".github/hooks/session-stop", "timeoutSec": 30}],
-    "userPromptSubmitted": [{"type": "command", "bash": ".github/hooks/user-prompt-submit", "timeoutSec": 10}],
-    "preToolUse": [{"type": "command", "bash": ".github/hooks/pre-tool-use", "timeoutSec": 15}],
-    "postToolUse": [{"type": "command", "bash": ".github/hooks/post-tool-use", "timeoutSec": 10}],
-    "errorOccurred": [{"type": "command", "bash": ".github/hooks/error-occurred", "timeoutSec": 10}]
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": ".github/hooks/session-start",
+        "timeoutSec": 30
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": ".github/hooks/session-stop",
+        "timeoutSec": 30
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": ".github/hooks/user-prompt-submit",
+        "timeoutSec": 10
+      }
+    ],
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": ".github/hooks/pre-tool-use",
+        "timeoutSec": 15
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": ".github/hooks/post-tool-use",
+        "timeoutSec": 10
+      }
+    ],
+    "errorOccurred": [
+      {
+        "type": "command",
+        "bash": ".github/hooks/error-occurred",
+        "timeoutSec": 10
+      }
+    ]
   }
 }
 "#;
@@ -73,6 +111,52 @@ pub fn ensure_copilot_home_staged() -> Result<()> {
     )?;
     generate_copilot_instructions(&copilot_home)?;
     Ok(())
+}
+
+pub fn disable_github_mcp_server() -> Result<bool> {
+    let mcp_config_dir = copilot_home()?.join("github-copilot");
+    let mcp_config_file = mcp_config_dir.join("mcp.json");
+    fs::create_dir_all(&mcp_config_dir)
+        .with_context(|| format!("failed to create {}", mcp_config_dir.display()))?;
+
+    let mut config = if mcp_config_file.exists() {
+        fs::read_to_string(&mcp_config_file)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .unwrap_or_else(|| json!({}))
+    } else {
+        json!({})
+    };
+
+    let Some(root) = config.as_object_mut() else {
+        return Err(anyhow!("mcp config root must be a JSON object"));
+    };
+    let servers = root
+        .entry("mcpServers")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !servers.is_object() {
+        *servers = Value::Object(Default::default());
+    }
+    let servers = servers
+        .as_object_mut()
+        .expect("mcpServers converted to object");
+    let github = servers
+        .entry("github-mcp-server")
+        .or_insert_with(|| Value::Object(Default::default()));
+    if !github.is_object() {
+        *github = Value::Object(Default::default());
+    }
+    github
+        .as_object_mut()
+        .expect("github-mcp-server converted to object")
+        .insert("disabled".to_string(), Value::Bool(true));
+
+    fs::write(
+        &mcp_config_file,
+        serde_json::to_string_pretty(&config)? + "\n",
+    )
+    .with_context(|| format!("failed to write {}", mcp_config_file.display()))?;
+    Ok(true)
 }
 
 fn stage_agents(source_agents: &Path, copilot_home: &Path) -> Result<usize> {
@@ -237,14 +321,28 @@ fn stage_repo_hooks(repo_root: &Path) -> Result<usize> {
     fs::write(&manifest_path, COPILOT_HOOKS_MANIFEST)
         .with_context(|| format!("failed to write {}", manifest_path.display()))?;
 
+    let hook_engine = hook_engine()?;
+    let rust_binary = if hook_engine == "rust" {
+        Some(find_rust_hook_binary()?.ok_or_else(|| {
+            anyhow!(
+                "AMPLIHACK_HOOK_ENGINE=rust but amplihack-hooks binary not found. Install it or set AMPLIHACK_HOOK_ENGINE=python."
+            )
+        })?)
+    } else {
+        None
+    };
+
     let mut staged = 0usize;
     for spec in COPILOT_HOOK_WRAPPERS {
         let wrapper_path = hooks_dir.join(spec.hook_name);
         if should_preserve_user_hook(&wrapper_path)? {
             continue;
         }
-        fs::write(&wrapper_path, build_wrapper_script(spec))
-            .with_context(|| format!("failed to write {}", wrapper_path.display()))?;
+        fs::write(
+            &wrapper_path,
+            build_wrapper_script(spec, hook_engine, rust_binary.as_deref()),
+        )
+        .with_context(|| format!("failed to write {}", wrapper_path.display()))?;
         set_executable(&wrapper_path)?;
         staged += 1;
     }
@@ -261,25 +359,66 @@ fn stage_repo_hooks(repo_root: &Path) -> Result<usize> {
 }
 
 fn generate_copilot_instructions(copilot_home: &Path) -> Result<()> {
+    let workflow_desc = workflow_description(copilot_home);
     let instructions_path = copilot_home.join("copilot-instructions.md");
+    let workflow = format!(
+        "{}/",
+        copilot_home.join("workflow").join("amplihack").display()
+    );
+    let context = format!(
+        "{}/",
+        copilot_home.join("context").join("amplihack").display()
+    );
+    let commands = format!(
+        "{}/",
+        copilot_home.join("commands").join("amplihack").display()
+    );
+    let agents = format!(
+        "{}/",
+        copilot_home.join("agents").join("amplihack").display()
+    );
+    let skills = format!("{}/", copilot_home.join("skills").display());
     let section = format!(
-        "{INSTRUCTIONS_MARKER_START}\n# Amplihack Framework Integration\n\n\
-You have access to the amplihack agentic coding framework. Use these resources:\n\n\
-## Workflows\n\
-Read workflow files from `{workflow}` to follow structured processes.\n\n\
-## Context\n\
-Read context files from `{context}` for project philosophy and patterns.\n\n\
-## Commands\n\
-Read command definitions from `{commands}` for available capabilities.\n\n\
-## Agents\n\
-Custom agents are available at `{agents}`.\n\n\
-## Skills\n\
-Skills are available at `{skills}`.\n{INSTRUCTIONS_MARKER_END}",
-        workflow = copilot_home.join("workflow").join("amplihack").display(),
-        context = copilot_home.join("context").join("amplihack").display(),
-        commands = copilot_home.join("commands").join("amplihack").display(),
-        agents = copilot_home.join("agents").join("amplihack").display(),
-        skills = copilot_home.join("skills").display(),
+        r#"{INSTRUCTIONS_MARKER_START}
+# Amplihack Framework Integration
+
+You have access to the amplihack agentic coding framework. Use these resources:
+
+## Workflows
+Read workflow files from `{workflow}` to follow structured processes:
+- `DEFAULT_WORKFLOW.md` — {workflow_desc}
+- `INVESTIGATION_WORKFLOW.md` — Research and exploration (6 phases)
+- `CASCADE_WORKFLOW.md`, `DEBATE_WORKFLOW.md`, `N_VERSION_WORKFLOW.md` — Fault tolerance patterns
+
+    For any non-trivial development or investigation task, use `/dev` (or `Skill(skill="dev-orchestrator")`)
+    so the smart-orchestrator recipe executes the workflow instead of handling it manually.
+
+## Context
+Read context files from `{context}` for project philosophy and patterns:
+- `PHILOSOPHY.md` — Core principles (ruthless simplicity, zero-BS, modular design)
+- `PATTERNS.md` — Reusable solution patterns
+- `TRUST.md` — Anti-sycophancy and direct communication guidelines
+- `USER_PREFERENCES.md` — User-specific preferences (MANDATORY)
+
+    ## Commands
+    Read command definitions from `{commands}` for available capabilities:
+    - `dev.md` — Primary dev-orchestrator entry point
+    - `ultrathink.md` — Deprecated alias to `/dev`
+    - `analyze.md` — Comprehensive code review
+    - `improve.md` — Self-improvement and learning capture
+
+## Agents
+Custom agents are available at `{agents}`. Use them via the task tool.
+
+## Skills
+Skills are available at `{skills}`. They auto-activate based on context.
+{INSTRUCTIONS_MARKER_END}"#,
+        workflow = workflow,
+        context = context,
+        commands = commands,
+        agents = agents,
+        skills = skills,
+        workflow_desc = workflow_desc,
     );
 
     let updated = if instructions_path.exists() {
@@ -292,6 +431,36 @@ Skills are available at `{skills}`.\n{INSTRUCTIONS_MARKER_END}",
 
     fs::write(&instructions_path, updated)
         .with_context(|| format!("failed to write {}", instructions_path.display()))
+}
+
+fn workflow_description(copilot_home: &Path) -> String {
+    let default_workflow = copilot_home
+        .join("workflow")
+        .join("amplihack")
+        .join("DEFAULT_WORKFLOW.md");
+    let Ok(content) = fs::read_to_string(default_workflow) else {
+        return INSTRUCTIONS_WORKFLOW_DESC.to_string();
+    };
+    let count = content
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("### Step ")
+                && trimmed
+                    .split_once(':')
+                    .map(|(prefix, _)| {
+                        prefix["### Step ".len()..]
+                            .chars()
+                            .all(|c| c.is_ascii_digit() || c == '.')
+                    })
+                    .unwrap_or(false)
+        })
+        .count();
+    if count == 0 {
+        INSTRUCTIONS_WORKFLOW_DESC.to_string()
+    } else {
+        format!("{INSTRUCTIONS_WORKFLOW_DESC} ({count} steps)")
+    }
 }
 
 fn replace_or_append_section(existing: &str, section: &str) -> String {
@@ -393,74 +562,285 @@ fn should_preserve_user_hook(path: &Path) -> Result<bool> {
     Ok(!existing.contains("amplihack"))
 }
 
-fn build_wrapper_script(spec: &HookWrapperSpec) -> String {
-    if spec.subcommands.len() == 1 {
-        let subcommand = spec.subcommands[0];
-        return format!(
-            "#!/usr/bin/env bash\n\
-# Copilot hook wrapper - generated by amplihack\n\
-HOOKS_BIN=\"${{AMPLIHACK_HOOKS_BIN:-}}\"\n\
-if [[ -z \"$HOOKS_BIN\" ]]; then\n\
-    if [[ -x \"$HOME/.local/bin/amplihack-hooks\" ]]; then\n\
-        HOOKS_BIN=\"$HOME/.local/bin/amplihack-hooks\"\n\
-    elif command -v amplihack-hooks >/dev/null 2>&1; then\n\
-        HOOKS_BIN=\"$(command -v amplihack-hooks)\"\n\
-    fi\n\
-fi\n\n\
-if [[ -n \"$HOOKS_BIN\" ]] && [[ -x \"$HOOKS_BIN\" ]]; then\n\
-    exec \"$HOOKS_BIN\" {subcommand} \"$@\"\n\
-else\n\
-    echo \"{{}}\"\n\
-fi\n"
-        );
+fn build_wrapper_script(
+    spec: &HookWrapperSpec,
+    hook_engine: &str,
+    rust_binary: Option<&Path>,
+) -> String {
+    if spec.hook_name == "pre-tool-use" {
+        return build_pre_tool_use_wrapper(hook_engine, rust_binary);
     }
 
-    let script_blocks = spec
-        .subcommands
-        .iter()
-        .map(|subcommand| {
-            format!(
-                "if [[ -n \"$HOOKS_BIN\" ]] && [[ -x \"$HOOKS_BIN\" ]]; then\n\
-    printf '%s' \"$INPUT\" | \"$HOOKS_BIN\" {subcommand} \"$@\" >/dev/null 2>/dev/null || true\n\
-fi"
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
+    if hook_engine == "rust" {
+        return build_rust_wrapper(spec, rust_binary);
+    }
 
-    format!(
-        "#!/usr/bin/env bash\n\
-# Copilot hook wrapper - generated by amplihack\n\
-# Runs multiple hook handlers for this event\n\
-HOOKS_BIN=\"${{AMPLIHACK_HOOKS_BIN:-}}\"\n\
-if [[ -z \"$HOOKS_BIN\" ]]; then\n\
-    if [[ -x \"$HOME/.local/bin/amplihack-hooks\" ]]; then\n\
-        HOOKS_BIN=\"$HOME/.local/bin/amplihack-hooks\"\n\
-    elif command -v amplihack-hooks >/dev/null 2>&1; then\n\
-        HOOKS_BIN=\"$(command -v amplihack-hooks)\"\n\
-    fi\n\
-fi\n\
-INPUT=$(cat)\n\n\
-{script_blocks}\n"
-    )
+    build_python_wrapper(spec)
 }
 
 fn error_wrapper_script() -> &'static str {
-    "#!/usr/bin/env bash\n\
-    # Copilot hook: error-occurred\n\
-    # Generated by amplihack\n\n\
-    LOG_DIR=\"$HOME/.amplihack/.claude/runtime/logs\"\n\n\
-    mkdir -p \"$LOG_DIR\"\n\
-    INPUT=$(cat)\n\
-    ERROR_MSG=$(printf '%s' \"$INPUT\" | tr '\n' ' ' | sed -n 's/.*\"message\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p')\n\
-    if [[ -z \"$ERROR_MSG\" ]]; then\n\
-        ERROR_MSG=$(printf '%s' \"$INPUT\" | tr '\n' ' ' | sed 's/[[:space:]]\\+/ /g' | cut -c1-500)\n\
-    fi\n\
-    if [[ -z \"$ERROR_MSG\" ]]; then\n\
-        ERROR_MSG=\"unknown\"\n\
-    fi\n\
-    echo \"$(date -Iseconds): ERROR - $ERROR_MSG\" >> \"${LOG_DIR}/errors.log\"\n\
-    echo \"{}\"\n"
+    r#"#!/usr/bin/env bash
+# Copilot hook: error-occurred
+# Logs error to runtime log. No dedicated Python hook exists for this event;
+# error_protocol.py is a utility module, not a hook entry point.
+
+AMPLIHACK_HOOKS="$HOME/.amplihack/.claude/tools/amplihack/hooks"
+LOG_DIR="$HOME/.amplihack/.claude/runtime/logs"
+
+# If a dedicated error_occurred.py hook exists, use it
+if [[ -f "${AMPLIHACK_HOOKS}/error_occurred.py" ]]; then
+    python3 "${AMPLIHACK_HOOKS}/error_occurred.py" "$@"
+elif REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" && [[ -f "${REPO_ROOT}/.claude/tools/amplihack/hooks/error_occurred.py" ]]; then
+    python3 "${REPO_ROOT}/.claude/tools/amplihack/hooks/error_occurred.py" "$@"
+else
+    # Fallback: log the error from stdin
+    mkdir -p "$LOG_DIR"
+    INPUT=$(cat)
+    ERROR_MSG=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',{}).get('message','unknown'))" 2>/dev/null || echo "unknown")
+    echo "$(date -Iseconds): ERROR - $ERROR_MSG" >> "${LOG_DIR}/errors.log"
+    echo "{}"
+fi
+"#
+}
+
+fn build_rust_wrapper(spec: &HookWrapperSpec, rust_binary: Option<&Path>) -> String {
+    let quoted_binary = rust_binary
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "amplihack-hooks".to_string());
+
+    match spec.hook_name {
+        "session-start" | "post-tool-use" => format!(
+            "#!/usr/bin/env bash\n\
+# Copilot hook wrapper - generated by amplihack (rust engine)\n\
+exec {quoted_binary} {} \"$@\"\n",
+            spec.subcommands[0]
+        ),
+        "session-stop" => format!(
+            "#!/usr/bin/env bash\n\
+# Copilot hook wrapper - generated by amplihack (rust engine)\n\
+# Runs multiple hook scripts for this event\n\
+INPUT=$(cat)\n\n\
+echo \"$INPUT\" | {quoted_binary} stop \"$@\" || true\n\n\
+echo \"$INPUT\" | {quoted_binary} session-stop \"$@\" || true\n"
+        ),
+        "user-prompt-submit" => format!(
+            r#"#!/usr/bin/env bash
+# Copilot hook wrapper - generated by amplihack (rust engine)
+# Runs multiple hook scripts for this event
+INPUT=$(cat)
+
+echo "$INPUT" | {quoted_binary} user-prompt-submit "$@" || true
+
+AMPLIHACK_HOOKS="$HOME/.amplihack/.claude/tools/amplihack/hooks"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT=""
+if [[ -f "${{AMPLIHACK_HOOKS}}/workflow_classification_reminder.py" ]]; then
+    echo "$INPUT" | python3 "${{AMPLIHACK_HOOKS}}/workflow_classification_reminder.py" "$@" 2>/dev/null || true
+elif [[ -n "$REPO_ROOT" ]] && [[ -f "${{REPO_ROOT}}/.claude/tools/amplihack/hooks/workflow_classification_reminder.py" ]]; then
+    echo "$INPUT" | python3 "${{REPO_ROOT}}/.claude/tools/amplihack/hooks/workflow_classification_reminder.py" "$@" 2>/dev/null || true
+fi
+"#
+        ),
+        _ => build_python_wrapper(spec),
+    }
+}
+
+fn build_pre_tool_use_wrapper(hook_engine: &str, rust_binary: Option<&Path>) -> String {
+    let amplihack_capture = if hook_engine == "rust" {
+        let binary = rust_binary
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "amplihack-hooks".to_string());
+        format!(
+            "AMPLIHACK_OUTPUT=$(echo \"$INPUT\" | {binary} pre-tool-use \"$@\" 2>/dev/null || printf '{{}}')"
+        )
+    } else {
+        "AMPLIHACK_OUTPUT=\"{}\"\n\
+AMPLIHACK_HOOKS=\"$HOME/.amplihack/.claude/tools/amplihack/hooks\"\n\
+if [[ -f \"${AMPLIHACK_HOOKS}/pre_tool_use.py\" ]]; then\n\
+    AMPLIHACK_OUTPUT=$(echo \"$INPUT\" | python3 \"${AMPLIHACK_HOOKS}/pre_tool_use.py\" \"$@\" 2>/dev/null || printf '{}')\n\
+elif [[ -n \"$REPO_ROOT\" ]] && [[ -f \"${REPO_ROOT}/.claude/tools/amplihack/hooks/pre_tool_use.py\" ]]; then\n\
+    AMPLIHACK_OUTPUT=$(echo \"$INPUT\" | python3 \"${REPO_ROOT}/.claude/tools/amplihack/hooks/pre_tool_use.py\" \"$@\" 2>/dev/null || printf '{}')\n\
+fi"
+            .to_string()
+    };
+
+    format!(
+        r#"#!/usr/bin/env bash
+# Copilot hook wrapper - generated by amplihack ({hook_engine} engine)
+# Aggregates amplihack and XPIA pre-tool validation into one JSON response
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || REPO_ROOT=""
+INPUT=$(cat)
+
+{amplihack_capture}
+
+XPIA_OUTPUT="{{}}"
+XPIA_HOOKS="$HOME/.amplihack/.claude/tools/xpia/hooks"
+if [[ -f "${{XPIA_HOOKS}}/pre_tool_use.py" ]]; then
+    XPIA_OUTPUT=$(echo "$INPUT" | python3 "${{XPIA_HOOKS}}/pre_tool_use.py" "$@" 2>/dev/null || printf '{{}}')
+elif [[ -n "$REPO_ROOT" ]] && [[ -f "${{REPO_ROOT}}/.claude/tools/xpia/hooks/pre_tool_use.py" ]]; then
+    XPIA_OUTPUT=$(echo "$INPUT" | python3 "${{REPO_ROOT}}/.claude/tools/xpia/hooks/pre_tool_use.py" "$@" 2>/dev/null || printf '{{}}')
+fi
+
+python3 - "$AMPLIHACK_OUTPUT" "$XPIA_OUTPUT" <<'PY'
+import json
+import sys
+
+
+def parse_payload(raw: str) -> dict:
+    raw = raw.strip()
+    if not raw:
+        return {{}}
+    for line in reversed(raw.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return {{}}
+
+
+amplihack = parse_payload(sys.argv[1])
+xpia = parse_payload(sys.argv[2])
+
+permission = xpia.get("permissionDecision")
+if permission in {{"allow", "deny", "ask"}}:
+    print(json.dumps(xpia))
+    raise SystemExit(0)
+
+permission = amplihack.get("permissionDecision")
+if permission in {{"allow", "deny", "ask"}}:
+    print(json.dumps(amplihack))
+    raise SystemExit(0)
+
+if amplihack.get("block"):
+    print(
+        json.dumps(
+            {{
+                "permissionDecision": "deny",
+                "message": amplihack.get(
+                    "message",
+                    "Blocked by amplihack pre-tool-use hook.",
+                ),
+            }}
+        )
+    )
+    raise SystemExit(0)
+
+print("{{}}")
+PY
+"#
+    )
+}
+
+fn build_python_wrapper(spec: &HookWrapperSpec) -> String {
+    match spec.hook_name {
+        "session-start" => "#!/usr/bin/env bash\n\
+# Copilot hook wrapper - generated by amplihack\n\
+HOOK=\"session_start.py\"\n\
+AMPLIHACK_HOOKS=\"$HOME/.amplihack/.claude/tools/amplihack/hooks\"\n\n\
+if [[ -f \"${AMPLIHACK_HOOKS}/${HOOK}\" ]]; then\n\
+    exec python3 \"${AMPLIHACK_HOOKS}/${HOOK}\" \"$@\"\n\
+elif REPO_ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null)\" && [[ -f \"${REPO_ROOT}/.claude/tools/amplihack/hooks/${HOOK}\" ]]; then\n\
+    exec python3 \"${REPO_ROOT}/.claude/tools/amplihack/hooks/${HOOK}\" \"$@\"\n\
+else\n\
+    echo \"{}\"\n\
+fi\n"
+            .to_string(),
+        "session-stop" => "#!/usr/bin/env bash\n\
+# Copilot hook wrapper - generated by amplihack\n\
+# Runs multiple hook scripts for this event\n\
+AMPLIHACK_HOOKS=\"$HOME/.amplihack/.claude/tools/amplihack/hooks\"\n\
+REPO_ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || REPO_ROOT=\"\"\n\
+INPUT=$(cat)\n\n\
+if [[ -f \"${AMPLIHACK_HOOKS}/stop.py\" ]]; then\n\
+    echo \"$INPUT\" | python3 \"${AMPLIHACK_HOOKS}/stop.py\" \"$@\" 2>/dev/null || true\n\
+elif [[ -n \"$REPO_ROOT\" ]] && [[ -f \"${REPO_ROOT}/.claude/tools/amplihack/hooks/stop.py\" ]]; then\n\
+    echo \"$INPUT\" | python3 \"${REPO_ROOT}/.claude/tools/amplihack/hooks/stop.py\" \"$@\" 2>/dev/null || true\n\
+fi\n\n\
+if [[ -f \"${AMPLIHACK_HOOKS}/session_stop.py\" ]]; then\n\
+    echo \"$INPUT\" | python3 \"${AMPLIHACK_HOOKS}/session_stop.py\" \"$@\" 2>/dev/null || true\n\
+elif [[ -n \"$REPO_ROOT\" ]] && [[ -f \"${REPO_ROOT}/.claude/tools/amplihack/hooks/session_stop.py\" ]]; then\n\
+    echo \"$INPUT\" | python3 \"${REPO_ROOT}/.claude/tools/amplihack/hooks/session_stop.py\" \"$@\" 2>/dev/null || true\n\
+fi\n"
+            .to_string(),
+        "post-tool-use" => "#!/usr/bin/env bash\n\
+# Copilot hook wrapper - generated by amplihack\n\
+HOOK=\"post_tool_use.py\"\n\
+AMPLIHACK_HOOKS=\"$HOME/.amplihack/.claude/tools/amplihack/hooks\"\n\n\
+if [[ -f \"${AMPLIHACK_HOOKS}/${HOOK}\" ]]; then\n\
+    exec python3 \"${AMPLIHACK_HOOKS}/${HOOK}\" \"$@\"\n\
+elif REPO_ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null)\" && [[ -f \"${REPO_ROOT}/.claude/tools/amplihack/hooks/${HOOK}\" ]]; then\n\
+    exec python3 \"${REPO_ROOT}/.claude/tools/amplihack/hooks/${HOOK}\" \"$@\"\n\
+else\n\
+    echo \"{}\"\n\
+fi\n"
+            .to_string(),
+        "user-prompt-submit" => "#!/usr/bin/env bash\n\
+# Copilot hook wrapper - generated by amplihack\n\
+# Runs multiple hook scripts for this event\n\
+AMPLIHACK_HOOKS=\"$HOME/.amplihack/.claude/tools/amplihack/hooks\"\n\
+REPO_ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || REPO_ROOT=\"\"\n\
+INPUT=$(cat)\n\n\
+if [[ -f \"${AMPLIHACK_HOOKS}/user_prompt_submit.py\" ]]; then\n\
+    echo \"$INPUT\" | python3 \"${AMPLIHACK_HOOKS}/user_prompt_submit.py\" \"$@\" 2>/dev/null || true\n\
+elif [[ -n \"$REPO_ROOT\" ]] && [[ -f \"${REPO_ROOT}/.claude/tools/amplihack/hooks/user_prompt_submit.py\" ]]; then\n\
+    echo \"$INPUT\" | python3 \"${REPO_ROOT}/.claude/tools/amplihack/hooks/user_prompt_submit.py\" \"$@\" 2>/dev/null || true\n\
+fi\n\n\
+if [[ -f \"${AMPLIHACK_HOOKS}/workflow_classification_reminder.py\" ]]; then\n\
+    echo \"$INPUT\" | python3 \"${AMPLIHACK_HOOKS}/workflow_classification_reminder.py\" \"$@\" 2>/dev/null || true\n\
+elif [[ -n \"$REPO_ROOT\" ]] && [[ -f \"${REPO_ROOT}/.claude/tools/amplihack/hooks/workflow_classification_reminder.py\" ]]; then\n\
+    echo \"$INPUT\" | python3 \"${REPO_ROOT}/.claude/tools/amplihack/hooks/workflow_classification_reminder.py\" \"$@\" 2>/dev/null || true\n\
+fi\n"
+            .to_string(),
+        _ => String::new(),
+    }
+}
+
+fn find_rust_hook_binary() -> Result<Option<PathBuf>> {
+    let mut candidates = Vec::new();
+    if let Some(path) = find_executable_on_path("amplihack-hooks") {
+        candidates.push(path);
+    }
+    if let Ok(home) = home_dir() {
+        candidates.push(
+            home.join(".amplihack")
+                .join(".claude")
+                .join("bin")
+                .join("amplihack-hooks"),
+        );
+        candidates.push(home.join(".amplihack").join("bin").join("amplihack-hooks"));
+        candidates.push(home.join(".cargo").join("bin").join("amplihack-hooks"));
+    }
+    Ok(candidates.into_iter().find(|candidate| candidate.is_file()))
+}
+
+fn hook_engine() -> Result<&'static str> {
+    match std::env::var("AMPLIHACK_HOOK_ENGINE") {
+        Ok(value) if value.eq_ignore_ascii_case("python") => Ok("python"),
+        Ok(value) if value.eq_ignore_ascii_case("rust") => Ok("rust"),
+        Ok(_) => Ok("python"),
+        Err(_) => {
+            if find_rust_hook_binary()?.is_some() {
+                Ok("rust")
+            } else {
+                Ok("python")
+            }
+        }
+    }
+}
+
+fn find_executable_on_path(binary: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(binary);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn set_executable(path: &Path) -> Result<()> {
@@ -587,33 +967,47 @@ mod tests {
 
     #[test]
     fn build_wrapper_script_uses_binary_subcommand_for_single_hook() {
-        let script = build_wrapper_script(&HookWrapperSpec {
-            hook_name: "session-start",
-            subcommands: &["session-start"],
-        });
+        let binary = Path::new("/tmp/amplihack-hooks");
+        let script = build_wrapper_script(
+            &HookWrapperSpec {
+                hook_name: "session-start",
+                subcommands: &["session-start"],
+            },
+            "rust",
+            Some(binary),
+        );
 
-        assert!(script.contains("amplihack-hooks"));
-        assert!(script.contains("exec \"$HOOKS_BIN\" session-start \"$@\""));
+        assert!(script.contains("/tmp/amplihack-hooks"));
+        assert!(script.contains("exec /tmp/amplihack-hooks session-start \"$@\""));
         assert!(!script.contains("python3"));
     }
 
     #[test]
     fn build_wrapper_script_uses_multiple_binary_subcommands() {
-        let script = build_wrapper_script(&HookWrapperSpec {
-            hook_name: "user-prompt-submit",
-            subcommands: &["workflow-classification-reminder", "user-prompt-submit"],
-        });
+        let binary = Path::new("/tmp/amplihack-hooks");
+        let script = build_wrapper_script(
+            &HookWrapperSpec {
+                hook_name: "user-prompt-submit",
+                subcommands: &["user-prompt-submit"],
+            },
+            "rust",
+            Some(binary),
+        );
 
-        assert!(script.contains("\"$HOOKS_BIN\" workflow-classification-reminder"));
-        assert!(script.contains("\"$HOOKS_BIN\" user-prompt-submit"));
-        assert!(!script.contains("python3"));
+        assert!(
+            script.contains(
+                "echo \"$INPUT\" | /tmp/amplihack-hooks user-prompt-submit \"$@\" || true"
+            )
+        );
+        assert!(script.contains("workflow_classification_reminder.py"));
+        assert!(script.contains("python3"));
     }
 
     #[test]
-    fn error_wrapper_script_is_python_free() {
+    fn error_wrapper_script_matches_python_fallback_shape() {
         let script = error_wrapper_script();
-        assert!(!script.contains("python3"));
-        assert!(script.contains("sed -n"));
+        assert!(script.contains("python3"));
+        assert!(script.contains("error_occurred.py"));
         assert!(script.contains("errors.log"));
     }
 }

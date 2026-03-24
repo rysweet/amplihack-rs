@@ -1,0 +1,96 @@
+cases:
+  - name: copilot-session-stop-rust-wrapper-runs-stop-and-session-stop
+    argv: ["copilot"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      AMPLIHACK_HOOK_ENGINE: "rust"
+      PATH: "${SANDBOX_ROOT}/bin:/usr/bin:/bin"
+    setup: |
+      mkdir -p bin
+      cat > bin/amplihack-hooks <<'SCRIPT'
+      #!/usr/bin/env bash
+      subcommand="${1:-}"
+      shift || true
+      case "$subcommand" in
+        stop)
+          printf '%s\n' "$@" > "$SANDBOX_ROOT/rust_stop_args.txt"
+          cat > "$SANDBOX_ROOT/rust_stop_stdin.json"
+          ;;
+        session-stop)
+          printf '%s\n' "$@" > "$SANDBOX_ROOT/rust_session_stop_args.txt"
+          cat > "$SANDBOX_ROOT/rust_session_stop_stdin.json"
+          ;;
+        *)
+          exit 1
+          ;;
+      esac
+      exit 0
+      SCRIPT
+      chmod +x bin/amplihack-hooks
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      cat > "$SANDBOX_ROOT/session-stop-input.json" <<'JSON'
+      {"hook_event_name":"SessionStop","session_id":"stop-rust-123","transcript_path":"/tmp/demo-transcript.jsonl"}
+      JSON
+      .github/hooks/session-stop < "$SANDBOX_ROOT/session-stop-input.json" > "$SANDBOX_ROOT/session_stop_output.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - fs:rust_stop_args.txt
+      - fs:rust_session_stop_args.txt
+      - jsonfs:rust_stop_stdin.json
+      - jsonfs:rust_session_stop_stdin.json
+
+  - name: copilot-session-stop-python-wrapper-runs-both-scripts
+    argv: ["copilot"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      AMPLIHACK_HOOK_ENGINE: "python"
+      PATH: "${SANDBOX_ROOT}/bin:/usr/bin:/bin"
+    setup: |
+      mkdir -p bin .claude/tools/amplihack/hooks
+      cat > .claude/tools/amplihack/hooks/stop.py <<'SCRIPT'
+      #!/usr/bin/env python3
+      import sys
+      from pathlib import Path
+      Path("stop_stdin.json").write_text(sys.stdin.read())
+      SCRIPT
+      chmod +x .claude/tools/amplihack/hooks/stop.py
+      cat > .claude/tools/amplihack/hooks/session_stop.py <<'SCRIPT'
+      #!/usr/bin/env python3
+      import sys
+      from pathlib import Path
+      Path("session_stop_stdin.json").write_text(sys.stdin.read())
+      SCRIPT
+      chmod +x .claude/tools/amplihack/hooks/session_stop.py
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      cat > "$SANDBOX_ROOT/session-stop-input.json" <<'JSON'
+      {"hook_event_name":"SessionStop","session_id":"stop-python-456","transcript_path":"/tmp/demo-transcript.jsonl"}
+      JSON
+      .github/hooks/session-stop < "$SANDBOX_ROOT/session-stop-input.json" > "$SANDBOX_ROOT/session_stop_output.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - jsonfs:stop_stdin.json
+      - jsonfs:session_stop_stdin.json

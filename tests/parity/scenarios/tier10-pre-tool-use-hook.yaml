@@ -1,0 +1,56 @@
+cases:
+  - name: copilot-pre-tool-use-allows-safe-bash
+    argv: ["copilot"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    setup: |
+      mkdir -p bin
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      cat > "$SANDBOX_ROOT/pre-tool-input.json" <<'JSON'
+      {"session_id":"test-session-000","transcript_path":"/tmp/test-transcript.jsonl","cwd":".","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git status"},"tool_use_id":"toolu_test_000"}
+      JSON
+      .github/hooks/pre-tool-use < "$SANDBOX_ROOT/pre-tool-input.json" > "$SANDBOX_ROOT/pre_tool_use_output.json"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - jsonfs:pre_tool_use_output.json
+
+  - name: copilot-pre-tool-use-denies-no-verify
+    argv: ["copilot"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
+    setup: |
+      mkdir -p bin
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      cat > "$SANDBOX_ROOT/pre-tool-input.json" <<'JSON'
+      {"session_id":"test-session-000","transcript_path":"/tmp/test-transcript.jsonl","cwd":".","permission_mode":"bypassPermissions","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git commit --no-verify -m parity"},"tool_use_id":"toolu_test_000"}
+      JSON
+      .github/hooks/pre-tool-use < "$SANDBOX_ROOT/pre-tool-input.json" > "$SANDBOX_ROOT/pre_tool_use_output.json"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - jsonfs:pre_tool_use_output.json

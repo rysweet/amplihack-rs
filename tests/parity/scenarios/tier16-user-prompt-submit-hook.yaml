@@ -1,0 +1,89 @@
+cases:
+  - name: copilot-user-prompt-submit-rust-wrapper-runs-both-hooks
+    argv: ["copilot"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      AMPLIHACK_HOOK_ENGINE: "rust"
+      PATH: "${SANDBOX_ROOT}/bin:/usr/bin:/bin"
+    setup: |
+      mkdir -p bin .claude/tools/amplihack/hooks
+      cat > bin/amplihack-hooks <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/rust_hook_args.txt"
+      cat > "$SANDBOX_ROOT/rust_hook_stdin.json"
+      exit 0
+      SCRIPT
+      chmod +x bin/amplihack-hooks
+      cat > .claude/tools/amplihack/hooks/workflow_classification_reminder.py <<'SCRIPT'
+      #!/usr/bin/env python3
+      import sys
+      from pathlib import Path
+      Path("reminder_stdin.json").write_text(sys.stdin.read())
+      SCRIPT
+      chmod +x .claude/tools/amplihack/hooks/workflow_classification_reminder.py
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      cat > "$SANDBOX_ROOT/user-prompt-input.json" <<'JSON'
+      {"hook_event_name":"UserPromptSubmit","session_id":"prompt-rust-123","prompt":"Please investigate this new bug"}
+      JSON
+      .github/hooks/user-prompt-submit < "$SANDBOX_ROOT/user-prompt-input.json" > "$SANDBOX_ROOT/user_prompt_submit_output.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - fs:rust_hook_args.txt
+      - jsonfs:rust_hook_stdin.json
+      - jsonfs:reminder_stdin.json
+
+  - name: copilot-user-prompt-submit-python-wrapper-runs-both-hooks
+    argv: ["copilot"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      AMPLIHACK_HOOK_ENGINE: "python"
+      PATH: "${SANDBOX_ROOT}/bin:/usr/bin:/bin"
+    setup: |
+      mkdir -p bin .claude/tools/amplihack/hooks
+      cat > .claude/tools/amplihack/hooks/user_prompt_submit.py <<'SCRIPT'
+      #!/usr/bin/env python3
+      import sys
+      from pathlib import Path
+      Path("submit_stdin.json").write_text(sys.stdin.read())
+      SCRIPT
+      chmod +x .claude/tools/amplihack/hooks/user_prompt_submit.py
+      cat > .claude/tools/amplihack/hooks/workflow_classification_reminder.py <<'SCRIPT'
+      #!/usr/bin/env python3
+      import sys
+      from pathlib import Path
+      Path("reminder_stdin.json").write_text(sys.stdin.read())
+      SCRIPT
+      chmod +x .claude/tools/amplihack/hooks/workflow_classification_reminder.py
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      cat > "$SANDBOX_ROOT/user-prompt-input.json" <<'JSON'
+      {"hook_event_name":"UserPromptSubmit","session_id":"prompt-python-456","prompt":"Please investigate this new bug"}
+      JSON
+      .github/hooks/user-prompt-submit < "$SANDBOX_ROOT/user-prompt-input.json" > "$SANDBOX_ROOT/user_prompt_submit_output.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - jsonfs:submit_stdin.json
+      - jsonfs:reminder_stdin.json
