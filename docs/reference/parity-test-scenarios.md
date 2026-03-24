@@ -38,6 +38,7 @@ and what behaviour each tier validates.
   - [tier16-user-prompt-submit-hook.yaml — Copilot user-prompt-submit hook](#tier16-user-prompt-submit-hookyaml--copilot-user-prompt-submit-hook)
   - [tier17-session-stop-hook.yaml — Copilot session-stop hook](#tier17-session-stop-hookyaml--copilot-session-stop-hook)
   - [tier18-post-tool-use-hook.yaml — Copilot post-tool-use hook](#tier18-post-tool-use-hookyaml--copilot-post-tool-use-hook)
+  - [tier19-pre-compact-legacy-runtime.yaml — PreCompact legacy runtime](#tier19-pre-compact-legacy-runtimeyaml--precompact-legacy-runtime)
   - [Related](#related)
 
 ---
@@ -412,6 +413,23 @@ both supported hook-engine modes. The current cases compare:
 
 **Expected result:** All cases pass. This tier extends runtime parity into the
 post-tool execution path rather than only checking staged artifact contents.
+
+---
+
+### tier19-pre-compact-legacy-runtime.yaml — PreCompact legacy runtime
+
+Exercises the direct `PreCompact` hook runtime against the legacy
+conversation-payload shape used by the Python hook. The case bypasses the
+top-level CLI and invokes the Python hook script and native Rust hooks binary
+directly, then compares normalized session artifacts:
+
+- `CONVERSATION_TRANSCRIPT.md`
+- `ORIGINAL_REQUEST.md`
+- `compaction_events.json`
+- transcript copy creation under `transcripts/`
+
+**Expected result:** All cases pass. This tier extends parity beyond Copilot
+wrappers into the non-Copilot hook runtime used before context compaction.
 
 ---
 

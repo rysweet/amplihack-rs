@@ -1,0 +1,99 @@
+cases:
+  - name: pre-compact-legacy-conversation-runtime
+    argv: ["version"]
+    timeout: 20
+    setup: |
+      mkdir -p .claude/runtime/logs .claude/runtime/metrics .claude/runtime/analysis
+    stdin: |
+      {
+        "hook_event_name": "PreCompact",
+        "session_id": "legacy-precompact",
+        "trigger": "token_limit",
+        "conversation": [
+          {
+            "role": "user",
+            "content": "Implement conversation transcript preservation with enough detail to capture the original request for later sessions and keep all requirements intact.",
+            "timestamp": "2025-09-23T11:00:00"
+          },
+          {
+            "role": "assistant",
+            "content": "Acknowledged",
+            "timestamp": "2025-09-23T11:00:01"
+          }
+        ]
+      }
+    python_command:
+      - bash
+      - -lc
+      - |
+        INPUT_JSON="$SANDBOX_ROOT/precompact_input.json"
+        cat > "$INPUT_JSON"
+        "${PYTHON_EXE}" "${PYTHON_HOOKS_DIR}/pre_compact.py" < "$INPUT_JSON" > "$SANDBOX_ROOT/python_hook_stdout.json"
+        python3 - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+
+        root = Path(os.environ["SANDBOX_ROOT"])
+        session_dir = root / ".claude" / "runtime" / "logs" / "legacy-precompact"
+        transcript = session_dir / "CONVERSATION_TRANSCRIPT.md"
+        request = session_dir / "ORIGINAL_REQUEST.md"
+        events = session_dir / "compaction_events.json"
+        transcripts_dir = session_dir / "transcripts"
+        summary = {
+            "transcript_exists": transcript.exists(),
+            "transcript_contains": "original request" if transcript.exists() and "original request" in transcript.read_text().lower() else "conversation transcript" if transcript.exists() and "conversation transcript" in transcript.read_text().lower() else "",
+            "original_request_exists": request.exists(),
+            "original_request_contains": "original user request" if request.exists() and "original user request" in request.read_text().lower() else "",
+            "transcript_copy_count": len(list(transcripts_dir.glob("conversation_*.md"))) if transcripts_dir.exists() else 0,
+            "events_count": 0,
+            "messages_exported": None,
+            "compaction_trigger": None,
+        }
+        if events.exists():
+            data = json.loads(events.read_text())
+            summary["events_count"] = len(data)
+            if data:
+                summary["messages_exported"] = data[-1].get("messages_exported")
+                summary["compaction_trigger"] = data[-1].get("compaction_trigger")
+        (root / "precompact_summary.json").write_text(json.dumps(summary, indent=2))
+        PY
+    rust_command:
+      - bash
+      - -lc
+      - |
+        INPUT_JSON="$SANDBOX_ROOT/precompact_input.json"
+        cat > "$INPUT_JSON"
+        "${RUST_HOOKS_BINARY}" pre-compact < "$INPUT_JSON" > "$SANDBOX_ROOT/rust_hook_stdout.json"
+        python3 - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+
+        root = Path(os.environ["SANDBOX_ROOT"])
+        session_dir = root / ".claude" / "runtime" / "logs" / "legacy-precompact"
+        transcript = session_dir / "CONVERSATION_TRANSCRIPT.md"
+        request = session_dir / "ORIGINAL_REQUEST.md"
+        events = session_dir / "compaction_events.json"
+        transcripts_dir = session_dir / "transcripts"
+        summary = {
+            "transcript_exists": transcript.exists(),
+            "transcript_contains": "original request" if transcript.exists() and "original request" in transcript.read_text().lower() else "conversation transcript" if transcript.exists() and "conversation transcript" in transcript.read_text().lower() else "",
+            "original_request_exists": request.exists(),
+            "original_request_contains": "original user request" if request.exists() and "original user request" in request.read_text().lower() else "",
+            "transcript_copy_count": len(list(transcripts_dir.glob("conversation_*.md"))) if transcripts_dir.exists() else 0,
+            "events_count": 0,
+            "messages_exported": None,
+            "compaction_trigger": None,
+        }
+        if events.exists():
+            data = json.loads(events.read_text())
+            summary["events_count"] = len(data)
+            if data:
+                summary["messages_exported"] = data[-1].get("messages_exported")
+                summary["compaction_trigger"] = data[-1].get("compaction_trigger")
+        (root / "precompact_summary.json").write_text(json.dumps(summary, indent=2))
+        PY
+    compare:
+      - exit_code
+      - jsonfs:precompact_summary.json

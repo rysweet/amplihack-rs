@@ -60,6 +60,12 @@ def parse_args() -> argparse.Namespace:
         help="Rust amplihack binary to compare",
     )
     parser.add_argument(
+        "--rust-hooks-binary",
+        default=Path.home() / "src" / "amplihack-rs" / "target" / "debug" / "amplihack-hooks",
+        type=Path,
+        help="Rust amplihack-hooks binary for direct hook runtime cases",
+    )
+    parser.add_argument(
         "--observable",
         action="store_true",
         help="Run each case in side-by-side tmux panes with tee-backed logs",
@@ -148,6 +154,42 @@ def resolve_python_exe(explicit: Path | None, python_repo: Path) -> Path:
     return Path(sys.executable).absolute()
 
 
+def resolve_engine_command(
+    *,
+    engine_name: str,
+    case: dict[str, Any],
+    python_exe: Path,
+    python_repo: Path,
+    rust_binary: Path,
+    rust_hooks_binary: Path,
+) -> list[str]:
+    override = case.get(f"{engine_name}_command")
+    if override is None:
+        if engine_name == "python":
+            return [str(python_exe), "-m", "amplihack", *case["argv"]]
+        return [str(rust_binary), *case["argv"]]
+
+    replacements = {
+        "${PYTHON_EXE}": str(python_exe),
+        "${PYTHON_REPO}": str(python_repo),
+        "${PYTHON_HOOKS_DIR}": str(python_repo / ".claude" / "tools" / "amplihack" / "hooks"),
+        "${RUST_BINARY}": str(rust_binary),
+        "${RUST_HOOKS_BINARY}": str(rust_hooks_binary),
+    }
+    if isinstance(override, list):
+        return [render_command_token(str(item), replacements) for item in override]
+    if isinstance(override, str):
+        return [render_command_token(override, replacements)]
+    raise ValueError(f"{engine_name}_command must be a list or string")
+
+
+def render_command_token(value: str, replacements: dict[str, str]) -> str:
+    rendered = value
+    for placeholder, replacement in replacements.items():
+        rendered = rendered.replace(placeholder, replacement)
+    return rendered
+
+
 def main() -> int:
     args = parse_args()
     if args.ssh_target:
@@ -155,6 +197,7 @@ def main() -> int:
     python_repo = args.python_repo.resolve()
     python_exe = resolve_python_exe(args.python_exe, python_repo)
     rust_binary = args.rust_binary.resolve()
+    rust_hooks_binary = args.rust_hooks_binary.resolve()
 
     if not python_repo.joinpath("src", "amplihack", "cli.py").exists():
         raise FileNotFoundError(f"Python repo not found: {python_repo}")
@@ -162,6 +205,8 @@ def main() -> int:
         raise FileNotFoundError(f"Python executable not found: {python_exe}")
     if not rust_binary.exists():
         raise FileNotFoundError(f"Rust binary not found: {rust_binary}")
+    if not rust_hooks_binary.exists():
+        raise FileNotFoundError(f"Rust hooks binary not found: {rust_hooks_binary}")
 
     cases = load_scenarios(args.scenario)
     if args.case:
@@ -179,7 +224,14 @@ def main() -> int:
         session_name = f"cli-parity-{int(time.time())}-{sanitize_name(name)}" if args.observable else None
         py_result = run_engine_case(
             engine_name="python",
-            command=[str(python_exe), "-m", "amplihack", *case["argv"]],
+            command=resolve_engine_command(
+                engine_name="python",
+                case=case,
+                python_exe=python_exe,
+                python_repo=python_repo,
+                rust_binary=rust_binary,
+                rust_hooks_binary=rust_hooks_binary,
+            ),
             case=case,
             python_repo=python_repo,
             observable=args.observable,
@@ -187,7 +239,14 @@ def main() -> int:
         )
         rust_result = run_engine_case(
             engine_name="rust",
-            command=[str(rust_binary), *case["argv"]],
+            command=resolve_engine_command(
+                engine_name="rust",
+                case=case,
+                python_exe=python_exe,
+                python_repo=python_repo,
+                rust_binary=rust_binary,
+                rust_hooks_binary=rust_hooks_binary,
+            ),
             case=case,
             python_repo=python_repo,
             observable=args.observable,
