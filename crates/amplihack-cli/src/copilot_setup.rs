@@ -361,6 +361,23 @@ fn stage_repo_hooks(repo_root: &Path) -> Result<usize> {
 fn generate_copilot_instructions(copilot_home: &Path) -> Result<()> {
     let workflow_desc = workflow_description(copilot_home);
     let instructions_path = copilot_home.join("copilot-instructions.md");
+    let workflow = format!(
+        "{}/",
+        copilot_home.join("workflow").join("amplihack").display()
+    );
+    let context = format!(
+        "{}/",
+        copilot_home.join("context").join("amplihack").display()
+    );
+    let commands = format!(
+        "{}/",
+        copilot_home.join("commands").join("amplihack").display()
+    );
+    let agents = format!(
+        "{}/",
+        copilot_home.join("agents").join("amplihack").display()
+    );
+    let skills = format!("{}/", copilot_home.join("skills").display());
     let section = format!(
         r#"{INSTRUCTIONS_MARKER_START}
 # Amplihack Framework Integration
@@ -396,23 +413,11 @@ Custom agents are available at `{agents}`. Use them via the task tool.
 ## Skills
 Skills are available at `{skills}`. They auto-activate based on context.
 {INSTRUCTIONS_MARKER_END}"#,
-        workflow = format!(
-            "{}/",
-            copilot_home.join("workflow").join("amplihack").display()
-        ),
-        context = format!(
-            "{}/",
-            copilot_home.join("context").join("amplihack").display()
-        ),
-        commands = format!(
-            "{}/",
-            copilot_home.join("commands").join("amplihack").display()
-        ),
-        agents = format!(
-            "{}/",
-            copilot_home.join("agents").join("amplihack").display()
-        ),
-        skills = format!("{}/", copilot_home.join("skills").display()),
+        workflow = workflow,
+        context = context,
+        commands = commands,
+        agents = agents,
+        skills = skills,
         workflow_desc = workflow_desc,
     );
 
