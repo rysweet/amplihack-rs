@@ -1,0 +1,76 @@
+cases:
+  - name: copilot-post-tool-use-rust-wrapper-forwards-stdin
+    argv: ["copilot"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      AMPLIHACK_HOOK_ENGINE: "rust"
+      PATH: "${SANDBOX_ROOT}/bin:/usr/bin:/bin"
+    setup: |
+      mkdir -p bin
+      cat > bin/amplihack-hooks <<'SCRIPT'
+      #!/usr/bin/env bash
+      printf '%s\n' "$@" > "$SANDBOX_ROOT/rust_post_tool_use_args.txt"
+      cat > "$SANDBOX_ROOT/rust_post_tool_use_stdin.json"
+      exit 0
+      SCRIPT
+      chmod +x bin/amplihack-hooks
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      cat > "$SANDBOX_ROOT/post-tool-use-input.json" <<'JSON'
+      {"hook_event_name":"PostToolUse","session_id":"post-rust-123","tool_name":"Read","tool_input":{"file_path":"README.md"},"tool_response":{"content":"hello"}}
+      JSON
+      .github/hooks/post-tool-use < "$SANDBOX_ROOT/post-tool-use-input.json" > "$SANDBOX_ROOT/post_tool_use_output.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - fs:rust_post_tool_use_args.txt
+      - jsonfs:rust_post_tool_use_stdin.json
+
+  - name: copilot-post-tool-use-python-wrapper-forwards-stdin
+    argv: ["copilot"]
+    timeout: 20
+    env:
+      AMPLIHACK_SKIP_UPDATE: "1"
+      AMPLIHACK_HOOK_ENGINE: "python"
+      PATH: "${SANDBOX_ROOT}/bin:/usr/bin:/bin"
+    setup: |
+      mkdir -p bin .claude/tools/amplihack/hooks
+      cat > .claude/tools/amplihack/hooks/post_tool_use.py <<'SCRIPT'
+      #!/usr/bin/env python3
+      import json
+      import sys
+      from pathlib import Path
+      Path("post_tool_use_stdin.json").write_text(sys.stdin.read())
+      Path("post_tool_use_args.json").write_text(json.dumps(sys.argv[1:]))
+      SCRIPT
+      chmod +x .claude/tools/amplihack/hooks/post_tool_use.py
+      cat > bin/copilot <<'SCRIPT'
+      #!/usr/bin/env bash
+      if [[ "${1:-}" == "--version" ]]; then
+        echo "copilot/cli/1.0.0"
+        exit 0
+      fi
+      if [[ "${1:-}" == "plugin" && "${2:-}" == "marketplace" && "${3:-}" == "add" ]]; then
+        exit 0
+      fi
+      cat > "$SANDBOX_ROOT/post-tool-use-input.json" <<'JSON'
+      {"hook_event_name":"PostToolUse","session_id":"post-python-456","tool_name":"Read","tool_input":{"file_path":"README.md"},"tool_response":{"content":"hello"}}
+      JSON
+      .github/hooks/post-tool-use < "$SANDBOX_ROOT/post-tool-use-input.json" > "$SANDBOX_ROOT/post_tool_use_output.txt"
+      exit 0
+      SCRIPT
+      chmod +x bin/copilot
+    compare:
+      - exit_code
+      - jsonfs:post_tool_use_stdin.json
+      - jsonfs:post_tool_use_args.json

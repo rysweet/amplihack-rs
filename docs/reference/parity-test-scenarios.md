@@ -37,6 +37,7 @@ and what behaviour each tier validates.
   - [tier15-session-start-hook.yaml — Copilot session-start hook](#tier15-session-start-hookyaml--copilot-session-start-hook)
   - [tier16-user-prompt-submit-hook.yaml — Copilot user-prompt-submit hook](#tier16-user-prompt-submit-hookyaml--copilot-user-prompt-submit-hook)
   - [tier17-session-stop-hook.yaml — Copilot session-stop hook](#tier17-session-stop-hookyaml--copilot-session-stop-hook)
+  - [tier18-post-tool-use-hook.yaml — Copilot post-tool-use hook](#tier18-post-tool-use-hookyaml--copilot-post-tool-use-hook)
   - [Related](#related)
 
 ---
@@ -396,6 +397,21 @@ both supported hook-engine modes. The current cases compare:
 **Expected result:** All cases pass. This tier extends runtime parity into the
 multi-hook shutdown contract used for power-steering and session-finalization
 behavior.
+
+---
+
+### tier18-post-tool-use-hook.yaml — Copilot post-tool-use hook
+
+Exercises the staged `.github/hooks/post-tool-use` wrapper end to end under
+both supported hook-engine modes. The current cases compare:
+
+- `AMPLIHACK_HOOK_ENGINE=rust`: wrapper `exec`s native `post-tool-use` with the
+  original stdin payload
+- `AMPLIHACK_HOOK_ENGINE=python`: wrapper `exec`s `post_tool_use.py` with the
+  same stdin payload and argv forwarding
+
+**Expected result:** All cases pass. This tier extends runtime parity into the
+post-tool execution path rather than only checking staged artifact contents.
 
 ---
 
