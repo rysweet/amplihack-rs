@@ -1,16 +1,17 @@
-# Tier 7: Launcher feature-parity gap tests.
+# Tier 7: Launcher feature-parity audit.
 #
-# Every test in this file documents a Python launcher behavior that the
-# Rust launcher does NOT yet implement.  All tests are expected to FAIL
-# against the current Rust binary.
+# These cases exercise historically divergent launcher behaviors and verify
+# that the current Rust binary matches the Python reference implementation.
+# Legacy `gap-*` case names are retained so older reports and issue threads
+# still line up with the scenario history.
 #
 # Master issue: rysweet/amplihack-rs#25
 
 cases:
   # ============================================================================
   # GAP A: --dangerously-skip-permissions
-  # Python always injects --dangerously-skip-permissions into the claude
-  # subprocess command.  Rust does not.
+  # Both implementations should inject --dangerously-skip-permissions into the
+  # claude subprocess command.
   # ============================================================================
 
   - name: gap-dangerously-skip-permissions
@@ -30,13 +31,12 @@ cases:
     compare:
       - exit_code
       - fs:claude_args.txt
-    # Python produces: --dangerously-skip-permissions\n--model\nopus[1m]\n
-    # Rust produces:   (empty or no --dangerously-skip-permissions)
+    # Both should produce: --dangerously-skip-permissions\n--model\nopus[1m]\n
 
   # ============================================================================
   # GAP B: --model default injection
-  # Python adds --model opus[1m] (or AMPLIHACK_DEFAULT_MODEL) when the user
-  # has not supplied --model.  Rust does not inject any default model.
+  # Both implementations should add --model opus[1m] (or
+  # AMPLIHACK_DEFAULT_MODEL) when the user has not supplied --model.
   # ============================================================================
 
   - name: gap-default-model-injection
@@ -56,8 +56,7 @@ cases:
     compare:
       - exit_code
       - fs:claude_args.txt
-    # Python produces: --dangerously-skip-permissions\n--model\nopus[1m]\n
-    # Rust produces:   (no --model flag at all)
+    # Both should produce: --dangerously-skip-permissions\n--model\nopus[1m]\n
 
   - name: gap-custom-default-model-via-env
     argv: ["launch"]
@@ -77,8 +76,7 @@ cases:
     compare:
       - exit_code
       - fs:claude_args.txt
-    # Python produces: --dangerously-skip-permissions\n--model\nsonnet-4\n
-    # Rust produces:   (no --model flag, ignores AMPLIHACK_DEFAULT_MODEL)
+    # Both should produce: --dangerously-skip-permissions\n--model\nsonnet-4\n
 
   - name: gap-no-model-when-user-supplies-one
     argv: ["launch", "--", "--model", "haiku"]
@@ -97,15 +95,12 @@ cases:
     compare:
       - exit_code
       - fs:claude_args.txt
-    # Python: --dangerously-skip-permissions\n--model\nhaiku\n
-    #   (skips default model because user provided --model)
-    # Rust:   --model\nhaiku\n
-    #   (just passes through, no --dangerously-skip-permissions)
+    # Both should produce: --dangerously-skip-permissions\n--model\nhaiku\n
 
   # ============================================================================
   # GAP C: NODE_OPTIONS environment variable
-  # Python sets NODE_OPTIONS=--max-old-space-size=32768 (or smart value)
-  # in the subprocess environment.  Rust does not set NODE_OPTIONS at all.
+  # Both implementations should set NODE_OPTIONS=--max-old-space-size=32768
+  # (or an equivalent smart value) in the subprocess environment.
   # ============================================================================
 
   - name: gap-node-options-set
@@ -125,8 +120,7 @@ cases:
     compare:
       - exit_code
       - fs:node_options.txt
-    # Python: --max-old-space-size=32768 (or similar smart value)
-    # Rust:   (empty — NODE_OPTIONS not set by Rust launcher)
+    # Both should set a smart --max-old-space-size value.
 
   - name: gap-node-options-preserves-existing
     argv: ["launch"]
@@ -146,13 +140,13 @@ cases:
     compare:
       - exit_code
       - fs:node_options.txt
-    # Python: merges/overrides with --max-old-space-size=32768
-    # Rust:   passes through --existing-option unchanged (no smart config)
+    # Both should preserve/augment the existing NODE_OPTIONS value with a
+    # smart --max-old-space-size setting.
 
   # ============================================================================
   # GAP D: SIGINT exit code behavior
-  # Both Python and Rust should exit 130 on SIGINT.  Test that the Rust
-  # launcher forwards SIGINT correctly and returns the right exit code.
+  # The current Python and Rust launchers both collapse this stubbed SIGINT
+  # path to exit 0. The test verifies parity, not an idealized exit contract.
   # ============================================================================
 
   - name: gap-sigint-exit-code
@@ -185,10 +179,8 @@ cases:
 
   # ============================================================================
   # GAP E: AMPLIHACK environment variables completeness
-  # Python sets AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH, AMPLIHACK_VERSION,
-  # and various other AMPLIHACK_* vars.
-  # Rust sets AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH, AMPLIHACK_RUST_RUNTIME,
-  # AMPLIHACK_VERSION but may differ in values or naming.
+  # The exact AMPLIHACK_* surface still differs somewhat between runtimes, but
+  # these cases verify the launcher-side compatibility behaviors that matter.
   # ============================================================================
 
   - name: gap-env-amplihack-session-id-format
@@ -231,14 +223,13 @@ cases:
     compare:
       - exit_code
       - fs:depth.txt
-    # Both should increment AMPLIHACK_DEPTH from 3 to 4.
-    # Both should preserve the existing AMPLIHACK_SESSION_ID.
-    # Divergence: Rust may generate new session ID instead of preserving.
+    # Both should preserve AMPLIHACK_DEPTH=3 and the existing
+    # AMPLIHACK_SESSION_ID.
 
   # ============================================================================
   # GAP F: --resume and --continue flags on the 'claude' subcommand
-  # Python's 'claude' subcommand inherits all launch flags including --resume.
-  # Rust's 'Claude' variant does NOT expose --resume or --continue-session.
+  # Both implementations should expose and pass through --resume / --continue
+  # on the 'claude' alias.
   # ============================================================================
 
   - name: gap-claude-resume-flag
@@ -258,8 +249,7 @@ cases:
     compare:
       - exit_code
       - fs:claude_args.txt
-    # Python: passes --resume to claude subprocess
-    # Rust: error — 'claude' subcommand doesn't accept --resume
+    # Both should pass --resume to the claude subprocess.
 
   - name: gap-claude-continue-flag
     argv: ["claude", "--continue"]
@@ -278,8 +268,7 @@ cases:
     compare:
       - exit_code
       - fs:claude_args.txt
-    # Python: passes --continue to claude subprocess
-    # Rust: error — 'claude' subcommand doesn't accept --continue
+    # Both should pass --continue to the claude subprocess.
 
   # gap-launch-resume-passthrough removed: Rust is strictly better here.
   # Python argparse doesn't support `launch --resume` (exit 2), Rust does (exit 0).
@@ -302,12 +291,13 @@ cases:
     compare:
       - exit_code
       - fs:claude_args.txt
-    # Python: --dangerously-skip-permissions\n--model\nopus[1m]\n--continue\n
-    # Rust:   --continue\n
+    # Both should produce:
+    # --dangerously-skip-permissions\n--model\nopus[1m]\n--continue\n
 
   # ============================================================================
-  # GAP G: Python-only commands that Rust does not implement
-  # fleet, uvx-help — should either exist natively or fall back to Python.
+  # GAP G: Command availability parity
+  # These cases verify that Rust now covers the historically missing command
+  # surfaces, or at least matches the effective Python behavior.
   # ============================================================================
 
   - name: gap-fleet-command-exists
@@ -317,8 +307,7 @@ cases:
       AMPLIHACK_NONINTERACTIVE: "1"
     compare:
       - exit_code
-    # Python: exits 0, prints fleet help text
-    # Rust: exits non-zero — unrecognized subcommand
+    # Both should exit 0 and print fleet help.
 
   - name: gap-uvx-help-command-exists
     argv: ["uvx-help"]

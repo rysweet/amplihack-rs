@@ -164,7 +164,7 @@ def run_shadow_case(
             python_exe = candidate if candidate.exists() else Path(sys.executable)
 
         # Run Python
-        py_cmd = [str(python_exe), "-m", "amplihack.cli", *argv]
+        py_cmd = [str(python_exe), "-m", "amplihack", *argv]
         py_env["SANDBOX_ROOT"] = str(py_sandbox)
         cwd = py_sandbox / case.get("cwd", ".")
         cwd.mkdir(parents=True, exist_ok=True)

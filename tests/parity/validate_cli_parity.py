@@ -179,7 +179,7 @@ def main() -> int:
         session_name = f"cli-parity-{int(time.time())}-{sanitize_name(name)}" if args.observable else None
         py_result = run_engine_case(
             engine_name="python",
-            command=[str(python_exe), "-m", "amplihack.cli", *case["argv"]],
+            command=[str(python_exe), "-m", "amplihack", *case["argv"]],
             case=case,
             python_repo=python_repo,
             observable=args.observable,
