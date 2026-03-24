@@ -32,6 +32,7 @@ and what behaviour each tier validates.
   - [tier10-pre-tool-use-hook.yaml — Copilot pre-tool-use hook](#tier10-pre-tool-use-hookyaml--copilot-pre-tool-use-hook)
   - [tier11-xpia-fail-closed.yaml — XPIA fail-closed behavior](#tier11-xpia-fail-closedyaml--xpia-fail-closed-behavior)
   - [tier12-xpia-malformed-output.yaml — XPIA malformed output](#tier12-xpia-malformed-outputyaml--xpia-malformed-output)
+  - [tier13-xpia-timeout.yaml — XPIA timeout behavior](#tier13-xpia-timeoutyaml--xpia-timeout-behavior)
   - [Related](#related)
 
 ---
@@ -321,6 +322,20 @@ syntactically or structurally invalid output. The current cases compare:
 
 **Expected result:** All cases pass. This tier extends the fail-closed parity
 matrix from "binary missing/internal error" into malformed-output behavior.
+
+---
+
+### tier13-xpia-timeout.yaml — XPIA timeout behavior
+
+Exercises the staged Copilot `pre-tool-use` wrapper when `xpia-defend` hangs.
+For deterministic test runtime, the sandbox copy of the Python hook lowers the
+bridge timeout before invoking the real validation flow. The current tier
+compares:
+
+- fake `xpia-defend` that sleeps past the shortened timeout and must yield a deny payload
+
+**Expected result:** All cases pass. This tier extends degraded-runtime parity
+from missing/malformed binaries into timeout handling.
 
 ---
 
