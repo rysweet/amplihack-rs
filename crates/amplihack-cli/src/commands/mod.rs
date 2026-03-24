@@ -36,9 +36,13 @@ pub fn dispatch(command: Commands) -> Result<()> {
             skip_update_check,
             claude_args,
         ),
-        Commands::Claude { claude_args } => {
+        Commands::Claude {
+            resume,
+            continue_session,
+            claude_args,
+        } => {
             // Always inject --dangerously-skip-permissions to match Python launcher parity.
-            launch::run_launch("claude", false, false, true, false, claude_args)
+            launch::run_launch("claude", resume, continue_session, true, false, claude_args)
         }
         Commands::Copilot { args } => {
             launch::run_launch("copilot", false, false, true, false, args)

@@ -507,6 +507,7 @@ mod tests {
     use super::*;
     use crate::test_support::{home_env_lock, restore_home, set_home};
     use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
 
     // ---------------------------------------------------------------------------
     // TDD Step 7: Failing tests for flag injection (Category 2)
@@ -522,6 +523,11 @@ mod tests {
             path: PathBuf::from(path),
             version: Some("1.0.0".to_string()),
         }
+    }
+
+    fn default_model_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
     }
 
     /// When skip_permissions=true, --dangerously-skip-permissions MUST be the
@@ -547,6 +553,10 @@ mod tests {
     /// Fails if no --model flag is injected by default.
     #[test]
     fn test_build_command_injects_default_model() {
+        let _guard = default_model_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
         // Ensure AMPLIHACK_DEFAULT_MODEL is not set so we get the hard-coded default
         // SAFETY: single-threaded test context.
         unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") };
@@ -569,6 +579,10 @@ mod tests {
             "Expected default model 'opus[1m]' after '--model', got: {:?}",
             args[model_pos + 1]
         );
+        if let Some(value) = previous {
+            // SAFETY: serialized by default_model_env_lock().
+            unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) };
+        }
     }
 
     /// When AMPLIHACK_DEFAULT_MODEL env var is set, build_command MUST use that
@@ -577,6 +591,10 @@ mod tests {
     /// Fails if the env var override is not respected.
     #[test]
     fn test_build_command_respects_custom_model_env() {
+        let _guard = default_model_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
         // SAFETY: single-threaded test context.
         unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", "claude-3-5-sonnet") };
         let binary = make_binary("/usr/bin/claude");
@@ -585,7 +603,16 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") };
+        match previous {
+            Some(value) => {
+                // SAFETY: serialized by default_model_env_lock().
+                unsafe { std::env::set_var("AMPLIHACK_DEFAULT_MODEL", value) };
+            }
+            None => {
+                // SAFETY: serialized by default_model_env_lock().
+                unsafe { std::env::remove_var("AMPLIHACK_DEFAULT_MODEL") };
+            }
+        }
         let model_pos = args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(
             args[model_pos + 1],
