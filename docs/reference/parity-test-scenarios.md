@@ -31,6 +31,7 @@ and what behaviour each tier validates.
   - [tier9-copilot-control-plane.yaml — Copilot control plane](#tier9-copilot-control-planeyaml--copilot-control-plane)
   - [tier10-pre-tool-use-hook.yaml — Copilot pre-tool-use hook](#tier10-pre-tool-use-hookyaml--copilot-pre-tool-use-hook)
   - [tier11-xpia-fail-closed.yaml — XPIA fail-closed behavior](#tier11-xpia-fail-closedyaml--xpia-fail-closed-behavior)
+  - [tier12-xpia-malformed-output.yaml — XPIA malformed output](#tier12-xpia-malformed-outputyaml--xpia-malformed-output)
   - [Related](#related)
 
 ---
@@ -307,6 +308,19 @@ binary is unavailable or misbehaves. The current cases compare:
 
 **Expected result:** All cases pass. This tier acts as regression coverage for
 the fail-closed XPIA contract that must hold even under degraded runtime conditions.
+
+---
+
+### tier12-xpia-malformed-output.yaml — XPIA malformed output
+
+Exercises the staged Copilot `pre-tool-use` wrapper when `xpia-defend` returns
+syntactically or structurally invalid output. The current cases compare:
+
+- fake `xpia-defend` that prints non-JSON output and exits `0`
+- fake `xpia-defend` that exits `0` but produces no stdout
+
+**Expected result:** All cases pass. This tier extends the fail-closed parity
+matrix from "binary missing/internal error" into malformed-output behavior.
 
 ---
 
