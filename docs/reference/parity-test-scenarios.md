@@ -29,6 +29,7 @@ and what behaviour each tier validates.
   - [tier7-launcher-parity.yaml — Launcher gaps](#tier7-launcher-parityyaml--launcher-gaps)
   - [tier8-env-vars.yaml — Environment variable injection](#tier8-env-varsyaml--environment-variable-injection)
   - [tier9-copilot-control-plane.yaml — Copilot control plane](#tier9-copilot-control-planeyaml--copilot-control-plane)
+  - [tier10-pre-tool-use-hook.yaml — Copilot pre-tool-use hook](#tier10-pre-tool-use-hookyaml--copilot-pre-tool-use-hook)
   - [Related](#related)
 
 ---
@@ -279,6 +280,19 @@ launcher contract. These cases compare:
 
 **Expected result:** All cases pass. This tier now serves as regression coverage
 for the dedicated Copilot control-plane contract.
+
+---
+
+### tier10-pre-tool-use-hook.yaml — Copilot pre-tool-use hook
+
+Exercises the staged `.github/hooks/pre-tool-use` wrapper end-to-end through the
+`amplihack copilot` launch path. The current cases compare:
+
+- safe Bash input that should pass with an empty JSON response
+- blocked Bash input (`git commit --no-verify ...`) that should return a deny payload
+
+**Expected result:** All cases pass. This tier acts as outside-in regression
+coverage for the staged Copilot pre-tool-use hook contract.
 
 ---
 
