@@ -236,7 +236,7 @@ fn validate_hook_command_string(cmd: &str) -> Result<()> {
 }
 
 /// Copy the Rust binaries to `~/.local/bin` with 0o755 perms.
-/// Emits a PATH advisory if `~/.local/bin` is not in `$PATH`.
+/// Persists `~/.local/bin` into the user's shell profile when needed.
 /// Returns the list of deployed paths for the manifest.
 fn deploy_binaries() -> Result<Vec<PathBuf>> {
     let home = home_dir()?;
@@ -313,14 +313,21 @@ fn deploy_binaries() -> Result<Vec<PathBuf>> {
         }
     }
 
-    // PATH advisory
+    // Persist ~/.local/bin when the current shell does not expose it.
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let in_path = std::env::split_paths(&path_var).any(|dir| dir == local_bin);
     if !in_path {
-        println!(
-            "  ⚠️  ~/.local/bin is not in $PATH. Add it to your shell profile:\n   \
-             export PATH=\"$HOME/.local/bin:$PATH\""
-        );
+        match ensure_local_bin_on_shell_path(&home)? {
+            Some(profile) => println!(
+                "  ✅ Added ~/.local/bin to {}. Open a new shell or run:\n   \
+                 export PATH=\"$HOME/.local/bin:$PATH\"",
+                profile.display()
+            ),
+            None => println!(
+                "  ⚠️  ~/.local/bin is not in $PATH. Add it to your shell profile:\n   \
+                 export PATH=\"$HOME/.local/bin:$PATH\""
+            ),
+        }
     }
 
     if let Some(amplihack_dst) = deployed
@@ -341,6 +348,51 @@ fn deploy_binaries() -> Result<Vec<PathBuf>> {
     }
 
     Ok(deployed)
+}
+
+fn ensure_local_bin_on_shell_path(home: &Path) -> Result<Option<PathBuf>> {
+    let Some(profile_path) = shell_profile_path(home) else {
+        return Ok(None);
+    };
+    let export_line = "export PATH=\"$HOME/.local/bin:$PATH\"";
+
+    if profile_path.exists() {
+        let existing = fs::read_to_string(&profile_path)
+            .with_context(|| format!("failed to read {}", profile_path.display()))?;
+        if existing.contains(export_line) {
+            return Ok(Some(profile_path));
+        }
+
+        let mut updated = existing;
+        if !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push_str("# Added by amplihack\n");
+        updated.push_str(export_line);
+        updated.push('\n');
+        fs::write(&profile_path, updated)
+            .with_context(|| format!("failed to update {}", profile_path.display()))?;
+        return Ok(Some(profile_path));
+    }
+
+    fs::write(
+        &profile_path,
+        format!("# Added by amplihack\n{export_line}\n"),
+    )
+    .with_context(|| format!("failed to write {}", profile_path.display()))?;
+    Ok(Some(profile_path))
+}
+
+fn shell_profile_path(home: &Path) -> Option<PathBuf> {
+    if cfg!(windows) {
+        return None;
+    }
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    if shell.ends_with("/zsh") || shell.ends_with("/zsh5") {
+        Some(home.join(".zshrc"))
+    } else {
+        Some(home.join(".bashrc"))
+    }
 }
 
 pub fn run_install(local: Option<PathBuf>) -> Result<()> {
@@ -2408,6 +2460,83 @@ mod tests {
             result.is_ok(),
             "deploy_binaries must exit 0 (warning only) even when ~/.local/bin absent from PATH"
         );
+    }
+
+    #[test]
+    fn ensure_local_bin_on_shell_path_writes_bashrc_once() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous_home = crate::test_support::set_home(temp.path());
+        let previous_shell = std::env::var_os("SHELL");
+        unsafe {
+            std::env::set_var("SHELL", "/bin/bash");
+        }
+
+        let first = ensure_local_bin_on_shell_path(temp.path()).unwrap();
+        let second = ensure_local_bin_on_shell_path(temp.path()).unwrap();
+
+        match previous_shell {
+            Some(value) => unsafe { std::env::set_var("SHELL", value) },
+            None => unsafe { std::env::remove_var("SHELL") },
+        }
+        crate::test_support::restore_home(previous_home);
+
+        let profile = temp.path().join(".bashrc");
+        let content = fs::read_to_string(&profile).unwrap();
+        assert_eq!(first, Some(profile.clone()));
+        assert_eq!(second, Some(profile.clone()));
+        assert_eq!(
+            content
+                .matches("export PATH=\"$HOME/.local/bin:$PATH\"")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn deploy_binaries_updates_shell_profile_when_local_bin_missing() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous_home = crate::test_support::set_home(temp.path());
+        let previous_shell = std::env::var_os("SHELL");
+        let previous_path = std::env::var_os("PATH");
+        let previous_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+        unsafe {
+            std::env::set_var("SHELL", "/bin/zsh");
+            std::env::set_var("PATH", "/usr/bin:/bin");
+        }
+
+        let hooks_stub = create_exe_stub(temp.path(), "amplihack-hooks");
+        unsafe {
+            std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+        }
+
+        let result = deploy_binaries();
+
+        match previous_shell {
+            Some(value) => unsafe { std::env::set_var("SHELL", value) },
+            None => unsafe { std::env::remove_var("SHELL") },
+        }
+        match previous_path {
+            Some(value) => unsafe { std::env::set_var("PATH", value) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+        match previous_hooks {
+            Some(value) => unsafe {
+                std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", value)
+            },
+            None => unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") },
+        }
+        crate::test_support::restore_home(previous_home);
+
+        assert!(result.is_ok(), "deploy_binaries must still succeed");
+        let zshrc = temp.path().join(".zshrc");
+        let content = fs::read_to_string(zshrc).unwrap();
+        assert!(content.contains("export PATH=\"$HOME/.local/bin:$PATH\""));
     }
 
     // ─── TDD: Group 8 — InstallManifest extended fields ──────────────────────
