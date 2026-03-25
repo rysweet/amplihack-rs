@@ -58,11 +58,15 @@ The installer performs these phases in order:
 # Check binaries are on PATH
 amplihack --version
 amplihack-hooks --version
-
-# If ~/.local/bin is not in $PATH, the installer printed an advisory:
-#   ⚠️  ~/.local/bin is not in $PATH
-#   Add: export PATH="$HOME/.local/bin:$PATH"
 ```
+
+If `~/.local/bin` was missing from `$PATH`, `amplihack install` now tries to persist the fix for you:
+
+- On bash, it appends `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc`
+- On zsh, it appends the same line to `~/.zshrc`
+- On shells without a known profile path (or on Windows), it falls back to the existing warning-only message
+
+After install, open a new shell or run `export PATH="$HOME/.local/bin:$PATH"` in the current one before retrying `amplihack --version`.
 
 ### 4. Check hook registration
 
@@ -118,7 +122,7 @@ See [Binary Resolution](../reference/binary-resolution.md) for the full lookup s
 
 **`⚠️  ~/.local/bin is not in $PATH`**
 
-This is a warning, not an error. Hook execution is unaffected because hooks are registered by absolute path. Add the directory to your shell profile when convenient:
+On bash and zsh, the installer now attempts to fix this automatically by updating the active shell profile. If you still see the warning, your shell did not map to a supported profile file (or the platform is Windows). Hook execution is still unaffected because hooks are registered by absolute path. Add the directory manually:
 
 ```sh
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
