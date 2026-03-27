@@ -293,6 +293,7 @@ mod tests {
 
     #[test]
     fn rm_rf_cwd_blocked() {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
         // Use the actual CWD (don't change it — parallel test safety).
         let cwd = std::env::current_dir().unwrap();
         let cmd = format!("rm -rf {}", cwd.display());
@@ -316,6 +317,7 @@ mod tests {
 
     #[test]
     fn mv_cwd_blocked() {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let cwd = std::env::current_dir().unwrap();
         let cmd = format!("mv {} /tmp/new_name", cwd.display());
         let result = check_cwd_rename(&cmd).unwrap();
@@ -334,6 +336,7 @@ mod tests {
 
     #[test]
     fn rmdir_cwd_blocked() {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let cwd = std::env::current_dir().unwrap();
         let cmd = format!("rmdir {}", cwd.display());
         let result = check_cwd_deletion(&cmd).unwrap();
@@ -342,6 +345,7 @@ mod tests {
 
     #[test]
     fn rm_rf_parent_of_cwd_blocked() {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let cwd = std::env::current_dir().unwrap();
         if let Some(parent) = cwd.parent()
             && parent != Path::new("/")
@@ -354,6 +358,7 @@ mod tests {
 
     #[test]
     fn rm_rf_unrelated_dir_not_blocked() {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let cwd = std::env::current_dir().unwrap();
         // Only test if tempdir is not an ancestor of CWD.

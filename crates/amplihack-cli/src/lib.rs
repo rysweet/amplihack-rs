@@ -17,6 +17,7 @@ pub mod bootstrap;
 pub mod command_error;
 pub mod commands;
 pub mod copilot_setup;
+pub mod docker;
 pub mod env_builder;
 /// Local session management dashboard (fleet_local).
 ///
@@ -110,6 +111,9 @@ pub enum Commands {
         /// Clone a GitHub repository and launch Claude in that checkout.
         #[arg(long = "checkout-repo", value_name = "GITHUB_URI")]
         checkout_repo: Option<String>,
+        /// Run amplihack in Docker container for isolated execution.
+        #[arg(long = "docker")]
+        docker: bool,
         /// Append instructions to a running auto mode session and exit.
         #[arg(long = "append")]
         append: Option<String>,
@@ -137,6 +141,9 @@ pub enum Commands {
         /// Clone a GitHub repository and launch Claude in that checkout.
         #[arg(long = "checkout-repo", value_name = "GITHUB_URI")]
         checkout_repo: Option<String>,
+        /// Run amplihack in Docker container for isolated execution.
+        #[arg(long = "docker")]
+        docker: bool,
         /// Append instructions to a running auto mode session and exit.
         #[arg(long = "append")]
         append: Option<String>,
@@ -161,6 +168,9 @@ pub enum Commands {
         /// Skip shared launcher staging/env updates for subprocess delegates.
         #[arg(long = "subprocess-safe")]
         subprocess_safe: bool,
+        /// Run amplihack in Docker container for isolated execution.
+        #[arg(long = "docker")]
+        docker: bool,
         /// Append instructions to a running auto mode session and exit.
         #[arg(long = "append")]
         append: Option<String>,
@@ -185,6 +195,9 @@ pub enum Commands {
         /// Skip shared launcher staging/env updates for subprocess delegates.
         #[arg(long = "subprocess-safe")]
         subprocess_safe: bool,
+        /// Run amplihack in Docker container for isolated execution.
+        #[arg(long = "docker")]
+        docker: bool,
         /// Append instructions to a running auto mode session and exit.
         #[arg(long = "append")]
         append: Option<String>,
@@ -209,6 +222,9 @@ pub enum Commands {
         /// Skip shared launcher staging/env updates for subprocess delegates.
         #[arg(long = "subprocess-safe")]
         subprocess_safe: bool,
+        /// Run amplihack in Docker container for isolated execution.
+        #[arg(long = "docker")]
+        docker: bool,
         /// Append instructions to a running auto mode session and exit.
         #[arg(long = "append")]
         append: Option<String>,
@@ -722,6 +738,7 @@ mod tests {
             "amplihack",
             "launch",
             "--no-reflection",
+            "--docker",
             "--subprocess-safe",
             "--auto",
             "--max-turns",
@@ -734,6 +751,7 @@ mod tests {
         .expect("launch should parse common sdk flags");
         match cli.command {
             Commands::Launch {
+                docker,
                 no_reflection,
                 subprocess_safe,
                 auto,
@@ -742,6 +760,7 @@ mod tests {
                 claude_args,
                 ..
             } => {
+                assert!(docker);
                 assert!(no_reflection);
                 assert!(subprocess_safe);
                 assert!(auto);
@@ -750,6 +769,71 @@ mod tests {
                 assert_eq!(claude_args, vec!["-p", "task"]);
             }
             other => panic!("expected launch command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn launcher_surfaces_parse_docker_flag() {
+        // --- Claude ---
+        let cli = Cli::try_parse_from(["amplihack", "claude", "--docker"])
+            .expect("claude should parse --docker");
+        match cli.command {
+            Commands::Claude { docker, .. } => assert!(docker),
+            other => panic!("expected claude command, got {other:?}"),
+        }
+
+        // --- Copilot ---
+        let cli = Cli::try_parse_from(["amplihack", "copilot", "--docker", "--", "chat"])
+            .expect("copilot should parse --docker");
+        match cli.command {
+            Commands::Copilot { docker, args, .. } => {
+                assert!(docker);
+                assert_eq!(args, vec!["chat"]);
+            }
+            other => panic!("expected copilot command, got {other:?}"),
+        }
+
+        // --- Amplifier ---
+        let cli = Cli::try_parse_from(["amplihack", "amplifier", "--docker", "--", "-p", "ship"])
+            .expect("amplifier should parse --docker");
+        match cli.command {
+            Commands::Amplifier { docker, args, .. } => {
+                assert!(docker);
+                assert_eq!(args, vec!["-p", "ship"]);
+            }
+            other => panic!("expected amplifier command, got {other:?}"),
+        }
+
+        // --- Launch (Gap 2: previously untested) ---
+        // `amplihack launch --docker` must set docker=true on the Launch variant.
+        let cli = Cli::try_parse_from(["amplihack", "launch", "--docker"])
+            .expect("launch should parse --docker");
+        match cli.command {
+            Commands::Launch { docker, .. } => assert!(
+                docker,
+                "launch --docker should set docker=true on Launch variant"
+            ),
+            other => panic!("expected launch command, got {other:?}"),
+        }
+
+        // --- Codex (Gap 2: previously untested) ---
+        // `amplihack codex --docker -- -p "work"` must set docker=true and
+        // forward the trailing args to the Codex variant.
+        let cli = Cli::try_parse_from(["amplihack", "codex", "--docker", "--", "-p", "work"])
+            .expect("codex should parse --docker with extra args");
+        match cli.command {
+            Commands::Codex { docker, args, .. } => {
+                assert!(
+                    docker,
+                    "codex --docker should set docker=true on Codex variant"
+                );
+                assert_eq!(
+                    args,
+                    vec!["-p", "work"],
+                    "codex --docker should preserve extra args after --"
+                );
+            }
+            other => panic!("expected codex command, got {other:?}"),
         }
     }
 

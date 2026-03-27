@@ -32,6 +32,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             no_reflection,
             subprocess_safe,
             checkout_repo,
+            docker,
             append,
             auto,
             max_turns,
@@ -54,6 +55,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             }
             launch::run_launch(
                 "claude",
+                "launch",
+                docker,
                 resume,
                 continue_session,
                 true, // always inject --dangerously-skip-permissions (matches Python launcher)
@@ -68,6 +71,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             no_reflection,
             subprocess_safe,
             checkout_repo,
+            docker,
             append,
             auto,
             max_turns,
@@ -91,6 +95,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             // Always inject --dangerously-skip-permissions to match Python launcher parity.
             launch::run_launch(
                 "claude",
+                "claude",
+                docker,
                 false,
                 false,
                 true,
@@ -104,6 +110,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Copilot {
             no_reflection,
             subprocess_safe,
+            docker,
             append,
             auto,
             max_turns,
@@ -125,6 +132,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             }
             launch::run_launch(
                 "copilot",
+                "copilot",
+                docker,
                 false,
                 false,
                 true,
@@ -138,6 +147,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Codex {
             no_reflection,
             subprocess_safe,
+            docker,
             append,
             auto,
             max_turns,
@@ -159,6 +169,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             }
             launch::run_launch(
                 "codex",
+                "codex",
+                docker,
                 false,
                 false,
                 true,
@@ -172,6 +184,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Amplifier {
             no_reflection,
             subprocess_safe,
+            docker,
             append,
             auto,
             max_turns,
@@ -193,6 +206,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             }
             launch::run_launch(
                 "amplifier",
+                "amplifier",
+                docker,
                 false,
                 false,
                 true,

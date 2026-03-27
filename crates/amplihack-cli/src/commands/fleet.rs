@@ -1386,6 +1386,8 @@ fn run_watch_with_timeout(
     lines: u32,
     timeout: Duration,
 ) -> Result<()> {
+    validate_vm_name(vm_name)?;
+    validate_session_name(session_name)?;
     let azlin = match get_azlin_path() {
         Ok(path) => path,
         Err(_) => {
@@ -13383,7 +13385,28 @@ exit 1
 
     #[test]
     fn run_watch_rejects_invalid_vm_name() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let empty_path = tempfile::tempdir().unwrap();
+        let previous_azlin = env::var_os("AZLIN_PATH");
+        let previous_path = env::var_os("PATH");
+        unsafe {
+            env::remove_var("AZLIN_PATH");
+            env::set_var("PATH", empty_path.path());
+        }
+
         let err = run_watch("bad vm!@#", "session-1", 30).expect_err("invalid VM should fail");
+
+        match previous_azlin {
+            Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
+            None => unsafe { env::remove_var("AZLIN_PATH") },
+        }
+        match previous_path {
+            Some(value) => unsafe { env::set_var("PATH", value) },
+            None => unsafe { env::remove_var("PATH") },
+        }
+
         assert_eq!(command_error::exit_code(&err), None);
         assert!(err.to_string().contains("Invalid VM name"));
     }

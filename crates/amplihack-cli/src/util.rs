@@ -238,7 +238,7 @@ mod tests {
         );
     }
 
-    /// WS2-3: TTY detection fallback — test runner has no TTY so result is true.
+    /// WS2-3: TTY detection fallback mirrors the actual stdin TTY state.
     #[test]
     fn is_noninteractive_tty_path() {
         let _guard = crate::test_support::home_env_lock()
@@ -249,15 +249,16 @@ mod tests {
         unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") };
 
         let result = is_noninteractive();
+        let expected = !std::io::stdin().is_terminal();
 
         match prev {
             Some(v) => unsafe { std::env::set_var("AMPLIHACK_NONINTERACTIVE", v) },
             None => unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") },
         }
 
-        assert!(
-            result,
-            "is_noninteractive() must return true in test runner (no TTY stdin)"
+        assert_eq!(
+            result, expected,
+            "is_noninteractive() must reflect stdin TTY state when AMPLIHACK_NONINTERACTIVE is unset"
         );
     }
 

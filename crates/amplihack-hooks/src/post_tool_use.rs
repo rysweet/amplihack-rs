@@ -397,9 +397,7 @@ fn update_workflow_enforcement(
         return None;
     }
 
-    let Some(mut state) = read_workflow_state(&dirs, session_id) else {
-        return None;
-    };
+    let mut state = read_workflow_state(&dirs, session_id)?;
 
     if has_workflow_evidence(tool_name, tool_input) {
         clear_workflow_state(&dirs, session_id);

@@ -16,6 +16,8 @@ pub fn run_rustyclawd(args: Vec<String>, no_reflection: bool, subprocess_safe: b
 
     launch::run_launch(
         "claude",
+        "claude",
+        false,
         false,
         false,
         true,

@@ -81,10 +81,13 @@ impl Hook for PreCompactHook {
         };
 
         Ok(serde_json::json!({
-            "status": "success",
-            "message": message,
-            "transcript_path": exported_path.map(|path| path.display().to_string()),
-            "metadata": metadata,
+            "hookSpecificOutput": {
+                "hookEventName": "PreCompact",
+                "status": "success",
+                "message": message,
+                "transcript_path": exported_path.map(|path| path.display().to_string()),
+                "metadata": metadata,
+            }
         }))
     }
 }
@@ -93,9 +96,12 @@ fn error_response(context: &str, error: &anyhow::Error) -> Value {
     let message = format!("{context}: {error}");
     tracing::warn!("{}", message);
     serde_json::json!({
-        "status": "error",
-        "message": message,
-        "error": error.to_string(),
+        "hookSpecificOutput": {
+            "hookEventName": "PreCompact",
+            "status": "error",
+            "message": message,
+            "error": error.to_string(),
+        }
     })
 }
 
@@ -314,22 +320,24 @@ mod tests {
 
         let _ = std::env::set_current_dir(&original);
 
-        assert_eq!(result["status"], "success");
+        let output = &result["hookSpecificOutput"];
+        assert_eq!(output["hookEventName"], "PreCompact");
+        assert_eq!(output["status"], "success");
         assert!(
-            result["message"]
+            output["message"]
                 .as_str()
                 .unwrap()
                 .contains("Conversation exported successfully")
         );
-        assert_eq!(result["metadata"]["event"], "pre_compact");
-        let exported = PathBuf::from(result["transcript_path"].as_str().unwrap());
+        assert_eq!(output["metadata"]["event"], "pre_compact");
+        let exported = PathBuf::from(output["transcript_path"].as_str().unwrap());
         assert!(exported.exists());
         assert!(
             dir.path()
                 .join(".claude/runtime/logs/test-session/compaction_metadata.jsonl")
                 .exists()
         );
-        assert_eq!(result["metadata"]["original_request_preserved"], false);
+        assert_eq!(output["metadata"]["original_request_preserved"], false);
     }
 
     #[test]
@@ -360,9 +368,11 @@ mod tests {
 
         let _ = std::env::set_current_dir(&original);
 
-        assert_eq!(result["status"], "success");
-        assert_eq!(result["metadata"]["original_request_preserved"], true);
-        assert_eq!(result["metadata"]["compaction_trigger"], "token_limit");
+        let output = &result["hookSpecificOutput"];
+        assert_eq!(output["hookEventName"], "PreCompact");
+        assert_eq!(output["status"], "success");
+        assert_eq!(output["metadata"]["original_request_preserved"], true);
+        assert_eq!(output["metadata"]["compaction_trigger"], "token_limit");
         assert!(
             dir.path()
                 .join(".claude/runtime/logs/compact-session/ORIGINAL_REQUEST.md")
@@ -405,8 +415,10 @@ mod tests {
 
         let _ = std::env::set_current_dir(&original);
 
-        assert_eq!(result["status"], "success");
-        assert_eq!(result["metadata"]["original_request_preserved"], true);
+        let output = &result["hookSpecificOutput"];
+        assert_eq!(output["hookEventName"], "PreCompact");
+        assert_eq!(output["status"], "success");
+        assert_eq!(output["metadata"]["original_request_preserved"], true);
         assert!(
             dir.path()
                 .join(".claude/runtime/logs/compact-transcript/ORIGINAL_REQUEST.md")

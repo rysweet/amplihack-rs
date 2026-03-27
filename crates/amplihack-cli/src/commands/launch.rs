@@ -185,14 +185,7 @@ pub fn run_launch(
     result
 }
 
-fn resolve_launch_node_options(subprocess_safe: bool) -> Result<String> {
-    if subprocess_safe {
-        // Passthrough: forward parent's NODE_OPTIONS unchanged without calling
-        // prepare_memory_config(). The top-level launcher already applied
-        // memory configuration; re-applying it in a nested subprocess would
-        // overwrite the parent's carefully-set value.
-        return Ok(std::env::var("NODE_OPTIONS").unwrap_or_default());
-    }
+fn resolve_launch_node_options(_subprocess_safe: bool) -> Result<String> {
     let existing = std::env::var("NODE_OPTIONS").ok();
     Ok(prepare_memory_config(existing.as_deref())?.node_options)
 }
@@ -219,6 +212,7 @@ fn render_session_argv(
     argv
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_docker_launcher_args(
     launcher_command: &str,
     resume: bool,
@@ -229,6 +223,7 @@ fn build_docker_launcher_args(
     checkout_repo: Option<&str>,
     extra_args: &[String],
 ) -> Vec<String> {
+    let is_launch_surface = launcher_command == "launch";
     let mut args = vec![launcher_command.to_string()];
     if resume {
         args.push("--resume".to_string());
@@ -236,7 +231,7 @@ fn build_docker_launcher_args(
     if continue_session {
         args.push("--continue".to_string());
     }
-    if skip_update_check && launcher_command == "launch" {
+    if skip_update_check && is_launch_surface {
         args.push("--skip-update-check".to_string());
     }
     if no_reflection {
@@ -1115,11 +1110,26 @@ mod tests {
     }
 
     #[test]
-    fn build_docker_launcher_args_omits_launch_only_flags_for_other_surfaces() {
+    fn build_docker_launcher_args_preserves_non_launch_surface_and_omits_launch_only_flags() {
         assert_eq!(
             build_docker_launcher_args("copilot", false, false, true, false, false, None, &[]),
             vec!["copilot"]
         );
+    }
+
+    #[test]
+    fn build_docker_launcher_args_preserves_each_non_launch_surface() {
+        for surface in ["copilot", "codex", "amplifier"] {
+            let args =
+                build_docker_launcher_args(surface, false, false, false, false, false, None, &[]);
+            assert_eq!(
+                args.first().map(String::as_str),
+                Some(surface),
+                "surface '{}' produced first arg {:?}",
+                surface,
+                args.first()
+            );
+        }
     }
 
     #[test]
@@ -1142,12 +1152,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_launch_node_options_subprocess_safe_passthrough_differs_from_normal() {
-        // subprocess-safe launches pass through NODE_OPTIONS unchanged.
-        // A normal (top-level) launch runs prepare_memory_config(), which may
-        // augment or replace the value.  The two code paths are deliberately
-        // different; this test confirms they diverge so that a nested subprocess
-        // does not overwrite the parent launcher's carefully-set memory limit.
+    fn resolve_launch_node_options_keeps_memory_config_for_subprocess_safe_launches() {
         let _guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1171,71 +1176,68 @@ mod tests {
             None => unsafe { std::env::remove_var("NODE_OPTIONS") },
         }
 
-        // Correct behavior: subprocess-safe result is the raw parent value;
-        // normal result is the prepare_memory_config()-processed value.
-        // They must differ (passthrough vs. processed).
-        assert_ne!(subprocess_safe, top_level);
-        // subprocess-safe returns the parent value verbatim
-        assert_eq!(subprocess_safe, "--trace-warnings");
-        // normal launch augments with --max-old-space-size
+        assert_eq!(subprocess_safe, top_level);
+        assert!(subprocess_safe.contains("--trace-warnings"));
+        assert!(subprocess_safe.contains("--max-old-space-size="));
         assert!(top_level.contains("--max-old-space-size="));
     }
 
     #[test]
-    fn test_subprocess_safe_preserves_node_options() {
+    fn test_subprocess_safe_preserves_existing_node_options() {
         let _guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let original_home = set_home(home.path());
+        fs::create_dir_all(home.path().join(".amplihack")).unwrap();
         let previous_node_options = std::env::var_os("NODE_OPTIONS");
-        unsafe { std::env::set_var("NODE_OPTIONS", "--max-old-space-size=16384") };
+        unsafe { std::env::set_var("NODE_OPTIONS", "--trace-warnings") };
 
         let result = resolve_launch_node_options(true).unwrap();
 
+        restore_home(original_home);
         match previous_node_options {
             Some(value) => unsafe { std::env::set_var("NODE_OPTIONS", value) },
             None => unsafe { std::env::remove_var("NODE_OPTIONS") },
         }
 
-        // Pass the result through EnvBuilder as the actual launch path does.
         let env = EnvBuilder::new()
             .with_amplihack_vars_with_node_options(Some(result.as_str()))
             .build();
 
-        // The child env must see exactly the parent's value, unchanged.
-        assert_eq!(
-            env.get("NODE_OPTIONS").map(String::as_str),
-            Some("--max-old-space-size=16384"),
-            "subprocess-safe launch must preserve parent NODE_OPTIONS verbatim"
-        );
+        let node_options = env.get("NODE_OPTIONS").map(String::as_str).unwrap_or("");
+        assert!(node_options.contains("--trace-warnings"));
+        assert!(node_options.contains("--max-old-space-size="));
     }
 
     #[test]
-    fn test_subprocess_safe_no_node_options_when_parent_unset() {
+    fn test_subprocess_safe_without_parent_still_applies_memory_config() {
         let _guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let original_home = set_home(home.path());
+        fs::create_dir_all(home.path().join(".amplihack")).unwrap();
         let previous_node_options = std::env::var_os("NODE_OPTIONS");
         unsafe { std::env::remove_var("NODE_OPTIONS") };
 
         let result = resolve_launch_node_options(true).unwrap();
 
+        restore_home(original_home);
         match previous_node_options {
             Some(value) => unsafe { std::env::set_var("NODE_OPTIONS", value) },
             None => unsafe { std::env::remove_var("NODE_OPTIONS") },
         }
 
-        // Pass the result through EnvBuilder as the actual launch path does.
         let env = EnvBuilder::new()
             .with_amplihack_vars_with_node_options(Some(result.as_str()))
             .build();
 
-        // When parent has no NODE_OPTIONS, subprocess-safe must NOT inject the
-        // static 32768 MB default that a normal launch would add.
         let node_opts = env.get("NODE_OPTIONS").map(String::as_str).unwrap_or("");
         assert!(
-            !node_opts.contains("--max-old-space-size=32768"),
-            "subprocess-safe launch must not inject 32768 MB default when parent has no \
-             NODE_OPTIONS; got: {:?}",
+            node_opts.contains("--max-old-space-size="),
+            "subprocess-safe launch must still inject smart NODE_OPTIONS when parent is unset; \
+             got: {:?}",
             node_opts
         );
     }

@@ -14,8 +14,7 @@ use std::path::PathBuf;
 
 pub struct WorkflowClassificationReminderHook;
 
-const DEFAULT_ROUTING_PROMPT: &str =
-    include_str!("../../../.claude/tools/amplihack/hooks/templates/routing_prompt.txt");
+const DEFAULT_ROUTING_PROMPT: &str = include_str!("routing_prompt.txt");
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ClassificationState {
