@@ -1,0 +1,31 @@
+{
+  "name": "@rysweet/amplihack-rs",
+  "version": "0.6.2",
+  "description": "npm/npx wrapper for the amplihack Rust CLI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rysweet/amplihack-rs.git"
+  },
+  "homepage": "https://github.com/rysweet/amplihack-rs",
+  "bugs": {
+    "url": "https://github.com/rysweet/amplihack-rs/issues"
+  },
+  "bin": {
+    "amplihack": "./npm/bin/amplihack.js"
+  },
+  "files": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "bins/",
+    "crates/",
+    "npm/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test npm/test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

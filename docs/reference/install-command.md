@@ -11,6 +11,15 @@ amplihack uninstall
 
 Bootstraps the amplihack environment on the current machine. On first run, it performs full setup: obtains the framework source, deploys native binaries, stages framework assets, and registers Claude Code hooks. Subsequent runs are idempotent — they update existing registrations in place without duplication.
 
+You can invoke the same command through the npm wrapper package when desired:
+
+```sh
+npx --yes --package=git+https://github.com/rysweet/amplihack-rs.git -- amplihack install
+```
+
+The wrapper only changes how the native binaries are obtained. Once it hands off
+to the Rust CLI, the install phases below are unchanged.
+
 ### Options
 
 | Flag | Type | Default | Description |

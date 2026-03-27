@@ -22,6 +22,21 @@ Rust core runtime for amplihack's deterministic infrastructure layer.
 cargo install --git https://github.com/rysweet/amplihack-rs amplihack --locked
 ```
 
+### Install or run through npm / npx
+```bash
+# One-shot install via a git package spec
+npx --yes --package=git+https://github.com/rysweet/amplihack-rs.git -- amplihack install
+
+# Equivalent npm exec form
+npm exec --yes --package=git+https://github.com/rysweet/amplihack-rs.git -- amplihack install
+```
+
+The npm wrapper exposes the `amplihack` bin, provisions both `amplihack` and
+`amplihack-hooks`, then delegates to the Rust CLI. It tries the matching GitHub
+release archive first and falls back to a local Cargo build when the package
+contents include the Rust workspace (for example when installed from a git
+checkout).
+
 ### Pre-built binaries (no build tools required)
 Download from https://github.com/rysweet/amplihack-rs/releases for your platform.
 
@@ -33,6 +48,9 @@ cargo build
 
 # Install from git
 cargo install --git https://github.com/rysweet/amplihack-rs amplihack --locked
+
+# Or bootstrap the Rust CLI through npm/npx
+npx --yes --package=git+https://github.com/rysweet/amplihack-rs.git -- amplihack install
 
 # First run: call the freshly installed Rust binary explicitly in case an older
 # Python/uv amplihack is earlier on PATH
@@ -87,6 +105,11 @@ host CLIs such as Claude, Copilot, Codex, or Amplifier.
 
 If `amplihack` still resolves to an older Python/uv installation, use `type -a amplihack`
 to confirm which binary wins on PATH and invoke `~/.local/bin/amplihack` directly.
+
+The accepted npm/npx form uses npm's `--package` flag, for example:
+`npx --yes --package=git+https://github.com/rysweet/amplihack-rs.git -- amplihack install`.
+That syntax installs the wrapper package into the npm cache, makes its `amplihack`
+bin available on `PATH`, and then hands off to the native Rust CLI.
 
 `~/.local/bin/amplihack update` switches to the tagged `v*` GitHub release channel once
 stable releases are published and installs the paired `amplihack-hooks` binary alongside
