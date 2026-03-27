@@ -5,9 +5,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { setTimeout: delay } = require('node:timers/promises');
 
 const {
+  acquireInstallLock,
   binaryFilename,
+  copyFileAtomic,
   findBinary,
   hasLocalCargoWorkspace,
   packageRoot,
@@ -15,6 +18,7 @@ const {
   releaseTargetFor,
   releaseUrls,
   validateDownloadUrl,
+  verifyArchiveChecksum,
 } = require('../lib/bootstrap');
 
 test('release target mapping matches published targets', () => {
@@ -48,6 +52,13 @@ test('checksum parser extracts the leading digest token', () => {
   assert.throws(() => parseChecksumHex('not-a-digest\n'));
 });
 
+test('checksum verification requires the published digest to match', () => {
+  const archiveBytes = Buffer.from('amplihack');
+  const digest = require('node:crypto').createHash('sha256').update(archiveBytes).digest('hex');
+  assert.doesNotThrow(() => verifyArchiveChecksum(archiveBytes, `${digest}  amplihack.tar.gz\n`, 'https://example.test/archive'));
+  assert.throws(() => verifyArchiveChecksum(archiveBytes, `${'a'.repeat(64)}  amplihack.tar.gz\n`, 'https://example.test/archive'));
+});
+
 test('download URL validation only trusts GitHub release hosts', () => {
   assert.doesNotThrow(() => validateDownloadUrl('https://github.com/rysweet/amplihack-rs/releases/download/v0.6.4/amplihack-x86_64-unknown-linux-gnu.tar.gz'));
   assert.doesNotThrow(() => validateDownloadUrl('https://objects.githubusercontent.com/github-production-release-asset-2e65be/123'));
@@ -62,6 +73,31 @@ test('findBinary locates nested binaries', async () => {
   const binaryPath = path.join(nestedDir, 'amplihack');
   await fs.promises.writeFile(binaryPath, '');
   assert.equal(findBinary(tempDir, 'amplihack'), binaryPath);
+});
+
+test('copyFileAtomic publishes the completed file contents', async () => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'amplihack-npm-copy-'));
+  const source = path.join(tempDir, 'source');
+  const destination = path.join(tempDir, 'destination');
+  await fs.promises.writeFile(source, 'hello');
+  await copyFileAtomic(source, destination, 0o700);
+  assert.equal(await fs.promises.readFile(destination, 'utf8'), 'hello');
+});
+
+test('install lock serializes concurrent installers', async () => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'amplihack-npm-lock-'));
+  const releaseFirst = await acquireInstallLock(tempDir, { timeoutMs: 1000, pollMs: 10 });
+  let acquiredSecond = false;
+  const secondLock = acquireInstallLock(tempDir, { timeoutMs: 1000, pollMs: 10 }).then((release) => {
+    acquiredSecond = true;
+    return release;
+  });
+  await delay(50);
+  assert.equal(acquiredSecond, false);
+  await releaseFirst();
+  const releaseSecond = await secondLock;
+  assert.equal(acquiredSecond, true);
+  await releaseSecond();
 });
 
 test('workspace detection requires both Rust binary crates', async () => {

@@ -20,6 +20,11 @@ npx --yes --package=git+https://github.com/rysweet/amplihack-rs.git -- amplihack
 The wrapper only changes how the native binaries are obtained. Once it hands off
 to the Rust CLI, the install phases below are unchanged.
 
+Published release archives currently cover Linux and macOS on `x64`/`arm64`.
+On Windows, or any other platform without a published release target, the npm
+wrapper needs the packaged Rust workspace plus a local Rust toolchain so it can
+fall back to a source build.
+
 ### Options
 
 | Flag | Type | Default | Description |

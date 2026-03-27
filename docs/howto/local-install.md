@@ -43,6 +43,10 @@ That wrapper path uses the same `amplihack` bin name, provisions
 If a matching GitHub release archive is unavailable, the wrapper falls back to
 building from the packaged Cargo workspace.
 
+That local-checkout path is also the way to use the wrapper on platforms without
+published release archives yet, because the fallback build needs the Rust
+workspace and a local Rust toolchain.
+
 The `--local` flag skips the default GitHub archive download step and reads framework assets directly from your checkout. All other phases (optional legacy-Python probe, binary deployment, asset staging, hook wiring) run identically to a standard install.
 
 ### 3. Verify

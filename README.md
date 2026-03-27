@@ -37,6 +37,12 @@ release archive first and falls back to a local Cargo build when the package
 contents include the Rust workspace (for example when installed from a git
 checkout).
 
+Published release archives currently cover Linux and macOS on `x64`/`arm64`.
+On Windows, or any other platform without a published release target, the npm
+wrapper only works when the packaged Rust workspace is present and a local Rust
+toolchain is available for the source-build fallback. If you want the most
+predictable cross-platform path, use `cargo install` or a native binary release.
+
 ### Pre-built binaries (no build tools required)
 Download from https://github.com/rysweet/amplihack-rs/releases for your platform.
 

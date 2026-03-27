@@ -6,6 +6,7 @@ const fsp = require('node:fs/promises');
 const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
+const { setTimeout: delay } = require('node:timers/promises');
 const { spawnSync } = require('node:child_process');
 
 const GITHUB_REPO = 'rysweet/amplihack-rs';
@@ -16,6 +17,9 @@ const ALLOWED_DOWNLOAD_PREFIXES = [
   'https://objects.githubusercontent.com/',
   'https://release-assets.githubusercontent.com/',
 ];
+const INSTALL_LOCK_FILE = '.install-lock';
+const INSTALL_LOCK_TIMEOUT_MS = 120000;
+const INSTALL_LOCK_POLL_MS = 200;
 
 function binaryFilename(name, platform = process.platform) {
   return platform === 'win32' ? `${name}.exe` : name;
@@ -101,6 +105,79 @@ function validateDownloadUrl(url) {
   }
 }
 
+function verifyArchiveChecksum(archiveBytes, checksumText, archiveUrl) {
+  const expectedHex = parseChecksumHex(checksumText);
+  const actualHex = crypto.createHash('sha256').update(archiveBytes).digest('hex');
+  if (actualHex.toLowerCase() !== expectedHex.toLowerCase()) {
+    throw new Error(`SHA-256 mismatch for ${archiveUrl}`);
+  }
+}
+
+function processExists(pidText) {
+  const pid = Number.parseInt(String(pidText || '').trim(), 10);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return null;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error && error.code === 'ESRCH') {
+      return false;
+    }
+    if (error && error.code === 'EPERM') {
+      return true;
+    }
+    throw error;
+  }
+}
+
+async function acquireInstallLock(installRoot, {
+  timeoutMs = INSTALL_LOCK_TIMEOUT_MS,
+  pollMs = INSTALL_LOCK_POLL_MS,
+} = {}) {
+  const lockPath = path.join(installRoot, INSTALL_LOCK_FILE);
+  const deadline = Date.now() + timeoutMs;
+
+  while (true) {
+    try {
+      const handle = await fsp.open(lockPath, 'wx');
+      await handle.writeFile(`${process.pid}\n`);
+      await handle.close();
+      return async () => {
+        await fsp.rm(lockPath, { force: true });
+      };
+    } catch (error) {
+      if (!error || error.code !== 'EEXIST') {
+        throw error;
+      }
+      const holder = await fsp.readFile(lockPath, 'utf8').catch(() => '');
+      const holderAlive = processExists(holder);
+      if (holderAlive === false) {
+        await fsp.rm(lockPath, { force: true });
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for install lock at ${lockPath}`);
+      }
+      await delay(pollMs);
+    }
+  }
+}
+
+async function copyFileAtomic(source, destination, mode = 0o755) {
+  const tempDestination = `${destination}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  try {
+    await fsp.copyFile(source, tempDestination);
+    await fsp.chmod(tempDestination, mode);
+    await fsp.rm(destination, { force: true });
+    await fsp.rename(tempDestination, destination);
+  } catch (error) {
+    await fsp.rm(tempDestination, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 function download(url) {
   return new Promise((resolve, reject) => {
     const seen = new Set();
@@ -160,43 +237,35 @@ async function installFromRelease(version, installRoot) {
 
   const { archiveUrl, checksumUrl } = releaseUrls(version, target);
   const archiveBytes = await download(archiveUrl);
-
-  try {
-    const checksumBytes = await download(checksumUrl);
-    const expectedHex = parseChecksumHex(checksumBytes.toString('utf8'));
-    const actualHex = crypto.createHash('sha256').update(archiveBytes).digest('hex');
-    if (actualHex.toLowerCase() !== expectedHex.toLowerCase()) {
-      throw new Error(`SHA-256 mismatch for ${archiveUrl}`);
-    }
-  } catch (error) {
-    if (!String(error.message || error).includes('HTTP 404')) {
-      throw error;
-    }
-  }
+  const checksumBytes = await download(checksumUrl);
+  verifyArchiveChecksum(archiveBytes, checksumBytes.toString('utf8'), archiveUrl);
 
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'amplihack-npm-'));
-  const archivePath = path.join(tempRoot, 'amplihack.tar.gz');
-  const extractDir = path.join(tempRoot, 'extract');
-  await fsp.mkdir(extractDir, { recursive: true });
-  await fsp.writeFile(archivePath, archiveBytes);
+  try {
+    const archivePath = path.join(tempRoot, 'amplihack.tar.gz');
+    const extractDir = path.join(tempRoot, 'extract');
+    await fsp.mkdir(extractDir, { recursive: true });
+    await fsp.writeFile(archivePath, archiveBytes);
 
-  const tar = spawnSync('tar', ['-xzf', archivePath, '-C', extractDir], {
-    stdio: 'inherit',
-  });
-  if (tar.error) {
-    throw new Error(`Failed to extract release archive with tar: ${tar.error.message}`);
-  }
-  if (tar.status !== 0) {
-    throw new Error(`tar extraction failed with exit code ${tar.status}`);
-  }
+    const tar = spawnSync('tar', ['-xzf', archivePath, '-C', extractDir], {
+      stdio: 'inherit',
+    });
+    if (tar.error) {
+      throw new Error(`Failed to extract release archive with tar: ${tar.error.message}`);
+    }
+    if (tar.status !== 0) {
+      throw new Error(`tar extraction failed with exit code ${tar.status}`);
+    }
 
-  const binDir = path.join(installRoot, 'bin');
-  await fsp.mkdir(binDir, { recursive: true });
-  for (const binary of ['amplihack', 'amplihack-hooks']) {
-    const source = findBinary(extractDir, binaryFilename(binary));
-    const destination = path.join(binDir, binaryFilename(binary));
-    await fsp.copyFile(source, destination);
-    await fsp.chmod(destination, 0o755);
+    const binDir = path.join(installRoot, 'bin');
+    await fsp.mkdir(binDir, { recursive: true });
+    for (const binary of ['amplihack', 'amplihack-hooks']) {
+      const source = findBinary(extractDir, binaryFilename(binary));
+      const destination = path.join(binDir, binaryFilename(binary));
+      await copyFileAtomic(source, destination);
+    }
+  } finally {
+    await fsp.rm(tempRoot, { recursive: true, force: true });
   }
 }
 
@@ -228,8 +297,7 @@ async function buildFromSource(root, installRoot) {
   for (const binary of ['amplihack', 'amplihack-hooks']) {
     const source = path.join(releaseDir, binaryFilename(binary));
     const destination = path.join(binDir, binaryFilename(binary));
-    await fsp.copyFile(source, destination);
-    await fsp.chmod(destination, 0o755);
+    await copyFileAtomic(source, destination);
   }
 }
 
@@ -243,31 +311,40 @@ async function ensureNativeBinaries({ root, version }) {
   }
 
   await fsp.mkdir(installRoot, { recursive: true });
-  const forceSource = process.env.AMPLIHACK_NPM_WRAPPER_FORCE_SOURCE === '1';
-  const localCargoWorkspace = hasLocalCargoWorkspace(root);
-  const errors = [];
-
-  if (!forceSource) {
-    try {
-      await installFromRelease(version, installRoot);
+  const releaseInstallLock = await acquireInstallLock(installRoot);
+  try {
+    if (fs.existsSync(mainBinary) && fs.existsSync(hooksBinary)) {
       return { mainBinary, hooksBinary, installRoot };
-    } catch (error) {
-      errors.push(`release download failed: ${error.message}`);
     }
-  }
 
-  if (localCargoWorkspace) {
-    try {
-      await buildFromSource(root, installRoot);
-      return { mainBinary, hooksBinary, installRoot };
-    } catch (error) {
-      errors.push(`source build failed: ${error.message}`);
+    const forceSource = process.env.AMPLIHACK_NPM_WRAPPER_FORCE_SOURCE === '1';
+    const localCargoWorkspace = hasLocalCargoWorkspace(root);
+    const errors = [];
+
+    if (!forceSource) {
+      try {
+        await installFromRelease(version, installRoot);
+        return { mainBinary, hooksBinary, installRoot };
+      } catch (error) {
+        errors.push(`release download failed: ${error.message}`);
+      }
     }
-  } else {
-    errors.push('local Cargo workspace not present for source-build fallback');
-  }
 
-  throw new Error(errors.join('\n'));
+    if (localCargoWorkspace) {
+      try {
+        await buildFromSource(root, installRoot);
+        return { mainBinary, hooksBinary, installRoot };
+      } catch (error) {
+        errors.push(`source build failed: ${error.message}`);
+      }
+    } else {
+      errors.push('local Cargo workspace not present for source-build fallback');
+    }
+
+    throw new Error(errors.join('\n'));
+  } finally {
+    await releaseInstallLock();
+  }
 }
 
 function runAmplihack(binaryPath, args) {
@@ -282,15 +359,19 @@ function runAmplihack(binaryPath, args) {
 }
 
 module.exports = {
+  acquireInstallLock,
   binaryFilename,
   cacheRoot,
+  copyFileAtomic,
   ensureNativeBinaries,
   findBinary,
   hasLocalCargoWorkspace,
+  installFromRelease,
   packageRoot,
   parseChecksumHex,
   releaseTargetFor,
   releaseUrls,
   runAmplihack,
   validateDownloadUrl,
+  verifyArchiveChecksum,
 };

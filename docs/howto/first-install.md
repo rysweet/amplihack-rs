@@ -54,6 +54,12 @@ The wrapper exposes the `amplihack` command, ensures both `amplihack` and
 native `amplihack install` flow. It prefers the matching GitHub release archive
 and falls back to a local Cargo build when the packaged Rust workspace is present.
 
+Published release archives currently cover Linux and macOS on `x64`/`arm64`.
+On Windows, or any other platform without a published release target, the npm
+wrapper needs the packaged Rust workspace plus a local Rust toolchain so it can
+fall back to a source build. If you do not want that dependency, use the native
+`cargo install` path instead of the npm wrapper.
+
 The installer performs these phases in order:
 
 | Phase | What happens |
