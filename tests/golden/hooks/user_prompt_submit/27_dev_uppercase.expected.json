@@ -1,1 +1,6 @@
-{}
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "__CONTAINS__:/dev workflow detected"
+  }
+}

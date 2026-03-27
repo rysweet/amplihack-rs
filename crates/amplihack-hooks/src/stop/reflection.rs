@@ -4,6 +4,7 @@
 //! headless Claude reflection prompt to generate feedback on the work done.
 //! Results are saved to timestamped files for history preservation.
 
+use amplihack_cli::env_builder::active_agent_binary;
 use amplihack_types::{ProjectDirs, sanitize_session_id};
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -115,10 +116,40 @@ struct RedirectRecord {
 }
 
 /// Check if reflection should run.
-pub fn should_run(_dirs: &ProjectDirs) -> bool {
-    match std::env::var("AMPLIHACK_ENABLE_REFLECTION") {
-        Ok(val) => matches!(val.to_lowercase().as_str(), "1" | "true" | "yes"),
-        Err(_) => false,
+pub fn should_run(dirs: &ProjectDirs) -> bool {
+    if std::env::var_os("AMPLIHACK_SKIP_REFLECTION").is_some_and(|value| !value.is_empty()) {
+        return false;
+    }
+
+    let reflection_lock = dirs.runtime.join("reflection").join(".reflection_lock");
+    if reflection_lock.exists() {
+        return false;
+    }
+
+    if std::env::var("AMPLIHACK_ENABLE_REFLECTION")
+        .ok()
+        .is_some_and(|value| matches!(value.to_lowercase().as_str(), "1" | "true" | "yes"))
+    {
+        return true;
+    }
+
+    let config_path = dirs.tools_amplihack.join(".reflection_config");
+    let Ok(config_text) = fs::read_to_string(&config_path) else {
+        return false;
+    };
+
+    match serde_json::from_str::<Value>(&config_text) {
+        Ok(config) => config
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        Err(err) => {
+            tracing::warn!(
+                path = %config_path.display(),
+                "Failed to parse reflection config: {err}"
+            );
+            false
+        }
     }
 }
 
@@ -139,7 +170,7 @@ fn save_reflection_artifacts(dirs: &ProjectDirs, session_id: &str, template: &st
         tracing::warn!("Failed to write FEEDBACK_SUMMARY.md: {}", e);
     }
 
-    let reflection_dir = dirs.runtime.join("reflection");
+    let reflection_dir = reflection_runtime_dir(dirs);
     if let Err(e) = fs::create_dir_all(&reflection_dir) {
         tracing::warn!("Failed to create reflection dir: {}", e);
     }
@@ -149,6 +180,17 @@ fn save_reflection_artifacts(dirs: &ProjectDirs, session_id: &str, template: &st
     if let Err(e) = fs::write(reflection_dir.join("current_findings.md"), template) {
         tracing::warn!("Failed to write current_findings.md: {}", e);
     }
+}
+
+fn reflection_runtime_dir(dirs: &ProjectDirs) -> std::path::PathBuf {
+    dirs.runtime.join("reflection")
+}
+
+fn reflection_semaphore_path(dirs: &ProjectDirs, session_id: &str) -> std::path::PathBuf {
+    reflection_runtime_dir(dirs).join(format!(
+        ".reflection_presented_{}",
+        sanitize_session_id(session_id)
+    ))
 }
 
 /// Run session reflection and return findings if session should be blocked.
@@ -162,10 +204,16 @@ pub fn run_reflection(
 ) -> Result<Option<Value>> {
     let session_dir = dirs.session_logs(session_id);
     fs::create_dir_all(&session_dir)?;
+    fs::create_dir_all(reflection_runtime_dir(dirs))?;
 
-    let safe_id = sanitize_session_id(session_id);
-    let semaphore_path = session_dir.join(format!(".reflection_presented_{safe_id}"));
+    let semaphore_path = reflection_semaphore_path(dirs, session_id);
     if semaphore_path.exists() {
+        if let Err(error) = fs::remove_file(&semaphore_path) {
+            tracing::warn!(
+                path = %semaphore_path.display(),
+                "Failed to remove reflection semaphore: {error}"
+            );
+        }
         return Ok(None);
     }
 
@@ -230,24 +278,27 @@ fn build_reflection_prompt(
 }
 
 fn load_prompt_template(dirs: &ProjectDirs) -> String {
-    let path = dirs
-        .tools_amplihack
-        .join("hooks")
-        .join("templates")
-        .join("reflection_prompt.txt");
+    let Some(path) = dirs
+        .resolve_framework_file(".claude/tools/amplihack/hooks/templates/reflection_prompt.txt")
+    else {
+        return DEFAULT_REFLECTION_PROMPT_TEMPLATE.to_string();
+    };
     fs::read_to_string(&path).unwrap_or_else(|_| DEFAULT_REFLECTION_PROMPT_TEMPLATE.to_string())
 }
 
 fn load_feedback_template(dirs: &ProjectDirs) -> String {
-    let path = dirs.claude.join("templates").join("FEEDBACK_SUMMARY.md");
+    let Some(path) = dirs.resolve_framework_file(".claude/templates/FEEDBACK_SUMMARY.md") else {
+        return DEFAULT_FEEDBACK_TEMPLATE.to_string();
+    };
     fs::read_to_string(&path).unwrap_or_else(|_| DEFAULT_FEEDBACK_TEMPLATE.to_string())
 }
 
 fn load_user_preferences_context(dirs: &ProjectDirs) -> Option<String> {
-    let candidates = [
-        dirs.user_preferences(),
-        dirs.root.join("USER_PREFERENCES.md"),
-    ];
+    let mut candidates = Vec::new();
+    if let Some(path) = dirs.resolve_preferences_file() {
+        candidates.push(path);
+    }
+    candidates.push(dirs.root.join("USER_PREFERENCES.md"));
     for path in candidates {
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
@@ -488,7 +539,7 @@ fn run_claude_reflection(project_root: &Path, prompt: &str) -> Result<Option<Str
     let binary = std::env::var("AMPLIHACK_REFLECTION_BINARY")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "claude".to_string());
+        .unwrap_or_else(active_agent_binary);
 
     let mut child = Command::new(&binary)
         .args([
@@ -550,23 +601,122 @@ mod tests {
     }
 
     #[test]
+    fn enabled_config_allows_reflection() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        fs::create_dir_all(&dirs.tools_amplihack).unwrap();
+        fs::write(
+            dirs.tools_amplihack.join(".reflection_config"),
+            r#"{"enabled": true}"#,
+        )
+        .unwrap();
+        let previous_enable = std::env::var_os("AMPLIHACK_ENABLE_REFLECTION");
+        let previous_skip = std::env::var_os("AMPLIHACK_SKIP_REFLECTION");
+        unsafe {
+            std::env::remove_var("AMPLIHACK_ENABLE_REFLECTION");
+            std::env::remove_var("AMPLIHACK_SKIP_REFLECTION");
+        }
+
+        let should_run_reflection = should_run(&dirs);
+
+        match previous_enable {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_ENABLE_REFLECTION", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_ENABLE_REFLECTION") },
+        }
+        match previous_skip {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_SKIP_REFLECTION", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_SKIP_REFLECTION") },
+        }
+
+        assert!(should_run_reflection);
+    }
+
+    #[test]
+    fn skip_flag_blocks_reflection_even_when_enabled() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        fs::create_dir_all(&dirs.tools_amplihack).unwrap();
+        fs::write(
+            dirs.tools_amplihack.join(".reflection_config"),
+            r#"{"enabled": true}"#,
+        )
+        .unwrap();
+        let previous_enable = std::env::var_os("AMPLIHACK_ENABLE_REFLECTION");
+        let previous_skip = std::env::var_os("AMPLIHACK_SKIP_REFLECTION");
+        unsafe {
+            std::env::set_var("AMPLIHACK_ENABLE_REFLECTION", "1");
+            std::env::set_var("AMPLIHACK_SKIP_REFLECTION", "1");
+        }
+
+        let should_run_reflection = should_run(&dirs);
+
+        match previous_enable {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_ENABLE_REFLECTION", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_ENABLE_REFLECTION") },
+        }
+        match previous_skip {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_SKIP_REFLECTION", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_SKIP_REFLECTION") },
+        }
+
+        assert!(!should_run_reflection);
+    }
+
+    #[test]
+    fn reflection_lock_blocks_execution() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        fs::create_dir_all(&dirs.tools_amplihack).unwrap();
+        fs::create_dir_all(dirs.runtime.join("reflection")).unwrap();
+        fs::write(
+            dirs.tools_amplihack.join(".reflection_config"),
+            r#"{"enabled": true}"#,
+        )
+        .unwrap();
+        fs::write(dirs.runtime.join("reflection/.reflection_lock"), "").unwrap();
+        let previous_enable = std::env::var_os("AMPLIHACK_ENABLE_REFLECTION");
+        let previous_skip = std::env::var_os("AMPLIHACK_SKIP_REFLECTION");
+        unsafe {
+            std::env::remove_var("AMPLIHACK_ENABLE_REFLECTION");
+            std::env::remove_var("AMPLIHACK_SKIP_REFLECTION");
+        }
+
+        let should_run_reflection = should_run(&dirs);
+
+        match previous_enable {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_ENABLE_REFLECTION", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_ENABLE_REFLECTION") },
+        }
+        match previous_skip {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_SKIP_REFLECTION", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_SKIP_REFLECTION") },
+        }
+
+        assert!(!should_run_reflection);
+    }
+
+    #[test]
     fn semaphore_prevents_re_presentation() {
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         let session_id = "test-session";
         let session_dir = dirs.session_logs(session_id);
         fs::create_dir_all(&session_dir).unwrap();
-        fs::write(
-            session_dir.join(format!(
-                ".reflection_presented_{}",
-                sanitize_session_id(session_id)
-            )),
-            "",
-        )
-        .unwrap();
+        fs::create_dir_all(reflection_runtime_dir(&dirs)).unwrap();
+        fs::write(reflection_semaphore_path(&dirs, session_id), "").unwrap();
 
         let result = run_reflection(&dirs, session_id, None).unwrap();
         assert!(result.is_none());
+        assert!(!reflection_semaphore_path(&dirs, session_id).exists());
     }
 
     #[test]
@@ -648,10 +798,100 @@ mod tests {
         );
         assert!(session_dir.join("FEEDBACK_SUMMARY.md").exists());
         assert!(dirs.runtime.join("reflection/current_findings.md").exists());
-        assert!(
-            session_dir
-                .join(".reflection_presented_test-session")
-                .exists()
+        assert!(reflection_semaphore_path(&dirs, "test-session").exists());
+    }
+
+    #[test]
+    fn run_claude_reflection_uses_active_agent_binary_when_override_unset() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let fake_cli = dir.path().join("copilot");
+        fs::write(
+            &fake_cli,
+            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '## Task Summary\\nReflected via agent binary\\n'\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&fake_cli).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_cli, perms).unwrap();
+
+        let previous_path = std::env::var_os("PATH");
+        let previous_agent_binary = std::env::var_os("AMPLIHACK_AGENT_BINARY");
+        let previous_reflection_binary = std::env::var_os("AMPLIHACK_REFLECTION_BINARY");
+        let temp_path = match previous_path.as_ref() {
+            Some(path) => format!("{}:{}", dir.path().display(), path.to_string_lossy()),
+            None => dir.path().display().to_string(),
+        };
+        unsafe {
+            std::env::set_var("PATH", temp_path);
+            std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot");
+            std::env::remove_var("AMPLIHACK_REFLECTION_BINARY");
+        }
+
+        let result = run_claude_reflection(dir.path(), "reflect now").unwrap();
+
+        match previous_path {
+            Some(value) => unsafe { std::env::set_var("PATH", value) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+        match previous_agent_binary {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_AGENT_BINARY") },
+        }
+        match previous_reflection_binary {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_REFLECTION_BINARY", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_REFLECTION_BINARY") },
+        }
+
+        assert_eq!(
+            result.as_deref(),
+            Some("## Task Summary\nReflected via agent binary")
         );
+    }
+
+    #[test]
+    fn reflection_templates_use_amplihack_root_override() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let project = tempfile::tempdir().unwrap();
+        let framework = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(project.path());
+        fs::create_dir_all(
+            framework
+                .path()
+                .join(".claude/tools/amplihack/hooks/templates"),
+        )
+        .unwrap();
+        fs::create_dir_all(framework.path().join(".claude/templates")).unwrap();
+        fs::write(
+            framework
+                .path()
+                .join(".claude/tools/amplihack/hooks/templates/reflection_prompt.txt"),
+            "Prompt from framework root",
+        )
+        .unwrap();
+        fs::write(
+            framework
+                .path()
+                .join(".claude/templates/FEEDBACK_SUMMARY.md"),
+            "Feedback from framework root",
+        )
+        .unwrap();
+        let previous = std::env::var_os("AMPLIHACK_ROOT");
+        unsafe { std::env::set_var("AMPLIHACK_ROOT", framework.path()) };
+
+        let prompt = load_prompt_template(&dirs);
+        let feedback = load_feedback_template(&dirs);
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_ROOT", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_ROOT") },
+        }
+
+        assert_eq!(prompt, "Prompt from framework root");
+        assert_eq!(feedback, "Feedback from framework root");
     }
 }

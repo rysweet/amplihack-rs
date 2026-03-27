@@ -53,6 +53,77 @@ struct HookSpec {
     matcher: Option<&'static str>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CanonicalHookContractEntry {
+    event: &'static str,
+    hook_file: &'static str,
+    native_subcmd: Option<&'static str>,
+    timeout: Option<u64>,
+    matcher: Option<&'static str>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ObservedNativeHookContractEntry {
+    subcmd: String,
+    timeout: Option<u64>,
+    matcher: Option<String>,
+}
+
+// Mirrors the canonical Python hook files plus the native Rust install contract.
+// UserPromptSubmit is intentionally launcher-ordered so the lightweight
+// workflow-classification reminder runs before user-prompt-submit.
+const CANONICAL_AMPLIHACK_HOOK_CONTRACT: &[CanonicalHookContractEntry] = &[
+    CanonicalHookContractEntry {
+        event: "SessionStart",
+        hook_file: "session_start.py",
+        native_subcmd: Some("session-start"),
+        timeout: Some(10),
+        matcher: None,
+    },
+    CanonicalHookContractEntry {
+        event: "Stop",
+        hook_file: "stop.py",
+        native_subcmd: Some("stop"),
+        timeout: Some(120),
+        matcher: None,
+    },
+    CanonicalHookContractEntry {
+        event: "PreToolUse",
+        hook_file: "pre_tool_use.py",
+        native_subcmd: Some("pre-tool-use"),
+        timeout: None,
+        matcher: Some("*"),
+    },
+    CanonicalHookContractEntry {
+        event: "PostToolUse",
+        hook_file: "post_tool_use.py",
+        native_subcmd: Some("post-tool-use"),
+        timeout: None,
+        matcher: Some("*"),
+    },
+    CanonicalHookContractEntry {
+        event: "UserPromptSubmit",
+        hook_file: "workflow_classification_reminder.py",
+        native_subcmd: Some("workflow-classification-reminder"),
+        timeout: Some(5),
+        matcher: None,
+    },
+    CanonicalHookContractEntry {
+        event: "UserPromptSubmit",
+        hook_file: "user_prompt_submit.py",
+        native_subcmd: Some("user-prompt-submit"),
+        timeout: Some(10),
+        matcher: None,
+    },
+    CanonicalHookContractEntry {
+        event: "PreCompact",
+        hook_file: "pre_compact.py",
+        native_subcmd: Some("pre-compact"),
+        timeout: Some(30),
+        matcher: None,
+    },
+];
+
 const AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[
     HookSpec {
         event: "SessionStart",
@@ -1010,6 +1081,16 @@ fn ensure_settings_json(
     .with_context(|| format!("failed to write {}", settings_path.display()))?;
     println!("  ✅ settings.json configured");
 
+    let hook_contract_drift = validate_amplihack_native_hook_contract(&settings);
+    if hook_contract_drift.is_empty() {
+        println!("  ✅ Native amplihack hook contract matches hooks.json");
+    } else {
+        println!("  ⚠️  Native amplihack hook contract drift detected:");
+        for issue in hook_contract_drift {
+            println!("     • {issue}");
+        }
+    }
+
     // Collect deduplicated event names that were registered
     let registered_events: Vec<String> = {
         let mut seen = BTreeSet::new();
@@ -1092,6 +1173,131 @@ fn ensure_permissions(settings: &mut Value) {
             additional.push(Value::String(dir.to_string()));
         }
     }
+}
+
+fn validate_amplihack_native_hook_contract(settings: &Value) -> Vec<String> {
+    let mut drift = Vec::new();
+    let mut seen_events = Vec::new();
+
+    for entry in CANONICAL_AMPLIHACK_HOOK_CONTRACT {
+        if !seen_events.contains(&entry.event) {
+            seen_events.push(entry.event);
+        }
+    }
+
+    for event in seen_events {
+        let expected = canonical_native_hooks_for_event(event);
+        let actual = observed_native_hooks_for_event(settings, event);
+
+        for (index, expected_entry) in expected.iter().enumerate() {
+            match actual.get(index) {
+                Some(observed)
+                    if observed.subcmd == expected_entry.native_subcmd.unwrap_or_default()
+                        && observed.timeout == expected_entry.timeout
+                        && observed.matcher.as_deref() == expected_entry.matcher => {}
+                Some(observed) => drift.push(format!(
+                    "{event}[{index}] expected {} but found {}",
+                    describe_expected_native_hook(expected_entry),
+                    describe_observed_native_hook(observed)
+                )),
+                None => drift.push(format!(
+                    "{event}[{index}] missing {}; expected native hook order from hooks.json/HOOK_CONFIGS",
+                    describe_expected_native_hook(expected_entry)
+                )),
+            }
+        }
+
+        for extra in actual.iter().skip(expected.len()) {
+            drift.push(format!(
+                "{event} has unexpected native hook {}",
+                describe_observed_native_hook(extra)
+            ));
+        }
+    }
+
+    drift
+}
+
+fn canonical_native_hooks_for_event(event: &str) -> Vec<&'static CanonicalHookContractEntry> {
+    CANONICAL_AMPLIHACK_HOOK_CONTRACT
+        .iter()
+        .filter(|entry| entry.event == event && entry.native_subcmd.is_some())
+        .collect()
+}
+
+fn observed_native_hooks_for_event(
+    settings: &Value,
+    event: &str,
+) -> Vec<ObservedNativeHookContractEntry> {
+    settings
+        .as_object()
+        .and_then(|root| root.get("hooks"))
+        .and_then(Value::as_object)
+        .and_then(|hooks| hooks.get(event))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flat_map(|wrappers| wrappers.iter())
+        .flat_map(|wrapper| {
+            let matcher = wrapper
+                .get("matcher")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            wrapper
+                .get("hooks")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flat_map(move |hooks| {
+                    let matcher = matcher.clone();
+                    hooks.iter().filter_map(move |hook| {
+                        let command = hook.get("command").and_then(Value::as_str)?;
+                        let subcmd = extract_native_hook_subcommand(command)?;
+                        Some(ObservedNativeHookContractEntry {
+                            subcmd: subcmd.to_string(),
+                            timeout: hook.get("timeout").and_then(Value::as_u64),
+                            matcher: matcher.clone(),
+                        })
+                    })
+                })
+        })
+        .collect()
+}
+
+fn extract_native_hook_subcommand(command: &str) -> Option<&str> {
+    command
+        .contains("amplihack-hooks")
+        .then(|| command.split_whitespace().last())
+        .flatten()
+}
+
+fn describe_expected_native_hook(entry: &CanonicalHookContractEntry) -> String {
+    format!(
+        "subcmd=`{}`, timeout={}, matcher={}, source={}",
+        entry.native_subcmd.unwrap_or_default(),
+        format_optional_timeout(entry.timeout),
+        format_optional_matcher(entry.matcher),
+        entry.hook_file
+    )
+}
+
+fn describe_observed_native_hook(entry: &ObservedNativeHookContractEntry) -> String {
+    format!(
+        "subcmd=`{}`, timeout={}, matcher={}",
+        entry.subcmd,
+        format_optional_timeout(entry.timeout),
+        format_optional_matcher(entry.matcher.as_deref())
+    )
+}
+
+fn format_optional_timeout(timeout: Option<u64>) -> String {
+    timeout
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn format_optional_matcher(matcher: Option<&str>) -> String {
+    matcher
+        .map(str::to_string)
+        .unwrap_or_else(|| "none".to_string())
 }
 
 fn update_hook_paths(
@@ -1602,6 +1808,36 @@ mod tests {
             fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         path
+    }
+
+    fn build_canonical_native_hook_settings(hooks_bin: &Path) -> Value {
+        let mut settings = json!({});
+        let root = ensure_object(&mut settings);
+        let hooks = root
+            .entry("hooks")
+            .or_insert_with(|| Value::Object(Map::new()));
+        let hooks = ensure_object(hooks);
+
+        for entry in CANONICAL_AMPLIHACK_HOOK_CONTRACT
+            .iter()
+            .filter(|entry| entry.native_subcmd.is_some())
+        {
+            let wrappers = hooks
+                .entry(entry.event)
+                .or_insert_with(|| Value::Array(Vec::new()));
+            let wrappers = ensure_array(wrappers);
+            let spec = HookSpec {
+                event: entry.event,
+                cmd: HookCommandKind::BinarySubcmd {
+                    subcmd: entry.native_subcmd.expect("filtered to native hooks"),
+                },
+                timeout: entry.timeout,
+                matcher: entry.matcher,
+            };
+            wrappers.push(build_hook_wrapper(&spec, hooks_bin));
+        }
+
+        settings
     }
 
     // ─── Existing baseline tests (updated to use new InstallManifest struct API)
@@ -2663,6 +2899,59 @@ mod tests {
         );
 
         crate::test_support::restore_home(previous);
+    }
+
+    #[test]
+    fn validate_amplihack_native_hook_contract_accepts_canonical_native_wrappers() {
+        let temp = tempfile::tempdir().unwrap();
+        let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
+        let settings = build_canonical_native_hook_settings(&hooks_bin);
+
+        let drift = validate_amplihack_native_hook_contract(&settings);
+
+        assert!(
+            drift.is_empty(),
+            "canonical native hook settings should validate cleanly: {drift:?}"
+        );
+    }
+
+    #[test]
+    fn validate_amplihack_native_hook_contract_reports_duplicate_native_drift() {
+        let temp = tempfile::tempdir().unwrap();
+        let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
+        let mut settings = build_canonical_native_hook_settings(&hooks_bin);
+
+        let root = ensure_object(&mut settings);
+        let hooks = ensure_object(
+            root.entry("hooks")
+                .or_insert_with(|| Value::Object(Map::new())),
+        );
+        let wrappers = ensure_array(
+            hooks
+                .entry("UserPromptSubmit")
+                .or_insert_with(|| Value::Array(Vec::new())),
+        );
+        let drift_spec = HookSpec {
+            event: "UserPromptSubmit",
+            cmd: HookCommandKind::BinarySubcmd {
+                subcmd: "workflow-classification-reminder",
+            },
+            timeout: Some(5),
+            matcher: None,
+        };
+        wrappers.push(build_hook_wrapper(&drift_spec, &hooks_bin));
+
+        let drift = validate_amplihack_native_hook_contract(&settings);
+
+        assert!(
+            drift
+                .iter()
+                .any(|issue| issue.contains("workflow-classification-reminder"))
+                && drift
+                    .iter()
+                    .any(|issue| issue.contains("unexpected native hook")),
+            "duplicate native drift must be surfaced explicitly, got: {drift:?}"
+        );
     }
 
     #[test]

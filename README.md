@@ -48,6 +48,11 @@ cargo test
 cargo clippy -- -D warnings
 cargo fmt --check
 
+# On disk-constrained machines, route local Cargo artifacts into /tmp and audit
+# repo/worktree growth before it becomes a cleanup incident.
+scripts/dev-space.sh cargo test -p amplihack-cli memory -- --nocapture
+scripts/dev-space.sh status
+
 # Run a hook
 echo '{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}}' | cargo run --bin amplihack-hooks -- pre-tool-use
 

@@ -8,8 +8,10 @@ fn main() {
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
-        eprintln!("Usage: amplihack-asset-resolver <relative-path>");
-        eprintln!("  <relative-path> must start with 'amplifier-bundle/'");
+        eprintln!("Usage: amplihack-asset-resolver <asset>");
+        eprintln!("  <asset> is either:");
+        eprintln!("    - a named asset: helper-path | session-tree-path | hooks-dir");
+        eprintln!("    - a relative path starting with 'amplifier-bundle/'");
         std::process::exit(2);
     }
 

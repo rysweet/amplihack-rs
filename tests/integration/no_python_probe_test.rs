@@ -151,6 +151,72 @@ fn read_until_quiet(master: &mut fs::File, buffer: &mut Vec<u8>, duration: Durat
     }
 }
 
+/// Poll the PTY master until `needle` appears somewhere in the accumulated
+/// buffer, or the wall-clock deadline is reached.
+///
+/// Unlike `read_until_quiet`, this does not exit as soon as the deadline
+/// passes — it keeps reading until the expected content arrives or time is
+/// truly up.  It is the correct primitive to use when the test needs to
+/// *observe* a specific string rather than merely wait a fixed amount of time.
+///
+/// Returns `true` if the needle was found, `false` on timeout.
+fn poll_until_output_contains(
+    master: &mut fs::File,
+    buffer: &mut Vec<u8>,
+    needle: &str,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut chunk = [0u8; 4096];
+
+    loop {
+        // Check the current accumulated buffer first.
+        let current = strip_ansi(&String::from_utf8_lossy(buffer));
+        if current.contains(needle) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        match master.read(&mut chunk) {
+            Ok(0) => {
+                sleep(Duration::from_millis(20));
+            }
+            Ok(read) => {
+                buffer.extend_from_slice(&chunk[..read]);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                sleep(Duration::from_millis(20));
+            }
+            Err(error) if error.raw_os_error() == Some(libc::EIO) => return false,
+            Err(error) => panic!("failed to read PTY output: {error}"),
+        }
+    }
+}
+
+/// Poll a file path until its contents contain `needle`, or a deadline is
+/// reached.  Used to verify side-effects (e.g. log files written by shims)
+/// that are produced asynchronously by a background thread.
+///
+/// Returns the file contents on success, or panics with a descriptive message
+/// on timeout.
+fn poll_file_for_content(path: &Path, needle: &str, timeout: Duration) -> String {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let contents = fs::read_to_string(path).unwrap_or_default();
+        if contents.contains(needle) {
+            return contents;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out after {timeout:?} waiting for {path:?} to contain {needle:?}; \
+                 got:\n{contents}"
+            );
+        }
+        sleep(Duration::from_millis(50));
+    }
+}
+
 fn wait_for_exit(child: &mut std::process::Child, timeout: Duration) -> std::process::ExitStatus {
     let deadline = Instant::now() + timeout;
     loop {
@@ -298,7 +364,7 @@ fn tc06_query_code_stats_smoke_on_fresh_db_without_python() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
-    // Create a temp file path for the Kuzu DB.  We pass the path to the
+    // Create a temp file path for the code-graph DB. We pass the path to the
     // binary so it creates a fresh database — we do NOT pre-populate it.
     let temp_dir = tempfile::TempDir::new().expect("failed to create tempdir");
     let db_path = temp_dir.path().join("probe_tc06.kuzu");
@@ -306,7 +372,7 @@ fn tc06_query_code_stats_smoke_on_fresh_db_without_python() {
     let output = cmd_without_python(&bin)
         .args([
             "query-code",
-            "--db",
+            "--db-path",
             db_path.to_str().expect("non-UTF-8 temp path"),
             "stats",
         ])
@@ -403,7 +469,7 @@ fn tc08_index_code_and_query_code_work_without_python() {
         .args([
             "index-code",
             json_path.to_str().expect("non-UTF-8 fixture path"),
-            "--kuzu-path",
+            "--db-path",
             db_path.to_str().expect("non-UTF-8 db path"),
         ])
         .output()
@@ -419,7 +485,7 @@ fn tc08_index_code_and_query_code_work_without_python() {
     let stats_output = cmd_with_failing_python_shims(&bin, &shim_dir, &python_log)
         .args([
             "query-code",
-            "--kuzu-path",
+            "--db-path",
             db_path.to_str().expect("non-UTF-8 db path"),
             "--json",
             "stats",
@@ -442,7 +508,7 @@ fn tc08_index_code_and_query_code_work_without_python() {
     let search_output = cmd_with_failing_python_shims(&bin, &shim_dir, &python_log)
         .args([
             "query-code",
-            "--kuzu-path",
+            "--db-path",
             db_path.to_str().expect("non-UTF-8 db path"),
             "--json",
             "search",
@@ -472,7 +538,7 @@ fn tc08_index_code_and_query_code_work_without_python() {
     let callers_output = cmd_with_failing_python_shims(&bin, &shim_dir, &python_log)
         .args([
             "query-code",
-            "--kuzu-path",
+            "--db-path",
             db_path.to_str().expect("non-UTF-8 db path"),
             "--json",
             "callers",
@@ -578,20 +644,21 @@ fn probe_script_content_contains_tc07_index_scip_help() {
 }
 
 /// TC-08 content gate: the probe script must exercise populated native
-/// `index-code` + `query-code` flows using the real `--kuzu-path` flag.
+/// `index-code` + `query-code` flows using the backend-neutral `--db-path`
+/// flag.
 #[test]
 fn probe_script_content_contains_tc08_populated_code_graph_probe() {
     let script = read_probe_script();
     let has_tc08 = script.contains("TC-08");
     let has_index = script.contains("index-code");
-    let has_kuzu_path = script.contains("--kuzu-path");
-    let has_search = script.contains("query-code --kuzu-path") && script.contains("search helper");
+    let has_db_path = script.contains("--db-path");
+    let has_search = script.contains("query-code --db-path") && script.contains("search helper");
     let has_callers = script.contains("callers helper");
     assert!(
-        has_tc08 && has_index && has_kuzu_path && has_search && has_callers,
+        has_tc08 && has_index && has_db_path && has_search && has_callers,
         "FAIL TC-08 content gate: probe-no-python.sh must include a populated \
-         native code-graph smoke test using --kuzu-path plus search/callers checks.\n\
-         Missing: tc08={has_tc08}, index={has_index}, kuzu_path={has_kuzu_path}, \
+         native code-graph smoke test using --db-path plus search/callers checks.\n\
+         Missing: tc08={has_tc08}, index={has_index}, db_path={has_db_path}, \
          search={has_search}, callers={has_callers}"
     );
 }
@@ -676,13 +743,7 @@ struct FleetTuiProbe {
 
 impl FleetTuiProbe {
     fn new(bin: &Path, reasoner_json: Option<&str>) -> Self {
-        Self::new_with_existing_vms_vm2_delay_and_reasoner_script(
-            bin,
-            reasoner_json,
-            None,
-            None,
-            None,
-        )
+        Self::new_with_fixture(bin, reasoner_json, None, None, None, None)
     }
 
     fn new_with_existing_vms(
@@ -690,13 +751,7 @@ impl FleetTuiProbe {
         reasoner_json: Option<&str>,
         existing_vms: Option<&str>,
     ) -> Self {
-        Self::new_with_existing_vms_vm2_delay_and_reasoner_script(
-            bin,
-            reasoner_json,
-            existing_vms,
-            None,
-            None,
-        )
+        Self::new_with_fixture(bin, reasoner_json, existing_vms, None, None, None)
     }
 
     fn new_with_existing_vms_and_vm2_delay(
@@ -705,31 +760,35 @@ impl FleetTuiProbe {
         existing_vms: Option<&str>,
         vm2_delay_seconds: Option<f32>,
     ) -> Self {
-        Self::new_with_existing_vms_vm2_delay_and_reasoner_script(
+        Self::new_with_fixture(
             bin,
             reasoner_json,
             existing_vms,
             vm2_delay_seconds,
             None,
+            None,
         )
     }
 
     fn new_with_reasoner_script(bin: &Path, reasoner_script: &str) -> Self {
-        Self::new_with_existing_vms_vm2_delay_and_reasoner_script(
-            bin,
-            None,
-            None,
-            None,
-            Some(reasoner_script),
-        )
+        Self::new_with_fixture(bin, None, None, None, Some(reasoner_script), None)
     }
 
-    fn new_with_existing_vms_vm2_delay_and_reasoner_script(
+    fn new_with_custom_azlin_script(
+        bin: &Path,
+        reasoner_json: Option<&str>,
+        azlin_script: &str,
+    ) -> Self {
+        Self::new_with_fixture(bin, reasoner_json, None, None, None, Some(azlin_script))
+    }
+
+    fn new_with_fixture(
         bin: &Path,
         reasoner_json: Option<&str>,
         existing_vms: Option<&str>,
         vm2_delay_seconds: Option<f32>,
         reasoner_script: Option<&str>,
+        azlin_script_override: Option<&str>,
     ) -> Self {
         let temp_dir = tempfile::TempDir::new().expect("failed to create tempdir");
         let fake_bin = temp_dir.path().join("bin");
@@ -822,10 +881,8 @@ fi
                 python_log.display()
             ),
         );
-        write_executable(
-            &azlin,
-            &format!(
-                r#"#!/bin/sh
+        let default_azlin_script = format!(
+            r#"#!/bin/sh
 if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
   printf '%s\n' '{}'
   exit 0
@@ -888,11 +945,14 @@ fi
 {}
 exit 1
 "#,
-                list_json,
-                send_log.display(),
-                create_log.display(),
-                vm2_block
-            ),
+            list_json,
+            send_log.display(),
+            create_log.display(),
+            vm2_block
+        );
+        write_executable(
+            &azlin,
+            azlin_script_override.unwrap_or(&default_azlin_script),
         );
 
         let clean_path = clean_path_without_python();
@@ -978,6 +1038,16 @@ exit 1
         read_until_quiet(&mut self.master, &mut self.output, duration);
     }
 
+    /// Block until `needle` appears somewhere in the accumulated PTY output,
+    /// or `timeout` elapses.  Returns `true` on success, `false` on timeout.
+    ///
+    /// This is the correct primitive to use instead of `drain(fixed_duration)`
+    /// when the test needs to synchronise on a specific piece of TUI output
+    /// rather than guess how long the binary will take to render it.
+    fn wait_for_output_containing(&mut self, needle: &str, timeout: Duration) -> bool {
+        poll_until_output_contains(&mut self.master, &mut self.output, needle, timeout)
+    }
+
     fn send(&mut self, bytes: &[u8], wait: Duration) {
         self.master
             .write_all(bytes)
@@ -985,12 +1055,32 @@ exit 1
         self.drain(wait);
     }
 
-    fn create_hits(&self) -> String {
-        fs::read_to_string(&self.create_log).unwrap_or_default()
+    /// Send bytes and then wait until `needle` appears in the accumulated PTY
+    /// output.  Panics if `timeout` expires before the expected string arrives.
+    fn send_and_wait_for(&mut self, bytes: &[u8], needle: &str, timeout: Duration) {
+        self.master
+            .write_all(bytes)
+            .unwrap_or_else(|error| panic!("failed to send PTY input {bytes:?}: {error}"));
+        assert!(
+            self.wait_for_output_containing(needle, timeout),
+            "timed out after {timeout:?} waiting for PTY output to contain {needle:?}"
+        );
     }
 
-    fn queue_contents(&self) -> String {
-        fs::read_to_string(&self.queue_path).unwrap_or_default()
+    /// Poll `create_log` until it contains `needle`, or panic after `timeout`.
+    fn wait_for_create_hits_containing(&self, needle: &str, timeout: Duration) -> String {
+        poll_file_for_content(&self.create_log, needle, timeout)
+    }
+
+    /// Poll `send_log` until it contains `needle`, or panic after `timeout`.
+    fn wait_for_send_hits_containing(&self, needle: &str, timeout: Duration) -> String {
+        poll_file_for_content(&self.send_log, needle, timeout)
+    }
+
+    /// Poll `task_queue.json` until it contains `needle`, or panic after
+    /// `timeout`.
+    fn wait_for_queue_contents_containing(&self, needle: &str, timeout: Duration) -> String {
+        poll_file_for_content(&self.queue_path, needle, timeout)
     }
 
     fn dashboard_contents(&self) -> String {
@@ -1014,6 +1104,22 @@ exit 1
         assert!(
             send_hits.trim().is_empty(),
             "fleet tui sent tmux input unexpectedly:\n{send_hits}"
+        );
+
+        cleaned
+    }
+
+    fn finish_allowing_tmux_input(mut self) -> String {
+        let status = wait_for_exit(&mut self.child, Duration::from_secs(10));
+        self.drain(Duration::from_millis(300));
+        assert!(status.success(), "fleet tui exited with {status:?}");
+
+        let cleaned = strip_ansi(&String::from_utf8_lossy(&self.output));
+
+        let python_hits = fs::read_to_string(&self.python_log).unwrap_or_default();
+        assert!(
+            python_hits.trim().is_empty(),
+            "fleet tui touched python unexpectedly:\n{python_hits}"
         );
 
         cleaned
@@ -1066,7 +1172,7 @@ fn tc09_fleet_tui_editor_apply_blocks_dangerous_input_without_python() {
     probe.send(b"t", Duration::from_millis(300));
     probe.send(b"t", Duration::from_millis(300));
     probe.send(b"i", Duration::from_millis(300));
-    probe.send(b"rm -rf /\n", Duration::from_millis(1200));
+    probe.send(b"rm -rf /", Duration::from_millis(1200));
     probe.send(b"A", Duration::from_millis(2200));
     probe.send(b"q", Duration::from_millis(200));
 
@@ -1075,7 +1181,9 @@ fn tc09_fleet_tui_editor_apply_blocks_dangerous_input_without_python() {
         cleaned.contains("Action Editor")
             && cleaned.contains("Action: send_input")
             && cleaned.contains("Action choices")
-            && cleaned.contains("> send_input"),
+            && cleaned.contains("> send_input")
+            && cleaned.contains("Typing mode")
+            && cleaned.contains("rm -rf /"),
         "expected proposal/editor output in PTY flow:\n{cleaned}"
     );
     assert!(
@@ -1086,21 +1194,59 @@ fn tc09_fleet_tui_editor_apply_blocks_dangerous_input_without_python() {
 
 /// TC-10: the native TUI new-session flow should create a session over azlin
 /// without touching Python or sending tmux input to an existing session.
+///
+/// # Why polling instead of fixed sleeps
+///
+/// Session creation is dispatched to a background thread (via `bg_tx`) and the
+/// azlin shim writes to `create_log` only after that thread processes the
+/// `CreateSession` command.  Under CI parallel load the background thread can
+/// be delayed well beyond any fixed margin.  Doubling the margins only reduces
+/// flake frequency; it cannot eliminate the race.
+///
+/// The fix uses two polling primitives:
+/// - `send_and_wait_for` waits until expected TUI output appears instead of
+///   sleeping a fixed duration after each key press.
+/// - `wait_for_create_hits_containing` retries reading `create_log` until the
+///   expected content arrives or a hard deadline (10 s) is reached.
 #[test]
 fn tc10_fleet_tui_new_session_launches_without_python() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
     let mut probe = FleetTuiProbe::new(&bin, None);
-    // Under heavy CI/workspace-parallel load the binary needs extra time to
-    // render the initial frame.  Use conservative delays throughout.
-    probe.drain(Duration::from_millis(2000));
-    probe.send(b"n", Duration::from_millis(1200));
-    probe.send(b"t", Duration::from_millis(600));
-    probe.send(b"\n", Duration::from_millis(2000));
+
+    // Wait for the TUI to render its initial Fleet view before sending keys.
+    // A fixed drain here races against a slow binary start on a loaded CI host;
+    // polling for a known string eliminates that.  "q quit" is part of the
+    // controls line that appears in every frame, making it a stable sentinel.
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    // Press 'n' to open the New Session dialog and wait for it to appear.
+    probe.send_and_wait_for(b"n", "New Session", Duration::from_secs(5));
+
+    // Press 't' to cycle the agent type.  The default is "claude"; after one
+    // press it becomes "copilot".  Wait for the updated label to confirm the
+    // keypress was actually processed and re-rendered.
+    probe.send_and_wait_for(b"t", "Agent type: copilot", Duration::from_secs(3));
+
+    // Submit the form with Enter.  The TUI dispatches CreateSession to the
+    // background thread, which calls azlin and then sends SessionCreated back.
+    // Wait until the TUI has rendered the confirmation message.
+    probe.send_and_wait_for(b"\n", "Created session 'copilot-", Duration::from_secs(10));
+
+    // Quit.
     probe.send(b"q", Duration::from_millis(400));
 
-    let create_hits = probe.create_hits();
+    // The azlin shim writes to create_log inside the background thread.  The
+    // TUI has already rendered "Created session …" at this point, but the file
+    // write is a side-effect of the same shell invocation so it must be present
+    // by now — poll with a short timeout as a safety net.
+    let create_hits =
+        probe.wait_for_create_hits_containing("tmux new-session -d -s", Duration::from_secs(5));
+
     let cleaned = probe.finish();
 
     assert!(
@@ -1127,9 +1273,10 @@ fn tc11_fleet_tui_adopts_selected_session_without_python() {
     let mut probe = FleetTuiProbe::new(&bin, None);
     probe.drain(Duration::from_millis(1200));
     probe.send(b"A", Duration::from_millis(1500));
+    let queue = probe
+        .wait_for_queue_contents_containing("\"assigned_vm\": \"vm-1\"", Duration::from_secs(5));
     probe.send(b"q", Duration::from_millis(200));
 
-    let queue = probe.queue_contents();
     let cleaned = probe.finish();
 
     assert!(
@@ -1301,6 +1448,33 @@ fn tc17_fleet_tui_numeric_tab_hotkeys_follow_python_order_without_python() {
     );
 }
 
+/// TC-24: canceling out of the focused multiline editor should return to Detail
+/// without applying changes or touching Python.
+#[test]
+fn tc24_fleet_tui_editor_cancel_returns_to_detail_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    probe.drain(Duration::from_millis(1200));
+    probe.send(b"d", Duration::from_millis(1500));
+    probe.send(b"e", Duration::from_millis(1200));
+    probe.send(b"i", Duration::from_millis(300));
+    probe.send(b"scratch", Duration::from_millis(800));
+    probe.send(b"\x1b", Duration::from_millis(1200));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Editor changes discarded."),
+        "expected cancel status in PTY output:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("Session Detail"),
+        "expected detail tab after cancel in PTY output:\n{cleaned}"
+    );
+}
+
 /// TC-18: entering the detail tab should fetch a fresh tmux capture immediately
 /// instead of only showing the observer summary lines.
 #[test]
@@ -1449,5 +1623,540 @@ fn tc23_fleet_tui_reasoner_failure_is_visible_without_python() {
             && cleaned.contains("ANTHROPIC_API_KEY missing")
             && cleaned.contains("heuristic proposal"),
         "expected visible reasoner failure notice in detail output:\n{cleaned}"
+    );
+}
+
+/// TC-25: the native dashboard should match the Python fleet scenario where
+/// Enter opens the selected session's detail view and Esc returns to Fleet,
+/// without touching Python.
+#[test]
+fn tc25_fleet_tui_enter_opens_detail_and_escape_returns_to_fleet_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    probe.drain(Duration::from_millis(1200));
+    probe.send(b"\n", Duration::from_millis(1200));
+    probe.send(b"\x1b", Duration::from_millis(1200));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Session Detail"),
+        "expected detail tab after pressing Enter in PTY output:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("Detail actions") && cleaned.contains("d prepare proposal"),
+        "expected visible detail action hints after pressing Enter in PTY output:\n{cleaned}"
+    );
+
+    let last_frame_body = cleaned
+        .rsplit_once('╔')
+        .map(|(_, tail)| tail)
+        .unwrap_or(cleaned.as_str());
+    let last_frame = format!("╔{last_frame_body}");
+    assert!(
+        last_frame.contains("Fleet Overview") || last_frame.contains("[fleet]"),
+        "expected fleet tab after pressing Esc in PTY output:\n{last_frame}"
+    );
+}
+
+/// TC-26: the native dashboard should match the Python force-refresh scenario:
+/// pressing `r` should kick off a fresh refresh cycle that becomes visible in
+/// the PTY output without touching Python.
+#[test]
+fn tc26_fleet_tui_force_refresh_restarts_visible_polling_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe =
+        FleetTuiProbe::new_with_existing_vms_and_vm2_delay(&bin, None, Some("vm-2"), Some(2.0));
+    assert!(
+        probe.wait_for_output_containing("refresh: 2/2 complete", Duration::from_secs(8)),
+        "timed out waiting for initial refresh to settle before force-refresh test"
+    );
+
+    probe.output.clear();
+    probe.send_and_wait_for(b"r", "refresh: 1/2 polling vm-2", Duration::from_secs(3));
+    probe.send(b"q", Duration::from_millis(2500));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("refresh: 1/2 polling vm-2"),
+        "expected fresh in-flight refresh progress after pressing r:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("refresh: 2/2 complete"),
+        "expected force-refresh cycle to complete after pressing r:\n{cleaned}"
+    );
+}
+
+/// TC-27: a successful native apply should stay Python-free, surface visible
+/// success feedback, and send the expected tmux input through azlin.
+#[test]
+fn tc27_fleet_tui_apply_prepared_proposal_sends_tmux_input_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(
+        &bin,
+        Some(
+            r#"{"action":"send_input","confidence":0.85,"reasoning":"Need operator confirmation","input_text":"y"}"#,
+        ),
+    );
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    probe.send_and_wait_for(
+        b"d",
+        "Prepared proposal for vm-1/claude-1:",
+        Duration::from_secs(5),
+    );
+    probe.send(b"a", Duration::from_millis(1500));
+    let send_hits = probe.wait_for_send_hits_containing(
+        "tmux send-keys -t 'claude-1' 'y' Enter",
+        Duration::from_secs(5),
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish_allowing_tmux_input();
+    assert!(
+        cleaned.contains("Apply status")
+            && cleaned.contains("Applied send_input to vm-1/claude-1."),
+        "expected persistent apply success notice in PTY output:\n{cleaned}"
+    );
+    assert!(
+        send_hits.contains("tmux send-keys -t 'claude-1' 'y' Enter"),
+        "expected azlin tmux send-keys command for apply flow, got:\n{send_hits}"
+    );
+}
+
+/// TC-28: the Python dashboard's letter hotkeys should also work in the native
+/// raw-terminal TUI without touching Python: `p` opens Projects, `f` returns to
+/// Fleet, and `s` opens Session Detail.
+#[test]
+fn tc28_fleet_tui_letter_tab_hotkeys_follow_python_order_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    probe.send(b"p", Duration::from_millis(900));
+    probe.send(b"f", Duration::from_millis(900));
+    probe.send(b"s", Duration::from_millis(900));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("[projects]") && cleaned.contains("No projects registered."),
+        "expected projects tab after pressing p:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("Fleet Overview") || cleaned.contains("[fleet]"),
+        "expected fleet tab after pressing f:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("Session Detail"),
+        "expected detail tab after pressing s:\n{cleaned}"
+    );
+}
+
+/// TC-29: a successful edited apply should stay Python-free, surface visible
+/// success feedback, and send the expected tmux input via the editor-tab `A`
+/// path rather than only through prepared-apply.
+#[test]
+fn tc29_fleet_tui_apply_edited_proposal_sends_tmux_input_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(
+        &bin,
+        Some(
+            r#"{"action":"send_input","confidence":0.85,"reasoning":"Need operator confirmation","input_text":"y"}"#,
+        ),
+    );
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    probe.send_and_wait_for(
+        b"d",
+        "Prepared proposal for vm-1/claude-1:",
+        Duration::from_secs(5),
+    );
+    probe.send_and_wait_for(b"e", "Action Editor", Duration::from_secs(5));
+    probe.send(b"A", Duration::from_millis(1500));
+    let send_hits = probe.wait_for_send_hits_containing(
+        "tmux send-keys -t 'claude-1' 'y' Enter",
+        Duration::from_secs(5),
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish_allowing_tmux_input();
+    assert!(
+        cleaned.contains("Apply status")
+            && cleaned.contains("Applied edited send_input to vm-1/claude-1."),
+        "expected persistent edited-apply success notice in PTY output:\n{cleaned}"
+    );
+    assert!(
+        send_hits.contains("tmux send-keys -t 'claude-1' 'y' Enter"),
+        "expected azlin tmux send-keys command for edited apply flow, got:\n{send_hits}"
+    );
+}
+
+/// TC-30: raw left/right arrow tab navigation should follow the same wrap order
+/// as the Python dashboard, not just the letter/numeric hotkeys.
+#[test]
+fn tc30_fleet_tui_arrow_tab_navigation_wraps_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    probe.output.clear();
+    probe.send_and_wait_for(b"\x1b[D", "New Session", Duration::from_secs(3));
+    probe.output.clear();
+    probe.send_and_wait_for(
+        b"\x1b[C",
+        "Selected session: vm-1/claude-1",
+        Duration::from_secs(3),
+    );
+    probe.output.clear();
+    probe.send_and_wait_for(b"\x1b[C", "Session Detail", Duration::from_secs(3));
+    probe.output.clear();
+    probe.send_and_wait_for(b"\x1b[C", "Action Editor", Duration::from_secs(3));
+    probe.output.clear();
+    probe.send_and_wait_for(b"\x1b[C", "[projects]", Duration::from_secs(3));
+    probe.output.clear();
+    probe.send_and_wait_for(b"\x1b[C", "New Session", Duration::from_secs(3));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("New Session"),
+        "expected final wrapped arrow traversal to land on New Session:\n{cleaned}"
+    );
+}
+
+/// TC-31: pressing Enter after filtering the fleet list down to zero visible
+/// sessions should still stay in the native TUI, switch to Detail, and show the
+/// explicit no-selection state instead of falling through silently.
+#[test]
+fn tc31_fleet_tui_enter_with_no_visible_selection_shows_detail_notice_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    probe.send(b"/", Duration::from_millis(300));
+    probe.send_and_wait_for(
+        b"missing-session\n",
+        "No sessions match the current search. Press Esc to clear.",
+        Duration::from_secs(5),
+    );
+    probe.send_and_wait_for(b"\n", "No session selected.", Duration::from_secs(3));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Search: missing-session (press / to edit, Esc to clear)")
+            || cleaned.contains("search: missing-session"),
+        "expected active empty-result search in PTY output:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("No sessions match the current search. Press Esc to clear."),
+        "expected explicit empty-result fleet message in PTY output:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("No session selected."),
+        "expected detail-tab no-selection message after pressing Enter:\n{cleaned}"
+    );
+}
+
+/// TC-32: raw up/down cursor navigation on the Fleet session table should
+/// update the selected-session preview, matching the Python outside-in session
+/// table cursor navigation contract without touching Python.
+#[test]
+fn tc32_fleet_tui_up_down_cursor_navigation_updates_preview_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
+    assert!(
+        probe
+            .wait_for_output_containing("Selected session: vm-1/claude-1", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet selection to render"
+    );
+
+    probe.output.clear();
+    probe.send_and_wait_for(b"t", "vm-2", Duration::from_secs(3));
+    probe.output.clear();
+    probe.send_and_wait_for(
+        b"\x1b[B",
+        "Selected session: vm-2/copilot-9",
+        Duration::from_secs(3),
+    );
+    let down_frame = strip_ansi(&String::from_utf8_lossy(&probe.output));
+    assert!(
+        down_frame.contains("Working outside fleet")
+            && down_frame.contains("branch: side-quest")
+            && down_frame.contains("repo: https://github.com/org/excluded.git"),
+        "expected down-arrow preview update for vm-2/copilot-9:\n{down_frame}"
+    );
+
+    probe.output.clear();
+    probe.send_and_wait_for(
+        b"\x1b[A",
+        "Selected session: vm-1/claude-1",
+        Duration::from_secs(3),
+    );
+    let up_frame = strip_ansi(&String::from_utf8_lossy(&probe.output));
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        up_frame.contains("Awaiting operator confirmation")
+            && up_frame.contains("branch: main")
+            && up_frame.contains("repo: https://github.com/org/demo.git"),
+        "expected up-arrow preview update for vm-1/claude-1:\n{up_frame}"
+    );
+    assert!(
+        cleaned.contains("Selected session: vm-1/claude-1"),
+        "expected final PTY output to end back on vm-1/claude-1:\n{cleaned}"
+    );
+}
+
+/// TC-33: a stale prepared proposal must not apply after the current fleet
+/// selection disappears; the native TUI should surface an explicit no-selection
+/// notice instead of sending tmux input.
+#[test]
+fn tc33_fleet_tui_stale_proposal_does_not_apply_when_selection_disappears_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    probe.send_and_wait_for(
+        b"d",
+        "Prepared proposal for vm-1/claude-1:",
+        Duration::from_secs(5),
+    );
+    probe.send(b"\x1b", Duration::from_millis(1200));
+    probe.send(b"/", Duration::from_millis(300));
+    probe.send_and_wait_for(
+        b"missing-session\n",
+        "No sessions match the current search. Press Esc to clear.",
+        Duration::from_secs(5),
+    );
+    probe.send_and_wait_for(
+        b"a",
+        "No session selected to apply.",
+        Duration::from_secs(3),
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("Prepared proposal for vm-1/claude-1:")
+            && cleaned.contains("No session selected to apply."),
+        "expected stale-proposal apply guard in PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-34: pressing `e` without a prepared proposal should stay on the current
+/// fleet view and surface the explicit no-proposal notice rather than switching
+/// into the editor.
+#[test]
+fn tc34_fleet_tui_edit_without_proposal_stays_out_of_editor_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    probe.send_and_wait_for(
+        b"e",
+        "No prepared proposal for the selected session.",
+        Duration::from_secs(3),
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    let last_frame_body = cleaned
+        .rsplit_once('╔')
+        .map(|(_, tail)| tail)
+        .unwrap_or(cleaned.as_str());
+    let last_frame = format!("╔{last_frame_body}");
+    assert!(
+        last_frame.contains("Fleet Overview") || last_frame.contains("[fleet]"),
+        "expected to remain on the fleet tab after pressing e without a proposal:\n{last_frame}"
+    );
+    assert!(
+        cleaned.contains("No prepared proposal for the selected session.")
+            && !cleaned.contains("Loaded proposal into editor for"),
+        "expected explicit no-proposal notice without editor activation:\n{cleaned}"
+    );
+}
+
+/// TC-35: a running VM with no tmux sessions should still render the explicit
+/// placeholder row in the live raw-terminal fleet view without touching Python.
+#[test]
+fn tc35_fleet_tui_running_vm_with_no_sessions_shows_placeholder_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let azlin_script = r#"#!/bin/sh
+if [ "$1" = "list" ] && [ "$2" = "--json" ]; then
+  printf '%s\n' '[{"name":"empty-vm","status":"Running","region":"westus","session_name":"empty-vm"}]'
+  exit 0
+fi
+if [ "$1" = "connect" ] && [ "$2" = "empty-vm" ]; then
+  case "$*" in
+    *"tmux list-sessions"*)
+      exit 0
+      ;;
+  esac
+fi
+exit 1
+"#;
+
+    let mut probe = FleetTuiProbe::new_with_custom_azlin_script(&bin, None, azlin_script);
+    assert!(
+        probe.wait_for_output_containing("empty-vm/(no sessions)", Duration::from_secs(10)),
+        "timed out waiting for placeholder row to render"
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("empty-vm/(no sessions)") && cleaned.contains("(empty)"),
+        "expected running-empty-vm placeholder row in PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-36: pressing `a` when the fleet view has no current selection should stay
+/// native and surface the explicit apply warning instead of crashing or silently
+/// doing nothing.
+#[test]
+fn tc36_fleet_tui_apply_without_selection_shows_warning_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for initial Fleet view to render"
+    );
+
+    probe.send(b"/", Duration::from_millis(300));
+    probe.send_and_wait_for(
+        b"missing-session\n",
+        "No sessions match the current search. Press Esc to clear.",
+        Duration::from_secs(5),
+    );
+    probe.send_and_wait_for(
+        b"a",
+        "No session selected to apply.",
+        Duration::from_secs(3),
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("No sessions match the current search. Press Esc to clear."),
+        "expected explicit empty-result fleet message in PTY output:\n{cleaned}"
+    );
+    assert!(
+        cleaned.contains("No session selected to apply."),
+        "expected visible apply warning in PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-37: the live raw-terminal fleet view should render the visible summary bar
+/// with the same operator-facing status buckets that Python exposes.
+#[test]
+fn tc37_fleet_tui_shows_status_summary_bar_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new_with_existing_vms(&bin, None, Some("vm-2"));
+    assert!(
+        probe.wait_for_output_containing("active:", Duration::from_secs(10)),
+        "timed out waiting for summary bar to render"
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("active:")
+            && cleaned.contains("idle:")
+            && cleaned.contains("waiting:")
+            && cleaned.contains("error:"),
+        "expected visible fleet status summary bar in PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-38: the live raw-terminal fleet view should render the visible footer
+/// control strip so the operator can discover keybindings without Python.
+#[test]
+fn tc38_fleet_tui_shows_footer_keybindings_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    assert!(
+        probe.wait_for_output_containing("q quit", Duration::from_secs(10)),
+        "timed out waiting for footer keybindings to render"
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("q quit") && cleaned.contains("r refresh") && cleaned.contains("? help"),
+        "expected visible fleet footer keybindings in PTY output:\n{cleaned}"
+    );
+}
+
+/// TC-39: the live raw-terminal fleet dashboard should render its default
+/// managed-subview chrome so operators can tell which fleet slice they are in
+/// without relying on Python/Textual scaffolding.
+#[test]
+fn tc39_fleet_tui_shows_managed_subview_header_without_python() {
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
+    let mut probe = FleetTuiProbe::new(&bin, None);
+    assert!(
+        probe.wait_for_output_containing("Managed Sessions", Duration::from_secs(10)),
+        "timed out waiting for managed subview header to render"
+    );
+    probe.send(b"q", Duration::from_millis(200));
+
+    let cleaned = probe.finish();
+    assert!(
+        cleaned.contains("[managed]") && cleaned.contains("Managed Sessions"),
+        "expected visible managed fleet subview header in PTY output:\n{cleaned}"
     );
 }

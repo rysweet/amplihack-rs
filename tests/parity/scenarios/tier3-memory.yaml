@@ -37,6 +37,13 @@ cases:
       )
       db.close()
       PY
+    # Rust correctly reports "Backend: sqlite"; Python currently reports "Backend: unknown"
+    # because cli_visualize falls back to "unknown" when get_capabilities() is unavailable
+    # in the parity sandbox. Normalize both to a placeholder so the rest of the tree output
+    # is still compared. See: rysweet/amplihack-rs#77
+    stdout_normalize_patterns:
+      - match: "Backend: (sqlite|unknown)"
+        replace: "Backend: <backend>"
     compare: ["stdout", "stderr", "exit_code"]
 
   - name: memory-clean-sqlite-dry-run

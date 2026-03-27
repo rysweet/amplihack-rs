@@ -1,5 +1,9 @@
-use super::code_graph::{CodeGraphImportCounts, default_code_graph_db_path_for_project};
+use super::code_graph::{
+    CodeGraphImportCounts, code_graph_compatibility_notice_for_project,
+    resolve_code_graph_db_path_for_project,
+};
 use super::import_scip_file;
+use super::{project_artifact_paths, required_parent_dir};
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::env;
@@ -8,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-const LANGUAGE_ORDER: &[&str] = &[
+pub(crate) const LANGUAGE_ORDER: &[&str] = &[
     "python",
     "typescript",
     "javascript",
@@ -115,7 +119,11 @@ pub fn run_index_scip(project_path: Option<&Path>, languages: &[String]) -> Resu
     let resolved_project_path = project_path
         .map(Path::to_path_buf)
         .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
-    let kuzu_path = default_code_graph_db_path_for_project(&resolved_project_path)?;
+    if let Some(notice) = code_graph_compatibility_notice_for_project(&resolved_project_path, None)?
+    {
+        eprintln!("⚠️ Compatibility mode: {notice}");
+    }
+    let db_path = resolve_code_graph_db_path_for_project(&resolved_project_path)?;
     let mut import_counts = CodeGraphImportCounts::default();
     for (language, artifact) in summary
         .completed_languages
@@ -126,7 +134,7 @@ pub fn run_index_scip(project_path: Option<&Path>, languages: &[String]) -> Resu
             artifact,
             &resolved_project_path,
             Some(language),
-            Some(&kuzu_path),
+            Some(&db_path),
         )?;
         import_counts.files += counts.files;
         import_counts.classes += counts.classes;
@@ -200,14 +208,15 @@ pub fn run_native_scip_indexing(
     let mut artifacts = Vec::new();
     let mut errors = Vec::new();
 
-    let artifact_dir = project_path.join(".amplihack").join("indexes");
-    fs::create_dir_all(&artifact_dir)
-        .with_context(|| format!("failed to create {}", artifact_dir.display()))?;
+    let artifact_paths = project_artifact_paths(&project_path);
+    fs::create_dir_all(&artifact_paths.indexes_dir)
+        .with_context(|| format!("failed to create {}", artifact_paths.indexes_dir.display()))?;
 
-    let root_index = project_path.join("index.scip");
+    let root_index = artifact_paths.root_index_scip.clone();
     let backup_index = if root_index.exists() {
-        let backup = project_path.join(".amplihack").join("index.scip.backup");
-        fs::create_dir_all(backup.parent().expect("backup parent"))?;
+        let backup = artifact_paths.index_scip_backup.clone();
+        fs::create_dir_all(required_parent_dir(&backup)?)
+            .with_context(|| format!("failed to create backup parent for {}", backup.display()))?;
         fs::copy(&root_index, &backup)
             .with_context(|| format!("failed to back up {}", root_index.display()))?;
         Some(backup)
@@ -216,7 +225,12 @@ pub fn run_native_scip_indexing(
     };
 
     for language in prereqs.available_languages {
-        let result = run_indexer_for_language(&language, &project_path, &artifact_dir, &root_index);
+        let result = run_indexer_for_language(
+            &language,
+            &project_path,
+            &artifact_paths.indexes_dir,
+            &root_index,
+        );
         if result.success {
             completed_languages.push(result.language.clone());
             if let Some(path) = result.artifact_path {
@@ -311,11 +325,11 @@ fn scan_languages(path: &Path, found: &mut BTreeMap<String, bool>) -> Result<()>
     Ok(())
 }
 
-fn should_ignore_dir(file_name: &str) -> bool {
+pub(crate) fn should_ignore_dir(file_name: &str) -> bool {
     IGNORED_DIRS.contains(&file_name) || file_name.ends_with(".egg-info")
 }
 
-fn language_for_path(path: &Path) -> Option<&'static str> {
+pub(crate) fn language_for_path(path: &Path) -> Option<&'static str> {
     match path.extension().and_then(|ext| ext.to_str())? {
         "py" => Some("python"),
         "ts" | "tsx" => Some("typescript"),
@@ -597,7 +611,7 @@ fn restore_root_index(root_index: &Path, backup_path: Option<&Path>) -> Result<(
     Ok(())
 }
 
-fn normalize_languages(languages: &[String]) -> Vec<String> {
+pub(crate) fn normalize_languages(languages: &[String]) -> Vec<String> {
     let mut unique = Vec::new();
     for language in languages {
         let normalized = normalize_language(language);

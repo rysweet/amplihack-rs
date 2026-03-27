@@ -3,6 +3,7 @@
 //! All hooks reference paths through `ProjectDirs` instead of
 //! ad-hoc `.join(".claude")` chains. Single source of truth.
 
+use std::env;
 use std::path::{Path, PathBuf};
 
 /// Sanitize a session ID to prevent path traversal attacks.
@@ -97,6 +98,16 @@ impl ProjectDirs {
         self.locks.join(".continuation_prompt")
     }
 
+    /// The persisted launcher context file.
+    pub fn launcher_context_file(&self) -> PathBuf {
+        self.runtime.join("launcher_context.json")
+    }
+
+    /// The launcher session lifecycle log.
+    pub fn sessions_log_file(&self) -> PathBuf {
+        self.runtime.join("sessions.jsonl")
+    }
+
     /// The `.version` file.
     pub fn version_file(&self) -> PathBuf {
         self.claude.join(".version")
@@ -147,11 +158,108 @@ impl ProjectDirs {
     pub fn from_root(root: &Path) -> Self {
         Self::new(root)
     }
+
+    /// Resolve a framework-owned file from deterministic search roots.
+    pub fn resolve_framework_file(&self, relative_path: &str) -> Option<PathBuf> {
+        resolve_framework_file_from(&self.root, relative_path)
+    }
+
+    /// Resolve the framework-owned USER_PREFERENCES.md file, if present.
+    pub fn resolve_preferences_file(&self) -> Option<PathBuf> {
+        self.resolve_framework_file(".claude/context/USER_PREFERENCES.md")
+    }
+
+    /// Resolve the framework-owned default workflow file, if present.
+    pub fn resolve_workflow_file(&self) -> Option<PathBuf> {
+        self.resolve_framework_file(".claude/workflow/DEFAULT_WORKFLOW.md")
+    }
+}
+
+fn is_framework_root(path: &Path) -> bool {
+    path.join(".claude").is_dir()
+}
+
+fn push_framework_root(roots: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if is_framework_root(&candidate) && !roots.iter().any(|existing| existing == &candidate) {
+        roots.push(candidate);
+    }
+}
+
+pub fn framework_roots_from(start: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut current = Some(start);
+
+    while let Some(path) = current {
+        push_framework_root(&mut roots, path.to_path_buf());
+        push_framework_root(&mut roots, path.join("src").join("amplihack"));
+        current = path.parent();
+    }
+
+    if let Some(root) = env::var_os("AMPLIHACK_ROOT").map(PathBuf::from) {
+        push_framework_root(&mut roots, root);
+    }
+
+    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        push_framework_root(&mut roots, home.join(".amplihack"));
+    }
+
+    roots
+}
+
+pub fn resolve_framework_file_from(start: &Path, relative_path: &str) -> Option<PathBuf> {
+    if relative_path.contains("..")
+        || relative_path.contains('\0')
+        || Path::new(relative_path).is_absolute()
+    {
+        return None;
+    }
+
+    for root in framework_roots_from(start) {
+        let candidate = root.join(relative_path);
+        if !candidate.exists() {
+            continue;
+        }
+
+        let Ok(resolved_root) = root.canonicalize() else {
+            continue;
+        };
+        let Ok(resolved_file) = candidate.canonicalize() else {
+            continue;
+        };
+
+        if resolved_file.starts_with(&resolved_root) {
+            return Some(resolved_file);
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "amplihack-types-{name}-{}-{unique}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
 
     #[test]
     fn paths_are_consistent() {
@@ -247,5 +355,80 @@ mod tests {
             path,
             PathBuf::from("/project/.claude/runtime/power-steering/etcpasswd")
         );
+    }
+
+    #[test]
+    fn resolve_framework_file_prefers_src_amplihack_checkout() {
+        let dir = temp_test_dir("src-amplihack");
+        let project = dir.join("worktree").join("nested");
+        let framework = dir.join("worktree").join("src").join("amplihack");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(framework.join(".claude/context")).unwrap();
+        fs::write(
+            framework.join(".claude/context/USER_PREFERENCES.md"),
+            "verbosity = balanced",
+        )
+        .unwrap();
+
+        let resolved = resolve_framework_file_from(&project, ".claude/context/USER_PREFERENCES.md");
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some(
+                framework
+                    .join(".claude/context/USER_PREFERENCES.md")
+                    .as_path()
+            )
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_framework_file_uses_amplihack_root_override() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_test_dir("amplihack-root");
+        let project = dir.join("project");
+        let framework = dir.join("framework-root");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(framework.join(".claude/context")).unwrap();
+        fs::write(
+            framework.join(".claude/context/USER_PREFERENCES.md"),
+            "verbosity = concise",
+        )
+        .unwrap();
+        let previous = env::var_os("AMPLIHACK_ROOT");
+        unsafe { env::set_var("AMPLIHACK_ROOT", &framework) };
+
+        let resolved = resolve_framework_file_from(&project, ".claude/context/USER_PREFERENCES.md");
+
+        match previous {
+            Some(value) => unsafe { env::set_var("AMPLIHACK_ROOT", value) },
+            None => unsafe { env::remove_var("AMPLIHACK_ROOT") },
+        }
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some(
+                framework
+                    .join(".claude/context/USER_PREFERENCES.md")
+                    .as_path()
+            )
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_framework_file_rejects_path_traversal() {
+        let dir = temp_test_dir("path-traversal");
+        fs::create_dir_all(dir.join(".claude")).unwrap();
+
+        assert!(resolve_framework_file_from(&dir, "../secret").is_none());
+        assert!(resolve_framework_file_from(&dir, "/absolute/path").is_none());
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

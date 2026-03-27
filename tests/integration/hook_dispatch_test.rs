@@ -317,7 +317,119 @@ fn session_start_dispatches_background_blarify_indexing() {
     let logged = fs::read_to_string(&log_path).expect("background command log");
     assert!(logged.contains("index-code"));
     assert!(logged.contains(".amplihack/blarify.json"));
-    assert!(logged.contains(".amplihack/kuzu_db"));
+    assert!(logged.contains(".amplihack/graph_db"));
 
     fs::remove_dir_all(&project_root).expect("cleanup project root");
+}
+
+// ---------------------------------------------------------------------------
+// Outside-in no-Python proof (Issue #77 AC — outside-in, no-Python/PTY)
+// ---------------------------------------------------------------------------
+
+/// Build a PATH string that has all directories containing `python` or
+/// `python3` executables removed.  Mirrors the probe used in
+/// `tests/integration/no_python_probe_test.rs` so that the test environment
+/// matches the documented "Python-free host" contract.
+fn clean_path_without_python() -> String {
+    let original = std::env::var("PATH").unwrap_or_default();
+    original
+        .split(':')
+        .filter(|dir| {
+            !std::path::Path::new(dir).join("python").exists()
+                && !std::path::Path::new(dir).join("python3").exists()
+        })
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// Outside-in integration proof: invoke the compiled `amplihack-hooks` binary
+/// with a SessionStart JSON payload while Python is absent from PATH.
+///
+/// Acceptance criteria verified:
+///   (a) The binary is invoked directly — no PTY, no subprocess shell.
+///   (b) Python is removed from PATH — the hook must not require it.
+///   (c) The output is valid JSON with the correct protocol structure.
+///   (d) `hookSpecificOutput.indexing_status` is present and holds one of the
+///       three valid values: "started", "complete", or "error:<reason>".
+#[test]
+fn session_start_outside_in_no_python_emits_indexing_status() {
+    let bin = hooks_bin();
+    if !bin.exists() {
+        eprintln!("Skipping: amplihack-hooks binary not found at {bin:?}");
+        return;
+    }
+
+    let clean_path = clean_path_without_python();
+
+    // Use a temporary directory as CWD so there are no project files that
+    // could trigger complex indexing paths (keeps the test deterministic).
+    // We use a unique suffix to avoid collisions between parallel test runs.
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp_dir = std::env::temp_dir().join(format!("amplihack-oi-no-py-{unique}"));
+    fs::create_dir_all(&tmp_dir).expect("create tmp dir");
+
+    let mut child = Command::new(&bin)
+        .arg("session-start")
+        // (b) Python-free PATH.
+        .env("PATH", &clean_path)
+        // Skip background blarify indexing so the test does not spawn child
+        // processes; we still expect a valid indexing_status in the output.
+        .env("AMPLIHACK_BLARIFY_MODE", "skip")
+        .current_dir(&tmp_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // (a) Direct binary invocation — no PTY.
+        .spawn()
+        .expect("Failed to spawn amplihack-hooks binary");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(SESSION_START_INPUT.as_bytes());
+    }
+
+    let output = child
+        .wait_with_output()
+        .expect("Failed to wait on hook process");
+
+    // Must exit 0 (fail-open policy).
+    assert!(
+        output.status.success(),
+        "session-start must exit 0 without Python on PATH.\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // (c) stdout must be valid JSON.
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "session-start must emit valid JSON without Python.\nParse error: {e}\nstdout: {stdout}"
+        )
+    });
+
+    // (c) Must follow the hook protocol — hookSpecificOutput key present.
+    assert!(
+        parsed.get("hookSpecificOutput").is_some(),
+        "output must contain 'hookSpecificOutput' key.\nGot: {parsed}"
+    );
+
+    // (d) indexing_status must be present and carry a valid value.
+    let status = parsed["hookSpecificOutput"]["indexing_status"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!(
+                "hookSpecificOutput.indexing_status must be a string.\nGot: {}",
+                parsed["hookSpecificOutput"]
+            )
+        });
+    assert!(
+        status == "started" || status == "complete" || status.starts_with("error:"),
+        "indexing_status must be 'started', 'complete', or 'error:<reason>'.\nGot: {status}"
+    );
+
+    // Cleanup temporary directory.
+    let _ = fs::remove_dir_all(&tmp_dir);
 }

@@ -4,7 +4,7 @@ pub fn run_validate(file: &str, verbose: bool, format: &str) -> Result<()> {
     let format = OutputFormat::parse(format)?;
     let mut stdout = io::stdout();
 
-    match parse_recipe_from_path(file) {
+    match parse_recipe_from_input(file, ".") {
         Ok(recipe) => {
             writeln!(
                 stdout,
@@ -28,7 +28,7 @@ pub fn run_show(name: &str, format: &str, show_steps: bool, show_context: bool) 
     let format = OutputFormat::parse(format)?;
     let mut stdout = io::stdout();
 
-    match parse_recipe_from_path(name) {
+    match parse_recipe_from_input(name, ".") {
         Ok(recipe) => {
             writeln!(
                 stdout,

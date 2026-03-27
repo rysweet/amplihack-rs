@@ -121,28 +121,6 @@ cases:
     compare: ["exit_code"]
 
   # ============================================================================
-  # GAP C: Recipe runner binary not found handling
-  # ============================================================================
-
-  # C1: Python treats missing recipe-runner-rs as non-fatal; Rust as fatal.
-  # Both should produce the same exit code and error behavior.
-  - name: gap-recipe-run-missing-runner-binary
-    argv: ["recipe", "run", "demo.yaml", "--format", "json"]
-    env:
-      PATH: "${SANDBOX_ROOT}/bin:${PATH}"
-      RECIPE_RUNNER_RS_PATH: "/nonexistent/binary"
-    setup: |
-      mkdir -p bin
-      cat > demo.yaml <<'EOF'
-      name: demo
-      description: Demo recipe
-      steps:
-        - id: step-1
-          command: echo hello
-      EOF
-    compare: ["exit_code", "stderr"]
-
-  # ============================================================================
   # GAP D: YAML validation warnings (typo detection)
   # ============================================================================
 

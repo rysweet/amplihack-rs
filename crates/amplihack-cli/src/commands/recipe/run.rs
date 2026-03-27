@@ -1,7 +1,8 @@
 use super::*;
-use crate::env_builder::EnvBuilder;
+use crate::env_builder::{EnvBuilder, active_agent_binary};
 
 const MAX_OUTPUT_LENGTH: usize = 200;
+const STDERR_TAIL_LINES: usize = 5;
 
 pub fn run_recipe(
     recipe_path: &str,
@@ -20,10 +21,11 @@ pub fn run_recipe(
         return Err(exit_error(1));
     }
 
-    let validated_path = validate_path(recipe_path, false)?;
+    let working_dir = working_dir.unwrap_or(".");
+    let abs_working_dir = validate_path(working_dir, false)?;
+    let validated_path = resolve_recipe_path(recipe_path, &abs_working_dir)?;
     let recipe = parse_recipe_from_path(&validated_path)?;
     let (merged_context, inferred) = infer_missing_context(&recipe.context, &context);
-    let working_dir = working_dir.unwrap_or(".");
     if verbose {
         writeln!(io::stderr(), "Executing recipe: {}", recipe.name)?;
         if dry_run {
@@ -38,7 +40,18 @@ pub fn run_recipe(
             )?;
         }
     }
-    let result = execute_recipe_via_rust(&validated_path, &merged_context, dry_run, working_dir)?;
+    let result = match execute_recipe_via_rust(
+        &validated_path,
+        &merged_context,
+        dry_run,
+        &abs_working_dir,
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            writeln!(io::stderr(), "Error: {error}")?;
+            return Err(exit_error(1));
+        }
+    };
 
     println!("{}", format_recipe_run_result(&result, format, false)?);
 
@@ -136,17 +149,16 @@ fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
     dry_run: bool,
-    working_dir: &str,
+    working_dir: &Path,
 ) -> Result<RecipeRunResult> {
     let binary = find_recipe_runner_binary()?;
-    let abs_working_dir = validate_path(working_dir, false)?;
     let mut command = Command::new(binary);
     command
         .arg(recipe_path)
         .arg("--output-format")
         .arg("json")
         .arg("-C")
-        .arg(&abs_working_dir);
+        .arg(working_dir);
 
     if dry_run {
         command.arg("--dry-run");
@@ -156,13 +168,13 @@ fn execute_recipe_via_rust(
         command.arg("--set").arg(format!("{key}={value}"));
     }
 
-    command.envs(
-        EnvBuilder::new()
-            .with_amplihack_home()
-            .with_asset_resolver()
-            .with_project_kuzu_db(&abs_working_dir)
-            .build(),
-    );
+    EnvBuilder::new()
+        .with_agent_binary(active_agent_binary())
+        .with_session_tree_context()
+        .with_amplihack_home()
+        .with_asset_resolver()
+        .with_project_graph_db(working_dir)?
+        .apply_to_command(&mut command);
 
     let output = command
         .output()
@@ -170,20 +182,102 @@ fn execute_recipe_via_rust(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let parsed: RecipeRunResult = serde_json::from_str(&stdout).map_err(|_| {
-        anyhow::anyhow!(
-            "Rust recipe runner returned unparseable output (exit {}): {}",
-            output.status,
-            if output.status.success() {
+        if output.status.success() {
+            anyhow::anyhow!(
+                "Rust recipe runner returned unparseable output (exit {}): {}",
+                exit_status_label(&output.status),
                 stdout.chars().take(500).collect::<String>()
-            } else if stderr.is_empty() {
-                "no stderr".to_string()
-            } else {
-                stderr.chars().take(1000).collect::<String>()
-            }
-        )
+            )
+        } else {
+            anyhow::anyhow!(
+                "Rust recipe runner failed (exit {}): {}",
+                exit_status_label(&output.status),
+                format_runner_failure_detail(&output.status, &stderr)
+            )
+        }
     })?;
 
     Ok(parsed)
+}
+
+fn format_runner_failure_detail(status: &std::process::ExitStatus, stderr: &str) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+
+        if let Some(signal) = status.signal() {
+            return format!(
+                "killed by signal {} ({}). The process was terminated externally before producing output.",
+                signal_name(signal),
+                signal
+            );
+        }
+    }
+
+    if stderr.is_empty() {
+        return "no stderr".to_string();
+    }
+
+    meaningful_stderr_tail(stderr)
+}
+
+fn exit_status_label(status: &std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("signal {signal}");
+        }
+    }
+
+    status
+        .code()
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn meaningful_stderr_tail(stderr: &str) -> String {
+    let lines = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    let meaningful = lines
+        .iter()
+        .copied()
+        .filter(|line| {
+            !matches!(line.chars().next(), Some('▶' | '✓' | '⊘' | '✗'))
+                && !line.starts_with("[agent]")
+        })
+        .collect::<Vec<_>>();
+
+    let selected = if meaningful.is_empty() {
+        lines
+            .into_iter()
+            .rev()
+            .take(STDERR_TAIL_LINES)
+            .collect::<Vec<_>>()
+    } else {
+        meaningful
+            .into_iter()
+            .rev()
+            .take(STDERR_TAIL_LINES)
+            .collect::<Vec<_>>()
+    };
+
+    selected.into_iter().rev().collect::<Vec<_>>().join("\n")
+}
+
+#[cfg(unix)]
+fn signal_name(signal: i32) -> &'static str {
+    match signal {
+        2 => "SIGINT",
+        6 => "SIGABRT",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        15 => "SIGTERM",
+        _ => "signal",
+    }
 }
 
 fn find_recipe_runner_binary() -> Result<PathBuf> {
@@ -381,23 +475,6 @@ fn json_scalar_to_string(value: &JsonValue) -> String {
     }
 }
 
-// =============================================================================
-// TDD Step 7: WS3 — Recipe Runner Unit Tests
-//
-// These tests specify the contract for the recipe run delegation chain.
-// They cover:
-//   - parse_context_args: key=value parsing and error cases
-//   - resolve_binary_path: path resolution with ~ expansion
-//   - infer_missing_context: env var inference and default merging
-//   - format_recipe_run_result: JSON/table output formatting
-//   - find_recipe_runner_binary: error path when binary not present
-//   - execute_recipe_via_rust: integration-level test (FAILS if
-//     recipe-runner-rs binary is not installed or working)
-//
-// FAILING TESTS (fail until recipe-runner-rs E2E is working):
-//   test_execute_recipe_via_rust_dry_run_succeeds_with_known_recipe
-// =============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,6 +598,12 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_resolve_binary_path_expands_tilde_to_home_dir() {
+        // Hold the home_env_lock so that tests which temporarily override HOME
+        // cannot race with this test and corrupt its view of the HOME env var.
+        let _home_guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         // Create a temp file inside the home directory to test expansion
         let home = std::env::var("HOME").expect("HOME env var must be set");
         let temp =
@@ -831,24 +914,14 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // execute_recipe_via_rust — E2E integration (dry-run)
-    //
-    // *** THIS TEST FAILS until recipe-runner-rs is installed and working. ***
-    //
-    // It is the primary E2E gate for Workstream 3.  Once recipe-runner-rs is
-    // installed (or built locally), this test must pass.
+    // execute_recipe_via_rust — E2E integration (dry-run, requires binary in PATH)
     // -------------------------------------------------------------------------
 
     /// When a valid recipe file is provided with --dry-run, execute_recipe_via_rust
     /// must succeed and return a RecipeRunResult with the correct recipe_name.
     ///
-    /// PRECONDITIONS:
-    ///   - recipe-runner-rs binary must be installed in PATH or ~/.cargo/bin/
-    ///     OR RECIPE_RUNNER_RS_PATH must point to a valid binary
-    ///   - A valid YAML recipe file must exist at the path used below
-    ///
-    /// *** FAILS currently because recipe-runner-rs binary is not installed. ***
-    /// *** PASSES once WS3 fix installs / registers the binary correctly.    ***
+    /// Ignored unless recipe-runner-rs binary is installed in PATH or
+    /// RECIPE_RUNNER_RS_PATH is set.
     #[test]
     #[ignore = "requires recipe-runner-rs binary in PATH"]
     fn test_execute_recipe_via_rust_dry_run_succeeds_with_known_recipe() {
@@ -878,13 +951,13 @@ steps:
         let recipe_path = tmp.path();
         let context = BTreeMap::new();
 
-        let result = execute_recipe_via_rust(recipe_path, &context, true, ".");
+        let result = execute_recipe_via_rust(recipe_path, &context, true, Path::new("."));
 
         assert!(
             result.is_ok(),
-            "execute_recipe_via_rust with --dry-run must succeed. \
-             FIX: install recipe-runner-rs (cargo install --git … or set \
-             RECIPE_RUNNER_RS_PATH). Error: {:?}",
+            "execute_recipe_via_rust with --dry-run must succeed \
+             (requires recipe-runner-rs binary in PATH or RECIPE_RUNNER_RS_PATH). \
+             Error: {:?}",
             result.err()
         );
 
@@ -916,7 +989,7 @@ steps:
 
         std::fs::write(
             &runner,
-            "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"resolver\":\"$AMPLIHACK_ASSET_RESOLVER\",\"home\":\"$AMPLIHACK_HOME\"}}\nEOF\n",
+            "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"resolver\":\"$AMPLIHACK_ASSET_RESOLVER\",\"home\":\"$AMPLIHACK_HOME\",\"graph\":\"$AMPLIHACK_GRAPH_DB_PATH\",\"legacy_graph_alias\":\"$AMPLIHACK_KUZU_DB_PATH\"}}\nEOF\n",
         )
         .expect("failed to write runner stub");
         std::fs::write(&resolver, "#!/bin/sh\nexit 0\n").expect("failed to write resolver stub");
@@ -937,6 +1010,8 @@ steps:
         let prev_path = std::env::var_os("PATH");
         let prev_home = std::env::var_os("AMPLIHACK_HOME");
         let prev_resolver = std::env::var_os("AMPLIHACK_ASSET_RESOLVER");
+        let prev_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        let prev_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
         let new_path = match &prev_path {
             Some(value) if !value.is_empty() => {
                 format!("{}:{}", temp.path().display(), value.to_string_lossy())
@@ -947,16 +1022,13 @@ steps:
             std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
             std::env::set_var("PATH", &new_path);
             std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+            std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", "/custom/graph");
+            std::env::set_var("AMPLIHACK_KUZU_DB_PATH", "/custom/legacy");
             std::env::remove_var("AMPLIHACK_ASSET_RESOLVER");
         }
 
-        let result = execute_recipe_via_rust(
-            &recipe,
-            &BTreeMap::new(),
-            true,
-            temp.path().to_str().unwrap(),
-        )
-        .expect("recipe run must succeed");
+        let result = execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, temp.path())
+            .expect("recipe run must succeed");
 
         match prev_runner {
             Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
@@ -974,6 +1046,14 @@ steps:
             Some(value) => unsafe { std::env::set_var("AMPLIHACK_ASSET_RESOLVER", value) },
             None => unsafe { std::env::remove_var("AMPLIHACK_ASSET_RESOLVER") },
         }
+        match prev_graph {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+        }
+        match prev_kuzu {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_KUZU_DB_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
+        }
 
         assert_eq!(
             result.context.get("resolver"),
@@ -984,6 +1064,153 @@ steps:
             Some(&JsonValue::String(
                 amplihack_home.to_string_lossy().into_owned()
             ))
+        );
+        assert_eq!(
+            result.context.get("graph"),
+            Some(&JsonValue::String("/custom/graph".to_string()))
+        );
+        assert_eq!(
+            result.context.get("legacy_graph_alias"),
+            Some(&JsonValue::String(String::new()))
+        );
+    }
+
+    #[test]
+    fn test_execute_recipe_via_rust_propagates_agent_binary_env() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let runner = temp.path().join("recipe-runner-rs");
+        let amplihack_home = temp.path().join("amplihack-home");
+        std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+        std::fs::write(
+            &runner,
+            "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"agent_binary\":\"$AMPLIHACK_AGENT_BINARY\"}}\nEOF\n",
+        )
+        .expect("failed to write runner stub");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+                .expect("failed to chmod runner");
+        }
+
+        let recipe = temp.path().join("recipe.yaml");
+        std::fs::write(&recipe, "name: env-probe\nsteps: []\n").expect("failed to write recipe");
+
+        let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+        let prev_home = std::env::var_os("AMPLIHACK_HOME");
+        let prev_agent = std::env::var_os("AMPLIHACK_AGENT_BINARY");
+        unsafe {
+            std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+            std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+            std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot");
+        }
+
+        let result = execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, temp.path())
+            .expect("recipe run must succeed");
+
+        match prev_runner {
+            Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+            None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+        }
+        match prev_home {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_HOME", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+        }
+        match prev_agent {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_AGENT_BINARY") },
+        }
+
+        assert_eq!(
+            result.context.get("agent_binary"),
+            Some(&JsonValue::String("copilot".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_meaningful_stderr_tail_skips_progress_noise() {
+        let tail = meaningful_stderr_tail(
+            "▶ step-02b-analyze-codebase\n  [agent] ... working\nreal error one\n✓ step-02b-analyze-codebase\nreal error two\n",
+        );
+
+        assert_eq!(tail, "real error one\nreal error two");
+    }
+
+    #[test]
+    fn test_execute_recipe_via_rust_reports_nonzero_exit_with_stderr() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let runner = temp.path().join("recipe-runner-rs");
+        std::fs::write(&runner, "#!/bin/sh\necho \"runner exploded\" >&2\nexit 2\n")
+            .expect("failed to write runner stub");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+                .expect("failed to chmod runner");
+        }
+
+        let recipe = temp.path().join("recipe.yaml");
+        std::fs::write(&recipe, "name: env-probe\nsteps: []\n").expect("failed to write recipe");
+
+        let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+        unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+
+        let result = execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, temp.path());
+
+        match prev_runner {
+            Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+            None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+        }
+
+        let error = result.expect_err("nonzero runner exit must return an error");
+        assert!(
+            error
+                .to_string()
+                .contains("Rust recipe runner failed (exit 2): runner exploded"),
+            "nonzero exit must surface stderr clearly. Got: {error}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_execute_recipe_via_rust_reports_signal_kill_clearly() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let runner = temp.path().join("recipe-runner-rs");
+        std::fs::write(&runner, "#!/bin/sh\nkill -TERM $$\n").expect("failed to write runner stub");
+
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+            .expect("failed to chmod runner");
+
+        let recipe = temp.path().join("recipe.yaml");
+        std::fs::write(&recipe, "name: env-probe\nsteps: []\n").expect("failed to write recipe");
+
+        let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+        unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+
+        let result = execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, temp.path());
+
+        match prev_runner {
+            Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+            None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+        }
+
+        let error = result.expect_err("signal-killed runner must return an error");
+        assert!(
+            error.to_string().contains("SIGTERM"),
+            "signal kill must surface SIGTERM clearly. Got: {error}"
         );
     }
 

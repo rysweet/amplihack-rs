@@ -95,6 +95,13 @@ cases:
   # E5: Memory tree with empty database
   - name: e2e-memory-tree-empty
     argv: ["memory", "tree", "--backend", "sqlite"]
+    # Rust correctly reports "Backend: sqlite"; Python currently reports "Backend: unknown"
+    # because cli_visualize falls back to "unknown" when get_capabilities() is unavailable
+    # in the parity sandbox. Normalize both to a placeholder before comparison.
+    # See: rysweet/amplihack-rs#77
+    stdout_normalize_patterns:
+      - match: "Backend: (sqlite|unknown)"
+        replace: "Backend: <backend>"
     compare: ["stdout", "stderr", "exit_code"]
 
   # E6: Recipe list in directory with multiple recipes

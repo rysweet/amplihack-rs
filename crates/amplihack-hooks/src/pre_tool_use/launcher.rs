@@ -9,6 +9,9 @@
 //! operations are blocked. Security checks (CWD, branch, --no-verify)
 //! are independent of the detected launcher.
 
+use amplihack_cli::launcher_context::{
+    LauncherKind, is_launcher_context_stale, read_launcher_context,
+};
 use amplihack_types::ProjectDirs;
 use serde_json::Value;
 use std::fs;
@@ -30,6 +33,10 @@ pub enum LauncherType {
 
 /// Detect which launcher is running by checking environment variables.
 pub fn detect_launcher() -> LauncherType {
+    detect_launcher_for_dirs(&ProjectDirs::from_cwd())
+}
+
+pub(crate) fn detect_launcher_for_dirs(dirs: &ProjectDirs) -> LauncherType {
     // Copilot sets specific env vars.
     if std::env::var("GITHUB_COPILOT_AGENT").is_ok() || std::env::var("COPILOT_AGENT").is_ok() {
         return LauncherType::Copilot;
@@ -45,6 +52,17 @@ pub fn detect_launcher() -> LauncherType {
         return LauncherType::ClaudeCode;
     }
 
+    if let Some(context) = read_launcher_context(&dirs.root)
+        && !is_launcher_context_stale(&context)
+    {
+        return match context.launcher {
+            LauncherKind::Copilot => LauncherType::Copilot,
+            LauncherKind::Amplifier => LauncherType::Amplifier,
+            LauncherKind::Claude => LauncherType::ClaudeCode,
+            LauncherKind::Codex | LauncherKind::Unknown => LauncherType::Unknown,
+        };
+    }
+
     LauncherType::Unknown
 }
 
@@ -54,7 +72,7 @@ pub fn detect_launcher() -> LauncherType {
 /// Context injection affects WHERE data is stored (AGENTS.md vs hook_context.json),
 /// not WHETHER operations are blocked.
 pub fn inject_context(dirs: &ProjectDirs, input_data: &Value) {
-    let launcher = detect_launcher();
+    let launcher = detect_launcher_for_dirs(dirs);
 
     match launcher {
         LauncherType::Copilot => {
@@ -174,6 +192,8 @@ fn set_launcher_env(
 mod tests {
     use super::*;
     use crate::test_support::env_lock;
+    use amplihack_cli::launcher_context::{LauncherContext, write_launcher_context};
+    use std::collections::BTreeMap;
 
     #[test]
     fn unknown_launcher_by_default() {
@@ -186,6 +206,52 @@ mod tests {
             matches!(result, LauncherType::Unknown),
             "Expected Unknown when no launcher env vars set, got: {result:?}"
         );
+    }
+
+    #[test]
+    fn detects_copilot_from_persisted_launcher_context() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_launcher_env(None, None, None, None);
+        let dir = tempfile::tempdir().unwrap();
+        write_launcher_context(
+            dir.path(),
+            LauncherKind::Copilot,
+            "amplihack copilot",
+            BTreeMap::from([("AMPLIHACK_LAUNCHER".to_string(), "copilot".to_string())]),
+        )
+        .unwrap();
+
+        let result = detect_launcher_for_dirs(&ProjectDirs::new(dir.path()));
+
+        assert!(matches!(result, LauncherType::Copilot));
+    }
+
+    #[test]
+    fn ignores_stale_persisted_launcher_context() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_launcher_env(None, None, None, None);
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        fs::create_dir_all(&dirs.runtime).unwrap();
+        fs::write(
+            dirs.launcher_context_file(),
+            serde_json::to_string_pretty(&LauncherContext {
+                launcher: LauncherKind::Copilot,
+                command: "amplihack copilot".to_string(),
+                timestamp: "2000-01-01T00:00:00+00:00".to_string(),
+                environment: BTreeMap::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let result = detect_launcher_for_dirs(&dirs);
+
+        assert!(matches!(result, LauncherType::Unknown));
     }
 
     #[test]

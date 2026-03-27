@@ -4,6 +4,8 @@
 //! and Copilot via JSON stdin/stdout protocol.
 
 mod agent_memory;
+mod original_request;
+mod prompt_input;
 #[cfg(test)]
 pub(crate) mod test_support;
 

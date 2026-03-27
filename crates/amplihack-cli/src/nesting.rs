@@ -2,12 +2,16 @@
 //!
 //! Detection strategy:
 //! 1. Primary: Check `AMPLIHACK_SESSION_ID` env var — if set, we're nested.
-//! 2. Secondary: Check session file with PID + timestamp in `~/.claude/runtime/`.
-//! 3. Stale detection: If holder PID is dead AND session is >1h old, consider stale.
+//! 2. Secondary: Check `.claude/runtime/sessions.jsonl` in the current project.
+//! 3. Fallback: Check session file with PID + timestamp in `~/.claude/runtime/`.
+//! 4. Stale detection: If holder PID is dead AND session is >1h old, consider stale.
 
+use amplihack_types::ProjectDirs;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Result of nesting detection.
@@ -55,7 +59,13 @@ impl NestingDetector {
             return NestingResult::Nested { session_id, depth };
         }
 
-        // Secondary: Check session file
+        if let Some(current_dir) = env::current_dir().ok()
+            && let Some(result) = detect_from_sessions_log(&current_dir)
+        {
+            return result;
+        }
+
+        // Fallback: Check legacy session file
         if let Some(session_path) = session_file_path()
             && let Ok(content) = std::fs::read_to_string(&session_path)
             && let Ok(session) = serde_json::from_str::<SessionFile>(&content)
@@ -116,6 +126,67 @@ impl NestingDetector {
     }
 }
 
+fn detect_from_sessions_log(current_dir: &Path) -> Option<NestingResult> {
+    let log_path = ProjectDirs::from_root(current_dir).sessions_log_file();
+    let content = std::fs::read_to_string(log_path).ok()?;
+    if content.trim().is_empty() {
+        return None;
+    }
+
+    let resolved_current_dir = resolve_path(current_dir);
+    let mut sessions: BTreeMap<String, Value> = BTreeMap::new();
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(session_id) = entry
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+
+        match entry.get("status").and_then(Value::as_str) {
+            Some("completed" | "crashed") => {
+                sessions.remove(&session_id);
+            }
+            Some("active") => {
+                sessions.insert(session_id, entry);
+            }
+            _ => {}
+        }
+    }
+
+    for entry in sessions.values().rev() {
+        let Some(pid) = entry.get("pid").and_then(Value::as_u64) else {
+            continue;
+        };
+        if !is_process_alive(pid as u32) {
+            continue;
+        }
+        let Some(launch_dir) = entry.get("launch_dir").and_then(Value::as_str) else {
+            continue;
+        };
+        if resolve_path(Path::new(launch_dir)) != resolved_current_dir {
+            continue;
+        }
+        let session_id = entry.get("session_id").and_then(Value::as_str)?.to_string();
+        let depth = entry
+            .get("parent_session_id")
+            .and_then(Value::as_str)
+            .map(|_| 2)
+            .unwrap_or(1);
+        return Some(NestingResult::Nested { session_id, depth });
+    }
+
+    None
+}
+
+fn resolve_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 fn session_file_path() -> Option<PathBuf> {
     env::var("HOME").ok().map(|h| {
         PathBuf::from(h)
@@ -160,7 +231,10 @@ fn is_stale(timestamp: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{home_env_lock, restore_home, set_home};
+    use crate::test_support::{
+        cwd_env_lock, home_env_lock, restore_cwd, restore_home, set_cwd, set_home,
+    };
+    use std::fs;
 
     #[test]
     fn not_nested_when_no_env_var() {
@@ -270,5 +344,85 @@ mod tests {
         assert!(!session_path.exists());
 
         restore_home(original_home);
+    }
+
+    #[test]
+    fn nested_when_sessions_log_has_active_session_for_current_dir() {
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("project");
+        fs::create_dir_all(project_dir.join(".claude/runtime")).unwrap();
+        let sessions_log = project_dir.join(".claude/runtime/sessions.jsonl");
+        fs::write(
+            &sessions_log,
+            format!(
+                "{{\"pid\":{},\"session_id\":\"session-log-123\",\"launch_dir\":\"{}\",\"argv\":[\"amplihack\",\"claude\"],\"start_time\":0.0,\"is_auto_mode\":false,\"is_nested\":false,\"parent_session_id\":null,\"status\":\"active\",\"end_time\":null}}\n",
+                std::process::id(),
+                project_dir.display()
+            ),
+        )
+        .unwrap();
+
+        let original_home = set_home(dir.path());
+        let original_cwd = set_cwd(&project_dir).unwrap();
+        unsafe {
+            env::remove_var("AMPLIHACK_SESSION_ID");
+            env::remove_var("AMPLIHACK_DEPTH");
+        }
+
+        let result = NestingDetector::detect();
+
+        restore_cwd(&original_cwd).unwrap();
+        restore_home(original_home);
+
+        assert!(matches!(
+            result,
+            NestingResult::Nested {
+                ref session_id,
+                depth: 1
+            } if session_id == "session-log-123"
+        ));
+    }
+
+    #[test]
+    fn ignores_completed_session_in_sessions_log() {
+        let _home_guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cwd_guard = cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("project");
+        fs::create_dir_all(project_dir.join(".claude/runtime")).unwrap();
+        let sessions_log = project_dir.join(".claude/runtime/sessions.jsonl");
+        fs::write(
+            &sessions_log,
+            format!(
+                "{{\"pid\":{},\"session_id\":\"session-log-123\",\"launch_dir\":\"{}\",\"argv\":[\"amplihack\",\"claude\"],\"start_time\":0.0,\"is_auto_mode\":false,\"is_nested\":false,\"parent_session_id\":null,\"status\":\"active\",\"end_time\":null}}\n{{\"session_id\":\"session-log-123\",\"status\":\"completed\",\"end_time\":1.0}}\n",
+                std::process::id(),
+                project_dir.display()
+            ),
+        )
+        .unwrap();
+
+        let original_home = set_home(dir.path());
+        let original_cwd = set_cwd(&project_dir).unwrap();
+        unsafe {
+            env::remove_var("AMPLIHACK_SESSION_ID");
+            env::remove_var("AMPLIHACK_DEPTH");
+        }
+
+        let result = NestingDetector::detect();
+
+        restore_cwd(&original_cwd).unwrap();
+        restore_home(original_home);
+
+        assert_eq!(result, NestingResult::NotNested);
     }
 }

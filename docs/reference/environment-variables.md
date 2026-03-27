@@ -8,7 +8,8 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_AGENT_BINARY](#amplihack_agent_binary)
   - [AMPLIHACK_ASSET_RESOLVER](#amplihack_asset_resolver)
   - [AMPLIHACK_HOME](#amplihack_home)
-  - [AMPLIHACK_KUZU_DB_PATH](#amplihack_kuzu_db_path)
+  - [AMPLIHACK_GRAPH_DB_PATH](#amplihack_graph_db_path)
+  - [AMPLIHACK_KUZU_DB_PATH](#amplihack_kuzu_db_path-legacy-alias)
   - [AMPLIHACK_NONINTERACTIVE](#amplihack_noninteractive)
   - [AMPLIHACK_SESSION_ID](#amplihack_session_id)
   - [AMPLIHACK_DEPTH](#amplihack_depth)
@@ -16,6 +17,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_VERSION](#amplihack_version)
   - [NODE_OPTIONS](#node_options)
 - [Variables read by amplihack](#variables-read-by-amplihack)
+  - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
   - [HOME](#home)
   - [AMPLIHACK_DEFAULT_MODEL](#amplihack_default_model)
   - [AMPLIHACK_ENABLE_BLARIFY](#amplihack_enable_blarify)
@@ -86,7 +88,7 @@ That returns the resolved absolute path on stdout and exits non-zero on invalid 
 | 4 | `~/.local/bin/amplihack-asset-resolver` |
 | 5 | `~/.cargo/bin/amplihack-asset-resolver` |
 
-If no binary is found, the variable is omitted. This is transitional behavior while remaining Issue #77 consumers are being ported; callers that require native resolution should treat absence as a hard setup problem rather than silently degrading.
+If no binary is found, the variable is omitted. Callers that require native resolution should treat absence as a hard setup problem rather than silently degrading.
 
 **Why it exists:** Python's `resolve_bundle_asset.py` was a hidden runtime dependency for recipes and helper scripts. Exposing a dedicated Rust binary makes asset lookup explicit, testable, and reusable by child tools without embedding Python-specific paths.
 
@@ -125,30 +127,51 @@ AMPLIHACK_HOME=/opt/amplihack amplihack claude --print-env 2>&1 | grep AMPLIHACK
 
 ---
 
-### AMPLIHACK_KUZU_DB_PATH
+### AMPLIHACK_GRAPH_DB_PATH
 
 **Type:** path
-**Example:** `/work/repo/.amplihack/kuzu_db`
-**Set by:** `EnvBuilder::with_project_kuzu_db()`
-**Read by:** `commands::memory::resolve_kuzu_memory_db_path()`
+**Example:** `/work/repo/.amplihack/graph_db`
+**Set by:** `EnvBuilder::with_project_graph_db()`
+**Read by:** `commands::memory::resolve_memory_graph_db_path()`
 
-Overrides the Kuzu database path used by Rust memory operations in launched child
+Overrides the code-graph database path used by Rust memory operations in launched child
 processes. `amplihack launch` and the Rust recipe runner set it to the
-project-local `.amplihack/kuzu_db` so launched sessions, hooks, and native
-code-graph features operate on the same live Kuzu store.
+project-local `.amplihack/graph_db` so launched sessions, hooks, and native
+code-graph features operate on the same live store.
 
-If this variable is absent, Rust memory operations keep using the historical
-global default `~/.amplihack/memory_kuzu.db`.
+If this variable is absent, `amplihack` sets it to the project-local
+`.amplihack/graph_db` directory. The legacy `AMPLIHACK_KUZU_DB_PATH`
+override is accepted as an alias and translated to `AMPLIHACK_GRAPH_DB_PATH`
+in the child process environment.
 
 ```sh
 # Effective child-process environment for a project rooted at /work/repo
-AMPLIHACK_KUZU_DB_PATH=/work/repo/.amplihack/kuzu_db amplihack claude
+AMPLIHACK_GRAPH_DB_PATH=/work/repo/.amplihack/graph_db amplihack claude
 ```
 
-**Why it exists:** Issue #77 still has memory/code parity gaps. This override
-lets launched Rust sessions converge on the same project-local Kuzu DB as the
-native code graph without forcing an immediate destructive migration away from
-the legacy global memory path.
+**Why it exists:** Launched sessions, hooks, and native code-graph features
+must all operate on the same project-local DB. Setting this variable ensures
+every subprocess resolves to the correct location without relying on
+filesystem detection heuristics.
+
+---
+
+### AMPLIHACK_KUZU_DB_PATH (legacy alias)
+
+Legacy compatibility alias for `AMPLIHACK_GRAPH_DB_PATH`.
+
+If `AMPLIHACK_GRAPH_DB_PATH` is unset, Rust still reads `AMPLIHACK_KUZU_DB_PATH`
+and also exports it for older child-process consumers. When both are present,
+`AMPLIHACK_GRAPH_DB_PATH` wins.
+
+```sh
+# Backward-compatible older configuration still works
+AMPLIHACK_KUZU_DB_PATH=/work/repo/.amplihack/graph_db amplihack claude
+```
+
+The alias remains because internal storage is still Kuzu-backed today, but new
+automation should prefer `AMPLIHACK_GRAPH_DB_PATH` so the public surface stays
+backend-neutral while the LadybugDB migration continues.
 
 ---
 
@@ -242,15 +265,56 @@ The version of the `amplihack-cli` crate that launched the session. Taken from `
 ### NODE_OPTIONS
 
 **Type:** space-separated Node.js CLI flags
-**Set by:** `EnvBuilder::with_amplihack_vars()`
+**Set by:** launcher startup via `memory_config.rs`, then propagated by `EnvBuilder::with_amplihack_vars()`
 
-`amplihack` injects `--max-old-space-size=32768` to raise the Node.js heap limit for Claude Code's large context operations. If `NODE_OPTIONS` is already set in the environment, `amplihack` appends the flag rather than replacing it, unless `--max-old-space-size=` is already present.
+`amplihack` now computes a smart `--max-old-space-size=<mb>` value at top-level launcher startup based on detected system RAM, persists the consent choice in `~/.amplihack/config`, and displays the active choice on launch. The resolved value is then propagated through `EnvBuilder`.
+
+When startup does not supply an explicit value, `EnvBuilder` still falls back to `--max-old-space-size=32768`, and if ambient `NODE_OPTIONS` already contains `--max-old-space-size=` it is preserved rather than duplicated.
 
 ---
 
 ## Variables read by amplihack
 
 These variables influence `amplihack`'s behaviour but are not set by it.
+
+---
+
+### AMPLIHACK_MEMORY_BACKEND
+
+**Type:** string
+**Values:** `sqlite` | `graph-db` | `kuzu`
+**Read by:** `resolve_memory_backend_preference()`, `resolve_transfer_backend_choice()`, `resolve_backend_with_autodetect()`
+
+Selects the memory storage backend for all memory commands: `memory tree`,
+`memory clean`, `memory export`, and `memory import`. When unset, the backend
+is chosen by probing the filesystem in priority order:
+
+1. `AMPLIHACK_GRAPH_DB_PATH` path exists on disk → `graph-db`
+2. `~/.amplihack/memory_graph.db` exists → `graph-db`
+3. Neither exists → `sqlite` (default for new installs)
+
+```sh
+# Permanently opt into SQLite (add to shell profile)
+export AMPLIHACK_MEMORY_BACKEND=sqlite
+
+# Single-invocation override
+AMPLIHACK_MEMORY_BACKEND=graph-db amplihack memory tree
+
+# Legacy kuzu alias still works
+AMPLIHACK_MEMORY_BACKEND=kuzu amplihack memory tree
+```
+
+Values outside the allowlist `['sqlite', 'kuzu', 'graph-db']` produce a
+visible warning to stderr and fall back to the graph-db backend. There is no
+silent acceptance of unrecognised values.
+
+**Why it exists:** New installs default to SQLite (no native library
+required). Existing installs with a populated `memory_graph.db` continue to
+use graph-db automatically. This variable lets users and CI pipelines opt in
+or out of either backend without modifying on-disk state.
+
+See [Memory Backend Reference](./memory-backend.md) for the complete
+backend configuration reference.
 
 ---
 
@@ -296,7 +360,7 @@ command line.
 **Values:** `1` enables launcher-side code-indexing checks; absence or any other value disables them  
 **Read by:** `commands::launch::should_prompt_blarify_indexing()`
 
-Opt-in gate for launcher-side code indexing. When set to `1` for `amplihack claude`, the Rust launcher checks whether code-graph artifacts are missing or stale, and whether the project-local `.amplihack/kuzu_db` store already exists, then either prompts or follows `AMPLIHACK_BLARIFY_MODE` if that mode is set.
+Opt-in gate for launcher-side code indexing. When set to `1` for `amplihack claude`, the Rust launcher checks whether code-graph artifacts are missing or stale, and whether the project-local `.amplihack/graph_db` store already exists, then either prompts or follows `AMPLIHACK_BLARIFY_MODE` if that mode is set.
 
 Without `AMPLIHACK_BLARIFY_MODE`, interactive launches offer to either:
 
@@ -317,9 +381,9 @@ amplihack index-scip --project-path .
 
 - `.amplihack/blarify.json` — native Kuzu import input for `amplihack index-code`
 - `.amplihack/indexes/<language>.scip` — per-language native SCIP artifacts from `amplihack index-scip`
-- `.amplihack/kuzu_db` — native Kuzu code-graph store populated by `index-code` or `index-scip`
+- `.amplihack/graph_db` — native code-graph store populated by `index-code` or `index-scip`
 
-**Why it exists:** Issue #77 is migrating code-graph features off the Python launcher without forcing indexing on every launch. This flag keeps the new behavior opt-in while broader memory/session parity work is still being finished.
+**Why it exists:** Code-graph indexing is computationally expensive and should not run on every launch. This flag keeps the behavior opt-in so only projects that benefit from code-graph enrichment pay the cost.
 
 ---
 
@@ -426,4 +490,5 @@ Override the directory where `uv tool install` places the `amplifier` binary. De
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — Why `AMPLIHACK_AGENT_BINARY` exists and how recipe runner uses it
 - [Run amplihack in Non-interactive Mode](../howto/run-in-noninteractive-mode.md) — CI and pipe usage guide
 - [Bootstrap Parity](../concepts/bootstrap-parity.md) — How the Rust CLI matches the Python launcher's environment contract
+- [Memory Backend Reference](./memory-backend.md) — `AMPLIHACK_MEMORY_BACKEND` values, storage paths, schema, and security
 - [amplihack install](./install-command.md) — Variables read during installation

@@ -1,9 +1,10 @@
+use super::{ensure_parent_dir, project_artifact_paths};
 use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub fn background_index_job_path(project_path: &Path) -> PathBuf {
-    project_path.join(".amplihack").join("indexing.pid")
+    project_artifact_paths(project_path).indexing_pid
 }
 
 pub fn background_index_job_active(project_path: &Path) -> Result<bool> {
@@ -24,9 +25,7 @@ pub fn background_index_job_active(project_path: &Path) -> Result<bool> {
 
 pub fn record_background_index_pid(project_path: &Path, pid: u32) -> Result<()> {
     let pid_path = background_index_job_path(project_path);
-    if let Some(parent) = pid_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    ensure_parent_dir(&pid_path)?;
     fs::write(pid_path, format!("{pid}\n"))?;
     Ok(())
 }

@@ -1,3 +1,4 @@
+use super::project_artifact_paths;
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
@@ -92,15 +93,14 @@ pub fn check_index_status(project_path: &Path) -> Result<IndexStatus> {
 }
 
 fn resolve_index_artifact(project_path: &Path) -> std::path::PathBuf {
-    let json_path = project_path.join(".amplihack").join("blarify.json");
-    if json_path.exists() {
-        return json_path;
+    let paths = project_artifact_paths(project_path);
+    if paths.blarify_json.exists() {
+        return paths.blarify_json;
     }
-    let indexes_dir = project_path.join(".amplihack").join("indexes");
-    if let Some(latest) = latest_scip_artifact(&indexes_dir) {
+    if let Some(latest) = latest_scip_artifact(&paths.indexes_dir) {
         return latest;
     }
-    project_path.join(".amplihack").join("index.scip")
+    paths.index_scip
 }
 
 fn latest_scip_artifact(indexes_dir: &Path) -> Option<std::path::PathBuf> {

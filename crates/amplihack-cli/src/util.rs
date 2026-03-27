@@ -10,7 +10,8 @@
 
 use anyhow::{Context, Result, bail};
 use std::io::IsTerminal;
-use std::process::{Command, ExitStatus};
+use std::io::{self, Write};
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -114,6 +115,74 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ExitStatu
     }
 }
 
+/// Run a pre-built `Command` with stdout/stderr capture and a hard timeout.
+pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let child = cmd.spawn().context("failed to spawn subprocess")?;
+    let pid = child.id();
+    let (tx, rx) = mpsc::channel::<std::io::Result<Output>>();
+
+    thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result.context("failed to wait for subprocess output"),
+        Err(_elapsed) => {
+            #[cfg(unix)]
+            let _ = Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .status();
+            bail!(
+                "subprocess timed out after {} seconds (pid {})",
+                timeout.as_secs(),
+                pid
+            )
+        }
+    }
+}
+
+/// Read a single line of terminal input with a wall-clock timeout.
+pub fn read_user_input_with_timeout(prompt: &str, timeout: Duration) -> Result<Option<String>> {
+    print!("{prompt}");
+    io::stdout().flush().context("failed to flush prompt")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+
+        let fd = io::stdin().as_raw_fd();
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+        let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+        if ready < 0 {
+            return Err(io::Error::last_os_error()).context("failed waiting for prompt input");
+        }
+        if ready == 0 {
+            println!();
+            return Ok(None);
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        if !io::stdin().is_terminal() {
+            return Ok(None);
+        }
+    }
+
+    let mut response = String::new();
+    io::stdin()
+        .read_line(&mut response)
+        .context("failed to read prompt input")?;
+    Ok(Some(response.trim().to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,7 +238,7 @@ mod tests {
         );
     }
 
-    /// WS2-3: TTY detection fallback — test runner has no TTY so result is true.
+    /// WS2-3: TTY detection fallback mirrors the actual stdin TTY state.
     #[test]
     fn is_noninteractive_tty_path() {
         let _guard = crate::test_support::home_env_lock()
@@ -180,15 +249,16 @@ mod tests {
         unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") };
 
         let result = is_noninteractive();
+        let expected = !std::io::stdin().is_terminal();
 
         match prev {
             Some(v) => unsafe { std::env::set_var("AMPLIHACK_NONINTERACTIVE", v) },
             None => unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") },
         }
 
-        assert!(
-            result,
-            "is_noninteractive() must return true in test runner (no TTY stdin)"
+        assert_eq!(
+            result, expected,
+            "is_noninteractive() must reflect stdin TTY state when AMPLIHACK_NONINTERACTIVE is unset"
         );
     }
 
