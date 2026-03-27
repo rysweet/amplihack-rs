@@ -10,6 +10,7 @@ This guide walks through running `amplihack install` on a machine that has never
 | Python 3 | 3.11+ | amplihack SDK hooks run as Python subprocesses |
 | `amplihack` Python package | any | Hooks import `amplihack` at runtime |
 | Internet access | — | Default install clones from GitHub (skip with `--local`) |
+| Node.js + npm (optional) | 18+ | Only needed when using the npm/npx wrapper path |
 
 ### macOS SIP Note {#macos-sip-note}
 
@@ -39,6 +40,25 @@ This produces two binaries:
 ```sh
 ./target/release/amplihack install
 ```
+
+### Alternative: bootstrap through npx
+
+If you want npm to provision the Rust CLI first, use the wrapper package:
+
+```sh
+npx --yes --package=git+https://github.com/rysweet/amplihack-rs.git -- amplihack install
+```
+
+The wrapper exposes the `amplihack` command, ensures both `amplihack` and
+`amplihack-hooks` exist for the current platform, and then delegates to the same
+native `amplihack install` flow. It prefers the matching GitHub release archive
+and falls back to a local Cargo build when the packaged Rust workspace is present.
+
+Published release archives currently cover Linux and macOS on `x64`/`arm64`.
+On Windows, or any other platform without a published release target, the npm
+wrapper needs the packaged Rust workspace plus a local Rust toolchain so it can
+fall back to a source build. If you do not want that dependency, use the native
+`cargo install` path instead of the npm wrapper.
 
 The installer performs these phases in order:
 

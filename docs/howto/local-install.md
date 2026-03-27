@@ -29,6 +29,24 @@ rsync -a user@remote:~/src/amplihack ~/src/amplihack
 amplihack install --local ~/src/amplihack
 ```
 
+### Alternative: execute the local Rust checkout through npm
+
+When you want npm/npx to invoke the Rust CLI from a local checkout of
+`amplihack-rs`, point `--package` at the repository root:
+
+```sh
+npx --yes --package=/path/to/amplihack-rs -- amplihack install
+```
+
+That wrapper path uses the same `amplihack` bin name, provisions
+`amplihack` + `amplihack-hooks`, and then delegates to the native Rust CLI.
+If a matching GitHub release archive is unavailable, the wrapper falls back to
+building from the packaged Cargo workspace.
+
+That local-checkout path is also the way to use the wrapper on platforms without
+published release archives yet, because the fallback build needs the Rust
+workspace and a local Rust toolchain.
+
 The `--local` flag skips the default GitHub archive download step and reads framework assets directly from your checkout. All other phases (optional legacy-Python probe, binary deployment, asset staging, hook wiring) run identically to a standard install.
 
 ### 3. Verify
