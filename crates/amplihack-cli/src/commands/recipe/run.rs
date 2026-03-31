@@ -25,7 +25,8 @@ pub fn run_recipe(
     let abs_working_dir = validate_path(working_dir, false)?;
     let validated_path = resolve_recipe_path(recipe_path, &abs_working_dir)?;
     let recipe = parse_recipe_from_path(&validated_path)?;
-    let (merged_context, inferred) = infer_missing_context(&recipe.context, &context);
+    let (merged_context, inferred) =
+        infer_missing_context(&recipe.context, &context, &abs_working_dir);
     if verbose {
         writeln!(io::stderr(), "Executing recipe: {}", recipe.name)?;
         if dry_run {
@@ -82,6 +83,7 @@ fn parse_context_args(context_args: &[String]) -> (BTreeMap<String, String>, Vec
 fn infer_missing_context(
     recipe_defaults: &BTreeMap<String, Value>,
     user_context: &BTreeMap<String, String>,
+    working_dir: &Path,
 ) -> (BTreeMap<String, String>, Vec<String>) {
     let mut merged = recipe_defaults
         .iter()
@@ -115,8 +117,11 @@ fn infer_missing_context(
             merged.insert(key.clone(), value);
             inferred.push(format!("{key} (from $AMPLIHACK_TASK_DESCRIPTION)"));
         } else if key == "repo_path" {
-            let value = std::env::var("AMPLIHACK_REPO_PATH").unwrap_or_else(|_| ".".to_string());
-            if value != "." {
+            let value = std::env::var("AMPLIHACK_REPO_PATH")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| working_dir.to_string_lossy().into_owned());
+            if std::env::var_os("AMPLIHACK_REPO_PATH").is_some() {
                 inferred.push(format!("{key} (from $AMPLIHACK_REPO_PATH)"));
             }
             merged.insert(key.clone(), value);
@@ -643,7 +648,9 @@ mod tests {
         let mut user_context = BTreeMap::new();
         user_context.insert("task_description".to_string(), "user override".to_string());
 
-        let (merged, inferred) = infer_missing_context(&recipe_defaults, &user_context);
+        let working_dir = Path::new("/tmp/project");
+        let (merged, inferred) =
+            infer_missing_context(&recipe_defaults, &user_context, working_dir);
 
         assert_eq!(
             merged.get("task_description").map(String::as_str),
@@ -661,6 +668,9 @@ mod tests {
     /// env var is set, it must be inferred automatically.
     #[test]
     fn test_infer_missing_context_infers_task_description_from_env() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // SAFETY: test-only env manipulation
         unsafe { std::env::set_var("AMPLIHACK_TASK_DESCRIPTION", "from env var") };
 
@@ -670,7 +680,9 @@ mod tests {
             serde_yaml::Value::String(String::new()), // empty default
         );
 
-        let (merged, inferred) = infer_missing_context(&recipe_defaults, &BTreeMap::new());
+        let working_dir = Path::new("/tmp/project");
+        let (merged, inferred) =
+            infer_missing_context(&recipe_defaults, &BTreeMap::new(), working_dir);
 
         unsafe { std::env::remove_var("AMPLIHACK_TASK_DESCRIPTION") };
 
@@ -686,9 +698,13 @@ mod tests {
         );
     }
 
-    /// When repo_path is a required context key, it defaults to "." if no env var is set.
+    /// When repo_path is a required context key, it defaults to the validated
+    /// working directory if no env var override is set.
     #[test]
-    fn test_infer_missing_context_repo_path_defaults_to_dot() {
+    fn test_infer_missing_context_repo_path_defaults_to_working_dir() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // Ensure no override is present
         unsafe { std::env::remove_var("AMPLIHACK_REPO_PATH") };
 
@@ -698,12 +714,45 @@ mod tests {
             serde_yaml::Value::String(String::new()),
         );
 
-        let (merged, _inferred) = infer_missing_context(&recipe_defaults, &BTreeMap::new());
+        let working_dir = Path::new("/tmp/project-root");
+        let (merged, _inferred) =
+            infer_missing_context(&recipe_defaults, &BTreeMap::new(), working_dir);
 
         assert_eq!(
             merged.get("repo_path").map(String::as_str),
-            Some("."),
-            "repo_path must default to '.' when AMPLIHACK_REPO_PATH is not set"
+            Some("/tmp/project-root"),
+            "repo_path must default to the validated working directory when AMPLIHACK_REPO_PATH is not set"
+        );
+    }
+
+    #[test]
+    fn test_infer_missing_context_repo_path_prefers_env_override() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe { std::env::set_var("AMPLIHACK_REPO_PATH", "/env/repo-root") };
+
+        let mut recipe_defaults = BTreeMap::new();
+        recipe_defaults.insert(
+            "repo_path".to_string(),
+            serde_yaml::Value::String(String::new()),
+        );
+
+        let working_dir = Path::new("/tmp/project-root");
+        let (merged, inferred) =
+            infer_missing_context(&recipe_defaults, &BTreeMap::new(), working_dir);
+
+        unsafe { std::env::remove_var("AMPLIHACK_REPO_PATH") };
+
+        assert_eq!(
+            merged.get("repo_path").map(String::as_str),
+            Some("/env/repo-root"),
+            "AMPLIHACK_REPO_PATH must override the working directory fallback"
+        );
+        assert!(
+            inferred.iter().any(|entry| entry.contains("repo_path")),
+            "Inference metadata must mention repo_path when the env override is used. Got: {:?}",
+            inferred
         );
     }
 
@@ -1004,7 +1053,11 @@ steps:
         }
 
         let recipe = temp.path().join("recipe.yaml");
-        std::fs::write(&recipe, "name: env-probe\nsteps: []\n").expect("failed to write recipe");
+        std::fs::write(
+            &recipe,
+            "name: env-probe\nsteps:\n  - id: step-1\n    type: bash\n    command: echo ok\n",
+        )
+        .expect("failed to write recipe");
 
         let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
         let prev_path = std::env::var_os("PATH");
@@ -1129,6 +1182,87 @@ steps:
         assert_eq!(
             result.context.get("agent_binary"),
             Some(&JsonValue::String("copilot".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_run_recipe_infers_absolute_repo_path_for_runner_context() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let project_dir = temp.path().join("project");
+        let amplihack_home = temp.path().join("amplihack-home");
+        let runner = temp.path().join("recipe-runner-rs");
+        let capture = temp.path().join("repo-path.txt");
+        std::fs::create_dir_all(&project_dir).expect("failed to create project dir");
+        std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+        let recipe = project_dir.join("recipe.yaml");
+        std::fs::write(
+            &recipe,
+            "name: repo-path-probe\ndescription: test\ncontext:\n  repo_path: \"\"\nsteps:\n  - id: step-1\n    type: bash\n    command: echo ok\n",
+        )
+        .expect("failed to write recipe");
+
+        std::fs::write(
+            &runner,
+            format!(
+                "#!/bin/sh\ncapture='{}'\nrepo_path=''\nprev=''\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"--set\" ]; then\n    case \"$arg\" in\n      repo_path=*) repo_path=\"${{arg#repo_path=}}\" ;;\n    esac\n  fi\n  prev=\"$arg\"\ndone\nprintf '%s' \"$repo_path\" > \"$capture\"\ncat <<EOF\n{{\"recipe_name\":\"repo-path-probe\",\"success\":true,\"step_results\":[],\"context\":{{}}}}\nEOF\n",
+                capture.display()
+            ),
+        )
+        .expect("failed to write runner stub");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+                .expect("failed to chmod runner");
+        }
+
+        let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+        let prev_home = std::env::var_os("AMPLIHACK_HOME");
+        let prev_repo = std::env::var_os("AMPLIHACK_REPO_PATH");
+        unsafe {
+            std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+            std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+            std::env::remove_var("AMPLIHACK_REPO_PATH");
+        }
+
+        let result = run_recipe(
+            recipe.to_str().expect("recipe path must be valid UTF-8"),
+            &[],
+            true,
+            false,
+            "json",
+            Some(
+                project_dir
+                    .to_str()
+                    .expect("project path must be valid UTF-8"),
+            ),
+        );
+
+        match prev_runner {
+            Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+            None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+        }
+        match prev_home {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_HOME", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+        }
+        match prev_repo {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_REPO_PATH", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_REPO_PATH") },
+        }
+
+        result.expect("recipe run must succeed");
+
+        let captured = std::fs::read_to_string(&capture).expect("runner must capture repo_path");
+        assert_eq!(
+            captured,
+            project_dir.to_string_lossy(),
+            "run_recipe must pass the absolute validated working directory as repo_path when no env override is set"
         );
     }
 
