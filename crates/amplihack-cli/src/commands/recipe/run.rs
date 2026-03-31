@@ -163,7 +163,9 @@ fn execute_recipe_via_rust(
         .arg("--output-format")
         .arg("json")
         .arg("-C")
-        .arg(working_dir);
+        .arg(working_dir)
+        .current_dir(working_dir)
+        .env("AMPLIHACK_ORIGINAL_CWD", working_dir);
 
     if dry_run {
         command.arg("--dry-run");
@@ -1182,6 +1184,85 @@ steps:
         assert_eq!(
             result.context.get("agent_binary"),
             Some(&JsonValue::String("copilot".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_execute_recipe_via_rust_sets_runner_cwd_and_original_cwd_env() {
+        let _home_guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cwd_guard = crate::test_support::cwd_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let ambient_dir = temp.path().join("ambient-cwd");
+        let project_dir = temp.path().join("project-root");
+        let wrong_original = temp.path().join("wrong-original");
+        let runner = temp.path().join("recipe-runner-rs");
+        let amplihack_home = temp.path().join("amplihack-home");
+        std::fs::create_dir_all(&ambient_dir).expect("failed to create ambient cwd");
+        std::fs::create_dir_all(&project_dir).expect("failed to create project dir");
+        std::fs::create_dir_all(&wrong_original).expect("failed to create wrong original dir");
+        std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+        std::fs::write(
+            &runner,
+            "#!/bin/sh\npwd_value=\"$(pwd)\"\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"pwd\":\"$pwd_value\",\"original_cwd\":\"$AMPLIHACK_ORIGINAL_CWD\"}}\nEOF\n",
+        )
+        .expect("failed to write runner stub");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+                .expect("failed to chmod runner");
+        }
+
+        let recipe = temp.path().join("recipe.yaml");
+        std::fs::write(
+            &recipe,
+            "name: env-probe\nsteps:\n  - id: step-1\n    type: bash\n    command: echo ok\n",
+        )
+        .expect("failed to write recipe");
+
+        let prev_cwd = crate::test_support::set_cwd(&ambient_dir).expect("failed to set cwd");
+        let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+        let prev_home = std::env::var_os("AMPLIHACK_HOME");
+        let prev_original_cwd = std::env::var_os("AMPLIHACK_ORIGINAL_CWD");
+        unsafe {
+            std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+            std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+            std::env::set_var("AMPLIHACK_ORIGINAL_CWD", &wrong_original);
+        }
+
+        let result = execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, &project_dir)
+            .expect("recipe run must succeed");
+
+        crate::test_support::restore_cwd(&prev_cwd).expect("failed to restore cwd");
+        match prev_runner {
+            Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+            None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+        }
+        match prev_home {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_HOME", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+        }
+        match prev_original_cwd {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_ORIGINAL_CWD", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_ORIGINAL_CWD") },
+        }
+
+        let expected = JsonValue::String(project_dir.to_string_lossy().into_owned());
+        assert_eq!(
+            result.context.get("pwd"),
+            Some(&expected),
+            "recipe runner child process must execute from the validated working directory, not the ambient cwd"
+        );
+        assert_eq!(
+            result.context.get("original_cwd"),
+            Some(&expected),
+            "recipe runner child process must export AMPLIHACK_ORIGINAL_CWD as the validated working directory"
         );
     }
 
