@@ -164,6 +164,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "amplihack-safety"
+version = "0.6.4"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "amplihack-security"
 version = "0.6.4"
 dependencies = [

@@ -11,6 +11,7 @@ members = [
     "crates/amplihack-memory",
     "crates/amplihack-launcher",
     "crates/amplihack-recipe",
+    "crates/amplihack-safety",
     "bins/amplihack",
     "bins/amplihack-asset-resolver",
     "bins/amplihack-hooks",
@@ -52,6 +53,7 @@ amplihack-fleet = { path = "crates/amplihack-fleet" }
 amplihack-memory = { path = "crates/amplihack-memory" }
 amplihack-launcher = { path = "crates/amplihack-launcher" }
 amplihack-recipe = { path = "crates/amplihack-recipe" }
+amplihack-safety = { path = "crates/amplihack-safety" }
 
 [profile.release]
 lto = true
