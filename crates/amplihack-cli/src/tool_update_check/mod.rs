@@ -6,13 +6,13 @@
 //! Design constraints: stdlib only, 3-second timeout per npm subprocess,
 //! skipped in non-interactive mode, version output sanitized before printing.
 
-use crate::util::{is_noninteractive, strip_ansi};
-use std::sync::mpsc;
-use std::thread;
-use std::time::Duration;
+mod version;
 
-/// Subprocess timeout for each npm command.
-const NPM_TIMEOUT: Duration = Duration::from_secs(3);
+pub use version::{
+    get_installed_version, get_latest_version, run_npm_with_timeout, sanitize_version,
+};
+
+use crate::util::is_noninteractive;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -91,141 +91,13 @@ pub fn npm_package_for_tool(tool: &str) -> Option<&'static str> {
 }
 
 // ---------------------------------------------------------------------------
-// Version queries
-// ---------------------------------------------------------------------------
-
-/// Query the locally installed version of an npm package.
-///
-/// Runs: `npm list -g --depth=0 --json`
-/// Parses the JSON output to extract the version for `pkg`.
-///
-/// Returns `None` if npm is unavailable, times out, or the package is not
-/// installed globally.
-pub fn get_installed_version(pkg: &str) -> Option<String> {
-    let output = run_npm_with_timeout(&["list", "-g", "--depth=0", "--json"], NPM_TIMEOUT)?;
-    parse_version_from_npm_list_json(&output, pkg)
-}
-
-/// Extract the version string for `pkg` from `npm list -g --depth=0 --json` output.
-///
-/// JSON structure: `{"dependencies": {"@pkg/name": {"version": "1.2.3"}}}`
-/// Uses simple string search to avoid a JSON parsing dependency.
-fn parse_version_from_npm_list_json(output: &str, pkg: &str) -> Option<String> {
-    let search_key = format!("\"{}\"", pkg);
-    let pkg_pos = output.find(&search_key)?;
-    let after_pkg = &output[pkg_pos..];
-    let version_pos = after_pkg.find("\"version\"")?;
-    let after_version = &after_pkg[version_pos..];
-    let colon_pos = after_version.find(':')?;
-    let after_colon = after_version[colon_pos + 1..].trim_start();
-    if !after_colon.starts_with('"') {
-        return None;
-    }
-    let inner = &after_colon[1..];
-    let end = inner.find('"')?;
-    let version = inner[..end].to_string();
-    if version.is_empty() {
-        None
-    } else {
-        Some(version)
-    }
-}
-
-/// Query the latest published version of an npm package from the registry.
-///
-/// Runs: `npm show <pkg> version`
-/// Returns the first token on stdout as the version string.
-///
-/// Returns `None` if npm is unavailable, times out, or the package is unknown.
-pub fn get_latest_version(pkg: &str) -> Option<String> {
-    // SEC-WS3: pkg is always a &'static str from npm_package_for_tool().
-    // It is never a user-controlled runtime string.
-    let output = run_npm_with_timeout(&["show", pkg, "version"], NPM_TIMEOUT)?;
-    let version = output.split_whitespace().next()?.to_string();
-    if version.is_empty() {
-        return None;
-    }
-    Some(version)
-}
-
-// ---------------------------------------------------------------------------
-// Version string sanitization (SEC-WS3)
-// ---------------------------------------------------------------------------
-
-/// Strip all characters from `s` that are not safe for semver display.
-///
-/// Strips ANSI escape sequences, then applies an allowlist of `[a-zA-Z0-9.\-+]`.
-/// Prevents terminal injection from a malicious npm registry response.
-///
-/// ```rust
-/// # use amplihack_cli::tool_update_check::sanitize_version;
-/// assert_eq!(sanitize_version("1.2.3"), "1.2.3");
-/// assert_eq!(sanitize_version("\x1b[31m1.2.3\x1b[0m"), "1.2.3");
-/// assert_eq!(sanitize_version("1.2.3\n"), "1.2.3");
-/// ```
-pub fn sanitize_version(s: &str) -> String {
-    // Strip ANSI escape sequences first (ANSI codes contain alphanumeric chars
-    // that would otherwise survive the allowlist filter and corrupt output).
-    let stripped = strip_ansi(s);
-
-    // Allowlist filter — keep only semver-safe characters: [a-zA-Z0-9.\-+]
-    // Pre-allocate to the stripped length; result is always ≤ input length.
-    let mut result = String::with_capacity(stripped.len());
-    result.extend(
-        stripped
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-' || *c == '+'),
-    );
-    result
-}
-
-// ---------------------------------------------------------------------------
-// Subprocess execution with timeout
-// ---------------------------------------------------------------------------
-
-/// Run `npm <args>` with a hard timeout, returning stdout on success.
-///
-/// Uses a background thread + `mpsc::channel` + `recv_timeout` to enforce
-/// the timeout without requiring an async runtime.  This is a security
-/// control against a hung or malicious npm binary on PATH.
-///
-/// Returns `None` if:
-/// - `npm` is not found on PATH
-/// - The process does not complete within `timeout`
-/// - The process exits with a non-zero status
-/// - stdout is not valid UTF-8
-pub fn run_npm_with_timeout(args: &[&str], timeout: Duration) -> Option<String> {
-    // Convert to owned Strings so the thread can take ownership.
-    let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-
-    let (tx, rx) = mpsc::channel::<Option<String>>();
-
-    thread::spawn(move || {
-        let result = std::process::Command::new("npm")
-            .args(&args_owned)
-            .output()
-            .ok()
-            .and_then(|out| {
-                if out.status.success() {
-                    String::from_utf8(out.stdout).ok()
-                } else {
-                    None
-                }
-            });
-        // Ignore send errors — receiver may have timed out.
-        let _ = tx.send(result);
-    });
-
-    rx.recv_timeout(timeout).ok().flatten()
-}
-
-// ---------------------------------------------------------------------------
 // Unit tests (TDD — these define the contract)
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     // ── npm_package_for_tool ────────────────────────────────────────────────
 
@@ -378,37 +250,18 @@ mod tests {
     /// Uses a clearly-bogus command name to ensure it fails.
     #[test]
     fn run_npm_with_timeout_missing_binary_returns_none() {
-        // Replace PATH with an empty temp dir so no binaries are found.
-        // This is safe because we restore it after.  The spawn will fail
-        // with ENOENT and the thread sends None.
-        //
-        // We can't use the test_support lock here (different crate in integration test),
-        // so we use a very short timeout to avoid flakiness.
-        //
-        // NOTE: This test is inherently racy if npm IS on PATH but takes <1s.
-        // That's acceptable — the important invariant is that a missing npm
-        // returns None, not panics.  The timeout ensures we never block forever.
         let result = run_npm_with_timeout(
             &["totally-invalid-npm-subcommand-that-will-exit-nonzero"],
             Duration::from_millis(500),
         );
-        // Either None (npm not found / timed out) or None (npm exits non-zero).
-        // Both are acceptable — the key invariant is it doesn't panic.
         let _ = result; // may be None or Some depending on environment
     }
 
     // ── get_installed_version JSON parsing ────────────────────────────────
 
     /// WS3-UNIT-15: get_installed_version parses a well-formed JSON response.
-    ///
-    /// Uses a known npm JSON output format.  We can't call real npm in unit tests,
-    /// so we test the parsing logic directly via the public function when given
-    /// a controlled npm output fixture.
-    ///
-    /// This is a contract test for the JSON parsing in get_installed_version.
     #[test]
     fn npm_list_json_parsing_extracts_version_correctly() {
-        // Simulate the output of `npm list -g --depth=0 --json`
         let npm_output = r#"{
   "dependencies": {
     "@anthropic-ai/claude-code": {
@@ -419,8 +272,6 @@ mod tests {
   }
 }"#;
 
-        // We test the parsing logic in isolation using a helper that
-        // performs the same string extraction as get_installed_version.
         let pkg = "@anthropic-ai/claude-code";
         let version = extract_version_from_npm_list_json(npm_output, pkg);
         assert_eq!(
@@ -444,14 +295,9 @@ mod tests {
     // ── maybe_print_npm_update_notice guards ──────────────────────────────
 
     /// WS3-UNIT-17: maybe_print_npm_update_notice returns immediately when skip=true.
-    ///
-    /// When --skip-update-check is passed, NO subprocesses must be spawned.
-    /// We verify this indirectly: the function must return within 1ms
-    /// (no npm subprocess overhead possible in that time).
     #[test]
     fn maybe_print_npm_update_notice_skips_when_skip_true() {
         let start = std::time::Instant::now();
-        // skip=true must prevent any npm subprocess from running.
         maybe_print_npm_update_notice("claude", true);
         let elapsed = start.elapsed();
         assert!(
@@ -478,9 +324,7 @@ mod tests {
 
     // ── Test helpers ───────────────────────────────────────────────────────
 
-    /// Helper that calls the production JSON parsing logic in `get_installed_version`
-    /// for use in unit tests without spawning npm subprocesses.
     fn extract_version_from_npm_list_json(output: &str, pkg: &str) -> Option<String> {
-        super::parse_version_from_npm_list_json(output, pkg)
+        version::parse_version_from_npm_list_json(output, pkg)
     }
 }
