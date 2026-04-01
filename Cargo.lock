@@ -83,6 +83,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "amplihack-fleet"
+version = "0.6.3"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "amplihack-hooks"
 version = "0.6.3"
 dependencies = [
