@@ -101,6 +101,7 @@ dependencies = [
  "amplihack-security",
  "amplihack-state",
  "amplihack-types",
+ "amplihack-workflows",
  "anyhow",
  "regex",
  "serde",
@@ -156,6 +157,16 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "amplihack-workflows"
+version = "0.6.3"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
  "tracing",
 ]
 
