@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
     use clap::CommandFactory;
     use std::path::PathBuf;
 

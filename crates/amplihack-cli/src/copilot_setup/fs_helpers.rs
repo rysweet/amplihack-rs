@@ -19,21 +19,20 @@ pub(super) fn reset_markdown_dir(dir: &Path) -> Result<()> {
 }
 
 pub(super) fn flatten_markdown_tree(source: &Path, dest: &Path) -> Result<usize> {
-    fs::create_dir_all(dest)?;
-    let mut count = 0;
-
-    for file in walk_files(source)? {
-        if file.extension().is_some_and(|ext| ext == "md") {
-            let relative = file.strip_prefix(source).unwrap_or(&file);
-            let flat_name = relative.to_string_lossy().replace(['/', '\\'], "_");
-            let target = dest.join(flat_name);
-            fs::copy(&file, &target)
-                .with_context(|| format!("copy {} → {}", file.display(), target.display()))?;
-            count += 1;
+    let mut copied = 0usize;
+    for path in walk_files(source)? {
+        if path.extension().and_then(|value| value.to_str()) != Some("md") {
+            continue;
         }
+        let file_name = path
+            .file_name()
+            .context("source markdown file missing name")?;
+        fs::copy(&path, dest.join(file_name)).with_context(|| {
+            format!("failed to copy {} into {}", path.display(), dest.display())
+        })?;
+        copied += 1;
     }
-
-    Ok(count)
+    Ok(copied)
 }
 
 pub(super) fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
