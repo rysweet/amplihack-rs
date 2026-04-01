@@ -10,7 +10,11 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 use tracing::{debug, info, warn};
+
+/// Maximum time to wait for a version-check subprocess.
+const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Codex binary detection result.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -22,7 +26,12 @@ pub struct CodexInfo {
 
 /// Check if Codex is installed and get version info.
 pub fn check_codex() -> CodexInfo {
-    match Command::new("codex").arg("--version").output() {
+    let child = Command::new("codex")
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    match child.and_then(|c| wait_with_timeout(c, VERSION_CHECK_TIMEOUT)) {
         Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout)
                 .trim()
@@ -36,7 +45,7 @@ pub fn check_codex() -> CodexInfo {
             }
         }
         _ => {
-            debug!("Codex not found");
+            debug!("Codex not found or timed out");
             CodexInfo {
                 installed: false,
                 version: None,
@@ -133,6 +142,38 @@ fn which_binary(name: &str) -> Option<PathBuf> {
         .ok()
         .filter(|o| o.status.success())
         .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
+}
+
+/// Wait for a child process with a timeout, killing it if it exceeds the limit.
+fn wait_with_timeout(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> std::io::Result<std::process::Output> {
+    use std::io;
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait()? {
+            Some(status) => {
+                let stdout = child.stdout.map_or_else(Vec::new, |mut s| {
+                    let mut buf = Vec::new();
+                    let _ = io::Read::read_to_end(&mut s, &mut buf);
+                    buf
+                });
+                let stderr = child.stderr.map_or_else(Vec::new, |mut s| {
+                    let mut buf = Vec::new();
+                    let _ = io::Read::read_to_end(&mut s, &mut buf);
+                    buf
+                });
+                return Ok(std::process::Output { status, stdout, stderr });
+            }
+            None if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "process timed out"));
+            }
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
 }
 
 #[cfg(test)]

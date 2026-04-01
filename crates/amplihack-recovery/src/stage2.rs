@@ -161,8 +161,10 @@ pub fn run_stage2(repo_path: &Path, _protected_files: &[String]) -> Result<Stage
     let signatures = build_error_signatures(&baseline_output);
     let clusters = cluster_signatures(&signatures);
 
-    // In a real implementation we would attempt automated fixes here.
-    // For now we just re-run and compare.
+    // NOTE: Automated fix application is not yet implemented. Stage 2
+    // currently benchmarks the error delta by re-running the test suite.
+    // Future work: parse error signatures, apply heuristic patches, and
+    // verify the fix reduces the error count before promoting.
     let (_final_output, final_errors) = run_tests(repo_path)
         .context("stage2: final test run failed")?;
     diagnostics.push(format!("final: {final_errors} error(s)"));

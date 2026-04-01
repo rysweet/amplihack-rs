@@ -3,7 +3,7 @@
 //! 19 patterns across 8 categories matching the Python XPIA implementation.
 
 use once_cell::sync::Lazy;
-use regex::RegexBuilder;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 /// Category of attack pattern.
@@ -49,12 +49,18 @@ impl AttackPattern {
 }
 
 fn re(pattern: &str) -> PatternMatcher {
-    PatternMatcher::Regex(
-        RegexBuilder::new(pattern)
-            .case_insensitive(true)
-            .build()
-            .expect("invalid XPIA regex"),
-    )
+    match RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .build()
+    {
+        Ok(r) => PatternMatcher::Regex(r),
+        Err(e) => {
+            // Log the bad pattern and fall back to a never-matching regex
+            // so the system degrades gracefully instead of panicking.
+            tracing::error!(pattern, error = %e, "invalid XPIA regex — pattern disabled");
+            PatternMatcher::Regex(Regex::new("(?:$^)").unwrap())
+        }
+    }
 }
 
 /// Central repository of all XPIA attack patterns.

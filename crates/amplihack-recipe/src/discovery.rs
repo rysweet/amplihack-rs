@@ -112,14 +112,19 @@ pub fn discover_recipes(search_dirs: &[PathBuf]) -> RecipeCache {
             continue;
         }
         debug!(dir = %dir.display(), "Scanning for recipes");
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if is_recipe_file(&path) {
-                    if let Some(info) = load_recipe_info(&path, dir) {
-                        cache.register(info);
+        match std::fs::read_dir(dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if is_recipe_file(&path) {
+                        if let Some(info) = load_recipe_info(&path, dir) {
+                            cache.register(info);
+                        }
                     }
                 }
+            }
+            Err(e) => {
+                debug!(dir = %dir.display(), error = %e, "Could not read recipe directory");
             }
         }
     }

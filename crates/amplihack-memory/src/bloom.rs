@@ -117,13 +117,21 @@ impl BloomFilter {
             let mut hasher = Md5::new();
             hasher.update(item.as_bytes());
             let result = hasher.finalize();
-            u64::from_le_bytes(result[..8].try_into().unwrap())
+            // MD5 produces 16 bytes; first 8 are always available.
+            let bytes: [u8; 8] = result[..8]
+                .try_into()
+                .expect("MD5 digest is always >= 8 bytes");
+            u64::from_le_bytes(bytes)
         };
         let h2 = {
             let mut hasher = Sha1::new();
             hasher.update(item.as_bytes());
             let result = hasher.finalize();
-            u64::from_le_bytes(result[..8].try_into().unwrap())
+            // SHA1 produces 20 bytes; first 8 are always available.
+            let bytes: [u8; 8] = result[..8]
+                .try_into()
+                .expect("SHA1 digest is always >= 8 bytes");
+            u64::from_le_bytes(bytes)
         };
         ((h1.wrapping_add((i as u64).wrapping_mul(h2))) % self.num_bits as u64) as usize
     }
