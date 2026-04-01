@@ -6,13 +6,14 @@
 //! 3. Fallback: Check session file with PID + timestamp in `~/.claude/runtime/`.
 //! 4. Stale detection: If holder PID is dead AND session is >1h old, consider stale.
 
-use amplihack_types::ProjectDirs;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::BTreeMap;
+mod helpers;
+
 use std::env;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use helpers::{
+    SessionFile, detect_from_sessions_log, is_process_alive, is_stale, session_file_path,
+};
 
 /// Result of nesting detection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,17 +33,6 @@ pub enum NestingResult {
         session_id: String,
     },
 }
-
-/// Session file format stored in `~/.claude/runtime/session.json`.
-#[derive(Debug, Serialize, Deserialize)]
-struct SessionFile {
-    session_id: String,
-    pid: u32,
-    timestamp: u64,
-}
-
-const SESSION_FILE_NAME: &str = "session.json";
-const STALE_THRESHOLD: Duration = Duration::from_secs(3600); // 1 hour
 
 /// Detects whether we are inside a nested amplihack session.
 pub struct NestingDetector;
@@ -126,114 +116,13 @@ impl NestingDetector {
     }
 }
 
-fn detect_from_sessions_log(current_dir: &Path) -> Option<NestingResult> {
-    let log_path = ProjectDirs::from_root(current_dir).sessions_log_file();
-    let content = std::fs::read_to_string(log_path).ok()?;
-    if content.trim().is_empty() {
-        return None;
-    }
-
-    let resolved_current_dir = resolve_path(current_dir);
-    let mut sessions: BTreeMap<String, Value> = BTreeMap::new();
-    for line in content.lines().filter(|line| !line.trim().is_empty()) {
-        let Ok(entry) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        let Some(session_id) = entry
-            .get("session_id")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-        else {
-            continue;
-        };
-
-        match entry.get("status").and_then(Value::as_str) {
-            Some("completed" | "crashed") => {
-                sessions.remove(&session_id);
-            }
-            Some("active") => {
-                sessions.insert(session_id, entry);
-            }
-            _ => {}
-        }
-    }
-
-    for entry in sessions.values().rev() {
-        let Some(pid) = entry.get("pid").and_then(Value::as_u64) else {
-            continue;
-        };
-        if !is_process_alive(pid as u32) {
-            continue;
-        }
-        let Some(launch_dir) = entry.get("launch_dir").and_then(Value::as_str) else {
-            continue;
-        };
-        if resolve_path(Path::new(launch_dir)) != resolved_current_dir {
-            continue;
-        }
-        let session_id = entry.get("session_id").and_then(Value::as_str)?.to_string();
-        let depth = entry
-            .get("parent_session_id")
-            .and_then(Value::as_str)
-            .map(|_| 2)
-            .unwrap_or(1);
-        return Some(NestingResult::Nested { session_id, depth });
-    }
-
-    None
-}
-
-fn resolve_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-fn session_file_path() -> Option<PathBuf> {
-    env::var("HOME").ok().map(|h| {
-        PathBuf::from(h)
-            .join(".claude")
-            .join("runtime")
-            .join(SESSION_FILE_NAME)
-    })
-}
-
-/// Check if a process with the given PID is alive.
-#[cfg(unix)]
-fn is_process_alive(pid: u32) -> bool {
-    // SAFETY: kill(pid, 0) is a standard POSIX signal-safe way to check if
-    // a process exists without actually sending a signal.
-    unsafe { libc::kill(pid as i32, 0) == 0 }
-}
-
-/// Check if a process with the given PID is alive (non-Unix fallback).
-///
-/// # Limitation
-///
-/// On non-Unix platforms (primarily Windows) this always returns `true`,
-/// meaning stale nesting-guard entries will never be detected. To implement
-/// proper detection on Windows, use `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, ...)`
-/// and check the result with `GetExitCodeProcess`.  This is left as a future
-/// improvement since amplihack does not yet actively target Windows.
-#[cfg(not(unix))]
-fn is_process_alive(_pid: u32) -> bool {
-    // On non-Unix, assume alive (conservative)
-    true
-}
-
-fn is_stale(timestamp: u64) -> bool {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    now.saturating_sub(timestamp) > STALE_THRESHOLD.as_secs()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::{
         cwd_env_lock, home_env_lock, restore_cwd, restore_home, set_cwd, set_home,
     };
+    use helpers::STALE_THRESHOLD;
     use std::fs;
 
     #[test]
@@ -293,7 +182,7 @@ mod tests {
             .unwrap()
             .as_secs()
             - 7200;
-        assert!(is_stale(two_hours_ago));
+        assert!(helpers::is_stale(two_hours_ago));
     }
 
     #[test]
@@ -302,20 +191,20 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        assert!(!is_stale(now));
+        assert!(!helpers::is_stale(now));
     }
 
     #[cfg(unix)]
     #[test]
     fn current_process_is_alive() {
-        assert!(is_process_alive(std::process::id()));
+        assert!(helpers::is_process_alive(std::process::id()));
     }
 
     #[cfg(unix)]
     #[test]
     fn dead_process_is_not_alive() {
         // PID 99999999 is almost certainly not alive
-        assert!(!is_process_alive(99_999_999));
+        assert!(!helpers::is_process_alive(99_999_999));
     }
 
     #[test]
@@ -328,14 +217,14 @@ mod tests {
             .path()
             .join(".claude")
             .join("runtime")
-            .join(SESSION_FILE_NAME);
+            .join("session.json");
 
         let original_home = set_home(dir.path());
 
         NestingDetector::claim_session("test-claim").unwrap();
         assert!(session_path.exists());
 
-        let content: SessionFile =
+        let content: helpers::SessionFile =
             serde_json::from_str(&std::fs::read_to_string(&session_path).unwrap()).unwrap();
         assert_eq!(content.session_id, "test-claim");
         assert_eq!(content.pid, std::process::id());
