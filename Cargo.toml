@@ -12,6 +12,7 @@ members = [
     "crates/amplihack-launcher",
     "crates/amplihack-recipe",
     "crates/amplihack-safety",
+    "crates/amplihack-context",
     "bins/amplihack",
     "bins/amplihack-asset-resolver",
     "bins/amplihack-hooks",
