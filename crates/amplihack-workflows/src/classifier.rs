@@ -82,9 +82,17 @@ impl WorkflowClassifier {
         Self { keyword_map }
     }
 
-    /// Classify a user request.
+    /// Classify a user request. Returns a low-confidence default result for
+    /// empty or whitespace-only input rather than panicking.
     pub fn classify(&self, request: &str) -> ClassificationResult {
-        assert!(!request.trim().is_empty(), "Request cannot be empty");
+        if request.trim().is_empty() {
+            return ClassificationResult {
+                workflow: WorkflowType::Default,
+                reason: "empty request".into(),
+                confidence: 0.0,
+                keywords: vec![],
+            };
+        }
 
         let keywords = self.extract_keywords(request);
         let (workflow, reason, confidence) = self.classify_by_keywords(&keywords);

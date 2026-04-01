@@ -145,12 +145,17 @@ impl XpiaConfig {
 }
 
 fn load_domains_from_file(path: &str, set: &mut HashSet<String>) {
-    if let Ok(content) = fs::read_to_string(Path::new(path)) {
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                set.insert(trimmed.to_lowercase());
+    match fs::read_to_string(Path::new(path)) {
+        Ok(content) => {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    set.insert(trimmed.to_lowercase());
+                }
             }
+        }
+        Err(e) => {
+            tracing::warn!(path, error = %e, "failed to load domain list — using defaults");
         }
     }
 }
