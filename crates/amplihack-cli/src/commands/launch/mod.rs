@@ -248,7 +248,7 @@ fn wait_for_child_or_signal(
         // Check if we received a shutdown signal
         if shutdown.load(Ordering::Relaxed) {
             tracing::info!("shutdown signal received, terminating child process");
-            // ManagedChild::drop handles graceful shutdown
+            child.terminate();
             return Ok(0); // match Python behavior: exit 0 on SIGINT
         }
 

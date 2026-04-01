@@ -118,6 +118,11 @@ fn test_subprocess_safe_preserves_existing_node_options() {
     let home = tempfile::tempdir().unwrap();
     let original_home = set_home(home.path());
     fs::create_dir_all(home.path().join(".amplihack")).unwrap();
+    fs::write(
+        home.path().join(".amplihack/config"),
+        r#"{"node_options_consent":true,"node_options_limit_mb":32768}"#,
+    )
+    .unwrap();
     let previous_node_options = std::env::var_os("NODE_OPTIONS");
     unsafe { std::env::set_var("NODE_OPTIONS", "--trace-warnings") };
 
@@ -146,6 +151,11 @@ fn test_subprocess_safe_without_parent_still_applies_memory_config() {
     let home = tempfile::tempdir().unwrap();
     let original_home = set_home(home.path());
     fs::create_dir_all(home.path().join(".amplihack")).unwrap();
+    fs::write(
+        home.path().join(".amplihack/config"),
+        r#"{"node_options_consent":true,"node_options_limit_mb":32768}"#,
+    )
+    .unwrap();
     let previous_node_options = std::env::var_os("NODE_OPTIONS");
     unsafe { std::env::remove_var("NODE_OPTIONS") };
 
@@ -178,6 +188,11 @@ fn test_normal_launch_applies_smart_node_options() {
     let home = tempfile::tempdir().unwrap();
     let original_home = set_home(home.path());
     fs::create_dir_all(home.path().join(".amplihack")).unwrap();
+    fs::write(
+        home.path().join(".amplihack/config"),
+        r#"{"node_options_consent":true,"node_options_limit_mb":32768}"#,
+    )
+    .unwrap();
     let previous_node_options = std::env::var_os("NODE_OPTIONS");
     unsafe { std::env::remove_var("NODE_OPTIONS") };
 
