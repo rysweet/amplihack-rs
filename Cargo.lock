@@ -125,6 +125,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "amplihack-launcher"
+version = "0.6.4"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "amplihack-memory"
 version = "0.6.4"
 dependencies = [
