@@ -13,6 +13,7 @@ members = [
     "crates/amplihack-recipe",
     "crates/amplihack-safety",
     "crates/amplihack-context",
+    "crates/amplihack-recovery",
     "bins/amplihack",
     "bins/amplihack-asset-resolver",
     "bins/amplihack-hooks",
@@ -37,6 +38,7 @@ shell-words = "1"
 clap = { version = "4", features = ["derive"] }
 signal-hook = "0.3"
 sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
 libc = "0.2"
 lru = "0.12"
 # SEC-WS4-01: Exact pin prevents cargo update from pulling versions that break

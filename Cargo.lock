@@ -176,6 +176,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "amplihack-recovery"
+version = "0.6.4"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "amplihack-safety"
 version = "0.6.4"
 dependencies = [
