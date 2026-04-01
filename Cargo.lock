@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-fleet"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "serde",
@@ -125,6 +125,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "amplihack-memory"
+version = "0.6.4"
+dependencies = [
+ "anyhow",
+ "md-5",
+ "serde",
+ "serde_json",
+ "sha1",
+ "tempfile",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "amplihack-security"
 version = "0.6.4"
 dependencies = [
@@ -162,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-workflows"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -939,6 +953,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1308,6 +1332,17 @@ dependencies = [
  "ryu",
  "serde",
  "unsafe-libyaml",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]
@@ -1716,6 +1751,7 @@ version = "1.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ac8b6f42ead25368cf5b098aeb3dc8a1a2c05a3eee8a9a1a68c640edbfc79d9"
 dependencies = [
+ "getrandom 0.4.2",
  "js-sys",
  "wasm-bindgen",
 ]

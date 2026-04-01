@@ -1,0 +1,16 @@
+[package]
+name = "amplihack-memory"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+md-5 = "0.10"
+sha1 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
