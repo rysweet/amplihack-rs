@@ -20,7 +20,7 @@ pub fn retrieve_prompt_context_memories(
     retrieve_prompt_context_memories_from_backend(choice, session_id, query_text, token_budget)
 }
 
-pub(super) fn build_memory_id(record: &SessionLearningRecord, timestamp: &str) -> String {
+pub(crate) fn build_memory_id(record: &SessionLearningRecord, timestamp: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(record.session_id.as_bytes());
     hasher.update(b"\0");

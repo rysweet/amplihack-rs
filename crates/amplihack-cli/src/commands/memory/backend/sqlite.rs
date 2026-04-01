@@ -6,6 +6,7 @@
 //! subsystem.
 
 use super::super::*;
+use super::super::learning::build_memory_id;
 use super::{MemoryRuntimeBackend, MemorySessionBackend, MemoryTreeBackend};
 use anyhow::Result;
 use rusqlite::{Connection as SqliteConnection, params};
