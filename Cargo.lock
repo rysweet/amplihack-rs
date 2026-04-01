@@ -150,6 +150,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "amplihack-recipe"
+version = "0.6.4"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "amplihack-security"
 version = "0.6.4"
 dependencies = [
