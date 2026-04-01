@@ -4,16 +4,6 @@ use crate::test_support::cwd_env_lock;
 use std::collections::HashMap;
 use std::env;
 use std::process::Command;
-use std::sync::Mutex;
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-fn restore_var(name: &str, previous: Option<std::ffi::OsString>) {
-    match previous {
-        Some(value) => unsafe { env::set_var(name, value) },
-        None => unsafe { env::remove_var(name) },
-    }
-}
 
 // ── WS1: with_agent_binary ────────────────────────────────────────────────
 
