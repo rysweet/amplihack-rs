@@ -1,10 +1,11 @@
 //! Docker detection and command construction for launcher parity.
 
-use anyhow::{Context, Result};
-use std::collections::BTreeMap;
+pub(crate) mod helpers;
+mod manager;
+
+pub(crate) use manager::DockerManager;
+
 use std::env;
-use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub(crate) const DEFAULT_IMAGE_NAME: &str = "amplihack:latest";
@@ -72,7 +73,7 @@ impl DockerDetector {
         let cgroup = std::fs::read_to_string("/proc/1/cgroup").ok();
         is_in_docker_from_state(
             env::var("AMPLIHACK_IN_DOCKER").ok().as_deref(),
-            Path::new("/.dockerenv").exists(),
+            std::path::Path::new("/.dockerenv").exists(),
             cgroup.as_deref(),
         )
     }
@@ -116,219 +117,11 @@ fn is_truthy_env_value(value: Option<&str>) -> bool {
     )
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct DockerManager {
-    project_root: PathBuf,
-    image_name: &'static str,
-    detector: DockerDetector,
-}
-
-impl Default for DockerManager {
-    fn default() -> Self {
-        Self {
-            project_root: workspace_root(),
-            image_name: DEFAULT_IMAGE_NAME,
-            detector: DockerDetector,
-        }
-    }
-}
-
-impl DockerManager {
-    #[cfg(test)]
-    pub(crate) fn new_for_tests(project_root: PathBuf) -> Self {
-        Self {
-            project_root,
-            image_name: DEFAULT_IMAGE_NAME,
-            detector: DockerDetector,
-        }
-    }
-
-    pub(crate) fn run_command(&self, amplihack_args: &[String], cwd: &Path) -> Result<i32> {
-        if !self.detector.is_running() {
-            eprintln!("Docker is not running.");
-            return Ok(1);
-        }
-
-        if !self.build_image()? {
-            eprintln!("Failed to build Docker image.");
-            return Ok(1);
-        }
-
-        let run_args = self.build_run_args(cwd, amplihack_args, env::vars_os());
-        let status = Command::new("docker")
-            .args(&run_args)
-            .status()
-            .context("failed to execute docker run")?;
-        Ok(status.code().unwrap_or(1))
-    }
-
-    fn build_image(&self) -> Result<bool> {
-        if self.detector.check_image_exists(self.image_name) {
-            return Ok(true);
-        }
-
-        let dockerfile = self.project_root.join("Dockerfile");
-        if !dockerfile.is_file() {
-            eprintln!("Dockerfile not found at {}", dockerfile.display());
-            return Ok(false);
-        }
-
-        println!("Building Docker image: {}", self.image_name);
-        let status = Command::new("docker")
-            .args(self.build_image_args(&dockerfile))
-            .status()
-            .context("failed to execute docker build")?;
-        if !status.success() {
-            eprintln!("Docker build failed.");
-            return Ok(false);
-        }
-
-        println!("Successfully built Docker image: {}", self.image_name);
-        Ok(true)
-    }
-
-    fn build_image_args(&self, dockerfile: &Path) -> Vec<String> {
-        vec![
-            "build".to_string(),
-            "-t".to_string(),
-            self.image_name.to_string(),
-            "-f".to_string(),
-            dockerfile.display().to_string(),
-            self.project_root.display().to_string(),
-        ]
-    }
-
-    pub(crate) fn build_run_args<I, K, V>(
-        &self,
-        cwd: &Path,
-        amplihack_args: &[String],
-        env_vars: I,
-    ) -> Vec<String>
-    where
-        I: IntoIterator<Item = (K, V)>,
-        K: Into<std::ffi::OsString>,
-        V: Into<std::ffi::OsString>,
-    {
-        let workspace_dir = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-        let mut args = vec![
-            "run".to_string(),
-            "--rm".to_string(),
-            "--interactive".to_string(),
-        ];
-        if std::io::stdin().is_terminal() {
-            args.push("--tty".to_string());
-        }
-        args.extend([
-            "--security-opt".to_string(),
-            "no-new-privileges".to_string(),
-            "--memory".to_string(),
-            "4g".to_string(),
-            "--cpus".to_string(),
-            "2".to_string(),
-        ]);
-        #[cfg(unix)]
-        {
-            args.extend(["--user".to_string(), format!("{}:{}", nix_uid(), nix_gid())]);
-        }
-        args.extend([
-            "-v".to_string(),
-            format!("{}:/workspace", workspace_dir.display()),
-            "-w".to_string(),
-            "/workspace".to_string(),
-        ]);
-
-        for (key, value) in forwarded_env_vars(env_vars) {
-            args.extend(["-e".to_string(), format!("{key}={value}")]);
-        }
-
-        args.push(self.image_name.to_string());
-        args.extend(amplihack_args.iter().cloned());
-        args
-    }
-}
-
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-fn validate_api_key(key: &str, value: &str) -> bool {
-    use regex::Regex;
-    use std::sync::OnceLock;
-
-    static SK_RE: OnceLock<Regex> = OnceLock::new();
-    static GH_RE: OnceLock<Regex> = OnceLock::new();
-
-    let result = match key {
-        "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" => {
-            let re = SK_RE.get_or_init(|| Regex::new(r"^sk-[a-zA-Z0-9\-_]+$").unwrap());
-            re.is_match(value)
-        }
-        "GITHUB_TOKEN" | "GH_TOKEN" => {
-            let re = GH_RE.get_or_init(|| {
-                Regex::new(r"^(ghp_|ghs_|gho_|ghu_|github_pat_).+$|^[0-9a-fA-F]{40}$").unwrap()
-            });
-            re.is_match(value)
-        }
-        _ => true, // No format requirement for other keys
-    };
-    if !result {
-        eprintln!("Warning: {key} has an unexpected format, skipping.");
-    }
-    result
-}
-
-fn forwarded_env_vars<I, K, V>(env_vars: I) -> BTreeMap<String, String>
-where
-    I: IntoIterator<Item = (K, V)>,
-    K: Into<std::ffi::OsString>,
-    V: Into<std::ffi::OsString>,
-{
-    let mut forwarded = BTreeMap::new();
-    for (key, value) in env_vars {
-        let key = key.into();
-        let value = value.into();
-        let key = key.to_string_lossy();
-        let value = value.to_string_lossy();
-        let should_forward = (matches!(
-            key.as_ref(),
-            "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "GITHUB_TOKEN" | "GH_TOKEN" | "TERM"
-        ) || (key.starts_with("AMPLIHACK_")
-            && key != "AMPLIHACK_USE_DOCKER"))
-            && validate_api_key(&key, &value);
-        if should_forward {
-            forwarded.insert(key.into_owned(), sanitize_env_value(&value));
-        }
-    }
-    forwarded.insert("AMPLIHACK_IN_DOCKER".to_string(), "1".to_string());
-    forwarded
-}
-
-fn sanitize_env_value(value: &str) -> String {
-    value
-        .chars()
-        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\r' | '\t'))
-        .collect()
-}
-
-#[cfg(unix)]
-fn nix_uid() -> u32 {
-    // SAFETY: libc getter has no preconditions.
-    unsafe { libc::geteuid() }
-}
-
-#[cfg(unix)]
-fn nix_gid() -> u32 {
-    // SAFETY: libc getter has no preconditions.
-    unsafe { libc::getegid() }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use helpers::forwarded_env_vars;
+    use std::path::PathBuf;
 
     fn sample_prefixed_value(parts: &[&str], suffix: &str) -> String {
         let mut value = parts.concat();
@@ -365,7 +158,7 @@ mod tests {
         let manager = DockerManager::new_for_tests(PathBuf::from("/repo"));
         let anthropic_api_key = sample_prefixed_value(&["s", "k-"], "test");
         let args = manager.build_run_args(
-            Path::new("/tmp/workspace"),
+            std::path::Path::new("/tmp/workspace"),
             &[
                 "launch".to_string(),
                 "--".to_string(),
@@ -417,21 +210,8 @@ mod tests {
         );
     }
 
-    // --- Gap 3: API key format validation ---
-    //
-    // FAILING TEST: `forwarded_env_vars` must validate ANTHROPIC_API_KEY, OPENAI_API_KEY,
-    // GITHUB_TOKEN, and GH_TOKEN against known format patterns. Keys with invalid formats
-    // must be SKIPPED (with a warning to stderr) rather than forwarded into the container.
-    //
-    // Currently `forwarded_env_vars` forwards any value for these key names without format
-    // validation, so the assertions that check invalid keys are NOT forwarded will fail.
-    //
-    // These tests will pass once `validate_api_key()` is implemented and wired into
-    // `forwarded_env_vars()`.
-
     #[test]
     fn invalid_api_key_format_skipped_with_warning() {
-        // ANTHROPIC_API_KEY: valid sk- prefix → must be forwarded.
         let valid_anthropic_key = sample_prefixed_value(&["s", "k-"], "validKey123");
         let forwarded = forwarded_env_vars([("ANTHROPIC_API_KEY", valid_anthropic_key.as_str())]);
         assert!(
@@ -445,7 +225,6 @@ mod tests {
             "value must be preserved for valid key"
         );
 
-        // ANTHROPIC_API_KEY: no sk- prefix → must NOT be forwarded.
         let forwarded = forwarded_env_vars([("ANTHROPIC_API_KEY", "not-valid-key")]);
         assert!(
             !forwarded.contains_key("ANTHROPIC_API_KEY"),
@@ -453,7 +232,6 @@ mod tests {
             forwarded.keys().collect::<Vec<_>>()
         );
 
-        // OPENAI_API_KEY: valid sk- prefix → must be forwarded.
         let valid_openai_key = sample_prefixed_value(&["s", "k-", "proj-"], "abcDEF012");
         let forwarded = forwarded_env_vars([("OPENAI_API_KEY", valid_openai_key.as_str())]);
         assert!(
@@ -461,14 +239,12 @@ mod tests {
             "valid sk- OPENAI_API_KEY should be forwarded"
         );
 
-        // OPENAI_API_KEY: missing sk- prefix → must NOT be forwarded.
         let forwarded = forwarded_env_vars([("OPENAI_API_KEY", "bad_key_no_prefix")]);
         assert!(
             !forwarded.contains_key("OPENAI_API_KEY"),
             "invalid OPENAI_API_KEY (no sk- prefix) must be skipped"
         );
 
-        // GITHUB_TOKEN: valid ghp_ prefix → must be forwarded.
         let valid_github_token = sample_prefixed_value(&["g", "hp_"], "validtoken1234");
         let forwarded = forwarded_env_vars([("GITHUB_TOKEN", valid_github_token.as_str())]);
         assert!(
@@ -476,14 +252,12 @@ mod tests {
             "valid ghp_ GITHUB_TOKEN should be forwarded"
         );
 
-        // GITHUB_TOKEN: invalid prefix → must NOT be forwarded.
         let forwarded = forwarded_env_vars([("GITHUB_TOKEN", "invalid_prefix_token")]);
         assert!(
             !forwarded.contains_key("GITHUB_TOKEN"),
             "invalid GITHUB_TOKEN (bad prefix) must be skipped"
         );
 
-        // GH_TOKEN: valid ghs_ prefix → must be forwarded.
         let valid_gh_token = sample_prefixed_value(&["g", "hs_"], "someServiceToken");
         let forwarded = forwarded_env_vars([("GH_TOKEN", valid_gh_token.as_str())]);
         assert!(
@@ -491,22 +265,19 @@ mod tests {
             "valid ghs_ GH_TOKEN should be forwarded"
         );
 
-        // GH_TOKEN: invalid prefix → must NOT be forwarded.
         let forwarded = forwarded_env_vars([("GH_TOKEN", "plaintext_bad_token")]);
         assert!(
             !forwarded.contains_key("GH_TOKEN"),
             "invalid GH_TOKEN (no recognised prefix) must be skipped"
         );
 
-        // GH_TOKEN: 40-char lowercase hex classic token → must be forwarded.
-        let classic_token = "a".repeat(40); // 40-char hex string
+        let classic_token = "a".repeat(40);
         let forwarded = forwarded_env_vars([("GH_TOKEN", classic_token.as_str())]);
         assert!(
             forwarded.contains_key("GH_TOKEN"),
             "40-char hex classic GITHUB_TOKEN should be forwarded"
         );
 
-        // GH_TOKEN: 39-char hex (too short) → must NOT be forwarded.
         let short_token = "a".repeat(39);
         let forwarded = forwarded_env_vars([("GH_TOKEN", short_token.as_str())]);
         assert!(
@@ -514,14 +285,12 @@ mod tests {
             "39-char hex token (too short) must be skipped"
         );
 
-        // TERM has no format validation — all values must pass through unchanged.
         let forwarded = forwarded_env_vars([("TERM", "xterm-256color")]);
         assert!(
             forwarded.contains_key("TERM"),
             "TERM must always be forwarded regardless of value"
         );
 
-        // AMPLIHACK_* variables (except AMPLIHACK_USE_DOCKER) must not be format-validated.
         let forwarded = forwarded_env_vars([("AMPLIHACK_SESSION_ID", "any-value-at-all")]);
         assert!(
             forwarded.contains_key("AMPLIHACK_SESSION_ID"),
@@ -531,7 +300,6 @@ mod tests {
 
     #[test]
     fn valid_github_pat_prefix_variants_are_forwarded() {
-        // All recognised GitHub token prefix variants must be accepted.
         for (key, value) in [
             (
                 "GITHUB_TOKEN",
@@ -567,7 +335,6 @@ mod tests {
 
     #[test]
     fn sk_prefix_requires_non_empty_suffix() {
-        // "sk-" alone (empty suffix) must NOT be forwarded — the + quantifier requires ≥1 char.
         let sk_prefix_only = ["s", "k-"].concat();
         let forwarded = forwarded_env_vars([("ANTHROPIC_API_KEY", sk_prefix_only.as_str())]);
         assert!(
@@ -575,7 +342,6 @@ mod tests {
             "sk- with empty suffix must be skipped"
         );
 
-        // "sk-a" (minimal valid key) must be forwarded.
         let minimal_valid_key = sample_prefixed_value(&["s", "k-"], "a");
         let forwarded = forwarded_env_vars([("ANTHROPIC_API_KEY", minimal_valid_key.as_str())]);
         assert!(
