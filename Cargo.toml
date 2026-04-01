@@ -4,6 +4,7 @@ members = [
     "crates/amplihack-types",
     "crates/amplihack-state",
     "crates/amplihack-security",
+    "crates/amplihack-workflows",
     "crates/amplihack-hooks",
     "crates/amplihack-cli",
     "crates/amplihack-fleet",
@@ -41,6 +42,7 @@ cxx-build = "=1.0.138"
 amplihack-types = { path = "crates/amplihack-types" }
 amplihack-state = { path = "crates/amplihack-state" }
 amplihack-security = { path = "crates/amplihack-security" }
+amplihack-workflows = { path = "crates/amplihack-workflows" }
 amplihack-hooks = { path = "crates/amplihack-hooks" }
 amplihack-cli = { path = "crates/amplihack-cli" }
 amplihack-fleet = { path = "crates/amplihack-fleet" }
