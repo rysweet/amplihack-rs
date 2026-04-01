@@ -1,15 +1,17 @@
-//! Pre-tool-use hook: validates bash commands before execution.
+//! Pre-tool-use hook: validates bash commands and XPIA security before execution.
 //!
 //! Blocks:
 //! - CWD deletion (rm -rf, rmdir targeting CWD or parent)
 //! - CWD rename/move (mv targeting CWD or parent)
 //! - Direct commits to main/master branch
 //! - Use of --no-verify flag on git commands
+//! - XPIA prompt injection attacks (all tools)
 
 mod command;
 mod cwd;
 mod git;
 pub mod launcher;
+mod xpia;
 
 use crate::protocol::{FailurePolicy, Hook};
 use amplihack_types::{HookInput, ProjectDirs};
@@ -99,7 +101,12 @@ impl Hook for PreToolUseHook {
         let input_value = serde_json::json!({"tool_name": &tool_name, "tool_input": &tool_input});
         launcher::inject_context(&dirs, &input_value);
 
-        // Only process Bash tool invocations.
+        // XPIA security validation for all tools.
+        if let Some(block) = xpia::check_xpia(&tool_name, &tool_input) {
+            return Ok(block);
+        }
+
+        // Only process Bash tool invocations for CWD/git checks.
         if tool_name != "Bash" {
             return Ok(Value::Object(serde_json::Map::new()));
         }

@@ -87,6 +87,7 @@ name = "amplihack-hooks"
 version = "0.6.3"
 dependencies = [
  "amplihack-cli",
+ "amplihack-security",
  "amplihack-state",
  "amplihack-types",
  "anyhow",
@@ -109,6 +110,19 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "amplihack-security"
+version = "0.6.3"
+dependencies = [
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

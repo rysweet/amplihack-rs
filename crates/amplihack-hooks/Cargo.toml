@@ -9,6 +9,7 @@ license.workspace = true
 amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
 amplihack-cli = { workspace = true }
+amplihack-security = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
