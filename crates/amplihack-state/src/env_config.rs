@@ -42,13 +42,26 @@ where
 
     /// Get the value. Uses default if env var not set.
     /// Panics if no default and env var not set, or if parse fails.
+    ///
+    /// Prefer [`get_or_err`] when graceful error handling is needed.
     pub fn get(&self) -> T {
+        match self.get_or_err() {
+            Ok(val) => val,
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    /// Get the value, returning an error instead of panicking.
+    ///
+    /// Returns `Err` if the env var is required (no default) and missing,
+    /// or if the value cannot be parsed as `T`.
+    pub fn get_or_err(&self) -> Result<T, String> {
         match env::var(self.name) {
-            Ok(val) => val.parse().unwrap_or_else(|e| {
-                panic!("Failed to parse env var {}={:?}: {}", self.name, val, e);
+            Ok(val) => val.parse().map_err(|e| {
+                format!("Failed to parse env var {}={:?}: {}", self.name, val, e)
             }),
-            Err(_) => self.default.clone().unwrap_or_else(|| {
-                panic!("Required env var {} not set", self.name);
+            Err(_) => self.default.clone().ok_or_else(|| {
+                format!("Required env var {} not set", self.name)
             }),
         }
     }
@@ -118,5 +131,21 @@ mod tests {
     #[test]
     fn env_u64_default() {
         assert_eq!(env_u64("AMPLIHACK_TEST_NONEXISTENT_789", 99), 99);
+    }
+
+    #[test]
+    fn get_or_err_returns_default() {
+        let val: Result<u64, _> = EnvVar::new("AMPLIHACK_TEST_NONEXISTENT_GET_ERR")
+            .default(7)
+            .get_or_err();
+        assert_eq!(val.unwrap(), 7);
+    }
+
+    #[test]
+    fn get_or_err_missing_no_default() {
+        let val: Result<u64, _> = EnvVar::new("AMPLIHACK_TEST_MISSING_NO_DEFAULT")
+            .get_or_err();
+        assert!(val.is_err());
+        assert!(val.unwrap_err().contains("Required env var"));
     }
 }
