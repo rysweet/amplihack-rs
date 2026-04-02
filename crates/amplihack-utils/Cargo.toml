@@ -1,0 +1,18 @@
+[package]
+name = "amplihack-utils"
+description = "Foundational utilities for amplihack: slugify, defensive LLM parsing, process management"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = "1"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { version = "1", features = ["process", "time", "rt"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["process", "time", "rt", "macros"] }
+tempfile = { workspace = true }
