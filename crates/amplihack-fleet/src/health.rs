@@ -326,4 +326,53 @@ Filesystem     1M-blocks  Used Available Use% Mounted on\n\
         assert_eq!(json["vm_name"], "vm-1");
         assert_eq!(json["overall"], "healthy");
     }
+
+    #[test]
+    fn parse_free_output_empty_returns_none() {
+        assert!(parse_free_output("").is_none());
+    }
+
+    #[test]
+    fn parse_free_output_malformed_returns_none() {
+        assert!(parse_free_output("total used free\nfoo bar baz").is_none());
+    }
+
+    #[test]
+    fn parse_df_output_empty_returns_none() {
+        assert!(parse_df_output("").is_none());
+    }
+
+    #[test]
+    fn parse_df_output_header_only_returns_none() {
+        assert!(
+            parse_df_output("Filesystem     1M-blocks  Used Available Use% Mounted on").is_none()
+        );
+    }
+
+    #[test]
+    fn health_status_serialization_round_trip() {
+        for status in [
+            HealthStatus::Healthy,
+            HealthStatus::Degraded,
+            HealthStatus::Unhealthy,
+            HealthStatus::Unreachable,
+        ] {
+            let json = serde_json::to_string(&status).unwrap();
+            let back: HealthStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, status);
+        }
+    }
+
+    #[test]
+    fn overall_status_high_load_and_high_mem_is_unhealthy() {
+        let high_mem = Some(ResourceInfo {
+            total_mb: 1000,
+            used_mb: 960,
+            percent_used: 96.0,
+        });
+        assert_eq!(
+            compute_overall_status(&high_mem, &None, Some(5.0)),
+            HealthStatus::Unhealthy
+        );
+    }
 }

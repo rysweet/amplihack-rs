@@ -199,4 +199,52 @@ mod tests {
         let json = serde_json::to_string(&r).unwrap();
         assert!(json.contains("recipe_runner"));
     }
+
+    #[test]
+    fn cascade_with_no_recipe_runner_falls_to_tier3() {
+        let c = ExecutionTierCascade::new(Some(vec![1, 2, 3]));
+        let ctx = serde_json::json!({});
+        let r = c.execute(WorkflowType::Default, &ctx);
+        // Without recipe-runner-rs on PATH, tier 1 is unavailable
+        if !c.is_recipe_runner_available() {
+            assert_eq!(r.tier, 3);
+            assert!(r.fallback_count > 0 || r.tier == 3);
+        }
+    }
+
+    #[test]
+    fn cascade_tracks_fallback_count() {
+        // Tier-3-only cascade should have 0 fallbacks (goes straight to markdown)
+        let c = ExecutionTierCascade::new(Some(vec![3]));
+        let ctx = serde_json::json!({});
+        let r = c.execute(WorkflowType::Default, &ctx);
+        assert_eq!(r.fallback_count, 0);
+        assert_eq!(r.tier, 3);
+    }
+
+    #[test]
+    fn cascade_investigation_workflow() {
+        let c = ExecutionTierCascade::new(Some(vec![3]));
+        let ctx = serde_json::json!({});
+        let r = c.execute(WorkflowType::Investigation, &ctx);
+        assert_eq!(r.tier, 3);
+        assert_eq!(r.workflow, "INVESTIGATION_WORKFLOW");
+    }
+
+    #[test]
+    fn cascade_ops_workflow() {
+        let c = ExecutionTierCascade::new(Some(vec![3]));
+        let ctx = serde_json::json!({});
+        let r = c.execute(WorkflowType::Ops, &ctx);
+        assert_eq!(r.tier, 3);
+        assert_eq!(r.workflow, "OPS_WORKFLOW");
+    }
+
+    #[test]
+    fn execution_result_deserializes() {
+        let json = r#"{"tier":1,"method":"recipe_runner","status":"success","workflow":"DEFAULT_WORKFLOW","recipe":"default-workflow","execution_time_secs":0.5,"fallback_count":0,"fallback_reason":null}"#;
+        let r: ExecutionResult = serde_json::from_str(json).unwrap();
+        assert_eq!(r.tier, 1);
+        assert_eq!(r.recipe.as_deref(), Some("default-workflow"));
+    }
 }

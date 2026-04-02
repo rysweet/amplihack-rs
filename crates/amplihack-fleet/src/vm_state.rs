@@ -264,4 +264,53 @@ mod tests {
         state.remove_vm("vm-1");
         assert_eq!(state.session_count(), 0);
     }
+
+    #[test]
+    fn remove_nonexistent_vm_is_noop() {
+        let mut state = FleetState::new();
+        state.upsert_vm(VmInfo::new("vm-1", "rg"));
+        state.remove_vm("vm-999");
+        assert_eq!(state.vm_count(), 1);
+    }
+
+    #[test]
+    fn reachable_vm_count() {
+        let mut state = FleetState::new();
+        let mut vm1 = VmInfo::new("vm-1", "rg");
+        vm1.status = VmStatus::Running;
+        vm1.ip_address = Some("10.0.0.1".into());
+        state.upsert_vm(vm1);
+        state.upsert_vm(VmInfo::new("vm-2", "rg")); // unreachable
+        assert_eq!(state.reachable_vm_count(), 1);
+    }
+
+    #[test]
+    fn vm_ssh_target_none_without_ip() {
+        let vm = VmInfo::new("vm-1", "rg");
+        assert!(vm.ssh_target().is_none());
+    }
+
+    #[test]
+    fn session_is_active_variants() {
+        let mut s = TmuxSessionInfo::new("s1", "vm-1", "claude");
+        s.status = SessionStatus::Active;
+        assert!(s.is_active());
+        s.status = SessionStatus::Idle;
+        assert!(s.is_active(), "Idle is considered active");
+        s.status = SessionStatus::Completed;
+        assert!(!s.is_active());
+        s.status = SessionStatus::Failed;
+        assert!(!s.is_active());
+    }
+
+    #[test]
+    fn fleet_state_counts_are_consistent() {
+        let mut state = FleetState::new();
+        state.upsert_vm(VmInfo::new("vm-1", "rg"));
+        state.upsert_vm(VmInfo::new("vm-2", "rg"));
+        state.upsert_session(TmuxSessionInfo::new("s1", "vm-1", "claude"));
+        assert_eq!(state.vm_count(), 2);
+        assert_eq!(state.session_count(), 1);
+        assert_eq!(state.vms().count(), 2);
+    }
 }
