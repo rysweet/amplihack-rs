@@ -25,7 +25,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "amplihack"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "amplihack-cli",
  "amplihack-hooks",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-asset-resolver-bin"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "amplihack-cli",
  "tracing",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-cli"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "amplihack-state",
  "amplihack-types",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-context"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "anyhow",
  "chrono",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-fleet"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "anyhow",
  "serde",
@@ -107,7 +107,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "amplihack-cli",
  "amplihack-security",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks-bin"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "amplihack-hooks",
  "amplihack-state",
@@ -138,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-launcher"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "anyhow",
  "serde",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-memory"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "anyhow",
  "md-5",
@@ -163,7 +163,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-recipe"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "anyhow",
  "serde",
@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-recovery"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "anyhow",
  "chrono",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-safety"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "serde",
  "serde_json",
@@ -200,7 +200,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-security"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "once_cell",
  "regex",
@@ -213,7 +213,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-state"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "amplihack-types",
  "libc",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-types"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "serde",
  "serde_json",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-workflows"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "serde",
  "serde_json",
@@ -2207,9 +2207,9 @@ dependencies = [
 
 [[package]]
 name = "writeable"
-version = "0.6.2"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
+checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "xattr"
