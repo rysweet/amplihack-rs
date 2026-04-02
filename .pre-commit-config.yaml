@@ -1,0 +1,35 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt --all --check
+        entry: cargo fmt --all --check
+        language: system
+        pass_filenames: false
+        files: '(\.rs|Cargo\.toml|Cargo\.lock)$'
+
+      - id: cargo-clippy
+        name: cargo clippy -- -D warnings
+        entry: cargo clippy -- -D warnings
+        language: system
+        pass_filenames: false
+        files: '(\.rs|Cargo\.toml|Cargo\.lock)$'
+
+      - id: cargo-test
+        name: cargo test (workspace, skip heavy)
+        entry: bash -c 'cargo test --workspace --skip fleet_probe --skip kuzu --skip fleet::fleet_local --skip memory::kuzu'
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        files: '(\.rs|Cargo\.toml|Cargo\.lock)$'
