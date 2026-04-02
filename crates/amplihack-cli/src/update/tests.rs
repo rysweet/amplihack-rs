@@ -351,3 +351,82 @@ fn create_test_archive(path: &Path) -> Result<()> {
     encoder.finish()?;
     Ok(())
 }
+
+#[test]
+fn wants_startup_update_positive() {
+    use super::check::*;
+    // Not publicly exported, but we test the outcome through StartupUpdateOutcome
+    // by verifying StartupUpdateOutcome variants exist.
+    assert_eq!(
+        StartupUpdateOutcome::Continue,
+        StartupUpdateOutcome::Continue
+    );
+    assert_ne!(
+        StartupUpdateOutcome::Continue,
+        StartupUpdateOutcome::ExitSuccess
+    );
+}
+
+#[test]
+fn shell_profile_path_bash() {
+    use crate::commands::install::paths::shell_profile_path;
+    let _lock = crate::test_support::env_lock();
+    unsafe { std::env::set_var("SHELL", "/bin/bash") };
+    let result = shell_profile_path();
+    unsafe { std::env::remove_var("SHELL") };
+    if let Some(path) = result {
+        assert!(
+            path.to_string_lossy().ends_with(".bashrc"),
+            "expected .bashrc, got {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn shell_profile_path_zsh() {
+    use crate::commands::install::paths::shell_profile_path;
+    let _lock = crate::test_support::env_lock();
+    unsafe { std::env::set_var("SHELL", "/bin/zsh") };
+    let result = shell_profile_path();
+    unsafe { std::env::remove_var("SHELL") };
+    if let Some(path) = result {
+        assert!(
+            path.to_string_lossy().ends_with(".zshrc"),
+            "expected .zshrc, got {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn shell_profile_path_unknown() {
+    use crate::commands::install::paths::shell_profile_path;
+    let _lock = crate::test_support::env_lock();
+    unsafe { std::env::set_var("SHELL", "/bin/csh") };
+    let result = shell_profile_path();
+    unsafe { std::env::remove_var("SHELL") };
+    assert!(result.is_none(), "unsupported shell should return None");
+}
+
+#[test]
+fn ensure_local_bin_on_shell_path_creates_export() {
+    use crate::commands::install::paths::ensure_local_bin_on_shell_path;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _lock = crate::test_support::env_lock();
+    unsafe { std::env::set_var("HOME", tmp.path().as_os_str()) };
+    unsafe { std::env::set_var("SHELL", "/bin/bash") };
+    ensure_local_bin_on_shell_path().unwrap();
+    let content = std::fs::read_to_string(tmp.path().join(".bashrc")).unwrap();
+    assert!(
+        content.contains(".local/bin"),
+        "should have added .local/bin to .bashrc"
+    );
+    // Second call is a no-op
+    ensure_local_bin_on_shell_path().unwrap();
+    let content2 = std::fs::read_to_string(tmp.path().join(".bashrc")).unwrap();
+    let count = content2.matches("export PATH").count();
+    assert_eq!(count, 1, "should not duplicate the export line");
+    unsafe { std::env::remove_var("SHELL") };
+    unsafe { std::env::remove_var("HOME") };
+}

@@ -3,7 +3,8 @@ mod install;
 mod network;
 
 pub use check::{
-    maybe_print_update_notice_from_args, run_update, should_skip_update_check_for_subcommand,
+    StartupUpdateOutcome, maybe_print_update_notice_from_args, run_update,
+    should_skip_update_check_for_subcommand,
 };
 pub(crate) use install::extract_archive;
 pub(crate) use network::{http_get, validate_download_url};

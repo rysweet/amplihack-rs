@@ -1,12 +1,29 @@
 use super::*;
+use std::io::{self, IsTerminal, Write};
+use std::time::Duration;
 
-pub fn maybe_print_update_notice_from_args(args: &[OsString]) {
+/// Outcome of the startup update check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupUpdateOutcome {
+    /// Continue with normal CLI execution.
+    Continue,
+    /// A self-update completed; main should exit immediately.
+    ExitSuccess,
+}
+
+const STARTUP_UPDATE_PROMPT_TIMEOUT_SECS: u64 = 5;
+
+pub fn maybe_print_update_notice_from_args(args: &[OsString]) -> StartupUpdateOutcome {
     if should_skip_update_check(args) || supported_release_target().is_none() {
-        return;
+        return StartupUpdateOutcome::Continue;
     }
 
-    if let Err(error) = maybe_print_update_notice() {
-        tracing::debug!(?error, "startup update check skipped");
+    match maybe_print_update_notice() {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            tracing::debug!(?error, "startup update check skipped");
+            StartupUpdateOutcome::Continue
+        }
     }
 }
 
@@ -28,9 +45,9 @@ pub fn run_update() -> Result<()> {
     Ok(())
 }
 
-fn maybe_print_update_notice() -> Result<()> {
+fn maybe_print_update_notice() -> Result<StartupUpdateOutcome> {
     if std::env::var(NO_UPDATE_CHECK_ENV).unwrap_or_default() == "1" {
-        return Ok(());
+        return Ok(StartupUpdateOutcome::Continue);
     }
 
     let cache_path = cache_path()?;
@@ -40,17 +57,87 @@ fn maybe_print_update_notice() -> Result<()> {
         && now.saturating_sub(timestamp) < UPDATE_CHECK_COOLDOWN_SECS
     {
         if is_newer(CURRENT_VERSION, &cached_version)? {
-            print_update_notice(&cached_version);
+            return maybe_prompt_for_startup_update(&cached_version);
         }
-        return Ok(());
+        return Ok(StartupUpdateOutcome::Continue);
     }
 
     let release = super::network::fetch_latest_release()?;
     write_cache(&cache_path, &release.version)?;
     if is_newer(CURRENT_VERSION, &release.version)? {
-        print_update_notice(&release.version);
+        return maybe_prompt_for_startup_update(&release.version);
     }
-    Ok(())
+    Ok(StartupUpdateOutcome::Continue)
+}
+
+fn maybe_prompt_for_startup_update(latest: &str) -> Result<StartupUpdateOutcome> {
+    print_update_notice(latest);
+    let response = read_user_input_with_timeout(
+        "Update now? [y/N] (5s timeout): ",
+        Duration::from_secs(STARTUP_UPDATE_PROMPT_TIMEOUT_SECS),
+    )?;
+    if !wants_startup_update(response.as_deref()) {
+        return Ok(StartupUpdateOutcome::Continue);
+    }
+
+    run_update()?;
+    println!("✅ Update complete. Re-run amplihack to continue with the new version.");
+    Ok(StartupUpdateOutcome::ExitSuccess)
+}
+
+fn wants_startup_update(response: Option<&str>) -> bool {
+    matches!(
+        response
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "y" | "yes"
+    )
+}
+
+fn read_user_input_with_timeout(prompt: &str, timeout: Duration) -> Result<Option<String>> {
+    #[cfg(not(unix))]
+    {
+        let _ = (prompt, timeout);
+        return Ok(None);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+
+        if !io::stdin().is_terminal() {
+            return Ok(None);
+        }
+
+        print!("{prompt}");
+        io::stdout()
+            .flush()
+            .context("failed to flush update prompt")?;
+
+        let fd = io::stdin().as_raw_fd();
+        let mut pollfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+        let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
+        if ready < 0 {
+            return Err(io::Error::last_os_error()).context("failed waiting for update prompt");
+        }
+        if ready == 0 {
+            println!();
+            return Ok(None);
+        }
+
+        let mut response = String::new();
+        io::stdin()
+            .read_line(&mut response)
+            .context("failed to read update prompt input")?;
+        Ok(Some(response.trim().to_string()))
+    }
 }
 
 /// Determine whether the update check should be skipped based on the subcommand

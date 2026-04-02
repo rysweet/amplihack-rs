@@ -1,4 +1,4 @@
 {
   "block": true,
-  "message": "__CONTAINS__:Working Directory Deletion Prevented"
+  "message": "__CONTAINS__:blocked due to potential security risk"
 }
