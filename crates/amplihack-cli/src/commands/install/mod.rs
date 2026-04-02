@@ -6,7 +6,7 @@ mod directories;
 mod filesystem;
 mod hooks;
 mod manifest;
-mod paths;
+pub(crate) mod paths;
 mod settings;
 mod types;
 

@@ -16,7 +16,12 @@ fn main() {
         .init();
 
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    update::maybe_print_update_notice_from_args(&args);
+    if matches!(
+        update::maybe_print_update_notice_from_args(&args),
+        update::StartupUpdateOutcome::ExitSuccess
+    ) {
+        return;
+    }
     let cli = Cli::parse_from(args);
 
     if let Err(e) = commands::dispatch(cli.command) {

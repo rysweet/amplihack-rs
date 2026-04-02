@@ -84,3 +84,58 @@ pub(super) fn unix_timestamp() -> u64 {
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
 }
+
+/// Determine the shell rc file where PATH exports should be appended.
+///
+/// Checks `$SHELL` for the login shell and returns the corresponding profile
+/// file (e.g. `.bashrc`, `.zshrc`).  Returns `None` when the shell cannot be
+/// detected or is unsupported.
+pub(crate) fn shell_profile_path() -> Option<PathBuf> {
+    let home = home_dir().ok()?;
+    let shell = std::env::var("SHELL").ok()?;
+    let name = Path::new(&shell).file_name()?.to_str()?;
+    let rc = match name {
+        "bash" => ".bashrc",
+        "zsh" => ".zshrc",
+        "fish" => ".config/fish/config.fish",
+        "ksh" => ".kshrc",
+        _ => return None,
+    };
+    Some(home.join(rc))
+}
+
+/// Ensure `~/.local/bin` is exported in the user's shell profile.
+///
+/// If `~/.local/bin` is already mentioned in the rc file (via literal
+/// `.local/bin` substring), this is a no-op.  Otherwise it appends an
+/// `export PATH` line with a timestamped comment.
+pub(crate) fn ensure_local_bin_on_shell_path() -> Result<()> {
+    let profile = match shell_profile_path() {
+        Some(p) => p,
+        None => {
+            tracing::debug!("could not detect shell profile; skipping PATH auto-persist");
+            return Ok(());
+        }
+    };
+
+    let existing = std::fs::read_to_string(&profile).unwrap_or_default();
+    if existing.contains(".local/bin") {
+        return Ok(());
+    }
+
+    let line = format!(
+        "\n# Added by amplihack install ({})\nexport PATH=\"$HOME/.local/bin:$PATH\"\n",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"),
+    );
+
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&profile)
+        .with_context(|| format!("failed to open {} for appending", profile.display()))?;
+    file.write_all(line.as_bytes())
+        .with_context(|| format!("failed to write PATH export to {}", profile.display()))?;
+    println!("  ✅ Added ~/.local/bin to PATH in {}", profile.display());
+    Ok(())
+}

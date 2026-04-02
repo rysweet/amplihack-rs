@@ -94,7 +94,18 @@ pub(crate) fn resolve_hierarchical_db_path(
 
 pub(crate) fn copy_hierarchical_storage(src: &Path, dst: &Path) -> Result<()> {
     use anyhow::Context;
-    if src.is_dir() {
+    // Use symlink_metadata (not is_dir) so we never silently follow
+    // an attacker-placed symlink. Reject symlinks outright.
+    let src_meta = src
+        .symlink_metadata()
+        .with_context(|| format!("failed to read metadata for {}", src.display()))?;
+    if src_meta.file_type().is_symlink() {
+        anyhow::bail!(
+            "Refusing to copy symlink at {}: symlink traversal rejected",
+            src.display()
+        );
+    }
+    if src_meta.is_dir() {
         copy_dir_recursive(src, dst)?;
         return Ok(());
     }
@@ -190,5 +201,53 @@ pub(crate) fn parse_json_array_of_strings(value: &str) -> Result<Vec<String>> {
             })
             .collect()),
         _ => Ok(Vec::new()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_hierarchical_storage_rejects_symlink_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real_file");
+        std::fs::write(&real, "data").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let dst = dir.path().join("dst");
+
+        let err = copy_hierarchical_storage(&link, &dst).unwrap_err();
+        assert!(
+            err.to_string().contains("symlink traversal rejected"),
+            "expected symlink rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn copy_hierarchical_storage_copies_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src_file");
+        std::fs::write(&src, "hello").unwrap();
+        let dst = dir.path().join("dst_file");
+
+        copy_hierarchical_storage(&src, &dst).unwrap();
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hello");
+    }
+
+    #[test]
+    fn copy_hierarchical_storage_copies_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src_dir");
+        std::fs::create_dir(&src_dir).unwrap();
+        std::fs::write(src_dir.join("a.txt"), "aaa").unwrap();
+        let dst_dir = dir.path().join("dst_dir");
+
+        copy_hierarchical_storage(&src_dir, &dst_dir).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dst_dir.join("a.txt")).unwrap(),
+            "aaa"
+        );
     }
 }
