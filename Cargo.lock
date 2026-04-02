@@ -238,9 +238,11 @@ dependencies = [
 name = "amplihack-utils"
 version = "0.6.15"
 dependencies = [
+ "chrono",
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "tokio",
