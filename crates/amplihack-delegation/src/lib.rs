@@ -17,8 +17,8 @@ pub mod state_machine;
 
 pub use error::DelegationError;
 pub use models::{
-    DelegationStatus, EvidenceItem, EvidenceType, MetaDelegationResult, ScenarioCategory,
-    SubprocessResult, TestScenario,
+    DelegationStatus, EvaluationResult, EvidenceItem, EvidenceType, MetaDelegationResult,
+    ScenarioCategory, SubprocessResult, TestScenario,
 };
 pub use persona::{PersonaStrategy, get_persona, register_persona};
 pub use scenario::ScenarioGenerator;
