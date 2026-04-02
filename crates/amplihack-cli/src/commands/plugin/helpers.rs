@@ -164,3 +164,51 @@ pub(super) fn is_valid_plugin_name(value: &str) -> bool {
             .chars()
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
+
+/// Fields in a plugin manifest whose values are file-system paths that may
+/// need to be resolved relative to the plugin root directory.
+const PATH_FIELDS: &[&str] = &["entry_point", "files", "cwd", "script", "path"];
+
+/// Resolve relative paths in a plugin manifest to absolute paths.
+///
+/// Walks the manifest JSON value and, for every key listed in [`PATH_FIELDS`],
+/// converts relative path strings (or lists of path strings) into absolute
+/// paths anchored at `plugin_root`.  Nested objects are handled recursively.
+///
+/// Absolute paths are left unchanged.
+pub(super) fn resolve_manifest_paths(manifest: &mut serde_json::Value, plugin_root: &Path) {
+    if let Some(obj) = manifest.as_object_mut() {
+        resolve_object_paths(obj, plugin_root);
+    }
+}
+
+/// Recursively resolve path fields inside a JSON object.
+fn resolve_object_paths(obj: &mut serde_json::Map<String, serde_json::Value>, plugin_root: &Path) {
+    for (key, value) in obj.iter_mut() {
+        let is_path_field = PATH_FIELDS.iter().any(|&f| f == key);
+
+        if is_path_field {
+            match value {
+                serde_json::Value::String(s) => {
+                    let p = Path::new(s.as_str());
+                    if !p.is_absolute() {
+                        *s = plugin_root.join(p).to_string_lossy().into_owned();
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    for item in arr.iter_mut() {
+                        if let serde_json::Value::String(s) = item {
+                            let p = Path::new(s.as_str());
+                            if !p.is_absolute() {
+                                *s = plugin_root.join(p).to_string_lossy().into_owned();
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else if let serde_json::Value::Object(nested) = value {
+            resolve_object_paths(nested, plugin_root);
+        }
+    }
+}

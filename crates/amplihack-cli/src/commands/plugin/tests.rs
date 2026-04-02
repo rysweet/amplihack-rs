@@ -1,5 +1,6 @@
 use super::helpers::{
     copy_dir_recursive, is_valid_plugin_name, is_valid_semver, plugin_name_from_git_url,
+    resolve_manifest_paths,
 };
 use super::manager::PluginManager;
 use super::verifier::PluginVerifier;
@@ -144,4 +145,93 @@ fn plugin_name_validation_matches_python_pattern() {
     assert!(is_valid_plugin_name("demo-plugin1"));
     assert!(!is_valid_plugin_name("Demo"));
     assert!(!is_valid_plugin_name("../demo"));
+}
+
+#[test]
+fn resolve_manifest_paths_converts_relative_string_fields() {
+    let root = Path::new("/plugins/demo");
+    let mut manifest = serde_json::json!({
+        "name": "demo",
+        "entry_point": "main.py",
+        "cwd": "src",
+        "script": "run.sh",
+        "path": "lib/bin",
+    });
+    resolve_manifest_paths(&mut manifest, root);
+    assert_eq!(manifest["entry_point"], "/plugins/demo/main.py");
+    assert_eq!(manifest["cwd"], "/plugins/demo/src");
+    assert_eq!(manifest["script"], "/plugins/demo/run.sh");
+    assert_eq!(manifest["path"], "/plugins/demo/lib/bin");
+    // Non-path fields are untouched
+    assert_eq!(manifest["name"], "demo");
+}
+
+#[test]
+fn resolve_manifest_paths_preserves_absolute_paths() {
+    let root = Path::new("/plugins/demo");
+    let mut manifest = serde_json::json!({
+        "entry_point": "/usr/bin/python",
+        "script": "/opt/run.sh",
+    });
+    resolve_manifest_paths(&mut manifest, root);
+    assert_eq!(manifest["entry_point"], "/usr/bin/python");
+    assert_eq!(manifest["script"], "/opt/run.sh");
+}
+
+#[test]
+fn resolve_manifest_paths_handles_path_lists() {
+    let root = Path::new("/plugins/demo");
+    let mut manifest = serde_json::json!({
+        "files": ["a.py", "/abs/b.py", "sub/c.py"],
+    });
+    resolve_manifest_paths(&mut manifest, root);
+    let files = manifest["files"].as_array().unwrap();
+    assert_eq!(files[0], "/plugins/demo/a.py");
+    assert_eq!(files[1], "/abs/b.py");
+    assert_eq!(files[2], "/plugins/demo/sub/c.py");
+}
+
+#[test]
+fn resolve_manifest_paths_recurses_into_nested_objects() {
+    let root = Path::new("/plugins/demo");
+    let mut manifest = serde_json::json!({
+        "name": "demo",
+        "hooks": {
+            "entry_point": "hooks/main.py",
+            "nested": {
+                "script": "deep/run.sh",
+            }
+        }
+    });
+    resolve_manifest_paths(&mut manifest, root);
+    assert_eq!(
+        manifest["hooks"]["entry_point"],
+        "/plugins/demo/hooks/main.py"
+    );
+    assert_eq!(
+        manifest["hooks"]["nested"]["script"],
+        "/plugins/demo/deep/run.sh"
+    );
+}
+
+#[test]
+fn resolve_manifest_paths_ignores_non_path_fields() {
+    let root = Path::new("/plugins/demo");
+    let mut manifest = serde_json::json!({
+        "name": "demo",
+        "version": "1.0.0",
+        "description": "relative/looking/but/not/a/path",
+    });
+    let original = manifest.clone();
+    resolve_manifest_paths(&mut manifest, root);
+    assert_eq!(manifest, original);
+}
+
+#[test]
+fn resolve_manifest_paths_noop_on_non_object() {
+    let root = Path::new("/plugins/demo");
+    let mut manifest = serde_json::json!("just a string");
+    let original = manifest.clone();
+    resolve_manifest_paths(&mut manifest, root);
+    assert_eq!(manifest, original);
 }
