@@ -288,4 +288,58 @@ mod tests {
         assert_eq!(task.priority, Priority::Critical);
         assert_eq!(task.repo_path.as_deref(), Some("/home/user/project"));
     }
+
+    #[test]
+    fn duplicate_enqueue_allowed() {
+        let mut q = TaskQueue::new();
+        q.enqueue(FleetTask::new("t1", "First")).unwrap();
+        q.enqueue(FleetTask::new("t1", "Duplicate")).unwrap();
+        assert_eq!(q.len(), 2, "queue allows duplicate IDs (Vec-backed)");
+    }
+
+    #[test]
+    fn next_pending_skips_assigned_and_completed() {
+        let mut q = TaskQueue::new();
+        q.enqueue(FleetTask::new("t1", "First")).unwrap();
+        q.enqueue(FleetTask::new("t2", "Second")).unwrap();
+        q.enqueue(FleetTask::new("t3", "Third")).unwrap();
+        q.assign("t1", "vm-1").unwrap();
+        q.complete("t2", None).unwrap();
+        let next = q.next_pending().unwrap();
+        assert_eq!(next.id, "t3");
+    }
+
+    #[test]
+    fn empty_queue_next_pending_returns_none() {
+        let q = TaskQueue::new();
+        assert!(q.next_pending().is_none());
+    }
+
+    #[test]
+    fn persistence_survives_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.json");
+        std::fs::write(&path, "not valid json {{{").unwrap();
+        let q = TaskQueue::with_persistence(&path).unwrap();
+        assert!(
+            q.is_empty(),
+            "corrupted file should fall back to empty queue"
+        );
+    }
+
+    #[test]
+    fn task_status_serialization_round_trip() {
+        for status in [
+            TaskStatus::Pending,
+            TaskStatus::Assigned,
+            TaskStatus::InProgress,
+            TaskStatus::Completed,
+            TaskStatus::Failed,
+            TaskStatus::Cancelled,
+        ] {
+            let json = serde_json::to_string(&status).unwrap();
+            let back: TaskStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, status);
+        }
+    }
 }

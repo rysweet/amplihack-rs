@@ -269,4 +269,45 @@ mod tests {
         assert!(!compliance.has_testing_phase);
         assert!((compliance.compliance_score - 0.5).abs() < 0.01);
     }
+
+    #[test]
+    fn parse_transcript_malformed_lines_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("bad.jsonl");
+        std::fs::write(
+            &file,
+            "not json at all\n{\"role\":\"user\",\"content\":\"hello\"}\n{broken\n",
+        )
+        .unwrap();
+        let entries = parse_transcript(&file).unwrap();
+        assert_eq!(entries.len(), 1, "only valid JSON lines should be parsed");
+        assert_eq!(entries[0].role, "user");
+    }
+
+    #[test]
+    fn parse_transcript_missing_file() {
+        let result = parse_transcript(std::path::Path::new("/nonexistent/path.jsonl"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn workflow_compliance_no_phases() {
+        let compliance = assess_workflow_compliance("random text with no keywords");
+        assert!(!compliance.has_planning_phase);
+        assert!(!compliance.has_implementation_phase);
+        assert!(!compliance.has_testing_phase);
+        assert!(!compliance.has_review_phase);
+        assert!((compliance.compliance_score - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn transcript_report_serializes() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("t.jsonl");
+        std::fs::write(&file, "{\"role\":\"user\",\"content\":\"hi\"}\n").unwrap();
+        let report = analyze_transcript(&file).unwrap();
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["total_entries"], 1);
+        assert_eq!(json["user_messages"], 1);
+    }
 }

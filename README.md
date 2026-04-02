@@ -4,10 +4,31 @@ Rust core runtime for amplihack's deterministic infrastructure layer.
 
 ## Architecture
 
+### Core Types & State
 - **amplihack-types** — Thin IPC boundary types (HookInput, HookOutput, Settings)
-- **amplihack-state** — File ops, locking, env config
+- **amplihack-state** — File ops, locking, env config, atomic JSON persistence
+
+### Hooks & Security
 - **amplihack-hooks** — All hook implementations (pre_tool_use, stop, session_start, etc.)
-- **amplihack (bin)** — CLI binary (Phase 2)
+- **amplihack-security** — XPIA threat detection, prompt injection analysis, security scanning
+- **amplihack-safety** — Conflict detection, safe file operations, guardrails
+
+### Intelligence & Coordination
+- **amplihack-workflows** — Workflow execution engine (default, cascade, consensus, investigation)
+- **amplihack-recovery** — Failure recovery orchestration, retry strategies, state checkpointing
+- **amplihack-context** — Runtime context detection, environment inference, session awareness
+
+### Memory & Fleet
+- **amplihack-memory** — Memory backends (SQLite, Kuzu graph), bloom filters, transfer/export
+- **amplihack-fleet** — Multi-agent fleet coordination, tmux/Azure VM orchestration
+
+### CLI & Recipes
+- **amplihack-cli** — CLI commands (install, launch, memory, fleet, update, doctor)
+- **amplihack-launcher** — Agent binary resolution, launch environment setup
+- **amplihack-recipe** — Recipe system, YAML parsing, step execution
+
+### Binaries
+- **amplihack (bin)** — Main CLI binary
 - **amplihack-hooks (bin)** — Multicall hook binary
 
 ## Installation
