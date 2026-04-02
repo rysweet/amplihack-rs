@@ -1,6 +1,8 @@
 //! Transcript parsing, agent detection, and conversation utilities.
 
-use crate::agent_memory::{detect_agent_references, detect_slash_command_agent, normalize_agent_name};
+use crate::agent_memory::{
+    detect_agent_references, detect_slash_command_agent, normalize_agent_name,
+};
 use serde_json::Value;
 use std::fs;
 use std::path::Path;

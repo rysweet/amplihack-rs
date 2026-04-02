@@ -68,8 +68,7 @@ pub fn enable_awesome_copilot_mcp_server(settings_path: &Path) -> Result<bool> {
     let servers = config
         .as_object_mut()
         .and_then(|o| {
-            o.entry("mcpServers")
-                .or_insert_with(|| json!({}));
+            o.entry("mcpServers").or_insert_with(|| json!({}));
             o.get_mut("mcpServers")
         })
         .and_then(|v| v.as_object_mut());
@@ -176,8 +175,7 @@ fn load_mcp_config(path: &Path) -> Result<Value> {
     }
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    serde_json::from_str(&content)
-        .with_context(|| format!("failed to parse {}", path.display()))
+    serde_json::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))
 }
 
 fn save_mcp_config(path: &Path, config: &Value) -> Result<()> {
@@ -185,8 +183,7 @@ fn save_mcp_config(path: &Path, config: &Value) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let content = serde_json::to_string_pretty(config)?;
-    std::fs::write(path, content)
-        .with_context(|| format!("failed to write {}", path.display()))
+    std::fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -201,11 +198,7 @@ mod tests {
     fn disable_github_server() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mcp.json");
-        std::fs::write(
-            &path,
-            r#"{"mcpServers":{"github":{"command":"gh"}}}"#,
-        )
-        .unwrap();
+        std::fs::write(&path, r#"{"mcpServers":{"github":{"command":"gh"}}}"#).unwrap();
         let result = disable_github_mcp_server(&path).unwrap();
         assert!(result);
         let config: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -237,11 +230,7 @@ mod tests {
     fn validate_finds_issues() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mcp.json");
-        std::fs::write(
-            &path,
-            r#"{"mcpServers":{"bad":{"args":["x"]}}}"#,
-        )
-        .unwrap();
+        std::fs::write(&path, r#"{"mcpServers":{"bad":{"args":["x"]}}}"#).unwrap();
         let issues = validate_and_repair(&path).unwrap();
         assert!(!issues.is_empty());
         assert!(issues[0].contains("missing 'command'"));

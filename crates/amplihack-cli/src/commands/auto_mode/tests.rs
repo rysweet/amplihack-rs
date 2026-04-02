@@ -1,9 +1,9 @@
-use super::*;
 use super::helpers::{
     build_auto_command, build_tool_passthrough_args, extract_prompt_args,
     transform_prompt_for_staging,
 };
 use super::run::render_auto_session_argv;
+use super::*;
 use std::collections::HashMap;
 
 #[test]
@@ -22,8 +22,8 @@ fn extract_prompt_args_supports_split_prompt_flag() {
 
 #[test]
 fn extract_prompt_args_supports_equals_prompt_flag() {
-    let parsed = extract_prompt_args(&["--prompt=ship parity".to_string()])
-        .expect("prompt should parse");
+    let parsed =
+        extract_prompt_args(&["--prompt=ship parity".to_string()]).expect("prompt should parse");
     assert_eq!(parsed.prompt, "ship parity");
     assert!(parsed.passthrough_args.is_empty());
 }
@@ -178,8 +178,7 @@ fn build_auto_command_marks_staged_execution_context() {
 #[test]
 fn transform_prompt_for_staging_preserves_leading_slash_commands() {
     let target = tempfile::tempdir().unwrap();
-    let transformed =
-        transform_prompt_for_staging("/dev /analyze fix the launcher", target.path());
+    let transformed = transform_prompt_for_staging("/dev /analyze fix the launcher", target.path());
 
     assert_eq!(
         transformed,

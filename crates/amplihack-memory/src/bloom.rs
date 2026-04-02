@@ -81,9 +81,18 @@ impl BloomFilter {
         self.bits.len()
     }
 
+    /// Magic bytes identifying the bloom filter binary format.
+    const MAGIC: [u8; 4] = *b"ABLM";
+    /// Current serialization format version.
+    const VERSION: u32 = 1;
+    /// Header size: 4 (magic) + 4 (version) + 4 (num_bits) + 4 (num_hashes) + 4 (count) = 20.
+    const HEADER_SIZE: usize = 20;
+
     /// Serialize to bytes for network transmission.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(12 + self.bits.len());
+        let mut out = Vec::with_capacity(Self::HEADER_SIZE + self.bits.len());
+        out.extend_from_slice(&Self::MAGIC);
+        out.extend_from_slice(&Self::VERSION.to_le_bytes());
         out.extend_from_slice(&(self.num_bits as u32).to_le_bytes());
         out.extend_from_slice(&self.num_hashes.to_le_bytes());
         out.extend_from_slice(&(self.count as u32).to_le_bytes());
@@ -93,13 +102,20 @@ impl BloomFilter {
 
     /// Deserialize from bytes.
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
-        if data.len() < 12 {
+        if data.len() < Self::HEADER_SIZE {
             return None;
         }
-        let num_bits = u32::from_le_bytes(data[0..4].try_into().ok()?) as usize;
-        let num_hashes = u32::from_le_bytes(data[4..8].try_into().ok()?);
-        let count = u32::from_le_bytes(data[8..12].try_into().ok()?) as usize;
-        let bits = data[12..].to_vec();
+        if data[0..4] != Self::MAGIC {
+            return None;
+        }
+        let version = u32::from_le_bytes(data[4..8].try_into().ok()?);
+        if version != Self::VERSION {
+            return None;
+        }
+        let num_bits = u32::from_le_bytes(data[8..12].try_into().ok()?) as usize;
+        let num_hashes = u32::from_le_bytes(data[12..16].try_into().ok()?);
+        let count = u32::from_le_bytes(data[16..20].try_into().ok()?) as usize;
+        let bits = data[20..].to_vec();
         if bits.len() < (num_bits + 7) / 8 {
             return None;
         }
@@ -199,6 +215,22 @@ mod tests {
     fn invalid_bytes_return_none() {
         assert!(BloomFilter::from_bytes(&[]).is_none());
         assert!(BloomFilter::from_bytes(&[0; 5]).is_none());
+        // Wrong magic
+        assert!(BloomFilter::from_bytes(&[0; 20]).is_none());
+        // Wrong version
+        let mut bad_ver = Vec::new();
+        bad_ver.extend_from_slice(b"ABLM");
+        bad_ver.extend_from_slice(&99u32.to_le_bytes());
+        bad_ver.extend_from_slice(&[0; 12]);
+        assert!(BloomFilter::from_bytes(&bad_ver).is_none());
+    }
+
+    #[test]
+    fn magic_and_version_present() {
+        let bf = BloomFilter::new(100, 0.01);
+        let bytes = bf.to_bytes();
+        assert_eq!(&bytes[0..4], b"ABLM");
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
     }
 
     #[test]

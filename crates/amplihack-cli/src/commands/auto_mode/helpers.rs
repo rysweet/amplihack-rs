@@ -90,9 +90,7 @@ impl PreparedAutoModeExecution {
     }
 }
 
-pub(super) fn prepare_auto_mode_execution(
-    project_dir: &Path,
-) -> Result<PreparedAutoModeExecution> {
+pub(super) fn prepare_auto_mode_execution(project_dir: &Path) -> Result<PreparedAutoModeExecution> {
     println!("\n🚨 SELF-MODIFICATION PROTECTION ACTIVATED");
     println!("   Auto-staging .claude/ to temp directory for safety");
     let staging = AutoStager::stage_for_nested_execution(
@@ -111,7 +109,10 @@ pub(super) fn prepare_auto_mode_execution(
     })
 }
 
-pub(super) fn transform_prompt_for_staging(original_prompt: &str, target_directory: &Path) -> String {
+pub(super) fn transform_prompt_for_staging(
+    original_prompt: &str,
+    target_directory: &Path,
+) -> String {
     let target_directory = target_directory
         .canonicalize()
         .unwrap_or_else(|_| target_directory.to_path_buf());

@@ -20,10 +20,7 @@ pub(super) fn check_xpia(tool_name: &str, tool_input: &Value) -> Option<Value> {
 
 fn check_webfetch(defender: &XpiaDefender, params: &Value) -> Option<Value> {
     let url = params.get("url").and_then(Value::as_str).unwrap_or("");
-    let prompt = params
-        .get("prompt")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let prompt = params.get("prompt").and_then(Value::as_str).unwrap_or("");
 
     if url.is_empty() && prompt.is_empty() {
         return None;
@@ -43,10 +40,7 @@ fn check_webfetch(defender: &XpiaDefender, params: &Value) -> Option<Value> {
 }
 
 fn check_bash(defender: &XpiaDefender, params: &Value) -> Option<Value> {
-    let command = params
-        .get("command")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let command = params.get("command").and_then(Value::as_str).unwrap_or("");
 
     if command.is_empty() {
         return None;

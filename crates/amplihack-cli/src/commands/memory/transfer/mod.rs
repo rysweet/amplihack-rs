@@ -9,8 +9,6 @@ mod plan;
 mod types;
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod backend_choice_test;
 #[cfg(test)]
 mod sqlite_backend_atomicity_test;
@@ -18,6 +16,8 @@ mod sqlite_backend_atomicity_test;
 mod sqlite_backend_security_test;
 #[cfg(test)]
 mod sqlite_schema_test;
+#[cfg(test)]
+mod tests;
 #[cfg(test)]
 mod transfer_backend_parity_test;
 
@@ -43,6 +43,6 @@ pub use commands::{run_export, run_import};
 // Items needed by child modules (backend.rs, sqlite_backend.rs, tests) via `use super::*;`.
 pub(crate) use commands::{export_memory, import_memory};
 pub(crate) use paths::{
-    compute_path_size, copy_hierarchical_storage, is_dir_empty, resolve_hierarchical_db_path,
-    resolve_hierarchical_memory_paths, HierarchicalMemoryPaths,
+    HierarchicalMemoryPaths, compute_path_size, copy_hierarchical_storage, is_dir_empty,
+    resolve_hierarchical_db_path, resolve_hierarchical_memory_paths,
 };

@@ -13,9 +13,6 @@ fn build_command_injects_uvx_plugin_and_project_args_for_claude() {
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _cwd_guard = cwd_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let execution_dir = tempfile::tempdir().unwrap();
@@ -76,9 +73,6 @@ fn build_command_prefers_original_cwd_for_staged_uvx_launches() {
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _cwd_guard = cwd_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let execution_dir = tempfile::tempdir().unwrap();
@@ -135,9 +129,6 @@ fn build_command_prefers_original_cwd_for_staged_uvx_launches() {
 #[test]
 fn build_command_does_not_duplicate_uvx_plugin_or_add_dir_args() {
     let _home_guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _cwd_guard = cwd_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = tempfile::tempdir().unwrap();

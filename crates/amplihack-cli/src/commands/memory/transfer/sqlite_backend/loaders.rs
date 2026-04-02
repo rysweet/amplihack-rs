@@ -1,14 +1,17 @@
 //! Functions that load nodes and edges from a hierarchical SQLite database.
 
-use crate::commands::memory::parse_json_value;
 use super::super::{
     DerivesEdge, EpisodicNode, SemanticNode, SimilarEdge, SupersedesEdge, TransitionEdge,
 };
+use crate::commands::memory::parse_json_value;
 use anyhow::{Context, Result};
 use rusqlite::{Connection as SqliteConnection, params};
 use serde_json::Value as JsonValue;
 
-pub(super) fn load_semantic_nodes(conn: &SqliteConnection, agent_name: &str) -> Result<Vec<SemanticNode>> {
+pub(super) fn load_semantic_nodes(
+    conn: &SqliteConnection,
+    agent_name: &str,
+) -> Result<Vec<SemanticNode>> {
     let mut stmt = conn.prepare(
         "SELECT memory_id, concept, content, confidence, source_id, tags, metadata, created_at, entity_name FROM semantic_memories WHERE agent_id = ?1 ORDER BY created_at ASC",
     )?;
@@ -59,7 +62,10 @@ pub(super) fn load_semantic_nodes(conn: &SqliteConnection, agent_name: &str) -> 
         .collect()
 }
 
-pub(super) fn load_episodic_nodes(conn: &SqliteConnection, agent_name: &str) -> Result<Vec<EpisodicNode>> {
+pub(super) fn load_episodic_nodes(
+    conn: &SqliteConnection,
+    agent_name: &str,
+) -> Result<Vec<EpisodicNode>> {
     let mut stmt = conn.prepare(
         "SELECT memory_id, content, source_label, tags, metadata, created_at FROM episodic_memories WHERE agent_id = ?1 ORDER BY created_at ASC",
     )?;
@@ -94,7 +100,10 @@ pub(super) fn load_episodic_nodes(conn: &SqliteConnection, agent_name: &str) -> 
         .collect()
 }
 
-pub(super) fn load_similar_to_edges(conn: &SqliteConnection, agent_name: &str) -> Result<Vec<SimilarEdge>> {
+pub(super) fn load_similar_to_edges(
+    conn: &SqliteConnection,
+    agent_name: &str,
+) -> Result<Vec<SimilarEdge>> {
     let mut stmt = conn.prepare(
         "SELECT s.source_id, s.target_id, s.weight, s.metadata FROM similar_to_edges s JOIN semantic_memories sm ON s.source_id = sm.memory_id WHERE sm.agent_id = ?1",
     )?;
@@ -123,7 +132,10 @@ pub(super) fn load_similar_to_edges(conn: &SqliteConnection, agent_name: &str) -
         .collect()
 }
 
-pub(super) fn load_derives_from_edges(conn: &SqliteConnection, agent_name: &str) -> Result<Vec<DerivesEdge>> {
+pub(super) fn load_derives_from_edges(
+    conn: &SqliteConnection,
+    agent_name: &str,
+) -> Result<Vec<DerivesEdge>> {
     let mut stmt = conn.prepare(
         "SELECT d.source_id, d.target_id, d.extraction_method, d.confidence FROM derives_from_edges d JOIN semantic_memories sm ON d.source_id = sm.memory_id WHERE sm.agent_id = ?1",
     )?;
@@ -151,7 +163,10 @@ pub(super) fn load_derives_from_edges(conn: &SqliteConnection, agent_name: &str)
         .collect()
 }
 
-pub(super) fn load_supersedes_edges(conn: &SqliteConnection, agent_name: &str) -> Result<Vec<SupersedesEdge>> {
+pub(super) fn load_supersedes_edges(
+    conn: &SqliteConnection,
+    agent_name: &str,
+) -> Result<Vec<SupersedesEdge>> {
     let mut stmt = conn.prepare(
         "SELECT s.source_id, s.target_id, s.reason, s.temporal_delta FROM supersedes_edges s JOIN semantic_memories sm ON s.source_id = sm.memory_id WHERE sm.agent_id = ?1",
     )?;

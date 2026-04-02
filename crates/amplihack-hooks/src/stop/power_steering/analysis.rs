@@ -3,9 +3,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
-pub(super) fn read_transcript_messages(
-    path: &Path,
-) -> anyhow::Result<Vec<TranscriptMessage>> {
+pub(super) fn read_transcript_messages(path: &Path) -> anyhow::Result<Vec<TranscriptMessage>> {
     let raw = std::fs::read_to_string(path)?;
     let mut messages = Vec::new();
 

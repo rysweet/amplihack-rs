@@ -36,7 +36,9 @@ pub(super) fn default_objective_state() -> String {
     "open".to_string()
 }
 
-pub(super) fn load_projects_registry(path: &Path) -> Result<BTreeMap<String, ProjectRegistryEntry>> {
+pub(super) fn load_projects_registry(
+    path: &Path,
+) -> Result<BTreeMap<String, ProjectRegistryEntry>> {
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
@@ -80,11 +82,16 @@ pub(super) fn save_projects_registry(
     Ok(())
 }
 
-pub(super) fn save_default_projects_registry(projects: &BTreeMap<String, ProjectRegistryEntry>) -> Result<()> {
+pub(super) fn save_default_projects_registry(
+    projects: &BTreeMap<String, ProjectRegistryEntry>,
+) -> Result<()> {
     save_projects_registry(projects, &default_projects_path())
 }
 
-pub(super) fn ensure_default_project_registry_entry(name: &str, entry: ProjectRegistryEntry) -> Result<bool> {
+pub(super) fn ensure_default_project_registry_entry(
+    name: &str,
+    entry: ProjectRegistryEntry,
+) -> Result<bool> {
     let mut projects = load_default_projects_registry()?;
     if projects.contains_key(name) {
         return Ok(false);
@@ -251,4 +258,3 @@ impl FleetGraphSummary {
         lines.join("\n")
     }
 }
-

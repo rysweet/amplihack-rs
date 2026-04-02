@@ -1,7 +1,9 @@
-use super::*;
 use super::check::should_skip_update_check;
 use super::install::{binary_filename, extract_archive, find_binary};
-use super::network::{github_error_message, is_retryable_error, parse_latest_release, validate_download_url};
+use super::network::{
+    github_error_message, is_retryable_error, parse_latest_release, validate_download_url,
+};
+use super::*;
 use sha2::{Digest, Sha256};
 
 /// When AMPLIHACK_NONINTERACTIVE=1 is set, ALL subcommands — including launch
@@ -135,9 +137,7 @@ fn github_error_message_contains_actionable_advice() {
 #[test]
 fn validate_download_url_accepts_allowed_hosts() {
     assert!(validate_download_url("https://api.github.com/repos/x/y/releases/latest").is_ok());
-    assert!(
-        validate_download_url("https://github.com/x/y/releases/download/v1/x.tar.gz").is_ok()
-    );
+    assert!(validate_download_url("https://github.com/x/y/releases/download/v1/x.tar.gz").is_ok());
     assert!(validate_download_url("https://objects.githubusercontent.com/x/y.tar.gz").is_ok());
 }
 

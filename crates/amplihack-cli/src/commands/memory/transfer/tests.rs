@@ -1,5 +1,5 @@
 use super::*;
-use crate::commands::memory::{memory_home_paths, BackendChoice, TransferFormat};
+use crate::commands::memory::{BackendChoice, TransferFormat, memory_home_paths};
 use crate::test_support::{home_env_lock, restore_home, set_home};
 use anyhow::Result;
 use std::collections::HashSet;
@@ -85,8 +85,7 @@ fn hierarchical_json_round_trip_uses_public_transfer_flow() -> Result<()> {
     )?;
     assert_eq!(export.format, "json");
 
-    let exported: HierarchicalExportData =
-        serde_json::from_str(&fs::read_to_string(output_path)?)?;
+    let exported: HierarchicalExportData = serde_json::from_str(&fs::read_to_string(output_path)?)?;
     assert_eq!(exported.agent_name, "target-agent");
     assert_eq!(exported.semantic_nodes.len(), 1);
     assert_eq!(exported.episodic_nodes.len(), 1);
@@ -150,8 +149,7 @@ fn resolve_hierarchical_db_path_keeps_direct_legacy_store_path() -> Result<()> {
     let temp = tempdir()?;
     let legacy = temp.path().join("kuzu_db");
 
-    let resolved =
-        resolve_hierarchical_db_path("agent-direct", Some(legacy.to_str().unwrap()))?;
+    let resolved = resolve_hierarchical_db_path("agent-direct", Some(legacy.to_str().unwrap()))?;
 
     assert_eq!(resolved, legacy);
     Ok(())
@@ -185,8 +183,7 @@ fn resolve_hierarchical_db_path_populated_kuzu_db_no_graph_db_returns_kuzu_db() 
 /// graph_db directory on a prior mis-resolve, which then causes a second resolve to prefer
 /// the empty neutral directory over the populated legacy one.
 #[test]
-fn resolve_hierarchical_db_path_populated_kuzu_db_empty_graph_db_returns_kuzu_db() -> Result<()>
-{
+fn resolve_hierarchical_db_path_populated_kuzu_db_empty_graph_db_returns_kuzu_db() -> Result<()> {
     let temp = tempdir()?;
     let agent_root = temp.path().join("agent-root");
     let kuzu_db = agent_root.join("kuzu_db");
@@ -308,8 +305,7 @@ fn hierarchical_json_export_agent_root_kuzu_db_with_empty_graph_db_sibling() -> 
     )?;
     assert_eq!(export.format, "json");
 
-    let exported: HierarchicalExportData =
-        serde_json::from_str(&fs::read_to_string(output_path)?)?;
+    let exported: HierarchicalExportData = serde_json::from_str(&fs::read_to_string(output_path)?)?;
     assert_eq!(
         exported.semantic_nodes.len(),
         1,
@@ -416,8 +412,7 @@ fn hierarchical_json_export_from_agent_root_uses_populated_legacy_store() -> Res
         "export should not create an empty graph_db sibling when kuzu_db is populated"
     );
 
-    let exported: HierarchicalExportData =
-        serde_json::from_str(&fs::read_to_string(output_path)?)?;
+    let exported: HierarchicalExportData = serde_json::from_str(&fs::read_to_string(output_path)?)?;
     assert_eq!(exported.semantic_nodes.len(), 1);
     assert_eq!(exported.episodic_nodes.len(), 1);
     assert_eq!(exported.derives_from_edges.len(), 1);
@@ -564,9 +559,8 @@ fn hierarchical_import_plan_applies_shared_validation_and_merge_policy() {
         .map(str::to_string)
         .collect();
 
-    let plan = build_hierarchical_import_plan(&data, true, |memory_id| {
-        existing_ids.contains(memory_id)
-    });
+    let plan =
+        build_hierarchical_import_plan(&data, true, |memory_id| existing_ids.contains(memory_id));
 
     assert_eq!(plan.episodic_nodes.len(), 1);
     assert_eq!(plan.semantic_nodes.len(), 1);

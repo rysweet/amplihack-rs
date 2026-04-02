@@ -256,4 +256,3 @@ impl FleetAdoptionBackend for TaskQueue {
         self.adopt_discovered_session(vm_name, session)
     }
 }
-

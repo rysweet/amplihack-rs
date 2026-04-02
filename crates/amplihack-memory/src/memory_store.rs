@@ -6,9 +6,7 @@
 //! - Text search across specified fields
 //! - Export/import for gossip protocol
 
-use crate::graph_store::{
-    EdgeDirection, EdgeQuad, EdgeRecord, GraphStore, NodeTriple, Props,
-};
+use crate::graph_store::{EdgeDirection, EdgeQuad, EdgeRecord, GraphStore, NodeTriple, Props};
 use std::collections::{HashMap, HashSet};
 
 /// In-memory graph store backed by HashMaps.
@@ -72,11 +70,7 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     fn get_node(&self, table: &str, node_id: &str) -> anyhow::Result<Option<Props>> {
-        Ok(self
-            .nodes
-            .get(table)
-            .and_then(|t| t.get(node_id))
-            .cloned())
+        Ok(self.nodes.get(table).and_then(|t| t.get(node_id)).cloned())
     }
 
     fn update_node(
@@ -85,11 +79,7 @@ impl GraphStore for InMemoryGraphStore {
         node_id: &str,
         properties: &Props,
     ) -> anyhow::Result<()> {
-        if let Some(existing) = self
-            .nodes
-            .get_mut(table)
-            .and_then(|t| t.get_mut(node_id))
-        {
+        if let Some(existing) = self.nodes.get_mut(table).and_then(|t| t.get_mut(node_id)) {
             for (k, v) in properties {
                 existing.insert(k.clone(), v.clone());
             }
@@ -118,9 +108,7 @@ impl GraphStore for InMemoryGraphStore {
         let results: Vec<Props> = table_nodes
             .values()
             .filter(|props| {
-                filters.map_or(true, |f| {
-                    f.iter().all(|(k, v)| props.get(k) == Some(v))
-                })
+                filters.map_or(true, |f| f.iter().all(|(k, v)| props.get(k) == Some(v)))
             })
             .take(limit)
             .cloned()
@@ -315,7 +303,9 @@ mod tests {
         let mut store = InMemoryGraphStore::new();
         let a = store.create_node("t", &make_props("a")).unwrap();
         let b = store.create_node("t", &make_props("b")).unwrap();
-        store.create_edge("rel", "t", &a, "t", &b, &Props::new()).unwrap();
+        store
+            .create_edge("rel", "t", &a, "t", &b, &Props::new())
+            .unwrap();
         store.delete_node("t", &a).unwrap();
         assert!(store.get_node("t", &a).unwrap().is_none());
         let edges = store.get_edges(&a, None, EdgeDirection::Both).unwrap();
@@ -325,8 +315,12 @@ mod tests {
     #[test]
     fn search_nodes_by_text() {
         let mut store = InMemoryGraphStore::new();
-        store.create_node("t", &make_props("the sky is blue")).unwrap();
-        store.create_node("t", &make_props("grass is green")).unwrap();
+        store
+            .create_node("t", &make_props("the sky is blue"))
+            .unwrap();
+        store
+            .create_node("t", &make_props("grass is green"))
+            .unwrap();
         let results = store.search_nodes("t", "sky", None, 10).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["content"], "the sky is blue");
@@ -363,11 +357,37 @@ mod tests {
         let mut store = InMemoryGraphStore::new();
         let a = store.create_node("t", &make_props("a")).unwrap();
         let b = store.create_node("t", &make_props("b")).unwrap();
-        store.create_edge("knows", "t", &a, "t", &b, &Props::new()).unwrap();
-        assert_eq!(store.get_edges(&a, None, EdgeDirection::Outgoing).unwrap().len(), 1);
-        assert_eq!(store.get_edges(&a, None, EdgeDirection::Incoming).unwrap().len(), 0);
-        assert_eq!(store.get_edges(&b, None, EdgeDirection::Incoming).unwrap().len(), 1);
-        assert_eq!(store.get_edges(&a, None, EdgeDirection::Both).unwrap().len(), 1);
+        store
+            .create_edge("knows", "t", &a, "t", &b, &Props::new())
+            .unwrap();
+        assert_eq!(
+            store
+                .get_edges(&a, None, EdgeDirection::Outgoing)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_edges(&a, None, EdgeDirection::Incoming)
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            store
+                .get_edges(&b, None, EdgeDirection::Incoming)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_edges(&a, None, EdgeDirection::Both)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! Prompt construction, context assembly, and CLI execution for reflection.
 
 use super::conversation::{
-    format_conversation_summary, format_redirects_context, load_power_steering_redirects,
-    ReflectionMessage,
+    ReflectionMessage, format_conversation_summary, format_redirects_context,
+    load_power_steering_redirects,
 };
 use amplihack_cli::env_builder::active_agent_binary;
 use amplihack_types::ProjectDirs;
@@ -12,8 +12,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-const AMPLIHACK_REPO_URI: &str =
-    "https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding";
+const AMPLIHACK_REPO_URI: &str = "https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding";
 
 const DEFAULT_FEEDBACK_TEMPLATE: &str = "## Task Summary
 [What was accomplished]
@@ -202,10 +201,7 @@ fn normalize_url(url: &str) -> String {
         .to_lowercase()
 }
 
-pub(crate) fn run_claude_reflection(
-    project_root: &Path,
-    prompt: &str,
-) -> Result<Option<String>> {
+pub(crate) fn run_claude_reflection(project_root: &Path, prompt: &str) -> Result<Option<String>> {
     let binary = std::env::var("AMPLIHACK_REFLECTION_BINARY")
         .ok()
         .filter(|value| !value.trim().is_empty())

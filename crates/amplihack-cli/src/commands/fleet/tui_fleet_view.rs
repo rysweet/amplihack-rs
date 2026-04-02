@@ -225,5 +225,3 @@ pub(super) fn cockpit_render_fleet_view(
         }
     }
 }
-
-

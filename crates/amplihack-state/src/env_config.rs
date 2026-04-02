@@ -57,12 +57,13 @@ where
     /// or if the value cannot be parsed as `T`.
     pub fn get_or_err(&self) -> Result<T, String> {
         match env::var(self.name) {
-            Ok(val) => val.parse().map_err(|e| {
-                format!("Failed to parse env var {}={:?}: {}", self.name, val, e)
-            }),
-            Err(_) => self.default.clone().ok_or_else(|| {
-                format!("Required env var {} not set", self.name)
-            }),
+            Ok(val) => val
+                .parse()
+                .map_err(|e| format!("Failed to parse env var {}={:?}: {}", self.name, val, e)),
+            Err(_) => self
+                .default
+                .clone()
+                .ok_or_else(|| format!("Required env var {} not set", self.name)),
         }
     }
 
@@ -143,8 +144,7 @@ mod tests {
 
     #[test]
     fn get_or_err_missing_no_default() {
-        let val: Result<u64, _> = EnvVar::new("AMPLIHACK_TEST_MISSING_NO_DEFAULT")
-            .get_or_err();
+        let val: Result<u64, _> = EnvVar::new("AMPLIHACK_TEST_MISSING_NO_DEFAULT").get_or_err();
         assert!(val.is_err());
         assert!(val.unwrap_err().contains("Required env var"));
     }

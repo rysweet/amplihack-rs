@@ -4,7 +4,7 @@ use super::plan::resolve_transfer_backend_choice;
 use super::types::{ExportResult, ImportResult};
 use crate::command_error::exit_error;
 use crate::commands::memory::{
-    transfer_format_cli_compatibility_notice, BackendChoice, TransferFormat,
+    BackendChoice, TransferFormat, transfer_format_cli_compatibility_notice,
 };
 use anyhow::Result;
 use std::io::{self, Write};

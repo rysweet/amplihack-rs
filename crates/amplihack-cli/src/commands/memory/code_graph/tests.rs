@@ -4,8 +4,8 @@ use super::paths::{
     resolve_code_graph_db_path_for_project, resolve_project_code_graph_paths,
 };
 use super::scip::{
-    ScipDocument, ScipIndex, ScipOccurrence, ScipSymbolInformation, SCIP_KIND_CLASS,
-    SCIP_KIND_FUNCTION, SCIP_SYMBOL_ROLE_DEFINITION,
+    SCIP_KIND_CLASS, SCIP_KIND_FUNCTION, SCIP_SYMBOL_ROLE_DEFINITION, ScipDocument, ScipIndex,
+    ScipOccurrence, ScipSymbolInformation,
 };
 use super::types::{CodeGraphImportCounts, CodeGraphSummary};
 use super::validation::{enforce_db_permissions, validate_blarify_json_size, validate_index_path};
@@ -299,9 +299,6 @@ fn import_blarify_json_links_semantic_memory_by_function_name() {
 
 #[test]
 fn default_code_graph_db_path_uses_project_local_store() {
-    let _cwd_guard = cwd_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -328,9 +325,6 @@ fn default_code_graph_db_path_uses_project_local_store() {
 
 #[test]
 fn default_code_graph_db_path_prefers_existing_legacy_project_store() {
-    let _cwd_guard = cwd_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -359,9 +353,6 @@ fn default_code_graph_db_path_prefers_existing_legacy_project_store() {
 
 #[test]
 fn default_code_graph_db_path_prefers_backend_neutral_override() {
-    let _cwd_guard = cwd_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -426,8 +417,7 @@ fn sample_scip_index() -> ScipIndex {
                 },
                 ScipOccurrence {
                     range: vec![3, 4, 3, 10],
-                    symbol: "scip-python python pkg src/example/module.py/helper()."
-                        .to_string(),
+                    symbol: "scip-python python pkg src/example/module.py/helper().".to_string(),
                     symbol_roles: SCIP_SYMBOL_ROLE_DEFINITION,
                 },
             ],
@@ -440,8 +430,7 @@ fn sample_scip_index() -> ScipIndex {
                     enclosing_symbol: String::new(),
                 },
                 ScipSymbolInformation {
-                    symbol: "scip-python python pkg src/example/module.py/helper()."
-                        .to_string(),
+                    symbol: "scip-python python pkg src/example/module.py/helper().".to_string(),
                     documentation: vec!["Helper".to_string()],
                     kind: SCIP_KIND_FUNCTION,
                     display_name: "helper".to_string(),
@@ -789,9 +778,6 @@ fn resolve_project_code_graph_paths_prefers_neutral_when_both_paths_exist() {
 /// must accept the legacy env var as the active path.
 #[test]
 fn resolve_code_graph_db_path_for_project_uses_kuzu_env_as_legacy_alias() {
-    let _cwd_guard = cwd_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -829,9 +815,6 @@ fn resolve_code_graph_db_path_for_project_uses_kuzu_env_as_legacy_alias() {
 ///
 #[test]
 fn resolve_code_graph_db_path_for_project_env_var_traversal_rejected() {
-    let _cwd_guard = cwd_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -867,9 +850,6 @@ fn resolve_code_graph_db_path_for_project_env_var_traversal_rejected() {
 ///
 #[test]
 fn resolve_code_graph_db_path_for_project_env_var_relative_path_rejected() {
-    let _cwd_guard = cwd_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -905,9 +885,6 @@ fn resolve_code_graph_db_path_for_project_env_var_relative_path_rejected() {
 ///
 #[test]
 fn resolve_code_graph_db_path_for_project_env_var_proc_prefix_rejected() {
-    let _cwd_guard = cwd_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -945,9 +922,6 @@ fn resolve_code_graph_db_path_for_project_env_var_proc_prefix_rejected() {
 #[test]
 #[cfg(unix)]
 fn resolve_code_graph_db_path_for_project_disk_shim_blocks_escaping_symlink() {
-    let _cwd_guard = cwd_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

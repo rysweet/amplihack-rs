@@ -27,7 +27,12 @@ pub(super) fn run_project(command: NativeFleetProjectCommand) -> Result<()> {
     }
 }
 
-pub(super) fn run_project_add(repo_url: &str, identity: &str, priority: &str, name: &str) -> Result<()> {
+pub(super) fn run_project_add(
+    repo_url: &str,
+    identity: &str,
+    priority: &str,
+    name: &str,
+) -> Result<()> {
     let mut dashboard = FleetDashboardSummary::load_default()?;
     let existing = dashboard.get_project(repo_url).or_else(|| {
         (!name.is_empty())
@@ -153,4 +158,3 @@ pub(super) fn capture_tmux_output_with_timeout(
         Err(error) => Err(error),
     }
 }
-

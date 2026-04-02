@@ -26,10 +26,7 @@ impl PromptTransformer {
 
         let target = target_directory.as_ref().to_path_buf();
         let (slash_commands, remaining) = Self::extract_slash_commands(original_prompt);
-        let dir_instruction = format!(
-            "Change your working directory to {}. ",
-            target.display()
-        );
+        let dir_instruction = format!("Change your working directory to {}. ", target.display());
 
         if slash_commands.is_empty() {
             format!("{dir_instruction}{remaining}")
@@ -58,7 +55,10 @@ impl PromptTransformer {
 
             let cmd = &rest[..cmd_end];
             // Validate: slash commands contain only word chars, colons, hyphens
-            if cmd[1..].chars().all(|c| c.is_alphanumeric() || c == ':' || c == '-' || c == '_') {
+            if cmd[1..]
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == ':' || c == '-' || c == '_')
+            {
                 commands.push(cmd.to_string());
                 rest = rest[cmd_end..].trim_start();
             } else {
@@ -86,30 +86,22 @@ mod tests {
 
     #[test]
     fn temp_prepends_cd_instruction() {
-        let result =
-            PromptTransformer::transform("fix the bug", "/tmp/work", true);
+        let result = PromptTransformer::transform("fix the bug", "/tmp/work", true);
         assert!(result.starts_with("Change your working directory to /tmp/work."));
         assert!(result.ends_with("fix the bug"));
     }
 
     #[test]
     fn preserves_slash_commands() {
-        let result = PromptTransformer::transform(
-            "/dev fix the bug",
-            "/tmp/work",
-            true,
-        );
+        let result = PromptTransformer::transform("/dev fix the bug", "/tmp/work", true);
         assert!(result.starts_with("/dev Change your working directory"));
         assert!(result.ends_with("fix the bug"));
     }
 
     #[test]
     fn multiple_slash_commands() {
-        let result = PromptTransformer::transform(
-            "/dev /ultrathink fix the bug",
-            "/tmp/work",
-            true,
-        );
+        let result =
+            PromptTransformer::transform("/dev /ultrathink fix the bug", "/tmp/work", true);
         assert!(result.starts_with("/dev /ultrathink Change your working directory"));
     }
 
@@ -135,8 +127,7 @@ mod tests {
 
     #[test]
     fn extract_slash_with_colon() {
-        let (cmds, rest) =
-            PromptTransformer::extract_slash_commands("/amplihack:customize show");
+        let (cmds, rest) = PromptTransformer::extract_slash_commands("/amplihack:customize show");
         assert_eq!(cmds, "/amplihack:customize");
         assert_eq!(rest, "show");
     }

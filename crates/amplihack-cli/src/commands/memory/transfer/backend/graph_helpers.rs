@@ -1,7 +1,7 @@
+use crate::commands::memory::HIERARCHICAL_SCHEMA;
 use crate::commands::memory::backend::graph_db::{
     GraphDbConnection, GraphDbHandle, GraphDbValue, graph_rows, graph_string,
 };
-use crate::commands::memory::HIERARCHICAL_SCHEMA;
 use anyhow::Result;
 use std::path::Path;
 

@@ -7,7 +7,6 @@
 //! INVARIANT: All external session name inputs MUST pass `validate_session_name()`
 //! before use in any subprocess or tmux command invocation.
 
-
 use crate::binary_finder::BinaryFinder;
 use crate::command_error::exit_error;
 use crate::env_builder::EnvBuilder;
@@ -120,8 +119,8 @@ mod tui_actions;
 use tui_actions::*;
 
 mod commands;
-use commands::*;
 pub use commands::run_fleet;
+use commands::*;
 
 mod commands_scout;
 use commands_scout::*;
@@ -140,7 +139,6 @@ use tui_main::*;
 
 mod tui_collect;
 use tui_collect::*;
-
 
 #[cfg(all(test, unix))]
 mod tests;

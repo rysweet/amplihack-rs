@@ -75,10 +75,7 @@ pub fn check_local_credentials() -> CredentialInventory {
 }
 
 /// Propagate a specific credential to a remote VM via SSH.
-pub fn propagate_credential(
-    ssh_target: &str,
-    cred_type: CredentialType,
-) -> Result<bool> {
+pub fn propagate_credential(ssh_target: &str, cred_type: CredentialType) -> Result<bool> {
     let env_name = cred_type.env_var_name();
     let value = match std::env::var(env_name) {
         Ok(v) if !v.is_empty() => v,
@@ -100,14 +97,22 @@ pub fn propagate_credential(
 
     let status = Command::new("ssh")
         .args([
-            "-o", "ConnectTimeout=10",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "BatchMode=yes",
             ssh_target,
             &remote_cmd,
         ])
         .status()
-        .with_context(|| format!("failed to propagate {} to {ssh_target}", cred_type.display_name()))?;
+        .with_context(|| {
+            format!(
+                "failed to propagate {} to {ssh_target}",
+                cred_type.display_name()
+            )
+        })?;
 
     if status.success() {
         info!(
@@ -168,7 +173,10 @@ mod tests {
     fn credential_env_var_names() {
         assert_eq!(CredentialType::GitHub.env_var_name(), "GITHUB_TOKEN");
         assert_eq!(CredentialType::Claude.env_var_name(), "CLAUDE_API_KEY");
-        assert_eq!(CredentialType::Anthropic.env_var_name(), "ANTHROPIC_API_KEY");
+        assert_eq!(
+            CredentialType::Anthropic.env_var_name(),
+            "ANTHROPIC_API_KEY"
+        );
         assert_eq!(CredentialType::OpenAi.env_var_name(), "OPENAI_API_KEY");
     }
 

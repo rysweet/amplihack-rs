@@ -84,8 +84,9 @@ impl AgentResolver {
             searched.push(candidate.display().to_string());
             if candidate.is_file() {
                 debug!(path = %candidate.display(), "Resolved agent reference");
-                return std::fs::read_to_string(&candidate)
-                    .with_context(|| format!("failed to read agent file: {}", candidate.display()));
+                return std::fs::read_to_string(&candidate).with_context(|| {
+                    format!("failed to read agent file: {}", candidate.display())
+                });
             }
         }
 

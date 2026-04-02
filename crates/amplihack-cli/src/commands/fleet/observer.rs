@@ -20,7 +20,11 @@ impl FleetObserver {
         }
     }
 
-    pub(super) fn observe_session(&mut self, vm_name: &str, session_name: &str) -> Result<ObservationResult> {
+    pub(super) fn observe_session(
+        &mut self,
+        vm_name: &str,
+        session_name: &str,
+    ) -> Result<ObservationResult> {
         let pane_content = self.capture_pane(vm_name, session_name);
         let Some(pane_content) = pane_content else {
             return Ok(ObservationResult {
@@ -48,7 +52,10 @@ impl FleetObserver {
         })
     }
 
-    pub(super) fn observe_all(&self, sessions: &[TmuxSessionInfo]) -> Result<Vec<ObservationResult>> {
+    pub(super) fn observe_all(
+        &self,
+        sessions: &[TmuxSessionInfo],
+    ) -> Result<Vec<ObservationResult>> {
         let mut observer = self.clone();
         sessions
             .iter()
@@ -197,5 +204,3 @@ impl FleetObserver {
         (AgentStatus::Unknown, CONFIDENCE_UNKNOWN, String::new())
     }
 }
-
-

@@ -1,7 +1,7 @@
-use super::*;
 use super::helpers::{
     copy_dir_recursive, is_path_safe, is_valid_plugin_name, plugin_name_from_git_url,
 };
+use super::*;
 
 #[derive(Debug, Clone)]
 pub(super) struct PluginManager {

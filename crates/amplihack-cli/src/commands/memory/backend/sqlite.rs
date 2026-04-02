@@ -5,8 +5,8 @@
 //! (e.g. LadybugDB) without requiring surgery to the rest of the memory
 //! subsystem.
 
-use super::super::*;
 use super::super::learning::build_memory_id;
+use super::super::*;
 use super::{MemoryRuntimeBackend, MemorySessionBackend, MemoryTreeBackend};
 use anyhow::Result;
 use rusqlite::{Connection as SqliteConnection, params};

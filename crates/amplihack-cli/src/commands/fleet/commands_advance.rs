@@ -287,4 +287,3 @@ pub(super) fn run_auth(vm_name: &str, services: &[String]) -> Result<()> {
 
     Ok(())
 }
-

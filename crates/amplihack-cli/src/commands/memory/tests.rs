@@ -305,8 +305,7 @@ fn retrieve_prompt_context_memories_does_not_silently_fallback_to_sqlite() -> Re
         None => unsafe { std::env::remove_var("AMPLIHACK_KUZU_DB_PATH") },
     }
 
-    let error =
-        result.expect_err("default backend path should not silently fall back to sqlite");
+    let error = result.expect_err("default backend path should not silently fall back to sqlite");
     assert!(
         error.to_string().contains("No such file or directory")
             || error.to_string().contains("File exists")
@@ -318,8 +317,7 @@ fn retrieve_prompt_context_memories_does_not_silently_fallback_to_sqlite() -> Re
 }
 
 #[test]
-fn enrich_prompt_context_memories_with_code_context_surfaces_graph_open_failure() -> Result<()>
-{
+fn enrich_prompt_context_memories_with_code_context_surfaces_graph_open_failure() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let blocker = dir.path().join("graph-parent-blocker");
     fs::write(&blocker, "blocker")?;
@@ -351,8 +349,8 @@ fn enrich_prompt_context_memories_with_code_context_surfaces_graph_open_failure(
 }
 
 #[test]
-fn enrich_prompt_context_memories_with_code_context_surfaces_context_lookup_failure()
--> Result<()> {
+fn enrich_prompt_context_memories_with_code_context_surfaces_context_lookup_failure() -> Result<()>
+{
     struct FailingReader;
 
     impl code_graph::CodeGraphReaderBackend for FailingReader {
@@ -360,10 +358,7 @@ fn enrich_prompt_context_memories_with_code_context_surfaces_context_lookup_fail
             Ok(code_graph::CodeGraphStats::default())
         }
 
-        fn context_payload(
-            &self,
-            _memory_id: &str,
-        ) -> Result<code_graph::CodeGraphContextPayload> {
+        fn context_payload(&self, _memory_id: &str) -> Result<code_graph::CodeGraphContextPayload> {
             Err(anyhow::anyhow!("synthetic code-context failure"))
         }
 
@@ -395,19 +390,11 @@ fn enrich_prompt_context_memories_with_code_context_surfaces_context_lookup_fail
             Ok(Vec::new())
         }
 
-        fn callers(
-            &self,
-            _name: &str,
-            _limit: u32,
-        ) -> Result<Vec<code_graph::CodeGraphEdgeEntry>> {
+        fn callers(&self, _name: &str, _limit: u32) -> Result<Vec<code_graph::CodeGraphEdgeEntry>> {
             Ok(Vec::new())
         }
 
-        fn callees(
-            &self,
-            _name: &str,
-            _limit: u32,
-        ) -> Result<Vec<code_graph::CodeGraphEdgeEntry>> {
+        fn callees(&self, _name: &str, _limit: u32) -> Result<Vec<code_graph::CodeGraphEdgeEntry>> {
             Ok(Vec::new())
         }
     }

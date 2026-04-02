@@ -1,5 +1,5 @@
-use super::*;
 use super::helpers::*;
+use super::*;
 use std::fs;
 
 // ─── TDD: Group 15 — run_uninstall removes binaries (Phase 3) ────────────
@@ -69,7 +69,11 @@ fn remove_hook_registrations_removes_amplihack_hooks_entries() {
             ]
         }
     });
-    fs::write(&settings_path, serde_json::to_string(&settings_val).unwrap()).unwrap();
+    fs::write(
+        &settings_path,
+        serde_json::to_string(&settings_val).unwrap(),
+    )
+    .unwrap();
 
     remove_hook_registrations(&settings_path).unwrap();
 
@@ -115,7 +119,11 @@ fn remove_hook_registrations_removes_tools_amplihack_python_paths() {
             ]
         }
     });
-    fs::write(&settings_path, serde_json::to_string(&settings_val).unwrap()).unwrap();
+    fs::write(
+        &settings_path,
+        serde_json::to_string(&settings_val).unwrap(),
+    )
+    .unwrap();
 
     remove_hook_registrations(&settings_path).unwrap();
 
@@ -170,7 +178,11 @@ fn remove_hook_registrations_preserves_non_amplihack_entries() {
             ]
         }
     });
-    fs::write(&settings_path, serde_json::to_string(&settings_val).unwrap()).unwrap();
+    fs::write(
+        &settings_path,
+        serde_json::to_string(&settings_val).unwrap(),
+    )
+    .unwrap();
 
     remove_hook_registrations(&settings_path).unwrap();
 
@@ -228,7 +240,11 @@ fn remove_hook_registrations_leaves_no_empty_arrays() {
             ]
         }
     });
-    fs::write(&settings_path, serde_json::to_string(&settings_val).unwrap()).unwrap();
+    fs::write(
+        &settings_path,
+        serde_json::to_string(&settings_val).unwrap(),
+    )
+    .unwrap();
 
     remove_hook_registrations(&settings_path).unwrap();
 
@@ -273,7 +289,11 @@ fn remove_hook_registrations_mixed_event_keeps_non_amplihack_wrapper() {
             ]
         }
     });
-    fs::write(&settings_path, serde_json::to_string(&settings_val).unwrap()).unwrap();
+    fs::write(
+        &settings_path,
+        serde_json::to_string(&settings_val).unwrap(),
+    )
+    .unwrap();
 
     remove_hook_registrations(&settings_path).unwrap();
 

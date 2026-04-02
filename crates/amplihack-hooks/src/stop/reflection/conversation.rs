@@ -123,9 +123,7 @@ pub(crate) fn format_conversation_summary(
     summary_parts.join("")
 }
 
-pub(crate) fn load_power_steering_redirects(
-    session_dir: &Path,
-) -> Option<Vec<RedirectRecord>> {
+pub(crate) fn load_power_steering_redirects(session_dir: &Path) -> Option<Vec<RedirectRecord>> {
     let path = session_dir.join("redirects.jsonl");
     let raw = fs::read_to_string(path).ok()?;
     let redirects = raw

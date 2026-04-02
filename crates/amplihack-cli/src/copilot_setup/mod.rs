@@ -12,9 +12,7 @@ use hooks::{
     build_wrapper_script, error_wrapper_script, generate_copilot_instructions,
     replace_or_append_section, stage_repo_hooks,
 };
-use staging::{
-    register_plugin, stage_agents, stage_command_docs, stage_directory, stage_skills,
-};
+use staging::{register_plugin, stage_agents, stage_command_docs, stage_directory, stage_skills};
 
 const INSTRUCTIONS_MARKER_START: &str = "<!-- AMPLIHACK_INSTRUCTIONS_START -->";
 const INSTRUCTIONS_MARKER_END: &str = "<!-- AMPLIHACK_INSTRUCTIONS_END -->";
@@ -117,9 +115,6 @@ mod tests {
     #[test]
     fn ensure_copilot_home_stages_assets_and_plugin() {
         let _home_guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _cwd_guard = crate::test_support::cwd_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();

@@ -146,4 +146,3 @@ impl AuthPropagator {
         run_output_with_timeout(cmd, Duration::from_secs(30))
     }
 }
-

@@ -27,10 +27,7 @@ pub(super) fn find_source_claude_dir(repo_root: &Path) -> Result<PathBuf> {
     )
 }
 
-pub(super) fn copytree_manifest(
-    source_claude: &Path,
-    claude_dir: &Path,
-) -> Result<Vec<String>> {
+pub(super) fn copytree_manifest(source_claude: &Path, claude_dir: &Path) -> Result<Vec<String>> {
     let mut copied = Vec::new();
     for dir in ESSENTIAL_DIRS {
         let source_dir = source_claude.join(dir);

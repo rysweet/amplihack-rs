@@ -1,5 +1,5 @@
-use super::*;
 use super::helpers::{default_plugin_root, home_dir};
+use super::*;
 
 pub(super) struct PluginVerifier {
     plugin_name: String,

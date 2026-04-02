@@ -2,9 +2,9 @@ use super::super::super::backend::graph_db::{
     GraphDbConnection, GraphDbValue, graph_i64, graph_rows, graph_string,
 };
 use super::super::{
-    CodeGraphContextClass, CodeGraphContextFile, CodeGraphContextFunction,
-    CodeGraphContextPayload, CodeGraphEdgeEntry, CodeGraphNamedEntry, CodeGraphReaderBackend,
-    CodeGraphSearchEntry, CodeGraphStats,
+    CodeGraphContextClass, CodeGraphContextFile, CodeGraphContextFunction, CodeGraphContextPayload,
+    CodeGraphEdgeEntry, CodeGraphNamedEntry, CodeGraphReaderBackend, CodeGraphSearchEntry,
+    CodeGraphStats,
 };
 use super::schema::{GRAPH_MEMORY_FILE_LINK_TABLES, GRAPH_MEMORY_FUNCTION_LINK_TABLES};
 use super::{ensure_memory_code_link_schema, open_graph_db_code_graph_db};

@@ -286,4 +286,3 @@ impl FleetTask {
         self.assigned_at = None;
     }
 }
-

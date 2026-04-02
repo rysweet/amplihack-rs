@@ -1,9 +1,9 @@
-use super::*;
 use super::helpers::{
     copy_dir_recursive, is_valid_plugin_name, is_valid_semver, plugin_name_from_git_url,
 };
 use super::manager::PluginManager;
 use super::verifier::PluginVerifier;
+use super::*;
 
 fn create_plugin_source(root: &Path, name: &str) -> PathBuf {
     let source = root.join(name);

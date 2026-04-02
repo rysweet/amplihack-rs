@@ -272,4 +272,3 @@ impl FleetDashboardSummary {
         })
     }
 }
-

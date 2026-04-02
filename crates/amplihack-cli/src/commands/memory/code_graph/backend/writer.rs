@@ -1,7 +1,5 @@
 use super::super::super::backend::graph_db::GraphDbConnection;
-use super::super::{
-    BlarifyOutput, CodeGraphImportCounts, CodeGraphWriterBackend,
-};
+use super::super::{BlarifyOutput, CodeGraphImportCounts, CodeGraphWriterBackend};
 use super::import_ops::{import_classes, import_files, import_functions, import_imports};
 use super::memory_links::link_memories_to_code_files_in_conn;
 use super::relationships::import_relationships;

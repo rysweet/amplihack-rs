@@ -7,9 +7,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use super::{
-    COPILOT_HOOKS_MANIFEST, COPILOT_HOOK_WRAPPERS, HookWrapperSpec,
-    INSTRUCTIONS_MARKER_END, INSTRUCTIONS_MARKER_START,
-    copilot_home, fs_helpers,
+    COPILOT_HOOK_WRAPPERS, COPILOT_HOOKS_MANIFEST, HookWrapperSpec, INSTRUCTIONS_MARKER_END,
+    INSTRUCTIONS_MARKER_START, copilot_home, fs_helpers,
 };
 
 pub(super) fn stage_repo_hooks(repo_root: &Path) -> Result<usize> {
@@ -103,12 +102,8 @@ pub(super) fn build_wrapper_script(spec: &HookWrapperSpec) -> String {
     script.push_str("HOOKS_BIN=\"\"\n");
     script.push_str("for candidate in \\\n");
     script.push_str("    \"$(command -v amplihack-hooks 2>/dev/null)\" \\\n");
-    script.push_str(
-        "    \"${HOME}/.amplihack/target/release/amplihack-hooks\" \\\n",
-    );
-    script.push_str(
-        "    \"${HOME}/.amplihack/target/debug/amplihack-hooks\"; do\n",
-    );
+    script.push_str("    \"${HOME}/.amplihack/target/release/amplihack-hooks\" \\\n");
+    script.push_str("    \"${HOME}/.amplihack/target/debug/amplihack-hooks\"; do\n");
     script.push_str("  if [ -n \"$candidate\" ] && [ -x \"$candidate\" ]; then\n");
     script.push_str("    HOOKS_BIN=\"$candidate\"\n");
     script.push_str("    break\n");

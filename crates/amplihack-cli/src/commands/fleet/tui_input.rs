@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FleetTuiInlineInputMode {
     AddProjectRepo,
@@ -218,5 +217,3 @@ pub(super) fn read_dashboard_key(timeout: Duration) -> Option<DashboardKey> {
     thread::sleep(timeout);
     None
 }
-
-

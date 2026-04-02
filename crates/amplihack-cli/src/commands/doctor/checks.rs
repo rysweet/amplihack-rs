@@ -1,7 +1,9 @@
 //! Individual health check implementations for `amplihack doctor`.
 
+use super::{
+    MAX_ERROR_LEN, MAX_VERSION_LEN, json_contains_amplihack, settings_json_path, truncate,
+};
 use crate::util::strip_ansi;
-use super::{MAX_ERROR_LEN, MAX_VERSION_LEN, settings_json_path, truncate, json_contains_amplihack};
 
 /// Check 1 — amplihack hooks installed.
 ///

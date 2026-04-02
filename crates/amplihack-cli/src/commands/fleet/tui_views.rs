@@ -184,7 +184,11 @@ pub(super) fn cockpit_render_projects_view(
     Ok(())
 }
 
-pub(super) fn cockpit_render_editor_view(ui_state: &FleetTuiUiState, lines: &mut Vec<String>, inner: usize) {
+pub(super) fn cockpit_render_editor_view(
+    ui_state: &FleetTuiUiState,
+    lines: &mut Vec<String>,
+    inner: usize,
+) {
     let push = |lines: &mut Vec<String>, text: &str| {
         lines.push(cockpit_boxline(text, text.len(), inner));
     };
@@ -302,5 +306,3 @@ pub(super) fn cockpit_render_new_session_view(
         "n jump here | j/k choose VM | t cycle agent | Enter create",
     );
 }
-
-

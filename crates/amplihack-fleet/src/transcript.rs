@@ -96,7 +96,10 @@ pub fn parse_transcript(path: &Path) -> anyhow::Result<Vec<TranscriptEntry>> {
                     entries.push(TranscriptEntry {
                         role,
                         content,
-                        tool_use: val.get("tool_use").and_then(|v| v.as_str()).map(String::from),
+                        tool_use: val
+                            .get("tool_use")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
                         timestamp: val.get("timestamp").and_then(|v| v.as_f64()),
                     });
                 }
@@ -151,7 +154,13 @@ fn count_strategy_keywords(content: &str) -> HashMap<String, usize> {
 
 fn detect_agent_invocations(entries: &[TranscriptEntry]) -> Vec<String> {
     let mut invocations = Vec::new();
-    let agent_patterns = ["Task(", "task(", "explore(", "general-purpose", "code-review"];
+    let agent_patterns = [
+        "Task(",
+        "task(",
+        "explore(",
+        "general-purpose",
+        "code-review",
+    ];
     for entry in entries {
         for pattern in &agent_patterns {
             if entry.content.contains(pattern) && !invocations.contains(&pattern.to_string()) {
@@ -164,7 +173,9 @@ fn detect_agent_invocations(entries: &[TranscriptEntry]) -> Vec<String> {
 
 fn assess_workflow_compliance(content: &str) -> WorkflowCompliance {
     let has_planning = PLANNING_INDICATORS.iter().any(|i| content.contains(i));
-    let has_impl = IMPLEMENTATION_INDICATORS.iter().any(|i| content.contains(i));
+    let has_impl = IMPLEMENTATION_INDICATORS
+        .iter()
+        .any(|i| content.contains(i));
     let has_testing = TESTING_INDICATORS.iter().any(|i| content.contains(i));
     let has_review = REVIEW_INDICATORS.iter().any(|i| content.contains(i));
 

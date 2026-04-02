@@ -99,8 +99,7 @@ impl WorkflowClassifier {
 
         trace!(
             workflow = workflow.as_str(),
-            confidence,
-            "classified request"
+            confidence, "classified request"
         );
 
         ClassificationResult {
@@ -126,9 +125,7 @@ impl WorkflowClassifier {
 
         if recipe_runner_available {
             if let Some(recipe) = result.workflow.recipe_name() {
-                ann.push_str(&format!(
-                    "\nExecution: Recipe Runner (tier 1) - {recipe}"
-                ));
+                ann.push_str(&format!("\nExecution: Recipe Runner (tier 1) - {recipe}"));
             }
         }
         ann
@@ -147,10 +144,7 @@ impl WorkflowClassifier {
         matched
     }
 
-    fn classify_by_keywords(
-        &self,
-        keywords: &[String],
-    ) -> (WorkflowType, String, f64) {
+    fn classify_by_keywords(&self, keywords: &[String]) -> (WorkflowType, String, f64) {
         // Priority: DEFAULT > INVESTIGATION > OPS > Q&A
         let priority = [
             WorkflowType::Default,
@@ -186,8 +180,12 @@ fn default_keyword_map() -> HashMap<WorkflowType, Vec<String>> {
     m.insert(
         WorkflowType::QAndA,
         vec![
-            "what is", "explain briefly", "quick question", "how do i run",
-            "what does", "can you explain",
+            "what is",
+            "explain briefly",
+            "quick question",
+            "how do i run",
+            "what does",
+            "can you explain",
         ]
         .into_iter()
         .map(String::from)
@@ -196,8 +194,15 @@ fn default_keyword_map() -> HashMap<WorkflowType, Vec<String>> {
     m.insert(
         WorkflowType::Ops,
         vec![
-            "run command", "disk cleanup", "repo management", "git operations",
-            "delete files", "cleanup", "organize", "clean up", "manage",
+            "run command",
+            "disk cleanup",
+            "repo management",
+            "git operations",
+            "delete files",
+            "cleanup",
+            "organize",
+            "clean up",
+            "manage",
         ]
         .into_iter()
         .map(String::from)
@@ -206,8 +211,13 @@ fn default_keyword_map() -> HashMap<WorkflowType, Vec<String>> {
     m.insert(
         WorkflowType::Investigation,
         vec![
-            "investigate", "understand", "analyze", "research", "explore",
-            "how does", "how it works",
+            "investigate",
+            "understand",
+            "analyze",
+            "research",
+            "explore",
+            "how does",
+            "how it works",
         ]
         .into_iter()
         .map(String::from)
@@ -216,8 +226,17 @@ fn default_keyword_map() -> HashMap<WorkflowType, Vec<String>> {
     m.insert(
         WorkflowType::Default,
         vec![
-            "implement", "add", "fix", "create", "refactor", "update",
-            "build", "develop", "remove", "delete", "modify",
+            "implement",
+            "add",
+            "fix",
+            "create",
+            "refactor",
+            "update",
+            "build",
+            "develop",
+            "remove",
+            "delete",
+            "modify",
         ]
         .into_iter()
         .map(String::from)
@@ -278,10 +297,7 @@ mod tests {
     #[test]
     fn custom_keywords_extend() {
         let mut custom = HashMap::new();
-        custom.insert(
-            WorkflowType::QAndA,
-            vec!["tell me about".to_string()],
-        );
+        custom.insert(WorkflowType::QAndA, vec!["tell me about".to_string()]);
         let c = WorkflowClassifier::new(Some(custom));
         let r = c.classify("tell me about the architecture");
         assert_eq!(r.workflow, WorkflowType::QAndA);

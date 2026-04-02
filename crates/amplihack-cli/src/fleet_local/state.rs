@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use super::{FleetLocalError, FleetSessionEntry, SessionStatus, PID_MAX};
+use super::{FleetLocalError, FleetSessionEntry, PID_MAX, SessionStatus};
 
 // ── collect_observed_fleet_state ──────────────────────────────────────────────
 

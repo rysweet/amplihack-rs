@@ -247,7 +247,10 @@ impl FleetState {
         Self::poll_tmux_sessions_with_path(&self.azlin_path, vm_name)
     }
 
-    pub(super) fn poll_tmux_sessions_with_path(azlin_path: &Path, vm_name: &str) -> Vec<TmuxSessionInfo> {
+    pub(super) fn poll_tmux_sessions_with_path(
+        azlin_path: &Path,
+        vm_name: &str,
+    ) -> Vec<TmuxSessionInfo> {
         let mut cmd = Command::new(azlin_path);
         cmd.args([
             "connect",
@@ -310,6 +313,3 @@ pub(super) fn is_executable_file(path: &Path) -> bool {
 pub(super) fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
-
-
-

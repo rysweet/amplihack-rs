@@ -1,5 +1,5 @@
-use super::*;
 use super::helpers::create_exe_stub;
+use super::*;
 use std::fs;
 
 // ─── TDD: Group 5 — find_hooks_binary resolution ─────────────────────────
@@ -101,10 +101,8 @@ fn validate_hook_command_string_rejects_backtick() {
 #[test]
 fn validate_hook_command_string_accepts_valid_binary_subcmd() {
     assert!(
-        binary::validate_hook_command_string(
-            "/home/user/.local/bin/amplihack-hooks session-start"
-        )
-        .is_ok(),
+        binary::validate_hook_command_string("/home/user/.local/bin/amplihack-hooks session-start")
+            .is_ok(),
         "must accept plain binary + subcommand"
     );
 }

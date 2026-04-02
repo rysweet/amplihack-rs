@@ -17,7 +17,11 @@ pub(super) struct FleetAdmiral {
 }
 
 impl FleetAdmiral {
-    pub(super) fn new(azlin_path: PathBuf, task_queue: TaskQueue, log_dir: Option<PathBuf>) -> Result<Self> {
+    pub(super) fn new(
+        azlin_path: PathBuf,
+        task_queue: TaskQueue,
+        log_dir: Option<PathBuf>,
+    ) -> Result<Self> {
         if let Some(dir) = &log_dir {
             fs::create_dir_all(dir)
                 .with_context(|| format!("failed to create {}", dir.display()))?;
@@ -255,7 +259,10 @@ impl FleetAdmiral {
         actions
     }
 
-    pub(super) fn batch_assign_actions(&self, prior_actions: &[DirectorAction]) -> Vec<DirectorAction> {
+    pub(super) fn batch_assign_actions(
+        &self,
+        prior_actions: &[DirectorAction],
+    ) -> Vec<DirectorAction> {
         let mut queued = self
             .task_queue
             .tasks
@@ -322,7 +329,10 @@ impl FleetAdmiral {
         actions
     }
 
-    pub(super) fn act(&mut self, actions: &[DirectorAction]) -> Result<Vec<(DirectorAction, String)>> {
+    pub(super) fn act(
+        &mut self,
+        actions: &[DirectorAction],
+    ) -> Result<Vec<(DirectorAction, String)>> {
         let mut results = Vec::new();
         for action in actions {
             let outcome = match self.execute_action(action) {
@@ -334,5 +344,4 @@ impl FleetAdmiral {
         }
         Ok(results)
     }
-
 }

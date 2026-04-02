@@ -43,10 +43,7 @@ impl ModeDetector {
     /// sub-directories.
     pub fn has_local_installation(project_dir: &Path) -> bool {
         let claude_dir = project_dir.join(".claude");
-        claude_dir.is_dir()
-            && ESSENTIAL_DIRS
-                .iter()
-                .all(|d| claude_dir.join(d).is_dir())
+        claude_dir.is_dir() && ESSENTIAL_DIRS.iter().all(|d| claude_dir.join(d).is_dir())
     }
 
     /// Check whether `~/.amplihack/.claude/` contains a plugin manifest.
@@ -185,7 +182,10 @@ mod tests {
     #[test]
     fn get_claude_dir_none() {
         let dir = TempDir::new().unwrap();
-        assert_eq!(ModeDetector::get_claude_dir(&ClaudeMode::None, dir.path()), None);
+        assert_eq!(
+            ModeDetector::get_claude_dir(&ClaudeMode::None, dir.path()),
+            None
+        );
     }
 
     #[test]

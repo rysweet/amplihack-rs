@@ -240,8 +240,8 @@ fn test_wait_for_child_returns_zero_on_normal_success() {
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     let cmd = Command::new("true"); // always exits 0 on Unix
     let mut child = ManagedChild::spawn(cmd).expect("failed to spawn 'true'");
@@ -265,8 +265,8 @@ fn test_wait_for_child_returns_nonzero_on_normal_failure() {
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     let cmd = Command::new("false"); // always exits 1 on Unix
     let mut child = ManagedChild::spawn(cmd).expect("failed to spawn 'false'");
@@ -315,8 +315,8 @@ fn test_wait_for_child_returns_zero_when_killed_by_sigint() {
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     // Spawn a shell that immediately sends SIGINT to itself.
     // This models a user pressing Ctrl+C while the claude binary is running.
@@ -348,8 +348,8 @@ fn test_wait_for_child_returns_zero_when_shutdown_flag_set() {
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     // Spawn a long-running process that would normally run for 60 seconds
     let mut cmd = Command::new("sleep");
@@ -360,8 +360,8 @@ fn test_wait_for_child_returns_zero_when_shutdown_flag_set() {
     let shutdown = Arc::new(AtomicBool::new(true));
     shutdown.store(true, Ordering::Relaxed);
 
-    let exit_code = wait_for_child_or_signal(&mut child, &shutdown)
-        .expect("wait_for_child_or_signal failed");
+    let exit_code =
+        wait_for_child_or_signal(&mut child, &shutdown).expect("wait_for_child_or_signal failed");
 
     assert_eq!(
         exit_code, 0,

@@ -1,6 +1,6 @@
-use super::analysis;
 use super::PowerSteeringConfig;
 use super::TranscriptMessage;
+use super::analysis;
 use amplihack_types::{ProjectDirs, sanitize_session_id};
 use serde_json::Value;
 use std::fs;

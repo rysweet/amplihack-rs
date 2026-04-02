@@ -47,10 +47,7 @@ pub enum ForkDecision {
         remaining_mins: u64,
     },
     /// Fork should be triggered now.
-    ShouldFork {
-        elapsed_mins: u64,
-        fork_number: u32,
-    },
+    ShouldFork { elapsed_mins: u64, fork_number: u32 },
     /// Forking is disabled.
     Disabled,
     /// Max forks reached, cannot fork again.
@@ -94,11 +91,7 @@ impl ForkManager {
                 fork_number: count + 1,
             }
         } else {
-            let remaining = threshold
-                .checked_sub(elapsed)
-                .unwrap_or_default()
-                .as_secs()
-                / 60;
+            let remaining = threshold.checked_sub(elapsed).unwrap_or_default().as_secs() / 60;
             ForkDecision::NotYet {
                 elapsed_mins,
                 remaining_mins: remaining,
@@ -127,11 +120,7 @@ impl ForkManager {
     pub fn remaining_mins(&self) -> u64 {
         let elapsed = self.session_start.elapsed();
         let threshold = Duration::from_secs(self.config.threshold_mins * 60);
-        threshold
-            .checked_sub(elapsed)
-            .unwrap_or_default()
-            .as_secs()
-            / 60
+        threshold.checked_sub(elapsed).unwrap_or_default().as_secs() / 60
     }
 
     /// Minutes remaining before hard session limit.
@@ -151,9 +140,7 @@ impl ForkManager {
                 "⚠️ Session has been running for {elapsed_mins} minutes. \
                  Forking session (fork #{fork_number}) to avoid {HARD_LIMIT_MINS}-minute limit."
             )),
-            ForkDecision::NotYet {
-                remaining_mins, ..
-            } if remaining_mins <= 5 => Some(format!(
+            ForkDecision::NotYet { remaining_mins, .. } if remaining_mins <= 5 => Some(format!(
                 "⏰ {remaining_mins} minutes until session fork threshold."
             )),
             _ => None,

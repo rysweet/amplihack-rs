@@ -106,10 +106,7 @@ mod tests {
 
     #[test]
     fn consecutive_hyphens_collapsed() {
-        assert_eq!(
-            sanitize_branch_name("a --- b --- c"),
-            "a-b-c"
-        );
+        assert_eq!(sanitize_branch_name("a --- b --- c"), "a-b-c");
     }
 
     #[test]
@@ -121,18 +118,12 @@ mod tests {
 
     #[test]
     fn trailing_hyphens_stripped() {
-        assert_eq!(
-            sanitize_branch_name("fix trailing---"),
-            "fix-trailing"
-        );
+        assert_eq!(sanitize_branch_name("fix trailing---"), "fix-trailing");
     }
 
     #[test]
     fn trailing_dots_stripped() {
-        assert_eq!(
-            sanitize_branch_name("version 1.0."),
-            "version-1.0"
-        );
+        assert_eq!(sanitize_branch_name("version 1.0."), "version-1.0");
     }
 
     #[test]
@@ -149,7 +140,7 @@ mod tests {
     fn unicode_replaced() {
         assert_eq!(
             sanitize_branch_name("日本語テスト"),
-            ""  // all non-ascii → hyphens → collapsed → stripped
+            "" // all non-ascii → hyphens → collapsed → stripped
         );
     }
 
@@ -163,18 +154,12 @@ mod tests {
 
     #[test]
     fn make_branch_name_empty_desc() {
-        assert_eq!(
-            make_branch_name("fix", ""),
-            "fix/unnamed"
-        );
+        assert_eq!(make_branch_name("fix", ""), "fix/unnamed");
     }
 
     #[test]
     fn preserves_dots_and_underscores() {
-        assert_eq!(
-            sanitize_branch_name("v1.0_release"),
-            "v1.0_release"
-        );
+        assert_eq!(sanitize_branch_name("v1.0_release"), "v1.0_release");
     }
 
     #[test]

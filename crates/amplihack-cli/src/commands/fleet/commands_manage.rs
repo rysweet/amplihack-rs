@@ -128,4 +128,3 @@ pub(super) fn run_add_task(
     );
     Ok(())
 }
-

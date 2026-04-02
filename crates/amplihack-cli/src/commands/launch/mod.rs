@@ -31,10 +31,9 @@ use context::persist_launcher_context;
 // `#[cfg(test)] mod tests_*` children via `use super::*`.
 #[cfg(test)]
 use blarify::{
-    blarify_mode, consent_cache_path, has_blarify_consent,
-    maybe_run_blarify_indexing_prompt_with, parse_blarify_prompt_choice,
+    BlarifyIndexAction, BlarifyMode, BlarifyPromptChoice, blarify_mode, consent_cache_path,
+    has_blarify_consent, maybe_run_blarify_indexing_prompt_with, parse_blarify_prompt_choice,
     resolve_blarify_index_action, save_blarify_consent, should_prompt_blarify_indexing,
-    BlarifyIndexAction, BlarifyMode, BlarifyPromptChoice,
 };
 #[cfg(test)]
 use checkout::{parse_github_repo_uri, resolve_checkout_repo_in};
@@ -58,8 +57,8 @@ use crate::util::is_noninteractive;
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 const POWER_STEERING_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);

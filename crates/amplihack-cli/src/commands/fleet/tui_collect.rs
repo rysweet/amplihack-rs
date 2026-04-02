@@ -34,7 +34,11 @@ pub(super) fn background_create_session(azlin_path: &Path, vm_name: &str, agent:
     }
 }
 
-pub(super) fn render_tui_once(azlin_path: &Path, interval: u64, capture_lines: usize) -> Result<String> {
+pub(super) fn render_tui_once(
+    azlin_path: &Path,
+    interval: u64,
+    capture_lines: usize,
+) -> Result<String> {
     let state = collect_observed_fleet_state(azlin_path, capture_lines)?;
     let mut ui_state = FleetTuiUiState::default();
     ui_state.sync_to_state(&state);
@@ -42,7 +46,10 @@ pub(super) fn render_tui_once(azlin_path: &Path, interval: u64, capture_lines: u
 }
 
 /// Return the terminal width, capped at 100 columns for readability.
-pub(super) fn collect_observed_fleet_state(azlin_path: &Path, capture_lines: usize) -> Result<FleetState> {
+pub(super) fn collect_observed_fleet_state(
+    azlin_path: &Path,
+    capture_lines: usize,
+) -> Result<FleetState> {
     collect_observed_fleet_state_with_progress(azlin_path, capture_lines, |_, _| Ok(()))
 }
 
@@ -132,6 +139,3 @@ where
 
     Ok(state)
 }
-
-
-

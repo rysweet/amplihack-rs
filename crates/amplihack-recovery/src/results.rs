@@ -18,16 +18,14 @@ pub fn recovery_run_to_json(run: &RecoveryRun) -> serde_json::Value {
 /// Write the recovery ledger to a JSON file.
 pub fn write_recovery_ledger(run: &RecoveryRun, output_path: &Path) -> Result<()> {
     let json = recovery_run_to_json(run);
-    let pretty = serde_json::to_string_pretty(&json)
-        .context("failed to serialize recovery ledger")?;
+    let pretty =
+        serde_json::to_string_pretty(&json).context("failed to serialize recovery ledger")?;
 
     if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)
-            .context("failed to create ledger output directory")?;
+        fs::create_dir_all(parent).context("failed to create ledger output directory")?;
     }
 
-    fs::write(output_path, &pretty)
-        .context("failed to write recovery ledger")?;
+    fs::write(output_path, &pretty).context("failed to write recovery ledger")?;
 
     info!("wrote recovery ledger to {}", output_path.display());
     Ok(())
@@ -36,7 +34,7 @@ pub fn write_recovery_ledger(run: &RecoveryRun, output_path: &Path) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{RecoveryRun, StageStatus, Stage1Result, FixVerifyMode};
+    use crate::models::{FixVerifyMode, RecoveryRun, Stage1Result, StageStatus};
     use chrono::Utc;
     use std::path::PathBuf;
 

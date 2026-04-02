@@ -5,9 +5,7 @@ use std::fs;
 
 /// Load user preferences from USER_PREFERENCES.md.
 /// Also detects `## Learned Patterns` section.
-pub(crate) fn load_user_preferences_with_patterns(
-    dirs: &ProjectDirs,
-) -> (Option<String>, bool) {
+pub(crate) fn load_user_preferences_with_patterns(dirs: &ProjectDirs) -> (Option<String>, bool) {
     let mut candidates = Vec::new();
     if let Some(path) = dirs.resolve_preferences_file() {
         candidates.push(path);

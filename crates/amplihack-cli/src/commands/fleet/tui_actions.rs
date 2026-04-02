@@ -124,7 +124,10 @@ pub(super) fn run_tui_edit(ui_state: &mut FleetTuiUiState) {
     ui_state.editor_active = false;
 }
 
-pub(super) fn handle_tui_inline_input_key(ui_state: &mut FleetTuiUiState, key: DashboardKey) -> Result<()> {
+pub(super) fn handle_tui_inline_input_key(
+    ui_state: &mut FleetTuiUiState,
+    key: DashboardKey,
+) -> Result<()> {
     match key {
         DashboardKey::Char('\n') | DashboardKey::Char('\r') => {
             if let Some((mode, value)) = ui_state.finish_inline_input() {
@@ -195,7 +198,10 @@ pub(super) fn run_tui_edit_input(ui_state: &mut FleetTuiUiState) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn run_tui_apply_edited(azlin_path: &Path, ui_state: &mut FleetTuiUiState) -> Result<()> {
+pub(super) fn run_tui_apply_edited(
+    azlin_path: &Path,
+    ui_state: &mut FleetTuiUiState,
+) -> Result<()> {
     let Some(mut decision) = ui_state.editor_decision.clone() else {
         ui_state.status_message =
             Some("No edited proposal to apply. Press 'e' to open the editor.".to_string());
@@ -288,7 +294,10 @@ pub(super) fn run_tui_adopt_selected_session(
 /// T1: Dispatch session creation to the background worker thread.
 /// When background threads are not available (tests, non-interactive mode),
 /// falls back to a synchronous blocking call.
-pub(super) fn run_tui_create_session(azlin_path: &Path, ui_state: &mut FleetTuiUiState) -> Result<()> {
+pub(super) fn run_tui_create_session(
+    azlin_path: &Path,
+    ui_state: &mut FleetTuiUiState,
+) -> Result<()> {
     let Some(vm_name) = ui_state.new_session_vm.as_deref() else {
         ui_state.status_message = Some("No running VM selected for session creation.".to_string());
         return Ok(());
@@ -324,7 +333,10 @@ pub(super) fn run_tui_add_project(ui_state: &mut FleetTuiUiState) -> Result<()> 
     Ok(())
 }
 
-pub(super) fn add_project_from_repo_input(ui_state: &mut FleetTuiUiState, repo_url: &str) -> Result<()> {
+pub(super) fn add_project_from_repo_input(
+    ui_state: &mut FleetTuiUiState,
+    repo_url: &str,
+) -> Result<()> {
     let repo_url = repo_url.trim();
     if repo_url.is_empty() {
         ui_state.status_message = Some("Project add cancelled.".to_string());
@@ -375,5 +387,3 @@ pub(super) fn run_tui_remove_project(ui_state: &mut FleetTuiUiState) -> Result<(
     ));
     Ok(())
 }
-
-

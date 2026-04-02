@@ -13,10 +13,7 @@ fn make_binary(path: &str) -> BinaryInfo {
 }
 
 fn with_uvx_detection_disabled<T>(f: impl FnOnce() -> T) -> T {
-    let _home_guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _cwd_guard = cwd_env_lock()
+    let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let cwd = tempfile::tempdir().unwrap();
@@ -277,5 +274,3 @@ fn build_command_without_skip_permissions_and_with_flags() {
         assert_eq!(args, &["--resume", "--continue", "--model", "opus"]);
     });
 }
-
-

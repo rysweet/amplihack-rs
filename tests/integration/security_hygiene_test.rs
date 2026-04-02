@@ -59,12 +59,55 @@ macro_rules! require_binary {
 }
 
 /// Path to the fleet.rs source file (used for static analysis tests).
+///
+/// After the module split (PR #121), `fleet.rs` became `commands/fleet/` dir.
+/// Returns the directory containing the fleet module source files.
 fn fleet_rs_source() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop(); // tests/ → workspace root
     path.pop();
-    path.push("crates/amplihack-cli/src/commands/fleet.rs");
+    path.push("crates/amplihack-cli/src/commands/fleet");
     path
+}
+
+/// Read all fleet module source as a single concatenated string for static analysis.
+fn fleet_rs_combined_source() -> String {
+    let dir = fleet_rs_source();
+    assert!(dir.exists(), "fleet module not found at {}", dir.display());
+    let mut combined = String::new();
+    for file in collect_rs_files(&dir) {
+        if let Ok(content) = fs::read_to_string(&file) {
+            combined.push_str(&format!("// --- {} ---\n", file.display()));
+            combined.push_str(&content);
+            combined.push('\n');
+        }
+    }
+    assert!(!combined.is_empty(), "No .rs files found in fleet module");
+    combined
+}
+
+/// Read all fleet_local module source as a single concatenated string.
+fn fleet_local_combined_source() -> Option<String> {
+    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    dir.pop();
+    dir.pop();
+    dir.push("crates/amplihack-cli/src/fleet_local");
+    if !dir.exists() {
+        return None;
+    }
+    let mut combined = String::new();
+    for file in collect_rs_files(&dir) {
+        if let Ok(content) = fs::read_to_string(&file) {
+            combined.push_str(&format!("// --- {} ---\n", file.display()));
+            combined.push_str(&content);
+            combined.push('\n');
+        }
+    }
+    if combined.is_empty() {
+        None
+    } else {
+        Some(combined)
+    }
 }
 
 /// All Rust source files under the fleet module scope.
@@ -133,15 +176,7 @@ fn tc_sec_01_cargo_lock_exists_for_audit() {
 /// // REGRESSION GUARD
 #[test]
 fn tc_sec_02_fleet_rs_no_command_new_sh() {
-    let source_path = fleet_rs_source();
-    assert!(
-        source_path.exists(),
-        "fleet.rs not found at expected path: {}",
-        source_path.display()
-    );
-
-    let source =
-        fs::read_to_string(&source_path).unwrap_or_else(|e| panic!("failed to read fleet.rs: {e}"));
+    let source = fleet_rs_combined_source();
 
     // Look for patterns that would indicate shell-via-sh or shell-via-bash.
     // We allow these in comments and string tests, but NOT in executable code
@@ -179,21 +214,13 @@ fn tc_sec_02_fleet_rs_no_command_new_sh() {
 /// // REGRESSION GUARD
 #[test]
 fn tc_sec_03_fleet_local_rs_no_command_new_sh() {
-    let mut source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    source_path.pop();
-    source_path.pop();
-    source_path.push("crates/amplihack-cli/src/fleet_local.rs");
-
-    if !source_path.exists() {
-        eprintln!(
-            "SKIP: fleet_local.rs not found at {}",
-            source_path.display()
-        );
-        return;
-    }
-
-    let source = fs::read_to_string(&source_path)
-        .unwrap_or_else(|e| panic!("failed to read fleet_local.rs: {e}"));
+    let source = match fleet_local_combined_source() {
+        Some(s) => s,
+        None => {
+            eprintln!("SKIP: fleet_local module not found");
+            return;
+        }
+    };
 
     let forbidden_patterns = [
         r#"Command::new("sh")"#,
@@ -235,19 +262,18 @@ fn tc_sec_03_fleet_local_rs_no_command_new_sh() {
 /// // REGRESSION GUARD
 #[test]
 fn tc_sec_04_no_shell_minus_c_arg_pattern_in_fleet_source() {
-    // Only scan fleet-specific files: the fleet command and local session manager.
-    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    root.pop();
-    root.pop();
-    root.push("crates/amplihack-cli/src");
+    // Scan fleet module directories instead of old single files.
+    let fleet_source = fleet_rs_combined_source();
+    let fleet_local_source = fleet_local_combined_source().unwrap_or_default();
+    let combined_sources = [
+        ("fleet/", fleet_source.as_str()),
+        ("fleet_local/", fleet_local_source.as_str()),
+    ];
 
-    let fleet_files = [root.join("commands/fleet.rs"), root.join("fleet_local.rs")];
-
-    for source_path in &fleet_files {
-        let source = match fs::read_to_string(source_path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
+    for (label, source) in &combined_sources {
+        if source.is_empty() {
+            continue;
+        }
 
         // Heuristic: look for `.arg("-c")` or `.args(["-c"` in non-comment lines.
         // In fleet.rs, `-c` should only appear as a tmux window index flag or
@@ -261,11 +287,11 @@ fn tc_sec_04_no_shell_minus_c_arg_pattern_in_fleet_source() {
             if trimmed.contains(r#".arg("-c")"#) || trimmed.contains(r#".args(["-c""#) {
                 panic!(
                     "SECURITY VIOLATION: potential shell -c injection at {}:{}: `{}`.\n\
-                     In fleet.rs, '-c' must not appear as a command argument — it \
+                     '-c' must not appear as a command argument — it \
                      indicates shell dispatch with user-controlled data.\n\
                      If this is a legitimate non-shell use of '-c', add a \
                      `// SEC-SHELL-C: <justification>` comment on the same line.",
-                    source_path.display(),
+                    label,
                     i + 1,
                     trimmed
                 );
@@ -383,9 +409,7 @@ fn tc_sec_06_json_persist_file_mode_is_0600_regardless_of_umask() {
 /// // EXPECTED FAIL until all persist() call sites are audited and annotated.
 #[test]
 fn tc_sec_07_every_persist_call_site_has_permission_annotation() {
-    let source_path = fleet_rs_source();
-    assert!(source_path.exists(), "fleet.rs not found");
-    let source = fs::read_to_string(&source_path).expect("read fleet.rs");
+    let source = fleet_rs_combined_source();
 
     let lines: Vec<&str> = source.lines().collect();
     let mut violations: Vec<usize> = Vec::new();
@@ -713,13 +737,11 @@ fn tc_sec_14_fleet_scout_rejects_all_shell_metacharacters_in_session_name() {
 /// // REGRESSION GUARD
 #[test]
 fn tc_sec_15_shell_single_quote_fn_present_in_source() {
-    let source_path = fleet_rs_source();
-    assert!(source_path.exists(), "fleet.rs not found");
-    let source = fs::read_to_string(&source_path).expect("read fleet.rs");
+    let source = fleet_rs_combined_source();
 
     assert!(
         source.contains("fn shell_single_quote("),
-        "fleet.rs must define `fn shell_single_quote()` to protect shell arguments."
+        "fleet module must define `fn shell_single_quote()` to protect shell arguments."
     );
 }
 
@@ -732,13 +754,12 @@ fn tc_sec_15_shell_single_quote_fn_present_in_source() {
 /// // REGRESSION GUARD
 #[test]
 fn tc_sec_16_shell_single_quote_handles_empty_string_in_source() {
-    let source_path = fleet_rs_source();
-    let source = fs::read_to_string(&source_path).expect("read fleet.rs");
+    let source = fleet_rs_combined_source();
 
     assert!(
         source.contains(r#"return "''".to_string()"#),
         "shell_single_quote must handle the empty string by returning `''`. \
-         Missing guard in fleet.rs source."
+         Missing guard in fleet module source."
     );
 }
 
@@ -748,13 +769,12 @@ fn tc_sec_16_shell_single_quote_handles_empty_string_in_source() {
 /// // REGRESSION GUARD
 #[test]
 fn tc_sec_17_shell_single_quote_escapes_embedded_single_quotes_in_source() {
-    let source_path = fleet_rs_source();
-    let source = fs::read_to_string(&source_path).expect("read fleet.rs");
+    let source = fleet_rs_combined_source();
 
     assert!(
         source.contains(r"'\''"),
         "shell_single_quote must escape embedded single quotes as `'\\''`. \
-         Missing escape sequence in fleet.rs source."
+         Missing escape sequence in fleet module source."
     );
 }
 
@@ -768,8 +788,7 @@ fn tc_sec_17_shell_single_quote_escapes_embedded_single_quotes_in_source() {
 /// // REGRESSION GUARD
 #[test]
 fn tc_sec_18_azlin_commands_use_args_array_not_shell_string() {
-    let source_path = fleet_rs_source();
-    let source = fs::read_to_string(&source_path).expect("read fleet.rs");
+    let source = fleet_rs_combined_source();
 
     let lines: Vec<&str> = source.lines().collect();
     let mut violations: Vec<usize> = Vec::new();
@@ -817,8 +836,7 @@ fn tc_sec_18_azlin_commands_use_args_array_not_shell_string() {
 /// // REGRESSION GUARD
 #[test]
 fn tc_sec_19_tmux_shell_commands_use_shell_single_quote() {
-    let source_path = fleet_rs_source();
-    let source = fs::read_to_string(&source_path).expect("read fleet.rs");
+    let source = fleet_rs_combined_source();
 
     // Find all format strings containing tmux commands.
     // For each one, verify it calls shell_single_quote() rather than
@@ -1004,15 +1022,14 @@ fn tc_sec_21_fleet_status_error_does_not_expose_home_path() {
 /// // REGRESSION GUARD
 #[test]
 fn tc_sec_22_timeout_error_message_format_in_source() {
-    let source_path = fleet_rs_source();
-    let source = fs::read_to_string(&source_path).expect("read fleet.rs");
+    let source = fleet_rs_combined_source();
 
     // The timeout error currently includes "subprocess timed out after N seconds (pid P)".
     // This is acceptable for internal debugging but must include the word "timed out"
     // so operators know what happened, AND must NOT include an absolute path.
     assert!(
         source.contains("timed out after"),
-        "fleet.rs timeout error message must include 'timed out after' for operator clarity."
+        "fleet module timeout error message must include 'timed out after' for operator clarity."
     );
 
     // Verify the timeout error message template does NOT contain a raw $HOME or
@@ -1020,7 +1037,7 @@ fn tc_sec_22_timeout_error_message_format_in_source() {
     let timeout_line = source
         .lines()
         .find(|l| l.contains("timed out after"))
-        .expect("'timed out after' not found in fleet.rs");
+        .expect("'timed out after' not found in fleet module");
 
     assert!(
         !timeout_line.contains("/home/") && !timeout_line.contains("HOME"),
@@ -1081,8 +1098,7 @@ fn tc_sec_23_workspace_cargo_toml_no_wildcard_versions() {
 /// // REGRESSION GUARD
 #[test]
 fn tc_sec_24_kill_command_pid_is_numeric_to_string() {
-    let source_path = fleet_rs_source();
-    let source = fs::read_to_string(&source_path).expect("read fleet.rs");
+    let source = fleet_rs_combined_source();
 
     let lines: Vec<&str> = source.lines().collect();
     for (i, line) in lines.iter().enumerate() {

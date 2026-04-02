@@ -240,9 +240,6 @@ mod tests {
         let _home_guard = home_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _cwd_guard = cwd_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let project_dir = dir.path().join("project");
         fs::create_dir_all(project_dir.join(".claude/runtime")).unwrap();
@@ -281,9 +278,6 @@ mod tests {
     #[test]
     fn ignores_completed_session_in_sessions_log() {
         let _home_guard = home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _cwd_guard = cwd_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();

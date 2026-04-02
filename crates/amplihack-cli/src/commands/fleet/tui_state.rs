@@ -256,4 +256,3 @@ impl Default for FleetTuiUiState {
         }
     }
 }
-

@@ -24,9 +24,7 @@ pub struct AmplifierInfo {
 pub fn check_amplifier() -> AmplifierInfo {
     match Command::new("amplifier").arg("--version").output() {
         Ok(output) if output.status.success() => {
-            let version = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .to_string();
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let path = which_binary("amplifier");
             info!(version = %version, "Amplifier detected");
             AmplifierInfo {
@@ -100,12 +98,10 @@ pub fn sync_agents_md(project_path: &Path) -> Result<()> {
 
     if agents_md.exists() && !claude_md.exists() {
         info!("Syncing AGENTS.md → CLAUDE.md for amplifier compatibility");
-        std::fs::copy(&agents_md, &claude_md)
-            .context("failed to copy AGENTS.md to CLAUDE.md")?;
+        std::fs::copy(&agents_md, &claude_md).context("failed to copy AGENTS.md to CLAUDE.md")?;
     } else if claude_md.exists() && !agents_md.exists() {
         info!("Syncing CLAUDE.md → AGENTS.md");
-        std::fs::copy(&claude_md, &agents_md)
-            .context("failed to copy CLAUDE.md to AGENTS.md")?;
+        std::fs::copy(&claude_md, &agents_md).context("failed to copy CLAUDE.md to AGENTS.md")?;
     }
     Ok(())
 }
@@ -141,9 +137,7 @@ pub fn ensure_and_build(
         if auto_install {
             install_amplifier()?;
         } else {
-            anyhow::bail!(
-                "Amplifier is not installed. Run `uv tool install amplifier-cli`."
-            );
+            anyhow::bail!("Amplifier is not installed. Run `uv tool install amplifier-cli`.");
         }
     }
     ensure_bundle_registered(project_path)?;
@@ -216,7 +210,13 @@ mod tests {
         std::fs::write(dir.path().join("CLAUDE.md"), "claude").unwrap();
         sync_agents_md(dir.path()).unwrap();
         // Neither should be overwritten
-        assert_eq!(std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap(), "agents");
-        assert_eq!(std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap(), "claude");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap(),
+            "agents"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("CLAUDE.md")).unwrap(),
+            "claude"
+        );
     }
 }
