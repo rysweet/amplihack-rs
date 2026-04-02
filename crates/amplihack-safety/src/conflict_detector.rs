@@ -149,12 +149,19 @@ pub fn check_conflicts_with_timeout(
     essential_dirs: &[&str],
     timeout: Duration,
 ) -> ConflictDetectionResult {
-    // For the timeout, we spawn the git commands inside the detector
-    // which already have implicit OS-level timeouts. The Duration is stored
-    // for documentation/future use.
-    let _ = timeout;
     let detector = GitConflictDetector::new(target_dir);
-    detector.detect_conflicts(essential_dirs)
+    let (tx, rx) = std::sync::mpsc::channel();
+    let dirs: Vec<String> = essential_dirs.iter().map(|s| s.to_string()).collect();
+    let det = detector;
+    std::thread::spawn(move || {
+        let dir_refs: Vec<&str> = dirs.iter().map(|s| s.as_str()).collect();
+        let _ = tx.send(det.detect_conflicts(&dir_refs));
+    });
+    rx.recv_timeout(timeout).unwrap_or(ConflictDetectionResult {
+        has_conflicts: false,
+        conflicting_files: Vec::new(),
+        is_git_repo: false,
+    })
 }
 
 #[cfg(test)]
