@@ -1,6 +1,6 @@
 use super::super::*;
-use anyhow::Result;
 use crate::commands::memory::BackendChoice;
+use anyhow::Result;
 
 /// Maximum allowed JSON file size for graph-db imports: 500 MiB.
 /// Mirrors the same guard in the SQLite backend.
@@ -41,7 +41,9 @@ pub(in crate::commands::memory::transfer) fn open_hierarchical_transfer_backend_
     choice: BackendChoice,
 ) -> Box<dyn HierarchicalTransferBackend> {
     match choice {
-        BackendChoice::Sqlite => Box::new(super::super::sqlite_backend::SqliteHierarchicalTransferBackend),
+        BackendChoice::Sqlite => {
+            Box::new(super::super::sqlite_backend::SqliteHierarchicalTransferBackend)
+        }
         BackendChoice::GraphDb => Box::new(GraphDbHierarchicalTransferBackend),
     }
 }

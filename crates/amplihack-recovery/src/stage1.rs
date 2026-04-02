@@ -156,7 +156,11 @@ mod tests {
             .unwrap();
 
         let result = run_stage1(repo, None).unwrap();
-        assert!(result.protected_staged_files.contains(&"staged.txt".to_string()));
+        assert!(
+            result
+                .protected_staged_files
+                .contains(&"staged.txt".to_string())
+        );
     }
 
     #[test]

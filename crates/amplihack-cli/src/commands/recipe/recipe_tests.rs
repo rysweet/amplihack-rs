@@ -144,9 +144,6 @@ fn resolve_recipe_path_finds_named_recipe_in_project_local_dir() {
 
 #[test]
 fn resolve_recipe_path_prefers_cwd_for_bare_yaml_filename_with_working_dir_override() {
-    let _cwd_guard = crate::test_support::cwd_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempdir().unwrap();
 
     let cwd_recipe = temp.path().join("demo.yaml");
@@ -198,7 +195,11 @@ fn resolve_recipe_path_searches_repo_root_from_nested_working_dir() {
     let recipes_dir = temp.path().join("amplifier-bundle").join("recipes");
     fs::create_dir_all(&recipes_dir).unwrap();
     let recipe_path = recipes_dir.join("smart-orchestrator.yaml");
-    fs::write(&recipe_path, "name: smart-orchestrator\nsteps:\n  - id: demo\n    type: bash\n    command: echo hi\n").unwrap();
+    fs::write(
+        &recipe_path,
+        "name: smart-orchestrator\nsteps:\n  - id: demo\n    type: bash\n    command: echo hi\n",
+    )
+    .unwrap();
 
     let resolved = resolve_recipe_path("smart-orchestrator", &nested_working_dir).unwrap();
 
@@ -238,9 +239,6 @@ fn amplihack_home_recipe_dir_warns_for_non_directory_root_with_resolved_path() {
     let _home_guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _cwd_guard = crate::test_support::cwd_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempdir().unwrap();
     let invalid_root = temp.path().join("invalid-home");
     fs::write(&invalid_root, "not a directory").unwrap();
@@ -263,9 +261,6 @@ fn amplihack_home_recipe_dir_warns_when_bundle_recipes_subdir_is_missing() {
     let _home_guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _cwd_guard = crate::test_support::cwd_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempdir().unwrap();
     let amplihack_home = temp.path().join("amplihack-home");
     fs::create_dir_all(&amplihack_home).unwrap();
@@ -279,9 +274,7 @@ fn amplihack_home_recipe_dir_warns_when_bundle_recipes_subdir_is_missing() {
 
     assert!(resolved.is_none());
     assert_eq!(warnings.len(), 1);
-    assert!(
-        warnings[0].contains("does not contain a usable amplifier-bundle/recipes directory")
-    );
+    assert!(warnings[0].contains("does not contain a usable amplifier-bundle/recipes directory"));
     assert!(warnings[0].contains(&amplihack_home.display().to_string()));
     assert!(warnings[0].contains(&expected_recipe_dir.display().to_string()));
 }

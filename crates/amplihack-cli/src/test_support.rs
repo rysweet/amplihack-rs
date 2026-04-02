@@ -1,14 +1,23 @@
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
-pub(crate) fn home_env_lock() -> &'static Mutex<()> {
-    static HOME_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    HOME_LOCK.get_or_init(|| Mutex::new(()))
+/// Single global lock for all environment-mutating tests.
+///
+/// Both HOME and CWD mutations must serialize through one lock to prevent
+/// races. Tests that need both HOME and CWD should acquire `env_lock()` once.
+pub(crate) fn env_lock() -> &'static Mutex<()> {
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    ENV_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Alias for `env_lock()` — all env locks use the same underlying mutex.
+pub(crate) fn home_env_lock() -> &'static Mutex<()> {
+    env_lock()
+}
+
+/// Alias for `env_lock()` — all env locks use the same underlying mutex.
 pub(crate) fn cwd_env_lock() -> &'static Mutex<()> {
-    static CWD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    CWD_LOCK.get_or_init(|| Mutex::new(()))
+    env_lock()
 }
 
 pub(crate) fn set_home(path: &Path) -> Option<std::ffi::OsString> {

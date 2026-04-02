@@ -48,13 +48,11 @@ impl RecipeCache {
 
     /// Look up by qualified key or bare name.
     pub fn get(&self, key: &str) -> Option<&RecipeInfo> {
-        self.by_qualified
-            .get(key)
-            .or_else(|| {
-                self.bare_to_qualified
-                    .get(key)
-                    .and_then(|qk| self.by_qualified.get(qk))
-            })
+        self.by_qualified.get(key).or_else(|| {
+            self.bare_to_qualified
+                .get(key)
+                .and_then(|qk| self.by_qualified.get(qk))
+        })
     }
 
     pub fn contains(&self, key: &str) -> bool {
@@ -169,7 +167,11 @@ pub fn verify_global_installation() -> VerifyResult {
         search_dirs_checked: dirs.len(),
         search_dirs_found: found_dirs.len(),
         recipes_found: cache.len(),
-        recipe_names: cache.qualified_keys().iter().map(|s| s.to_string()).collect(),
+        recipe_names: cache
+            .qualified_keys()
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
     }
 }
 
@@ -184,8 +186,8 @@ pub struct VerifyResult {
 
 /// Compute content hash for change detection.
 pub fn file_hash(path: &Path) -> Result<String> {
-    let content = std::fs::read(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let content =
+        std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut hasher = Sha256::new();
     hasher.update(&content);
     Ok(format!("{:x}", hasher.finalize()))
@@ -239,10 +241,7 @@ fn qualified_key(search_dir: &Path, name: &str) -> String {
 }
 
 fn is_recipe_file(path: &Path) -> bool {
-    path.is_file()
-        && path
-            .extension()
-            .is_some_and(|e| e == "yaml" || e == "yml")
+    path.is_file() && path.extension().is_some_and(|e| e == "yaml" || e == "yml")
 }
 
 fn home_dir() -> Option<PathBuf> {

@@ -224,4 +224,5 @@ pub(crate) const AUTH_AZURE_FILES: &[(&str, &str, &str)] = &[
     ),
     ("~/.azure/clouds.config", "~/.azure/clouds.config", "644"),
 ];
-pub(crate) const AUTH_CLAUDE_FILES: &[(&str, &str, &str)] = &[("~/.claude.json", "~/.claude.json", "600")];
+pub(crate) const AUTH_CLAUDE_FILES: &[(&str, &str, &str)] =
+    &[("~/.claude.json", "~/.claude.json", "600")];

@@ -33,9 +33,7 @@ pub fn check_codex() -> CodexInfo {
         .spawn();
     match child.and_then(|c| wait_with_timeout(c, VERSION_CHECK_TIMEOUT)) {
         Ok(output) if output.status.success() => {
-            let version = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .to_string();
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let path = which_binary("codex");
             info!(version = %version, "Codex detected");
             CodexInfo {
@@ -85,8 +83,7 @@ pub fn ensure_latest_codex() -> Result<()> {
 /// Configure Codex for autonomous mode (approval_mode: auto).
 pub fn configure_codex(project_path: &Path) -> Result<()> {
     let config_dir = project_path.join(".codex");
-    std::fs::create_dir_all(&config_dir)
-        .context("failed to create .codex directory")?;
+    std::fs::create_dir_all(&config_dir).context("failed to create .codex directory")?;
     let config_file = config_dir.join("config.yaml");
     if !config_file.exists() {
         std::fs::write(&config_file, "approval_mode: auto\n")
@@ -97,11 +94,7 @@ pub fn configure_codex(project_path: &Path) -> Result<()> {
 }
 
 /// Build the command to launch Codex with the given prompt.
-pub fn build_codex_command(
-    prompt: &str,
-    project_path: &Path,
-    extra_args: &[String],
-) -> Command {
+pub fn build_codex_command(prompt: &str, project_path: &Path, extra_args: &[String]) -> Command {
     let mut cmd = Command::new("codex");
     cmd.current_dir(project_path);
     if !prompt.is_empty() {
@@ -127,9 +120,7 @@ pub fn ensure_and_build(
         if auto_install {
             install_codex()?;
         } else {
-            anyhow::bail!(
-                "Codex is not installed. Run `npm install -g @openai/codex` to install."
-            );
+            anyhow::bail!("Codex is not installed. Run `npm install -g @openai/codex` to install.");
         }
     }
     Ok(build_codex_command(prompt, project_path, extra_args))
@@ -164,7 +155,11 @@ fn wait_with_timeout(
                     let _ = io::Read::read_to_end(&mut s, &mut buf);
                     buf
                 });
-                return Ok(std::process::Output { status, stdout, stderr });
+                return Ok(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
             }
             None if start.elapsed() >= timeout => {
                 let _ = child.kill();
@@ -196,8 +191,10 @@ mod tests {
     fn build_codex_command_sets_env() {
         let cmd = build_codex_command("test prompt", Path::new("/tmp"), &[]);
         let envs: Vec<_> = cmd.get_envs().collect();
-        assert!(envs.iter().any(|(k, v)| *k == "AMPLIHACK_AGENT_BINARY"
-            && v == &Some(std::ffi::OsStr::new("codex"))));
+        assert!(
+            envs.iter().any(|(k, v)| *k == "AMPLIHACK_AGENT_BINARY"
+                && v == &Some(std::ffi::OsStr::new("codex")))
+        );
     }
 
     #[test]

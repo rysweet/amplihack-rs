@@ -68,11 +68,7 @@ impl ExecutionTierCascade {
     }
 
     /// Execute a workflow through the cascade.
-    pub fn execute(
-        &self,
-        workflow: WorkflowType,
-        _context: &serde_json::Value,
-    ) -> ExecutionResult {
+    pub fn execute(&self, workflow: WorkflowType, _context: &serde_json::Value) -> ExecutionResult {
         let start = Instant::now();
         let mut fallback_count = 0u32;
         let mut last_error: Option<String> = None;
@@ -141,14 +137,9 @@ fn is_recipe_runner_enabled() -> bool {
 fn which_recipe_runner() -> Option<std::path::PathBuf> {
     let candidates = ["recipe-runner-rs", "recipe-runner"];
     for name in &candidates {
-        if let Ok(output) = std::process::Command::new("which")
-            .arg(name)
-            .output()
-        {
+        if let Ok(output) = std::process::Command::new("which").arg(name).output() {
             if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .to_string();
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !path.is_empty() {
                     return Some(std::path::PathBuf::from(path));
                 }

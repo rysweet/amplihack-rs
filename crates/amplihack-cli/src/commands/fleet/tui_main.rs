@@ -388,4 +388,3 @@ pub(super) fn run_tui(interval: u64, capture_lines: usize) -> Result<()> {
         .context("failed to flush dashboard teardown")?;
     result
 }
-

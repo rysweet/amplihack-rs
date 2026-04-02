@@ -131,10 +131,7 @@ mod tests {
     #[test]
     fn importance_scoring() {
         assert!(
-            score_importance(
-                "fn main() { println!(\"hello\"); }",
-                MemoryType::Procedural
-            ) > 0.6
+            score_importance("fn main() { println!(\"hello\"); }", MemoryType::Procedural) > 0.6
         );
         assert!(score_importance("ok", MemoryType::Working) < 0.5);
     }

@@ -141,8 +141,12 @@ fn returns_additional_context_without_mutating_prompt() {
 #[test]
 fn detects_python_parity_dev_variants_case_insensitively() {
     assert!(preferences::is_dev_invocation("/DEV implement caching"));
-    assert!(preferences::is_dev_invocation("/Dev add logging middleware"));
-    assert!(preferences::is_dev_invocation("/amplihack:dev continue parity"));
+    assert!(preferences::is_dev_invocation(
+        "/Dev add logging middleware"
+    ));
+    assert!(preferences::is_dev_invocation(
+        "/amplihack:dev continue parity"
+    ));
     assert!(preferences::is_dev_invocation(
         "Please use dev-orchestrator for this"
     ));

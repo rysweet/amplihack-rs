@@ -118,8 +118,11 @@ impl MessageCapture {
     /// Export as a human-readable markdown transcript.
     pub fn export_markdown(&self) -> String {
         let mut md = format!("# Session Transcript: {}\n\n", self.session_id);
-        md.push_str(&format!("Turns: {} | Messages: {}\n\n---\n\n",
-            self.current_turn, self.messages.len()));
+        md.push_str(&format!(
+            "Turns: {} | Messages: {}\n\n---\n\n",
+            self.current_turn,
+            self.messages.len()
+        ));
 
         for msg in &self.messages {
             let role_label = match msg.role {
@@ -127,8 +130,10 @@ impl MessageCapture {
                 MessageRole::Assistant => "**Assistant**",
                 MessageRole::System => "**System**",
             };
-            md.push_str(&format!("### Turn {} ({}) [{}]\n\n",
-                msg.turn, role_label, msg.phase));
+            md.push_str(&format!(
+                "### Turn {} ({}) [{}]\n\n",
+                msg.turn, role_label, msg.phase
+            ));
             md.push_str(&msg.content);
             md.push_str("\n\n---\n\n");
         }
@@ -217,6 +222,9 @@ mod tests {
         capture.capture_user_message("test");
         let ts = capture.messages()[0].timestamp;
         let now = now_secs();
-        assert!((now - ts).abs() < 1.0, "timestamp should be within 1 second");
+        assert!(
+            (now - ts).abs() < 1.0,
+            "timestamp should be within 1 second"
+        );
     }
 }

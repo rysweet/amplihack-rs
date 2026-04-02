@@ -73,15 +73,19 @@ pub(in crate::commands::memory::code_graph) const GRAPH_CODE_GRAPH_SCHEMA: &[&st
     )"#,
 ];
 
-pub(in crate::commands::memory::code_graph) const GRAPH_MEMORY_FILE_LINK_TABLES: &[(&str, &str)] = &[
-    ("EpisodicMemory", "RELATES_TO_FILE_EPISODIC"),
-    ("SemanticMemory", "RELATES_TO_FILE_SEMANTIC"),
-    ("ProceduralMemory", "RELATES_TO_FILE_PROCEDURAL"),
-    ("ProspectiveMemory", "RELATES_TO_FILE_PROSPECTIVE"),
-    ("WorkingMemory", "RELATES_TO_FILE_WORKING"),
-];
+pub(in crate::commands::memory::code_graph) const GRAPH_MEMORY_FILE_LINK_TABLES: &[(&str, &str)] =
+    &[
+        ("EpisodicMemory", "RELATES_TO_FILE_EPISODIC"),
+        ("SemanticMemory", "RELATES_TO_FILE_SEMANTIC"),
+        ("ProceduralMemory", "RELATES_TO_FILE_PROCEDURAL"),
+        ("ProspectiveMemory", "RELATES_TO_FILE_PROSPECTIVE"),
+        ("WorkingMemory", "RELATES_TO_FILE_WORKING"),
+    ];
 
-pub(in crate::commands::memory::code_graph) const GRAPH_MEMORY_FUNCTION_LINK_TABLES: &[(&str, &str)] = &[
+pub(in crate::commands::memory::code_graph) const GRAPH_MEMORY_FUNCTION_LINK_TABLES: &[(
+    &str,
+    &str,
+)] = &[
     ("EpisodicMemory", "RELATES_TO_FUNCTION_EPISODIC"),
     ("SemanticMemory", "RELATES_TO_FUNCTION_SEMANTIC"),
     ("ProceduralMemory", "RELATES_TO_FUNCTION_PROCEDURAL"),

@@ -209,9 +209,11 @@ mod tests {
         let result = run_stage4(tmp.path(), None).unwrap();
         // code-atlas binary won't exist in test env
         assert_eq!(result.status, StageStatus::Blocked);
-        assert!(result
-            .blockers
-            .iter()
-            .any(|b| b.code == "ATLAS_EXEC_FAILED"));
+        assert!(
+            result
+                .blockers
+                .iter()
+                .any(|b| b.code == "ATLAS_EXEC_FAILED")
+        );
     }
 }

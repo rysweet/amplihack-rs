@@ -27,9 +27,6 @@ fn native_reasoner_backend_propagates_shared_env_context() {
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _cwd_guard = cwd_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let reasoner = temp.path().join("claude");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -304,10 +301,8 @@ fn parses_native_queue_command() {
 
 #[test]
 fn parses_native_add_task_command_with_defaults() {
-    match parse_native_fleet_command(&[
-        String::from("add-task"),
-        String::from("Fix the login bug"),
-    ]) {
+    match parse_native_fleet_command(&[String::from("add-task"), String::from("Fix the login bug")])
+    {
         Some(NativeFleetCommand::AddTask {
             prompt,
             repo,
@@ -521,9 +516,8 @@ fn run_setup_returns_exit_error_when_azlin_missing() {
 
 #[test]
 fn parse_vm_json_supports_list_and_location_fallback() {
-    let vms = FleetState::parse_vm_json(
-        r#"[{"name":"vm-1","status":"Running","location":"eastus"}]"#,
-    );
+    let vms =
+        FleetState::parse_vm_json(r#"[{"name":"vm-1","status":"Running","location":"eastus"}]"#);
     assert_eq!(vms.len(), 1);
     assert_eq!(vms[0].name, "vm-1");
     assert_eq!(vms[0].region, "eastus");

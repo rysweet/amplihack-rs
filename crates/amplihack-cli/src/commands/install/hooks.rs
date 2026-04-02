@@ -1,7 +1,7 @@
 //! Hook wrapper construction, matching, and JSON helpers.
 
-use super::types::{HookCommandKind, HookSpec};
 use super::binary::{validate_binary_path, validate_hook_command_string};
+use super::types::{HookCommandKind, HookSpec};
 use serde_json::{Map, Value};
 use std::path::Path;
 

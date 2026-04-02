@@ -151,6 +151,6 @@ fn scalar_to_context_value(value: &Value) -> String {
 #[cfg(test)]
 mod tests_context;
 #[cfg(test)]
-mod tests_format;
-#[cfg(test)]
 mod tests_execute;
+#[cfg(test)]
+mod tests_format;

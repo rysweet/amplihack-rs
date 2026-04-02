@@ -133,9 +133,13 @@ impl MemoryEntry {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.content.len().hash(&mut hasher);
-        self.content.get(..20.min(self.content.len())).hash(&mut hasher);
+        self.content
+            .get(..20.min(self.content.len()))
+            .hash(&mut hasher);
         let len = self.content.len();
-        self.content.get(len.saturating_sub(20)..len).hash(&mut hasher);
+        self.content
+            .get(len.saturating_sub(20)..len)
+            .hash(&mut hasher);
         self.content.hash(&mut hasher);
         hasher.finish()
     }

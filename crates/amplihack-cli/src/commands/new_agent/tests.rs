@@ -56,17 +56,26 @@ fn test_domain_classification() {
         analysis::classify_domain("deploy the application to production"),
         "deployment"
     );
-    assert_eq!(analysis::classify_domain("test the API endpoints"), "testing");
+    assert_eq!(
+        analysis::classify_domain("test the API endpoints"),
+        "testing"
+    );
     assert_eq!(
         analysis::classify_domain("process and transform data"),
         "data-processing"
     );
-    assert_eq!(analysis::classify_domain("something completely generic"), "general");
+    assert_eq!(
+        analysis::classify_domain("something completely generic"),
+        "general"
+    );
 }
 
 #[test]
 fn test_complexity_detection() {
-    assert_eq!(analysis::determine_complexity("simple one step task"), "simple");
+    assert_eq!(
+        analysis::determine_complexity("simple one step task"),
+        "simple"
+    );
     assert_eq!(
         analysis::determine_complexity("complex distributed multi-stage pipeline"),
         "complex"
@@ -79,8 +88,7 @@ fn test_complexity_detection() {
 #[test]
 fn test_e2e_creates_expected_files() {
     let tmp = TempDir::new().unwrap();
-    let prompt_path =
-        write_prompt(tmp.path(), "# Automate deployment\n\nDeploy to production.");
+    let prompt_path = write_prompt(tmp.path(), "# Automate deployment\n\nDeploy to production.");
     let out = tmp.path().join("out");
 
     run_new(
@@ -231,8 +239,7 @@ fn test_enable_spawning_implies_multi_agent() {
     // sub_agents directory should exist (multi-agent was auto-enabled)
     assert!(agent_dir.join("sub_agents").exists());
     // spawner.yaml should have enabled: true
-    let spawner =
-        fs::read_to_string(agent_dir.join("sub_agents").join("spawner.yaml")).unwrap();
+    let spawner = fs::read_to_string(agent_dir.join("sub_agents").join("spawner.yaml")).unwrap();
     assert!(spawner.contains("enabled: true"));
 }
 

@@ -6,7 +6,7 @@
 use crate::file_lock::FileLock;
 use serde::{Serialize, de::DeserializeOwned};
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::NamedTempFile;
@@ -99,6 +99,14 @@ impl AtomicJsonFile {
             source: e,
         })?;
         serde_json::to_writer_pretty(temp.as_file(), value)?;
+        temp.as_file().flush().map_err(|e| AtomicJsonError::Io {
+            path: self.path.clone(),
+            source: e,
+        })?;
+        temp.as_file().sync_all().map_err(|e| AtomicJsonError::Io {
+            path: self.path.clone(),
+            source: e,
+        })?;
         temp.persist(&self.path)?;
         Ok(())
     }
@@ -142,6 +150,14 @@ impl AtomicJsonFile {
             source: e,
         })?;
         serde_json::to_writer_pretty(temp.as_file(), &data)?;
+        temp.as_file().flush().map_err(|e| AtomicJsonError::Io {
+            path: self.path.clone(),
+            source: e,
+        })?;
+        temp.as_file().sync_all().map_err(|e| AtomicJsonError::Io {
+            path: self.path.clone(),
+            source: e,
+        })?;
         temp.persist(&self.path)?;
         Ok(data)
     }

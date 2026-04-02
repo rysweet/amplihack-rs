@@ -186,4 +186,3 @@ pub(super) fn find_binary(name: &str) -> Option<PathBuf> {
         is_executable_file(&candidate).then_some(candidate)
     })
 }
-

@@ -7,8 +7,8 @@ use super::tmux::{
     sanitize_tmux_session_name,
 };
 use super::{
-    collect_observed_fleet_state, strip_osc_sequences, FleetLocalError, RefreshMsg,
-    CAPTURE_CACHE_ENTRY_MAX_BYTES,
+    CAPTURE_CACHE_ENTRY_MAX_BYTES, FleetLocalError, RefreshMsg, collect_observed_fleet_state,
+    strip_osc_sequences,
 };
 
 // ── run_fleet_dashboard ───────────────────────────────────────────────────────

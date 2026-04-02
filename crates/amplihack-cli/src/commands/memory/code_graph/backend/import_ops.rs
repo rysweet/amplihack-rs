@@ -1,6 +1,4 @@
-use super::super::super::backend::graph_db::{
-    GraphDbConnection, GraphDbValue, graph_rows,
-};
+use super::super::super::backend::graph_db::{GraphDbConnection, GraphDbValue, graph_rows};
 use super::super::{BlarifyClass, BlarifyFile, BlarifyFunction, BlarifyImport};
 use super::{node_exists, parse_blarify_timestamp, relationship_exists};
 use anyhow::Result;

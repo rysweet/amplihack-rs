@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::{copilot_home, staged_framework_dir, fs_helpers};
+use super::{copilot_home, fs_helpers, staged_framework_dir};
 
 pub(super) fn stage_agents(source_agents: &Path, copilot_home: &Path) -> Result<usize> {
     let dest = copilot_home.join("agents").join("amplihack");
@@ -13,7 +13,11 @@ pub(super) fn stage_agents(source_agents: &Path, copilot_home: &Path) -> Result<
     fs_helpers::flatten_markdown_tree(source_agents, &dest)
 }
 
-pub(super) fn stage_directory(source_dir: &Path, copilot_home: &Path, dest_name: &str) -> Result<usize> {
+pub(super) fn stage_directory(
+    source_dir: &Path,
+    copilot_home: &Path,
+    dest_name: &str,
+) -> Result<usize> {
     let dest = copilot_home.join(dest_name).join("amplihack");
     fs_helpers::reset_markdown_dir(&dest)?;
     fs_helpers::flatten_markdown_tree(source_dir, &dest)
@@ -130,7 +134,10 @@ pub(super) fn register_plugin(source_commands: &Path, copilot_home: &Path) -> Re
         .as_array_mut()
         .ok_or_else(|| anyhow!("plugins is not an array"))?;
 
-    if !arr.iter().any(|p| p.get("name").and_then(Value::as_str) == Some(plugin_name)) {
+    if !arr
+        .iter()
+        .any(|p| p.get("name").and_then(Value::as_str) == Some(plugin_name))
+    {
         arr.push(json!({
             "name": plugin_name,
             "version": "local",

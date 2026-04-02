@@ -49,8 +49,13 @@ impl MemoryCoordinator {
     /// Pipeline: trivial filter → duplicate check → importance scoring → store
     pub fn store(&mut self, request: StorageRequest) -> Option<String> {
         // Stage 1: Trivial content filter
-        if self.config.trivial_content_filter && is_trivial(&request.content, self.config.min_content_length) {
-            debug!(content_len = request.content.len(), "Rejected: trivial content");
+        if self.config.trivial_content_filter
+            && is_trivial(&request.content, self.config.min_content_length)
+        {
+            debug!(
+                content_len = request.content.len(),
+                "Rejected: trivial content"
+            );
             self.stats.trivial_count += 1;
             self.stats.total_rejected += 1;
             return None;
@@ -77,9 +82,9 @@ impl MemoryCoordinator {
         }
 
         // Stage 3: Importance scoring
-        entry.importance = request.importance.unwrap_or_else(|| {
-            score_importance(&entry.content, entry.memory_type)
-        });
+        entry.importance = request
+            .importance
+            .unwrap_or_else(|| score_importance(&entry.content, entry.memory_type));
 
         let id = entry.id.clone();
         info!(id = %id, mem_type = entry.memory_type.as_str(), "Stored memory");
@@ -138,9 +143,8 @@ impl MemoryCoordinator {
 
     /// Clear working memory for a session.
     pub fn clear_working_memory(&mut self, session_id: &str) {
-        self.entries.retain(|e| {
-            !(e.session_id == session_id && e.memory_type == MemoryType::Working)
-        });
+        self.entries
+            .retain(|e| !(e.session_id == session_id && e.memory_type == MemoryType::Working));
         info!(session_id, "Cleared working memory");
     }
 

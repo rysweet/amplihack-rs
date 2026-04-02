@@ -1,5 +1,5 @@
-use super::*;
 use super::helpers::philosophy_context;
+use super::*;
 
 pub(super) struct AutoModeSession<E: PromptExecutor> {
     pub(super) tool: AutoModeTool,

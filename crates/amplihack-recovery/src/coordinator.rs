@@ -41,7 +41,8 @@ pub fn run_recovery(
     // Stage 1
     info!("recovery: stage 1");
     let s1 = run_stage1(repo_path, worktree_path)?;
-    run.protected_staged_files.clone_from(&s1.protected_staged_files);
+    run.protected_staged_files
+        .clone_from(&s1.protected_staged_files);
     run.blockers.extend(s1.blockers.iter().cloned());
     run.stage1 = Some(s1);
 
@@ -70,10 +71,7 @@ pub fn run_recovery(
         write_recovery_ledger(&run, out)?;
     }
 
-    info!(
-        "recovery: finished with {} blocker(s)",
-        run.blockers.len()
-    );
+    info!("recovery: finished with {} blocker(s)", run.blockers.len());
     Ok(run)
 }
 
@@ -154,9 +152,6 @@ mod tests {
         std::fs::write(repo.join("pyproject.toml"), "[tool.pytest]").unwrap();
 
         let result = run_recovery(repo, None, None, 3, 6).unwrap();
-        assert!(result
-            .blockers
-            .iter()
-            .any(|b| b.code == "CLAUDE_DIRTY"));
+        assert!(result.blockers.iter().any(|b| b.code == "CLAUDE_DIRTY"));
     }
 }

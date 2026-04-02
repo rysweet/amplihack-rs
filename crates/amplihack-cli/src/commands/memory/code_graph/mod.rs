@@ -19,17 +19,15 @@ mod tests;
 mod types;
 mod validation;
 
-pub use import::{
-    import_blarify_json, import_scip_file, run_index_code, summarize_code_graph,
-};
+pub use import::{import_blarify_json, import_scip_file, run_index_code, summarize_code_graph};
 pub use paths::{
     code_graph_compatibility_notice_for_project, default_code_graph_db_path_for_project,
     resolve_code_graph_db_path_for_project,
 };
 pub use types::{
-    CodeGraphContextClass, CodeGraphContextFile, CodeGraphContextFunction,
-    CodeGraphContextPayload, CodeGraphEdgeEntry, CodeGraphImportCounts, CodeGraphNamedEntry,
-    CodeGraphSearchEntry, CodeGraphStats, CodeGraphSummary,
+    CodeGraphContextClass, CodeGraphContextFile, CodeGraphContextFunction, CodeGraphContextPayload,
+    CodeGraphEdgeEntry, CodeGraphImportCounts, CodeGraphNamedEntry, CodeGraphSearchEntry,
+    CodeGraphStats, CodeGraphSummary,
 };
 
 pub(crate) use import::open_code_graph_reader;
@@ -43,8 +41,8 @@ pub(crate) use validation::validate_index_path;
 pub(self) use paths::default_code_graph_db_path;
 #[allow(unused_imports)]
 pub(self) use types::{
-    BlarifyClass, BlarifyFile, BlarifyFunction, BlarifyImport, BlarifyOutput,
-    BlarifyRelationship, CodeGraphWriterBackend, BLARIFY_JSON_MAX_BYTES,
+    BLARIFY_JSON_MAX_BYTES, BlarifyClass, BlarifyFile, BlarifyFunction, BlarifyImport,
+    BlarifyOutput, BlarifyRelationship, CodeGraphWriterBackend,
 };
 #[allow(unused_imports)]
 pub(self) use validation::validate_blarify_json_size;

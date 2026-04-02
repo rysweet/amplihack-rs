@@ -1,5 +1,5 @@
-use super::super::super::*;
 use super::super::super::learning::build_memory_id;
+use super::super::super::*;
 use super::values::{graph_i64, graph_rows};
 use super::{GraphDbConnection, GraphDbValue};
 use anyhow::Result;

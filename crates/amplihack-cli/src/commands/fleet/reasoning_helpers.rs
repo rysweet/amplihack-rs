@@ -360,4 +360,3 @@ pub(super) fn infer_agent_status(tmux_text: &str) -> AgentStatus {
     }
     AgentStatus::Unknown
 }
-

@@ -6,8 +6,8 @@ use super::paths::{
 };
 use super::scip::{ScipIndex, convert_scip_to_blarify};
 use super::types::{
-    BlarifyOutput, CodeGraphImportCounts, CodeGraphReaderBackend, CodeGraphSummary,
-    CodeGraphWriterBackend, BLARIFY_JSON_MAX_BYTES,
+    BLARIFY_JSON_MAX_BYTES, BlarifyOutput, CodeGraphImportCounts, CodeGraphReaderBackend,
+    CodeGraphSummary, CodeGraphWriterBackend,
 };
 use super::validation::{validate_blarify_json_size, validate_index_path};
 
@@ -22,9 +22,7 @@ pub(crate) fn open_code_graph_reader(
     super::backend::open_code_graph_reader(path_override)
 }
 
-fn open_code_graph_writer(
-    path_override: Option<&Path>,
-) -> Result<Box<dyn CodeGraphWriterBackend>> {
+fn open_code_graph_writer(path_override: Option<&Path>) -> Result<Box<dyn CodeGraphWriterBackend>> {
     super::backend::open_code_graph_writer(path_override)
 }
 

@@ -1,6 +1,6 @@
 //! Multiline proposal editor buffer (`EditorState`).
 
-use super::{FleetLocalError, EDITOR_MAX_BYTES_PER_LINE, EDITOR_MAX_LINES};
+use super::{EDITOR_MAX_BYTES_PER_LINE, EDITOR_MAX_LINES, FleetLocalError};
 
 // ── EditorState ───────────────────────────────────────────────────────────────
 

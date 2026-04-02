@@ -32,7 +32,7 @@ pub(crate) use workflow::begin_workflow_enforcement_tracking;
 // Imports used directly in the Hook impl.
 use metrics::save_tool_metric;
 use validation::{mark_blarify_stale_if_needed, validate_tool_result};
-use workflow::{update_workflow_enforcement, TOOL_CALL_THRESHOLD};
+use workflow::{TOOL_CALL_THRESHOLD, update_workflow_enforcement};
 
 // Imports used only in tests (available via `super::*`).
 #[cfg(test)]
@@ -42,7 +42,7 @@ use std::fs;
 #[cfg(test)]
 use validation::{extract_written_paths, is_code_file};
 #[cfg(test)]
-use workflow::{read_workflow_state, write_workflow_state, WorkflowEnforcementState};
+use workflow::{WorkflowEnforcementState, read_workflow_state, write_workflow_state};
 
 pub struct PostToolUseHook;
 

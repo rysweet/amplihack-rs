@@ -31,9 +31,7 @@ pub fn store_discovery(
     let now = chrono_date();
     let mut request = StorageRequest::new(content, MemoryType::Semantic, session_id);
     request.metadata.insert("source".into(), json!("discovery"));
-    request
-        .metadata
-        .insert("category".into(), json!(category));
+    request.metadata.insert("category".into(), json!(category));
     request
         .metadata
         .insert("timestamp".into(), json!(date.unwrap_or(&now)));

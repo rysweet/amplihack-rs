@@ -62,7 +62,11 @@ pub(super) fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
-pub(super) fn first_matching_pattern(patterns: &[&str], text: &str, multiline: bool) -> Option<String> {
+pub(super) fn first_matching_pattern(
+    patterns: &[&str],
+    text: &str,
+    multiline: bool,
+) -> Option<String> {
     patterns.iter().find_map(|pattern| {
         RegexBuilder::new(pattern)
             .case_insensitive(true)
@@ -134,7 +138,8 @@ pub(super) fn load_previous_scout(
     Ok((statuses, decisions))
 }
 
-pub(super) fn load_default_previous_scout() -> Result<(BTreeMap<String, String>, Vec<SessionDecisionRecord>)> {
+pub(super) fn load_default_previous_scout()
+-> Result<(BTreeMap<String, String>, Vec<SessionDecisionRecord>)> {
     load_previous_scout(&default_last_scout_path())
 }
 
@@ -265,5 +270,3 @@ pub(super) fn render_advance_report(
 
     lines.join("\n")
 }
-
-

@@ -1,6 +1,4 @@
-use super::super::super::backend::graph_db::{
-    GraphDbConnection, GraphDbValue, graph_rows,
-};
+use super::super::super::backend::graph_db::{GraphDbConnection, GraphDbValue, graph_rows};
 use super::super::BlarifyRelationship;
 use super::relationship_exists;
 use anyhow::Result;

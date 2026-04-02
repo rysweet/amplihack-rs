@@ -30,9 +30,8 @@ fn make_result(success: bool) -> RecipeRunResult {
 #[test]
 fn test_format_recipe_run_result_json_contains_required_fields() {
     let result = make_result(true);
-    let json_str =
-        format::format_recipe_run_result(&result, OutputFormat::Json, false)
-            .expect("format failed");
+    let json_str = format::format_recipe_run_result(&result, OutputFormat::Json, false)
+        .expect("format failed");
 
     let parsed: serde_json::Value =
         serde_json::from_str(&json_str).expect("output must be valid JSON");
@@ -62,9 +61,8 @@ fn test_format_recipe_run_result_json_contains_required_fields() {
 #[test]
 fn test_format_recipe_run_result_table_shows_success_symbol() {
     let result = make_result(true);
-    let table =
-        format::format_recipe_run_result(&result, OutputFormat::Table, false)
-            .expect("format failed");
+    let table = format::format_recipe_run_result(&result, OutputFormat::Table, false)
+        .expect("format failed");
 
     assert!(
         table.contains("✓ Success") || table.contains("✓"),
@@ -80,9 +78,8 @@ fn test_format_recipe_run_result_table_shows_success_symbol() {
 #[test]
 fn test_format_recipe_run_result_table_shows_failure_symbol() {
     let result = make_result(false);
-    let table =
-        format::format_recipe_run_result(&result, OutputFormat::Table, false)
-            .expect("format failed");
+    let table = format::format_recipe_run_result(&result, OutputFormat::Table, false)
+        .expect("format failed");
 
     assert!(
         table.contains("✗ Failed") || table.contains("✗"),
@@ -122,9 +119,8 @@ fn test_format_recipe_run_result_table_step_symbols() {
         ],
         context: Default::default(),
     };
-    let table =
-        format::format_recipe_run_result(&result, OutputFormat::Table, false)
-            .expect("format failed");
+    let table = format::format_recipe_run_result(&result, OutputFormat::Table, false)
+        .expect("format failed");
 
     assert!(table.contains("✓"), "completed step must show '✓'");
     assert!(table.contains("⊘"), "skipped step must show '⊘'");

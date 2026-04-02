@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 
 use super::helpers::parse_backend_choice_env_value;
 use super::types::{
-    backend_cli_compatibility_notice, memory_home_paths, BackendChoice, ResolvedMemoryCliBackend,
+    BackendChoice, ResolvedMemoryCliBackend, backend_cli_compatibility_notice, memory_home_paths,
 };
 
 /// Resolve the memory backend from `AMPLIHACK_MEMORY_BACKEND`.

@@ -157,11 +157,7 @@ impl SafeCopyStrategy {
             writeln!(err, "  ⚠️  {f}")?;
         }
         if conflicting_files.len() > 20 {
-            writeln!(
-                err,
-                "  ... and {} more",
-                conflicting_files.len() - 20
-            )?;
+            writeln!(err, "  ... and {} more", conflicting_files.len() - 20)?;
         }
 
         writeln!(err, "\n📝 Choose how to proceed:")?;
@@ -224,8 +220,7 @@ mod tests {
     #[test]
     fn no_conflicts_proceeds() {
         let result =
-            SafeCopyStrategy::determine_target("/tmp/test/.claude", false, &[], false)
-                .unwrap();
+            SafeCopyStrategy::determine_target("/tmp/test/.claude", false, &[], false).unwrap();
         assert!(result.should_proceed);
         assert!(!result.use_temp);
     }
@@ -233,13 +228,8 @@ mod tests {
     #[test]
     fn auto_approve_overrides_conflicts() {
         let files = vec![".claude/commands/dev.md".to_string()];
-        let result = SafeCopyStrategy::determine_target(
-            "/tmp/test/.claude",
-            true,
-            &files,
-            true,
-        )
-        .unwrap();
+        let result =
+            SafeCopyStrategy::determine_target("/tmp/test/.claude", true, &files, true).unwrap();
         assert!(result.should_proceed);
         assert!(!result.use_temp);
     }

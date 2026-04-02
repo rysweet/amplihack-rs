@@ -1,6 +1,6 @@
-use super::*;
 use super::helpers::{extract_prompt_args, prepare_auto_mode_execution};
 use super::session::AutoModeSession;
+use super::*;
 
 pub fn run_auto_mode(
     tool: AutoModeTool,

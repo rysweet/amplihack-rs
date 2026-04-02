@@ -42,7 +42,7 @@ pub trait GraphStore: Send + Sync {
     fn create_node(&mut self, table: &str, properties: &Props) -> anyhow::Result<String>;
     fn get_node(&self, table: &str, node_id: &str) -> anyhow::Result<Option<Props>>;
     fn update_node(&mut self, table: &str, node_id: &str, properties: &Props)
-        -> anyhow::Result<()>;
+    -> anyhow::Result<()>;
     fn delete_node(&mut self, table: &str, node_id: &str) -> anyhow::Result<()>;
     fn query_nodes(
         &self,

@@ -49,10 +49,7 @@ impl AttackPattern {
 }
 
 fn re(pattern: &str) -> PatternMatcher {
-    match RegexBuilder::new(pattern)
-        .case_insensitive(true)
-        .build()
-    {
+    match RegexBuilder::new(pattern).case_insensitive(true).build() {
         Ok(r) => PatternMatcher::Regex(r),
         Err(e) => {
             // Log the bad pattern and fall back to a never-matching regex
@@ -114,7 +111,9 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "critical",
             description: "Attempts to override previous instructions",
             mitigation: "Block and alert on detection",
-            matcher: re(r"(ignore|disregard|forget|abandon|override|bypass|skip)[\s\w]*(previous|prior|above|earlier|preceding)[\s\w]*(instructions?|prompts?|commands?|directives?)"),
+            matcher: re(
+                r"(ignore|disregard|forget|abandon|override|bypass|skip)[\s\w]*(previous|prior|above|earlier|preceding)[\s\w]*(instructions?|prompts?|commands?|directives?)",
+            ),
         },
         AttackPattern {
             id: "PO002",
@@ -123,7 +122,9 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "high",
             description: "Attempts to inject new overriding instructions",
             mitigation: "Validate against original context",
-            matcher: re(r"(new|updated|revised|different|alternative)[\s\w]*(instructions?|task|objective|goal|mission)[\s\w]*:?[\s\w]*(ignore|override|replace|supersede)"),
+            matcher: re(
+                r"(new|updated|revised|different|alternative)[\s\w]*(instructions?|task|objective|goal|mission)[\s\w]*:?[\s\w]*(ignore|override|replace|supersede)",
+            ),
         },
         AttackPattern {
             id: "PO003",
@@ -132,7 +133,9 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "critical",
             description: "Attempts to disable safety measures",
             mitigation: "Block immediately",
-            matcher: re(r"(ignore|bypass|disable|turn\s+off|skip|override)[\s\w]*(all|any|every)?[\s\w]*(safety|security|validation|filter|guard|protection)"),
+            matcher: re(
+                r"(ignore|bypass|disable|turn\s+off|skip|override)[\s\w]*(all|any|every)?[\s\w]*(safety|security|validation|filter|guard|protection)",
+            ),
         },
         AttackPattern {
             id: "PO004",
@@ -141,7 +144,9 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "high",
             description: "General instruction override attempt",
             mitigation: "Block and log",
-            matcher: re(r"(ignore|disregard|forget|override|bypass)[\s\w]*(instructions?|rules|guidelines|constraints?)"),
+            matcher: re(
+                r"(ignore|disregard|forget|override|bypass)[\s\w]*(instructions?|rules|guidelines|constraints?)",
+            ),
         },
         // --- Instruction Injection (II) ---
         AttackPattern {
@@ -160,7 +165,9 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "high",
             description: "Attempts to inject assistant role markers",
             mitigation: "Strip role markers from user input",
-            matcher: re(r"(assistant:|Assistant:|ASSISTANT:|<assistant>|</assistant>)|(you are now|you must act as|pretend to be|roleplay as)"),
+            matcher: re(
+                r"(assistant:|Assistant:|ASSISTANT:|<assistant>|</assistant>)|(you are now|you must act as|pretend to be|roleplay as)",
+            ),
         },
         // --- Context Manipulation (CM) ---
         AttackPattern {
@@ -189,7 +196,9 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "critical",
             description: "Attempts to extract credentials or secrets",
             mitigation: "Block credential exposure",
-            matcher: re(r"(show|display|print|output|reveal|expose|leak)[\s\w]*(password|token|key|secret|credential|api[\s_\-]?key|private)"),
+            matcher: re(
+                r"(show|display|print|output|reveal|expose|leak)[\s\w]*(password|token|key|secret|credential|api[\s_\-]?key|private)",
+            ),
         },
         AttackPattern {
             id: "DE002",
@@ -198,7 +207,9 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "critical",
             description: "Attempts to access sensitive files",
             mitigation: "Block sensitive path access",
-            matcher: re(r"(read|cat|type|show|display|output)[\s\w]*(/etc/passwd|/etc/shadow|\.env|config\.json|secrets|credentials)"),
+            matcher: re(
+                r"(read|cat|type|show|display|output)[\s\w]*(/etc/passwd|/etc/shadow|\.env|config\.json|secrets|credentials)",
+            ),
         },
         // --- System Escape (SE) ---
         AttackPattern {
@@ -208,7 +219,9 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "critical",
             description: "Shell command injection via operators",
             mitigation: "Sanitize shell metacharacters",
-            matcher: re(r"(\||&&|\$\(|`|;|\n)[\s]*(rm|del|format|kill|shutdown|reboot|wget|curl|nc|netcat)"),
+            matcher: re(
+                r"(\||&&|\$\(|`|;|\n)[\s]*(rm|del|format|kill|shutdown|reboot|wget|curl|nc|netcat)",
+            ),
         },
         AttackPattern {
             id: "SE002",
@@ -227,7 +240,9 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "critical",
             description: "Known jailbreak technique attempt",
             mitigation: "Block and report",
-            matcher: re(r"(DAN|Do Anything Now|jailbreak|unrestricted mode|developer mode|god mode)"),
+            matcher: re(
+                r"(DAN|Do Anything Now|jailbreak|unrestricted mode|developer mode|god mode)",
+            ),
         },
         AttackPattern {
             id: "RH002",
@@ -236,7 +251,9 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "high",
             description: "Claims authority over the AI system",
             mitigation: "Ignore authority claims",
-            matcher: re(r"(I am|I'm|act as if I am|pretend I am)[\s\w]*(the AI|the assistant|the system|in control|your master)"),
+            matcher: re(
+                r"(I am|I'm|act as if I am|pretend I am)[\s\w]*(the AI|the assistant|the system|in control|your master)",
+            ),
         },
         // --- Encoding Bypass (EB) ---
         AttackPattern {
@@ -265,7 +282,9 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "high",
             description: "Multi-step attack using sequential instructions",
             mitigation: "Validate each step independently",
-            matcher: re(r"(step\s+1|first,?|then|after that|next|finally).*?(step\s+2|second|then|after|next|finally)"),
+            matcher: re(
+                r"(step\s+1|first,?|then|after that|next|finally).*?(step\s+2|second|then|after|next|finally)",
+            ),
         },
         AttackPattern {
             id: "WF001",
@@ -274,7 +293,9 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "critical",
             description: "Attempts to fetch malicious content",
             mitigation: "Validate URLs against allowlist",
-            matcher: re(r"(fetch|get|retrieve|download|access)[\s\w]*(malware|payload|exploit|backdoor|trojan|virus)"),
+            matcher: re(
+                r"(fetch|get|retrieve|download|access)[\s\w]*(malware|payload|exploit|backdoor|trojan|virus)",
+            ),
         },
         AttackPattern {
             id: "WF002",

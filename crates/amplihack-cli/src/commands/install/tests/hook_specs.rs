@@ -1,5 +1,5 @@
-use super::*;
 use super::helpers::create_exe_stub;
+use super::*;
 
 // ─── TDD: Group 1 — HookCommandKind discriminant ──────────────────────────
 

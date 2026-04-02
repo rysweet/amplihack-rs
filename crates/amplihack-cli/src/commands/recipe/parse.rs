@@ -93,11 +93,7 @@ pub(crate) fn parse_recipe_text(text: &str) -> Result<RecipeDoc> {
     Ok(recipe)
 }
 
-pub(crate) fn require_field(
-    mapping: &serde_yaml::Mapping,
-    key: &str,
-    message: &str,
-) -> Result<()> {
+pub(crate) fn require_field(mapping: &serde_yaml::Mapping, key: &str, message: &str) -> Result<()> {
     if mapping.contains_key(Value::String(key.to_string())) {
         return Ok(());
     }

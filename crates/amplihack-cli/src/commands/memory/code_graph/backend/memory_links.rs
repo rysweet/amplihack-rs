@@ -10,9 +10,7 @@ fn normalize_match_path(path: &str) -> String {
     path.replace('\\', "/")
 }
 
-pub(super) fn link_memories_to_code_files_in_conn(
-    conn: &GraphDbConnection<'_>,
-) -> Result<usize> {
+pub(super) fn link_memories_to_code_files_in_conn(conn: &GraphDbConnection<'_>) -> Result<usize> {
     ensure_memory_code_link_schema(conn)?;
 
     let mut created = 0usize;

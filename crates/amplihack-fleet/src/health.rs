@@ -60,11 +60,15 @@ pub fn check_ssh_reachable(ssh_target: &str) -> (bool, Option<u64>) {
     let start = Instant::now();
     let result = Command::new("ssh")
         .args([
-            "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "BatchMode=yes",
             ssh_target,
-            "echo", "ok",
+            "echo",
+            "ok",
         ])
         .output();
 
@@ -191,9 +195,12 @@ fn count_agent_processes(ssh_target: &str) -> usize {
 fn run_ssh_command(ssh_target: &str, cmd: &str) -> Result<String> {
     let output = Command::new("ssh")
         .args([
-            "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "BatchMode=yes",
             ssh_target,
             cmd,
         ])

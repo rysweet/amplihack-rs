@@ -1,12 +1,9 @@
-use super::analysis;
 use super::TranscriptMessage;
+use super::analysis;
 use std::fs;
 use std::path::Path;
 
-pub(super) fn collect_blockers(
-    messages: &[TranscriptMessage],
-    project_root: &Path,
-) -> Vec<String> {
+pub(super) fn collect_blockers(messages: &[TranscriptMessage], project_root: &Path) -> Vec<String> {
     let mut blockers = Vec::new();
     let has_code_changes = analysis::transcript_has_code_changes(messages);
 

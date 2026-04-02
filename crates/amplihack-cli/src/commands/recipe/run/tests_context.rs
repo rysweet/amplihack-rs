@@ -87,8 +87,7 @@ fn test_resolve_binary_path_returns_none_for_nonexistent_path() {
 /// A bare name not in PATH must return None.
 #[test]
 fn test_resolve_binary_path_returns_none_for_unknown_binary_name() {
-    let result =
-        binary::resolve_binary_path("this-binary-cannot-possibly-exist-amplihack-test");
+    let result = binary::resolve_binary_path("this-binary-cannot-possibly-exist-amplihack-test");
     assert!(
         result.is_none(),
         "Unknown binary name must resolve to None. Got: {:?}",
@@ -126,8 +125,7 @@ fn test_resolve_binary_path_expands_tilde_to_home_dir() {
 
     // Create a temp file inside the home directory to test expansion
     let home = std::env::var("HOME").expect("HOME env var must be set");
-    let temp =
-        tempfile::NamedTempFile::new_in(&home).expect("failed to create temp file in HOME");
+    let temp = tempfile::NamedTempFile::new_in(&home).expect("failed to create temp file in HOME");
 
     // Make it executable so resolve_binary_path treats it as a file candidate
     let tilde_path = format!("~/{}", temp.path().file_name().unwrap().to_str().unwrap());

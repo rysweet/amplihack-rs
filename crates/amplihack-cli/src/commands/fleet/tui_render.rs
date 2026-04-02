@@ -269,4 +269,3 @@ pub(super) fn cockpit_render_help_overlay(lines: &mut Vec<String>, inner: usize)
     push("");
     push("  ?              Toggle this help overlay");
 }
-

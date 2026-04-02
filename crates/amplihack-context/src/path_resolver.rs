@@ -41,10 +41,7 @@ impl PathResolver {
             return expanded;
         }
 
-        plugin_root
-            .join(&expanded)
-            .to_string_lossy()
-            .into_owned()
+        plugin_root.join(&expanded).to_string_lossy().into_owned()
     }
 
     /// Recursively walk a JSON value and resolve every string in a

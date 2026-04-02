@@ -6,7 +6,7 @@ use std::fs;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use super::{ModeDetector, CHECK_MARK};
+use super::{CHECK_MARK, ModeDetector};
 
 #[derive(Debug, Clone)]
 pub(super) struct MigrationHelper {

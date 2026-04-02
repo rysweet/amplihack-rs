@@ -265,10 +265,8 @@ mod tests {
     #[test]
     fn parse_unrecoverable_response() {
         let r = SubRecipeRecovery::new();
-        let result = r.parse_recovery_response(
-            "This is UNRECOVERABLE - missing external dependency",
-            0,
-        );
+        let result =
+            r.parse_recovery_response("This is UNRECOVERABLE - missing external dependency", 0);
         assert!(!result.recovered);
         assert_eq!(result.strategy, "agent_declared_unrecoverable");
     }
@@ -276,10 +274,8 @@ mod tests {
     #[test]
     fn parse_successful_recovery() {
         let r = SubRecipeRecovery::new();
-        let result = r.parse_recovery_response(
-            "Fixed the compilation error by adding missing import",
-            0,
-        );
+        let result =
+            r.parse_recovery_response("Fixed the compilation error by adding missing import", 0);
         assert!(result.recovered);
         assert_eq!(result.strategy, "agent_recovery");
     }

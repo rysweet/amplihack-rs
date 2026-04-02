@@ -21,22 +21,22 @@
 //!
 //! Full spec: docs/concepts/fleet-dashboard-architecture.md (v0.5.0 target).
 
-mod types;
 mod cache;
-mod summary;
+mod dashboard;
 mod editor;
 mod osc;
 mod state;
-mod dashboard;
+mod summary;
 mod tmux;
+mod types;
 
-pub use types::*;
 pub use cache::*;
-pub use summary::*;
+pub use dashboard::*;
 pub use editor::*;
 pub use osc::*;
 pub use state::*;
-pub use dashboard::*;
+pub use summary::*;
+pub use types::*;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 

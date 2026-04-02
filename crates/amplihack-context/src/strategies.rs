@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 // ── Trait ──────────────────────────────────────────────────────────────
 
@@ -106,16 +106,15 @@ impl HookStrategy for CopilotStrategy {
             String::new()
         };
 
-        let new_content = if let (Some(s), Some(e)) =
-            (existing.find(MARKER_START), existing.find(MARKER_END))
-        {
-            let end = e + MARKER_END.len();
-            format!("{}{marked}{}", &existing[..s], &existing[end..])
-        } else if existing.is_empty() {
-            marked.clone()
-        } else {
-            format!("{}\n\n{marked}", existing.trim_end())
-        };
+        let new_content =
+            if let (Some(s), Some(e)) = (existing.find(MARKER_START), existing.find(MARKER_END)) {
+                let end = e + MARKER_END.len();
+                format!("{}{marked}{}", &existing[..s], &existing[end..])
+            } else if existing.is_empty() {
+                marked.clone()
+            } else {
+                format!("{}\n\n{marked}", existing.trim_end())
+            };
 
         std::fs::write(&self.agents_path, &new_content)?;
         Ok(marked)

@@ -66,7 +66,9 @@ fn parse_headline_location_message(rest: &str) -> (String, String, String) {
     if let Some(open) = before_msg.rfind('(') {
         if before_msg.ends_with(')') {
             let headline = before_msg[..open].trim().to_string();
-            let location = before_msg[open + 1..before_msg.len() - 1].trim().to_string();
+            let location = before_msg[open + 1..before_msg.len() - 1]
+                .trim()
+                .to_string();
             return (headline, location, message);
         }
     }
@@ -134,8 +136,11 @@ fn run_tests(repo_path: &Path) -> Result<(String, u32)> {
 
     match output {
         Ok(o) => {
-            let combined =
-                format!("{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+            let combined = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
             let sigs = build_error_signatures(&combined);
             let count = sigs.iter().map(|s| s.occurrences).sum();
             Ok((combined, count))
@@ -153,14 +158,17 @@ fn run_tests(repo_path: &Path) -> Result<(String, u32)> {
 pub fn run_stage2(repo_path: &Path, protected_files: &[String]) -> Result<Stage2Result> {
     info!("stage2: collecting error signatures");
     if !protected_files.is_empty() {
-        info!("stage2: {} protected file(s) will be excluded from automated fixes", protected_files.len());
+        info!(
+            "stage2: {} protected file(s) will be excluded from automated fixes",
+            protected_files.len()
+        );
     }
 
     let mut blockers = Vec::new();
     let mut diagnostics = Vec::new();
 
-    let (baseline_output, baseline_errors) = run_tests(repo_path)
-        .context("stage2: baseline test run failed")?;
+    let (baseline_output, baseline_errors) =
+        run_tests(repo_path).context("stage2: baseline test run failed")?;
     diagnostics.push(format!("baseline: {baseline_errors} error(s)"));
 
     let signatures = build_error_signatures(&baseline_output);
@@ -170,8 +178,8 @@ pub fn run_stage2(repo_path: &Path, protected_files: &[String]) -> Result<Stage2
     // currently benchmarks the error delta by re-running the test suite.
     // Future work: parse error signatures, apply heuristic patches, and
     // verify the fix reduces the error count before promoting.
-    let (_final_output, final_errors) = run_tests(repo_path)
-        .context("stage2: final test run failed")?;
+    let (_final_output, final_errors) =
+        run_tests(repo_path).context("stage2: final test run failed")?;
     diagnostics.push(format!("final: {final_errors} error(s)"));
 
     let delta_verdict = determine_delta_verdict(baseline_errors, final_errors);

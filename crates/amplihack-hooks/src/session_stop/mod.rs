@@ -7,9 +7,9 @@
 //! Neither blocks session exit (fail-open).
 
 mod git;
-mod transcript;
 #[cfg(test)]
 mod tests;
+mod transcript;
 
 use crate::agent_memory::normalize_agent_name;
 use crate::protocol::{FailurePolicy, Hook};

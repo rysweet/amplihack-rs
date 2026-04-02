@@ -1,11 +1,11 @@
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tracing::{info, warn};
 
 use crate::models::{
-    FixVerifyMode, RecoveryBlocker, Stage2Result, Stage3Cycle, Stage3Result,
-    Stage3ValidatorResult, StageStatus, ValidationStatus,
+    FixVerifyMode, RecoveryBlocker, Stage2Result, Stage3Cycle, Stage3Result, Stage3ValidatorResult,
+    StageStatus, ValidationStatus,
 };
 
 /// Validate that cycle bounds are within the allowed range [3, 6].
@@ -94,7 +94,10 @@ fn run_fix_verify_worktree(
 
 /// Merge validator results into an overall status.
 fn merge_validation(results: &[Stage3ValidatorResult]) -> ValidationStatus {
-    if results.iter().any(|r| r.status == ValidationStatus::Blocked) {
+    if results
+        .iter()
+        .any(|r| r.status == ValidationStatus::Blocked)
+    {
         ValidationStatus::Blocked
     } else if results.iter().any(|r| r.status == ValidationStatus::Failed) {
         ValidationStatus::Failed
@@ -249,14 +252,12 @@ mod tests {
 
     #[test]
     fn merge_all_passed() {
-        let results = vec![
-            Stage3ValidatorResult {
-                name: "a".into(),
-                status: ValidationStatus::Passed,
-                details: String::new(),
-                metadata: serde_json::json!({}),
-            },
-        ];
+        let results = vec![Stage3ValidatorResult {
+            name: "a".into(),
+            status: ValidationStatus::Passed,
+            details: String::new(),
+            metadata: serde_json::json!({}),
+        }];
         assert_eq!(merge_validation(&results), ValidationStatus::Passed);
     }
 

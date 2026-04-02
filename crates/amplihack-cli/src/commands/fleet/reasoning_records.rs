@@ -123,7 +123,10 @@ impl LastScoutSnapshot {
     }
 }
 
-pub(super) fn discover_dry_run_sessions(azlin: &Path, vm_names: &[String]) -> Result<Vec<DryRunSession>> {
+pub(super) fn discover_dry_run_sessions(
+    azlin: &Path,
+    vm_names: &[String],
+) -> Result<Vec<DryRunSession>> {
     let mut state = FleetState::new(azlin.to_path_buf());
     let existing_vms = configured_existing_vms();
     let existing_refs: Vec<&str> = existing_vms.iter().map(String::as_str).collect();
@@ -280,4 +283,3 @@ pub(super) fn generate_task_id(seed: &str) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
-

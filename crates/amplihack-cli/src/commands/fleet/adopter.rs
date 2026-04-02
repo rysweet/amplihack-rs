@@ -109,7 +109,11 @@ impl SessionAdopter {
         .concat()
     }
 
-    pub(super) fn parse_discovery_output(&self, vm_name: &str, output: &str) -> Vec<AdoptedSession> {
+    pub(super) fn parse_discovery_output(
+        &self,
+        vm_name: &str,
+        output: &str,
+    ) -> Vec<AdoptedSession> {
         let mut sessions = Vec::new();
         let mut current: Option<AdoptedSession> = None;
 
@@ -170,4 +174,3 @@ impl SessionAdopter {
         sessions
     }
 }
-

@@ -36,8 +36,7 @@ impl GitConflictDetector {
     ];
 
     pub fn new(target_dir: impl AsRef<Path>) -> Self {
-        let system_metadata: HashSet<&'static str> =
-            Self::SYSTEM_FILES.iter().copied().collect();
+        let system_metadata: HashSet<&'static str> = Self::SYSTEM_FILES.iter().copied().collect();
         Self {
             target_dir: target_dir.as_ref().to_path_buf(),
             system_metadata,
@@ -45,10 +44,7 @@ impl GitConflictDetector {
     }
 
     /// Detect conflicts between `essential_dirs` and uncommitted changes.
-    pub fn detect_conflicts(
-        &self,
-        essential_dirs: &[&str],
-    ) -> ConflictDetectionResult {
+    pub fn detect_conflicts(&self, essential_dirs: &[&str]) -> ConflictDetectionResult {
         if !self.is_git_repo() {
             return ConflictDetectionResult {
                 has_conflicts: false,
@@ -111,11 +107,7 @@ impl GitConflictDetector {
         uncommitted
     }
 
-    fn filter_conflicts(
-        &self,
-        uncommitted: &[String],
-        essential_dirs: &[&str],
-    ) -> Vec<String> {
+    fn filter_conflicts(&self, uncommitted: &[String], essential_dirs: &[&str]) -> Vec<String> {
         let mut conflicts = Vec::new();
 
         for file_path in uncommitted {
@@ -349,11 +341,8 @@ mod tests {
     #[test]
     fn timeout_convenience_function() {
         let dir = TempDir::new().unwrap();
-        let result = check_conflicts_with_timeout(
-            dir.path(),
-            &["commands"],
-            Duration::from_secs(5),
-        );
+        let result =
+            check_conflicts_with_timeout(dir.path(), &["commands"], Duration::from_secs(5));
         assert!(!result.has_conflicts);
     }
 }

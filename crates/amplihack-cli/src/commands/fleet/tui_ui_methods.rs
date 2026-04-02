@@ -327,5 +327,4 @@ impl FleetTuiUiState {
             decision.vm_name, decision.session_name
         ));
     }
-
 }

@@ -18,7 +18,7 @@ use crate::protocol::{FailurePolicy, Hook};
 use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
 
-use blarify::{setup_blarify_indexing, BlarifySetupResult};
+use blarify::{BlarifySetupResult, setup_blarify_indexing};
 use context_loaders::{
     check_version, load_code_graph_context, load_discoveries, load_project_context,
     load_user_preferences, load_workflow_context,

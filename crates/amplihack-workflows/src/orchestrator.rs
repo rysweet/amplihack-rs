@@ -97,11 +97,7 @@ impl SessionStartClassifierSkill {
             WorkflowType::Default | WorkflowType::Investigation
         ) {
             let exec = self.cascade.execute(workflow, context);
-            (
-                Some(exec.tier),
-                exec.method,
-                exec.status,
-            )
+            (Some(exec.tier), exec.method, exec.status)
         } else {
             (None, "direct".to_string(), "success".to_string())
         };

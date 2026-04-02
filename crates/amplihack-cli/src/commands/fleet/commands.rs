@@ -238,4 +238,3 @@ pub(super) fn run_dry_run(vm_names: &[String], priorities: &str, backend: &str) 
     println!("\n{}", reasoner.dry_run_report());
     Ok(())
 }
-

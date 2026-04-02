@@ -2,9 +2,9 @@
 
 mod render;
 
-use render::render_tree_from_backend;
 #[cfg(test)]
 use render::render_tree;
+use render::render_tree_from_backend;
 
 #[cfg(test)]
 use super::backend::MemoryTreeBackend;
@@ -89,8 +89,7 @@ mod backend_tests {
             agent_count_calls: Cell::new(0),
         };
 
-        let rendered =
-            render_tree_from_backend(&backend, None, None, Some(3), None).unwrap();
+        let rendered = render_tree_from_backend(&backend, None, None, Some(3), None).unwrap();
 
         assert!(rendered.contains("Backend: ladybug-preview"));
         assert!(rendered.contains("sess-1 (1 memories)"));
@@ -113,8 +112,7 @@ mod backend_tests {
             agent_count_calls: Cell::new(0),
         };
 
-        let rendered =
-            render_tree_from_backend(&backend, None, None, Some(2), None).unwrap();
+        let rendered = render_tree_from_backend(&backend, None, None, Some(2), None).unwrap();
 
         assert!(!rendered.contains("👥 Agents"));
         assert_eq!(backend.agent_count_calls.get(), 0);

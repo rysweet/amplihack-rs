@@ -1,5 +1,5 @@
-use super::*;
 use super::helpers::*;
+use super::*;
 use std::fs;
 
 #[test]

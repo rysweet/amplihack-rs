@@ -107,6 +107,9 @@ fn write_copilot_context(dirs: &ProjectDirs, input_data: &Value) -> anyhow::Resu
     content = remove_old_context(&content);
 
     let mut lines = content.lines().map(ToString::to_string).collect::<Vec<_>>();
+    if lines.is_empty() {
+        lines.push("# Amplihack Agents".to_string());
+    }
     let title_line = lines
         .iter()
         .position(|line| line.starts_with("# "))

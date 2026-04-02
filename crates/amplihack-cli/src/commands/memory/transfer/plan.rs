@@ -1,7 +1,5 @@
-use super::types::{
-    HierarchicalExportData, HierarchicalImportPlan, ImportResult, ImportStats,
-};
-use crate::commands::memory::{parse_backend_choice_env_value, BackendChoice};
+use super::types::{HierarchicalExportData, HierarchicalImportPlan, ImportResult, ImportStats};
+use crate::commands::memory::{BackendChoice, parse_backend_choice_env_value};
 
 pub(crate) fn build_hierarchical_import_plan<'a, F>(
     data: &'a HierarchicalExportData,

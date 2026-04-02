@@ -45,7 +45,7 @@ impl Hook for PreCompactHook {
                     return Ok(export::error_response(
                         "Failed to export transcript",
                         &error,
-                    ))
+                    ));
                 }
             },
             None => None,

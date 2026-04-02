@@ -182,7 +182,12 @@ impl DistributedGraphStore {
             // Find which of A's nodes B is missing (bloom filter check)
             let missing: Vec<String> = if let Some(shard_b) = self.shards.get(b_id) {
                 let refs: Vec<&str> = a_ids.iter().map(|s| s.as_str()).collect();
-                shard_b.bloom.missing_from(&refs).iter().map(|s| s.to_string()).collect()
+                shard_b
+                    .bloom
+                    .missing_from(&refs)
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
             } else {
                 continue;
             };
@@ -217,7 +222,11 @@ impl DistributedGraphStore {
             debug!(from = a_id, to = b_id, nodes = total_nodes, "Gossip sync");
         }
 
-        info!(nodes = total_nodes, edges = total_edges, "Gossip round complete");
+        info!(
+            nodes = total_nodes,
+            edges = total_edges,
+            "Gossip round complete"
+        );
         Ok((total_nodes, total_edges))
     }
 
@@ -292,7 +301,9 @@ mod tests {
         let mut store = DistributedGraphStore::new(DistributedConfig::default());
         store.add_agent("a1");
         store.add_agent("a2");
-        let id = store.create_node("test", &make_props("hello world")).unwrap();
+        let id = store
+            .create_node("test", &make_props("hello world"))
+            .unwrap();
         let node = store.get_node("test", &id).unwrap();
         assert!(node.is_some());
     }
@@ -306,7 +317,9 @@ mod tests {
         store.add_agent("a1");
         store.add_agent("a2");
         store.create_node("t", &make_props("sky is blue")).unwrap();
-        store.create_node("t", &make_props("grass is green")).unwrap();
+        store
+            .create_node("t", &make_props("grass is green"))
+            .unwrap();
         let results = store.search_nodes("t", "sky", None, 10).unwrap();
         assert!(!results.is_empty());
     }
@@ -321,8 +334,13 @@ mod tests {
         store.add_agent("a2");
 
         // Create nodes only on a1's shard
-        store.shards.get_mut("a1").unwrap().store
-            .create_node("t", &make_props("exclusive data")).unwrap();
+        store
+            .shards
+            .get_mut("a1")
+            .unwrap()
+            .store
+            .create_node("t", &make_props("exclusive data"))
+            .unwrap();
 
         let (nodes, _) = store.run_gossip_round().unwrap();
         assert!(nodes > 0, "gossip should sync at least one node");
@@ -338,8 +356,13 @@ mod tests {
         store.add_agent("a2");
 
         // Add data to a1
-        store.shards.get_mut("a1").unwrap().store
-            .create_node("t", &make_props("data to recover")).unwrap();
+        store
+            .shards
+            .get_mut("a1")
+            .unwrap()
+            .store
+            .create_node("t", &make_props("data to recover"))
+            .unwrap();
 
         let recovered = store.rebuild_shard("a2").unwrap();
         assert!(recovered > 0);

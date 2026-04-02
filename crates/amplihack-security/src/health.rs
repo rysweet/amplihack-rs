@@ -67,8 +67,7 @@ pub fn check_health() -> HealthReport {
     });
 
     // Check 3: Blocking thresholds
-    let blocking_configured =
-        config.block_on_critical || config.block_on_high_risk;
+    let blocking_configured = config.block_on_critical || config.block_on_high_risk;
     checks.push(CheckResult {
         name: "blocking_configured".into(),
         passed: blocking_configured,
@@ -83,9 +82,8 @@ pub fn check_health() -> HealthReport {
     });
 
     // Check 4: Feature flags
-    let features_enabled = config.validate_webfetch
-        || config.validate_bash
-        || config.validate_agents;
+    let features_enabled =
+        config.validate_webfetch || config.validate_bash || config.validate_agents;
     checks.push(CheckResult {
         name: "features_enabled".into(),
         passed: features_enabled,
@@ -108,8 +106,7 @@ pub fn check_health() -> HealthReport {
     });
 
     // Check 6: Limits configured
-    let limits_sane =
-        config.max_prompt_length >= 100 && config.max_url_length >= 10;
+    let limits_sane = config.max_prompt_length >= 100 && config.max_url_length >= 10;
     checks.push(CheckResult {
         name: "limits_configured".into(),
         passed: limits_sane,
