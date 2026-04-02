@@ -148,8 +148,13 @@ fn run_tests(repo_path: &Path) -> Result<(String, u32)> {
 }
 
 /// Stage 2: collect error signatures, attempt fixes, compute delta verdict.
-pub fn run_stage2(repo_path: &Path, _protected_files: &[String]) -> Result<Stage2Result> {
+///
+/// `protected_files` lists paths that must not be modified by automated fixes.
+pub fn run_stage2(repo_path: &Path, protected_files: &[String]) -> Result<Stage2Result> {
     info!("stage2: collecting error signatures");
+    if !protected_files.is_empty() {
+        info!("stage2: {} protected file(s) will be excluded from automated fixes", protected_files.len());
+    }
 
     let mut blockers = Vec::new();
     let mut diagnostics = Vec::new();

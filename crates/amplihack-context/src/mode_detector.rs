@@ -76,7 +76,14 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
     use tempfile::TempDir;
+
+    /// Serialize tests that mutate AMPLIHACK_MODE to prevent races.
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn create_local_installation(base: &Path) {
         let claude = base.join(".claude");
@@ -87,8 +94,9 @@ mod tests {
 
     #[test]
     fn detect_none_when_empty() {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let dir = TempDir::new().unwrap();
-        // Ensure env override is not set for this test
+        unsafe { std::env::remove_var("AMPLIHACK_MODE") };
         let mode = ModeDetector::detect(dir.path());
         // May be None or Plugin depending on host; at minimum it's not Local
         assert_ne!(mode, ClaudeMode::Local);
@@ -96,9 +104,9 @@ mod tests {
 
     #[test]
     fn detect_local_when_essential_dirs_present() {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let dir = TempDir::new().unwrap();
         create_local_installation(dir.path());
-        // Temporarily override to avoid plugin detection interfering
         unsafe { std::env::remove_var("AMPLIHACK_MODE") };
         let mode = ModeDetector::detect(dir.path());
         assert_eq!(mode, ClaudeMode::Local);
@@ -116,7 +124,6 @@ mod tests {
         let claude = dir.path().join(".claude");
         std::fs::create_dir_all(claude.join("agents")).unwrap();
         std::fs::create_dir_all(claude.join("commands")).unwrap();
-        // Missing skills and tools
         assert!(!ModeDetector::has_local_installation(dir.path()));
     }
 
@@ -129,6 +136,7 @@ mod tests {
 
     #[test]
     fn env_override_local() {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let dir = TempDir::new().unwrap();
         unsafe { std::env::set_var("AMPLIHACK_MODE", "local") };
         let mode = ModeDetector::detect(dir.path());
@@ -138,6 +146,7 @@ mod tests {
 
     #[test]
     fn env_override_plugin() {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let dir = TempDir::new().unwrap();
         unsafe { std::env::set_var("AMPLIHACK_MODE", "plugin") };
         let mode = ModeDetector::detect(dir.path());
@@ -147,6 +156,7 @@ mod tests {
 
     #[test]
     fn env_override_none() {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let dir = TempDir::new().unwrap();
         create_local_installation(dir.path());
         unsafe { std::env::set_var("AMPLIHACK_MODE", "none") };
@@ -157,9 +167,9 @@ mod tests {
 
     #[test]
     fn env_override_unknown_falls_through() {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
         let dir = TempDir::new().unwrap();
         unsafe { std::env::set_var("AMPLIHACK_MODE", "bogus") };
-        // Should fall through to normal detection (not Local)
         let mode = ModeDetector::detect(dir.path());
         unsafe { std::env::remove_var("AMPLIHACK_MODE") };
         assert_ne!(mode, ClaudeMode::Local);
@@ -181,7 +191,6 @@ mod tests {
     #[test]
     fn get_claude_dir_plugin() {
         let result = ModeDetector::get_claude_dir(&ClaudeMode::Plugin, Path::new("/unused"));
-        // Should be Some(HOME/.amplihack/.claude) when HOME is set
         if std::env::var("HOME").is_ok() {
             assert!(result.is_some());
         }
