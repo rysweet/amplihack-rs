@@ -166,7 +166,7 @@ impl WorkflowClassifier {
                     .filter(|kw| wf_keywords.contains(kw))
                     .collect();
                 if !matched.is_empty() {
-                    let confidence = if matched.len() >= 1 { 0.9 } else { 0.7 };
+                    let confidence = if matched.len() > 1 { 0.9 } else { 0.7 };
                     let reason = format!("keyword '{}'", matched[0]);
                     return (*wf, reason, confidence);
                 }
