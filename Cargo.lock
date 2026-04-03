@@ -183,6 +183,7 @@ dependencies = [
  "amplihack-agent-core",
  "amplihack-memory",
  "chrono",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
