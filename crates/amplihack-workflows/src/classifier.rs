@@ -123,10 +123,10 @@ impl WorkflowClassifier {
             result.workflow.as_str()
         );
 
-        if recipe_runner_available {
-            if let Some(recipe) = result.workflow.recipe_name() {
-                ann.push_str(&format!("\nExecution: Recipe Runner (tier 1) - {recipe}"));
-            }
+        if recipe_runner_available
+            && let Some(recipe) = result.workflow.recipe_name()
+        {
+            ann.push_str(&format!("\nExecution: Recipe Runner (tier 1) - {recipe}"));
         }
         ann
     }
