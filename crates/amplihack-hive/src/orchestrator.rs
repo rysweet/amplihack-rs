@@ -1,16 +1,21 @@
 use std::collections::HashSet;
 
 use crate::error::{HiveError, Result};
+use crate::event_bus::{EventBus, LocalEventBus};
+use crate::gossip::GossipProtocol;
 use crate::graph::HiveGraph;
 use crate::models::{BusEvent, HiveFact};
 
-/// Policy that decides when a fact should be promoted or broadcast.
+/// Policy that decides when a fact should be promoted, broadcast, or gossiped.
 pub trait PromotionPolicy: Send + Sync {
     /// Whether the fact should be promoted for the given agent.
     fn should_promote(&self, fact: &HiveFact, agent_id: &str) -> bool;
 
     /// Whether the fact should be broadcast to all agents.
     fn should_broadcast(&self, fact: &HiveFact) -> bool;
+
+    /// Whether the fact should be included in gossip rounds.
+    fn should_gossip(&self, fact: &HiveFact) -> bool;
 }
 
 /// Threshold-based promotion policy.
@@ -32,11 +37,15 @@ impl Default for DefaultPromotionPolicy {
 
 impl PromotionPolicy for DefaultPromotionPolicy {
     fn should_promote(&self, fact: &HiveFact, _agent_id: &str) -> bool {
-        fact.confidence >= self.promote_threshold
+        fact.status != "retracted" && fact.confidence >= self.promote_threshold
     }
 
     fn should_broadcast(&self, fact: &HiveFact) -> bool {
-        fact.confidence >= self.broadcast_threshold
+        fact.status != "retracted" && fact.confidence >= self.broadcast_threshold
+    }
+
+    fn should_gossip(&self, fact: &HiveFact) -> bool {
+        fact.status != "retracted" && fact.confidence >= self.gossip_threshold
     }
 }
 
@@ -53,7 +62,9 @@ pub struct HiveMindOrchestrator {
     graph: HiveGraph,
     policy: Box<dyn PromotionPolicy>,
     agent_id: String,
+    bus: LocalEventBus,
     peers: Vec<HiveMindOrchestrator>,
+    gossip: Option<GossipProtocol>,
     pending_events: Vec<BusEvent>,
     closed: bool,
 }
@@ -65,7 +76,9 @@ impl HiveMindOrchestrator {
             graph: HiveGraph::new(),
             policy,
             agent_id: String::new(),
+            bus: LocalEventBus::new(),
             peers: Vec::new(),
+            gossip: None,
             pending_events: Vec::new(),
             closed: false,
         }
@@ -195,6 +208,7 @@ impl HiveMindOrchestrator {
         self.closed = true;
         self.pending_events.clear();
         self.peers.clear();
+        self.bus.close()?;
         Ok(())
     }
 
@@ -202,4 +216,13 @@ impl HiveMindOrchestrator {
     pub fn is_closed(&self) -> bool {
         self.closed
     }
+
+    /// Return a reference to the underlying graph.
+    pub fn graph(&self) -> &HiveGraph { &self.graph }
+
+    /// Return a mutable reference to the event bus.
+    pub fn bus_mut(&mut self) -> &mut LocalEventBus { &mut self.bus }
+
+    /// Set the gossip protocol for this orchestrator.
+    pub fn set_gossip(&mut self, gossip: GossipProtocol) { self.gossip = Some(gossip); }
 }

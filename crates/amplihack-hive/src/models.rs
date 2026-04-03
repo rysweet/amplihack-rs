@@ -38,6 +38,7 @@ pub struct HiveFact {
 /// An event published to the hive event bus.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BusEvent {
+    #[serde(default)]
     pub event_id: String,
     /// Kept for backward compat; also accessible as `event_type`.
     #[serde(alias = "event_type")]
@@ -46,20 +47,25 @@ pub struct BusEvent {
     /// Kept for backward compat; also accessible as `source_agent`.
     #[serde(alias = "source_agent")]
     pub source_id: String,
-    pub timestamp: DateTime<Utc>,
+    /// Unix epoch seconds.
+    pub timestamp: f64,
 }
 
 impl BusEvent {
-    /// Create a new BusEvent with auto-generated ID and timestamp.
+    /// Create a new BusEvent with auto-generated ID and current unix timestamp.
     pub fn new(topic: &str, payload: serde_json::Value, source_id: &str) -> Self {
         Self {
             event_id: uuid::Uuid::new_v4().to_string(),
             topic: topic.to_string(),
             payload,
             source_id: source_id.to_string(),
-            timestamp: Utc::now(),
+            timestamp: Utc::now().timestamp() as f64,
         }
     }
+    /// Alias accessor for `topic`.
+    pub fn event_type(&self) -> &str { &self.topic }
+    /// Alias accessor for `source_id`.
+    pub fn source_agent(&self) -> &str { &self.source_id }
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
@@ -68,14 +74,14 @@ impl BusEvent {
     }
 }
 
-/// Factory for creating a [`BusEvent`] with a generated id and current timestamp.
+/// Factory for creating a [`BusEvent`] with a generated id and current unix timestamp.
 pub fn make_event(topic: impl Into<String>, source_id: impl Into<String>, payload: serde_json::Value) -> BusEvent {
     BusEvent {
         event_id: uuid::Uuid::new_v4().to_string(),
         topic: topic.into(),
         payload,
         source_id: source_id.into(),
-        timestamp: Utc::now(),
+        timestamp: Utc::now().timestamp() as f64,
     }
 }
 

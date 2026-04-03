@@ -4,6 +4,7 @@ pub mod bloom;
 pub mod controller;
 pub mod crdt;
 pub mod dht;
+pub mod distributed;
 pub mod embeddings;
 pub mod error;
 pub mod event_bus;

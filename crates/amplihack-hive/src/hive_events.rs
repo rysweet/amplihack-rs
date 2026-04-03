@@ -43,7 +43,7 @@ pub fn make_learn_content_event(source: &str, content: &str) -> Result<BusEvent>
         source_id: Uuid::new_v4().to_string(),
         topic: HIVE_LEARN_CONTENT.to_string(),
         payload: serde_json::to_value(&event)?,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Utc::now().timestamp() as f64,
     })
 }
 
@@ -58,7 +58,7 @@ pub fn make_feed_complete_event(feed_id: &str, items: u32) -> Result<BusEvent> {
         source_id: Uuid::new_v4().to_string(),
         topic: HIVE_FEED_COMPLETE.to_string(),
         payload: serde_json::to_value(&event)?,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Utc::now().timestamp() as f64,
     })
 }
 
@@ -72,7 +72,7 @@ pub fn make_agent_ready_event(agent_id: &str) -> Result<BusEvent> {
         source_id: Uuid::new_v4().to_string(),
         topic: HIVE_AGENT_READY.to_string(),
         payload: serde_json::to_value(&event)?,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Utc::now().timestamp() as f64,
     })
 }
 
@@ -88,7 +88,7 @@ pub fn make_query_event(question: &str) -> Result<(String, BusEvent)> {
         source_id: Uuid::new_v4().to_string(),
         topic: HIVE_QUERY.to_string(),
         payload: serde_json::to_value(&event)?,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Utc::now().timestamp() as f64,
     };
     Ok((query_id, bus_event))
 }
@@ -108,7 +108,7 @@ pub fn make_query_response_event(query_id: &str, answer: &str, confidence: f64) 
         source_id: Uuid::new_v4().to_string(),
         topic: HIVE_QUERY_RESPONSE.to_string(),
         payload: serde_json::to_value(&event)?,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Utc::now().timestamp() as f64,
     })
 }
 
