@@ -154,6 +154,7 @@ version = "0.7.3"
 dependencies = [
  "amplihack-agent-core",
  "amplihack-memory",
+ "amplihack-workflows",
  "chrono",
  "serde",
  "serde_json",
@@ -338,6 +339,7 @@ dependencies = [
 name = "amplihack-workflows"
 version = "0.7.3"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "tempfile",

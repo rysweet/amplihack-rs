@@ -1,8 +1,12 @@
 use crate::error::Result;
 use crate::models::{DomainAgentType, RoutingDecision};
+use amplihack_workflows::provenance::{self, ProvenanceEntry};
+use std::path::PathBuf;
 
 pub struct IntentRouter {
     confidence_threshold: f64,
+    /// Base directory for provenance logs. When `None`, logging is disabled.
+    log_base_dir: Option<PathBuf>,
 }
 
 impl IntentRouter {
@@ -14,12 +18,19 @@ impl IntentRouter {
         }
         Ok(Self {
             confidence_threshold,
+            log_base_dir: None,
         })
     }
 
     pub fn with_defaults() -> Self {
         // SAFETY: 0.5 is always in range 0.0..=1.0
         Self::new(0.5).unwrap()
+    }
+
+    /// Enable provenance logging to the given base directory.
+    pub fn with_log_dir(mut self, base_dir: impl Into<PathBuf>) -> Self {
+        self.log_base_dir = Some(base_dir.into());
+        self
     }
 
     pub fn confidence_threshold(&self) -> f64 {
@@ -36,13 +47,13 @@ impl IntentRouter {
                 decision.confidence, self.confidence_threshold
             );
         }
+        self.log_decision(input, &decision);
         Ok(decision)
     }
 
     pub fn route_with_context(&self, input: &str, context: &str) -> Result<RoutingDecision> {
         let combined = format!("{} {}", input, context).to_lowercase();
         let mut decision = Self::classify(&combined)?;
-        // Context reinforcement: bump confidence slightly when context is non-empty
         if !context.is_empty() && decision.confidence < 1.0 {
             decision.confidence = (decision.confidence + 0.05).min(1.0);
         }
@@ -53,6 +64,7 @@ impl IntentRouter {
                 decision.confidence, self.confidence_threshold
             );
         }
+        self.log_decision(input, &decision);
         Ok(decision)
     }
 
@@ -98,6 +110,20 @@ impl IntentRouter {
         "fact",
         "note",
     ];
+
+    fn log_decision(&self, input: &str, decision: &RoutingDecision) {
+        if let Some(base) = &self.log_base_dir {
+            let entry = ProvenanceEntry::new(
+                "routing_decision",
+                format!("{:?}", decision.agent_type),
+                &decision.reasoning,
+                decision.confidence,
+                vec![],
+                input,
+            );
+            provenance::log_routing_decision(base, &entry);
+        }
+    }
 
     fn classify(text: &str) -> Result<RoutingDecision> {
         let density = |keywords: &[&str]| -> f64 {

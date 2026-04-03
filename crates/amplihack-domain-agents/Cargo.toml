@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 amplihack-agent-core = { path = "../amplihack-agent-core" }
 amplihack-memory = { workspace = true }
+amplihack-workflows = { path = "../amplihack-workflows" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
