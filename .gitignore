@@ -15,3 +15,5 @@ worktrees/
 .claude/runtime/
 index.scip
 .amplihack/
+logs/
+outputs/

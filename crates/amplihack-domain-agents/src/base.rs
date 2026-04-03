@@ -108,6 +108,9 @@ pub struct DomainTeachingResult {
 ///
 /// Each domain agent handles a specific type of task (code review,
 /// meeting synthesis, etc.) and provides evaluation levels for testing.
+///
+/// **Note:** This trait is object-safe and can be used as `dyn DomainAgent`
+/// for heterogeneous agent collections.
 pub trait DomainAgent: Send + Sync {
     /// The domain this agent handles.
     fn domain(&self) -> &str;

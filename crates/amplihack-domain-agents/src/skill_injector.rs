@@ -162,7 +162,7 @@ pub fn pr_review_tool(input: Value) -> Value {
             findings.push(serde_json::json!({
                 "type": "debug_statement",
                 "severity": "warning",
-                "message": format!("Debug statement found: {}", &line[..line.len().min(80)]),
+                "message": format!("Debug statement found: {}", line.chars().take(80).collect::<String>()),
             }));
         }
     }
