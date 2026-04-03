@@ -39,6 +39,7 @@ pub fn make_learn_content_event(source: &str, content: &str) -> Result<BusEvent>
         source: source.to_string(),
     };
     Ok(BusEvent {
+        event_id: Uuid::new_v4().to_string(),
         source_id: Uuid::new_v4().to_string(),
         topic: HIVE_LEARN_CONTENT.to_string(),
         payload: serde_json::to_value(&event)?,
@@ -53,6 +54,7 @@ pub fn make_feed_complete_event(feed_id: &str, items: u32) -> Result<BusEvent> {
         items,
     };
     Ok(BusEvent {
+        event_id: Uuid::new_v4().to_string(),
         source_id: Uuid::new_v4().to_string(),
         topic: HIVE_FEED_COMPLETE.to_string(),
         payload: serde_json::to_value(&event)?,
@@ -66,6 +68,7 @@ pub fn make_agent_ready_event(agent_id: &str) -> Result<BusEvent> {
         agent_id: agent_id.to_string(),
     };
     Ok(BusEvent {
+        event_id: Uuid::new_v4().to_string(),
         source_id: Uuid::new_v4().to_string(),
         topic: HIVE_AGENT_READY.to_string(),
         payload: serde_json::to_value(&event)?,
@@ -81,6 +84,7 @@ pub fn make_query_event(question: &str) -> Result<(String, BusEvent)> {
         question: question.to_string(),
     };
     let bus_event = BusEvent {
+        event_id: Uuid::new_v4().to_string(),
         source_id: Uuid::new_v4().to_string(),
         topic: HIVE_QUERY.to_string(),
         payload: serde_json::to_value(&event)?,
@@ -100,6 +104,7 @@ pub fn make_query_response_event(query_id: &str, answer: &str, confidence: f64) 
         confidence,
     };
     Ok(BusEvent {
+        event_id: Uuid::new_v4().to_string(),
         source_id: Uuid::new_v4().to_string(),
         topic: HIVE_QUERY_RESPONSE.to_string(),
         payload: serde_json::to_value(&event)?,
@@ -123,6 +128,7 @@ mod tests {
         let event = make_learn_content_event("test-source", "hello world").unwrap();
         assert_eq!(event.topic, HIVE_LEARN_CONTENT);
         assert!(!event.source_id.is_empty());
+        assert!(!event.event_id.is_empty());
     }
 
     #[test]
@@ -174,6 +180,6 @@ mod tests {
     fn events_have_unique_ids() {
         let e1 = make_learn_content_event("s", "c").unwrap();
         let e2 = make_learn_content_event("s", "c").unwrap();
-        assert_ne!(e1.source_id, e2.source_id);
+        assert_ne!(e1.event_id, e2.event_id);
     }
 }
