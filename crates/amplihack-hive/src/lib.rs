@@ -4,10 +4,14 @@
 //! CRDT-based convergence, a controller/orchestrator for managing
 //! swarms, hive events, learning feed, and evaluation.
 
+pub mod bloom;
 pub mod controller;
 pub mod crdt;
+pub mod dht;
+pub mod embeddings;
 pub mod error;
 pub mod event_bus;
+pub mod fact_lifecycle;
 pub mod feed;
 pub mod gossip;
 pub mod graph;
@@ -15,12 +19,19 @@ pub mod hive_eval;
 pub mod hive_events;
 pub mod models;
 pub mod orchestrator;
+pub mod quality;
+pub mod query_expansion;
+pub mod reranker;
 pub mod workload;
 
+pub use bloom::BloomFilter;
 pub use controller::HiveController;
-pub use crdt::{GCounter, LWWRegister};
+pub use crdt::{GCounter, GSet, LWWRegister, ORSet, PNCounter};
+pub use dht::{DHTRouter, HashRing, ShardFact, ShardStore};
+pub use embeddings::{cosine_similarity, cosine_similarity_batch, dot_product, normalize};
 pub use error::{HiveError, Result};
 pub use event_bus::{EventBus, LocalEventBus};
+pub use fact_lifecycle::{decay_confidence, gc_expired_facts, refresh_confidence, FactTTL};
 pub use feed::{FeedConfig, FeedResult, run_feed};
 pub use gossip::GossipProtocol;
 pub use graph::HiveGraph;
@@ -34,4 +45,10 @@ pub use models::{
     MergeResult,
 };
 pub use orchestrator::{DefaultPromotionPolicy, HiveMindOrchestrator, PromotionPolicy};
+pub use quality::{score_content_quality, QualityGate};
+pub use query_expansion::{expand_query, search_expanded};
+pub use reranker::{
+    hybrid_score, hybrid_score_weighted, rrf_merge, rrf_merge_scored, trust_weighted_score,
+    ScoredFact,
+};
 pub use workload::{HiveEvent, HiveWorkloadConfig, WorkloadStatus};

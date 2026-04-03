@@ -92,6 +92,18 @@ impl HiveGraph {
     pub fn fact_count(&self) -> usize {
         self.facts.len()
     }
+
+    /// Update a fact's confidence by ID, clamping to \[0.0, 1.0\].
+    ///
+    /// Returns `true` if the fact was found and updated.
+    pub fn set_fact_confidence(&mut self, fact_id: &str, confidence: f64) -> bool {
+        if let Some(fact) = self.facts.iter_mut().find(|f| f.fact_id == fact_id) {
+            fact.confidence = confidence.clamp(0.0, 1.0);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl Default for HiveGraph {
