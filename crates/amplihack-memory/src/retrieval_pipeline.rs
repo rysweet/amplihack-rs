@@ -5,7 +5,9 @@
 //! final retrieval result within token budget constraints.
 
 use crate::models::{MemoryEntry, MemoryQuery};
+use crate::quality::{matches_query, relevance_score};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// A memory entry with an associated relevance score.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,38 +131,141 @@ impl RetrievalPipeline {
     /// Execute the retrieval pipeline against a set of candidate entries.
     pub fn execute(
         &self,
-        _candidates: Vec<MemoryEntry>,
-        _query: &MemoryQuery,
+        candidates: Vec<MemoryEntry>,
+        query: &MemoryQuery,
     ) -> anyhow::Result<RetrievalResult> {
-        todo!("retrieval pipeline execution")
+        let total_candidates = candidates.len();
+
+        // Initial scoring
+        let query_words: HashSet<&str> = query.query_text.split_whitespace().collect();
+        let mut scored: Vec<ScoredEntry> = candidates
+            .into_iter()
+            .map(|entry| {
+                let score = relevance_score(&entry, &query_words);
+                ScoredEntry::new(entry, score)
+            })
+            .collect();
+
+        let mut stages_applied = Vec::new();
+
+        for &stage in &self.stages {
+            match stage {
+                RetrievalStage::Filter => {
+                    scored = self.filter(scored, query);
+                    stages_applied.push(RetrievalStage::Filter);
+                }
+                RetrievalStage::Rank => {
+                    scored = self.rank(scored, query);
+                    stages_applied.push(RetrievalStage::Rank);
+                }
+                RetrievalStage::Deduplicate => {
+                    scored = self.deduplicate(scored);
+                    stages_applied.push(RetrievalStage::Deduplicate);
+                }
+                RetrievalStage::BudgetEnforce => {
+                    let budget = if query.token_budget > 0 {
+                        query.token_budget
+                    } else {
+                        4000
+                    };
+                    let (entries, truncated_flag) = self.enforce_budget(scored, budget);
+                    scored = entries;
+                    stages_applied.push(RetrievalStage::BudgetEnforce);
+                    let tokens_used: usize = scored.iter().map(|s| s.estimated_tokens()).sum();
+                    return Ok(RetrievalResult {
+                        entries: scored,
+                        total_candidates,
+                        total_tokens_used: tokens_used,
+                        stages_applied,
+                        truncated: truncated_flag,
+                    });
+                }
+            }
+        }
+
+        let tokens_used: usize = scored.iter().map(|s| s.estimated_tokens()).sum();
+        Ok(RetrievalResult {
+            entries: scored,
+            total_candidates,
+            total_tokens_used: tokens_used,
+            stages_applied,
+            truncated: false,
+        })
     }
 
     /// Run only the filter stage.
     pub fn filter(
         &self,
-        _candidates: Vec<ScoredEntry>,
-        _query: &MemoryQuery,
+        candidates: Vec<ScoredEntry>,
+        query: &MemoryQuery,
     ) -> Vec<ScoredEntry> {
-        todo!("filter stage")
+        candidates
+            .into_iter()
+            .filter(|s| {
+                matches_query(&s.entry, query) && s.score >= self.config.min_score_threshold
+            })
+            .take(self.config.max_results)
+            .map(|s| {
+                let filter_score = s.score;
+                s.with_stage_score("filter", filter_score)
+            })
+            .collect()
     }
 
     /// Run only the rank stage.
-    pub fn rank(&self, _entries: Vec<ScoredEntry>, _query: &MemoryQuery) -> Vec<ScoredEntry> {
-        todo!("rank stage")
+    pub fn rank(&self, mut entries: Vec<ScoredEntry>, query: &MemoryQuery) -> Vec<ScoredEntry> {
+        let query_words: HashSet<&str> = query.query_text.split_whitespace().collect();
+
+        for entry in &mut entries {
+            let new_score = relevance_score(&entry.entry, &query_words);
+            entry.score = new_score;
+            entry
+                .stage_scores
+                .push(("rank".to_string(), new_score));
+        }
+
+        entries.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        entries
     }
 
     /// Run only the dedup stage.
-    pub fn deduplicate(&self, _entries: Vec<ScoredEntry>) -> Vec<ScoredEntry> {
-        todo!("dedup stage")
+    ///
+    /// Uses content fingerprinting to remove near-duplicates.
+    pub fn deduplicate(&self, entries: Vec<ScoredEntry>) -> Vec<ScoredEntry> {
+        let mut seen = HashSet::new();
+        entries
+            .into_iter()
+            .filter(|s| seen.insert(s.entry.content_fingerprint()))
+            .collect()
     }
 
     /// Run only the budget enforcement stage.
+    ///
+    /// Returns `(kept_entries, was_truncated)`.
     pub fn enforce_budget(
         &self,
-        _entries: Vec<ScoredEntry>,
-        _token_budget: usize,
+        entries: Vec<ScoredEntry>,
+        token_budget: usize,
     ) -> (Vec<ScoredEntry>, bool) {
-        todo!("budget enforcement stage")
+        let mut used = 0usize;
+        let mut kept = Vec::new();
+        let total = entries.len();
+
+        for entry in entries {
+            let tokens = entry.estimated_tokens().max(1);
+            if used + tokens > token_budget && !kept.is_empty() {
+                return (kept, true);
+            }
+            used += tokens;
+            kept.push(entry);
+        }
+
+        let truncated = kept.len() < total;
+        (kept, truncated)
     }
 
     /// Get the configured stages.

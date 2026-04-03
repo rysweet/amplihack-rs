@@ -1,6 +1,4 @@
 //! Tests for retrieval and storage pipelines.
-//!
-//! Tests compile but FAIL because pipeline methods use todo!().
 
 use amplihack_memory::models::{MemoryEntry, MemoryQuery, MemoryType};
 use amplihack_memory::retrieval_pipeline::{
@@ -55,44 +53,80 @@ fn retrieval_pipeline_with_config() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn retrieval_pipeline_execute_not_implemented() {
+fn retrieval_pipeline_execute_returns_results() {
     let pipeline = RetrievalPipeline::new();
-    let candidates = vec![semantic_entry("test candidate content here")];
+    let candidates = vec![semantic_entry("test candidate content here for retrieval")];
     let query = MemoryQuery::new("test");
-    let _ = pipeline.execute(candidates, &query);
+    let result = pipeline.execute(candidates, &query).unwrap();
+    assert_eq!(result.total_candidates, 1);
+    assert!(!result.entries.is_empty());
+    assert!(!result.stages_applied.is_empty());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn retrieval_filter_stage_not_implemented() {
+fn retrieval_pipeline_execute_empty_candidates() {
     let pipeline = RetrievalPipeline::new();
-    let entries = vec![ScoredEntry::new(semantic_entry("filter test"), 0.5)];
-    let _ = pipeline.filter(entries, &MemoryQuery::new("test"));
+    let query = MemoryQuery::new("test");
+    let result = pipeline.execute(vec![], &query).unwrap();
+    assert_eq!(result.total_candidates, 0);
+    assert!(result.entries.is_empty());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn retrieval_rank_stage_not_implemented() {
+fn retrieval_filter_stage_applies_query() {
     let pipeline = RetrievalPipeline::new();
-    let entries = vec![ScoredEntry::new(semantic_entry("rank test"), 0.5)];
-    let _ = pipeline.rank(entries, &MemoryQuery::new("test"));
+    let entries = vec![
+        ScoredEntry::new(semantic_entry("matching filter test content"), 0.5),
+        ScoredEntry::new(
+            MemoryEntry::new("other-session", "a", MemoryType::Working, "other content"),
+            0.5,
+        ),
+    ];
+    let query = MemoryQuery::new("test").with_session("test-session");
+    let filtered = pipeline.filter(entries, &query);
+    assert_eq!(filtered.len(), 1);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn retrieval_dedup_stage_not_implemented() {
+fn retrieval_rank_stage_sorts_by_score() {
     let pipeline = RetrievalPipeline::new();
-    let entries = vec![ScoredEntry::new(semantic_entry("dedup test"), 0.5)];
-    let _ = pipeline.deduplicate(entries);
+    let entries = vec![
+        ScoredEntry::new(semantic_entry("low relevance content here"), 0.2),
+        ScoredEntry::new(semantic_entry("high relevance test query content here"), 0.8),
+    ];
+    let query = MemoryQuery::new("test query");
+    let ranked = pipeline.rank(entries, &query);
+    assert!(ranked[0].score >= ranked[1].score);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn retrieval_budget_enforce_not_implemented() {
+fn retrieval_dedup_stage_removes_duplicates() {
     let pipeline = RetrievalPipeline::new();
-    let entries = vec![ScoredEntry::new(semantic_entry("budget test"), 0.5)];
-    let _ = pipeline.enforce_budget(entries, 1000);
+    let entries = vec![
+        ScoredEntry::new(semantic_entry("duplicate content for testing"), 0.5),
+        ScoredEntry::new(semantic_entry("duplicate content for testing"), 0.4),
+        ScoredEntry::new(semantic_entry("unique content for testing"), 0.6),
+    ];
+    let deduped = pipeline.deduplicate(entries);
+    assert_eq!(deduped.len(), 2);
+}
+
+#[test]
+fn retrieval_budget_enforce_truncates() {
+    let pipeline = RetrievalPipeline::new();
+    // Each entry ~10 tokens (40 chars / 4)
+    let entries: Vec<ScoredEntry> = (0..10)
+        .map(|i| {
+            ScoredEntry::new(
+                semantic_entry(&format!("Entry number {i:02} with enough padding text")),
+                0.5,
+            )
+        })
+        .collect();
+    // Budget for ~3 entries (~30 tokens)
+    let (kept, truncated) = pipeline.enforce_budget(entries, 30);
+    assert!(kept.len() < 10);
+    assert!(truncated);
 }
 
 #[test]
@@ -124,7 +158,7 @@ fn scored_entry_with_stage_scores() {
 
 #[test]
 fn scored_entry_token_estimation() {
-    let mut entry = semantic_entry("a]".repeat(100).as_str());
+    let mut entry = semantic_entry(&"a]".repeat(100));
     entry.title = "short".to_string();
     let scored = ScoredEntry::new(entry, 0.5);
     let tokens = scored.estimated_tokens();
@@ -178,32 +212,70 @@ fn storage_pipeline_with_config() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn storage_pipeline_execute_not_implemented() {
+fn storage_pipeline_execute_accepts_valid_entry() {
     let mut pipeline = StoragePipeline::new();
-    let entry = semantic_entry("test storage pipeline entry");
-    let _ = pipeline.execute(&entry);
+    let entry = semantic_entry("This is a valid storage pipeline entry for testing");
+    let result = pipeline.execute(&entry).unwrap();
+    assert!(result.accepted);
+    assert!(result.entry_id.is_some());
+    assert!(!result.stages_applied.is_empty());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn storage_validate_not_implemented() {
-    let pipeline = StoragePipeline::new();
-    let _ = pipeline.validate(&semantic_entry("validate test"));
+fn storage_pipeline_execute_rejects_short_content() {
+    let mut pipeline = StoragePipeline::new();
+    let entry = semantic_entry("short");
+    let result = pipeline.execute(&entry).unwrap();
+    assert!(!result.accepted);
+    assert!(matches!(
+        result.rejection_reason,
+        Some(RejectionReason::TooShort { .. })
+    ));
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn storage_check_duplicate_not_implemented() {
-    let pipeline = StoragePipeline::new();
-    let _ = pipeline.check_duplicate(&semantic_entry("dedup check"));
+fn storage_pipeline_execute_rejects_trivial_content() {
+    let mut pipeline = StoragePipeline::new();
+    // "thanks" is exactly a trivial phrase and length >= 10 check needs padding
+    let entry = semantic_entry("short txt");
+    let result = pipeline.execute(&entry).unwrap();
+    assert!(!result.accepted);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn storage_classify_not_implemented() {
+fn storage_validate_accepts_valid_content() {
     let pipeline = StoragePipeline::new();
-    let _ = pipeline.classify(&semantic_entry("classify test"));
+    let entry = semantic_entry("This is perfectly valid content for testing");
+    assert!(pipeline.validate(&entry).is_ok());
+}
+
+#[test]
+fn storage_validate_rejects_too_short() {
+    let pipeline = StoragePipeline::new();
+    let entry = semantic_entry("short");
+    let err = pipeline.validate(&entry).unwrap_err();
+    assert!(matches!(err, RejectionReason::TooShort { .. }));
+}
+
+#[test]
+fn storage_check_duplicate_returns_none_for_fresh() {
+    let pipeline = StoragePipeline::new();
+    let entry = semantic_entry("Unique content that hasn't been seen before");
+    assert!(pipeline.check_duplicate(&entry).is_none());
+}
+
+#[test]
+fn storage_classify_keeps_existing_type() {
+    let pipeline = StoragePipeline::new();
+    let entry = MemoryEntry::new("s1", "a1", MemoryType::Working, "some working memory content");
+    assert_eq!(pipeline.classify(&entry), MemoryType::Working);
+}
+
+#[test]
+fn storage_classify_detects_procedural() {
+    let pipeline = StoragePipeline::new();
+    let entry = semantic_entry("how to install rust on ubuntu");
+    assert_eq!(pipeline.classify(&entry), MemoryType::Procedural);
 }
 
 #[test]

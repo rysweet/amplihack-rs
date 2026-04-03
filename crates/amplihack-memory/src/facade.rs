@@ -3,9 +3,11 @@
 //! Provides three main methods: store_memory(), recall(), forget().
 //! Automatically selects the best available backend.
 
+use crate::auto_backend::{create_backend, detect_backend};
 use crate::backend::MemoryBackend;
 use crate::config::MemoryConfig;
-use crate::models::{MemoryEntry, MemoryType, SessionInfo};
+use crate::models::{MemoryEntry, MemoryQuery, MemoryType, SessionInfo};
+use crate::quality::score_importance;
 
 /// Options for storing a memory through the facade.
 #[derive(Debug, Clone)]
@@ -74,36 +76,56 @@ impl MemoryFacade {
     }
 
     /// Create a facade with auto-detected backend.
-    pub fn auto(_config: MemoryConfig) -> anyhow::Result<Self> {
-        todo!("auto-detect backend")
+    pub fn auto(config: MemoryConfig) -> anyhow::Result<Self> {
+        let detected = detect_backend(&config);
+        let backend = create_backend(&detected)?;
+        Ok(Self { backend, config })
     }
 
     /// Store a memory. Returns the entry ID.
     pub fn store_memory(
         &mut self,
-        _content: &str,
-        _options: StoreOptions,
+        content: &str,
+        options: StoreOptions,
     ) -> anyhow::Result<String> {
-        todo!("store_memory")
+        let mut entry = MemoryEntry::new(
+            &options.session_id,
+            &options.agent_id,
+            options.memory_type,
+            content,
+        );
+        entry.importance = options
+            .importance
+            .unwrap_or_else(|| score_importance(content, options.memory_type));
+        entry.tags = options.tags;
+        self.backend.store(&entry)
     }
 
     /// Recall memories matching a query string.
     pub fn recall(
         &self,
-        _query: &str,
-        _options: RecallOptions,
+        query: &str,
+        options: RecallOptions,
     ) -> anyhow::Result<Vec<MemoryEntry>> {
-        todo!("recall")
+        let q = MemoryQuery {
+            query_text: query.to_string(),
+            session_id: options.session_id,
+            memory_types: options.memory_types,
+            token_budget: options.token_budget,
+            limit: options.limit,
+            ..Default::default()
+        };
+        self.backend.retrieve(&q)
     }
 
     /// Forget (delete) a memory by ID. Returns true if it existed.
-    pub fn forget(&mut self, _entry_id: &str) -> anyhow::Result<bool> {
-        todo!("forget")
+    pub fn forget(&mut self, entry_id: &str) -> anyhow::Result<bool> {
+        self.backend.delete(entry_id)
     }
 
     /// List all sessions known to the backend.
     pub fn list_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
-        todo!("list_sessions")
+        self.backend.list_sessions()
     }
 
     /// Get the name of the active backend.

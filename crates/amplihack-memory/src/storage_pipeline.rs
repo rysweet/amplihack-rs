@@ -5,7 +5,9 @@
 //! final persistence, rejecting invalid or duplicate content.
 
 use crate::models::{MemoryEntry, MemoryType};
+use crate::quality::is_trivial;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// Stages in the storage pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +112,7 @@ impl Default for StoragePipelineConfig {
 pub struct StoragePipeline {
     config: StoragePipelineConfig,
     stages: Vec<StorageStage>,
+    seen_fingerprints: HashSet<u64>,
 }
 
 impl StoragePipeline {
@@ -123,6 +126,7 @@ impl StoragePipeline {
                 StorageStage::Classify,
                 StorageStage::Store,
             ],
+            seen_fingerprints: HashSet::new(),
         }
     }
 
@@ -136,6 +140,7 @@ impl StoragePipeline {
                 StorageStage::Classify,
                 StorageStage::Store,
             ],
+            seen_fingerprints: HashSet::new(),
         }
     }
 
@@ -146,23 +151,109 @@ impl StoragePipeline {
     }
 
     /// Execute the storage pipeline for a memory entry.
-    pub fn execute(&mut self, _entry: &MemoryEntry) -> anyhow::Result<StorageResult> {
-        todo!("storage pipeline execution")
+    pub fn execute(&mut self, entry: &MemoryEntry) -> anyhow::Result<StorageResult> {
+        let mut stages_applied = Vec::new();
+        let mut memory_type = entry.memory_type;
+
+        for &stage in &self.stages.clone() {
+            match stage {
+                StorageStage::Validate => {
+                    if let Err(reason) = self.validate(entry) {
+                        let mut result = StorageResult::rejected(memory_type, reason);
+                        stages_applied.push(StorageStage::Validate);
+                        result.stages_applied = stages_applied;
+                        return Ok(result);
+                    }
+                    stages_applied.push(StorageStage::Validate);
+                }
+                StorageStage::Deduplicate => {
+                    if self.config.enable_dedup
+                        && let Some(existing_id) = self.check_duplicate(entry)
+                    {
+                        let reason = RejectionReason::Duplicate { existing_id };
+                        let mut result = StorageResult::rejected(memory_type, reason);
+                        stages_applied.push(StorageStage::Deduplicate);
+                        result.stages_applied = stages_applied;
+                        return Ok(result);
+                    }
+                    stages_applied.push(StorageStage::Deduplicate);
+                }
+                StorageStage::Classify => {
+                    if self.config.enable_classification {
+                        memory_type = self.classify(entry);
+                    }
+                    stages_applied.push(StorageStage::Classify);
+                }
+                StorageStage::Store => {
+                    stages_applied.push(StorageStage::Store);
+                }
+            }
+        }
+
+        let importance = crate::quality::score_importance(&entry.content, memory_type);
+        let mut result = StorageResult::accepted(entry.id.clone(), memory_type, importance);
+        result.stages_applied = stages_applied;
+        Ok(result)
     }
 
     /// Run only the validation stage.
-    pub fn validate(&self, _entry: &MemoryEntry) -> Result<(), RejectionReason> {
-        todo!("validate stage")
+    pub fn validate(&self, entry: &MemoryEntry) -> Result<(), RejectionReason> {
+        let len = entry.content.trim().len();
+        if len < self.config.min_content_length {
+            return Err(RejectionReason::TooShort {
+                min_length: self.config.min_content_length,
+                actual: len,
+            });
+        }
+        if entry.content.len() > self.config.max_content_length {
+            return Err(RejectionReason::TooLarge {
+                max_length: self.config.max_content_length,
+                actual: entry.content.len(),
+            });
+        }
+        if self.config.trivial_filter && is_trivial(&entry.content, self.config.min_content_length)
+        {
+            return Err(RejectionReason::TrivialContent);
+        }
+        Ok(())
     }
 
     /// Run only the deduplication check.
-    pub fn check_duplicate(&self, _entry: &MemoryEntry) -> Option<String> {
-        todo!("dedup check")
+    /// Returns the existing entry's fingerprint as hex if duplicate found.
+    pub fn check_duplicate(&self, entry: &MemoryEntry) -> Option<String> {
+        let fp = entry.content_fingerprint();
+        if self.seen_fingerprints.contains(&fp) {
+            Some(format!("fp:{fp:016x}"))
+        } else {
+            None
+        }
     }
 
     /// Run only the classification stage.
-    pub fn classify(&self, _entry: &MemoryEntry) -> MemoryType {
-        todo!("classify stage")
+    ///
+    /// Infers memory type from content heuristics when the entry
+    /// has a generic type.
+    pub fn classify(&self, entry: &MemoryEntry) -> MemoryType {
+        let content = &entry.content;
+        let lower = content.to_lowercase();
+
+        // If the entry already has a non-semantic cognitive type, keep it
+        if entry.memory_type != MemoryType::Semantic && entry.memory_type.is_cognitive() {
+            return entry.memory_type;
+        }
+
+        // Heuristic classification
+        if lower.contains("how to") || lower.contains("step ") || lower.contains("procedure") {
+            return MemoryType::Procedural;
+        }
+        if lower.contains("todo") || lower.contains("reminder") || lower.contains("plan to") {
+            return MemoryType::Prospective;
+        }
+        if lower.contains("fn ") || lower.contains("def ") || lower.contains("class ") {
+            return MemoryType::CodeContext;
+        }
+
+        entry.memory_type
     }
 
     /// Get the configured stages.
