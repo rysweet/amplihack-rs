@@ -1,0 +1,57 @@
+id: domain-agents-routing
+name: "Domain Agents — CodeReview and MeetingSynthesizer Routing"
+description: |
+  Verifies that the IntentRouter correctly routes to the two new domain
+  agent types (CodeReview, MeetingSynthesizer) and that both agents can
+  execute basic tasks. Tests SkillInjector, eval levels, and 7-type router.
+priority: HIGH
+interface: CLI
+prerequisites:
+  - "Rust toolchain available on PATH"
+tags: [smoke, domain-agents, code-review, meeting-synthesizer, feature-parity]
+
+agents:
+  - name: cargo-test-runner
+    type: cli
+    command: cargo
+
+steps:
+  - action: run
+    target: "cargo test -p amplihack-domain-agents --lib -- code_review --no-fail-fast"
+    description: "Run all code_review unit tests"
+    expected: success
+    timeout: 60000
+
+  - action: run
+    target: "cargo test -p amplihack-domain-agents --lib -- meeting_synthesizer --no-fail-fast"
+    description: "Run all meeting_synthesizer unit tests"
+    expected: success
+    timeout: 60000
+
+  - action: run
+    target: "cargo test -p amplihack-domain-agents --lib -- skill_injector --no-fail-fast"
+    description: "Run all skill_injector unit tests"
+    expected: success
+    timeout: 60000
+
+  - action: run
+    target: "cargo test -p amplihack-domain-agents --test router_test --no-fail-fast"
+    description: "Run router integration tests including 7-type coverage"
+    expected: success
+    timeout: 60000
+
+verifications:
+  - type: output
+    target: stdout
+    expected: "test result: ok"
+    operator: contains
+    description: "All test suites must pass"
+
+  - type: output
+    target: stdout
+    expected: "supported_types_returns_all_seven"
+    operator: contains
+    description: "Router must support all 7 agent types"
+
+estimatedDuration: 120
+enabled: true
