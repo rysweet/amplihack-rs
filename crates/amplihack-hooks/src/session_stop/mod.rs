@@ -39,7 +39,14 @@ impl Hook for SessionStopHook {
             _ => return Ok(Value::Object(serde_json::Map::new())),
         };
 
-        let session_id = session_id.unwrap_or_else(|| "hook_session".to_string());
+        let session_id = session_id.unwrap_or_else(|| {
+            let id = generate_unique_session_id();
+            tracing::warn!(
+                "No session_id provided to session_stop hook; using generated fallback: {}",
+                id
+            );
+            id
+        });
         match collect_session_learning_inputs(&session_id, transcript_path.as_deref(), &extra) {
             Ok(learnings) => {
                 for learning in learnings {
@@ -61,6 +68,18 @@ impl Hook for SessionStopHook {
 
         Ok(Value::Object(serde_json::Map::new()))
     }
+}
+
+/// Generate a unique session ID from PID and current timestamp.
+fn generate_unique_session_id() -> String {
+    format!(
+        "hook-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

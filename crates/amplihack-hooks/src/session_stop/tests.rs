@@ -3,7 +3,6 @@
 use super::*;
 use crate::protocol::Hook;
 use crate::test_support::env_lock;
-use serde_json::Value;
 use std::fs;
 
 #[test]
@@ -105,4 +104,15 @@ fn session_stop_stores_learning_in_sqlite_backend() {
     assert!(result.as_object().unwrap().is_empty());
     assert_eq!(memories.len(), 1);
     assert!(memories[0].content.contains("Found the failing middleware"));
+}
+
+#[test]
+fn generate_unique_session_id_produces_different_ids() {
+    let id1 = super::generate_unique_session_id();
+    // Small sleep to ensure timestamp differs.
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let id2 = super::generate_unique_session_id();
+    assert_ne!(id1, id2, "Two calls should produce different session IDs");
+    assert!(id1.starts_with("hook-"), "ID should start with 'hook-'");
+    assert!(id2.starts_with("hook-"), "ID should start with 'hook-'");
 }
