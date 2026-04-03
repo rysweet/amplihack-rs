@@ -62,7 +62,7 @@ fn quality_score_entry_returns_bounded_score() {
     let eval = QualityEvaluator::new();
     let entry = semantic_entry("Score this entry with meaningful content");
     let score = eval.score_entry(&entry);
-    assert!(score >= 0.0 && score <= 1.0);
+    assert!((0.0..=1.0).contains(&score));
 }
 
 #[test]
