@@ -6,15 +6,18 @@
 
 mod analysis;
 mod bundle;
+pub mod distributor;
 pub mod documentation;
 pub mod error;
 pub mod generator;
 mod generator_templates;
 pub mod models;
+pub mod packager;
 mod packaging;
 mod planning;
 mod skills;
 mod templates;
+pub mod update_manager;
 
 #[cfg(test)]
 mod tests;
