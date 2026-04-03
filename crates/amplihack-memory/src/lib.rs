@@ -8,14 +8,20 @@ pub mod backend;
 pub mod bloom;
 pub mod config;
 pub mod coordinator;
+pub mod database;
+pub(crate) mod database_helpers;
 pub mod discoveries;
 pub mod distributed_store;
 pub mod evaluation;
 pub mod facade;
 pub mod graph_store;
 pub mod hash_ring;
+pub mod maintenance;
+pub mod manager;
 pub mod memory_store;
 pub mod models;
+pub mod network_store;
+pub(crate) mod network_store_types;
 pub mod quality;
 pub mod retrieval;
 pub mod retrieval_pipeline;
@@ -27,6 +33,8 @@ pub use backend::{BackendHealth, InMemoryBackend, MemoryBackend};
 pub use bloom::BloomFilter;
 pub use config::{Backend, MemoryConfig, Topology, Transport};
 pub use coordinator::MemoryCoordinator;
+#[cfg(feature = "sqlite")]
+pub use database::MemoryDatabase;
 pub use discoveries::{Discovery, get_recent_discoveries, store_discovery};
 pub use distributed_store::DistributedGraphStore;
 pub use evaluation::{
@@ -38,8 +46,12 @@ pub use evaluation::{
 pub use facade::MemoryFacade;
 pub use graph_store::GraphStore;
 pub use hash_ring::HashRing;
+#[cfg(feature = "sqlite")]
+pub use maintenance::MemoryMaintenance;
+pub use manager::MemoryManager;
 pub use memory_store::InMemoryGraphStore;
 pub use models::{MemoryEntry, MemoryQuery, MemoryType, SessionInfo, StorageRequest};
+pub use network_store::{AgentRegistry, NetworkGraphStore};
 pub use retrieval_pipeline::{RetrievalPipeline, RetrievalResult, ScoredEntry};
 pub use retrieval::{Fact, IntentKind, MemorySearch as RetrievalMemorySearch};
 pub use storage_pipeline::{StoragePipeline, StorageResult};
