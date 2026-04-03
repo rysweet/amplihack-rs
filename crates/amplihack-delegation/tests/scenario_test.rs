@@ -1,83 +1,77 @@
 use amplihack_delegation::{ScenarioCategory, ScenarioGenerator};
 
 #[test]
-fn generates_minimum() {
-    let generator = ScenarioGenerator::new("build a todo app");
-    let scenarios = generator.generate(1);
+fn generates_happy_path_and_error_handling() {
+    let generator = ScenarioGenerator::new();
+    let scenarios = generator.generate_scenarios("build a todo app", "users can add/remove items");
     assert!(!scenarios.is_empty());
-    assert_eq!(scenarios[0].goal, "build a todo app");
+    assert!(scenarios.iter().any(|s| s.category == ScenarioCategory::HappyPath));
+    assert!(scenarios.iter().any(|s| s.category == ScenarioCategory::ErrorHandling));
 }
 
 #[test]
-fn api_more() {
-    let generator = ScenarioGenerator::new("build rest api");
-    let scenarios = generator.generate(2);
-    assert!(scenarios.len() >= 1);
-    assert!(
-        scenarios
-            .iter()
-            .any(|s| s.category == ScenarioCategory::API)
-    );
+fn api_goal_produces_api_specific_scenarios() {
+    let generator = ScenarioGenerator::new();
+    let scenarios = generator.generate_scenarios("build rest api", "CRUD endpoints work");
+    assert!(scenarios.len() >= 3);
+    // API goals should produce boundary conditions and integration at minimum
+    assert!(scenarios.iter().any(|s| s.category == ScenarioCategory::BoundaryConditions));
+    assert!(scenarios.iter().any(|s| s.category == ScenarioCategory::Integration));
 }
 
 #[test]
-fn auth_security() {
-    let generator = ScenarioGenerator::new("jwt authentication");
-    let scenarios = generator.generate(1);
+fn auth_goal_produces_security_scenarios() {
+    let generator = ScenarioGenerator::new();
+    let scenarios = generator.generate_scenarios("jwt authentication", "users can log in securely");
     assert!(!scenarios.is_empty());
-    assert_eq!(scenarios[0].category, ScenarioCategory::AuthSecurity);
+    assert!(scenarios.iter().any(|s| s.category == ScenarioCategory::Security));
 }
 
 #[test]
-fn performance() {
-    let generator = ScenarioGenerator::new("performance testing");
-    let scenarios = generator.generate(1);
+fn performance_goal_produces_perf_scenarios() {
+    let generator = ScenarioGenerator::new();
+    let scenarios = generator.generate_scenarios("performance testing", "sub-second response times");
     assert!(!scenarios.is_empty());
-    assert_eq!(scenarios[0].category, ScenarioCategory::Performance);
+    assert!(scenarios.iter().any(|s| s.category == ScenarioCategory::Performance));
 }
 
 #[test]
-fn pagination_zero() {
-    let generator = ScenarioGenerator::new("build list page");
-    let scenarios = generator.generate(0);
-    assert_eq!(scenarios.len(), 0);
-}
-
-#[test]
-fn required_fields() {
-    let generator = ScenarioGenerator::new("test goal");
-    let scenarios = generator.generate(1);
+fn always_produces_integration() {
+    let generator = ScenarioGenerator::new();
+    let scenarios = generator.generate_scenarios("any goal", "some criteria");
     assert!(!scenarios.is_empty());
-    let scenario = &scenarios[0];
-    assert!(!scenario.goal.is_empty());
-    assert!(!scenario.test_steps.is_empty());
-    assert!(!scenario.expected_outcome.is_empty());
-    assert!(!scenario.priority.is_empty());
-    assert!(!scenario.tags.is_empty());
+    assert!(scenarios.iter().any(|s| s.category == ScenarioCategory::Integration));
 }
 
 #[test]
-fn integration_always() {
-    let generator = ScenarioGenerator::new("any goal");
-    let scenarios = generator.generate(1);
+fn empty_goal_still_generates() {
+    let generator = ScenarioGenerator::new();
+    let scenarios = generator.generate_scenarios("", "");
     assert!(!scenarios.is_empty());
-    assert!(scenarios[0].tags.contains(&"integration".into()));
 }
 
 #[test]
-fn missing_data() {
-    let generator = ScenarioGenerator::new("");
-    let scenarios = generator.generate(1);
-    assert!(!scenarios.is_empty());
+fn scenarios_have_required_fields() {
+    let generator = ScenarioGenerator::new();
+    let scenarios = generator.generate_scenarios("test goal", "test criteria");
+    for s in &scenarios {
+        assert!(!s.name.is_empty());
+        assert!(!s.description.is_empty());
+        assert!(!s.steps.is_empty());
+        assert!(!s.expected_outcome.is_empty());
+        assert!(!s.priority.is_empty());
+    }
 }
 
 #[test]
 fn serde_roundtrip() {
-    let generator = ScenarioGenerator::new("test");
-    let scenarios = generator.generate(1);
-    if !scenarios.is_empty() {
-        let json = serde_json::to_string(&scenarios[0]).unwrap();
-        let deserialized = serde_json::from_str(&json).expect("Failed to deserialize scenario");
-        assert_eq!(scenarios[0].goal, deserialized.goal);
+    let generator = ScenarioGenerator::new();
+    let scenarios = generator.generate_scenarios("test serde", "round trip works");
+    if let Some(s) = scenarios.first() {
+        let json = serde_json::to_string(s).unwrap();
+        let deser: amplihack_delegation::TestScenario =
+            serde_json::from_str(&json).expect("deserialize failed");
+        assert_eq!(s.name, deser.name);
+        assert_eq!(s.category, deser.category);
     }
 }

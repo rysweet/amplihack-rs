@@ -1,7 +1,5 @@
 use super::*;
 
-    use super::*;
-
     fn make_generator() -> ScenarioGenerator {
         ScenarioGenerator::new()
     }
