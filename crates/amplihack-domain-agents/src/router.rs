@@ -24,7 +24,7 @@ impl IntentRouter {
 
     pub fn with_defaults() -> Self {
         // SAFETY: 0.5 is always in range 0.0..=1.0
-        Self::new(0.5).unwrap()
+        Self::new(0.5).expect("default confidence threshold 0.5 is in range")
     }
 
     /// Enable provenance logging to the given base directory.

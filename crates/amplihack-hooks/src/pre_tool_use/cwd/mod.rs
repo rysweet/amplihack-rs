@@ -15,17 +15,17 @@ use std::sync::LazyLock;
 /// Regex for recursive rm commands.
 /// Catches: rm -rf, rm -r, rm -fr, rm -Rf, rm -r -f, rm --recursive, /bin/rm -rf
 static RM_RECURSIVE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\brm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*|(?:-[a-zA-Z]+\s+)*-[rR]|--recursive)").unwrap()
+    Regex::new(r"\brm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*|(?:-[a-zA-Z]+\s+)*-[rR]|--recursive)").expect("static RM_RECURSIVE regex")
 });
 
 /// Regex for rmdir commands.
-static RMDIR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\brmdir(?:\s|$)").unwrap());
+static RMDIR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\brmdir(?:\s|$)").expect("static RMDIR regex"));
 
 /// Regex for mv commands (with optional sudo, env vars, command prefix, full path).
 static MV_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?:^|[;&|])\s*(?:\w+=\S+\s+)*(?:sudo\s+)?(?:-\w+(?:\s+\S+)?\s+)*(?:command\s+)?(?:/(?:usr/)?bin/)?mv\s+"
-    ).unwrap()
+    ).expect("static MV regex")
 });
 
 /// Check if a command would delete the current working directory.

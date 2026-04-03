@@ -55,7 +55,7 @@ fn re(pattern: &str) -> PatternMatcher {
             // Log the bad pattern and fall back to a never-matching regex
             // so the system degrades gracefully instead of panicking.
             tracing::error!(pattern, error = %e, "invalid XPIA regex — pattern disabled");
-            PatternMatcher::Regex(Regex::new("(?:$^)").unwrap())
+            PatternMatcher::Regex(Regex::new("(?:$^)").expect("never-matching fallback regex"))
         }
     }
 }

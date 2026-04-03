@@ -130,11 +130,10 @@ mod tests {
         let event = make_feed_complete_event("feed-1", 10).unwrap();
         assert_eq!(event.topic, HIVE_FEED_COMPLETE);
         let payload: HiveEvent = serde_json::from_value(event.payload).unwrap();
-        if let HiveEvent::FeedComplete { items, .. } = payload {
-            assert_eq!(items, 10);
-        } else {
-            panic!("Wrong event type");
-        }
+        let HiveEvent::FeedComplete { items, .. } = payload else {
+            unreachable!("Expected FeedComplete, got {payload:?}");
+        };
+        assert_eq!(items, 10);
     }
 
     #[test]
@@ -149,16 +148,15 @@ mod tests {
         assert_eq!(event.topic, HIVE_QUERY);
         assert!(!query_id.is_empty());
         let payload: HiveEvent = serde_json::from_value(event.payload).unwrap();
-        if let HiveEvent::Query {
+        let HiveEvent::Query {
             query_id: qid,
             question,
         } = payload
-        {
-            assert_eq!(qid, query_id);
-            assert_eq!(question, "What is Rust?");
-        } else {
-            panic!("Wrong event type");
-        }
+        else {
+            unreachable!("Expected Query, got {payload:?}");
+        };
+        assert_eq!(qid, query_id);
+        assert_eq!(question, "What is Rust?");
     }
 
     #[test]
@@ -166,11 +164,10 @@ mod tests {
         let event = make_query_response_event("q1", "A language", 0.85).unwrap();
         assert_eq!(event.topic, HIVE_QUERY_RESPONSE);
         let payload: HiveEvent = serde_json::from_value(event.payload).unwrap();
-        if let HiveEvent::QueryResponse { confidence, .. } = payload {
-            assert!((confidence - 0.85).abs() < f64::EPSILON);
-        } else {
-            panic!("Wrong event type");
-        }
+        let HiveEvent::QueryResponse { confidence, .. } = payload else {
+            unreachable!("Expected QueryResponse, got {payload:?}");
+        };
+        assert!((confidence - 0.85).abs() < f64::EPSILON);
     }
 
     #[test]

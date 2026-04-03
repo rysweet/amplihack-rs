@@ -155,12 +155,11 @@ mod tests {
     #[test]
     fn new_session_not_ready_to_fork() {
         let fm = ForkManager::new(ForkConfig::default());
-        match fm.should_fork() {
-            ForkDecision::NotYet { elapsed_mins, .. } => {
-                assert_eq!(elapsed_mins, 0);
-            }
-            other => panic!("Expected NotYet, got {other:?}"),
-        }
+        let decision = fm.should_fork();
+        let ForkDecision::NotYet { elapsed_mins, .. } = decision else {
+            unreachable!("Expected NotYet, got {decision:?}");
+        };
+        assert_eq!(elapsed_mins, 0);
     }
 
     #[test]
@@ -181,10 +180,11 @@ mod tests {
         });
         fm.record_fork();
         fm.record_fork();
-        match fm.should_fork() {
-            ForkDecision::MaxReached { fork_count } => assert_eq!(fork_count, 2),
-            other => panic!("Expected MaxReached, got {other:?}"),
-        }
+        let decision = fm.should_fork();
+        let ForkDecision::MaxReached { fork_count } = decision else {
+            unreachable!("Expected MaxReached, got {decision:?}");
+        };
+        assert_eq!(fork_count, 2);
     }
 
     #[test]
@@ -209,12 +209,11 @@ mod tests {
             threshold_mins: 0,
             ..Default::default()
         });
-        match fm.should_fork() {
-            ForkDecision::ShouldFork { fork_number, .. } => {
-                assert_eq!(fork_number, 1);
-            }
-            other => panic!("Expected ShouldFork, got {other:?}"),
-        }
+        let decision = fm.should_fork();
+        let ForkDecision::ShouldFork { fork_number, .. } = decision else {
+            unreachable!("Expected ShouldFork, got {decision:?}");
+        };
+        assert_eq!(fork_number, 1);
     }
 
     #[test]
