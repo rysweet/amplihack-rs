@@ -11,16 +11,22 @@ pub mod action_executor;
 pub mod agent;
 pub mod agentic_loop;
 pub mod answer_synth;
+pub mod code_synthesis;
 pub mod cognitive_adapter;
+pub mod continuous_eval;
 pub mod error;
 pub mod input_events;
 pub mod input_source;
 pub mod intent;
+pub mod knowledge_utils;
+pub mod learning_ingestion;
 pub mod lifecycle;
+pub mod memory_retrieval;
 pub mod models;
 pub(crate) mod safe_calc;
 pub mod session;
 pub mod task_queue;
+pub mod temporal_reasoning;
 
 // Re-exports for ergonomic access.
 pub use action_executor::{
