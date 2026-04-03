@@ -27,6 +27,17 @@ Rust core runtime for amplihack's deterministic infrastructure layer.
 - **amplihack-launcher** — Agent binary resolution, launch environment setup
 - **amplihack-recipe** — Recipe system, YAML parsing, step execution
 
+### Agent System
+- **amplihack-agent-core** — Agent lifecycle, session management, OODA loop engine
+- **amplihack-domain-agents** — Specialized agents: teaching, code review, meeting synthesis
+- **amplihack-agent-eval** — Progressive evaluation framework (L1–L12), graders, self-improvement
+- **amplihack-hive** — Multi-agent orchestration, workload management, distributed swarms
+- **amplihack-agent-generator** — Goal-to-agent pipeline: analyze → plan → synthesize → assemble
+
+### Utilities
+- **amplihack-utils** — Process management, project init, plugin system, slugify, defensive parsing
+- **amplihack-delegation** — Meta-delegation orchestration, persona strategies, subprocess tracking
+
 ### Binaries
 - **amplihack (bin)** — Main CLI binary
 - **amplihack-hooks (bin)** — Multicall hook binary
