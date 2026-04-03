@@ -230,9 +230,13 @@ name = "amplihack-launcher"
 version = "0.7.20"
 dependencies = [
  "anyhow",
+ "chrono",
+ "libc",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tracing",
 ]
 
