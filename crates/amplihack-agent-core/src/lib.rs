@@ -15,17 +15,25 @@ pub mod code_synthesis;
 pub mod cognitive_adapter;
 pub mod continuous_eval;
 pub mod error;
+pub mod flat_retriever_adapter;
+pub mod graph_rag_retriever;
+pub mod hierarchical_memory_local;
+pub mod hierarchical_memory_types;
 pub mod input_events;
 pub mod input_source;
 pub mod intent;
 pub mod knowledge_utils;
 pub mod learning_ingestion;
 pub mod lifecycle;
+pub mod memory_export;
 pub mod memory_retrieval;
 pub mod models;
+pub mod partition_routing;
 pub(crate) mod safe_calc;
+pub mod runtime_factory;
 pub mod sdk_adapters;
 pub mod session;
+pub mod similarity;
 pub mod sub_agents;
 pub mod task_queue;
 pub mod temporal_reasoning;
@@ -59,4 +67,24 @@ pub use sub_agents::{
     AgentSpawner, AnswerContext, CoordinatorAgent, MemoryAgent, MultiAgentConfig,
     MultiAgentOrchestrator, RetrievalStrategy, SpawnedAgent, SpawnedAgentStatus, SpecialistType,
     SubAgentMemory, TaskRoute,
+};
+pub use flat_retriever_adapter::FlatRetrieverAdapter;
+pub use graph_rag_retriever::GraphRagRetriever;
+pub use hierarchical_memory_local::HierarchicalMemoryLocal;
+pub use hierarchical_memory_types::{
+    KnowledgeEdge, KnowledgeNode, KnowledgeSubgraph, MemoryCategory,
+    MemoryClassifier, StoreKnowledgeParams,
+};
+pub use memory_export::{export_memory, import_memory, ExportFormat, ExportMetadata};
+pub use partition_routing::{
+    partition_for_agent, stable_agent_index, DEFAULT_EVENT_HUB_PARTITIONS,
+};
+pub use runtime_factory::{
+    create_goal_agent_runtime, create_goal_agent_runtime_with, ConfiguredGoalAgentRuntime,
+    GoalAgentRuntime, RuntimeConfig,
+};
+pub use similarity::{
+    compute_similarity, compute_tag_similarity, compute_word_similarity,
+    extract_entity_anchor_tokens, extract_query_anchor_tokens, extract_query_phrases,
+    rerank_facts_by_query, tokenize_similarity_text, NodeSimilarityInput,
 };
