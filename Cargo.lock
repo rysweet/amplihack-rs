@@ -162,6 +162,7 @@ dependencies = [
  "amplihack-memory",
  "amplihack-workflows",
  "chrono",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
