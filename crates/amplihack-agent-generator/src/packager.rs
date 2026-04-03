@@ -29,3 +29,37 @@ impl Default for GoalAgentPackager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{BundleStatus, GoalAgentBundle};
+
+    #[test]
+    fn package_writes_bundle_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bundle = GoalAgentBundle::new("test-pkg", "0.1.0").unwrap();
+        bundle.status = BundleStatus::Ready;
+
+        let pkg = GoalAgentPackager::new();
+        let out = pkg.package(&bundle, dir.path()).unwrap();
+        assert_eq!(out, dir.path());
+
+        let contents = fs::read_to_string(dir.path().join("bundle.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(parsed["name"], "test-pkg");
+        assert_eq!(parsed["version"], "0.1.0");
+        assert_eq!(parsed["status"], "ready");
+    }
+
+    #[test]
+    fn package_creates_output_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b");
+        let bundle = GoalAgentBundle::new("nested-pkg", "1.0").unwrap();
+
+        let pkg = GoalAgentPackager::new();
+        let out = pkg.package(&bundle, &nested).unwrap();
+        assert!(out.join("bundle.json").exists());
+    }
+}

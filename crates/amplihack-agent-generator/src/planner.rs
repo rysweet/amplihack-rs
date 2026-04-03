@@ -103,3 +103,60 @@ impl Default for ObjectivePlanner {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simple_goal_produces_3_phases() {
+        let goal = GoalDefinition::new("p", "g", "d").unwrap();
+        let plan = ObjectivePlanner::new().plan(&goal).unwrap();
+        assert_eq!(plan.phase_count(), 3);
+    }
+
+    #[test]
+    fn moderate_goal_adds_optimization_phase() {
+        let mut goal = GoalDefinition::new("p", "g", "d").unwrap();
+        goal.complexity = Complexity::Moderate;
+        let plan = ObjectivePlanner::new().plan(&goal).unwrap();
+        assert_eq!(plan.phase_count(), 4);
+        assert_eq!(plan.phases[3].name, "optimization");
+    }
+
+    #[test]
+    fn complex_goal_adds_risk_factor() {
+        let mut goal = GoalDefinition::new("p", "g", "d").unwrap();
+        goal.complexity = Complexity::Complex;
+        let plan = ObjectivePlanner::new().plan(&goal).unwrap();
+        assert!(plan.risk_factors.iter().any(|r| r.contains("complexity")));
+    }
+
+    #[test]
+    fn constrained_goal_adds_risk_factor() {
+        let mut goal = GoalDefinition::new("p", "g", "d").unwrap();
+        goal.constraints = vec!["must be fast".into()];
+        let plan = ObjectivePlanner::new().plan(&goal).unwrap();
+        assert!(plan.risk_factors.iter().any(|r| r.contains("Constraints")));
+    }
+
+    #[test]
+    fn required_skills_deduped_and_sorted() {
+        let mut goal = GoalDefinition::new("p", "g", "d").unwrap();
+        goal.complexity = Complexity::Moderate;
+        let plan = ObjectivePlanner::new().plan(&goal).unwrap();
+        let skills = &plan.required_skills;
+        let mut sorted = skills.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(skills, &sorted);
+    }
+
+    #[test]
+    fn implementation_phase_not_parallel_safe() {
+        let goal = GoalDefinition::new("p", "g", "d").unwrap();
+        let plan = ObjectivePlanner::new().plan(&goal).unwrap();
+        let imp = plan.phases.iter().find(|p| p.name == "implementation").unwrap();
+        assert!(!imp.parallel_safe);
+    }
+}

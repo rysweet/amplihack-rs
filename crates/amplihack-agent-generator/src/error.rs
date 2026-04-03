@@ -23,3 +23,29 @@ pub enum GeneratorError {
 }
 
 pub type Result<T> = std::result::Result<T, GeneratorError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_display_messages() {
+        let cases: Vec<(GeneratorError, &str)> = vec![
+            (GeneratorError::InvalidGoal("bad".into()), "invalid goal: bad"),
+            (GeneratorError::PlanningFailed("oops".into()), "planning failed: oops"),
+            (GeneratorError::SynthesisFailed("fail".into()), "synthesis failed: fail"),
+            (GeneratorError::AssemblyFailed("boom".into()), "assembly failed: boom"),
+            (GeneratorError::PackagingFailed("err".into()), "packaging failed: err"),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(err.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn io_error_transparent() {
+        let io = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        let err: GeneratorError = io.into();
+        assert!(err.to_string().contains("gone"));
+    }
+}
