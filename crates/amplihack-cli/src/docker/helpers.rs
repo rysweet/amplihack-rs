@@ -11,12 +11,13 @@ pub(super) fn validate_api_key(key: &str, value: &str) -> bool {
 
     let result = match key {
         "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" => {
-            let re = SK_RE.get_or_init(|| Regex::new(r"^sk-[a-zA-Z0-9\-_]+$").unwrap());
+            let re = SK_RE.get_or_init(|| Regex::new(r"^sk-[a-zA-Z0-9\-_]+$").expect("static SK regex"));
             re.is_match(value)
         }
         "GITHUB_TOKEN" | "GH_TOKEN" => {
             let re = GH_RE.get_or_init(|| {
-                Regex::new(r"^(ghp_|ghs_|gho_|ghu_|github_pat_).+$|^[0-9a-fA-F]{40}$").unwrap()
+                Regex::new(r"^(ghp_|ghs_|gho_|ghu_|github_pat_).+$|^[0-9a-fA-F]{40}$")
+                    .expect("static GH token regex")
             });
             re.is_match(value)
         }
