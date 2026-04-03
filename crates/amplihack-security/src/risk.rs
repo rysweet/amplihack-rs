@@ -168,4 +168,156 @@ mod tests {
         assert!(r.threat_summary().contains("1 threat(s)"));
         assert!(r.threat_summary().contains("critical"));
     }
+
+    #[test]
+    fn risk_level_display_all_variants() {
+        assert_eq!(RiskLevel::None.to_string(), "none");
+        assert_eq!(RiskLevel::Low.to_string(), "low");
+        assert_eq!(RiskLevel::Medium.to_string(), "medium");
+        assert_eq!(RiskLevel::High.to_string(), "high");
+        assert_eq!(RiskLevel::Critical.to_string(), "critical");
+    }
+
+    #[test]
+    fn security_level_display_all_variants() {
+        assert_eq!(SecurityLevel::Low.to_string(), "low");
+        assert_eq!(SecurityLevel::Medium.to_string(), "medium");
+        assert_eq!(SecurityLevel::High.to_string(), "high");
+        assert_eq!(SecurityLevel::Strict.to_string(), "strict");
+    }
+
+    #[test]
+    fn threat_summary_multiple_threats_shows_highest() {
+        let mut r = ValidationResult::clean(ContentType::Prompt);
+        r.threats.push(ThreatDetection {
+            threat_type: ThreatType::PromptInjection,
+            severity: RiskLevel::Low,
+            description: "low".into(),
+            pattern_id: "T1".into(),
+            mitigation: "fix".into(),
+        });
+        r.threats.push(ThreatDetection {
+            threat_type: ThreatType::DataExfiltration,
+            severity: RiskLevel::High,
+            description: "high".into(),
+            pattern_id: "T2".into(),
+            mitigation: "fix".into(),
+        });
+        r.threats.push(ThreatDetection {
+            threat_type: ThreatType::SystemEscape,
+            severity: RiskLevel::Medium,
+            description: "medium".into(),
+            pattern_id: "T3".into(),
+            mitigation: "fix".into(),
+        });
+        let summary = r.threat_summary();
+        assert!(summary.contains("3 threat(s)"));
+        assert!(summary.contains("high"));
+    }
+
+    #[test]
+    fn clean_result_for_each_content_type() {
+        for ct in [
+            ContentType::Prompt,
+            ContentType::Url,
+            ContentType::BashCommand,
+            ContentType::ToolParameters,
+            ContentType::Data,
+        ] {
+            let r = ValidationResult::clean(ct);
+            assert_eq!(r.risk_level, RiskLevel::None);
+            assert!(!r.should_block);
+            assert!(r.threats.is_empty());
+            assert_eq!(r.content_type, ct);
+        }
+    }
+
+    #[test]
+    fn validation_result_serialization_roundtrip() {
+        let mut r = ValidationResult::clean(ContentType::Prompt);
+        r.threats.push(ThreatDetection {
+            threat_type: ThreatType::PromptInjection,
+            severity: RiskLevel::Critical,
+            description: "injection detected".into(),
+            pattern_id: "PO001".into(),
+            mitigation: "block".into(),
+        });
+        r.risk_level = RiskLevel::Critical;
+        r.should_block = true;
+
+        let json = serde_json::to_string(&r).unwrap();
+        let deserialized: ValidationResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.risk_level, RiskLevel::Critical);
+        assert!(deserialized.should_block);
+        assert_eq!(deserialized.threats.len(), 1);
+        assert_eq!(deserialized.threats[0].pattern_id, "PO001");
+    }
+
+    #[test]
+    fn risk_level_serde_roundtrip() {
+        for level in [
+            RiskLevel::None,
+            RiskLevel::Low,
+            RiskLevel::Medium,
+            RiskLevel::High,
+            RiskLevel::Critical,
+        ] {
+            let json = serde_json::to_string(&level).unwrap();
+            let back: RiskLevel = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, level);
+        }
+    }
+
+    #[test]
+    fn security_level_serde_roundtrip() {
+        for level in [
+            SecurityLevel::Low,
+            SecurityLevel::Medium,
+            SecurityLevel::High,
+            SecurityLevel::Strict,
+        ] {
+            let json = serde_json::to_string(&level).unwrap();
+            let back: SecurityLevel = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, level);
+        }
+    }
+
+    #[test]
+    fn threat_type_serde_roundtrip() {
+        for tt in [
+            ThreatType::PromptInjection,
+            ThreatType::DataExfiltration,
+            ThreatType::SystemEscape,
+            ThreatType::RoleHijacking,
+            ThreatType::EncodingBypass,
+            ThreatType::ContextManipulation,
+            ThreatType::MaliciousUrl,
+            ThreatType::ChainAttack,
+        ] {
+            let json = serde_json::to_string(&tt).unwrap();
+            let back: ThreatType = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, tt);
+        }
+    }
+
+    #[test]
+    fn content_type_serde_roundtrip() {
+        for ct in [
+            ContentType::Prompt,
+            ContentType::Url,
+            ContentType::BashCommand,
+            ContentType::ToolParameters,
+            ContentType::Data,
+        ] {
+            let json = serde_json::to_string(&ct).unwrap();
+            let back: ContentType = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, ct);
+        }
+    }
+
+    #[test]
+    fn clean_result_metadata_contains_passed() {
+        let r = ValidationResult::clean(ContentType::Data);
+        assert_eq!(r.metadata["validation"], "passed");
+    }
 }
