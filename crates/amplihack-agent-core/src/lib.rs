@@ -11,6 +11,8 @@ pub mod action_executor;
 pub mod agent;
 pub mod agentic_loop;
 pub mod error;
+pub mod input_events;
+pub mod input_source;
 pub mod intent;
 pub mod lifecycle;
 pub mod models;
