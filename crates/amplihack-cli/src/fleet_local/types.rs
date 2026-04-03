@@ -232,12 +232,10 @@ mod tests {
             session_id: "session-01".to_string(),
             output: "some output".to_string(),
         };
-        match msg {
-            RefreshMsg::CaptureUpdate { session_id, output } => {
-                assert_eq!(session_id, "session-01");
-                assert_eq!(output, "some output");
-            }
-            _ => panic!("unexpected variant"),
-        }
+        let RefreshMsg::CaptureUpdate { session_id, output } = msg else {
+            unreachable!("Expected CaptureUpdate, got {msg:?}");
+        };
+        assert_eq!(session_id, "session-01");
+        assert_eq!(output, "some output");
     }
 }

@@ -41,13 +41,20 @@ where
     }
 
     /// Get the value. Uses default if env var not set.
-    /// Panics if no default and env var not set, or if parse fails.
     ///
-    /// Prefer [`get_or_err`] when graceful error handling is needed.
-    pub fn get(&self) -> T {
+    /// If the env var is missing (with no default) or unparseable, logs a
+    /// warning and returns `T::default()`.  Prefer [`get_or_err`] when the
+    /// caller can propagate errors.
+    pub fn get(&self) -> T
+    where
+        T: Default,
+    {
         match self.get_or_err() {
             Ok(val) => val,
-            Err(e) => panic!("{e}"),
+            Err(e) => {
+                tracing::warn!("{e} — falling back to type default");
+                self.default.clone().unwrap_or_default()
+            }
         }
     }
 
