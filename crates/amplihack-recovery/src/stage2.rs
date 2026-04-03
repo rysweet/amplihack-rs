@@ -63,14 +63,14 @@ fn parse_headline_location_message(rest: &str) -> (String, String, String) {
     };
 
     // Try extracting (location) from the end of before_msg
-    if let Some(open) = before_msg.rfind('(') {
-        if before_msg.ends_with(')') {
-            let headline = before_msg[..open].trim().to_string();
-            let location = before_msg[open + 1..before_msg.len() - 1]
-                .trim()
-                .to_string();
-            return (headline, location, message);
-        }
+    if let Some(open) = before_msg.rfind('(')
+        && before_msg.ends_with(')')
+    {
+        let headline = before_msg[..open].trim().to_string();
+        let location = before_msg[open + 1..before_msg.len() - 1]
+            .trim()
+            .to_string();
+        return (headline, location, message);
     }
 
     (before_msg.to_string(), String::new(), message)

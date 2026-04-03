@@ -110,23 +110,23 @@ impl XpiaDefender {
         }
 
         // Extract domain for whitelist/blacklist check
-        if let Some(domain) = extract_domain(url) {
-            if self.config.is_blacklisted(&domain) {
-                return ValidationResult {
-                    risk_level: RiskLevel::Critical,
-                    should_block: true,
-                    threats: vec![ThreatDetection {
-                        threat_type: ThreatType::MaliciousUrl,
-                        severity: RiskLevel::Critical,
-                        description: format!("Domain '{domain}' is blacklisted"),
-                        pattern_id: "BLACKLIST".into(),
-                        mitigation: "Do not access blacklisted domains".into(),
-                    }],
-                    recommendations: vec!["Use a trusted domain".into()],
-                    content_type: ContentType::Url,
-                    metadata: serde_json::json!({"domain": domain}),
-                };
-            }
+        if let Some(domain) = extract_domain(url)
+            && self.config.is_blacklisted(&domain)
+        {
+            return ValidationResult {
+                risk_level: RiskLevel::Critical,
+                should_block: true,
+                threats: vec![ThreatDetection {
+                    threat_type: ThreatType::MaliciousUrl,
+                    severity: RiskLevel::Critical,
+                    description: format!("Domain '{domain}' is blacklisted"),
+                    pattern_id: "BLACKLIST".into(),
+                    mitigation: "Do not access blacklisted domains".into(),
+                }],
+                recommendations: vec!["Use a trusted domain".into()],
+                content_type: ContentType::Url,
+                metadata: serde_json::json!({"domain": domain}),
+            };
         }
 
         // Run standard content validation on the URL string

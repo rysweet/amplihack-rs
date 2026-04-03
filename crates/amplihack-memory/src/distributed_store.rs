@@ -14,6 +14,11 @@ use crate::memory_store::InMemoryGraphStore;
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, info};
 
+/// Exported node representation: `(id, label, properties)`.
+type ExportedNodes = Vec<(String, String, Props)>;
+/// Exported edge representation: `(source, target, label, properties)`.
+type ExportedEdges = Vec<(String, String, String, Props)>;
+
 /// Configuration for the distributed store.
 pub struct DistributedConfig {
     pub replication_factor: usize,
@@ -226,10 +231,7 @@ impl DistributedGraphStore {
         &self,
         agent_id: &str,
         node_ids: &[String],
-    ) -> (
-        Vec<(String, String, Props)>,
-        Vec<(String, String, String, Props)>,
-    ) {
+    ) -> (ExportedNodes, ExportedEdges) {
         let nodes = self
             .shards
             .get(agent_id)

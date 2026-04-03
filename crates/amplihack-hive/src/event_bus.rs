@@ -47,7 +47,7 @@ impl Default for LocalEventBus {
 impl EventBus for LocalEventBus {
     fn publish(&mut self, event: BusEvent) -> Result<()> {
         if let Some(handlers) = self.subscriptions.get(&event.topic) {
-            let handler_ids: Vec<String> = handlers.iter().cloned().collect();
+            let handler_ids: Vec<String> = handlers.to_vec();
             for handler_id in handler_ids {
                 self.queues
                     .entry(handler_id)
