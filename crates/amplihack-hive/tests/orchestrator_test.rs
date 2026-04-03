@@ -10,6 +10,8 @@ fn make_fact(concept: &str, confidence: f64) -> HiveFact {
         source_id: "agent-1".to_string(),
         tags: vec![],
         created_at: Utc::now(),
+        status: "promoted".to_string(),
+        metadata: std::collections::HashMap::new(),
     }
 }
 
