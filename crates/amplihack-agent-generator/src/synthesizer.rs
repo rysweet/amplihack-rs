@@ -32,10 +32,11 @@ impl SkillSynthesizer {
                 other => (other, "General-purpose skill", 0.5),
             };
 
+            let content = format!("# {skill_name}\n\n{description}");
             let mut skill = SkillDefinition::new(
                 skill_name,
                 PathBuf::from(format!("skills/{skill_name}.yaml")),
-                description,
+                content,
             )?;
             skill.description = description.to_string();
             skill.match_score = score;

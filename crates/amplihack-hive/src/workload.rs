@@ -40,8 +40,15 @@ impl HiveWorkloadConfig {
     }
 
     /// Return the total number of agents across all containers.
-    pub fn total_agents(&self) -> u32 {
-        self.num_containers * self.agents_per_container
+    pub fn total_agents(&self) -> Result<u32> {
+        self.num_containers
+            .checked_mul(self.agents_per_container)
+            .ok_or_else(|| {
+                crate::error::HiveError::Workload(format!(
+                    "overflow in total_agents: {} * {}",
+                    self.num_containers, self.agents_per_container
+                ))
+            })
     }
 }
 

@@ -24,6 +24,9 @@ impl HiveGraph {
         source_id: &str,
         tags: Vec<String>,
     ) -> Result<String> {
+        if !(0.0..=1.0).contains(&confidence) {
+            return Err(crate::error::HiveError::InvalidConfidence(confidence));
+        }
         let id = Uuid::new_v4().to_string();
         let fact = HiveFact {
             fact_id: id.clone(),

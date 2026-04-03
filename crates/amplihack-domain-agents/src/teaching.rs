@@ -33,6 +33,16 @@ impl TeachingAgent {
     }
 
     pub fn quiz(&self, topic: &str, num_questions: usize) -> Result<Vec<QuizQuestion>> {
+        if topic.trim().is_empty() {
+            return Err(crate::error::DomainError::InvalidInput(
+                "topic must not be empty".into(),
+            ));
+        }
+        if num_questions == 0 {
+            return Err(crate::error::DomainError::InvalidInput(
+                "num_questions must be > 0".into(),
+            ));
+        }
         let questions: Vec<QuizQuestion> = (0..num_questions)
             .map(|i| QuizQuestion {
                 question: format!("Question {} about {}", i + 1, topic),

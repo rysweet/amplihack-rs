@@ -224,10 +224,11 @@ impl StepResult {
     /// Truncated output for display.
     pub fn truncated_output(&self, max_len: usize) -> Option<String> {
         self.output.as_ref().map(|o| {
-            if o.len() <= max_len {
+            if o.chars().count() <= max_len {
                 o.clone()
             } else {
-                format!("{}…", &o[..max_len])
+                let truncated: String = o.chars().take(max_len).collect();
+                format!("{truncated}…")
             }
         })
     }

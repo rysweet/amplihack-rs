@@ -12,7 +12,7 @@ use crate::graph_store::{GraphStore, Props};
 use crate::hash_ring::HashRing;
 use crate::memory_store::InMemoryGraphStore;
 use std::collections::{HashMap, HashSet};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Exported node representation: `(table, node_id, properties)` — matches [`NodeTriple`].
 type ExportedNodes = Vec<(String, String, Props)>;
@@ -86,7 +86,7 @@ impl DistributedGraphStore {
         let content_key = properties
             .get("content")
             .and_then(|v| v.as_str())
-            .unwrap_or("default");
+            .ok_or_else(|| anyhow::anyhow!("Missing 'content' key for DHT routing"))?;
         let owners = self
             .ring
             .get_agents(content_key, self.config.replication_factor)
@@ -216,7 +216,10 @@ impl DistributedGraphStore {
             .map(|s| {
                 s.store
                     .get_all_node_ids(None)
-                    .unwrap_or_default()
+                    .unwrap_or_else(|e| {
+                        warn!(agent_id, error = %e, "get_all_node_ids failed, falling back to empty");
+                        HashSet::new()
+                    })
                     .into_iter()
                     .collect()
             })
@@ -246,12 +249,22 @@ impl DistributedGraphStore {
         let nodes = self
             .shards
             .get(agent_id)
-            .map(|s| s.store.export_nodes(Some(node_ids)).unwrap_or_default())
+            .map(|s| {
+                s.store.export_nodes(Some(node_ids)).unwrap_or_else(|e| {
+                    warn!(agent_id, error = %e, "export_nodes failed, falling back to empty");
+                    Vec::new()
+                })
+            })
             .unwrap_or_default();
         let edges = self
             .shards
             .get(agent_id)
-            .map(|s| s.store.export_edges(Some(node_ids)).unwrap_or_default())
+            .map(|s| {
+                s.store.export_edges(Some(node_ids)).unwrap_or_else(|e| {
+                    warn!(agent_id, error = %e, "export_edges failed, falling back to empty");
+                    Vec::new()
+                })
+            })
             .unwrap_or_default();
         (nodes, edges)
     }
@@ -309,7 +322,10 @@ impl DistributedGraphStore {
     /// Get statistics for a specific agent's shard.
     pub fn shard_stats(&self, agent_id: &str) -> Option<ShardStats> {
         self.shards.get(agent_id).map(|shard| {
-            let node_count = shard.store.get_all_node_ids(None).unwrap_or_default().len();
+            let node_count = shard.store.get_all_node_ids(None).unwrap_or_else(|e| {
+                warn!(agent_id, error = %e, "get_all_node_ids failed in shard_stats, falling back to empty");
+                HashSet::new()
+            }).len();
             ShardStats {
                 agent_id: agent_id.to_string(),
                 node_count,

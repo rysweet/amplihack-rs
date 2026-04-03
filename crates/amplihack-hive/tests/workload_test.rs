@@ -10,7 +10,7 @@ fn total_agents_calculation() {
         image: "hive:latest".to_string(),
         resource_group: "rg-hive".to_string(),
     };
-    assert_eq!(config.total_agents(), 12);
+    assert_eq!(config.total_agents().unwrap(), 12);
 }
 
 #[test]
@@ -21,7 +21,7 @@ fn total_agents_zero_containers() {
         image: "hive:latest".to_string(),
         resource_group: "rg-hive".to_string(),
     };
-    assert_eq!(config.total_agents(), 0);
+    assert_eq!(config.total_agents().unwrap(), 0);
 }
 
 #[test]
@@ -32,7 +32,7 @@ fn total_agents_single_container() {
         image: "hive:latest".to_string(),
         resource_group: "rg-hive".to_string(),
     };
-    assert_eq!(config.total_agents(), 1);
+    assert_eq!(config.total_agents().unwrap(), 1);
 }
 
 #[test]

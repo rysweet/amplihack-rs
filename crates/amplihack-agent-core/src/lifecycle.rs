@@ -128,7 +128,7 @@ impl AgentLifecycle for BasicLifecycle {
         self.state = LifecycleState::Running;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .expect("SystemTime before UNIX_EPOCH")
             .as_secs_f64();
         self.started_at = Some(now);
         Ok(())
@@ -174,7 +174,7 @@ impl AgentLifecycle for BasicLifecycle {
                 let uptime = self.started_at.map_or(0.0, |started| {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
+                        .expect("SystemTime before UNIX_EPOCH")
                         .as_secs_f64();
                     now - started
                 });

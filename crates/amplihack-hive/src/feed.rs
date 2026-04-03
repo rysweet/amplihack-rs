@@ -65,7 +65,7 @@ pub fn run_feed(bus: &mut dyn EventBus, config: &FeedConfig) -> Result<FeedResul
             continue;
         }
 
-        let event = make_learn_content_event(&config.source_name, content);
+        let event = make_learn_content_event(&config.source_name, content)?;
         match bus.publish(event) {
             Ok(()) => {
                 published += 1;
@@ -79,7 +79,7 @@ pub fn run_feed(bus: &mut dyn EventBus, config: &FeedConfig) -> Result<FeedResul
     }
 
     // Emit feed-complete event
-    let complete_event = make_feed_complete_event(&feed_id, published);
+    let complete_event = make_feed_complete_event(&feed_id, published)?;
     if let Err(e) = bus.publish(complete_event) {
         errors.push(format!("Failed to publish feed-complete: {e}"));
     }

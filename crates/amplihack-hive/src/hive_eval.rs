@@ -137,6 +137,9 @@ pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveE
     bus.subscribe(HIVE_QUERY_RESPONSE, EVAL_HANDLER)
         .map_err(|e| HiveError::EventBus(format!("Failed to subscribe for eval: {e}")))?;
 
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs(config.timeout_seconds);
+
     info!(
         questions = config.questions.len(),
         timeout = config.timeout_seconds,
@@ -146,7 +149,15 @@ pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveE
     let mut query_results = Vec::with_capacity(config.questions.len());
 
     for question in &config.questions {
-        let (query_id, event) = make_query_event(question);
+        if std::time::Instant::now() >= deadline {
+            warn!(
+                remaining = config.questions.len() - query_results.len(),
+                "Eval timeout reached, skipping remaining questions"
+            );
+            break;
+        }
+
+        let (query_id, event) = make_query_event(question)?;
         debug!(query_id = %query_id, question = %question, "Publishing query");
 
         if let Err(e) = bus.publish(event) {
@@ -161,6 +172,15 @@ pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveE
 
         // Collect responses from the bus for this query
         let answers = collect_responses(bus, &query_id);
+
+        if answers.len() < config.min_responses_per_query {
+            warn!(
+                query_id = %query_id,
+                got = answers.len(),
+                min = config.min_responses_per_query,
+                "Fewer responses than min_responses_per_query"
+            );
+        }
 
         query_results.push(QueryResult {
             query_id,
@@ -187,7 +207,10 @@ pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveE
 
 /// Collect responses for a specific query from the event bus.
 fn collect_responses(bus: &mut dyn EventBus, query_id: &str) -> Vec<AgentAnswer> {
-    let events = bus.drain_events(EVAL_HANDLER).unwrap_or_default();
+    let events = bus.drain_events(EVAL_HANDLER).unwrap_or_else(|e| {
+        warn!(error = %e, "drain_events failed, falling back to empty");
+        Vec::new()
+    });
     let mut answers = Vec::new();
 
     for event in events {

@@ -242,11 +242,22 @@ fn extract_bool(mapping: &serde_yaml::Mapping, key: &str) -> Option<bool> {
 }
 
 fn extract_context(mapping: &serde_yaml::Mapping) -> HashMap<String, serde_json::Value> {
-    mapping
-        .get(serde_yaml::Value::String("context".into()))
-        .and_then(|v| serde_json::to_value(v).ok())
-        .and_then(|v| serde_json::from_value(v).ok())
-        .unwrap_or_default()
+    match mapping.get(serde_yaml::Value::String("context".into())) {
+        Some(v) => match serde_json::to_value(v) {
+            Ok(json_val) => match serde_json::from_value(json_val) {
+                Ok(map) => map,
+                Err(e) => {
+                    warn!(error = %e, "Failed to deserialize recipe context as map, using default");
+                    HashMap::new()
+                }
+            },
+            Err(e) => {
+                warn!(error = %e, "Failed to convert recipe context to JSON, using default");
+                HashMap::new()
+            }
+        },
+        None => HashMap::new(),
+    }
 }
 
 fn extract_step_context(mapping: &serde_yaml::Mapping) -> HashMap<String, serde_json::Value> {

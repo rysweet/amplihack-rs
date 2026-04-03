@@ -63,7 +63,7 @@ impl SqliteBackend {
             let conn = self
                 .conn
                 .as_ref()
-                .unwrap()
+                .ok_or_else(|| anyhow::anyhow!("SQLite connection not initialized"))?
                 .lock()
                 .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             conn.execute_batch(
@@ -114,7 +114,7 @@ impl SqliteBackend {
             let conn = self
                 .conn
                 .as_ref()
-                .unwrap()
+                .ok_or_else(|| anyhow::anyhow!("SQLite connection not initialized"))?
                 .lock()
                 .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             let mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
@@ -133,7 +133,7 @@ impl SqliteBackend {
             let conn = self
                 .conn
                 .as_ref()
-                .unwrap()
+                .ok_or_else(|| anyhow::anyhow!("SQLite connection not initialized"))?
                 .lock()
                 .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             let mut stmt = conn.prepare(
@@ -188,7 +188,7 @@ impl MemoryBackend for SqliteBackend {
         let conn = self
             .conn
             .as_ref()
-            .unwrap()
+            .ok_or_else(|| anyhow::anyhow!("SQLite connection not initialized"))?
             .lock()
             .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
         let metadata = serde_json::to_string(&entry.metadata)?;
@@ -220,7 +220,7 @@ impl MemoryBackend for SqliteBackend {
         let conn = self
             .conn
             .as_ref()
-            .unwrap()
+            .ok_or_else(|| anyhow::anyhow!("SQLite connection not initialized"))?
             .lock()
             .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
         let mut sql = String::from(
@@ -259,6 +259,7 @@ impl MemoryBackend for SqliteBackend {
         }
 
         let limit = if query.limit > 0 { query.limit } else { 20 };
+        let limit = limit.min(10_000);
         sql.push_str(&format!(" ORDER BY created_at DESC LIMIT {limit}"));
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -275,7 +276,7 @@ impl MemoryBackend for SqliteBackend {
         let conn = self
             .conn
             .as_ref()
-            .unwrap()
+            .ok_or_else(|| anyhow::anyhow!("SQLite connection not initialized"))?
             .lock()
             .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
         let changed = conn.execute(
@@ -289,7 +290,7 @@ impl MemoryBackend for SqliteBackend {
         let conn = self
             .conn
             .as_ref()
-            .unwrap()
+            .ok_or_else(|| anyhow::anyhow!("SQLite connection not initialized"))?
             .lock()
             .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
         let mut stmt = conn.prepare(
@@ -316,7 +317,7 @@ impl MemoryBackend for SqliteBackend {
         let conn = self
             .conn
             .as_ref()
-            .unwrap()
+            .ok_or_else(|| anyhow::anyhow!("SQLite connection not initialized"))?
             .lock()
             .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
         let start = std::time::Instant::now();

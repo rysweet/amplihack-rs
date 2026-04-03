@@ -32,7 +32,7 @@ impl AgentSession {
     pub fn new(session_id: impl Into<String>, agent_id: impl Into<String>) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .expect("SystemTime before UNIX_EPOCH")
             .as_secs_f64();
         Self {
             session_id: session_id.into(),
@@ -48,7 +48,7 @@ impl AgentSession {
     pub fn is_expired(&self, timeout_secs: f64) -> bool {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .expect("SystemTime before UNIX_EPOCH")
             .as_secs_f64();
         (now - self.last_active) > timeout_secs
     }
@@ -57,7 +57,7 @@ impl AgentSession {
     pub fn touch(&mut self) {
         self.last_active = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .expect("SystemTime before UNIX_EPOCH")
             .as_secs_f64();
     }
 }
@@ -92,7 +92,7 @@ impl SessionManager {
         let count = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
         let now_nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
+            .expect("SystemTime before UNIX_EPOCH")
             .as_nanos();
         let session_id = format!("sess-{:x}-{}", now_nanos, count);
         let session = AgentSession::new(&session_id, agent_id);

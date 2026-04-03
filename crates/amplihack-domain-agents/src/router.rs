@@ -7,6 +7,10 @@ pub struct IntentRouter {
 
 impl IntentRouter {
     pub fn new(confidence_threshold: f64) -> Self {
+        assert!(
+            (0.0..=1.0).contains(&confidence_threshold),
+            "confidence_threshold must be 0.0..=1.0, got {confidence_threshold}"
+        );
         Self {
             confidence_threshold,
         }
