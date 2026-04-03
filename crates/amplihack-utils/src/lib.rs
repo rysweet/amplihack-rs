@@ -17,11 +17,16 @@ pub mod claude_cli;
 pub mod claude_md;
 pub mod cleanup;
 pub mod defensive;
+pub mod docker_detector;
+pub mod kb_types;
+pub mod plugin_verifier;
 pub mod prerequisites;
 pub mod process;
 pub mod project_init;
 pub(crate) mod project_init_detect;
+pub mod send_input_allowlist;
 pub mod slugify;
+pub mod trace_logger;
 
 // Re-export the most commonly used items at crate root.
 pub use defensive::{parse_llm_json, validate_json_schema};
