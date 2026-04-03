@@ -42,6 +42,7 @@ pub mod send_input_allowlist;
 pub mod settings_generator;
 pub(crate) mod settings_helpers;
 pub mod simple_tui;
+pub(crate) mod simple_tui_runner;
 pub mod slugify;
 pub mod trace_logger;
 pub mod worktree;
