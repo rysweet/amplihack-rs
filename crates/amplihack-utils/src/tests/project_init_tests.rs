@@ -87,7 +87,7 @@ fn analyze_reads_readme_preview() {
         analysis
             .readme_preview
             .as_ref()
-            .map_or(false, |p| p.contains("short description"))
+            .is_some_and(|p| p.contains("short description"))
     );
 }
 

@@ -251,7 +251,6 @@ mod tests {
 
     #[test]
     fn confirm_accepts_yes_only() {
-        use migration::run_to_plugin_with as _; // suppress unused import
         let mut yes = io::Cursor::new("y\n");
         let mut out = Vec::new();
         assert!(migration_confirm(&mut yes, &mut out).unwrap());

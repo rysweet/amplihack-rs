@@ -157,7 +157,7 @@ fn language_for_extension_known_and_unknown() {
 fn collect_skips_binary_files() {
     let dir = make_dir_with_files(&[]);
     // Write a binary file.
-    std::fs::write(dir.path().join("img.rs"), &[0xFF, 0xD8, 0xFF]).expect("write");
+    std::fs::write(dir.path().join("img.rs"), [0xFF, 0xD8, 0xFF].as_slice()).expect("write");
     let mut c = EvidenceCollector::new(dir.path(), None);
     // Should not panic on binary content.
     let _evidence = c.collect(None, Some(&[EvidenceType::CodeFile]), None);

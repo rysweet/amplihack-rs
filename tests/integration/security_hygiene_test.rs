@@ -363,7 +363,7 @@ fn tc_sec_06_json_persist_file_mode_is_0600_regardless_of_umask() {
     // explicitly force 0o600.
     let old_umask = unsafe { libc::umask(0o000) }; // allow everything
 
-    let result = (|| {
+    let result = {
         let payload = serde_json::json!({"session": "test-1", "status": "running"});
         let rendered = serde_json::to_vec_pretty(&payload).expect("json encode failed");
         let mut temp =
@@ -382,7 +382,7 @@ fn tc_sec_06_json_persist_file_mode_is_0600_regardless_of_umask() {
             .expect("set_permissions failed");
 
         temp.persist(&target).map_err(|e| e.error)
-    })();
+    };
 
     // Restore umask regardless of test outcome.
     unsafe { libc::umask(old_umask) };
@@ -803,8 +803,8 @@ fn tc_sec_18_azlin_commands_use_args_array_not_shell_string() {
         // controlled variable inside.
         if trimmed.contains("Command::new") && trimmed.contains("azlin") {
             // Scan the next 3 lines for dangerous patterns.
-            for j in (i + 1)..(i + 4).min(lines.len()) {
-                let next = lines[j].trim();
+            for line in lines.iter().take((i + 4).min(lines.len())).skip(i + 1) {
+                let next = line.trim();
                 if next.starts_with("//") {
                     continue;
                 }

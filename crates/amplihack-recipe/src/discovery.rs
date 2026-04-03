@@ -274,7 +274,7 @@ mod tests {
         std::fs::create_dir_all(&recipes).unwrap();
         std::fs::write(recipes.join("my-recipe.yaml"), "name: my-recipe\nsteps: []").unwrap();
 
-        let cache = discover_recipes(&[recipes.clone()]);
+        let cache = discover_recipes(&[recipes]);
         let qualified = cache.qualified_keys();
         assert_eq!(qualified.len(), 1);
         assert!(qualified[0].contains("my-recipe"));

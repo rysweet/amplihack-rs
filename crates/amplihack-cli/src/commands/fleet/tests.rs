@@ -1,6 +1,6 @@
 use super::*;
 use crate::command_error;
-use crate::test_support::{cwd_env_lock, home_env_lock, restore_cwd, set_cwd};
+use crate::test_support::{home_env_lock, restore_cwd, set_cwd};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
@@ -2799,7 +2799,7 @@ fn decode_dashboard_key_bytes_handles_arrow_sequences() {
         Some(DashboardKey::Down)
     );
     assert_eq!(
-        decode_dashboard_key_bytes(&[b'x']),
+        decode_dashboard_key_bytes(b"x"),
         Some(DashboardKey::Char('x'))
     );
 }
@@ -3398,19 +3398,21 @@ fn render_tui_editor_view_shows_apply_failure_notice() {
 
 #[test]
 fn run_tui_apply_sets_persistent_success_notice() {
-    let mut ui_state = FleetTuiUiState::default();
-    ui_state.selected = Some(FleetTuiSelection {
-        vm_name: "vm-1".to_string(),
-        session_name: "claude-1".to_string(),
-    });
-    ui_state.last_decision = Some(SessionDecision {
-        session_name: "claude-1".to_string(),
-        vm_name: "vm-1".to_string(),
-        action: SessionAction::Wait,
-        input_text: String::new(),
-        reasoning: "testing apply".to_string(),
-        confidence: 1.0,
-    });
+    let mut ui_state = FleetTuiUiState {
+        selected: Some(FleetTuiSelection {
+            vm_name: "vm-1".to_string(),
+            session_name: "claude-1".to_string(),
+        }),
+        last_decision: Some(SessionDecision {
+            session_name: "claude-1".to_string(),
+            vm_name: "vm-1".to_string(),
+            action: SessionAction::Wait,
+            input_text: String::new(),
+            reasoning: "testing apply".to_string(),
+            confidence: 1.0,
+        }),
+        ..Default::default()
+    };
 
     let result = run_tui_apply(Path::new("azlin"), &mut ui_state);
 
@@ -3498,11 +3500,13 @@ fn handle_tui_editor_active_key_escape_discards_and_returns_detail() {
 
 #[test]
 fn run_tui_apply_reports_missing_prepared_proposal() {
-    let mut ui_state = FleetTuiUiState::default();
-    ui_state.selected = Some(FleetTuiSelection {
-        vm_name: "vm-1".to_string(),
-        session_name: "claude-1".to_string(),
-    });
+    let mut ui_state = FleetTuiUiState {
+        selected: Some(FleetTuiSelection {
+            vm_name: "vm-1".to_string(),
+            session_name: "claude-1".to_string(),
+        }),
+        ..Default::default()
+    };
 
     let result = run_tui_apply(Path::new("azlin"), &mut ui_state);
 
@@ -3515,15 +3519,17 @@ fn run_tui_apply_reports_missing_prepared_proposal() {
 
 #[test]
 fn run_tui_apply_reports_missing_selection_even_with_stale_proposal() {
-    let mut ui_state = FleetTuiUiState::default();
-    ui_state.last_decision = Some(SessionDecision {
-        session_name: "claude-1".to_string(),
-        vm_name: "vm-1".to_string(),
-        action: SessionAction::SendInput,
-        input_text: "y".to_string(),
-        reasoning: "stale prepared proposal".to_string(),
-        confidence: 0.95,
-    });
+    let mut ui_state = FleetTuiUiState {
+        last_decision: Some(SessionDecision {
+            session_name: "claude-1".to_string(),
+            vm_name: "vm-1".to_string(),
+            action: SessionAction::SendInput,
+            input_text: "y".to_string(),
+            reasoning: "stale prepared proposal".to_string(),
+            confidence: 0.95,
+        }),
+        ..Default::default()
+    };
 
     let result = run_tui_apply(Path::new("azlin"), &mut ui_state);
 
@@ -3536,19 +3542,21 @@ fn run_tui_apply_reports_missing_selection_even_with_stale_proposal() {
 
 #[test]
 fn run_tui_apply_requires_proposal_for_current_selection() {
-    let mut ui_state = FleetTuiUiState::default();
-    ui_state.selected = Some(FleetTuiSelection {
-        vm_name: "vm-2".to_string(),
-        session_name: "copilot-9".to_string(),
-    });
-    ui_state.last_decision = Some(SessionDecision {
-        session_name: "claude-1".to_string(),
-        vm_name: "vm-1".to_string(),
-        action: SessionAction::SendInput,
-        input_text: "y".to_string(),
-        reasoning: "proposal belongs to another session".to_string(),
-        confidence: 0.95,
-    });
+    let mut ui_state = FleetTuiUiState {
+        selected: Some(FleetTuiSelection {
+            vm_name: "vm-2".to_string(),
+            session_name: "copilot-9".to_string(),
+        }),
+        last_decision: Some(SessionDecision {
+            session_name: "claude-1".to_string(),
+            vm_name: "vm-1".to_string(),
+            action: SessionAction::SendInput,
+            input_text: "y".to_string(),
+            reasoning: "proposal belongs to another session".to_string(),
+            confidence: 0.95,
+        }),
+        ..Default::default()
+    };
 
     let result = run_tui_apply(Path::new("azlin"), &mut ui_state);
 
@@ -3561,19 +3569,21 @@ fn run_tui_apply_requires_proposal_for_current_selection() {
 
 #[test]
 fn run_tui_apply_reports_dangerous_input_block() {
-    let mut ui_state = FleetTuiUiState::default();
-    ui_state.selected = Some(FleetTuiSelection {
-        vm_name: "vm-1".to_string(),
-        session_name: "claude-1".to_string(),
-    });
-    ui_state.last_decision = Some(SessionDecision {
-        session_name: "claude-1".to_string(),
-        vm_name: "vm-1".to_string(),
-        action: SessionAction::SendInput,
-        input_text: "rm -rf /".to_string(),
-        reasoning: "testing dangerous input".to_string(),
-        confidence: 0.95,
-    });
+    let mut ui_state = FleetTuiUiState {
+        selected: Some(FleetTuiSelection {
+            vm_name: "vm-1".to_string(),
+            session_name: "claude-1".to_string(),
+        }),
+        last_decision: Some(SessionDecision {
+            session_name: "claude-1".to_string(),
+            vm_name: "vm-1".to_string(),
+            action: SessionAction::SendInput,
+            input_text: "rm -rf /".to_string(),
+            reasoning: "testing dangerous input".to_string(),
+            confidence: 0.95,
+        }),
+        ..Default::default()
+    };
 
     let result = run_tui_apply(Path::new("azlin"), &mut ui_state);
 
@@ -4595,8 +4605,10 @@ fn capture_cache_compat_detail_capture_field_falls_through() {
 #[test]
 fn drain_bg_messages_handles_session_created() {
     let (tx, rx) = mpsc::channel::<BackgroundMessage>();
-    let mut ui = FleetTuiUiState::default();
-    ui.bg_rx = Some(Arc::new(Mutex::new(rx)));
+    let mut ui = FleetTuiUiState {
+        bg_rx: Some(Arc::new(Mutex::new(rx))),
+        ..Default::default()
+    };
 
     tx.send(BackgroundMessage::SessionCreated {
         message: "Created session 'claude-1234' on vm-1 running claude.".to_string(),
@@ -4605,7 +4617,7 @@ fn drain_bg_messages_handles_session_created() {
 
     ui.drain_bg_messages();
 
-    assert_eq!(ui.create_session_pending, false, "pending flag cleared");
+    assert!(!ui.create_session_pending, "pending flag cleared");
     assert_eq!(
         ui.tab,
         FleetTuiTab::Fleet,
@@ -4623,8 +4635,10 @@ fn drain_bg_messages_handles_session_created() {
 #[test]
 fn drain_bg_messages_handles_slow_capture_update() {
     let (tx, rx) = mpsc::channel::<BackgroundMessage>();
-    let mut ui = FleetTuiUiState::default();
-    ui.bg_rx = Some(Arc::new(Mutex::new(rx)));
+    let mut ui = FleetTuiUiState {
+        bg_rx: Some(Arc::new(Mutex::new(rx))),
+        ..Default::default()
+    };
 
     tx.send(BackgroundMessage::SlowCaptureUpdate {
         vm_name: "vm-bg".to_string(),
@@ -4644,8 +4658,10 @@ fn drain_bg_messages_handles_slow_capture_update() {
 #[test]
 fn drain_bg_messages_handles_background_error() {
     let (tx, rx) = mpsc::channel::<BackgroundMessage>();
-    let mut ui = FleetTuiUiState::default();
-    ui.bg_rx = Some(Arc::new(Mutex::new(rx)));
+    let mut ui = FleetTuiUiState {
+        bg_rx: Some(Arc::new(Mutex::new(rx))),
+        ..Default::default()
+    };
 
     tx.send(BackgroundMessage::Error("disk full".to_string()))
         .unwrap();
@@ -4989,7 +5005,7 @@ fn editor_save_extracts_content() {
     let saved_input = ui
         .editor_decision
         .as_ref()
-        .and_then(|d| Some(d.input_text.as_str()));
+        .map(|d| d.input_text.as_str());
     assert_eq!(saved_input, Some("new\ncontent"), "content saved");
 }
 

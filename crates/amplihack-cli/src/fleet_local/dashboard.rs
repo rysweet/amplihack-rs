@@ -169,22 +169,19 @@ mod tests {
                 // terminal in the test environment.
             }
             Ok(Err(panic_msg)) => {
-                assert!(
-                    false,
+                panic!(
                     "run_fleet_dashboard(None) is not yet implemented: {panic_msg}\n\
                      Implement S3 to make this test pass."
                 );
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                assert!(
-                    false,
+                panic!(
                     "run_fleet_dashboard(None) panicked (likely todo!() stub) without \
                      returning.  Implement S3 in fleet_local.rs to make this pass."
                 );
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                assert!(
-                    false,
+                panic!(
                     "run_fleet_dashboard(None) did not complete within 3 s in \
                      non-terminal mode; the None path must return immediately."
                 );

@@ -206,10 +206,10 @@ fn test_meaningful_stderr_tail_skips_progress_noise() {
 
 /// Returns true if recipe-runner-rs appears to be available on this system.
 fn which_recipe_runner_available() -> bool {
-    if let Ok(p) = std::env::var("RECIPE_RUNNER_RS_PATH") {
-        if std::path::Path::new(&p).is_file() {
-            return true;
-        }
+    if let Ok(p) = std::env::var("RECIPE_RUNNER_RS_PATH")
+        && std::path::Path::new(&p).is_file()
+    {
+        return true;
     }
     for candidate in [
         "recipe-runner-rs",
