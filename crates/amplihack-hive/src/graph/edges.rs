@@ -1,3 +1,5 @@
+//! Edge management for the hive knowledge graph.
+
 use std::collections::HashMap;
 
 use crate::models::HiveEdge;
@@ -5,23 +7,21 @@ use crate::models::HiveEdge;
 use super::HiveGraph;
 
 impl HiveGraph {
-    /// Add a directed edge between two nodes.
     pub fn add_edge(
         &mut self,
-        source_id: impl Into<String>,
-        target_id: impl Into<String>,
-        edge_type: impl Into<String>,
+        source_id: &str,
+        target_id: &str,
+        edge_type: &str,
         properties: HashMap<String, String>,
     ) {
         self.edges.push(HiveEdge {
-            source_id: source_id.into(),
-            target_id: target_id.into(),
-            edge_type: edge_type.into(),
+            source_id: source_id.to_string(),
+            target_id: target_id.to_string(),
+            edge_type: edge_type.to_string(),
             properties,
         });
     }
 
-    /// Get all edges where `node_id` is source or target.
     pub fn get_edges(&self, node_id: &str) -> Vec<&HiveEdge> {
         self.edges
             .iter()
@@ -29,11 +29,16 @@ impl HiveGraph {
             .collect()
     }
 
-    /// Get edges from a specific source with a specific type.
-    pub fn get_edges_from(&self, source_id: &str, edge_type: &str) -> Vec<&HiveEdge> {
+    pub fn get_edges_from(
+        &self,
+        source_id: &str,
+        edge_type: &str,
+    ) -> Vec<&HiveEdge> {
         self.edges
             .iter()
-            .filter(|e| e.source_id == source_id && e.edge_type == edge_type)
+            .filter(|e| {
+                e.source_id == source_id && e.edge_type == edge_type
+            })
             .collect()
     }
 }

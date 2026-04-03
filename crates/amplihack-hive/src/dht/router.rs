@@ -198,7 +198,7 @@ mod tests {
 
         let stored = router.store_fact(fact("f1", "Rust is great for systems programming"));
         assert!(
-            stored.len() >= 1,
+            !stored.is_empty(),
             "fact should be stored on at least 1 agent"
         );
     }

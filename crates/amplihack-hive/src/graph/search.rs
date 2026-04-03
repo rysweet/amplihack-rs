@@ -1,47 +1,45 @@
+//! Keyword search, contradiction detection, and query routing.
+
 use std::collections::HashSet;
 
-use serde::{Deserialize, Serialize};
-
+use super::{CONFIDENCE_SCORE_BOOST, HiveGraph};
 use crate::models::HiveFact;
 
-use super::{HiveGraph, CONFIDENCE_SCORE_BOOST};
-
-/// Tokenize text into lowercase words longer than 1 character.
+/// Tokenize a string into lowercase words, filtering single-char tokens.
 pub fn tokenize(text: &str) -> HashSet<String> {
-    text.split_whitespace()
-        .map(|w| w.to_lowercase())
+    text.split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() > 1)
+        .map(|w| w.to_lowercase())
         .collect()
 }
 
-/// Compute Jaccard similarity based on word overlap between two strings.
+/// Compute Jaccard word overlap between two strings.
 pub fn word_overlap(a: &str, b: &str) -> f64 {
     let set_a = tokenize(a);
     let set_b = tokenize(b);
-    if set_a.is_empty() && set_b.is_empty() {
+    let union_size = set_a.union(&set_b).count();
+    if union_size == 0 {
         return 0.0;
     }
-    let intersection = set_a.intersection(&set_b).count();
-    let union = set_a.union(&set_b).count();
-    if union == 0 {
-        return 0.0;
-    }
-    intersection as f64 / union as f64
+    set_a.intersection(&set_b).count() as f64 / union_size as f64
 }
 
-/// A fact with a search relevance score.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// A fact scored by keyword relevance.
+#[derive(Clone, Debug)]
 pub struct ScoredFact {
     pub fact: HiveFact,
     pub score: f64,
 }
 
 impl HiveGraph {
-    /// Keyword-based query: score = token_hits + confidence * CONFIDENCE_SCORE_BOOST.
-    /// Excludes retracted facts.
-    pub fn keyword_query(&self, query: &str, limit: usize) -> Vec<ScoredFact> {
-        let query_tokens = tokenize(query);
-        if query_tokens.is_empty() {
+    /// Keyword search: scores facts by word overlap with query.
+    pub fn keyword_query(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Vec<ScoredFact> {
+        let keywords = tokenize(query);
+        if keywords.is_empty() {
             return Vec::new();
         }
         let mut scored: Vec<ScoredFact> = self
@@ -49,18 +47,15 @@ impl HiveGraph {
             .iter()
             .filter(|f| f.status != "retracted")
             .filter_map(|f| {
-                let fact_tokens = tokenize(&format!("{} {}", f.concept, f.content));
-                let hits = query_tokens
-                    .iter()
-                    .filter(|qt| fact_tokens.contains(*qt))
-                    .count();
+                let fact_words = tokenize(&f.content);
+                let hits = keywords.intersection(&fact_words).count();
                 if hits == 0 {
                     return None;
                 }
-                let score = hits as f64 + f.confidence * CONFIDENCE_SCORE_BOOST;
                 Some(ScoredFact {
                     fact: f.clone(),
-                    score,
+                    score: hits as f64
+                        + f.confidence * CONFIDENCE_SCORE_BOOST,
                 })
             })
             .collect();
@@ -73,10 +68,12 @@ impl HiveGraph {
         scored
     }
 
-    /// Find facts that may contradict the given concept+content.
-    /// Same concept (case-insensitive exact match), word_overlap > 0.4,
-    /// different content, excludes retracted.
-    pub fn check_contradictions(&self, concept: &str, content: &str) -> Vec<HiveFact> {
+    /// Detect facts that contradict given content for a concept.
+    pub fn check_contradictions(
+        &self,
+        concept: &str,
+        content: &str,
+    ) -> Vec<HiveFact> {
         let concept_lower = concept.to_lowercase();
         self.facts
             .iter()
@@ -90,22 +87,25 @@ impl HiveGraph {
             .collect()
     }
 
-    /// Route a query to agents whose domain has the highest keyword overlap.
-    /// Returns agent IDs sorted by overlap descending, active agents only.
+    /// Route a query to expert agents based on domain keyword overlap.
     pub fn route_query(&self, query: &str) -> Vec<String> {
-        let mut agent_scores: Vec<(String, f64)> = self
+        let keywords = tokenize(query);
+        if keywords.is_empty() {
+            return Vec::new();
+        }
+        let mut scored: Vec<(String, usize)> = self
             .agents
             .values()
             .filter(|a| a.status == "active")
             .map(|a| {
-                let overlap = word_overlap(query, &a.domain);
+                let domain_words = tokenize(&a.domain);
+                let overlap =
+                    keywords.intersection(&domain_words).count();
                 (a.agent_id.clone(), overlap)
             })
+            .filter(|(_, score)| *score > 0)
             .collect();
-        agent_scores.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        agent_scores.into_iter().map(|(id, _)| id).collect()
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.into_iter().map(|(id, _)| id).collect()
     }
 }
