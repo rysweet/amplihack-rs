@@ -15,9 +15,6 @@
 //! - [`worktree`] — Git worktree detection and shared runtime directory resolution
 //! - [`settings_generator`] — Plugin settings generation, merging, and writing
 //! - [`power_steering`] — Power-steering re-enable prompt with timeout
-//! - [`plugin_manifest`] — Plugin manifest types and validation
-//! - [`plugin_manager`] — Plugin installation, uninstallation, and path resolution
-//! - [`plugin_cli`] — CLI command handlers for plugin management
 
 pub mod claude_cli;
 pub mod claude_md;
@@ -25,9 +22,6 @@ pub mod cleanup;
 pub mod defensive;
 pub mod docker_detector;
 pub mod kb_types;
-pub mod plugin_cli;
-pub mod plugin_manifest;
-pub mod plugin_manager;
 pub mod plugin_verifier;
 pub mod power_steering;
 pub mod prerequisites;
@@ -36,6 +30,7 @@ pub mod project_init;
 pub(crate) mod project_init_detect;
 pub mod send_input_allowlist;
 pub mod settings_generator;
+pub(crate) mod settings_helpers;
 pub mod slugify;
 pub mod trace_logger;
 pub mod worktree;
