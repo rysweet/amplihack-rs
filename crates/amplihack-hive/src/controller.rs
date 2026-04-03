@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{HiveError, Result};
 use crate::models::{HiveManifest, HiveState};
 
 /// Kubernetes-style reconciliation controller for the hive.
@@ -24,13 +24,45 @@ impl HiveController {
     }
 
     /// Set the desired manifest for the hive.
-    pub fn apply(&mut self, _manifest: HiveManifest) -> Result<()> {
-        todo!()
+    pub fn apply(&mut self, manifest: HiveManifest) -> Result<()> {
+        self.current.running_agents = manifest.agents.clone();
+        self.current.graph_status = "ready".into();
+        self.current.bus_status = "ready".into();
+        self.desired = Some(manifest);
+        Ok(())
     }
 
     /// Reconcile desired vs current state, returning a list of actions taken.
     pub fn reconcile(&mut self) -> Result<Vec<String>> {
-        todo!()
+        let Some(desired) = &self.desired else {
+            return Ok(vec![]);
+        };
+
+        let mut actions = Vec::new();
+
+        for agent in &desired.agents {
+            if let Some(current) = self
+                .current
+                .running_agents
+                .iter()
+                .find(|a| a.name == agent.name)
+            {
+                if current.replicas != agent.replicas {
+                    actions.push(format!("scale {} to {}", agent.name, agent.replicas));
+                }
+            } else {
+                actions.push(format!("scale {} to {}", agent.name, agent.replicas));
+            }
+        }
+
+        for current_agent in &self.current.running_agents {
+            if !desired.agents.iter().any(|a| a.name == current_agent.name) {
+                actions.push(format!("remove {}", current_agent.name));
+            }
+        }
+
+        self.current.running_agents = desired.agents.clone();
+        Ok(actions)
     }
 
     /// Return a reference to the current hive state.
@@ -44,13 +76,48 @@ impl HiveController {
     }
 
     /// Scale a named agent to the given replica count.
-    pub fn scale_agent(&mut self, _name: &str, _replicas: u32) -> Result<()> {
-        todo!()
+    pub fn scale_agent(&mut self, name: &str, replicas: u32) -> Result<()> {
+        let mut found = false;
+        if let Some(manifest) = &mut self.desired
+            && let Some(agent) = manifest.agents.iter_mut().find(|a| a.name == name)
+        {
+            agent.replicas = replicas;
+            found = true;
+        }
+        if let Some(current) = self
+            .current
+            .running_agents
+            .iter_mut()
+            .find(|a| a.name == name)
+        {
+            current.replicas = replicas;
+            found = true;
+        }
+        if found {
+            Ok(())
+        } else {
+            Err(HiveError::Controller(format!(
+                "agent not found: {name}"
+            )))
+        }
     }
 
     /// Remove a named agent from the hive. Returns whether it existed.
-    pub fn remove_agent(&mut self, _name: &str) -> Result<bool> {
-        todo!()
+    pub fn remove_agent(&mut self, name: &str) -> Result<bool> {
+        let mut found = false;
+        if let Some(manifest) = &mut self.desired {
+            let before = manifest.agents.len();
+            manifest.agents.retain(|a| a.name != name);
+            if manifest.agents.len() < before {
+                found = true;
+            }
+        }
+        let before = self.current.running_agents.len();
+        self.current.running_agents.retain(|a| a.name != name);
+        if self.current.running_agents.len() < before {
+            found = true;
+        }
+        Ok(found)
     }
 }
 

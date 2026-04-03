@@ -36,7 +36,6 @@ fn total_agents_single_container() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn validate_config() {
     let config = HiveWorkloadConfig {
         num_containers: 3,
@@ -48,7 +47,6 @@ fn validate_config() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn validate_empty_image() {
     let config = HiveWorkloadConfig {
         num_containers: 1,
@@ -56,7 +54,18 @@ fn validate_empty_image() {
         image: "".to_string(),
         resource_group: "rg-hive".to_string(),
     };
-    config.validate().unwrap();
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn validate_empty_resource_group() {
+    let config = HiveWorkloadConfig {
+        num_containers: 1,
+        agents_per_container: 1,
+        image: "hive:latest".to_string(),
+        resource_group: "".to_string(),
+    };
+    assert!(config.validate().is_err());
 }
 
 // --- HiveEvent serde tests (should pass) ---
@@ -149,22 +158,30 @@ fn workload_status_non_terminal_states() {
 
 #[test]
 fn workload_status_display() {
-    // Verify Debug is derived (used for display-like output)
     let status = WorkloadStatus::Running;
     let debug = format!("{:?}", status);
     assert_eq!(debug, "Running");
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn workload_status_can_transition() {
-    let status = WorkloadStatus::Pending;
-    let _can = status.can_transition_to(&WorkloadStatus::Deploying);
+    assert!(WorkloadStatus::Pending.can_transition_to(&WorkloadStatus::Deploying));
+    assert!(WorkloadStatus::Deploying.can_transition_to(&WorkloadStatus::Running));
+    assert!(WorkloadStatus::Running.can_transition_to(&WorkloadStatus::Stopping));
+    assert!(WorkloadStatus::Stopping.can_transition_to(&WorkloadStatus::Stopped));
+    assert!(WorkloadStatus::Failed.can_transition_to(&WorkloadStatus::Pending));
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn workload_status_cannot_transition_terminal() {
-    let status = WorkloadStatus::Stopped;
-    let _can = status.can_transition_to(&WorkloadStatus::Running);
+    assert!(!WorkloadStatus::Stopped.can_transition_to(&WorkloadStatus::Running));
+    assert!(!WorkloadStatus::Stopped.can_transition_to(&WorkloadStatus::Pending));
+    assert!(!WorkloadStatus::Stopped.can_transition_to(&WorkloadStatus::Deploying));
+}
+
+#[test]
+fn workload_status_invalid_transitions() {
+    assert!(!WorkloadStatus::Pending.can_transition_to(&WorkloadStatus::Running));
+    assert!(!WorkloadStatus::Pending.can_transition_to(&WorkloadStatus::Stopped));
+    assert!(!WorkloadStatus::Running.can_transition_to(&WorkloadStatus::Deploying));
 }

@@ -37,33 +37,52 @@ fn supported_types_returns_all_five() {
 // ── route (todo → should_panic) ─────────────────────────────────────────────
 
 #[test]
-#[should_panic]
 fn route_basic_input() {
     let router = IntentRouter::with_defaults();
-    let _ = router.route("teach me about Rust lifetimes");
+    let decision = router.route("teach me about Rust lifetimes").unwrap();
+    assert_eq!(decision.agent_type, DomainAgentType::Teaching);
+    assert!((decision.confidence - 1.0).abs() < f64::EPSILON);
 }
 
 #[test]
-#[should_panic]
 fn route_empty_input() {
     let router = IntentRouter::with_defaults();
-    let _ = router.route("");
+    let decision = router.route("").unwrap();
+    // Empty input defaults to Teaching with lower confidence
+    assert_eq!(decision.agent_type, DomainAgentType::Teaching);
+    assert!((decision.confidence - 0.7).abs() < f64::EPSILON);
 }
 
 // ── route_with_context (todo → should_panic) ────────────────────────────────
 
 #[test]
-#[should_panic]
 fn route_with_context_basic() {
     let router = IntentRouter::with_defaults();
-    let _ = router.route_with_context("scan for vulnerabilities", "security audit project");
+    let decision = router.route_with_context("scan for vulnerabilities", "security audit project").unwrap();
+    assert_eq!(decision.agent_type, DomainAgentType::Security);
+    assert!(decision.confidence >= 1.0);
 }
 
 #[test]
-#[should_panic]
 fn route_with_context_empty() {
     let router = IntentRouter::with_defaults();
-    let _ = router.route_with_context("", "");
+    let decision = router.route_with_context("", "").unwrap();
+    assert_eq!(decision.agent_type, DomainAgentType::Teaching);
+    assert!((decision.confidence - 0.7).abs() < f64::EPSILON);
+}
+
+#[test]
+fn route_code_keywords() {
+    let router = IntentRouter::with_defaults();
+    let decision = router.route("implement a new function").unwrap();
+    assert_eq!(decision.agent_type, DomainAgentType::CodeSynthesis);
+}
+
+#[test]
+fn route_learning_keywords() {
+    let router = IntentRouter::with_defaults();
+    let decision = router.route("remember this fact for later recall").unwrap();
+    assert_eq!(decision.agent_type, DomainAgentType::Learning);
 }
 
 // ── serde roundtrip (PASS) ──────────────────────────────────────────────────

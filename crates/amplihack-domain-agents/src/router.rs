@@ -20,12 +20,69 @@ impl IntentRouter {
         self.confidence_threshold
     }
 
-    pub fn route(&self, _input: &str) -> Result<RoutingDecision> {
-        todo!()
+    pub fn route(&self, input: &str) -> Result<RoutingDecision> {
+        let lower = input.to_lowercase();
+        Self::classify(&lower)
     }
 
-    pub fn route_with_context(&self, _input: &str, _context: &str) -> Result<RoutingDecision> {
-        todo!()
+    pub fn route_with_context(&self, input: &str, context: &str) -> Result<RoutingDecision> {
+        let combined = format!("{} {}", input, context).to_lowercase();
+        let mut decision = Self::classify(&combined)?;
+        // Context reinforcement: bump confidence slightly when context is non-empty
+        if !context.is_empty() && decision.confidence < 1.0 {
+            decision.confidence = (decision.confidence + 0.05).min(1.0);
+        }
+        Ok(decision)
+    }
+
+    const SECURITY_KEYWORDS: &'static [&'static str] = &[
+        "vulnerability", "security", "audit", "exploit", "injection", "xss", "csrf", "unsafe", "risk",
+    ];
+    const CODE_KEYWORDS: &'static [&'static str] = &[
+        "code", "function", "class", "implement", "refactor", "generate", "program", "compile",
+        "syntax", "algorithm",
+    ];
+    const TEACHING_KEYWORDS: &'static [&'static str] = &[
+        "teach", "explain", "lesson", "tutorial", "learn", "understand", "concept", "course",
+    ];
+    const LEARNING_KEYWORDS: &'static [&'static str] = &[
+        "remember", "recall", "store", "memorize", "knowledge", "fact", "note",
+    ];
+
+    fn classify(text: &str) -> Result<RoutingDecision> {
+        let has = |keywords: &[&str]| keywords.iter().any(|kw| text.contains(kw));
+
+        if has(Self::SECURITY_KEYWORDS) {
+            Ok(RoutingDecision {
+                agent_type: DomainAgentType::Security,
+                confidence: 1.0,
+                reasoning: "Input contains security-related keywords".into(),
+            })
+        } else if has(Self::CODE_KEYWORDS) {
+            Ok(RoutingDecision {
+                agent_type: DomainAgentType::CodeSynthesis,
+                confidence: 1.0,
+                reasoning: "Input contains code-related keywords".into(),
+            })
+        } else if has(Self::TEACHING_KEYWORDS) {
+            Ok(RoutingDecision {
+                agent_type: DomainAgentType::Teaching,
+                confidence: 1.0,
+                reasoning: "Input contains teaching-related keywords".into(),
+            })
+        } else if has(Self::LEARNING_KEYWORDS) {
+            Ok(RoutingDecision {
+                agent_type: DomainAgentType::Learning,
+                confidence: 1.0,
+                reasoning: "Input contains learning-related keywords".into(),
+            })
+        } else {
+            Ok(RoutingDecision {
+                agent_type: DomainAgentType::Teaching,
+                confidence: 0.7,
+                reasoning: "No specific keywords matched; defaulting to teaching".into(),
+            })
+        }
     }
 
     pub fn supported_types(&self) -> Vec<DomainAgentType> {

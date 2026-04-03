@@ -22,7 +22,7 @@ pub trait EventBus {
 }
 
 /// An in-process event bus backed by [`Vec`] queues.
-#[allow(dead_code)] // Fields used once todo!() stubs are implemented
+/// An in-process event bus backed by [`Vec`] queues.
 pub struct LocalEventBus {
     subscriptions: HashMap<String, Vec<String>>,
     queues: HashMap<String, Vec<BusEvent>>,
@@ -45,23 +45,38 @@ impl Default for LocalEventBus {
 }
 
 impl EventBus for LocalEventBus {
-    fn publish(&mut self, _event: BusEvent) -> Result<()> {
-        todo!()
+    fn publish(&mut self, event: BusEvent) -> Result<()> {
+        if let Some(handlers) = self.subscriptions.get(&event.topic) {
+            for handler_id in handlers.clone() {
+                self.queues
+                    .entry(handler_id)
+                    .or_default()
+                    .push(event.clone());
+            }
+        }
+        Ok(())
     }
 
-    fn subscribe(&mut self, _topic: &str, _handler_id: &str) -> Result<()> {
-        todo!()
+    fn subscribe(&mut self, topic: &str, handler_id: &str) -> Result<()> {
+        self.subscriptions
+            .entry(topic.to_string())
+            .or_default()
+            .push(handler_id.to_string());
+        Ok(())
     }
 
-    fn unsubscribe(&mut self, _topic: &str, _handler_id: &str) -> Result<()> {
-        todo!()
+    fn unsubscribe(&mut self, topic: &str, handler_id: &str) -> Result<()> {
+        if let Some(handlers) = self.subscriptions.get_mut(topic) {
+            handlers.retain(|h| h != handler_id);
+        }
+        Ok(())
     }
 
-    fn pending_events(&self, _handler_id: &str) -> Result<Vec<BusEvent>> {
-        todo!()
+    fn pending_events(&self, handler_id: &str) -> Result<Vec<BusEvent>> {
+        Ok(self.queues.get(handler_id).cloned().unwrap_or_default())
     }
 
-    fn drain_events(&mut self, _handler_id: &str) -> Result<Vec<BusEvent>> {
-        todo!()
+    fn drain_events(&mut self, handler_id: &str) -> Result<Vec<BusEvent>> {
+        Ok(self.queues.remove(handler_id).unwrap_or_default())
     }
 }

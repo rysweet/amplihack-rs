@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::graph::HiveGraph;
 use crate::models::HiveFact;
 
 /// Policy that decides when a fact should be promoted or broadcast.
@@ -37,13 +38,17 @@ impl PromotionPolicy for DefaultPromotionPolicy {
 
 /// Top-level orchestrator that wires the graph, bus, and gossip layers.
 pub struct HiveMindOrchestrator {
+    graph: HiveGraph,
     policy: Box<dyn PromotionPolicy>,
 }
 
 impl HiveMindOrchestrator {
     /// Create an orchestrator with a custom promotion policy.
     pub fn new(policy: Box<dyn PromotionPolicy>) -> Self {
-        Self { policy }
+        Self {
+            graph: HiveGraph::new(),
+            policy,
+        }
     }
 
     /// Create an orchestrator using [`DefaultPromotionPolicy`].
@@ -54,22 +59,26 @@ impl HiveMindOrchestrator {
     /// Store a new fact in the orchestrator's graph.
     pub fn store_fact(
         &mut self,
-        _concept: &str,
-        _content: &str,
-        _confidence: f64,
-        _source_id: &str,
+        concept: &str,
+        content: &str,
+        confidence: f64,
+        source_id: &str,
     ) -> Result<String> {
-        todo!()
+        self.graph
+            .store_fact(concept, content, confidence, source_id, vec![])
     }
 
     /// Query facts by concept.
-    pub fn query(&self, _concept: &str) -> Result<Vec<HiveFact>> {
-        todo!()
+    pub fn query(&self, concept: &str) -> Result<Vec<HiveFact>> {
+        self.graph.query_facts(concept, 0.0, 100)
     }
 
     /// Attempt to promote a fact for a specific agent.
-    pub fn promote(&mut self, _fact_id: &str, _agent_id: &str) -> Result<bool> {
-        todo!()
+    pub fn promote(&mut self, fact_id: &str, agent_id: &str) -> Result<bool> {
+        match self.graph.get_fact(fact_id)? {
+            Some(fact) => Ok(self.policy.should_promote(&fact, agent_id)),
+            None => Ok(false),
+        }
     }
 
     /// Return a reference to the active promotion policy.

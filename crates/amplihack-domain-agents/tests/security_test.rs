@@ -1,5 +1,5 @@
 use amplihack_domain_agents::{
-    AuditReport, RiskAssessment, SecurityAuditor, SecurityConfig, Vulnerability,
+    AuditReport, SecurityAuditor, SecurityConfig, Vulnerability,
 };
 use chrono::Utc;
 
@@ -45,49 +45,62 @@ fn config_accessor_returns_config() {
 // ── audit (todo → should_panic) ─────────────────────────────────────────────
 
 #[test]
-#[should_panic]
 fn audit_basic_code() {
     let auditor = SecurityAuditor::with_defaults();
-    let _ = auditor.audit("fn main() { println!(\"hello\"); }");
+    let report = auditor.audit("fn main() { println!(\"hello\"); }").unwrap();
+    assert!(report.vulnerabilities.is_empty());
+    assert!((report.risk_score - 0.0).abs() < f64::EPSILON);
 }
 
 #[test]
-#[should_panic]
 fn audit_empty_code() {
     let auditor = SecurityAuditor::with_defaults();
-    let _ = auditor.audit("");
+    let report = auditor.audit("").unwrap();
+    assert!(report.vulnerabilities.is_empty());
+}
+
+#[test]
+fn audit_detects_unsafe() {
+    let auditor = SecurityAuditor::with_defaults();
+    let report = auditor.audit("unsafe { std::ptr::null::<u8>().read() }").unwrap();
+    assert!(!report.vulnerabilities.is_empty());
+    assert!(report.risk_score > 0.0);
 }
 
 // ── scan_vulnerabilities (todo → should_panic) ──────────────────────────────
 
 #[test]
-#[should_panic]
 fn scan_vulnerabilities_basic() {
     let auditor = SecurityAuditor::with_defaults();
-    let _ = auditor.scan_vulnerabilities("unsafe { std::ptr::null::<u8>().read() }");
+    let vulns = auditor.scan_vulnerabilities("unsafe { std::ptr::null::<u8>().read() }").unwrap();
+    assert!(!vulns.is_empty());
+    assert!(vulns.iter().any(|v| v.description.contains("unsafe")));
 }
 
 #[test]
-#[should_panic]
 fn scan_vulnerabilities_safe_code() {
     let auditor = SecurityAuditor::with_defaults();
-    let _ = auditor.scan_vulnerabilities("let x: i32 = 42;");
+    let vulns = auditor.scan_vulnerabilities("let x: i32 = 42;").unwrap();
+    assert!(vulns.is_empty());
 }
 
 // ── risk_assessment (todo → should_panic) ───────────────────────────────────
 
 #[test]
-#[should_panic]
 fn risk_assessment_basic() {
     let auditor = SecurityAuditor::with_defaults();
-    let _ = auditor.risk_assessment("fn safe() {}");
+    let assessment = auditor.risk_assessment("fn safe() {}").unwrap();
+    assert_eq!(assessment.overall_risk, "low");
+    assert!((assessment.risk_score - 0.0).abs() < f64::EPSILON);
 }
 
 #[test]
-#[should_panic]
 fn risk_assessment_high_risk() {
     let auditor = SecurityAuditor::with_defaults();
-    let _ = auditor.risk_assessment("unsafe { libc::system(cmd.as_ptr()) }");
+    let code = "unsafe { libc::system(cmd.as_ptr()) }; password = \"secret\"; eval(input); innerHTML = data; let query = format!(\"SELECT * FROM users\")";
+    let assessment = auditor.risk_assessment(code).unwrap();
+    assert!(assessment.risk_score > 0.0);
+    assert_ne!(assessment.overall_risk, "low");
 }
 
 // ── serde roundtrip (PASS) ──────────────────────────────────────────────────

@@ -44,7 +44,6 @@ fn config_accessor_returns_config() {
 // ── generate (todo → should_panic) ──────────────────────────────────────────
 
 #[test]
-#[should_panic]
 fn generate_from_spec() {
     let synth = CodeSynthesizer::with_defaults();
     let spec = CodeSpec {
@@ -52,11 +51,13 @@ fn generate_from_spec() {
         language: "rust".to_string(),
         constraints: vec!["must be generic".to_string()],
     };
-    let _ = synth.generate(&spec);
+    let result = synth.generate(&spec).unwrap();
+    assert_eq!(result.language, "rust");
+    assert!(result.code.contains("A function that adds two numbers"));
+    assert!(result.code.contains("must be generic"));
 }
 
 #[test]
-#[should_panic]
 fn generate_complex_spec() {
     let synth = CodeSynthesizer::with_defaults();
     let spec = CodeSpec {
@@ -68,36 +69,39 @@ fn generate_complex_spec() {
             "must implement Iterator".to_string(),
         ],
     };
-    let _ = synth.generate(&spec);
+    let result = synth.generate(&spec).unwrap();
+    assert_eq!(result.language, "rust");
+    assert!(!result.code.is_empty());
+    assert!(!result.explanation.is_empty());
 }
 
 // ── refactor (todo → should_panic) ──────────────────────────────────────────
 
 #[test]
-#[should_panic]
 fn refactor_basic_code() {
     let synth = CodeSynthesizer::with_defaults();
-    let _ = synth.refactor("fn add(a: i32, b: i32) -> i32 { return a + b; }");
+    let result = synth.refactor("fn add(a: i32, b: i32) -> i32 { return a + b; }").unwrap();
+    assert!(result.code.contains("fn add"));
+    assert!(result.code.contains("TODO"));
 }
 
 #[test]
-#[should_panic]
 fn refactor_empty_code() {
     let synth = CodeSynthesizer::with_defaults();
-    let _ = synth.refactor("");
+    let result = synth.refactor("").unwrap();
+    assert!(!result.code.is_empty());
 }
 
 // ── analyze (todo → should_panic) ───────────────────────────────────────────
 
 #[test]
-#[should_panic]
 fn analyze_basic_code() {
     let synth = CodeSynthesizer::with_defaults();
-    let _ = synth.analyze("fn hello() { println!(\"hi\"); }");
+    let analysis = synth.analyze("fn hello() { println!(\"hi\"); }").unwrap();
+    assert!(analysis.complexity > 0);
 }
 
 #[test]
-#[should_panic]
 fn analyze_complex_code() {
     let synth = CodeSynthesizer::with_defaults();
     let code = r#"
@@ -108,7 +112,8 @@ fn analyze_complex_code() {
                 .collect()
         }
     "#;
-    let _ = synth.analyze(code);
+    let analysis = synth.analyze(code).unwrap();
+    assert!(analysis.complexity > 0);
 }
 
 // ── serde roundtrip (PASS) ──────────────────────────────────────────────────

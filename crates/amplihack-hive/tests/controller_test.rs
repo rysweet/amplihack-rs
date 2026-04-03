@@ -48,18 +48,19 @@ fn controller_default_is_constructible() {
     let _controller: HiveController = Default::default();
 }
 
-// --- apply tests (todo!()) ---
+// --- apply tests ---
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn apply_manifest_sets_desired() {
     let mut controller = HiveController::new();
     let manifest = make_manifest(vec![make_agent("learner", "learner", 2)]);
-    controller.apply(manifest).unwrap();
+    controller.apply(manifest.clone()).unwrap();
+    assert!(controller.desired_manifest().is_some());
+    assert_eq!(controller.desired_manifest().unwrap().agents.len(), 1);
+    assert_eq!(controller.status().running_agents.len(), 1);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn apply_manifest_with_multiple_agents() {
     let mut controller = HiveController::new();
     let manifest = make_manifest(vec![
@@ -68,10 +69,11 @@ fn apply_manifest_with_multiple_agents() {
         make_agent("gateway", "gateway", 1),
     ]);
     controller.apply(manifest).unwrap();
+    assert_eq!(controller.desired_manifest().unwrap().agents.len(), 3);
+    assert_eq!(controller.status().running_agents.len(), 3);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn apply_manifest_with_memory_config() {
     let mut controller = HiveController::new();
     let agent = AgentSpec {
@@ -82,61 +84,73 @@ fn apply_manifest_with_memory_config() {
     };
     let manifest = make_manifest(vec![agent]);
     controller.apply(manifest).unwrap();
+    let agents = &controller.desired_manifest().unwrap().agents;
+    assert_eq!(agents[0].memory_config, Some("persistent".to_string()));
 }
 
-// --- reconcile tests (todo!()) ---
+// --- reconcile tests ---
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn reconcile_no_manifest() {
     let mut controller = HiveController::new();
-    let _actions = controller.reconcile().unwrap();
+    let actions = controller.reconcile().unwrap();
+    assert!(actions.is_empty());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn reconcile_with_manifest() {
     let mut controller = HiveController::new();
     let manifest = make_manifest(vec![make_agent("learner", "learner", 2)]);
     controller.apply(manifest).unwrap();
-    let _actions = controller.reconcile().unwrap();
+    // After apply, current matches desired, so reconcile should find no drift
+    let actions = controller.reconcile().unwrap();
+    assert!(actions.is_empty());
 }
 
-// --- scale_agent tests (todo!()) ---
+// --- scale_agent tests ---
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn scale_agent_up() {
     let mut controller = HiveController::new();
+    let manifest = make_manifest(vec![make_agent("learner", "learner", 2)]);
+    controller.apply(manifest).unwrap();
     controller.scale_agent("learner", 5).unwrap();
+    let agents = &controller.status().running_agents;
+    assert_eq!(agents[0].replicas, 5);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn scale_agent_down() {
     let mut controller = HiveController::new();
+    let manifest = make_manifest(vec![make_agent("learner", "learner", 5)]);
+    controller.apply(manifest).unwrap();
     controller.scale_agent("learner", 1).unwrap();
+    let agents = &controller.status().running_agents;
+    assert_eq!(agents[0].replicas, 1);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn scale_agent_nonexistent() {
     let mut controller = HiveController::new();
-    controller.scale_agent("no-such-agent", 3).unwrap();
+    let result = controller.scale_agent("no-such-agent", 3);
+    assert!(result.is_err());
 }
 
-// --- remove_agent tests (todo!()) ---
+// --- remove_agent tests ---
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn remove_agent_existing() {
     let mut controller = HiveController::new();
-    let _removed = controller.remove_agent("learner").unwrap();
+    let manifest = make_manifest(vec![make_agent("learner", "learner", 2)]);
+    controller.apply(manifest).unwrap();
+    let removed = controller.remove_agent("learner").unwrap();
+    assert!(removed);
+    assert!(controller.status().running_agents.is_empty());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn remove_agent_nonexistent() {
     let mut controller = HiveController::new();
-    let _removed = controller.remove_agent("ghost-agent").unwrap();
+    let removed = controller.remove_agent("ghost-agent").unwrap();
+    assert!(!removed);
 }

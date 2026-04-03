@@ -18,28 +18,79 @@ impl TeachingAgent {
         &self.config
     }
 
-    pub fn teach(&self, _content: &str) -> Result<TeachingResult> {
-        todo!()
+    pub fn teach(&self, content: &str) -> Result<TeachingResult> {
+        let key_points: Vec<String> = content
+            .split(['.', '!', '?'])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+
+        Ok(TeachingResult {
+            content_delivered: content.to_string(),
+            topics_covered: key_points,
+        })
     }
 
-    pub fn quiz(&self, _topic: &str, _num_questions: usize) -> Result<Vec<QuizQuestion>> {
-        todo!()
+    pub fn quiz(&self, topic: &str, num_questions: usize) -> Result<Vec<QuizQuestion>> {
+        let questions: Vec<QuizQuestion> = (0..num_questions)
+            .map(|i| QuizQuestion {
+                question: format!("Question {} about {}", i + 1, topic),
+                options: vec![
+                    format!("Correct answer for Q{}", i + 1),
+                    format!("Wrong answer A for Q{}", i + 1),
+                    format!("Wrong answer B for Q{}", i + 1),
+                    format!("Wrong answer C for Q{}", i + 1),
+                ],
+                correct_index: 0,
+            })
+            .collect();
+        Ok(questions)
     }
 
     pub fn evaluate_response(
         &self,
-        _question: &QuizQuestion,
-        _answer_index: usize,
+        question: &QuizQuestion,
+        answer_index: usize,
     ) -> Result<EvaluationResult> {
-        todo!()
+        let correct = answer_index == question.correct_index;
+        Ok(EvaluationResult {
+            score: if correct { 1.0 } else { 0.0 },
+            feedback: if correct {
+                "Correct!".into()
+            } else {
+                format!(
+                    "Incorrect. The correct answer was option {}",
+                    question.correct_index
+                )
+            },
+            correct_count: usize::from(correct),
+            total_count: 1,
+        })
     }
 
     pub fn evaluate_batch(
         &self,
-        _questions: &[QuizQuestion],
-        _answers: &[usize],
+        questions: &[QuizQuestion],
+        answers: &[usize],
     ) -> Result<EvaluationResult> {
-        todo!()
+        let total = questions.len();
+        let correct_count = questions
+            .iter()
+            .zip(answers.iter())
+            .filter(|&(q, a)| *a == q.correct_index)
+            .count();
+        let score = if total == 0 {
+            0.0
+        } else {
+            correct_count as f64 / total as f64
+        };
+        Ok(EvaluationResult {
+            score,
+            feedback: format!("{correct_count}/{total} correct"),
+            correct_count,
+            total_count: total,
+        })
     }
 }
 

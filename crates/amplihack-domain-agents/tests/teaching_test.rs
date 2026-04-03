@@ -1,5 +1,5 @@
 use amplihack_domain_agents::{
-    EvaluationResult, QuizQuestion, TeachingAgent, TeachingConfig, TeachingResult,
+    QuizQuestion, TeachingAgent, TeachingConfig,
 };
 
 // ── Construction & accessors (PASS) ─────────────────────────────────────────
@@ -44,39 +44,44 @@ fn config_accessor_returns_config() {
 // ── teach (todo → should_panic) ─────────────────────────────────────────────
 
 #[test]
-#[should_panic]
 fn teach_basic_content() {
     let agent = TeachingAgent::with_defaults();
-    let _ = agent.teach("Introduction to Rust ownership");
+    let result = agent.teach("Introduction to Rust ownership").unwrap();
+    assert_eq!(result.content_delivered, "Introduction to Rust ownership");
+    assert!(!result.topics_covered.is_empty());
 }
 
 #[test]
-#[should_panic]
 fn teach_empty_content() {
     let agent = TeachingAgent::with_defaults();
-    let _ = agent.teach("");
+    let result = agent.teach("").unwrap();
+    assert_eq!(result.content_delivered, "");
+    assert!(result.topics_covered.is_empty());
 }
 
 // ── quiz (todo → should_panic) ──────────────────────────────────────────────
 
 #[test]
-#[should_panic]
 fn quiz_generates_questions() {
     let agent = TeachingAgent::with_defaults();
-    let _ = agent.quiz("Rust lifetimes", 5);
+    let questions = agent.quiz("Rust lifetimes", 5).unwrap();
+    assert_eq!(questions.len(), 5);
+    for q in &questions {
+        assert!(q.question.contains("Rust lifetimes"));
+        assert_eq!(q.options.len(), 4);
+    }
 }
 
 #[test]
-#[should_panic]
 fn quiz_respects_num_questions() {
     let agent = TeachingAgent::with_defaults();
-    let _ = agent.quiz("Rust traits", 3);
+    let questions = agent.quiz("Rust traits", 3).unwrap();
+    assert_eq!(questions.len(), 3);
 }
 
 // ── evaluate_response (todo → should_panic) ─────────────────────────────────
 
 #[test]
-#[should_panic]
 fn evaluate_response_correct() {
     let agent = TeachingAgent::with_defaults();
     let q = QuizQuestion {
@@ -88,11 +93,14 @@ fn evaluate_response_correct() {
         ],
         correct_index: 1,
     };
-    let _ = agent.evaluate_response(&q, 1);
+    let result = agent.evaluate_response(&q, 1).unwrap();
+    assert!((result.score - 1.0).abs() < f64::EPSILON);
+    assert_eq!(result.correct_count, 1);
+    assert_eq!(result.total_count, 1);
+    assert!(result.feedback.contains("Correct"));
 }
 
 #[test]
-#[should_panic]
 fn evaluate_response_incorrect() {
     let agent = TeachingAgent::with_defaults();
     let q = QuizQuestion {
@@ -104,13 +112,15 @@ fn evaluate_response_incorrect() {
         ],
         correct_index: 1,
     };
-    let _ = agent.evaluate_response(&q, 0);
+    let result = agent.evaluate_response(&q, 0).unwrap();
+    assert!((result.score - 0.0).abs() < f64::EPSILON);
+    assert_eq!(result.correct_count, 0);
+    assert!(result.feedback.contains("Incorrect"));
 }
 
 // ── evaluate_batch (todo → should_panic) ─────────────────────────────────────
 
 #[test]
-#[should_panic]
 fn evaluate_batch_all_correct() {
     let agent = TeachingAgent::with_defaults();
     let questions = vec![
@@ -126,11 +136,13 @@ fn evaluate_batch_all_correct() {
         },
     ];
     let answers = vec![0, 1];
-    let _ = agent.evaluate_batch(&questions, &answers);
+    let result = agent.evaluate_batch(&questions, &answers).unwrap();
+    assert!((result.score - 1.0).abs() < f64::EPSILON);
+    assert_eq!(result.correct_count, 2);
+    assert_eq!(result.total_count, 2);
 }
 
 #[test]
-#[should_panic]
 fn evaluate_batch_mixed() {
     let agent = TeachingAgent::with_defaults();
     let questions = vec![
@@ -146,7 +158,10 @@ fn evaluate_batch_mixed() {
         },
     ];
     let answers = vec![0, 0]; // second is wrong
-    let _ = agent.evaluate_batch(&questions, &answers);
+    let result = agent.evaluate_batch(&questions, &answers).unwrap();
+    assert!((result.score - 0.5).abs() < f64::EPSILON);
+    assert_eq!(result.correct_count, 1);
+    assert_eq!(result.total_count, 2);
 }
 
 // ── serde roundtrip (PASS) ──────────────────────────────────────────────────

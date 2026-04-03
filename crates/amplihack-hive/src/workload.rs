@@ -16,7 +16,27 @@ pub struct HiveWorkloadConfig {
 impl HiveWorkloadConfig {
     /// Validate that the configuration is well-formed.
     pub fn validate(&self) -> Result<()> {
-        todo!()
+        if self.image.is_empty() {
+            return Err(crate::error::HiveError::Workload(
+                "image must not be empty".into(),
+            ));
+        }
+        if self.resource_group.is_empty() {
+            return Err(crate::error::HiveError::Workload(
+                "resource_group must not be empty".into(),
+            ));
+        }
+        if self.num_containers == 0 {
+            return Err(crate::error::HiveError::Workload(
+                "num_containers must be greater than 0".into(),
+            ));
+        }
+        if self.agents_per_container == 0 {
+            return Err(crate::error::HiveError::Workload(
+                "agents_per_container must be greater than 0".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Return the total number of agents across all containers.
@@ -84,7 +104,19 @@ impl WorkloadStatus {
     }
 
     /// Whether a transition from this status to `next` is valid.
-    pub fn can_transition_to(&self, _next: &WorkloadStatus) -> bool {
-        todo!()
+    pub fn can_transition_to(&self, next: &WorkloadStatus) -> bool {
+        matches!(
+            (self, next),
+            (WorkloadStatus::Pending, WorkloadStatus::Deploying)
+                | (WorkloadStatus::Pending, WorkloadStatus::Failed)
+                | (WorkloadStatus::Deploying, WorkloadStatus::Running)
+                | (WorkloadStatus::Deploying, WorkloadStatus::Failed)
+                | (WorkloadStatus::Deploying, WorkloadStatus::Stopping)
+                | (WorkloadStatus::Running, WorkloadStatus::Stopping)
+                | (WorkloadStatus::Running, WorkloadStatus::Failed)
+                | (WorkloadStatus::Stopping, WorkloadStatus::Stopped)
+                | (WorkloadStatus::Stopping, WorkloadStatus::Failed)
+                | (WorkloadStatus::Failed, WorkloadStatus::Pending)
+        )
     }
 }

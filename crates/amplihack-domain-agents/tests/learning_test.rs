@@ -1,4 +1,4 @@
-use amplihack_domain_agents::{Answer, LearnedContent, LearningAgent, LearningConfig};
+use amplihack_domain_agents::{LearnedContent, LearningAgent, LearningConfig};
 use chrono::Utc;
 
 // ── Construction & accessors (PASS) ─────────────────────────────────────────
@@ -44,49 +44,57 @@ fn initial_learned_count_is_zero() {
 // ── learn_from_content (todo → should_panic) ────────────────────────────────
 
 #[test]
-#[should_panic]
 fn learn_from_content_basic() {
     let mut agent = LearningAgent::with_defaults();
-    let _ = agent.learn_from_content("Rust ownership ensures memory safety without a GC.");
+    let result = agent.learn_from_content("Rust ownership ensures memory safety without a GC.").unwrap();
+    assert_eq!(result.content_id, "lc-1");
+    assert!(!result.summary.is_empty());
+    assert!(!result.key_concepts.is_empty());
+    assert_eq!(agent.learned_count(), 1);
 }
 
 #[test]
-#[should_panic]
 fn learn_from_content_empty() {
     let mut agent = LearningAgent::with_defaults();
-    let _ = agent.learn_from_content("");
+    let result = agent.learn_from_content("").unwrap();
+    assert_eq!(result.content_id, "lc-1");
+    assert_eq!(agent.learned_count(), 1);
 }
 
 // ── answer_question (todo → should_panic) ───────────────────────────────────
 
 #[test]
-#[should_panic]
 fn answer_question_basic() {
-    let agent = LearningAgent::with_defaults();
-    let _ = agent.answer_question("What is Rust ownership?");
+    let mut agent = LearningAgent::with_defaults();
+    agent.learn_from_content("Rust ownership ensures memory safety without a GC.").unwrap();
+    let answer = agent.answer_question("What is Rust ownership?").unwrap();
+    assert!(!answer.content.is_empty());
+    assert!(answer.confidence > 0.0);
 }
 
 #[test]
-#[should_panic]
 fn answer_question_no_knowledge() {
     let agent = LearningAgent::with_defaults();
-    let _ = agent.answer_question("Explain quantum entanglement");
+    let answer = agent.answer_question("Explain quantum entanglement").unwrap();
+    assert_eq!(answer.content, "No relevant knowledge found");
+    assert!((answer.confidence - 0.0).abs() < f64::EPSILON);
 }
 
 // ── recall (todo → should_panic) ────────────────────────────────────────────
 
 #[test]
-#[should_panic]
 fn recall_concept() {
-    let agent = LearningAgent::with_defaults();
-    let _ = agent.recall("ownership");
+    let mut agent = LearningAgent::with_defaults();
+    agent.learn_from_content("Rust ownership ensures memory safety without a GC.").unwrap();
+    let results = agent.recall("ownership").unwrap();
+    assert!(!results.is_empty());
 }
 
 #[test]
-#[should_panic]
 fn recall_unknown_concept() {
     let agent = LearningAgent::with_defaults();
-    let _ = agent.recall("nonexistent_concept_xyz");
+    let results = agent.recall("nonexistent_concept_xyz").unwrap();
+    assert!(results.is_empty());
 }
 
 // ── serde roundtrip (PASS) ──────────────────────────────────────────────────

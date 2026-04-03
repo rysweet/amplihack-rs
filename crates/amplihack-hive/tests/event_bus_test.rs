@@ -10,74 +10,92 @@ fn make_event(topic: &str, source: &str) -> BusEvent {
     }
 }
 
-// --- publish tests (all todo!()) ---
+// --- publish tests ---
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn publish_single_event() {
     let mut bus = LocalEventBus::new();
+    bus.subscribe("topic-a", "handler-1").unwrap();
     bus.publish(make_event("topic-a", "agent-1")).unwrap();
+    let events = bus.pending_events("handler-1").unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].source_id, "agent-1");
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn publish_multiple_events() {
     let mut bus = LocalEventBus::new();
+    bus.subscribe("topic-a", "handler-1").unwrap();
+    bus.subscribe("topic-b", "handler-1").unwrap();
     bus.publish(make_event("topic-a", "agent-1")).unwrap();
     bus.publish(make_event("topic-a", "agent-2")).unwrap();
     bus.publish(make_event("topic-b", "agent-1")).unwrap();
+    let events = bus.pending_events("handler-1").unwrap();
+    assert_eq!(events.len(), 3);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn publish_preserves_event_data() {
     let mut bus = LocalEventBus::new();
+    bus.subscribe("metrics", "handler-1").unwrap();
     let event = BusEvent {
         topic: "metrics".to_string(),
         payload: serde_json::json!({"cpu": 42, "mem": 1024}),
         source_id: "monitor-1".to_string(),
         timestamp: Utc::now(),
     };
-    bus.publish(event).unwrap();
+    bus.publish(event.clone()).unwrap();
+    let events = bus.pending_events("handler-1").unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].payload, serde_json::json!({"cpu": 42, "mem": 1024}));
+    assert_eq!(events[0].source_id, "monitor-1");
 }
 
-// --- subscribe tests (all todo!()) ---
+// --- subscribe tests ---
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn subscribe_to_topic() {
     let mut bus = LocalEventBus::new();
     bus.subscribe("topic-a", "handler-1").unwrap();
+    bus.publish(make_event("topic-a", "agent-1")).unwrap();
+    let events = bus.pending_events("handler-1").unwrap();
+    assert_eq!(events.len(), 1);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn subscribe_multiple_handlers() {
     let mut bus = LocalEventBus::new();
     bus.subscribe("topic-a", "handler-1").unwrap();
     bus.subscribe("topic-a", "handler-2").unwrap();
+    bus.publish(make_event("topic-a", "agent-1")).unwrap();
+    let events1 = bus.pending_events("handler-1").unwrap();
+    let events2 = bus.pending_events("handler-2").unwrap();
+    assert_eq!(events1.len(), 1);
+    assert_eq!(events2.len(), 1);
 }
 
-// --- unsubscribe tests (all todo!()) ---
+// --- unsubscribe tests ---
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn unsubscribe_handler() {
     let mut bus = LocalEventBus::new();
+    bus.subscribe("topic-a", "handler-1").unwrap();
     bus.unsubscribe("topic-a", "handler-1").unwrap();
+    bus.publish(make_event("topic-a", "agent-1")).unwrap();
+    let events = bus.pending_events("handler-1").unwrap();
+    assert!(events.is_empty());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn unsubscribe_nonexistent_handler() {
     let mut bus = LocalEventBus::new();
+    // Should succeed as a no-op
     bus.unsubscribe("topic-x", "no-such-handler").unwrap();
 }
 
-// --- pending_events tests (all todo!()) ---
+// --- pending_events tests ---
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn pending_events_after_publish() {
     let mut bus = LocalEventBus::new();
     bus.subscribe("topic-a", "handler-1").unwrap();
@@ -87,36 +105,38 @@ fn pending_events_after_publish() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn pending_events_empty() {
     let bus = LocalEventBus::new();
-    let _events = bus.pending_events("handler-1").unwrap();
+    let events = bus.pending_events("handler-1").unwrap();
+    assert!(events.is_empty());
 }
 
-// --- drain_events tests (all todo!()) ---
+// --- drain_events tests ---
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn drain_events_clears_queue() {
     let mut bus = LocalEventBus::new();
     bus.subscribe("topic-a", "handler-1").unwrap();
     bus.publish(make_event("topic-a", "agent-1")).unwrap();
-    let _events = bus.drain_events("handler-1").unwrap();
+    let events = bus.drain_events("handler-1").unwrap();
+    assert_eq!(events.len(), 1);
+    // Queue should be empty after drain
+    let remaining = bus.pending_events("handler-1").unwrap();
+    assert!(remaining.is_empty());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn drain_events_multiple_topics() {
     let mut bus = LocalEventBus::new();
     bus.subscribe("topic-a", "handler-1").unwrap();
     bus.subscribe("topic-b", "handler-1").unwrap();
     bus.publish(make_event("topic-a", "agent-1")).unwrap();
     bus.publish(make_event("topic-b", "agent-2")).unwrap();
-    let _events = bus.drain_events("handler-1").unwrap();
+    let events = bus.drain_events("handler-1").unwrap();
+    assert_eq!(events.len(), 2);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn event_ordering_preserved() {
     let mut bus = LocalEventBus::new();
     bus.subscribe("topic-a", "handler-1").unwrap();
@@ -131,6 +151,9 @@ fn event_ordering_preserved() {
     }
     let events = bus.drain_events("handler-1").unwrap();
     assert_eq!(events.len(), 5);
+    for (i, event) in events.iter().enumerate() {
+        assert_eq!(event.source_id, format!("agent-{i}"));
+    }
 }
 
 // --- constructor tests ---

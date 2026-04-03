@@ -99,27 +99,52 @@ fn merge_result_serde_roundtrip() {
     assert_eq!(deserialized.conflicts, vec!["c"]);
 }
 
-// --- todo!() method tests (should_panic) ---
+// --- behavioral tests ---
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn run_gossip_round_merges_facts() {
     let mut proto = GossipProtocol::new("node-1".to_string(), default_config());
     let local = vec![make_fact("local", 0.9)];
     let peer = vec![make_fact("peer", 0.8)];
-    let _result = proto.run_gossip_round(&local, &peer).unwrap();
+    let result = proto.run_gossip_round(&local, &peer).unwrap();
+    assert_eq!(result.accepted, vec!["fact-peer"]);
+    assert!(result.rejected.is_empty());
+    assert!(result.conflicts.is_empty());
+    assert_eq!(proto.current_round(), 1);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
+fn run_gossip_round_detects_conflicts() {
+    let mut proto = GossipProtocol::new("node-1".to_string(), default_config());
+    let local = vec![make_fact("shared", 0.9)];
+    let peer = vec![make_fact("shared", 0.8)];
+    let result = proto.run_gossip_round(&local, &peer).unwrap();
+    assert!(result.accepted.is_empty());
+    assert_eq!(result.conflicts, vec!["fact-shared"]);
+}
+
+#[test]
+fn run_gossip_round_rejects_low_confidence() {
+    let mut proto = GossipProtocol::new("node-1".to_string(), default_config());
+    let local = vec![];
+    let peer = vec![make_fact("weak", 0.3)];
+    let result = proto.run_gossip_round(&local, &peer).unwrap();
+    assert!(result.accepted.is_empty());
+    assert_eq!(result.rejected, vec!["fact-weak"]);
+}
+
+#[test]
 fn prepare_message_creates_gossip_message() {
     let proto = GossipProtocol::new("node-1".to_string(), default_config());
     let facts = vec![make_fact("test", 0.7)];
-    let _msg = proto.prepare_message(facts);
+    let msg = proto.prepare_message(facts);
+    assert_eq!(msg.source_id, "node-1");
+    assert_eq!(msg.round, 0);
+    assert_eq!(msg.facts.len(), 1);
+    assert_eq!(msg.facts[0].fact_id, "fact-test");
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn merge_incoming_processes_message() {
     let mut proto = GossipProtocol::new("node-1".to_string(), default_config());
     let msg = GossipMessage {
@@ -127,20 +152,31 @@ fn merge_incoming_processes_message() {
         source_id: "node-2".to_string(),
         round: 1,
     };
-    let _result = proto.merge_incoming(msg).unwrap();
+    let result = proto.merge_incoming(msg).unwrap();
+    assert_eq!(result.accepted, vec!["fact-incoming"]);
+    assert!(result.rejected.is_empty());
+    assert_eq!(proto.current_round(), 1);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn select_peers_limits_by_fanout() {
     let proto = GossipProtocol::new("node-1".to_string(), default_config());
     let all_peers: Vec<String> = (0..10).map(|i| format!("peer-{i}")).collect();
-    let _selected = proto.select_peers(&all_peers);
+    let selected = proto.select_peers(&all_peers);
+    assert_eq!(selected.len(), 3); // fanout = 3
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn select_peers_empty_list() {
     let proto = GossipProtocol::new("node-1".to_string(), default_config());
-    let _selected = proto.select_peers(&[]);
+    let selected = proto.select_peers(&[]);
+    assert!(selected.is_empty());
+}
+
+#[test]
+fn select_peers_fewer_than_fanout() {
+    let proto = GossipProtocol::new("node-1".to_string(), default_config());
+    let all_peers = vec!["peer-0".to_string(), "peer-1".to_string()];
+    let selected = proto.select_peers(&all_peers);
+    assert_eq!(selected.len(), 2); // only 2 available, fanout is 3
 }

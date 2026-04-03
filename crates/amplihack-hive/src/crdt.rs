@@ -20,23 +20,29 @@ impl GCounter {
     }
 
     /// Increment the counter for `node_id` and return the new local count.
-    pub fn increment(&mut self, _node_id: &str) -> u64 {
-        todo!()
+    pub fn increment(&mut self, node_id: &str) -> u64 {
+        let count = self.counts.entry(node_id.to_string()).or_insert(0);
+        *count += 1;
+        *count
     }
 
     /// Return the total value across all nodes.
     pub fn value(&self) -> u64 {
-        todo!()
+        self.counts.values().sum()
     }
 
     /// Merge another counter into this one (element-wise max).
-    pub fn merge(&mut self, _other: &GCounter) -> &mut Self {
-        todo!()
+    pub fn merge(&mut self, other: &GCounter) -> &mut Self {
+        for (node, &count) in &other.counts {
+            let entry = self.counts.entry(node.clone()).or_insert(0);
+            *entry = (*entry).max(count);
+        }
+        self
     }
 
     /// Return the count for a single node.
-    pub fn get(&self, _node_id: &str) -> u64 {
-        todo!()
+    pub fn get(&self, node_id: &str) -> u64 {
+        self.counts.get(node_id).copied().unwrap_or(0)
     }
 }
 
@@ -67,18 +73,25 @@ impl<T: Clone> LWWRegister<T> {
     }
 
     /// Set the register value at the given timestamp.
-    pub fn set(&mut self, _value: T, _timestamp: u64) {
-        todo!()
+    pub fn set(&mut self, value: T, timestamp: u64) {
+        if timestamp > self.timestamp {
+            self.value = Some(value);
+            self.timestamp = timestamp;
+        }
     }
 
     /// Get the current value, if any.
     pub fn get(&self) -> Option<&T> {
-        todo!()
+        self.value.as_ref()
     }
 
     /// Merge another register into this one.
-    pub fn merge(&mut self, _other: &LWWRegister<T>) {
-        todo!()
+    pub fn merge(&mut self, other: &LWWRegister<T>) {
+        if other.timestamp > self.timestamp {
+            self.value = other.value.clone();
+            self.timestamp = other.timestamp;
+            self.node_id = other.node_id.clone();
+        }
     }
 
     /// Return the timestamp of the last write.

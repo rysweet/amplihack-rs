@@ -112,7 +112,6 @@ fn orchestrator_with_default_policy_is_constructible() {
 fn orchestrator_policy_accessible() {
     let orch = HiveMindOrchestrator::with_default_policy();
     let fact = make_fact("test", 0.95);
-    // The default policy should promote and broadcast high-confidence facts
     assert!(orch.policy().should_promote(&fact, "agent-1"));
     assert!(orch.policy().should_broadcast(&fact));
 }
@@ -128,25 +127,52 @@ fn orchestrator_custom_policy() {
     assert!(orch.policy().should_promote(&fact, "agent-1"));
 }
 
-// --- HiveMindOrchestrator todo!() methods (should_panic) ---
+// --- HiveMindOrchestrator behavioral tests ---
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn orchestrator_store_fact() {
     let mut orch = HiveMindOrchestrator::with_default_policy();
-    let _id = orch.store_fact("rust", "systems language", 0.9, "agent-1").unwrap();
+    let id = orch
+        .store_fact("rust", "systems language", 0.9, "agent-1")
+        .unwrap();
+    assert!(!id.is_empty());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn orchestrator_query() {
-    let orch = HiveMindOrchestrator::with_default_policy();
-    let _facts = orch.query("rust").unwrap();
+    let mut orch = HiveMindOrchestrator::with_default_policy();
+    orch.store_fact("rust", "systems language", 0.9, "agent-1")
+        .unwrap();
+    let facts = orch.query("rust").unwrap();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].concept, "rust");
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn orchestrator_promote() {
     let mut orch = HiveMindOrchestrator::with_default_policy();
-    let _promoted = orch.promote("fact-1", "agent-1").unwrap();
+    let id = orch
+        .store_fact("rust", "systems language", 0.9, "agent-1")
+        .unwrap();
+    // 0.9 >= 0.7 threshold → should promote
+    let promoted = orch.promote(&id, "agent-1").unwrap();
+    assert!(promoted);
+}
+
+#[test]
+fn orchestrator_promote_below_threshold() {
+    let mut orch = HiveMindOrchestrator::with_default_policy();
+    let id = orch
+        .store_fact("rumor", "unverified", 0.3, "agent-1")
+        .unwrap();
+    // 0.3 < 0.7 threshold → should not promote
+    let promoted = orch.promote(&id, "agent-1").unwrap();
+    assert!(!promoted);
+}
+
+#[test]
+fn orchestrator_promote_nonexistent() {
+    let mut orch = HiveMindOrchestrator::with_default_policy();
+    let promoted = orch.promote("nonexistent-id", "agent-1").unwrap();
+    assert!(!promoted);
 }
