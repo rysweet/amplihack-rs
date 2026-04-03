@@ -37,38 +37,51 @@ impl Default for AgentAssembler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::PlanPhase;
-    use std::path::PathBuf;
-    use uuid::Uuid;
+    use crate::planner::ObjectivePlanner;
+    use crate::synthesizer::SkillSynthesizer;
 
-    fn sample_goal() -> GoalDefinition {
-        GoalDefinition::new("prompt", "goal", "security").unwrap()
-    }
-
-    fn sample_plan() -> ExecutionPlan {
-        let phase = PlanPhase::new("analysis", "desc", vec!["cap".into()]).unwrap();
-        ExecutionPlan::new(Uuid::new_v4(), vec![phase]).unwrap()
-    }
-
-    fn sample_skills() -> Vec<SkillDefinition> {
-        vec![SkillDefinition::new("sk", PathBuf::from("p"), "content").unwrap()]
+    fn make_parts() -> (GoalDefinition, ExecutionPlan, Vec<SkillDefinition>) {
+        let goal = GoalDefinition::new("prompt", "build tool", "development").unwrap();
+        let plan = ObjectivePlanner::new().plan(&goal).unwrap();
+        let skills = SkillSynthesizer::new().synthesize(&plan).unwrap();
+        (goal, plan, skills)
     }
 
     #[test]
     fn assemble_produces_ready_bundle() {
-        let asm = AgentAssembler::new();
-        let bundle = asm.assemble(&sample_goal(), &sample_plan(), sample_skills()).unwrap();
+        let (goal, plan, skills) = make_parts();
+        let bundle = AgentAssembler::new().assemble(&goal, &plan, skills).unwrap();
         assert_eq!(bundle.status, BundleStatus::Ready);
-        assert!(bundle.goal_definition.is_some());
-        assert!(bundle.execution_plan.is_some());
-        assert!(!bundle.skills.is_empty());
+    }
+
+    #[test]
+    fn assemble_sets_domain_agent_name() {
+        let (goal, plan, skills) = make_parts();
+        let bundle = AgentAssembler::new().assemble(&goal, &plan, skills).unwrap();
+        assert_eq!(bundle.name, "development-agent");
+    }
+
+    #[test]
+    fn assembled_bundle_is_complete() {
+        let (goal, plan, skills) = make_parts();
+        let bundle = AgentAssembler::new().assemble(&goal, &plan, skills).unwrap();
         assert!(bundle.is_complete());
     }
 
     #[test]
-    fn assemble_names_bundle_after_domain() {
-        let asm = AgentAssembler::new();
-        let bundle = asm.assemble(&sample_goal(), &sample_plan(), sample_skills()).unwrap();
-        assert_eq!(bundle.name, "security-agent");
+    fn assemble_preserves_goal_and_plan() {
+        let (goal, plan, skills) = make_parts();
+        let skill_count = skills.len();
+        let bundle = AgentAssembler::new().assemble(&goal, &plan, skills).unwrap();
+        assert!(bundle.goal_definition.is_some());
+        assert!(bundle.execution_plan.is_some());
+        assert_eq!(bundle.skills.len(), skill_count);
+    }
+
+    #[test]
+    fn default_impl() {
+        let a = AgentAssembler::default();
+        let (goal, plan, skills) = make_parts();
+        assert!(a.assemble(&goal, &plan, skills).is_ok());
     }
 }

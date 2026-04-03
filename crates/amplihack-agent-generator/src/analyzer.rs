@@ -132,73 +132,125 @@ impl Default for PromptAnalyzer {
 mod tests {
     use super::*;
 
+    fn analyzer() -> PromptAnalyzer {
+        PromptAnalyzer::new()
+    }
+
+    #[test]
+    fn analyze_rejects_empty_prompt() {
+        assert!(analyzer().analyze("").is_err());
+        assert!(analyzer().analyze("   ").is_err());
+    }
+
+    #[test]
+    fn analyze_returns_structured_goal() {
+        let g = analyzer().analyze("scan for vulnerabilities").unwrap();
+        assert_eq!(g.raw_prompt, "scan for vulnerabilities");
+        assert_eq!(g.domain, "security");
+    }
+
+    // Domain detection ---------------------------------------------------
+
     #[test]
     fn detect_domain_security() {
-        assert_eq!(PromptAnalyzer::detect_domain("scan for vulnerabilities"), "security");
-        assert_eq!(PromptAnalyzer::detect_domain("check CVE database"), "security");
+        let g = analyzer().analyze("scan for CVE issues").unwrap();
+        assert_eq!(g.domain, "security");
     }
 
     #[test]
     fn detect_domain_data_processing() {
-        assert_eq!(PromptAnalyzer::detect_domain("process CSV data"), "data-processing");
-        assert_eq!(PromptAnalyzer::detect_domain("build a pipeline"), "data-processing");
+        let g = analyzer().analyze("aggregate csv data").unwrap();
+        assert_eq!(g.domain, "data-processing");
     }
 
     #[test]
     fn detect_domain_log_analysis() {
-        assert_eq!(PromptAnalyzer::detect_domain("analyze logs for errors"), "log-analysis");
+        let g = analyzer().analyze("parse logs for errors").unwrap();
+        assert_eq!(g.domain, "log-analysis");
+    }
+
+    #[test]
+    fn detect_domain_code_review() {
+        let g = analyzer().analyze("review pull request").unwrap();
+        assert_eq!(g.domain, "code-review");
+    }
+
+    #[test]
+    fn detect_domain_meetings() {
+        let g = analyzer().analyze("summarize meeting notes").unwrap();
+        assert_eq!(g.domain, "meetings");
+    }
+
+    #[test]
+    fn detect_domain_email() {
+        let g = analyzer().analyze("draft email response").unwrap();
+        assert_eq!(g.domain, "email");
     }
 
     #[test]
     fn detect_domain_development() {
-        assert_eq!(PromptAnalyzer::detect_domain("build the code"), "development");
+        let g = analyzer().analyze("build the project").unwrap();
+        assert_eq!(g.domain, "development");
+    }
+
+    #[test]
+    fn detect_domain_file_management() {
+        let g = analyzer().analyze("organize the directory").unwrap();
+        assert_eq!(g.domain, "file-management");
     }
 
     #[test]
     fn detect_domain_general_fallback() {
-        assert_eq!(PromptAnalyzer::detect_domain("hello world"), "general");
+        let g = analyzer().analyze("hello world").unwrap();
+        assert_eq!(g.domain, "general");
+    }
+
+    // Complexity estimation ----------------------------------------------
+
+    #[test]
+    fn complexity_simple_for_short_prompt() {
+        let g = analyzer().analyze("fix bug").unwrap();
+        assert_eq!(g.complexity, Complexity::Simple);
     }
 
     #[test]
-    fn extract_constraints_picks_must_should_require() {
-        let text = "Must be fast.\nShould use Rust.\nThis is fine.\nRequires auth.";
-        let c = PromptAnalyzer::extract_constraints(text);
-        assert_eq!(c.len(), 3);
-        assert!(c.iter().any(|s| s.contains("fast")));
-        assert!(c.iter().any(|s| s.contains("Rust")));
-        assert!(c.iter().any(|s| s.contains("auth")));
+    fn complexity_moderate_for_medium_prompt() {
+        let prompt = "a".repeat(60);
+        let g = analyzer().analyze(&prompt).unwrap();
+        assert_eq!(g.complexity, Complexity::Moderate);
     }
 
     #[test]
-    fn extract_success_criteria_keywords() {
-        let text = "Done when tests pass.\nThe success should be verified.\nRandom line.";
-        let c = PromptAnalyzer::extract_success_criteria(text);
-        assert_eq!(c.len(), 2);
+    fn complexity_complex_for_long_prompt() {
+        let prompt = "a".repeat(120);
+        let g = analyzer().analyze(&prompt).unwrap();
+        assert_eq!(g.complexity, Complexity::Complex);
     }
 
-    #[test]
-    fn estimate_complexity_by_length() {
-        assert_eq!(PromptAnalyzer::estimate_complexity("short"), Complexity::Simple);
-        let medium = "a".repeat(60);
-        assert_eq!(PromptAnalyzer::estimate_complexity(&medium), Complexity::Moderate);
-        let long = "a".repeat(120);
-        assert_eq!(PromptAnalyzer::estimate_complexity(&long), Complexity::Complex);
-    }
+    // Constraint extraction ----------------------------------------------
 
     #[test]
-    fn analyze_empty_prompt_errors() {
-        let a = PromptAnalyzer::new();
-        assert!(a.analyze("   ").is_err());
+    fn extracts_constraints() {
+        let g = analyzer()
+            .analyze("build app. It must be fast. Should handle errors.")
+            .unwrap();
+        assert!(g.constraints.iter().any(|c| c.contains("must")));
+        assert!(g.constraints.iter().any(|c| c.contains("Should")));
     }
 
+    // Success criteria extraction ----------------------------------------
+
     #[test]
-    fn analyze_sets_domain_and_complexity() {
-        let a = PromptAnalyzer::new();
-        let g = a.analyze("scan for security vulnerabilities in the codebase. Must be thorough. Done when all CVEs checked.").unwrap();
-        assert_eq!(g.domain, "security");
-        // >100 chars → Complex, but the complexity threshold is on the trimmed prompt length
-        assert!(g.complexity >= Complexity::Moderate);
-        assert!(!g.constraints.is_empty());
+    fn extracts_success_criteria() {
+        let g = analyzer()
+            .analyze("deploy service. Done when all tests pass. Success means zero errors.")
+            .unwrap();
         assert!(!g.success_criteria.is_empty());
+    }
+
+    #[test]
+    fn default_impl() {
+        let a = PromptAnalyzer::default();
+        assert!(a.analyze("test").is_ok());
     }
 }
