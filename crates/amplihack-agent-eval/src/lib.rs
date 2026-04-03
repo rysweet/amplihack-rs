@@ -29,6 +29,7 @@ pub mod security_log;
 pub mod self_improve;
 pub(crate) mod self_improve_helpers;
 pub mod teaching_eval;
+pub mod teaching_session;
 
 pub use agent_adapter::{AgentAdapter, AgentResponse, MockAgentAdapter, SubprocessAdapter};
 pub use agent_subprocess::{AgentSubprocessConfig, Phase, ReasoningTrace};
@@ -55,3 +56,7 @@ pub use sdk_eval_loop::{MultiSdkReport, SdkEvalLoopConfig, SdkEvalReport};
 pub use security_log::{AttackCampaign, SecurityEvalReport, SecurityGradeResult, SecurityQuestion};
 pub use self_improve::{ErrorAnalyzer, PatchProposer, ReviewerVoting, SelfImproveRunner};
 pub use teaching_eval::{TeachingDimensionScore, TeachingEvalResult, TeachingResult};
+pub use teaching_session::{
+    DeterministicGenerator, MessageGenerator, SessionTurn, TeachingSession,
+    TeachingSessionConfig, TeachingSessionResult,
+};

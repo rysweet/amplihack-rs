@@ -91,6 +91,24 @@ impl IntentRouter {
         "syntax",
         "algorithm",
     ];
+    const CODE_REVIEW_KEYWORDS: &'static [&'static str] = &[
+        "review",
+        "code review",
+        "pull request",
+        "pr",
+        "lint",
+        "style",
+        "quality",
+    ];
+    const MEETING_KEYWORDS: &'static [&'static str] = &[
+        "meeting",
+        "transcript",
+        "minutes",
+        "action items",
+        "decisions",
+        "agenda",
+        "synthesize",
+    ];
     const TEACHING_KEYWORDS: &'static [&'static str] = &[
         "teach",
         "explain",
@@ -133,6 +151,8 @@ impl IntentRouter {
 
         let categories: &[(&[&str], DomainAgentType, &str)] = &[
             (Self::SECURITY_KEYWORDS, DomainAgentType::Security, "security"),
+            (Self::CODE_REVIEW_KEYWORDS, DomainAgentType::CodeReview, "code_review"),
+            (Self::MEETING_KEYWORDS, DomainAgentType::MeetingSynthesizer, "meeting"),
             (Self::CODE_KEYWORDS, DomainAgentType::CodeSynthesis, "code"),
             (Self::TEACHING_KEYWORDS, DomainAgentType::Teaching, "teaching"),
             (Self::LEARNING_KEYWORDS, DomainAgentType::Learning, "learning"),
@@ -171,6 +191,8 @@ impl IntentRouter {
             DomainAgentType::Teaching,
             DomainAgentType::Security,
             DomainAgentType::CodeSynthesis,
+            DomainAgentType::CodeReview,
+            DomainAgentType::MeetingSynthesizer,
             DomainAgentType::Learning,
             DomainAgentType::Research,
         ]
@@ -203,10 +225,12 @@ mod tests {
     fn supported_types_returns_all() {
         let router = IntentRouter::with_defaults();
         let types = router.supported_types();
-        assert_eq!(types.len(), 5);
+        assert_eq!(types.len(), 7);
         assert!(types.contains(&DomainAgentType::Teaching));
         assert!(types.contains(&DomainAgentType::Security));
         assert!(types.contains(&DomainAgentType::CodeSynthesis));
+        assert!(types.contains(&DomainAgentType::CodeReview));
+        assert!(types.contains(&DomainAgentType::MeetingSynthesizer));
         assert!(types.contains(&DomainAgentType::Learning));
         assert!(types.contains(&DomainAgentType::Research));
     }

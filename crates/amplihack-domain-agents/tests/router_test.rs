@@ -23,15 +23,17 @@ fn confidence_threshold_accessor() {
 // ── supported_types (REAL implementation → PASS) ────────────────────────────
 
 #[test]
-fn supported_types_returns_all_five() {
+fn supported_types_returns_all_seven() {
     let router = IntentRouter::with_defaults();
     let types = router.supported_types();
-    assert_eq!(types.len(), 5);
+    assert_eq!(types.len(), 7);
     assert!(types.contains(&DomainAgentType::Teaching));
     assert!(types.contains(&DomainAgentType::Security));
     assert!(types.contains(&DomainAgentType::CodeSynthesis));
     assert!(types.contains(&DomainAgentType::Learning));
     assert!(types.contains(&DomainAgentType::Research));
+    assert!(types.contains(&DomainAgentType::CodeReview));
+    assert!(types.contains(&DomainAgentType::MeetingSynthesizer));
 }
 
 // ── route (todo → should_panic) ─────────────────────────────────────────────
@@ -117,6 +119,11 @@ fn domain_agent_type_display() {
     );
     assert_eq!(format!("{}", DomainAgentType::Learning), "learning");
     assert_eq!(format!("{}", DomainAgentType::Research), "research");
+    assert_eq!(format!("{}", DomainAgentType::CodeReview), "code_review");
+    assert_eq!(
+        format!("{}", DomainAgentType::MeetingSynthesizer),
+        "meeting_synthesizer"
+    );
 }
 
 #[test]
@@ -127,6 +134,8 @@ fn domain_agent_type_serde_roundtrip() {
         DomainAgentType::CodeSynthesis,
         DomainAgentType::Learning,
         DomainAgentType::Research,
+        DomainAgentType::CodeReview,
+        DomainAgentType::MeetingSynthesizer,
     ];
     for variant in variants {
         let json = serde_json::to_string(&variant).expect("serialize");

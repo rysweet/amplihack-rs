@@ -9,6 +9,7 @@ license.workspace = true
 amplihack-agent-core = { path = "../amplihack-agent-core" }
 amplihack-memory = { workspace = true }
 amplihack-workflows = { path = "../amplihack-workflows" }
+regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

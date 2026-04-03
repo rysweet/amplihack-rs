@@ -7,6 +7,8 @@ pub enum DomainAgentType {
     Teaching,
     Security,
     CodeSynthesis,
+    CodeReview,
+    MeetingSynthesizer,
     Learning,
     Research,
 }
@@ -17,6 +19,8 @@ impl std::fmt::Display for DomainAgentType {
             Self::Teaching => write!(f, "teaching"),
             Self::Security => write!(f, "security"),
             Self::CodeSynthesis => write!(f, "code_synthesis"),
+            Self::CodeReview => write!(f, "code_review"),
+            Self::MeetingSynthesizer => write!(f, "meeting_synthesizer"),
             Self::Learning => write!(f, "learning"),
             Self::Research => write!(f, "research"),
         }
@@ -187,6 +191,8 @@ mod tests {
         assert_eq!(DomainAgentType::Teaching.to_string(), "teaching");
         assert_eq!(DomainAgentType::Security.to_string(), "security");
         assert_eq!(DomainAgentType::CodeSynthesis.to_string(), "code_synthesis");
+        assert_eq!(DomainAgentType::CodeReview.to_string(), "code_review");
+        assert_eq!(DomainAgentType::MeetingSynthesizer.to_string(), "meeting_synthesizer");
         assert_eq!(DomainAgentType::Learning.to_string(), "learning");
         assert_eq!(DomainAgentType::Research.to_string(), "research");
     }
@@ -197,6 +203,8 @@ mod tests {
             DomainAgentType::Teaching,
             DomainAgentType::Security,
             DomainAgentType::CodeSynthesis,
+            DomainAgentType::CodeReview,
+            DomainAgentType::MeetingSynthesizer,
             DomainAgentType::Learning,
             DomainAgentType::Research,
         ];

@@ -1,6 +1,6 @@
 {
   "name": "@rysweet/amplihack-rs",
-  "version": "0.7.0",
+  "version": "0.7.21",
   "description": "npm/npx wrapper for the amplihack Rust CLI",
   "license": "MIT",
   "repository": {

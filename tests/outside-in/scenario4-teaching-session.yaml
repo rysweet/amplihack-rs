@@ -1,0 +1,40 @@
+id: teaching-session-orchestration
+name: "Teaching Session — Multi-turn Orchestration"
+description: |
+  Verifies that the teaching session module correctly orchestrates
+  multi-turn teacher-student dialogues using the DeterministicGenerator,
+  including session creation, turn execution, accuracy estimation,
+  error handling, and JSON response parsing.
+priority: HIGH
+interface: CLI
+prerequisites:
+  - "Rust toolchain available on PATH"
+tags: [smoke, agent-eval, teaching-session, feature-parity]
+
+agents:
+  - name: cargo-test-runner
+    type: cli
+    command: cargo
+
+steps:
+  - action: run
+    target: "cargo test -p amplihack-agent-eval --lib -- teaching_session --no-fail-fast"
+    description: "Run all teaching_session unit tests"
+    expected: success
+    timeout: 60000
+
+verifications:
+  - type: output
+    target: stdout
+    expected: "test result: ok"
+    operator: contains
+    description: "All tests must pass"
+
+  - type: output
+    target: stdout
+    expected: "18 passed"
+    operator: contains
+    description: "All 18 teaching_session tests must pass"
+
+estimatedDuration: 60
+enabled: true
