@@ -46,7 +46,7 @@ use amplihack_agent_core::{AgentSession, SessionConfig};
 let config = SessionConfig::builder()
     .session_id("abc-123")
     .working_dir("/path/to/project")
-    .memory_backend(Backend::Sqlite)
+    .memory_backend(Backend::Cognitive)
     .build();
 
 let session = AgentSession::new(config)?;
@@ -88,7 +88,7 @@ let config = AgentConfig {
     name: "my-agent".into(),
     model: "claude-sonnet-4-5".into(),
     max_turns: 100,
-    memory_backend: Backend::Sqlite,
+    memory_backend: Backend::Cognitive,
     memory_topology: Topology::Single,
     timeout_secs: 300,
     working_dir: Some("/path/to/project".into()),
@@ -112,12 +112,13 @@ memory facade provides two primary operations:
 
 ```rust
 // Store a fact
-session.memory().remember("The deployment uses Kubernetes 1.28")?;
+let mem = session.memory_handle();
+mem.remember("The deployment uses Kubernetes 1.28")?;
 
 // Recall relevant facts
-let facts = session.memory().recall("deployment infrastructure")?;
+let facts = mem.recall("deployment infrastructure")?;
 for fact in &facts {
-    println!("{}: {} (relevance: {:.2})", fact.memory_type, fact.content, fact.relevance);
+    println!("{}: {} (relevance: {:.2})", fact.entry.memory_type, fact.entry.content, fact.relevance);
 }
 ```
 

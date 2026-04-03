@@ -55,7 +55,7 @@ let config = HarnessConfig {
     news_file: "test_data/news.json".into(),
     output_dir: "eval_results/".into(),
     agent_name: "my-agent".into(),
-    memory_backend: "sqlite".into(),
+    memory_backend: Backend::Cognitive,
 };
 
 let result = run_harness(&config)?;
@@ -155,6 +155,7 @@ let eval = LongHorizonMemoryEval::new(LongHorizonConfig {
     total_turns: 1000,
     checkpoint_interval: 100,
     categories: vec!["facts", "procedures", "episodes"],
+    model: "claude-sonnet-4-5".into(),
     ..Default::default()
 });
 

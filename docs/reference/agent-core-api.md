@@ -95,6 +95,18 @@ pub struct SessionConfig {
 impl SessionConfig {
     pub fn builder() -> SessionConfigBuilder;
 }
+
+/// Builder for `SessionConfig`.
+pub struct SessionConfigBuilder { /* private */ }
+
+impl SessionConfigBuilder {
+    pub fn session_id(self, id: &str) -> Self;
+    pub fn working_dir(self, dir: impl Into<PathBuf>) -> Self;
+    pub fn memory_backend(self, backend: Backend) -> Self;
+    pub fn memory_topology(self, topology: Topology) -> Self;
+    pub fn transcript_enabled(self, enabled: bool) -> Self;
+    pub fn build(self) -> SessionConfig;
+}
 ```
 
 ### AgentSession
@@ -102,6 +114,16 @@ impl SessionConfig {
 ```rust
 pub struct AgentSession {
     /* private fields */
+}
+
+/// A cloneable handle to the session's memory subsystem.
+pub struct MemoryHandle {
+    /* private — wraps Arc<Memory> */
+}
+
+impl MemoryHandle {
+    pub fn remember(&self, content: &str) -> Result<String, MemoryError>;
+    pub fn recall(&self, query: &str) -> Result<Vec<RecallResult>, MemoryError>;
 }
 
 impl AgentSession {

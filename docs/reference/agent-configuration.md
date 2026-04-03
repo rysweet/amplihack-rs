@@ -11,9 +11,9 @@ and hive deployments in amplihack-rs.
 |-----------------------------|----------|---------------------|----------------------------------------|
 | `AMPLIHACK_AGENT_MODEL`     | `String` | `claude-sonnet-4-5` | Default LLM model for agents           |
 | `AMPLIHACK_AGENT_BINARY`    | `String` | auto-detected       | Path to the AI tool binary             |
-| `AMPLIHACK_MEMORY_BACKEND`  | `String` | `sqlite`            | Memory backend: `sqlite`, `kuzu`, `memory` |
+| `AMPLIHACK_MEMORY_BACKEND`  | `String` | `cognitive`         | Memory backend: `cognitive`, `hierarchical`, `memory` |
 | `AMPLIHACK_MEMORY_TOPOLOGY` | `String` | `single`            | Memory topology: `single`, `distributed` |
-| `AMPLIHACK_MEMORY_PATH`     | `String` | `~/.amplihack/memory.db` | Memory storage path              |
+| `AMPLIHACK_MEMORY_STORAGE_PATH` | `String` | `~/.amplihack/memory.db` | Memory storage path          |
 | `AMPLIHACK_MAX_DEPTH`       | `u32`    | `3`                 | Max recursion depth for nested sessions |
 | `AMPLIHACK_NONINTERACTIVE`  | `bool`   | `false`             | Skip interactive prompts               |
 | `EVAL_MODEL`                | `String` | `claude-opus-4-6`   | Model used for evaluation grading      |
@@ -29,7 +29,7 @@ max_turns = 100
 timeout_secs = 300
 
 [memory]
-backend = "sqlite"
+backend = "cognitive"
 topology = "single"
 storage_path = ".amplihack/memory.db"
 
@@ -63,20 +63,20 @@ Create `~/.amplihack/config.toml` for user-level defaults:
 model = "claude-sonnet-4-5"
 
 [memory]
-backend = "sqlite"
+backend = "cognitive"
 ```
 
 ## Memory Backend Configuration
 
-### SQLite Backend (Default)
+### Cognitive Backend (Default)
 
 ```toml
 [memory]
-backend = "sqlite"
+backend = "cognitive"
 storage_path = "~/.amplihack/memory.db"
 ```
 
-The SQLite backend stores memories in a local file with:
+The cognitive backend stores memories using graph-based cognitive modeling with:
 - Thread-safe access via `RwLock`
 - Automatic schema migrations
 - `0o600` file permissions

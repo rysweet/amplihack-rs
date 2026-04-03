@@ -8,18 +8,10 @@ specialized agent from a natural-language description.
 - amplihack-rs installed
 - An LLM API key configured (via `AMPLIHACK_AGENT_BINARY` or model config)
 
-## Quick Start (CLI)
+## Quick Start
 
-```bash
-# Generate an agent from a goal description
-amplihack generate-agent \
-    --goal "Build an agent that monitors GitHub pull requests and suggests optimal reviewers based on code file expertise" \
-    --output ./my-agents/ \
-    --model claude-sonnet-4-5
-
-# List generated files
-ls my-agents/pr-reviewer-agent/
-```
+The generator is currently a library API. CLI integration is planned for a
+future release. Use the programmatic API below.
 
 ## Programmatic Usage
 
@@ -68,7 +60,7 @@ use amplihack_memory::{MemoryConfig, Backend, Topology};
 let bundle = assembler.assemble_with_memory(
     &goal, &plan, &skills,
     MemoryConfig {
-        backend: Backend::Sqlite,
+        backend: Backend::Cognitive,
         topology: Topology::Single,
         ..Default::default()
     },
@@ -108,12 +100,14 @@ my-agents/security-log-analyzer/
 ├── README.md              # Auto-generated documentation
 ├── goal.json              # Structured goal definition
 ├── plan.json              # Phased execution plan
-├── config.yaml            # Runtime configuration
+├── agent_config.json      # Runtime configuration
+├── prompt.md              # System prompt
 ├── skills/
-│   ├── log_parser.rs      # Log parsing skill
-│   ├── anomaly_detector.rs # Anomaly detection
-│   └── report_generator.rs # Report generation
-└── main.rs                # Entry point
+│   ├── log_parser.yaml    # Log parsing skill config
+│   ├── anomaly_detector.yaml # Anomaly detection config
+│   └── report_generator.yaml # Report generation config
+├── requirements.txt       # Dependencies (Python SDK)
+└── main.py                # Entry point (SDK-dependent)
 ```
 
 For multi-agent bundles:
@@ -123,7 +117,8 @@ my-agents/code-qa-system/
 ├── README.md
 ├── goal.json
 ├── plan.json
-├── config.yaml
+├── agent_config.json
+├── prompt.md
 ├── skills/
 │   └── ...
 ├── sub_agents/
@@ -131,7 +126,8 @@ my-agents/code-qa-system/
 │   ├── indexer.yaml        # Code indexer agent
 │   ├── responder.yaml      # QA responder agent
 │   └── memory_agent.yaml   # Shared memory manager
-└── main.rs
+├── requirements.txt
+└── main.py
 ```
 
 ## Customizing Generated Agents
@@ -145,15 +141,15 @@ After generation, you can customize:
 
 ## Evaluating Generated Agents
 
-Test your generated agent:
+Test your generated agent by loading and evaluating it:
 
 ```rust
 use amplihack_agent_eval::DomainEvalHarness;
+use amplihack_agent_generator::GoalAgentPackager;
 
-// Load the generated agent
-let agent = load_generated_agent("./my-agents/security-log-analyzer")?;
-
-let harness = DomainEvalHarness::new(vec![Box::new(agent)]);
+// The generated agent directory contains config that can be loaded
+// into a DomainAgent implementation for evaluation.
+let harness = DomainEvalHarness::new(vec![Box::new(my_agent)]);
 let report = harness.run_all()?;
 println!("Score: {:.1}%", report.results[0].score * 100.0);
 ```

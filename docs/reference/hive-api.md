@@ -46,12 +46,16 @@ impl Default for HiveConfig {
         Self {
             num_containers: 20,
             agents_per_container: 5,
+            image: String::new(),
+            resource_group: String::new(),
+            subscription_id: String::new(),
             location: "eastus".into(),
+            acr_name: String::new(),
+            service_bus_connection_string: String::new(),
             topic_name: "hive-graph".into(),
+            agent_prompt: String::new(),
             cpu: 1.0,
             memory_gb: 4,
-            // Other fields must be set explicitly
-            ..
         }
     }
 }
@@ -166,7 +170,9 @@ pub struct HiveEvent {
 }
 
 impl HiveEvent {
-    pub fn new(topic: &str, payload: Value) -> Self;
+    /// Creates an event. `source` defaults to the caller's agent ID
+    /// and `deployment_id` must be provided separately.
+    pub fn new(topic: &str, payload: Value, deployment_id: &str) -> Self;
 }
 ```
 

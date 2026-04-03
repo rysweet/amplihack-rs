@@ -14,9 +14,9 @@ In your `Cargo.toml`:
 
 ```toml
 [dependencies]
-amplihack-agent-core = { version = "0.6" }
-amplihack-domain-agents = { version = "0.6" }
-amplihack-memory = { version = "0.6", features = ["sqlite"] }
+amplihack-agent-core = { path = "../amplihack-rs/crates/amplihack-agent-core" }
+amplihack-domain-agents = { path = "../amplihack-rs/crates/amplihack-domain-agents" }
+amplihack-memory = { path = "../amplihack-rs/crates/amplihack-memory" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ```
@@ -31,6 +31,7 @@ use amplihack_domain_agents::{DomainAgent, EvalLevel, EvalScenario};
 
 pub struct SecurityAuditor {
     model: String,
+    memory: Option<Memory>,
 }
 
 impl SecurityAuditor {
@@ -79,12 +80,12 @@ impl DomainAgent for SecurityAuditor {
 Give your agent persistent memory:
 
 ```rust
-use amplihack_memory::{Memory, MemoryOptions, Backend, Topology};
+use amplihack_memory::{Memory, MemoryConfig, Backend, Topology};
 
 impl SecurityAuditor {
     pub fn with_memory(model: &str, agent_name: &str) -> Result<Self, AgentError> {
-        let memory = Memory::new(agent_name, MemoryOptions {
-            backend: Backend::Sqlite,
+        let memory = Memory::new(agent_name, MemoryConfig {
+            backend: Backend::Cognitive,
             topology: Topology::Single,
             ..Default::default()
         })?;
