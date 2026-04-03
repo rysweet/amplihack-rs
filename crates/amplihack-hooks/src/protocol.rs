@@ -47,9 +47,6 @@ pub trait Hook {
 /// 5. On any failure (including panics): outputs `{}` (fail-open) or error (fail-closed)
 /// 6. Emits telemetry to stderr
 pub fn run_hook<H: Hook>(hook: H) {
-    // Suppress default panic output.
-    std::panic::set_hook(Box::new(|_| {}));
-
     let start = Instant::now();
     let hook_name = hook.name();
     let policy = hook.failure_policy();

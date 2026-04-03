@@ -61,7 +61,7 @@ impl ManagedChild {
             // SAFETY: We're sending a standard signal to a process we own.
             // The PID is valid because try_wait() above confirmed the child is still running.
             unsafe {
-                libc::kill(self.child.id() as i32, libc::SIGTERM);
+                libc::kill(i32::try_from(self.child.id()).unwrap_or(0), libc::SIGTERM);
             }
         }
 
@@ -154,7 +154,7 @@ mod tests {
         {
             // SAFETY: Sending signal 0 to check if a process exists is a standard
             // POSIX pattern and is safe for any PID value.
-            let result = unsafe { libc::kill(pid as i32, 0) };
+            let result = unsafe { libc::kill(i32::try_from(pid).unwrap_or(0), 0) };
             assert_eq!(result, -1, "process should be dead after drop");
         }
     }
@@ -181,7 +181,7 @@ mod tests {
         // SAFETY: getpgrp/getpgid only query kernel process-group state.
         let parent_pgid = unsafe { libc::getpgrp() };
         // SAFETY: child.id() is a live child PID here.
-        let child_pgid = unsafe { libc::getpgid(child.id() as i32) };
+        let child_pgid = unsafe { libc::getpgid(i32::try_from(child.id()).unwrap_or(0)) };
 
         assert_eq!(child_pgid, parent_pgid);
         drop(child);

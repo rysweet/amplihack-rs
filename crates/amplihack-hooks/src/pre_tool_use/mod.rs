@@ -74,6 +74,64 @@ For true emergencies, ask a human to override this protection.\n\
 \n\
 🔒 This protection cannot be disabled programmatically.";
 
+/// Strip leading env-variable assignments (`VAR=value ...`) and an optional
+/// `env` prefix so that `GIT_DIR=/x git commit` is normalized to `git commit`.
+fn normalize_command(command: &str) -> String {
+    let mut rest = command.trim();
+
+    // Strip `VAR=value ` prefixes (no quotes in key, value runs until space).
+    while let Some(eq_pos) = rest.find('=') {
+        let prefix = &rest[..eq_pos];
+        // Key must be a valid env var name (alphanumeric + underscore, not starting with digit).
+        if prefix.is_empty()
+            || !prefix
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            || prefix.as_bytes()[0].is_ascii_digit()
+        {
+            break;
+        }
+        // Skip past the value (until next unquoted space).
+        let after_eq = &rest[eq_pos + 1..];
+        let value_end = after_eq
+            .find([' ', '\t'])
+            .unwrap_or(after_eq.len());
+        let after_value = after_eq[value_end..].trim_start();
+        if after_value.is_empty() {
+            break; // nothing left after the value — not a prefix
+        }
+        rest = after_value;
+    }
+
+    // Strip optional `env` command prefix.
+    if let Some(after_env) = rest.strip_prefix("env ") {
+        rest = after_env.trim_start();
+        // Also strip any additional VAR=val pairs after `env`.
+        while let Some(eq_pos) = rest.find('=') {
+            let prefix = &rest[..eq_pos];
+            if prefix.is_empty()
+                || !prefix
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                || prefix.as_bytes()[0].is_ascii_digit()
+            {
+                break;
+            }
+            let after_eq = &rest[eq_pos + 1..];
+            let value_end = after_eq
+                .find([' ', '\t'])
+                .unwrap_or(after_eq.len());
+            let after_value = after_eq[value_end..].trim_start();
+            if after_value.is_empty() {
+                break;
+            }
+            rest = after_value;
+        }
+    }
+
+    rest.to_string()
+}
+
 /// The pre-tool-use hook.
 pub struct PreToolUseHook;
 
@@ -130,12 +188,13 @@ impl Hook for PreToolUseHook {
             return Ok(block);
         }
 
-        let is_git_commit = command.contains("git commit");
-        let is_git_push = command.contains("git push");
-        let is_git_rebase = command.contains("git rebase");
-        let is_git_merge = command.contains("git merge");
-        let is_git_cherry_pick = command.contains("git cherry-pick");
-        let is_git_am = command.contains("git am");
+        let normalized = normalize_command(command);
+        let is_git_commit = normalized.contains("git commit");
+        let is_git_push = normalized.contains("git push");
+        let is_git_rebase = normalized.contains("git rebase");
+        let is_git_merge = normalized.contains("git merge");
+        let is_git_cherry_pick = normalized.contains("git cherry-pick");
+        let is_git_am = normalized.contains("git am");
         let has_no_verify = command.contains("--no-verify");
         let is_git_command = is_git_commit
             || is_git_push
@@ -289,5 +348,56 @@ mod tests {
         let hook = PreToolUseHook;
         let result = hook.process(HookInput::Unknown).unwrap();
         assert!(result.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn blocks_no_verify_with_git_dir_prefix() {
+        let hook = PreToolUseHook;
+        let result = hook
+            .process(make_bash_input(
+                "GIT_DIR=/some/path git commit --no-verify -m 'test'",
+            ))
+            .unwrap();
+        assert_eq!(result["block"], true);
+        assert!(result["message"].as_str().unwrap().contains("--no-verify"));
+    }
+
+    #[test]
+    fn blocks_no_verify_with_env_prefix() {
+        let hook = PreToolUseHook;
+        let result = hook
+            .process(make_bash_input("env git push --no-verify origin main"))
+            .unwrap();
+        assert_eq!(result["block"], true);
+        assert!(result["message"].as_str().unwrap().contains("--no-verify"));
+    }
+
+    #[test]
+    fn normalize_strips_env_var_prefix() {
+        assert_eq!(
+            normalize_command("GIT_DIR=/tmp git commit -m 'x'"),
+            "git commit -m 'x'"
+        );
+    }
+
+    #[test]
+    fn normalize_strips_env_command() {
+        assert_eq!(
+            normalize_command("env git push origin main"),
+            "git push origin main"
+        );
+    }
+
+    #[test]
+    fn normalize_strips_multiple_env_vars() {
+        assert_eq!(
+            normalize_command("FOO=1 BAR=baz git commit"),
+            "git commit"
+        );
+    }
+
+    #[test]
+    fn normalize_passthrough_plain_command() {
+        assert_eq!(normalize_command("git commit -m 'x'"), "git commit -m 'x'");
     }
 }

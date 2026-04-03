@@ -1,6 +1,9 @@
 //! Git status checking and uncommitted work warnings.
 
 use std::process::Command;
+use std::time::{Duration, Instant};
+
+const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct GitStatus {
     staged: Vec<String>,
@@ -8,39 +11,55 @@ struct GitStatus {
     untracked: Vec<String>,
 }
 
+/// Run a git command with a timeout, returning its stdout on success.
+fn run_git_with_timeout(args: &[&str]) -> Option<String> {
+    let mut child = Command::new("git")
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let deadline = Instant::now() + GIT_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                let output = child.wait_with_output().ok()?;
+                return Some(String::from_utf8_lossy(&output.stdout).into_owned());
+            }
+            Ok(Some(_)) => return None, // non-zero exit
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+fn parse_lines(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect()
+}
+
 fn get_git_status() -> Option<GitStatus> {
-    let staged = match Command::new("git")
-        .args(["diff", "--cached", "--name-only"])
-        .output()
-    {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(String::from)
-            .collect::<Vec<_>>(),
-        _ => return None,
-    };
+    let staged = parse_lines(&run_git_with_timeout(&["diff", "--cached", "--name-only"])?);
 
-    let unstaged = match Command::new("git").args(["diff", "--name-only"]).output() {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(String::from)
-            .collect::<Vec<_>>(),
-        _ => Vec::new(),
-    };
+    let unstaged = run_git_with_timeout(&["diff", "--name-only"])
+        .map(|o| parse_lines(&o))
+        .unwrap_or_default();
 
-    let untracked = match Command::new("git")
-        .args(["ls-files", "--others", "--exclude-standard"])
-        .output()
-    {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(String::from)
-            .collect::<Vec<_>>(),
-        _ => Vec::new(),
-    };
+    let untracked =
+        run_git_with_timeout(&["ls-files", "--others", "--exclude-standard"])
+            .map(|o| parse_lines(&o))
+            .unwrap_or_default();
 
     Some(GitStatus {
         staged,

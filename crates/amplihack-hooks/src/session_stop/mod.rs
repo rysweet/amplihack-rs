@@ -57,6 +57,7 @@ impl Hook for SessionStopHook {
                         learning.task.as_deref(),
                         learning.success,
                     ) {
+                        eprintln!("WARNING: failed to store session learning: {error}");
                         tracing::error!("Session-end learning store failed: {}", error);
                     }
                 }
