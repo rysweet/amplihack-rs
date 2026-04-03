@@ -24,6 +24,7 @@ pub mod lifecycle;
 pub mod memory_retrieval;
 pub mod models;
 pub(crate) mod safe_calc;
+pub mod sdk_adapters;
 pub mod session;
 pub mod task_queue;
 pub mod temporal_reasoning;
@@ -47,4 +48,9 @@ pub use task_queue::TaskQueue;
 pub use cognitive_adapter::{
     BackendKind, CognitiveAdapter, CognitiveAdapterConfig, CognitiveBackend, HiveFact, HiveStore,
     QualityScorer,
+};
+pub use sdk_adapters::{
+    create_adapter, create_adapter_by_name, AdapterResult, AgentTool, ClaudeAdapter,
+    CopilotAdapter, Goal, MicrosoftAdapter, SdkAdapter, SdkAdapterConfig, SdkClient,
+    SdkClientResponse, SdkType, ToolCategory,
 };
