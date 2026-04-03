@@ -145,25 +145,15 @@ impl GossipProtocol {
         let candidates: Vec<(&HiveGraph, f64)> = peer_hives
             .iter()
             .filter(|h| {
-                if let Some(exc) = exclude_id {
-                    h.hive_id() != exc
-                } else {
-                    true
-                }
+                exclude_id.is_none_or(|exc| h.hive_id() != exc)
             })
             .map(|h| {
                 let trust_sum: f64 = h
-                    .all_facts()
-                    .iter()
-                    .map(|_| 0.0_f64)
-                    .sum::<f64>(); // placeholder
-                let agent_trust: f64 = h
                     .list_agents(Some("active"))
                     .iter()
                     .map(|a| a.trust)
                     .sum();
-                let weight = agent_trust.max(0.1);
-                (*h, weight + trust_sum)
+                (*h, trust_sum.max(0.1))
             })
             .collect();
 
@@ -172,31 +162,37 @@ impl GossipProtocol {
         }
 
         let n = self.config.fanout.min(candidates.len());
-        let total_weight: f64 = candidates.iter().map(|(_, w)| w).sum();
-        let mut rng = self.round.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let mut remaining: Vec<(String, f64)> = candidates
+            .iter()
+            .map(|(h, w)| (h.hive_id().to_string(), *w))
+            .collect();
         let mut selected = Vec::with_capacity(n);
-        let mut used: HashSet<usize> = HashSet::new();
+        let mut rng = self
+            .round
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
 
         for _ in 0..n {
+            if remaining.is_empty() {
+                break;
+            }
+            let total: f64 = remaining.iter().map(|(_, w)| w).sum();
+            if total <= 0.0 {
+                break;
+            }
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let r = ((rng >> 33) as f64 / (u32::MAX as f64)) * total_weight;
+            let r = (rng as f64 / u64::MAX as f64) * total;
             let mut cumulative = 0.0;
-            let mut pick = 0;
-            for (i, (_, w)) in candidates.iter().enumerate() {
-                if used.contains(&i) {
-                    continue;
-                }
+            let mut pick = remaining.len() - 1;
+            for (i, (_, w)) in remaining.iter().enumerate() {
                 cumulative += w;
                 if cumulative >= r {
                     pick = i;
                     break;
                 }
-                pick = i;
             }
-            if !used.contains(&pick) {
-                used.insert(pick);
-                selected.push(candidates[pick].0.hive_id().to_string());
-            }
+            selected.push(remaining[pick].0.clone());
+            remaining.swap_remove(pick);
         }
         selected
     }

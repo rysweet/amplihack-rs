@@ -33,8 +33,7 @@ pub use error::{HiveError, Result};
 pub use event_bus::{EventBus, LocalEventBus};
 pub use fact_lifecycle::{decay_confidence, gc_expired_facts, refresh_confidence, FactTTL};
 pub use feed::{FeedConfig, FeedResult, run_feed};
-pub use gossip::convergence_check;
-pub use gossip::GossipProtocol;
+pub use gossip::{GossipProtocol, convergence_check};
 pub use graph::search::{ScoredFact as KeywordScoredFact, tokenize, word_overlap};
 pub use graph::HiveGraph;
 pub use graph::{
@@ -47,8 +46,8 @@ pub use hive_events::{
     HIVE_QUERY_RESPONSE,
 };
 pub use models::{
-    AgentSpec, BusEvent, GossipConfig, GossipMessage, GraphStats, HiveAgent, HiveEdge, HiveFact,
-    HiveManifest, HiveState, MergeResult,
+    AgentSpec, BusEvent, GossipConfig, GossipMessage, GraphStats, HiveAgent,
+    HiveEdge, HiveFact, HiveManifest, HiveState, MergeResult,
 };
 pub use orchestrator::{DefaultPromotionPolicy, HiveMindOrchestrator, PromotionPolicy};
 pub use quality::{score_content_quality, QualityGate};

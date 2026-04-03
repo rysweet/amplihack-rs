@@ -182,3 +182,116 @@ fn select_peers_fewer_than_fanout() {
     let selected = proto.select_peers(&all_peers);
     assert_eq!(selected.len(), 2); // only 2 available, fanout is 3
 }
+
+// --- new: content dedup ---
+
+use amplihack_hive::{convergence_check, HiveGraph};
+
+#[test]
+fn content_dedup_in_gossip_round() {
+    let mut proto = GossipProtocol::new("n1".to_string(), default_config());
+    let local = vec![make_fact("topic", 0.9)];
+    let mut peer = make_fact("peer-topic", 0.8);
+    peer.content = "topic content".to_string();
+    let result = proto.run_gossip_round(&local, &[peer]).unwrap();
+    assert!(result.accepted.is_empty());
+    assert_eq!(result.conflicts.len(), 1);
+}
+
+// --- new: gossip tagging ---
+
+#[test]
+fn prepare_message_adds_gossip_tag() {
+    let proto = GossipProtocol::new("n1".to_string(), default_config());
+    let msg = proto.prepare_message(vec![make_fact("test", 0.8)]);
+    assert!(msg.facts[0].tags.iter().any(|t| t.starts_with("gossip:")));
+}
+
+// --- new: top-K facts ---
+
+#[test]
+fn get_top_facts_by_confidence() {
+    let mut hive = HiveGraph::new();
+    hive.store_fact("a", "low", 0.3, "s", vec![]).unwrap();
+    hive.store_fact("a", "high", 0.9, "s", vec![]).unwrap();
+    let top = GossipProtocol::get_top_facts(&hive, 1);
+    assert_eq!(top.len(), 1);
+    assert!((top[0].confidence - 0.9).abs() < f64::EPSILON);
+}
+
+#[test]
+fn get_top_facts_excludes_retracted() {
+    let mut hive = HiveGraph::new();
+    let id = hive.store_fact("a", "retracted", 0.95, "s", vec![]).unwrap();
+    hive.store_fact("a", "active", 0.5, "s", vec![]).unwrap();
+    hive.retract_fact(&id, "wrong");
+    let top = GossipProtocol::get_top_facts(&hive, 10);
+    assert_eq!(top.len(), 1);
+    assert_eq!(top[0].content, "active");
+}
+
+// --- new: weighted peer selection ---
+
+#[test]
+fn select_peers_weighted_basic() {
+    let proto = GossipProtocol::new("n1".to_string(), default_config());
+    let mut h1 = HiveGraph::with_id("h1");
+    h1.register_agent("a1", "bio").unwrap();
+    let mut h2 = HiveGraph::with_id("h2");
+    h2.register_agent("a2", "phys").unwrap();
+    let peers: Vec<&HiveGraph> = vec![&h1, &h2];
+    let selected = proto.select_peers_weighted(&peers, None);
+    assert!(!selected.is_empty());
+    assert!(selected.len() <= 3);
+}
+
+#[test]
+fn select_peers_weighted_excludes_self() {
+    let proto = GossipProtocol::new("n1".to_string(), default_config());
+    let mut h1 = HiveGraph::with_id("n1");
+    h1.register_agent("a1", "bio").unwrap();
+    let mut h2 = HiveGraph::with_id("h2");
+    h2.register_agent("a2", "phys").unwrap();
+    let peers: Vec<&HiveGraph> = vec![&h1, &h2];
+    let selected = proto.select_peers_weighted(&peers, Some("n1"));
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0], "h2");
+}
+
+// --- new: convergence check ---
+
+#[test]
+fn convergence_identical_hives() {
+    let mut h1 = HiveGraph::new();
+    let mut h2 = HiveGraph::new();
+    h1.store_fact("a", "fact one", 0.9, "s", vec![]).unwrap();
+    h2.store_fact("a", "fact one", 0.8, "s", vec![]).unwrap();
+    assert!((convergence_check(&[&h1, &h2]) - 1.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn convergence_disjoint_hives() {
+    let mut h1 = HiveGraph::new();
+    let mut h2 = HiveGraph::new();
+    h1.store_fact("a", "fact one", 0.9, "s", vec![]).unwrap();
+    h2.store_fact("a", "fact two", 0.8, "s", vec![]).unwrap();
+    assert!(convergence_check(&[&h1, &h2]).abs() < f64::EPSILON);
+}
+
+#[test]
+fn convergence_partial_overlap() {
+    let mut h1 = HiveGraph::new();
+    let mut h2 = HiveGraph::new();
+    h1.store_fact("a", "shared", 0.9, "s", vec![]).unwrap();
+    h1.store_fact("a", "h1 only", 0.8, "s", vec![]).unwrap();
+    h2.store_fact("a", "shared", 0.9, "s", vec![]).unwrap();
+    h2.store_fact("a", "h2 only", 0.7, "s", vec![]).unwrap();
+    let conv = convergence_check(&[&h1, &h2]);
+    assert!((conv - 1.0 / 3.0).abs() < 0.01);
+}
+
+#[test]
+fn convergence_single_hive() {
+    let h = HiveGraph::new();
+    assert!((convergence_check(&[&h]) - 1.0).abs() < f64::EPSILON);
+}
