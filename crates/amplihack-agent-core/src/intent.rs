@@ -155,4 +155,35 @@ mod tests {
         assert!(Intent::ExecuteTask.is_actionable());
         assert!(!Intent::Unknown.is_actionable());
     }
+
+    // M6: classify() tests
+    #[test]
+    fn classify_question_mark() {
+        let d = IntentDetector::new();
+        assert_eq!(d.classify("what is Rust?"), Intent::AnswerQuestion);
+    }
+
+    #[test]
+    fn classify_question_word() {
+        let d = IntentDetector::new();
+        assert_eq!(d.classify("how does it work"), Intent::AnswerQuestion);
+    }
+
+    #[test]
+    fn classify_command() {
+        let d = IntentDetector::new();
+        assert_eq!(d.classify("run the tests"), Intent::ExecuteTask);
+    }
+
+    #[test]
+    fn classify_store_content() {
+        let d = IntentDetector::new();
+        assert_eq!(d.classify("the sky is blue"), Intent::StoreContent);
+    }
+
+    #[test]
+    fn classify_empty_is_unknown() {
+        let d = IntentDetector::new();
+        assert_eq!(d.classify(""), Intent::Unknown);
+    }
 }

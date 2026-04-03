@@ -95,6 +95,12 @@ impl GoalSeekingAgent {
 
 impl Agent for GoalSeekingAgent {
     fn observe(&mut self, input: &str) -> Result<()> {
+        if self.state != AgentState::Idle {
+            return Err(crate::error::AgentError::InvalidState {
+                from: self.state,
+                to: AgentState::Observing,
+            });
+        }
         self.current_input = input.to_string();
         self.context.clear();
         self.action_plan.clear();
@@ -103,12 +109,24 @@ impl Agent for GoalSeekingAgent {
     }
 
     fn orient(&mut self) -> Result<Vec<String>> {
+        if self.state != AgentState::Observing {
+            return Err(crate::error::AgentError::InvalidState {
+                from: self.state,
+                to: AgentState::Orienting,
+            });
+        }
         self.state = AgentState::Orienting;
         self.context = vec![self.current_input.clone()];
         Ok(self.context.clone())
     }
 
     fn decide(&mut self) -> Result<String> {
+        if self.state != AgentState::Orienting {
+            return Err(crate::error::AgentError::InvalidState {
+                from: self.state,
+                to: AgentState::Deciding,
+            });
+        }
         self.state = AgentState::Deciding;
         let lower = self.current_input.trim().to_lowercase();
 
@@ -129,6 +147,12 @@ impl Agent for GoalSeekingAgent {
     }
 
     fn act(&mut self) -> Result<TaskResult> {
+        if self.state != AgentState::Deciding {
+            return Err(crate::error::AgentError::InvalidState {
+                from: self.state,
+                to: AgentState::Acting,
+            });
+        }
         self.state = AgentState::Acting;
         let output = match self.action_plan.as_str() {
             "answer" => format!("Answer: {}", self.current_input),

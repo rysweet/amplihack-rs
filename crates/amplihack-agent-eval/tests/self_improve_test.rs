@@ -10,7 +10,6 @@ fn voting_result_all_approve() {
     let vr = VotingResult {
         patch_id: "p1".into(),
         votes: vec![Vote::Approve, Vote::Approve, Vote::Approve],
-        approved: true,
     };
     assert_eq!(vr.approval_count(), 3);
     assert_eq!(vr.rejection_count(), 0);
@@ -22,7 +21,6 @@ fn voting_result_all_reject() {
     let vr = VotingResult {
         patch_id: "p1".into(),
         votes: vec![Vote::Reject, Vote::Reject, Vote::Reject],
-        approved: false,
     };
     assert_eq!(vr.approval_count(), 0);
     assert_eq!(vr.rejection_count(), 3);
@@ -34,7 +32,6 @@ fn voting_result_majority_approve() {
     let vr = VotingResult {
         patch_id: "p1".into(),
         votes: vec![Vote::Approve, Vote::Approve, Vote::Reject],
-        approved: true,
     };
     assert!(vr.has_majority());
 }
@@ -44,7 +41,6 @@ fn voting_result_majority_reject() {
     let vr = VotingResult {
         patch_id: "p1".into(),
         votes: vec![Vote::Approve, Vote::Reject, Vote::Reject],
-        approved: false,
     };
     assert!(!vr.has_majority());
 }
@@ -54,7 +50,6 @@ fn voting_result_with_abstain() {
     let vr = VotingResult {
         patch_id: "p1".into(),
         votes: vec![Vote::Approve, Vote::Abstain, Vote::Abstain],
-        approved: true,
     };
     assert!(vr.has_majority());
     assert_eq!(vr.approval_count(), 1);
@@ -65,7 +60,6 @@ fn voting_result_all_abstain_no_majority() {
     let vr = VotingResult {
         patch_id: "p1".into(),
         votes: vec![Vote::Abstain, Vote::Abstain],
-        approved: false,
     };
     assert!(!vr.has_majority());
 }
@@ -75,7 +69,6 @@ fn voting_result_empty_votes_no_majority() {
     let vr = VotingResult {
         patch_id: "p1".into(),
         votes: vec![],
-        approved: false,
     };
     assert!(!vr.has_majority());
     assert_eq!(vr.approval_count(), 0);
@@ -195,7 +188,7 @@ fn reviewer_voting_approves_high_confidence_patch() {
         confidence: 0.9,
     };
     let result = rv.vote(&patch).unwrap();
-    assert!(result.approved);
+    assert!(result.approved());
     assert_eq!(result.votes.len(), 3);
     // confidence 0.9 exceeds all thresholds → all approve
     assert_eq!(result.approval_count(), 3);
@@ -212,7 +205,7 @@ fn reviewer_voting_rejects_low_confidence_patch() {
     };
     let result = rv.vote(&patch).unwrap();
     // 0.3 < all thresholds (0.5, 0.6, 0.4) → quality rejects, regression rejects, simplicity abstains
-    assert!(!result.approved);
+    assert!(!result.approved());
 }
 
 // ── SelfImproveRunner ────────────────────────────────────────

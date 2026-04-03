@@ -74,11 +74,12 @@ impl<T: Clone> LWWRegister<T> {
         }
     }
 
-    /// Set the register value at the given timestamp.
-    pub fn set(&mut self, value: T, timestamp: u64) {
+    /// Set the register value at the given timestamp, restoring the owner node ID.
+    pub fn set(&mut self, value: T, timestamp: u64, node_id: &str) {
         if timestamp > self.timestamp {
             self.value = Some(value);
             self.timestamp = timestamp;
+            self.node_id = node_id.to_string();
         }
     }
 
@@ -133,12 +134,27 @@ mod tests {
     #[test]
     fn lww_register_tie_breaks_by_node_id() {
         let mut r1 = LWWRegister::new("node-a".into());
-        r1.set("value-a", 10);
+        r1.set("value-a", 10, "node-a");
         let mut r2 = LWWRegister::new("node-b".into());
-        r2.set("value-b", 10);
+        r2.set("value-b", 10, "node-b");
         // node-b > node-a, so merging r2 into r1 should adopt r2's value
         r1.merge(&r2);
         assert_eq!(r1.get(), Some(&"value-b"));
         assert_eq!(r1.node_id(), "node-b");
+    }
+
+    #[test]
+    fn lww_register_set_restores_node_id_after_merge() {
+        let mut r1 = LWWRegister::new("node-a".into());
+        r1.set("v1", 5, "node-a");
+        let mut r2 = LWWRegister::new("node-b".into());
+        r2.set("v2", 10, "node-b");
+        // merge overwrites r1's node_id to "node-b"
+        r1.merge(&r2);
+        assert_eq!(r1.node_id(), "node-b");
+        // set must restore node_id to "node-a"
+        r1.set("v3", 15, "node-a");
+        assert_eq!(r1.node_id(), "node-a");
+        assert_eq!(r1.get(), Some(&"v3"));
     }
 }

@@ -162,6 +162,12 @@ impl DomainEvalHarness {
     ) -> Result<LevelReport, EvalError> {
         let level_scenarios: Vec<_> = self.scenarios.iter().filter(|s| s.level == level).collect();
 
+        if level_scenarios.is_empty() {
+            return Err(EvalError::level_not_found(format!(
+                "No scenarios for level {level}"
+            )));
+        }
+
         debug!(
             level = %level,
             count = level_scenarios.len(),

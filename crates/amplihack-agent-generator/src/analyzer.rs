@@ -47,7 +47,12 @@ impl PromptAnalyzer {
             || lower.contains("aggregate")
         {
             "data-processing".into()
-        } else if lower.contains("log") {
+        } else if lower.contains("log ")
+            || lower.contains(" log")
+            || lower.contains("logs")
+            || lower.contains("logging")
+            || lower.contains("log-analysis")
+        {
             "log-analysis".into()
         } else if lower.contains("review") {
             "code-review".into()

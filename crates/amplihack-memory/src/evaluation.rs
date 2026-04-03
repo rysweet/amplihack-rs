@@ -304,7 +304,7 @@ pub fn generate_report(
 
     // Overall = 0.4 * quality_score + 0.3 * reliability_score + 0.3 * perf_score
     // Performance weight contributes 0 when no expected set is available.
-    let quality_score = 1.0 - quality.trivial_ratio - quality.duplicate_ratio;
+    let quality_score = (1.0 - quality.trivial_ratio - quality.duplicate_ratio).max(0.0);
     let reliability_score =
         (reliability.store_success_rate + reliability.retrieve_success_rate) / 2.0;
     let perf_score = performance.average_relevance_score;

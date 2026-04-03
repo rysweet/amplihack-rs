@@ -131,7 +131,7 @@ fn lww_register_different_types() {
 #[test]
 fn lww_register_set_value() {
     let mut reg = LWWRegister::<String>::new("node-1".to_string());
-    reg.set("hello".to_string(), 1);
+    reg.set("hello".to_string(), 1, "node-1");
     assert_eq!(reg.get(), Some(&"hello".to_string()));
     assert_eq!(reg.timestamp(), 1);
 }
@@ -145,9 +145,9 @@ fn lww_register_get_value() {
 #[test]
 fn lww_register_merge_newer_wins() {
     let mut a = LWWRegister::<String>::new("node-a".to_string());
-    a.set("old".to_string(), 1);
+    a.set("old".to_string(), 1, "node-a");
     let mut b = LWWRegister::<String>::new("node-b".to_string());
-    b.set("new".to_string(), 5);
+    b.set("new".to_string(), 5, "node-b");
     a.merge(&b);
     assert_eq!(a.get(), Some(&"new".to_string()));
     assert_eq!(a.timestamp(), 5);
@@ -156,9 +156,9 @@ fn lww_register_merge_newer_wins() {
 #[test]
 fn lww_register_merge_older_loses() {
     let mut a = LWWRegister::<String>::new("node-a".to_string());
-    a.set("newer".to_string(), 10);
+    a.set("newer".to_string(), 10, "node-a");
     let mut b = LWWRegister::<String>::new("node-b".to_string());
-    b.set("older".to_string(), 3);
+    b.set("older".to_string(), 3, "node-b");
     a.merge(&b);
     assert_eq!(a.get(), Some(&"newer".to_string()));
     assert_eq!(a.timestamp(), 10);

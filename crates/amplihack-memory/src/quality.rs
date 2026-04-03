@@ -82,10 +82,10 @@ pub fn relevance_score(entry: &MemoryEntry, query_words: &HashSet<&str>) -> f64 
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64();
-    let age_hours = (now - entry.created_at) / 3600.0;
+    let age_hours = ((now - entry.created_at) / 3600.0).max(0.0);
     let recency_boost = 1.0 / (1.0 + age_hours * 0.1);
 
-    word_score * 0.6 + recency_boost * 0.2 + entry.importance * 0.2
+    (word_score * 0.6 + recency_boost * 0.2 + entry.importance * 0.2).clamp(0.0, 1.0)
 }
 
 /// Score the importance of content based on type and heuristics.

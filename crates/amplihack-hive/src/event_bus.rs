@@ -1,7 +1,12 @@
 use std::collections::HashMap;
 
+use tracing::warn;
+
 use crate::error::Result;
 use crate::models::BusEvent;
+
+/// Maximum number of events a single handler queue can hold.
+const MAX_QUEUE_SIZE: usize = 10_000;
 
 /// Trait for publishing and consuming events within the hive.
 pub trait EventBus {
@@ -48,10 +53,15 @@ impl EventBus for LocalEventBus {
         if let Some(handlers) = self.subscriptions.get(&event.topic) {
             let handler_ids: Vec<String> = handlers.to_vec();
             for handler_id in handler_ids {
-                self.queues
-                    .entry(handler_id)
-                    .or_default()
-                    .push(event.clone());
+                let queue = self.queues.entry(handler_id.clone()).or_default();
+                if queue.len() >= MAX_QUEUE_SIZE {
+                    warn!(
+                        handler_id = %handler_id,
+                        "Event queue at capacity ({MAX_QUEUE_SIZE}), dropping oldest event"
+                    );
+                    queue.remove(0);
+                }
+                queue.push(event.clone());
             }
         }
         Ok(())

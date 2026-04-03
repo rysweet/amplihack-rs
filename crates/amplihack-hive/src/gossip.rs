@@ -59,6 +59,10 @@ impl GossipProtocol {
     }
 
     /// Merge an incoming gossip message into local state.
+    ///
+    /// NOTE: conflicts will always be empty. This method only has access to the
+    /// incoming message and cannot compare against local facts. Use
+    /// [`run_gossip_round()`](Self::run_gossip_round) for conflict detection.
     pub fn merge_incoming(&mut self, message: GossipMessage) -> Result<MergeResult> {
         let mut accepted = Vec::new();
         let mut rejected = Vec::new();

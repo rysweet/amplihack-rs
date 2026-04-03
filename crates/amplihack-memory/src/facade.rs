@@ -98,6 +98,9 @@ impl MemoryFacade {
     }
 
     /// Recall memories matching a query string.
+    ///
+    /// Results are truncated to fit within `options.token_budget` (estimated as
+    /// `content.len() / 4` tokens per entry).
     pub fn recall(&self, query: &str, options: RecallOptions) -> anyhow::Result<Vec<MemoryEntry>> {
         let q = MemoryQuery {
             query_text: query.to_string(),
@@ -107,7 +110,20 @@ impl MemoryFacade {
             limit: options.limit,
             ..Default::default()
         };
-        self.backend.retrieve(&q)
+        let results = self.backend.retrieve(&q)?;
+
+        // Enforce token_budget: estimate tokens as content.len() / 4.
+        let mut budget_remaining = options.token_budget;
+        let mut truncated = Vec::new();
+        for entry in results {
+            let estimated_tokens = entry.content.len() / 4;
+            if estimated_tokens > budget_remaining {
+                break;
+            }
+            budget_remaining -= estimated_tokens;
+            truncated.push(entry);
+        }
+        Ok(truncated)
     }
 
     /// Forget (delete) a memory by ID. Returns true if it existed.

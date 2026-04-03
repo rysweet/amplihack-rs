@@ -263,6 +263,12 @@ impl MemoryBackend for SqliteBackend {
                 placeholders.join(", ")
             ));
         }
+        if !query.query_text.is_empty() {
+            sql.push_str(&format!(" AND content LIKE ?{idx}"));
+            params.push(Box::new(format!("%{}%", query.query_text)));
+            #[allow(unused_assignments)]
+            { idx += 1; }
+        }
 
         let limit = if query.limit > 0 { query.limit } else { 20 };
         let limit = limit.min(10_000);

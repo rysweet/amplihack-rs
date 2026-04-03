@@ -35,10 +35,14 @@ pub enum Vote {
 pub struct VotingResult {
     pub patch_id: String,
     pub votes: Vec<Vote>,
-    pub approved: bool,
 }
 
 impl VotingResult {
+    /// Whether the patch was approved (delegates to `has_majority()`).
+    pub fn approved(&self) -> bool {
+        self.has_majority()
+    }
+
     /// Count approvals.
     pub fn approval_count(&self) -> usize {
         self.votes.iter().filter(|v| **v == Vote::Approve).count()
@@ -249,14 +253,9 @@ impl ReviewerVoting {
             votes.push(vote);
         }
 
-        let approvals = votes.iter().filter(|v| **v == Vote::Approve).count();
-        let non_abstain = votes.iter().filter(|v| **v != Vote::Abstain).count();
-        let approved = non_abstain > 0 && approvals > non_abstain / 2;
-
         Ok(VotingResult {
             patch_id: patch.id.clone(),
             votes,
-            approved,
         })
     }
 
@@ -314,7 +313,7 @@ impl SelfImproveRunner {
         let mut applied = 0;
         for patch in &patches {
             let vote_result = self.voting.vote(patch)?;
-            if vote_result.approved && self.config.auto_apply_patches {
+            if vote_result.approved() && self.config.auto_apply_patches {
                 applied += 1;
             }
         }
@@ -361,7 +360,6 @@ mod tests {
         let vr = VotingResult {
             patch_id: "p1".into(),
             votes: vec![Vote::Approve, Vote::Reject, Vote::Approve, Vote::Abstain],
-            approved: true,
         };
         assert_eq!(vr.approval_count(), 2);
         assert_eq!(vr.rejection_count(), 1);
@@ -372,14 +370,12 @@ mod tests {
         let approved = VotingResult {
             patch_id: "p1".into(),
             votes: vec![Vote::Approve, Vote::Approve, Vote::Reject],
-            approved: true,
         };
         assert!(approved.has_majority());
 
         let rejected = VotingResult {
             patch_id: "p2".into(),
             votes: vec![Vote::Reject, Vote::Reject, Vote::Approve],
-            approved: false,
         };
         assert!(!rejected.has_majority());
     }
@@ -389,7 +385,6 @@ mod tests {
         let vr = VotingResult {
             patch_id: "p1".into(),
             votes: vec![Vote::Abstain, Vote::Abstain],
-            approved: false,
         };
         assert!(!vr.has_majority());
     }
@@ -442,7 +437,7 @@ mod tests {
             confidence: 0.8,
         };
         let result = voting.vote(&patch).unwrap();
-        assert!(result.approved);
+        assert!(result.approved());
     }
 
     #[test]
@@ -455,7 +450,7 @@ mod tests {
             confidence: 0.2,
         };
         let result = voting.vote(&patch).unwrap();
-        assert!(!result.approved);
+        assert!(!result.approved());
     }
 
     #[test]

@@ -70,6 +70,13 @@ impl TeachingAgent {
                 question.options.len()
             )));
         }
+        if answer_index >= question.options.len() {
+            return Err(crate::error::DomainError::InvalidInput(format!(
+                "answer_index {} out of bounds for {} options",
+                answer_index,
+                question.options.len()
+            )));
+        }
         let correct = answer_index == question.correct_index;
         Ok(EvaluationResult {
             score: if correct { 1.0 } else { 0.0 },

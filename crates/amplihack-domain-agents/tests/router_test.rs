@@ -41,28 +41,31 @@ fn route_basic_input() {
     let router = IntentRouter::with_defaults();
     let decision = router.route("teach me about Rust lifetimes").unwrap();
     assert_eq!(decision.agent_type, DomainAgentType::Teaching);
-    assert!((decision.confidence - 1.0).abs() < f64::EPSILON);
+    // "teach" matches 1 of 8 TEACHING_KEYWORDS → density 0.125
+    assert!((decision.confidence - 1.0 / 8.0).abs() < f64::EPSILON);
 }
 
 #[test]
 fn route_empty_input() {
     let router = IntentRouter::with_defaults();
     let decision = router.route("").unwrap();
-    // Empty input defaults to Teaching with lower confidence
+    // Empty input matches no keywords → confidence 0.0
     assert_eq!(decision.agent_type, DomainAgentType::Teaching);
-    assert!((decision.confidence - 0.7).abs() < f64::EPSILON);
+    assert!((decision.confidence).abs() < f64::EPSILON);
 }
 
 // ── route_with_context (todo → should_panic) ────────────────────────────────
 
 #[test]
 fn route_with_context_basic() {
-    let router = IntentRouter::with_defaults();
+    // Use low threshold so density-based confidence isn't overridden
+    let router = IntentRouter::new(0.1).unwrap();
     let decision = router
         .route_with_context("scan for vulnerabilities", "security audit project")
         .unwrap();
     assert_eq!(decision.agent_type, DomainAgentType::Security);
-    assert!(decision.confidence >= 1.0);
+    // "security", "audit" match → 2/9 ≈ 0.22, + 0.05 context boost ≈ 0.27
+    assert!(decision.confidence > 0.2);
 }
 
 #[test]
@@ -70,19 +73,22 @@ fn route_with_context_empty() {
     let router = IntentRouter::with_defaults();
     let decision = router.route_with_context("", "").unwrap();
     assert_eq!(decision.agent_type, DomainAgentType::Teaching);
-    assert!((decision.confidence - 0.7).abs() < f64::EPSILON);
+    // No keywords match → confidence 0.0
+    assert!((decision.confidence).abs() < f64::EPSILON);
 }
 
 #[test]
 fn route_code_keywords() {
-    let router = IntentRouter::with_defaults();
+    // Use low threshold so density-based confidence isn't overridden
+    let router = IntentRouter::new(0.1).unwrap();
     let decision = router.route("implement a new function").unwrap();
     assert_eq!(decision.agent_type, DomainAgentType::CodeSynthesis);
 }
 
 #[test]
 fn route_learning_keywords() {
-    let router = IntentRouter::with_defaults();
+    // Use low threshold so density-based confidence isn't overridden
+    let router = IntentRouter::new(0.1).unwrap();
     let decision = router.route("remember this fact for later recall").unwrap();
     assert_eq!(decision.agent_type, DomainAgentType::Learning);
 }

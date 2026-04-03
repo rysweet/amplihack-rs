@@ -157,36 +157,8 @@ pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveE
             break;
         }
 
-        let (query_id, event) = make_query_event(question)?;
-        debug!(query_id = %query_id, question = %question, "Publishing query");
-
-        if let Err(e) = bus.publish(event) {
-            warn!(query_id = %query_id, error = %e, "Failed to publish query");
-            query_results.push(QueryResult {
-                query_id,
-                question: question.clone(),
-                answers: vec![],
-            });
-            continue;
-        }
-
-        // Collect responses from the bus for this query
-        let answers = collect_responses(bus, &query_id);
-
-        if answers.len() < config.min_responses_per_query {
-            warn!(
-                query_id = %query_id,
-                got = answers.len(),
-                min = config.min_responses_per_query,
-                "Fewer responses than min_responses_per_query"
-            );
-        }
-
-        query_results.push(QueryResult {
-            query_id,
-            question: question.clone(),
-            answers,
-        });
+        let result = eval_single_question(bus, question, config.min_responses_per_query);
+        query_results.push(result);
     }
 
     // Unsubscribe — log but don't fail the whole eval on cleanup error
@@ -203,6 +175,53 @@ pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveE
     );
 
     Ok(result)
+}
+
+/// Evaluate a single question: publish the query and collect responses.
+fn eval_single_question(
+    bus: &mut dyn EventBus,
+    question: &str,
+    min_responses: usize,
+) -> QueryResult {
+    let (query_id, event) = match make_query_event(question) {
+        Ok(pair) => pair,
+        Err(e) => {
+            warn!(error = %e, "Failed to create query event");
+            return QueryResult {
+                query_id: String::new(),
+                question: question.to_string(),
+                answers: vec![],
+            };
+        }
+    };
+
+    debug!(query_id = %query_id, question = %question, "Publishing query");
+
+    if let Err(e) = bus.publish(event) {
+        warn!(query_id = %query_id, error = %e, "Failed to publish query");
+        return QueryResult {
+            query_id,
+            question: question.to_string(),
+            answers: vec![],
+        };
+    }
+
+    let answers = collect_responses(bus, &query_id);
+
+    if answers.len() < min_responses {
+        warn!(
+            query_id = %query_id,
+            got = answers.len(),
+            min = min_responses,
+            "Fewer responses than min_responses_per_query"
+        );
+    }
+
+    QueryResult {
+        query_id,
+        question: question.to_string(),
+        answers,
+    }
 }
 
 /// Collect responses for a specific query from the event bus.
@@ -227,8 +246,12 @@ fn collect_responses(bus: &mut dyn EventBus, query_id: &str) -> Vec<AgentAnswer>
                 });
             }
             _ => {
-                // Re-publish unmatched events so other queries can consume them
-                let _ = bus.publish(event);
+                // Unmatched events are dropped; re-publishing would duplicate
+                // them to all subscribers. Log a warning instead.
+                warn!(
+                    event_topic = %event.topic,
+                    "Dropping unmatched event during eval collection"
+                );
             }
         }
     }

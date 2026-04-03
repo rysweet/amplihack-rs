@@ -134,7 +134,7 @@ impl DistributedGraphStore {
         Ok(None)
     }
 
-    /// Search across shards with fanout.
+    /// Search across shards with fanout, using the hash ring for shard selection.
     pub fn search_nodes(
         &self,
         table: &str,
@@ -146,18 +146,18 @@ impl DistributedGraphStore {
         let mut seen_ids = HashSet::new();
         let fanout = self.config.query_fanout.min(self.shards.len());
 
-        for (i, (_, shard)) in self.shards.iter().enumerate() {
-            if i >= fanout {
-                break;
-            }
-            for props in shard.store.search_nodes(table, text, fields, limit)? {
-                let id = props
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if seen_ids.insert(id) {
-                    results.push(props);
+        let target_agents = self.ring.get_agents(text, fanout);
+        for agent_id in target_agents {
+            if let Some(shard) = self.shards.get(agent_id) {
+                for props in shard.store.search_nodes(table, text, fields, limit)? {
+                    let id = props
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if seen_ids.insert(id) {
+                        results.push(props);
+                    }
                 }
             }
         }

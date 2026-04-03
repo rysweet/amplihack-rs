@@ -86,8 +86,15 @@ impl SessionManager {
         self
     }
 
+    /// Remove all expired sessions from the manager.
+    pub fn cleanup_expired(&mut self) {
+        let timeout = self.timeout_secs;
+        self.sessions.retain(|_, s| !s.is_expired(timeout));
+    }
+
     /// Create a new session for the given agent.
     pub fn create_session(&mut self, agent_id: &str) -> Result<AgentSession> {
+        self.cleanup_expired();
         static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
         let count = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
         let now_nanos = std::time::SystemTime::now()
@@ -129,14 +136,18 @@ impl SessionManager {
             .collect()
     }
 
-    /// Number of active sessions.
+    /// Number of active (non-expired) sessions.
     pub fn len(&self) -> usize {
-        self.sessions.len()
+        let timeout = self.timeout_secs;
+        self.sessions
+            .values()
+            .filter(|s| !s.is_expired(timeout))
+            .count()
     }
 
-    /// Whether the manager has no sessions.
+    /// Whether the manager has no active sessions.
     pub fn is_empty(&self) -> bool {
-        self.sessions.is_empty()
+        self.len() == 0
     }
 }
 

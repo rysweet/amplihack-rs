@@ -137,15 +137,29 @@ impl MemoryCoordinator {
 
     /// Clear working memory for a session.
     pub fn clear_working_memory(&mut self, session_id: &str) {
+        let removed_fps: HashSet<u64> = self
+            .entries
+            .iter()
+            .filter(|e| e.session_id == session_id && e.memory_type == MemoryType::Working)
+            .map(|e| e.content_fingerprint())
+            .collect();
         self.entries
             .retain(|e| !(e.session_id == session_id && e.memory_type == MemoryType::Working));
+        self.fingerprints.retain(|fp| !removed_fps.contains(fp));
         info!(session_id, "Cleared working memory");
     }
 
     /// Clear all memory for a session.
     pub fn clear_session(&mut self, session_id: &str) {
         let before = self.entries.len();
+        let removed_fps: HashSet<u64> = self
+            .entries
+            .iter()
+            .filter(|e| e.session_id == session_id)
+            .map(|e| e.content_fingerprint())
+            .collect();
         self.entries.retain(|e| e.session_id != session_id);
+        self.fingerprints.retain(|fp| !removed_fps.contains(fp));
         let removed = before - self.entries.len();
         info!(session_id, removed, "Cleared session memory");
     }
@@ -281,6 +295,38 @@ mod tests {
         coord.store(store_req("Session memory content here"));
         coord.clear_session("test-session");
         assert_eq!(coord.entry_count(), 0);
+    }
+
+    #[test]
+    fn re_store_after_clear_working_memory() {
+        let mut coord = MemoryCoordinator::new(MemoryConfig {
+            duplicate_detection: true,
+            ..MemoryConfig::for_testing()
+        });
+        let content = "Working memory that will be cleared and re-stored";
+        let req = StorageRequest::new(content, MemoryType::Working, "s1");
+        assert!(coord.store(req).is_some());
+        coord.clear_working_memory("s1");
+        assert_eq!(coord.entry_count(), 0);
+        // Must succeed — fingerprint should have been purged
+        let req2 = StorageRequest::new(content, MemoryType::Working, "s1");
+        assert!(coord.store(req2).is_some(), "re-store after clear must not be rejected as duplicate");
+        assert_eq!(coord.entry_count(), 1);
+    }
+
+    #[test]
+    fn re_store_after_clear_session() {
+        let mut coord = MemoryCoordinator::new(MemoryConfig {
+            duplicate_detection: true,
+            ..MemoryConfig::for_testing()
+        });
+        let content = "Session memory that will be cleared and re-stored";
+        assert!(coord.store(store_req(content)).is_some());
+        coord.clear_session("test-session");
+        assert_eq!(coord.entry_count(), 0);
+        // Must succeed — fingerprint should have been purged
+        assert!(coord.store(store_req(content)).is_some(), "re-store after clear must not be rejected as duplicate");
+        assert_eq!(coord.entry_count(), 1);
     }
 
     #[test]

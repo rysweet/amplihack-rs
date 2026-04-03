@@ -189,3 +189,117 @@ impl AgentLifecycle for BasicLifecycle {
         self.state
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn start_from_stopped_succeeds() {
+        let mut lc = BasicLifecycle::new();
+        assert!(lc.start().is_ok());
+        assert_eq!(lc.lifecycle_state(), LifecycleState::Running);
+    }
+
+    #[test]
+    fn start_from_running_fails() {
+        let mut lc = BasicLifecycle::new();
+        lc.start().unwrap();
+        assert!(lc.start().is_err());
+    }
+
+    #[test]
+    fn start_from_paused_fails() {
+        let mut lc = BasicLifecycle::new();
+        lc.start().unwrap();
+        lc.pause().unwrap();
+        assert!(lc.start().is_err());
+    }
+
+    #[test]
+    fn stop_from_running_succeeds() {
+        let mut lc = BasicLifecycle::new();
+        lc.start().unwrap();
+        assert!(lc.stop().is_ok());
+        assert_eq!(lc.lifecycle_state(), LifecycleState::Stopped);
+    }
+
+    #[test]
+    fn stop_from_stopped_fails() {
+        let mut lc = BasicLifecycle::new();
+        assert!(lc.stop().is_err());
+    }
+
+    #[test]
+    fn pause_from_running_succeeds() {
+        let mut lc = BasicLifecycle::new();
+        lc.start().unwrap();
+        assert!(lc.pause().is_ok());
+        assert_eq!(lc.lifecycle_state(), LifecycleState::Paused);
+    }
+
+    #[test]
+    fn pause_from_stopped_fails() {
+        let mut lc = BasicLifecycle::new();
+        assert!(lc.pause().is_err());
+    }
+
+    #[test]
+    fn pause_from_paused_fails() {
+        let mut lc = BasicLifecycle::new();
+        lc.start().unwrap();
+        lc.pause().unwrap();
+        assert!(lc.pause().is_err());
+    }
+
+    #[test]
+    fn resume_from_paused_succeeds() {
+        let mut lc = BasicLifecycle::new();
+        lc.start().unwrap();
+        lc.pause().unwrap();
+        assert!(lc.resume().is_ok());
+        assert_eq!(lc.lifecycle_state(), LifecycleState::Running);
+    }
+
+    #[test]
+    fn resume_from_running_fails() {
+        let mut lc = BasicLifecycle::new();
+        lc.start().unwrap();
+        assert!(lc.resume().is_err());
+    }
+
+    #[test]
+    fn resume_from_stopped_fails() {
+        let mut lc = BasicLifecycle::new();
+        assert!(lc.resume().is_err());
+    }
+
+    #[test]
+    fn health_check_stopped() {
+        let lc = BasicLifecycle::new();
+        let h = lc.health_check();
+        assert!(h.healthy);
+        assert_eq!(h.lifecycle_state, LifecycleState::Stopped);
+        assert_eq!(h.uptime_secs, 0.0);
+    }
+
+    #[test]
+    fn health_check_running() {
+        let mut lc = BasicLifecycle::new();
+        lc.start().unwrap();
+        let h = lc.health_check();
+        assert!(h.healthy);
+        assert_eq!(h.lifecycle_state, LifecycleState::Running);
+        assert!(h.uptime_secs >= 0.0);
+    }
+
+    #[test]
+    fn health_check_paused() {
+        let mut lc = BasicLifecycle::new();
+        lc.start().unwrap();
+        lc.pause().unwrap();
+        let h = lc.health_check();
+        assert!(h.healthy);
+        assert_eq!(h.lifecycle_state, LifecycleState::Paused);
+    }
+}

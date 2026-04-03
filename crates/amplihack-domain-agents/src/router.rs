@@ -100,36 +100,41 @@ impl IntentRouter {
     ];
 
     fn classify(text: &str) -> Result<RoutingDecision> {
-        let has = |keywords: &[&str]| keywords.iter().any(|kw| text.contains(kw));
+        let density = |keywords: &[&str]| -> f64 {
+            let matches = keywords.iter().filter(|kw| text.contains(**kw)).count();
+            matches as f64 / keywords.len() as f64
+        };
 
-        if has(Self::SECURITY_KEYWORDS) {
+        let categories: &[(&[&str], DomainAgentType, &str)] = &[
+            (Self::SECURITY_KEYWORDS, DomainAgentType::Security, "security"),
+            (Self::CODE_KEYWORDS, DomainAgentType::CodeSynthesis, "code"),
+            (Self::TEACHING_KEYWORDS, DomainAgentType::Teaching, "teaching"),
+            (Self::LEARNING_KEYWORDS, DomainAgentType::Learning, "learning"),
+        ];
+
+        let mut best_type = DomainAgentType::Teaching;
+        let mut best_confidence: f64 = 0.0;
+        let mut best_label = "none";
+
+        for &(keywords, ref agent_type, label) in categories {
+            let d = density(keywords);
+            if d > best_confidence {
+                best_confidence = d;
+                best_type = agent_type.clone();
+                best_label = label;
+            }
+        }
+
+        if best_confidence > 0.0 {
             Ok(RoutingDecision {
-                agent_type: DomainAgentType::Security,
-                confidence: 1.0,
-                reasoning: "Input contains security-related keywords".into(),
-            })
-        } else if has(Self::CODE_KEYWORDS) {
-            Ok(RoutingDecision {
-                agent_type: DomainAgentType::CodeSynthesis,
-                confidence: 1.0,
-                reasoning: "Input contains code-related keywords".into(),
-            })
-        } else if has(Self::TEACHING_KEYWORDS) {
-            Ok(RoutingDecision {
-                agent_type: DomainAgentType::Teaching,
-                confidence: 1.0,
-                reasoning: "Input contains teaching-related keywords".into(),
-            })
-        } else if has(Self::LEARNING_KEYWORDS) {
-            Ok(RoutingDecision {
-                agent_type: DomainAgentType::Learning,
-                confidence: 1.0,
-                reasoning: "Input contains learning-related keywords".into(),
+                agent_type: best_type,
+                confidence: best_confidence,
+                reasoning: format!("Input contains {best_label}-related keywords"),
             })
         } else {
             Ok(RoutingDecision {
                 agent_type: DomainAgentType::Teaching,
-                confidence: 0.7,
+                confidence: 0.0,
                 reasoning: "No specific keywords matched; defaulting to teaching".into(),
             })
         }

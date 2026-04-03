@@ -58,6 +58,9 @@ impl HarnessRunner {
     /// NOTE: This is a post-hoc check, not a preemptive timeout. The run
     /// completes fully and the elapsed time is checked afterward.
     pub fn run_with_timeout(&self, timeout_seconds: u64) -> Result<HarnessResult, EvalError> {
+        if timeout_seconds == 0 {
+            return Err(EvalError::config("timeout must be > 0"));
+        }
         let start = Instant::now();
         let result = self.run();
         if start.elapsed().as_secs_f64() >= timeout_seconds as f64 {

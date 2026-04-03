@@ -29,6 +29,11 @@ impl LearningAgent {
     }
 
     pub fn learn_from_content(&mut self, content: &str) -> Result<LearnedContent> {
+        if self.learned_items.len() >= self.config.max_memory_items {
+            // Evict oldest
+            self.learned_items.remove(0);
+        }
+
         let sentences: Vec<&str> = content
             .split(['.', '!', '?'])
             .map(str::trim)

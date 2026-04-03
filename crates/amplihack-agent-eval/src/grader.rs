@@ -102,6 +102,10 @@ impl SimpleGrader {
     }
 
     /// Multi-vote grading: run `grade_single` N times and take the median.
+    ///
+    /// For deterministic graders like `SimpleGrader`, every call to `grade_single`
+    /// returns the same result, so multiple votes are redundant. We short-circuit
+    /// by calling `grade_single` once and replicating its score across all votes.
     fn grade_multi_vote(
         &self,
         expected: &str,
@@ -109,23 +113,13 @@ impl SimpleGrader {
         level: TestLevel,
     ) -> Result<GradeResult, EvalError> {
         let vote_count = self.votes.clamp(1, 9) as usize;
-        let mut scores = Vec::with_capacity(vote_count);
-        let mut last_reasoning = String::new();
 
-        for _ in 0..vote_count {
-            let result = self.grade_single(expected, actual, level)?;
-            scores.push(result.score);
-            last_reasoning = result.reasoning;
-        }
+        // Deterministic grader: a single call suffices since every invocation
+        // produces the identical score.
+        let single = self.grade_single(expected, actual, level)?;
+        let scores = vec![single.score; vote_count];
 
-        scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let median_score = if scores.len() % 2 == 0 {
-            (scores[scores.len() / 2 - 1] + scores[scores.len() / 2]) / 2.0
-        } else {
-            scores[scores.len() / 2]
-        };
-
-        let mut result = GradeResult::new(median_score, last_reasoning)?;
+        let mut result = GradeResult::new(single.score, single.reasoning)?;
         result = result.with_votes(scores);
         Ok(result)
     }
