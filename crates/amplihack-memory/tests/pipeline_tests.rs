@@ -322,3 +322,19 @@ fn rejection_reason_variants() {
     let _ = RejectionReason::InvalidType;
     let _ = RejectionReason::Custom("custom reason".to_string());
 }
+
+#[test]
+fn storage_pipeline_dedup_rejects_second_identical_entry() {
+    let mut pipeline = StoragePipeline::new();
+    let entry = semantic_entry("This is a valid entry that will be stored and then duplicated");
+
+    let first = pipeline.execute(&entry).unwrap();
+    assert!(first.accepted, "First entry should be accepted");
+
+    let second = pipeline.execute(&entry).unwrap();
+    assert!(!second.accepted, "Duplicate entry should be rejected");
+    assert!(
+        matches!(second.rejection_reason, Some(RejectionReason::Duplicate { .. })),
+        "Should be rejected as duplicate"
+    );
+}

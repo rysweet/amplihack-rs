@@ -74,6 +74,8 @@ pub struct RetrievalResult {
 /// Configuration for the retrieval pipeline.
 #[derive(Debug, Clone)]
 pub struct RetrievalPipelineConfig {
+    /// Similarity threshold for dedup (reserved for future fuzzy dedup).
+    /// Currently dedup uses exact fingerprint matching.
     pub dedup_similarity_threshold: f64,
     pub min_score_threshold: f64,
     pub max_results: usize,

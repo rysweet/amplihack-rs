@@ -130,7 +130,8 @@ pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveE
     }
 
     // Subscribe to response topic
-    let _ = bus.subscribe(HIVE_QUERY_RESPONSE, EVAL_HANDLER);
+    bus.subscribe(HIVE_QUERY_RESPONSE, EVAL_HANDLER)
+        .map_err(|e| HiveError::EventBus(format!("Failed to subscribe for eval: {e}")))?;
 
     info!(
         questions = config.questions.len(),
@@ -164,8 +165,10 @@ pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveE
         });
     }
 
-    // Unsubscribe
-    let _ = bus.unsubscribe(HIVE_QUERY_RESPONSE, EVAL_HANDLER);
+    // Unsubscribe — log but don't fail the whole eval on cleanup error
+    if let Err(e) = bus.unsubscribe(HIVE_QUERY_RESPONSE, EVAL_HANDLER) {
+        warn!(error = %e, "Failed to unsubscribe eval handler");
+    }
 
     let result = HiveEvalResult::from_results(query_results);
     info!(

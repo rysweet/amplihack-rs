@@ -22,7 +22,15 @@ impl IntentRouter {
 
     pub fn route(&self, input: &str) -> Result<RoutingDecision> {
         let lower = input.to_lowercase();
-        Self::classify(&lower)
+        let mut decision = Self::classify(&lower)?;
+        if decision.confidence < self.confidence_threshold {
+            decision.agent_type = DomainAgentType::Teaching;
+            decision.reasoning = format!(
+                "Confidence {:.2} below threshold {:.2}; defaulting to teaching",
+                decision.confidence, self.confidence_threshold
+            );
+        }
+        Ok(decision)
     }
 
     pub fn route_with_context(&self, input: &str, context: &str) -> Result<RoutingDecision> {

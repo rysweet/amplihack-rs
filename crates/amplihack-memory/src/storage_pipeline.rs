@@ -185,6 +185,8 @@ impl StoragePipeline {
                     stages_applied.push(StorageStage::Classify);
                 }
                 StorageStage::Store => {
+                    // Record fingerprint so future calls detect duplicates
+                    self.seen_fingerprints.insert(entry.content_fingerprint());
                     stages_applied.push(StorageStage::Store);
                 }
             }

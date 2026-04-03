@@ -32,10 +32,10 @@ impl SimpleGrader {
     }
 }
 
-impl Grader for SimpleGrader {
-    fn grade(
+impl SimpleGrader {
+    /// Single-pass grading logic (no vote aggregation).
+    fn grade_single(
         &self,
-        _question: &str,
         expected: &str,
         actual: &str,
         level: TestLevel,
@@ -47,15 +47,12 @@ impl Grader for SimpleGrader {
         let expected_lower = expected.to_lowercase();
         let actual_lower = actual.to_lowercase();
 
-        // Exact match
         if expected_lower == actual_lower {
             return GradeResult::new(1.0, "Exact match");
         }
 
-        // Containment check
         let contains_expected = actual_lower.contains(&expected_lower);
 
-        // Word overlap scoring
         let expected_words: std::collections::HashSet<&str> =
             expected_lower.split_whitespace().collect();
         let actual_words: std::collections::HashSet<&str> =
@@ -68,7 +65,6 @@ impl Grader for SimpleGrader {
             overlap as f64 / expected_words.len() as f64
         };
 
-        // Level-specific adjustments
         let level_bonus = match level {
             TestLevel::L3TemporalReasoning => {
                 if has_temporal_ordering(&actual_lower, &expected_lower) {
@@ -103,6 +99,47 @@ impl Grader for SimpleGrader {
             level.display_name()
         );
         GradeResult::new(score, reasoning)
+    }
+
+    /// Multi-vote grading: run `grade_single` N times and take the median.
+    fn grade_multi_vote(
+        &self,
+        expected: &str,
+        actual: &str,
+        level: TestLevel,
+    ) -> Result<GradeResult, EvalError> {
+        let vote_count = self.votes.clamp(1, 9) as usize;
+        let mut scores = Vec::with_capacity(vote_count);
+        let mut last_reasoning = String::new();
+
+        for _ in 0..vote_count {
+            let result = self.grade_single(expected, actual, level)?;
+            scores.push(result.score);
+            last_reasoning = result.reasoning;
+        }
+
+        scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median_score = scores[scores.len() / 2];
+
+        let mut result = GradeResult::new(median_score, last_reasoning)?;
+        result = result.with_votes(scores);
+        Ok(result)
+    }
+}
+
+impl Grader for SimpleGrader {
+    fn grade(
+        &self,
+        _question: &str,
+        expected: &str,
+        actual: &str,
+        level: TestLevel,
+    ) -> Result<GradeResult, EvalError> {
+        if self.votes > 1 {
+            self.grade_multi_vote(expected, actual, level)
+        } else {
+            self.grade_single(expected, actual, level)
+        }
     }
 }
 

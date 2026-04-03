@@ -165,60 +165,13 @@ impl DistributedGraphStore {
             let a_id = &agent_ids[i];
             let b_id = &agent_ids[j];
 
-            // Get node IDs from shard A
-            let a_ids: Vec<String> = self
-                .shards
-                .get(a_id)
-                .map(|s| {
-                    s.store
-                        .get_all_node_ids(None)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect()
-                })
-                .unwrap_or_default();
+            let (n, e) = self.sync_pair(a_id, b_id)?;
+            total_nodes += n;
+            total_edges += e;
 
-            // Find which of A's nodes B is missing (bloom filter check)
-            let missing: Vec<String> = if let Some(shard_b) = self.shards.get(b_id) {
-                let refs: Vec<&str> = a_ids.iter().map(|s| s.as_str()).collect();
-                shard_b
-                    .bloom
-                    .missing_from(&refs)
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect()
-            } else {
-                continue;
-            };
-
-            if missing.is_empty() {
-                continue;
+            if n > 0 || e > 0 {
+                debug!(from = %a_id, to = %b_id, nodes = n, edges = e, "Gossip sync");
             }
-
-            // Export missing nodes from A
-            let nodes_export = self
-                .shards
-                .get(a_id)
-                .map(|s| s.store.export_nodes(Some(&missing)).unwrap_or_default())
-                .unwrap_or_default();
-            let edges_export = self
-                .shards
-                .get(a_id)
-                .map(|s| s.store.export_edges(Some(&missing)).unwrap_or_default())
-                .unwrap_or_default();
-
-            // Import into B
-            if let Some(shard_b) = self.shards.get_mut(b_id) {
-                let n = shard_b.store.import_nodes(&nodes_export)?;
-                let e = shard_b.store.import_edges(&edges_export)?;
-                for (_, id, _) in &nodes_export {
-                    shard_b.bloom.add(id);
-                }
-                total_nodes += n;
-                total_edges += e;
-            }
-
-            debug!(from = a_id, to = b_id, nodes = total_nodes, "Gossip sync");
         }
 
         info!(
@@ -227,6 +180,85 @@ impl DistributedGraphStore {
             "Gossip round complete"
         );
         Ok((total_nodes, total_edges))
+    }
+
+    /// Sync missing data from shard `from` into shard `to`.
+    fn sync_pair(&mut self, from: &str, to: &str) -> anyhow::Result<(usize, usize)> {
+        let from_ids = self.get_shard_node_ids(from);
+        let missing = self.find_missing_nodes(to, &from_ids);
+        if missing.is_empty() {
+            return Ok((0, 0));
+        }
+
+        let (nodes_export, edges_export) = self.export_from_shard(from, &missing);
+        self.import_into_shard(to, &nodes_export, &edges_export)
+    }
+
+    fn get_shard_node_ids(&self, agent_id: &str) -> Vec<String> {
+        self.shards
+            .get(agent_id)
+            .map(|s| {
+                s.store
+                    .get_all_node_ids(None)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn find_missing_nodes(&self, target: &str, candidate_ids: &[String]) -> Vec<String> {
+        match self.shards.get(target) {
+            Some(shard) => {
+                let refs: Vec<&str> = candidate_ids.iter().map(|s| s.as_str()).collect();
+                shard
+                    .bloom
+                    .missing_from(&refs)
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            }
+            None => Vec::new(),
+        }
+    }
+
+    fn export_from_shard(
+        &self,
+        agent_id: &str,
+        node_ids: &[String],
+    ) -> (
+        Vec<(String, String, Props)>,
+        Vec<(String, String, String, Props)>,
+    ) {
+        let nodes = self
+            .shards
+            .get(agent_id)
+            .map(|s| s.store.export_nodes(Some(node_ids)).unwrap_or_default())
+            .unwrap_or_default();
+        let edges = self
+            .shards
+            .get(agent_id)
+            .map(|s| s.store.export_edges(Some(node_ids)).unwrap_or_default())
+            .unwrap_or_default();
+        (nodes, edges)
+    }
+
+    fn import_into_shard(
+        &mut self,
+        agent_id: &str,
+        nodes: &[(String, String, Props)],
+        edges: &[(String, String, String, Props)],
+    ) -> anyhow::Result<(usize, usize)> {
+        if let Some(shard) = self.shards.get_mut(agent_id) {
+            let n = shard.store.import_nodes(nodes)?;
+            let e = shard.store.import_edges(edges)?;
+            for (_, id, _) in nodes {
+                shard.bloom.add(id);
+            }
+            Ok((n, e))
+        } else {
+            Ok((0, 0))
+        }
     }
 
     /// Rebuild a shard by pulling data from peers.

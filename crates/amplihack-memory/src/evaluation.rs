@@ -176,53 +176,33 @@ impl ReliabilityEvaluator {
         store_results: &[(bool, f64)],
         retrieve_results: &[(bool, f64)],
     ) -> ReliabilityMetrics {
-        let store_window = if store_results.len() > self.window_size {
-            &store_results[store_results.len() - self.window_size..]
-        } else {
-            store_results
-        };
-        let retrieve_window = if retrieve_results.len() > self.window_size {
-            &retrieve_results[retrieve_results.len() - self.window_size..]
-        } else {
-            retrieve_results
-        };
-
-        let store_success = store_window.iter().filter(|(ok, _)| *ok).count();
-        let retrieve_success = retrieve_window.iter().filter(|(ok, _)| *ok).count();
-
-        let store_rate = if store_window.is_empty() {
-            1.0
-        } else {
-            store_success as f64 / store_window.len() as f64
-        };
-        let retrieve_rate = if retrieve_window.is_empty() {
-            1.0
-        } else {
-            retrieve_success as f64 / retrieve_window.len() as f64
-        };
-
-        let avg_store_lat = if store_window.is_empty() {
-            0.0
-        } else {
-            store_window.iter().map(|(_, lat)| lat).sum::<f64>() / store_window.len() as f64
-        };
-        let avg_retrieve_lat = if retrieve_window.is_empty() {
-            0.0
-        } else {
-            retrieve_window.iter().map(|(_, lat)| lat).sum::<f64>()
-                / retrieve_window.len() as f64
-        };
-
-        let errors = store_window.iter().filter(|(ok, _)| !*ok).count()
-            + retrieve_window.iter().filter(|(ok, _)| !*ok).count();
+        let store = Self::compute_window_stats(store_results, self.window_size);
+        let retrieve = Self::compute_window_stats(retrieve_results, self.window_size);
 
         ReliabilityMetrics {
-            store_success_rate: store_rate,
-            retrieve_success_rate: retrieve_rate,
-            average_store_latency_ms: avg_store_lat,
-            average_retrieve_latency_ms: avg_retrieve_lat,
-            error_count: errors,
+            store_success_rate: store.0,
+            retrieve_success_rate: retrieve.0,
+            average_store_latency_ms: store.1,
+            average_retrieve_latency_ms: retrieve.1,
+            error_count: store.2 + retrieve.2,
         }
+    }
+
+    /// Compute (success_rate, avg_latency, error_count) for a windowed slice.
+    fn compute_window_stats(results: &[(bool, f64)], window: usize) -> (f64, f64, usize) {
+        let w = if results.len() > window {
+            &results[results.len() - window..]
+        } else {
+            results
+        };
+        if w.is_empty() {
+            return (1.0, 0.0, 0);
+        }
+        let successes = w.iter().filter(|(ok, _)| *ok).count();
+        let failures = w.len() - successes;
+        let rate = successes as f64 / w.len() as f64;
+        let avg_lat = w.iter().map(|(_, lat)| lat).sum::<f64>() / w.len() as f64;
+        (rate, avg_lat, failures)
     }
 
     /// Get the window size.
