@@ -38,6 +38,7 @@ impl SecurityAuditor {
     pub fn new(model: &str) -> Self {
         Self {
             model: model.to_string(),
+            memory: None,
         }
     }
 }
@@ -54,14 +55,10 @@ impl DomainAgent for SecurityAuditor {
         Ok(TaskResult {
             output: format!("Found {} security issues", findings.len()),
             confidence: 0.9,
-            metadata: serde_json::json!({
-                "findings": findings,
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .collect(),
+            metadata: [("findings_count".into(), serde_json::json!(findings.len()))]
+                .into_iter()
+                .collect(),
+            memory_updates: Vec::new(),
         })
     }
 

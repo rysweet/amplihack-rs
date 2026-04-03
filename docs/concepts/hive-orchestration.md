@@ -45,6 +45,7 @@ let event = HiveEvent::new(
         "title": "Rust Memory Safety",
         "content": "Rust prevents data races at compile time..."
     }),
+    &deployment_id,
 );
 ```
 
@@ -87,7 +88,7 @@ let workload = HiveMindWorkload::new(config)?;
 | `acr_name`                   | `String`| (required)    | Azure Container Registry name         |
 | `service_bus_connection_string`| `String`| (required)  | Service Bus Premium connection string |
 | `topic_name`                 | `String`| `"hive-graph"`| Service Bus topic                     |
-| `agent_prompt`               | `String`| (optional)    | System prompt injected into agents    |
+| `agent_prompt`               | `String`| `""`          | System prompt injected into agents    |
 | `cpu`                        | `f64`  | `1.0`          | CPU cores per container               |
 | `memory_gb`                  | `u32`  | `4`            | Memory per container (GiB)            |
 
