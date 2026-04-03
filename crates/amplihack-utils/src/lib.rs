@@ -20,6 +20,7 @@
 //! - [`plugin_cli`] — CLI command handlers for plugin management
 //! - [`simple_tui`] — Simple TUI testing framework with gadugi and subprocess fallback
 //! - [`knowledge_builder`] — Knowledge Builder orchestrator (Socratic method pipeline)
+//! - [`llm_client`] — SDK launcher detection and LLM completion routing
 
 pub mod claude_cli;
 pub mod claude_md;
@@ -28,6 +29,7 @@ pub mod defensive;
 pub mod docker_detector;
 pub mod kb_types;
 pub mod knowledge_builder;
+pub mod llm_client;
 pub mod plugin_cli;
 pub mod plugin_manager;
 pub(crate) mod plugin_manager_paths;
