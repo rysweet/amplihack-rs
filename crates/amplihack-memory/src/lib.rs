@@ -29,7 +29,12 @@ pub use config::{Backend, MemoryConfig, Topology, Transport};
 pub use coordinator::MemoryCoordinator;
 pub use discoveries::{Discovery, get_recent_discoveries, store_discovery};
 pub use distributed_store::DistributedGraphStore;
-pub use evaluation::{QualityEvaluator, QualityMetrics, QualityReport};
+pub use evaluation::{
+    BackendComparison, BackendReliabilityEvaluator, BackendReliabilityMetrics, BenchmarkEvaluator,
+    BenchmarkMetrics, ComparisonReport, PerformanceContracts, QueryTestCase,
+    QualityEvaluator, QualityMetrics, QualityReport, RetrievalQualityEvaluator,
+    RetrievalQualityMetrics,
+};
 pub use facade::MemoryFacade;
 pub use graph_store::GraphStore;
 pub use hash_ring::HashRing;

@@ -1,6 +1,6 @@
 use amplihack_hive::{
-    DefaultPromotionPolicy, HiveFact, HiveMindOrchestrator, PromotionPolicy,
-    make_event,
+    DefaultPromotionPolicy, GossipConfig, GossipProtocol, HiveFact, HiveMindOrchestrator,
+    PromotionPolicy, make_event,
 };
 use chrono::Utc;
 use std::collections::HashMap;
@@ -159,13 +159,48 @@ fn query_unified_with_peers() {
 // --- process_event tests ---
 
 #[test]
-fn process_event_stores_fact() {
-    let mut orch = HiveMindOrchestrator::with_default_policy();
-    let event = make_event("fact.propagate", "src",
+fn process_event_incorporates_peer_fact() {
+    let mut orch = HiveMindOrchestrator::with_default_policy()
+        .with_agent_id("me".to_string());
+    let event = make_event("FACT_PROMOTED", "peer",
         serde_json::json!({"concept": "rust", "content": "fast", "confidence": 0.8}));
-    orch.process_event(&event).unwrap();
-    let facts = orch.query("rust").unwrap();
-    assert_eq!(facts.len(), 1);
+    let result = orch.process_event(&event);
+    assert!(result.incorporated);
+    assert!(result.fact_id.is_some());
+}
+
+#[test]
+fn process_event_skips_non_fact_promoted() {
+    let mut orch = HiveMindOrchestrator::with_default_policy();
+    let event = make_event("OTHER", "src", serde_json::json!({}));
+    let result = orch.process_event(&event);
+    assert!(!result.incorporated);
+    assert!(result.reason.contains("not a FACT_PROMOTED"));
+}
+
+#[test]
+fn process_event_skips_self() {
+    let mut orch = HiveMindOrchestrator::with_default_policy()
+        .with_agent_id("me".to_string());
+    let event = make_event("FACT_PROMOTED", "me",
+        serde_json::json!({"concept": "x", "content": "y", "confidence": 0.9}));
+    let result = orch.process_event(&event);
+    assert!(!result.incorporated);
+    assert!(result.reason.contains("self-published"));
+}
+
+#[test]
+fn process_event_applies_peer_discount() {
+    let mut orch = HiveMindOrchestrator::with_default_policy()
+        .with_agent_id("me".to_string());
+    let event = make_event("FACT_PROMOTED", "peer",
+        serde_json::json!({"concept": "bio", "content": "DNA", "confidence": 0.8}));
+    let result = orch.process_event(&event);
+    assert!(result.incorporated);
+    // Discounted confidence should be 0.8 * 0.9 = 0.72
+    let facts = orch.query("bio").unwrap();
+    assert!(!facts.is_empty());
+    assert!((facts[0].confidence - 0.72).abs() < 0.01);
 }
 
 // --- drain_events tests ---
@@ -173,12 +208,12 @@ fn process_event_stores_fact() {
 #[test]
 fn drain_events_returns_pending() {
     let mut orch = HiveMindOrchestrator::with_default_policy();
-    let event = make_event("test", "src", serde_json::json!({}));
-    orch.process_event(&event).unwrap();
-    let events = orch.drain_events();
-    assert_eq!(events.len(), 1);
+    let event = make_event("OTHER_TYPE", "src", serde_json::json!({}));
+    orch.process_event(&event); // non-FACT_PROMOTED goes to pending
+    let results = orch.drain_events();
+    assert_eq!(results.len(), 1);
     // Should be empty after drain
-    assert!(orch.drain_events().is_empty());
+    assert!(orch.drain_raw_events().is_empty());
 }
 
 // --- peer management tests ---
@@ -261,4 +296,38 @@ fn orchestrator_promote_nonexistent() {
     let mut orch = HiveMindOrchestrator::with_default_policy();
     let promoted = orch.promote("nonexistent-id", "agent-1").unwrap();
     assert!(!promoted);
+}
+
+// --- gossip round tests ---
+
+#[test]
+fn gossip_round_no_gossip_protocol() {
+    let mut orch = HiveMindOrchestrator::with_default_policy();
+    let result = orch.run_gossip_round();
+    assert!(result.skipped.is_some());
+    assert!(result.skipped.unwrap().contains("gossip protocol not configured"));
+}
+
+#[test]
+fn gossip_round_no_peers() {
+    let mut orch = HiveMindOrchestrator::with_default_policy();
+    orch.set_gossip(GossipProtocol::new("node-1".into(), GossipConfig::default()));
+    let result = orch.run_gossip_round();
+    assert!(result.skipped.is_some());
+    assert!(result.skipped.unwrap().contains("no peers"));
+}
+
+#[test]
+fn gossip_round_with_peers() {
+    let mut peer = HiveMindOrchestrator::with_default_policy();
+    peer.store_fact("bio", "DNA", 0.8, "peer").unwrap();
+
+    let mut orch = HiveMindOrchestrator::with_default_policy();
+    orch.store_fact("bio", "RNA", 0.9, "local").unwrap();
+    orch.set_gossip(GossipProtocol::new("node-1".into(), GossipConfig::default()));
+    orch.add_peer(peer);
+
+    let result = orch.run_gossip_round();
+    assert!(result.skipped.is_none());
+    assert!(result.peers_contacted > 0);
 }

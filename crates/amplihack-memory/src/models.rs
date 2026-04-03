@@ -294,6 +294,6 @@ mod tests {
         let e = MemoryEntry::new("s1", "a1", MemoryType::Procedural, "how to test");
         let json = serde_json::to_value(&e).unwrap();
         assert_eq!(json["memory_type"], "procedural");
-        assert!(json["id"].as_str().unwrap().len() > 0);
+        assert!(!json["id"].as_str().unwrap().is_empty());
     }
 }

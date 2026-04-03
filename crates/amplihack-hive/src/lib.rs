@@ -49,7 +49,8 @@ pub use models::{
     FACT_ID_HEX_LENGTH, GOSSIP_MIN_CONFIDENCE, MAX_TRUST_SCORE, PEER_CONFIDENCE_DISCOUNT,
 };
 pub use orchestrator::{
-    DefaultPromotionPolicy, HiveMindOrchestrator, PromotionPolicy, PromotionResult,
+    DefaultPromotionPolicy, GossipRoundResult, HiveMindOrchestrator, ProcessEventResult,
+    PromotionPolicy, PromotionResult,
 };
 pub use quality::{score_content_quality, QualityGate};
 pub use query_expansion::{expand_query, search_expanded};

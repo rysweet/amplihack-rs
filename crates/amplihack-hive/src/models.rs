@@ -66,6 +66,10 @@ impl BusEvent {
     pub fn from_json(value: &serde_json::Value) -> Result<Self, serde_json::Error> {
         serde_json::from_value(value.clone())
     }
+    /// Alias for `topic` (Python parity).
+    pub fn event_type(&self) -> &str { &self.topic }
+    /// Alias for `source_id` (Python parity).
+    pub fn source_agent(&self) -> &str { &self.source_id }
 }
 
 /// Factory for creating a [`BusEvent`] with a generated id and current timestamp.
