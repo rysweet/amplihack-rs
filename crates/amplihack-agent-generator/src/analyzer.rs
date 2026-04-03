@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn default_impl() {
-        let a = PromptAnalyzer::default();
+        let a = PromptAnalyzer;
         assert!(a.analyze("test").is_ok());
     }
 }

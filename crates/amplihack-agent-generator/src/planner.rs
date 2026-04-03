@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn default_impl() {
-        let p = ObjectivePlanner::default();
+        let p = ObjectivePlanner;
         assert!(p.plan(&simple_goal()).is_ok());
     }
 }

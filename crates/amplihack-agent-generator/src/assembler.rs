@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn default_impl() {
-        let a = AgentAssembler::default();
+        let a = AgentAssembler;
         let (goal, plan, skills) = make_parts();
         assert!(a.assemble(&goal, &plan, skills).is_ok());
     }

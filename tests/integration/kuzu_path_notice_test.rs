@@ -10,7 +10,7 @@ fn amplihack_bin() -> PathBuf {
     path
 }
 
-fn require_binary(bin: &PathBuf) {
+fn require_binary(bin: &std::path::Path) {
     assert!(
         bin.exists(),
         "amplihack binary not found at {}; run `cargo build --bin amplihack` first.",

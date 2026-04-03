@@ -66,6 +66,6 @@ mod tests {
 
     #[test]
     fn default_impl() {
-        let _p = GoalAgentPackager::default();
+        let _p = GoalAgentPackager;
     }
 }

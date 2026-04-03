@@ -3,7 +3,7 @@ use crate::binary_finder::BinaryInfo;
 use crate::env_builder::EnvBuilder;
 use crate::launcher_context::{LauncherKind, read_launcher_context};
 use crate::test_support::{
-    cwd_env_lock, home_env_lock, restore_cwd, restore_home, set_cwd, set_home,
+    home_env_lock, restore_cwd, restore_home, set_cwd, set_home,
 };
 use std::fs;
 use std::path::PathBuf;

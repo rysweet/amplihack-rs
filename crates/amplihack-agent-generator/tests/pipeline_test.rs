@@ -172,9 +172,9 @@ fn metrics_serde_preserves_all_fields() {
 #[test]
 fn pipeline_components_are_default_constructible() {
     // Verify all pipeline components implement Default
-    let _a = PromptAnalyzer::default();
-    let _p = ObjectivePlanner::default();
-    let _s = SkillSynthesizer::default();
-    let _asm = AgentAssembler::default();
-    let _pkg = GoalAgentPackager::default();
+    let _a = PromptAnalyzer;
+    let _p = ObjectivePlanner;
+    let _s = SkillSynthesizer;
+    let _asm = AgentAssembler;
+    let _pkg = GoalAgentPackager;
 }

@@ -16,7 +16,7 @@ use crate::commands::memory::backend::graph_db::{
 use crate::commands::memory::code_graph::backend::{
     initialize_test_code_graph_db, with_test_code_graph_conn,
 };
-use crate::test_support::{cwd_env_lock, home_env_lock, restore_cwd, set_cwd};
+use crate::test_support::{home_env_lock, restore_cwd, set_cwd};
 
 use anyhow::Result;
 use prost::Message;

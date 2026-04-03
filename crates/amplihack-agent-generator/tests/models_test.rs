@@ -215,7 +215,7 @@ fn bundle_name_too_short() {
 }
 #[test]
 fn bundle_name_too_long() {
-    assert!(GoalAgentBundle::new(&"x".repeat(51), "1.0.0").is_err());
+    assert!(GoalAgentBundle::new("x".repeat(51).as_str(), "1.0.0").is_err());
 }
 #[test]
 fn bundle_name_boundary_3_chars() {
@@ -223,7 +223,7 @@ fn bundle_name_boundary_3_chars() {
 }
 #[test]
 fn bundle_name_boundary_50_chars() {
-    assert!(GoalAgentBundle::new(&"x".repeat(50), "1.0.0").is_ok());
+    assert!(GoalAgentBundle::new("x".repeat(50).as_str(), "1.0.0").is_ok());
 }
 #[test]
 fn bundle_is_complete_when_ready() {
@@ -276,8 +276,7 @@ fn bundle_default_status_is_pending() {
 
 #[test]
 fn bundle_status_transitions() {
-    let mut s = BundleStatus::Pending;
-    s = BundleStatus::Planning;
+    let mut s = BundleStatus::Planning;
     assert_eq!(s, BundleStatus::Planning);
     s = BundleStatus::Assembling;
     assert_eq!(s, BundleStatus::Assembling);
@@ -387,7 +386,7 @@ fn generation_metrics_serde_roundtrip() {
 
 #[test]
 fn json_field_names_match_python_goal() {
-    let v: serde_json::Value = serde_json::to_value(&valid_goal()).unwrap();
+    let v: serde_json::Value = serde_json::to_value(valid_goal()).unwrap();
     let obj = v.as_object().unwrap();
     for key in [
         "raw_prompt",
@@ -402,7 +401,7 @@ fn json_field_names_match_python_goal() {
 }
 #[test]
 fn json_field_names_match_python_plan_phase() {
-    let v: serde_json::Value = serde_json::to_value(&valid_phase()).unwrap();
+    let v: serde_json::Value = serde_json::to_value(valid_phase()).unwrap();
     let obj = v.as_object().unwrap();
     for key in [
         "name",
@@ -416,7 +415,7 @@ fn json_field_names_match_python_plan_phase() {
 }
 #[test]
 fn json_field_names_match_python_bundle() {
-    let v: serde_json::Value = serde_json::to_value(&valid_bundle()).unwrap();
+    let v: serde_json::Value = serde_json::to_value(valid_bundle()).unwrap();
     let obj = v.as_object().unwrap();
     for key in [
         "id",

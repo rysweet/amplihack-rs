@@ -21,7 +21,6 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use tempfile;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

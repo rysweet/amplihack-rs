@@ -131,9 +131,8 @@ fn safe_subprocess_call_echo() {
 fn safe_subprocess_call_nonexistent() {
     let r = safe_subprocess_call(&["absolutely_not_a_command_xyz"], 5);
     // Should either error or return a non-success result.
-    match r {
-        Ok(cr) => assert!(!cr.success()),
-        Err(_) => {} // Also acceptable.
+    if let Ok(cr) = r {
+        assert!(!cr.success());
     }
 }
 

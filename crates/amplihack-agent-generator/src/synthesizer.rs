@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn default_impl() {
-        let s = SkillSynthesizer::default();
+        let s = SkillSynthesizer;
         let plan = make_plan(Complexity::Simple);
         assert!(s.synthesize(&plan).is_ok());
     }

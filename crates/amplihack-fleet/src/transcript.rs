@@ -248,7 +248,7 @@ mod tests {
         assert_eq!(counts.get("investigate"), Some(&1));
         assert_eq!(counts.get("implement"), Some(&1));
         assert_eq!(counts.get("test"), Some(&2));
-        assert!(counts.get("deploy").is_none());
+        assert!(!counts.contains_key("deploy"));
     }
 
     #[test]

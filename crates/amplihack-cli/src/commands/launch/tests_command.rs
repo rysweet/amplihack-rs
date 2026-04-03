@@ -1,6 +1,6 @@
 use super::*;
 use crate::binary_finder::BinaryInfo;
-use crate::test_support::{cwd_env_lock, home_env_lock, restore_cwd, set_cwd};
+use crate::test_support::{home_env_lock, restore_cwd, set_cwd};
 use std::fs;
 use std::path::PathBuf;
 
