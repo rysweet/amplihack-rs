@@ -178,10 +178,18 @@ pub fn validate_age(timestamp: f64) -> Result<(), ValidationError> {
     Ok(())
 }
 
-/// Check whether a PID corresponds to a running process (signal 0).
+/// Check whether a PID corresponds to a running process.
+#[cfg(unix)]
 pub fn is_pid_alive(pid: u32) -> bool {
     // SAFETY: `kill(pid, 0)` only checks existence — sends no signal.
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+/// Check whether a PID corresponds to a running process (non-Unix fallback).
+#[cfg(not(unix))]
+pub fn is_pid_alive(_pid: u32) -> bool {
+    // On non-Unix platforms, skip PID liveness — assume alive.
+    true
 }
 
 /// Full validation of a progress file given its filename and raw JSON bytes.
