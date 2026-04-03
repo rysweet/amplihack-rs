@@ -14,6 +14,7 @@ tracing = { workspace = true }
 tokio = { version = "1", features = ["process", "time", "rt"] }
 sha2 = { workspace = true }
 chrono = { workspace = true }
+libc = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["process", "time", "rt", "macros"] }

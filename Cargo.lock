@@ -254,6 +254,7 @@ name = "amplihack-utils"
 version = "0.6.18"
 dependencies = [
  "chrono",
+ "libc",
  "regex",
  "serde",
  "serde_json",
