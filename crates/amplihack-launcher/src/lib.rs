@@ -12,6 +12,8 @@ pub mod auto_mode_coordinator;
 pub mod auto_mode_exec;
 pub mod auto_mode_state;
 pub mod auto_mode_ui;
+pub mod auto_stager;
+pub mod claude_binary_manager;
 pub mod codex;
 pub mod completion_signals;
 pub mod completion_verifier;
@@ -19,9 +21,11 @@ pub mod copilot_launcher;
 pub mod copilot_mcp;
 pub mod copilot_staging;
 pub mod fork_manager;
+pub mod json_logger;
 pub mod launcher_core;
 pub mod memory_config;
 pub mod nesting_detector;
+pub mod platform_check;
 pub mod repo_checkout;
 pub mod session_capture;
 pub mod session_tracker;
@@ -54,3 +58,9 @@ pub use settings_manager::SettingsManager;
 pub use work_summary::{
     GitHubState, GitState, TodoExtractor, TodoState, WorkSummary, WorkSummaryGenerator,
 };
+
+// Re-exports for newly ported modules
+pub use auto_stager::{AutoStager, StagingResult};
+pub use claude_binary_manager::{BinaryInfo, ClaudeBinaryManager};
+pub use json_logger::JsonLogger;
+pub use platform_check::{check_platform_compatibility, is_native_windows, PlatformCheckResult};
