@@ -8,6 +8,7 @@
 //! - process() → full OODA cycle
 
 use crate::error::Result;
+use crate::intent::{COMMAND_WORDS, QUESTION_WORDS};
 use crate::models::{AgentConfig, AgentInfo, AgentState, TaskResult};
 
 // ---------------------------------------------------------------------------
@@ -111,22 +112,13 @@ impl Agent for GoalSeekingAgent {
         self.state = AgentState::Deciding;
         let lower = self.current_input.trim().to_lowercase();
 
-        let question_words = [
-            "what", "who", "where", "when", "why", "how", "which", "is", "are", "do", "does",
-            "can", "could", "would", "should",
-        ];
-        let command_words = [
-            "run", "execute", "create", "delete", "build", "test", "deploy", "install", "fix",
-            "update", "start", "stop",
-        ];
-
         if lower.ends_with('?') {
             self.action_plan = "answer".to_string();
         } else {
             let first_word = lower.split_whitespace().next().unwrap_or("");
-            if question_words.contains(&first_word) {
+            if QUESTION_WORDS.contains(&first_word) {
                 self.action_plan = "answer".to_string();
-            } else if command_words.contains(&first_word) {
+            } else if COMMAND_WORDS.contains(&first_word) {
                 self.action_plan = "execute".to_string();
             } else {
                 self.action_plan = "store".to_string();
@@ -175,5 +167,92 @@ impl Agent for GoalSeekingAgent {
         self.state = AgentState::Idle;
         self.iteration = 0;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_agent() -> GoalSeekingAgent {
+        GoalSeekingAgent::new(AgentConfig::new("test", "model"))
+    }
+
+    #[test]
+    fn initial_state_is_idle() {
+        let agent = make_agent();
+        assert_eq!(agent.state(), AgentState::Idle);
+    }
+
+    #[test]
+    fn process_answer_question() {
+        let mut agent = make_agent();
+        let result = agent.process("what is Rust?").unwrap();
+        assert!(result.success);
+        assert!(result.output.starts_with("Answer:"));
+        assert_eq!(agent.state(), AgentState::Idle);
+    }
+
+    #[test]
+    fn process_execute_command() {
+        let mut agent = make_agent();
+        let result = agent.process("run the tests").unwrap();
+        assert!(result.success);
+        assert!(result.output.starts_with("Executed:"));
+    }
+
+    #[test]
+    fn process_store_content() {
+        let mut agent = make_agent();
+        let result = agent.process("the sky is blue").unwrap();
+        assert!(result.success);
+        assert!(result.output.starts_with("Stored:"));
+    }
+
+    #[test]
+    fn state_transitions_through_ooda() {
+        let mut agent = make_agent();
+        assert_eq!(agent.state(), AgentState::Idle);
+
+        agent.observe("hello").unwrap();
+        assert_eq!(agent.state(), AgentState::Observing);
+
+        agent.orient().unwrap();
+        assert_eq!(agent.state(), AgentState::Orienting);
+
+        agent.decide().unwrap();
+        assert_eq!(agent.state(), AgentState::Deciding);
+
+        agent.act().unwrap();
+        assert_eq!(agent.state(), AgentState::Idle);
+    }
+
+    #[test]
+    fn reset_clears_state() {
+        let mut agent = make_agent();
+        agent.process("hello").unwrap();
+        assert_eq!(agent.info().iterations, 1);
+
+        agent.reset().unwrap();
+        assert_eq!(agent.state(), AgentState::Idle);
+        assert_eq!(agent.info().iterations, 0);
+    }
+
+    #[test]
+    fn info_reflects_config() {
+        let agent = make_agent();
+        let info = agent.info();
+        assert_eq!(info.agent_name, "test");
+        assert_eq!(info.model, "model");
+        assert_eq!(info.state, AgentState::Idle);
+        assert_eq!(info.iterations, 0);
+    }
+
+    #[test]
+    fn iteration_increments_on_act() {
+        let mut agent = make_agent();
+        agent.process("a").unwrap();
+        agent.process("b").unwrap();
+        assert_eq!(agent.info().iterations, 2);
     }
 }

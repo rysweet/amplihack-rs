@@ -217,6 +217,11 @@ impl DomainEvalHarness {
             return self.grade_by_similarity(output, &scenario.expected_output);
         }
 
+        for item in &scenario.rubric {
+            if item.weight < 0.0 || !item.weight.is_finite() {
+                return 0.0;
+            }
+        }
         let total_weight: f64 = scenario.rubric.iter().map(|r| r.weight).sum();
         if total_weight == 0.0 {
             return 0.0;

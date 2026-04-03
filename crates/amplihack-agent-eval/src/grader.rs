@@ -119,7 +119,11 @@ impl SimpleGrader {
         }
 
         scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let median_score = scores[scores.len() / 2];
+        let median_score = if scores.len() % 2 == 0 {
+            (scores[scores.len() / 2 - 1] + scores[scores.len() / 2]) / 2.0
+        } else {
+            scores[scores.len() / 2]
+        };
 
         let mut result = GradeResult::new(median_score, last_reasoning)?;
         result = result.with_votes(scores);
@@ -172,8 +176,11 @@ pub fn grade_with_votes(
 
     // Use median score
     scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median_idx = scores.len() / 2;
-    let median_score = scores[median_idx];
+    let median_score = if scores.len() % 2 == 0 {
+        (scores[scores.len() / 2 - 1] + scores[scores.len() / 2]) / 2.0
+    } else {
+        scores[scores.len() / 2]
+    };
 
     let mut result = GradeResult::new(median_score, last_reasoning)?;
     result = result.with_votes(scores);

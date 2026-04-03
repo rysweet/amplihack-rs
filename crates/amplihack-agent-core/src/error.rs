@@ -28,6 +28,10 @@ pub enum AgentError {
     #[error("task failed: {0}")]
     TaskFailed(String),
 
+    /// The task queue is full.
+    #[error("queue full: {0}")]
+    QueueFull(String),
+
     /// A memory operation failed.
     #[error("memory error: {0}")]
     MemoryError(String),
@@ -80,6 +84,12 @@ mod tests {
     fn task_failed_display() {
         let err = AgentError::TaskFailed("exit code 1".into());
         assert_eq!(err.to_string(), "task failed: exit code 1");
+    }
+
+    #[test]
+    fn queue_full_display() {
+        let err = AgentError::QueueFull("queue is at capacity (10)".into());
+        assert_eq!(err.to_string(), "queue full: queue is at capacity (10)");
     }
 
     #[test]

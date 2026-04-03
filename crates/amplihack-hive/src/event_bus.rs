@@ -58,10 +58,10 @@ impl EventBus for LocalEventBus {
     }
 
     fn subscribe(&mut self, topic: &str, handler_id: &str) -> Result<()> {
-        self.subscriptions
-            .entry(topic.to_string())
-            .or_default()
-            .push(handler_id.to_string());
+        let handlers = self.subscriptions.entry(topic.to_string()).or_default();
+        if !handlers.contains(&handler_id.to_string()) {
+            handlers.push(handler_id.to_string());
+        }
         Ok(())
     }
 

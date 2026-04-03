@@ -294,13 +294,16 @@ pub fn generate_report(
 ) -> QualityReport {
     let quality_eval = QualityEvaluator::new();
     let reliability_eval = ReliabilityEvaluator::new(1000);
-    let perf_eval = PerformanceEvaluator::new(10);
 
     let quality = quality_eval.evaluate(entries);
     let reliability = reliability_eval.evaluate(store_log, retrieve_log);
-    let performance = perf_eval.evaluate(entries, &[], 4000, 0);
+    // No expected-relevant set is available in this context, so performance
+    // metrics are left at defaults (zeros). Including an empty expected set
+    // would produce meaningless precision/recall scores.
+    let performance = PerformanceMetrics::default();
 
     // Overall = 0.4 * quality_score + 0.3 * reliability_score + 0.3 * perf_score
+    // Performance weight contributes 0 when no expected set is available.
     let quality_score = 1.0 - quality.trivial_ratio - quality.duplicate_ratio;
     let reliability_score =
         (reliability.store_success_rate + reliability.retrieve_success_rate) / 2.0;

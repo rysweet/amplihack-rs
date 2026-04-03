@@ -4,7 +4,7 @@ use amplihack_domain_agents::{DomainAgentType, IntentRouter, RoutingDecision};
 
 #[test]
 fn new_with_threshold() {
-    let router = IntentRouter::new(0.8);
+    let router = IntentRouter::new(0.8).unwrap();
     assert!((router.confidence_threshold() - 0.8).abs() < f64::EPSILON);
 }
 
@@ -16,7 +16,7 @@ fn with_defaults_uses_half() {
 
 #[test]
 fn confidence_threshold_accessor() {
-    let router = IntentRouter::new(0.75);
+    let router = IntentRouter::new(0.75).unwrap();
     assert!((router.confidence_threshold() - 0.75).abs() < f64::EPSILON);
 }
 

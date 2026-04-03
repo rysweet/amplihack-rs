@@ -69,8 +69,9 @@ pub fn matches_query(entry: &MemoryEntry, query: &MemoryQuery) -> bool {
 ///
 /// Combines word overlap (60%), recency boost (20%), and importance (20%).
 pub fn relevance_score(entry: &MemoryEntry, query_words: &HashSet<&str>) -> f64 {
-    let content_words: HashSet<&str> = entry.content.split_whitespace().collect();
-    let overlap = query_words.intersection(&content_words).count() as f64;
+    let content_words: HashSet<String> = entry.content.split_whitespace().map(|w| w.to_lowercase()).collect();
+    let query_lower: HashSet<String> = query_words.iter().map(|w| w.to_lowercase()).collect();
+    let overlap = query_lower.intersection(&content_words).count() as f64;
     let word_score = if query_words.is_empty() {
         0.0
     } else {

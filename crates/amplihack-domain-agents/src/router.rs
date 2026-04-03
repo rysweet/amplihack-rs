@@ -6,18 +6,20 @@ pub struct IntentRouter {
 }
 
 impl IntentRouter {
-    pub fn new(confidence_threshold: f64) -> Self {
-        assert!(
-            (0.0..=1.0).contains(&confidence_threshold),
-            "confidence_threshold must be 0.0..=1.0, got {confidence_threshold}"
-        );
-        Self {
-            confidence_threshold,
+    pub fn new(confidence_threshold: f64) -> Result<Self> {
+        if !(0.0..=1.0).contains(&confidence_threshold) {
+            return Err(crate::error::DomainError::InvalidInput(format!(
+                "confidence_threshold must be 0.0..=1.0, got {confidence_threshold}"
+            )));
         }
+        Ok(Self {
+            confidence_threshold,
+        })
     }
 
     pub fn with_defaults() -> Self {
-        Self::new(0.5)
+        // SAFETY: 0.5 is always in range 0.0..=1.0
+        Self::new(0.5).unwrap()
     }
 
     pub fn confidence_threshold(&self) -> f64 {
@@ -43,6 +45,13 @@ impl IntentRouter {
         // Context reinforcement: bump confidence slightly when context is non-empty
         if !context.is_empty() && decision.confidence < 1.0 {
             decision.confidence = (decision.confidence + 0.05).min(1.0);
+        }
+        if decision.confidence < self.confidence_threshold {
+            decision.agent_type = DomainAgentType::Teaching;
+            decision.reasoning = format!(
+                "Confidence {:.2} below threshold {:.2}; defaulting to teaching",
+                decision.confidence, self.confidence_threshold
+            );
         }
         Ok(decision)
     }
@@ -143,8 +152,14 @@ mod tests {
 
     #[test]
     fn new_with_threshold() {
-        let router = IntentRouter::new(0.75);
+        let router = IntentRouter::new(0.75).unwrap();
         assert!((router.confidence_threshold() - 0.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn new_rejects_out_of_range() {
+        assert!(IntentRouter::new(-0.1).is_err());
+        assert!(IntentRouter::new(1.1).is_err());
     }
 
     #[test]

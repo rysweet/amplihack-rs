@@ -57,7 +57,8 @@ fn apply_manifest_sets_desired() {
     controller.apply(manifest.clone()).unwrap();
     assert!(controller.desired_manifest().is_some());
     assert_eq!(controller.desired_manifest().unwrap().agents.len(), 1);
-    assert_eq!(controller.status().running_agents.len(), 1);
+    // apply only sets desired; current is empty until reconcile
+    assert_eq!(controller.status().running_agents.len(), 0);
 }
 
 #[test]
@@ -70,7 +71,8 @@ fn apply_manifest_with_multiple_agents() {
     ]);
     controller.apply(manifest).unwrap();
     assert_eq!(controller.desired_manifest().unwrap().agents.len(), 3);
-    assert_eq!(controller.status().running_agents.len(), 3);
+    // apply only sets desired; current is empty until reconcile
+    assert_eq!(controller.status().running_agents.len(), 0);
 }
 
 #[test]
@@ -102,9 +104,11 @@ fn reconcile_with_manifest() {
     let mut controller = HiveController::new();
     let manifest = make_manifest(vec![make_agent("learner", "learner", 2)]);
     controller.apply(manifest).unwrap();
-    // After apply, current matches desired, so reconcile should find no drift
+    // Current is empty, desired has agents — reconcile detects drift
     let actions = controller.reconcile().unwrap();
-    assert!(actions.is_empty());
+    assert!(!actions.is_empty());
+    // After reconcile, current matches desired
+    assert_eq!(controller.status().running_agents.len(), 1);
 }
 
 // --- scale_agent tests ---
@@ -114,6 +118,7 @@ fn scale_agent_up() {
     let mut controller = HiveController::new();
     let manifest = make_manifest(vec![make_agent("learner", "learner", 2)]);
     controller.apply(manifest).unwrap();
+    controller.reconcile().unwrap();
     controller.scale_agent("learner", 5).unwrap();
     let agents = &controller.status().running_agents;
     assert_eq!(agents[0].replicas, 5);
@@ -124,6 +129,7 @@ fn scale_agent_down() {
     let mut controller = HiveController::new();
     let manifest = make_manifest(vec![make_agent("learner", "learner", 5)]);
     controller.apply(manifest).unwrap();
+    controller.reconcile().unwrap();
     controller.scale_agent("learner", 1).unwrap();
     let agents = &controller.status().running_agents;
     assert_eq!(agents[0].replicas, 1);

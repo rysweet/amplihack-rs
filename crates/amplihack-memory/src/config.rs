@@ -118,14 +118,14 @@ impl MemoryConfig {
             config.storage_path = Some(PathBuf::from(v));
         }
         if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_REPLICATION_FACTOR")
-            && let Ok(n) = v.parse()
+            && let Ok(n) = v.parse::<usize>()
         {
-            config.replication_factor = n;
+            config.replication_factor = n.max(1);
         }
         if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_QUERY_FANOUT")
-            && let Ok(n) = v.parse()
+            && let Ok(n) = v.parse::<usize>()
         {
-            config.query_fanout = n;
+            config.query_fanout = n.max(1);
         }
         if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_GOSSIP_ENABLED") {
             config.gossip_enabled = v != "0" && v.to_lowercase() != "false";

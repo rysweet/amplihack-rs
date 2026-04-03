@@ -8,7 +8,7 @@ pub(crate) const FAILURE_CATEGORIES: &[(&str, &[&str])] = &[
     ),
     (
         "temporal_ordering_wrong",
-        &["before", "after", "order", "sequence", "first"],
+        &["before", "after", "wrong order", "first"],
     ),
     (
         "intent_misclassification",

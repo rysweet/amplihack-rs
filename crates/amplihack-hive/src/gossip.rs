@@ -95,8 +95,23 @@ impl GossipProtocol {
     }
 
     /// Select a subset of peers to gossip with based on fanout.
+    ///
+    /// Uses a round-based shuffle to avoid always picking the same first-N peers.
     pub fn select_peers(&self, all_peers: &[String]) -> Vec<String> {
         let n = self.config.fanout.min(all_peers.len());
-        all_peers[..n].to_vec()
+        if n == 0 || all_peers.is_empty() {
+            return Vec::new();
+        }
+        let mut peers: Vec<String> = all_peers.to_vec();
+        // Simple deterministic shuffle seeded by the current round number.
+        // Fisher-Yates using a basic LCG so we don't need the `rand` crate.
+        let mut rng = self.round.wrapping_mul(6364136223846793005).wrapping_add(1);
+        for i in (1..peers.len()).rev() {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let j = (rng >> 33) as usize % (i + 1);
+            peers.swap(i, j);
+        }
+        peers.truncate(n);
+        peers
     }
 }

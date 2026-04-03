@@ -214,18 +214,22 @@ fn collect_responses(bus: &mut dyn EventBus, query_id: &str) -> Vec<AgentAnswer>
     let mut answers = Vec::new();
 
     for event in events {
-        if let Ok(crate::workload::HiveEvent::QueryResponse {
-            query_id: qid,
-            answer,
-            confidence,
-        }) = serde_json::from_value::<crate::workload::HiveEvent>(event.payload)
-            && qid == query_id
-        {
-            answers.push(AgentAnswer {
-                agent_id: event.source_id,
+        match serde_json::from_value::<crate::workload::HiveEvent>(event.payload.clone()) {
+            Ok(crate::workload::HiveEvent::QueryResponse {
+                query_id: qid,
                 answer,
                 confidence,
-            });
+            }) if qid == query_id => {
+                answers.push(AgentAnswer {
+                    agent_id: event.source_id,
+                    answer,
+                    confidence,
+                });
+            }
+            _ => {
+                // Re-publish unmatched events so other queries can consume them
+                let _ = bus.publish(event);
+            }
         }
     }
 

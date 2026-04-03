@@ -250,7 +250,7 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     fn import_edges(&mut self, edges: &[EdgeQuad]) -> anyhow::Result<usize> {
-        let existing: HashSet<_> = self
+        let mut existing: HashSet<_> = self
             .edges
             .iter()
             .map(|(rt, f, t, _)| (rt.clone(), f.clone(), t.clone()))
@@ -261,6 +261,7 @@ impl GraphStore for InMemoryGraphStore {
             if !existing.contains(&key) {
                 self.edges
                     .push((rt.clone(), from.clone(), to.clone(), props.clone()));
+                existing.insert(key);
                 count += 1;
             }
         }

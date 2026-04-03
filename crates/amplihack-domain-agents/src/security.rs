@@ -62,6 +62,17 @@ impl SecurityAuditor {
         })
     }
 
+    fn severity_rank(severity: &str) -> u8 {
+        match severity.to_lowercase().as_str() {
+            "critical" => 4,
+            "high" => 3,
+            "medium" => 2,
+            "low" => 1,
+            "info" => 0,
+            _ => 0,
+        }
+    }
+
     fn find_vulnerabilities(&self, code: &str) -> Vec<Vulnerability> {
         let mut vulns = Vec::new();
         let lower = code.to_lowercase();
@@ -123,6 +134,8 @@ impl SecurityAuditor {
             });
         }
 
+        let threshold = Self::severity_rank(&self.config.severity_threshold);
+        vulns.retain(|v| Self::severity_rank(&v.severity) >= threshold);
         vulns
     }
 }

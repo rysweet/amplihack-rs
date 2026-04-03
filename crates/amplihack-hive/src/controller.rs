@@ -25,9 +25,6 @@ impl HiveController {
 
     /// Set the desired manifest for the hive.
     pub fn apply(&mut self, manifest: HiveManifest) -> Result<()> {
-        self.current.running_agents = manifest.agents.clone();
-        self.current.graph_status = "ready".into();
-        self.current.bus_status = "ready".into();
         self.desired = Some(manifest);
         Ok(())
     }

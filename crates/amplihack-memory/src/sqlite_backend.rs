@@ -149,7 +149,7 @@ impl SqliteBackend {
                 .query_map(rusqlite::params![query, limit as i64], |row| {
                     Self::row_to_entry(row)
                 })?
-                .filter_map(|r| r.ok())
+                .filter_map(|r| r.map_err(|e| eprintln!("WARNING: skipping corrupted row: {e}")).ok())
                 .collect();
             Ok(entries)
         }
@@ -165,12 +165,18 @@ impl SqliteBackend {
         let metadata_str: String = row.get(6)?;
         let tags_str: String = row.get(9)?;
         let memory_type_str: String = row.get(3)?;
+        let memory_type = match serde_json::from_str::<MemoryType>(&format!("\"{}\"", memory_type_str)) {
+            Ok(mt) => mt,
+            Err(_) => {
+                eprintln!("WARNING: unknown memory_type '{}', defaulting to Semantic", memory_type_str);
+                MemoryType::Semantic
+            }
+        };
         Ok(MemoryEntry {
             id: row.get(0)?,
             session_id: row.get(1)?,
             agent_id: row.get(2)?,
-            memory_type: serde_json::from_str(&format!("\"{}\"", memory_type_str))
-                .unwrap_or(MemoryType::Semantic),
+            memory_type,
             title: row.get(4)?,
             content: row.get(5)?,
             metadata: serde_json::from_str(&metadata_str).unwrap_or_default(),
@@ -267,7 +273,7 @@ impl MemoryBackend for SqliteBackend {
         let mut stmt = conn.prepare(&sql)?;
         let entries = stmt
             .query_map(param_refs.as_slice(), Self::row_to_entry)?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| r.map_err(|e| eprintln!("WARNING: skipping corrupted row: {e}")).ok())
             .collect();
         Ok(entries)
     }
@@ -308,7 +314,7 @@ impl MemoryBackend for SqliteBackend {
                     last_accessed: row.get(3)?,
                 })
             })?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| r.map_err(|e| eprintln!("WARNING: skipping corrupted row: {e}")).ok())
             .collect();
         Ok(sessions)
     }

@@ -91,6 +91,9 @@ pub fn make_query_event(question: &str) -> Result<(String, BusEvent)> {
 
 /// Create a query-response event.
 pub fn make_query_response_event(query_id: &str, answer: &str, confidence: f64) -> Result<BusEvent> {
+    if !(0.0..=1.0).contains(&confidence) {
+        return Err(crate::error::HiveError::InvalidConfidence(confidence));
+    }
     let event = HiveEvent::QueryResponse {
         query_id: query_id.to_string(),
         answer: answer.to_string(),

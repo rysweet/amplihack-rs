@@ -53,6 +53,18 @@ impl Intent {
 // IntentDetector
 // ---------------------------------------------------------------------------
 
+/// Question-word prefixes used for heuristic intent detection.
+pub const QUESTION_WORDS: &[&str] = &[
+    "what", "who", "where", "when", "why", "how", "which", "is", "are", "do", "does", "can",
+    "could", "would", "should",
+];
+
+/// Command prefixes used for heuristic intent detection.
+pub const COMMAND_WORDS: &[&str] = &[
+    "run", "execute", "create", "delete", "build", "test", "deploy", "install", "fix", "update",
+    "start", "stop",
+];
+
 /// Classifies raw text input into an `Intent`.
 ///
 /// Port of Python `IntentDetector`.
@@ -66,14 +78,8 @@ pub struct IntentDetector {
 impl IntentDetector {
     pub fn new() -> Self {
         Self {
-            question_words: vec![
-                "what", "who", "where", "when", "why", "how", "which", "is", "are", "do", "does",
-                "can", "could", "would", "should",
-            ],
-            command_words: vec![
-                "run", "execute", "create", "delete", "build", "test", "deploy", "install", "fix",
-                "update", "start", "stop",
-            ],
+            question_words: QUESTION_WORDS.to_vec(),
+            command_words: COMMAND_WORDS.to_vec(),
         }
     }
 

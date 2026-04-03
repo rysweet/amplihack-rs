@@ -91,7 +91,17 @@ impl BloomFilter {
     const HEADER_SIZE: usize = 20;
 
     /// Serialize to bytes for network transmission.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        anyhow::ensure!(
+            self.num_bits <= u32::MAX as usize,
+            "num_bits {} exceeds u32::MAX",
+            self.num_bits
+        );
+        anyhow::ensure!(
+            self.count <= u32::MAX as usize,
+            "count {} exceeds u32::MAX",
+            self.count
+        );
         let mut out = Vec::with_capacity(Self::HEADER_SIZE + self.bits.len());
         out.extend_from_slice(&Self::MAGIC);
         out.extend_from_slice(&Self::VERSION.to_le_bytes());
@@ -99,7 +109,7 @@ impl BloomFilter {
         out.extend_from_slice(&self.num_hashes.to_le_bytes());
         out.extend_from_slice(&(self.count as u32).to_le_bytes());
         out.extend_from_slice(&self.bits);
-        out
+        Ok(out)
     }
 
     /// Deserialize from bytes.
@@ -208,7 +218,7 @@ mod tests {
         let mut bf = BloomFilter::new(1000, 0.01);
         bf.add("test-item-1");
         bf.add("test-item-2");
-        let bytes = bf.to_bytes();
+        let bytes = bf.to_bytes().unwrap();
         let bf2 = BloomFilter::from_bytes(&bytes).unwrap();
         assert!(bf2.might_contain("test-item-1"));
         assert!(bf2.might_contain("test-item-2"));
@@ -233,7 +243,7 @@ mod tests {
     #[test]
     fn magic_and_version_present() {
         let bf = BloomFilter::new(100, 0.01);
-        let bytes = bf.to_bytes();
+        let bytes = bf.to_bytes().unwrap();
         assert_eq!(&bytes[0..4], b"ABLM");
         assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
     }

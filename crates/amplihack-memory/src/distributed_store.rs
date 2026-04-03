@@ -11,7 +11,7 @@ use crate::bloom::BloomFilter;
 use crate::graph_store::{GraphStore, Props};
 use crate::hash_ring::HashRing;
 use crate::memory_store::InMemoryGraphStore;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use tracing::{debug, info, warn};
 
 /// Exported node representation: `(table, node_id, properties)` — matches [`NodeTriple`].
@@ -51,7 +51,7 @@ impl AgentShard {
 /// Distributed graph store with DHT sharding and gossip protocol.
 pub struct DistributedGraphStore {
     ring: HashRing,
-    shards: HashMap<String, AgentShard>,
+    shards: BTreeMap<String, AgentShard>,
     config: DistributedConfig,
     next_id: u64,
 }
@@ -60,7 +60,7 @@ impl DistributedGraphStore {
     pub fn new(config: DistributedConfig) -> Self {
         Self {
             ring: HashRing::default_ring(),
-            shards: HashMap::new(),
+            shards: BTreeMap::new(),
             config,
             next_id: 0,
         }

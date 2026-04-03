@@ -115,7 +115,7 @@ impl MemoryCoordinator {
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
         // Token budget enforcement
-        let budget_chars = query.token_budget * CHARS_PER_TOKEN;
+        let budget_chars = query.token_budget.saturating_mul(CHARS_PER_TOKEN);
         let mut used_chars = 0;
         let limit = if query.limit > 0 { query.limit } else { 20 };
         let mut results = Vec::with_capacity(limit.min(scored.len()));

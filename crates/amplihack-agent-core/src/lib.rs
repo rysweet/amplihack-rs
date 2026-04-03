@@ -18,7 +18,7 @@ pub mod task_queue;
 // Re-exports for ergonomic access.
 pub use agent::{Agent, GoalSeekingAgent};
 pub use error::{AgentError, Result};
-pub use intent::{Intent, IntentDetector};
+pub use intent::{Intent, IntentDetector, COMMAND_WORDS, QUESTION_WORDS};
 pub use lifecycle::{AgentLifecycle, BasicLifecycle, HealthStatus, LifecycleState};
 pub use models::{AgentConfig, AgentInfo, AgentState, TaskPriority, TaskResult, TaskSpec};
 pub use session::{AgentSession, SessionManager};
