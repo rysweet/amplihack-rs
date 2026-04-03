@@ -4,7 +4,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tracing::trace;
+
+use crate::provenance::{self, ProvenanceEntry};
 
 /// The four workflow types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -62,6 +65,9 @@ pub struct ClassificationResult {
 /// Classifies user requests into appropriate workflows.
 pub struct WorkflowClassifier {
     keyword_map: HashMap<WorkflowType, Vec<String>>,
+    /// Base directory for provenance logs (typically the project root).
+    /// When `None`, provenance logging is disabled.
+    log_base_dir: Option<PathBuf>,
 }
 
 impl Default for WorkflowClassifier {
@@ -79,7 +85,16 @@ impl WorkflowClassifier {
                 keyword_map.entry(wf).or_default().extend(kws);
             }
         }
-        Self { keyword_map }
+        Self {
+            keyword_map,
+            log_base_dir: None,
+        }
+    }
+
+    /// Enable provenance logging to the given base directory.
+    pub fn with_log_dir(mut self, base_dir: impl Into<PathBuf>) -> Self {
+        self.log_base_dir = Some(base_dir.into());
+        self
     }
 
     /// Classify a user request. Returns a low-confidence default result for
@@ -102,12 +117,26 @@ impl WorkflowClassifier {
             confidence, "classified request"
         );
 
-        ClassificationResult {
+        let result = ClassificationResult {
             workflow,
             reason,
             confidence,
             keywords,
+        };
+
+        if let Some(base) = &self.log_base_dir {
+            let entry = ProvenanceEntry::new(
+                "classification",
+                result.workflow.as_str(),
+                &result.reason,
+                result.confidence,
+                result.keywords.clone(),
+                request,
+            );
+            provenance::log_classification(base, &entry);
         }
+
+        result
     }
 
     /// Format a user-facing announcement of the classification.
