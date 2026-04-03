@@ -2,9 +2,9 @@
 
 use super::paths::staging_claude_dir;
 use super::types::InstallManifest;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub(super) fn manifest_path() -> Result<PathBuf> {
     Ok(staging_claude_dir()?
@@ -12,9 +12,51 @@ pub(super) fn manifest_path() -> Result<PathBuf> {
         .join("amplihack-manifest.json"))
 }
 
+/// Validate that a relative path entry contains no path-traversal sequences.
+///
+/// Rejects entries that:
+/// - Are absolute paths
+/// - Contain `..` components
+/// - Contain non-normal components after normalization
+fn validate_manifest_entry(entry: &str) -> Result<()> {
+    let path = Path::new(entry);
+
+    if path.is_absolute() {
+        bail!("manifest entry is an absolute path (potential path traversal): {entry}");
+    }
+
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                bail!("manifest entry contains '..' (potential path traversal): {entry}");
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                bail!(
+                    "manifest entry contains root/prefix component (potential path traversal): {entry}"
+                );
+            }
+            Component::Normal(_) | Component::CurDir => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate all path entries in a manifest, returning an error if any contain
+/// path-traversal sequences.
+fn validate_manifest_paths(manifest: &InstallManifest) -> Result<()> {
+    for entry in &manifest.files {
+        validate_manifest_entry(entry)
+            .with_context(|| format!("invalid file entry in manifest: {entry}"))?;
+    }
+    for entry in &manifest.dirs {
+        validate_manifest_entry(entry)
+            .with_context(|| format!("invalid dir entry in manifest: {entry}"))?;
+    }
+    Ok(())
+}
+
 pub(super) fn read_manifest(path: &Path) -> Result<InstallManifest> {
-    // TODO(hardening): validate that manifest path entries contain no path-traversal
-    // sequences (e.g. "../../../etc") before use; file a follow-up issue for this.
     if !path.exists() {
         return Ok(InstallManifest::default());
     }
@@ -36,6 +78,14 @@ pub(super) fn read_manifest(path: &Path) -> Result<InstallManifest> {
             )
         })
         .unwrap_or_default();
+
+    validate_manifest_paths(&manifest).with_context(|| {
+        format!(
+            "manifest at {} contains path-traversal entries",
+            path.display()
+        )
+    })?;
+
     Ok(manifest)
 }
 
