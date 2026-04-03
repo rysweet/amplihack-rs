@@ -112,14 +112,14 @@ mod tests {
 
     #[test]
     fn resolve_tilde() {
-        let home = std::env::var("HOME").unwrap();
+        let home = std::env::var("HOME").expect("HOME must be set for this test");
         let result = PathResolver::resolve("~/docs/x.txt", Path::new("/root"));
         assert_eq!(result, format!("{home}/docs/x.txt"));
     }
 
     #[test]
     fn resolve_bare_tilde() {
-        let home = std::env::var("HOME").unwrap();
+        let home = std::env::var("HOME").expect("HOME must be set for this test");
         let result = PathResolver::resolve("~", Path::new("/root"));
         assert_eq!(result, home);
     }
@@ -143,7 +143,7 @@ mod tests {
             "name": "mylib",
             "cwd": "~/work"
         });
-        let home = std::env::var("HOME").unwrap();
+        let home = std::env::var("HOME").expect("HOME must be set for this test");
         let resolved = PathResolver::resolve_map(&data, Path::new("/project"));
         assert_eq!(resolved["path"], "/project/src/lib.rs");
         assert_eq!(resolved["name"], "mylib"); // not a path field

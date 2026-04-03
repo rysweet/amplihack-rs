@@ -398,3 +398,66 @@ fn find_framework_repo_root_errors_when_archive_lacks_claude_dir() {
         "unexpected error: {err}"
     );
 }
+
+#[test]
+fn read_manifest_rejects_path_traversal_in_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("manifest.json");
+    let bad_manifest = r#"{"files": ["../../../etc/passwd"], "dirs": []}"#;
+    fs::write(&path, bad_manifest).unwrap();
+
+    let result = manifest::read_manifest(&path);
+    assert!(
+        result.is_err(),
+        "manifest with '..' in file entries must be rejected"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("path-traversal") || err.contains("path traversal"),
+        "error should mention path traversal, got: {err}"
+    );
+}
+
+#[test]
+fn read_manifest_rejects_path_traversal_in_dirs() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("manifest.json");
+    let bad_manifest = r#"{"files": [], "dirs": ["foo/../../bar"]}"#;
+    fs::write(&path, bad_manifest).unwrap();
+
+    let result = manifest::read_manifest(&path);
+    assert!(
+        result.is_err(),
+        "manifest with '..' in dir entries must be rejected"
+    );
+}
+
+#[test]
+fn read_manifest_rejects_absolute_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("manifest.json");
+    let bad_manifest = r#"{"files": ["/etc/passwd"], "dirs": []}"#;
+    fs::write(&path, bad_manifest).unwrap();
+
+    let result = manifest::read_manifest(&path);
+    assert!(
+        result.is_err(),
+        "manifest with absolute paths must be rejected"
+    );
+}
+
+#[test]
+fn read_manifest_accepts_valid_relative_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("manifest.json");
+    let good_manifest =
+        r#"{"files": ["agents/amplihack/foo.py", "tools/bar.sh"], "dirs": ["agents/amplihack"]}"#;
+    fs::write(&path, good_manifest).unwrap();
+
+    let result = manifest::read_manifest(&path);
+    assert!(
+        result.is_ok(),
+        "manifest with valid relative paths must be accepted, got: {:?}",
+        result.err()
+    );
+}
