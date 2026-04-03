@@ -1,8 +1,4 @@
 //! Multi-agent hive mind orchestration with 4-layer architecture.
-//!
-//! Provides a shared knowledge graph, event bus, gossip protocol,
-//! CRDT-based convergence, a controller/orchestrator for managing
-//! swarms, hive events, learning feed, and evaluation.
 
 pub mod bloom;
 pub mod controller;
@@ -25,15 +21,15 @@ pub mod reranker;
 pub mod workload;
 
 pub use bloom::BloomFilter;
-pub use controller::HiveController;
+pub use controller::{HiveController, InMemoryGateway, InMemoryGraphStore};
 pub use crdt::{GCounter, GSet, LWWRegister, ORSet, PNCounter};
 pub use dht::{DHTRouter, HashRing, ShardFact, ShardStore};
 pub use embeddings::{cosine_similarity, cosine_similarity_batch, dot_product, normalize};
 pub use error::{HiveError, Result};
-pub use event_bus::{EventBus, LocalEventBus};
+pub use event_bus::{EventBus, LocalEventBus, MAX_MAILBOX_SIZE};
 pub use fact_lifecycle::{decay_confidence, gc_expired_facts, refresh_confidence, FactTTL};
 pub use feed::{FeedConfig, FeedResult, run_feed};
-pub use gossip::{GossipProtocol, convergence_check};
+pub use gossip::{convergence_check, GossipProtocol};
 pub use graph::search::{ScoredFact as KeywordScoredFact, tokenize, word_overlap};
 pub use graph::HiveGraph;
 pub use graph::{
@@ -46,10 +42,15 @@ pub use hive_events::{
     HIVE_QUERY_RESPONSE,
 };
 pub use models::{
-    AgentSpec, BusEvent, GossipConfig, GossipMessage, GraphStats, HiveAgent,
-    HiveEdge, HiveFact, HiveManifest, HiveState, MergeResult,
+    make_event, AgentSpec, BusEvent, EventBusConfig, GatewayConfig, GossipConfig, GossipMessage,
+    GraphStats, GraphStoreConfig, HiveAgent, HiveEdge, HiveFact, HiveManifest, HiveState,
+    MergeResult, DEFAULT_BROADCAST_THRESHOLD, DEFAULT_CONFIDENCE_GATE,
+    DEFAULT_CONTRADICTION_OVERLAP, DEFAULT_QUALITY_THRESHOLD, DEFAULT_TRUST_SCORE,
+    FACT_ID_HEX_LENGTH, GOSSIP_MIN_CONFIDENCE, MAX_TRUST_SCORE, PEER_CONFIDENCE_DISCOUNT,
 };
-pub use orchestrator::{DefaultPromotionPolicy, HiveMindOrchestrator, PromotionPolicy};
+pub use orchestrator::{
+    DefaultPromotionPolicy, HiveMindOrchestrator, PromotionPolicy, PromotionResult,
+};
 pub use quality::{score_content_quality, QualityGate};
 pub use query_expansion::{expand_query, search_expanded};
 pub use reranker::{

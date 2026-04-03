@@ -1,13 +1,7 @@
-use amplihack_hive::{BusEvent, EventBus, LocalEventBus};
-use chrono::Utc;
+use amplihack_hive::{BusEvent, EventBus, LocalEventBus, MAX_MAILBOX_SIZE, make_event};
 
-fn make_event(topic: &str, source: &str) -> BusEvent {
-    BusEvent {
-        topic: topic.to_string(),
-        payload: serde_json::json!({"key": "value"}),
-        source_id: source.to_string(),
-        timestamp: Utc::now(),
-    }
+fn ev(topic: &str, source: &str) -> BusEvent {
+    make_event(topic, source, serde_json::json!({"key": "value"}))
 }
 
 // --- publish tests ---
@@ -15,8 +9,8 @@ fn make_event(topic: &str, source: &str) -> BusEvent {
 #[test]
 fn publish_single_event() {
     let mut bus = LocalEventBus::new();
-    bus.subscribe("topic-a", "handler-1").unwrap();
-    bus.publish(make_event("topic-a", "agent-1")).unwrap();
+    bus.subscribe("handler-1", None).unwrap();
+    bus.publish(ev("topic-a", "agent-1")).unwrap();
     let events = bus.pending_events("handler-1").unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].source_id, "agent-1");
@@ -25,11 +19,10 @@ fn publish_single_event() {
 #[test]
 fn publish_multiple_events() {
     let mut bus = LocalEventBus::new();
-    bus.subscribe("topic-a", "handler-1").unwrap();
-    bus.subscribe("topic-b", "handler-1").unwrap();
-    bus.publish(make_event("topic-a", "agent-1")).unwrap();
-    bus.publish(make_event("topic-a", "agent-2")).unwrap();
-    bus.publish(make_event("topic-b", "agent-1")).unwrap();
+    bus.subscribe("handler-1", None).unwrap();
+    bus.publish(ev("topic-a", "agent-1")).unwrap();
+    bus.publish(ev("topic-a", "agent-2")).unwrap();
+    bus.publish(ev("topic-b", "agent-3")).unwrap();
     let events = bus.pending_events("handler-1").unwrap();
     assert_eq!(events.len(), 3);
 }
@@ -37,44 +30,47 @@ fn publish_multiple_events() {
 #[test]
 fn publish_preserves_event_data() {
     let mut bus = LocalEventBus::new();
-    bus.subscribe("metrics", "handler-1").unwrap();
-    let event = BusEvent {
-        topic: "metrics".to_string(),
-        payload: serde_json::json!({"cpu": 42, "mem": 1024}),
-        source_id: "monitor-1".to_string(),
-        timestamp: Utc::now(),
-    };
-    bus.publish(event.clone()).unwrap();
+    bus.subscribe("handler-1", None).unwrap();
+    let event = make_event("metrics", "monitor-1", serde_json::json!({"cpu": 42, "mem": 1024}));
+    bus.publish(event).unwrap();
     let events = bus.pending_events("handler-1").unwrap();
     assert_eq!(events.len(), 1);
-    assert_eq!(
-        events[0].payload,
-        serde_json::json!({"cpu": 42, "mem": 1024})
-    );
+    assert_eq!(events[0].payload, serde_json::json!({"cpu": 42, "mem": 1024}));
     assert_eq!(events[0].source_id, "monitor-1");
 }
 
 // --- subscribe tests ---
 
 #[test]
-fn subscribe_to_topic() {
+fn subscribe_receives_events() {
     let mut bus = LocalEventBus::new();
-    bus.subscribe("topic-a", "handler-1").unwrap();
-    bus.publish(make_event("topic-a", "agent-1")).unwrap();
+    bus.subscribe("handler-1", None).unwrap();
+    bus.publish(ev("topic-a", "agent-1")).unwrap();
     let events = bus.pending_events("handler-1").unwrap();
     assert_eq!(events.len(), 1);
 }
 
 #[test]
-fn subscribe_multiple_handlers() {
+fn subscribe_with_filter() {
     let mut bus = LocalEventBus::new();
-    bus.subscribe("topic-a", "handler-1").unwrap();
-    bus.subscribe("topic-a", "handler-2").unwrap();
-    bus.publish(make_event("topic-a", "agent-1")).unwrap();
-    let events1 = bus.pending_events("handler-1").unwrap();
-    let events2 = bus.pending_events("handler-2").unwrap();
-    assert_eq!(events1.len(), 1);
-    assert_eq!(events2.len(), 1);
+    bus.subscribe("handler-1", Some(&["topic-a"])).unwrap();
+    bus.publish(ev("topic-a", "agent-1")).unwrap();
+    bus.publish(ev("topic-b", "agent-2")).unwrap();
+    let events = bus.pending_events("handler-1").unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].topic, "topic-a");
+}
+
+#[test]
+fn subscribe_multiple_agents() {
+    let mut bus = LocalEventBus::new();
+    bus.subscribe("handler-1", None).unwrap();
+    bus.subscribe("handler-2", None).unwrap();
+    bus.publish(ev("topic-a", "agent-1")).unwrap();
+    let e1 = bus.pending_events("handler-1").unwrap();
+    let e2 = bus.pending_events("handler-2").unwrap();
+    assert_eq!(e1.len(), 1);
+    assert_eq!(e2.len(), 1);
 }
 
 // --- unsubscribe tests ---
@@ -82,9 +78,9 @@ fn subscribe_multiple_handlers() {
 #[test]
 fn unsubscribe_handler() {
     let mut bus = LocalEventBus::new();
-    bus.subscribe("topic-a", "handler-1").unwrap();
-    bus.unsubscribe("topic-a", "handler-1").unwrap();
-    bus.publish(make_event("topic-a", "agent-1")).unwrap();
+    bus.subscribe("handler-1", None).unwrap();
+    bus.unsubscribe("handler-1").unwrap();
+    bus.publish(ev("topic-a", "agent-1")).unwrap();
     let events = bus.pending_events("handler-1").unwrap();
     assert!(events.is_empty());
 }
@@ -92,8 +88,7 @@ fn unsubscribe_handler() {
 #[test]
 fn unsubscribe_nonexistent_handler() {
     let mut bus = LocalEventBus::new();
-    // Should succeed as a no-op
-    bus.unsubscribe("topic-x", "no-such-handler").unwrap();
+    bus.unsubscribe("no-such-handler").unwrap();
 }
 
 // --- pending_events tests ---
@@ -101,8 +96,8 @@ fn unsubscribe_nonexistent_handler() {
 #[test]
 fn pending_events_after_publish() {
     let mut bus = LocalEventBus::new();
-    bus.subscribe("topic-a", "handler-1").unwrap();
-    bus.publish(make_event("topic-a", "agent-1")).unwrap();
+    bus.subscribe("handler-1", None).unwrap();
+    bus.publish(ev("topic-a", "agent-1")).unwrap();
     let events = bus.pending_events("handler-1").unwrap();
     assert_eq!(events.len(), 1);
 }
@@ -114,45 +109,50 @@ fn pending_events_empty() {
     assert!(events.is_empty());
 }
 
-// --- drain_events tests ---
+// --- poll tests ---
 
 #[test]
-fn drain_events_clears_queue() {
+fn poll_drains_queue() {
     let mut bus = LocalEventBus::new();
-    bus.subscribe("topic-a", "handler-1").unwrap();
-    bus.publish(make_event("topic-a", "agent-1")).unwrap();
-    let events = bus.drain_events("handler-1").unwrap();
+    bus.subscribe("handler-1", None).unwrap();
+    bus.publish(ev("topic-a", "agent-1")).unwrap();
+    let events = bus.poll("handler-1").unwrap();
     assert_eq!(events.len(), 1);
-    // Queue should be empty after drain
     let remaining = bus.pending_events("handler-1").unwrap();
     assert!(remaining.is_empty());
 }
 
 #[test]
-fn drain_events_multiple_topics() {
+fn poll_multiple_topics() {
     let mut bus = LocalEventBus::new();
-    bus.subscribe("topic-a", "handler-1").unwrap();
-    bus.subscribe("topic-b", "handler-1").unwrap();
-    bus.publish(make_event("topic-a", "agent-1")).unwrap();
-    bus.publish(make_event("topic-b", "agent-2")).unwrap();
-    let events = bus.drain_events("handler-1").unwrap();
+    bus.subscribe("handler-1", None).unwrap();
+    bus.publish(ev("topic-a", "agent-1")).unwrap();
+    bus.publish(ev("topic-b", "agent-2")).unwrap();
+    let events = bus.poll("handler-1").unwrap();
     assert_eq!(events.len(), 2);
 }
+
+// --- close tests ---
+
+#[test]
+fn close_clears_all_state() {
+    let mut bus = LocalEventBus::new();
+    bus.subscribe("handler-1", None).unwrap();
+    bus.publish(ev("topic-a", "agent-1")).unwrap();
+    bus.close().unwrap();
+    assert!(bus.pending_events("handler-1").unwrap().is_empty());
+}
+
+// --- event ordering ---
 
 #[test]
 fn event_ordering_preserved() {
     let mut bus = LocalEventBus::new();
-    bus.subscribe("topic-a", "handler-1").unwrap();
+    bus.subscribe("handler-1", None).unwrap();
     for i in 0..5 {
-        let event = BusEvent {
-            topic: "topic-a".to_string(),
-            payload: serde_json::json!({"seq": i}),
-            source_id: format!("agent-{i}"),
-            timestamp: Utc::now(),
-        };
-        bus.publish(event).unwrap();
+        bus.publish(ev("topic-a", &format!("agent-{i}"))).unwrap();
     }
-    let events = bus.drain_events("handler-1").unwrap();
+    let events = bus.poll("handler-1").unwrap();
     assert_eq!(events.len(), 5);
     for (i, event) in events.iter().enumerate() {
         assert_eq!(event.source_id, format!("agent-{i}"));
@@ -169,4 +169,9 @@ fn new_local_event_bus_is_constructible() {
 #[test]
 fn local_event_bus_default_is_constructible() {
     let _bus: LocalEventBus = Default::default();
+}
+
+#[test]
+fn max_mailbox_size_is_positive() {
+    const { assert!(MAX_MAILBOX_SIZE > 0) };
 }

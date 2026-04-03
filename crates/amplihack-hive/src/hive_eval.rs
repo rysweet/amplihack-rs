@@ -134,7 +134,7 @@ pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveE
     }
 
     // Subscribe to response topic
-    bus.subscribe(HIVE_QUERY_RESPONSE, EVAL_HANDLER)
+    bus.subscribe(EVAL_HANDLER, Some(&[HIVE_QUERY_RESPONSE]))
         .map_err(|e| HiveError::EventBus(format!("Failed to subscribe for eval: {e}")))?;
 
     let deadline = std::time::Instant::now()
@@ -162,7 +162,7 @@ pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveE
     }
 
     // Unsubscribe — log but don't fail the whole eval on cleanup error
-    if let Err(e) = bus.unsubscribe(HIVE_QUERY_RESPONSE, EVAL_HANDLER) {
+    if let Err(e) = bus.unsubscribe(EVAL_HANDLER) {
         warn!(error = %e, "Failed to unsubscribe eval handler");
     }
 
@@ -226,8 +226,8 @@ fn eval_single_question(
 
 /// Collect responses for a specific query from the event bus.
 fn collect_responses(bus: &mut dyn EventBus, query_id: &str) -> Vec<AgentAnswer> {
-    let events = bus.drain_events(EVAL_HANDLER).unwrap_or_else(|e| {
-        warn!(error = %e, "drain_events failed, falling back to empty");
+    let events = bus.poll(EVAL_HANDLER).unwrap_or_else(|e| {
+        warn!(error = %e, "poll failed, falling back to empty");
         Vec::new()
     });
     let mut answers = Vec::new();
