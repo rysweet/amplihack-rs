@@ -1,5 +1,4 @@
 use super::*;
-use super::*;
 
 #[allow(clippy::too_many_arguments)]
 fn make_signals(
