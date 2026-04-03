@@ -20,6 +20,10 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Use the Fleet Dashboard](./howto/use-fleet-dashboard.md) — Open the cockpit, start and adopt sessions, search sessions, run the reasoner from the TUI, and exit cleanly
 - [Run Fleet Scout and Advance on Azure VMs](./howto/run-fleet-scout-and-advance.md) — Discover sessions across VMs, reason about them with the LLM backend, and execute recommended actions
 - [Migrate Memory to the SQLite Backend](./howto/migrate-memory-backend.md) — Export hierarchical memory to portable JSON, switch to SQLite, and verify the migration
+- [Create a Custom Agent](./howto/create-custom-agent.md) — Build a domain agent with memory integration and evaluation
+- [Run Agent Evaluations](./howto/run-agent-evaluations.md) — Evaluate agent performance across progressive difficulty levels
+- [Deploy a Hive Swarm](./howto/deploy-hive-swarm.md) — Deploy multi-agent hive on Azure Container Apps
+- [Generate an Agent from a Goal](./howto/generate-agent-from-goal.md) — Create specialized agents from natural-language descriptions
 
 ### Reference
 
@@ -37,6 +41,13 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [amplihack query-code](./reference/query-code-command.md) — Full CLI reference for querying the native Kuzu code-graph
 - [amplihack fleet](./reference/fleet-command.md) — Full CLI reference for the fleet dashboard: key bindings, refresh architecture, persistent state schema, and security properties
 - [Memory Backend](./reference/memory-backend.md) — `BackendChoice` values, env vars, flat and hierarchical schema, transfer formats, and security properties
+- [Agent Configuration](./reference/agent-configuration.md) — Complete configuration reference for agents, memory, eval, and hive
+- [amplihack-agent-core API](./reference/agent-core-api.md) — Agent lifecycle, session management, and OODA loop
+- [amplihack-domain-agents API](./reference/domain-agents-api.md) — Teaching, code review, and meeting synthesizer agents
+- [amplihack-agent-eval API](./reference/agent-eval-api.md) — Progressive evaluation framework and graders
+- [amplihack-hive API](./reference/hive-api.md) — Multi-agent orchestration and workload management
+- [amplihack-agent-generator API](./reference/agent-generator-api.md) — Goal-to-agent pipeline
+- [amplihack-memory Extended API](./reference/memory-extended-api.md) — Memory facade, manager, Kuzu store, and evaluation
 
 ### Concepts
 
@@ -48,6 +59,11 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Memory Backend Architecture](./concepts/memory-backend-architecture.md) — Backend-neutral trait seams, auto-detection order, SQLite vs. graph-db storage layout, and the transfer layer
 - [Fleet Dashboard Architecture](./concepts/fleet-dashboard-architecture.md) — Thread model, state design, persistence layer, terminal safety, and security rationale for `amplihack fleet`
 - [Fleet Admiral Reasoning Engine](./concepts/fleet-admiral-reasoning.md) — How the LLM-backed reasoner works: what it sees, the five actions, confidence scoring, failure modes, and design rationale
+- [Agent Lifecycle](./concepts/agent-lifecycle.md) — Agent state machine, session management, OODA loop, and subprocess isolation
+- [Domain Agents](./concepts/domain-agents.md) — Specialized goal-seeking agents: teaching, code review, meeting synthesis
+- [Evaluation Framework](./concepts/eval-framework.md) — Progressive L1–L12 evaluation, graders, and self-improvement
+- [Hive Orchestration](./concepts/hive-orchestration.md) — Multi-agent swarm deployment, events, and workload management
+- [Goal Agent Generator](./concepts/agent-generator.md) — Four-stage pipeline: analyze → plan → synthesize → assemble
 
 ## Quick Start
 
