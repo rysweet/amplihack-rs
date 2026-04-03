@@ -26,6 +26,7 @@ pub mod models;
 pub(crate) mod safe_calc;
 pub mod sdk_adapters;
 pub mod session;
+pub mod sub_agents;
 pub mod task_queue;
 pub mod temporal_reasoning;
 
@@ -53,4 +54,9 @@ pub use sdk_adapters::{
     create_adapter, create_adapter_by_name, AdapterResult, AgentTool, ClaudeAdapter,
     CopilotAdapter, Goal, MicrosoftAdapter, SdkAdapter, SdkAdapterConfig, SdkClient,
     SdkClientResponse, SdkType, ToolCategory,
+};
+pub use sub_agents::{
+    AgentSpawner, AnswerContext, CoordinatorAgent, MemoryAgent, MultiAgentConfig,
+    MultiAgentOrchestrator, RetrievalStrategy, SpawnedAgent, SpawnedAgentStatus, SpecialistType,
+    SubAgentMemory, TaskRoute,
 };
