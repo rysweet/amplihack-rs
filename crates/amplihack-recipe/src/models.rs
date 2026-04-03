@@ -195,10 +195,7 @@ impl StepResult {
         }
     }
 
-    pub fn failure(
-        step_id: impl Into<String>,
-        error: impl Into<String>,
-    ) -> Self {
+    pub fn failure(step_id: impl Into<String>, error: impl Into<String>) -> Self {
         Self {
             step_id: step_id.into(),
             status: StepStatus::Failed,

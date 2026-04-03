@@ -124,11 +124,7 @@ impl MockAgentAdapter {
         }
     }
 
-    pub fn with_response(
-        mut self,
-        question: impl Into<String>,
-        answer: impl Into<String>,
-    ) -> Self {
+    pub fn with_response(mut self, question: impl Into<String>, answer: impl Into<String>) -> Self {
         self.responses.insert(question.into(), answer.into());
         self
     }
@@ -152,18 +148,14 @@ impl AgentAdapter for MockAgentAdapter {
 
     fn answer(&mut self, question: &str) -> Result<AgentResponse, EvalError> {
         let question_lower = question.to_lowercase();
-        let answer = self
-            .responses
-            .get(question)
-            .cloned()
-            .unwrap_or_else(|| {
-                for content in &self.learned {
-                    if content.to_lowercase().contains(&question_lower) {
-                        return content.clone();
-                    }
+        let answer = self.responses.get(question).cloned().unwrap_or_else(|| {
+            for content in &self.learned {
+                if content.to_lowercase().contains(&question_lower) {
+                    return content.clone();
                 }
-                self.default_response.clone()
-            });
+            }
+            self.default_response.clone()
+        });
 
         let confidence = if self.responses.contains_key(question) {
             0.95
@@ -278,8 +270,7 @@ mod tests {
 
     #[test]
     fn mock_adapter_default_response() {
-        let mut agent = MockAgentAdapter::new("test")
-            .with_default_response("unknown");
+        let mut agent = MockAgentAdapter::new("test").with_default_response("unknown");
 
         let response = agent.answer("random question").unwrap();
         assert_eq!(response.answer, "unknown");
@@ -313,8 +304,7 @@ mod tests {
 
     #[test]
     fn agent_response_serde() {
-        let response = AgentResponse::new("test")
-            .with_confidence(0.5);
+        let response = AgentResponse::new("test").with_confidence(0.5);
         let json = serde_json::to_string(&response).unwrap();
         let restored: AgentResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.answer, "test");
@@ -350,8 +340,7 @@ mod tests {
 
     #[test]
     fn subprocess_config_serde() {
-        let config = SubprocessConfig::new("/bin/test")
-            .with_timeout(120);
+        let config = SubprocessConfig::new("/bin/test").with_timeout(120);
         let json = serde_json::to_string(&config).unwrap();
         let restored: SubprocessConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.timeout_seconds, 120);

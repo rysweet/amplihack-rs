@@ -1,6 +1,4 @@
-use amplihack_agent_core::{
-    Agent, AgentConfig, AgentState, GoalSeekingAgent,
-};
+use amplihack_agent_core::{Agent, AgentConfig, AgentState, GoalSeekingAgent};
 use amplihack_memory::MemoryType;
 
 // ---------------------------------------------------------------------------

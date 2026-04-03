@@ -16,7 +16,9 @@ pub mod progressive;
 pub mod self_improve;
 
 pub use agent_adapter::{AgentAdapter, AgentResponse, MockAgentAdapter, SubprocessAdapter};
-pub use domain_eval::{DomainEvalAgent, DomainEvalHarness, EvalReport, EvalScenario, ScenarioResult};
+pub use domain_eval::{
+    DomainEvalAgent, DomainEvalHarness, EvalReport, EvalScenario, ScenarioResult,
+};
 pub use error::EvalError;
 pub use grader::{Grader, SimpleGrader};
 pub use harness::HarnessRunner;

@@ -27,8 +27,8 @@ fn retrieval_pipeline_default_stages() {
 
 #[test]
 fn retrieval_pipeline_custom_stages() {
-    let pipeline = RetrievalPipeline::new()
-        .with_stages(vec![RetrievalStage::Filter, RetrievalStage::Rank]);
+    let pipeline =
+        RetrievalPipeline::new().with_stages(vec![RetrievalStage::Filter, RetrievalStage::Rank]);
     assert_eq!(pipeline.stages().len(), 2);
 }
 
@@ -92,7 +92,10 @@ fn retrieval_rank_stage_sorts_by_score() {
     let pipeline = RetrievalPipeline::new();
     let entries = vec![
         ScoredEntry::new(semantic_entry("low relevance content here"), 0.2),
-        ScoredEntry::new(semantic_entry("high relevance test query content here"), 0.8),
+        ScoredEntry::new(
+            semantic_entry("high relevance test query content here"),
+            0.8,
+        ),
     ];
     let query = MemoryQuery::new("test query");
     let ranked = pipeline.rank(entries, &query);
@@ -182,8 +185,8 @@ fn storage_pipeline_default_stages() {
 
 #[test]
 fn storage_pipeline_custom_stages() {
-    let pipeline = StoragePipeline::new()
-        .with_stages(vec![StorageStage::Validate, StorageStage::Store]);
+    let pipeline =
+        StoragePipeline::new().with_stages(vec![StorageStage::Validate, StorageStage::Store]);
     assert_eq!(pipeline.stages().len(), 2);
 }
 
@@ -267,7 +270,12 @@ fn storage_check_duplicate_returns_none_for_fresh() {
 #[test]
 fn storage_classify_keeps_existing_type() {
     let pipeline = StoragePipeline::new();
-    let entry = MemoryEntry::new("s1", "a1", MemoryType::Working, "some working memory content");
+    let entry = MemoryEntry::new(
+        "s1",
+        "a1",
+        MemoryType::Working,
+        "some working memory content",
+    );
     assert_eq!(pipeline.classify(&entry), MemoryType::Working);
 }
 
@@ -288,11 +296,7 @@ fn storage_stage_as_str() {
 
 #[test]
 fn storage_result_accepted_constructor() {
-    let result = StorageResult::accepted(
-        "entry-1".to_string(),
-        MemoryType::Semantic,
-        0.75,
-    );
+    let result = StorageResult::accepted("entry-1".to_string(), MemoryType::Semantic, 0.75);
     assert!(result.accepted);
     assert_eq!(result.entry_id, Some("entry-1".to_string()));
     assert_eq!(result.importance_score, 0.75);
@@ -303,22 +307,36 @@ fn storage_result_accepted_constructor() {
 fn storage_result_rejected_constructor() {
     let result = StorageResult::rejected(
         MemoryType::Semantic,
-        RejectionReason::TooShort { min_length: 10, actual: 3 },
+        RejectionReason::TooShort {
+            min_length: 10,
+            actual: 3,
+        },
     );
     assert!(!result.accepted);
     assert!(result.entry_id.is_none());
     assert_eq!(
         result.rejection_reason,
-        Some(RejectionReason::TooShort { min_length: 10, actual: 3 })
+        Some(RejectionReason::TooShort {
+            min_length: 10,
+            actual: 3
+        })
     );
 }
 
 #[test]
 fn rejection_reason_variants() {
-    let _ = RejectionReason::TooShort { min_length: 10, actual: 5 };
+    let _ = RejectionReason::TooShort {
+        min_length: 10,
+        actual: 5,
+    };
     let _ = RejectionReason::TrivialContent;
-    let _ = RejectionReason::Duplicate { existing_id: "dup-1".to_string() };
-    let _ = RejectionReason::TooLarge { max_length: 100_000, actual: 200_000 };
+    let _ = RejectionReason::Duplicate {
+        existing_id: "dup-1".to_string(),
+    };
+    let _ = RejectionReason::TooLarge {
+        max_length: 100_000,
+        actual: 200_000,
+    };
     let _ = RejectionReason::InvalidType;
     let _ = RejectionReason::Custom("custom reason".to_string());
 }
@@ -334,7 +352,10 @@ fn storage_pipeline_dedup_rejects_second_identical_entry() {
     let second = pipeline.execute(&entry).unwrap();
     assert!(!second.accepted, "Duplicate entry should be rejected");
     assert!(
-        matches!(second.rejection_reason, Some(RejectionReason::Duplicate { .. })),
+        matches!(
+            second.rejection_reason,
+            Some(RejectionReason::Duplicate { .. })
+        ),
         "Should be rejected as duplicate"
     );
 }

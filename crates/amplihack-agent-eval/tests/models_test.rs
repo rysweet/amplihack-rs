@@ -240,7 +240,10 @@ fn progressive_result_add_passed() {
 fn progressive_result_add_failed() {
     let cfg = ProgressiveConfig::new("agent", PathBuf::from("./out")).unwrap();
     let mut pr = ProgressiveResult::new(cfg);
-    pr.add_result(LevelResult::failed(TestLevel::L2MultiSourceSynthesis, "err"));
+    pr.add_result(LevelResult::failed(
+        TestLevel::L2MultiSourceSynthesis,
+        "err",
+    ));
     assert!(pr.passed_levels.is_empty());
     assert_eq!(pr.failed_levels, vec![2]);
 }
@@ -250,7 +253,10 @@ fn progressive_result_total_score_averaged() {
     let cfg = ProgressiveConfig::new("agent", PathBuf::from("./out")).unwrap();
     let mut pr = ProgressiveResult::new(cfg);
     pr.add_result(LevelResult::passed(TestLevel::L1Recall, vec![1.0]));
-    pr.add_result(LevelResult::passed(TestLevel::L2MultiSourceSynthesis, vec![0.5]));
+    pr.add_result(LevelResult::passed(
+        TestLevel::L2MultiSourceSynthesis,
+        vec![0.5],
+    ));
     assert!((pr.total_score - 0.75).abs() < f64::EPSILON);
 }
 

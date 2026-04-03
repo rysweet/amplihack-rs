@@ -1,6 +1,4 @@
-use amplihack_hive::{
-    DefaultPromotionPolicy, HiveFact, HiveMindOrchestrator, PromotionPolicy,
-};
+use amplihack_hive::{DefaultPromotionPolicy, HiveFact, HiveMindOrchestrator, PromotionPolicy};
 use chrono::Utc;
 
 fn make_fact(concept: &str, confidence: f64) -> HiveFact {

@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use crate::project_init_detect::{detect_languages, generate_from_template, read_preview};
 #[cfg(test)]
 use crate::project_init_detect::extract_description;
+use crate::project_init_detect::{detect_languages, generate_from_template, read_preview};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -118,7 +118,6 @@ const INDICATOR_THRESHOLD: usize = 2;
 
 /// Relative path from the project root to `PROJECT.md`.
 const PROJECT_MD_REL: &str = ".claude/context/PROJECT.md";
-
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -298,7 +297,6 @@ pub fn initialize_project_md(
         template_used: Some("default".to_owned()),
     })
 }
-
 
 #[cfg(test)]
 #[path = "tests/project_init_tests.rs"]

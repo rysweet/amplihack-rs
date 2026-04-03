@@ -44,17 +44,46 @@ impl IntentRouter {
     }
 
     const SECURITY_KEYWORDS: &'static [&'static str] = &[
-        "vulnerability", "security", "audit", "exploit", "injection", "xss", "csrf", "unsafe", "risk",
+        "vulnerability",
+        "security",
+        "audit",
+        "exploit",
+        "injection",
+        "xss",
+        "csrf",
+        "unsafe",
+        "risk",
     ];
     const CODE_KEYWORDS: &'static [&'static str] = &[
-        "code", "function", "class", "implement", "refactor", "generate", "program", "compile",
-        "syntax", "algorithm",
+        "code",
+        "function",
+        "class",
+        "implement",
+        "refactor",
+        "generate",
+        "program",
+        "compile",
+        "syntax",
+        "algorithm",
     ];
     const TEACHING_KEYWORDS: &'static [&'static str] = &[
-        "teach", "explain", "lesson", "tutorial", "learn", "understand", "concept", "course",
+        "teach",
+        "explain",
+        "lesson",
+        "tutorial",
+        "learn",
+        "understand",
+        "concept",
+        "course",
     ];
     const LEARNING_KEYWORDS: &'static [&'static str] = &[
-        "remember", "recall", "store", "memorize", "knowledge", "fact", "note",
+        "remember",
+        "recall",
+        "store",
+        "memorize",
+        "knowledge",
+        "fact",
+        "note",
     ];
 
     fn classify(text: &str) -> Result<RoutingDecision> {

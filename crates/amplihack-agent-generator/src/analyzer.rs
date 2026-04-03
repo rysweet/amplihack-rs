@@ -77,10 +77,7 @@ impl PromptAnalyzer {
                     continue;
                 }
                 let lower = trimmed.to_lowercase();
-                if lower.contains("must")
-                    || lower.contains("should")
-                    || lower.contains("require")
-                {
+                if lower.contains("must") || lower.contains("should") || lower.contains("require") {
                     constraints.push(trimmed.to_string());
                 }
             }

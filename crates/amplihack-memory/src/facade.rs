@@ -83,11 +83,7 @@ impl MemoryFacade {
     }
 
     /// Store a memory. Returns the entry ID.
-    pub fn store_memory(
-        &mut self,
-        content: &str,
-        options: StoreOptions,
-    ) -> anyhow::Result<String> {
+    pub fn store_memory(&mut self, content: &str, options: StoreOptions) -> anyhow::Result<String> {
         let mut entry = MemoryEntry::new(
             &options.session_id,
             &options.agent_id,
@@ -102,11 +98,7 @@ impl MemoryFacade {
     }
 
     /// Recall memories matching a query string.
-    pub fn recall(
-        &self,
-        query: &str,
-        options: RecallOptions,
-    ) -> anyhow::Result<Vec<MemoryEntry>> {
+    pub fn recall(&self, query: &str, options: RecallOptions) -> anyhow::Result<Vec<MemoryEntry>> {
         let q = MemoryQuery {
             query_text: query.to_string(),
             session_id: options.session_id,

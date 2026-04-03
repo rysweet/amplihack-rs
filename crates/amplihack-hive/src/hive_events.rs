@@ -89,11 +89,7 @@ pub fn make_query_event(question: &str) -> (String, BusEvent) {
 }
 
 /// Create a query-response event.
-pub fn make_query_response_event(
-    query_id: &str,
-    answer: &str,
-    confidence: f64,
-) -> BusEvent {
+pub fn make_query_response_event(query_id: &str, answer: &str, confidence: f64) -> BusEvent {
     let event = HiveEvent::QueryResponse {
         query_id: query_id.to_string(),
         answer: answer.to_string(),
@@ -149,7 +145,11 @@ mod tests {
         assert_eq!(event.topic, HIVE_QUERY);
         assert!(!query_id.is_empty());
         let payload: HiveEvent = serde_json::from_value(event.payload).unwrap();
-        if let HiveEvent::Query { query_id: qid, question } = payload {
+        if let HiveEvent::Query {
+            query_id: qid,
+            question,
+        } = payload
+        {
             assert_eq!(qid, query_id);
             assert_eq!(question, "What is Rust?");
         } else {

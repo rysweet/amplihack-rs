@@ -31,21 +31,23 @@ impl DetectedBackend {
 /// 2. Otherwise, fall back to in-memory
 pub fn detect_backend(config: &MemoryConfig) -> DetectedBackend {
     if let Some(ref path) = config.storage_path
-        && cfg!(feature = "sqlite") {
-            return DetectedBackend::Sqlite(path.clone());
-        }
+        && cfg!(feature = "sqlite")
+    {
+        return DetectedBackend::Sqlite(path.clone());
+    }
 
     // Check default path
     if cfg!(feature = "sqlite")
-        && let Some(home) = std::env::var_os("HOME") {
-            let default_path = Path::new(&home)
-                .join(".amplihack")
-                .join("memory")
-                .join("memory.db");
-            if default_path.parent().is_some_and(|p| p.exists()) {
-                return DetectedBackend::Sqlite(default_path);
-            }
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        let default_path = Path::new(&home)
+            .join(".amplihack")
+            .join("memory")
+            .join("memory.db");
+        if default_path.parent().is_some_and(|p| p.exists()) {
+            return DetectedBackend::Sqlite(default_path);
         }
+    }
 
     DetectedBackend::InMemory
 }

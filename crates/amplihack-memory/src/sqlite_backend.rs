@@ -60,7 +60,11 @@ impl SqliteBackend {
     fn ensure_tables(&mut self) -> anyhow::Result<()> {
         #[cfg(feature = "sqlite")]
         {
-            let conn = self.conn.as_ref().unwrap().lock()
+            let conn = self
+                .conn
+                .as_ref()
+                .unwrap()
+                .lock()
                 .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS memories (
@@ -107,10 +111,13 @@ impl SqliteBackend {
     pub fn is_wal_mode(&self) -> anyhow::Result<bool> {
         #[cfg(feature = "sqlite")]
         {
-            let conn = self.conn.as_ref().unwrap().lock()
+            let conn = self
+                .conn
+                .as_ref()
+                .unwrap()
+                .lock()
                 .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
-            let mode: String =
-                conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+            let mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
             Ok(mode.to_lowercase() == "wal")
         }
         #[cfg(not(feature = "sqlite"))]
@@ -120,14 +127,14 @@ impl SqliteBackend {
     }
 
     /// Full-text search across memory content.
-    pub fn full_text_search(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> anyhow::Result<Vec<MemoryEntry>> {
+    pub fn full_text_search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryEntry>> {
         #[cfg(feature = "sqlite")]
         {
-            let conn = self.conn.as_ref().unwrap().lock()
+            let conn = self
+                .conn
+                .as_ref()
+                .unwrap()
+                .lock()
                 .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
             let mut stmt = conn.prepare(
                 "SELECT m.id, m.session_id, m.agent_id, m.memory_type, m.title,
@@ -178,8 +185,12 @@ impl SqliteBackend {
 #[cfg(feature = "sqlite")]
 impl MemoryBackend for SqliteBackend {
     fn store(&mut self, entry: &MemoryEntry) -> anyhow::Result<String> {
-        let conn = self.conn.as_ref().unwrap().lock()
-                .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .as_ref()
+            .unwrap()
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
         let metadata = serde_json::to_string(&entry.metadata)?;
         let tags = serde_json::to_string(&entry.tags)?;
         let mem_type = entry.memory_type.as_str();
@@ -206,8 +217,12 @@ impl MemoryBackend for SqliteBackend {
     }
 
     fn retrieve(&self, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
-        let conn = self.conn.as_ref().unwrap().lock()
-                .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .as_ref()
+            .unwrap()
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
         let mut sql = String::from(
             "SELECT id, session_id, agent_id, memory_type, title, content,
                     metadata, created_at, accessed_at, tags, importance
@@ -257,8 +272,12 @@ impl MemoryBackend for SqliteBackend {
     }
 
     fn delete(&mut self, entry_id: &str) -> anyhow::Result<bool> {
-        let conn = self.conn.as_ref().unwrap().lock()
-                .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .as_ref()
+            .unwrap()
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
         let changed = conn.execute(
             "DELETE FROM memories WHERE id = ?1",
             rusqlite::params![entry_id],
@@ -267,8 +286,12 @@ impl MemoryBackend for SqliteBackend {
     }
 
     fn list_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
-        let conn = self.conn.as_ref().unwrap().lock()
-                .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .as_ref()
+            .unwrap()
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
         let mut stmt = conn.prepare(
             "SELECT session_id, COUNT(*) as cnt,
                     MIN(created_at) as first, MAX(accessed_at) as last
@@ -290,11 +313,14 @@ impl MemoryBackend for SqliteBackend {
     }
 
     fn health_check(&self) -> anyhow::Result<BackendHealth> {
-        let conn = self.conn.as_ref().unwrap().lock()
-                .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
+        let conn = self
+            .conn
+            .as_ref()
+            .unwrap()
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Mutex poisoned: {e}"))?;
         let start = std::time::Instant::now();
-        let count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))?;
         let latency = start.elapsed().as_secs_f64() * 1000.0;
         Ok(BackendHealth {
             healthy: true,

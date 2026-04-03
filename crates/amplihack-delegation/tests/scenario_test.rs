@@ -5,8 +5,16 @@ fn generates_happy_path_and_error_handling() {
     let generator = ScenarioGenerator::new();
     let scenarios = generator.generate_scenarios("build a todo app", "users can add/remove items");
     assert!(!scenarios.is_empty());
-    assert!(scenarios.iter().any(|s| s.category == ScenarioCategory::HappyPath));
-    assert!(scenarios.iter().any(|s| s.category == ScenarioCategory::ErrorHandling));
+    assert!(
+        scenarios
+            .iter()
+            .any(|s| s.category == ScenarioCategory::HappyPath)
+    );
+    assert!(
+        scenarios
+            .iter()
+            .any(|s| s.category == ScenarioCategory::ErrorHandling)
+    );
 }
 
 #[test]
@@ -15,8 +23,16 @@ fn api_goal_produces_api_specific_scenarios() {
     let scenarios = generator.generate_scenarios("build rest api", "CRUD endpoints work");
     assert!(scenarios.len() >= 3);
     // API goals should produce boundary conditions and integration at minimum
-    assert!(scenarios.iter().any(|s| s.category == ScenarioCategory::BoundaryConditions));
-    assert!(scenarios.iter().any(|s| s.category == ScenarioCategory::Integration));
+    assert!(
+        scenarios
+            .iter()
+            .any(|s| s.category == ScenarioCategory::BoundaryConditions)
+    );
+    assert!(
+        scenarios
+            .iter()
+            .any(|s| s.category == ScenarioCategory::Integration)
+    );
 }
 
 #[test]
@@ -24,15 +40,24 @@ fn auth_goal_produces_security_scenarios() {
     let generator = ScenarioGenerator::new();
     let scenarios = generator.generate_scenarios("jwt authentication", "users can log in securely");
     assert!(!scenarios.is_empty());
-    assert!(scenarios.iter().any(|s| s.category == ScenarioCategory::Security));
+    assert!(
+        scenarios
+            .iter()
+            .any(|s| s.category == ScenarioCategory::Security)
+    );
 }
 
 #[test]
 fn performance_goal_produces_perf_scenarios() {
     let generator = ScenarioGenerator::new();
-    let scenarios = generator.generate_scenarios("performance testing", "sub-second response times");
+    let scenarios =
+        generator.generate_scenarios("performance testing", "sub-second response times");
     assert!(!scenarios.is_empty());
-    assert!(scenarios.iter().any(|s| s.category == ScenarioCategory::Performance));
+    assert!(
+        scenarios
+            .iter()
+            .any(|s| s.category == ScenarioCategory::Performance)
+    );
 }
 
 #[test]
@@ -40,7 +65,11 @@ fn always_produces_integration() {
     let generator = ScenarioGenerator::new();
     let scenarios = generator.generate_scenarios("any goal", "some criteria");
     assert!(!scenarios.is_empty());
-    assert!(scenarios.iter().any(|s| s.category == ScenarioCategory::Integration));
+    assert!(
+        scenarios
+            .iter()
+            .any(|s| s.category == ScenarioCategory::Integration)
+    );
 }
 
 #[test]

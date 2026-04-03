@@ -58,7 +58,9 @@ fn route_empty_input() {
 #[test]
 fn route_with_context_basic() {
     let router = IntentRouter::with_defaults();
-    let decision = router.route_with_context("scan for vulnerabilities", "security audit project").unwrap();
+    let decision = router
+        .route_with_context("scan for vulnerabilities", "security audit project")
+        .unwrap();
     assert_eq!(decision.agent_type, DomainAgentType::Security);
     assert!(decision.confidence >= 1.0);
 }
@@ -103,7 +105,10 @@ fn routing_decision_serde_roundtrip() {
 fn domain_agent_type_display() {
     assert_eq!(format!("{}", DomainAgentType::Teaching), "teaching");
     assert_eq!(format!("{}", DomainAgentType::Security), "security");
-    assert_eq!(format!("{}", DomainAgentType::CodeSynthesis), "code_synthesis");
+    assert_eq!(
+        format!("{}", DomainAgentType::CodeSynthesis),
+        "code_synthesis"
+    );
     assert_eq!(format!("{}", DomainAgentType::Learning), "learning");
     assert_eq!(format!("{}", DomainAgentType::Research), "research");
 }

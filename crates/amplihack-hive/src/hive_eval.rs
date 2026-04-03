@@ -8,7 +8,7 @@
 
 use crate::error::{HiveError, Result};
 use crate::event_bus::EventBus;
-use crate::hive_events::{make_query_event, HIVE_QUERY_RESPONSE};
+use crate::hive_events::{HIVE_QUERY_RESPONSE, make_query_event};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
@@ -71,9 +71,11 @@ pub struct QueryResult {
 
 impl QueryResult {
     pub fn best_answer(&self) -> Option<&AgentAnswer> {
-        self.answers
-            .iter()
-            .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap_or(std::cmp::Ordering::Equal))
+        self.answers.iter().max_by(|a, b| {
+            a.confidence
+                .partial_cmp(&b.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     }
 
     pub fn average_confidence(&self) -> f64 {
@@ -126,7 +128,9 @@ impl HiveEvalResult {
 /// subscription; this function provides the query-side orchestration.
 pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveEvalResult> {
     if config.questions.is_empty() {
-        return Err(HiveError::Workload("No evaluation questions provided".into()));
+        return Err(HiveError::Workload(
+            "No evaluation questions provided".into(),
+        ));
     }
 
     // Subscribe to response topic
@@ -240,10 +244,7 @@ mod tests {
     #[test]
     fn run_eval_publishes_queries() {
         let mut bus = LocalEventBus::new();
-        let config = HiveEvalConfig::new(vec![
-            "Question 1?".into(),
-            "Question 2?".into(),
-        ]);
+        let config = HiveEvalConfig::new(vec!["Question 1?".into(), "Question 2?".into()]);
         let result = run_eval(&mut bus, &config).unwrap();
         assert_eq!(result.total_queries, 2);
     }

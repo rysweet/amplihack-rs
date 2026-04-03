@@ -50,8 +50,7 @@ impl HiveGraph {
             .facts
             .iter()
             .filter(|f| {
-                f.concept.to_lowercase().contains(&concept_lower)
-                    && f.confidence >= min_confidence
+                f.concept.to_lowercase().contains(&concept_lower) && f.confidence >= min_confidence
             })
             .cloned()
             .collect();

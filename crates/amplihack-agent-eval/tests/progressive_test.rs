@@ -1,10 +1,10 @@
 //! Tests for the progressive test suite.
 
+use amplihack_agent_eval::EvalError;
 use amplihack_agent_eval::grader::Grader;
 use amplihack_agent_eval::levels::TestLevel;
 use amplihack_agent_eval::models::*;
 use amplihack_agent_eval::progressive::ProgressiveSuite;
-use amplihack_agent_eval::EvalError;
 use std::path::PathBuf;
 
 // ── Test double ──────────────────────────────────────────────
@@ -171,7 +171,10 @@ fn summary_all_failed() {
 
 #[test]
 fn summary_single_result() {
-    let results = vec![LevelResult::passed(TestLevel::L5ContradictionHandling, vec![0.72])];
+    let results = vec![LevelResult::passed(
+        TestLevel::L5ContradictionHandling,
+        vec![0.72],
+    )];
     let summary = ProgressiveSuite::compute_summary(&results);
     assert_eq!(summary.total_levels, 1);
     assert!((summary.average_score - 0.72).abs() < f64::EPSILON);
@@ -198,7 +201,10 @@ fn progressive_result_score_recomputes_on_each_add() {
     let mut pr = ProgressiveResult::new(make_config());
     pr.add_result(LevelResult::passed(TestLevel::L1Recall, vec![1.0]));
     assert!((pr.total_score - 1.0).abs() < f64::EPSILON);
-    pr.add_result(LevelResult::passed(TestLevel::L2MultiSourceSynthesis, vec![0.0]));
+    pr.add_result(LevelResult::passed(
+        TestLevel::L2MultiSourceSynthesis,
+        vec![0.0],
+    ));
     assert!((pr.total_score - 0.5).abs() < f64::EPSILON);
 }
 
@@ -206,8 +212,14 @@ fn progressive_result_score_recomputes_on_each_add() {
 fn progressive_result_tracks_passed_and_failed_ids() {
     let mut pr = ProgressiveResult::new(make_config());
     pr.add_result(LevelResult::passed(TestLevel::L1Recall, vec![0.95]));
-    pr.add_result(LevelResult::failed(TestLevel::L3TemporalReasoning, "timeout"));
-    pr.add_result(LevelResult::passed(TestLevel::L4ProceduralLearning, vec![0.8]));
+    pr.add_result(LevelResult::failed(
+        TestLevel::L3TemporalReasoning,
+        "timeout",
+    ));
+    pr.add_result(LevelResult::passed(
+        TestLevel::L4ProceduralLearning,
+        vec![0.8],
+    ));
     assert_eq!(pr.passed_levels, vec![1, 4]);
     assert_eq!(pr.failed_levels, vec![3]);
 }

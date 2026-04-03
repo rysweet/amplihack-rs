@@ -32,11 +32,7 @@ const FAILURE: &str = if cfg!(windows) { "[ERROR]" } else { "❌" };
 /// - `plugin_root`: Optional override for the plugin install directory.
 ///
 /// Returns `0` on success, `1` on failure.
-pub fn plugin_install_command(
-    source: &str,
-    force: bool,
-    plugin_root: Option<PathBuf>,
-) -> i32 {
+pub fn plugin_install_command(source: &str, force: bool, plugin_root: Option<PathBuf>) -> i32 {
     let manager = PluginManager::new(plugin_root);
     let result = manager.install(source, force);
 
@@ -54,10 +50,7 @@ pub fn plugin_install_command(
 /// Uninstall a plugin by name.
 ///
 /// Returns `0` on success, `1` on failure.
-pub fn plugin_uninstall_command(
-    plugin_name: &str,
-    plugin_root: Option<PathBuf>,
-) -> i32 {
+pub fn plugin_uninstall_command(plugin_name: &str, plugin_root: Option<PathBuf>) -> i32 {
     let manager = PluginManager::new(plugin_root);
     let success = manager.uninstall(plugin_name);
 
@@ -142,11 +135,8 @@ mod tests {
         let source = create_test_plugin(tmp.path(), "test-plugin");
         let install_dir = tmp.path().join("installed");
 
-        let code = plugin_install_command(
-            source.to_str().unwrap(),
-            false,
-            Some(install_dir.clone()),
-        );
+        let code =
+            plugin_install_command(source.to_str().unwrap(), false, Some(install_dir.clone()));
         assert_eq!(code, 0);
         assert!(install_dir.join("test-plugin").exists());
     }
@@ -163,11 +153,7 @@ mod tests {
         let source = create_test_plugin(tmp.path(), "test-plugin");
         let install_dir = tmp.path().join("installed");
 
-        plugin_install_command(
-            source.to_str().unwrap(),
-            false,
-            Some(install_dir.clone()),
-        );
+        plugin_install_command(source.to_str().unwrap(), false, Some(install_dir.clone()));
 
         let code = plugin_uninstall_command("test-plugin", Some(install_dir));
         assert_eq!(code, 0);
@@ -176,10 +162,7 @@ mod tests {
     #[test]
     fn uninstall_command_fails_for_missing_plugin() {
         let tmp = TempDir::new().unwrap();
-        let code = plugin_uninstall_command(
-            "ghost-plugin",
-            Some(tmp.path().join("plugins")),
-        );
+        let code = plugin_uninstall_command("ghost-plugin", Some(tmp.path().join("plugins")));
         assert_eq!(code, 1);
     }
 

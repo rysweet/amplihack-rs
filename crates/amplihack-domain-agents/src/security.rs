@@ -68,7 +68,8 @@ impl SecurityAuditor {
         let mut id_counter = 1u32;
 
         // SQL injection patterns
-        let has_sql = lower.contains("select") || lower.contains("insert") || lower.contains("delete");
+        let has_sql =
+            lower.contains("select") || lower.contains("insert") || lower.contains("delete");
         let has_concat = code.contains("format!") || code.contains('+') || code.contains("concat");
         if has_sql && has_concat {
             vulns.push(Vulnerability {
@@ -82,7 +83,10 @@ impl SecurityAuditor {
         }
 
         // XSS patterns
-        if lower.contains("innerhtml") || lower.contains("document.write") || lower.contains("<script") {
+        if lower.contains("innerhtml")
+            || lower.contains("document.write")
+            || lower.contains("<script")
+        {
             vulns.push(Vulnerability {
                 id: format!("VULN-{id_counter:03}"),
                 severity: "high".into(),
@@ -114,7 +118,8 @@ impl SecurityAuditor {
                 severity: "high".into(),
                 description: "Use of unsafe or dynamic execution pattern".into(),
                 location: "detected in source".into(),
-                recommendation: "Avoid unsafe blocks and dynamic code execution where possible".into(),
+                recommendation: "Avoid unsafe blocks and dynamic code execution where possible"
+                    .into(),
             });
         }
 

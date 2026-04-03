@@ -1,9 +1,9 @@
 //! Tests for the grading infrastructure.
 
-use amplihack_agent_eval::grader::{grade_with_votes, Grader, SimpleGrader};
+use amplihack_agent_eval::EvalError;
+use amplihack_agent_eval::grader::{Grader, SimpleGrader, grade_with_votes};
 use amplihack_agent_eval::levels::TestLevel;
 use amplihack_agent_eval::models::GradeResult;
-use amplihack_agent_eval::EvalError;
 
 // ── SimpleGrader construction ────────────────────────────────
 
@@ -190,9 +190,7 @@ impl Grader for FixedGrader {
 #[test]
 fn fixed_grader_always_returns_score() {
     let grader = FixedGrader { score: 0.42 };
-    let result = grader
-        .grade("q", "e", "a", TestLevel::L1Recall)
-        .unwrap();
+    let result = grader.grade("q", "e", "a", TestLevel::L1Recall).unwrap();
     assert!((result.score - 0.42).abs() < f64::EPSILON);
 }
 
@@ -208,9 +206,7 @@ fn fixed_grader_perfect_score() {
 #[test]
 fn fixed_grader_zero_score() {
     let grader = FixedGrader { score: 0.0 };
-    let result = grader
-        .grade("q", "e", "a", TestLevel::L1Recall)
-        .unwrap();
+    let result = grader.grade("q", "e", "a", TestLevel::L1Recall).unwrap();
     assert!(!result.passed(0.1));
 }
 

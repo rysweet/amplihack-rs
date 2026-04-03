@@ -50,9 +50,7 @@ pub(crate) fn resolve_paths_in_map(data: &Map<String, Value>) -> Map<String, Val
                 if p.is_absolute() {
                     value.clone()
                 } else {
-                    let abs = std::env::current_dir()
-                        .unwrap_or_default()
-                        .join(p);
+                    let abs = std::env::current_dir().unwrap_or_default().join(p);
                     Value::String(abs.to_string_lossy().into_owned())
                 }
             }

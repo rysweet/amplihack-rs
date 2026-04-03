@@ -120,9 +120,10 @@ impl DistributedGraphStore {
         // Check bloom filters for likely shard
         for shard in self.shards.values() {
             if shard.bloom.might_contain(node_id)
-                && let Some(props) = shard.store.get_node(table, node_id)? {
-                    return Ok(Some(props));
-                }
+                && let Some(props) = shard.store.get_node(table, node_id)?
+            {
+                return Ok(Some(props));
+            }
         }
         // Fallback: full scan
         for shard in self.shards.values() {

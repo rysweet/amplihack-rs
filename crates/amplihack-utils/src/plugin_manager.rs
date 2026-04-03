@@ -14,11 +14,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::plugin_manifest::{is_valid_plugin_name, validate_manifest};
 use crate::plugin_manager_paths::{
     copy_dir_recursive, extract_plugin_name_from_url, home_dir, resolve_paths_inner,
     validate_path_safety,
 };
+use crate::plugin_manifest::{is_valid_plugin_name, validate_manifest};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -98,18 +98,24 @@ impl PluginManager {
     /// If `plugin_root` is `None`, defaults to `~/.amplihack/.claude/plugins`.
     pub fn new(plugin_root: Option<PathBuf>) -> Self {
         let home = home_dir();
-        let plugin_root = plugin_root
-            .unwrap_or_else(|| home.join(".amplihack").join(".claude").join("plugins"));
+        let plugin_root =
+            plugin_root.unwrap_or_else(|| home.join(".amplihack").join(".claude").join("plugins"));
         let settings_path = home
             .join(".config")
             .join("claude-code")
             .join("plugins.json");
-        Self { plugin_root, settings_path }
+        Self {
+            plugin_root,
+            settings_path,
+        }
     }
 
     /// Create a manager with explicit paths (useful for testing).
     pub fn with_paths(plugin_root: PathBuf, settings_path: PathBuf) -> Self {
-        Self { plugin_root, settings_path }
+        Self {
+            plugin_root,
+            settings_path,
+        }
     }
 
     /// Root directory for installed plugins.

@@ -20,7 +20,6 @@ pub enum Topology {
     Distributed,
 }
 
-
 /// Memory backend selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,7 +34,6 @@ pub enum Backend {
     InMemory,
 }
 
-
 /// Transport mode for distributed topology.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,7 +47,6 @@ pub enum Transport {
     /// Azure Service Bus transport.
     AzureServiceBus,
 }
-
 
 /// Complete memory configuration.
 ///
@@ -121,20 +118,23 @@ impl MemoryConfig {
             config.storage_path = Some(PathBuf::from(v));
         }
         if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_REPLICATION_FACTOR")
-            && let Ok(n) = v.parse() {
-                config.replication_factor = n;
-            }
+            && let Ok(n) = v.parse()
+        {
+            config.replication_factor = n;
+        }
         if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_QUERY_FANOUT")
-            && let Ok(n) = v.parse() {
-                config.query_fanout = n;
-            }
+            && let Ok(n) = v.parse()
+        {
+            config.query_fanout = n;
+        }
         if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_GOSSIP_ENABLED") {
             config.gossip_enabled = v != "0" && v.to_lowercase() != "false";
         }
         if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_TOKEN_BUDGET")
-            && let Ok(n) = v.parse() {
-                config.token_budget_default = n;
-            }
+            && let Ok(n) = v.parse()
+        {
+            config.token_budget_default = n;
+        }
         config
     }
 

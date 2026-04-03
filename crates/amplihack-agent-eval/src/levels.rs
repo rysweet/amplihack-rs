@@ -126,9 +126,10 @@ impl TestLevel {
         let s_lower = s.to_lowercase();
         // Try "lN" format
         if let Some(stripped) = s_lower.strip_prefix('l')
-            && let Ok(n) = stripped.parse::<u8>() {
-                return Self::from_id(n);
-            }
+            && let Ok(n) = stripped.parse::<u8>()
+        {
+            return Self::from_id(n);
+        }
         // Try display name match
         Self::all()
             .iter()

@@ -44,10 +44,7 @@ fn env_override_valid_path_under_home() {
 #[test]
 fn env_override_rejects_path_outside_allowed_roots() {
     let result = validate_env_runtime_dir(Path::new("/etc/shadow-runtime"));
-    assert!(
-        result.is_err(),
-        "should reject paths outside home and /tmp"
-    );
+    assert!(result.is_err(), "should reject paths outside home and /tmp");
 }
 
 #[test]
@@ -74,8 +71,7 @@ fn clear_cache_works() {
     let _ = get_shared_runtime_dir(tmp.path()).unwrap();
     clear_cache();
     // After clearing, the cache lookup should miss.
-    let canonical = fs::canonicalize(tmp.path())
-        .unwrap_or_else(|_| tmp.path().to_path_buf());
+    let canonical = fs::canonicalize(tmp.path()).unwrap_or_else(|_| tmp.path().to_path_buf());
     assert!(
         cache_get(&canonical).is_none(),
         "cache should be empty after clear"

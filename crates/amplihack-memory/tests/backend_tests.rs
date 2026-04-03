@@ -23,8 +23,10 @@ fn in_memory_store_returns_id() {
 #[test]
 fn in_memory_retrieve_by_text() {
     let mut b = InMemoryBackend::new();
-    b.store(&semantic_entry("The sky is blue and vast")).unwrap();
-    b.store(&semantic_entry("Grass grows green in spring")).unwrap();
+    b.store(&semantic_entry("The sky is blue and vast"))
+        .unwrap();
+    b.store(&semantic_entry("Grass grows green in spring"))
+        .unwrap();
     let results = b.retrieve(&MemoryQuery::new("sky")).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].content.contains("sky"));
@@ -33,8 +35,10 @@ fn in_memory_retrieve_by_text() {
 #[test]
 fn in_memory_retrieve_empty_query_returns_all() {
     let mut b = InMemoryBackend::new();
-    b.store(&semantic_entry("First entry content here")).unwrap();
-    b.store(&semantic_entry("Second entry content here")).unwrap();
+    b.store(&semantic_entry("First entry content here"))
+        .unwrap();
+    b.store(&semantic_entry("Second entry content here"))
+        .unwrap();
     let results = b.retrieve(&MemoryQuery::new("")).unwrap();
     assert_eq!(results.len(), 2);
 }
@@ -42,8 +46,18 @@ fn in_memory_retrieve_empty_query_returns_all() {
 #[test]
 fn in_memory_retrieve_by_session() {
     let mut b = InMemoryBackend::new();
-    b.store(&make_entry("s1", "Entry for session one", MemoryType::Semantic)).unwrap();
-    b.store(&make_entry("s2", "Entry for session two", MemoryType::Semantic)).unwrap();
+    b.store(&make_entry(
+        "s1",
+        "Entry for session one",
+        MemoryType::Semantic,
+    ))
+    .unwrap();
+    b.store(&make_entry(
+        "s2",
+        "Entry for session two",
+        MemoryType::Semantic,
+    ))
+    .unwrap();
     let q = MemoryQuery::new("").with_session("s1");
     let results = b.retrieve(&q).unwrap();
     assert_eq!(results.len(), 1);
@@ -53,9 +67,24 @@ fn in_memory_retrieve_by_session() {
 #[test]
 fn in_memory_retrieve_by_memory_type() {
     let mut b = InMemoryBackend::new();
-    b.store(&make_entry("s1", "Semantic knowledge here", MemoryType::Semantic)).unwrap();
-    b.store(&make_entry("s1", "Working context here", MemoryType::Working)).unwrap();
-    b.store(&make_entry("s1", "Procedural steps here", MemoryType::Procedural)).unwrap();
+    b.store(&make_entry(
+        "s1",
+        "Semantic knowledge here",
+        MemoryType::Semantic,
+    ))
+    .unwrap();
+    b.store(&make_entry(
+        "s1",
+        "Working context here",
+        MemoryType::Working,
+    ))
+    .unwrap();
+    b.store(&make_entry(
+        "s1",
+        "Procedural steps here",
+        MemoryType::Procedural,
+    ))
+    .unwrap();
     let q = MemoryQuery::new("").with_types(vec![MemoryType::Working]);
     let results = b.retrieve(&q).unwrap();
     assert_eq!(results.len(), 1);
@@ -81,9 +110,24 @@ fn in_memory_delete_nonexistent_returns_false() {
 #[test]
 fn in_memory_list_sessions() {
     let mut b = InMemoryBackend::new();
-    b.store(&make_entry("s1", "First session entry here", MemoryType::Semantic)).unwrap();
-    b.store(&make_entry("s1", "Another first session entry", MemoryType::Working)).unwrap();
-    b.store(&make_entry("s2", "Second session entry here", MemoryType::Semantic)).unwrap();
+    b.store(&make_entry(
+        "s1",
+        "First session entry here",
+        MemoryType::Semantic,
+    ))
+    .unwrap();
+    b.store(&make_entry(
+        "s1",
+        "Another first session entry",
+        MemoryType::Working,
+    ))
+    .unwrap();
+    b.store(&make_entry(
+        "s2",
+        "Second session entry here",
+        MemoryType::Semantic,
+    ))
+    .unwrap();
     let sessions = b.list_sessions().unwrap();
     assert_eq!(sessions.len(), 2);
     let s1 = sessions.iter().find(|s| s.session_id == "s1").unwrap();
@@ -101,8 +145,10 @@ fn in_memory_health_check_always_healthy() {
 #[test]
 fn in_memory_health_check_counts_entries() {
     let mut b = InMemoryBackend::new();
-    b.store(&semantic_entry("Some entry for health check")).unwrap();
-    b.store(&semantic_entry("Another entry for counting")).unwrap();
+    b.store(&semantic_entry("Some entry for health check"))
+        .unwrap();
+    b.store(&semantic_entry("Another entry for counting"))
+        .unwrap();
     let health = b.health_check().unwrap();
     assert_eq!(health.entry_count, 2);
 }
@@ -117,7 +163,8 @@ fn in_memory_backend_name() {
 fn in_memory_retrieve_respects_limit() {
     let mut b = InMemoryBackend::new();
     for i in 0..50 {
-        b.store(&semantic_entry(&format!("Entry number {i} with content"))).unwrap();
+        b.store(&semantic_entry(&format!("Entry number {i} with content")))
+            .unwrap();
     }
     let mut q = MemoryQuery::new("");
     q.limit = 5;
@@ -147,8 +194,18 @@ fn store_all_cognitive_types() {
 #[test]
 fn store_legacy_types() {
     let mut b = InMemoryBackend::new();
-    b.store(&make_entry("s1", "Code context for legacy path", MemoryType::CodeContext)).unwrap();
-    b.store(&make_entry("s1", "Task-specific memory content here", MemoryType::Task)).unwrap();
+    b.store(&make_entry(
+        "s1",
+        "Code context for legacy path",
+        MemoryType::CodeContext,
+    ))
+    .unwrap();
+    b.store(&make_entry(
+        "s1",
+        "Task-specific memory content here",
+        MemoryType::Task,
+    ))
+    .unwrap();
     let q = MemoryQuery::new("").with_types(vec![MemoryType::CodeContext]);
     assert_eq!(b.retrieve(&q).unwrap().len(), 1);
     let q = MemoryQuery::new("").with_types(vec![MemoryType::Task]);
@@ -158,11 +215,25 @@ fn store_legacy_types() {
 #[test]
 fn retrieve_multiple_types() {
     let mut b = InMemoryBackend::new();
-    b.store(&make_entry("s1", "Semantic knowledge content here", MemoryType::Semantic)).unwrap();
-    b.store(&make_entry("s1", "Working memory context here", MemoryType::Working)).unwrap();
-    b.store(&make_entry("s1", "Episodic event record here", MemoryType::Episodic)).unwrap();
-    let q = MemoryQuery::new("")
-        .with_types(vec![MemoryType::Semantic, MemoryType::Episodic]);
+    b.store(&make_entry(
+        "s1",
+        "Semantic knowledge content here",
+        MemoryType::Semantic,
+    ))
+    .unwrap();
+    b.store(&make_entry(
+        "s1",
+        "Working memory context here",
+        MemoryType::Working,
+    ))
+    .unwrap();
+    b.store(&make_entry(
+        "s1",
+        "Episodic event record here",
+        MemoryType::Episodic,
+    ))
+    .unwrap();
+    let q = MemoryQuery::new("").with_types(vec![MemoryType::Semantic, MemoryType::Episodic]);
     let results = b.retrieve(&q).unwrap();
     assert_eq!(results.len(), 2);
 }
@@ -183,8 +254,12 @@ fn store_duplicate_content_creates_two_entries() {
 #[test]
 fn entries_have_unique_ids() {
     let mut b = InMemoryBackend::new();
-    let id1 = b.store(&semantic_entry("First unique entry content")).unwrap();
-    let id2 = b.store(&semantic_entry("Second unique entry content")).unwrap();
+    let id1 = b
+        .store(&semantic_entry("First unique entry content"))
+        .unwrap();
+    let id2 = b
+        .store(&semantic_entry("Second unique entry content"))
+        .unwrap();
     assert_ne!(id1, id2);
 }
 
@@ -261,9 +336,9 @@ fn backend_health_serializes() {
 
 #[cfg(feature = "sqlite")]
 mod sqlite_tests {
-    use amplihack_memory::sqlite_backend::SqliteBackend;
     use amplihack_memory::backend::MemoryBackend;
     use amplihack_memory::models::{MemoryEntry, MemoryQuery, MemoryType};
+    use amplihack_memory::sqlite_backend::SqliteBackend;
 
     fn make_entry(content: &str) -> MemoryEntry {
         MemoryEntry::new("test-session", "agent-1", MemoryType::Semantic, content)
@@ -299,9 +374,30 @@ mod sqlite_tests {
     #[test]
     fn sqlite_store_multiple_types() {
         let mut backend = SqliteBackend::open_in_memory().unwrap();
-        backend.store(&MemoryEntry::new("s1", "a1", MemoryType::Semantic, "Semantic data")).unwrap();
-        backend.store(&MemoryEntry::new("s1", "a1", MemoryType::Episodic, "Episodic data")).unwrap();
-        backend.store(&MemoryEntry::new("s1", "a1", MemoryType::Working, "Working data")).unwrap();
+        backend
+            .store(&MemoryEntry::new(
+                "s1",
+                "a1",
+                MemoryType::Semantic,
+                "Semantic data",
+            ))
+            .unwrap();
+        backend
+            .store(&MemoryEntry::new(
+                "s1",
+                "a1",
+                MemoryType::Episodic,
+                "Episodic data",
+            ))
+            .unwrap();
+        backend
+            .store(&MemoryEntry::new(
+                "s1",
+                "a1",
+                MemoryType::Working,
+                "Working data",
+            ))
+            .unwrap();
         let all = backend.retrieve(&MemoryQuery::new("")).unwrap();
         assert_eq!(all.len(), 3);
     }
@@ -309,8 +405,22 @@ mod sqlite_tests {
     #[test]
     fn sqlite_retrieve_by_type() {
         let mut backend = SqliteBackend::open_in_memory().unwrap();
-        backend.store(&MemoryEntry::new("s1", "a1", MemoryType::Semantic, "Semantic only")).unwrap();
-        backend.store(&MemoryEntry::new("s1", "a1", MemoryType::Working, "Working only")).unwrap();
+        backend
+            .store(&MemoryEntry::new(
+                "s1",
+                "a1",
+                MemoryType::Semantic,
+                "Semantic only",
+            ))
+            .unwrap();
+        backend
+            .store(&MemoryEntry::new(
+                "s1",
+                "a1",
+                MemoryType::Working,
+                "Working only",
+            ))
+            .unwrap();
         let q = MemoryQuery::new("").with_types(vec![MemoryType::Working]);
         let results = backend.retrieve(&q).unwrap();
         assert_eq!(results.len(), 1);
@@ -320,8 +430,22 @@ mod sqlite_tests {
     #[test]
     fn sqlite_retrieve_by_session() {
         let mut backend = SqliteBackend::open_in_memory().unwrap();
-        backend.store(&MemoryEntry::new("s1", "a1", MemoryType::Semantic, "Session one data")).unwrap();
-        backend.store(&MemoryEntry::new("s2", "a1", MemoryType::Semantic, "Session two data")).unwrap();
+        backend
+            .store(&MemoryEntry::new(
+                "s1",
+                "a1",
+                MemoryType::Semantic,
+                "Session one data",
+            ))
+            .unwrap();
+        backend
+            .store(&MemoryEntry::new(
+                "s2",
+                "a1",
+                MemoryType::Semantic,
+                "Session two data",
+            ))
+            .unwrap();
         let q = MemoryQuery::new("").with_session("s1");
         let results = backend.retrieve(&q).unwrap();
         assert_eq!(results.len(), 1);
@@ -340,8 +464,12 @@ mod sqlite_tests {
     #[test]
     fn sqlite_full_text_search() {
         let mut backend = SqliteBackend::open_in_memory().unwrap();
-        backend.store(&make_entry("The quick brown fox jumps over")).unwrap();
-        backend.store(&make_entry("A lazy dog sleeps in the sun")).unwrap();
+        backend
+            .store(&make_entry("The quick brown fox jumps over"))
+            .unwrap();
+        backend
+            .store(&make_entry("A lazy dog sleeps in the sun"))
+            .unwrap();
         let results = backend.full_text_search("quick fox", 10).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].content.contains("quick"));
@@ -350,8 +478,22 @@ mod sqlite_tests {
     #[test]
     fn sqlite_list_sessions() {
         let mut backend = SqliteBackend::open_in_memory().unwrap();
-        backend.store(&MemoryEntry::new("s1", "a1", MemoryType::Semantic, "Session one")).unwrap();
-        backend.store(&MemoryEntry::new("s2", "a1", MemoryType::Semantic, "Session two")).unwrap();
+        backend
+            .store(&MemoryEntry::new(
+                "s1",
+                "a1",
+                MemoryType::Semantic,
+                "Session one",
+            ))
+            .unwrap();
+        backend
+            .store(&MemoryEntry::new(
+                "s2",
+                "a1",
+                MemoryType::Semantic,
+                "Session two",
+            ))
+            .unwrap();
         let sessions = backend.list_sessions().unwrap();
         assert_eq!(sessions.len(), 2);
     }
@@ -385,7 +527,9 @@ mod sqlite_tests {
     fn sqlite_concurrent_reads() {
         let mut backend = SqliteBackend::open_in_memory().unwrap();
         for i in 0..100 {
-            backend.store(&make_entry(&format!("Concurrent entry {i}"))).unwrap();
+            backend
+                .store(&make_entry(&format!("Concurrent entry {i}")))
+                .unwrap();
         }
         // Multiple retrieve calls should not conflict
         let r1 = backend.retrieve(&MemoryQuery::new("")).unwrap();

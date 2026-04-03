@@ -67,12 +67,12 @@ impl IntentDetector {
     pub fn new() -> Self {
         Self {
             question_words: vec![
-                "what", "who", "where", "when", "why", "how", "which",
-                "is", "are", "do", "does", "can", "could", "would", "should",
+                "what", "who", "where", "when", "why", "how", "which", "is", "are", "do", "does",
+                "can", "could", "would", "should",
             ],
             command_words: vec![
-                "run", "execute", "create", "delete", "build", "test",
-                "deploy", "install", "fix", "update", "start", "stop",
+                "run", "execute", "create", "delete", "build", "test", "deploy", "install", "fix",
+                "update", "start", "stop",
             ],
         }
     }

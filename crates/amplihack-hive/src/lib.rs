@@ -30,8 +30,8 @@ pub use hive_events::{
     HIVE_QUERY_RESPONSE,
 };
 pub use models::{
-    AgentSpec, BusEvent, GossipConfig, GossipMessage, HiveFact, HiveManifest,
-    HiveState, MergeResult,
+    AgentSpec, BusEvent, GossipConfig, GossipMessage, HiveFact, HiveManifest, HiveState,
+    MergeResult,
 };
 pub use orchestrator::{DefaultPromotionPolicy, HiveMindOrchestrator, PromotionPolicy};
 pub use workload::{HiveEvent, HiveWorkloadConfig, WorkloadStatus};

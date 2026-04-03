@@ -51,13 +51,13 @@ pub fn disable_github_mcp_server(settings_path: &Path) -> Result<bool> {
         return Ok(false);
     };
 
-    if let Some(github) = servers.get_mut("github") {
-        if let Some(obj) = github.as_object_mut() {
-            obj.insert("disabled".into(), json!(true));
-            save_mcp_config(settings_path, &config)?;
-            info!("Disabled GitHub MCP server");
-            return Ok(true);
-        }
+    if let Some(github) = servers.get_mut("github")
+        && let Some(obj) = github.as_object_mut()
+    {
+        obj.insert("disabled".into(), json!(true));
+        save_mcp_config(settings_path, &config)?;
+        info!("Disabled GitHub MCP server");
+        return Ok(true);
     }
     Ok(false)
 }
@@ -132,10 +132,10 @@ pub fn validate_and_repair(settings_path: &Path) -> Result<Vec<String>> {
             issues.push(format!("Server '{name}' missing 'command' field"));
         }
 
-        if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
-            if cmd.is_empty() {
-                issues.push(format!("Server '{name}' has empty command"));
-            }
+        if let Some(cmd) = obj.get("command").and_then(|v| v.as_str())
+            && cmd.is_empty()
+        {
+            issues.push(format!("Server '{name}' has empty command"));
         }
     }
 

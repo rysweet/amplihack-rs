@@ -76,9 +76,12 @@ fn dequeue_decrements_len() {
 #[test]
 fn priority_ordering_critical_first() {
     let mut q = TaskQueue::new(10);
-    q.enqueue(task_with_priority("low", TaskPriority::Low)).unwrap();
-    q.enqueue(task_with_priority("critical", TaskPriority::Critical)).unwrap();
-    q.enqueue(task_with_priority("normal", TaskPriority::Normal)).unwrap();
+    q.enqueue(task_with_priority("low", TaskPriority::Low))
+        .unwrap();
+    q.enqueue(task_with_priority("critical", TaskPriority::Critical))
+        .unwrap();
+    q.enqueue(task_with_priority("normal", TaskPriority::Normal))
+        .unwrap();
     let t = q.dequeue().unwrap();
     assert_eq!(t.description, "critical");
 }
@@ -86,8 +89,10 @@ fn priority_ordering_critical_first() {
 #[test]
 fn same_priority_fifo() {
     let mut q = TaskQueue::new(10);
-    q.enqueue(task_with_priority("a", TaskPriority::High)).unwrap();
-    q.enqueue(task_with_priority("b", TaskPriority::High)).unwrap();
+    q.enqueue(task_with_priority("a", TaskPriority::High))
+        .unwrap();
+    q.enqueue(task_with_priority("b", TaskPriority::High))
+        .unwrap();
     let t = q.dequeue().unwrap();
     assert_eq!(t.description, "a");
 }
@@ -155,9 +160,12 @@ fn clear_empties_queue() {
 #[test]
 fn drain_priority_removes_matching() {
     let mut q = TaskQueue::new(10);
-    q.enqueue(task_with_priority("low1", TaskPriority::Low)).unwrap();
-    q.enqueue(task_with_priority("high1", TaskPriority::High)).unwrap();
-    q.enqueue(task_with_priority("low2", TaskPriority::Low)).unwrap();
+    q.enqueue(task_with_priority("low1", TaskPriority::Low))
+        .unwrap();
+    q.enqueue(task_with_priority("high1", TaskPriority::High))
+        .unwrap();
+    q.enqueue(task_with_priority("low2", TaskPriority::Low))
+        .unwrap();
     let drained = q.drain_priority(TaskPriority::Low);
     assert_eq!(drained.len(), 2);
     assert_eq!(q.len(), 1);

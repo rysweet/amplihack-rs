@@ -197,8 +197,7 @@ impl SimpleTUITester {
 
     /// Register a [`TUITestCase`].
     pub fn add_test(&mut self, test_case: TUITestCase) {
-        self.test_cases
-            .insert(test_case.test_id.clone(), test_case);
+        self.test_cases.insert(test_case.test_id.clone(), test_case);
     }
 
     /// Number of registered test cases.
@@ -260,7 +259,9 @@ impl SimpleTUITester {
             "timeout": test_case.timeout,
         });
 
-        let config_path = self.output_dir.join(format!("{}_config.json", test_case.test_id));
+        let config_path = self
+            .output_dir
+            .join(format!("{}_config.json", test_case.test_id));
         if let Err(e) = std::fs::write(&config_path, config.to_string()) {
             return TestResult::failed(
                 &test_case.test_id,
@@ -283,18 +284,26 @@ impl SimpleTUITester {
         let duration = start.elapsed().as_secs_f64();
 
         match outcome {
-            CmdOutcome::Success(stdout) => {
-                TestResult::passed(&test_case.test_id, duration, format!("gadugi-test completed successfully: {}", stdout.trim()))
-            }
-            CmdOutcome::Failed(stderr) => {
-                TestResult::failed(&test_case.test_id, duration, format!("gadugi-test failed: {}", stderr.trim()))
-            }
-            CmdOutcome::Timeout => {
-                TestResult::failed(&test_case.test_id, duration, format!("Test timed out after {gadugi_timeout_secs} seconds"))
-            }
-            CmdOutcome::Error(e) => {
-                TestResult::failed(&test_case.test_id, duration, format!("gadugi-test error: {e}"))
-            }
+            CmdOutcome::Success(stdout) => TestResult::passed(
+                &test_case.test_id,
+                duration,
+                format!("gadugi-test completed successfully: {}", stdout.trim()),
+            ),
+            CmdOutcome::Failed(stderr) => TestResult::failed(
+                &test_case.test_id,
+                duration,
+                format!("gadugi-test failed: {}", stderr.trim()),
+            ),
+            CmdOutcome::Timeout => TestResult::failed(
+                &test_case.test_id,
+                duration,
+                format!("Test timed out after {gadugi_timeout_secs} seconds"),
+            ),
+            CmdOutcome::Error(e) => TestResult::failed(
+                &test_case.test_id,
+                duration,
+                format!("gadugi-test error: {e}"),
+            ),
         }
     }
 
@@ -336,7 +345,10 @@ impl SimpleTUITester {
                     return TestResult::failed(
                         &test_case.test_id,
                         start.elapsed().as_secs_f64(),
-                        format!("Command '{command}' timed out after {} seconds", cmd_timeout.as_secs()),
+                        format!(
+                            "Command '{command}' timed out after {} seconds",
+                            cmd_timeout.as_secs()
+                        ),
                     );
                 }
                 CmdOutcome::Error(e) => {
@@ -366,7 +378,6 @@ impl SimpleTUITester {
 // Subprocess helpers extracted to simple_tui_runner.rs.
 use crate::simple_tui_runner::{CmdOutcome, command_exists_on_path, run_command_with_timeout};
 
-
 // ---------------------------------------------------------------------------
 // Factory / convenience helpers
 // ---------------------------------------------------------------------------
@@ -393,7 +404,6 @@ pub fn create_amplihack_test(test_id: impl Into<String>, args: &str) -> TUITestC
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
 
 #[cfg(test)]
 #[path = "tests/simple_tui_tests.rs"]

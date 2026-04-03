@@ -106,13 +106,18 @@ fn execution_plan_max_phases_accepted() {
 }
 #[test]
 fn execution_plan_phase_count() {
-    let plan = ExecutionPlan::new(Uuid::new_v4(), vec![valid_phase(), valid_phase(), valid_phase()]).unwrap();
+    let plan = ExecutionPlan::new(
+        Uuid::new_v4(),
+        vec![valid_phase(), valid_phase(), valid_phase()],
+    )
+    .unwrap();
     assert_eq!(plan.phase_count(), 3);
 }
 #[test]
 fn execution_plan_serde_roundtrip() {
     let plan = ExecutionPlan::new(Uuid::new_v4(), vec![valid_phase()]).unwrap();
-    let plan2: ExecutionPlan = serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+    let plan2: ExecutionPlan =
+        serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
     assert_eq!(plan.goal_id, plan2.goal_id);
     assert_eq!(plan.phase_count(), plan2.phase_count());
 }
@@ -157,7 +162,12 @@ fn skill_definition_serde_roundtrip() {
 
 #[test]
 fn sdk_tool_config_to_dict() {
-    let d = SDKToolConfig { name: "tool".into(), description: "does stuff".into(), category: "util".into() }.to_dict();
+    let d = SDKToolConfig {
+        name: "tool".into(),
+        description: "does stuff".into(),
+        category: "util".into(),
+    }
+    .to_dict();
     assert_eq!(d.get("name").unwrap(), "tool");
     assert_eq!(d.get("description").unwrap(), "does stuff");
     assert_eq!(d.get("category").unwrap(), "util");
@@ -165,7 +175,11 @@ fn sdk_tool_config_to_dict() {
 }
 #[test]
 fn sdk_tool_config_serde_roundtrip() {
-    let cfg = SDKToolConfig { name: "t".into(), description: "d".into(), category: "c".into() };
+    let cfg = SDKToolConfig {
+        name: "t".into(),
+        description: "d".into(),
+        category: "c".into(),
+    };
     let cfg2: SDKToolConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
     assert_eq!(cfg.name, cfg2.name);
 }
@@ -263,16 +277,26 @@ fn bundle_default_status_is_pending() {
 #[test]
 fn bundle_status_transitions() {
     let mut s = BundleStatus::Pending;
-    s = BundleStatus::Planning;  assert_eq!(s, BundleStatus::Planning);
-    s = BundleStatus::Assembling; assert_eq!(s, BundleStatus::Assembling);
-    s = BundleStatus::Ready;     assert_eq!(s, BundleStatus::Ready);
-    s = BundleStatus::Failed;    assert_eq!(s, BundleStatus::Failed);
+    s = BundleStatus::Planning;
+    assert_eq!(s, BundleStatus::Planning);
+    s = BundleStatus::Assembling;
+    assert_eq!(s, BundleStatus::Assembling);
+    s = BundleStatus::Ready;
+    assert_eq!(s, BundleStatus::Ready);
+    s = BundleStatus::Failed;
+    assert_eq!(s, BundleStatus::Failed);
 }
 #[test]
 fn bundle_status_serde_roundtrip() {
-    for status in [BundleStatus::Pending, BundleStatus::Planning,
-                   BundleStatus::Assembling, BundleStatus::Ready, BundleStatus::Failed] {
-        let s2: BundleStatus = serde_json::from_str(&serde_json::to_string(&status).unwrap()).unwrap();
+    for status in [
+        BundleStatus::Pending,
+        BundleStatus::Planning,
+        BundleStatus::Assembling,
+        BundleStatus::Ready,
+        BundleStatus::Failed,
+    ] {
+        let s2: BundleStatus =
+            serde_json::from_str(&serde_json::to_string(&status).unwrap()).unwrap();
         assert_eq!(status, s2);
     }
 }
@@ -287,16 +311,29 @@ fn complexity_ordering() {
 }
 #[test]
 fn complexity_serde_roundtrip() {
-    for c in [Complexity::Simple, Complexity::Moderate, Complexity::Complex] {
+    for c in [
+        Complexity::Simple,
+        Complexity::Moderate,
+        Complexity::Complex,
+    ] {
         let c2: Complexity = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(c, c2);
     }
 }
 #[test]
 fn complexity_snake_case_serialization() {
-    assert_eq!(serde_json::to_string(&Complexity::Simple).unwrap(), "\"simple\"");
-    assert_eq!(serde_json::to_string(&Complexity::Moderate).unwrap(), "\"moderate\"");
-    assert_eq!(serde_json::to_string(&Complexity::Complex).unwrap(), "\"complex\"");
+    assert_eq!(
+        serde_json::to_string(&Complexity::Simple).unwrap(),
+        "\"simple\""
+    );
+    assert_eq!(
+        serde_json::to_string(&Complexity::Moderate).unwrap(),
+        "\"moderate\""
+    );
+    assert_eq!(
+        serde_json::to_string(&Complexity::Complex).unwrap(),
+        "\"complex\""
+    );
 }
 
 // GenerationMetrics
@@ -304,24 +341,42 @@ fn complexity_snake_case_serialization() {
 #[test]
 fn generation_metrics_average_phase_time() {
     let m = GenerationMetrics {
-        total_time_seconds: 30.0, analysis_time: 5.0, planning_time: 10.0,
-        synthesis_time: 10.0, assembly_time: 5.0, skill_count: 4, phase_count: 3, bundle_size_kb: 12.5,
+        total_time_seconds: 30.0,
+        analysis_time: 5.0,
+        planning_time: 10.0,
+        synthesis_time: 10.0,
+        assembly_time: 5.0,
+        skill_count: 4,
+        phase_count: 3,
+        bundle_size_kb: 12.5,
     };
     assert!((m.average_phase_time() - 10.0).abs() < f64::EPSILON);
 }
 #[test]
 fn generation_metrics_zero_phases() {
     let m = GenerationMetrics {
-        total_time_seconds: 10.0, analysis_time: 0.0, planning_time: 0.0,
-        synthesis_time: 0.0, assembly_time: 0.0, skill_count: 0, phase_count: 0, bundle_size_kb: 0.0,
+        total_time_seconds: 10.0,
+        analysis_time: 0.0,
+        planning_time: 0.0,
+        synthesis_time: 0.0,
+        assembly_time: 0.0,
+        skill_count: 0,
+        phase_count: 0,
+        bundle_size_kb: 0.0,
     };
     assert!((m.average_phase_time()).abs() < f64::EPSILON);
 }
 #[test]
 fn generation_metrics_serde_roundtrip() {
     let m = GenerationMetrics {
-        total_time_seconds: 1.0, analysis_time: 0.1, planning_time: 0.2,
-        synthesis_time: 0.3, assembly_time: 0.4, skill_count: 2, phase_count: 1, bundle_size_kb: 5.0,
+        total_time_seconds: 1.0,
+        analysis_time: 0.1,
+        planning_time: 0.2,
+        synthesis_time: 0.3,
+        assembly_time: 0.4,
+        skill_count: 2,
+        phase_count: 1,
+        bundle_size_kb: 5.0,
     };
     let m2: GenerationMetrics = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
     assert_eq!(m.skill_count, m2.skill_count);
@@ -334,7 +389,14 @@ fn generation_metrics_serde_roundtrip() {
 fn json_field_names_match_python_goal() {
     let v: serde_json::Value = serde_json::to_value(&valid_goal()).unwrap();
     let obj = v.as_object().unwrap();
-    for key in ["raw_prompt", "goal", "domain", "constraints", "success_criteria", "complexity"] {
+    for key in [
+        "raw_prompt",
+        "goal",
+        "domain",
+        "constraints",
+        "success_criteria",
+        "complexity",
+    ] {
         assert!(obj.contains_key(key), "missing key: {key}");
     }
 }
@@ -342,7 +404,13 @@ fn json_field_names_match_python_goal() {
 fn json_field_names_match_python_plan_phase() {
     let v: serde_json::Value = serde_json::to_value(&valid_phase()).unwrap();
     let obj = v.as_object().unwrap();
-    for key in ["name", "required_capabilities", "estimated_duration", "parallel_safe", "success_indicators"] {
+    for key in [
+        "name",
+        "required_capabilities",
+        "estimated_duration",
+        "parallel_safe",
+        "success_indicators",
+    ] {
         assert!(obj.contains_key(key), "missing key: {key}");
     }
 }
@@ -350,20 +418,42 @@ fn json_field_names_match_python_plan_phase() {
 fn json_field_names_match_python_bundle() {
     let v: serde_json::Value = serde_json::to_value(&valid_bundle()).unwrap();
     let obj = v.as_object().unwrap();
-    for key in ["id", "name", "version", "skills", "sdk_tools", "sub_agent_configs", "status"] {
+    for key in [
+        "id",
+        "name",
+        "version",
+        "skills",
+        "sdk_tools",
+        "sub_agent_configs",
+        "status",
+    ] {
         assert!(obj.contains_key(key), "missing key: {key}");
     }
 }
 #[test]
 fn json_field_names_match_python_metrics() {
     let m = GenerationMetrics {
-        total_time_seconds: 0.0, analysis_time: 0.0, planning_time: 0.0,
-        synthesis_time: 0.0, assembly_time: 0.0, skill_count: 0, phase_count: 0, bundle_size_kb: 0.0,
+        total_time_seconds: 0.0,
+        analysis_time: 0.0,
+        planning_time: 0.0,
+        synthesis_time: 0.0,
+        assembly_time: 0.0,
+        skill_count: 0,
+        phase_count: 0,
+        bundle_size_kb: 0.0,
     };
     let v: serde_json::Value = serde_json::to_value(&m).unwrap();
     let obj = v.as_object().unwrap();
-    for key in ["total_time_seconds", "analysis_time", "planning_time", "synthesis_time",
-                "assembly_time", "skill_count", "phase_count", "bundle_size_kb"] {
+    for key in [
+        "total_time_seconds",
+        "analysis_time",
+        "planning_time",
+        "synthesis_time",
+        "assembly_time",
+        "skill_count",
+        "phase_count",
+        "bundle_size_kb",
+    ] {
         assert!(obj.contains_key(key), "missing key: {key}");
     }
 }

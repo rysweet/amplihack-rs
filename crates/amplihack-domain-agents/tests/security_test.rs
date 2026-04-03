@@ -1,6 +1,4 @@
-use amplihack_domain_agents::{
-    AuditReport, SecurityAuditor, SecurityConfig, Vulnerability,
-};
+use amplihack_domain_agents::{AuditReport, SecurityAuditor, SecurityConfig, Vulnerability};
 use chrono::Utc;
 
 // ── Construction & accessors (PASS) ─────────────────────────────────────────
@@ -62,7 +60,9 @@ fn audit_empty_code() {
 #[test]
 fn audit_detects_unsafe() {
     let auditor = SecurityAuditor::with_defaults();
-    let report = auditor.audit("unsafe { std::ptr::null::<u8>().read() }").unwrap();
+    let report = auditor
+        .audit("unsafe { std::ptr::null::<u8>().read() }")
+        .unwrap();
     assert!(!report.vulnerabilities.is_empty());
     assert!(report.risk_score > 0.0);
 }
@@ -72,7 +72,9 @@ fn audit_detects_unsafe() {
 #[test]
 fn scan_vulnerabilities_basic() {
     let auditor = SecurityAuditor::with_defaults();
-    let vulns = auditor.scan_vulnerabilities("unsafe { std::ptr::null::<u8>().read() }").unwrap();
+    let vulns = auditor
+        .scan_vulnerabilities("unsafe { std::ptr::null::<u8>().read() }")
+        .unwrap();
     assert!(!vulns.is_empty());
     assert!(vulns.iter().any(|v| v.description.contains("unsafe")));
 }

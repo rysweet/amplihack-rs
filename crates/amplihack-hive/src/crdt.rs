@@ -28,7 +28,9 @@ impl GCounter {
 
     /// Return the total value across all nodes.
     pub fn value(&self) -> u64 {
-        self.counts.values().fold(0u64, |acc, &v| acc.saturating_add(v))
+        self.counts
+            .values()
+            .fold(0u64, |acc, &v| acc.saturating_add(v))
     }
 
     /// Merge another counter into this one (element-wise max).

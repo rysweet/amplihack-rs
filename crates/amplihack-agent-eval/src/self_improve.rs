@@ -5,16 +5,46 @@ use crate::models::SelfImproveConfig;
 
 /// Failure taxonomy categories matching Python's error_analyzer.
 const FAILURE_CATEGORIES: &[(&str, &[&str])] = &[
-    ("retrieval_insufficient", &["not found", "missing", "no result", "empty"]),
-    ("temporal_ordering_wrong", &["before", "after", "order", "sequence", "first"]),
-    ("intent_misclassification", &["intent", "classify", "misunderstood", "wrong type"]),
-    ("fact_extraction_incomplete", &["partial", "incomplete", "missed", "omitted"]),
-    ("synthesis_hallucination", &["hallucinate", "fabricate", "invented", "false"]),
-    ("update_not_applied", &["update", "stale", "old version", "not applied"]),
-    ("contradiction_undetected", &["contradict", "conflict", "inconsistent"]),
-    ("procedural_ordering_lost", &["step", "procedure", "order lost", "sequence"]),
-    ("teaching_coverage_gap", &["teach", "coverage", "gap", "not covered"]),
-    ("counterfactual_refusal", &["counterfactual", "hypothetical", "what if"]),
+    (
+        "retrieval_insufficient",
+        &["not found", "missing", "no result", "empty"],
+    ),
+    (
+        "temporal_ordering_wrong",
+        &["before", "after", "order", "sequence", "first"],
+    ),
+    (
+        "intent_misclassification",
+        &["intent", "classify", "misunderstood", "wrong type"],
+    ),
+    (
+        "fact_extraction_incomplete",
+        &["partial", "incomplete", "missed", "omitted"],
+    ),
+    (
+        "synthesis_hallucination",
+        &["hallucinate", "fabricate", "invented", "false"],
+    ),
+    (
+        "update_not_applied",
+        &["update", "stale", "old version", "not applied"],
+    ),
+    (
+        "contradiction_undetected",
+        &["contradict", "conflict", "inconsistent"],
+    ),
+    (
+        "procedural_ordering_lost",
+        &["step", "procedure", "order lost", "sequence"],
+    ),
+    (
+        "teaching_coverage_gap",
+        &["teach", "coverage", "gap", "not covered"],
+    ),
+    (
+        "counterfactual_refusal",
+        &["counterfactual", "hypothetical", "what if"],
+    ),
 ];
 
 /// Represents an analyzed test failure.
@@ -64,11 +94,7 @@ impl VotingResult {
 
     /// Check if majority approved (among non-abstaining voters).
     pub fn has_majority(&self) -> bool {
-        let non_abstain: usize = self
-            .votes
-            .iter()
-            .filter(|v| **v != Vote::Abstain)
-            .count();
+        let non_abstain: usize = self.votes.iter().filter(|v| **v != Vote::Abstain).count();
         if non_abstain == 0 {
             return false;
         }
@@ -140,9 +166,7 @@ impl ErrorAnalyzer {
                 "procedural_ordering_lost" => {
                     "Preserve step ordering: use indexed sequences in storage"
                 }
-                "teaching_coverage_gap" => {
-                    "Expand teaching coverage: add missing topic areas"
-                }
+                "teaching_coverage_gap" => "Expand teaching coverage: add missing topic areas",
                 "counterfactual_refusal" => {
                     "Enable hypothetical reasoning: relax factual-only constraints"
                 }
@@ -172,16 +196,10 @@ impl ErrorAnalyzer {
 fn classify_failure(error_lower: &str) -> (&'static str, String) {
     for &(category, keywords) in FAILURE_CATEGORIES {
         if keywords.iter().any(|kw| error_lower.contains(kw)) {
-            return (
-                category,
-                format!("Matched pattern in error: {error_lower}"),
-            );
+            return (category, format!("Matched pattern in error: {error_lower}"));
         }
     }
-    (
-        "unknown",
-        format!("Unclassified failure: {error_lower}"),
-    )
+    ("unknown", format!("Unclassified failure: {error_lower}"))
 }
 
 /// Proposes code patches based on failure analysis.
@@ -332,8 +350,14 @@ impl SelfImproveRunner {
         //
         // Without an agent process, we simulate the pipeline structure.
         let simulated_failures = vec![
-            ("test-recall-1".to_string(), "retrieval not found".to_string()),
-            ("test-temporal-1".to_string(), "wrong order of events".to_string()),
+            (
+                "test-recall-1".to_string(),
+                "retrieval not found".to_string(),
+            ),
+            (
+                "test-temporal-1".to_string(),
+                "wrong order of events".to_string(),
+            ),
         ];
 
         let analyses = self.analyzer.analyze(&simulated_failures)?;

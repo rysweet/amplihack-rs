@@ -97,8 +97,7 @@ impl EvalReport {
         let overall_score = if level_reports.is_empty() {
             0.0
         } else {
-            level_reports.iter().map(|r| r.average_score).sum::<f64>()
-                / level_reports.len() as f64
+            level_reports.iter().map(|r| r.average_score).sum::<f64>() / level_reports.len() as f64
         };
         Self {
             agent_name: agent_name.into(),
@@ -161,8 +160,7 @@ impl DomainEvalHarness {
         agent: &mut dyn DomainEvalAgent,
         level: TestLevel,
     ) -> Result<LevelReport, EvalError> {
-        let level_scenarios: Vec<_> =
-            self.scenarios.iter().filter(|s| s.level == level).collect();
+        let level_scenarios: Vec<_> = self.scenarios.iter().filter(|s| s.level == level).collect();
 
         debug!(
             level = %level,
@@ -188,10 +186,7 @@ impl DomainEvalHarness {
     }
 
     /// Run all scenarios across all represented levels.
-    pub fn run_all(
-        &self,
-        agent: &mut dyn DomainEvalAgent,
-    ) -> Result<EvalReport, EvalError> {
+    pub fn run_all(&self, agent: &mut dyn DomainEvalAgent) -> Result<EvalReport, EvalError> {
         let mut levels: Vec<TestLevel> = self.scenarios.iter().map(|s| s.level).collect();
         levels.sort_by_key(|l| l.id());
         levels.dedup();
@@ -377,7 +372,13 @@ mod tests {
         let reports = vec![
             LevelReport::from_results(
                 TestLevel::L1Recall,
-                vec![ScenarioResult::new("s1", TestLevel::L1Recall, 0.9, "a", "a")],
+                vec![ScenarioResult::new(
+                    "s1",
+                    TestLevel::L1Recall,
+                    0.9,
+                    "a",
+                    "a",
+                )],
             ),
             LevelReport::from_results(
                 TestLevel::L2MultiSourceSynthesis,

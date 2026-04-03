@@ -42,8 +42,8 @@ impl RecipeParser {
             );
         }
 
-        let doc: serde_yaml::Value =
-            serde_yaml::from_str(yaml_content).map_err(|e| anyhow::anyhow!("YAML parse error: {e}"))?;
+        let doc: serde_yaml::Value = serde_yaml::from_str(yaml_content)
+            .map_err(|e| anyhow::anyhow!("YAML parse error: {e}"))?;
 
         let mapping = doc
             .as_mapping()
@@ -112,11 +112,9 @@ impl RecipeParser {
             .as_mapping()
             .ok_or_else(|| anyhow::anyhow!("Step {} must be a mapping", index))?;
 
-        let id = extract_string(mapping, "id")
-            .unwrap_or_else(|| format!("step-{}", index));
+        let id = extract_string(mapping, "id").unwrap_or_else(|| format!("step-{}", index));
 
-        let name = extract_string(mapping, "name")
-            .unwrap_or_else(|| format!("Step {}", index));
+        let name = extract_string(mapping, "name").unwrap_or_else(|| format!("Step {}", index));
 
         // Collect field names for type inference (no value cloning needed)
         let field_keys: std::collections::HashSet<String> = mapping
@@ -129,13 +127,13 @@ impl RecipeParser {
             .unwrap_or_else(|| StepType::infer(&field_keys));
 
         let prompt = extract_string(mapping, "prompt");
-        let command = extract_string(mapping, "command")
-            .or_else(|| extract_string(mapping, "shell"));
+        let command =
+            extract_string(mapping, "command").or_else(|| extract_string(mapping, "shell"));
         let agent = extract_string(mapping, "agent");
         let description = extract_string(mapping, "description");
         let condition = extract_string(mapping, "condition");
-        let timeout_seconds = extract_u64(mapping, "timeout_seconds")
-            .or_else(|| extract_u64(mapping, "timeout"));
+        let timeout_seconds =
+            extract_u64(mapping, "timeout_seconds").or_else(|| extract_u64(mapping, "timeout"));
         let retry_count = extract_u64(mapping, "retry_count")
             .or_else(|| extract_u64(mapping, "retries"))
             .map(|v| v as u32);
@@ -175,10 +173,26 @@ impl Default for RecipeParser {
 // ---------------------------------------------------------------------------
 
 const KNOWN_STEP_FIELDS: &[&str] = &[
-    "id", "name", "type", "description", "prompt", "command", "shell",
-    "agent", "condition", "timeout_seconds", "timeout", "retry_count",
-    "retries", "allow_failure", "continue_on_error", "context",
-    "recipe", "sub_recipe", "parallel", "checkpoint",
+    "id",
+    "name",
+    "type",
+    "description",
+    "prompt",
+    "command",
+    "shell",
+    "agent",
+    "condition",
+    "timeout_seconds",
+    "timeout",
+    "retry_count",
+    "retries",
+    "allow_failure",
+    "continue_on_error",
+    "context",
+    "recipe",
+    "sub_recipe",
+    "parallel",
+    "checkpoint",
 ];
 
 fn warn_unrecognized_fields(mapping: &serde_yaml::Mapping, step_id: &str) {
@@ -304,7 +318,10 @@ steps:
         let recipe = parser().parse(yaml).unwrap();
         assert_eq!(recipe.name, "full-recipe");
         assert_eq!(recipe.version, "2.0");
-        assert_eq!(recipe.description.as_deref(), Some("A fully specified recipe"));
+        assert_eq!(
+            recipe.description.as_deref(),
+            Some("A fully specified recipe")
+        );
         assert_eq!(recipe.on_failure.as_deref(), Some("cleanup-step"));
         assert_eq!(recipe.step_count(), 3);
 
@@ -356,7 +373,8 @@ steps:
     #[test]
     fn parse_enforces_size_limit() {
         let small_parser = RecipeParser::with_max_size(50);
-        let yaml = "name: big\nsteps:\n  - id: s1\n    shell: echo this is too long for the limit\n";
+        let yaml =
+            "name: big\nsteps:\n  - id: s1\n    shell: echo this is too long for the limit\n";
         let result = small_parser.parse(yaml);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("size limit"));

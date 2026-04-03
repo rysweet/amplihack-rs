@@ -1,6 +1,4 @@
-use amplihack_agent_core::{
-    AgentLifecycle, BasicLifecycle, HealthStatus, LifecycleState,
-};
+use amplihack_agent_core::{AgentLifecycle, BasicLifecycle, HealthStatus, LifecycleState};
 
 // ---------------------------------------------------------------------------
 // Helpers

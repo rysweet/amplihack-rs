@@ -103,9 +103,7 @@ impl HiveController {
         if found {
             Ok(())
         } else {
-            Err(HiveError::Controller(format!(
-                "agent not found: {name}"
-            )))
+            Err(HiveError::Controller(format!("agent not found: {name}")))
         }
     }
 

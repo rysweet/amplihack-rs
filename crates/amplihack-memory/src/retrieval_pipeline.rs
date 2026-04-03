@@ -196,11 +196,7 @@ impl RetrievalPipeline {
     }
 
     /// Run only the filter stage.
-    pub fn filter(
-        &self,
-        candidates: Vec<ScoredEntry>,
-        query: &MemoryQuery,
-    ) -> Vec<ScoredEntry> {
+    pub fn filter(&self, candidates: Vec<ScoredEntry>, query: &MemoryQuery) -> Vec<ScoredEntry> {
         candidates
             .into_iter()
             .filter(|s| {

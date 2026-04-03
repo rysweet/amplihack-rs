@@ -150,7 +150,10 @@ fn from_str_l_prefix() {
 
 #[test]
 fn from_str_lowercase() {
-    assert_eq!(TestLevel::from_str_loose("l3"), Some(TestLevel::L3TemporalReasoning));
+    assert_eq!(
+        TestLevel::from_str_loose("l3"),
+        Some(TestLevel::L3TemporalReasoning)
+    );
 }
 
 #[test]

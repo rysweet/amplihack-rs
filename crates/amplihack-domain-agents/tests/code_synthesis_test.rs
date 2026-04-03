@@ -80,7 +80,9 @@ fn generate_complex_spec() {
 #[test]
 fn refactor_basic_code() {
     let synth = CodeSynthesizer::with_defaults();
-    let result = synth.refactor("fn add(a: i32, b: i32) -> i32 { return a + b; }").unwrap();
+    let result = synth
+        .refactor("fn add(a: i32, b: i32) -> i32 { return a + b; }")
+        .unwrap();
     assert!(result.code.contains("fn add"));
     assert!(result.code.contains("TODO"));
 }

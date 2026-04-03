@@ -112,10 +112,7 @@ impl MemoryCoordinator {
             .filter(|e| matches_query(e, query))
             .map(|e| (relevance_score(e, &query_words), e))
             .collect();
-        scored.sort_by(|a, b| {
-            b.0.partial_cmp(&a.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
         // Token budget enforcement
         let budget_chars = query.token_budget * CHARS_PER_TOKEN;

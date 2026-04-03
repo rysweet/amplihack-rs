@@ -28,11 +28,7 @@ impl SkillSynthesizer {
                     0.9,
                 ),
                 "validation" => ("testing", "Test and verify the implementation", 0.85),
-                "optimization" => (
-                    "refactoring",
-                    "Optimize and refine the implementation",
-                    0.8,
-                ),
+                "optimization" => ("refactoring", "Optimize and refine the implementation", 0.8),
                 other => (other, "General-purpose skill", 0.5),
             };
 

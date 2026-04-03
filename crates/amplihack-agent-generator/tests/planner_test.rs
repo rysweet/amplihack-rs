@@ -16,10 +16,7 @@ fn complex_goal() -> GoalDefinition {
     )
     .unwrap();
     g.complexity = amplihack_agent_generator::Complexity::Complex;
-    g.constraints = vec![
-        "sub-100ms latency".into(),
-        "multi-region failover".into(),
-    ];
+    g.constraints = vec!["sub-100ms latency".into(), "multi-region failover".into()];
     g
 }
 
@@ -50,14 +47,12 @@ fn dependency_ordering() {
         .find(|p| p.name == "implementation")
         .unwrap();
     assert!(impl_phase.dependencies.contains(&"analysis".to_string()));
-    let val_phase = plan
-        .phases
-        .iter()
-        .find(|p| p.name == "validation")
-        .unwrap();
-    assert!(val_phase
-        .dependencies
-        .contains(&"implementation".to_string()));
+    let val_phase = plan.phases.iter().find(|p| p.name == "validation").unwrap();
+    assert!(
+        val_phase
+            .dependencies
+            .contains(&"implementation".to_string())
+    );
 }
 
 #[test]

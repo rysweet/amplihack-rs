@@ -81,7 +81,6 @@ pub enum TaskPriority {
     Critical,
 }
 
-
 impl fmt::Display for TaskPriority {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

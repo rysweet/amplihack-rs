@@ -30,7 +30,6 @@ pub enum BundleStatus {
     Failed,
 }
 
-
 // ---------------------------------------------------------------------------
 // GoalDefinition
 // ---------------------------------------------------------------------------
@@ -70,9 +69,7 @@ impl GoalDefinition {
             ));
         }
         if goal.trim().is_empty() {
-            return Err(GeneratorError::InvalidGoal(
-                "goal must not be empty".into(),
-            ));
+            return Err(GeneratorError::InvalidGoal("goal must not be empty".into()));
         }
         if domain.trim().is_empty() {
             return Err(GeneratorError::InvalidGoal(

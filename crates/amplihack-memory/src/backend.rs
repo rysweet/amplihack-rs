@@ -95,18 +95,15 @@ impl MemoryBackend for InMemoryBackend {
             .entries
             .iter()
             .filter(|e| {
-                if !query_lower.is_empty()
-                    && !e.content.to_lowercase().contains(&query_lower)
-                {
+                if !query_lower.is_empty() && !e.content.to_lowercase().contains(&query_lower) {
                     return false;
                 }
                 if let Some(ref sid) = query.session_id
-                    && e.session_id != *sid {
-                        return false;
-                    }
-                if !query.memory_types.is_empty()
-                    && !query.memory_types.contains(&e.memory_type)
+                    && e.session_id != *sid
                 {
+                    return false;
+                }
+                if !query.memory_types.is_empty() && !query.memory_types.contains(&e.memory_type) {
                     return false;
                 }
                 true
@@ -127,20 +124,18 @@ impl MemoryBackend for InMemoryBackend {
         use std::collections::{HashMap, HashSet};
         let mut sessions: HashMap<String, (SessionInfo, HashSet<String>)> = HashMap::new();
         for e in &self.entries {
-            let (info, seen_agents) = sessions
-                .entry(e.session_id.clone())
-                .or_insert_with(|| {
-                    (
-                        SessionInfo {
-                            session_id: e.session_id.clone(),
-                            agent_ids: Vec::new(),
-                            memory_count: 0,
-                            created_at: e.created_at,
-                            last_accessed: e.accessed_at,
-                        },
-                        HashSet::new(),
-                    )
-                });
+            let (info, seen_agents) = sessions.entry(e.session_id.clone()).or_insert_with(|| {
+                (
+                    SessionInfo {
+                        session_id: e.session_id.clone(),
+                        agent_ids: Vec::new(),
+                        memory_count: 0,
+                        created_at: e.created_at,
+                        last_accessed: e.accessed_at,
+                    },
+                    HashSet::new(),
+                )
+            });
             info.memory_count += 1;
             if seen_agents.insert(e.agent_id.clone()) {
                 info.agent_ids.push(e.agent_id.clone());

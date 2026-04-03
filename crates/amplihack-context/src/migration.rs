@@ -124,11 +124,7 @@ impl MigrationHelper {
             has_plugin,
             can_migrate_to_plugin: self.can_migrate_to_plugin(project_dir),
             can_migrate_to_local: has_plugin && !has_local,
-            local_path: if has_local {
-                Some(local_claude)
-            } else {
-                None
-            },
+            local_path: if has_local { Some(local_claude) } else { None },
             plugin_path: if has_plugin {
                 Some(self.plugin_claude.clone())
             } else {
@@ -174,11 +170,7 @@ mod tests {
         let plugin_root = tmp.path().join("plugin_root");
         fs::create_dir_all(plugin_root.join(".claude")).unwrap();
         fs::create_dir_all(plugin_root.join(".claude-plugin")).unwrap();
-        fs::write(
-            plugin_root.join(".claude-plugin").join("plugin.json"),
-            "{}",
-        )
-        .unwrap();
+        fs::write(plugin_root.join(".claude-plugin").join("plugin.json"), "{}").unwrap();
         let helper = MigrationHelper::with_paths(plugin_root);
         let project = tmp.path().join("project");
         fs::create_dir_all(&project).unwrap();
@@ -207,11 +199,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let (helper, project) = setup_helper(&tmp);
         // Put a file in the plugin .claude/ so we can verify it's copied.
-        fs::write(
-            helper.plugin_claude.join("settings.json"),
-            r#"{"ok":true}"#,
-        )
-        .unwrap();
+        fs::write(helper.plugin_claude.join("settings.json"), r#"{"ok":true}"#).unwrap();
 
         assert!(helper.migrate_to_local(&project));
         assert!(project.join(".claude").join("settings.json").exists());

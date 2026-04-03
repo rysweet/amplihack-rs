@@ -119,9 +119,7 @@ pub fn validate_content(items: &[String]) -> Result<()> {
     }
     let non_empty = items.iter().filter(|s| !s.trim().is_empty()).count();
     if non_empty == 0 {
-        return Err(HiveError::Workload(
-            "All content items are empty".into(),
-        ));
+        return Err(HiveError::Workload("All content items are empty".into()));
     }
     Ok(())
 }
@@ -157,8 +155,7 @@ mod tests {
     #[test]
     fn feed_uses_custom_feed_id() {
         let mut bus = LocalEventBus::new();
-        let config = FeedConfig::new("test", vec!["item".into()])
-            .with_feed_id("my-feed");
+        let config = FeedConfig::new("test", vec!["item".into()]).with_feed_id("my-feed");
         let result = run_feed(&mut bus, &config).unwrap();
         assert_eq!(result.feed_id, "my-feed");
     }

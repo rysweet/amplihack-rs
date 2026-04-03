@@ -166,8 +166,12 @@ mod tests {
     #[test]
     fn test_generate_agent_has_required_sections() {
         let ag = AgentGenerator::new();
-        let result =
-            ag.generate_agent(&sample_req(), "data-processing", "create", Complexity::Standard);
+        let result = ag.generate_agent(
+            &sample_req(),
+            "data-processing",
+            "create",
+            Complexity::Standard,
+        );
         for section in &[
             "## Role",
             "## Capabilities",
@@ -182,16 +186,24 @@ mod tests {
     #[test]
     fn test_content_length() {
         let ag = AgentGenerator::new();
-        let result =
-            ag.generate_agent(&sample_req(), "data-processing", "create", Complexity::Standard);
+        let result = ag.generate_agent(
+            &sample_req(),
+            "data-processing",
+            "create",
+            Complexity::Standard,
+        );
         assert!(result.content.len() > 500);
     }
 
     #[test]
     fn test_validate_passes() {
         let ag = AgentGenerator::new();
-        let result =
-            ag.generate_agent(&sample_req(), "data-processing", "create", Complexity::Standard);
+        let result = ag.generate_agent(
+            &sample_req(),
+            "data-processing",
+            "create",
+            Complexity::Standard,
+        );
         assert!(AgentGenerator::validate_content(&result.content).is_empty());
     }
 
@@ -242,24 +254,36 @@ mod tests {
     #[test]
     fn test_docs_generated() {
         let ag = AgentGenerator::new();
-        let result =
-            ag.generate_agent(&sample_req(), "data-processing", "create", Complexity::Standard);
+        let result = ag.generate_agent(
+            &sample_req(),
+            "data-processing",
+            "create",
+            Complexity::Standard,
+        );
         assert!(result.documentation.contains("Extended Documentation"));
     }
 
     #[test]
     fn test_advanced_adds_responsibilities() {
         let ag = AgentGenerator::new();
-        let result =
-            ag.generate_agent(&sample_req(), "data-processing", "create", Complexity::Advanced);
+        let result = ag.generate_agent(
+            &sample_req(),
+            "data-processing",
+            "create",
+            Complexity::Advanced,
+        );
         assert!(result.content.contains("Optimization"));
     }
 
     #[test]
     fn test_simple_no_advanced_features() {
         let ag = AgentGenerator::new();
-        let result =
-            ag.generate_agent(&sample_req(), "data-processing", "create", Complexity::Simple);
+        let result = ag.generate_agent(
+            &sample_req(),
+            "data-processing",
+            "create",
+            Complexity::Simple,
+        );
         assert!(!result.content.contains("### Advanced Features"));
     }
 
@@ -269,7 +293,11 @@ mod tests {
         let mut req = sample_req();
         req.dependencies.clear();
         let result = ag.generate_agent(&req, "general", "create", Complexity::Simple);
-        assert!(result.content.contains("No external dependencies required."));
+        assert!(
+            result
+                .content
+                .contains("No external dependencies required.")
+        );
     }
 
     #[test]
@@ -292,8 +320,7 @@ mod tests {
     #[test]
     fn test_no_placeholders_in_output() {
         let ag = AgentGenerator::new();
-        let result =
-            ag.generate_agent(&sample_req(), "security", "create", Complexity::Advanced);
+        let result = ag.generate_agent(&sample_req(), "security", "create", Complexity::Advanced);
         assert!(!result.content.contains("PLACEHOLDER"));
         assert!(!result.content.contains("TODO"));
     }

@@ -1,5 +1,7 @@
 use crate::error::Result;
-use crate::models::{BundleStatus, ExecutionPlan, GoalAgentBundle, GoalDefinition, SkillDefinition};
+use crate::models::{
+    BundleStatus, ExecutionPlan, GoalAgentBundle, GoalDefinition, SkillDefinition,
+};
 
 /// Combines a goal, plan, and skills into a deployable [`GoalAgentBundle`].
 pub struct AgentAssembler;

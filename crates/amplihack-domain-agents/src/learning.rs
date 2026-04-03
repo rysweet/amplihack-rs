@@ -40,7 +40,11 @@ impl LearningAgent {
         let concepts: Vec<String> = content
             .split_whitespace()
             .filter(|w| w.len() > 3)
-            .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+            .map(|w| {
+                w.to_lowercase()
+                    .trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_string()
+            })
             .filter(|w| !w.is_empty())
             .collect();
 

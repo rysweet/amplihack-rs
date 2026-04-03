@@ -5,7 +5,7 @@
 //! - SSH-based secure credential transfer
 //! - Credential validation before propagation
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -81,7 +81,9 @@ fn validate_ssh_target(target: &str) -> Result<()> {
         bail!("SSH target must not be empty");
     }
     // Allow user@host, user@host:port, IPv4, IPv6 in brackets, hostnames
-    let forbidden = ['\'', '"', '`', '$', '(', ')', ';', '&', '|', '\\', '\n', '\r', ' ', '\t'];
+    let forbidden = [
+        '\'', '"', '`', '$', '(', ')', ';', '&', '|', '\\', '\n', '\r', ' ', '\t',
+    ];
     if target.chars().any(|c| forbidden.contains(&c)) {
         bail!("SSH target contains forbidden characters: {target:?}");
     }
@@ -150,11 +152,9 @@ pub fn propagate_credential(ssh_target: &str, cred_type: CredentialType) -> Resu
     }
     drop(child.stdin.take());
 
-    let status = child.wait().with_context(|| {
-        format!(
-            "failed waiting for credential propagation to {ssh_target}",
-        )
-    })?;
+    let status = child
+        .wait()
+        .with_context(|| format!("failed waiting for credential propagation to {ssh_target}",))?;
 
     if status.success() {
         info!(

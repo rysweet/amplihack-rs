@@ -35,10 +35,8 @@ fn install_from_local_path() {
 #[test]
 fn install_rejects_nonexistent_source() {
     let tmp = TempDir::new().unwrap();
-    let mgr = PluginManager::with_paths(
-        tmp.path().join("plugins"),
-        tmp.path().join("settings.json"),
-    );
+    let mgr =
+        PluginManager::with_paths(tmp.path().join("plugins"), tmp.path().join("settings.json"));
     let result = mgr.install("/nonexistent/path", false);
     assert!(!result.success);
     assert!(result.message.contains("must be a directory"));
@@ -47,10 +45,8 @@ fn install_rejects_nonexistent_source() {
 #[test]
 fn install_rejects_empty_source() {
     let tmp = TempDir::new().unwrap();
-    let mgr = PluginManager::with_paths(
-        tmp.path().join("plugins"),
-        tmp.path().join("settings.json"),
-    );
+    let mgr =
+        PluginManager::with_paths(tmp.path().join("plugins"), tmp.path().join("settings.json"));
     let result = mgr.install("", false);
     assert!(!result.success);
     assert!(result.message.contains("Empty source"));
@@ -104,10 +100,8 @@ fn uninstall_removes_plugin() {
 #[test]
 fn uninstall_returns_false_for_missing_plugin() {
     let tmp = TempDir::new().unwrap();
-    let mgr = PluginManager::with_paths(
-        tmp.path().join("plugins"),
-        tmp.path().join("settings.json"),
-    );
+    let mgr =
+        PluginManager::with_paths(tmp.path().join("plugins"), tmp.path().join("settings.json"));
     assert!(!mgr.uninstall("no-such-plugin"));
 }
 
@@ -121,8 +115,7 @@ fn list_installed_finds_valid_plugins() {
 
     std::fs::create_dir_all(install_root.join("not-a-plugin")).unwrap();
 
-    let mgr =
-        PluginManager::with_paths(install_root, tmp.path().join("settings.json"));
+    let mgr = PluginManager::with_paths(install_root, tmp.path().join("settings.json"));
     let list = mgr.list_installed();
     assert_eq!(list, vec!["alpha-plugin", "beta-plugin"]);
 }
@@ -130,10 +123,8 @@ fn list_installed_finds_valid_plugins() {
 #[test]
 fn list_installed_empty_when_no_plugins() {
     let tmp = TempDir::new().unwrap();
-    let mgr = PluginManager::with_paths(
-        tmp.path().join("plugins"),
-        tmp.path().join("settings.json"),
-    );
+    let mgr =
+        PluginManager::with_paths(tmp.path().join("plugins"), tmp.path().join("settings.json"));
     assert!(mgr.list_installed().is_empty());
 }
 
@@ -143,10 +134,8 @@ fn resolve_paths_makes_relative_absolute() {
     let base = tmp.path().join("plugin");
     std::fs::create_dir_all(&base).unwrap();
 
-    let mgr = PluginManager::with_paths(
-        tmp.path().join("plugins"),
-        tmp.path().join("settings.json"),
-    );
+    let mgr =
+        PluginManager::with_paths(tmp.path().join("plugins"), tmp.path().join("settings.json"));
 
     let mut manifest = serde_json::Map::new();
     manifest.insert(
@@ -168,10 +157,8 @@ fn resolve_paths_makes_relative_absolute() {
 #[test]
 fn resolve_paths_preserves_absolute() {
     let tmp = TempDir::new().unwrap();
-    let mgr = PluginManager::with_paths(
-        tmp.path().join("plugins"),
-        tmp.path().join("settings.json"),
-    );
+    let mgr =
+        PluginManager::with_paths(tmp.path().join("plugins"), tmp.path().join("settings.json"));
 
     let mut manifest = serde_json::Map::new();
     manifest.insert(
@@ -192,10 +179,8 @@ fn resolve_paths_handles_arrays() {
     let base = tmp.path().join("plugin");
     std::fs::create_dir_all(&base).unwrap();
 
-    let mgr = PluginManager::with_paths(
-        tmp.path().join("plugins"),
-        tmp.path().join("settings.json"),
-    );
+    let mgr =
+        PluginManager::with_paths(tmp.path().join("plugins"), tmp.path().join("settings.json"));
 
     let mut manifest = serde_json::Map::new();
     manifest.insert(
@@ -215,10 +200,8 @@ fn resolve_paths_recurses_into_nested_objects() {
     let base = tmp.path().join("plugin");
     std::fs::create_dir_all(&base).unwrap();
 
-    let mgr = PluginManager::with_paths(
-        tmp.path().join("plugins"),
-        tmp.path().join("settings.json"),
-    );
+    let mgr =
+        PluginManager::with_paths(tmp.path().join("plugins"), tmp.path().join("settings.json"));
 
     let mut manifest = serde_json::Map::new();
     let mut nested = serde_json::Map::new();

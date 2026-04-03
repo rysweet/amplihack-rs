@@ -199,12 +199,8 @@ fn fact_count_empty_graph() {
 #[test]
 fn fact_count_after_insertions() {
     let mut graph = HiveGraph::new();
-    graph
-        .store_fact("a", "fact a", 0.5, "src", vec![])
-        .unwrap();
-    graph
-        .store_fact("b", "fact b", 0.6, "src", vec![])
-        .unwrap();
+    graph.store_fact("a", "fact a", 0.5, "src", vec![]).unwrap();
+    graph.store_fact("b", "fact b", 0.6, "src", vec![]).unwrap();
     assert_eq!(graph.fact_count(), 2);
 }
 

@@ -16,11 +16,7 @@ pub const DEFAULT_GRADER_MODEL: &str = "claude-sonnet-4-20250514";
 /// Trait for LLM-backed grading.
 pub trait LlmGrader {
     /// Call the LLM and return a parsed grade result.
-    fn grade_with_llm(
-        &self,
-        prompt: &str,
-        model: &str,
-    ) -> Result<LlmGradeResponse, EvalError>;
+    fn grade_with_llm(&self, prompt: &str, model: &str) -> Result<LlmGradeResponse, EvalError>;
 }
 
 /// Structured response from an LLM grading call.
@@ -72,17 +68,16 @@ pub fn extract_json(text: &str) -> Option<String> {
 }
 
 /// Build a grading prompt for semantic comparison.
-pub fn build_grading_prompt(
-    question: &str,
-    expected: &str,
-    actual: &str,
-    level: u8,
-) -> String {
+pub fn build_grading_prompt(question: &str, expected: &str, actual: &str, level: u8) -> String {
     let level_guidance = match level {
-        3 => "\nIMPORTANT: For L3 temporal reasoning, pay special attention to \
-              time-based ordering, recency, and chronological accuracy.",
-        5 => "\nIMPORTANT: For L5 contradiction handling, verify the answer \
-              correctly identifies and resolves contradicting information.",
+        3 => {
+            "\nIMPORTANT: For L3 temporal reasoning, pay special attention to \
+              time-based ordering, recency, and chronological accuracy."
+        }
+        5 => {
+            "\nIMPORTANT: For L5 contradiction handling, verify the answer \
+              correctly identifies and resolves contradicting information."
+        }
         _ => "",
     };
 
@@ -103,11 +98,7 @@ Respond with JSON: {{"score": <float>, "reasoning": "<explanation>"}}"#
 pub struct StubLlmGrader;
 
 impl LlmGrader for StubLlmGrader {
-    fn grade_with_llm(
-        &self,
-        _prompt: &str,
-        _model: &str,
-    ) -> Result<LlmGradeResponse, EvalError> {
+    fn grade_with_llm(&self, _prompt: &str, _model: &str) -> Result<LlmGradeResponse, EvalError> {
         debug!("StubLlmGrader: returning default response");
         Ok(LlmGradeResponse {
             score: 0.5,

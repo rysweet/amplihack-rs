@@ -96,7 +96,10 @@ pub struct TestCase {
 }
 
 impl TestCase {
-    pub fn new(question: TestQuestion, expected_answer: impl Into<String>) -> Result<Self, EvalError> {
+    pub fn new(
+        question: TestQuestion,
+        expected_answer: impl Into<String>,
+    ) -> Result<Self, EvalError> {
         let expected_answer = expected_answer.into();
         if expected_answer.is_empty() {
             return Err(EvalError::config("expected answer must not be empty"));

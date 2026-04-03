@@ -1,6 +1,4 @@
-use amplihack_domain_agents::{
-    QuizQuestion, TeachingAgent, TeachingConfig,
-};
+use amplihack_domain_agents::{QuizQuestion, TeachingAgent, TeachingConfig};
 
 // ── Construction & accessors (PASS) ─────────────────────────────────────────
 

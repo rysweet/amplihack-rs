@@ -106,9 +106,7 @@ impl GraphStore for InMemoryGraphStore {
         };
         let results: Vec<Props> = table_nodes
             .values()
-            .filter(|props| {
-                filters.is_none_or(|f| f.iter().all(|(k, v)| props.get(k) == Some(v)))
-            })
+            .filter(|props| filters.is_none_or(|f| f.iter().all(|(k, v)| props.get(k) == Some(v))))
             .take(limit)
             .cloned()
             .collect();
