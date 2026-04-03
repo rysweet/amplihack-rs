@@ -127,3 +127,78 @@ impl Default for PromptAnalyzer {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_domain_security() {
+        assert_eq!(PromptAnalyzer::detect_domain("scan for vulnerabilities"), "security");
+        assert_eq!(PromptAnalyzer::detect_domain("check CVE database"), "security");
+    }
+
+    #[test]
+    fn detect_domain_data_processing() {
+        assert_eq!(PromptAnalyzer::detect_domain("process CSV data"), "data-processing");
+        assert_eq!(PromptAnalyzer::detect_domain("build a pipeline"), "data-processing");
+    }
+
+    #[test]
+    fn detect_domain_log_analysis() {
+        assert_eq!(PromptAnalyzer::detect_domain("analyze logs for errors"), "log-analysis");
+    }
+
+    #[test]
+    fn detect_domain_development() {
+        assert_eq!(PromptAnalyzer::detect_domain("build the code"), "development");
+    }
+
+    #[test]
+    fn detect_domain_general_fallback() {
+        assert_eq!(PromptAnalyzer::detect_domain("hello world"), "general");
+    }
+
+    #[test]
+    fn extract_constraints_picks_must_should_require() {
+        let text = "Must be fast.\nShould use Rust.\nThis is fine.\nRequires auth.";
+        let c = PromptAnalyzer::extract_constraints(text);
+        assert_eq!(c.len(), 3);
+        assert!(c.iter().any(|s| s.contains("fast")));
+        assert!(c.iter().any(|s| s.contains("Rust")));
+        assert!(c.iter().any(|s| s.contains("auth")));
+    }
+
+    #[test]
+    fn extract_success_criteria_keywords() {
+        let text = "Done when tests pass.\nThe success should be verified.\nRandom line.";
+        let c = PromptAnalyzer::extract_success_criteria(text);
+        assert_eq!(c.len(), 2);
+    }
+
+    #[test]
+    fn estimate_complexity_by_length() {
+        assert_eq!(PromptAnalyzer::estimate_complexity("short"), Complexity::Simple);
+        let medium = "a".repeat(60);
+        assert_eq!(PromptAnalyzer::estimate_complexity(&medium), Complexity::Moderate);
+        let long = "a".repeat(120);
+        assert_eq!(PromptAnalyzer::estimate_complexity(&long), Complexity::Complex);
+    }
+
+    #[test]
+    fn analyze_empty_prompt_errors() {
+        let a = PromptAnalyzer::new();
+        assert!(a.analyze("   ").is_err());
+    }
+
+    #[test]
+    fn analyze_sets_domain_and_complexity() {
+        let a = PromptAnalyzer::new();
+        let g = a.analyze("scan for security vulnerabilities in the codebase. Must be thorough. Done when all CVEs checked.").unwrap();
+        assert_eq!(g.domain, "security");
+        // >100 chars → Complex, but the complexity threshold is on the trimmed prompt length
+        assert!(g.complexity >= Complexity::Moderate);
+        assert!(!g.constraints.is_empty());
+        assert!(!g.success_criteria.is_empty());
+    }
+}
