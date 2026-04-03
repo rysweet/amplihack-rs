@@ -18,7 +18,11 @@ fn setup_disabled(tmp: &TempDir) -> PathBuf {
 fn returns_enabled_when_no_disabled_file() {
     let tmp = TempDir::new().unwrap();
     // Create the runtime dir but NOT the .disabled file.
-    let runtime = tmp.path().join(".claude").join("runtime").join("power-steering");
+    let runtime = tmp
+        .path()
+        .join(".claude")
+        .join("runtime")
+        .join("power-steering");
     fs::create_dir_all(&runtime).unwrap();
 
     crate::worktree::clear_cache();
@@ -108,7 +112,7 @@ fn try_prompt_with_nonexistent_project_root() {
     // The worktree module fails gracefully; either we get Enabled (no
     // .disabled file) or an error that gets caught at the outer level.
     match result {
-        Ok(ReEnableResult::Enabled) => {} // expected
+        Ok(ReEnableResult::Enabled) => {}  // expected
         Ok(ReEnableResult::Disabled) => {} // acceptable
         Err(_) => {}                       // also acceptable (IO error)
     }

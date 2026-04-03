@@ -1,0 +1,189 @@
+//! Intent detection and classification.
+//!
+//! Matches Python `amplihack/agents/goal_seeking/intent_detector.py`:
+//! - Intent enum: StoreContent, AnswerQuestion, ExecuteTask, Unknown
+//! - IntentDetector: classify(input) → Intent
+
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Intent
+// ---------------------------------------------------------------------------
+
+/// Classified intent of user input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Intent {
+    /// Input is content to be stored in memory.
+    StoreContent,
+    /// Input is a question to be answered.
+    AnswerQuestion,
+    /// Input is a task/command to be executed.
+    ExecuteTask,
+    /// Intent could not be determined.
+    Unknown,
+}
+
+impl fmt::Display for Intent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::StoreContent => write!(f, "store_content"),
+            Self::AnswerQuestion => write!(f, "answer_question"),
+            Self::ExecuteTask => write!(f, "execute_task"),
+            Self::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
+impl Intent {
+    /// Whether this intent requires memory access.
+    pub fn needs_memory(&self) -> bool {
+        matches!(self, Self::StoreContent | Self::AnswerQuestion)
+    }
+
+    /// Whether this intent is actionable (not Unknown).
+    pub fn is_actionable(&self) -> bool {
+        !matches!(self, Self::Unknown)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IntentDetector
+// ---------------------------------------------------------------------------
+
+/// Question-word prefixes used for heuristic intent detection.
+pub const QUESTION_WORDS: &[&str] = &[
+    "what", "who", "where", "when", "why", "how", "which", "is", "are", "do", "does", "can",
+    "could", "would", "should",
+];
+
+/// Command prefixes used for heuristic intent detection.
+pub const COMMAND_WORDS: &[&str] = &[
+    "run", "execute", "create", "delete", "build", "test", "deploy", "install", "fix", "update",
+    "start", "stop",
+];
+
+/// Classifies raw text input into an `Intent`.
+///
+/// Port of Python `IntentDetector`.
+pub struct IntentDetector {
+    /// Question-word prefixes used for heuristic detection.
+    question_words: Vec<&'static str>,
+    /// Command prefixes used for heuristic detection.
+    command_words: Vec<&'static str>,
+}
+
+impl IntentDetector {
+    pub fn new() -> Self {
+        Self {
+            question_words: QUESTION_WORDS.to_vec(),
+            command_words: COMMAND_WORDS.to_vec(),
+        }
+    }
+
+    /// Classify the given input into an `Intent`.
+    pub fn classify(&self, input: &str) -> Intent {
+        let trimmed = input.trim();
+        let lower = trimmed.to_lowercase();
+
+        if lower.is_empty() {
+            return Intent::Unknown;
+        }
+
+        if lower.ends_with('?') {
+            return Intent::AnswerQuestion;
+        }
+
+        let first_word = lower.split_whitespace().next().unwrap_or("");
+
+        if self.question_words.contains(&first_word) {
+            return Intent::AnswerQuestion;
+        }
+
+        if self.command_words.contains(&first_word) {
+            return Intent::ExecuteTask;
+        }
+
+        Intent::StoreContent
+    }
+}
+
+impl Default for IntentDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intent_display() {
+        assert_eq!(Intent::StoreContent.to_string(), "store_content");
+        assert_eq!(Intent::AnswerQuestion.to_string(), "answer_question");
+        assert_eq!(Intent::ExecuteTask.to_string(), "execute_task");
+        assert_eq!(Intent::Unknown.to_string(), "unknown");
+    }
+
+    #[test]
+    fn intent_serde_roundtrip() {
+        let json = serde_json::to_string(&Intent::ExecuteTask).unwrap();
+        assert_eq!(json, r#""execute_task""#);
+        let parsed: Intent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, Intent::ExecuteTask);
+    }
+
+    #[test]
+    fn intent_needs_memory() {
+        assert!(Intent::StoreContent.needs_memory());
+        assert!(Intent::AnswerQuestion.needs_memory());
+        assert!(!Intent::ExecuteTask.needs_memory());
+        assert!(!Intent::Unknown.needs_memory());
+    }
+
+    #[test]
+    fn intent_is_actionable() {
+        assert!(Intent::StoreContent.is_actionable());
+        assert!(Intent::AnswerQuestion.is_actionable());
+        assert!(Intent::ExecuteTask.is_actionable());
+        assert!(!Intent::Unknown.is_actionable());
+    }
+
+    // M6: classify() tests
+    #[test]
+    fn classify_question_mark() {
+        let d = IntentDetector::new();
+        assert_eq!(d.classify("what is Rust?"), Intent::AnswerQuestion);
+    }
+
+    #[test]
+    fn classify_question_word() {
+        let d = IntentDetector::new();
+        assert_eq!(d.classify("how does it work"), Intent::AnswerQuestion);
+    }
+
+    #[test]
+    fn classify_command() {
+        let d = IntentDetector::new();
+        assert_eq!(d.classify("run the tests"), Intent::ExecuteTask);
+    }
+
+    #[test]
+    fn classify_store_content() {
+        let d = IntentDetector::new();
+        assert_eq!(d.classify("the sky is blue"), Intent::StoreContent);
+    }
+
+    #[test]
+    fn classify_empty_is_unknown() {
+        let d = IntentDetector::new();
+        assert_eq!(d.classify(""), Intent::Unknown);
+    }
+}

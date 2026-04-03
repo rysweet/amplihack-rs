@@ -20,8 +20,8 @@ pub const ALLOWLIST_ENV_VAR: &str = "AMPLIHACK_SEND_INPUT_ALLOWLIST";
 
 /// Default safe patterns (normalised: lowercase, stripped).
 const DEFAULT_PATTERNS: &[&str] = &[
-    "", "\n", "y", "y\n", "yes", "yes\n", "n", "n\n", "no", "no\n", "q", "q\n", "quit",
-    "quit\n", "exit", "exit\n",
+    "", "\n", "y", "y\n", "yes", "yes\n", "n", "n\n", "no", "no\n", "q", "q\n", "quit", "quit\n",
+    "exit", "exit\n",
 ];
 
 /// Error returned when a `send_input` value is not on the allow-list and
@@ -43,10 +43,7 @@ pub struct UnsafeInputError {
 /// Extra patterns are loaded from the JSON file pointed to by
 /// [`ALLOWLIST_ENV_VAR`], if set and readable.
 pub fn get_safe_patterns() -> HashSet<String> {
-    let mut set: HashSet<String> = DEFAULT_PATTERNS
-        .iter()
-        .map(|p| normalise(p))
-        .collect();
+    let mut set: HashSet<String> = DEFAULT_PATTERNS.iter().map(|p| normalise(p)).collect();
 
     for extra in load_extra_patterns() {
         set.insert(normalise(&extra));

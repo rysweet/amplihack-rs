@@ -22,11 +22,7 @@ pub(super) fn titlecase_name(name: &str) -> String {
         .join(" ")
 }
 
-pub(super) fn generate_description(
-    req: &AgentRequirement,
-    domain: &str,
-    action: &str,
-) -> String {
+pub(super) fn generate_description(req: &AgentRequirement, domain: &str, action: &str) -> String {
     format!(
         "{}\n\nThis {} agent operates within the {} domain\n\
          to provide specialized functionality for {} operations.",
@@ -40,15 +36,18 @@ pub(super) fn generate_capabilities(capabilities: &[String]) -> String {
     }
     capabilities
         .iter()
-        .map(|c| format!("- **{}**: Perform {} operations on input data", titlecase_name(c), c))
+        .map(|c| {
+            format!(
+                "- **{}**: Perform {} operations on input data",
+                titlecase_name(c),
+                c
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-pub(super) fn generate_responsibilities(
-    req: &AgentRequirement,
-    complexity: Complexity,
-) -> String {
+pub(super) fn generate_responsibilities(req: &AgentRequirement, complexity: Complexity) -> String {
     let caps = if req.capabilities.is_empty() {
         "core".to_string()
     } else {
@@ -74,10 +73,7 @@ pub(super) fn generate_responsibilities(
     lines.join("\n")
 }
 
-pub(super) fn generate_implementation(
-    req: &AgentRequirement,
-    complexity: Complexity,
-) -> String {
+pub(super) fn generate_implementation(req: &AgentRequirement, complexity: Complexity) -> String {
     let cap = req
         .capabilities
         .first()

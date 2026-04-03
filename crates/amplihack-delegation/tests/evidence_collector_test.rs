@@ -74,11 +74,7 @@ fn collect_respects_exclude_patterns() {
     let dir = make_dir_with_files(&[("src/main.rs", "fn main(){}"), ("build/out.rs", "// out")]);
     let mut c = EvidenceCollector::new(dir.path(), None);
     let evidence = c
-        .collect(
-            None,
-            Some(&[EvidenceType::CodeFile]),
-            Some(&["build/**"]),
-        )
+        .collect(None, Some(&[EvidenceType::CodeFile]), Some(&["build/**"]))
         .expect("collect");
     assert!(
         evidence.iter().all(|e| !e.path.starts_with("build")),
@@ -93,8 +89,14 @@ fn get_by_type_filters_correctly() {
     c.collect(None, None, None).expect("collect");
     let code = c.get_by_type(&EvidenceType::CodeFile);
     let docs = c.get_by_type(&EvidenceType::Documentation);
-    assert!(code.iter().all(|e| e.evidence_type == EvidenceType::CodeFile));
-    assert!(docs.iter().all(|e| e.evidence_type == EvidenceType::Documentation));
+    assert!(
+        code.iter()
+            .all(|e| e.evidence_type == EvidenceType::CodeFile)
+    );
+    assert!(
+        docs.iter()
+            .all(|e| e.evidence_type == EvidenceType::Documentation)
+    );
 }
 
 #[test]
@@ -114,8 +116,14 @@ fn metadata_includes_language_and_line_count() {
     c.collect(None, Some(&[EvidenceType::CodeFile]), None)
         .expect("collect");
     let items = c.get_by_type(&EvidenceType::CodeFile);
-    let py = items.iter().find(|e| e.path.ends_with(".py")).expect("py file");
-    assert_eq!(py.metadata.get("language").map(|s| s.as_str()), Some("python"));
+    let py = items
+        .iter()
+        .find(|e| e.path.ends_with(".py"))
+        .expect("py file");
+    assert_eq!(
+        py.metadata.get("language").map(|s| s.as_str()),
+        Some("python")
+    );
     assert!(py.metadata.contains_key("line_count"));
 }
 

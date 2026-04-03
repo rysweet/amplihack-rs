@@ -17,7 +17,11 @@ pub(crate) enum CmdOutcome {
 }
 
 /// Run a command with a wall-clock timeout.
-pub(crate) fn run_command_with_timeout(args: &[&str], timeout: Duration, cwd: Option<&Path>) -> CmdOutcome {
+pub(crate) fn run_command_with_timeout(
+    args: &[&str],
+    timeout: Duration,
+    cwd: Option<&Path>,
+) -> CmdOutcome {
     if args.is_empty() {
         return CmdOutcome::Error("empty argument list".into());
     }

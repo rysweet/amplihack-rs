@@ -37,15 +37,15 @@ pub fn is_trivial(content: &str, min_length: usize) -> bool {
 
 /// Check if a memory entry matches a query's filters.
 pub fn matches_query(entry: &MemoryEntry, query: &MemoryQuery) -> bool {
-    if let Some(ref sid) = query.session_id {
-        if entry.session_id != *sid {
-            return false;
-        }
+    if let Some(ref sid) = query.session_id
+        && entry.session_id != *sid
+    {
+        return false;
     }
-    if let Some(ref aid) = query.agent_id {
-        if entry.agent_id != *aid {
-            return false;
-        }
+    if let Some(ref aid) = query.agent_id
+        && entry.agent_id != *aid
+    {
+        return false;
     }
     if !query.memory_types.is_empty() && !query.memory_types.contains(&entry.memory_type) {
         return false;
@@ -69,8 +69,9 @@ pub fn matches_query(entry: &MemoryEntry, query: &MemoryQuery) -> bool {
 ///
 /// Combines word overlap (60%), recency boost (20%), and importance (20%).
 pub fn relevance_score(entry: &MemoryEntry, query_words: &HashSet<&str>) -> f64 {
-    let content_words: HashSet<&str> = entry.content.split_whitespace().collect();
-    let overlap = query_words.intersection(&content_words).count() as f64;
+    let content_words: HashSet<String> = entry.content.split_whitespace().map(|w| w.to_lowercase()).collect();
+    let query_lower: HashSet<String> = query_words.iter().map(|w| w.to_lowercase()).collect();
+    let overlap = query_lower.intersection(&content_words).count() as f64;
     let word_score = if query_words.is_empty() {
         0.0
     } else {
@@ -81,10 +82,10 @@ pub fn relevance_score(entry: &MemoryEntry, query_words: &HashSet<&str>) -> f64 
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64();
-    let age_hours = (now - entry.created_at) / 3600.0;
+    let age_hours = ((now - entry.created_at) / 3600.0).max(0.0);
     let recency_boost = 1.0 / (1.0 + age_hours * 0.1);
 
-    word_score * 0.6 + recency_boost * 0.2 + entry.importance * 0.2
+    (word_score * 0.6 + recency_boost * 0.2 + entry.importance * 0.2).clamp(0.0, 1.0)
 }
 
 /// Score the importance of content based on type and heuristics.

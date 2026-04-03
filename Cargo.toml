@@ -16,13 +16,18 @@ members = [
     "crates/amplihack-recovery",
     "crates/amplihack-utils",
     "crates/amplihack-delegation",
+    "crates/amplihack-agent-eval",
+    "crates/amplihack-agent-core",
+    "crates/amplihack-domain-agents",
+    "crates/amplihack-hive",
+    "crates/amplihack-agent-generator",
     "bins/amplihack",
     "bins/amplihack-asset-resolver",
     "bins/amplihack-hooks",
 ]
 
 [workspace.package]
-version = "0.6.24"
+version = "0.7.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/rysweet/amplihack-rs"
@@ -61,6 +66,11 @@ amplihack-recipe = { path = "crates/amplihack-recipe" }
 amplihack-safety = { path = "crates/amplihack-safety" }
 amplihack-utils = { path = "crates/amplihack-utils" }
 amplihack-delegation = { path = "crates/amplihack-delegation" }
+amplihack-agent-eval = { path = "crates/amplihack-agent-eval" }
+amplihack-agent-core = { path = "crates/amplihack-agent-core" }
+amplihack-domain-agents = { path = "crates/amplihack-domain-agents" }
+amplihack-hive = { path = "crates/amplihack-hive" }
+amplihack-agent-generator = { path = "crates/amplihack-agent-generator" }
 
 [profile.release]
 lto = true

@@ -17,7 +17,15 @@ pub mod parsers;
 
 /// Whitelisted CLI flags that may be passed as extra arguments.
 pub const ALLOWED_EXTRA_ARGS: &[&str] = &[
-    "--debug", "--verbose", "-v", "--quiet", "-q", "--help", "-h", "--version", "--no-color",
+    "--debug",
+    "--verbose",
+    "-v",
+    "--quiet",
+    "-q",
+    "--help",
+    "-h",
+    "--version",
+    "--no-color",
     "--json",
 ];
 
@@ -38,7 +46,9 @@ pub fn validate_extra_args(args: &[String]) -> Result<()> {
 /// Validate that `working_dir` exists, is a directory, and contains no `..` components.
 pub fn validate_working_dir(working_dir: &str) -> Result<()> {
     if working_dir.is_empty() {
-        return Err(DelegationError::Validation("working_dir cannot be empty".into()));
+        return Err(DelegationError::Validation(
+            "working_dir cannot be empty".into(),
+        ));
     }
     let path = Path::new(working_dir);
     for component in path.components() {
@@ -78,8 +88,13 @@ pub trait PlatformCli: Send + Sync {
     fn platform_name(&self) -> &str;
     /// Build a [`SpawnConfig`] describing how to launch the subprocess.
     fn build_spawn_config(
-        &self, goal: &str, persona: &str, working_dir: &str,
-        environment: &HashMap<String, String>, extra_args: &[String], context: &str,
+        &self,
+        goal: &str,
+        persona: &str,
+        working_dir: &str,
+        environment: &HashMap<String, String>,
+        extra_args: &[String],
+        context: &str,
     ) -> Result<SpawnConfig>;
     /// Format a prompt tailored to this platform and the given persona.
     fn format_prompt(&self, goal: &str, persona: &str, context: &str) -> String;
@@ -100,16 +115,27 @@ fn stdout_map(output: &str) -> HashMap<String, String> {
 pub struct ClaudeCodeCli;
 
 impl PlatformCli for ClaudeCodeCli {
-    fn platform_name(&self) -> &str { "claude-code" }
+    fn platform_name(&self) -> &str {
+        "claude-code"
+    }
 
     fn format_prompt(&self, goal: &str, persona: &str, context: &str) -> String {
-        let ctx = if context.is_empty() { "No additional context provided." } else { context };
+        let ctx = if context.is_empty() {
+            "No additional context provided."
+        } else {
+            context
+        };
         parsers::format_claude_prompt(goal, persona, ctx)
     }
 
     fn build_spawn_config(
-        &self, goal: &str, persona: &str, working_dir: &str,
-        environment: &HashMap<String, String>, extra_args: &[String], context: &str,
+        &self,
+        goal: &str,
+        persona: &str,
+        working_dir: &str,
+        environment: &HashMap<String, String>,
+        extra_args: &[String],
+        context: &str,
     ) -> Result<SpawnConfig> {
         validate_working_dir(working_dir)?;
         validate_extra_args(extra_args)?;
@@ -121,12 +147,22 @@ impl PlatformCli for ClaudeCodeCli {
         let mut env = environment.clone();
         env.insert("AMPLIHACK_NONINTERACTIVE".into(), "1".into());
         env.insert("CI".into(), "true".into());
-        Ok(SpawnConfig { command: cmd, working_dir: working_dir.into(), environment: env })
+        Ok(SpawnConfig {
+            command: cmd,
+            working_dir: working_dir.into(),
+            environment: env,
+        })
     }
 
-    fn parse_output(&self, output: &str) -> HashMap<String, String> { stdout_map(output) }
-    fn validate_installation(&self) -> bool { which("claude") }
-    fn get_version(&self) -> String { version_from_binary(&["claude", "--version"]) }
+    fn parse_output(&self, output: &str) -> HashMap<String, String> {
+        stdout_map(output)
+    }
+    fn validate_installation(&self) -> bool {
+        which("claude")
+    }
+    fn get_version(&self) -> String {
+        version_from_binary(&["claude", "--version"])
+    }
 }
 
 /// GitHub Copilot CLI implementation.
@@ -134,15 +170,22 @@ impl PlatformCli for ClaudeCodeCli {
 pub struct CopilotCli;
 
 impl PlatformCli for CopilotCli {
-    fn platform_name(&self) -> &str { "copilot" }
+    fn platform_name(&self) -> &str {
+        "copilot"
+    }
 
     fn format_prompt(&self, goal: &str, persona: &str, context: &str) -> String {
         parsers::format_copilot_prompt(goal, persona, context)
     }
 
     fn build_spawn_config(
-        &self, goal: &str, persona: &str, working_dir: &str,
-        environment: &HashMap<String, String>, extra_args: &[String], context: &str,
+        &self,
+        goal: &str,
+        persona: &str,
+        working_dir: &str,
+        environment: &HashMap<String, String>,
+        extra_args: &[String],
+        context: &str,
     ) -> Result<SpawnConfig> {
         validate_working_dir(working_dir)?;
         validate_extra_args(extra_args)?;
@@ -151,13 +194,21 @@ impl PlatformCli for CopilotCli {
         cmd.extend(extra_args.iter().cloned());
         cmd.push(prompt);
         Ok(SpawnConfig {
-            command: cmd, working_dir: working_dir.into(), environment: environment.clone(),
+            command: cmd,
+            working_dir: working_dir.into(),
+            environment: environment.clone(),
         })
     }
 
-    fn parse_output(&self, output: &str) -> HashMap<String, String> { stdout_map(output) }
-    fn validate_installation(&self) -> bool { which("gh") }
-    fn get_version(&self) -> String { version_from_binary(&["gh", "copilot", "--version"]) }
+    fn parse_output(&self, output: &str) -> HashMap<String, String> {
+        stdout_map(output)
+    }
+    fn validate_installation(&self) -> bool {
+        which("gh")
+    }
+    fn get_version(&self) -> String {
+        version_from_binary(&["gh", "copilot", "--version"])
+    }
 }
 
 /// Microsoft Amplifier CLI implementation.
@@ -165,15 +216,22 @@ impl PlatformCli for CopilotCli {
 pub struct AmplifierCli;
 
 impl PlatformCli for AmplifierCli {
-    fn platform_name(&self) -> &str { "amplifier" }
+    fn platform_name(&self) -> &str {
+        "amplifier"
+    }
 
     fn format_prompt(&self, goal: &str, persona: &str, context: &str) -> String {
         parsers::format_amplifier_prompt(goal, persona, context)
     }
 
     fn build_spawn_config(
-        &self, goal: &str, persona: &str, working_dir: &str,
-        environment: &HashMap<String, String>, extra_args: &[String], context: &str,
+        &self,
+        goal: &str,
+        persona: &str,
+        working_dir: &str,
+        environment: &HashMap<String, String>,
+        extra_args: &[String],
+        context: &str,
     ) -> Result<SpawnConfig> {
         validate_working_dir(working_dir)?;
         validate_extra_args(extra_args)?;
@@ -182,13 +240,21 @@ impl PlatformCli for AmplifierCli {
         cmd.extend(extra_args.iter().cloned());
         cmd.push(prompt);
         Ok(SpawnConfig {
-            command: cmd, working_dir: working_dir.into(), environment: environment.clone(),
+            command: cmd,
+            working_dir: working_dir.into(),
+            environment: environment.clone(),
         })
     }
 
-    fn parse_output(&self, output: &str) -> HashMap<String, String> { stdout_map(output) }
-    fn validate_installation(&self) -> bool { which("amplifier") }
-    fn get_version(&self) -> String { version_from_binary(&["amplifier", "--version"]) }
+    fn parse_output(&self, output: &str) -> HashMap<String, String> {
+        stdout_map(output)
+    }
+    fn validate_installation(&self) -> bool {
+        which("amplifier")
+    }
+    fn get_version(&self) -> String {
+        version_from_binary(&["amplifier", "--version"])
+    }
 }
 
 /// Thread-safe registry of platform CLI implementations.
@@ -219,7 +285,8 @@ pub fn get_platform(name: Option<&str>) -> Result<String> {
     } else {
         let available: Vec<_> = reg.keys().cloned().collect();
         Err(DelegationError::Validation(format!(
-            "Unknown platform: {key}. Available: {}", available.join(", ")
+            "Unknown platform: {key}. Available: {}",
+            available.join(", ")
         )))
     }
 }

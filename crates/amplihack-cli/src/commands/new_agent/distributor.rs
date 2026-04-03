@@ -69,17 +69,15 @@ impl Distributor {
                     }
                 }
             }
-            DistributionPlatform::Local => {
-                match self.distribute_local(package, repository) {
-                    Ok(path) => {
-                        result.url = Some(format!("file://{}", path.display()));
-                    }
-                    Err(e) => {
-                        result.success = false;
-                        result.errors.push(e.message.clone());
-                    }
+            DistributionPlatform::Local => match self.distribute_local(package, repository) {
+                Ok(path) => {
+                    result.url = Some(format!("file://{}", path.display()));
                 }
-            }
+                Err(e) => {
+                    result.success = false;
+                    result.errors.push(e.message.clone());
+                }
+            },
             DistributionPlatform::Pypi => {
                 result.success = false;
                 result
@@ -117,10 +115,7 @@ impl Distributor {
             format!("{org}/{repository}")
         };
 
-        let branch = options
-            .branch
-            .as_deref()
-            .unwrap_or(&self.default_branch);
+        let branch = options.branch.as_deref().unwrap_or(&self.default_branch);
 
         // Ensure repo exists (create if needed).
         self.ensure_repo(&full_repo)?;
@@ -183,9 +178,7 @@ impl Distributor {
                     "Amplihack agent bundle",
                 ])
                 .output()
-                .map_err(|e| {
-                    BundleError::distribution(format!("gh repo create failed: {e}"))
-                })?;
+                .map_err(|e| BundleError::distribution(format!("gh repo create failed: {e}")))?;
             if !out.status.success() {
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 return Err(BundleError::distribution(format!(
@@ -216,9 +209,7 @@ impl Distributor {
 
         if !clone_out.status.success() {
             let stderr = String::from_utf8_lossy(&clone_out.stderr);
-            return Err(BundleError::distribution(format!(
-                "clone failed: {stderr}"
-            )));
+            return Err(BundleError::distribution(format!("clone failed: {stderr}")));
         }
 
         // Copy asset into the work-tree.
@@ -227,9 +218,8 @@ impl Distributor {
             .and_then(|n| n.to_str())
             .unwrap_or("bundle");
         let dest = work.join(asset_name);
-        fs::copy(asset, &dest).map_err(|e| {
-            BundleError::distribution(format!("copy asset failed: {e}"))
-        })?;
+        fs::copy(asset, &dest)
+            .map_err(|e| BundleError::distribution(format!("copy asset failed: {e}")))?;
 
         // Git add + commit + push.
         let run_git = |args: &[&str]| -> Result<(), BundleError> {
@@ -297,7 +287,11 @@ impl Distributor {
         })
     }
 
-    fn build_release_notes(&self, package: &PackagedBundle, options: &DistributionOptions) -> String {
+    fn build_release_notes(
+        &self,
+        package: &PackagedBundle,
+        options: &DistributionOptions,
+    ) -> String {
         let mut notes = String::from("## Bundle Release\n\n");
         notes.push_str(&format!("- **Format:** {}\n", package.format));
         notes.push_str(&format!("- **Size:** {} bytes\n", package.size_bytes));
@@ -326,18 +320,14 @@ impl Distributor {
         })?;
 
         let src = &package.path;
-        let dest_name = src
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("bundle");
+        let dest_name = src.file_name().and_then(|n| n.to_str()).unwrap_or("bundle");
         let dest = target_path.join(dest_name);
 
         if src.is_dir() {
             super::packager::copy_dir_recursive(src, &dest)?;
         } else {
-            fs::copy(src, &dest).map_err(|e| {
-                BundleError::distribution(format!("copy failed: {e}"))
-            })?;
+            fs::copy(src, &dest)
+                .map_err(|e| BundleError::distribution(format!("copy failed: {e}")))?;
         }
 
         // Write a manifest alongside the distributed bundle.
@@ -348,10 +338,11 @@ impl Distributor {
             "distributed_at": chrono::Utc::now().to_rfc3339(),
         });
         let manifest_path = target_path.join("distribution_manifest.json");
-        fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap_or_default())
-            .map_err(|e| {
-                BundleError::distribution(format!("manifest write failed: {e}"))
-            })?;
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap_or_default(),
+        )
+        .map_err(|e| BundleError::distribution(format!("manifest write failed: {e}")))?;
 
         Ok(dest)
     }
@@ -372,5 +363,3 @@ struct GhDistInfo {
     release_tag: Option<String>,
     assets: Vec<String>,
 }
-
-

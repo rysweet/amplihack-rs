@@ -32,15 +32,16 @@ impl HashRing {
 
     /// Add an agent to the ring.
     pub fn add_agent(&mut self, agent_id: &str) {
-        if self.agents.contains(&agent_id.to_string()) {
+        if self.agents.iter().any(|a| a == agent_id) {
             return;
         }
-        self.agents.push(agent_id.to_string());
+        let owned = agent_id.to_string();
         for i in 0..self.virtual_nodes {
             let vnode_key = format!("{agent_id}:vnode:{i}");
             let hash = hash_key(&vnode_key);
-            self.ring.insert(hash, agent_id.to_string());
+            self.ring.insert(hash, owned.clone());
         }
+        self.agents.push(owned);
     }
 
     /// Remove an agent from the ring.

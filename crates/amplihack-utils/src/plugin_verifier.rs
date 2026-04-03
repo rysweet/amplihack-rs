@@ -64,11 +64,7 @@ impl PluginVerifier {
     }
 
     /// Create a verifier with explicit paths (useful for testing).
-    pub fn with_paths(
-        plugin_name: &str,
-        plugin_root: PathBuf,
-        settings_path: PathBuf,
-    ) -> Self {
+    pub fn with_paths(plugin_name: &str, plugin_root: PathBuf, settings_path: PathBuf) -> Self {
         Self {
             plugin_name: plugin_name.to_owned(),
             plugin_root,
@@ -114,10 +110,7 @@ impl PluginVerifier {
 
     /// Check whether the plugin directory and its manifest exist.
     pub fn check_installed(&self) -> bool {
-        let manifest = self
-            .plugin_root
-            .join(".claude-plugin")
-            .join("plugin.json");
+        let manifest = self.plugin_root.join(".claude-plugin").join("plugin.json");
         self.plugin_root.exists() && manifest.exists()
     }
 
@@ -192,11 +185,7 @@ mod tests {
 
         // Create manifest
         std::fs::create_dir_all(plugin_root.join(".claude-plugin")).unwrap();
-        std::fs::write(
-            plugin_root.join(".claude-plugin").join("plugin.json"),
-            "{}",
-        )
-        .unwrap();
+        std::fs::write(plugin_root.join(".claude-plugin").join("plugin.json"), "{}").unwrap();
 
         // Create hooks
         let hooks_dir = plugin_root
@@ -205,11 +194,7 @@ mod tests {
             .join("amplihack")
             .join("hooks");
         std::fs::create_dir_all(&hooks_dir).unwrap();
-        std::fs::write(
-            hooks_dir.join("hooks.json"),
-            r#"[{"name":"pre-commit"}]"#,
-        )
-        .unwrap();
+        std::fs::write(hooks_dir.join("hooks.json"), r#"[{"name":"pre-commit"}]"#).unwrap();
 
         // Create settings
         let settings_path = tmp.path().join("settings.json");
@@ -286,11 +271,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let plugin_root = tmp.path().join("plugins").join("x");
         std::fs::create_dir_all(plugin_root.join(".claude-plugin")).unwrap();
-        std::fs::write(
-            plugin_root.join(".claude-plugin").join("plugin.json"),
-            "{}",
-        )
-        .unwrap();
+        std::fs::write(plugin_root.join(".claude-plugin").join("plugin.json"), "{}").unwrap();
         let settings_path = tmp.path().join("nonexistent.json");
 
         let v = PluginVerifier::with_paths("x", plugin_root, settings_path);

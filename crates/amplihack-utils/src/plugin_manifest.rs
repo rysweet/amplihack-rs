@@ -137,15 +137,26 @@ pub fn validate_manifest(manifest_path: &Path) -> ValidationResult {
     let mut warnings = Vec::new();
 
     if !manifest_path.exists() {
-        errors.push(format!("Manifest file not found: {}", manifest_path.display()));
-        return ValidationResult { valid: false, errors, warnings };
+        errors.push(format!(
+            "Manifest file not found: {}",
+            manifest_path.display()
+        ));
+        return ValidationResult {
+            valid: false,
+            errors,
+            warnings,
+        };
     }
 
     let text = match std::fs::read_to_string(manifest_path) {
         Ok(t) => t,
         Err(e) => {
             errors.push(format!("Failed to read manifest: {e}"));
-            return ValidationResult { valid: false, errors, warnings };
+            return ValidationResult {
+                valid: false,
+                errors,
+                warnings,
+            };
         }
     };
 
@@ -153,7 +164,11 @@ pub fn validate_manifest(manifest_path: &Path) -> ValidationResult {
         Ok(v) => v,
         Err(e) => {
             errors.push(format!("Invalid JSON in manifest: {e}"));
-            return ValidationResult { valid: false, errors, warnings };
+            return ValidationResult {
+                valid: false,
+                errors,
+                warnings,
+            };
         }
     };
 
@@ -161,7 +176,11 @@ pub fn validate_manifest(manifest_path: &Path) -> ValidationResult {
         Some(o) => o,
         None => {
             errors.push("Manifest must be a JSON object".to_string());
-            return ValidationResult { valid: false, errors, warnings };
+            return ValidationResult {
+                valid: false,
+                errors,
+                warnings,
+            };
         }
     };
 
@@ -193,7 +212,11 @@ pub fn validate_manifest(manifest_path: &Path) -> ValidationResult {
         }
     }
 
-    ValidationResult { valid: errors.is_empty(), errors, warnings }
+    ValidationResult {
+        valid: errors.is_empty(),
+        errors,
+        warnings,
+    }
 }
 
 /// Check whether a plugin name matches the required pattern.

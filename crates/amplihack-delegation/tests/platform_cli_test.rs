@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use amplihack_delegation::platform_cli::{
-    parsers, validate_extra_args, validate_working_dir, AmplifierCli, ClaudeCodeCli,
-    CopilotCli, PlatformCli, available_platforms, get_platform,
+    AmplifierCli, ClaudeCodeCli, CopilotCli, PlatformCli, available_platforms, get_platform,
+    parsers, validate_extra_args, validate_working_dir,
 };
 
 // ---------------------------------------------------------------------------

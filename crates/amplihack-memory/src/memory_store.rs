@@ -32,13 +32,12 @@ impl InMemoryGraphStore {
         format!("mem-{}", self.next_id)
     }
 
-    fn text_matches(props: &Props, text: &str, fields: Option<&[&str]>) -> bool {
-        let text_lower = text.to_lowercase();
+    fn text_matches(props: &Props, text_lower: &str, fields: Option<&[&str]>) -> bool {
         let check_field = |key: &str| -> bool {
             props
                 .get(key)
                 .and_then(|v| v.as_str())
-                .is_some_and(|s| s.to_lowercase().contains(&text_lower))
+                .is_some_and(|s| s.to_lowercase().contains(text_lower))
         };
         match fields {
             Some(fs) => fs.iter().any(|f| check_field(f)),
@@ -107,9 +106,7 @@ impl GraphStore for InMemoryGraphStore {
         };
         let results: Vec<Props> = table_nodes
             .values()
-            .filter(|props| {
-                filters.map_or(true, |f| f.iter().all(|(k, v)| props.get(k) == Some(v)))
-            })
+            .filter(|props| filters.is_none_or(|f| f.iter().all(|(k, v)| props.get(k) == Some(v))))
             .take(limit)
             .cloned()
             .collect();
@@ -126,9 +123,10 @@ impl GraphStore for InMemoryGraphStore {
         let Some(table_nodes) = self.nodes.get(table) else {
             return Ok(Vec::new());
         };
+        let text_lower = text.to_lowercase();
         let results: Vec<Props> = table_nodes
             .values()
-            .filter(|props| Self::text_matches(props, text, fields))
+            .filter(|props| Self::text_matches(props, &text_lower, fields))
             .take(limit)
             .cloned()
             .collect();
@@ -163,7 +161,7 @@ impl GraphStore for InMemoryGraphStore {
             .edges
             .iter()
             .filter(|(rt, from, to, _)| {
-                let type_match = rel_type.map_or(true, |t| t == rt);
+                let type_match = rel_type.is_none_or(|t| t == rt);
                 let dir_match = match direction {
                     EdgeDirection::Outgoing => from == node_id,
                     EdgeDirection::Incoming => to == node_id,
@@ -210,10 +208,12 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     fn export_nodes(&self, node_ids: Option<&[String]>) -> anyhow::Result<Vec<NodeTriple>> {
+        let id_set: Option<HashSet<&str>> =
+            node_ids.map(|ids| ids.iter().map(|s| s.as_str()).collect());
         let mut result = Vec::new();
         for (table, nodes) in &self.nodes {
             for (id, props) in nodes {
-                if node_ids.map_or(true, |ids| ids.contains(id)) {
+                if id_set.as_ref().is_none_or(|set| set.contains(id.as_str())) {
                     result.push((table.clone(), id.clone(), props.clone()));
                 }
             }
@@ -222,11 +222,15 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     fn export_edges(&self, node_ids: Option<&[String]>) -> anyhow::Result<Vec<EdgeQuad>> {
+        let id_set: Option<HashSet<&str>> =
+            node_ids.map(|ids| ids.iter().map(|s| s.as_str()).collect());
         let result = self
             .edges
             .iter()
             .filter(|(_, from, to, _)| {
-                node_ids.map_or(true, |ids| ids.contains(from) || ids.contains(to))
+                id_set
+                    .as_ref()
+                    .is_none_or(|set| set.contains(from.as_str()) || set.contains(to.as_str()))
             })
             .map(|(rt, from, to, props)| (rt.clone(), from.clone(), to.clone(), props.clone()))
             .collect();
@@ -246,7 +250,7 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     fn import_edges(&mut self, edges: &[EdgeQuad]) -> anyhow::Result<usize> {
-        let existing: HashSet<_> = self
+        let mut existing: HashSet<_> = self
             .edges
             .iter()
             .map(|(rt, f, t, _)| (rt.clone(), f.clone(), t.clone()))
@@ -257,6 +261,7 @@ impl GraphStore for InMemoryGraphStore {
             if !existing.contains(&key) {
                 self.edges
                     .push((rt.clone(), from.clone(), to.clone(), props.clone()));
+                existing.insert(key);
                 count += 1;
             }
         }
@@ -271,133 +276,5 @@ impl GraphStore for InMemoryGraphStore {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn make_props(content: &str) -> Props {
-        let mut p = Props::new();
-        p.insert("content".into(), json!(content));
-        p
-    }
-
-    #[test]
-    fn create_and_get_node() {
-        let mut store = InMemoryGraphStore::new();
-        let id = store.create_node("test", &make_props("hello")).unwrap();
-        let node = store.get_node("test", &id).unwrap().unwrap();
-        assert_eq!(node["content"], "hello");
-    }
-
-    #[test]
-    fn update_node() {
-        let mut store = InMemoryGraphStore::new();
-        let id = store.create_node("t", &make_props("v1")).unwrap();
-        store.update_node("t", &id, &make_props("v2")).unwrap();
-        let node = store.get_node("t", &id).unwrap().unwrap();
-        assert_eq!(node["content"], "v2");
-    }
-
-    #[test]
-    fn delete_node_removes_edges() {
-        let mut store = InMemoryGraphStore::new();
-        let a = store.create_node("t", &make_props("a")).unwrap();
-        let b = store.create_node("t", &make_props("b")).unwrap();
-        store
-            .create_edge("rel", "t", &a, "t", &b, &Props::new())
-            .unwrap();
-        store.delete_node("t", &a).unwrap();
-        assert!(store.get_node("t", &a).unwrap().is_none());
-        let edges = store.get_edges(&a, None, EdgeDirection::Both).unwrap();
-        assert!(edges.is_empty());
-    }
-
-    #[test]
-    fn search_nodes_by_text() {
-        let mut store = InMemoryGraphStore::new();
-        store
-            .create_node("t", &make_props("the sky is blue"))
-            .unwrap();
-        store
-            .create_node("t", &make_props("grass is green"))
-            .unwrap();
-        let results = store.search_nodes("t", "sky", None, 10).unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0]["content"], "the sky is blue");
-    }
-
-    #[test]
-    fn query_with_filters() {
-        let mut store = InMemoryGraphStore::new();
-        let mut p = make_props("x");
-        p.insert("status".into(), json!("active"));
-        store.create_node("t", &p).unwrap();
-        store.create_node("t", &make_props("y")).unwrap();
-        let filter: Props = [("status".into(), json!("active"))].into_iter().collect();
-        let results = store.query_nodes("t", Some(&filter), 10).unwrap();
-        assert_eq!(results.len(), 1);
-    }
-
-    #[test]
-    fn export_import_round_trip() {
-        let mut store = InMemoryGraphStore::new();
-        let id = store.create_node("t", &make_props("data")).unwrap();
-        let nodes = store.export_nodes(None).unwrap();
-        let mut store2 = InMemoryGraphStore::new();
-        let imported = store2.import_nodes(&nodes).unwrap();
-        assert_eq!(imported, 1);
-        assert!(store2.get_node("t", &id).unwrap().is_some());
-        // Second import is idempotent
-        let imported2 = store2.import_nodes(&nodes).unwrap();
-        assert_eq!(imported2, 0);
-    }
-
-    #[test]
-    fn edge_directions() {
-        let mut store = InMemoryGraphStore::new();
-        let a = store.create_node("t", &make_props("a")).unwrap();
-        let b = store.create_node("t", &make_props("b")).unwrap();
-        store
-            .create_edge("knows", "t", &a, "t", &b, &Props::new())
-            .unwrap();
-        assert_eq!(
-            store
-                .get_edges(&a, None, EdgeDirection::Outgoing)
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(
-            store
-                .get_edges(&a, None, EdgeDirection::Incoming)
-                .unwrap()
-                .len(),
-            0
-        );
-        assert_eq!(
-            store
-                .get_edges(&b, None, EdgeDirection::Incoming)
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(
-            store
-                .get_edges(&a, None, EdgeDirection::Both)
-                .unwrap()
-                .len(),
-            1
-        );
-    }
-
-    #[test]
-    fn get_all_node_ids() {
-        let mut store = InMemoryGraphStore::new();
-        store.create_node("t1", &make_props("a")).unwrap();
-        store.create_node("t2", &make_props("b")).unwrap();
-        let all = store.get_all_node_ids(None).unwrap();
-        assert_eq!(all.len(), 2);
-        let t1_only = store.get_all_node_ids(Some("t1")).unwrap();
-        assert_eq!(t1_only.len(), 1);
-    }
-}
+#[path = "tests/memory_store_tests.rs"]
+mod tests;

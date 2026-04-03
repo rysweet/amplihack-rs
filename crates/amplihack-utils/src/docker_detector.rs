@@ -156,11 +156,17 @@ mod tests {
         // Save and restore.
         let prev = std::env::var("AMPLIHACK_IN_DOCKER").ok();
         // SAFETY: Tests run single-threaded per module; env var mutation is contained.
-        unsafe { std::env::set_var("AMPLIHACK_IN_DOCKER", "1"); }
+        unsafe {
+            std::env::set_var("AMPLIHACK_IN_DOCKER", "1");
+        }
         assert!(DockerDetector::is_in_docker());
         match prev {
-            Some(v) => unsafe { std::env::set_var("AMPLIHACK_IN_DOCKER", v); },
-            None => unsafe { std::env::remove_var("AMPLIHACK_IN_DOCKER"); },
+            Some(v) => unsafe {
+                std::env::set_var("AMPLIHACK_IN_DOCKER", v);
+            },
+            None => unsafe {
+                std::env::remove_var("AMPLIHACK_IN_DOCKER");
+            },
         }
     }
 
@@ -168,12 +174,16 @@ mod tests {
     fn is_in_docker_false_when_unset() {
         let prev = std::env::var("AMPLIHACK_IN_DOCKER").ok();
         // SAFETY: Tests run single-threaded per module; env var mutation is contained.
-        unsafe { std::env::remove_var("AMPLIHACK_IN_DOCKER"); }
+        unsafe {
+            std::env::remove_var("AMPLIHACK_IN_DOCKER");
+        }
         // On a normal host without /.dockerenv this should be false.
         // (We can't guarantee this in all CI environments, so just check no panic.)
         let _ = DockerDetector::is_in_docker();
         if let Some(v) = prev {
-            unsafe { std::env::set_var("AMPLIHACK_IN_DOCKER", v); }
+            unsafe {
+                std::env::set_var("AMPLIHACK_IN_DOCKER", v);
+            }
         }
     }
 
@@ -181,10 +191,14 @@ mod tests {
     fn should_use_docker_false_by_default() {
         let prev = std::env::var("AMPLIHACK_USE_DOCKER").ok();
         // SAFETY: Tests run single-threaded per module; env var mutation is contained.
-        unsafe { std::env::remove_var("AMPLIHACK_USE_DOCKER"); }
+        unsafe {
+            std::env::remove_var("AMPLIHACK_USE_DOCKER");
+        }
         assert!(!DockerDetector::should_use_docker());
         if let Some(v) = prev {
-            unsafe { std::env::set_var("AMPLIHACK_USE_DOCKER", v); }
+            unsafe {
+                std::env::set_var("AMPLIHACK_USE_DOCKER", v);
+            }
         }
     }
 
@@ -194,9 +208,13 @@ mod tests {
         // We don't assume docker is available in tests.
         let prev_path = std::env::var("PATH").unwrap_or_default();
         // SAFETY: Tests run single-threaded per module; env var mutation is contained.
-        unsafe { std::env::set_var("PATH", ""); }
+        unsafe {
+            std::env::set_var("PATH", "");
+        }
         assert!(!DockerDetector::check_image_exists("nonexistent:latest"));
-        unsafe { std::env::set_var("PATH", prev_path); }
+        unsafe {
+            std::env::set_var("PATH", prev_path);
+        }
     }
 
     #[test]

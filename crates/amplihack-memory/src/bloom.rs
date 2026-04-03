@@ -24,7 +24,7 @@ impl BloomFilter {
         let fpr = fpr.clamp(1e-10, 0.5);
         let num_bits = optimal_num_bits(capacity, fpr).max(8);
         let num_hashes = optimal_num_hashes(num_bits, capacity).max(1);
-        let byte_len = (num_bits + 7) / 8;
+        let byte_len = num_bits.div_ceil(8);
         Self {
             bits: vec![0u8; byte_len],
             num_bits,
@@ -35,8 +35,9 @@ impl BloomFilter {
 
     /// Add an item to the filter.
     pub fn add(&mut self, item: &str) {
+        let (h1, h2) = self.base_hashes(item);
         for i in 0..self.num_hashes {
-            let pos = self.hash_position(item, i);
+            let pos = Self::hash_position_from(h1, h2, i, self.num_bits);
             self.bits[pos / 8] |= 1 << (pos % 8);
         }
         self.count += 1;
@@ -52,8 +53,9 @@ impl BloomFilter {
     /// Test whether the filter might contain the item.
     /// No false negatives; may return false positives.
     pub fn might_contain(&self, item: &str) -> bool {
+        let (h1, h2) = self.base_hashes(item);
         for i in 0..self.num_hashes {
-            let pos = self.hash_position(item, i);
+            let pos = Self::hash_position_from(h1, h2, i, self.num_bits);
             if self.bits[pos / 8] & (1 << (pos % 8)) == 0 {
                 return false;
             }
@@ -89,7 +91,17 @@ impl BloomFilter {
     const HEADER_SIZE: usize = 20;
 
     /// Serialize to bytes for network transmission.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
+        anyhow::ensure!(
+            self.num_bits <= u32::MAX as usize,
+            "num_bits {} exceeds u32::MAX",
+            self.num_bits
+        );
+        anyhow::ensure!(
+            self.count <= u32::MAX as usize,
+            "count {} exceeds u32::MAX",
+            self.count
+        );
         let mut out = Vec::with_capacity(Self::HEADER_SIZE + self.bits.len());
         out.extend_from_slice(&Self::MAGIC);
         out.extend_from_slice(&Self::VERSION.to_le_bytes());
@@ -97,7 +109,7 @@ impl BloomFilter {
         out.extend_from_slice(&self.num_hashes.to_le_bytes());
         out.extend_from_slice(&(self.count as u32).to_le_bytes());
         out.extend_from_slice(&self.bits);
-        out
+        Ok(out)
     }
 
     /// Deserialize from bytes.
@@ -116,7 +128,7 @@ impl BloomFilter {
         let num_hashes = u32::from_le_bytes(data[12..16].try_into().ok()?);
         let count = u32::from_le_bytes(data[16..20].try_into().ok()?) as usize;
         let bits = data[20..].to_vec();
-        if bits.len() < (num_bits + 7) / 8 {
+        if bits.len() < num_bits.div_ceil(8) {
             return None;
         }
         Some(Self {
@@ -127,13 +139,12 @@ impl BloomFilter {
         })
     }
 
-    /// Double-hashing: position = (h1 + i * h2) % num_bits
-    fn hash_position(&self, item: &str, i: u32) -> usize {
+    /// Compute the two base hashes (MD5 and SHA1) for an item.
+    fn base_hashes(&self, item: &str) -> (u64, u64) {
         let h1 = {
             let mut hasher = Md5::new();
             hasher.update(item.as_bytes());
             let result = hasher.finalize();
-            // MD5 produces 16 bytes; first 8 are always available.
             let bytes: [u8; 8] = result[..8]
                 .try_into()
                 .expect("MD5 digest is always >= 8 bytes");
@@ -143,13 +154,17 @@ impl BloomFilter {
             let mut hasher = Sha1::new();
             hasher.update(item.as_bytes());
             let result = hasher.finalize();
-            // SHA1 produces 20 bytes; first 8 are always available.
             let bytes: [u8; 8] = result[..8]
                 .try_into()
                 .expect("SHA1 digest is always >= 8 bytes");
             u64::from_le_bytes(bytes)
         };
-        ((h1.wrapping_add((i as u64).wrapping_mul(h2))) % self.num_bits as u64) as usize
+        (h1, h2)
+    }
+
+    /// Derive position from pre-computed base hashes: (h1 + i * h2) % num_bits
+    fn hash_position_from(h1: u64, h2: u64, i: u32, num_bits: usize) -> usize {
+        ((h1.wrapping_add((i as u64).wrapping_mul(h2))) % num_bits as u64) as usize
     }
 }
 
@@ -203,7 +218,7 @@ mod tests {
         let mut bf = BloomFilter::new(1000, 0.01);
         bf.add("test-item-1");
         bf.add("test-item-2");
-        let bytes = bf.to_bytes();
+        let bytes = bf.to_bytes().unwrap();
         let bf2 = BloomFilter::from_bytes(&bytes).unwrap();
         assert!(bf2.might_contain("test-item-1"));
         assert!(bf2.might_contain("test-item-2"));
@@ -228,7 +243,7 @@ mod tests {
     #[test]
     fn magic_and_version_present() {
         let bf = BloomFilter::new(100, 0.01);
-        let bytes = bf.to_bytes();
+        let bytes = bf.to_bytes().unwrap();
         assert_eq!(&bytes[0..4], b"ABLM");
         assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
     }

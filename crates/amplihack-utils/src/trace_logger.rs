@@ -48,9 +48,7 @@ impl TraceLogger {
     /// When `enabled` is `true`, `log_file` should be `Some`.
     pub fn new(enabled: bool, log_file: Option<PathBuf>) -> Self {
         let handle = if enabled {
-            log_file
-                .as_deref()
-                .and_then(|p| open_log_file(p).ok())
+            log_file.as_deref().and_then(|p| open_log_file(p).ok())
         } else {
             None
         };

@@ -104,10 +104,10 @@ impl AgentResolver {
             if let Ok(entries) = std::fs::read_dir(search_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.extension().is_some_and(|e| e == "md") {
-                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                            agents.push(stem.to_string());
-                        }
+                    if path.extension().is_some_and(|e| e == "md")
+                        && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                    {
+                        agents.push(stem.to_string());
                     }
                 }
             }

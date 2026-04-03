@@ -65,9 +65,7 @@ pub enum ReEnableResult {
 ///
 /// On any unexpected error the function returns `Enabled` — power-steering
 /// should default to being active.
-pub fn prompt_re_enable_if_disabled(
-    project_root: Option<&Path>,
-) -> ReEnableResult {
+pub fn prompt_re_enable_if_disabled(project_root: Option<&Path>) -> ReEnableResult {
     match try_prompt(project_root) {
         Ok(r) => r,
         Err(e) => {
@@ -126,10 +124,7 @@ fn try_prompt(project_root: Option<&Path>) -> Result<ReEnableResult, PowerSteeri
             }
         }
         InputResult::Timeout => {
-            remove_disabled_file_safe(
-                &disabled_file,
-                Some("(timeout, defaulted to YES)"),
-            );
+            remove_disabled_file_safe(&disabled_file, Some("(timeout, defaulted to YES)"));
             Ok(ReEnableResult::Enabled)
         }
         InputResult::Interrupted => {
@@ -138,10 +133,7 @@ fn try_prompt(project_root: Option<&Path>) -> Result<ReEnableResult, PowerSteeri
         }
         InputResult::Eof => {
             tracing::info!("EOF on stdin, defaulting to YES");
-            remove_disabled_file_safe(
-                &disabled_file,
-                Some("(non-interactive, defaulted to YES)"),
-            );
+            remove_disabled_file_safe(&disabled_file, Some("(non-interactive, defaulted to YES)"));
             Ok(ReEnableResult::Enabled)
         }
     }

@@ -4,8 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::plugin_manifest::PATH_FIELDS;
 use crate::plugin_manager::PluginManagerError;
+use crate::plugin_manifest::PATH_FIELDS;
 
 /// Validate that `path` stays under `base` after resolution (no traversal).
 pub fn validate_path_safety(path: &Path, base: &Path) -> bool {

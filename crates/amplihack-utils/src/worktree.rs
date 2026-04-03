@@ -110,9 +110,7 @@ fn cache_insert(project_root: PathBuf, value: String) {
 ///
 /// If `git` commands fail (not a repo, git not installed, timeout), falls back
 /// to `project_root/.claude/runtime` without error.
-pub fn get_shared_runtime_dir(
-    project_root: &Path,
-) -> Result<String, WorktreeError> {
+pub fn get_shared_runtime_dir(project_root: &Path) -> Result<String, WorktreeError> {
     // --- P0: Environment variable override ---
     if let Ok(env_val) = std::env::var("AMPLIHACK_RUNTIME_DIR")
         && !env_val.is_empty()
@@ -123,8 +121,8 @@ pub fn get_shared_runtime_dir(
     }
 
     // Canonicalize project root (best-effort).
-    let project_path = std::fs::canonicalize(project_root)
-        .unwrap_or_else(|_| project_root.to_path_buf());
+    let project_path =
+        std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
 
     // --- Cache lookup ---
     if let Some(cached) = cache_get(&project_path) {
@@ -164,9 +162,7 @@ fn resolve_runtime_path(project_path: &Path, default: &Path) -> PathBuf {
         return default.to_path_buf();
     }
 
-    let git_common_dir = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .to_string();
+    let git_common_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
     if git_common_dir.is_empty() {
         return default.to_path_buf();
@@ -181,19 +177,15 @@ fn resolve_runtime_path(project_path: &Path, default: &Path) -> PathBuf {
         project_path.join(&git_common_path)
     };
 
-    let git_common_resolved = std::fs::canonicalize(&git_common_path)
-        .unwrap_or_else(|_| git_common_path.clone());
+    let git_common_resolved =
+        std::fs::canonicalize(&git_common_path).unwrap_or_else(|_| git_common_path.clone());
 
     let expected_main_git = project_path.join(".git");
-    let expected_resolved = std::fs::canonicalize(&expected_main_git)
-        .unwrap_or(expected_main_git);
+    let expected_resolved = std::fs::canonicalize(&expected_main_git).unwrap_or(expected_main_git);
 
     if git_common_resolved != expected_resolved {
         // We are in a worktree — find main repo root.
-        let main_repo_root = if git_common_resolved
-            .file_name()
-            .is_some_and(|n| n == ".git")
-        {
+        let main_repo_root = if git_common_resolved.file_name().is_some_and(|n| n == ".git") {
             git_common_resolved.parent().unwrap_or(&git_common_resolved)
         } else {
             &git_common_resolved
@@ -209,18 +201,13 @@ fn resolve_runtime_path(project_path: &Path, default: &Path) -> PathBuf {
 /// Allowed roots are the user's home directory and `/tmp`. Path traversal
 /// sequences are resolved before the check.
 fn validate_env_runtime_dir(path: &Path) -> Result<(), WorktreeError> {
-    let resolved = std::fs::canonicalize(path)
-        .unwrap_or_else(|_| path.to_path_buf());
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
     let home = dirs_home().unwrap_or_else(|| PathBuf::from("/nonexistent"));
-    let home_resolved =
-        std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
-    let tmp_resolved =
-        std::fs::canonicalize("/tmp").unwrap_or_else(|_| PathBuf::from("/tmp"));
+    let home_resolved = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
+    let tmp_resolved = std::fs::canonicalize("/tmp").unwrap_or_else(|_| PathBuf::from("/tmp"));
 
-    if resolved.starts_with(&home_resolved)
-        || resolved.starts_with(&tmp_resolved)
-    {
+    if resolved.starts_with(&home_resolved) || resolved.starts_with(&tmp_resolved) {
         return Ok(());
     }
 
@@ -247,11 +234,9 @@ fn create_runtime_dir_secure(path: &Path) -> Result<(), WorktreeError> {
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o700);
-        std::fs::set_permissions(path, perms).map_err(|e| {
-            WorktreeError::SetPermissions {
-                path: path.display().to_string(),
-                source: e,
-            }
+        std::fs::set_permissions(path, perms).map_err(|e| WorktreeError::SetPermissions {
+            path: path.display().to_string(),
+            source: e,
         })?;
 
         // Harden parent (.claude) — remove world-writable bit.

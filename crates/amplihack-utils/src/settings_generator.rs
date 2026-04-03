@@ -112,10 +112,7 @@ impl SettingsGenerator {
         plugin_manifest: &Value,
         user_settings: Option<&Value>,
     ) -> Result<Value, SettingsError> {
-        let manifest = plugin_manifest
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
+        let manifest = plugin_manifest.as_object().cloned().unwrap_or_default();
 
         // Check for circular references.
         check_circular_reference(plugin_manifest, &mut HashSet::new())?;
@@ -179,10 +176,7 @@ impl SettingsGenerator {
                 .entry("plugins")
                 .or_insert_with(|| Value::Object(Map::new()));
             if let Some(obj) = plugins.as_object_mut() {
-                obj.insert(
-                    plugin_name.to_owned(),
-                    Value::Object(plugin_meta),
-                );
+                obj.insert(plugin_name.to_owned(), Value::Object(plugin_meta));
             }
         }
 
@@ -228,27 +222,18 @@ impl SettingsGenerator {
     ///
     /// Creates parent directories as needed. Returns `true` on success,
     /// `false` on I/O or serialization errors.
-    pub fn write_settings(
-        &self,
-        settings: &Value,
-        target_path: &Path,
-    ) -> bool {
+    pub fn write_settings(&self, settings: &Value, target_path: &Path) -> bool {
         let result = (|| -> Result<(), SettingsError> {
             if let Some(parent) = target_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    SettingsError::WriteError {
-                        path: target_path.display().to_string(),
-                        source: e,
-                    }
-                })?;
-            }
-            let json_content =
-                serde_json::to_string_pretty(settings)?;
-            std::fs::write(target_path, json_content).map_err(|e| {
-                SettingsError::WriteError {
+                std::fs::create_dir_all(parent).map_err(|e| SettingsError::WriteError {
                     path: target_path.display().to_string(),
                     source: e,
-                }
+                })?;
+            }
+            let json_content = serde_json::to_string_pretty(settings)?;
+            std::fs::write(target_path, json_content).map_err(|e| SettingsError::WriteError {
+                path: target_path.display().to_string(),
+                source: e,
             })?;
             Ok(())
         })();
@@ -262,10 +247,7 @@ impl SettingsGenerator {
         mp: &Map<String, Value>,
         settings: &mut Map<String, Value>,
     ) -> Result<(), SettingsError> {
-        let url = mp
-            .get("url")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let url = mp.get("url").and_then(Value::as_str).unwrap_or("");
 
         if url.is_empty() || !is_valid_url(url) {
             return Err(SettingsError::InvalidMarketplaceUrl {
@@ -273,10 +255,7 @@ impl SettingsGenerator {
             });
         }
 
-        let name = mp
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let name = mp.get("name").and_then(Value::as_str).unwrap_or("");
 
         if name.is_empty() || !NAME_PATTERN.is_match(name) {
             return Err(SettingsError::InvalidMarketplaceName {
@@ -284,10 +263,7 @@ impl SettingsGenerator {
             });
         }
 
-        let mp_type = mp
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("github");
+        let mp_type = mp.get("type").and_then(Value::as_str).unwrap_or("github");
 
         if mp_type != "github" {
             return Err(SettingsError::UnsupportedMarketplace);
@@ -316,19 +292,10 @@ impl SettingsGenerator {
             && !obj.contains_key(name)
         {
             let mut source_inner = Map::new();
-            source_inner.insert(
-                "source".to_owned(),
-                Value::String("github".to_owned()),
-            );
-            source_inner.insert(
-                "repo".to_owned(),
-                Value::String(repo.to_owned()),
-            );
+            source_inner.insert("source".to_owned(), Value::String("github".to_owned()));
+            source_inner.insert("repo".to_owned(), Value::String(repo.to_owned()));
             let mut entry = Map::new();
-            entry.insert(
-                "source".to_owned(),
-                Value::Object(source_inner),
-            );
+            entry.insert("source".to_owned(), Value::Object(source_inner));
             obj.insert(name.to_owned(), Value::Object(entry));
         }
 
@@ -343,10 +310,10 @@ impl Default for SettingsGenerator {
 }
 
 // Helper functions extracted to settings_helpers.rs to stay under 400 lines.
+pub use crate::settings_helpers::is_valid_semver;
 use crate::settings_helpers::{
     check_circular_reference, is_valid_github_url, is_valid_url, resolve_paths_in_map,
 };
-pub use crate::settings_helpers::is_valid_semver;
 
 #[cfg(test)]
 #[path = "tests/settings_generator_tests.rs"]

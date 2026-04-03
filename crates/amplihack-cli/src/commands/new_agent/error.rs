@@ -50,11 +50,19 @@ impl BundleErrorKind {
     pub fn recovery_hint(self) -> &'static str {
         match self {
             Self::Parse => "Check prompt syntax and structure. Ensure clear agent descriptions.",
-            Self::Extraction => "Provide clearer agent requirements. Use specific action verbs and clear role definitions.",
-            Self::Generation => "Try simplifying agent requirements or generating agents individually.",
+            Self::Extraction => {
+                "Provide clearer agent requirements. Use specific action verbs and clear role definitions."
+            }
+            Self::Generation => {
+                "Try simplifying agent requirements or generating agents individually."
+            }
             Self::Build => "Verify build toolchain is installed and all sources are present.",
-            Self::Packaging => "Check file permissions and available disk space. Ensure package format is supported.",
-            Self::Distribution => "Check network connectivity and authentication. Verify repository permissions.",
+            Self::Packaging => {
+                "Check file permissions and available disk space. Ensure package format is supported."
+            }
+            Self::Distribution => {
+                "Check network connectivity and authentication. Verify repository permissions."
+            }
             Self::Validation => "Review validation failures and correct the identified issues.",
             Self::Config => "Verify configuration file exists and is valid JSON/YAML.",
             Self::Repo => "Check git configuration, remote URL, and authentication credentials.",
@@ -212,8 +220,7 @@ mod tests {
 
     #[test]
     fn test_to_dict() {
-        let e =
-            BundleError::validation("missing section").detail("validation_type", "structure");
+        let e = BundleError::validation("missing section").detail("validation_type", "structure");
         let d = e.to_dict();
         assert_eq!(d["error_code"], "VALIDATION_FAILED");
         assert!(d.contains_key("recovery_suggestion"));
@@ -239,15 +246,24 @@ mod tests {
     #[test]
     fn test_shortcut_constructors() {
         assert_eq!(BundleError::parse("x").kind, BundleErrorKind::Parse);
-        assert_eq!(BundleError::extraction("x").kind, BundleErrorKind::Extraction);
-        assert_eq!(BundleError::generation("x").kind, BundleErrorKind::Generation);
+        assert_eq!(
+            BundleError::extraction("x").kind,
+            BundleErrorKind::Extraction
+        );
+        assert_eq!(
+            BundleError::generation("x").kind,
+            BundleErrorKind::Generation
+        );
         assert_eq!(BundleError::build("x").kind, BundleErrorKind::Build);
         assert_eq!(BundleError::packaging("x").kind, BundleErrorKind::Packaging);
         assert_eq!(
             BundleError::distribution("x").kind,
             BundleErrorKind::Distribution
         );
-        assert_eq!(BundleError::validation("x").kind, BundleErrorKind::Validation);
+        assert_eq!(
+            BundleError::validation("x").kind,
+            BundleErrorKind::Validation
+        );
         assert_eq!(BundleError::config("x").kind, BundleErrorKind::Config);
         assert_eq!(BundleError::repo("x").kind, BundleErrorKind::Repo);
     }

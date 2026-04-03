@@ -11,8 +11,13 @@ use crate::bloom::BloomFilter;
 use crate::graph_store::{GraphStore, Props};
 use crate::hash_ring::HashRing;
 use crate::memory_store::InMemoryGraphStore;
-use std::collections::{HashMap, HashSet};
-use tracing::{debug, info};
+use std::collections::{BTreeMap, HashSet};
+use tracing::{debug, info, warn};
+
+/// Exported node representation: `(table, node_id, properties)` — matches [`NodeTriple`].
+type ExportedNodes = Vec<(String, String, Props)>;
+/// Exported edge representation: `(rel_type, from_id, to_id, properties)` — matches [`EdgeQuad`].
+type ExportedEdges = Vec<(String, String, String, Props)>;
 
 /// Configuration for the distributed store.
 pub struct DistributedConfig {
@@ -46,16 +51,18 @@ impl AgentShard {
 /// Distributed graph store with DHT sharding and gossip protocol.
 pub struct DistributedGraphStore {
     ring: HashRing,
-    shards: HashMap<String, AgentShard>,
+    shards: BTreeMap<String, AgentShard>,
     config: DistributedConfig,
+    next_id: u64,
 }
 
 impl DistributedGraphStore {
     pub fn new(config: DistributedConfig) -> Self {
         Self {
             ring: HashRing::default_ring(),
-            shards: HashMap::new(),
+            shards: BTreeMap::new(),
             config,
+            next_id: 0,
         }
     }
 
@@ -79,7 +86,7 @@ impl DistributedGraphStore {
         let content_key = properties
             .get("content")
             .and_then(|v| v.as_str())
-            .unwrap_or("default");
+            .ok_or_else(|| anyhow::anyhow!("Missing 'content' key for DHT routing"))?;
         let owners = self
             .ring
             .get_agents(content_key, self.config.replication_factor)
@@ -87,10 +94,18 @@ impl DistributedGraphStore {
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
 
+        // Pre-generate a stable monotonic ID so all replicas store the same node ID.
+        let mut props = properties.clone();
+        if !props.contains_key("id") {
+            self.next_id += 1;
+            let id = format!("dist-{}", self.next_id);
+            props.insert("id".into(), serde_json::json!(id));
+        }
+
         let mut node_id = None;
         for owner in &owners {
             if let Some(shard) = self.shards.get_mut(owner) {
-                let id = shard.store.create_node(table, properties)?;
+                let id = shard.store.create_node(table, &props)?;
                 shard.bloom.add(&id);
                 if node_id.is_none() {
                     node_id = Some(id);
@@ -103,15 +118,15 @@ impl DistributedGraphStore {
     /// Get a node by ID, checking bloom filters first.
     pub fn get_node(&self, table: &str, node_id: &str) -> anyhow::Result<Option<Props>> {
         // Check bloom filters for likely shard
-        for (_, shard) in &self.shards {
-            if shard.bloom.might_contain(node_id) {
-                if let Some(props) = shard.store.get_node(table, node_id)? {
-                    return Ok(Some(props));
-                }
+        for shard in self.shards.values() {
+            if shard.bloom.might_contain(node_id)
+                && let Some(props) = shard.store.get_node(table, node_id)?
+            {
+                return Ok(Some(props));
             }
         }
         // Fallback: full scan
-        for (_, shard) in &self.shards {
+        for shard in self.shards.values() {
             if let Some(props) = shard.store.get_node(table, node_id)? {
                 return Ok(Some(props));
             }
@@ -119,7 +134,7 @@ impl DistributedGraphStore {
         Ok(None)
     }
 
-    /// Search across shards with fanout.
+    /// Search across shards with fanout, using the hash ring for shard selection.
     pub fn search_nodes(
         &self,
         table: &str,
@@ -131,18 +146,18 @@ impl DistributedGraphStore {
         let mut seen_ids = HashSet::new();
         let fanout = self.config.query_fanout.min(self.shards.len());
 
-        for (i, (_, shard)) in self.shards.iter().enumerate() {
-            if i >= fanout {
-                break;
-            }
-            for props in shard.store.search_nodes(table, text, fields, limit)? {
-                let id = props
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if seen_ids.insert(id) {
-                    results.push(props);
+        let target_agents = self.ring.get_agents(text, fanout);
+        for agent_id in target_agents {
+            if let Some(shard) = self.shards.get(agent_id) {
+                for props in shard.store.search_nodes(table, text, fields, limit)? {
+                    let id = props
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if seen_ids.insert(id) {
+                        results.push(props);
+                    }
                 }
             }
         }
@@ -166,60 +181,13 @@ impl DistributedGraphStore {
             let a_id = &agent_ids[i];
             let b_id = &agent_ids[j];
 
-            // Get node IDs from shard A
-            let a_ids: Vec<String> = self
-                .shards
-                .get(a_id)
-                .map(|s| {
-                    s.store
-                        .get_all_node_ids(None)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect()
-                })
-                .unwrap_or_default();
+            let (n, e) = self.sync_pair(a_id, b_id)?;
+            total_nodes += n;
+            total_edges += e;
 
-            // Find which of A's nodes B is missing (bloom filter check)
-            let missing: Vec<String> = if let Some(shard_b) = self.shards.get(b_id) {
-                let refs: Vec<&str> = a_ids.iter().map(|s| s.as_str()).collect();
-                shard_b
-                    .bloom
-                    .missing_from(&refs)
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect()
-            } else {
-                continue;
-            };
-
-            if missing.is_empty() {
-                continue;
+            if n > 0 || e > 0 {
+                debug!(from = %a_id, to = %b_id, nodes = n, edges = e, "Gossip sync");
             }
-
-            // Export missing nodes from A
-            let nodes_export = self
-                .shards
-                .get(a_id)
-                .map(|s| s.store.export_nodes(Some(&missing)).unwrap_or_default())
-                .unwrap_or_default();
-            let edges_export = self
-                .shards
-                .get(a_id)
-                .map(|s| s.store.export_edges(Some(&missing)).unwrap_or_default())
-                .unwrap_or_default();
-
-            // Import into B
-            if let Some(shard_b) = self.shards.get_mut(b_id) {
-                let n = shard_b.store.import_nodes(&nodes_export)?;
-                let e = shard_b.store.import_edges(&edges_export)?;
-                for (_, id, _) in &nodes_export {
-                    shard_b.bloom.add(id);
-                }
-                total_nodes += n;
-                total_edges += e;
-            }
-
-            debug!(from = a_id, to = b_id, nodes = total_nodes, "Gossip sync");
         }
 
         info!(
@@ -228,6 +196,95 @@ impl DistributedGraphStore {
             "Gossip round complete"
         );
         Ok((total_nodes, total_edges))
+    }
+
+    /// Sync missing data from shard `from` into shard `to`.
+    fn sync_pair(&mut self, from: &str, to: &str) -> anyhow::Result<(usize, usize)> {
+        let from_ids = self.get_shard_node_ids(from);
+        let missing = self.find_missing_nodes(to, &from_ids);
+        if missing.is_empty() {
+            return Ok((0, 0));
+        }
+
+        let (nodes_export, edges_export) = self.export_from_shard(from, &missing);
+        self.import_into_shard(to, &nodes_export, &edges_export)
+    }
+
+    fn get_shard_node_ids(&self, agent_id: &str) -> Vec<String> {
+        self.shards
+            .get(agent_id)
+            .map(|s| {
+                s.store
+                    .get_all_node_ids(None)
+                    .unwrap_or_else(|e| {
+                        warn!(agent_id, error = %e, "get_all_node_ids failed, falling back to empty");
+                        HashSet::new()
+                    })
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn find_missing_nodes(&self, target: &str, candidate_ids: &[String]) -> Vec<String> {
+        match self.shards.get(target) {
+            Some(shard) => {
+                let refs: Vec<&str> = candidate_ids.iter().map(|s| s.as_str()).collect();
+                shard
+                    .bloom
+                    .missing_from(&refs)
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            }
+            None => Vec::new(),
+        }
+    }
+
+    fn export_from_shard(
+        &self,
+        agent_id: &str,
+        node_ids: &[String],
+    ) -> (ExportedNodes, ExportedEdges) {
+        let nodes = self
+            .shards
+            .get(agent_id)
+            .map(|s| {
+                s.store.export_nodes(Some(node_ids)).unwrap_or_else(|e| {
+                    warn!(agent_id, error = %e, "export_nodes failed, falling back to empty");
+                    Vec::new()
+                })
+            })
+            .unwrap_or_default();
+        let edges = self
+            .shards
+            .get(agent_id)
+            .map(|s| {
+                s.store.export_edges(Some(node_ids)).unwrap_or_else(|e| {
+                    warn!(agent_id, error = %e, "export_edges failed, falling back to empty");
+                    Vec::new()
+                })
+            })
+            .unwrap_or_default();
+        (nodes, edges)
+    }
+
+    fn import_into_shard(
+        &mut self,
+        agent_id: &str,
+        nodes: &[(String, String, Props)],
+        edges: &[(String, String, String, Props)],
+    ) -> anyhow::Result<(usize, usize)> {
+        if let Some(shard) = self.shards.get_mut(agent_id) {
+            let n = shard.store.import_nodes(nodes)?;
+            let e = shard.store.import_edges(edges)?;
+            for (_, id, _) in nodes {
+                shard.bloom.add(id);
+            }
+            Ok((n, e))
+        } else {
+            Ok((0, 0))
+        }
     }
 
     /// Rebuild a shard by pulling data from peers.
@@ -265,7 +322,10 @@ impl DistributedGraphStore {
     /// Get statistics for a specific agent's shard.
     pub fn shard_stats(&self, agent_id: &str) -> Option<ShardStats> {
         self.shards.get(agent_id).map(|shard| {
-            let node_count = shard.store.get_all_node_ids(None).unwrap_or_default().len();
+            let node_count = shard.store.get_all_node_ids(None).unwrap_or_else(|e| {
+                warn!(agent_id, error = %e, "get_all_node_ids failed in shard_stats, falling back to empty");
+                HashSet::new()
+            }).len();
             ShardStats {
                 agent_id: agent_id.to_string(),
                 node_count,
@@ -286,111 +346,5 @@ pub struct ShardStats {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn make_props(content: &str) -> Props {
-        let mut p = Props::new();
-        p.insert("content".into(), json!(content));
-        p
-    }
-
-    #[test]
-    fn add_agents_and_create_node() {
-        let mut store = DistributedGraphStore::new(DistributedConfig::default());
-        store.add_agent("a1");
-        store.add_agent("a2");
-        let id = store
-            .create_node("test", &make_props("hello world"))
-            .unwrap();
-        let node = store.get_node("test", &id).unwrap();
-        assert!(node.is_some());
-    }
-
-    #[test]
-    fn search_across_shards() {
-        let mut store = DistributedGraphStore::new(DistributedConfig {
-            replication_factor: 1,
-            query_fanout: 10,
-        });
-        store.add_agent("a1");
-        store.add_agent("a2");
-        store.create_node("t", &make_props("sky is blue")).unwrap();
-        store
-            .create_node("t", &make_props("grass is green"))
-            .unwrap();
-        let results = store.search_nodes("t", "sky", None, 10).unwrap();
-        assert!(!results.is_empty());
-    }
-
-    #[test]
-    fn gossip_syncs_between_shards() {
-        let mut store = DistributedGraphStore::new(DistributedConfig {
-            replication_factor: 1,
-            query_fanout: 10,
-        });
-        store.add_agent("a1");
-        store.add_agent("a2");
-
-        // Create nodes only on a1's shard
-        store
-            .shards
-            .get_mut("a1")
-            .unwrap()
-            .store
-            .create_node("t", &make_props("exclusive data"))
-            .unwrap();
-
-        let (nodes, _) = store.run_gossip_round().unwrap();
-        assert!(nodes > 0, "gossip should sync at least one node");
-    }
-
-    #[test]
-    fn rebuild_shard_recovers_data() {
-        let mut store = DistributedGraphStore::new(DistributedConfig {
-            replication_factor: 1,
-            query_fanout: 10,
-        });
-        store.add_agent("a1");
-        store.add_agent("a2");
-
-        // Add data to a1
-        store
-            .shards
-            .get_mut("a1")
-            .unwrap()
-            .store
-            .create_node("t", &make_props("data to recover"))
-            .unwrap();
-
-        let recovered = store.rebuild_shard("a2").unwrap();
-        assert!(recovered > 0);
-    }
-
-    #[test]
-    fn shard_stats() {
-        let mut store = DistributedGraphStore::new(DistributedConfig::default());
-        store.add_agent("a1");
-        store.create_node("t", &make_props("test data")).unwrap();
-        let stats = store.shard_stats("a1").unwrap();
-        assert!(stats.bloom_size_bytes > 0);
-    }
-
-    #[test]
-    fn remove_agent() {
-        let mut store = DistributedGraphStore::new(DistributedConfig::default());
-        store.add_agent("a1");
-        store.add_agent("a2");
-        assert_eq!(store.agent_count(), 2);
-        store.remove_agent("a1");
-        assert_eq!(store.agent_count(), 1);
-    }
-
-    #[test]
-    fn no_shards_returns_error() {
-        let mut store = DistributedGraphStore::new(DistributedConfig::default());
-        let result = store.create_node("t", &make_props("orphan"));
-        assert!(result.is_err());
-    }
-}
+#[path = "tests/distributed_store_tests.rs"]
+mod tests;

@@ -48,13 +48,7 @@ pub fn evidence_patterns() -> HashMap<EvidenceType, Vec<&'static str>> {
     );
     m.insert(
         EvidenceType::Documentation,
-        vec![
-            "README.md",
-            "README.txt",
-            "*.md",
-            "GUIDE.md",
-            "TUTORIAL.md",
-        ],
+        vec!["README.md", "README.txt", "*.md", "GUIDE.md", "TUTORIAL.md"],
     );
     m.insert(
         EvidenceType::ArchitectureDoc,
@@ -83,11 +77,7 @@ pub fn evidence_patterns() -> HashMap<EvidenceType, Vec<&'static str>> {
     m.insert(EvidenceType::ExecutionLog, vec!["*.log"]);
     m.insert(
         EvidenceType::ValidationReport,
-        vec![
-            "validation-report.md",
-            "qa-report.md",
-            "test-report.md",
-        ],
+        vec!["validation-report.md", "qa-report.md", "test-report.md"],
     );
     m.insert(
         EvidenceType::Diagram,

@@ -104,29 +104,23 @@ impl MemoryCoordinator {
     pub fn retrieve(&mut self, query: &MemoryQuery) -> Vec<MemoryEntry> {
         self.stats.total_retrieved += 1;
 
-        let mut candidates: Vec<&MemoryEntry> = self
+        // Rank by relevance — score each candidate once and sort by cached score
+        let query_words: HashSet<&str> = query.query_text.split_whitespace().collect();
+        let mut scored: Vec<(f64, &MemoryEntry)> = self
             .entries
             .iter()
             .filter(|e| matches_query(e, query))
+            .map(|e| (relevance_score(e, &query_words), e))
             .collect();
-
-        // Rank by relevance
-        let query_words: HashSet<&str> = query.query_text.split_whitespace().collect();
-        candidates.sort_by(|a, b| {
-            let score_a = relevance_score(a, &query_words);
-            let score_b = relevance_score(b, &query_words);
-            score_b
-                .partial_cmp(&score_a)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
         // Token budget enforcement
-        let budget_chars = query.token_budget * CHARS_PER_TOKEN;
+        let budget_chars = query.token_budget.saturating_mul(CHARS_PER_TOKEN);
         let mut used_chars = 0;
-        let mut results = Vec::new();
         let limit = if query.limit > 0 { query.limit } else { 20 };
+        let mut results = Vec::with_capacity(limit.min(scored.len()));
 
-        for entry in candidates {
+        for (_score, entry) in scored {
             if results.len() >= limit {
                 break;
             }
@@ -143,15 +137,29 @@ impl MemoryCoordinator {
 
     /// Clear working memory for a session.
     pub fn clear_working_memory(&mut self, session_id: &str) {
+        let removed_fps: HashSet<u64> = self
+            .entries
+            .iter()
+            .filter(|e| e.session_id == session_id && e.memory_type == MemoryType::Working)
+            .map(|e| e.content_fingerprint())
+            .collect();
         self.entries
             .retain(|e| !(e.session_id == session_id && e.memory_type == MemoryType::Working));
+        self.fingerprints.retain(|fp| !removed_fps.contains(fp));
         info!(session_id, "Cleared working memory");
     }
 
     /// Clear all memory for a session.
     pub fn clear_session(&mut self, session_id: &str) {
         let before = self.entries.len();
+        let removed_fps: HashSet<u64> = self
+            .entries
+            .iter()
+            .filter(|e| e.session_id == session_id)
+            .map(|e| e.content_fingerprint())
+            .collect();
         self.entries.retain(|e| e.session_id != session_id);
+        self.fingerprints.retain(|fp| !removed_fps.contains(fp));
         let removed = before - self.entries.len();
         info!(session_id, removed, "Cleared session memory");
     }
@@ -287,6 +295,38 @@ mod tests {
         coord.store(store_req("Session memory content here"));
         coord.clear_session("test-session");
         assert_eq!(coord.entry_count(), 0);
+    }
+
+    #[test]
+    fn re_store_after_clear_working_memory() {
+        let mut coord = MemoryCoordinator::new(MemoryConfig {
+            duplicate_detection: true,
+            ..MemoryConfig::for_testing()
+        });
+        let content = "Working memory that will be cleared and re-stored";
+        let req = StorageRequest::new(content, MemoryType::Working, "s1");
+        assert!(coord.store(req).is_some());
+        coord.clear_working_memory("s1");
+        assert_eq!(coord.entry_count(), 0);
+        // Must succeed — fingerprint should have been purged
+        let req2 = StorageRequest::new(content, MemoryType::Working, "s1");
+        assert!(coord.store(req2).is_some(), "re-store after clear must not be rejected as duplicate");
+        assert_eq!(coord.entry_count(), 1);
+    }
+
+    #[test]
+    fn re_store_after_clear_session() {
+        let mut coord = MemoryCoordinator::new(MemoryConfig {
+            duplicate_detection: true,
+            ..MemoryConfig::for_testing()
+        });
+        let content = "Session memory that will be cleared and re-stored";
+        assert!(coord.store(store_req(content)).is_some());
+        coord.clear_session("test-session");
+        assert_eq!(coord.entry_count(), 0);
+        // Must succeed — fingerprint should have been purged
+        assert!(coord.store(store_req(content)).is_some(), "re-store after clear must not be rejected as duplicate");
+        assert_eq!(coord.entry_count(), 1);
     }
 
     #[test]

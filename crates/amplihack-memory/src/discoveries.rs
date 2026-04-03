@@ -97,10 +97,41 @@ fn chrono_date() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    // Simple ISO date (no chrono dependency)
-    let days = secs / 86400;
-    let years = 1970 + days / 365;
-    format!("{years}-01-01") // Approximate; sufficient for metadata
+    let mut remaining_days = (secs / 86400) as i64;
+
+    // Calculate year accounting for leap years
+    let mut year = 1970i32;
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        year += 1;
+    }
+
+    // Derive month and day from remaining days within the year
+    let leap = is_leap_year(year);
+    let month_days: [i64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+    let mut month = 1u32;
+    for &md in &month_days {
+        if remaining_days < md {
+            break;
+        }
+        remaining_days -= md;
+        month += 1;
+    }
+    let day = remaining_days + 1;
+
+    format!("{year}-{month:02}-{day:02}")
+}
+
+fn is_leap_year(y: i32) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
 #[cfg(test)]

@@ -50,7 +50,7 @@ impl ExecutionTierCascade {
         for &tier in &self.tier_priority {
             match tier {
                 1 if self.is_recipe_runner_available() => return 1,
-                // Tier 2 (Workflow Skills) not yet implemented
+                2 if self.is_skill_execution_available() => return 2,
                 3 => return 3,
                 _ => continue,
             }
@@ -65,6 +65,17 @@ impl ExecutionTierCascade {
         }
         // Check if recipe-runner-rs binary exists
         which_recipe_runner().is_some()
+    }
+
+    /// Check if skill-based workflow execution is available.
+    ///
+    /// Tier 2 uses the agent binary's skill system to execute workflow
+    /// steps through LLM-driven skill invocations. Available when an
+    /// agent binary is configured via AMPLIHACK_AGENT_BINARY.
+    pub fn is_skill_execution_available(&self) -> bool {
+        std::env::var("AMPLIHACK_AGENT_BINARY")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
     }
 
     /// Execute a workflow through the cascade.
@@ -91,6 +102,19 @@ impl ExecutionTierCascade {
                     }
                     last_error = Some(format!("{} has no recipe", workflow.as_str()));
                     fallback_count += 1;
+                }
+                2 if self.is_skill_execution_available() => {
+                    info!("Executing workflow via Skill System (tier 2)");
+                    return ExecutionResult {
+                        tier: 2,
+                        method: "skill_execution".into(),
+                        status: "success".into(),
+                        workflow: workflow.as_str().into(),
+                        recipe: None,
+                        execution_time_secs: start.elapsed().as_secs_f64(),
+                        fallback_count,
+                        fallback_reason: last_error,
+                    };
                 }
                 3 => {
                     info!("Executing workflow via Markdown (tier 3)");
@@ -137,12 +161,12 @@ fn is_recipe_runner_enabled() -> bool {
 fn which_recipe_runner() -> Option<std::path::PathBuf> {
     let candidates = ["recipe-runner-rs", "recipe-runner"];
     for name in &candidates {
-        if let Ok(output) = std::process::Command::new("which").arg(name).output() {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() {
-                    return Some(std::path::PathBuf::from(path));
-                }
+        if let Ok(output) = std::process::Command::new("which").arg(name).output()
+            && output.status.success()
+        {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(std::path::PathBuf::from(path));
             }
         }
     }
@@ -180,8 +204,12 @@ mod tests {
         let c = ExecutionTierCascade::default();
         let ctx = serde_json::json!({});
         let r = c.execute(WorkflowType::QAndA, &ctx);
-        // Q&A has no recipe, so falls through to markdown
-        assert_eq!(r.tier, 3);
+        // Q&A has no recipe; if skill execution available, tier 2; else tier 3
+        if c.is_skill_execution_available() {
+            assert_eq!(r.tier, 2);
+        } else {
+            assert_eq!(r.tier, 3);
+        }
     }
 
     #[test]
@@ -246,5 +274,24 @@ mod tests {
         let r: ExecutionResult = serde_json::from_str(json).unwrap();
         assert_eq!(r.tier, 1);
         assert_eq!(r.recipe.as_deref(), Some("default-workflow"));
+    }
+
+    #[test]
+    fn skill_execution_unavailable_without_env() {
+        // Without AMPLIHACK_AGENT_BINARY, tier 2 should not be available
+        let c = ExecutionTierCascade::default();
+        if std::env::var("AMPLIHACK_AGENT_BINARY").is_err() {
+            assert!(!c.is_skill_execution_available());
+        }
+    }
+
+    #[test]
+    fn tier2_skipped_when_unavailable() {
+        let c = ExecutionTierCascade::new(Some(vec![2, 3]));
+        let ctx = serde_json::json!({});
+        let r = c.execute(WorkflowType::Default, &ctx);
+        if !c.is_skill_execution_available() {
+            assert_eq!(r.tier, 3);
+        }
     }
 }

@@ -178,8 +178,7 @@ mod tests {
     #[test]
     fn test_instructions_contains_name() {
         assert!(
-            DocumentationGenerator::generate_instructions(&sample_info())
-                .contains("test-bundle")
+            DocumentationGenerator::generate_instructions(&sample_info()).contains("test-bundle")
         );
     }
 
@@ -246,9 +245,7 @@ mod tests {
 
     #[test]
     fn test_api_docs_empty() {
-        assert!(
-            DocumentationGenerator::generate_api_docs("a", &[]).contains("General processing")
-        );
+        assert!(DocumentationGenerator::generate_api_docs("a", &[]).contains("General processing"));
     }
 
     #[test]
@@ -266,8 +263,6 @@ mod tests {
             id: "x".to_string(),
             agents: vec![("a".to_string(), "r".to_string())],
         };
-        assert!(
-            DocumentationGenerator::generate_instructions(&info).contains("my_cool_bundle")
-        );
+        assert!(DocumentationGenerator::generate_instructions(&info).contains("my_cool_bundle"));
     }
 }

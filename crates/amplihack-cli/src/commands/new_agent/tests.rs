@@ -545,8 +545,7 @@ fn test_local_distribution_manifest_content() {
         target.to_str().expect("path"),
         &distributor::DistributionOptions::default(),
     );
-    let raw =
-        fs::read_to_string(target.join("distribution_manifest.json")).expect("read manifest");
+    let raw = fs::read_to_string(target.join("distribution_manifest.json")).expect("read manifest");
     let manifest: serde_json::Value = serde_json::from_str(&raw).expect("parse");
     assert_eq!(manifest["format"], "tar.gz");
     assert_eq!(manifest["checksum"], "abc123");

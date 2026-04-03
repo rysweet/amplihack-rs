@@ -123,22 +123,14 @@ fn criteria_all_met_scores_100_without_bonus() {
         &evidence,
         "implements login creates jwt token",
     );
-    assert!(
-        r.score >= 80,
-        "score {} expected ≥80 when all met",
-        r.score
-    );
+    assert!(r.score >= 80, "score {} expected ≥80 when all met", r.score);
     assert!(r.requirements_met.len() >= 2);
 }
 
 #[test]
 fn criteria_none_met_scores_low() {
     let eval = SuccessEvaluator::new();
-    let r = eval.evaluate(
-        "- quantum entanglement\n- cold fusion reactor",
-        &[],
-        "",
-    );
+    let r = eval.evaluate("- quantum entanglement\n- cold fusion reactor", &[], "");
     assert!(r.score < 50, "score {} should be <50", r.score);
     assert!(!r.requirements_missing.is_empty());
 }
@@ -158,10 +150,7 @@ fn passing_tests_give_bonus() {
 fn documentation_gives_bonus() {
     let eval = SuccessEvaluator::new();
     let long_doc = "a".repeat(200);
-    let evidence = vec![
-        code_item("main.rs", "fn main(){}"),
-        doc_item(&long_doc),
-    ];
+    let evidence = vec![code_item("main.rs", "fn main(){}"), doc_item(&long_doc)];
     let r = eval.evaluate(
         "- code file exists here now",
         &evidence,

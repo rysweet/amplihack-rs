@@ -95,7 +95,10 @@ fn has_passing_tests(evidence: &[EvidenceItem], execution_log: &str) -> bool {
     }
 
     // Check test-result evidence files.
-    for item in evidence.iter().filter(|e| e.evidence_type == EvidenceType::TestResults) {
+    for item in evidence
+        .iter()
+        .filter(|e| e.evidence_type == EvidenceType::TestResults)
+    {
         let c = item.content.to_lowercase();
         if c.contains("passed") && c.contains("failed: 0") {
             return true;

@@ -94,12 +94,10 @@ fn read_manifest(bundle_path: &Path) -> Result<BundleManifest, BundleError> {
             bundle_path.display()
         )));
     }
-    let data = fs::read_to_string(&manifest_path).map_err(|e| {
-        BundleError::validation(format!("cannot read manifest: {e}"))
-    })?;
-    serde_json::from_str(&data).map_err(|e| {
-        BundleError::validation(format!("invalid manifest JSON: {e}"))
-    })
+    let data = fs::read_to_string(&manifest_path)
+        .map_err(|e| BundleError::validation(format!("cannot read manifest: {e}")))?;
+    serde_json::from_str(&data)
+        .map_err(|e| BundleError::validation(format!("invalid manifest JSON: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -321,7 +319,14 @@ impl UpdateManager {
         let mut updated = Vec::new();
         let mut preserved = Vec::new();
 
-        Self::walk_templates(template_dir, template_dir, bundle_path, customised, &mut updated, &mut preserved)?;
+        Self::walk_templates(
+            template_dir,
+            template_dir,
+            bundle_path,
+            customised,
+            &mut updated,
+            &mut preserved,
+        )?;
         Ok((updated, preserved))
     }
 
@@ -351,9 +356,8 @@ impl UpdateManager {
             let dest = bundle_path.join(&rel);
 
             if full.is_dir() {
-                fs::create_dir_all(&dest).map_err(|e| {
-                    BundleError::packaging(format!("mkdir failed: {e}"))
-                })?;
+                fs::create_dir_all(&dest)
+                    .map_err(|e| BundleError::packaging(format!("mkdir failed: {e}")))?;
                 Self::walk_templates(root, &full, bundle_path, customised, updated, preserved)?;
             } else if customised.contains(&rel) {
                 preserved.push(rel);
@@ -361,9 +365,8 @@ impl UpdateManager {
                 if let Some(parent) = dest.parent() {
                     fs::create_dir_all(parent).ok();
                 }
-                fs::copy(&full, &dest).map_err(|e| {
-                    BundleError::packaging(format!("copy template failed: {e}"))
-                })?;
+                fs::copy(&full, &dest)
+                    .map_err(|e| BundleError::packaging(format!("copy template failed: {e}")))?;
                 updated.push(rel);
             }
         }
@@ -373,12 +376,9 @@ impl UpdateManager {
 
 /// Compute SHA-256 checksum with a "sha256:" prefix (matching Python convention).
 pub fn compute_checksum(path: &Path) -> Result<String, BundleError> {
-    let data = fs::read(path).map_err(|e| {
-        BundleError::packaging(format!("cannot read {}: {e}", path.display()))
-    })?;
+    let data = fs::read(path)
+        .map_err(|e| BundleError::packaging(format!("cannot read {}: {e}", path.display())))?;
     let mut hasher = Sha256::new();
     hasher.update(&data);
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
-
-

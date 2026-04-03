@@ -174,4 +174,3 @@ pub(crate) fn extract_description(preview: &str) -> String {
         lines.join("\n")
     }
 }
-

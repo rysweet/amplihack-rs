@@ -114,10 +114,10 @@ pub fn discover_recipes(search_dirs: &[PathBuf]) -> RecipeCache {
             Ok(entries) => {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if is_recipe_file(&path) {
-                        if let Some(info) = load_recipe_info(&path, dir) {
-                            cache.register(info);
-                        }
+                    if is_recipe_file(&path)
+                        && let Some(info) = load_recipe_info(&path, dir)
+                    {
+                        cache.register(info);
                     }
                 }
             }

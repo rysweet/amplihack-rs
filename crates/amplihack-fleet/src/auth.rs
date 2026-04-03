@@ -5,9 +5,10 @@
 //! - SSH-based secure credential transfer
 //! - Credential validation before propagation
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use tracing::{debug, info, warn};
 
 /// Types of credentials that can be propagated.
@@ -74,8 +75,28 @@ pub fn check_local_credentials() -> CredentialInventory {
     CredentialInventory { available, missing }
 }
 
+/// Validate that an SSH target does not contain shell metacharacters.
+fn validate_ssh_target(target: &str) -> Result<()> {
+    if target.is_empty() {
+        bail!("SSH target must not be empty");
+    }
+    // Allow user@host, user@host:port, IPv4, IPv6 in brackets, hostnames
+    let forbidden = [
+        '\'', '"', '`', '$', '(', ')', ';', '&', '|', '\\', '\n', '\r', ' ', '\t',
+    ];
+    if target.chars().any(|c| forbidden.contains(&c)) {
+        bail!("SSH target contains forbidden characters: {target:?}");
+    }
+    Ok(())
+}
+
 /// Propagate a specific credential to a remote VM via SSH.
+///
+/// The credential value is passed through stdin to avoid shell injection.
+/// The remote script reads the value from stdin and writes it to ~/.bashrc.
 pub fn propagate_credential(ssh_target: &str, cred_type: CredentialType) -> Result<bool> {
+    validate_ssh_target(ssh_target)?;
+
     let env_name = cred_type.env_var_name();
     let value = match std::env::var(env_name) {
         Ok(v) if !v.is_empty() => v,
@@ -88,31 +109,52 @@ pub fn propagate_credential(ssh_target: &str, cred_type: CredentialType) -> Resu
         }
     };
 
-    // Write to remote .env file via SSH (append to bashrc for persistence)
+    // Reject credential values containing newlines (would break the stdin protocol).
+    if value.contains('\n') || value.contains('\r') {
+        bail!(
+            "Credential value for {} contains newline characters",
+            cred_type.display_name()
+        );
+    }
+
+    // Pass the credential value via stdin to avoid shell injection.
+    // The remote script reads one line from stdin and uses it as the value.
     let remote_cmd = format!(
-        "grep -q '^export {env_name}=' ~/.bashrc 2>/dev/null && \
-         sed -i 's|^export {env_name}=.*|export {env_name}={value}|' ~/.bashrc || \
-         echo 'export {env_name}={value}' >> ~/.bashrc"
+        "read -r VALUE && \
+         grep -q '^export {env_name}=' ~/.bashrc 2>/dev/null && \
+         sed -i \"s|^export {env_name}=.*|export {env_name}=$VALUE|\" ~/.bashrc || \
+         echo \"export {env_name}=$VALUE\" >> ~/.bashrc"
     );
 
-    let status = Command::new("ssh")
+    let mut child = Command::new("ssh")
         .args([
             "-o",
             "ConnectTimeout=10",
             "-o",
-            "StrictHostKeyChecking=no",
+            "StrictHostKeyChecking=accept-new",
             "-o",
             "BatchMode=yes",
             ssh_target,
             &remote_cmd,
         ])
-        .status()
+        .stdin(Stdio::piped())
+        .spawn()
         .with_context(|| {
             format!(
                 "failed to propagate {} to {ssh_target}",
                 cred_type.display_name()
             )
         })?;
+
+    // Write credential value to stdin, then close the pipe.
+    if let Some(ref mut stdin) = child.stdin {
+        writeln!(stdin, "{value}")?;
+    }
+    drop(child.stdin.take());
+
+    let status = child
+        .wait()
+        .with_context(|| format!("failed waiting for credential propagation to {ssh_target}",))?;
 
     if status.success() {
         info!(
@@ -219,5 +261,27 @@ mod tests {
             5,
             "should account for all credential types"
         );
+    }
+
+    #[test]
+    fn validate_ssh_target_accepts_valid() {
+        assert!(validate_ssh_target("user@vm-1.example.com").is_ok());
+        assert!(validate_ssh_target("root@10.0.0.1").is_ok());
+        assert!(validate_ssh_target("deploy@host:22").is_ok());
+    }
+
+    #[test]
+    fn validate_ssh_target_rejects_empty() {
+        assert!(validate_ssh_target("").is_err());
+    }
+
+    #[test]
+    fn validate_ssh_target_rejects_shell_metacharacters() {
+        assert!(validate_ssh_target("user@host; rm -rf /").is_err());
+        assert!(validate_ssh_target("user@host$(whoami)").is_err());
+        assert!(validate_ssh_target("user@host`id`").is_err());
+        assert!(validate_ssh_target("user@host | cat /etc/passwd").is_err());
+        assert!(validate_ssh_target("user@host\nmalicious").is_err());
+        assert!(validate_ssh_target("user@host'injection").is_err());
     }
 }

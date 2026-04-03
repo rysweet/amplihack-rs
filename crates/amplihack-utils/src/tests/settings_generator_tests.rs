@@ -18,10 +18,7 @@ fn generate_basic_manifest() {
     let settings = make_gen().generate(&manifest, None).unwrap();
     let plugins = settings.get("plugins").unwrap();
     assert!(plugins.get("my-plugin").is_some());
-    assert_eq!(
-        plugins["my-plugin"]["version"],
-        json!("1.0.0")
-    );
+    assert_eq!(plugins["my-plugin"]["version"], json!("1.0.0"));
 }
 
 #[test]
@@ -147,8 +144,7 @@ fn write_settings_creates_file() {
     let settings = json!({ "key": "value" });
     assert!(make_gen().write_settings(&settings, &target));
     let content = std::fs::read_to_string(&target).unwrap();
-    let parsed: serde_json::Value =
-        serde_json::from_str(&content).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
     assert_eq!(parsed["key"], json!("value"));
 }
 
@@ -156,8 +152,7 @@ fn write_settings_creates_file() {
 fn write_settings_returns_false_on_invalid_path() {
     let settings = json!({ "key": "value" });
     // /dev/null/impossible is not writable as a regular file.
-    let result =
-        make_gen().write_settings(&settings, std::path::Path::new("/dev/null/impossible"));
+    let result = make_gen().write_settings(&settings, std::path::Path::new("/dev/null/impossible"));
     assert!(!result);
 }
 

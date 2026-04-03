@@ -66,10 +66,7 @@ pub trait ArtifactGenerator: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if artifact generation fails.
-    fn generate_all(
-        &self,
-        graph: &KnowledgeGraph,
-    ) -> Result<Vec<PathBuf>, KnowledgeBuilderError>;
+    fn generate_all(&self, graph: &KnowledgeGraph) -> Result<Vec<PathBuf>, KnowledgeBuilderError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +113,11 @@ impl KnowledgeBuilderConfig {
     /// Create a config with sensible defaults.
     ///
     /// `topic` is trimmed; `agent_cmd` is read from the environment if `None`.
-    pub fn new(topic: impl Into<String>, agent_cmd: Option<String>, output_base: Option<PathBuf>) -> Self {
+    pub fn new(
+        topic: impl Into<String>,
+        agent_cmd: Option<String>,
+        output_base: Option<PathBuf>,
+    ) -> Self {
         let topic = topic.into().trim().to_string();
         let agent_cmd = agent_cmd
             .or_else(|| std::env::var("AMPLIHACK_AGENT_BINARY").ok())
@@ -238,11 +239,7 @@ pub fn create_config(
     agent_cmd: Option<String>,
     output_base: Option<&Path>,
 ) -> KnowledgeBuilderConfig {
-    KnowledgeBuilderConfig::new(
-        topic,
-        agent_cmd,
-        output_base.map(|p| p.to_path_buf()),
-    )
+    KnowledgeBuilderConfig::new(topic, agent_cmd, output_base.map(|p| p.to_path_buf()))
 }
 
 // ---------------------------------------------------------------------------
