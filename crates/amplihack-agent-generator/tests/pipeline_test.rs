@@ -28,11 +28,10 @@ fn valid_skill() -> SkillDefinition {
 }
 
 // ---------------------------------------------------------------------------
-// Full pipeline — each stage hits todo!()
+// Full pipeline — behavioral tests
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn full_pipeline_analyze_to_package() {
     let analyzer = PromptAnalyzer::new();
     let planner = ObjectivePlanner::new();
@@ -44,65 +43,71 @@ fn full_pipeline_analyze_to_package() {
     let plan = planner.plan(&goal).unwrap();
     let skills = synthesizer.synthesize(&plan).unwrap();
     let bundle = assembler.assemble(&goal, &plan, skills).unwrap();
-    let _path = packager.package(&bundle, &PathBuf::from("output")).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = packager.package(&bundle, dir.path()).unwrap();
+    assert!(path.join("bundle.json").exists());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn pipeline_analyze_step() {
     let analyzer = PromptAnalyzer::new();
-    let _ = analyzer.analyze("simple task").unwrap();
+    let goal = analyzer.analyze("simple task").unwrap();
+    assert_eq!(goal.goal, "simple task");
+    assert!(!goal.domain.is_empty());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn pipeline_plan_step() {
     let planner = ObjectivePlanner::new();
-    let _ = planner.plan(&valid_goal()).unwrap();
+    let plan = planner.plan(&valid_goal()).unwrap();
+    assert!(plan.phase_count() >= 3);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn pipeline_synthesize_step() {
     let synthesizer = SkillSynthesizer::new();
-    let _ = synthesizer.synthesize(&valid_plan()).unwrap();
+    let skills = synthesizer.synthesize(&valid_plan()).unwrap();
+    assert_eq!(skills.len(), 1);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn pipeline_assemble_step() {
     let assembler = AgentAssembler::new();
-    let _ = assembler
+    let bundle = assembler
         .assemble(&valid_goal(), &valid_plan(), vec![valid_skill()])
         .unwrap();
+    assert_eq!(bundle.status, BundleStatus::Ready);
+    assert!(bundle.goal_definition.is_some());
+    assert!(bundle.execution_plan.is_some());
+    assert!(!bundle.skills.is_empty());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn pipeline_package_step() {
     let packager = GoalAgentPackager::new();
     let bundle = GoalAgentBundle::new("pkg-test", "0.1.0").unwrap();
-    let _ = packager.package(&bundle, &PathBuf::from("out")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = packager.package(&bundle, dir.path()).unwrap();
+    assert!(path.join("bundle.json").exists());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn pipeline_error_propagation_from_analyzer() {
     let analyzer = PromptAnalyzer::new();
-    // Even a valid-looking prompt triggers the todo!()
-    let result = analyzer.analyze("valid prompt");
-    // If analyze() returned an error instead of panicking, propagate it:
-    result.unwrap();
+    // Empty prompt should produce an error, not panic
+    let result = analyzer.analyze("");
+    assert!(result.is_err());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn output_directory_creation() {
     let packager = GoalAgentPackager::new();
     let bundle = GoalAgentBundle::new("dir-test", "0.1.0").unwrap();
-    let _ = packager
-        .package(&bundle, &PathBuf::from("nonexistent/nested/dir"))
-        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("nonexistent").join("nested").join("dir");
+    let path = packager.package(&bundle, &nested).unwrap();
+    assert!(path.join("bundle.json").exists());
 }
 
 // ---------------------------------------------------------------------------

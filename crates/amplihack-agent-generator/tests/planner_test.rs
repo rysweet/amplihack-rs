@@ -24,61 +24,80 @@ fn complex_goal() -> GoalDefinition {
 }
 
 // ---------------------------------------------------------------------------
-// ObjectivePlanner — all tests hit todo!() and should panic
+// ObjectivePlanner — behavioral tests
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn single_phase_plan() {
-    let _ = planner().plan(&simple_goal());
+    let plan = planner().plan(&simple_goal()).unwrap();
+    // Simple goal gets analysis + implementation + validation
+    assert_eq!(plan.phase_count(), 3);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn multi_phase_plan() {
-    let _ = planner().plan(&complex_goal());
+    let plan = planner().plan(&complex_goal()).unwrap();
+    // Complex goal adds optimization phase
+    assert_eq!(plan.phase_count(), 4);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn dependency_ordering() {
-    let _ = planner().plan(&complex_goal());
+    let plan = planner().plan(&complex_goal()).unwrap();
+    let impl_phase = plan
+        .phases
+        .iter()
+        .find(|p| p.name == "implementation")
+        .unwrap();
+    assert!(impl_phase.dependencies.contains(&"analysis".to_string()));
+    let val_phase = plan
+        .phases
+        .iter()
+        .find(|p| p.name == "validation")
+        .unwrap();
+    assert!(val_phase
+        .dependencies
+        .contains(&"implementation".to_string()));
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn parallel_opportunities() {
-    let _ = planner().plan(&complex_goal());
+    let plan = planner().plan(&complex_goal()).unwrap();
+    // All phases are sequential in this plan
+    assert!(plan.phase_count() >= 3);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn risk_factor_identification() {
-    let _ = planner().plan(&complex_goal());
+    let plan = planner().plan(&complex_goal()).unwrap();
+    assert!(!plan.risk_factors.is_empty());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn plan_with_simple_goal() {
-    let _ = planner().plan(&simple_goal());
+    let plan = planner().plan(&simple_goal()).unwrap();
+    assert_eq!(plan.phase_count(), 3);
+    let names: Vec<&str> = plan.phases.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["analysis", "implementation", "validation"]);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn plan_with_constrained_goal() {
     let mut g = simple_goal();
     g.constraints = vec!["must complete in 5 seconds".into()];
-    let _ = planner().plan(&g);
+    let plan = planner().plan(&g).unwrap();
+    assert!(plan.phase_count() >= 3);
+    assert!(!plan.risk_factors.is_empty());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn plan_duration_estimation() {
-    let _ = planner().plan(&simple_goal());
+    let plan = planner().plan(&simple_goal()).unwrap();
+    assert!(!plan.total_estimated_duration.is_empty());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn plan_required_skills_populated() {
-    let _ = planner().plan(&complex_goal());
+    let plan = planner().plan(&complex_goal()).unwrap();
+    assert!(!plan.required_skills.is_empty());
 }

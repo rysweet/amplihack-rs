@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::models::{ExecutionPlan, GoalAgentBundle, GoalDefinition, SkillDefinition};
+use crate::models::{BundleStatus, ExecutionPlan, GoalAgentBundle, GoalDefinition, SkillDefinition};
 
 /// Combines a goal, plan, and skills into a deployable [`GoalAgentBundle`].
 pub struct AgentAssembler;
@@ -12,11 +12,17 @@ impl AgentAssembler {
     /// Assemble a complete agent bundle from the constituent parts.
     pub fn assemble(
         &self,
-        _goal: &GoalDefinition,
-        _plan: &ExecutionPlan,
-        _skills: Vec<SkillDefinition>,
+        goal: &GoalDefinition,
+        plan: &ExecutionPlan,
+        skills: Vec<SkillDefinition>,
     ) -> Result<GoalAgentBundle> {
-        todo!("AgentAssembler::assemble not yet implemented")
+        let bundle_name = format!("{}-agent", goal.domain);
+        let mut bundle = GoalAgentBundle::new(bundle_name, "0.1.0")?;
+        bundle.goal_definition = Some(goal.clone());
+        bundle.execution_plan = Some(plan.clone());
+        bundle.skills = skills;
+        bundle.status = BundleStatus::Ready;
+        Ok(bundle)
     }
 }
 
