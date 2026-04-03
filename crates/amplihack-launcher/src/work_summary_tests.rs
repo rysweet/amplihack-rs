@@ -1,5 +1,4 @@
 use super::*;
-use super::*;
 
 #[test]
 fn todo_state_new_valid() {
