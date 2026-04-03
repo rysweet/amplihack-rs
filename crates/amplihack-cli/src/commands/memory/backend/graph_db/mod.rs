@@ -12,17 +12,14 @@ pub(crate) use kuzu::{
     SystemConfig as GraphDbSystemConfig, Value as GraphDbValue,
 };
 
-pub(crate) use handle::{GraphDbBackend, GraphDbHandle, connect_graph_db, open_graph_db_at_path};
+pub(crate) use handle::{GraphDbBackend, GraphDbHandle};
 pub use queries::list_graph_sessions_from_conn;
-pub(crate) use queries::{collect_graph_db_agent_counts, query_graph_memories_for_session};
 pub(crate) use resolve::resolve_memory_graph_db_path;
 pub use schema::init_graph_backend_schema;
-pub(crate) use schema::{GRAPH_BACKEND_SCHEMA, GRAPH_MEMORY_TABLES};
 pub use values::graph_rows;
-pub(crate) use values::{
-    graph_f64, graph_i64, graph_string, graph_value_to_i64, graph_value_to_string,
-    memory_from_graph_node, property_i64, property_string,
-};
+pub(crate) use values::{graph_f64, graph_i64, graph_string};
+#[cfg(test)]
+pub(crate) use values::{graph_value_to_i64, graph_value_to_string, memory_from_graph_node};
 
 #[cfg(test)]
 mod tests {

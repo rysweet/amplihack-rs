@@ -1,11 +1,10 @@
 //! DockerManager — image building and container execution.
 
 use anyhow::{Context, Result};
-use std::collections::BTreeMap;
 use std::env;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use super::{DEFAULT_IMAGE_NAME, DockerDetector, helpers::forwarded_env_vars};
 

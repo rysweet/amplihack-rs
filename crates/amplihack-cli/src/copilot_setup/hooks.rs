@@ -4,11 +4,11 @@ use anyhow::{Context, Result};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::{
     COPILOT_HOOK_WRAPPERS, COPILOT_HOOKS_MANIFEST, HookWrapperSpec, INSTRUCTIONS_MARKER_END,
-    INSTRUCTIONS_MARKER_START, copilot_home, fs_helpers,
+    INSTRUCTIONS_MARKER_START, fs_helpers,
 };
 
 pub(super) fn stage_repo_hooks(repo_root: &Path) -> Result<usize> {
@@ -73,12 +73,12 @@ pub(super) fn generate_copilot_instructions(copilot_home: &Path) -> Result<()> {
 }
 
 pub(super) fn replace_or_append_section(existing: &str, section: &str) -> String {
-    if let Some(start) = existing.find(INSTRUCTIONS_MARKER_START) {
-        if let Some(end) = existing.find(INSTRUCTIONS_MARKER_END) {
-            let before = &existing[..start];
-            let after = &existing[end + INSTRUCTIONS_MARKER_END.len()..];
-            return format!("{before}{section}{after}");
-        }
+    if let Some(start) = existing.find(INSTRUCTIONS_MARKER_START)
+        && let Some(end) = existing.find(INSTRUCTIONS_MARKER_END)
+    {
+        let before = &existing[..start];
+        let after = &existing[end + INSTRUCTIONS_MARKER_END.len()..];
+        return format!("{before}{section}{after}");
     }
 
     if existing.is_empty() {

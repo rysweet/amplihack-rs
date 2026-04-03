@@ -10,7 +10,7 @@
 ```json
 {
   "tool_input": {
-    "command": "git push --no-verify origin main"
+    "command": "git rebase --no-verify main"
   },
   "tool_name": "Bash"
 }

@@ -191,7 +191,7 @@ pub(super) struct AdmiralStats {
 }
 
 #[derive(Debug, Clone)]
-
+#[allow(dead_code)] // Fields populated from API response for future TUI display
 pub(super) struct VmInfo {
     pub(super) name: String,
     pub(super) session_name: String,

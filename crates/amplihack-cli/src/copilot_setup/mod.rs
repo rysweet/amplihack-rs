@@ -6,12 +6,11 @@ mod staging;
 
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use hooks::{
-    build_wrapper_script, error_wrapper_script, generate_copilot_instructions,
-    replace_or_append_section, stage_repo_hooks,
-};
+use hooks::{generate_copilot_instructions, stage_repo_hooks};
+#[cfg(test)]
+use hooks::{build_wrapper_script, error_wrapper_script, replace_or_append_section};
 use staging::{register_plugin, stage_agents, stage_command_docs, stage_directory, stage_skills};
 
 const INSTRUCTIONS_MARKER_START: &str = "<!-- AMPLIHACK_INSTRUCTIONS_START -->";

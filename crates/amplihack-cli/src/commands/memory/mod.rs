@@ -49,28 +49,35 @@ pub(crate) use helpers::{
     ensure_parent_dir, parse_backend_choice_env_value, parse_json_value, required_parent_dir,
 };
 pub(crate) use prompt_context::parse_memory_timestamp;
-pub(crate) use resolve::{
-    memory_graph_compatibility_notice, resolve_backend_with_autodetect, resolve_memory_cli_backend,
-};
+pub(crate) use resolve::resolve_memory_cli_backend;
 pub(crate) use schema::{GRAPH_DB_TREE_BACKEND_NAME, HIERARCHICAL_SCHEMA};
 pub(crate) use types::{
-    BackendChoice, MemoryHomePaths, MemoryRecord, ProjectArtifactPaths, ResolvedMemoryCliBackend,
-    SessionLearningRecord, TransferFormat, backend_cli_compatibility_notice, home_dir,
+    BackendChoice, MemoryRecord, SessionLearningRecord, TransferFormat,
     memory_home_paths, project_artifact_paths, transfer_format_cli_compatibility_notice,
 };
 
 // Private imports: accessible to descendant modules (tests) via `use super::*`.
-use self::backend::graph_db::resolve_memory_graph_db_path;
+use serde_json::Value as JsonValue;
+#[cfg(test)]
 use anyhow::Result;
+#[cfg(test)]
+use self::backend::graph_db::resolve_memory_graph_db_path;
+#[cfg(test)]
 use learning::{build_learning_record, store_learning_with_backend};
+#[cfg(test)]
 use prompt_context::{
     enrich_prompt_context_memories_with_code_context_at_path,
     enrich_prompt_context_memories_with_reader, select_prompt_context_memories,
 };
-use resolve::resolve_memory_backend_preference;
-use serde_json::Value as JsonValue;
+#[cfg(test)]
+use resolve::{
+    memory_graph_compatibility_notice, resolve_backend_with_autodetect,
+    resolve_memory_backend_preference,
+};
+#[cfg(test)]
 use std::path::Path;
-use types::SelectedPromptContextMemory;
+#[cfg(test)]
+use types::{SelectedPromptContextMemory, backend_cli_compatibility_notice};
 
 #[cfg(test)]
 mod autodetect_test;
