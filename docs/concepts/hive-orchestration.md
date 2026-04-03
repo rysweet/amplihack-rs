@@ -40,7 +40,7 @@ Hive agents communicate through typed events on named topics:
 use amplihack_hive::events::{HiveEvent, EventTopic};
 
 let event = HiveEvent::new(
-    EventTopic::LearnContent,
+    EventTopic::LEARN_CONTENT,
     serde_json::json!({
         "title": "Rust Memory Safety",
         "content": "Rust prevents data races at compile time..."
@@ -60,12 +60,15 @@ let config = HiveConfig {
     agents_per_container: 5,
     image: "myregistry.azurecr.io/hive-agent:latest".into(),
     resource_group: "hive-rg".into(),
+    subscription_id: "your-subscription-id".into(),
     location: "eastus".into(),
+    acr_name: "myacr".into(),
+    service_bus_connection_string: std::env::var("SERVICE_BUS_CONN_STR")
+        .expect("SERVICE_BUS_CONN_STR required"),
     cpu: 1.0,
     memory_gb: 4,
     topic_name: "hive-graph".into(),
     agent_prompt: "You are a learning agent...".into(),
-    ..Default::default()
 };
 
 let workload = HiveMindWorkload::new(config)?;
@@ -93,7 +96,7 @@ let workload = HiveMindWorkload::new(config)?;
 ### Deploy
 
 ```rust
-let deployment_id = workload.deploy().await?;
+let deployment_id = workload.deploy()?;
 println!("Deployed: {}", deployment_id);
 ```
 
@@ -103,7 +106,7 @@ infrastructure via Bicep, then creates each container app.
 ### Status
 
 ```rust
-let status = workload.get_status(&deployment_id).await?;
+let status = workload.get_status(&deployment_id)?;
 println!("State: {:?}, Containers: {}/{}",
     status.state,
     status.ready_containers,
@@ -114,14 +117,14 @@ println!("State: {:?}, Containers: {}/{}",
 ### Feed Content
 
 ```rust
-workload.feed(&deployment_id, &articles, 100).await?;
+workload.feed(&deployment_id, &articles, 100)?;
 // Publishes `turns` LEARN_CONTENT events, then FEED_COMPLETE
 ```
 
 ### Query the Swarm
 
 ```rust
-let responses = workload.query(&deployment_id, "What is Rust?").await?;
+let responses = workload.query(&deployment_id, "What is Rust?")?;
 for resp in &responses {
     println!("[Agent {}] {}", resp.agent_id, resp.answer);
 }
@@ -130,8 +133,8 @@ for resp in &responses {
 ### Stop and Cleanup
 
 ```rust
-workload.stop(&deployment_id).await?;   // Sets min-replicas to 0
-workload.cleanup(&deployment_id).await?; // Deletes all container apps
+workload.stop(&deployment_id)?;   // Sets min-replicas to 0
+workload.cleanup(&deployment_id)?; // Deletes all container apps
 ```
 
 ## Evaluation Integration
@@ -170,7 +173,7 @@ Workloads are the execution units of the hive. Each workload type
 implements the deployment, monitoring, and teardown contract:
 
 ```rust
-use amplihack_hive::workloads::WorkloadBase;
+use amplihack_hive::workload::WorkloadBase;
 
 pub trait WorkloadBase {
     fn deploy(&self) -> Result<String, HiveError>;

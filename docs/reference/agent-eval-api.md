@@ -38,7 +38,7 @@ pub struct HarnessConfig {
     pub news_file: PathBuf,
     pub output_dir: PathBuf,
     pub agent_name: String,
-    pub memory_backend: String,
+    pub memory_backend: Backend,
 }
 ```
 
@@ -108,7 +108,7 @@ pub struct NewsArticle {
 ### collect_news
 
 ```rust
-pub fn collect_news(websearch_data: &Value) -> Result<Vec<NewsArticle>, EvalError>;
+pub fn collect_news(websearch_data: &serde_json::Value) -> Result<Vec<NewsArticle>, EvalError>;
 ```
 
 ## Quiz Generator
@@ -259,7 +259,7 @@ pub struct LongHorizonRunnerConfig {
     pub improvement_strategy: String,
     pub model: String,
     pub agent_name: String,
-    pub memory_backend: String,
+    pub memory_backend: Backend,
 }
 ```
 
@@ -279,6 +279,17 @@ pub struct RunnerResult {
 ```
 
 ## General Capability Eval
+
+### CapabilityEvalConfig
+
+```rust
+#[derive(Debug, Clone, Default)]
+pub struct CapabilityEvalConfig {
+    pub model: Option<String>,
+    pub timeout: Option<Duration>,
+    pub scenarios: Option<Vec<String>>,
+}
+```
 
 ### GeneralCapabilityEval
 

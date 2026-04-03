@@ -58,6 +58,8 @@ let teacher = TeachingAgent::new(TeachingConfig {
     difficulty: Difficulty::Intermediate,
     model: "claude-sonnet-4-5".into(),
     memory: session.memory_handle(),
+    max_turns: 20,
+    prompt_template: None,
 });
 
 let result = teacher.execute("Explain the borrow checker")?;
@@ -77,6 +79,7 @@ let reviewer = CodeReviewAgent::new(CodeReviewConfig {
     severity_threshold: Severity::Warning,
     categories: vec![Category::Security, Category::Logic, Category::Performance],
     model: "claude-sonnet-4-5".into(),
+    max_findings: 50,
 });
 
 let findings = reviewer.review_diff(diff_text)?;
@@ -90,7 +93,7 @@ Extracts action items, decisions, and key points from meeting
 transcripts. Produces structured summaries.
 
 ```rust
-use amplihack_domain_agents::meeting::MeetingSynthesizerAgent;
+use amplihack_domain_agents::meeting_synthesizer::MeetingSynthesizerAgent;
 
 let synthesizer = MeetingSynthesizerAgent::new(Default::default());
 let summary = synthesizer.synthesize(transcript)?;
@@ -155,6 +158,7 @@ impl DomainAgent for MyCustomAgent {
             output: format!("Analyzed: {}", input),
             confidence: 0.95,
             metadata: Default::default(),
+            memory_updates: Vec::new(),
         })
     }
 

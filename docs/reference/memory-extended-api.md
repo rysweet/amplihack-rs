@@ -25,9 +25,9 @@ The `Memory` struct provides the simplest API for agent memory:
 ```rust
 use amplihack_memory::Memory;
 
-let mem = Memory::new("my-agent", MemoryOptions {
+let mem = Memory::new("my-agent", MemoryConfig {
     topology: Topology::Single,
-    backend: Backend::Sqlite,
+    backend: Backend::Cognitive,
     ..Default::default()
 })?;
 
@@ -51,7 +51,7 @@ pub struct Memory {
 }
 
 impl Memory {
-    pub fn new(agent_name: &str, options: MemoryOptions) -> Result<Self, MemoryError>;
+    pub fn new(agent_name: &str, config: MemoryConfig) -> Result<Self, MemoryError>;
     pub fn remember(&self, content: &str) -> Result<String, MemoryError>;
     pub fn recall(&self, query: &str) -> Result<Vec<RecallResult>, MemoryError>;
     pub fn facts(&self) -> Result<Vec<MemoryEntry>, MemoryError>;
@@ -60,21 +60,21 @@ impl Memory {
 }
 ```
 
-### MemoryOptions
+### MemoryConfig (existing)
+
+The `Memory` facade reuses the existing `MemoryConfig` struct from the
+memory crate:
 
 ```rust
-pub struct MemoryOptions {
+pub struct MemoryConfig {
     pub topology: Topology,
-    pub backend: Backend,
+    pub backend: Backend,         // Cognitive (default), Hierarchical, InMemory
+    pub transport: Transport,
     pub storage_path: Option<PathBuf>,
-    pub model: Option<String>,
-    pub kuzu_buffer_pool_mb: Option<u32>,
-    pub replication_factor: Option<u32>,
-    pub query_fanout: Option<u32>,
-    pub gossip_enabled: Option<bool>,
-    pub gossip_rounds: Option<u32>,
-    pub memory_transport: Option<Transport>,
-    pub connection_string: Option<String>,
+    pub replication_factor: u32,
+    pub query_fanout: u32,
+    pub gossip_enabled: bool,
+    pub token_budget: usize,
 }
 ```
 
@@ -114,7 +114,7 @@ let id = manager.store(
 
 let entries = manager.retrieve(&MemoryQuery {
     agent_id: Some("agent-1".into()),
-    memory_type: Some(MemoryType::Context),
+    memory_types: vec![MemoryType::Context],
     tags: Some(vec!["architecture".into()]),
     limit: Some(10),
     ..Default::default()
@@ -138,7 +138,7 @@ impl MemoryManager {
         memory_type: MemoryType,
         metadata: Option<HashMap<String, Value>>,
         tags: Option<Vec<String>>,
-        importance: Option<u32>,
+        importance: Option<f64>,
         expires_in: Option<Duration>,
         parent_id: Option<&str>,
     ) -> Result<String, MemoryError>;

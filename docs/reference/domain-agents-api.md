@@ -80,6 +80,7 @@ pub struct TaskResult {
     pub output: String,
     pub confidence: f64,
     pub metadata: HashMap<String, Value>,
+    pub memory_updates: Vec<MemoryEntry>,
 }
 ```
 
@@ -105,7 +106,7 @@ impl SkillInjector {
     pub fn new() -> Self;
     pub fn register(&mut self, name: &str, skill: Box<dyn Skill>);
     pub fn unregister(&mut self, name: &str) -> Option<Box<dyn Skill>>;
-    pub fn list(&self) -> Vec<&str>;
+    pub fn list(&self) -> Vec<String>;
     pub fn inject(&self, agent: Box<dyn DomainAgent>) -> Result<Box<dyn DomainAgent>, AgentError>;
 }
 
@@ -233,7 +234,22 @@ pub struct ActionItem {
     pub description: String,
     pub assignee: Option<String>,
     pub deadline: Option<String>,
-    pub priority: Priority,
+    pub priority: ActionPriority,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ActionPriority {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Decision {
+    pub description: String,
+    pub participants: Vec<String>,
+    pub rationale: Option<String>,
 }
 
 impl MeetingSynthesizerAgent {

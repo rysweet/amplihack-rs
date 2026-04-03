@@ -10,32 +10,18 @@ amplihack-rs evaluation framework.
 
 ## Quick Evaluation
 
-Run a complete evaluation harness:
-
-```bash
-# Prepare test data
-amplihack eval prepare --news-file data/news.json --output-dir eval/
-
-# Run full harness
-amplihack eval run \
-    --agent my-agent \
-    --memory-backend sqlite \
-    --news-file data/news.json \
-    --output-dir eval/results/
-```
-
-## Programmatic Evaluation
-
-### Basic Harness
+Run a complete evaluation using the programmatic API (CLI support is planned
+for a future release):
 
 ```rust
 use amplihack_agent_eval::{HarnessConfig, run_harness};
+use amplihack_memory::Backend;
 
 let config = HarnessConfig {
     news_file: "data/news.json".into(),
     output_dir: "eval/results/".into(),
     agent_name: "my-agent".into(),
-    memory_backend: "sqlite".into(),
+    memory_backend: Backend::Cognitive,
 };
 
 let result = run_harness(&config)?;
@@ -113,7 +99,7 @@ let config = LongHorizonRunnerConfig {
     improvement_strategy: "prompt-refinement".into(),
     model: "claude-sonnet-4-5".into(),
     agent_name: "my-agent".into(),
-    memory_backend: "sqlite".into(),
+    memory_backend: Backend::Cognitive,
 };
 
 let result = run_long_horizon_self_improve(&config)?;

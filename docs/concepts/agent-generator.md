@@ -193,7 +193,11 @@ pub struct GoalAgentBundle {
     pub skills: Vec<SkillDefinition>,
     pub sub_agents: Vec<SubAgentConfig>,
     pub memory_config: Option<MemoryConfig>,
-    pub is_complete: bool,
+}
+
+impl GoalAgentBundle {
+    /// Returns true when all pipeline stages have completed successfully.
+    pub fn is_complete(&self) -> bool;
 }
 
 pub struct SubAgentConfig {
@@ -213,16 +217,22 @@ goal_agents/my-agent/
 ├── README.md              # Auto-generated documentation
 ├── goal.json              # GoalDefinition
 ├── plan.json              # ExecutionPlan
-├── config.yaml            # Agent configuration
+├── agent_config.json      # Agent runtime configuration
+├── prompt.md              # System prompt
 ├── skills/
-│   ├── skill_1.rs         # Generated skill implementations
-│   └── skill_2.rs
+│   ├── skill_1.yaml       # Skill definitions and config
+│   └── skill_2.yaml
 ├── sub_agents/            # (if multi-agent)
 │   ├── coordinator.yaml
 │   ├── spawner.yaml
 │   └── memory_agent.yaml
-└── main.rs                # Entry point
+├── requirements.txt       # Python SDK dependencies (if Python SDK)
+└── main.py                # Entry point (SDK-dependent)
 ```
+
+> **Note**: The generated output format depends on the target SDK. Python
+> SDK generates `.py` entry points; future Rust SDK will generate `.rs`.
+> The configuration files (JSON/YAML) are SDK-agnostic.
 
 ### Multi-Agent Packaging
 
@@ -243,7 +253,7 @@ Generated agents can optionally include memory configuration:
 let bundle = assembler.assemble_with_memory(
     &goal, &plan, &skills,
     MemoryConfig {
-        backend: Backend::Sqlite,
+        backend: Backend::Cognitive,
         topology: Topology::Single,
         ..Default::default()
     },
