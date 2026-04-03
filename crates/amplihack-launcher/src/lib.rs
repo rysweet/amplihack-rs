@@ -7,14 +7,20 @@
 pub mod agent_memory;
 pub mod amplifier;
 pub mod append_handler;
+pub mod auto_mode;
 pub mod auto_mode_coordinator;
+pub mod auto_mode_exec;
 pub mod auto_mode_state;
 pub mod auto_mode_ui;
 pub mod codex;
 pub mod completion_signals;
 pub mod completion_verifier;
+pub mod copilot_launcher;
 pub mod copilot_mcp;
+pub mod copilot_staging;
 pub mod fork_manager;
+pub mod launcher_core;
+pub mod memory_config;
 pub mod nesting_detector;
 pub mod repo_checkout;
 pub mod session_capture;
@@ -23,9 +29,14 @@ pub mod settings_manager;
 pub mod work_summary;
 
 pub use amplifier::AmplifierInfo;
+pub use auto_mode::{AutoModeConfig, SdkBackend, SessionResult, TurnResult};
+pub use auto_mode_exec::AutoMode;
 pub use codex::CodexInfo;
+pub use copilot_launcher::PluginEntry;
 pub use copilot_mcp::McpServerConfig;
 pub use fork_manager::{ForkConfig, ForkDecision, ForkManager};
+pub use launcher_core::{ClaudeLauncher, LauncherConfig};
+pub use memory_config::{MemoryConfig, MemoryPreference};
 pub use session_capture::{CapturedMessage, MessageCapture, MessageRole};
 
 // Re-exports for ported supporting modules
