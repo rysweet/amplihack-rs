@@ -7,16 +7,21 @@
 //! - Priority task queue
 //! - Agent lifecycle (start/stop/pause/resume)
 
+pub mod action_executor;
 pub mod agent;
 pub mod agentic_loop;
 pub mod error;
 pub mod intent;
 pub mod lifecycle;
 pub mod models;
+pub(crate) mod safe_calc;
 pub mod session;
 pub mod task_queue;
 
 // Re-exports for ergonomic access.
+pub use action_executor::{
+    action_calculate, action_read_content, RegistryActionExecutor,
+};
 pub use agent::{Agent, GoalSeekingAgent};
 pub use agentic_loop::{
     ActionExecutor, ActionResult, AgenticLoop, LlmClient, LlmMessage, LoopState, MemoryFacade,
