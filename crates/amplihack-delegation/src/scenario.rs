@@ -366,4 +366,6 @@ impl ScenarioGenerator {
     }
 }
 
-// Tests in tests/scenario_test.rs to stay under 400 lines.
+#[cfg(test)]
+#[path = "tests/scenario_test.rs"]
+mod tests;
