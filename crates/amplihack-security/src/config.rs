@@ -236,4 +236,107 @@ mod tests {
         assert!(cfg.is_whitelisted("custom-domain.com"));
         assert!(cfg.is_whitelisted("trusted.org"));
     }
+
+    #[test]
+    fn should_block_with_critical_disabled() {
+        let mut cfg = XpiaConfig::from_env();
+        cfg.block_on_critical = false;
+        assert!(!cfg.should_block(RiskLevel::Critical));
+        assert!(cfg.should_block(RiskLevel::High));
+    }
+
+    #[test]
+    fn should_block_with_high_disabled() {
+        let mut cfg = XpiaConfig::from_env();
+        cfg.block_on_high_risk = false;
+        assert!(cfg.should_block(RiskLevel::Critical));
+        assert!(!cfg.should_block(RiskLevel::High));
+    }
+
+    #[test]
+    fn should_block_none_and_low_never_blocked() {
+        let mut cfg = XpiaConfig::from_env();
+        cfg.block_on_critical = true;
+        cfg.block_on_high_risk = true;
+        assert!(!cfg.should_block(RiskLevel::None));
+        assert!(!cfg.should_block(RiskLevel::Low));
+        assert!(!cfg.should_block(RiskLevel::Medium));
+    }
+
+    #[test]
+    fn is_whitelisted_case_insensitive() {
+        let cfg = XpiaConfig::from_env();
+        assert!(cfg.is_whitelisted("GitHub.COM"));
+        assert!(cfg.is_whitelisted("GITHUB.COM"));
+        assert!(cfg.is_whitelisted("Api.GitHub.Com"));
+    }
+
+    #[test]
+    fn is_blacklisted_case_insensitive() {
+        let mut cfg = XpiaConfig::from_env();
+        cfg.blacklist_domains.insert("evil.com".to_string());
+        assert!(cfg.is_blacklisted("Evil.Com"));
+        assert!(cfg.is_blacklisted("EVIL.COM"));
+        assert!(cfg.is_blacklisted("sub.EVIL.COM"));
+    }
+
+    #[test]
+    fn is_whitelisted_empty_string() {
+        let cfg = XpiaConfig::from_env();
+        assert!(!cfg.is_whitelisted(""));
+    }
+
+    #[test]
+    fn is_blacklisted_empty_string() {
+        let cfg = XpiaConfig::from_env();
+        assert!(!cfg.is_blacklisted(""));
+    }
+
+    #[test]
+    fn default_limits_are_sane() {
+        let cfg = XpiaConfig::from_env();
+        assert_eq!(cfg.max_prompt_length, 10_000);
+        assert_eq!(cfg.max_url_length, 2048);
+    }
+
+    #[test]
+    fn default_safe_domains_all_present() {
+        let cfg = XpiaConfig::from_env();
+        for domain in super::DEFAULT_SAFE_DOMAINS {
+            assert!(
+                cfg.is_whitelisted(domain),
+                "default safe domain {domain} should be whitelisted"
+            );
+        }
+    }
+
+    #[test]
+    fn load_domains_from_nonexistent_file() {
+        let mut domains = HashSet::new();
+        // Should not panic, just log a warning
+        super::load_domains_from_file("/nonexistent/path/domains.txt", &mut domains);
+        assert!(domains.is_empty());
+    }
+
+    #[test]
+    fn load_domains_from_file_skips_empty_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("domains.txt");
+        fs::write(&file, "\n\n  \n# comment\nexample.com\n\n  test.org  \n").unwrap();
+        let mut domains = HashSet::new();
+        super::load_domains_from_file(file.to_str().unwrap(), &mut domains);
+        assert_eq!(domains.len(), 2);
+        assert!(domains.contains("example.com"));
+        assert!(domains.contains("test.org"));
+    }
+
+    #[test]
+    fn blacklist_overrides_whitelist_check() {
+        let mut cfg = XpiaConfig::from_env();
+        cfg.whitelist_domains.insert("dual.com".to_string());
+        cfg.blacklist_domains.insert("dual.com".to_string());
+        // Both match — callers should check blacklist first
+        assert!(cfg.is_whitelisted("dual.com"));
+        assert!(cfg.is_blacklisted("dual.com"));
+    }
 }

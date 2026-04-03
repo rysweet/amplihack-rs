@@ -181,4 +181,57 @@ mod tests {
         assert!(names.contains(&"domain_lists"));
         assert!(names.contains(&"limits_configured"));
     }
+
+    #[test]
+    fn health_status_display() {
+        assert_eq!(HealthStatus::Healthy.to_string(), "healthy");
+        assert_eq!(HealthStatus::Degraded.to_string(), "degraded");
+        assert_eq!(HealthStatus::Unhealthy.to_string(), "unhealthy");
+    }
+
+    #[test]
+    fn health_report_serialization() {
+        let report = check_health();
+        let json = serde_json::to_string(&report).unwrap();
+        let deserialized: HealthReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.status, report.status);
+        assert_eq!(deserialized.checks.len(), report.checks.len());
+        assert_eq!(deserialized.pattern_count, report.pattern_count);
+    }
+
+    #[test]
+    fn health_check_has_six_checks() {
+        let report = check_health();
+        assert_eq!(report.checks.len(), 6);
+    }
+
+    #[test]
+    fn health_config_summary_has_expected_fields() {
+        let report = check_health();
+        assert!(report.config_summary.get("enabled").is_some());
+        assert!(report.config_summary.get("security_level").is_some());
+        assert!(report.config_summary.get("block_on_critical").is_some());
+        assert!(report.config_summary.get("block_on_high_risk").is_some());
+    }
+
+    #[test]
+    fn health_status_serde_roundtrip() {
+        for status in [HealthStatus::Healthy, HealthStatus::Degraded, HealthStatus::Unhealthy] {
+            let json = serde_json::to_string(&status).unwrap();
+            let back: HealthStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, status);
+        }
+    }
+
+    #[test]
+    fn all_default_checks_pass() {
+        let report = check_health();
+        for check in &report.checks {
+            assert!(
+                check.passed,
+                "check '{}' failed with message: {}",
+                check.name, check.message
+            );
+        }
+    }
 }
