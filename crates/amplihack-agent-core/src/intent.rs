@@ -55,9 +55,7 @@ impl Intent {
 
 /// Classifies raw text input into an `Intent`.
 ///
-/// Port of Python `IntentDetector`. The `classify` body is a `todo!()`
-/// stub — tests come first.
-#[allow(dead_code)] // Fields used once todo!() stubs are implemented
+/// Port of Python `IntentDetector`.
 pub struct IntentDetector {
     /// Question-word prefixes used for heuristic detection.
     question_words: Vec<&'static str>,
@@ -80,8 +78,29 @@ impl IntentDetector {
     }
 
     /// Classify the given input into an `Intent`.
-    pub fn classify(&self, _input: &str) -> Intent {
-        todo!("classify: detect intent from input text")
+    pub fn classify(&self, input: &str) -> Intent {
+        let trimmed = input.trim();
+        let lower = trimmed.to_lowercase();
+
+        if lower.is_empty() {
+            return Intent::Unknown;
+        }
+
+        if lower.ends_with('?') {
+            return Intent::AnswerQuestion;
+        }
+
+        let first_word = lower.split_whitespace().next().unwrap_or("");
+
+        if self.question_words.contains(&first_word) {
+            return Intent::AnswerQuestion;
+        }
+
+        if self.command_words.contains(&first_word) {
+            return Intent::ExecuteTask;
+        }
+
+        Intent::StoreContent
     }
 }
 

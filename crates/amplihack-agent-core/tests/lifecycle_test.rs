@@ -31,7 +31,6 @@ fn default_is_stopped() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn start_from_stopped() {
     let mut lc = make_lifecycle();
     lc.start().unwrap();
@@ -39,7 +38,6 @@ fn start_from_stopped() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn start_when_already_running_is_error() {
     let mut lc = make_lifecycle();
     lc.start().unwrap();
@@ -52,7 +50,6 @@ fn start_when_already_running_is_error() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn stop_from_running() {
     let mut lc = make_lifecycle();
     lc.start().unwrap();
@@ -61,7 +58,6 @@ fn stop_from_running() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn stop_when_already_stopped_is_error() {
     let mut lc = make_lifecycle();
     let result = lc.stop();
@@ -73,7 +69,6 @@ fn stop_when_already_stopped_is_error() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn pause_from_running() {
     let mut lc = make_lifecycle();
     lc.start().unwrap();
@@ -82,7 +77,6 @@ fn pause_from_running() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn pause_when_stopped_is_error() {
     let mut lc = make_lifecycle();
     let result = lc.pause();
@@ -90,7 +84,6 @@ fn pause_when_stopped_is_error() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn resume_from_paused() {
     let mut lc = make_lifecycle();
     lc.start().unwrap();
@@ -100,7 +93,6 @@ fn resume_from_paused() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn resume_when_not_paused_is_error() {
     let mut lc = make_lifecycle();
     lc.start().unwrap();
@@ -113,22 +105,22 @@ fn resume_when_not_paused_is_error() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn health_check_when_stopped() {
     let lc = make_lifecycle();
     let health = lc.health_check();
     assert!(health.healthy);
     assert_eq!(health.lifecycle_state, LifecycleState::Stopped);
+    assert_eq!(health.uptime_secs, 0.0);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn health_check_when_running() {
     let mut lc = make_lifecycle();
     lc.start().unwrap();
     let health = lc.health_check();
     assert!(health.healthy);
     assert_eq!(health.lifecycle_state, LifecycleState::Running);
+    assert!(health.uptime_secs >= 0.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -136,7 +128,6 @@ fn health_check_when_running() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn full_lifecycle_cycle() {
     let mut lc = make_lifecycle();
     assert_eq!(lc.lifecycle_state(), LifecycleState::Stopped);
@@ -155,7 +146,6 @@ fn full_lifecycle_cycle() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn stop_from_paused() {
     let mut lc = make_lifecycle();
     lc.start().unwrap();

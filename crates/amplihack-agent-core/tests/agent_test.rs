@@ -1,5 +1,5 @@
 use amplihack_agent_core::{
-    Agent, AgentConfig, AgentInfo, AgentState, GoalSeekingAgent, TaskResult,
+    Agent, AgentConfig, AgentState, GoalSeekingAgent,
 };
 use amplihack_memory::MemoryType;
 
@@ -55,33 +55,31 @@ fn agent_config_accessible() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn observe_stores_input() {
     let mut agent = make_agent("obs");
     agent.observe("hello world").unwrap();
+    assert_eq!(agent.state(), AgentState::Observing);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn observe_empty_input() {
     let mut agent = make_agent("obs-empty");
     agent.observe("").unwrap();
+    assert_eq!(agent.state(), AgentState::Observing);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn observe_transitions_to_observing() {
     let mut agent = make_agent("obs-state");
     agent.observe("input").unwrap();
-    // After implementation, this should assert:
-    // assert_eq!(agent.state(), AgentState::Observing);
+    assert_eq!(agent.state(), AgentState::Observing);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn observe_unicode_input() {
     let mut agent = make_agent("obs-unicode");
     agent.observe("日本語テスト 🦀").unwrap();
+    assert_eq!(agent.state(), AgentState::Observing);
 }
 
 // ---------------------------------------------------------------------------
@@ -89,17 +87,21 @@ fn observe_unicode_input() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn orient_recalls_memory() {
+fn orient_returns_context_with_input() {
     let mut agent = make_agent("orient");
     agent.observe("test").unwrap();
+    let ctx = agent.orient().unwrap();
+    assert_eq!(ctx, vec!["test".to_string()]);
+    assert_eq!(agent.state(), AgentState::Orienting);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn orient_returns_context_strings() {
     let mut agent = make_agent("orient-ctx");
     agent.observe("what is rust?").unwrap();
+    let ctx = agent.orient().unwrap();
+    assert!(!ctx.is_empty());
+    assert_eq!(ctx[0], "what is rust?");
 }
 
 // ---------------------------------------------------------------------------
@@ -107,17 +109,22 @@ fn orient_returns_context_strings() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn decide_classifies_intent() {
+fn decide_classifies_question_as_answer() {
     let mut agent = make_agent("decide");
     agent.observe("how do I test?").unwrap();
+    agent.orient().unwrap();
+    let plan = agent.decide().unwrap();
+    assert_eq!(plan, "answer");
+    assert_eq!(agent.state(), AgentState::Deciding);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn decide_produces_action_plan() {
+fn decide_classifies_command_as_execute() {
     let mut agent = make_agent("decide-plan");
     agent.observe("run cargo test").unwrap();
+    agent.orient().unwrap();
+    let plan = agent.decide().unwrap();
+    assert_eq!(plan, "execute");
 }
 
 // ---------------------------------------------------------------------------
@@ -125,17 +132,24 @@ fn decide_produces_action_plan() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn act_produces_task_result() {
     let mut agent = make_agent("act");
     agent.observe("do something").unwrap();
+    agent.orient().unwrap();
+    agent.decide().unwrap();
+    let result = agent.act().unwrap();
+    assert!(result.success);
+    assert!(result.output.contains("do something"));
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn act_returns_to_idle() {
     let mut agent = make_agent("act-idle");
     agent.observe("task").unwrap();
+    agent.orient().unwrap();
+    agent.decide().unwrap();
+    agent.act().unwrap();
+    assert_eq!(agent.state(), AgentState::Idle);
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +157,6 @@ fn act_returns_to_idle() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn process_chains_ooda_steps() {
     let mut agent = make_agent("process");
     let result = agent.process("hello").unwrap();
@@ -151,7 +164,6 @@ fn process_chains_ooda_steps() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn process_returns_to_idle_after_success() {
     let mut agent = make_agent("proc-idle");
     agent.process("task").unwrap();
@@ -159,34 +171,35 @@ fn process_returns_to_idle_after_success() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn process_with_question_input() {
     let mut agent = make_agent("proc-q");
     let result = agent.process("what is TDD?").unwrap();
     assert!(result.success);
+    assert!(result.output.starts_with("Answer: "));
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn process_with_command_input() {
     let mut agent = make_agent("proc-cmd");
     let result = agent.process("run the tests").unwrap();
     assert!(result.success);
+    assert!(result.output.starts_with("Executed: "));
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn process_with_content_input() {
     let mut agent = make_agent("proc-content");
     let result = agent.process("Rust was created by Mozilla.").unwrap();
     assert!(result.success);
+    assert!(result.output.starts_with("Stored: "));
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn process_empty_input() {
     let mut agent = make_agent("proc-empty");
-    agent.process("").unwrap();
+    let result = agent.process("").unwrap();
+    assert!(result.success);
+    assert_eq!(agent.state(), AgentState::Idle);
 }
 
 // ---------------------------------------------------------------------------
@@ -237,11 +250,12 @@ fn error_state_has_no_next() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn reset_returns_to_idle() {
     let mut agent = make_agent("reset");
+    agent.process("something").unwrap();
     agent.reset().unwrap();
     assert_eq!(agent.state(), AgentState::Idle);
+    assert_eq!(agent.info().iterations, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -249,17 +263,21 @@ fn reset_returns_to_idle() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn multiple_process_calls() {
     let mut agent = make_agent("multi");
-    agent.process("first").unwrap();
-    agent.process("second").unwrap();
+    let r1 = agent.process("first").unwrap();
+    assert!(r1.success);
+    assert_eq!(agent.info().iterations, 1);
+    let r2 = agent.process("second").unwrap();
+    assert!(r2.success);
+    assert_eq!(agent.info().iterations, 2);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn long_input_handled() {
     let mut agent = make_agent("long");
     let long_input = "x".repeat(10_000);
-    agent.process(&long_input).unwrap();
+    let result = agent.process(&long_input).unwrap();
+    assert!(result.success);
+    assert!(result.output.contains(&long_input));
 }

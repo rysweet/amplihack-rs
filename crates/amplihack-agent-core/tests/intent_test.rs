@@ -13,35 +13,30 @@ fn detector() -> IntentDetector {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn classify_what_question() {
     let d = detector();
     assert_eq!(d.classify("what is Rust?"), Intent::AnswerQuestion);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn classify_who_question() {
     let d = detector();
     assert_eq!(d.classify("who created Linux?"), Intent::AnswerQuestion);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn classify_how_question() {
     let d = detector();
     assert_eq!(d.classify("how does TDD work?"), Intent::AnswerQuestion);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn classify_trailing_question_mark() {
     let d = detector();
     assert_eq!(d.classify("is this a test?"), Intent::AnswerQuestion);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn classify_why_question() {
     let d = detector();
     assert_eq!(d.classify("why use OODA loops?"), Intent::AnswerQuestion);
@@ -52,7 +47,6 @@ fn classify_why_question() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn classify_factual_statement() {
     let d = detector();
     assert_eq!(
@@ -62,7 +56,6 @@ fn classify_factual_statement() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn classify_declarative_content() {
     let d = detector();
     assert_eq!(
@@ -76,21 +69,18 @@ fn classify_declarative_content() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn classify_run_command() {
     let d = detector();
     assert_eq!(d.classify("run cargo test"), Intent::ExecuteTask);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn classify_create_command() {
     let d = detector();
     assert_eq!(d.classify("create a new module"), Intent::ExecuteTask);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn classify_build_command() {
     let d = detector();
     assert_eq!(d.classify("build the project"), Intent::ExecuteTask);
@@ -101,17 +91,14 @@ fn classify_build_command() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn classify_empty_input() {
     let d = detector();
     assert_eq!(d.classify(""), Intent::Unknown);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn classify_single_word() {
     let d = detector();
-    // A single word with no clear intent.
     let intent = d.classify("hello");
     assert!(
         intent == Intent::Unknown || intent == Intent::StoreContent,
@@ -120,14 +107,12 @@ fn classify_single_word() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn classify_whitespace_only() {
     let d = detector();
     assert_eq!(d.classify("   "), Intent::Unknown);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn classify_mixed_case_question() {
     let d = detector();
     assert_eq!(d.classify("WHAT is going on?"), Intent::AnswerQuestion);

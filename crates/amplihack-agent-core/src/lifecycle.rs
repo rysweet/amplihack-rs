@@ -3,7 +3,7 @@
 //! Defines the `AgentLifecycle` trait for starting, stopping, pausing,
 //! and resuming agents, plus health checks.
 
-use crate::error::Result;
+use crate::error::{AgentError, Result};
 
 // ---------------------------------------------------------------------------
 // LifecycleState
@@ -96,10 +96,7 @@ pub trait AgentLifecycle {
 // BasicLifecycle — stub implementation
 // ---------------------------------------------------------------------------
 
-/// Minimal lifecycle implementation for testing.
-///
-/// All transition bodies are `todo!()` stubs — tests come first.
-#[allow(dead_code)] // Fields used once todo!() stubs are implemented
+/// Minimal lifecycle implementation.
 pub struct BasicLifecycle {
     state: LifecycleState,
     started_at: Option<f64>,
@@ -122,23 +119,70 @@ impl Default for BasicLifecycle {
 
 impl AgentLifecycle for BasicLifecycle {
     fn start(&mut self) -> Result<()> {
-        todo!("start: transition Stopped → Running")
+        if self.state != LifecycleState::Stopped {
+            return Err(AgentError::ConfigError(format!(
+                "cannot start: current state is {}",
+                self.state
+            )));
+        }
+        self.state = LifecycleState::Running;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        self.started_at = Some(now);
+        Ok(())
     }
 
     fn stop(&mut self) -> Result<()> {
-        todo!("stop: transition Running/Paused → Stopped")
+        if self.state != LifecycleState::Running && self.state != LifecycleState::Paused {
+            return Err(AgentError::ConfigError(format!(
+                "cannot stop: current state is {}",
+                self.state
+            )));
+        }
+        self.state = LifecycleState::Stopped;
+        self.started_at = None;
+        Ok(())
     }
 
     fn pause(&mut self) -> Result<()> {
-        todo!("pause: transition Running → Paused")
+        if self.state != LifecycleState::Running {
+            return Err(AgentError::ConfigError(format!(
+                "cannot pause: current state is {}",
+                self.state
+            )));
+        }
+        self.state = LifecycleState::Paused;
+        Ok(())
     }
 
     fn resume(&mut self) -> Result<()> {
-        todo!("resume: transition Paused → Running")
+        if self.state != LifecycleState::Paused {
+            return Err(AgentError::ConfigError(format!(
+                "cannot resume: current state is {}",
+                self.state
+            )));
+        }
+        self.state = LifecycleState::Running;
+        Ok(())
     }
 
     fn health_check(&self) -> HealthStatus {
-        todo!("health_check: return current health status")
+        match self.state {
+            LifecycleState::Running | LifecycleState::Paused => {
+                let uptime = self.started_at.map_or(0.0, |started| {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs_f64();
+                    now - started
+                });
+                HealthStatus::ok(self.state, uptime)
+            }
+            LifecycleState::Stopped => HealthStatus::ok(self.state, 0.0),
+            LifecycleState::Failed => HealthStatus::unhealthy(self.state, "agent has failed"),
+        }
     }
 
     fn lifecycle_state(&self) -> LifecycleState {

@@ -41,7 +41,6 @@ fn default_queue_capacity() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn enqueue_and_dequeue_fifo() {
     let mut q = TaskQueue::new(10);
     q.enqueue(task("first")).unwrap();
@@ -53,7 +52,6 @@ fn enqueue_and_dequeue_fifo() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn enqueue_increments_len() {
     let mut q = TaskQueue::new(10);
     q.enqueue(task("a")).unwrap();
@@ -63,7 +61,6 @@ fn enqueue_increments_len() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn dequeue_decrements_len() {
     let mut q = TaskQueue::new(10);
     q.enqueue(task("a")).unwrap();
@@ -77,7 +74,6 @@ fn dequeue_decrements_len() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn priority_ordering_critical_first() {
     let mut q = TaskQueue::new(10);
     q.enqueue(task_with_priority("low", TaskPriority::Low)).unwrap();
@@ -88,7 +84,6 @@ fn priority_ordering_critical_first() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn same_priority_fifo() {
     let mut q = TaskQueue::new(10);
     q.enqueue(task_with_priority("a", TaskPriority::High)).unwrap();
@@ -102,17 +97,15 @@ fn same_priority_fifo() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn peek_returns_next_without_removing() {
     let mut q = TaskQueue::new(10);
     q.enqueue(task("peeked")).unwrap();
     let peeked = q.peek().unwrap();
     assert_eq!(peeked.description, "peeked");
-    assert_eq!(q.len(), 1); // not removed
+    assert_eq!(q.len(), 1);
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn peek_empty_returns_none() {
     let q = TaskQueue::new(10);
     assert!(q.peek().is_none());
@@ -123,7 +116,6 @@ fn peek_empty_returns_none() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn dequeue_empty_returns_none() {
     let mut q = TaskQueue::new(10);
     assert!(q.dequeue().is_none());
@@ -134,7 +126,6 @@ fn dequeue_empty_returns_none() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn enqueue_at_capacity_returns_error() {
     let mut q = TaskQueue::new(2);
     q.enqueue(task("a")).unwrap();
@@ -151,7 +142,8 @@ fn enqueue_at_capacity_returns_error() {
 #[test]
 fn clear_empties_queue() {
     let mut q = TaskQueue::new(10);
-    // Items vector starts empty, clear should keep it empty.
+    q.enqueue(task("a")).unwrap();
+    q.enqueue(task("b")).unwrap();
     q.clear();
     assert!(q.is_empty());
 }
@@ -161,7 +153,6 @@ fn clear_empties_queue() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn drain_priority_removes_matching() {
     let mut q = TaskQueue::new(10);
     q.enqueue(task_with_priority("low1", TaskPriority::Low)).unwrap();

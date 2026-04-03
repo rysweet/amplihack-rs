@@ -3,7 +3,7 @@
 //! Provides a simple priority-aware queue. Higher-priority tasks are
 //! dequeued before lower-priority ones at the same insertion order.
 
-use crate::error::Result;
+use crate::error::{AgentError, Result};
 use crate::models::{TaskPriority, TaskSpec};
 
 // ---------------------------------------------------------------------------
@@ -26,18 +26,33 @@ impl TaskQueue {
     }
 
     /// Enqueue a task. Returns error if at capacity.
-    pub fn enqueue(&mut self, _task: TaskSpec) -> Result<()> {
-        todo!("enqueue: insert task respecting priority and capacity")
+    pub fn enqueue(&mut self, task: TaskSpec) -> Result<()> {
+        if self.is_full() {
+            return Err(AgentError::TaskFailed("queue is at capacity".into()));
+        }
+        // Insert maintaining priority order (Critical first, then High, Normal, Low).
+        // Within same priority, maintain FIFO by inserting at end of same-priority group.
+        let pos = self
+            .items
+            .iter()
+            .position(|t| t.priority < task.priority)
+            .unwrap_or(self.items.len());
+        self.items.insert(pos, task);
+        Ok(())
     }
 
     /// Dequeue the highest-priority task (FIFO within same priority).
     pub fn dequeue(&mut self) -> Option<TaskSpec> {
-        todo!("dequeue: remove and return highest-priority task")
+        if self.items.is_empty() {
+            None
+        } else {
+            Some(self.items.remove(0))
+        }
     }
 
     /// Peek at the next task without removing it.
     pub fn peek(&self) -> Option<&TaskSpec> {
-        todo!("peek: return reference to highest-priority task")
+        self.items.first()
     }
 
     /// Number of tasks in the queue.
@@ -66,8 +81,18 @@ impl TaskQueue {
     }
 
     /// Drain all tasks matching a priority level.
-    pub fn drain_priority(&mut self, _priority: TaskPriority) -> Vec<TaskSpec> {
-        todo!("drain_priority: remove and return all tasks at given priority")
+    pub fn drain_priority(&mut self, priority: TaskPriority) -> Vec<TaskSpec> {
+        let mut drained = Vec::new();
+        let mut remaining = Vec::new();
+        for item in self.items.drain(..) {
+            if item.priority == priority {
+                drained.push(item);
+            } else {
+                remaining.push(item);
+            }
+        }
+        self.items = remaining;
+        drained
     }
 }
 

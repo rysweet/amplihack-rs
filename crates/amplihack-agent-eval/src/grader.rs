@@ -36,22 +36,109 @@ impl Grader for SimpleGrader {
     fn grade(
         &self,
         _question: &str,
-        _expected: &str,
-        _actual: &str,
-        _level: TestLevel,
+        expected: &str,
+        actual: &str,
+        level: TestLevel,
     ) -> Result<GradeResult, EvalError> {
-        todo!("SimpleGrader::grade not yet implemented")
+        if actual.is_empty() {
+            return GradeResult::new(0.0, "Empty answer — no content to grade");
+        }
+
+        let expected_lower = expected.to_lowercase();
+        let actual_lower = actual.to_lowercase();
+
+        // Exact match
+        if expected_lower == actual_lower {
+            return GradeResult::new(1.0, "Exact match");
+        }
+
+        // Containment check
+        let contains_expected = actual_lower.contains(&expected_lower);
+
+        // Word overlap scoring
+        let expected_words: std::collections::HashSet<&str> =
+            expected_lower.split_whitespace().collect();
+        let actual_words: std::collections::HashSet<&str> =
+            actual_lower.split_whitespace().collect();
+
+        let overlap = expected_words.intersection(&actual_words).count();
+        let word_score = if expected_words.is_empty() {
+            0.0
+        } else {
+            overlap as f64 / expected_words.len() as f64
+        };
+
+        // Level-specific adjustments
+        let level_bonus = match level {
+            TestLevel::L3TemporalReasoning => {
+                if has_temporal_ordering(&actual_lower, &expected_lower) {
+                    0.1
+                } else {
+                    -0.1
+                }
+            }
+            TestLevel::L5ContradictionHandling => {
+                if actual_lower.contains("contradict")
+                    || actual_lower.contains("outdated")
+                    || actual_lower.contains("incorrect")
+                {
+                    0.1
+                } else {
+                    0.0
+                }
+            }
+            _ => 0.0,
+        };
+
+        let mut score = if contains_expected {
+            0.9
+        } else {
+            word_score * 0.8
+        };
+        score = (score + level_bonus).clamp(0.0, 1.0);
+
+        let reasoning = format!(
+            "Word overlap: {overlap}/{}, containment: {contains_expected}, level: {}",
+            expected_words.len(),
+            level.display_name()
+        );
+        GradeResult::new(score, reasoning)
     }
+}
+
+/// Check if actual has temporal ordering consistent with expected.
+fn has_temporal_ordering(actual: &str, expected: &str) -> bool {
+    let temporal_words = ["before", "after", "first", "then", "later", "earlier"];
+    temporal_words
+        .iter()
+        .any(|w| actual.contains(w) && expected.contains(w))
 }
 
 /// Multi-vote grader that averages across multiple grading passes.
 pub fn grade_with_votes(
-    _grader: &dyn Grader,
-    _question: &str,
-    _expected: &str,
-    _actual: &str,
-    _level: TestLevel,
-    _votes: u8,
+    grader: &dyn Grader,
+    question: &str,
+    expected: &str,
+    actual: &str,
+    level: TestLevel,
+    votes: u8,
 ) -> Result<GradeResult, EvalError> {
-    todo!("grade_with_votes not yet implemented")
+    let vote_count = votes.clamp(1, 9);
+    let mut scores = Vec::with_capacity(vote_count as usize);
+    let mut last_reasoning = String::new();
+
+    for _ in 0..vote_count {
+        let result = grader.grade(question, expected, actual, level)?;
+        scores.push(result.score);
+        last_reasoning = result.reasoning;
+    }
+
+    // Use median score
+    scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median_idx = scores.len() / 2;
+    let median_score = scores[median_idx];
+
+    let mut result = GradeResult::new(median_score, last_reasoning)?;
+    result = result.with_votes(scores);
+    Ok(result)
 }

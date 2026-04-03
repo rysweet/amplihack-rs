@@ -3,7 +3,7 @@
 use amplihack_agent_eval::grader::Grader;
 use amplihack_agent_eval::levels::TestLevel;
 use amplihack_agent_eval::models::*;
-use amplihack_agent_eval::progressive::{ProgressiveSuite, ProgressiveSummary};
+use amplihack_agent_eval::progressive::ProgressiveSuite;
 use amplihack_agent_eval::EvalError;
 use std::path::PathBuf;
 
@@ -66,29 +66,59 @@ fn suite_config_levels() {
     assert_eq!(suite.config().levels_to_run.len(), 2);
 }
 
-// ── run_level (should_panic since todo!()) ───────────────────
+// ── run_level ────────────────────────────────────────────────
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn run_level_panics_todo() {
+fn run_level_l1_fails_below_threshold() {
+    // StubGrader returns 0.8, L1 threshold is 0.9 → should fail
     let suite = make_suite(&[TestLevel::L1Recall]);
-    let _ = suite.run_level(TestLevel::L1Recall);
+    let result = suite.run_level(TestLevel::L1Recall).unwrap();
+    assert!(!result.success);
+    assert_eq!(result.level_id, 1);
+    assert!(result.error_message.is_some());
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn run_level_l12_panics_todo() {
+fn run_level_l12_passes_with_stub_grader() {
+    // StubGrader returns 0.8, L12 threshold is 0.5 → should pass
     let suite = make_suite(&[TestLevel::L12FarTransfer]);
-    let _ = suite.run_level(TestLevel::L12FarTransfer);
+    let result = suite.run_level(TestLevel::L12FarTransfer).unwrap();
+    assert!(result.success);
+    assert_eq!(result.level_id, 12);
+    assert!(result.error_message.is_none());
+    assert!(!result.scores.is_empty());
 }
 
-// ── run_all (should_panic since todo!()) ─────────────────────
+#[test]
+fn run_level_missing_cases_returns_error() {
+    let suite = make_suite(&[TestLevel::L1Recall]);
+    // L3 has no test cases in this suite
+    let result = suite.run_level(TestLevel::L3TemporalReasoning);
+    assert!(result.is_err());
+}
+
+// ── run_all ──────────────────────────────────────────────────
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
-fn run_all_panics_todo() {
+fn run_all_returns_results_for_all_levels() {
     let suite = make_suite(TestLevel::all());
-    let _ = suite.run_all();
+    let result = suite.run_all().unwrap();
+    // StubGrader returns 0.8 for all → levels with threshold <= 0.8 pass
+    // L1 (0.9) and L2 (0.85) should fail; L3-L12 (thresholds 0.5-0.8) should pass
+    assert_eq!(result.level_results.len(), 12);
+    assert_eq!(result.failed_levels.len(), 2); // L1, L2
+    assert_eq!(result.passed_levels.len(), 10); // L3-L12
+    assert!(result.finished_at.is_some());
+}
+
+#[test]
+fn run_all_with_single_level() {
+    let suite = make_suite(&[TestLevel::L5ContradictionHandling]);
+    let result = suite.run_all().unwrap();
+    // StubGrader 0.8 >= L5 threshold 0.7 → pass
+    assert_eq!(result.level_results.len(), 1);
+    assert_eq!(result.passed_levels.len(), 1);
+    assert!(result.failed_levels.is_empty());
 }
 
 // ── compute_summary ──────────────────────────────────────────

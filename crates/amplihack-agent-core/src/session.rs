@@ -4,9 +4,11 @@
 //! Provides `AgentSession` for per-agent session state and `SessionManager`
 //! for creating, retrieving, and ending sessions.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::error::{AgentError, Result};
 use crate::models::AgentState;
 
 // ---------------------------------------------------------------------------
@@ -65,8 +67,6 @@ impl AgentSession {
 // ---------------------------------------------------------------------------
 
 /// Manages agent sessions.
-///
-/// All method bodies are `todo!()` stubs — tests come first.
 pub struct SessionManager {
     sessions: std::collections::HashMap<String, AgentSession>,
     /// Default session timeout in seconds.
@@ -87,28 +87,46 @@ impl SessionManager {
     }
 
     /// Create a new session for the given agent.
-    pub fn create_session(&mut self, _agent_id: &str) -> Result<AgentSession> {
-        todo!("create_session: generate ID, store, return session")
+    pub fn create_session(&mut self, agent_id: &str) -> Result<AgentSession> {
+        static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let count = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let now_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let session_id = format!("sess-{:x}-{}", now_nanos, count);
+        let session = AgentSession::new(&session_id, agent_id);
+        self.sessions.insert(session_id, session.clone());
+        Ok(session)
     }
 
     /// Retrieve an existing session by ID.
-    pub fn get_session(&self, _session_id: &str) -> Result<&AgentSession> {
-        todo!("get_session: look up session or return SessionNotFound")
+    pub fn get_session(&self, session_id: &str) -> Result<&AgentSession> {
+        self.sessions
+            .get(session_id)
+            .ok_or_else(|| AgentError::SessionNotFound(session_id.to_string()))
     }
 
     /// Retrieve a mutable reference to an existing session.
-    pub fn get_session_mut(&mut self, _session_id: &str) -> Result<&mut AgentSession> {
-        todo!("get_session_mut: look up session or return SessionNotFound")
+    pub fn get_session_mut(&mut self, session_id: &str) -> Result<&mut AgentSession> {
+        self.sessions
+            .get_mut(session_id)
+            .ok_or_else(|| AgentError::SessionNotFound(session_id.to_string()))
     }
 
     /// End (remove) a session by ID.
-    pub fn end_session(&mut self, _session_id: &str) -> Result<AgentSession> {
-        todo!("end_session: remove session or return SessionNotFound")
+    pub fn end_session(&mut self, session_id: &str) -> Result<AgentSession> {
+        self.sessions
+            .remove(session_id)
+            .ok_or_else(|| AgentError::SessionNotFound(session_id.to_string()))
     }
 
     /// List all active (non-expired) sessions.
     pub fn list_sessions(&self) -> Vec<&AgentSession> {
-        todo!("list_sessions: return non-expired sessions")
+        self.sessions
+            .values()
+            .filter(|s| !s.is_expired(self.timeout_secs))
+            .collect()
     }
 
     /// Number of active sessions.

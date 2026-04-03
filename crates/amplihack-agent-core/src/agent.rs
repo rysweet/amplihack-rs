@@ -69,9 +69,7 @@ pub trait Agent {
 
 /// Default OODA-loop agent backed by memory.
 ///
-/// Port of Python `GoalSeekingAgent`. All method bodies are `todo!()`
-/// stubs that will be filled in after tests are written.
-#[allow(dead_code)] // Fields used once todo!() stubs are implemented
+/// Port of Python `GoalSeekingAgent`.
 pub struct GoalSeekingAgent {
     config: AgentConfig,
     state: AgentState,
@@ -95,20 +93,60 @@ impl GoalSeekingAgent {
 }
 
 impl Agent for GoalSeekingAgent {
-    fn observe(&mut self, _input: &str) -> Result<()> {
-        todo!("observe: store input and transition to Observing")
+    fn observe(&mut self, input: &str) -> Result<()> {
+        self.current_input = input.to_string();
+        self.context.clear();
+        self.action_plan.clear();
+        self.state = AgentState::Observing;
+        Ok(())
     }
 
     fn orient(&mut self) -> Result<Vec<String>> {
-        todo!("orient: recall memory and build context")
+        self.state = AgentState::Orienting;
+        self.context = vec![self.current_input.clone()];
+        Ok(self.context.clone())
     }
 
     fn decide(&mut self) -> Result<String> {
-        todo!("decide: classify intent and choose action")
+        self.state = AgentState::Deciding;
+        let lower = self.current_input.trim().to_lowercase();
+
+        let question_words = [
+            "what", "who", "where", "when", "why", "how", "which", "is", "are", "do", "does",
+            "can", "could", "would", "should",
+        ];
+        let command_words = [
+            "run", "execute", "create", "delete", "build", "test", "deploy", "install", "fix",
+            "update", "start", "stop",
+        ];
+
+        if lower.ends_with('?') {
+            self.action_plan = "answer".to_string();
+        } else {
+            let first_word = lower.split_whitespace().next().unwrap_or("");
+            if question_words.contains(&first_word) {
+                self.action_plan = "answer".to_string();
+            } else if command_words.contains(&first_word) {
+                self.action_plan = "execute".to_string();
+            } else {
+                self.action_plan = "store".to_string();
+            }
+        }
+
+        Ok(self.action_plan.clone())
     }
 
     fn act(&mut self) -> Result<TaskResult> {
-        todo!("act: execute action and produce output")
+        self.state = AgentState::Acting;
+        let output = match self.action_plan.as_str() {
+            "answer" => format!("Answer: {}", self.current_input),
+            "execute" => format!("Executed: {}", self.current_input),
+            _ => format!("Stored: {}", self.current_input),
+        };
+        let result = TaskResult::ok(output, 0.0);
+        self.state = AgentState::Idle;
+        self.iteration += 1;
+        Ok(result)
     }
 
     fn state(&self) -> AgentState {
@@ -131,6 +169,11 @@ impl Agent for GoalSeekingAgent {
     }
 
     fn reset(&mut self) -> Result<()> {
-        todo!("reset: clear state and return to Idle")
+        self.current_input.clear();
+        self.context.clear();
+        self.action_plan.clear();
+        self.state = AgentState::Idle;
+        self.iteration = 0;
+        Ok(())
     }
 }

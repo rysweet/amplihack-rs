@@ -88,7 +88,6 @@ fn manager_custom_timeout() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn create_session_returns_session() {
     let mut mgr = SessionManager::new();
     let session = mgr.create_session("agent-1").unwrap();
@@ -97,7 +96,6 @@ fn create_session_returns_session() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn create_session_increments_count() {
     let mut mgr = SessionManager::new();
     mgr.create_session("a1").unwrap();
@@ -111,7 +109,6 @@ fn create_session_increments_count() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn get_session_returns_existing() {
     let mut mgr = SessionManager::new();
     let created = mgr.create_session("a1").unwrap();
@@ -120,7 +117,6 @@ fn get_session_returns_existing() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn get_session_not_found() {
     let mgr = SessionManager::new();
     let result = mgr.get_session("nonexistent");
@@ -132,7 +128,6 @@ fn get_session_not_found() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn end_session_removes_it() {
     let mut mgr = SessionManager::new();
     let session = mgr.create_session("a1").unwrap();
@@ -142,7 +137,6 @@ fn end_session_removes_it() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn end_session_not_found() {
     let mut mgr = SessionManager::new();
     let result = mgr.end_session("nonexistent");
@@ -154,7 +148,6 @@ fn end_session_not_found() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn list_sessions_returns_all_active() {
     let mut mgr = SessionManager::new();
     mgr.create_session("a1").unwrap();
@@ -168,7 +161,6 @@ fn list_sessions_returns_all_active() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn get_session_mut_allows_state_change() {
     let mut mgr = SessionManager::new();
     let created = mgr.create_session("a1").unwrap();
@@ -179,7 +171,6 @@ fn get_session_mut_allows_state_change() {
 }
 
 #[test]
-#[should_panic(expected = "not yet implemented")]
 fn session_touch_via_manager() {
     let mut mgr = SessionManager::new();
     let created = mgr.create_session("a1").unwrap();
