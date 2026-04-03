@@ -18,6 +18,8 @@
 //! - [`plugin_manifest`] — Plugin manifest types and validation
 //! - [`plugin_manager`] — Plugin installation, uninstallation, and path resolution
 //! - [`plugin_cli`] — CLI command handlers for plugin management
+//! - [`simple_tui`] — Simple TUI testing framework with gadugi and subprocess fallback
+//! - [`knowledge_builder`] — Knowledge Builder orchestrator (Socratic method pipeline)
 
 pub mod claude_cli;
 pub mod claude_md;
@@ -25,6 +27,7 @@ pub mod cleanup;
 pub mod defensive;
 pub mod docker_detector;
 pub mod kb_types;
+pub mod knowledge_builder;
 pub mod plugin_cli;
 pub mod plugin_manifest;
 pub mod plugin_manager;
@@ -38,6 +41,8 @@ pub(crate) mod project_init_detect;
 pub mod send_input_allowlist;
 pub mod settings_generator;
 pub(crate) mod settings_helpers;
+pub mod simple_tui;
+pub(crate) mod simple_tui_runner;
 pub mod slugify;
 pub mod trace_logger;
 pub mod worktree;
