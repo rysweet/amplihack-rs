@@ -10,7 +10,10 @@
 pub mod action_executor;
 pub mod agent;
 pub mod agentic_loop;
+pub mod cognitive_adapter;
 pub mod error;
+pub mod input_events;
+pub mod input_source;
 pub mod intent;
 pub mod lifecycle;
 pub mod models;
@@ -34,3 +37,7 @@ pub use lifecycle::{AgentLifecycle, BasicLifecycle, HealthStatus, LifecycleState
 pub use models::{AgentConfig, AgentInfo, AgentState, TaskPriority, TaskResult, TaskSpec};
 pub use session::{AgentSession, SessionManager};
 pub use task_queue::TaskQueue;
+pub use cognitive_adapter::{
+    BackendKind, CognitiveAdapter, CognitiveAdapterConfig, CognitiveBackend, HiveFact, HiveStore,
+    QualityScorer,
+};
