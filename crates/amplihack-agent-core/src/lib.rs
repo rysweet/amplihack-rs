@@ -10,6 +10,7 @@
 pub mod action_executor;
 pub mod agent;
 pub mod agentic_loop;
+pub mod answer_synth;
 pub mod cognitive_adapter;
 pub mod error;
 pub mod input_events;
