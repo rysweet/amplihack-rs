@@ -6,6 +6,11 @@
 
 mod analysis;
 mod bundle;
+pub mod documentation;
+pub mod error;
+pub mod generator;
+mod generator_templates;
+pub mod models;
 mod packaging;
 mod planning;
 mod skills;
