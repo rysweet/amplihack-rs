@@ -96,6 +96,9 @@ pub(super) fn session_file_path() -> Option<PathBuf> {
 pub(super) fn is_process_alive(pid: u32) -> bool {
     // SAFETY: kill(pid, 0) is a standard POSIX signal-safe way to check if
     // a process exists without actually sending a signal.
+    if pid > i32::MAX as u32 {
+        return false;
+    }
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
