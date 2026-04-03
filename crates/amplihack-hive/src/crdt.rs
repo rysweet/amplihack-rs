@@ -22,7 +22,7 @@ impl GCounter {
     /// Increment the counter for `node_id` and return the new local count.
     pub fn increment(&mut self, node_id: &str) -> u64 {
         let count = self.counts.entry(node_id.to_string()).or_insert(0);
-        *count += 1;
+        *count = count.saturating_add(1);
         *count
     }
 
@@ -86,8 +86,11 @@ impl<T: Clone> LWWRegister<T> {
     }
 
     /// Merge another register into this one.
+    /// When timestamps are equal, the higher node ID wins (deterministic tie-break).
     pub fn merge(&mut self, other: &LWWRegister<T>) {
-        if other.timestamp > self.timestamp {
+        if other.timestamp > self.timestamp
+            || (other.timestamp == self.timestamp && other.node_id > self.node_id)
+        {
             self.value = other.value.clone();
             self.timestamp = other.timestamp;
             self.node_id = other.node_id.clone();

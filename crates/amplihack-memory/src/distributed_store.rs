@@ -92,10 +92,17 @@ impl DistributedGraphStore {
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
 
+        // Pre-generate a stable ID so all replicas store the same node ID.
+        let mut props = properties.clone();
+        if !props.contains_key("id") {
+            let id = format!("dist-{}", self.shards.len() + owners.len());
+            props.insert("id".into(), serde_json::json!(id));
+        }
+
         let mut node_id = None;
         for owner in &owners {
             if let Some(shard) = self.shards.get_mut(owner) {
-                let id = shard.store.create_node(table, properties)?;
+                let id = shard.store.create_node(table, &props)?;
                 shard.bloom.add(&id);
                 if node_id.is_none() {
                     node_id = Some(id);
