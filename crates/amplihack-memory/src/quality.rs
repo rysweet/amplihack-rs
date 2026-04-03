@@ -37,16 +37,14 @@ pub fn is_trivial(content: &str, min_length: usize) -> bool {
 
 /// Check if a memory entry matches a query's filters.
 pub fn matches_query(entry: &MemoryEntry, query: &MemoryQuery) -> bool {
-    if let Some(ref sid) = query.session_id {
-        if entry.session_id != *sid {
+    if let Some(ref sid) = query.session_id
+        && entry.session_id != *sid {
             return false;
         }
-    }
-    if let Some(ref aid) = query.agent_id {
-        if entry.agent_id != *aid {
+    if let Some(ref aid) = query.agent_id
+        && entry.agent_id != *aid {
             return false;
         }
-    }
     if !query.memory_types.is_empty() && !query.memory_types.contains(&entry.memory_type) {
         return false;
     }

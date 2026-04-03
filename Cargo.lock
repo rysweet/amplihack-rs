@@ -41,6 +41,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "amplihack-agent-core"
+version = "0.6.23"
+dependencies = [
+ "amplihack-memory",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "amplihack-agent-eval"
+version = "0.6.23"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "amplihack-agent-generator"
+version = "0.6.23"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "amplihack-asset-resolver-bin"
 version = "0.6.24"
 dependencies = [
@@ -111,6 +149,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "amplihack-domain-agents"
+version = "0.6.23"
+dependencies = [
+ "amplihack-agent-core",
+ "amplihack-memory",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "amplihack-fleet"
 version = "0.6.24"
 dependencies = [
@@ -119,6 +171,21 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "amplihack-hive"
+version = "0.6.23"
+dependencies = [
+ "amplihack-agent-core",
+ "amplihack-memory",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -169,6 +236,7 @@ version = "0.6.24"
 dependencies = [
  "anyhow",
  "md-5",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha1",
@@ -1943,6 +2011,7 @@ checksum = "5ac8b6f42ead25368cf5b098aeb3dc8a1a2c05a3eee8a9a1a68c640edbfc79d9"
 dependencies = [
  "getrandom 0.4.2",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

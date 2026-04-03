@@ -1,0 +1,19 @@
+[package]
+name = "amplihack-hive"
+description = "Multi-agent hive mind orchestration with 4-layer architecture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+amplihack-agent-core = { path = "../amplihack-agent-core" }
+amplihack-memory = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

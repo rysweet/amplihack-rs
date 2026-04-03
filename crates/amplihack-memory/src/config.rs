@@ -11,24 +11,23 @@ use std::path::PathBuf;
 /// Memory topology mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Topology {
     /// Local-only agent, no distribution.
+    #[default]
     Single,
     /// Multi-agent hive with DHT sharding.
     Distributed,
 }
 
-impl Default for Topology {
-    fn default() -> Self {
-        Self::Single
-    }
-}
 
 /// Memory backend selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Backend {
     /// Cognitive adapter with graph DB.
+    #[default]
     Cognitive,
     /// Hierarchical memory adapter.
     Hierarchical,
@@ -36,17 +35,14 @@ pub enum Backend {
     InMemory,
 }
 
-impl Default for Backend {
-    fn default() -> Self {
-        Self::Cognitive
-    }
-}
 
 /// Transport mode for distributed topology.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Transport {
     /// Local in-process transport.
+    #[default]
     Local,
     /// Redis pub/sub transport.
     Redis,
@@ -54,11 +50,6 @@ pub enum Transport {
     AzureServiceBus,
 }
 
-impl Default for Transport {
-    fn default() -> Self {
-        Self::Local
-    }
-}
 
 /// Complete memory configuration.
 ///
@@ -129,24 +120,21 @@ impl MemoryConfig {
         if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_STORAGE_PATH") {
             config.storage_path = Some(PathBuf::from(v));
         }
-        if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_REPLICATION_FACTOR") {
-            if let Ok(n) = v.parse() {
+        if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_REPLICATION_FACTOR")
+            && let Ok(n) = v.parse() {
                 config.replication_factor = n;
             }
-        }
-        if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_QUERY_FANOUT") {
-            if let Ok(n) = v.parse() {
+        if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_QUERY_FANOUT")
+            && let Ok(n) = v.parse() {
                 config.query_fanout = n;
             }
-        }
         if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_GOSSIP_ENABLED") {
             config.gossip_enabled = v != "0" && v.to_lowercase() != "false";
         }
-        if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_TOKEN_BUDGET") {
-            if let Ok(n) = v.parse() {
+        if let Ok(v) = std::env::var("AMPLIHACK_MEMORY_TOKEN_BUDGET")
+            && let Ok(n) = v.parse() {
                 config.token_budget_default = n;
             }
-        }
         config
     }
 

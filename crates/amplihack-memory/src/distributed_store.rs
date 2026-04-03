@@ -103,15 +103,14 @@ impl DistributedGraphStore {
     /// Get a node by ID, checking bloom filters first.
     pub fn get_node(&self, table: &str, node_id: &str) -> anyhow::Result<Option<Props>> {
         // Check bloom filters for likely shard
-        for (_, shard) in &self.shards {
-            if shard.bloom.might_contain(node_id) {
-                if let Some(props) = shard.store.get_node(table, node_id)? {
+        for shard in self.shards.values() {
+            if shard.bloom.might_contain(node_id)
+                && let Some(props) = shard.store.get_node(table, node_id)? {
                     return Ok(Some(props));
                 }
-            }
         }
         // Fallback: full scan
-        for (_, shard) in &self.shards {
+        for shard in self.shards.values() {
             if let Some(props) = shard.store.get_node(table, node_id)? {
                 return Ok(Some(props));
             }

@@ -24,7 +24,7 @@ impl BloomFilter {
         let fpr = fpr.clamp(1e-10, 0.5);
         let num_bits = optimal_num_bits(capacity, fpr).max(8);
         let num_hashes = optimal_num_hashes(num_bits, capacity).max(1);
-        let byte_len = (num_bits + 7) / 8;
+        let byte_len = num_bits.div_ceil(8);
         Self {
             bits: vec![0u8; byte_len],
             num_bits,
@@ -116,7 +116,7 @@ impl BloomFilter {
         let num_hashes = u32::from_le_bytes(data[12..16].try_into().ok()?);
         let count = u32::from_le_bytes(data[16..20].try_into().ok()?) as usize;
         let bits = data[20..].to_vec();
-        if bits.len() < (num_bits + 7) / 8 {
+        if bits.len() < num_bits.div_ceil(8) {
             return None;
         }
         Some(Self {

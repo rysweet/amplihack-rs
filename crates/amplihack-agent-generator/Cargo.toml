@@ -1,0 +1,20 @@
+[package]
+name = "amplihack-agent-generator"
+description = "Goal-to-agent pipeline: prompt analysis, planning, skill synthesis, assembly"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# TODO: re-enable once amplihack-memory compiles (rusqlite Mutex API)
+# amplihack-agent-core = { path = "../amplihack-agent-core" }
+# amplihack-memory = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

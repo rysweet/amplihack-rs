@@ -1,0 +1,17 @@
+[package]
+name = "amplihack-agent-core"
+description = "Agent lifecycle, session management, and OODA loop for amplihack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+amplihack-memory = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

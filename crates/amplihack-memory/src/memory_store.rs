@@ -108,7 +108,7 @@ impl GraphStore for InMemoryGraphStore {
         let results: Vec<Props> = table_nodes
             .values()
             .filter(|props| {
-                filters.map_or(true, |f| f.iter().all(|(k, v)| props.get(k) == Some(v)))
+                filters.is_none_or(|f| f.iter().all(|(k, v)| props.get(k) == Some(v)))
             })
             .take(limit)
             .cloned()
@@ -163,7 +163,7 @@ impl GraphStore for InMemoryGraphStore {
             .edges
             .iter()
             .filter(|(rt, from, to, _)| {
-                let type_match = rel_type.map_or(true, |t| t == rt);
+                let type_match = rel_type.is_none_or(|t| t == rt);
                 let dir_match = match direction {
                     EdgeDirection::Outgoing => from == node_id,
                     EdgeDirection::Incoming => to == node_id,
@@ -213,7 +213,7 @@ impl GraphStore for InMemoryGraphStore {
         let mut result = Vec::new();
         for (table, nodes) in &self.nodes {
             for (id, props) in nodes {
-                if node_ids.map_or(true, |ids| ids.contains(id)) {
+                if node_ids.is_none_or(|ids| ids.contains(id)) {
                     result.push((table.clone(), id.clone(), props.clone()));
                 }
             }
@@ -226,7 +226,7 @@ impl GraphStore for InMemoryGraphStore {
             .edges
             .iter()
             .filter(|(_, from, to, _)| {
-                node_ids.map_or(true, |ids| ids.contains(from) || ids.contains(to))
+                node_ids.is_none_or(|ids| ids.contains(from) || ids.contains(to))
             })
             .map(|(rt, from, to, props)| (rt.clone(), from.clone(), to.clone(), props.clone()))
             .collect();
