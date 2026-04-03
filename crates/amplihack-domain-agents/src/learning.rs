@@ -69,11 +69,12 @@ impl LearningAgent {
         let mut best_score = 0usize;
 
         for item in &self.learned_items {
+            let summary_lower = item.summary.to_lowercase();
             let score = keywords
                 .iter()
                 .filter(|kw| {
                     item.key_concepts.iter().any(|c| c.contains(kw.as_str()))
-                        || item.summary.to_lowercase().contains(kw.as_str())
+                        || summary_lower.contains(kw.as_str())
                 })
                 .count();
             if score > best_score {
@@ -106,6 +107,7 @@ impl LearningAgent {
                 item.key_concepts.iter().any(|c| c.contains(&lower))
                     || item.summary.to_lowercase().contains(&lower)
             })
+            .take(self.config.max_memory_items)
             .cloned()
             .collect();
         Ok(matches)

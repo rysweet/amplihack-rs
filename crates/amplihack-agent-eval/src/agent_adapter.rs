@@ -151,14 +151,14 @@ impl AgentAdapter for MockAgentAdapter {
     }
 
     fn answer(&mut self, question: &str) -> Result<AgentResponse, EvalError> {
+        let question_lower = question.to_lowercase();
         let answer = self
             .responses
             .get(question)
             .cloned()
             .unwrap_or_else(|| {
-                // Check if any learned content contains the answer
                 for content in &self.learned {
-                    if content.to_lowercase().contains(&question.to_lowercase()) {
+                    if content.to_lowercase().contains(&question_lower) {
                         return content.clone();
                     }
                 }

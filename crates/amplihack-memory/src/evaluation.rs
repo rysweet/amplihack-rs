@@ -76,25 +76,22 @@ impl QualityEvaluator {
             return QualityMetrics::default();
         }
         let total = entries.len();
-        let avg_importance = entries.iter().map(|e| e.importance).sum::<f64>() / total as f64;
-        let avg_len =
-            entries.iter().map(|e| e.content.len()).sum::<usize>() as f64 / total as f64;
-
-        let trivial_count = entries
-            .iter()
-            .filter(|e| is_trivial(&e.content, self.min_content_length))
-            .count();
-
-        let mut fingerprints = HashSet::new();
+        let mut importance_sum = 0.0;
+        let mut len_sum = 0usize;
+        let mut trivial_count = 0usize;
         let mut dup_count = 0usize;
+        let mut fingerprints = HashSet::with_capacity(total);
+        let mut type_dist: HashMap<String, usize> = HashMap::new();
+
         for e in entries {
+            importance_sum += e.importance;
+            len_sum += e.content.len();
+            if is_trivial(&e.content, self.min_content_length) {
+                trivial_count += 1;
+            }
             if !fingerprints.insert(e.content_fingerprint()) {
                 dup_count += 1;
             }
-        }
-
-        let mut type_dist = HashMap::new();
-        for e in entries {
             *type_dist
                 .entry(e.memory_type.as_str().to_string())
                 .or_insert(0) += 1;
@@ -102,8 +99,8 @@ impl QualityEvaluator {
 
         QualityMetrics {
             total_entries: total,
-            average_importance: avg_importance,
-            average_content_length: avg_len,
+            average_importance: importance_sum / total as f64,
+            average_content_length: len_sum as f64 / total as f64,
             trivial_ratio: trivial_count as f64 / total as f64,
             duplicate_ratio: dup_count as f64 / total as f64,
             type_distribution: type_dist,

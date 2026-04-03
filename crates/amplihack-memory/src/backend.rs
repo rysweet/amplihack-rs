@@ -90,12 +90,13 @@ impl MemoryBackend for InMemoryBackend {
     }
 
     fn retrieve(&self, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
+        let query_lower = query.query_text.to_lowercase();
         let results = self
             .entries
             .iter()
             .filter(|e| {
-                if !query.query_text.is_empty()
-                    && !e.content.to_lowercase().contains(&query.query_text.to_lowercase())
+                if !query_lower.is_empty()
+                    && !e.content.to_lowercase().contains(&query_lower)
                 {
                     return false;
                 }
@@ -123,27 +124,32 @@ impl MemoryBackend for InMemoryBackend {
     }
 
     fn list_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
-        use std::collections::HashMap;
-        let mut sessions: HashMap<String, SessionInfo> = HashMap::new();
+        use std::collections::{HashMap, HashSet};
+        let mut sessions: HashMap<String, (SessionInfo, HashSet<String>)> = HashMap::new();
         for e in &self.entries {
-            let info = sessions
+            let (info, seen_agents) = sessions
                 .entry(e.session_id.clone())
-                .or_insert_with(|| SessionInfo {
-                    session_id: e.session_id.clone(),
-                    agent_ids: Vec::new(),
-                    memory_count: 0,
-                    created_at: e.created_at,
-                    last_accessed: e.accessed_at,
+                .or_insert_with(|| {
+                    (
+                        SessionInfo {
+                            session_id: e.session_id.clone(),
+                            agent_ids: Vec::new(),
+                            memory_count: 0,
+                            created_at: e.created_at,
+                            last_accessed: e.accessed_at,
+                        },
+                        HashSet::new(),
+                    )
                 });
             info.memory_count += 1;
-            if !info.agent_ids.contains(&e.agent_id) {
+            if seen_agents.insert(e.agent_id.clone()) {
                 info.agent_ids.push(e.agent_id.clone());
             }
             if e.accessed_at > info.last_accessed {
                 info.last_accessed = e.accessed_at;
             }
         }
-        Ok(sessions.into_values().collect())
+        Ok(sessions.into_values().map(|(info, _)| info).collect())
     }
 
     fn health_check(&self) -> anyhow::Result<BackendHealth> {

@@ -81,7 +81,7 @@ impl HiveGraph {
         Ok(self
             .facts
             .iter()
-            .filter(|f| f.tags.contains(&tag.to_string()))
+            .filter(|f| f.tags.iter().any(|t| t == tag))
             .cloned()
             .collect())
     }

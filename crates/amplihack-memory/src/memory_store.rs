@@ -32,13 +32,12 @@ impl InMemoryGraphStore {
         format!("mem-{}", self.next_id)
     }
 
-    fn text_matches(props: &Props, text: &str, fields: Option<&[&str]>) -> bool {
-        let text_lower = text.to_lowercase();
+    fn text_matches(props: &Props, text_lower: &str, fields: Option<&[&str]>) -> bool {
         let check_field = |key: &str| -> bool {
             props
                 .get(key)
                 .and_then(|v| v.as_str())
-                .is_some_and(|s| s.to_lowercase().contains(&text_lower))
+                .is_some_and(|s| s.to_lowercase().contains(text_lower))
         };
         match fields {
             Some(fs) => fs.iter().any(|f| check_field(f)),
@@ -126,9 +125,10 @@ impl GraphStore for InMemoryGraphStore {
         let Some(table_nodes) = self.nodes.get(table) else {
             return Ok(Vec::new());
         };
+        let text_lower = text.to_lowercase();
         let results: Vec<Props> = table_nodes
             .values()
-            .filter(|props| Self::text_matches(props, text, fields))
+            .filter(|props| Self::text_matches(props, &text_lower, fields))
             .take(limit)
             .cloned()
             .collect();
@@ -210,10 +210,12 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     fn export_nodes(&self, node_ids: Option<&[String]>) -> anyhow::Result<Vec<NodeTriple>> {
+        let id_set: Option<HashSet<&str>> =
+            node_ids.map(|ids| ids.iter().map(|s| s.as_str()).collect());
         let mut result = Vec::new();
         for (table, nodes) in &self.nodes {
             for (id, props) in nodes {
-                if node_ids.is_none_or(|ids| ids.contains(id)) {
+                if id_set.as_ref().is_none_or(|set| set.contains(id.as_str())) {
                     result.push((table.clone(), id.clone(), props.clone()));
                 }
             }
@@ -222,11 +224,15 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     fn export_edges(&self, node_ids: Option<&[String]>) -> anyhow::Result<Vec<EdgeQuad>> {
+        let id_set: Option<HashSet<&str>> =
+            node_ids.map(|ids| ids.iter().map(|s| s.as_str()).collect());
         let result = self
             .edges
             .iter()
             .filter(|(_, from, to, _)| {
-                node_ids.is_none_or(|ids| ids.contains(from) || ids.contains(to))
+                id_set
+                    .as_ref()
+                    .is_none_or(|set| set.contains(from.as_str()) || set.contains(to.as_str()))
             })
             .map(|(rt, from, to, props)| (rt.clone(), from.clone(), to.clone(), props.clone()))
             .collect();

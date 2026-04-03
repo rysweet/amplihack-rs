@@ -6,7 +6,7 @@
 //! - `StepResult`, `RecipeResult` execution result types
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use thiserror::Error;
 
@@ -23,17 +23,17 @@ pub enum StepType {
 }
 
 impl StepType {
-    /// Infer step type from step fields when not explicitly provided.
-    pub fn infer(step_fields: &HashMap<String, serde_yaml::Value>) -> Self {
-        if step_fields.contains_key("recipe") || step_fields.contains_key("sub_recipe") {
+    /// Infer step type from step field names when not explicitly provided.
+    pub fn infer(step_keys: &HashSet<String>) -> Self {
+        if step_keys.contains("recipe") || step_keys.contains("sub_recipe") {
             StepType::SubRecipe
-        } else if step_fields.contains_key("parallel") {
+        } else if step_keys.contains("parallel") {
             StepType::Parallel
-        } else if step_fields.contains_key("shell") || step_fields.contains_key("command") {
+        } else if step_keys.contains("shell") || step_keys.contains("command") {
             StepType::Shell
-        } else if step_fields.contains_key("checkpoint") {
+        } else if step_keys.contains("checkpoint") {
             StepType::Checkpoint
-        } else if step_fields.contains_key("prompt") || step_fields.contains_key("agent") {
+        } else if step_keys.contains("prompt") || step_keys.contains("agent") {
             StepType::Agent
         } else {
             StepType::Prompt
@@ -315,19 +315,16 @@ mod tests {
 
     #[test]
     fn step_type_inference() {
-        let mut fields = HashMap::new();
-        fields.insert("shell".into(), serde_yaml::Value::String("echo hi".into()));
+        let fields: HashSet<String> = ["shell".into()].into_iter().collect();
         assert_eq!(StepType::infer(&fields), StepType::Shell);
 
-        let mut fields = HashMap::new();
-        fields.insert("recipe".into(), serde_yaml::Value::String("sub".into()));
+        let fields: HashSet<String> = ["recipe".into()].into_iter().collect();
         assert_eq!(StepType::infer(&fields), StepType::SubRecipe);
 
-        let mut fields = HashMap::new();
-        fields.insert("prompt".into(), serde_yaml::Value::String("ask".into()));
+        let fields: HashSet<String> = ["prompt".into()].into_iter().collect();
         assert_eq!(StepType::infer(&fields), StepType::Agent);
 
-        let empty: HashMap<String, serde_yaml::Value> = HashMap::new();
+        let empty: HashSet<String> = HashSet::new();
         assert_eq!(StepType::infer(&empty), StepType::Prompt);
     }
 

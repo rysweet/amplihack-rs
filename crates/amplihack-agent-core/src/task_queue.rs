@@ -5,6 +5,7 @@
 
 use crate::error::{AgentError, Result};
 use crate::models::{TaskPriority, TaskSpec};
+use std::collections::VecDeque;
 
 // ---------------------------------------------------------------------------
 // TaskQueue
@@ -12,7 +13,7 @@ use crate::models::{TaskPriority, TaskSpec};
 
 /// A bounded priority queue for `TaskSpec` items.
 pub struct TaskQueue {
-    items: Vec<TaskSpec>,
+    items: VecDeque<TaskSpec>,
     capacity: usize,
 }
 
@@ -20,7 +21,7 @@ impl TaskQueue {
     /// Create a new queue with the given capacity.
     pub fn new(capacity: usize) -> Self {
         Self {
-            items: Vec::new(),
+            items: VecDeque::new(),
             capacity,
         }
     }
@@ -43,16 +44,12 @@ impl TaskQueue {
 
     /// Dequeue the highest-priority task (FIFO within same priority).
     pub fn dequeue(&mut self) -> Option<TaskSpec> {
-        if self.items.is_empty() {
-            None
-        } else {
-            Some(self.items.remove(0))
-        }
+        self.items.pop_front()
     }
 
     /// Peek at the next task without removing it.
     pub fn peek(&self) -> Option<&TaskSpec> {
-        self.items.first()
+        self.items.front()
     }
 
     /// Number of tasks in the queue.
@@ -83,12 +80,12 @@ impl TaskQueue {
     /// Drain all tasks matching a priority level.
     pub fn drain_priority(&mut self, priority: TaskPriority) -> Vec<TaskSpec> {
         let mut drained = Vec::new();
-        let mut remaining = Vec::new();
+        let mut remaining = VecDeque::new();
         for item in self.items.drain(..) {
             if item.priority == priority {
                 drained.push(item);
             } else {
-                remaining.push(item);
+                remaining.push_back(item);
             }
         }
         self.items = remaining;

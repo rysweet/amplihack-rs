@@ -104,29 +104,26 @@ impl MemoryCoordinator {
     pub fn retrieve(&mut self, query: &MemoryQuery) -> Vec<MemoryEntry> {
         self.stats.total_retrieved += 1;
 
-        let mut candidates: Vec<&MemoryEntry> = self
+        // Rank by relevance — score each candidate once and sort by cached score
+        let query_words: HashSet<&str> = query.query_text.split_whitespace().collect();
+        let mut scored: Vec<(f64, &MemoryEntry)> = self
             .entries
             .iter()
             .filter(|e| matches_query(e, query))
+            .map(|e| (relevance_score(e, &query_words), e))
             .collect();
-
-        // Rank by relevance
-        let query_words: HashSet<&str> = query.query_text.split_whitespace().collect();
-        candidates.sort_by(|a, b| {
-            let score_a = relevance_score(a, &query_words);
-            let score_b = relevance_score(b, &query_words);
-            score_b
-                .partial_cmp(&score_a)
+        scored.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // Token budget enforcement
         let budget_chars = query.token_budget * CHARS_PER_TOKEN;
         let mut used_chars = 0;
-        let mut results = Vec::new();
         let limit = if query.limit > 0 { query.limit } else { 20 };
+        let mut results = Vec::with_capacity(limit.min(scored.len()));
 
-        for entry in candidates {
+        for (_score, entry) in scored {
             if results.len() >= limit {
                 break;
             }

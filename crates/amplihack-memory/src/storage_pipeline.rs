@@ -155,7 +155,8 @@ impl StoragePipeline {
         let mut stages_applied = Vec::new();
         let mut memory_type = entry.memory_type;
 
-        for &stage in &self.stages.clone() {
+        for i in 0..self.stages.len() {
+            let stage = self.stages[i];
             match stage {
                 StorageStage::Validate => {
                     if let Err(reason) = self.validate(entry) {

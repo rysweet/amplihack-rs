@@ -40,23 +40,30 @@ impl HiveController {
 
         let mut actions = Vec::new();
 
+        let current_map: std::collections::HashMap<&str, u32> = self
+            .current
+            .running_agents
+            .iter()
+            .map(|a| (a.name.as_str(), a.replicas))
+            .collect();
+
+        let desired_names: std::collections::HashSet<&str> =
+            desired.agents.iter().map(|a| a.name.as_str()).collect();
+
         for agent in &desired.agents {
-            if let Some(current) = self
-                .current
-                .running_agents
-                .iter()
-                .find(|a| a.name == agent.name)
-            {
-                if current.replicas != agent.replicas {
+            match current_map.get(agent.name.as_str()) {
+                Some(&replicas) if replicas != agent.replicas => {
                     actions.push(format!("scale {} to {}", agent.name, agent.replicas));
                 }
-            } else {
-                actions.push(format!("scale {} to {}", agent.name, agent.replicas));
+                None => {
+                    actions.push(format!("scale {} to {}", agent.name, agent.replicas));
+                }
+                _ => {}
             }
         }
 
         for current_agent in &self.current.running_agents {
-            if !desired.agents.iter().any(|a| a.name == current_agent.name) {
+            if !desired_names.contains(current_agent.name.as_str()) {
                 actions.push(format!("remove {}", current_agent.name));
             }
         }

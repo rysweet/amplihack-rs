@@ -139,7 +139,7 @@ pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveE
         "Starting hive evaluation"
     );
 
-    let mut query_results = Vec::new();
+    let mut query_results = Vec::with_capacity(config.questions.len());
 
     for question in &config.questions {
         let (query_id, event) = make_query_event(question);
@@ -191,11 +191,11 @@ fn collect_responses(bus: &mut dyn EventBus, query_id: &str) -> Vec<AgentAnswer>
             query_id: qid,
             answer,
             confidence,
-        }) = serde_json::from_value::<crate::workload::HiveEvent>(event.payload.clone())
+        }) = serde_json::from_value::<crate::workload::HiveEvent>(event.payload)
             && qid == query_id
         {
             answers.push(AgentAnswer {
-                agent_id: event.source_id.clone(),
+                agent_id: event.source_id,
                 answer,
                 confidence,
             });

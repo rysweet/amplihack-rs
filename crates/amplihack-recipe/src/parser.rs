@@ -118,15 +118,15 @@ impl RecipeParser {
         let name = extract_string(mapping, "name")
             .unwrap_or_else(|| format!("Step {}", index));
 
-        // Collect all string keys for type inference
-        let field_map: HashMap<String, serde_yaml::Value> = mapping
+        // Collect field names for type inference (no value cloning needed)
+        let field_keys: std::collections::HashSet<String> = mapping
             .iter()
-            .filter_map(|(k, v)| k.as_str().map(|s| (s.to_string(), v.clone())))
+            .filter_map(|(k, _)| k.as_str().map(|s| s.to_string()))
             .collect();
 
         let step_type = extract_string(mapping, "type")
             .and_then(|t| parse_step_type(&t))
-            .unwrap_or_else(|| StepType::infer(&field_map));
+            .unwrap_or_else(|| StepType::infer(&field_keys));
 
         let prompt = extract_string(mapping, "prompt");
         let command = extract_string(mapping, "command")

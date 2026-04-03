@@ -80,7 +80,7 @@ impl ObjectivePlanner {
         plan.required_skills = plan
             .phases
             .iter()
-            .flat_map(|p| p.required_capabilities.clone())
+            .flat_map(|p| p.required_capabilities.iter().cloned())
             .collect::<Vec<_>>();
         plan.required_skills.sort();
         plan.required_skills.dedup();

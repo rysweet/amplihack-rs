@@ -71,7 +71,7 @@ impl ProgressiveSuite {
     pub fn run_all(&self) -> Result<ProgressiveResult, EvalError> {
         let mut result = ProgressiveResult::new(self.config.clone());
 
-        for &level in &self.config.levels_to_run.clone() {
+        for &level in &self.config.levels_to_run {
             match self.run_level(level) {
                 Ok(lr) => result.add_result(lr),
                 Err(EvalError::LevelNotFound { .. }) => {

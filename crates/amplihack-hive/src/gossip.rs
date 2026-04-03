@@ -28,7 +28,7 @@ impl GossipProtocol {
     ) -> Result<MergeResult> {
         let local_ids: HashSet<&str> =
             local_facts.iter().map(|f| f.fact_id.as_str()).collect();
-        let mut accepted = Vec::new();
+        let mut accepted = Vec::with_capacity(peer_facts.len());
         let mut rejected = Vec::new();
         let mut conflicts = Vec::new();
 

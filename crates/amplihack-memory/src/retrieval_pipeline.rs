@@ -221,9 +221,7 @@ impl RetrievalPipeline {
         for entry in &mut entries {
             let new_score = relevance_score(&entry.entry, &query_words);
             entry.score = new_score;
-            entry
-                .stage_scores
-                .push(("rank".to_string(), new_score));
+            entry.stage_scores.push(("rank".into(), new_score));
         }
 
         entries.sort_by(|a, b| {

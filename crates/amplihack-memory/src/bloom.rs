@@ -35,8 +35,9 @@ impl BloomFilter {
 
     /// Add an item to the filter.
     pub fn add(&mut self, item: &str) {
+        let (h1, h2) = self.base_hashes(item);
         for i in 0..self.num_hashes {
-            let pos = self.hash_position(item, i);
+            let pos = Self::hash_position_from(h1, h2, i, self.num_bits);
             self.bits[pos / 8] |= 1 << (pos % 8);
         }
         self.count += 1;
@@ -52,8 +53,9 @@ impl BloomFilter {
     /// Test whether the filter might contain the item.
     /// No false negatives; may return false positives.
     pub fn might_contain(&self, item: &str) -> bool {
+        let (h1, h2) = self.base_hashes(item);
         for i in 0..self.num_hashes {
-            let pos = self.hash_position(item, i);
+            let pos = Self::hash_position_from(h1, h2, i, self.num_bits);
             if self.bits[pos / 8] & (1 << (pos % 8)) == 0 {
                 return false;
             }
@@ -127,13 +129,12 @@ impl BloomFilter {
         })
     }
 
-    /// Double-hashing: position = (h1 + i * h2) % num_bits
-    fn hash_position(&self, item: &str, i: u32) -> usize {
+    /// Compute the two base hashes (MD5 and SHA1) for an item.
+    fn base_hashes(&self, item: &str) -> (u64, u64) {
         let h1 = {
             let mut hasher = Md5::new();
             hasher.update(item.as_bytes());
             let result = hasher.finalize();
-            // MD5 produces 16 bytes; first 8 are always available.
             let bytes: [u8; 8] = result[..8]
                 .try_into()
                 .expect("MD5 digest is always >= 8 bytes");
@@ -143,13 +144,17 @@ impl BloomFilter {
             let mut hasher = Sha1::new();
             hasher.update(item.as_bytes());
             let result = hasher.finalize();
-            // SHA1 produces 20 bytes; first 8 are always available.
             let bytes: [u8; 8] = result[..8]
                 .try_into()
                 .expect("SHA1 digest is always >= 8 bytes");
             u64::from_le_bytes(bytes)
         };
-        ((h1.wrapping_add((i as u64).wrapping_mul(h2))) % self.num_bits as u64) as usize
+        (h1, h2)
+    }
+
+    /// Derive position from pre-computed base hashes: (h1 + i * h2) % num_bits
+    fn hash_position_from(h1: u64, h2: u64, i: u32, num_bits: usize) -> usize {
+        ((h1.wrapping_add((i as u64).wrapping_mul(h2))) % num_bits as u64) as usize
     }
 }
 
