@@ -14,6 +14,7 @@ pub mod llm_grader;
 pub mod models;
 pub mod progressive;
 pub mod self_improve;
+pub(crate) mod self_improve_helpers;
 
 pub use agent_adapter::{AgentAdapter, AgentResponse, MockAgentAdapter, SubprocessAdapter};
 pub use domain_eval::{
