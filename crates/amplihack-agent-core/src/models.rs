@@ -337,7 +337,7 @@ mod tests {
         let r = TaskResult::ok("output", 2.0);
         let json = serde_json::to_string(&r).unwrap();
         let parsed: TaskResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.success, true);
+        assert!(parsed.success);
         assert_eq!(parsed.output, "output");
     }
 }

@@ -309,7 +309,7 @@ async fn test_run_until_goal_max_iterations() {
     let response = r#"{"reasoning":"r","action":"noop","params":{}}"#;
     let mut l = AgenticLoop::new(
         "agent",
-        MockLlm::new(vec![response; 5].iter().map(|s| *s).collect()),
+        MockLlm::new(vec![response; 5]),
         MockExecutor::new(vec!["noop"]),
         MockRetriever::empty(),
         None,

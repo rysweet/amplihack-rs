@@ -27,7 +27,11 @@ pub mod scoring;
 pub mod types;
 
 #[cfg(test)]
+mod test_mocks;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_advanced;
 
 pub use adapter::CognitiveAdapter;
 pub use constants::{
