@@ -14,9 +14,9 @@ use crate::memory_store::InMemoryGraphStore;
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, info};
 
-/// Exported node representation: `(id, label, properties)`.
+/// Exported node representation: `(table, node_id, properties)` — matches [`NodeTriple`].
 type ExportedNodes = Vec<(String, String, Props)>;
-/// Exported edge representation: `(source, target, label, properties)`.
+/// Exported edge representation: `(rel_type, from_id, to_id, properties)` — matches [`EdgeQuad`].
 type ExportedEdges = Vec<(String, String, String, Props)>;
 
 /// Configuration for the distributed store.
@@ -53,6 +53,7 @@ pub struct DistributedGraphStore {
     ring: HashRing,
     shards: HashMap<String, AgentShard>,
     config: DistributedConfig,
+    next_id: u64,
 }
 
 impl DistributedGraphStore {
@@ -61,6 +62,7 @@ impl DistributedGraphStore {
             ring: HashRing::default_ring(),
             shards: HashMap::new(),
             config,
+            next_id: 0,
         }
     }
 
@@ -92,10 +94,11 @@ impl DistributedGraphStore {
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
 
-        // Pre-generate a stable ID so all replicas store the same node ID.
+        // Pre-generate a stable monotonic ID so all replicas store the same node ID.
         let mut props = properties.clone();
         if !props.contains_key("id") {
-            let id = format!("dist-{}", self.shards.len() + owners.len());
+            self.next_id += 1;
+            let id = format!("dist-{}", self.next_id);
             props.insert("id".into(), serde_json::json!(id));
         }
 
@@ -432,5 +435,20 @@ mod tests {
         let mut store = DistributedGraphStore::new(DistributedConfig::default());
         let result = store.create_node("t", &make_props("orphan"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_node_generates_unique_ids() {
+        let mut store = DistributedGraphStore::new(DistributedConfig {
+            replication_factor: 1,
+            query_fanout: 10,
+        });
+        store.add_agent("a1");
+        let id1 = store.create_node("t", &make_props("first")).unwrap();
+        let id2 = store.create_node("t", &make_props("second")).unwrap();
+        let id3 = store.create_node("t", &make_props("third")).unwrap();
+        assert_ne!(id1, id2, "each node must get a unique ID");
+        assert_ne!(id2, id3, "each node must get a unique ID");
+        assert_ne!(id1, id3, "each node must get a unique ID");
     }
 }

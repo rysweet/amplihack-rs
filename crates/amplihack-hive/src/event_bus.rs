@@ -22,7 +22,6 @@ pub trait EventBus {
 }
 
 /// An in-process event bus backed by [`Vec`] queues.
-/// An in-process event bus backed by [`Vec`] queues.
 pub struct LocalEventBus {
     subscriptions: HashMap<String, Vec<String>>,
     queues: HashMap<String, Vec<BusEvent>>,

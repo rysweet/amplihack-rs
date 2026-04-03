@@ -28,7 +28,7 @@ impl GCounter {
 
     /// Return the total value across all nodes.
     pub fn value(&self) -> u64 {
-        self.counts.values().sum()
+        self.counts.values().fold(0u64, |acc, &v| acc.saturating_add(v))
     }
 
     /// Merge another counter into this one (element-wise max).
@@ -105,5 +105,38 @@ impl<T: Clone> LWWRegister<T> {
     /// Return the owning node ID.
     pub fn node_id(&self) -> &str {
         &self.node_id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gcounter_value_saturates_instead_of_overflowing() {
+        let mut counter = GCounter::new();
+        counter.counts.insert("a".into(), u64::MAX);
+        counter.counts.insert("b".into(), 1);
+        assert_eq!(counter.value(), u64::MAX);
+    }
+
+    #[test]
+    fn gcounter_increment_saturates() {
+        let mut counter = GCounter::new();
+        counter.counts.insert("n".into(), u64::MAX);
+        let val = counter.increment("n");
+        assert_eq!(val, u64::MAX);
+    }
+
+    #[test]
+    fn lww_register_tie_breaks_by_node_id() {
+        let mut r1 = LWWRegister::new("node-a".into());
+        r1.set("value-a", 10);
+        let mut r2 = LWWRegister::new("node-b".into());
+        r2.set("value-b", 10);
+        // node-b > node-a, so merging r2 into r1 should adopt r2's value
+        r1.merge(&r2);
+        assert_eq!(r1.get(), Some(&"value-b"));
+        assert_eq!(r1.node_id(), "node-b");
     }
 }
