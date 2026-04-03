@@ -132,8 +132,17 @@ impl Hook for PreToolUseHook {
 
         let is_git_commit = command.contains("git commit");
         let is_git_push = command.contains("git push");
+        let is_git_rebase = command.contains("git rebase");
+        let is_git_merge = command.contains("git merge");
+        let is_git_cherry_pick = command.contains("git cherry-pick");
+        let is_git_am = command.contains("git am");
         let has_no_verify = command.contains("--no-verify");
-        let is_git_command = is_git_commit || is_git_push;
+        let is_git_command = is_git_commit
+            || is_git_push
+            || is_git_rebase
+            || is_git_merge
+            || is_git_cherry_pick
+            || is_git_am;
 
         if !is_git_command {
             return Ok(Value::Object(serde_json::Map::new()));
@@ -205,6 +214,56 @@ mod tests {
             .process(make_bash_input("git push --no-verify origin main"))
             .unwrap();
         assert_eq!(result["block"], true);
+    }
+
+    #[test]
+    fn blocks_no_verify_on_rebase() {
+        let hook = PreToolUseHook;
+        let result = hook
+            .process(make_bash_input("git rebase --no-verify main"))
+            .unwrap();
+        assert_eq!(result["block"], true);
+        assert!(result["message"].as_str().unwrap().contains("--no-verify"));
+    }
+
+    #[test]
+    fn blocks_no_verify_on_merge() {
+        let hook = PreToolUseHook;
+        let result = hook
+            .process(make_bash_input("git merge --no-verify feature-branch"))
+            .unwrap();
+        assert_eq!(result["block"], true);
+        assert!(result["message"].as_str().unwrap().contains("--no-verify"));
+    }
+
+    #[test]
+    fn blocks_no_verify_on_cherry_pick() {
+        let hook = PreToolUseHook;
+        let result = hook
+            .process(make_bash_input("git cherry-pick --no-verify abc123"))
+            .unwrap();
+        assert_eq!(result["block"], true);
+        assert!(result["message"].as_str().unwrap().contains("--no-verify"));
+    }
+
+    #[test]
+    fn blocks_no_verify_on_am() {
+        let hook = PreToolUseHook;
+        let result = hook
+            .process(make_bash_input("git am --no-verify patch.patch"))
+            .unwrap();
+        assert_eq!(result["block"], true);
+        assert!(result["message"].as_str().unwrap().contains("--no-verify"));
+    }
+
+    #[test]
+    fn allows_git_rebase_without_no_verify() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let hook = PreToolUseHook;
+        let result = hook.process(make_bash_input("git rebase main")).unwrap();
+        assert!(result.get("block").is_none());
     }
 
     #[test]

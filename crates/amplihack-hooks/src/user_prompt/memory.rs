@@ -18,9 +18,18 @@ pub(crate) fn inject_memory(prompt: &str, session_id: Option<&str>) -> Option<St
         return None;
     }
 
-    let session_id = session_id
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("hook_session");
+    let session_id_owned: String;
+    let session_id = match session_id.filter(|value| !value.trim().is_empty()) {
+        Some(id) => id,
+        None => {
+            session_id_owned = generate_unique_session_id();
+            tracing::warn!(
+                "No session_id provided to user_prompt memory hook; using generated fallback: {}",
+                session_id_owned
+            );
+            &session_id_owned
+        }
+    };
     let query_text = prompt.chars().take(500).collect::<String>();
 
     match retrieve_prompt_context_memories(session_id, &query_text, 2000) {
@@ -55,6 +64,18 @@ pub fn format_agent_memory_context(
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Generate a unique session ID from PID and current timestamp.
+fn generate_unique_session_id() -> String {
+    format!(
+        "hook-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    )
 }
 
 /// Check if AMPLIHACK.md should be injected (differs from CLAUDE.md).

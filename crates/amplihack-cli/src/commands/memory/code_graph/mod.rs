@@ -38,11 +38,11 @@ pub(crate) use validation::validate_index_path;
 
 // Re-exports for backend submodule (consumed via `use super::*;`).
 #[allow(unused_imports)]
-pub(self) use paths::default_code_graph_db_path;
+use paths::default_code_graph_db_path;
 #[allow(unused_imports)]
-pub(self) use types::{
+use types::{
     BLARIFY_JSON_MAX_BYTES, BlarifyClass, BlarifyFile, BlarifyFunction, BlarifyImport,
     BlarifyOutput, BlarifyRelationship, CodeGraphWriterBackend,
 };
 #[allow(unused_imports)]
-pub(self) use validation::validate_blarify_json_size;
+use validation::validate_blarify_json_size;

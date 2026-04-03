@@ -120,6 +120,7 @@ use tui_actions::*;
 
 mod commands;
 pub use commands::run_fleet;
+#[cfg(test)]
 use commands::*;
 
 mod commands_scout;

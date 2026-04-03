@@ -52,6 +52,7 @@ pub(super) fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(result)
 }
 
+#[allow(dead_code)] // Utility kept for staging operations
 pub(super) fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<()> {
     fs::create_dir_all(dest)?;
     for entry in fs::read_dir(source)? {

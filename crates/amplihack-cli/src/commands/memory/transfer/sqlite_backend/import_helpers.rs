@@ -6,6 +6,80 @@ use rusqlite::{Connection as SqliteConnection, params};
 use std::fs;
 use tracing;
 
+/// Base delay (in milliseconds) for the first backoff interval.
+const BUSY_BASE_DELAY_MS: u64 = 50;
+
+/// Execute `body` inside an `IMMEDIATE` transaction, retrying the `BEGIN` with
+/// exponential backoff when SQLite returns `SQLITE_BUSY`.
+///
+/// Up to 3 attempts are made (delays: 50 ms, 100 ms) before the final try.
+/// On the last failure the error mentions concurrent access so users can
+/// diagnose the problem.
+///
+/// The closure receives a `&rusqlite::Transaction` and must return
+/// `Result<T>`.  On success the transaction is committed; on any error (from
+/// the closure **or** from `BEGIN`) the transaction is rolled back
+/// automatically.
+pub(super) fn with_retry_immediate_transaction<T, F>(
+    conn: &mut SqliteConnection,
+    body: F,
+) -> Result<T>
+where
+    F: FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
+{
+    // Attempt 1
+    match conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
+        Ok(tx) => {
+            let val = body(&tx)?;
+            tx.commit()?;
+            return Ok(val);
+        }
+        Err(e) if is_sqlite_busy(&e) => {
+            tracing::warn!(attempt = 1, delay_ms = 50, "SQLITE_BUSY on BEGIN IMMEDIATE, retrying");
+            std::thread::sleep(std::time::Duration::from_millis(BUSY_BASE_DELAY_MS));
+        }
+        Err(e) => {
+            return Err(
+                anyhow::anyhow!(e).context("failed to begin IMMEDIATE transaction"),
+            )
+        }
+    }
+    // Attempt 2
+    match conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
+        Ok(tx) => {
+            let val = body(&tx)?;
+            tx.commit()?;
+            return Ok(val);
+        }
+        Err(e) if is_sqlite_busy(&e) => {
+            tracing::warn!(attempt = 2, delay_ms = 100, "SQLITE_BUSY on BEGIN IMMEDIATE, retrying");
+            std::thread::sleep(std::time::Duration::from_millis(BUSY_BASE_DELAY_MS * 2));
+        }
+        Err(e) => {
+            return Err(
+                anyhow::anyhow!(e).context("failed to begin IMMEDIATE transaction"),
+            )
+        }
+    }
+    // Attempt 3 (final)
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| {
+            anyhow::anyhow!(e).context(
+                "failed to begin IMMEDIATE transaction after 3 attempts; \
+                 another process may be holding the database lock — \
+                 check for concurrent amplihack processes accessing the same database",
+            )
+        })?;
+    let val = body(&tx)?;
+    tx.commit()?;
+    Ok(val)
+}
+
+fn is_sqlite_busy(err: &rusqlite::Error) -> bool {
+    err.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy)
+}
+
 /// Insert all nodes and edges from `data` into `conn`, respecting merge semantics.
 ///
 /// Accepts any `&rusqlite::Connection` (including `&*Transaction` via Deref) so
@@ -214,4 +288,102 @@ pub(super) fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> Result<(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    /// `with_retry_immediate_transaction` succeeds after a concurrent writer
+    /// releases its lock within the retry window.
+    #[test]
+    fn retry_transaction_succeeds_after_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("busy_test.db");
+
+        // Initialise schema from the main thread.
+        {
+            let init = SqliteConnection::open(&db_path).unwrap();
+            init.execute_batch("CREATE TABLE t (id INTEGER)")
+                .unwrap();
+        }
+
+        // Barrier so the background thread grabs the lock before we retry.
+        let barrier = Arc::new(Barrier::new(2));
+        let b2 = Arc::clone(&barrier);
+        let path_bg = db_path.clone();
+
+        // Background thread: hold IMMEDIATE lock, signal, wait, release.
+        let handle = std::thread::spawn(move || {
+            let mut c = SqliteConnection::open(&path_bg).unwrap();
+            let tx = c
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
+            b2.wait(); // signal "lock held"
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            drop(tx);
+        });
+
+        barrier.wait(); // wait until lock is held
+
+        let mut conn2 = SqliteConnection::open(&db_path).unwrap();
+        conn2
+            .busy_timeout(std::time::Duration::ZERO)
+            .unwrap();
+
+        let result = with_retry_immediate_transaction(&mut conn2, |_tx| Ok(42));
+        handle.join().unwrap();
+
+        assert_eq!(
+            result.unwrap(),
+            42,
+            "expected closure value after successful retry",
+        );
+    }
+
+    /// When all retries are exhausted the error message must mention
+    /// concurrent access.
+    #[test]
+    fn retry_transaction_error_mentions_concurrent_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("busy_exhaust.db");
+
+        {
+            let init = SqliteConnection::open(&db_path).unwrap();
+            init.execute_batch("CREATE TABLE t (id INTEGER)")
+                .unwrap();
+        }
+
+        let barrier = Arc::new(Barrier::new(2));
+        let b2 = Arc::clone(&barrier);
+        let path_bg = db_path.clone();
+
+        // Hold the lock long enough for all retries to expire.
+        let handle = std::thread::spawn(move || {
+            let mut c = SqliteConnection::open(&path_bg).unwrap();
+            let _tx = c
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
+            b2.wait();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        });
+
+        barrier.wait();
+
+        let mut conn2 = SqliteConnection::open(&db_path).unwrap();
+        conn2
+            .busy_timeout(std::time::Duration::ZERO)
+            .unwrap();
+
+        let err = with_retry_immediate_transaction(&mut conn2, |_tx| Ok(()))
+            .expect_err("all retries should fail while lock is held");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("concurrent"),
+            "error should mention concurrent access, got: {msg}",
+        );
+
+        handle.join().unwrap();
+    }
 }

@@ -21,9 +21,9 @@ pub use list::run_list;
 pub use run::run_recipe;
 pub use show_validate::{run_show, run_validate};
 
-pub(crate) use parse::{
-    parse_recipe_from_input, parse_recipe_from_path, parse_recipe_text, validate_path,
-};
+pub(crate) use parse::{parse_recipe_from_input, parse_recipe_from_path, validate_path};
+#[cfg(test)]
+pub(crate) use parse::parse_recipe_text;
 pub(crate) use resolve::{recipe_search_dirs, resolve_recipe_path};
 
 pub(crate) const MAX_YAML_SIZE_BYTES: usize = 1_000_000;

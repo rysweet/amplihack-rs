@@ -35,14 +35,67 @@ pub(crate) fn parse_json_value(value: &str) -> Result<JsonValue> {
     Ok(serde_json::from_str(value)?)
 }
 
+/// Parse a raw string value into a [`BackendChoice`].
+///
+/// # Recognised values
+///
+/// | Input        | Result                   |
+/// |--------------|--------------------------|
+/// | `"sqlite"`   | `BackendChoice::Sqlite`  |
+/// | `"graph-db"` | `BackendChoice::GraphDb` |
+/// | `"kuzu"`     | `BackendChoice::GraphDb` *(legacy alias)* |
+///
+/// Any other value produces an error whose message lists the valid options.
+/// A `tracing::warn!` is also emitted so the invalid value is visible in logs
+/// even when the caller swallows the error (e.g. by defaulting).
 pub(crate) fn parse_backend_choice_env_value(value: &str) -> Result<BackendChoice> {
     match value {
         "sqlite" => Ok(BackendChoice::Sqlite),
         "graph-db" | "kuzu" => Ok(BackendChoice::GraphDb),
-        other => Err(anyhow::anyhow!(
-            "Unrecognized AMPLIHACK_MEMORY_BACKEND value {:?}. \
-             Valid values: sqlite, graph-db. Legacy compatibility value: kuzu",
-            other
-        )),
+        other => {
+            let msg = format!(
+                "Unrecognized AMPLIHACK_MEMORY_BACKEND value {:?}. \
+                 Valid values: sqlite, graph-db. Legacy compatibility value: kuzu",
+                other,
+            );
+            tracing::warn!("{msg}");
+            Err(anyhow::anyhow!(msg))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_backend_choice_env_value_error_lists_valid_values() {
+        let err = parse_backend_choice_env_value("not-a-backend")
+            .expect_err("unrecognised value should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Valid values: sqlite, graph-db"),
+            "error should list valid values, got: {msg}",
+        );
+        assert!(
+            msg.contains("not-a-backend"),
+            "error should echo the rejected value, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn parse_backend_choice_env_value_accepts_known_values() {
+        assert_eq!(
+            parse_backend_choice_env_value("sqlite").unwrap(),
+            BackendChoice::Sqlite,
+        );
+        assert_eq!(
+            parse_backend_choice_env_value("graph-db").unwrap(),
+            BackendChoice::GraphDb,
+        );
+        assert_eq!(
+            parse_backend_choice_env_value("kuzu").unwrap(),
+            BackendChoice::GraphDb,
+        );
     }
 }

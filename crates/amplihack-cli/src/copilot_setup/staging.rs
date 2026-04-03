@@ -3,9 +3,9 @@
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use super::{copilot_home, fs_helpers, staged_framework_dir};
+use super::fs_helpers;
 
 pub(super) fn stage_agents(source_agents: &Path, copilot_home: &Path) -> Result<usize> {
     let dest = copilot_home.join("agents").join("amplihack");

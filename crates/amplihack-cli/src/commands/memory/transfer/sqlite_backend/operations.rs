@@ -5,7 +5,10 @@ use super::super::{
     ExportResult, HierarchicalExportData, HierarchicalStats, ImportResult,
     build_hierarchical_import_result, graph_export_timestamp,
 };
-use super::import_helpers::{clear_agent_data, copy_dir, get_existing_ids, insert_nodes_and_edges};
+use super::import_helpers::{
+    clear_agent_data, copy_dir, get_existing_ids, insert_nodes_and_edges,
+    with_retry_immediate_transaction,
+};
 use super::loaders::{
     load_derives_from_edges, load_episodic_nodes, load_semantic_nodes, load_similar_to_edges,
     load_supersedes_edges, load_transitioned_to_edges,
@@ -141,20 +144,20 @@ impl HierarchicalTransferBackend for SqliteHierarchicalTransferBackend {
 
         let stats = if !merge {
             // Wrap clear_agent_data + all inserts in a single IMMEDIATE
-            // transaction.  If the process dies between the clear and the
-            // first insert – or any fatal error occurs – the transaction
-            // rolls back automatically on drop, leaving original data intact.
-            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            clear_agent_data(&tx, agent_name)?;
-            let s = insert_nodes_and_edges(
-                &tx,
-                agent_name,
-                &data,
-                false,
-                &std::collections::HashSet::new(),
-            )?;
-            tx.commit()?;
-            s
+            // transaction with retry on SQLITE_BUSY.  If the process dies
+            // between the clear and the first insert – or any fatal error
+            // occurs – the transaction rolls back automatically on drop,
+            // leaving original data intact.
+            with_retry_immediate_transaction(&mut conn, |tx| {
+                clear_agent_data(tx, agent_name)?;
+                insert_nodes_and_edges(
+                    tx,
+                    agent_name,
+                    &data,
+                    false,
+                    &std::collections::HashSet::new(),
+                )
+            })?
         } else {
             let existing_ids: std::collections::HashSet<String> =
                 get_existing_ids(&conn, agent_name)?.into_iter().collect();

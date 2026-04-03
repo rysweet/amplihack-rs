@@ -29,10 +29,7 @@ pub use checks::{
     check_settings_valid_json, check_tmux_installed,
 };
 
-// Re-export strip_ansi from the shared util module so existing callers within
-// this file continue to work without qualification.  Shared module ensures the
-// SEC-WS2-02 contract is applied consistently across doctor.rs and
-// binary_finder.rs.
+#[cfg(test)]
 use crate::util::strip_ansi;
 
 // ── Public constants ──────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
-use std::env;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::env;
 
 mod search;
 

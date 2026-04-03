@@ -14,13 +14,24 @@ use amplihack_cli::launcher_context::{
 };
 use amplihack_types::ProjectDirs;
 use serde_json::Value;
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 const AGENTS_FILE: &str = "AGENTS.md";
 const CONTEXT_MARKER_START: &str = "<!-- AMPLIHACK_CONTEXT_START -->";
 const CONTEXT_MARKER_END: &str = "<!-- AMPLIHACK_CONTEXT_END -->";
 const MAX_CONTEXT_SIZE: usize = 10 * 1024 * 1024;
+const HASH_MARKER_DIR: &str = ".amplihack";
+const HASH_MARKER_FILE: &str = ".agents_md_hash";
+
+/// Compute a simple hash of the given content string.
+fn content_hash(content: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// Detected launcher type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,7 +129,28 @@ fn write_copilot_context(dirs: &ProjectDirs, input_data: &Value) -> anyhow::Resu
     lines.insert(title_line + 2, context_markdown);
     lines.insert(title_line + 3, String::new());
 
-    fs::write(agents_path, lines.join("\n"))?;
+    let final_content = lines.join("\n");
+
+    // Content-hash gating: skip write if content hasn't changed.
+    let new_hash = content_hash(&final_content);
+    let marker_dir = dirs.root.join(HASH_MARKER_DIR);
+    let marker_path = marker_dir.join(HASH_MARKER_FILE);
+
+    if let Ok(existing) = fs::read_to_string(&marker_path)
+        && let Ok(existing_hash) = existing.trim().parse::<u64>()
+        && existing_hash == new_hash
+    {
+        tracing::debug!(
+            "AGENTS.md content unchanged (hash {}); skipping write",
+            new_hash
+        );
+        return Ok(());
+    }
+
+    fs::write(&agents_path, &final_content)?;
+    fs::create_dir_all(&marker_dir)?;
+    fs::write(&marker_path, new_hash.to_string())?;
+
     Ok(())
 }
 
@@ -321,5 +353,68 @@ mod tests {
         assert!(content.contains("\"tool_name\": \"Read\""));
         assert!(content.contains("keep me"));
         assert!(!content.contains("\nold\n"));
+    }
+
+    #[test]
+    fn content_hash_gating_skips_redundant_write() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_launcher_env(Some("1"), None, None, None);
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        let input = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "ls"}});
+
+        // First two calls stabilize content (trailing newline normalization).
+        inject_context(&dirs, &input);
+        inject_context(&dirs, &input);
+
+        let agents_path = dir.path().join("AGENTS.md");
+        let marker_path = dir.path().join(HASH_MARKER_DIR).join(HASH_MARKER_FILE);
+        let content_before = fs::read_to_string(&agents_path).unwrap();
+        let hash_before = fs::read_to_string(&marker_path).unwrap();
+        let mtime_before = fs::metadata(&agents_path).unwrap().modified().unwrap();
+
+        // Small sleep so any real write would have a different mtime.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Third call with same input: should skip the write.
+        inject_context(&dirs, &input);
+
+        let content_after = fs::read_to_string(&agents_path).unwrap();
+        let hash_after = fs::read_to_string(&marker_path).unwrap();
+        let mtime_after = fs::metadata(&agents_path).unwrap().modified().unwrap();
+        set_launcher_env(None, None, None, None);
+
+        assert_eq!(content_before, content_after, "Content should be unchanged");
+        assert_eq!(hash_before, hash_after, "Hash marker should be unchanged");
+        assert_eq!(mtime_before, mtime_after, "File should not have been rewritten");
+    }
+
+    #[test]
+    fn content_hash_gating_writes_on_changed_content() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_launcher_env(Some("1"), None, None, None);
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+
+        // First call + stabilization call.
+        let input1 = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "ls"}});
+        inject_context(&dirs, &input1);
+        inject_context(&dirs, &input1);
+        let marker_path = dir.path().join(HASH_MARKER_DIR).join(HASH_MARKER_FILE);
+        let hash1 = fs::read_to_string(&marker_path).unwrap();
+
+        // Call with different input: should write.
+        let input2 = serde_json::json!({"tool_name": "Read", "tool_input": {"path": "/a"}});
+        inject_context(&dirs, &input2);
+        let hash2 = fs::read_to_string(&marker_path).unwrap();
+        let content = fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+        set_launcher_env(None, None, None, None);
+
+        assert_ne!(hash1, hash2, "Hash should change with different content");
+        assert!(content.contains("\"tool_name\": \"Read\""));
     }
 }
