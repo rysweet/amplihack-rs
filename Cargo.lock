@@ -25,7 +25,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "amplihack"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "amplihack-cli",
  "amplihack-hooks",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-core"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "amplihack-memory",
  "chrono",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-eval"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "chrono",
  "serde",
@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-generator"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "chrono",
  "serde",
@@ -80,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-asset-resolver-bin"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "amplihack-cli",
  "tracing",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-cli"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "amplihack-state",
  "amplihack-types",
@@ -123,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-context"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -135,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-delegation"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "chrono",
  "globset",
@@ -150,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-domain-agents"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "amplihack-agent-core",
  "amplihack-memory",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-fleet"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "serde",
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hive"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "amplihack-agent-core",
  "amplihack-memory",
@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "amplihack-cli",
  "amplihack-security",
@@ -208,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks-bin"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "amplihack-hooks",
  "amplihack-state",
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-launcher"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "serde",
@@ -232,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-memory"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "md-5",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-recipe"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "serde",
@@ -261,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-recovery"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -274,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-safety"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-security"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "once_cell",
  "regex",
@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-state"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "amplihack-types",
  "libc",
@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-types"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -320,7 +320,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-utils"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "chrono",
  "libc",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-workflows"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -475,9 +475,9 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cc"
-version = "1.2.58"
+version = "1.2.59"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1e928d4b69e3077709075a938a05ffbedfa53a84c8f766efbf8220bb1ff60e1"
+checksum = "b7a4d3ec6524d28a329fc53654bbadc9bdd7b0431f5d65f1a56ffb28a1ee5283"
 dependencies = [
  "find-msvc-tools",
  "shlex",
