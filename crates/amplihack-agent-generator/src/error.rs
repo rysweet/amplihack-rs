@@ -29,23 +29,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn error_display_messages() {
-        let cases: Vec<(GeneratorError, &str)> = vec![
-            (GeneratorError::InvalidGoal("bad".into()), "invalid goal: bad"),
-            (GeneratorError::PlanningFailed("oops".into()), "planning failed: oops"),
-            (GeneratorError::SynthesisFailed("fail".into()), "synthesis failed: fail"),
-            (GeneratorError::AssemblyFailed("boom".into()), "assembly failed: boom"),
-            (GeneratorError::PackagingFailed("err".into()), "packaging failed: err"),
-        ];
-        for (err, expected) in cases {
-            assert_eq!(err.to_string(), expected);
-        }
+    fn display_invalid_goal() {
+        let e = GeneratorError::InvalidGoal("bad goal".into());
+        assert_eq!(e.to_string(), "invalid goal: bad goal");
     }
 
     #[test]
-    fn io_error_transparent() {
-        let io = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
-        let err: GeneratorError = io.into();
-        assert!(err.to_string().contains("gone"));
+    fn display_planning_failed() {
+        let e = GeneratorError::PlanningFailed("no phases".into());
+        assert_eq!(e.to_string(), "planning failed: no phases");
+    }
+
+    #[test]
+    fn display_synthesis_failed() {
+        let e = GeneratorError::SynthesisFailed("missing skill".into());
+        assert_eq!(e.to_string(), "synthesis failed: missing skill");
+    }
+
+    #[test]
+    fn display_assembly_failed() {
+        let e = GeneratorError::AssemblyFailed("bad name".into());
+        assert_eq!(e.to_string(), "assembly failed: bad name");
+    }
+
+    #[test]
+    fn display_packaging_failed() {
+        let e = GeneratorError::PackagingFailed("io err".into());
+        assert_eq!(e.to_string(), "packaging failed: io err");
+    }
+
+    #[test]
+    fn from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "gone");
+        let e = GeneratorError::from(io_err);
+        assert!(matches!(e, GeneratorError::IoError(_)));
+        assert!(e.to_string().contains("gone"));
     }
 }

@@ -108,43 +108,63 @@ impl Default for ObjectivePlanner {
 mod tests {
     use super::*;
 
+    fn simple_goal() -> GoalDefinition {
+        GoalDefinition::new("prompt", "fix a bug", "dev").unwrap()
+    }
+
+    fn complex_goal() -> GoalDefinition {
+        let mut g = GoalDefinition::new("prompt", "big refactor", "dev").unwrap();
+        g.complexity = Complexity::Complex;
+        g.constraints.push("must be safe".into());
+        g
+    }
+
     #[test]
-    fn simple_goal_produces_3_phases() {
-        let goal = GoalDefinition::new("p", "g", "d").unwrap();
-        let plan = ObjectivePlanner::new().plan(&goal).unwrap();
+    fn simple_goal_produces_three_phases() {
+        let plan = ObjectivePlanner::new().plan(&simple_goal()).unwrap();
         assert_eq!(plan.phase_count(), 3);
+        assert_eq!(plan.phases[0].name, "analysis");
+        assert_eq!(plan.phases[1].name, "implementation");
+        assert_eq!(plan.phases[2].name, "validation");
     }
 
     #[test]
     fn moderate_goal_adds_optimization_phase() {
-        let mut goal = GoalDefinition::new("p", "g", "d").unwrap();
-        goal.complexity = Complexity::Moderate;
-        let plan = ObjectivePlanner::new().plan(&goal).unwrap();
+        let mut g = simple_goal();
+        g.complexity = Complexity::Moderate;
+        let plan = ObjectivePlanner::new().plan(&g).unwrap();
         assert_eq!(plan.phase_count(), 4);
         assert_eq!(plan.phases[3].name, "optimization");
     }
 
     #[test]
     fn complex_goal_adds_risk_factor() {
-        let mut goal = GoalDefinition::new("p", "g", "d").unwrap();
-        goal.complexity = Complexity::Complex;
-        let plan = ObjectivePlanner::new().plan(&goal).unwrap();
-        assert!(plan.risk_factors.iter().any(|r| r.contains("complexity")));
+        let plan = ObjectivePlanner::new().plan(&complex_goal()).unwrap();
+        assert!(plan
+            .risk_factors
+            .iter()
+            .any(|r| r.contains("High complexity")));
     }
 
     #[test]
-    fn constrained_goal_adds_risk_factor() {
-        let mut goal = GoalDefinition::new("p", "g", "d").unwrap();
-        goal.constraints = vec!["must be fast".into()];
-        let plan = ObjectivePlanner::new().plan(&goal).unwrap();
-        assert!(plan.risk_factors.iter().any(|r| r.contains("Constraints")));
+    fn constraints_add_risk_factor() {
+        let plan = ObjectivePlanner::new().plan(&complex_goal()).unwrap();
+        assert!(plan
+            .risk_factors
+            .iter()
+            .any(|r| r.contains("Constraints")));
+    }
+
+    #[test]
+    fn implementation_depends_on_analysis() {
+        let plan = ObjectivePlanner::new().plan(&simple_goal()).unwrap();
+        assert!(plan.phases[1].dependencies.contains(&"analysis".to_string()));
+        assert!(!plan.phases[1].parallel_safe);
     }
 
     #[test]
     fn required_skills_deduped_and_sorted() {
-        let mut goal = GoalDefinition::new("p", "g", "d").unwrap();
-        goal.complexity = Complexity::Moderate;
-        let plan = ObjectivePlanner::new().plan(&goal).unwrap();
+        let plan = ObjectivePlanner::new().plan(&simple_goal()).unwrap();
         let skills = &plan.required_skills;
         let mut sorted = skills.clone();
         sorted.sort();
@@ -153,10 +173,20 @@ mod tests {
     }
 
     #[test]
-    fn implementation_phase_not_parallel_safe() {
-        let goal = GoalDefinition::new("p", "g", "d").unwrap();
-        let plan = ObjectivePlanner::new().plan(&goal).unwrap();
-        let imp = plan.phases.iter().find(|p| p.name == "implementation").unwrap();
-        assert!(!imp.parallel_safe);
+    fn total_estimated_duration_simple() {
+        let plan = ObjectivePlanner::new().plan(&simple_goal()).unwrap();
+        assert_eq!(plan.total_estimated_duration, "20m");
+    }
+
+    #[test]
+    fn total_estimated_duration_complex() {
+        let plan = ObjectivePlanner::new().plan(&complex_goal()).unwrap();
+        assert_eq!(plan.total_estimated_duration, "50m");
+    }
+
+    #[test]
+    fn default_impl() {
+        let p = ObjectivePlanner::default();
+        assert!(p.plan(&simple_goal()).is_ok());
     }
 }

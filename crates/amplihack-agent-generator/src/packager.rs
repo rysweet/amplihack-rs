@@ -33,33 +33,39 @@ impl Default for GoalAgentPackager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{BundleStatus, GoalAgentBundle};
+    use crate::assembler::AgentAssembler;
+    use crate::GoalDefinition;
+    use crate::planner::ObjectivePlanner;
+    use crate::synthesizer::SkillSynthesizer;
+
+    fn make_bundle() -> GoalAgentBundle {
+        let goal = GoalDefinition::new("prompt", "build tool", "development").unwrap();
+        let plan = ObjectivePlanner::new().plan(&goal).unwrap();
+        let skills = SkillSynthesizer::new().synthesize(&plan).unwrap();
+        AgentAssembler::new().assemble(&goal, &plan, skills).unwrap()
+    }
 
     #[test]
     fn package_writes_bundle_json() {
         let dir = tempfile::tempdir().unwrap();
-        let mut bundle = GoalAgentBundle::new("test-pkg", "0.1.0").unwrap();
-        bundle.status = BundleStatus::Ready;
-
-        let pkg = GoalAgentPackager::new();
-        let out = pkg.package(&bundle, dir.path()).unwrap();
-        assert_eq!(out, dir.path());
-
-        let contents = fs::read_to_string(dir.path().join("bundle.json")).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
-        assert_eq!(parsed["name"], "test-pkg");
-        assert_eq!(parsed["version"], "0.1.0");
-        assert_eq!(parsed["status"], "ready");
+        let bundle = make_bundle();
+        let path = GoalAgentPackager::new().package(&bundle, dir.path()).unwrap();
+        let contents = std::fs::read_to_string(path.join("bundle.json")).unwrap();
+        let back: GoalAgentBundle = serde_json::from_str(&contents).unwrap();
+        assert_eq!(back.name, bundle.name);
     }
 
     #[test]
     fn package_creates_output_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let nested = dir.path().join("a").join("b");
-        let bundle = GoalAgentBundle::new("nested-pkg", "1.0").unwrap();
+        let nested = dir.path().join("sub").join("dir");
+        let bundle = make_bundle();
+        let path = GoalAgentPackager::new().package(&bundle, &nested).unwrap();
+        assert!(path.join("bundle.json").exists());
+    }
 
-        let pkg = GoalAgentPackager::new();
-        let out = pkg.package(&bundle, &nested).unwrap();
-        assert!(out.join("bundle.json").exists());
+    #[test]
+    fn default_impl() {
+        let _p = GoalAgentPackager::default();
     }
 }

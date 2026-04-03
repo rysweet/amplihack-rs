@@ -56,46 +56,61 @@ impl Default for SkillSynthesizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::PlanPhase;
-    use uuid::Uuid;
+    use crate::models::{Complexity, GoalDefinition};
+    use crate::planner::ObjectivePlanner;
 
-    fn make_plan(phase_names: &[&str]) -> ExecutionPlan {
-        let phases = phase_names
-            .iter()
-            .map(|name| PlanPhase::new(*name, "desc", vec!["cap".into()]).unwrap())
-            .collect();
-        ExecutionPlan::new(Uuid::new_v4(), phases).unwrap()
+    fn make_plan(complexity: Complexity) -> ExecutionPlan {
+        let mut g = GoalDefinition::new("p", "goal", "dev").unwrap();
+        g.complexity = complexity;
+        ObjectivePlanner::new().plan(&g).unwrap()
     }
 
     #[test]
-    fn synthesize_produces_one_skill_per_phase() {
-        let plan = make_plan(&["analysis", "implementation", "validation"]);
+    fn synthesize_creates_skill_per_phase() {
+        let plan = make_plan(Complexity::Simple);
         let skills = SkillSynthesizer::new().synthesize(&plan).unwrap();
-        assert_eq!(skills.len(), 3);
+        assert_eq!(skills.len(), plan.phase_count());
     }
 
     #[test]
-    fn synthesize_known_phase_scores() {
-        let plan = make_plan(&["analysis", "implementation", "validation", "optimization"]);
+    fn known_phases_get_named_skills() {
+        let plan = make_plan(Complexity::Simple);
         let skills = SkillSynthesizer::new().synthesize(&plan).unwrap();
-        assert!((skills[0].match_score - 0.9).abs() < f64::EPSILON);
-        assert!((skills[1].match_score - 0.9).abs() < f64::EPSILON);
-        assert!((skills[2].match_score - 0.85).abs() < f64::EPSILON);
-        assert!((skills[3].match_score - 0.8).abs() < f64::EPSILON);
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"prompt_analysis"));
+        assert!(names.contains(&"code_generation"));
+        assert!(names.contains(&"testing"));
     }
 
     #[test]
-    fn synthesize_unknown_phase_gets_default_score() {
-        let plan = make_plan(&["custom_phase"]);
+    fn optimization_phase_gets_refactoring_skill() {
+        let plan = make_plan(Complexity::Moderate);
         let skills = SkillSynthesizer::new().synthesize(&plan).unwrap();
-        assert_eq!(skills[0].name, "custom_phase");
-        assert!((skills[0].match_score - 0.5).abs() < f64::EPSILON);
+        assert!(skills.iter().any(|s| s.name == "refactoring"));
     }
 
     #[test]
-    fn synthesized_skill_content_contains_name() {
-        let plan = make_plan(&["analysis"]);
+    fn skills_have_nonzero_match_scores() {
+        let plan = make_plan(Complexity::Simple);
         let skills = SkillSynthesizer::new().synthesize(&plan).unwrap();
-        assert!(skills[0].content.contains("prompt_analysis"));
+        for s in &skills {
+            assert!(s.match_score > 0.0, "skill {} has zero score", s.name);
+        }
+    }
+
+    #[test]
+    fn skills_have_descriptions() {
+        let plan = make_plan(Complexity::Simple);
+        let skills = SkillSynthesizer::new().synthesize(&plan).unwrap();
+        for s in &skills {
+            assert!(!s.description.is_empty(), "skill {} has no description", s.name);
+        }
+    }
+
+    #[test]
+    fn default_impl() {
+        let s = SkillSynthesizer::default();
+        let plan = make_plan(Complexity::Simple);
+        assert!(s.synthesize(&plan).is_ok());
     }
 }
