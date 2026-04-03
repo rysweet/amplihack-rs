@@ -219,8 +219,10 @@ fn self_improve_runner_valid_construction() {
 
 #[test]
 fn self_improve_runner_rejects_invalid_config() {
-    let mut config = SelfImproveConfig::default();
-    config.reviewer_count = 0;
+    let config = SelfImproveConfig {
+        reviewer_count: 0,
+        ..Default::default()
+    };
     assert!(SelfImproveRunner::new(config).is_err());
 }
 

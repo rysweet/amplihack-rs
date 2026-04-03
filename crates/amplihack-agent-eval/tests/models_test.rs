@@ -340,22 +340,28 @@ fn self_improve_config_validates_ok() {
 
 #[test]
 fn self_improve_config_rejects_zero_iterations() {
-    let mut cfg = SelfImproveConfig::default();
-    cfg.max_iterations = 0;
+    let cfg = SelfImproveConfig {
+        max_iterations: 0,
+        ..Default::default()
+    };
     assert!(cfg.validate().is_err());
 }
 
 #[test]
 fn self_improve_config_rejects_invalid_target() {
-    let mut cfg = SelfImproveConfig::default();
-    cfg.target_score = 1.5;
+    let cfg = SelfImproveConfig {
+        target_score: 1.5,
+        ..Default::default()
+    };
     assert!(cfg.validate().is_err());
 }
 
 #[test]
 fn self_improve_config_rejects_zero_reviewers() {
-    let mut cfg = SelfImproveConfig::default();
-    cfg.reviewer_count = 0;
+    let cfg = SelfImproveConfig {
+        reviewer_count: 0,
+        ..Default::default()
+    };
     assert!(cfg.validate().is_err());
 }
 
