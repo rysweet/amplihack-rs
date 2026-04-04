@@ -94,9 +94,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "amplihack-blarify"
+version = "0.7.21"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "amplihack-cli"
 version = "0.7.21"
 dependencies = [
+ "amplihack-hive",
  "amplihack-state",
  "amplihack-types",
  "anyhow",
@@ -258,6 +274,20 @@ dependencies = [
  "tempfile",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "amplihack-multilspy"
+version = "0.7.21"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

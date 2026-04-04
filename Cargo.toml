@@ -21,6 +21,8 @@ members = [
     "crates/amplihack-domain-agents",
     "crates/amplihack-hive",
     "crates/amplihack-agent-generator",
+    "crates/amplihack-blarify",
+    "crates/amplihack-multilspy",
     "bins/amplihack",
     "bins/amplihack-asset-resolver",
     "bins/amplihack-hooks",

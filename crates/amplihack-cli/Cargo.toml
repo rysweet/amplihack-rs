@@ -9,6 +9,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+amplihack-hive = { path = "../amplihack-hive" }
 amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
 anyhow = { workspace = true }

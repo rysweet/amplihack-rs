@@ -5,6 +5,7 @@ pub mod auto_mode;
 pub mod completions;
 pub mod doctor;
 pub mod fleet;
+pub mod hive_haymaker;
 pub mod install;
 pub mod launch;
 pub mod memory;
