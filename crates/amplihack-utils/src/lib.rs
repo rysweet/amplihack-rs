@@ -47,6 +47,7 @@ pub mod simple_tui;
 pub(crate) mod simple_tui_runner;
 pub mod slugify;
 pub mod trace_logger;
+pub mod uvx_manager;
 pub mod worktree;
 
 // Re-export the most commonly used items at crate root.
