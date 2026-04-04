@@ -23,6 +23,7 @@ members = [
     "crates/amplihack-agent-generator",
     "crates/amplihack-blarify",
     "crates/amplihack-multilspy",
+    "crates/amplihack-remote",
     "bins/amplihack",
     "bins/amplihack-asset-resolver",
     "bins/amplihack-hooks",

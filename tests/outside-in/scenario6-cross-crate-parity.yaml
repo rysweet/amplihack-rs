@@ -4,9 +4,9 @@ agents:
   - name: json-parser
     type: agent-core
     description: Tests LLM JSON parsing
-  - name: kuzu-connector
+  - name: graph-db-connector
     type: memory
-    description: Tests Kuzu graph DB connector
+    description: Tests LadybugDB (lbug) graph DB connector
   - name: gh-aw-compiler
     type: workflow
     description: Tests workflow frontmatter compiler
@@ -18,8 +18,8 @@ steps:
       - Fenced code blocks are extracted
       - Embedded braces are found
       - JSON lists are parsed
-  - action: verify_kuzu_connector
-    description: CRUD operations on Kuzu graph
+  - action: verify_graph_db_connector
+    description: CRUD operations on LadybugDB graph
     expect:
       - Nodes can be added and retrieved
       - Edges connect nodes with direction

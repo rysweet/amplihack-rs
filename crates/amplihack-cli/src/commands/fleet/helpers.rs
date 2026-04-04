@@ -1,5 +1,35 @@
 use super::*;
 
+use std::sync::LazyLock;
+
+static TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|ghs_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}|(?:Bearer|Authorization:?\s*Bearer)\s+\S+)"
+    )
+    .expect("compiled token regex")
+});
+
+static PATH_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?:~|/)[^\s'":;,]+"#).expect("compiled path regex"));
+
+/// Sanitize user-facing subprocess and exception error details.
+///
+/// Removes authentication tokens, replaces filesystem paths with `<path>`,
+/// collapses whitespace, and truncates to `max_len`.  Mirrors the Python
+/// `sanitize_external_error_detail()` (PR #3907).
+pub(super) fn sanitize_external_error_detail(detail: &str, max_len: usize) -> String {
+    if detail.is_empty() {
+        return "details unavailable".to_string();
+    }
+    let sanitized = TOKEN_RE.replace_all(detail, "***");
+    let sanitized = PATH_RE.replace_all(&sanitized, "<path>");
+    let sanitized: String = sanitized.split_whitespace().collect::<Vec<_>>().join(" ");
+    if sanitized.is_empty() {
+        return "details unavailable".to_string();
+    }
+    truncate_chars(&sanitized, max_len)
+}
+
 pub(super) fn default_queue_path() -> PathBuf {
     fleet_home_dir().join("task_queue.json")
 }

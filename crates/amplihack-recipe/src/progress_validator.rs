@@ -110,9 +110,131 @@ pub enum ValidationError {
     PidNotAlive(u32),
     #[error("failed to parse progress JSON: {0}")]
     ParseError(String),
+    #[error("progress file path {0} escapes temp directory {1}")]
+    PathEscape(String, String),
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Build a progress file path in the system temp directory.
+///
+/// The recipe name is sanitised and clamped to [`MAX_SAFE_NAME_LEN`] characters.
+/// The final path is validated to stay within the temp directory.
+pub fn progress_file_path(
+    recipe_name: &str,
+    pid: u32,
+) -> Result<std::path::PathBuf, ValidationError> {
+    let safe_name = safe_progress_name(recipe_name);
+    let filename = format!("amplihack-progress-{safe_name}-{pid}.json");
+    let path = std::env::temp_dir().join(&filename);
+    validate_path_within_tmpdir(&path)?;
+    Ok(path)
+}
+
+/// Ensure a path resolves to a location inside the system temp directory.
+///
+/// Returns the path unchanged on success, or a `ValidationError` if the
+/// resolved path escapes the temp directory (e.g. via `..` components or
+/// symlinks in the recipe name).
+pub fn validate_path_within_tmpdir(path: &Path) -> Result<(), ValidationError> {
+    let tmp_root = std::env::temp_dir();
+    // Use the string prefix check since the path may not exist yet.
+    let tmp_str = tmp_root.to_string_lossy();
+    let path_str = path.to_string_lossy();
+    if !path_str.starts_with(tmp_str.as_ref()) {
+        return Err(ValidationError::PathEscape(
+            path.display().to_string(),
+            tmp_root.display().to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Atomically write a JSON payload to a file via a temp-file rename.
+///
+/// Ensures concurrent readers never observe a partially-written file.
+/// On rename failure, falls back to direct overwrite.
+#[cfg(unix)]
+pub fn atomic_write_json(path: &Path, payload: &serde_json::Value) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let data = serde_json::to_string(payload)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+
+    // Try atomic write via temp + rename.
+    let tmp_name = format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("progress"),
+        std::process::id()
+    );
+    let tmp_path = parent.join(&tmp_name);
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp_path)
+    {
+        Ok(mut f) => {
+            f.write_all(data.as_bytes())?;
+            f.sync_all()?;
+            drop(f);
+            match std::fs::rename(&tmp_path, path) {
+                Ok(()) => return Ok(()),
+                Err(_) => {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    // Fall through to direct write.
+                }
+            }
+        }
+        Err(_) => {
+            // Fall through to direct write.
+        }
+    }
+
+    // Fallback: direct overwrite.
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(data.as_bytes())?;
+    Ok(())
+}
+
+/// Atomically write a JSON payload to a file (non-Unix fallback).
+#[cfg(not(unix))]
+pub fn atomic_write_json(path: &Path, payload: &serde_json::Value) -> std::io::Result<()> {
+    use std::io::Write;
+    let data = serde_json::to_string(payload)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let mut f = std::fs::File::create(path)?;
+    f.write_all(data.as_bytes())?;
+    Ok(())
+}
+
+/// Read and validate a progress JSON file, returning `None` on any error.
+///
+/// Handles missing files, permission errors, partial writes, and malformed
+/// JSON gracefully — the caller should treat `None` as "no progress info".
+pub fn read_progress_file(path: &Path) -> Option<ProgressPayload> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let data: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    if !data.is_object() {
+        return None;
+    }
+    let required_keys = ["recipe_name", "current_step", "status", "pid"];
+    for key in &required_keys {
+        data.get(*key)?;
+    }
+    serde_json::from_value(data).ok()
+}
 
 /// Sanitize a recipe name to the safe filename stem format.
 pub fn safe_progress_name(name: &str) -> String {

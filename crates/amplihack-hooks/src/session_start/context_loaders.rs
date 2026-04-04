@@ -47,6 +47,12 @@ pub(super) fn load_user_preferences(dirs: &ProjectDirs) -> Option<String> {
 }
 
 pub(super) fn load_workflow_context(dirs: &ProjectDirs) -> String {
+    // Nested recipe sessions should not get top-level /dev rules to prevent
+    // recursive workflow invocation (ported from Python PR #4142).
+    if is_nested_recipe_session() || is_workflow_active(dirs) {
+        return build_suppressed_workflow_rules();
+    }
+
     let mut parts = vec![
         "## Default Workflow".to_string(),
         "The multi-step workflow is automatically followed by `/ultrathink`".to_string(),
@@ -120,6 +126,73 @@ pub(super) fn load_code_graph_context(dirs: &ProjectDirs) -> anyhow::Result<Opti
          Use `--json` for machine-readable output and `--limit N` to control result count.",
         summary.files, summary.classes, summary.functions
     )))
+}
+
+/// Return `true` when a nested session is running inside a recipe.
+fn is_nested_recipe_session() -> bool {
+    std::env::var("AMPLIHACK_SESSION_DEPTH")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0)
+        > 0
+}
+
+/// Return `true` when a workflow-active semaphore points at a live process.
+fn is_workflow_active(dirs: &ProjectDirs) -> bool {
+    let path = dirs.runtime.join("locks").join(".workflow_active");
+    if !path.exists() {
+        return false;
+    }
+
+    let data = match fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(_) => {
+            let _ = fs::remove_file(&path);
+            return false;
+        }
+    };
+
+    let parsed: serde_json::Value = match serde_json::from_str(&data) {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = fs::remove_file(&path);
+            return false;
+        }
+    };
+
+    let pid = parsed.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+    if pid == 0 {
+        let _ = fs::remove_file(&path);
+        return false;
+    }
+
+    // Check if PID is alive via /proc on Linux, or assume alive otherwise.
+    #[cfg(target_os = "linux")]
+    {
+        if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+            let _ = fs::remove_file(&path);
+            return false;
+        }
+        true
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Cannot reliably check PID without libc; assume alive.
+        true
+    }
+}
+
+/// Return nested-session guidance that prevents workflow recursion.
+fn build_suppressed_workflow_rules() -> String {
+    "## Default Workflow\n\n\
+     A recipe-managed workflow is already active for this session.\n\n\
+     Do NOT invoke `Skill(skill=\"dev-orchestrator\")`, do NOT run \
+     `run_recipe_by_name(\"smart-orchestrator\")`, and do NOT reinterpret \
+     the current prompt as a new top-level task.\n\n\
+     Follow the current prompt exactly. Return only the requested output \
+     format. Use tools only when the prompt explicitly requires them."
+        .to_string()
 }
 
 #[cfg(test)]

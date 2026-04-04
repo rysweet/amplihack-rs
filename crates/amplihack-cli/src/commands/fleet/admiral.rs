@@ -337,7 +337,7 @@ impl FleetAdmiral {
         for action in actions {
             let outcome = match self.execute_action(action) {
                 Ok(outcome) => outcome,
-                Err(error) => format!("ERROR: {error}"),
+                Err(error) => format!("ERROR: {error:#}"),
             };
             self.log.record(action, &outcome)?;
             results.push((action.clone(), outcome));

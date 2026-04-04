@@ -6,15 +6,24 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-/// Sanitize a session ID to prevent path traversal attacks.
+/// Sanitize a session ID to prevent path traversal and metadata injection.
 ///
-/// Strips path separators (`/`, `\`) and `..` components, returning a safe
-/// string for use in filesystem path construction.
+/// Replaces any character that is not alphanumeric, hyphen, or underscore
+/// with an underscore.  Mirrors the Python `_sanitize_session_id()`.
 ///
 /// # Panics
 /// Panics if the sanitized result is empty.
 pub fn sanitize_session_id(session_id: &str) -> String {
-    let sanitized: String = session_id.replace(['/', '\\'], "").replace("..", "");
+    let sanitized: String = session_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
     assert!(
         !sanitized.is_empty(),
         "session_id is empty after sanitization (original: {session_id:?})"
@@ -96,6 +105,16 @@ impl ProjectDirs {
     /// The `.continuation_prompt` file.
     pub fn continuation_prompt_file(&self) -> PathBuf {
         self.locks.join(".continuation_prompt")
+    }
+
+    /// The `.lock_goal` file.
+    pub fn lock_goal_file(&self) -> PathBuf {
+        self.locks.join(".lock_goal")
+    }
+
+    /// The `.lock_message` file.
+    pub fn lock_message_file(&self) -> PathBuf {
+        self.locks.join(".lock_message")
     }
 
     /// The persisted launcher context file.
