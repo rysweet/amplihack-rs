@@ -23,6 +23,7 @@ use context_loaders::{
     check_version, load_code_graph_context, load_discoveries, load_project_context,
     load_user_preferences, load_workflow_context,
 };
+pub(crate) use context_loaders::{is_nested_recipe_session, is_workflow_active};
 use migration::{
     code_graph_compatibility_notice, memory_graph_compatibility_notice, migrate_global_hooks,
 };

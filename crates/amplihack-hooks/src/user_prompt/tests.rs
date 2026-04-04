@@ -4,6 +4,7 @@ use super::*;
 use crate::agent_memory::{detect_agent_references, detect_slash_command_agent};
 use crate::post_tool_use::PostToolUseHook;
 use crate::protocol::Hook;
+use crate::session_start::is_workflow_active;
 use crate::test_support::env_lock;
 use amplihack_cli::memory::PromptContextMemory;
 use amplihack_types::{HookInput, ProjectDirs};
@@ -298,4 +299,101 @@ fn load_user_preferences_uses_amplihack_root_override() {
 
     assert!(!has_learned_patterns);
     assert!(context.unwrap().contains("**Verbosity**: concise"));
+}
+
+#[test]
+fn workflow_active_semaphore_skips_dev_detection() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    // Create workflow-active semaphore with current PID.
+    let dirs = ProjectDirs::new(dir.path());
+    let lock_dir = dirs.runtime.join("locks");
+    fs::create_dir_all(&lock_dir).unwrap();
+    fs::write(
+        lock_dir.join(".workflow_active"),
+        serde_json::json!({ "pid": std::process::id() }).to_string(),
+    )
+    .unwrap();
+
+    let hook = UserPromptSubmitHook;
+    let result = hook
+        .process(HookInput::UserPromptSubmit {
+            user_prompt: Some("/dev continue parity audit".to_string()),
+            session_id: Some("wf-active-session".to_string()),
+            extra: Value::Null,
+        })
+        .unwrap();
+
+    let _ = std::env::set_current_dir(&original);
+
+    // When workflow is active, /dev detection should be suppressed.
+    let ctx = result["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        !ctx.contains("/dev workflow detected"),
+        "dev detection should be suppressed when workflow is active"
+    );
+}
+
+#[test]
+fn workflow_active_via_session_depth_skips_dev_detection() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let previous = std::env::var_os("AMPLIHACK_SESSION_DEPTH");
+    unsafe { std::env::set_var("AMPLIHACK_SESSION_DEPTH", "1") };
+
+    let hook = UserPromptSubmitHook;
+    let result = hook
+        .process(HookInput::UserPromptSubmit {
+            user_prompt: Some("/dev continue parity audit".to_string()),
+            session_id: Some("depth-session".to_string()),
+            extra: Value::Null,
+        })
+        .unwrap();
+
+    match previous {
+        Some(value) => unsafe { std::env::set_var("AMPLIHACK_SESSION_DEPTH", value) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_SESSION_DEPTH") },
+    }
+    let _ = std::env::set_current_dir(&original);
+
+    let ctx = result["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        !ctx.contains("/dev workflow detected"),
+        "dev detection should be suppressed in nested recipe sessions"
+    );
+}
+
+#[test]
+fn is_workflow_active_returns_false_when_no_semaphore() {
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = ProjectDirs::new(dir.path());
+    assert!(!is_workflow_active(&dirs));
+}
+
+#[test]
+fn is_workflow_active_returns_true_with_live_pid() {
+    let dir = tempfile::tempdir().unwrap();
+    let dirs = ProjectDirs::new(dir.path());
+    let lock_dir = dirs.runtime.join("locks");
+    fs::create_dir_all(&lock_dir).unwrap();
+    fs::write(
+        lock_dir.join(".workflow_active"),
+        serde_json::json!({ "pid": std::process::id() }).to_string(),
+    )
+    .unwrap();
+    assert!(is_workflow_active(&dirs));
 }

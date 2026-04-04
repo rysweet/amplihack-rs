@@ -6,6 +6,7 @@
 
 use crate::prompt_input::extract_user_prompt;
 use crate::protocol::{FailurePolicy, Hook};
+use crate::session_start::{is_nested_recipe_session, is_workflow_active};
 use amplihack_types::{HookInput, ProjectDirs, sanitize_session_id};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -49,7 +50,13 @@ impl Hook for WorkflowClassificationReminderHook {
             return Ok(Value::Object(serde_json::Map::new()));
         }
 
+        // When a workflow is already active, skip classification reminders
+        // to prevent recursive workflow invocation (ported from Python PR #3974).
         let dirs = ProjectDirs::from_cwd();
+        if is_nested_recipe_session() || is_workflow_active(&dirs) {
+            return Ok(Value::Object(serde_json::Map::new()));
+        }
+
         if !is_new_topic(&dirs, &session_id, turn_count, &prompt) {
             return Ok(Value::Object(serde_json::Map::new()));
         }

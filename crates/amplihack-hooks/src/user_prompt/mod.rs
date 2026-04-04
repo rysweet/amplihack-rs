@@ -14,6 +14,7 @@ mod tests;
 use crate::post_tool_use::begin_workflow_enforcement_tracking;
 use crate::prompt_input::extract_user_prompt;
 use crate::protocol::{FailurePolicy, Hook};
+use crate::session_start::{is_nested_recipe_session, is_workflow_active};
 use amplihack_types::HookInput;
 use serde_json::Value;
 
@@ -68,15 +69,24 @@ impl Hook for UserPromptSubmitHook {
             context_parts.push(memory_context);
         }
 
-        // Check AMPLIHACK.md injection.
-        if let Some(framework_context) = memory::check_framework_injection(&dirs)
+        // When a workflow is already active (recipe session or workflow semaphore),
+        // skip framework injection and dev-prompt detection to prevent
+        // classify-and-decompose recursion (ported from Python PR #3974).
+        let workflow_active = is_nested_recipe_session() || is_workflow_active(&dirs);
+
+        // Check AMPLIHACK.md injection (skip when workflow is active to avoid
+        // injecting "use dev-orchestrator" instructions into agent steps).
+        if !workflow_active
+            && let Some(framework_context) = memory::check_framework_injection(&dirs)
             && !framework_context.is_empty()
         {
             context_parts.push(framework_context);
         }
 
-        // Detect /dev invocations and inject workflow enforcement context.
-        if preferences::is_dev_invocation(&prompt) {
+        // Detect /dev invocations and inject workflow enforcement context
+        // (skip when workflow is active to prevent false-positive detection on
+        // agent step prompts that mention "dev-orchestrator").
+        if !workflow_active && preferences::is_dev_invocation(&prompt) {
             if let Err(error) = begin_workflow_enforcement_tracking(session_id.as_deref()) {
                 tracing::warn!(
                     "workflow enforcement: failed to initialize state from user prompt: {}",

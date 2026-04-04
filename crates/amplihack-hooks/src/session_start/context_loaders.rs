@@ -129,7 +129,7 @@ pub(super) fn load_code_graph_context(dirs: &ProjectDirs) -> anyhow::Result<Opti
 }
 
 /// Return `true` when a nested session is running inside a recipe.
-fn is_nested_recipe_session() -> bool {
+pub(crate) fn is_nested_recipe_session() -> bool {
     std::env::var("AMPLIHACK_SESSION_DEPTH")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
@@ -138,7 +138,7 @@ fn is_nested_recipe_session() -> bool {
 }
 
 /// Return `true` when a workflow-active semaphore points at a live process.
-fn is_workflow_active(dirs: &ProjectDirs) -> bool {
+pub(crate) fn is_workflow_active(dirs: &ProjectDirs) -> bool {
     let path = dirs.runtime.join("locks").join(".workflow_active");
     if !path.exists() {
         return false;
