@@ -30,6 +30,7 @@ pub mod docker_detector;
 pub mod hook_merge;
 pub mod kb_types;
 pub mod knowledge_builder;
+pub mod litellm_callbacks;
 pub mod llm_client;
 pub mod plugin_cli;
 pub mod plugin_manager;
