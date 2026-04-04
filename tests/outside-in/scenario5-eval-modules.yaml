@@ -1,0 +1,36 @@
+name: feature-parity-eval-modules
+description: Validate eval module ports maintain API parity with Python
+agents:
+  - name: metacognition-grader
+    type: eval
+    description: Tests 4-dimension metacognition grading
+  - name: domain-eval-runner
+    type: eval
+    description: Tests domain agent evaluation registry
+  - name: multi-seed-evaluator
+    type: eval
+    description: Tests multi-seed variance analysis
+steps:
+  - action: verify_module_exports
+    description: Check all eval modules export expected types
+    expect:
+      - MetacognitionGrader is exported from agent-eval
+      - run_all_evals is exported from agent-eval
+      - build_multi_seed_report is exported from agent-eval
+      - MetaEvalExperiment is exported from agent-eval
+  - action: verify_metacognition_grading
+    description: Grade a sample answer and check 4 dimensions
+    expect:
+      - Grade returns 4 dimensions (factual_accuracy, self_awareness, knowledge_boundaries, explanation_quality)
+      - Overall score is average of dimensions
+      - Summary contains quality level
+  - action: verify_domain_eval_registry
+    description: Check all 5 agents are registered
+    expect:
+      - AGENT_NAMES contains 5 entries
+      - run_all_evals returns results for all agents
+  - action: verify_multi_seed_variance
+    description: Detect noisy questions across seeds
+    expect:
+      - Questions with stddev > 10pp are flagged noisy
+      - Category stats include mean and stddev
