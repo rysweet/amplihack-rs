@@ -69,22 +69,72 @@ const MARKER_START: &str = "<!-- AMPLIHACK_CONTEXT_START -->";
 const MARKER_END: &str = "<!-- AMPLIHACK_CONTEXT_END -->";
 /// 10 MB hard limit.
 const MAX_CONTEXT_SIZE: usize = 10 * 1024 * 1024;
+const AGENTS_TITLE: &str = "# Amplihack Agents";
 
 /// Injects context into `AGENTS.md` at the repository root, delimited by
 /// marker comments so repeated injections replace rather than append.
 pub struct CopilotStrategy {
     agents_path: PathBuf,
+    project_dir: PathBuf,
 }
 
 impl CopilotStrategy {
     pub fn new(project_dir: &Path) -> Self {
         Self {
             agents_path: project_dir.join("AGENTS.md"),
+            project_dir: project_dir.to_path_buf(),
         }
     }
 
     pub fn agents_path(&self) -> &Path {
         &self.agents_path
+    }
+
+    /// Validate that AGENTS.md path stays inside the project root.
+    fn validate_path(&self) -> Result<()> {
+        let canonical_project = self
+            .project_dir
+            .canonicalize()
+            .unwrap_or_else(|_| self.project_dir.clone());
+        let canonical_agents = if self.agents_path.exists() {
+            self.agents_path.canonicalize()?
+        } else if let Some(parent) = self.agents_path.parent() {
+            let parent_canonical = parent
+                .canonicalize()
+                .unwrap_or_else(|_| parent.to_path_buf());
+            parent_canonical.join(self.agents_path.file_name().unwrap_or_default())
+        } else {
+            self.agents_path.clone()
+        };
+
+        if !canonical_agents.starts_with(&canonical_project) {
+            bail!(
+                "AGENTS.md path escapes project root: {}",
+                canonical_agents.display()
+            );
+        }
+        Ok(())
+    }
+
+    /// Format context string as a markdown section with session header.
+    fn format_context_markdown(context: &str) -> String {
+        format!("## Current Session Context\n\n{context}")
+    }
+
+    /// Remove old marker-delimited context from content.
+    fn remove_old_context(content: &str) -> String {
+        if let (Some(s), Some(e)) = (content.find(MARKER_START), content.find(MARKER_END))
+            && s < e
+        {
+            let end = e + MARKER_END.len();
+            let mut cleaned = format!("{}{}", &content[..s], &content[end..]);
+            while cleaned.contains("\n\n\n") {
+                cleaned = cleaned.replace("\n\n\n", "\n\n");
+            }
+            cleaned.trim().to_string()
+        } else {
+            content.to_string()
+        }
     }
 }
 
@@ -98,7 +148,10 @@ impl HookStrategy for CopilotStrategy {
             );
         }
 
-        let marked = format!("{MARKER_START}\n{context}\n{MARKER_END}");
+        self.validate_path()?;
+
+        let formatted = Self::format_context_markdown(context);
+        let marked = format!("{MARKER_START}\n{formatted}\n{MARKER_END}");
 
         let existing = if self.agents_path.exists() {
             std::fs::read_to_string(&self.agents_path)?
@@ -106,15 +159,23 @@ impl HookStrategy for CopilotStrategy {
             String::new()
         };
 
-        let new_content =
-            if let (Some(s), Some(e)) = (existing.find(MARKER_START), existing.find(MARKER_END)) {
-                let end = e + MARKER_END.len();
-                format!("{}{marked}{}", &existing[..s], &existing[end..])
-            } else if existing.is_empty() {
-                marked.clone()
+        let base = Self::remove_old_context(&existing);
+
+        let new_content = if base.is_empty() {
+            format!("{AGENTS_TITLE}\n\n{marked}")
+        } else {
+            // Insert after the title line if present
+            if let Some(title_end) = base.find('\n') {
+                let first_line = &base[..title_end];
+                if first_line.starts_with('#') {
+                    format!("{first_line}\n\n{marked}{}", &base[title_end..])
+                } else {
+                    format!("{}\n\n{marked}", base.trim_end())
+                }
             } else {
-                format!("{}\n\n{marked}", existing.trim_end())
-            };
+                format!("{}\n\n{marked}", base.trim_end())
+            }
+        };
 
         std::fs::write(&self.agents_path, &new_content)?;
         Ok(marked)
@@ -125,18 +186,12 @@ impl HookStrategy for CopilotStrategy {
             return Ok(());
         }
         let content = std::fs::read_to_string(&self.agents_path)?;
-        if let (Some(s), Some(e)) = (content.find(MARKER_START), content.find(MARKER_END)) {
-            let end = e + MARKER_END.len();
-            let mut cleaned = format!("{}{}", &content[..s], &content[end..]);
-            while cleaned.contains("\n\n\n") {
-                cleaned = cleaned.replace("\n\n\n", "\n\n");
-            }
-            let cleaned = cleaned.trim().to_string();
-            if cleaned.is_empty() {
-                std::fs::remove_file(&self.agents_path)?;
-            } else {
-                std::fs::write(&self.agents_path, &cleaned)?;
-            }
+        let cleaned = Self::remove_old_context(&content);
+        let trimmed = cleaned.trim();
+        if trimmed.is_empty() || trimmed == AGENTS_TITLE {
+            std::fs::remove_file(&self.agents_path)?;
+        } else {
+            std::fs::write(&self.agents_path, &cleaned)?;
         }
         Ok(())
     }
@@ -198,7 +253,7 @@ mod tests {
     // -- Copilot ---------------------------------------------------------
 
     #[test]
-    fn copilot_inject_creates_agents_md() {
+    fn copilot_inject_creates_agents_md_with_title() {
         let dir = TempDir::new().unwrap();
         let strat = CopilotStrategy::new(dir.path());
         let result = strat.inject_context("my context").unwrap();
@@ -206,7 +261,8 @@ mod tests {
         assert!(result.contains(MARKER_END));
         assert!(result.contains("my context"));
         let on_disk = std::fs::read_to_string(strat.agents_path()).unwrap();
-        assert!(on_disk.contains("my context"));
+        assert!(on_disk.starts_with(AGENTS_TITLE));
+        assert!(on_disk.contains("## Current Session Context"));
     }
 
     #[test]
@@ -218,12 +274,11 @@ mod tests {
         let on_disk = std::fs::read_to_string(strat.agents_path()).unwrap();
         assert!(!on_disk.contains("first"));
         assert!(on_disk.contains("second"));
-        // Only one pair of markers
         assert_eq!(on_disk.matches(MARKER_START).count(), 1);
     }
 
     #[test]
-    fn copilot_inject_appends_to_existing_content() {
+    fn copilot_inject_inserts_after_title() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "# Agents\n\nExisting.").unwrap();
         let strat = CopilotStrategy::new(dir.path());
@@ -231,6 +286,10 @@ mod tests {
         let on_disk = std::fs::read_to_string(strat.agents_path()).unwrap();
         assert!(on_disk.starts_with("# Agents"));
         assert!(on_disk.contains("new ctx"));
+        // Context should appear before "Existing."
+        let marker_pos = on_disk.find(MARKER_START).unwrap();
+        let existing_pos = on_disk.find("Existing.").unwrap();
+        assert!(marker_pos < existing_pos);
     }
 
     #[test]
@@ -280,5 +339,29 @@ mod tests {
         let result = strat.inject_context("payload").unwrap();
         assert!(result.starts_with(MARKER_START));
         assert!(result.ends_with(MARKER_END));
+    }
+
+    #[test]
+    fn copilot_remove_old_context_helper() {
+        let content = format!("before\n{MARKER_START}\nold\n{MARKER_END}\nafter");
+        let cleaned = CopilotStrategy::remove_old_context(&content);
+        assert!(!cleaned.contains("old"));
+        assert!(cleaned.contains("before"));
+        assert!(cleaned.contains("after"));
+    }
+
+    #[test]
+    fn copilot_remove_old_context_misordered_markers() {
+        // If markers are misordered, content should be returned unchanged
+        let content = format!("before\n{MARKER_END}\nstuff\n{MARKER_START}\nafter");
+        let cleaned = CopilotStrategy::remove_old_context(&content);
+        assert_eq!(cleaned, content);
+    }
+
+    #[test]
+    fn copilot_format_context_markdown() {
+        let formatted = CopilotStrategy::format_context_markdown("test data");
+        assert!(formatted.starts_with("## Current Session Context"));
+        assert!(formatted.contains("test data"));
     }
 }

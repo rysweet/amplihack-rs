@@ -1,0 +1,45 @@
+id: adaptive-context-uvx
+name: "Adaptive Context & UVX Manager — Feature Parity"
+description: |
+  Verifies adaptive context gap-fill (launcher detector, strategies) and
+  UVX manager port (detection, path resolution, security validation).
+  Runs the crate-level test suites for amplihack-context and
+  amplihack-utils::uvx_manager.
+priority: HIGH
+interface: CLI
+prerequisites:
+  - "Rust toolchain available on PATH"
+tags: [smoke, context, uvx, feature-parity]
+
+agents:
+  - name: cargo-test-runner
+    type: cli
+    command: cargo
+
+steps:
+  - action: run
+    target: "cargo test -p amplihack-context --lib -- launcher_detector --no-fail-fast"
+    expect:
+      exit_code: 0
+      stdout_contains: "test result: ok"
+    description: "Launcher detector tests pass (detect, staleness, Display, permissions)"
+
+  - action: run
+    target: "cargo test -p amplihack-context --lib -- strategies --no-fail-fast"
+    expect:
+      exit_code: 0
+      stdout_contains: "test result: ok"
+    description: "Strategy tests pass (path validation, formatting, cleanup)"
+
+  - action: run
+    target: "cargo test -p amplihack-utils --lib -- uvx_manager --no-fail-fast"
+    expect:
+      exit_code: 0
+      stdout_contains: "test result: ok"
+    description: "UVX manager tests pass (detection, paths, security, env vars)"
+
+  - action: run
+    target: "cargo clippy -p amplihack-context -p amplihack-utils --tests -- -D warnings"
+    expect:
+      exit_code: 0
+    description: "Both crates pass clippy with -D warnings"
