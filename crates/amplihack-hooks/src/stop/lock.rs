@@ -18,6 +18,30 @@ pub fn is_lock_active(dirs: &ProjectDirs) -> bool {
     dirs.lock_active_file().exists()
 }
 
+/// Remove lock and goal files to auto-disable lock mode.
+///
+/// Cleans up `.lock_active`, `.lock_goal`, `.lock_message`, and
+/// `.continuation_prompt` from the locks directory.
+pub fn disable_lock_files(dirs: &ProjectDirs) {
+    let files = [
+        dirs.lock_active_file(),
+        dirs.lock_goal_file(),
+        dirs.lock_message_file(),
+        dirs.continuation_prompt_file(),
+    ];
+    for file_path in &files {
+        match fs::remove_file(file_path) {
+            Ok(()) => {
+                tracing::info!("Removed lock file: {}", file_path.display());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!("Failed to remove {}: {}", file_path.display(), e);
+            }
+        }
+    }
+}
+
 /// Handle lock mode: increment counter, check safety valve, block with prompt.
 pub fn handle_lock_mode(dirs: &ProjectDirs, session_id: &str) -> anyhow::Result<Value> {
     let locks_dir = dirs.session_locks(session_id);
@@ -36,12 +60,8 @@ pub fn handle_lock_mode(dirs: &ProjectDirs, session_id: &str) -> anyhow::Result<
             count
         );
 
-        // Remove lock file. If it's already gone, that's fine.
-        match fs::remove_file(dirs.lock_active_file()) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::error!("Failed to clear lock file: {}", e),
-        }
+        // Remove all lock files (active, goal, message, continuation prompt).
+        disable_lock_files(dirs);
 
         return Ok(serde_json::json!({"decision": "approve"}));
     }
@@ -152,5 +172,62 @@ mod tests {
 
         let prompt = read_continuation_prompt(&dirs);
         assert_eq!(prompt, "Keep going!");
+    }
+
+    #[test]
+    fn disable_lock_files_removes_all_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        fs::create_dir_all(&dirs.locks).unwrap();
+        fs::write(dirs.lock_active_file(), "").unwrap();
+        fs::write(dirs.lock_goal_file(), "fix the bug").unwrap();
+        fs::write(dirs.lock_message_file(), "working on it").unwrap();
+        fs::write(dirs.continuation_prompt_file(), "keep going").unwrap();
+
+        disable_lock_files(&dirs);
+
+        assert!(!dirs.lock_active_file().exists());
+        assert!(!dirs.lock_goal_file().exists());
+        assert!(!dirs.lock_message_file().exists());
+        assert!(!dirs.continuation_prompt_file().exists());
+    }
+
+    #[test]
+    fn disable_lock_files_tolerates_missing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        fs::create_dir_all(&dirs.locks).unwrap();
+        // Only create one file — others missing is fine.
+        fs::write(dirs.lock_active_file(), "").unwrap();
+
+        disable_lock_files(&dirs);
+
+        assert!(!dirs.lock_active_file().exists());
+    }
+
+    #[test]
+    fn safety_valve_cleans_all_lock_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        fs::create_dir_all(&dirs.locks).unwrap();
+        fs::write(dirs.lock_active_file(), "").unwrap();
+        fs::write(dirs.lock_goal_file(), "fix the bug").unwrap();
+        fs::write(dirs.lock_message_file(), "msg").unwrap();
+        fs::write(dirs.continuation_prompt_file(), "prompt").unwrap();
+
+        let session_locks = dirs.session_locks("valve-all");
+        fs::create_dir_all(&session_locks).unwrap();
+        fs::write(
+            session_locks.join("lock_invocations.txt"),
+            format!(r#"{{"value":{}}}"#, DEFAULT_MAX_LOCK_ITERATIONS - 1),
+        )
+        .unwrap();
+
+        let result = handle_lock_mode(&dirs, "valve-all").unwrap();
+        assert_eq!(result["decision"], "approve");
+        assert!(!dirs.lock_active_file().exists());
+        assert!(!dirs.lock_goal_file().exists());
+        assert!(!dirs.lock_message_file().exists());
+        assert!(!dirs.continuation_prompt_file().exists());
     }
 }

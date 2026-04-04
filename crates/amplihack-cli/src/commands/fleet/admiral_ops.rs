@@ -62,7 +62,7 @@ impl FleetAdmiral {
 
         Ok(format!(
             "ERROR: Failed to start agent: {}",
-            truncate_chars(String::from_utf8_lossy(&output.stderr).trim(), 200)
+            sanitize_external_error_detail(String::from_utf8_lossy(&output.stderr).trim(), 200,)
         ))
     }
 

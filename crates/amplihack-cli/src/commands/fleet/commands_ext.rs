@@ -149,7 +149,7 @@ pub(super) fn capture_tmux_output_with_timeout(
             let stderr = String::from_utf8_lossy(&output.stderr);
             Ok(format!(
                 "Failed to capture: {}",
-                truncate_chars(stderr.trim(), 200)
+                sanitize_external_error_detail(stderr.trim(), 200)
             ))
         }
         Err(error) if error.to_string().contains("timed out after") => {

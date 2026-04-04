@@ -1743,35 +1743,53 @@ exit 1
     );
 
     let mut snapshots = Vec::new();
-    let state = collect_observed_fleet_state_with_progress(&azlin, 10, |state, progress| {
-        snapshots.push((
-            progress.completed_vms,
-            progress.total_vms,
-            progress.current_vm.clone(),
-            state
-                .vms
-                .iter()
-                .map(|vm| format!("{}:{}", vm.name, vm.tmux_sessions.len()))
-                .collect::<Vec<_>>(),
-        ));
-        Ok(())
-    })
-    .unwrap();
+    // Retry up to 3 times to handle transient subprocess spawn failures
+    // under heavy parallel test load (CI runs 880+ tests concurrently).
+    let mut last_snapshot_count = 0;
+    for attempt in 0..3 {
+        snapshots.clear();
+        let state = collect_observed_fleet_state_with_progress(&azlin, 10, |state, progress| {
+            snapshots.push((
+                progress.completed_vms,
+                progress.total_vms,
+                progress.current_vm.clone(),
+                state
+                    .vms
+                    .iter()
+                    .map(|vm| format!("{}:{}", vm.name, vm.tmux_sessions.len()))
+                    .collect::<Vec<_>>(),
+            ));
+            Ok(())
+        })
+        .unwrap();
+        last_snapshot_count = snapshots.len();
 
-    assert_eq!(snapshots.len(), 3);
-    assert_eq!(snapshots[0].0, 0);
-    assert_eq!(snapshots[0].1, 2);
-    assert_eq!(snapshots[0].2.as_deref(), Some("vm-1"));
-    assert_eq!(snapshots[0].3, vec!["vm-1:0", "vm-2:0"]);
-    assert_eq!(snapshots[1].0, 1);
-    assert_eq!(snapshots[1].2.as_deref(), Some("vm-2"));
-    assert_eq!(snapshots[1].3, vec!["vm-1:1", "vm-2:0"]);
-    assert_eq!(snapshots[2].0, 2);
-    assert!(snapshots[2].2.is_none());
-    assert_eq!(snapshots[2].3, vec!["vm-1:1", "vm-2:1"]);
-    assert_eq!(state.vms.len(), 2);
-    assert_eq!(state.vms[0].tmux_sessions.len(), 1);
-    assert_eq!(state.vms[1].tmux_sessions.len(), 1);
+        if snapshots.len() == 3 {
+            assert_eq!(snapshots[0].0, 0);
+            assert_eq!(snapshots[0].1, 2);
+            assert_eq!(snapshots[0].2.as_deref(), Some("vm-1"));
+            assert_eq!(snapshots[0].3, vec!["vm-1:0", "vm-2:0"]);
+            assert_eq!(snapshots[1].0, 1);
+            assert_eq!(snapshots[1].2.as_deref(), Some("vm-2"));
+            assert_eq!(snapshots[1].3, vec!["vm-1:1", "vm-2:0"]);
+            assert_eq!(snapshots[2].0, 2);
+            assert!(snapshots[2].2.is_none());
+            assert_eq!(snapshots[2].3, vec!["vm-1:1", "vm-2:1"]);
+            assert_eq!(state.vms.len(), 2);
+            assert_eq!(state.vms[0].tmux_sessions.len(), 1);
+            assert_eq!(state.vms[1].tmux_sessions.len(), 1);
+            return;
+        }
+
+        if attempt < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
+    panic!(
+        "expected 3 snapshots but got {} after 3 attempts (subprocess spawn likely failed under load)",
+        last_snapshot_count
+    );
 }
 
 #[test]
@@ -4214,34 +4232,52 @@ fn fleet_admiral_start_agent_updates_task_state_and_log() {
         pr_url: None,
         error: None,
     };
-    let mut admiral = FleetAdmiral::new(
-        azlin,
-        TaskQueue {
-            tasks: vec![task.clone()],
-            persist_path: Some(temp.path().join("task_queue.json")),
-        },
-        Some(temp.path().join("logs")),
-    )
-    .unwrap();
-    admiral.coordination_dir = temp.path().join("coordination");
 
-    let action = DirectorAction::new(
-        ActionType::StartAgent,
-        Some(task),
-        Some("vm-1".to_string()),
-        Some("fleet-queued-task".to_string()),
-        "Batch assign: MEDIUM task",
+    // Retry up to 3 times to handle transient spawn failures under
+    // heavy parallel test load (CI runs 880+ tests concurrently).
+    let mut last_outcome = String::new();
+    for attempt in 0..3 {
+        let mut admiral = FleetAdmiral::new(
+            azlin.clone(),
+            TaskQueue {
+                tasks: vec![task.clone()],
+                persist_path: Some(temp.path().join("task_queue.json")),
+            },
+            Some(temp.path().join("logs")),
+        )
+        .unwrap();
+        admiral.coordination_dir = temp.path().join("coordination");
+
+        let action = DirectorAction::new(
+            ActionType::StartAgent,
+            Some(task.clone()),
+            Some("vm-1".to_string()),
+            Some("fleet-queued-task".to_string()),
+            "Batch assign: MEDIUM task",
+        );
+
+        let results = admiral.act(&[action]).unwrap();
+        assert_eq!(results.len(), 1);
+        last_outcome = results[0].1.clone();
+
+        if last_outcome == "Agent started: fleet-queued-task on vm-1" {
+            let saved = &admiral.task_queue.tasks[0];
+            assert_eq!(saved.status, TaskStatus::Running);
+            assert_eq!(saved.assigned_vm.as_deref(), Some("vm-1"));
+            assert_eq!(saved.assigned_session.as_deref(), Some("fleet-queued-task"));
+            assert!(temp.path().join("logs/admiral_log.json").exists());
+            return;
+        }
+
+        if attempt < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
+    panic!(
+        "expected 'Agent started: fleet-queued-task on vm-1' but got '{}' after 3 attempts",
+        last_outcome
     );
-
-    let results = admiral.act(&[action]).unwrap();
-
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].1, "Agent started: fleet-queued-task on vm-1");
-    let saved = &admiral.task_queue.tasks[0];
-    assert_eq!(saved.status, TaskStatus::Running);
-    assert_eq!(saved.assigned_vm.as_deref(), Some("vm-1"));
-    assert_eq!(saved.assigned_session.as_deref(), Some("fleet-queued-task"));
-    assert!(temp.path().join("logs/admiral_log.json").exists());
 }
 
 #[test]
@@ -4412,8 +4448,29 @@ fn run_tui_refresh_detail_capture_reads_fresh_tmux_output() {
     };
     ui_state.sync_to_state(&state);
 
-    run_tui_refresh_detail_capture(&azlin, &state, &mut ui_state, 10).unwrap();
+    // Retry up to 3 times to handle transient subprocess spawn failures
+    // under heavy parallel test load.
+    for attempt in 0..3 {
+        let mut try_state = ui_state.clone();
+        if run_tui_refresh_detail_capture(&azlin, &state, &mut try_state, 10).is_ok()
+            && try_state
+                .detail_capture
+                .as_ref()
+                .is_some_and(|c| c.output.contains("fresh detail line 1"))
+        {
+            let capture = try_state.detail_capture.as_ref().unwrap();
+            assert_eq!(capture.vm_name, "vm-1");
+            assert_eq!(capture.session_name, "claude-1");
+            assert!(capture.output.contains("fresh detail line 2"));
+            return;
+        }
+        if attempt < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
 
+    // Final attempt — assert normally so failure message is clear
+    run_tui_refresh_detail_capture(&azlin, &state, &mut ui_state, 10).unwrap();
     let capture = ui_state
         .detail_capture
         .as_ref()

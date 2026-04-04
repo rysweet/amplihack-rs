@@ -17,6 +17,7 @@ pub use discovery::{RecipeCache, RecipeInfo, discover_recipes, find_recipe, list
 pub use models::{Recipe, RecipeResult, Step, StepResult, StepStatus, StepType};
 pub use parser::RecipeParser;
 pub use progress_validator::{
-    ProgressPayload, ProgressStatus, ValidationError, validate_progress_file,
+    ProgressPayload, ProgressStatus, ValidationError, atomic_write_json, progress_file_path,
+    read_progress_file, validate_path_within_tmpdir, validate_progress_file,
 };
 pub use sub_recipe_recovery::{FailureClass, FailureContext, RecoveryResult, SubRecipeRecovery};

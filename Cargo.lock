@@ -320,6 +320,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "amplihack-remote"
+version = "0.7.22"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "libc",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "amplihack-safety"
 version = "0.7.22"
 dependencies = [

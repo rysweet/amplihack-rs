@@ -181,6 +181,12 @@ pub(super) fn build_tool_passthrough_args(
     let mut args = passthrough_args.to_vec();
     match tool {
         AutoModeTool::Claude | AutoModeTool::RustyClawd => {
+            if !args
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions")
+            {
+                args.push("--dangerously-skip-permissions".to_string());
+            }
             if !args.iter().any(|arg| arg == "--verbose") {
                 args.push("--verbose".to_string());
             }
@@ -188,6 +194,8 @@ pub(super) fn build_tool_passthrough_args(
             args.push(prompt.to_string());
         }
         AutoModeTool::Copilot => {
+            // Strip Claude-only flags from Copilot invocations (PR #4142).
+            args = strip_claude_only_flags(args);
             if !args.iter().any(|arg| arg == "--allow-all-tools") {
                 args.push("--allow-all-tools".to_string());
             }
@@ -214,4 +222,34 @@ pub(super) fn build_tool_passthrough_args(
         }
     }
     args
+}
+
+/// Strip Claude-only flags that Copilot CLI does not accept.
+///
+/// Removes `--dangerously-skip-permissions` and `--disallowed-tools` (with their
+/// values) from args.  Mirrors the normalizer in Python `rust_runner_copilot.py`
+/// (PR #4142).
+fn strip_claude_only_flags(args: Vec<String>) -> Vec<String> {
+    let mut filtered = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--dangerously-skip-permissions"
+            || arg.starts_with("--dangerously-skip-permissions=")
+        {
+            i += 1;
+            continue;
+        }
+        if arg == "--disallowed-tools" {
+            i += if i + 1 < args.len() { 2 } else { 1 };
+            continue;
+        }
+        if arg.starts_with("--disallowed-tools=") {
+            i += 1;
+            continue;
+        }
+        filtered.push(arg.clone());
+        i += 1;
+    }
+    filtered
 }

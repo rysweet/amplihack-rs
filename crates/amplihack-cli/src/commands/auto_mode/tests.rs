@@ -188,3 +188,46 @@ fn transform_prompt_for_staging_preserves_leading_slash_commands() {
         )
     );
 }
+
+#[test]
+fn claude_passthrough_args_include_permission_flag() {
+    let args = build_tool_passthrough_args(AutoModeTool::Claude, &[], "fix bug");
+    assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
+    assert!(args.contains(&"--verbose".to_string()));
+    assert!(args.contains(&"-p".to_string()));
+}
+
+#[test]
+fn copilot_strips_claude_only_flags_from_passthrough() {
+    let passthrough = vec![
+        "--dangerously-skip-permissions".to_string(),
+        "--disallowed-tools".to_string(),
+        "Bash,Write".to_string(),
+        "--model".to_string(),
+        "gpt-5".to_string(),
+    ];
+    let args = build_tool_passthrough_args(AutoModeTool::Copilot, &passthrough, "classify");
+
+    assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
+    assert!(!args.contains(&"--disallowed-tools".to_string()));
+    assert!(!args.contains(&"Bash,Write".to_string()));
+    assert!(args.contains(&"--model".to_string()));
+    assert!(args.contains(&"--allow-all-tools".to_string()));
+}
+
+#[test]
+fn copilot_strips_equals_style_claude_flags() {
+    let passthrough = vec![
+        "--dangerously-skip-permissions=true".to_string(),
+        "--disallowed-tools=Bash".to_string(),
+    ];
+    let args = build_tool_passthrough_args(AutoModeTool::Copilot, &passthrough, "check");
+
+    assert!(
+        !args
+            .iter()
+            .any(|a| a.starts_with("--dangerously-skip-permissions"))
+    );
+    assert!(!args.iter().any(|a| a.starts_with("--disallowed-tools")));
+    assert!(args.contains(&"--allow-all-tools".to_string()));
+}

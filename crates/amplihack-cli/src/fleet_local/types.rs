@@ -221,7 +221,7 @@ mod tests {
     fn sanitize_session_id_removes_traversal_sequences() {
         use amplihack_types::paths::sanitize_session_id;
         let safe = sanitize_session_id("../../../etc/passwd");
-        assert_eq!(safe, "etcpasswd");
+        assert_eq!(safe, "_________etc_passwd");
     }
 
     // ── RefreshMsg ─────────────────────────────────────────────────────────

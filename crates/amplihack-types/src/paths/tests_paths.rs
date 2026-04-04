@@ -36,6 +36,18 @@ fn paths_are_consistent() {
         dirs.lock_active_file(),
         PathBuf::from("/project/.claude/runtime/locks/.lock_active")
     );
+    assert_eq!(
+        dirs.lock_goal_file(),
+        PathBuf::from("/project/.claude/runtime/locks/.lock_goal")
+    );
+    assert_eq!(
+        dirs.lock_message_file(),
+        PathBuf::from("/project/.claude/runtime/locks/.lock_message")
+    );
+    assert_eq!(
+        dirs.continuation_prompt_file(),
+        PathBuf::from("/project/.claude/runtime/locks/.continuation_prompt")
+    );
 }
 
 #[test]
@@ -61,31 +73,41 @@ fn sanitize_normal_session_id() {
 
 #[test]
 fn sanitize_strips_path_traversal() {
-    assert_eq!(sanitize_session_id("../../../etc/passwd"), "etcpasswd");
+    // `..` and `/` are replaced with underscores
+    assert_eq!(
+        sanitize_session_id("../../../etc/passwd"),
+        "_________etc_passwd"
+    );
 }
 
 #[test]
 fn sanitize_strips_forward_slashes() {
-    assert_eq!(sanitize_session_id("foo/bar"), "foobar");
+    assert_eq!(sanitize_session_id("foo/bar"), "foo_bar");
 }
 
 #[test]
 fn sanitize_strips_backslashes() {
-    assert_eq!(sanitize_session_id("foo\\bar"), "foobar");
+    assert_eq!(sanitize_session_id("foo\\bar"), "foo_bar");
 }
 
 #[test]
 fn sanitize_strips_mixed_traversal() {
     assert_eq!(
         sanitize_session_id("..\\..\\windows\\system32"),
-        "windowssystem32"
+        "______windows_system32"
     );
 }
 
 #[test]
-#[should_panic(expected = "session_id is empty after sanitization")]
-fn sanitize_rejects_empty_result() {
-    sanitize_session_id("../../../");
+fn sanitize_replaces_dots_with_underscore() {
+    assert_eq!(sanitize_session_id("session.123"), "session_123");
+}
+
+#[test]
+fn sanitize_replaces_traversal_chars_with_underscores() {
+    // ../../../ → all dots and slashes become underscores
+    let result = sanitize_session_id("../../../");
+    assert_eq!(result, "_________");
 }
 
 #[test]
@@ -94,7 +116,7 @@ fn session_locks_sanitizes_traversal() {
     let path = dirs.session_locks("../../../etc/passwd");
     assert_eq!(
         path,
-        PathBuf::from("/project/.claude/runtime/locks/etcpasswd")
+        PathBuf::from("/project/.claude/runtime/locks/_________etc_passwd")
     );
 }
 
@@ -104,7 +126,7 @@ fn session_logs_sanitizes_traversal() {
     let path = dirs.session_logs("../../../etc/passwd");
     assert_eq!(
         path,
-        PathBuf::from("/project/.claude/runtime/logs/etcpasswd")
+        PathBuf::from("/project/.claude/runtime/logs/_________etc_passwd")
     );
 }
 
@@ -114,7 +136,7 @@ fn session_power_steering_sanitizes_traversal() {
     let path = dirs.session_power_steering("../../../etc/passwd");
     assert_eq!(
         path,
-        PathBuf::from("/project/.claude/runtime/power-steering/etcpasswd")
+        PathBuf::from("/project/.claude/runtime/power-steering/_________etc_passwd")
     );
 }
 

@@ -1,0 +1,18 @@
+[package]
+name = "amplihack-remote"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+regex.workspace = true
+libc.workspace = true
+tempfile.workspace = true
+tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "macros", "fs", "time"] }
+
+[dev-dependencies]

@@ -50,7 +50,26 @@ impl AuthPropagator {
             .map(|(service, command)| {
                 let works = self
                     .remote_exec(vm_name, command)
-                    .map(|output| output.status.success())
+                    .map(|output| {
+                        if output.status.success() {
+                            true
+                        } else {
+                            let detail = String::from_utf8_lossy(&output.stderr);
+                            let stdout = String::from_utf8_lossy(&output.stdout);
+                            let raw = if detail.trim().is_empty() {
+                                stdout.trim().to_string()
+                            } else {
+                                detail.trim().to_string()
+                            };
+                            if !raw.is_empty() {
+                                let sanitized = sanitize_external_error_detail(&raw, 200);
+                                tracing::warn!(
+                                    "Auth verify failed for {service} on {vm_name}: {sanitized}"
+                                );
+                            }
+                            false
+                        }
+                    })
                     .unwrap_or(false);
                 (service.to_string(), works)
             })
@@ -112,7 +131,8 @@ impl AuthPropagator {
                         .file_name()
                         .and_then(|name| name.to_str())
                         .unwrap_or("file");
-                    errors.push(format!("Failed to copy {file_name}: {}", stderr.trim()));
+                    let detail = sanitize_external_error_detail(stderr.trim(), 200);
+                    errors.push(format!("Failed to copy {file_name}: {detail}"));
                 }
                 Err(error) => {
                     let file_name = src_path
@@ -123,7 +143,8 @@ impl AuthPropagator {
                     if message.contains("timed out after") {
                         errors.push(format!("Timeout copying {file_name}"));
                     } else {
-                        errors.push(format!("Error copying {file_name}: {message}"));
+                        let detail = sanitize_external_error_detail(&message, 200);
+                        errors.push(format!("Error copying {file_name}: {detail}"));
                     }
                 }
             }
