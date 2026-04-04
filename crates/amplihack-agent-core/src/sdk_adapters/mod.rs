@@ -51,6 +51,4 @@ pub use claude::ClaudeAdapter;
 pub use copilot::CopilotAdapter;
 pub use factory::{create_adapter, create_adapter_by_name};
 pub use microsoft::MicrosoftAdapter;
-pub use types::{
-    AdapterResult, AgentTool, Goal, SdkAdapterConfig, SdkType, ToolCategory,
-};
+pub use types::{AdapterResult, AgentTool, Goal, SdkAdapterConfig, SdkType, ToolCategory};

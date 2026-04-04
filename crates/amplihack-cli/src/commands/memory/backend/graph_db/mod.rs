@@ -1,3 +1,8 @@
+// When the `graph-db` feature is disabled, the parent module
+// (`backend/mod.rs`) provides an inline stub module instead of loading
+// this directory module.  All items below are therefore only compiled
+// when lbug is available.
+
 mod handle;
 mod learning;
 mod queries;
@@ -6,8 +11,8 @@ mod schema;
 mod values;
 
 #[cfg(test)]
-pub(crate) use kuzu::LogicalType as GraphDbLogicalType;
-pub(crate) use kuzu::{
+pub(crate) use lbug::LogicalType as GraphDbLogicalType;
+pub(crate) use lbug::{
     Connection as GraphDbConnection, Database as GraphDbDatabase,
     SystemConfig as GraphDbSystemConfig, Value as GraphDbValue,
 };

@@ -7,10 +7,10 @@ use std::collections::HashMap;
 use serde_json::Value;
 use tracing::info;
 
+use super::types::{DetectedIntent, ENUMERATION_KEYWORDS, IntentType};
 use crate::agentic_loop::traits::LlmClient;
 use crate::agentic_loop::types::LlmMessage;
 use crate::error::AgentError;
-use super::types::{DetectedIntent, IntentType, ENUMERATION_KEYWORDS};
 
 /// Classify the intent of `question` via a single LLM call.
 pub async fn detect_intent(
@@ -27,11 +27,12 @@ pub async fn detect_intent(
     let mut intent = parse_intent_response(&raw);
 
     let q_lower = question.to_lowercase();
-    if ENUMERATION_KEYWORDS.iter().any(|kw| q_lower.contains(kw))
-        && !intent.intent.is_aggregation()
+    if ENUMERATION_KEYWORDS.iter().any(|kw| q_lower.contains(kw)) && !intent.intent.is_aggregation()
     {
-        info!(question = &question[..question.len().min(60)],
-            "Enumeration keywords detected; routing to aggregation");
+        info!(
+            question = &question[..question.len().min(60)],
+            "Enumeration keywords detected; routing to aggregation"
+        );
         intent.intent = IntentType::MetaMemory;
     }
     Ok(intent)
@@ -62,11 +63,25 @@ pub fn parse_intent_response(raw: &str) -> DetectedIntent {
         Ok(m) => m,
         Err(_) => return DetectedIntent::default(),
     };
-    let intent = parsed.get("intent").and_then(Value::as_str)
-        .map(IntentType::parse).unwrap_or_default();
-    let needs_temporal = parsed.get("needs_temporal").and_then(Value::as_bool).unwrap_or(false);
-    let needs_math = parsed.get("needs_math").and_then(Value::as_bool).unwrap_or(false);
-    DetectedIntent { intent, needs_temporal, needs_math, ..Default::default() }
+    let intent = parsed
+        .get("intent")
+        .and_then(Value::as_str)
+        .map(IntentType::parse)
+        .unwrap_or_default();
+    let needs_temporal = parsed
+        .get("needs_temporal")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let needs_math = parsed
+        .get("needs_math")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    DetectedIntent {
+        intent,
+        needs_temporal,
+        needs_math,
+        ..Default::default()
+    }
 }
 
 fn strip_markdown_fences(s: &str) -> String {
@@ -85,7 +100,8 @@ mod tests {
 
     #[test]
     fn parse_valid_json() {
-        let raw = r#"{"intent": "temporal_comparison", "needs_temporal": true, "needs_math": false}"#;
+        let raw =
+            r#"{"intent": "temporal_comparison", "needs_temporal": true, "needs_math": false}"#;
         let i = parse_intent_response(raw);
         assert_eq!(i.intent, IntentType::TemporalComparison);
         assert!(i.needs_temporal);
@@ -100,7 +116,10 @@ mod tests {
 
     #[test]
     fn parse_garbage_returns_default() {
-        assert_eq!(parse_intent_response("not json").intent, IntentType::SimpleRecall);
+        assert_eq!(
+            parse_intent_response("not json").intent,
+            IntentType::SimpleRecall
+        );
     }
 
     #[test]
@@ -113,7 +132,10 @@ mod tests {
     #[test]
     fn strip_fences() {
         assert_eq!(strip_markdown_fences("hello"), "hello");
-        assert_eq!(strip_markdown_fences("```json\n{\"a\":1}\n```"), "{\"a\":1}");
+        assert_eq!(
+            strip_markdown_fences("```json\n{\"a\":1}\n```"),
+            "{\"a\":1}"
+        );
     }
 
     #[test]
@@ -126,8 +148,11 @@ mod tests {
     fn enumeration_override() {
         let mut i = parse_intent_response(r#"{"intent": "simple_recall"}"#);
         let q = "list all incidents in 2024";
-        if ENUMERATION_KEYWORDS.iter().any(|kw| q.to_lowercase().contains(kw))
-            && !i.intent.is_aggregation() {
+        if ENUMERATION_KEYWORDS
+            .iter()
+            .any(|kw| q.to_lowercase().contains(kw))
+            && !i.intent.is_aggregation()
+        {
             i.intent = IntentType::MetaMemory;
         }
         assert_eq!(i.intent, IntentType::MetaMemory);

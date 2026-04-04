@@ -69,7 +69,7 @@ Bundle asset resolution also now has a native path: the Rust installer can deplo
 
 `user-prompt-submit` now performs agent-memory lookup natively in Rust as well, using the existing Rust memory-store readers instead of shelling out through a Python bridge.
 
-`session-stop` now follows the same pattern: instead of delegating to a stale Python `MemoryCoordinator.store()` bridge, the Rust hook derives session-end learnings from explicit hook payload fields or transcript JSONL and writes them through the native SQLite / Kuzu memory backends.
+`session-stop` now follows the same pattern: instead of delegating to a stale Python `MemoryCoordinator.store()` bridge, the Rust hook derives session-end learnings from explicit hook payload fields or transcript JSONL and writes them through the native SQLite / LadybugDB memory backends.
 
 `stop/reflection` is native on the Rust side too: transcript parsing, repository-context detection, redirect-history loading, and reflection-prompt assembly now happen in Rust, and the hook invokes headless Claude CLI directly instead of bouncing through a Python SDK bridge.
 

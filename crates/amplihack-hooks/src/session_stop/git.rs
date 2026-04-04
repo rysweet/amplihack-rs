@@ -56,10 +56,9 @@ fn get_git_status() -> Option<GitStatus> {
         .map(|o| parse_lines(&o))
         .unwrap_or_default();
 
-    let untracked =
-        run_git_with_timeout(&["ls-files", "--others", "--exclude-standard"])
-            .map(|o| parse_lines(&o))
-            .unwrap_or_default();
+    let untracked = run_git_with_timeout(&["ls-files", "--others", "--exclude-standard"])
+        .map(|o| parse_lines(&o))
+        .unwrap_or_default();
 
     Some(GitStatus {
         staged,

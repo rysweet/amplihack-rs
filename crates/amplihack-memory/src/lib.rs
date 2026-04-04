@@ -14,9 +14,9 @@ pub mod discoveries;
 pub mod distributed_store;
 pub mod evaluation;
 pub mod facade;
+pub mod graph_db;
 pub mod graph_store;
 pub mod hash_ring;
-pub mod kuzu;
 pub mod maintenance;
 pub mod manager;
 pub mod memory_store;
@@ -40,9 +40,8 @@ pub use discoveries::{Discovery, get_recent_discoveries, store_discovery};
 pub use distributed_store::DistributedGraphStore;
 pub use evaluation::{
     BackendComparison, BackendReliabilityEvaluator, BackendReliabilityMetrics, BenchmarkEvaluator,
-    BenchmarkMetrics, ComparisonReport, PerformanceContracts, QueryTestCase,
-    QualityEvaluator, QualityMetrics, QualityReport, RetrievalQualityEvaluator,
-    RetrievalQualityMetrics,
+    BenchmarkMetrics, ComparisonReport, PerformanceContracts, QualityEvaluator, QualityMetrics,
+    QualityReport, QueryTestCase, RetrievalQualityEvaluator, RetrievalQualityMetrics,
 };
 pub use facade::MemoryFacade;
 pub use graph_store::GraphStore;
@@ -53,6 +52,6 @@ pub use manager::MemoryManager;
 pub use memory_store::InMemoryGraphStore;
 pub use models::{MemoryEntry, MemoryQuery, MemoryType, SessionInfo, StorageRequest};
 pub use network_store::{AgentRegistry, NetworkGraphStore};
-pub use retrieval_pipeline::{RetrievalPipeline, RetrievalResult, ScoredEntry};
 pub use retrieval::{Fact, IntentKind, MemorySearch as RetrievalMemorySearch};
+pub use retrieval_pipeline::{RetrievalPipeline, RetrievalResult, ScoredEntry};
 pub use storage_pipeline::{StoragePipeline, StorageResult};

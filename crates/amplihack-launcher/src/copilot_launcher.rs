@@ -40,8 +40,12 @@ pub struct PluginEntry {
     pub installed_at: String,
 }
 
-fn default_marketplace() -> String { "local".into() }
-fn default_true() -> bool { true }
+fn default_marketplace() -> String {
+    "local".into()
+}
+fn default_true() -> bool {
+    true
+}
 
 /// Check if Copilot CLI is installed and responsive.
 pub fn check_copilot() -> bool {
@@ -57,7 +61,13 @@ pub fn install_copilot() -> Result<bool> {
     let npm_prefix = copilot_npm_prefix();
     info!("Installing Copilot CLI via npm...");
     let status = Command::new("npm")
-        .args(["install", "-g", "--prefix", &npm_prefix.to_string_lossy(), "@github/copilot"])
+        .args([
+            "install",
+            "-g",
+            "--prefix",
+            &npm_prefix.to_string_lossy(),
+            "@github/copilot",
+        ])
         .status()
         .context("failed to run npm install")?;
     Ok(status.success())
@@ -66,7 +76,9 @@ pub fn install_copilot() -> Result<bool> {
 /// Get the current installed Copilot version.
 pub fn get_current_copilot_version() -> Option<String> {
     let output = Command::new("copilot").arg("--version").output().ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     text.split_whitespace()
         .find(|s| s.contains('.'))
@@ -94,7 +106,13 @@ pub fn execute_update(install_method: &str) -> Result<bool> {
         _ => {
             let prefix = copilot_npm_prefix();
             Command::new("npm")
-                .args(["update", "-g", "--prefix", &prefix.to_string_lossy(), "@github/copilot"])
+                .args([
+                    "update",
+                    "-g",
+                    "--prefix",
+                    &prefix.to_string_lossy(),
+                    "@github/copilot",
+                ])
                 .status()
                 .context("failed to run npm update")?
         }
@@ -104,15 +122,27 @@ pub fn execute_update(install_method: &str) -> Result<bool> {
 
 /// Pre-launch update gate. Respects `AMPLIHACK_SKIP_UPDATE=1`.
 pub fn ensure_latest_copilot() -> Result<bool> {
-    if std::env::var("AMPLIHACK_SKIP_UPDATE").map(|v| v == "1").unwrap_or(false) {
+    if std::env::var("AMPLIHACK_SKIP_UPDATE")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         debug!("Skipping update check (AMPLIHACK_SKIP_UPDATE=1)");
         return Ok(true);
     }
     let method = detect_install_method();
     match execute_update(&method) {
-        Ok(true) => { info!("Copilot CLI updated successfully"); Ok(true) }
-        Ok(false) => { warn!("Copilot CLI update failed, continuing"); Ok(true) }
-        Err(e) => { warn!(err = %e, "Update check failed, continuing"); Ok(true) }
+        Ok(true) => {
+            info!("Copilot CLI updated successfully");
+            Ok(true)
+        }
+        Ok(false) => {
+            warn!("Copilot CLI update failed, continuing");
+            Ok(true)
+        }
+        Err(e) => {
+            warn!(err = %e, "Update check failed, continuing");
+            Ok(true)
+        }
     }
 }
 
@@ -120,7 +150,8 @@ pub fn ensure_latest_copilot() -> Result<bool> {
 pub fn register_copilot_plugin(source_commands: &Path, copilot_home: &Path) -> Result<bool> {
     let config_path = copilot_home.join("config.json");
     let mut config: Value = if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path).context("failed to read config.json")?;
+        let content =
+            std::fs::read_to_string(&config_path).context("failed to read config.json")?;
         serde_json::from_str(&content).unwrap_or_else(|_| json!({}))
     } else {
         json!({})
@@ -135,12 +166,18 @@ pub fn register_copilot_plugin(source_commands: &Path, copilot_home: &Path) -> R
         .as_array_mut()
         .ok_or_else(|| anyhow::anyhow!("installed_plugins is not an array"))?;
 
-    if plugins.iter().any(|p| p.get("name").and_then(|n| n.as_str()) == Some("amplihack")) {
+    if plugins
+        .iter()
+        .any(|p| p.get("name").and_then(|n| n.as_str()) == Some("amplihack"))
+    {
         debug!("Plugin already registered");
         return Ok(false);
     }
 
-    let cache_path = copilot_home.join("installed-plugins").join("amplihack@local").join("commands");
+    let cache_path = copilot_home
+        .join("installed-plugins")
+        .join("amplihack@local")
+        .join("commands");
     if source_commands.exists() {
         crate::copilot_staging::stage_md_files(source_commands, &cache_path, false)?;
     }
@@ -163,13 +200,18 @@ pub fn register_copilot_plugin(source_commands: &Path, copilot_home: &Path) -> R
 /// Validate and repair plugin entries in config.json.
 pub fn validate_and_repair_copilot_config(copilot_home: &Path) -> Result<bool> {
     let config_path = copilot_home.join("config.json");
-    if !config_path.exists() { return Ok(false); }
+    if !config_path.exists() {
+        return Ok(false);
+    }
 
     let content = std::fs::read_to_string(&config_path)?;
     let mut config: Value = serde_json::from_str(&content)?;
     let mut dirty = false;
 
-    if let Some(plugins) = config.get_mut("installed_plugins").and_then(|v| v.as_array_mut()) {
+    if let Some(plugins) = config
+        .get_mut("installed_plugins")
+        .and_then(|v| v.as_array_mut())
+    {
         for plugin in plugins.iter_mut() {
             if let Some(obj) = plugin.as_object_mut() {
                 for &(field, default) in REQUIRED_PLUGIN_DEFAULTS {
@@ -220,18 +262,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn check_copilot_returns_bool() { let _ = check_copilot(); }
+    fn check_copilot_returns_bool() {
+        let _ = check_copilot();
+    }
     #[test]
-    fn detect_method_valid() { let m = detect_install_method(); assert!(m == "npm" || m == "uvx"); }
+    fn detect_method_valid() {
+        let m = detect_install_method();
+        assert!(m == "npm" || m == "uvx");
+    }
     #[test]
-    fn copilot_home_default() { assert!(copilot_home().to_string_lossy().contains("copilot") || std::env::var("COPILOT_HOME").is_ok()); }
+    fn copilot_home_default() {
+        assert!(
+            copilot_home().to_string_lossy().contains("copilot")
+                || std::env::var("COPILOT_HOME").is_ok()
+        );
+    }
     #[test]
     fn register_plugin_creates() {
         let home = tempfile::tempdir().unwrap();
         let cmds = tempfile::tempdir().unwrap();
         std::fs::write(cmds.path().join("dev.md"), "# dev").unwrap();
         assert!(register_copilot_plugin(cmds.path(), home.path()).unwrap());
-        let c: Value = serde_json::from_str(&std::fs::read_to_string(home.path().join("config.json")).unwrap()).unwrap();
+        let c: Value = serde_json::from_str(
+            &std::fs::read_to_string(home.path().join("config.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(c["installed_plugins"].as_array().unwrap().len(), 1);
         assert_eq!(c["installed_plugins"][0]["name"], "amplihack");
     }
@@ -245,9 +300,16 @@ mod tests {
     #[test]
     fn validate_repair_backfills() {
         let home = tempfile::tempdir().unwrap();
-        std::fs::write(home.path().join("config.json"), r#"{"installed_plugins":[{"name":"test","enabled":true}]}"#).unwrap();
+        std::fs::write(
+            home.path().join("config.json"),
+            r#"{"installed_plugins":[{"name":"test","enabled":true}]}"#,
+        )
+        .unwrap();
         assert!(validate_and_repair_copilot_config(home.path()).unwrap());
-        let c: Value = serde_json::from_str(&std::fs::read_to_string(home.path().join("config.json")).unwrap()).unwrap();
+        let c: Value = serde_json::from_str(
+            &std::fs::read_to_string(home.path().join("config.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(c["installed_plugins"][0]["marketplace"], "local");
     }
     #[test]
@@ -259,9 +321,17 @@ mod tests {
     }
     #[test]
     fn plugin_entry_serializes() {
-        let e = PluginEntry { name: "test".into(), marketplace: "local".into(), version: "1.0".into(),
-            enabled: true, cache_path: "/p".into(), source: "m".into(), installed_at: "2024-01-01T00:00:00+00:00".into() };
+        let e = PluginEntry {
+            name: "test".into(),
+            marketplace: "local".into(),
+            version: "1.0".into(),
+            enabled: true,
+            cache_path: "/p".into(),
+            source: "m".into(),
+            installed_at: "2024-01-01T00:00:00+00:00".into(),
+        };
         let j = serde_json::to_value(&e).unwrap();
-        assert_eq!(j["name"], "test"); assert_eq!(j["enabled"], true);
+        assert_eq!(j["name"], "test");
+        assert_eq!(j["enabled"], true);
     }
 }

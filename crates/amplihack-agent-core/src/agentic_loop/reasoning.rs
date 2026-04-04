@@ -14,8 +14,7 @@ use super::json_parse::parse_json_response;
 use super::loop_core::AgenticLoop;
 use super::traits::{ActionExecutor, LlmClient, MemoryRetriever};
 use super::types::{
-    LlmMessage, MemoryFact, ReasoningStep, ReasoningTrace, RetrievalPlan,
-    SufficiencyEvaluation,
+    LlmMessage, MemoryFact, ReasoningStep, ReasoningTrace, RetrievalPlan, SufficiencyEvaluation,
 };
 
 impl<L, A, M> AgenticLoop<L, A, M>
@@ -94,8 +93,7 @@ where
             let mut new_facts_this_round: usize = 0;
             for query in &plan.search_queries {
                 total_queries += 1;
-                let (nodes, facts) =
-                    self.targeted_search(query, &seen_ids, search_max_nodes);
+                let (nodes, facts) = self.targeted_search(query, &seen_ids, search_max_nodes);
                 for (node, fact) in nodes.into_iter().zip(facts.into_iter()) {
                     if seen_ids.insert(node.id.clone()) {
                         collected_nodes.push(node);
@@ -250,14 +248,8 @@ where
             .iter()
             .take(10)
             .map(|f| {
-                let ctx = f
-                    .get("context")
-                    .and_then(Value::as_str)
-                    .unwrap_or("?");
-                let outcome = f
-                    .get("outcome")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
+                let ctx = f.get("context").and_then(Value::as_str).unwrap_or("?");
+                let outcome = f.get("outcome").and_then(Value::as_str).unwrap_or("");
                 let short: String = outcome.chars().take(80).collect();
                 format!("- [{ctx}] {short}")
             })

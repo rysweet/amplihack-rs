@@ -15,11 +15,13 @@ use std::sync::LazyLock;
 /// Regex for recursive rm commands.
 /// Catches: rm -rf, rm -r, rm -fr, rm -Rf, rm -r -f, rm --recursive, /bin/rm -rf
 static RM_RECURSIVE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\brm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*|(?:-[a-zA-Z]+\s+)*-[rR]|--recursive)").expect("static RM_RECURSIVE regex")
+    Regex::new(r"\brm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*|(?:-[a-zA-Z]+\s+)*-[rR]|--recursive)")
+        .expect("static RM_RECURSIVE regex")
 });
 
 /// Regex for rmdir commands.
-static RMDIR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\brmdir(?:\s|$)").expect("static RMDIR regex"));
+static RMDIR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\brmdir(?:\s|$)").expect("static RMDIR regex"));
 
 /// Regex for mv commands (with optional sudo, env vars, command prefix, full path).
 static MV_RE: LazyLock<Regex> = LazyLock::new(|| {

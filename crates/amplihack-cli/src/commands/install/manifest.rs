@@ -2,7 +2,7 @@
 
 use super::paths::staging_claude_dir;
 use super::types::InstallManifest;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 

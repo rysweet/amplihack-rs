@@ -196,7 +196,10 @@ pub fn make_executable(path: &Path) -> std::io::Result<()> {
 
 /// Sanitize a bundle name: only allow `[a-zA-Z0-9_-]`.
 pub fn sanitize_bundle_name(name: &str) -> Result<String> {
-    let sanitized: String = name.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect();
+    let sanitized: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
     if sanitized.is_empty() {
         return Err(GeneratorError::PackagingFailed(format!(
             "Bundle name contains no valid characters: {name}"
@@ -207,7 +210,10 @@ pub fn sanitize_bundle_name(name: &str) -> Result<String> {
 
 /// Sanitize a version string: only allow `[0-9.-]`.
 pub fn sanitize_version(version: &str) -> Result<String> {
-    let sanitized: String = version.chars().filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-').collect();
+    let sanitized: String = version
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+        .collect();
     if sanitized.is_empty() {
         return Err(GeneratorError::PackagingFailed(format!(
             "Version contains no valid characters: {version}"

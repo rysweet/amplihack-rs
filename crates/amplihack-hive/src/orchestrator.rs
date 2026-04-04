@@ -115,13 +115,20 @@ impl HiveMindOrchestrator {
         confidence: f64,
         source_id: &str,
     ) -> Result<PromotionResult> {
-        let fact_id = self.graph
+        let fact_id = self
+            .graph
             .store_fact(concept, content, confidence, source_id, vec![])?;
-        let fact = self.graph.get_fact(&fact_id)?
+        let fact = self
+            .graph
+            .get_fact(&fact_id)?
             .ok_or_else(|| HiveError::FactNotFound(fact_id.clone()))?;
         let promoted = self.policy.should_promote(&fact, &self.agent_id);
         let broadcast = self.policy.should_broadcast(&fact);
-        Ok(PromotionResult { fact_id, promoted, broadcast })
+        Ok(PromotionResult {
+            fact_id,
+            promoted,
+            broadcast,
+        })
     }
 
     /// Query facts by concept.
@@ -138,7 +145,11 @@ impl HiveMindOrchestrator {
         // Deduplicate by content
         let mut seen = HashSet::new();
         results.retain(|f| seen.insert(f.content.clone()));
-        results.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(results)
     }
 
@@ -188,7 +199,8 @@ impl HiveMindOrchestrator {
 
     /// Collect all facts from all peers.
     pub fn all_peer_facts(&self) -> Vec<HiveFact> {
-        self.peers.iter()
+        self.peers
+            .iter()
             .flat_map(|p| p.all_facts().to_vec())
             .collect()
     }
@@ -218,11 +230,17 @@ impl HiveMindOrchestrator {
     }
 
     /// Return a reference to the underlying graph.
-    pub fn graph(&self) -> &HiveGraph { &self.graph }
+    pub fn graph(&self) -> &HiveGraph {
+        &self.graph
+    }
 
     /// Return a mutable reference to the event bus.
-    pub fn bus_mut(&mut self) -> &mut LocalEventBus { &mut self.bus }
+    pub fn bus_mut(&mut self) -> &mut LocalEventBus {
+        &mut self.bus
+    }
 
     /// Set the gossip protocol for this orchestrator.
-    pub fn set_gossip(&mut self, gossip: GossipProtocol) { self.gossip = Some(gossip); }
+    pub fn set_gossip(&mut self, gossip: GossipProtocol) {
+        self.gossip = Some(gossip);
+    }
 }

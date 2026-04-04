@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use crate::auto_mode::{
-    AutoModeConfig, SdkBackend, SessionMetrics, SessionResult, TurnResult,
-    format_elapsed, is_retryable_output, sanitize_injected_content,
+    AutoModeConfig, SdkBackend, SessionMetrics, SessionResult, TurnResult, format_elapsed,
+    is_retryable_output, sanitize_injected_content,
 };
 
 /// Autonomous execution engine.
@@ -101,7 +101,12 @@ impl AutoMode {
             duration_secs: duration,
         });
 
-        debug!(turn = self.turn, exit_code, duration = format_elapsed(duration), "Turn completed");
+        debug!(
+            turn = self.turn,
+            exit_code,
+            duration = format_elapsed(duration),
+            "Turn completed"
+        );
         Ok(())
     }
 
@@ -117,9 +122,14 @@ impl AutoMode {
                 Ok((code, output)) if code == 0 || !is_retryable_output(&output) => {
                     return Ok((code, output));
                 }
-                Ok((code, output)) if attempt < max_retries => {
+                Ok((code, _output)) if attempt < max_retries => {
                     let delay = base_delay_secs * 2_f64.powi(attempt as i32);
-                    warn!(attempt = attempt + 1, delay_secs = delay, exit_code = code, "Retrying");
+                    warn!(
+                        attempt = attempt + 1,
+                        delay_secs = delay,
+                        exit_code = code,
+                        "Retrying"
+                    );
                     std::thread::sleep(Duration::from_secs_f64(delay));
                     attempt += 1;
                 }
@@ -147,7 +157,9 @@ impl AutoMode {
         if let Some(timeout) = self.config.query_timeout_secs {
             cmd.env("AMPLIHACK_QUERY_TIMEOUT", timeout.to_string());
         }
-        let output = cmd.output().with_context(|| format!("failed to run {binary}"))?;
+        let output = cmd
+            .output()
+            .with_context(|| format!("failed to run {binary}"))?;
         let code = output.status.code().unwrap_or(1);
         let text = String::from_utf8_lossy(&output.stdout).to_string();
         Ok((code, text))
@@ -251,14 +263,20 @@ mod tests {
 
     #[test]
     fn should_continue_respects_turns() {
-        let mut am = AutoMode::new(AutoModeConfig { max_turns: 2, ..Default::default() });
+        let mut am = AutoMode::new(AutoModeConfig {
+            max_turns: 2,
+            ..Default::default()
+        });
         assert!(am.should_continue());
         am.turn = 2;
         assert!(!am.should_continue());
     }
     #[test]
     fn should_continue_respects_api_calls() {
-        let mut am = AutoMode::new(AutoModeConfig { max_api_calls: 3, ..Default::default() });
+        let mut am = AutoMode::new(AutoModeConfig {
+            max_api_calls: 3,
+            ..Default::default()
+        });
         am.total_api_calls = 3;
         assert!(!am.should_continue());
     }
@@ -266,23 +284,36 @@ mod tests {
     fn metrics_initial() {
         let am = AutoMode::new(AutoModeConfig::default());
         let m = am.metrics();
-        assert_eq!(m.turn, 0); assert_eq!(m.api_calls, 0); assert!(m.elapsed_secs < 1.0);
+        assert_eq!(m.turn, 0);
+        assert_eq!(m.api_calls, 0);
+        assert!(m.elapsed_secs < 1.0);
     }
     #[test]
     fn build_clarify_uses_task() {
-        let am = AutoMode::new(AutoModeConfig { prompt: "orig".into(), task: Some("override".into()), ..Default::default() });
+        let am = AutoMode::new(AutoModeConfig {
+            prompt: "orig".into(),
+            task: Some("override".into()),
+            ..Default::default()
+        });
         let p = am.build_clarify_prompt();
-        assert!(p.contains("override")); assert!(!p.contains("orig"));
+        assert!(p.contains("override"));
+        assert!(!p.contains("orig"));
     }
     #[test]
     fn build_clarify_falls_back() {
-        let am = AutoMode::new(AutoModeConfig { prompt: "fix bug".into(), ..Default::default() });
+        let am = AutoMode::new(AutoModeConfig {
+            prompt: "fix bug".into(),
+            ..Default::default()
+        });
         assert!(am.build_clarify_prompt().contains("fix bug"));
     }
     #[test]
     fn check_instructions_no_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let am = AutoMode::new(AutoModeConfig { working_dir: dir.path().into(), ..Default::default() });
+        let am = AutoMode::new(AutoModeConfig {
+            working_dir: dir.path().into(),
+            ..Default::default()
+        });
         assert!(am.check_for_new_instructions().unwrap().is_none());
     }
     #[test]
@@ -291,7 +322,10 @@ mod tests {
         let append = dir.path().join(".amplihack/append");
         std::fs::create_dir_all(&append).unwrap();
         std::fs::write(append.join("extra.md"), "Do this also").unwrap();
-        let am = AutoMode::new(AutoModeConfig { working_dir: dir.path().into(), ..Default::default() });
+        let am = AutoMode::new(AutoModeConfig {
+            working_dir: dir.path().into(),
+            ..Default::default()
+        });
         let instr = am.check_for_new_instructions().unwrap().unwrap();
         assert!(instr.contains("Do this also"));
         assert!(!append.join("extra.md").exists());

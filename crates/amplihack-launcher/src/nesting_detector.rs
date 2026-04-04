@@ -50,9 +50,7 @@ impl NestingDetector {
         let active_session = self.find_active_session(cwd);
 
         let is_nested = active_session.is_some();
-        let parent_session_id = active_session
-            .as_ref()
-            .map(|s| s.session_id.clone());
+        let parent_session_id = active_session.as_ref().map(|s| s.session_id.clone());
 
         // Auto-mode always stages
         let is_auto_mode = argv.iter().any(|a| a == "--auto");
@@ -108,10 +106,7 @@ impl NestingDetector {
                 None => continue,
             };
 
-            let status = entry
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let status = entry.get("status").and_then(|v| v.as_str()).unwrap_or("");
             if status == "completed" || status == "crashed" {
                 if let Some(existing) = sessions.get_mut(&session_id) {
                     existing["status"] = serde_json::Value::String(status.to_string());
@@ -125,10 +120,7 @@ impl NestingDetector {
         let cwd_resolved = cwd.canonicalize().ok()?;
 
         for data in sessions.values() {
-            let status = data
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("");
             if status != "active" {
                 continue;
             }
@@ -198,14 +190,12 @@ fn is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
         // signal 0 checks if process exists without sending a signal
-        unsafe {
-            let ret = libc::kill(pid as i32, 0);
-            if ret == 0 {
-                return true;
-            }
-            // EPERM means process exists but we can't signal it
-            *libc::__errno_location() == libc::EPERM
+        let ret = unsafe { libc::kill(pid as i32, 0) };
+        if ret == 0 {
+            return true;
         }
+        // EPERM means process exists but we can't signal it
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 
     #[cfg(not(unix))]
@@ -249,8 +239,8 @@ mod tests {
     #[test]
     fn detect_nesting_no_log() {
         let dir = tempfile::tempdir().unwrap();
-        let detector = NestingDetector::new()
-            .with_runtime_log(dir.path().join("nonexistent.jsonl"));
+        let detector =
+            NestingDetector::new().with_runtime_log(dir.path().join("nonexistent.jsonl"));
         let result = detector.detect_nesting(dir.path(), &[]);
         assert!(!result.is_nested);
         assert!(!result.requires_staging);
@@ -259,8 +249,8 @@ mod tests {
     #[test]
     fn detect_nesting_auto_mode_requires_staging() {
         let dir = tempfile::tempdir().unwrap();
-        let detector = NestingDetector::new()
-            .with_runtime_log(dir.path().join("nonexistent.jsonl"));
+        let detector =
+            NestingDetector::new().with_runtime_log(dir.path().join("nonexistent.jsonl"));
         let result = detector.detect_nesting(dir.path(), &["--auto".to_string()]);
         assert!(result.requires_staging);
     }

@@ -35,17 +35,9 @@ impl JsonLogger {
     /// - `event_type`: e.g. `"turn_start"`, `"turn_complete"`, `"error"`.
     /// - `data`: optional extra key-value pairs merged into the event.
     /// - `level`: `"INFO"`, `"WARNING"`, or `"ERROR"`.
-    pub fn log_event(
-        &self,
-        event_type: &str,
-        data: Option<&HashMap<String, Value>>,
-        level: &str,
-    ) {
+    pub fn log_event(&self, event_type: &str, data: Option<&HashMap<String, Value>>, level: &str) {
         let mut event = serde_json::Map::new();
-        event.insert(
-            "timestamp".into(),
-            Value::String(Utc::now().to_rfc3339()),
-        );
+        event.insert("timestamp".into(), Value::String(Utc::now().to_rfc3339()));
         event.insert("level".into(), Value::String(level.into()));
         event.insert("event".into(), Value::String(event_type.into()));
 

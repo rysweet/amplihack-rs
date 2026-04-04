@@ -118,10 +118,7 @@ impl Default for ClaudeBinaryManager {
 
 /// Detect the version by running `<binary> --version`.
 fn detect_version(path: &Path) -> Option<String> {
-    let output = Command::new(path)
-        .arg("--version")
-        .output()
-        .ok()?;
+    let output = Command::new(path).arg("--version").output().ok()?;
 
     if !output.status.success() {
         return None;
@@ -225,12 +222,8 @@ mod tests {
             version: Some("1.0.0".into()),
             supports_trace: true,
         };
-        let cmd =
-            ClaudeBinaryManager::build_command(&info, true, Some("/log.txt"), &[]).unwrap();
-        assert_eq!(
-            cmd,
-            vec!["/usr/bin/rustyclawd", "--log-file", "/log.txt"]
-        );
+        let cmd = ClaudeBinaryManager::build_command(&info, true, Some("/log.txt"), &[]).unwrap();
+        assert_eq!(cmd, vec!["/usr/bin/rustyclawd", "--log-file", "/log.txt"]);
     }
 
     #[test]

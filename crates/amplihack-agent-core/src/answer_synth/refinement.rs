@@ -26,12 +26,17 @@ pub async fn answer_question(
     let intent = detect_intent(question, llm, &config.model).await?;
     let outcome = adaptive_retrieve(question, &intent, retriever, config);
     if outcome.facts.is_empty() {
-        return Ok(("I don't have enough information to answer that question.".into(),
-            build_trace(question, &intent, 0, true)));
+        return Ok((
+            "I don't have enough information to answer that question.".into(),
+            build_trace(question, &intent, 0, true),
+        ));
     }
     let facts = dedup_and_filter(outcome.facts);
     let answer = synthesize(question, &facts, level, &intent, llm, config).await?;
-    Ok((answer, build_trace(question, &intent, facts.len(), outcome.used_simple_path)))
+    Ok((
+        answer,
+        build_trace(question, &intent, facts.len(), outcome.used_simple_path),
+    ))
 }
 
 /// Agentic answer: single-shot first, then evaluate + gap-fill + re-synthesize.
@@ -56,7 +61,9 @@ pub async fn answer_question_agentic(
     let mut seen: HashSet<String> = HashSet::new();
     for gap in evaluation.gaps.iter().take(max_iterations) {
         for f in retriever.search(gap, 50) {
-            if !f.id.is_empty() && seen.insert(f.id.clone()) { additional.push(f); }
+            if !f.id.is_empty() && seen.insert(f.id.clone()) {
+                additional.push(f);
+            }
         }
     }
     if additional.is_empty() {
@@ -65,9 +72,11 @@ pub async fn answer_question_agentic(
     }
     let original = retriever.search(question, config.max_retrieval_limit);
     let prev_fact = MemoryFact {
-        id: "__previous_answer__".into(), context: "PREVIOUS_ANSWER".into(),
+        id: "__previous_answer__".into(),
+        context: "PREVIOUS_ANSWER".into(),
         outcome: format!("A previous analysis answered: {initial_answer}"),
-        confidence: 0.95, metadata: Default::default(),
+        confidence: 0.95,
+        metadata: Default::default(),
     };
     let mut all = vec![prev_fact];
     all.extend(original);
@@ -75,7 +84,10 @@ pub async fn answer_question_agentic(
     let deduped = dedup_and_filter(all);
     let intent = detect_intent(question, llm, &config.model).await?;
     let refined = synthesize(question, &deduped, QuestionLevel::L3, &intent, llm, config).await?;
-    info!(total = deduped.len(), "Agentic: refined with additional facts");
+    info!(
+        total = deduped.len(),
+        "Agentic: refined with additional facts"
+    );
     Ok((refined, trace))
 }
 
@@ -88,50 +100,108 @@ pub async fn evaluate_completeness(
 ) -> Result<CompletenessEvaluation, AgentError> {
     let trimmed = answer.trim();
     if trimmed.is_empty() {
-        return Ok(CompletenessEvaluation { is_complete: false, gaps: vec![question.into()] });
+        return Ok(CompletenessEvaluation {
+            is_complete: false,
+            gaps: vec![question.into()],
+        });
     }
     let lower = trimmed.to_lowercase();
-    let no_info = ["i don't have enough", "i don't have information", "i cannot answer",
-                   "no information available", "not enough context"];
+    let no_info = [
+        "i don't have enough",
+        "i don't have information",
+        "i cannot answer",
+        "no information available",
+        "not enough context",
+    ];
     if no_info.iter().any(|p| lower.starts_with(p)) {
-        return Ok(CompletenessEvaluation { is_complete: false, gaps: vec![question.into()] });
+        return Ok(CompletenessEvaluation {
+            is_complete: false,
+            gaps: vec![question.into()],
+        });
     }
     if trimmed.len() > 50 {
-        return Ok(CompletenessEvaluation { is_complete: true, gaps: vec![] });
+        return Ok(CompletenessEvaluation {
+            is_complete: true,
+            gaps: vec![],
+        });
     }
     let prompt = format!(
         "Evaluate if this answer FULLY addresses the question.\n\n\
          QUESTION: {question}\nANSWER: {answer}\n\n\
          Respond with JSON: {{\"is_complete\": true}} or \
          {{\"is_complete\": false, \"gaps\": [\"search query\"]}}\n\
-         Only mark incomplete if SPECIFIC information is missing. Return ONLY JSON.");
-    let raw = llm.completion(&[LlmMessage::user(prompt)], &config.model, config.eval_temperature).await?;
+         Only mark incomplete if SPECIFIC information is missing. Return ONLY JSON."
+    );
+    let raw = llm
+        .completion(
+            &[LlmMessage::user(prompt)],
+            &config.model,
+            config.eval_temperature,
+        )
+        .await?;
     Ok(parse_completeness_response(&raw))
 }
 
 fn parse_completeness_response(raw: &str) -> CompletenessEvaluation {
     let s = raw.trim();
     let s = if s.starts_with("```") {
-        s.split_once('\n').map_or(s, |(_, r)| r).strip_suffix("```").unwrap_or(s).trim()
-    } else { s };
+        s.split_once('\n')
+            .map_or(s, |(_, r)| r)
+            .strip_suffix("```")
+            .unwrap_or(s)
+            .trim()
+    } else {
+        s
+    };
     match serde_json::from_str::<serde_json::Value>(s) {
         Ok(val) => CompletenessEvaluation {
-            is_complete: val.get("is_complete").and_then(|v| v.as_bool()).unwrap_or(true),
-            gaps: val.get("gaps").and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            is_complete: val
+                .get("is_complete")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            gaps: val
+                .get("gaps")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
         },
-        Err(_) => CompletenessEvaluation { is_complete: true, gaps: vec![] },
+        Err(_) => CompletenessEvaluation {
+            is_complete: true,
+            gaps: vec![],
+        },
     }
 }
 
-fn build_trace(question: &str, intent: &DetectedIntent, facts: usize, simple: bool) -> ReasoningTrace {
+fn build_trace(
+    question: &str,
+    intent: &DetectedIntent,
+    facts: usize,
+    simple: bool,
+) -> ReasoningTrace {
     let mut m = std::collections::HashMap::new();
-    m.insert("intent".into(), serde_json::Value::String(intent.intent.to_string()));
-    m.insert("needs_temporal".into(), serde_json::Value::Bool(intent.needs_temporal));
-    m.insert("needs_math".into(), serde_json::Value::Bool(intent.needs_math));
-    ReasoningTrace { question: question.into(), intent: m,
-        total_facts_collected: facts, used_simple_path: simple, ..Default::default() }
+    m.insert(
+        "intent".into(),
+        serde_json::Value::String(intent.intent.to_string()),
+    );
+    m.insert(
+        "needs_temporal".into(),
+        serde_json::Value::Bool(intent.needs_temporal),
+    );
+    m.insert(
+        "needs_math".into(),
+        serde_json::Value::Bool(intent.needs_math),
+    );
+    ReasoningTrace {
+        question: question.into(),
+        intent: m,
+        total_facts_collected: facts,
+        used_simple_path: simple,
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]
@@ -143,20 +213,32 @@ mod tests {
     struct MockLlm(String);
     #[async_trait]
     impl LlmClient for MockLlm {
-        async fn completion(&self, _: &[LlmMessage], _: &str, _: f64) -> Result<String, AgentError> {
+        async fn completion(
+            &self,
+            _: &[LlmMessage],
+            _: &str,
+            _: f64,
+        ) -> Result<String, AgentError> {
             Ok(self.0.clone())
         }
     }
 
     struct MockRetriever(Vec<MemoryFact>);
     impl MemoryRetriever for MockRetriever {
-        fn search(&self, _: &str, limit: usize) -> Vec<MemoryFact> { self.0.iter().take(limit).cloned().collect() }
+        fn search(&self, _: &str, limit: usize) -> Vec<MemoryFact> {
+            self.0.iter().take(limit).cloned().collect()
+        }
         fn store_fact(&self, _: &str, _: &str, _: f64, _: &[String]) {}
     }
 
     fn mf(id: &str, ctx: &str, out: &str) -> MemoryFact {
-        MemoryFact { id: id.into(), context: ctx.into(), outcome: out.into(),
-            confidence: 1.0, metadata: HashMap::new() }
+        MemoryFact {
+            id: id.into(),
+            context: ctx.into(),
+            outcome: out.into(),
+            confidence: 1.0,
+            metadata: HashMap::new(),
+        }
     }
 
     #[test]
@@ -166,32 +248,55 @@ mod tests {
         let c = parse_completeness_response(r#"{"is_complete": false, "gaps": ["a","b"]}"#);
         assert!(!c.is_complete && c.gaps.len() == 2);
         assert!(parse_completeness_response("garbage").is_complete);
-        let c = parse_completeness_response("```json\n{\"is_complete\": false, \"gaps\": [\"x\"]}\n```");
+        let c = parse_completeness_response(
+            "```json\n{\"is_complete\": false, \"gaps\": [\"x\"]}\n```",
+        );
         assert!(!c.is_complete && c.gaps == vec!["x"]);
     }
 
     #[tokio::test]
     async fn answer_empty() {
-        let (a, _) = answer_question("", QuestionLevel::L1, &MockLlm("{}".into()),
-            &MockRetriever(vec![]), &SynthesisConfig::default()).await.unwrap();
+        let (a, _) = answer_question(
+            "",
+            QuestionLevel::L1,
+            &MockLlm("{}".into()),
+            &MockRetriever(vec![]),
+            &SynthesisConfig::default(),
+        )
+        .await
+        .unwrap();
         assert!(a.contains("empty"));
     }
 
     #[tokio::test]
     async fn answer_no_facts() {
-        let llm = MockLlm(r#"{"intent":"simple_recall","needs_temporal":false,"needs_math":false}"#.into());
-        let (a, t) = answer_question("What is X?", QuestionLevel::L1, &llm,
-            &MockRetriever(vec![]), &SynthesisConfig::default()).await.unwrap();
+        let llm = MockLlm(
+            r#"{"intent":"simple_recall","needs_temporal":false,"needs_math":false}"#.into(),
+        );
+        let (a, t) = answer_question(
+            "What is X?",
+            QuestionLevel::L1,
+            &llm,
+            &MockRetriever(vec![]),
+            &SynthesisConfig::default(),
+        )
+        .await
+        .unwrap();
         assert!(a.contains("don't have enough"));
         assert!(t.used_simple_path);
     }
 
     #[tokio::test]
     async fn answer_with_facts() {
-        let (a, t) = answer_question("Do dogs have fur?", QuestionLevel::L2,
+        let (a, t) = answer_question(
+            "Do dogs have fur?",
+            QuestionLevel::L2,
             &MockLlm("Dogs are mammals with fur.".into()),
             &MockRetriever(vec![mf("f1", "Dogs", "are mammals")]),
-            &SynthesisConfig::default()).await.unwrap();
+            &SynthesisConfig::default(),
+        )
+        .await
+        .unwrap();
         assert!(a.contains("Dogs") || a.contains("mammals"));
         assert!(t.total_facts_collected > 0);
     }
@@ -200,23 +305,48 @@ mod tests {
     async fn completeness_cases() {
         let cfg = SynthesisConfig::default();
         let llm = MockLlm("{}".into());
-        assert!(!(evaluate_completeness("Q?", "", &llm, &cfg).await.unwrap().is_complete));
-        assert!(!(evaluate_completeness("Q?", "I don't have enough", &llm, &cfg).await.unwrap().is_complete));
+        assert!(
+            !(evaluate_completeness("Q?", "", &llm, &cfg)
+                .await
+                .unwrap()
+                .is_complete)
+        );
+        assert!(
+            !(evaluate_completeness("Q?", "I don't have enough", &llm, &cfg)
+                .await
+                .unwrap()
+                .is_complete)
+        );
         let long = "A very detailed and comprehensive answer that addresses the question fully.";
-        assert!(evaluate_completeness("Q?", long, &llm, &cfg).await.unwrap().is_complete);
+        assert!(
+            evaluate_completeness("Q?", long, &llm, &cfg)
+                .await
+                .unwrap()
+                .is_complete
+        );
     }
 
     #[tokio::test]
     async fn agentic_empty() {
-        let (a, _) = answer_question_agentic("  ", 3, &MockLlm("{}".into()),
-            &MockRetriever(vec![]), &SynthesisConfig::default()).await.unwrap();
+        let (a, _) = answer_question_agentic(
+            "  ",
+            3,
+            &MockLlm("{}".into()),
+            &MockRetriever(vec![]),
+            &SynthesisConfig::default(),
+        )
+        .await
+        .unwrap();
         assert!(a.contains("empty"));
     }
 
     #[test]
     fn trace_fields() {
-        let i = DetectedIntent { intent: crate::answer_synth::IntentType::TemporalComparison,
-            needs_temporal: true, ..Default::default() };
+        let i = DetectedIntent {
+            intent: crate::answer_synth::IntentType::TemporalComparison,
+            needs_temporal: true,
+            ..Default::default()
+        };
         let t = build_trace("q?", &i, 10, false);
         assert_eq!(t.question, "q?");
         assert_eq!(t.total_facts_collected, 10);

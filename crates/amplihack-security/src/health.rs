@@ -216,7 +216,11 @@ mod tests {
 
     #[test]
     fn health_status_serde_roundtrip() {
-        for status in [HealthStatus::Healthy, HealthStatus::Degraded, HealthStatus::Unhealthy] {
+        for status in [
+            HealthStatus::Healthy,
+            HealthStatus::Degraded,
+            HealthStatus::Unhealthy,
+        ] {
             let json = serde_json::to_string(&status).unwrap();
             let back: HealthStatus = serde_json::from_str(&json).unwrap();
             assert_eq!(back, status);

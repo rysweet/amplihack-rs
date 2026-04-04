@@ -28,10 +28,15 @@ impl BackendComparison {
         let benchmark_metrics = BenchmarkEvaluator::evaluate(backend, 100);
 
         let overall = Self::calculate_overall_score(
-            &quality_metrics, &benchmark_metrics, &reliability_metrics,
+            &quality_metrics,
+            &benchmark_metrics,
+            &reliability_metrics,
         );
         let recommendations = Self::generate_recommendations(
-            &backend_name, &quality_metrics, &benchmark_metrics, &reliability_metrics,
+            &backend_name,
+            &quality_metrics,
+            &benchmark_metrics,
+            &reliability_metrics,
         );
 
         let timestamp = std::time::SystemTime::now()
@@ -61,8 +66,16 @@ impl BackendComparison {
 
         let contracts = check_performance_contracts(benchmark);
         let perf_parts = [
-            if contracts.storage_latency_ok { 1.0 } else { 0.5 },
-            if contracts.retrieval_latency_ok { 1.0 } else { 0.5 },
+            if contracts.storage_latency_ok {
+                1.0
+            } else {
+                0.5
+            },
+            if contracts.retrieval_latency_ok {
+                1.0
+            } else {
+                0.5
+            },
         ];
         let perf_score = perf_parts.iter().sum::<f64>() / perf_parts.len() as f64;
 
@@ -140,7 +153,10 @@ impl BackendComparison {
         for r in &sorted {
             md.push_str(&format!("\n## {}\n\n", r.backend_name));
             md.push_str("### Quality\n");
-            md.push_str(&format!("- Precision: {:.3}\n", r.quality_metrics.precision));
+            md.push_str(&format!(
+                "- Precision: {:.3}\n",
+                r.quality_metrics.precision
+            ));
             md.push_str(&format!("- Recall: {:.3}\n", r.quality_metrics.recall));
             md.push_str(&format!("- NDCG: {:.3}\n", r.quality_metrics.ndcg_score));
 
@@ -149,17 +165,28 @@ impl BackendComparison {
             let check = |ok: bool| if ok { "✅" } else { "❌" };
             md.push_str(&format!(
                 "- Storage latency: {:.2}ms {}\n",
-                r.benchmark_metrics.storage_latency_ms, check(contracts.storage_latency_ok)
+                r.benchmark_metrics.storage_latency_ms,
+                check(contracts.storage_latency_ok)
             ));
             md.push_str(&format!(
                 "- Retrieval latency: {:.2}ms {}\n",
-                r.benchmark_metrics.retrieval_latency_ms, check(contracts.retrieval_latency_ok)
+                r.benchmark_metrics.retrieval_latency_ms,
+                check(contracts.retrieval_latency_ok)
             ));
 
             md.push_str("\n### Reliability\n");
-            md.push_str(&format!("- Data integrity: {:.2}\n", r.reliability_metrics.data_integrity_score));
-            md.push_str(&format!("- Sequential safety: {:.2}\n", r.reliability_metrics.concurrent_safety_score));
-            md.push_str(&format!("- Error recovery: {:.2}\n", r.reliability_metrics.error_recovery_score));
+            md.push_str(&format!(
+                "- Data integrity: {:.2}\n",
+                r.reliability_metrics.data_integrity_score
+            ));
+            md.push_str(&format!(
+                "- Sequential safety: {:.2}\n",
+                r.reliability_metrics.concurrent_safety_score
+            ));
+            md.push_str(&format!(
+                "- Error recovery: {:.2}\n",
+                r.reliability_metrics.error_recovery_score
+            ));
 
             if !r.recommendations.is_empty() {
                 md.push_str("\n### Recommendations\n");
@@ -189,10 +216,21 @@ mod tests {
 
     #[test]
     fn comparison_overall_score_bounded() {
-        let quality = RetrievalQualityMetrics { precision: 1.0, recall: 1.0, ..Default::default() };
-        let benchmark = BenchmarkMetrics { storage_latency_ms: 1.0, retrieval_latency_ms: 1.0, ..Default::default() };
+        let quality = RetrievalQualityMetrics {
+            precision: 1.0,
+            recall: 1.0,
+            ..Default::default()
+        };
+        let benchmark = BenchmarkMetrics {
+            storage_latency_ms: 1.0,
+            retrieval_latency_ms: 1.0,
+            ..Default::default()
+        };
         let reliability = BackendReliabilityMetrics {
-            data_integrity_score: 1.0, concurrent_safety_score: 1.0, error_recovery_score: 1.0, ..Default::default()
+            data_integrity_score: 1.0,
+            concurrent_safety_score: 1.0,
+            error_recovery_score: 1.0,
+            ..Default::default()
         };
         let score = BackendComparison::calculate_overall_score(&quality, &benchmark, &reliability);
         assert!((0.0..=1.0).contains(&score));
@@ -200,9 +238,16 @@ mod tests {
 
     #[test]
     fn comparison_recommendations_quality() {
-        let quality = RetrievalQualityMetrics { precision: 0.9, recall: 0.9, ..Default::default() };
+        let quality = RetrievalQualityMetrics {
+            precision: 0.9,
+            recall: 0.9,
+            ..Default::default()
+        };
         let recs = BackendComparison::generate_recommendations(
-            "test", &quality, &BenchmarkMetrics::default(), &BackendReliabilityMetrics::default(),
+            "test",
+            &quality,
+            &BenchmarkMetrics::default(),
+            &BackendReliabilityMetrics::default(),
         );
         assert!(recs.iter().any(|r| r.contains("excels")));
     }
@@ -210,7 +255,9 @@ mod tests {
     #[test]
     fn comparison_recommendations_backend_specific() {
         let recs = BackendComparison::generate_recommendations(
-            "sqlite", &RetrievalQualityMetrics::default(), &BenchmarkMetrics::default(),
+            "sqlite",
+            &RetrievalQualityMetrics::default(),
+            &BenchmarkMetrics::default(),
             &BackendReliabilityMetrics::default(),
         );
         assert!(recs.iter().any(|r| r.contains("single-process")));

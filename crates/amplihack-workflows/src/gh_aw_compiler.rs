@@ -125,8 +125,7 @@ impl GhAwCompiler {
         };
 
         // Parse YAML frontmatter
-        let parsed: Result<HashMap<String, serde_yaml::Value>, _> =
-            serde_yaml::from_str(&fm_text);
+        let parsed: Result<HashMap<String, serde_yaml::Value>, _> = serde_yaml::from_str(&fm_text);
         let map = match parsed {
             Ok(m) => m,
             Err(e) => {
@@ -188,9 +187,7 @@ impl GhAwCompiler {
                 let example = valid_vals.get(key.as_str()).unwrap_or(&"an integer");
                 diagnostics.push(Diagnostic {
                     severity: Severity::Error,
-                    message: format!(
-                        "Field '{key}' must be {example}, got non-integer value."
-                    ),
+                    message: format!("Field '{key}' must be {example}, got non-integer value."),
                     line: Some(fm_line_offset),
                     col: Some(1),
                 });
@@ -198,10 +195,7 @@ impl GhAwCompiler {
         }
 
         // Required-field checks
-        let mut missing: Vec<&&str> = required
-            .iter()
-            .filter(|f| !map.contains_key(**f))
-            .collect();
+        let mut missing: Vec<&&str> = required.iter().filter(|f| !map.contains_key(**f)).collect();
         missing.sort();
         for field in missing {
             let example = valid_vals.get(*field).unwrap_or(&"");
@@ -293,7 +287,11 @@ mod tests {
     fn valid_workflow() {
         let content = "---\nname: Test\non:\n  push:\n    branches: [main]\n---\n\n# Body";
         let diags = compile_workflow(content, "test.md");
-        assert!(diags.is_empty(), "Expected no diagnostics, got: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "Expected no diagnostics, got: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -329,9 +327,7 @@ mod tests {
     fn unknown_field_no_suggestion() {
         let content = "---\nname: Test\non:\n  push: true\nzzzzzz: val\n---\n";
         let diags = compile_workflow(content, "test.md");
-        let unknown = diags
-            .iter()
-            .find(|d| d.message.contains("zzzzzz"));
+        let unknown = diags.iter().find(|d| d.message.contains("zzzzzz"));
         assert!(unknown.is_some());
         assert_eq!(unknown.unwrap().severity, Severity::Warning);
     }
@@ -372,9 +368,7 @@ mod tests {
     fn int_field_type_check() {
         let content = "---\nname: Test\non:\n  push: true\ntimeout-minutes: \"30\"\n---\n";
         let diags = compile_workflow(content, "test.md");
-        let type_err = diags
-            .iter()
-            .find(|d| d.message.contains("timeout-minutes"));
+        let type_err = diags.iter().find(|d| d.message.contains("timeout-minutes"));
         assert!(type_err.is_some());
     }
 

@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::temporal_reasoning::{
-    collapse_change_count_transitions, collapse_temporal_lookup_transitions,
-    heuristic_temporal_entity_field, parse_temporal_index, transition_chain_from_facts, Transition,
+    Transition, collapse_change_count_transitions, collapse_temporal_lookup_transitions,
+    heuristic_temporal_entity_field, parse_temporal_index, transition_chain_from_facts,
 };
 
 use amplihack_memory::Fact;
@@ -114,7 +114,12 @@ pub fn try_heuristic_synthesis(
     candidate_facts: &[Fact],
 ) -> Option<CodeSynthesisResult> {
     let (entity, field) = heuristic_temporal_entity_field(question)?;
-    Some(temporal_code_synthesis(question, &entity, &field, candidate_facts))
+    Some(temporal_code_synthesis(
+        question,
+        &entity,
+        &field,
+        candidate_facts,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -161,16 +166,8 @@ fn resolve_temporal_result(
 }
 
 /// Format a temporal lookup answer sentence.
-pub fn format_temporal_lookup_answer(
-    question: &str,
-    result: &CodeSynthesisResult,
-) -> String {
-    let res = result
-        .result
-        .as_deref()
-        .unwrap_or("")
-        .trim()
-        .to_string();
+pub fn format_temporal_lookup_answer(question: &str, result: &CodeSynthesisResult) -> String {
+    let res = result.result.as_deref().unwrap_or("").trim().to_string();
     if res.is_empty() {
         return res;
     }
@@ -179,10 +176,12 @@ pub fn format_temporal_lookup_answer(
         Some((entity, field)) => {
             // reconstruct qualifier from the question
             let lower = question.to_lowercase();
-            let qualifier = ["current", "latest", "original", "initial", "previous", "final", "last"]
-                .iter()
-                .find(|q| lower.contains(**q))
-                .unwrap_or(&"current");
+            let qualifier = [
+                "current", "latest", "original", "initial", "previous", "final", "last",
+            ]
+            .iter()
+            .find(|q| lower.contains(**q))
+            .unwrap_or(&"current");
             (qualifier.to_string(), field, entity)
         }
         None => return res,
@@ -209,7 +208,10 @@ mod tests {
 
     fn make_facts() -> Vec<Fact> {
         vec![
-            Fact::new("Atlas deadline", "deadline changed from March 15 to April 1"),
+            Fact::new(
+                "Atlas deadline",
+                "deadline changed from March 15 to April 1",
+            ),
             Fact::new("Atlas deadline", "current deadline is April 1"),
         ]
     }
@@ -217,7 +219,12 @@ mod tests {
     #[test]
     fn synthesis_state_lookup() {
         let facts = make_facts();
-        let r = temporal_code_synthesis("What is the current deadline for Atlas?", "Atlas", "deadline", &facts);
+        let r = temporal_code_synthesis(
+            "What is the current deadline for Atlas?",
+            "Atlas",
+            "deadline",
+            &facts,
+        );
         assert_eq!(r.operation, "state_lookup");
         assert!(r.code.contains("retrieve_transition_chain"));
     }
@@ -227,7 +234,9 @@ mod tests {
         let facts = make_facts();
         let r = temporal_code_synthesis(
             "How many times has the deadline changed for Atlas?",
-            "Atlas", "deadline", &facts,
+            "Atlas",
+            "deadline",
+            &facts,
         );
         assert_eq!(r.operation, "change_count");
         assert!(r.code.contains("_collapse_change_count_transitions"));

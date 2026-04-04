@@ -40,10 +40,7 @@ pub fn extract_text_from_event(
 
         match et {
             "FEED_COMPLETE" => {
-                let total = payload
-                    .get("total")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
+                let total = payload.get("total").and_then(Value::as_u64).unwrap_or(0);
                 return Some(format!("{FEED_COMPLETE_PREFIX}{total}"));
             }
             "ONLINE_CHECK" => return Some(ONLINE_CHECK.to_string()),

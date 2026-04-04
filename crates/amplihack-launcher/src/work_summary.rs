@@ -187,8 +187,7 @@ impl WorkSummaryGenerator {
             ],
         );
 
-        let prs: Vec<serde_json::Value> = match output.and_then(|s| serde_json::from_str(&s).ok())
-        {
+        let prs: Vec<serde_json::Value> = match output.and_then(|s| serde_json::from_str(&s).ok()) {
             Some(v) => v,
             None => return GitHubState::empty(),
         };
@@ -220,11 +219,14 @@ impl WorkSummaryGenerator {
                 })
             });
 
-        let pr_mergeable = pr.get("mergeable").and_then(|v| v.as_str()).map(|m| match m {
-            "MERGEABLE" => true,
-            "CONFLICTING" => false,
-            _ => false,
-        });
+        let pr_mergeable = pr
+            .get("mergeable")
+            .and_then(|v| v.as_str())
+            .map(|m| match m {
+                "MERGEABLE" => true,
+                "CONFLICTING" => false,
+                _ => false,
+            });
 
         GitHubState {
             pr_number,
@@ -272,11 +274,7 @@ impl WorkSummaryGenerator {
                 lines.push(format!("- CI Status: {text}"));
             }
             if let Some(mergeable) = gh.pr_mergeable {
-                let text = if mergeable {
-                    "yes"
-                } else {
-                    "no (conflicts)"
-                };
+                let text = if mergeable { "yes" } else { "no (conflicts)" };
                 lines.push(format!("- Mergeable: {text}"));
             }
         } else {
@@ -299,7 +297,6 @@ fn run_cmd(cmd: &str, args: &[&str]) -> Option<String> {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
 }
-
 
 #[cfg(test)]
 #[path = "work_summary_tests.rs"]

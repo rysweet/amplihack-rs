@@ -29,16 +29,10 @@ impl HiveGraph {
             .collect()
     }
 
-    pub fn get_edges_from(
-        &self,
-        source_id: &str,
-        edge_type: &str,
-    ) -> Vec<&HiveEdge> {
+    pub fn get_edges_from(&self, source_id: &str, edge_type: &str) -> Vec<&HiveEdge> {
         self.edges
             .iter()
-            .filter(|e| {
-                e.source_id == source_id && e.edge_type == edge_type
-            })
+            .filter(|e| e.source_id == source_id && e.edge_type == edge_type)
             .collect()
     }
 }

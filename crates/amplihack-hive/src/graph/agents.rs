@@ -6,11 +6,7 @@ use crate::models::HiveAgent;
 use super::HiveGraph;
 
 impl HiveGraph {
-    pub fn register_agent(
-        &mut self,
-        agent_id: &str,
-        domain: &str,
-    ) -> crate::error::Result<()> {
+    pub fn register_agent(&mut self, agent_id: &str, domain: &str) -> crate::error::Result<()> {
         if self.agents.contains_key(agent_id) {
             return Err(HiveError::Graph(format!(
                 "agent already registered: {agent_id}"
@@ -34,10 +30,7 @@ impl HiveGraph {
         self.agents.get(agent_id)
     }
 
-    pub fn list_agents(
-        &self,
-        status_filter: Option<&str>,
-    ) -> Vec<&HiveAgent> {
+    pub fn list_agents(&self, status_filter: Option<&str>) -> Vec<&HiveAgent> {
         self.agents
             .values()
             .filter(|a| status_filter.is_none_or(|s| a.status == s))

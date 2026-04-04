@@ -33,8 +33,8 @@ string tokens.
 | Token | Backend | Notes |
 |-------|---------|-------|
 | `sqlite` | SQLite (`~/.amplihack/memory.db`) | Default for new installs |
-| `graph-db` | Kuzu graph database | Default when an existing Kuzu DB is detected |
-| `kuzu` | Kuzu graph database | Legacy alias for `graph-db`; deprecated for new automation |
+| `graph-db` | LadybugDB (formerly Kuzu) graph database | Default when an existing graph DB is detected |
+| `kuzu` | LadybugDB graph database | Backward-compatible alias for `graph-db`; deprecated for new automation |
 
 Any value outside this allowlist is rejected with a structured error. Casing
 is exact: `KUZU` and `Graph-DB` are invalid.
@@ -61,7 +61,7 @@ export AMPLIHACK_MEMORY_BACKEND=sqlite
 # Force graph-db for a single invocation
 AMPLIHACK_MEMORY_BACKEND=graph-db amplihack memory tree
 
-# Legacy alias still accepted (maps to graph-db)
+# Backward-compatible alias (maps to graph-db)
 AMPLIHACK_MEMORY_BACKEND=kuzu amplihack memory tree
 ```
 
@@ -131,10 +131,10 @@ created with `fs::create_dir_all`.
 |-----------------|---------|--------------|
 | `memory_graph.db` | Sessions, learnings, context memories | `~/.amplihack/memory_graph.db` |
 | `graph_db/` | Hierarchical semantic/episodic graph per agent | `~/.amplihack/hierarchical_memory/<agent>/graph_db/` |
-| `kuzu_db/` | Legacy hierarchical path (read-only fallback) | `~/.amplihack/hierarchical_memory/<agent>/kuzu_db/` |
+| `kuzu_db/` | Legacy hierarchical path (read-only fallback, backward-compatible alias) | `~/.amplihack/hierarchical_memory/<agent>/kuzu_db/` |
 
 The `AMPLIHACK_GRAPH_DB_PATH` environment variable overrides the
-`memory_graph.db` path. `AMPLIHACK_KUZU_DB_PATH` is accepted as a legacy
+`memory_graph.db` path. `AMPLIHACK_KUZU_DB_PATH` is accepted as a backward-compatible
 alias (see [Environment Variables](./environment-variables.md)).
 
 `resolve_hierarchical_db_path()` prefers `graph_db/` over `kuzu_db/` when
@@ -146,7 +146,7 @@ directory.
 ## Flat memory schema
 
 The SQLite flat memory store uses three tables. The graph-db backend uses an
-equivalent Kuzu node schema.
+equivalent LadybugDB node schema.
 
 ```sql
 CREATE TABLE IF NOT EXISTS memory_entries (
@@ -304,7 +304,7 @@ graph-db can be imported into SQLite and vice versa.
 ### Raw-db format
 
 `--format raw-db` copies the raw database files (a single SQLite file for
-the SQLite backend; a Kuzu directory tree for the graph-db backend) to the
+the SQLite backend; a LadybugDB directory tree for the graph-db backend) to the
 destination path.
 
 **Constraints:**
@@ -318,7 +318,7 @@ destination path.
   paths are rejected before the copy begins.
 
 The `kuzu` format alias (`--format kuzu`) maps to `raw-db` for backward
-compatibility with existing scripts.
+compatibility with existing scripts (legacy alias).
 
 ---
 
@@ -363,7 +363,7 @@ compatibility with existing scripts.
 | Agent isolation | `agent_name` from CLI is the sole partition key; JSON payload's `agent_name` field is ignored during import writes |
 | SQL injection | All queries use `params!` macro exclusively; zero string interpolation; JSON fields serialised with `serde_json::to_string()` before binding |
 | Import payload size | JSON files larger than 500 MB are rejected before `serde_json::from_str()` |
-| Env var allowlist | `AMPLIHACK_MEMORY_BACKEND` values outside `['sqlite', 'kuzu', 'graph-db']` produce a visible warning to stderr before fallback |
+| Env var allowlist | `AMPLIHACK_MEMORY_BACKEND` values outside `['sqlite', 'kuzu', 'graph-db']` produce a visible warning to stderr before fallback (`kuzu` is a backward-compatible alias) |
 | Symlink protection | Raw-db export uses `symlink_metadata()` to detect and reject symlinked source paths; symlinks inside copied trees are skipped |
 | Atomic writes | JSON export writes to a `.tmp` file in the destination directory, then renames — prevents partially-written exports from appearing valid |
 | Probe safety | `resolve_backend_with_autodetect()` uses `symlink_metadata().is_ok()` for filesystem probes; returns `Err` when `HOME` is unavailable |
@@ -375,4 +375,4 @@ compatibility with existing scripts.
 - [Memory Backend Architecture](../concepts/memory-backend-architecture.md) — Design rationale, trait seams, auto-detection
 - [How to Migrate Memory to SQLite](../howto/migrate-memory-backend.md) — Step-by-step migration guide
 - [Environment Variables](./environment-variables.md) — `AMPLIHACK_MEMORY_BACKEND`, `AMPLIHACK_GRAPH_DB_PATH`, and related vars
-- [Kuzu Code Graph](../concepts/kuzu-code-graph.md) — Graph-db code graph architecture
+- [LadybugDB Code Graph](../concepts/kuzu-code-graph.md) — Graph-db code graph architecture

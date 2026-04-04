@@ -1,6 +1,6 @@
 # How to Index a Project with the Native SCIP Pipeline
 
-Index a project's source code into the Kuzu code-graph so that
+Index a project's source code into the LadybugDB (formerly Kuzu) code-graph so that
 `amplihack query-code` can answer structural questions about it.
 
 ## Before you start
@@ -122,7 +122,7 @@ If you have a `blarify.json` from a CI artifact or another tool:
 amplihack index-code /path/to/blarify.json
 ```
 
-The JSON is parsed and merged into the same Kuzu graph that `index-scip`
+The JSON is parsed and merged into the same LadybugDB graph that `index-scip`
 populates. If the file is absent, the command logs a warning and exits 0 — it
 does not abort.
 
@@ -152,10 +152,10 @@ or were skipped). Common causes:
 |-------|-----|
 | Indexer binary not on PATH | Install the binary; check with `amplihack doctor` |
 | `index.scip` not written | The indexer ran but produced no output; check its stderr |
-| Kuzu path not writable | Ensure `<project>/.amplihack/` is writable |
+| Graph DB path not writable | Ensure `<project>/.amplihack/` is writable |
 
 ## Related
 
 - [`amplihack index-scip` and `index-code` reference](../reference/memory-index-command.md)
 - [`amplihack query-code` reference](../reference/query-code-command.md)
-- [Kuzu Code Graph Architecture](../concepts/kuzu-code-graph.md)
+- [LadybugDB Code Graph Architecture](../concepts/kuzu-code-graph.md)

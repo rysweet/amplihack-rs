@@ -33,8 +33,8 @@ impl Default for GoalAgentPackager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assembler::AgentAssembler;
     use crate::GoalDefinition;
+    use crate::assembler::AgentAssembler;
     use crate::planner::ObjectivePlanner;
     use crate::synthesizer::SkillSynthesizer;
 
@@ -42,14 +42,18 @@ mod tests {
         let goal = GoalDefinition::new("prompt", "build tool", "development").unwrap();
         let plan = ObjectivePlanner::new().plan(&goal).unwrap();
         let skills = SkillSynthesizer::new().synthesize(&plan).unwrap();
-        AgentAssembler::new().assemble(&goal, &plan, skills).unwrap()
+        AgentAssembler::new()
+            .assemble(&goal, &plan, skills)
+            .unwrap()
     }
 
     #[test]
     fn package_writes_bundle_json() {
         let dir = tempfile::tempdir().unwrap();
         let bundle = make_bundle();
-        let path = GoalAgentPackager::new().package(&bundle, dir.path()).unwrap();
+        let path = GoalAgentPackager::new()
+            .package(&bundle, dir.path())
+            .unwrap();
         let contents = std::fs::read_to_string(path.join("bundle.json")).unwrap();
         let back: GoalAgentBundle = serde_json::from_str(&contents).unwrap();
         assert_eq!(back.name, bundle.name);

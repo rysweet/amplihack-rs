@@ -37,8 +37,7 @@ pub struct LaunchResult {
 /// Launch a terminal window tailing the specified file.
 pub fn launch_tail_terminal(file_path: &Path) -> LaunchResult {
     let os = detect_os();
-    let abs_path = std::fs::canonicalize(file_path)
-        .unwrap_or_else(|_| file_path.to_path_buf());
+    let abs_path = std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
 
     match os {
         OsType::MacOs => launch_macos(&abs_path),
@@ -52,7 +51,9 @@ pub fn launch_tail_terminal(file_path: &Path) -> LaunchResult {
 /// Rejects paths containing shell metacharacters to prevent command injection.
 fn validate_path_for_shell(file_path: &Path) -> Result<String, &'static str> {
     let s = file_path.to_string_lossy();
-    let dangerous = [';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '!', '\n', '\r'];
+    let dangerous = [
+        ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '!', '\n', '\r',
+    ];
     if s.chars().any(|c| dangerous.contains(&c)) {
         return Err("path contains shell metacharacters");
     }
@@ -66,7 +67,7 @@ fn launch_macos(file_path: &Path) -> LaunchResult {
             return LaunchResult {
                 success: false,
                 terminal: None,
-            }
+            };
         }
     };
     let script = format!(
@@ -97,7 +98,7 @@ fn launch_linux(file_path: &Path) -> LaunchResult {
             return LaunchResult {
                 success: false,
                 terminal: None,
-            }
+            };
         }
     };
     let quoted = safe_path.replace('\'', "'\\''");
@@ -149,16 +150,23 @@ fn launch_windows(file_path: &Path) -> LaunchResult {
             return LaunchResult {
                 success: false,
                 terminal: None,
-            }
+            };
         }
     };
-    let ps_cmd = format!(
-        "Get-Content '{}' -Wait",
-        safe_path.replace('\'', "''")
-    );
+    let ps_cmd = format!("Get-Content '{}' -Wait", safe_path.replace('\'', "''"));
 
     let terminals = [
-        ("wt", vec!["-p", "Windows PowerShell", "--", "powershell", "-NoExit", "-Command"]),
+        (
+            "wt",
+            vec![
+                "-p",
+                "Windows PowerShell",
+                "--",
+                "powershell",
+                "-NoExit",
+                "-Command",
+            ],
+        ),
         ("powershell", vec!["-NoExit", "-Command"]),
     ];
 

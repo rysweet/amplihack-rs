@@ -1,7 +1,7 @@
 # amplihack index-code and index-scip
 
 Full CLI reference for `amplihack index-code` and `amplihack index-scip` — the
-two commands that build the native Kuzu code-graph from source.
+two commands that build the native LadybugDB (formerly Kuzu) code-graph from source.
 
 ## Contents
 
@@ -34,7 +34,7 @@ amplihack index-code <INPUT> [--db-path <PATH>]
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `<INPUT>` | yes | Path to a blarify JSON export (`blarify.json`) |
-| `--db-path <PATH>` | no | Override the code-graph database directory. Defaults to `<project>/.amplihack/graph_db` inferred from the input path location. `--kuzu-path` remains as a compatibility alias. |
+| `--db-path <PATH>` | no | Override the code-graph database directory. Defaults to `<project>/.amplihack/graph_db` inferred from the input path location. `--kuzu-path` remains as a backward-compatible alias. |
 
 ### Behavior
 
@@ -175,7 +175,7 @@ For `index-code`, the project root is inferred from the input path: if the
 input is `<project>/.amplihack/blarify.json`, the database will be
 `<project>/.amplihack/graph_db`. Otherwise the current directory is used.
 
-Use `--db-path` on `index-code` to override. `--kuzu-path` remains accepted as a compatibility alias.
+Use `--db-path` on `index-code` to override. `--kuzu-path` remains accepted as a backward-compatible alias.
 
 ---
 
@@ -186,9 +186,9 @@ Use `--db-path` on `index-code` to override. `--kuzu-path` remains accepted as a
 | 500 MB size guard | `index-code` reads the blarify JSON file size before parsing. Files ≥ 500 MB are rejected with a clear error. |
 | Path canonicalization | Both `--project-path` and `--db-path` are canonicalized via `std::fs::canonicalize`. Symlinks are followed; a `WARN` log entry is emitted if the input or DB path is a symlink. |
 | Blocked path prefixes | Paths under `/proc`, `/sys`, or `/dev` are rejected immediately. |
-| DB file permissions (Unix) | After the Kuzu database is initialized, the DB file is `chmod 0600` and its parent directory is `chmod 0700`. |
+| DB file permissions (Unix) | After the LadybugDB database is initialized, the DB file is `chmod 0600` and its parent directory is `chmod 0700`. |
 | No shell expansion | All external tool invocations (SCIP indexers) pass arguments as discrete `Vec<String>` elements — never via a shell string. |
-| Parameterized Cypher | All Kuzu queries use parameterized statements. String interpolation into query text is prohibited. |
+| Parameterized Cypher | All LadybugDB queries use parameterized statements. String interpolation into query text is prohibited. |
 
 ---
 
@@ -252,7 +252,7 @@ Run `amplihack doctor` to check which prerequisites are currently satisfied.
 
 ## Related commands
 
-- [`amplihack query-code`](./query-code-command.md) — Query the populated Kuzu code-graph
+- [`amplihack query-code`](./query-code-command.md) — Query the populated LadybugDB code-graph
 - [`amplihack doctor`](./doctor-command.md) — Check indexer prerequisites
 - [Index a project end-to-end](../howto/index-a-project.md) — Step-by-step guide
-- [Kuzu Code Graph Architecture](../concepts/kuzu-code-graph.md) — How the graph is structured
+- [LadybugDB Code Graph Architecture](../concepts/kuzu-code-graph.md) — How the graph is structured

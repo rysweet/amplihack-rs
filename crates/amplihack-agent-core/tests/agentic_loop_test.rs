@@ -6,13 +6,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use amplihack_agent_core::AgentError;
+use amplihack_agent_core::agentic_loop::AgenticLoop;
 use amplihack_agent_core::agentic_loop::json_parse::parse_json_response;
 use amplihack_agent_core::agentic_loop::traits::{
     ActionExecutor, LlmClient, MemoryFacade, MemoryRetriever,
 };
 use amplihack_agent_core::agentic_loop::types::{ActionResult, LlmMessage, MemoryFact};
-use amplihack_agent_core::agentic_loop::AgenticLoop;
-use amplihack_agent_core::AgentError;
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -172,9 +172,7 @@ impl MemoryFacade for MockFacade {
 // Helper: build a loop quickly
 // =========================================================================
 
-fn make_loop(
-    llm_response: &str,
-) -> AgenticLoop<MockLlm, MockExecutor, MockRetriever> {
+fn make_loop(llm_response: &str) -> AgenticLoop<MockLlm, MockExecutor, MockRetriever> {
     AgenticLoop::new(
         "test-agent",
         MockLlm::single(llm_response),
@@ -433,8 +431,7 @@ fn test_parse_json_variants() {
 #[tokio::test]
 async fn test_reason_iteratively_basic() {
     // Plan response → search queries.
-    let plan_resp =
-        r#"{"search_queries": ["query1", "query2"], "reasoning": "coverage"}"#;
+    let plan_resp = r#"{"search_queries": ["query1", "query2"], "reasoning": "coverage"}"#;
     // Sufficiency evaluation → sufficient.
     let eval_resp =
         r#"{"sufficient": true, "missing": "", "confidence": 0.95, "refined_queries": []}"#;
@@ -450,10 +447,16 @@ async fn test_reason_iteratively_basic() {
     .unwrap();
 
     let intent: HashMap<String, Value> = HashMap::new();
-    let (facts, _nodes, trace) = l.reason_iteratively("What is X?", &intent, 3).await.unwrap();
+    let (facts, _nodes, trace) = l
+        .reason_iteratively("What is X?", &intent, 3)
+        .await
+        .unwrap();
 
     assert!(facts.is_empty(), "no memory → no facts");
-    assert!(!trace.steps.is_empty(), "should have at least plan + search + eval steps");
+    assert!(
+        !trace.steps.is_empty(),
+        "should have at least plan + search + eval steps"
+    );
     assert!(trace.total_queries_executed > 0);
 }
 

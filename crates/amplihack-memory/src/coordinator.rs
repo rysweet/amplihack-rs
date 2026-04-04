@@ -310,7 +310,10 @@ mod tests {
         assert_eq!(coord.entry_count(), 0);
         // Must succeed — fingerprint should have been purged
         let req2 = StorageRequest::new(content, MemoryType::Working, "s1");
-        assert!(coord.store(req2).is_some(), "re-store after clear must not be rejected as duplicate");
+        assert!(
+            coord.store(req2).is_some(),
+            "re-store after clear must not be rejected as duplicate"
+        );
         assert_eq!(coord.entry_count(), 1);
     }
 
@@ -325,7 +328,10 @@ mod tests {
         coord.clear_session("test-session");
         assert_eq!(coord.entry_count(), 0);
         // Must succeed — fingerprint should have been purged
-        assert!(coord.store(store_req(content)).is_some(), "re-store after clear must not be rejected as duplicate");
+        assert!(
+            coord.store(store_req(content)).is_some(),
+            "re-store after clear must not be rejected as duplicate"
+        );
         assert_eq!(coord.entry_count(), 1);
     }
 

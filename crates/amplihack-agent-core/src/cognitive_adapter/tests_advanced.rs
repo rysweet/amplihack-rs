@@ -40,7 +40,9 @@ fn prospective_store_and_trigger() {
 #[test]
 fn sensory_record() {
     let mut adapter = make_adapter(BackendKind::Cognitive);
-    let id = adapter.record_sensory("text", "raw input data", 300).unwrap();
+    let id = adapter
+        .record_sensory("text", "raw input data", 300)
+        .unwrap();
     assert!(!id.is_empty());
 }
 
@@ -59,7 +61,14 @@ fn episode_store() {
 fn memory_retriever_search() {
     let mut adapter = make_adapter(BackendKind::Cognitive);
     adapter
-        .store_fact_full("math", "Pi is approximately 3.14159", 0.95, &[], "", &HashMap::new())
+        .store_fact_full(
+            "math",
+            "Pi is approximately 3.14159",
+            0.95,
+            &[],
+            "",
+            &HashMap::new(),
+        )
         .unwrap();
 
     let results = MemoryRetriever::search(&adapter, "pi", 10);
@@ -70,7 +79,14 @@ fn memory_retriever_search() {
 fn memory_facade_recall() {
     let mut adapter = make_adapter(BackendKind::Cognitive);
     adapter
-        .store_fact_full("math", "Pi is approximately 3.14159", 0.95, &[], "", &HashMap::new())
+        .store_fact_full(
+            "math",
+            "Pi is approximately 3.14159",
+            0.95,
+            &[],
+            "",
+            &HashMap::new(),
+        )
         .unwrap();
 
     let results = MemoryFacade::recall(&adapter, "pi", 10);
@@ -82,7 +98,14 @@ fn memory_facade_recall() {
 fn memory_facade_retrieve_facts() {
     let mut adapter = make_adapter(BackendKind::Cognitive);
     adapter
-        .store_fact_full("geo", "Earth orbits the Sun", 0.99, &[], "", &HashMap::new())
+        .store_fact_full(
+            "geo",
+            "Earth orbits the Sun",
+            0.99,
+            &[],
+            "",
+            &HashMap::new(),
+        )
         .unwrap();
 
     let facts = MemoryFacade::retrieve_facts(&adapter, "earth", 10);

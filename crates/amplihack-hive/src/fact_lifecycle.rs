@@ -66,11 +66,7 @@ impl FactTTL {
 /// `confidence_new = confidence_original × exp(−decay_rate × elapsed_hours)`
 ///
 /// Result is clamped to \[0.0, 1.0\].
-pub fn decay_confidence(
-    original_confidence: f64,
-    elapsed_hours: f64,
-    decay_rate: f64,
-) -> f64 {
+pub fn decay_confidence(original_confidence: f64, elapsed_hours: f64, decay_rate: f64) -> f64 {
     if elapsed_hours <= 0.0 {
         return original_confidence.clamp(0.0, 1.0);
     }
@@ -211,8 +207,12 @@ mod tests {
         registry.insert(id.clone(), FactTTL::new(&id, now));
 
         // Only 1 hour later
-        let removed =
-            gc_expired_facts(&mut hive, &mut registry, DEFAULT_MAX_AGE_HOURS, now + 3600.0);
+        let removed = gc_expired_facts(
+            &mut hive,
+            &mut registry,
+            DEFAULT_MAX_AGE_HOURS,
+            now + 3600.0,
+        );
 
         assert!(removed.is_empty());
         assert_eq!(hive.fact_count(), 1);
@@ -230,7 +230,13 @@ mod tests {
         let mut registry = HashMap::new();
         registry.insert(id.clone(), FactTTL::new(&id, 100.0));
 
-        assert!(refresh_confidence(&mut hive, &mut registry, &id, 0.9, 200.0));
+        assert!(refresh_confidence(
+            &mut hive,
+            &mut registry,
+            &id,
+            0.9,
+            200.0
+        ));
 
         let fact = hive.get_fact(&id).unwrap().unwrap();
         assert!((fact.confidence - 0.9).abs() < 1e-9);
@@ -258,7 +264,13 @@ mod tests {
             .unwrap();
 
         let mut registry = HashMap::new();
-        assert!(refresh_confidence(&mut hive, &mut registry, &id, 0.7, 300.0));
+        assert!(refresh_confidence(
+            &mut hive,
+            &mut registry,
+            &id,
+            0.7,
+            300.0
+        ));
         assert!(registry.contains_key(&id));
         assert!((registry[&id].created_at - 300.0).abs() < 1e-9);
     }

@@ -172,7 +172,16 @@ mod tests {
             .status()
             .unwrap();
         Command::new("git")
-            .args(["commit", "--allow-empty", "-m", "init"])
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@test",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "init",
+            ])
             .current_dir(dir.path())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -215,7 +224,15 @@ mod tests {
             .status()
             .unwrap();
         Command::new("git")
-            .args(["commit", "-m", "add file"])
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@test",
+                "commit",
+                "-m",
+                "add file",
+            ])
             .current_dir(dir.path())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -246,7 +263,15 @@ mod tests {
             .status()
             .unwrap();
         Command::new("git")
-            .args(["commit", "-m", "add"])
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@test",
+                "commit",
+                "-m",
+                "add",
+            ])
             .current_dir(dir.path())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -275,7 +300,15 @@ mod tests {
             .status()
             .unwrap();
         Command::new("git")
-            .args(["commit", "-m", "add"])
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@test",
+                "commit",
+                "-m",
+                "add",
+            ])
             .current_dir(dir.path())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -317,7 +350,15 @@ mod tests {
             .status()
             .unwrap();
         Command::new("git")
-            .args(["commit", "-m", "add"])
+            .args([
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@test",
+                "commit",
+                "-m",
+                "add",
+            ])
             .current_dir(dir.path())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

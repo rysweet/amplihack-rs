@@ -27,6 +27,7 @@ pub mod claude_md;
 pub mod cleanup;
 pub mod defensive;
 pub mod docker_detector;
+pub mod hook_merge;
 pub mod kb_types;
 pub mod knowledge_builder;
 pub mod llm_client;
@@ -49,7 +50,6 @@ pub mod slugify;
 pub mod terminal_launcher;
 pub mod trace_logger;
 pub mod uvx_manager;
-pub mod hook_merge;
 pub mod worktree;
 
 // Re-export the most commonly used items at crate root.

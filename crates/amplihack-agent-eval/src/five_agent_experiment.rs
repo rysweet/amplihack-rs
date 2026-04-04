@@ -22,14 +22,12 @@ pub fn agent_registry() -> Vec<AgentRegistryEntry> {
         AgentRegistryEntry {
             name: "code_review".to_string(),
             teaching_topic: "security review".to_string(),
-            description: "Reviews code for quality, security, and style issues"
-                .to_string(),
+            description: "Reviews code for quality, security, and style issues".to_string(),
         },
         AgentRegistryEntry {
             name: "meeting_synthesizer".to_string(),
             teaching_topic: "meeting synthesis".to_string(),
-            description: "Synthesizes meeting transcripts into structured summaries"
-                .to_string(),
+            description: "Synthesizes meeting transcripts into structured summaries".to_string(),
         },
         AgentRegistryEntry {
             name: "document_creator".to_string(),
@@ -39,14 +37,12 @@ pub fn agent_registry() -> Vec<AgentRegistryEntry> {
         AgentRegistryEntry {
             name: "data_analysis".to_string(),
             teaching_topic: "trend detection".to_string(),
-            description: "Analyzes data, detects trends, generates insights"
-                .to_string(),
+            description: "Analyzes data, detects trends, generates insights".to_string(),
         },
         AgentRegistryEntry {
             name: "project_planning".to_string(),
             teaching_topic: "risk assessment".to_string(),
-            description: "Decomposes projects, identifies dependencies, assesses risks"
-                .to_string(),
+            description: "Decomposes projects, identifies dependencies, assesses risks".to_string(),
         },
     ]
 }
@@ -90,10 +86,8 @@ pub struct ExperimentReport {
 impl ExperimentReport {
     /// Build a report from individual agent results.
     pub fn from_results(results: Vec<AgentExperimentResult>) -> Self {
-        let eval_scores: Vec<f64> =
-            results.iter().map(|r| r.eval_overall_score).collect();
-        let combined_scores: Vec<f64> =
-            results.iter().map(|r| r.combined_score).collect();
+        let eval_scores: Vec<f64> = results.iter().map(|r| r.eval_overall_score).collect();
+        let combined_scores: Vec<f64> = results.iter().map(|r| r.combined_score).collect();
 
         let overall_eval = if eval_scores.is_empty() {
             0.0
@@ -116,11 +110,7 @@ impl ExperimentReport {
             results.len(),
             overall_eval * 100.0,
             overall_combined * 100.0,
-            if all_passed {
-                "PASS"
-            } else {
-                "have failures"
-            }
+            if all_passed { "PASS" } else { "have failures" }
         );
 
         Self {

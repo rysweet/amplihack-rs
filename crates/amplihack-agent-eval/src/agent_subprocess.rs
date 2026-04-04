@@ -272,8 +272,7 @@ mod tests {
 
     #[test]
     fn phase_serde_roundtrip() {
-        let config =
-            AgentSubprocessConfig::new(Phase::Learning, "a", "b.json").with_sdk("copilot");
+        let config = AgentSubprocessConfig::new(Phase::Learning, "a", "b.json").with_sdk("copilot");
         let json = serde_json::to_string(&config).unwrap();
         let restored: AgentSubprocessConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.phase, Phase::Learning);

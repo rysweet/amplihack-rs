@@ -238,7 +238,14 @@ impl GitHubDistributor {
             };
             let desc = &meta.description[..meta.description.len().min(100)];
             let mut cmd = Command::new("gh");
-            cmd.args(["repo", "create", repository, visibility, "--description", desc]);
+            cmd.args([
+                "repo",
+                "create",
+                repository,
+                visibility,
+                "--description",
+                desc,
+            ]);
             if let Some(org) = &self.organization {
                 cmd.args(["--org", org]);
             }
@@ -363,18 +370,12 @@ mod tests {
     #[test]
     fn repo_url_with_org() {
         let dist = GitHubDistributor::new(Some("myorg".into()), None);
-        assert_eq!(
-            dist.repo_url("test"),
-            "https://github.com/myorg/test"
-        );
+        assert_eq!(dist.repo_url("test"), "https://github.com/myorg/test");
     }
 
     #[test]
     fn repo_url_without_org() {
         let dist = GitHubDistributor::new(None, None);
-        assert_eq!(
-            dist.repo_url("test"),
-            "https://github.com/user/test"
-        );
+        assert_eq!(dist.repo_url("test"), "https://github.com/user/test");
     }
 }

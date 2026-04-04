@@ -32,10 +32,7 @@ pub struct AutoModeCoordinator {
 }
 
 impl AutoModeCoordinator {
-    pub fn new(
-        state: Arc<AutoModeState>,
-        state_callback: Option<StateCallback>,
-    ) -> Self {
+    pub fn new(state: Arc<AutoModeState>, state_callback: Option<StateCallback>) -> Self {
         Self {
             state,
             execution_thread: None,
@@ -60,7 +57,10 @@ impl AutoModeCoordinator {
             .add_log(&format!("Auto mode started (max {max_turns} turns)"), true);
 
         let state = Arc::clone(&self.state);
-        let callback = self.state_callback.as_ref().map(|_| Arc::clone(&self.state));
+        let callback = self
+            .state_callback
+            .as_ref()
+            .map(|_| Arc::clone(&self.state));
 
         let handle = thread::Builder::new()
             .name("AutoModeExecution".into())

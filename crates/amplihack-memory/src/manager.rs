@@ -66,10 +66,7 @@ impl MemoryManager {
                 Some(self.session_id.clone())
             },
             agent_id: criteria.agent_id,
-            memory_types: criteria
-                .memory_type
-                .map(|mt| vec![mt])
-                .unwrap_or_default(),
+            memory_types: criteria.memory_type.map(|mt| vec![mt]).unwrap_or_default(),
             tags: criteria.tags,
             token_budget: 0,
             limit: criteria.limit.unwrap_or(20),
@@ -130,10 +127,7 @@ impl MemoryManager {
     }
 
     /// Store multiple memories. Returns IDs (None for failed items).
-    pub fn store_batch(
-        &mut self,
-        requests: Vec<StoreRequest>,
-    ) -> Vec<Option<String>> {
+    pub fn store_batch(&mut self, requests: Vec<StoreRequest>) -> Vec<Option<String>> {
         requests
             .into_iter()
             .map(|req| {

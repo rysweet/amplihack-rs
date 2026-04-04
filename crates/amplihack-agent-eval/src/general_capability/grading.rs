@@ -1,8 +1,7 @@
 //! Grading functions for general capability scenarios.
 
-use std::collections::{HashMap, HashSet};
 use super::*;
-
+use std::collections::{HashMap, HashSet};
 
 /// Grade tool use efficiency for a single scenario.
 ///
@@ -26,8 +25,11 @@ pub fn grade_tool_use(
     } else {
         expected_set.intersection(&called_set).count() as f64 / expected_set.len() as f64
     };
-    let unnecessary_set: HashSet<&str> =
-        scenario.unnecessary_tools.iter().map(String::as_str).collect();
+    let unnecessary_set: HashSet<&str> = scenario
+        .unnecessary_tools
+        .iter()
+        .map(String::as_str)
+        .collect();
     let unnecessary_called = called_set.intersection(&unnecessary_set).count();
     let selection_accuracy = (selection_recall - unnecessary_called as f64 * 0.15).max(0.0);
 
@@ -40,9 +42,10 @@ pub fn grade_tool_use(
             let pos_a = actual_names.iter().position(|n| *n == pair[0]);
             let pos_b = actual_names.iter().position(|n| *n == pair[1]);
             if let (Some(a), Some(b)) = (pos_a, pos_b)
-                && a < b {
-                    correct += 1;
-                }
+                && a < b
+            {
+                correct += 1;
+            }
         }
         if total > 0 {
             correct as f64 / total as f64
@@ -120,9 +123,10 @@ pub fn grade_planning(scenario: &PlanningScenario, agent_response: &str) -> Scen
             let pos_before = response_lower.find(&before.to_lowercase());
             let pos_after = response_lower.find(&after.to_lowercase());
             if let (Some(pb), Some(pa)) = (pos_before, pos_after)
-                && pb < pa {
-                    satisfied += 1;
-                }
+                && pb < pa
+            {
+                satisfied += 1;
+            }
         }
         satisfied as f64 / scenario.expected_ordering_constraints.len() as f64
     };
@@ -179,7 +183,14 @@ pub fn grade_uncertainty(scenario: &UncertaintyScenario, agent_response: &str) -
     };
 
     // Hedging check
-    let hedging_words = ["however", "although", "uncertain", "conflicting", "may", "possible"];
+    let hedging_words = [
+        "however",
+        "although",
+        "uncertain",
+        "conflicting",
+        "may",
+        "possible",
+    ];
     let hedging_count = hedging_words
         .iter()
         .filter(|w| response_lower.contains(**w))
@@ -301,4 +312,3 @@ pub fn grade_collaborative(
 fn round3(v: f64) -> f64 {
     (v * 1000.0).round() / 1000.0
 }
-

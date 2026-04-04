@@ -59,7 +59,11 @@ impl ProvenanceEntry {
 ///
 /// Returns `<base_dir>/.claude/runtime/logs/<subdirectory>/<filename>`.
 /// Creates parent directories if they don't exist.
-fn resolve_log_path(base_dir: &Path, subdirectory: &str, filename: &str) -> std::io::Result<PathBuf> {
+fn resolve_log_path(
+    base_dir: &Path,
+    subdirectory: &str,
+    filename: &str,
+) -> std::io::Result<PathBuf> {
     let dir = base_dir
         .join(".claude")
         .join("runtime")
@@ -73,7 +77,12 @@ fn resolve_log_path(base_dir: &Path, subdirectory: &str, filename: &str) -> std:
 ///
 /// Fail-open: returns `Ok(())` even when the write fails — errors are logged
 /// via `tracing::warn` but never propagated.
-pub fn log_provenance(base_dir: &Path, subdirectory: &str, filename: &str, entry: &ProvenanceEntry) {
+pub fn log_provenance(
+    base_dir: &Path,
+    subdirectory: &str,
+    filename: &str,
+    entry: &ProvenanceEntry,
+) {
     if let Err(e) = try_log_provenance(base_dir, subdirectory, filename, entry) {
         warn!(
             error = %e,

@@ -99,21 +99,16 @@ impl CognitiveAdapter {
             return Err("fact cannot be empty");
         }
 
-        let node_id =
-            self.backend
-                .store_fact(context, fact, confidence, source_id, tags, metadata);
+        let node_id = self
+            .backend
+            .store_fact(context, fact, confidence, source_id, tags, metadata);
 
         self.promote_to_hive(context, fact, confidence, tags, metadata);
         Ok(node_id)
     }
 
     /// Search memory with n-gram re-ranking and optional hive federation.
-    pub fn search_full(
-        &self,
-        query: &str,
-        limit: usize,
-        min_confidence: f64,
-    ) -> Vec<MemoryFact> {
+    pub fn search_full(&self, query: &str, limit: usize, min_confidence: f64) -> Vec<MemoryFact> {
         if query.trim().is_empty() {
             return Vec::new();
         }
@@ -148,12 +143,7 @@ impl CognitiveAdapter {
     /// Search LOCAL memory only — no hive federation.
     ///
     /// Used by shard query handlers to avoid recursive query storms.
-    pub fn search_local(
-        &self,
-        query: &str,
-        limit: usize,
-        min_confidence: f64,
-    ) -> Vec<MemoryFact> {
+    pub fn search_local(&self, query: &str, limit: usize, min_confidence: f64) -> Vec<MemoryFact> {
         if query.trim().is_empty() {
             return Vec::new();
         }
@@ -200,7 +190,8 @@ impl CognitiveAdapter {
         task_id: &str,
         relevance: f64,
     ) -> Option<String> {
-        self.backend.push_working(slot_type, content, task_id, relevance)
+        self.backend
+            .push_working(slot_type, content, task_id, relevance)
     }
 
     /// Get working memory slots for a task.
@@ -267,12 +258,7 @@ impl CognitiveAdapter {
     // Internals
     // ------------------------------------------------------------------
 
-    fn backend_search(
-        &self,
-        query: &str,
-        limit: usize,
-        min_confidence: f64,
-    ) -> Vec<MemoryFact> {
+    fn backend_search(&self, query: &str, limit: usize, min_confidence: f64) -> Vec<MemoryFact> {
         self.backend
             .search_facts(query, limit * SEARCH_CANDIDATE_MULTIPLIER, min_confidence)
     }

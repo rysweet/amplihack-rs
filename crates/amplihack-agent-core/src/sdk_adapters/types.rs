@@ -288,8 +288,12 @@ mod tests {
 
     #[test]
     fn sdk_type_display_and_parse() {
-        for (s, t) in [("claude", SdkType::Claude), ("copilot", SdkType::Copilot),
-                        ("microsoft", SdkType::Microsoft), ("mini", SdkType::Mini)] {
+        for (s, t) in [
+            ("claude", SdkType::Claude),
+            ("copilot", SdkType::Copilot),
+            ("microsoft", SdkType::Microsoft),
+            ("mini", SdkType::Mini),
+        ] {
             assert_eq!(t.to_string(), s);
             assert_eq!(s.parse::<SdkType>().unwrap(), t);
         }

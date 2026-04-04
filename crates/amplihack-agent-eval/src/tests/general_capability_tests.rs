@@ -243,7 +243,8 @@ fn grade_uncertainty_with_hedging() {
         expected_behavior: String::new(),
         key_criteria: vec!["acknowledges_conflict".into()],
     };
-    let response = "However, there is uncertain evidence that acknowledges the conflict between sources";
+    let response =
+        "However, there is uncertain evidence that acknowledges the conflict between sources";
     let result = grade_uncertainty(&scenario, response);
     assert!(result.scores["appropriate_hedging"] > 0.0);
 }

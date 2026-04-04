@@ -251,7 +251,14 @@ pub fn grade_student_performance(result: &TeachingResult) -> TeachingDimensionSc
     }
 
     // Finding indicators
-    let finding_markers = ["found", "identified", "detected", "issue", "finding", "action"];
+    let finding_markers = [
+        "found",
+        "identified",
+        "detected",
+        "issue",
+        "finding",
+        "action",
+    ];
     let has_findings = finding_markers
         .iter()
         .any(|m| attempt.to_lowercase().contains(m));
@@ -283,18 +290,19 @@ pub fn grade_adaptivity(result: &TeachingResult) -> TeachingDimensionScore {
     let mut details = Vec::new();
 
     // Varied responses
-    if result.agent_answers.len() >= 2
-        && result.agent_answers[0] != result.agent_answers[1]
-    {
+    if result.agent_answers.len() >= 2 && result.agent_answers[0] != result.agent_answers[1] {
         score += 0.35;
         details.push("Varied responses".into());
     }
 
     // Answer quality
     if !result.agent_answers.is_empty() {
-        let avg_len: f64 =
-            result.agent_answers.iter().map(|a| a.len() as f64).sum::<f64>()
-                / result.agent_answers.len() as f64;
+        let avg_len: f64 = result
+            .agent_answers
+            .iter()
+            .map(|a| a.len() as f64)
+            .sum::<f64>()
+            / result.agent_answers.len() as f64;
         if avg_len > 100.0 {
             score += 0.3;
             details.push(format!("Detailed answers (avg {avg_len:.0} chars)"));
@@ -353,22 +361,30 @@ pub fn evaluate_teaching(
 pub fn get_domain_terms(domain: &str) -> Vec<&'static str> {
     match domain {
         "code_review" => vec![
-            "bug", "security", "vulnerability", "style", "naming",
-            "convention", "injection", "refactor", "test", "pattern",
+            "bug",
+            "security",
+            "vulnerability",
+            "style",
+            "naming",
+            "convention",
+            "injection",
+            "refactor",
+            "test",
+            "pattern",
         ],
         "meeting_synthesizer" => vec![
-            "action item", "decision", "speaker", "transcript",
-            "summary", "deadline", "owner", "follow-up",
+            "action item",
+            "decision",
+            "speaker",
+            "transcript",
+            "summary",
+            "deadline",
+            "owner",
+            "follow-up",
         ],
-        "document_creator" => vec![
-            "template", "format", "section", "outline", "audience",
-        ],
-        "data_analysis" => vec![
-            "statistics", "trend", "correlation", "dataset", "insight",
-        ],
-        "project_planning" => vec![
-            "task", "milestone", "dependency", "risk", "timeline",
-        ],
+        "document_creator" => vec!["template", "format", "section", "outline", "audience"],
+        "data_analysis" => vec!["statistics", "trend", "correlation", "dataset", "insight"],
+        "project_planning" => vec!["task", "milestone", "dependency", "risk", "timeline"],
         _ => vec![],
     }
 }

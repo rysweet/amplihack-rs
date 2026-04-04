@@ -92,9 +92,7 @@ impl UpdateManager {
             }
         }
 
-        if preserve_edits
-            && let Ok(custom) = self.detect_customizations(bundle_path)
-        {
+        if preserve_edits && let Ok(custom) = self.detect_customizations(bundle_path) {
             let count = custom.values().filter(|&&v| v).count();
             if count > 0 {
                 tracing::info!("Found {count} user-modified file(s)");
@@ -206,7 +204,10 @@ fn read_manifest(bundle_path: &Path) -> Result<serde_json::Value> {
     serde_json::from_str(&text).map_err(|e| GeneratorError::PackagingFailed(e.to_string()))
 }
 
-fn detect_modified_files(bundle_path: &Path, checksums: &HashMap<String, String>) -> HashSet<String> {
+fn detect_modified_files(
+    bundle_path: &Path,
+    checksums: &HashMap<String, String>,
+) -> HashSet<String> {
     let mut modified = HashSet::new();
     for (rel_path, original) in checksums {
         let full = bundle_path.join(rel_path);
@@ -330,6 +331,9 @@ mod tests {
         copy_dir_all(src_dir.path(), &dst).unwrap();
 
         assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "a");
-        assert_eq!(fs::read_to_string(dst.join("sub").join("b.txt")).unwrap(), "b");
+        assert_eq!(
+            fs::read_to_string(dst.join("sub").join("b.txt")).unwrap(),
+            "b"
+        );
     }
 }

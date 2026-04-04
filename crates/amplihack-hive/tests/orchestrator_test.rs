@@ -1,6 +1,5 @@
 use amplihack_hive::{
-    DefaultPromotionPolicy, HiveFact, HiveMindOrchestrator, PromotionPolicy,
-    make_event,
+    DefaultPromotionPolicy, HiveFact, HiveMindOrchestrator, PromotionPolicy, make_event,
 };
 use chrono::Utc;
 use std::collections::HashMap;
@@ -105,8 +104,7 @@ fn orchestrator_custom_policy() {
 
 #[test]
 fn orchestrator_with_agent_id() {
-    let orch = HiveMindOrchestrator::with_default_policy()
-        .with_agent_id("test-agent".to_string());
+    let orch = HiveMindOrchestrator::with_default_policy().with_agent_id("test-agent".to_string());
     assert_eq!(orch.agent_id(), "test-agent");
 }
 
@@ -114,9 +112,10 @@ fn orchestrator_with_agent_id() {
 
 #[test]
 fn store_and_promote_high_confidence() {
-    let mut orch = HiveMindOrchestrator::with_default_policy()
-        .with_agent_id("a1".to_string());
-    let result = orch.store_and_promote("rust", "systems language", 0.9, "a1").unwrap();
+    let mut orch = HiveMindOrchestrator::with_default_policy().with_agent_id("a1".to_string());
+    let result = orch
+        .store_and_promote("rust", "systems language", 0.9, "a1")
+        .unwrap();
     assert!(!result.fact_id.is_empty());
     assert!(result.promoted);
     assert!(result.broadcast);
@@ -124,9 +123,10 @@ fn store_and_promote_high_confidence() {
 
 #[test]
 fn store_and_promote_low_confidence() {
-    let mut orch = HiveMindOrchestrator::with_default_policy()
-        .with_agent_id("a1".to_string());
-    let result = orch.store_and_promote("rumor", "unverified", 0.3, "a1").unwrap();
+    let mut orch = HiveMindOrchestrator::with_default_policy().with_agent_id("a1".to_string());
+    let result = orch
+        .store_and_promote("rumor", "unverified", 0.3, "a1")
+        .unwrap();
     assert!(!result.promoted);
     assert!(!result.broadcast);
 }
@@ -136,7 +136,8 @@ fn store_and_promote_low_confidence() {
 #[test]
 fn query_unified_local_only() {
     let mut orch = HiveMindOrchestrator::with_default_policy();
-    orch.store_fact("rust", "systems language", 0.9, "a1").unwrap();
+    orch.store_fact("rust", "systems language", 0.9, "a1")
+        .unwrap();
     let facts = orch.query_unified("rust").unwrap();
     assert_eq!(facts.len(), 1);
 }
@@ -147,7 +148,8 @@ fn query_unified_with_peers() {
     peer.store_fact("rust", "memory safe", 0.85, "a2").unwrap();
 
     let mut orch = HiveMindOrchestrator::with_default_policy();
-    orch.store_fact("rust", "systems language", 0.9, "a1").unwrap();
+    orch.store_fact("rust", "systems language", 0.9, "a1")
+        .unwrap();
     orch.add_peer(peer);
 
     let facts = orch.query_unified("rust").unwrap();
@@ -161,8 +163,11 @@ fn query_unified_with_peers() {
 #[test]
 fn process_event_stores_fact() {
     let mut orch = HiveMindOrchestrator::with_default_policy();
-    let event = make_event("fact.propagate", "src",
-        serde_json::json!({"concept": "rust", "content": "fast", "confidence": 0.8}));
+    let event = make_event(
+        "fact.propagate",
+        "src",
+        serde_json::json!({"concept": "rust", "content": "fast", "confidence": 0.8}),
+    );
     orch.process_event(&event).unwrap();
     let facts = orch.query("rust").unwrap();
     assert_eq!(facts.len(), 1);
@@ -227,14 +232,17 @@ fn close_clears_peers() {
 #[test]
 fn orchestrator_store_fact() {
     let mut orch = HiveMindOrchestrator::with_default_policy();
-    let id = orch.store_fact("rust", "systems language", 0.9, "agent-1").unwrap();
+    let id = orch
+        .store_fact("rust", "systems language", 0.9, "agent-1")
+        .unwrap();
     assert!(!id.is_empty());
 }
 
 #[test]
 fn orchestrator_query() {
     let mut orch = HiveMindOrchestrator::with_default_policy();
-    orch.store_fact("rust", "systems language", 0.9, "agent-1").unwrap();
+    orch.store_fact("rust", "systems language", 0.9, "agent-1")
+        .unwrap();
     let facts = orch.query("rust").unwrap();
     assert_eq!(facts.len(), 1);
     assert_eq!(facts[0].concept, "rust");
@@ -243,7 +251,9 @@ fn orchestrator_query() {
 #[test]
 fn orchestrator_promote() {
     let mut orch = HiveMindOrchestrator::with_default_policy();
-    let id = orch.store_fact("rust", "systems language", 0.9, "agent-1").unwrap();
+    let id = orch
+        .store_fact("rust", "systems language", 0.9, "agent-1")
+        .unwrap();
     let promoted = orch.promote(&id, "agent-1").unwrap();
     assert!(promoted);
 }
@@ -251,7 +261,9 @@ fn orchestrator_promote() {
 #[test]
 fn orchestrator_promote_below_threshold() {
     let mut orch = HiveMindOrchestrator::with_default_policy();
-    let id = orch.store_fact("rumor", "unverified", 0.3, "agent-1").unwrap();
+    let id = orch
+        .store_fact("rumor", "unverified", 0.3, "agent-1")
+        .unwrap();
     let promoted = orch.promote(&id, "agent-1").unwrap();
     assert!(!promoted);
 }

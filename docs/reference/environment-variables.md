@@ -156,7 +156,7 @@ filesystem detection heuristics.
 
 ---
 
-### AMPLIHACK_KUZU_DB_PATH (legacy alias)
+### AMPLIHACK_KUZU_DB_PATH (backward-compatible alias)
 
 Legacy compatibility alias for `AMPLIHACK_GRAPH_DB_PATH`.
 
@@ -169,9 +169,9 @@ and also exports it for older child-process consumers. When both are present,
 AMPLIHACK_KUZU_DB_PATH=/work/repo/.amplihack/graph_db amplihack claude
 ```
 
-The alias remains because internal storage is still Kuzu-backed today, but new
-automation should prefer `AMPLIHACK_GRAPH_DB_PATH` so the public surface stays
-backend-neutral while the LadybugDB migration continues.
+The alias remains because the storage engine was originally named Kuzu (now
+rebranded to LadybugDB), but new automation should prefer
+`AMPLIHACK_GRAPH_DB_PATH` so the public surface stays backend-neutral.
 
 ---
 
@@ -300,7 +300,7 @@ export AMPLIHACK_MEMORY_BACKEND=sqlite
 # Single-invocation override
 AMPLIHACK_MEMORY_BACKEND=graph-db amplihack memory tree
 
-# Legacy kuzu alias still works
+# Legacy kuzu alias still works (backward-compatible)
 AMPLIHACK_MEMORY_BACKEND=kuzu amplihack memory tree
 ```
 
@@ -379,7 +379,7 @@ amplihack index-scip --project-path .
 
 **Artifact locations:**
 
-- `.amplihack/blarify.json` — native Kuzu import input for `amplihack index-code`
+- `.amplihack/blarify.json` — LadybugDB import input for `amplihack index-code`
 - `.amplihack/indexes/<language>.scip` — per-language native SCIP artifacts from `amplihack index-scip`
 - `.amplihack/graph_db` — native code-graph store populated by `index-code` or `index-scip`
 

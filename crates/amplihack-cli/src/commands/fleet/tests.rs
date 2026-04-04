@@ -5002,10 +5002,7 @@ fn editor_save_extracts_content() {
     assert!(!ui.editor_active, "editor deactivated after save");
     assert!(ui.editor_lines.is_empty(), "lines cleared after save");
     // The saved content should have been applied to editor_decision.
-    let saved_input = ui
-        .editor_decision
-        .as_ref()
-        .map(|d| d.input_text.as_str());
+    let saved_input = ui.editor_decision.as_ref().map(|d| d.input_text.as_str());
     assert_eq!(saved_input, Some("new\ncontent"), "content saved");
 }
 

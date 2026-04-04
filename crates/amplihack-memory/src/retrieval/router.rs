@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 
 use super::constants::*;
 use super::strategies::{
-    concept_retrieval, entity_retrieval, extract_entity_ids, simple_retrieval, ENTITY_ID_RE,
+    ENTITY_ID_RE, concept_retrieval, entity_retrieval, extract_entity_ids, simple_retrieval,
 };
 use super::types::{Fact, MemorySearch};
 
@@ -25,7 +25,10 @@ static MULTI_WORD_NAME_RE: LazyLock<Regex> =
 
 /// Retrieve all facts linked to structured entity IDs in the question.
 pub fn entity_linked_retrieval(
-    memory: &dyn MemorySearch, question: &str, existing_facts: &[Fact], local_only: bool,
+    memory: &dyn MemorySearch,
+    question: &str,
+    existing_facts: &[Fact],
+    local_only: bool,
 ) -> Vec<Fact> {
     let entity_ids = extract_entity_ids(question);
     if entity_ids.is_empty() {
@@ -91,7 +94,10 @@ pub fn entity_linked_retrieval(
 
 /// Chain-aware retrieval for questions mentioning 2+ named entities or IDs.
 pub fn multi_entity_retrieval(
-    memory: &dyn MemorySearch, question: &str, existing_facts: &[Fact], local_only: bool,
+    memory: &dyn MemorySearch,
+    question: &str,
+    existing_facts: &[Fact],
+    local_only: bool,
 ) -> Vec<Fact> {
     let name_candidates: Vec<String> = MULTI_WORD_NAME_RE
         .find_iter(question)
@@ -99,10 +105,7 @@ pub fn multi_entity_retrieval(
         .collect();
     let id_candidates = extract_entity_ids(question);
 
-    let all_entities: HashSet<String> = name_candidates
-        .into_iter()
-        .chain(id_candidates)
-        .collect();
+    let all_entities: HashSet<String> = name_candidates.into_iter().chain(id_candidates).collect();
 
     if all_entities.len() < 2 {
         return existing_facts.to_vec();
@@ -142,7 +145,10 @@ pub fn multi_entity_retrieval(
 
 /// Follow infrastructure relation targets (e.g. subnet → CIDR).
 pub fn infrastructure_relation_retrieval(
-    memory: &dyn MemorySearch, question: &str, existing_facts: &[Fact], local_only: bool,
+    memory: &dyn MemorySearch,
+    question: &str,
+    existing_facts: &[Fact],
+    local_only: bool,
 ) -> Vec<Fact> {
     let q_lower = question.to_lowercase();
     if !q_lower.contains("subnet") {
@@ -162,10 +168,18 @@ pub fn infrastructure_relation_retrieval(
             for cap in pattern.captures_iter(&text) {
                 if let Some(m) = cap.get(1) {
                     let candidate = m.as_str().trim_matches(|c: char| {
-                        c == ' ' || c == '\'' || c == '"' || c == '.' || c == ','
-                            || c == ':' || c == ';' || c == '(' || c == ')'
+                        c == ' '
+                            || c == '\''
+                            || c == '"'
+                            || c == '.'
+                            || c == ','
+                            || c == ':'
+                            || c == ';'
+                            || c == '('
+                            || c == ')'
                     });
-                    if candidate.is_empty() || skip_words.contains(candidate.to_lowercase().as_str())
+                    if candidate.is_empty()
+                        || skip_words.contains(candidate.to_lowercase().as_str())
                     {
                         continue;
                     }
@@ -201,7 +215,10 @@ pub fn infrastructure_relation_retrieval(
 
 /// Add focused entity/concept hits back into large simple retrievals.
 pub fn supplement_simple_retrieval(
-    memory: &dyn MemorySearch, question: &str, existing_facts: &[Fact], local_only: bool,
+    memory: &dyn MemorySearch,
+    question: &str,
+    existing_facts: &[Fact],
+    local_only: bool,
 ) -> Vec<Fact> {
     let mut existing_keys: HashSet<String> = existing_facts.iter().map(|f| f.dedup_key()).collect();
     let mut supplemented: Vec<Fact> = existing_facts.to_vec();
@@ -258,19 +275,27 @@ pub fn aggregation_retrieval(memory: &dyn MemorySearch, question: &str) -> Vec<F
     if entity_kw == "project" {
         let agg = memory.execute_aggregation("list_concepts", Some("project"));
         if !agg.items.is_empty() {
-            results.push(agg_fact("Meta-memory: Project count", &format!(
-                "There are {} distinct project-related concepts: {}",
-                agg.items.len(), agg.items.join(", ")
-            )));
+            results.push(agg_fact(
+                "Meta-memory: Project count",
+                &format!(
+                    "There are {} distinct project-related concepts: {}",
+                    agg.items.len(),
+                    agg.items.join(", ")
+                ),
+            ));
         }
     }
     if ["people", "person", "member", "team"].contains(&entity_kw) {
         let agg = memory.execute_aggregation("list_entities", None);
         if !agg.items.is_empty() {
-            results.push(agg_fact("Meta-memory: Entity list", &format!(
-                "There are {} distinct entities: {}",
-                agg.items.len(), agg.items.join(", ")
-            )));
+            results.push(agg_fact(
+                "Meta-memory: Entity list",
+                &format!(
+                    "There are {} distinct entities: {}",
+                    agg.items.len(),
+                    agg.items.join(", ")
+                ),
+            ));
         }
     }
 
@@ -282,9 +307,15 @@ pub fn aggregation_retrieval(memory: &dyn MemorySearch, question: &str) -> Vec<F
         let agg = memory.execute_aggregation("list_superseded", None);
         if !agg.items.is_empty() {
             let topics: Vec<_> = agg.items.iter().take(CONFLICTING_TOPICS_LIMIT).collect();
-            let joined = topics.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
-            results.push(agg_fact("Meta-memory: Conflicting topics",
-                &format!("Topics with conflicting/updated information: {joined}")));
+            let joined = topics
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            results.push(agg_fact(
+                "Meta-memory: Conflicting topics",
+                &format!("Topics with conflicting/updated information: {joined}"),
+            ));
         }
     }
 
@@ -301,7 +332,13 @@ pub fn aggregation_retrieval(memory: &dyn MemorySearch, question: &str) -> Vec<F
             parts.push(format!(
                 "Distinct entities ({}): {}",
                 entity_agg.items.len(),
-                entity_agg.items.iter().take(30).cloned().collect::<Vec<_>>().join(", ")
+                entity_agg
+                    .items
+                    .iter()
+                    .take(30)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         if !concept_agg.item_counts.is_empty() {
@@ -314,7 +351,10 @@ pub fn aggregation_retrieval(memory: &dyn MemorySearch, question: &str) -> Vec<F
             parts.push(format!("Top concepts: {}", top.join(", ")));
         }
         if !parts.is_empty() {
-            results.push(agg_fact("Meta-memory: Knowledge summary", &parts.join(". ")));
+            results.push(agg_fact(
+                "Meta-memory: Knowledge summary",
+                &parts.join(". "),
+            ));
         }
     }
 
@@ -378,9 +418,13 @@ fn agg_fact(context: &str, outcome: &str) -> Fact {
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("aggregation".into(), serde_json::Value::Bool(true));
     Fact {
-        context: context.into(), outcome: outcome.into(), confidence: 1.0,
-        timestamp: String::new(), experience_id: String::new(),
-        tags: vec!["meta_memory".into()], metadata,
+        context: context.into(),
+        outcome: outcome.into(),
+        confidence: 1.0,
+        timestamp: String::new(),
+        experience_id: String::new(),
+        tags: vec!["meta_memory".into()],
+        metadata,
     }
 }
 

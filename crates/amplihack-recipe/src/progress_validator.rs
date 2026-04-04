@@ -96,7 +96,10 @@ pub enum ValidationError {
     #[error("step_name exceeds {MAX_STEP_NAME_LEN} chars ({0} chars)")]
     StepNameTooLong(usize),
     #[error("invalid status transition: {from} → {to}")]
-    InvalidTransition { from: ProgressStatus, to: ProgressStatus },
+    InvalidTransition {
+        from: ProgressStatus,
+        to: ProgressStatus,
+    },
     #[error("progress file is stale (age {age_secs:.0}s exceeds {MAX_PROGRESS_AGE_SECS}s limit)")]
     Stale { age_secs: f64 },
     #[error("timestamp is {drift_secs:.1}s in the future (max {MAX_FUTURE_DRIFT_SECS}s)")]
@@ -202,8 +205,8 @@ pub fn validate_progress_file(
 ) -> Result<ProgressPayload, ValidationError> {
     let (safe_name, file_pid) = validate_filename(filename)?;
 
-    let payload: ProgressPayload =
-        serde_json::from_slice(json_bytes).map_err(|e| ValidationError::ParseError(e.to_string()))?;
+    let payload: ProgressPayload = serde_json::from_slice(json_bytes)
+        .map_err(|e| ValidationError::ParseError(e.to_string()))?;
 
     // Field constraints
     validate_fields(&payload)?;
@@ -239,7 +242,6 @@ pub fn validate_progress_file(
 
     Ok(payload)
 }
-
 
 #[cfg(test)]
 #[path = "tests/progress_validator_tests.rs"]

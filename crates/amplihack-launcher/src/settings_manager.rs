@@ -31,10 +31,7 @@ struct SessionState {
 impl SettingsManager {
     pub fn new(settings_path: PathBuf, session_id: String, non_interactive: bool) -> Self {
         let home = dirs_or_home();
-        let session_state_dir = home
-            .join(".claude")
-            .join("runtime")
-            .join("sessions");
+        let session_state_dir = home.join(".claude").join("runtime").join("sessions");
         let session_state_file = session_state_dir.join(format!("{session_id}_backup.json"));
 
         Self {
@@ -119,7 +116,10 @@ impl SettingsManager {
 
         let state = SessionState {
             session_id: self.session_id.clone(),
-            backup_path: self.backup_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            backup_path: self
+                .backup_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
             settings_path: self.settings_path.to_string_lossy().into_owned(),
             timestamp: unix_timestamp(),
         };
@@ -185,14 +185,13 @@ mod tests {
         let settings_path = dir.path().join("settings.json");
         fs::write(&settings_path, r#"{"key": "value"}"#).unwrap();
 
-        let mut mgr = SettingsManager::new(
-            settings_path,
-            "test-session-123".into(),
-            true,
-        );
+        let mut mgr = SettingsManager::new(settings_path, "test-session-123".into(), true);
         // Override session state dir to use temp
         mgr.session_state_dir = dir.path().join("state");
-        mgr.session_state_file = dir.path().join("state").join("test-session-123_backup.json");
+        mgr.session_state_file = dir
+            .path()
+            .join("state")
+            .join("test-session-123_backup.json");
         (dir, mgr)
     }
 
@@ -221,11 +220,7 @@ mod tests {
     #[test]
     fn create_backup_no_settings_file() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SettingsManager::new(
-            dir.path().join("nonexistent.json"),
-            "s1".into(),
-            true,
-        );
+        let mut mgr = SettingsManager::new(dir.path().join("nonexistent.json"), "s1".into(), true);
         let (ok, path) = mgr.create_backup();
         assert!(!ok);
         assert!(path.is_none());
@@ -247,7 +242,9 @@ mod tests {
         mgr.backup_path = None;
         assert!(mgr.load_session_state());
         assert_eq!(
-            mgr.backup_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            mgr.backup_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
             Some("/fake/path/backup.json".to_string())
         );
     }
@@ -265,11 +262,7 @@ mod tests {
     #[test]
     fn load_session_state_no_file() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mgr = SettingsManager::new(
-            dir.path().join("settings.json"),
-            "s1".into(),
-            true,
-        );
+        let mut mgr = SettingsManager::new(dir.path().join("settings.json"), "s1".into(), true);
         mgr.session_state_file = dir.path().join("nonexistent.json");
         assert!(!mgr.load_session_state());
     }

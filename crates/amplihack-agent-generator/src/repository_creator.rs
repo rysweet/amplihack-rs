@@ -58,7 +58,9 @@ impl RepositoryCreator {
     /// Create a new creator without verifying `gh` (for testing).
     #[cfg(test)]
     fn new_unchecked() -> Self {
-        Self { gh_available: false }
+        Self {
+            gh_available: false,
+        }
     }
 
     /// Create a GitHub repository for the bundle at `bundle_path`.
@@ -264,13 +266,7 @@ mod tests {
     #[test]
     fn create_missing_path() {
         let creator = RepositoryCreator::new_unchecked();
-        let r = creator.create_repository(
-            Path::new("/nonexistent/path"),
-            None,
-            true,
-            false,
-            None,
-        );
+        let r = creator.create_repository(Path::new("/nonexistent/path"), None, true, false, None);
         assert!(!r.success);
     }
 

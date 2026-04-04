@@ -207,10 +207,7 @@ mod tests {
 
     #[test]
     fn agent_binary_takes_priority_over_session_markers() {
-        let env = EnvReader::Test(&[
-            ("AMPLIHACK_AGENT_BINARY", "copilot"),
-            ("CLAUDE_CODE", "1"),
-        ]);
+        let env = EnvReader::Test(&[("AMPLIHACK_AGENT_BINARY", "copilot"), ("CLAUDE_CODE", "1")]);
         assert_eq!(detect_launcher_from(env), LauncherType::CopilotCli);
     }
 

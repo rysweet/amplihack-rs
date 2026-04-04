@@ -109,7 +109,9 @@ impl TeachingAgent {
             if q.correct_index >= q.options.len() {
                 return Err(crate::error::DomainError::InvalidInput(format!(
                     "question {}: correct_index {} out of bounds for {} options",
-                    i, q.correct_index, q.options.len()
+                    i,
+                    q.correct_index,
+                    q.options.len()
                 )));
             }
         }

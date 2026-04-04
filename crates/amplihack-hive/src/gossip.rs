@@ -144,15 +144,9 @@ impl GossipProtocol {
     ) -> Vec<String> {
         let candidates: Vec<(&HiveGraph, f64)> = peer_hives
             .iter()
-            .filter(|h| {
-                exclude_id.is_none_or(|exc| h.hive_id() != exc)
-            })
+            .filter(|h| exclude_id.is_none_or(|exc| h.hive_id() != exc))
             .map(|h| {
-                let trust_sum: f64 = h
-                    .list_agents(Some("active"))
-                    .iter()
-                    .map(|a| a.trust)
-                    .sum();
+                let trust_sum: f64 = h.list_agents(Some("active")).iter().map(|a| a.trust).sum();
                 (*h, trust_sum.max(0.1))
             })
             .collect();

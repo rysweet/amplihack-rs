@@ -12,8 +12,8 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 pub use transitions::{
-    collapse_change_count_transitions, collapse_temporal_lookup_transitions,
-    transition_chain_from_facts, Transition,
+    Transition, collapse_change_count_transitions, collapse_temporal_lookup_transitions,
+    transition_chain_from_facts,
 };
 
 // ---------------------------------------------------------------------------
@@ -50,20 +50,21 @@ static ENTITY_TRAIL_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\s+\b(?:before|after|when|as of)\b.*$").unwrap());
 
 static AFTER_BEFORE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)after\s+(?:the\s+)?first.*?(?:but\s+)?before\s+(?:the\s+)?(?:second|final|last)").unwrap()
+    Regex::new(
+        r"(?i)after\s+(?:the\s+)?first.*?(?:but\s+)?before\s+(?:the\s+)?(?:second|final|last)",
+    )
+    .unwrap()
 });
 
 static BEFORE_FIRST_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)before\s+(?:the\s+)?(?:first|any)\s+(?:change|update|modification)").unwrap()
 });
 
-static AFTER_NTH_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)after\s+(?:the\s+)?(\w+)\s+(?:change|update)").unwrap()
-});
+static AFTER_NTH_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)after\s+(?:the\s+)?(\w+)\s+(?:change|update)").unwrap());
 
 static BEFORE_FINAL_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)before\s+(?:the\s+)?(?:final|last|latest)\s+(?:change|update|value)")
-        .unwrap()
+    Regex::new(r"(?i)before\s+(?:the\s+)?(?:final|last|latest)\s+(?:change|update|value)").unwrap()
 });
 
 // ---------------------------------------------------------------------------
@@ -97,9 +98,7 @@ pub fn extract_temporal_state_values(value: &str, field: &str) -> Vec<String> {
     if field_lower == "date" || field_lower == "deadline" {
         if let Some(cap) = FROM_TO_RE.captures(cleaned) {
             let sequence = &cleaned[cap.get(0).unwrap().start()..];
-            let sequence = Regex::new(r"(?i)^from\s+")
-                .unwrap()
-                .replace(sequence, "");
+            let sequence = Regex::new(r"(?i)^from\s+").unwrap().replace(sequence, "");
             let parts: Vec<&str> = Regex::new(r"(?i)\s+to\s+")
                 .unwrap()
                 .split(&sequence)
@@ -170,8 +169,18 @@ pub fn parse_temporal_index(question: &str) -> String {
         return "-2".into();
     }
     for kw in [
-        "first", "original", "initial", "second", "third",
-        "intermediate", "middle", "between", "latest", "current", "final", "last",
+        "first",
+        "original",
+        "initial",
+        "second",
+        "third",
+        "intermediate",
+        "middle",
+        "between",
+        "latest",
+        "current",
+        "final",
+        "last",
     ] {
         if lower.contains(kw)
             && let Some(expr) = temporal_keyword_index(kw)
@@ -293,7 +302,10 @@ mod tests {
     #[test]
     fn transition_chain_basic() {
         let facts = vec![
-            Fact::new("Atlas deadline", "deadline changed from March 15 to April 1"),
+            Fact::new(
+                "Atlas deadline",
+                "deadline changed from March 15 to April 1",
+            ),
             Fact::new("Atlas deadline", "Project deadline is April 1"),
         ];
         let chain = transition_chain_from_facts("Atlas", "deadline", &facts);

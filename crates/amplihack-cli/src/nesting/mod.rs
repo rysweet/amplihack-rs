@@ -119,9 +119,7 @@ impl NestingDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{
-        home_env_lock, restore_cwd, restore_home, set_cwd, set_home,
-    };
+    use crate::test_support::{home_env_lock, restore_cwd, restore_home, set_cwd, set_home};
     use std::fs;
 
     #[test]

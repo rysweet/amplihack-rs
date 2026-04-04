@@ -1,13 +1,13 @@
-# Kuzu Code Graph
+# LadybugDB Code Graph
 
-The Kuzu code-graph is amplihack-rs's native, zero-Python store for structural
+The LadybugDB (formerly Kuzu) code-graph is amplihack-rs's native, zero-Python store for structural
 information about a project's source code — files, classes, functions, and the
 relationships between them.
 
 ## Contents
 
 - [What it is](#what-it-is)
-- [Why Kuzu](#why-kuzu)
+- [Why LadybugDB](#why-ladybugdb)
 - [Schema](#schema)
 - [Data ingestion pipeline](#data-ingestion-pipeline)
 - [blarify: consumption vs. generation](#blarify-consumption-vs-generation)
@@ -22,7 +22,7 @@ relationships between them.
 
 ## What it is
 
-The Kuzu code-graph answers structural questions about a codebase without
+The LadybugDB code-graph answers structural questions about a codebase without
 reading source files at query time:
 
 - "How many functions are in this project?"
@@ -34,21 +34,21 @@ It is a persistent property graph, updated by running `amplihack index-scip`
 (or `amplihack index-code` for blarify JSON imports) and queried via
 `amplihack query-code`.
 
-> **Historical naming:** Earlier issue discussions referred to this system as
-> "LadybugDB". That name was a working label for the Kuzu-backed code-graph
-> layer. No separate LadybugDB package exists. LadybugDB == the Kuzu code-graph
-> layer described in this document.
+> **Historical naming:** The graph database engine was previously known as "Kuzu"
+> and has been rebranded to "LadybugDB". The `lbug` crate (formerly `kuzu`)
+> provides the Rust FFI bindings. CLI flags like `--kuzu-path` and env vars
+> like `AMPLIHACK_KUZU_DB_PATH` remain as backward-compatible aliases.
 
 ---
 
-## Why Kuzu
+## Why LadybugDB
 
-[Kuzu](https://kuzudb.com/) is an embeddable property graph database with a
-C++ core. The `kuzu` Rust crate exposes it through a native C++ FFI binding
+[LadybugDB](https://kuzudb.com/) (formerly Kuzu) is an embeddable property graph database with a
+C++ core. The `lbug` Rust crate exposes it through a native C++ FFI binding
 (`cxx-build`, pinned to `=1.0.138` per [the version contract](./cxx-version-contract.md)).
 
-Kuzu has no runtime dependency on Python or any interpreter. The FFI boundary
-is compile-time — `cargo build` links the Kuzu C++ library into the
+LadybugDB has no runtime dependency on Python or any interpreter. The FFI boundary
+is compile-time — `cargo build` links the LadybugDB C++ library into the
 `amplihack` binary. There is no subprocess launched to query the graph.
 
 ---
@@ -105,7 +105,7 @@ Source code
     │   import_scip_file()  — prost decode + SCIP-to-BlarifyOutput conversion
     │       │
     │       ▼
-    │   Kuzu graph  ◄──────────────────────────────────┐
+    │   LadybugDB graph  ◄──────────────────────────────────┐
     │                                                   │
     └── path B: blarify JSON import                     │
             │                                           │
@@ -135,7 +135,7 @@ blarify *generator* is out of scope for this project.
 What amplihack-rs does:
 
 - Defines the `BlarifyOutput` deserialization schema in Rust (`serde`)
-- Imports any conforming `blarify.json` into Kuzu via `import_blarify_json()`
+- Imports any conforming `blarify.json` into LadybugDB via `import_blarify_json()`
 - Never invokes `python blarify` or `python -m blarify` as a subprocess
 
 If `blarify.json` is absent, `index-code` logs a `WARN` and exits cleanly with
@@ -153,7 +153,7 @@ Protocol) is a protobuf-based format for precise code intelligence — symbols,
 occurrences, and relationships across a codebase.
 
 amplihack-rs uses `prost` to decode SCIP protobuf files and then converts them
-to the internal `BlarifyOutput` structure for import into Kuzu.
+to the internal `BlarifyOutput` structure for import into LadybugDB.
 
 The SCIP indexer binaries are external native tools:
 
@@ -235,7 +235,7 @@ reading graph data that may include sensitive symbol names or docstrings.
 | Property | Implementation |
 |----------|---------------|
 | No interpreter subprocess | All SCIP indexers are binary executables; `python3` is never launched |
-| Parameterized queries | All Kuzu Cypher statements use parameter binding; no string interpolation |
+| Parameterized queries | All LadybugDB Cypher statements use parameter binding; no string interpolation |
 | Path canonicalization | `--project-path` and `--db-path` are canonicalized; symlinks emit `WARN` |
 | Blocked prefixes | `/proc`, `/sys`, `/dev` are rejected immediately |
 | DB file permissions | `0600` file / `0700` directory enforced after first open (Unix only) |
@@ -249,4 +249,4 @@ reading graph data that may include sensitive symbol names or docstrings.
 - [`amplihack index-scip` and `index-code` reference](../reference/memory-index-command.md)
 - [`amplihack query-code` reference](../reference/query-code-command.md)
 - [Index a project end-to-end](../howto/index-a-project.md)
-- [The cxx/cxx-build Version Contract](./cxx-version-contract.md) — why Kuzu requires a pinned `cxx` version
+- [The cxx/cxx-build Version Contract](./cxx-version-contract.md) — why LadybugDB requires a pinned `cxx` version

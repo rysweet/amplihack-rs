@@ -40,11 +40,11 @@ pub(crate) use paths::{graph_export_timestamp, parse_json_array_of_strings};
 pub use commands::{run_export, run_import};
 
 // Items needed by child modules (backend.rs, sqlite_backend.rs, tests) via `use super::*;`.
-pub(crate) use paths::{
-    compute_path_size, copy_hierarchical_storage, resolve_hierarchical_db_path,
-    resolve_hierarchical_memory_paths,
-};
 #[cfg(test)]
 pub(crate) use commands::{export_memory, import_memory};
 #[cfg(test)]
 pub(crate) use paths::is_dir_empty;
+pub(crate) use paths::{
+    compute_path_size, copy_hierarchical_storage, resolve_hierarchical_db_path,
+    resolve_hierarchical_memory_paths,
+};

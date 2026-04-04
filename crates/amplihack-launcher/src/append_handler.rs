@@ -84,11 +84,7 @@ pub fn check_rate_limit(append_dir: &Path) -> Result<(), AppendError> {
     let pending: Vec<_> = fs::read_dir(append_dir)
         .map_err(|e| AppendError::OperationFailed(format!("Cannot read append dir: {e}")))?
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext == "md")
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
         .collect();
 
     if pending.len() >= MAX_PENDING_INSTRUCTIONS {
@@ -234,9 +230,8 @@ pub fn append_instructions(
     let filename = format!("{timestamp}.md");
     let filepath = append_dir.join(&filename);
 
-    let content = format!(
-        "# Appended Instruction\n\n**Timestamp**: {timestamp}\n\n{instruction}\n"
-    );
+    let content =
+        format!("# Appended Instruction\n\n**Timestamp**: {timestamp}\n\n{instruction}\n");
     fs::write(&filepath, content)?;
 
     Ok(AppendResult {
@@ -302,7 +297,10 @@ mod tests {
 
         let root = find_workspace_root(&sub);
         assert!(root.is_some());
-        assert_eq!(root.unwrap().canonicalize().unwrap(), dir.path().canonicalize().unwrap());
+        assert_eq!(
+            root.unwrap().canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
     }
 
     #[test]
@@ -329,10 +327,12 @@ mod tests {
 
         let found = find_active_session(dir.path(), None);
         assert!(found.is_some());
-        assert!(found
-            .unwrap()
-            .to_string_lossy()
-            .contains("auto_20240101_120000"));
+        assert!(
+            found
+                .unwrap()
+                .to_string_lossy()
+                .contains("auto_20240101_120000")
+        );
     }
 
     #[test]

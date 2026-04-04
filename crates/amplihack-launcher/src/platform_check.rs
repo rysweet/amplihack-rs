@@ -38,7 +38,7 @@ pub fn check_platform_compatibility() -> PlatformCheckResult {
             message: concat!(
                 "⚠️  Native Windows detected — running with partial support.\n",
                 "   Unavailable features: fleet (requires tmux/SSH).\n",
-                "   On ARM64 Windows, use x86_64 Python for memory features (kuzu).\n",
+                "   On ARM64 Windows, use x86_64 Python for memory features (LadybugDB).\n",
                 "   For full support, use WSL: ",
                 "https://learn.microsoft.com/en-us/windows/wsl/install",
             )

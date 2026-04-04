@@ -17,23 +17,81 @@ use crate::safe_calc::safe_eval;
 // ---------------------------------------------------------------------------
 
 const PERSON_DETAIL_CUES: &[&str] = &[
-    "allerg", "birthday", "degree", "favorite food", "hobby", "hometown",
-    "personal information", "pet", "team",
+    "allerg",
+    "birthday",
+    "degree",
+    "favorite food",
+    "hobby",
+    "hometown",
+    "personal information",
+    "pet",
+    "team",
 ];
 
 static NON_PERSON_NAME_TOKENS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "affected", "allergies", "allergy", "award", "birthday", "center",
-        "city", "climate", "competitor", "computer", "customer", "daily",
-        "data", "database", "development", "difference", "discrepancy",
-        "educational", "engineering", "estimate", "experience", "facilities",
-        "favorite", "food", "framework", "gartner", "hiring", "hobby",
-        "hometown", "incident", "indicators", "information", "innovation",
-        "internal", "island", "market", "marketing", "migration",
-        "nationality", "newsletter", "personnel", "personal", "pet", "pets",
-        "preference", "product", "professional", "production", "project",
-        "report", "rhode", "school", "security", "segment", "senior", "size",
-        "sprint", "success", "satisfaction", "team", "threat", "user",
+        "affected",
+        "allergies",
+        "allergy",
+        "award",
+        "birthday",
+        "center",
+        "city",
+        "climate",
+        "competitor",
+        "computer",
+        "customer",
+        "daily",
+        "data",
+        "database",
+        "development",
+        "difference",
+        "discrepancy",
+        "educational",
+        "engineering",
+        "estimate",
+        "experience",
+        "facilities",
+        "favorite",
+        "food",
+        "framework",
+        "gartner",
+        "hiring",
+        "hobby",
+        "hometown",
+        "incident",
+        "indicators",
+        "information",
+        "innovation",
+        "internal",
+        "island",
+        "market",
+        "marketing",
+        "migration",
+        "nationality",
+        "newsletter",
+        "personnel",
+        "personal",
+        "pet",
+        "pets",
+        "preference",
+        "product",
+        "professional",
+        "production",
+        "project",
+        "report",
+        "rhode",
+        "school",
+        "security",
+        "segment",
+        "senior",
+        "size",
+        "sprint",
+        "success",
+        "satisfaction",
+        "team",
+        "threat",
+        "user",
         "vulnerability",
     ]
     .into_iter()
@@ -42,8 +100,16 @@ static NON_PERSON_NAME_TOKENS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 
 static NON_PROJECT_NAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
-        "assignment", "framework", "identity", "lead", "leadership",
-        "management", "new", "overview", "status", "type",
+        "assignment",
+        "framework",
+        "identity",
+        "lead",
+        "leadership",
+        "management",
+        "new",
+        "overview",
+        "status",
+        "type",
     ]
     .into_iter()
     .collect()
@@ -71,11 +137,15 @@ static PERSON_ATTR_VERB_RE: Lazy<Regex> =
 static PROJECT_NAME_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\bProject\s+([A-Z][A-Za-z0-9_-]+)\b").unwrap());
 
-static APT_NUM_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\bapt(?:-| )?\d+\b").unwrap());
+static APT_NUM_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bapt(?:-| )?\d+\b").unwrap());
 
-const APT_ATTRIBUTION_FACT_CUES: &[&str] =
-    &["apt", "attribution", "development infrastructure", "threat actor", "ttp"];
+const APT_ATTRIBUTION_FACT_CUES: &[&str] = &[
+    "apt",
+    "attribution",
+    "development infrastructure",
+    "threat actor",
+    "ttp",
+];
 
 static ARITHMETIC_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(\d+(?:\.\d+)?)\s*([+\-*/])\s*(\d+(?:\.\d+)?)\s*=\s*(\d+(?:\.\d+)?)").unwrap()
@@ -186,7 +256,8 @@ pub fn extract_project_names(facts: &[Fact]) -> Vec<String> {
         for cap in PROJECT_NAME_RE.captures_iter(&fact.context) {
             let name = cap[1].trim_matches(|c: char| ".,;:!?()[]{}\"'".contains(c));
             if looks_like_project_name(name) {
-                ctx.entry(name.to_lowercase()).or_insert_with(|| name.to_string());
+                ctx.entry(name.to_lowercase())
+                    .or_insert_with(|| name.to_string());
             }
         }
         for cap in PROJECT_NAME_RE.captures_iter(&fact.outcome) {

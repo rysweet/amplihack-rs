@@ -212,7 +212,10 @@ mod tests {
         let entries = tracker.read_entries().unwrap();
         assert_eq!(entries.len(), 2);
         assert!(entries[1].is_nested);
-        assert_eq!(entries[1].parent_session_id.as_deref(), Some(parent_id.as_str()));
+        assert_eq!(
+            entries[1].parent_session_id.as_deref(),
+            Some(parent_id.as_str())
+        );
 
         tracker.complete_session(&child_id).unwrap();
         tracker.complete_session(&parent_id).unwrap();

@@ -48,10 +48,7 @@ pub fn create_adapter(config: SdkAdapterConfig) -> Result<Box<dyn SdkAdapter>> {
 /// Create an SDK adapter from a string SDK type name and agent name.
 ///
 /// Convenience wrapper around [`create_adapter`] for CLI/config-driven usage.
-pub fn create_adapter_by_name(
-    name: &str,
-    sdk: &str,
-) -> Result<Box<dyn SdkAdapter>> {
+pub fn create_adapter_by_name(name: &str, sdk: &str) -> Result<Box<dyn SdkAdapter>> {
     let sdk_type: SdkType = sdk.parse()?;
     let config = SdkAdapterConfig::new(name, sdk_type);
     create_adapter(config)

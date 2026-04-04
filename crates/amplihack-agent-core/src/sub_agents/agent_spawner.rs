@@ -16,15 +16,54 @@ use super::types::{SpawnedAgent, SpawnedAgentStatus, SpecialistType};
 /// Executor function signature: takes a spawned agent, returns result or error.
 type ExecutorFn = Box<dyn Fn(&SpawnedAgent) -> std::result::Result<String, String> + Send + Sync>;
 
-struct ClassificationRule { keywords: &'static [&'static str], specialist: SpecialistType }
+struct ClassificationRule {
+    keywords: &'static [&'static str],
+    specialist: SpecialistType,
+}
 
 /// Order matters: more specific patterns checked first.
 static CLASSIFICATION_RULES: &[ClassificationRule] = &[
-    ClassificationRule { keywords: &["research", "web search", "look up online"], specialist: SpecialistType::Research },
-    ClassificationRule { keywords: &["generate", "write code", "script", "implement", "create program", "create a program"], specialist: SpecialistType::CodeGeneration },
-    ClassificationRule { keywords: &["combine", "synthesize", "summarize", "merge", "integrate"], specialist: SpecialistType::Synthesis },
-    ClassificationRule { keywords: &["analyze", "pattern", "detect", "compare", "trend", "correlation"], specialist: SpecialistType::Analysis },
-    ClassificationRule { keywords: &["find", "search", "retrieve", "lookup", "get facts", "what do we know"], specialist: SpecialistType::Retrieval },
+    ClassificationRule {
+        keywords: &["research", "web search", "look up online"],
+        specialist: SpecialistType::Research,
+    },
+    ClassificationRule {
+        keywords: &[
+            "generate",
+            "write code",
+            "script",
+            "implement",
+            "create program",
+            "create a program",
+        ],
+        specialist: SpecialistType::CodeGeneration,
+    },
+    ClassificationRule {
+        keywords: &["combine", "synthesize", "summarize", "merge", "integrate"],
+        specialist: SpecialistType::Synthesis,
+    },
+    ClassificationRule {
+        keywords: &[
+            "analyze",
+            "pattern",
+            "detect",
+            "compare",
+            "trend",
+            "correlation",
+        ],
+        specialist: SpecialistType::Analysis,
+    },
+    ClassificationRule {
+        keywords: &[
+            "find",
+            "search",
+            "retrieve",
+            "lookup",
+            "get facts",
+            "what do we know",
+        ],
+        specialist: SpecialistType::Retrieval,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -108,7 +147,10 @@ impl AgentSpawner {
         };
 
         self.spawn_counter += 1;
-        let name = format!("{}_sub_{}_{}", self.parent_agent_name, self.spawn_counter, st);
+        let name = format!(
+            "{}_sub_{}_{}",
+            self.parent_agent_name, self.spawn_counter, st
+        );
 
         let spawned = SpawnedAgent {
             name: name.clone(),
@@ -226,28 +268,46 @@ impl AgentSpawner {
 // ---------------------------------------------------------------------------
 
 fn default_retrieval(agent: &SpawnedAgent) -> std::result::Result<String, String> {
-    Ok(format!("Retrieval task queued: {} (memory integration not configured)", agent.task))
+    Ok(format!(
+        "Retrieval task queued: {} (memory integration not configured)",
+        agent.task
+    ))
 }
 
 fn default_analysis(agent: &SpawnedAgent) -> std::result::Result<String, String> {
-    Ok(format!("Analysis task queued: {} (memory integration not configured)", agent.task))
+    Ok(format!(
+        "Analysis task queued: {} (memory integration not configured)",
+        agent.task
+    ))
 }
 
 fn default_synthesis(agent: &SpawnedAgent) -> std::result::Result<String, String> {
-    Ok(format!("Synthesis task queued: {} (memory integration not configured)", agent.task))
+    Ok(format!(
+        "Synthesis task queued: {} (memory integration not configured)",
+        agent.task
+    ))
 }
 
 fn default_code_gen(agent: &SpawnedAgent) -> std::result::Result<String, String> {
     let tl = agent.task.to_lowercase();
     if tl.contains("script") || tl.contains("python") {
-        Ok(format!("# Generated script for: {}\ndef main():\n    pass\n", agent.task))
+        Ok(format!(
+            "# Generated script for: {}\ndef main():\n    pass\n",
+            agent.task
+        ))
     } else {
-        Ok(format!("Code generation for: {} (requires LLM integration)", agent.task))
+        Ok(format!(
+            "Code generation for: {} (requires LLM integration)",
+            agent.task
+        ))
     }
 }
 
 fn default_research(agent: &SpawnedAgent) -> std::result::Result<String, String> {
-    Ok(format!("Research task queued: {} (external search not implemented)", agent.task))
+    Ok(format!(
+        "Research task queued: {} (external search not implemented)",
+        agent.task
+    ))
 }
 
 #[cfg(test)]
@@ -308,14 +368,23 @@ mod tests {
     #[test]
     fn classify_defaults_to_retrieval() {
         let s = AgentSpawner::new("p", "/m", "mini", 4).unwrap();
-        assert_eq!(s.classify_task("some random task"), SpecialistType::Retrieval);
+        assert_eq!(
+            s.classify_task("some random task"),
+            SpecialistType::Retrieval
+        );
     }
 
     #[test]
     fn classify_multi_word_keyword() {
         let s = AgentSpawner::new("p", "/m", "mini", 4).unwrap();
-        assert_eq!(s.classify_task("Please web search for info"), SpecialistType::Research);
-        assert_eq!(s.classify_task("write code for the parser"), SpecialistType::CodeGeneration);
+        assert_eq!(
+            s.classify_task("Please web search for info"),
+            SpecialistType::Research
+        );
+        assert_eq!(
+            s.classify_task("write code for the parser"),
+            SpecialistType::CodeGeneration
+        );
     }
 
     #[test]
@@ -326,7 +395,11 @@ mod tests {
 
         let results = s.collect_results(Duration::from_secs(10));
         assert_eq!(results.len(), 2);
-        assert!(results.iter().all(|r| r.status == SpawnedAgentStatus::Completed));
+        assert!(
+            results
+                .iter()
+                .all(|r| r.status == SpawnedAgentStatus::Completed)
+        );
         assert!(results[0].result.is_some());
         assert!(results[0].elapsed_seconds >= 0.0);
     }

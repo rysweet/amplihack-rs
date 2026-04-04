@@ -138,12 +138,7 @@ impl MemoryRetrieverStore {
     }
 
     /// Search for facts matching `query` (substring match, case-insensitive).
-    pub fn search(
-        &self,
-        query: &str,
-        limit: usize,
-        min_confidence: f64,
-    ) -> Vec<SearchResult> {
+    pub fn search(&self, query: &str, limit: usize, min_confidence: f64) -> Vec<SearchResult> {
         if query.trim().is_empty() {
             return Vec::new();
         }
@@ -245,11 +240,7 @@ mod tests {
     fn normalize_already_quoted() {
         let q = normalize_fts_query(r#"incident "INC-2024-001" details"#);
         // Should not double-quote
-        assert_eq!(
-            q.matches("\"INC-2024-001\"").count(),
-            1,
-            "got: {q}"
-        );
+        assert_eq!(q.matches("\"INC-2024-001\"").count(), 1, "got: {q}");
     }
 
     #[test]

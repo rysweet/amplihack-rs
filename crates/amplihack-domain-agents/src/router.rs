@@ -150,12 +150,32 @@ impl IntentRouter {
         };
 
         let categories: &[(&[&str], DomainAgentType, &str)] = &[
-            (Self::SECURITY_KEYWORDS, DomainAgentType::Security, "security"),
-            (Self::CODE_REVIEW_KEYWORDS, DomainAgentType::CodeReview, "code_review"),
-            (Self::MEETING_KEYWORDS, DomainAgentType::MeetingSynthesizer, "meeting"),
+            (
+                Self::SECURITY_KEYWORDS,
+                DomainAgentType::Security,
+                "security",
+            ),
+            (
+                Self::CODE_REVIEW_KEYWORDS,
+                DomainAgentType::CodeReview,
+                "code_review",
+            ),
+            (
+                Self::MEETING_KEYWORDS,
+                DomainAgentType::MeetingSynthesizer,
+                "meeting",
+            ),
             (Self::CODE_KEYWORDS, DomainAgentType::CodeSynthesis, "code"),
-            (Self::TEACHING_KEYWORDS, DomainAgentType::Teaching, "teaching"),
-            (Self::LEARNING_KEYWORDS, DomainAgentType::Learning, "learning"),
+            (
+                Self::TEACHING_KEYWORDS,
+                DomainAgentType::Teaching,
+                "teaching",
+            ),
+            (
+                Self::LEARNING_KEYWORDS,
+                DomainAgentType::Learning,
+                "learning",
+            ),
         ];
 
         let mut best_type = DomainAgentType::Teaching;

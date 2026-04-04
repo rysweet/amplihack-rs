@@ -74,10 +74,18 @@ pub struct RuntimeConfig {
     pub runtime_kind: Option<String>,
 }
 
-fn default_sdk() -> String { "mini".into() }
-fn default_memory_type() -> String { "auto".into() }
-fn default_answer_mode() -> String { "single-shot".into() }
-fn default_true() -> bool { true }
+fn default_sdk() -> String {
+    "mini".into()
+}
+fn default_memory_type() -> String {
+    "auto".into()
+}
+fn default_answer_mode() -> String {
+    "single-shot".into()
+}
+fn default_true() -> bool {
+    true
+}
 
 impl RuntimeConfig {
     /// Create a minimal runtime config for the given agent.
@@ -186,9 +194,7 @@ impl ConfiguredGoalAgentRuntime {
 /// `GoalSeekingAgent` or an SDK adapter. The Rust port returns a
 /// [`ConfiguredGoalAgentRuntime`] wrapping a `StubRuntime` (or a provided
 /// implementation via [`create_goal_agent_runtime_with`]).
-pub fn create_goal_agent_runtime(
-    config: &RuntimeConfig,
-) -> Result<ConfiguredGoalAgentRuntime> {
+pub fn create_goal_agent_runtime(config: &RuntimeConfig) -> Result<ConfiguredGoalAgentRuntime> {
     if config.agent_name.trim().is_empty() {
         return Err(AgentError::ConfigError("agent_name cannot be empty".into()));
     }
@@ -196,7 +202,10 @@ pub fn create_goal_agent_runtime(
         agent_name: config.agent_name.clone(),
         sdk: config.sdk.clone(),
     });
-    Ok(ConfiguredGoalAgentRuntime::new(runtime, &config.answer_mode))
+    Ok(ConfiguredGoalAgentRuntime::new(
+        runtime,
+        &config.answer_mode,
+    ))
 }
 
 /// Create a configured runtime wrapping a caller-provided implementation.
@@ -319,19 +328,31 @@ mod tests {
     fn custom_runtime() {
         struct Custom;
         impl GoalAgentRuntime for Custom {
-            fn learn_from_content(&mut self, _: &str) -> Result<HashMap<String, serde_json::Value>> {
+            fn learn_from_content(
+                &mut self,
+                _: &str,
+            ) -> Result<HashMap<String, serde_json::Value>> {
                 Ok(HashMap::new())
             }
             fn answer_question(&mut self, _: &str) -> Result<String> {
                 Ok("custom".into())
             }
-            fn prepare_fact_batch(&mut self, _: &str, _: bool) -> Result<HashMap<String, serde_json::Value>> {
+            fn prepare_fact_batch(
+                &mut self,
+                _: &str,
+                _: bool,
+            ) -> Result<HashMap<String, serde_json::Value>> {
                 Ok(HashMap::new())
             }
-            fn store_fact_batch(&mut self, _: &HashMap<String, serde_json::Value>) -> Result<HashMap<String, serde_json::Value>> {
+            fn store_fact_batch(
+                &mut self,
+                _: &HashMap<String, serde_json::Value>,
+            ) -> Result<HashMap<String, serde_json::Value>> {
                 Ok(HashMap::new())
             }
-            fn get_memory_stats(&self) -> HashMap<String, serde_json::Value> { HashMap::new() }
+            fn get_memory_stats(&self) -> HashMap<String, serde_json::Value> {
+                HashMap::new()
+            }
             fn flush_memory(&mut self) {}
             fn close(&mut self) {}
         }

@@ -83,7 +83,10 @@ pub fn ngram_overlap_score(query: &str, text: &str) -> f64 {
     };
 
     // Bigram overlap
-    let q_bigrams: Vec<(&str, &str)> = q_words.windows(2).map(|w| (w[0].as_str(), w[1].as_str())).collect();
+    let q_bigrams: Vec<(&str, &str)> = q_words
+        .windows(2)
+        .map(|w| (w[0].as_str(), w[1].as_str()))
+        .collect();
 
     let t_bigrams: std::collections::HashSet<(&str, &str)> = t_words
         .windows(2)
@@ -121,11 +124,7 @@ pub fn rerank_by_ngram(query: &str, results: &mut Vec<MemoryFact>, limit: usize)
 /// Merge local and hive results, deduplicating by content.
 ///
 /// Local facts are preferred (higher trust).
-pub fn merge_results(
-    local: &[MemoryFact],
-    hive: &[MemoryFact],
-    limit: usize,
-) -> Vec<MemoryFact> {
+pub fn merge_results(local: &[MemoryFact], hive: &[MemoryFact], limit: usize) -> Vec<MemoryFact> {
     let mut seen = std::collections::HashSet::new();
     let mut merged = Vec::with_capacity(limit);
 

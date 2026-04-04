@@ -174,7 +174,12 @@ mod tests {
         let eval = QualityEvaluator::new();
         let entries = vec![
             semantic_entry("Semantic content entry for testing"),
-            MemoryEntry::new("s1", "a1", MemoryType::Working, "Working content entry here"),
+            MemoryEntry::new(
+                "s1",
+                "a1",
+                MemoryType::Working,
+                "Working content entry here",
+            ),
         ];
         let metrics = eval.evaluate(&entries);
         assert_eq!(metrics.type_distribution.get("semantic"), Some(&1));

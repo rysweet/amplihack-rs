@@ -21,7 +21,9 @@ pub struct StagingResult {
 }
 
 /// Directories that are safe to copy during staging.
-const DIRS_TO_COPY: &[&str] = &["agents", "commands", "skills", "tools", "workflow", "context"];
+const DIRS_TO_COPY: &[&str] = &[
+    "agents", "commands", "skills", "tools", "workflow", "context",
+];
 
 /// Stage `.claude` directory to a temp location when nested.
 pub struct AutoStager;
@@ -126,9 +128,7 @@ mod tests {
         fs::write(claude_dir.join("a.md"), "agent").unwrap();
 
         let stager = AutoStager;
-        let result = stager
-            .stage_for_nested_execution(&cwd, "test-123")
-            .unwrap();
+        let result = stager.stage_for_nested_execution(&cwd, "test-123").unwrap();
 
         assert!(result.staged_claude.exists());
         assert!(result.staged_claude.join("agents").join("a.md").exists());
@@ -145,12 +145,15 @@ mod tests {
         fs::create_dir_all(&cwd).unwrap();
 
         let stager = AutoStager;
-        let result = stager
-            .stage_for_nested_execution(&cwd, "empty")
-            .unwrap();
+        let result = stager.stage_for_nested_execution(&cwd, "empty").unwrap();
 
         assert!(result.staged_claude.exists());
-        assert!(fs::read_dir(&result.staged_claude).unwrap().next().is_none());
+        assert!(
+            fs::read_dir(&result.staged_claude)
+                .unwrap()
+                .next()
+                .is_none()
+        );
         unsafe { std::env::remove_var("AMPLIHACK_IS_STAGED") };
         let _ = fs::remove_dir_all(&result.temp_root);
     }
@@ -184,6 +187,9 @@ mod tests {
         copy_dir_recursive(&src, &dst).unwrap();
 
         assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "hello");
-        assert_eq!(fs::read_to_string(dst.join("sub").join("b.txt")).unwrap(), "world");
+        assert_eq!(
+            fs::read_to_string(dst.join("sub").join("b.txt")).unwrap(),
+            "world"
+        );
     }
 }

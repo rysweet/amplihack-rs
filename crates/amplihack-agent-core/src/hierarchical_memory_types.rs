@@ -57,7 +57,9 @@ pub struct KnowledgeNode {
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
-fn default_confidence() -> f64 { 0.8 }
+fn default_confidence() -> f64 {
+    0.8
+}
 
 // ── KnowledgeEdge ────────────────────────────────────────────────────────
 
@@ -73,7 +75,9 @@ pub struct KnowledgeEdge {
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
-fn default_weight() -> f64 { 1.0 }
+fn default_weight() -> f64 {
+    1.0
+}
 
 // ── KnowledgeSubgraph ────────────────────────────────────────────────────
 
@@ -88,31 +92,51 @@ pub struct KnowledgeSubgraph {
 
 impl KnowledgeSubgraph {
     pub fn new(query: impl Into<String>) -> Self {
-        Self { nodes: Vec::new(), edges: Vec::new(), query: query.into() }
+        Self {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            query: query.into(),
+        }
     }
 
     /// Format subgraph as LLM-readable context string.
     pub fn to_llm_context(&self, chronological: bool) -> String {
-        if self.nodes.is_empty() { return String::new(); }
+        if self.nodes.is_empty() {
+            return String::new();
+        }
         let mut nodes = self.nodes.clone();
         if chronological {
             nodes.sort_by_key(|n| {
-                n.metadata.get("temporal_index").and_then(|v| v.as_i64()).unwrap_or(0)
+                n.metadata
+                    .get("temporal_index")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0)
             });
         } else {
-            nodes.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal));
+            nodes.sort_by(|a, b| {
+                b.confidence
+                    .partial_cmp(&a.confidence)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
         let mut out = String::new();
         for (i, n) in nodes.iter().enumerate() {
-            out.push_str(&format!("{}. [{}] {}: {} (confidence: {:.2})\n",
-                i + 1, n.category, n.concept, n.content, n.confidence));
+            out.push_str(&format!(
+                "{}. [{}] {}: {} (confidence: {:.2})\n",
+                i + 1,
+                n.category,
+                n.concept,
+                n.content,
+                n.confidence
+            ));
         }
         if !self.edges.is_empty() {
             out.push_str("\nRelationships:\n");
             for e in &self.edges {
-                out.push_str(&format!("  {} --[{} {:.2}]--> {}\n",
-                    e.source_id, e.relationship, e.weight, e.target_id));
+                out.push_str(&format!(
+                    "  {} --[{} {:.2}]--> {}\n",
+                    e.source_id, e.relationship, e.weight, e.target_id
+                ));
             }
         }
         out
@@ -128,28 +152,71 @@ impl MemoryClassifier {
     /// Classify content into a memory category using keyword heuristics.
     pub fn classify(content: &str) -> MemoryCategory {
         let lower = content.to_lowercase();
-        if Self::is_procedural(&lower) { return MemoryCategory::Procedural; }
-        if Self::is_prospective(&lower) { return MemoryCategory::Prospective; }
-        if Self::is_episodic(&lower) { return MemoryCategory::Episodic; }
+        if Self::is_procedural(&lower) {
+            return MemoryCategory::Procedural;
+        }
+        if Self::is_prospective(&lower) {
+            return MemoryCategory::Prospective;
+        }
+        if Self::is_episodic(&lower) {
+            return MemoryCategory::Episodic;
+        }
         MemoryCategory::Semantic
     }
 
     fn is_procedural(text: &str) -> bool {
-        ["step 1", "step 2", "how to", "procedure", "instructions", "recipe",
-         "guide", "tutorial", "method", "process:", "1.", "2.", "first,", "then,", "finally,"]
-            .iter().any(|m| text.contains(m))
+        [
+            "step 1",
+            "step 2",
+            "how to",
+            "procedure",
+            "instructions",
+            "recipe",
+            "guide",
+            "tutorial",
+            "method",
+            "process:",
+            "1.",
+            "2.",
+            "first,",
+            "then,",
+            "finally,",
+        ]
+        .iter()
+        .any(|m| text.contains(m))
     }
 
     fn is_prospective(text: &str) -> bool {
-        ["plan to", "will need", "should do", "reminder", "todo", "next step",
-         "goal:", "objective:", "upcoming", "schedule"]
-            .iter().any(|m| text.contains(m))
+        [
+            "plan to",
+            "will need",
+            "should do",
+            "reminder",
+            "todo",
+            "next step",
+            "goal:",
+            "objective:",
+            "upcoming",
+            "schedule",
+        ]
+        .iter()
+        .any(|m| text.contains(m))
     }
 
     fn is_episodic(text: &str) -> bool {
-        ["happened", "occurred", "event:", "incident", "observed",
-         "witnessed", "experience:", "session:", "meeting:"]
-            .iter().any(|m| text.contains(m))
+        [
+            "happened",
+            "occurred",
+            "event:",
+            "incident",
+            "observed",
+            "witnessed",
+            "experience:",
+            "session:",
+            "meeting:",
+        ]
+        .iter()
+        .any(|m| text.contains(m))
     }
 }
 
@@ -186,24 +253,48 @@ mod tests {
 
     #[test]
     fn classifier_categories() {
-        assert_eq!(MemoryClassifier::classify("Paris is the capital"), MemoryCategory::Semantic);
-        assert_eq!(MemoryClassifier::classify("Step 1: preheat oven"), MemoryCategory::Procedural);
-        assert_eq!(MemoryClassifier::classify("How to bake a cake"), MemoryCategory::Procedural);
-        assert_eq!(MemoryClassifier::classify("Plan to review tomorrow"), MemoryCategory::Prospective);
-        assert_eq!(MemoryClassifier::classify("Reminder: call dentist"), MemoryCategory::Prospective);
-        assert_eq!(MemoryClassifier::classify("An incident occurred"), MemoryCategory::Episodic);
+        assert_eq!(
+            MemoryClassifier::classify("Paris is the capital"),
+            MemoryCategory::Semantic
+        );
+        assert_eq!(
+            MemoryClassifier::classify("Step 1: preheat oven"),
+            MemoryCategory::Procedural
+        );
+        assert_eq!(
+            MemoryClassifier::classify("How to bake a cake"),
+            MemoryCategory::Procedural
+        );
+        assert_eq!(
+            MemoryClassifier::classify("Plan to review tomorrow"),
+            MemoryCategory::Prospective
+        );
+        assert_eq!(
+            MemoryClassifier::classify("Reminder: call dentist"),
+            MemoryCategory::Prospective
+        );
+        assert_eq!(
+            MemoryClassifier::classify("An incident occurred"),
+            MemoryCategory::Episodic
+        );
     }
 
     #[test]
     fn subgraph_to_llm_context() {
         let sg = KnowledgeSubgraph {
             nodes: vec![KnowledgeNode {
-                node_id: "n1".into(), category: MemoryCategory::Semantic,
-                content: "Cells are alive".into(), concept: "Biology".into(),
-                confidence: 0.9, source_id: String::new(), created_at: String::new(),
-                tags: vec![], metadata: HashMap::new(),
+                node_id: "n1".into(),
+                category: MemoryCategory::Semantic,
+                content: "Cells are alive".into(),
+                concept: "Biology".into(),
+                confidence: 0.9,
+                source_id: String::new(),
+                created_at: String::new(),
+                tags: vec![],
+                metadata: HashMap::new(),
             }],
-            edges: vec![], query: "cells".into(),
+            edges: vec![],
+            query: "cells".into(),
         };
         let ctx = sg.to_llm_context(false);
         assert!(ctx.contains("Biology") && ctx.contains("0.90"));
@@ -212,10 +303,15 @@ mod tests {
     #[test]
     fn knowledge_node_serde_roundtrip() {
         let node = KnowledgeNode {
-            node_id: "n1".into(), category: MemoryCategory::Semantic,
-            content: "test".into(), concept: "topic".into(), confidence: 0.9,
-            source_id: String::new(), created_at: String::new(),
-            tags: vec!["t1".into()], metadata: HashMap::new(),
+            node_id: "n1".into(),
+            category: MemoryCategory::Semantic,
+            content: "test".into(),
+            concept: "topic".into(),
+            confidence: 0.9,
+            source_id: String::new(),
+            created_at: String::new(),
+            tags: vec!["t1".into()],
+            metadata: HashMap::new(),
         };
         let json = serde_json::to_string(&node).unwrap();
         let parsed: KnowledgeNode = serde_json::from_str(&json).unwrap();

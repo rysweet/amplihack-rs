@@ -56,10 +56,10 @@ pub static QUERY_STOP_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| 
         "what", "is", "the", "a", "an", "are", "was", "were", "how", "does", "do", "and", "or",
         "of", "in", "to", "for", "with", "on", "at", "by", "from", "that", "this", "it", "as",
         "be", "been", "has", "have", "had", "will", "would", "could", "should", "did", "which",
-        "who", "when", "where", "why", "any", "some", "all", "both", "each", "few", "more",
-        "most", "other", "such", "into", "through", "during", "before", "after", "than", "then",
-        "these", "those", "there", "their", "they", "its", "our", "your", "my", "we", "i", "you",
-        "he", "she", "me", "him", "her", "them", "used", "found", "given", "made", "came", "went",
+        "who", "when", "where", "why", "any", "some", "all", "both", "each", "few", "more", "most",
+        "other", "such", "into", "through", "during", "before", "after", "than", "then", "these",
+        "those", "there", "their", "they", "its", "our", "your", "my", "we", "i", "you", "he",
+        "she", "me", "him", "her", "them", "used", "found", "given", "made", "came", "went",
         "said", "got",
     ]
     .into_iter()

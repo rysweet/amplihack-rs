@@ -256,10 +256,14 @@ pub fn validate_matrix_config(
     }
     for (i, a) in agents.iter().enumerate() {
         if a.name.is_empty() {
-            return Err(EvalError::config(format!("agent[{i}] name must not be empty")));
+            return Err(EvalError::config(format!(
+                "agent[{i}] name must not be empty"
+            )));
         }
         if a.sdk.is_empty() {
-            return Err(EvalError::config(format!("agent[{i}] sdk must not be empty")));
+            return Err(EvalError::config(format!(
+                "agent[{i}] sdk must not be empty"
+            )));
         }
     }
     eval_config.validate()
@@ -282,7 +286,9 @@ mod tests {
         let agents = default_agent_types();
         assert_eq!(agents.len(), 5);
         assert!(agents.iter().any(|a| a.multi_agent));
-        let c = AgentConfig::new("t", "m").with_multi_agent(true).with_spawning(true);
+        let c = AgentConfig::new("t", "m")
+            .with_multi_agent(true)
+            .with_spawning(true);
         assert!(c.multi_agent && c.enable_spawning);
     }
 
@@ -315,7 +321,13 @@ mod tests {
     #[test]
     fn report_category_comparison() {
         let mut r = MatrixReport::new(LongHorizonConfig::default());
-        let cs = |score| vec![CategoryScore { category: "r".into(), score, num_questions: 5 }];
+        let cs = |score| {
+            vec![CategoryScore {
+                category: "r".into(),
+                score,
+                num_questions: 5,
+            }]
+        };
         r.add_result(MatrixResult::success("a", 0.7, 1.0).with_category_scores(cs(0.8)));
         r.add_result(MatrixResult::success("b", 0.9, 1.0).with_category_scores(cs(0.95)));
         let comp = r.category_comparison();
@@ -338,7 +350,13 @@ mod tests {
 
         let report = sample_report();
         let j = serde_json::to_string(&report).unwrap();
-        assert_eq!(serde_json::from_str::<MatrixReport>(&j).unwrap().results.len(), 3);
+        assert_eq!(
+            serde_json::from_str::<MatrixReport>(&j)
+                .unwrap()
+                .results
+                .len(),
+            3
+        );
     }
 
     #[test]

@@ -34,7 +34,7 @@ amplihack query-code [--db-path <PATH>] [--json] [--limit <N>] <SUBCOMMAND>
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--db-path <PATH>` | `<cwd>/.amplihack/graph_db` | Path to the code-graph database directory. `--kuzu-path` remains as a compatibility alias. |
+| `--db-path <PATH>` | `<cwd>/.amplihack/graph_db` | Path to the code-graph database directory. `--kuzu-path` remains as a backward-compatible alias. |
 | `--json` | false | Emit output as JSON instead of human-readable text. |
 | `--limit <N>` | 50 | Maximum number of rows returned by list subcommands. |
 
@@ -45,7 +45,7 @@ amplihack query-code [--db-path <PATH>] [--json] [--limit <N>] <SUBCOMMAND>
 ### stats
 
 Print aggregate counts for the entire code-graph, including any native
-memory↔code relationships already linked in the same project-local Kuzu DB.
+memory↔code relationships already linked in the same project-local LadybugDB.
 
 ```sh
 amplihack query-code stats
@@ -205,7 +205,7 @@ amplihack query-code functions --file code_graph
     "fully_qualified_name": "amplihack_cli::commands::memory::code_graph::import_blarify_json",
     "file_path": "src/commands/memory/code_graph.rs",
     "line_number": 236,
-    "signature": "(input_path: &Path, kuzu_path: Option<&Path>) -> Result<CodeGraphImportCounts>",
+    "signature": "(input_path: &Path, db_path: Option<&Path>) -> Result<CodeGraphImportCounts>",
     "is_async": false,
     "cyclomatic_complexity": 4
   }
@@ -344,5 +344,5 @@ amplihack query-code --json stats | jq '.functions'
 
 - [`amplihack index-scip`](./memory-index-command.md#index-scip) — Build the graph from source
 - [`amplihack index-code`](./memory-index-command.md#index-code) — Import a blarify JSON
-- [Kuzu Code Graph Architecture](../concepts/kuzu-code-graph.md) — Schema and data model
+- [LadybugDB Code Graph Architecture](../concepts/kuzu-code-graph.md) — Schema and data model
 - [Index a project end-to-end](../howto/index-a-project.md) — Walkthrough

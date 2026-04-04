@@ -162,10 +162,7 @@ fn normalize_strips_env_command() {
 
 #[test]
 fn normalize_strips_multiple_env_vars() {
-    assert_eq!(
-        normalize_command("FOO=1 BAR=baz git commit"),
-        "git commit"
-    );
+    assert_eq!(normalize_command("FOO=1 BAR=baz git commit"), "git commit");
 }
 
 #[test]

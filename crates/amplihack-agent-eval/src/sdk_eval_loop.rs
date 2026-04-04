@@ -197,7 +197,9 @@ pub fn generate_recommendations(failures: &[FailureDetail], sdk: &str) -> Vec<St
     }
 
     if recs.is_empty() {
-        recs.push(format!("[{sdk}] No specific recommendations — all levels acceptable"));
+        recs.push(format!(
+            "[{sdk}] No specific recommendations — all levels acceptable"
+        ));
     }
 
     recs
@@ -254,7 +256,13 @@ impl SdkEvalLoopConfig {
 }
 
 /// All known SDK identifiers.
-pub const ALL_SDKS: &[&str] = &["mini", "claude", "copilot", "microsoft", "multiagent-copilot"];
+pub const ALL_SDKS: &[&str] = &[
+    "mini",
+    "claude",
+    "copilot",
+    "microsoft",
+    "multiagent-copilot",
+];
 
 #[cfg(test)]
 mod tests {
@@ -283,8 +291,12 @@ mod tests {
 
     fn make_iter(sdk: &str, idx: u32, overall: f64) -> LoopIteration {
         LoopIteration {
-            iteration: idx, sdk: sdk.into(), scores: HashMap::new(),
-            overall, failures: Vec::new(), recommendations: Vec::new(),
+            iteration: idx,
+            sdk: sdk.into(),
+            scores: HashMap::new(),
+            overall,
+            failures: Vec::new(),
+            recommendations: Vec::new(),
             duration_seconds: 1.0,
         }
     }
@@ -301,8 +313,10 @@ mod tests {
     #[test]
     fn recommendations_generation() {
         let failures = vec![FailureDetail {
-            level: "L1 Recall".into(), failure_type: "level_failure".into(),
-            error: Some("low".into()), score: Some(0.2),
+            level: "L1 Recall".into(),
+            failure_type: "level_failure".into(),
+            error: Some("low".into()),
+            score: Some(0.2),
         }];
         let recs = generate_recommendations(&failures, "mini");
         assert!(recs.len() >= 2);
@@ -353,16 +367,29 @@ mod tests {
 
     #[test]
     fn config_validation() {
-        assert!(SdkEvalLoopConfig::new(vec!["mini".into()], 5).validate().is_ok());
+        assert!(
+            SdkEvalLoopConfig::new(vec!["mini".into()], 5)
+                .validate()
+                .is_ok()
+        );
         assert!(SdkEvalLoopConfig::new(vec![], 5).validate().is_err());
-        assert!(SdkEvalLoopConfig::new(vec!["mini".into()], 0).validate().is_err());
-        assert!(SdkEvalLoopConfig::new(vec!["".into()], 5).validate().is_err());
+        assert!(
+            SdkEvalLoopConfig::new(vec!["mini".into()], 0)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            SdkEvalLoopConfig::new(vec!["".into()], 5)
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]
     fn config_builder() {
         let c = SdkEvalLoopConfig::new(vec!["mini".into()], 3)
-            .with_levels(vec!["L1".into()]).with_output_dir("./out");
+            .with_levels(vec!["L1".into()])
+            .with_output_dir("./out");
         assert_eq!(c.levels.unwrap().len(), 1);
         assert_eq!(c.output_dir, "./out");
     }
@@ -377,15 +404,28 @@ mod tests {
     fn serde_roundtrips() {
         let iter = make_iter("mini", 0, 0.8);
         let j = serde_json::to_string(&iter).unwrap();
-        assert_eq!(serde_json::from_str::<LoopIteration>(&j).unwrap().overall, 0.8);
+        assert_eq!(
+            serde_json::from_str::<LoopIteration>(&j).unwrap().overall,
+            0.8
+        );
 
         let r = SdkEvalReport::new("mini");
         let j = serde_json::to_string(&r).unwrap();
-        assert_eq!(serde_json::from_str::<SdkEvalReport>(&j).unwrap().sdk, "mini");
+        assert_eq!(
+            serde_json::from_str::<SdkEvalReport>(&j).unwrap().sdk,
+            "mini"
+        );
 
-        let f = FailureDetail { level: "L1".into(), failure_type: "lf".into(),
-            error: Some("e".into()), score: Some(0.3) };
+        let f = FailureDetail {
+            level: "L1".into(),
+            failure_type: "lf".into(),
+            error: Some("e".into()),
+            score: Some(0.3),
+        };
         let j = serde_json::to_string(&f).unwrap();
-        assert_eq!(serde_json::from_str::<FailureDetail>(&j).unwrap().level, "L1");
+        assert_eq!(
+            serde_json::from_str::<FailureDetail>(&j).unwrap().level,
+            "L1"
+        );
     }
 }

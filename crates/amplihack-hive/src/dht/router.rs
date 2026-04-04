@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::ring::HashRing;
 use super::store::{ShardFact, ShardStore};
-use super::{content_key, hash_key, DEFAULT_REPLICATION_FACTOR};
+use super::{DEFAULT_REPLICATION_FACTOR, content_key, hash_key};
 
 /// Routes facts and queries across the distributed hash ring.
 ///
@@ -275,6 +275,10 @@ mod tests {
         let results = router.query("Rust safety", 10);
         let ids: Vec<_> = results.iter().map(|f| &f.fact_id).collect();
         let unique_ids: HashSet<_> = ids.iter().collect();
-        assert_eq!(ids.len(), unique_ids.len(), "results should be deduplicated");
+        assert_eq!(
+            ids.len(),
+            unique_ids.len(),
+            "results should be deduplicated"
+        );
     }
 }

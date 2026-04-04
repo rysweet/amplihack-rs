@@ -192,7 +192,9 @@ impl ExperienceStore for InMemoryStore {
             .filter(|e| {
                 e.context.to_lowercase().contains(&lower_query)
                     || e.outcome.to_lowercase().contains(&lower_query)
-                    || e.tags.iter().any(|t| t.to_lowercase().contains(&lower_query))
+                    || e.tags
+                        .iter()
+                        .any(|t| t.to_lowercase().contains(&lower_query))
             })
             .take(limit)
             .cloned()

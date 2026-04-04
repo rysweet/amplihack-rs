@@ -18,9 +18,9 @@ pub mod types;
 
 pub use intent::{detect_intent, parse_intent_response};
 pub use refinement::{answer_question, answer_question_agentic, evaluate_completeness};
-pub use retrieval::{adaptive_retrieve, dedup_and_filter, RetrievalOutcome};
+pub use retrieval::{RetrievalOutcome, adaptive_retrieve, dedup_and_filter};
 pub use synthesis::synthesize;
 pub use types::{
-    CompletenessEvaluation, DetectedIntent, IntentType, QuestionLevel, SynthesisConfig,
-    TemporalCodeResult, ENUMERATION_KEYWORDS,
+    CompletenessEvaluation, DetectedIntent, ENUMERATION_KEYWORDS, IntentType, QuestionLevel,
+    SynthesisConfig, TemporalCodeResult,
 };

@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 #[cfg(feature = "sqlite")]
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 #[cfg(feature = "sqlite")]
 use std::path::{Path, PathBuf};
 #[cfg(feature = "sqlite")]
@@ -19,9 +19,9 @@ use crate::models::MemoryType;
 #[cfg(feature = "sqlite")]
 use crate::models::{MemoryEntry, SessionInfo};
 
-pub(crate) use crate::database_helpers::{iso_to_epoch, now_iso};
 #[cfg(feature = "sqlite")]
-use crate::database_helpers::{row_to_entry, CREATE_INDEXES_SQL, CREATE_TABLES_SQL};
+use crate::database_helpers::{CREATE_INDEXES_SQL, CREATE_TABLES_SQL, row_to_entry};
+pub(crate) use crate::database_helpers::{iso_to_epoch, now_iso};
 
 /// Database query parameters (simplified from Python MemoryQuery).
 #[derive(Debug, Clone, Default)]
@@ -300,7 +300,11 @@ impl MemoryDatabase {
         };
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?;
 
         let mut sessions = Vec::new();
@@ -322,20 +326,13 @@ impl MemoryDatabase {
     /// Aggregate statistics.
     pub fn get_stats(&self) -> anyhow::Result<DbStats> {
         let conn = self.conn.lock().unwrap();
-        let total_memories: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM memory_entries",
-            [],
-            |r| r.get(0),
-        )?;
-        let total_sessions: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sessions",
-            [],
-            |r| r.get(0),
-        )?;
+        let total_memories: i64 =
+            conn.query_row("SELECT COUNT(*) FROM memory_entries", [], |r| r.get(0))?;
+        let total_sessions: i64 =
+            conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))?;
 
-        let mut mt_stmt = conn.prepare(
-            "SELECT memory_type, COUNT(*) FROM memory_entries GROUP BY memory_type",
-        )?;
+        let mut mt_stmt =
+            conn.prepare("SELECT memory_type, COUNT(*) FROM memory_entries GROUP BY memory_type")?;
         let memory_types: HashMap<String, usize> = mt_stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
             .filter_map(|r| r.ok())
@@ -365,7 +362,9 @@ impl MemoryDatabase {
         })
     }
 
-    pub fn db_path(&self) -> &Path { &self.db_path }
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
+    }
 
     /// Run VACUUM.
     pub fn vacuum(&self) -> anyhow::Result<()> {
@@ -375,7 +374,10 @@ impl MemoryDatabase {
 
     /// Run ANALYZE + PRAGMA optimize.
     pub fn optimize(&self) -> anyhow::Result<()> {
-        self.conn.lock().unwrap().execute_batch("ANALYZE; PRAGMA optimize;")?;
+        self.conn
+            .lock()
+            .unwrap()
+            .execute_batch("ANALYZE; PRAGMA optimize;")?;
         Ok(())
     }
 
@@ -383,13 +385,17 @@ impl MemoryDatabase {
         let mut stmt = conn.prepare(
             "SELECT agent_id FROM session_agents WHERE session_id = ?1 ORDER BY last_used DESC",
         )?;
-        Ok(stmt.query_map(params![session_id], |r| r.get(0))?.filter_map(|r| r.ok()).collect())
+        Ok(stmt
+            .query_map(params![session_id], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect())
     }
 
     fn session_memory_count(&self, conn: &Connection, session_id: &str) -> anyhow::Result<usize> {
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM memory_entries WHERE session_id = ?1",
-            params![session_id], |r| r.get(0),
+            params![session_id],
+            |r| r.get(0),
         )?;
         Ok(count as usize)
     }
