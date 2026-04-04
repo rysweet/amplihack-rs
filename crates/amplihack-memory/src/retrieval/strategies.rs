@@ -41,15 +41,15 @@ static POSSESSIVE_RE: LazyLock<Regex> = LazyLock::new(|| {
 // Stop words for concept retrieval (same set as Python).
 static STOP_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
-        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "have", "has",
-        "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "shall",
-        "can", "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into", "about",
+        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+        "do", "does", "did", "will", "would", "could", "should", "may", "might", "shall", "can",
+        "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into", "about",
         "between", "through", "during", "before", "after", "above", "below", "and", "but", "or",
         "not", "no", "if", "then", "than", "that", "this", "these", "those", "it", "its", "he",
         "she", "they", "we", "you", "i", "my", "your", "his", "her", "their", "our", "what",
         "which", "who", "whom", "how", "when", "where", "why", "all", "each", "every", "both",
-        "few", "more", "most", "other", "some", "such", "any", "many", "much", "own", "same",
-        "so", "too", "very", "just", "also",
+        "few", "more", "most", "other", "some", "such", "any", "many", "much", "own", "same", "so",
+        "too", "very", "just", "also",
     ]
     .into_iter()
     .collect()
@@ -87,9 +87,8 @@ pub fn simple_retrieval(
     let kb_size = all_facts.len();
 
     let total_est = estimate_total_fact_count(memory, None);
-    let distributed_partial = memory.supports_local_search()
-        && total_est.is_some()
-        && kb_size > total_est.unwrap_or(0);
+    let distributed_partial =
+        memory.supports_local_search() && total_est.is_some() && kb_size > total_est.unwrap_or(0);
 
     let exhaustive = force_verbatim
         || (!distributed_partial
@@ -200,7 +199,8 @@ pub fn summarize_old_facts(facts: &[Fact], level: &str) -> Vec<Fact> {
         return Vec::new();
     }
 
-    let mut groups: std::collections::HashMap<String, Vec<&Fact>> = std::collections::HashMap::new();
+    let mut groups: std::collections::HashMap<String, Vec<&Fact>> =
+        std::collections::HashMap::new();
     for f in facts {
         let key = if level == "entity" {
             if f.context.is_empty() {
@@ -265,17 +265,18 @@ pub fn summarize_old_facts(facts: &[Fact], level: &str) -> Vec<Fact> {
             }
         }
 
-        summaries.push(Fact::summary(group_key, group_facts.len(), &combined, level));
+        summaries.push(Fact::summary(
+            group_key,
+            group_facts.len(),
+            &combined,
+            level,
+        ));
     }
     summaries
 }
 
 /// Entity-centric retrieval for questions about specific people/projects.
-pub fn entity_retrieval(
-    memory: &dyn MemorySearch,
-    question: &str,
-    local_only: bool,
-) -> Vec<Fact> {
+pub fn entity_retrieval(memory: &dyn MemorySearch, question: &str, local_only: bool) -> Vec<Fact> {
     if !memory.supports_hierarchical() {
         return Vec::new();
     }
@@ -289,9 +290,7 @@ pub fn entity_retrieval(
     if candidates.is_empty() {
         for word in question.split_whitespace() {
             let cleaned = word.trim_matches(|c: char| c.is_ascii_punctuation());
-            if cleaned.len() > 2
-                && cleaned.starts_with(|c: char| c.is_uppercase())
-            {
+            if cleaned.len() > 2 && cleaned.starts_with(|c: char| c.is_uppercase()) {
                 candidates.push(cleaned.to_string());
             }
         }
@@ -324,11 +323,7 @@ pub fn entity_retrieval(
 }
 
 /// Concept-based retrieval fallback: extract key noun phrases, search memory.
-pub fn concept_retrieval(
-    memory: &dyn MemorySearch,
-    question: &str,
-    local_only: bool,
-) -> Vec<Fact> {
+pub fn concept_retrieval(memory: &dyn MemorySearch, question: &str, local_only: bool) -> Vec<Fact> {
     if !memory.supports_hierarchical() {
         return Vec::new();
     }

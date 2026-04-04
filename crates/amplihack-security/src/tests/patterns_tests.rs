@@ -235,8 +235,14 @@ fn pattern_matching_is_case_insensitive() {
 fn all_categories_have_at_least_one_pattern() {
     let p = XpiaPatterns::new();
     assert!(!p.by_category(PatternCategory::PromptOverride).is_empty());
-    assert!(!p.by_category(PatternCategory::InstructionInjection).is_empty());
-    assert!(!p.by_category(PatternCategory::ContextManipulation).is_empty());
+    assert!(
+        !p.by_category(PatternCategory::InstructionInjection)
+            .is_empty()
+    );
+    assert!(
+        !p.by_category(PatternCategory::ContextManipulation)
+            .is_empty()
+    );
     assert!(!p.by_category(PatternCategory::DataExfiltration).is_empty());
     assert!(!p.by_category(PatternCategory::SystemEscape).is_empty());
     assert!(!p.by_category(PatternCategory::RoleHijacking).is_empty());
@@ -250,9 +256,21 @@ fn each_pattern_has_non_empty_metadata() {
     for pat in p.all() {
         assert!(!pat.id.is_empty(), "pattern has empty id");
         assert!(!pat.name.is_empty(), "pattern {} has empty name", pat.id);
-        assert!(!pat.description.is_empty(), "pattern {} has empty description", pat.id);
-        assert!(!pat.mitigation.is_empty(), "pattern {} has empty mitigation", pat.id);
-        assert!(!pat.severity.is_empty(), "pattern {} has empty severity", pat.id);
+        assert!(
+            !pat.description.is_empty(),
+            "pattern {} has empty description",
+            pat.id
+        );
+        assert!(
+            !pat.mitigation.is_empty(),
+            "pattern {} has empty mitigation",
+            pat.id
+        );
+        assert!(
+            !pat.severity.is_empty(),
+            "pattern {} has empty severity",
+            pat.id
+        );
     }
 }
 

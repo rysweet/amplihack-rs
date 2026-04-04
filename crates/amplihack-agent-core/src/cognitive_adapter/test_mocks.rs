@@ -66,12 +66,7 @@ impl CognitiveBackend for MockCognitiveBackend {
         id
     }
 
-    fn search_facts(
-        &self,
-        query: &str,
-        limit: usize,
-        min_confidence: f64,
-    ) -> Vec<MemoryFact> {
+    fn search_facts(&self, query: &str, limit: usize, min_confidence: f64) -> Vec<MemoryFact> {
         let q = query.to_lowercase();
         self.facts
             .iter()
@@ -101,13 +96,16 @@ impl CognitiveBackend for MockCognitiveBackend {
             return None;
         }
         let id = self.next_id();
-        self.working.entry(task_id.to_string()).or_default().push(WorkingSlot {
-            id: id.clone(),
-            slot_type: slot_type.to_string(),
-            content: content.to_string(),
-            task_id: task_id.to_string(),
-            relevance,
-        });
+        self.working
+            .entry(task_id.to_string())
+            .or_default()
+            .push(WorkingSlot {
+                id: id.clone(),
+                slot_type: slot_type.to_string(),
+                content: content.to_string(),
+                task_id: task_id.to_string(),
+                relevance,
+            });
         Some(id)
     }
 
@@ -231,8 +229,7 @@ impl HiveStore for MockHiveStore {
         self.facts
             .iter()
             .filter(|f| {
-                f.content.to_lowercase().contains(&q)
-                    || f.concept.to_lowercase().contains(&q)
+                f.content.to_lowercase().contains(&q) || f.concept.to_lowercase().contains(&q)
             })
             .take(limit)
             .cloned()
@@ -272,12 +269,7 @@ impl QualityScorer for AlwaysFailScorer {
 
 pub(super) fn make_adapter(kind: BackendKind) -> CognitiveAdapter {
     let cfg = CognitiveAdapterConfig::new("test-agent");
-    CognitiveAdapter::new(
-        cfg,
-        Box::new(MockCognitiveBackend::new(kind)),
-        None,
-        None,
-    )
+    CognitiveAdapter::new(cfg, Box::new(MockCognitiveBackend::new(kind)), None, None)
 }
 
 pub(super) fn make_adapter_with_hive(hive: MockHiveStore) -> CognitiveAdapter {

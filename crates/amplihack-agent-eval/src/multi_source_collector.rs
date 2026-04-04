@@ -37,7 +37,9 @@ impl NewsArticle {
             return Err(EvalError::config("article content must not be empty"));
         }
         if published.is_empty() {
-            return Err(EvalError::config("article published date must not be empty"));
+            return Err(EvalError::config(
+                "article published date must not be empty",
+            ));
         }
         Ok(Self {
             url,
@@ -64,7 +66,12 @@ pub fn collect_news(value: &serde_json::Value) -> Result<Vec<NewsArticle>, EvalE
     let mut articles = Vec::with_capacity(sources.len());
     for (idx, src) in sources.iter().enumerate() {
         for &field in REQUIRED_FIELDS {
-            if src.get(field).and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+            if src
+                .get(field)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .is_empty()
+            {
                 return Err(EvalError::config(format!(
                     "source[{idx}] missing required field '{field}'"
                 )));

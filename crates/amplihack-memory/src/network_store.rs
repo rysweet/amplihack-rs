@@ -12,9 +12,7 @@ use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
 // Re-export types from the companion module.
-pub use crate::network_store_types::{
-    AgentRegistry, BusEvent, EventTransport, LocalTransport,
-};
+pub use crate::network_store_types::{AgentRegistry, BusEvent, EventTransport, LocalTransport};
 
 // ── Event type constants ──
 
@@ -77,11 +75,7 @@ impl NetworkGraphStore {
     }
 
     /// Create a node locally and publish to peers.
-    pub fn create_node(
-        &mut self,
-        table: &str,
-        properties: &Props,
-    ) -> anyhow::Result<String> {
+    pub fn create_node(&mut self, table: &str, properties: &Props) -> anyhow::Result<String> {
         let node_id = self.local.create_node(table, properties)?;
         let mut payload = HashMap::new();
         payload.insert("table".into(), serde_json::json!(table));
@@ -145,8 +139,8 @@ impl NetworkGraphStore {
         self.publish(OP_SEARCH_QUERY, payload);
 
         // Poll for responses up to timeout
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_millis(self.search_timeout_ms);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(self.search_timeout_ms);
         let mut remote_results: Vec<Props> = Vec::new();
 
         while std::time::Instant::now() < deadline {
@@ -156,8 +150,7 @@ impl NetworkGraphStore {
                         if let Some(qid) = event.payload.get("query_id")
                             && qid.as_str() == Some(&query_id)
                             && let Some(results) = event.payload.get("results")
-                            && let Ok(items) =
-                                serde_json::from_value::<Vec<Props>>(results.clone())
+                            && let Ok(items) = serde_json::from_value::<Vec<Props>>(results.clone())
                         {
                             remote_results.extend(items);
                         }

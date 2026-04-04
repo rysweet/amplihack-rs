@@ -78,10 +78,7 @@ impl MemoryMaintenance {
     }
 
     /// Remove sessions older than `older_than_days`.
-    pub fn cleanup_old_sessions(
-        &self,
-        older_than_days: u64,
-    ) -> anyhow::Result<MaintenanceReport> {
+    pub fn cleanup_old_sessions(&self, older_than_days: u64) -> anyhow::Result<MaintenanceReport> {
         let start = Instant::now();
         let sessions = self.db.list_sessions(None)?;
         let now_epoch = std::time::SystemTime::now()
@@ -178,9 +175,8 @@ impl MemoryMaintenance {
             recommendations.push("Database is large (>100MB), consider running vacuum".into());
         }
         if avg_per_session > 1000.0 {
-            recommendations.push(
-                "High memory count per session, consider memory lifecycle policies".into(),
-            );
+            recommendations
+                .push("High memory count per session, consider memory lifecycle policies".into());
         }
 
         let mut report = MaintenanceReport::new();
@@ -203,10 +199,7 @@ impl MemoryMaintenance {
     }
 
     /// Run full maintenance with given options.
-    pub fn run_full(
-        &self,
-        options: &MaintenanceOptions,
-    ) -> anyhow::Result<MaintenanceReport> {
+    pub fn run_full(&self, options: &MaintenanceOptions) -> anyhow::Result<MaintenanceReport> {
         let start = Instant::now();
         let mut report = MaintenanceReport::new();
 
@@ -223,10 +216,7 @@ impl MemoryMaintenance {
             );
         }
         if options.vacuum {
-            report.set(
-                "vacuum",
-                serde_json::to_value(self.vacuum_database()?)?,
-            );
+            report.set("vacuum", serde_json::to_value(self.vacuum_database()?)?);
         }
         if options.optimize {
             report.set(

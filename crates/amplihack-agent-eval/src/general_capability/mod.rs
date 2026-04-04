@@ -99,8 +99,8 @@ impl EvalTypeResult {
             .map(|(k, v)| (k.clone(), v.iter().sum::<f64>() / v.len() as f64))
             .collect();
         if !self.metric_averages.is_empty() {
-            self.overall_score = self.metric_averages.values().sum::<f64>()
-                / self.metric_averages.len() as f64;
+            self.overall_score =
+                self.metric_averages.values().sum::<f64>() / self.metric_averages.len() as f64;
         }
     }
 }
@@ -129,7 +129,10 @@ impl CapabilityReport {
         if self.eval_results.is_empty() {
             return 0.0;
         }
-        self.eval_results.iter().map(|r| r.overall_score).sum::<f64>()
+        self.eval_results
+            .iter()
+            .map(|r| r.overall_score)
+            .sum::<f64>()
             / self.eval_results.len() as f64
     }
 }

@@ -1,7 +1,7 @@
 //! Tests for security_log module.
 
-use super::*;
 use super::data;
+use super::*;
 
 #[test]
 fn technique_label_known() {

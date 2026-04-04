@@ -229,7 +229,9 @@ fn graph_with_id() {
 #[test]
 fn retract_fact_sets_status() {
     let mut g = HiveGraph::new();
-    let id = g.store_fact("rust", "Rust is fast", 0.9, "a", vec![]).unwrap();
+    let id = g
+        .store_fact("rust", "Rust is fast", 0.9, "a", vec![])
+        .unwrap();
     assert!(g.retract_fact(&id, "outdated"));
     let fact = g.get_fact(&id).unwrap().unwrap();
     assert_eq!(fact.status, "retracted");
@@ -245,7 +247,9 @@ fn retract_nonexistent_returns_false() {
 #[test]
 fn query_excludes_retracted_facts() {
     let mut g = HiveGraph::new();
-    let id = g.store_fact("rust", "Rust is fast", 0.9, "a", vec![]).unwrap();
+    let id = g
+        .store_fact("rust", "Rust is fast", 0.9, "a", vec![])
+        .unwrap();
     g.retract_fact(&id, "wrong");
     assert!(g.query_facts("rust", 0.0, 10).unwrap().is_empty());
 }
@@ -336,8 +340,10 @@ fn word_overlap_disjoint() {
 #[test]
 fn keyword_query_finds_relevant() {
     let mut g = HiveGraph::new();
-    g.store_fact("lang", "Rust is a systems language", 0.9, "a", vec![]).unwrap();
-    g.store_fact("lang", "Python is interpreted", 0.8, "a", vec![]).unwrap();
+    g.store_fact("lang", "Rust is a systems language", 0.9, "a", vec![])
+        .unwrap();
+    g.store_fact("lang", "Python is interpreted", 0.8, "a", vec![])
+        .unwrap();
     let results = g.keyword_query("systems language", 10);
     assert!(!results.is_empty());
     assert!(results[0].fact.content.contains("systems"));
@@ -348,7 +354,14 @@ fn keyword_query_finds_relevant() {
 #[test]
 fn check_contradictions_finds_overlapping() {
     let mut g = HiveGraph::new();
-    g.store_fact("water", "water boils at 100 degrees Celsius", 0.9, "a", vec![]).unwrap();
+    g.store_fact(
+        "water",
+        "water boils at 100 degrees Celsius",
+        0.9,
+        "a",
+        vec![],
+    )
+    .unwrap();
     let contras = g.check_contradictions("water", "water boils at 50 degrees Celsius");
     assert_eq!(contras.len(), 1);
 }
@@ -356,7 +369,8 @@ fn check_contradictions_finds_overlapping() {
 #[test]
 fn check_contradictions_ignores_different_concept() {
     let mut g = HiveGraph::new();
-    g.store_fact("water", "water boils at 100C", 0.9, "a", vec![]).unwrap();
+    g.store_fact("water", "water boils at 100C", 0.9, "a", vec![])
+        .unwrap();
     assert!(g.check_contradictions("ice", "ice melts at 0C").is_empty());
 }
 
@@ -388,7 +402,9 @@ fn federation_parent_child() {
 fn escalate_fact_to_parent() {
     let mut child = HiveGraph::with_id("child");
     let mut parent = HiveGraph::with_id("parent");
-    let id = child.store_fact("bio", "DNA stores info", 0.9, "a", vec![]).unwrap();
+    let id = child
+        .store_fact("bio", "DNA stores info", 0.9, "a", vec![])
+        .unwrap();
     let new_id = child.escalate_fact(&id, &mut parent);
     assert!(new_id.is_some());
     assert_eq!(parent.fact_count(), 1);
@@ -398,7 +414,9 @@ fn escalate_fact_to_parent() {
 fn escalate_prevents_loop() {
     let mut child = HiveGraph::with_id("child");
     let mut parent = HiveGraph::with_id("parent");
-    let id = child.store_fact("bio", "x", 0.9, "a", vec!["escalation:other".into()]).unwrap();
+    let id = child
+        .store_fact("bio", "x", 0.9, "a", vec!["escalation:other".into()])
+        .unwrap();
     assert!(child.escalate_fact(&id, &mut parent).is_none());
 }
 
@@ -407,7 +425,9 @@ fn broadcast_fact_to_children() {
     let mut parent = HiveGraph::with_id("parent");
     let c1 = HiveGraph::with_id("c1");
     let c2 = HiveGraph::with_id("c2");
-    let id = parent.store_fact("bio", "DNA info", 0.9, "a", vec![]).unwrap();
+    let id = parent
+        .store_fact("bio", "DNA info", 0.9, "a", vec![])
+        .unwrap();
     let result = parent.broadcast_fact(&id, &mut [c1, c2]);
     assert_eq!(result.len(), 2);
 }

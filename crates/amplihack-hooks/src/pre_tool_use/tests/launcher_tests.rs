@@ -161,7 +161,10 @@ fn content_hash_gating_skips_redundant_write() {
 
     assert_eq!(content_before, content_after, "Content should be unchanged");
     assert_eq!(hash_before, hash_after, "Hash marker should be unchanged");
-    assert_eq!(mtime_before, mtime_after, "File should not have been rewritten");
+    assert_eq!(
+        mtime_before, mtime_after,
+        "File should not have been rewritten"
+    );
 }
 
 #[test]

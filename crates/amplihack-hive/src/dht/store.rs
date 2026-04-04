@@ -54,11 +54,11 @@ impl ShardFact {
 
 const SEARCH_STOP_WORDS: &[&str] = &[
     "the", "a", "an", "is", "are", "was", "were", "what", "how", "does", "do", "and", "or", "of",
-    "in", "to", "for", "with", "on", "at", "by", "from", "that", "this", "it", "as", "be",
-    "been", "has", "have", "had", "will", "would", "could", "should", "did", "which", "who",
-    "when", "where", "why", "any", "some", "all", "both", "each", "few", "more", "most", "other",
-    "such", "into", "through", "during", "before", "after", "than", "then", "these", "those",
-    "there", "their", "they", "its",
+    "in", "to", "for", "with", "on", "at", "by", "from", "that", "this", "it", "as", "be", "been",
+    "has", "have", "had", "will", "would", "could", "should", "did", "which", "who", "when",
+    "where", "why", "any", "some", "all", "both", "each", "few", "more", "most", "other", "such",
+    "into", "through", "during", "before", "after", "than", "then", "these", "those", "there",
+    "their", "they", "its",
 ];
 
 /// Strip leading/trailing punctuation from a word (mirrors Python's `str.strip`).
@@ -87,9 +87,9 @@ fn score_fact(
         if content_lower.contains(term.as_str()) {
             hits += weight;
         } else if term.len() >= 4 {
-            let partial = content_word_set.iter().any(|w| {
-                w.len() >= 4 && (w.starts_with(term.as_str()) || term.starts_with(w))
-            });
+            let partial = content_word_set
+                .iter()
+                .any(|w| w.len() >= 4 && (w.starts_with(term.as_str()) || term.starts_with(w)));
             if partial {
                 hits += weight * 0.5;
             }
@@ -101,10 +101,8 @@ fn score_fact(
     }
 
     // Bigram bonus: reward facts that share consecutive-word matches.
-    let fact_bigrams: HashSet<(&str, &str)> = content_words
-        .windows(2)
-        .map(|w| (w[0], w[1]))
-        .collect();
+    let fact_bigrams: HashSet<(&str, &str)> =
+        content_words.windows(2).map(|w| (w[0], w[1])).collect();
     let bigram_hits = bigrams
         .iter()
         .filter(|(a, b)| fact_bigrams.contains(&(a.as_str(), b.as_str())))

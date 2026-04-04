@@ -129,10 +129,14 @@ mod tests {
     #[test]
     fn priority_ordering() {
         let mut q = TaskQueue::new(10);
-        q.enqueue(TaskSpec::new("low").with_priority(TaskPriority::Low)).unwrap();
-        q.enqueue(TaskSpec::new("critical").with_priority(TaskPriority::Critical)).unwrap();
-        q.enqueue(TaskSpec::new("normal").with_priority(TaskPriority::Normal)).unwrap();
-        q.enqueue(TaskSpec::new("high").with_priority(TaskPriority::High)).unwrap();
+        q.enqueue(TaskSpec::new("low").with_priority(TaskPriority::Low))
+            .unwrap();
+        q.enqueue(TaskSpec::new("critical").with_priority(TaskPriority::Critical))
+            .unwrap();
+        q.enqueue(TaskSpec::new("normal").with_priority(TaskPriority::Normal))
+            .unwrap();
+        q.enqueue(TaskSpec::new("high").with_priority(TaskPriority::High))
+            .unwrap();
 
         assert_eq!(q.dequeue().unwrap().description, "critical");
         assert_eq!(q.dequeue().unwrap().description, "high");
@@ -159,9 +163,12 @@ mod tests {
     #[test]
     fn fifo_within_same_priority() {
         let mut q = TaskQueue::new(10);
-        q.enqueue(TaskSpec::new("first").with_priority(TaskPriority::Normal)).unwrap();
-        q.enqueue(TaskSpec::new("second").with_priority(TaskPriority::Normal)).unwrap();
-        q.enqueue(TaskSpec::new("third").with_priority(TaskPriority::Normal)).unwrap();
+        q.enqueue(TaskSpec::new("first").with_priority(TaskPriority::Normal))
+            .unwrap();
+        q.enqueue(TaskSpec::new("second").with_priority(TaskPriority::Normal))
+            .unwrap();
+        q.enqueue(TaskSpec::new("third").with_priority(TaskPriority::Normal))
+            .unwrap();
 
         assert_eq!(q.dequeue().unwrap().description, "first");
         assert_eq!(q.dequeue().unwrap().description, "second");
@@ -171,10 +178,14 @@ mod tests {
     #[test]
     fn drain_priority_removes_only_matching() {
         let mut q = TaskQueue::new(10);
-        q.enqueue(TaskSpec::new("high1").with_priority(TaskPriority::High)).unwrap();
-        q.enqueue(TaskSpec::new("normal1").with_priority(TaskPriority::Normal)).unwrap();
-        q.enqueue(TaskSpec::new("high2").with_priority(TaskPriority::High)).unwrap();
-        q.enqueue(TaskSpec::new("low1").with_priority(TaskPriority::Low)).unwrap();
+        q.enqueue(TaskSpec::new("high1").with_priority(TaskPriority::High))
+            .unwrap();
+        q.enqueue(TaskSpec::new("normal1").with_priority(TaskPriority::Normal))
+            .unwrap();
+        q.enqueue(TaskSpec::new("high2").with_priority(TaskPriority::High))
+            .unwrap();
+        q.enqueue(TaskSpec::new("low1").with_priority(TaskPriority::Low))
+            .unwrap();
 
         let drained = q.drain_priority(TaskPriority::High);
         assert_eq!(drained.len(), 2);
@@ -189,7 +200,8 @@ mod tests {
     #[test]
     fn drain_priority_empty_when_no_match() {
         let mut q = TaskQueue::new(10);
-        q.enqueue(TaskSpec::new("normal").with_priority(TaskPriority::Normal)).unwrap();
+        q.enqueue(TaskSpec::new("normal").with_priority(TaskPriority::Normal))
+            .unwrap();
         let drained = q.drain_priority(TaskPriority::Critical);
         assert!(drained.is_empty());
         assert_eq!(q.len(), 1);

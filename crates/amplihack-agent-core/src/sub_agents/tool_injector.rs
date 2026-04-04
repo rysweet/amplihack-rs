@@ -15,19 +15,40 @@ use crate::sdk_adapters::types::{AgentTool, SdkType, ToolCategory};
 fn claude_tools() -> Vec<AgentTool> {
     vec![
         AgentTool::new("bash", "Execute a bash command in a sandboxed environment")
-            .with_parameter("command", json!({"type": "string", "description": "The bash command to execute"}))
+            .with_parameter(
+                "command",
+                json!({"type": "string", "description": "The bash command to execute"}),
+            )
             .with_category(ToolCategory::Custom),
         AgentTool::new("read_file", "Read the contents of a file")
-            .with_parameter("path", json!({"type": "string", "description": "File path to read"}))
+            .with_parameter(
+                "path",
+                json!({"type": "string", "description": "File path to read"}),
+            )
             .with_category(ToolCategory::Custom),
         AgentTool::new("write_file", "Write content to a file")
-            .with_parameter("path", json!({"type": "string", "description": "File path to write"}))
-            .with_parameter("content", json!({"type": "string", "description": "Content to write"}))
+            .with_parameter(
+                "path",
+                json!({"type": "string", "description": "File path to write"}),
+            )
+            .with_parameter(
+                "content",
+                json!({"type": "string", "description": "Content to write"}),
+            )
             .with_category(ToolCategory::Custom),
         AgentTool::new("edit_file", "Edit a file with search and replace")
-            .with_parameter("path", json!({"type": "string", "description": "File path to edit"}))
-            .with_parameter("old_text", json!({"type": "string", "description": "Text to find"}))
-            .with_parameter("new_text", json!({"type": "string", "description": "Replacement text"}))
+            .with_parameter(
+                "path",
+                json!({"type": "string", "description": "File path to edit"}),
+            )
+            .with_parameter(
+                "old_text",
+                json!({"type": "string", "description": "Text to find"}),
+            )
+            .with_parameter(
+                "new_text",
+                json!({"type": "string", "description": "Replacement text"}),
+            )
             .with_category(ToolCategory::Custom),
     ]
 }
@@ -35,24 +56,42 @@ fn claude_tools() -> Vec<AgentTool> {
 fn copilot_tools() -> Vec<AgentTool> {
     vec![
         AgentTool::new("file_system", "Read, write, or list files and directories")
-            .with_parameter("operation", json!({
-                "type": "string",
-                "enum": ["read", "write", "list"],
-                "description": "File system operation"
-            }))
-            .with_parameter("path", json!({"type": "string", "description": "File or directory path"}))
-            .with_parameter("content", json!({"type": "string", "description": "Content for write operations"}))
+            .with_parameter(
+                "operation",
+                json!({
+                    "type": "string",
+                    "enum": ["read", "write", "list"],
+                    "description": "File system operation"
+                }),
+            )
+            .with_parameter(
+                "path",
+                json!({"type": "string", "description": "File or directory path"}),
+            )
+            .with_parameter(
+                "content",
+                json!({"type": "string", "description": "Content for write operations"}),
+            )
             .with_category(ToolCategory::Custom),
         AgentTool::new("git", "Execute git operations")
-            .with_parameter("command", json!({"type": "string", "description": "Git command to execute"}))
+            .with_parameter(
+                "command",
+                json!({"type": "string", "description": "Git command to execute"}),
+            )
             .with_category(ToolCategory::Custom),
         AgentTool::new("web_requests", "Make HTTP requests to external services")
-            .with_parameter("url", json!({"type": "string", "description": "URL to request"}))
-            .with_parameter("method", json!({
-                "type": "string",
-                "enum": ["GET", "POST", "PUT", "DELETE"],
-                "default": "GET"
-            }))
+            .with_parameter(
+                "url",
+                json!({"type": "string", "description": "URL to request"}),
+            )
+            .with_parameter(
+                "method",
+                json!({
+                    "type": "string",
+                    "enum": ["GET", "POST", "PUT", "DELETE"],
+                    "default": "GET"
+                }),
+            )
             .with_category(ToolCategory::Custom),
     ]
 }
@@ -63,11 +102,20 @@ fn microsoft_tools() -> Vec<AgentTool> {
             "agent_execute",
             "Execute a task through the Microsoft Agent Framework",
         )
-        .with_parameter("task", json!({"type": "string", "description": "Task to execute"}))
-        .with_parameter("context", json!({"type": "string", "description": "Additional context"}))
+        .with_parameter(
+            "task",
+            json!({"type": "string", "description": "Task to execute"}),
+        )
+        .with_parameter(
+            "context",
+            json!({"type": "string", "description": "Additional context"}),
+        )
         .with_category(ToolCategory::Custom),
         AgentTool::new("agent_query", "Query the agent framework for information")
-            .with_parameter("query", json!({"type": "string", "description": "Query to run"}))
+            .with_parameter(
+                "query",
+                json!({"type": "string", "description": "Query to run"}),
+            )
             .with_category(ToolCategory::Custom),
     ]
 }
@@ -88,7 +136,10 @@ pub fn get_sdk_tools(sdk_type: SdkType) -> Vec<AgentTool> {
 
 /// Get the native tool names for an SDK type.
 pub fn get_sdk_tool_names(sdk_type: SdkType) -> Vec<String> {
-    get_sdk_tools(sdk_type).into_iter().map(|t| t.name).collect()
+    get_sdk_tools(sdk_type)
+        .into_iter()
+        .map(|t| t.name)
+        .collect()
 }
 
 /// Inject SDK-specific tools into a tool list, skipping duplicates.

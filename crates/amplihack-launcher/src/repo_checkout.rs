@@ -25,19 +25,17 @@ pub fn parse_github_uri(uri: &str) -> anyhow::Result<String> {
     }
 
     // HTTPS URL
-    let https_re = regex::Regex::new(
-        r"^https://github\.com/([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+?)(?:\.git)?$",
-    )
-    .unwrap();
+    let https_re =
+        regex::Regex::new(r"^https://github\.com/([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+?)(?:\.git)?$")
+            .unwrap();
     if let Some(caps) = https_re.captures(uri) {
         return Ok(caps[1].to_string());
     }
 
     // SSH URL
-    let ssh_re = regex::Regex::new(
-        r"^git@github\.com:([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+?)(?:\.git)?$",
-    )
-    .unwrap();
+    let ssh_re =
+        regex::Regex::new(r"^git@github\.com:([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+?)(?:\.git)?$")
+            .unwrap();
     if let Some(caps) = ssh_re.captures(uri) {
         return Ok(caps[1].to_string());
     }
@@ -65,9 +63,7 @@ pub fn checkout_repository(repo_uri: &str, base_dir: Option<&Path>) -> Option<Pa
 
     let base = base_dir
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join("claude-checkouts")
-        });
+        .unwrap_or_else(|| std::env::temp_dir().join("claude-checkouts"));
     std::fs::create_dir_all(&base).ok()?;
 
     let target_dir = base.join(&dir_name);
@@ -93,10 +89,7 @@ pub fn checkout_repository(repo_uri: &str, base_dir: Option<&Path>) -> Option<Pa
         tracing::info!("Cloned repository to: {}", target_dir.display());
         Some(target_dir)
     } else {
-        tracing::warn!(
-            "Clone failed: {}",
-            String::from_utf8_lossy(&result.stderr)
-        );
+        tracing::warn!("Clone failed: {}", String::from_utf8_lossy(&result.stderr));
         None
     }
 }

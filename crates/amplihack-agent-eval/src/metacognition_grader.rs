@@ -76,8 +76,7 @@ impl MetacognitionGrader {
         let quality = self.grade_explanation_quality(self_explanation, question);
 
         let dimensions = vec![factual, awareness, boundaries, quality];
-        let overall = dimensions.iter().map(|d| d.score).sum::<f64>()
-            / dimensions.len() as f64;
+        let overall = dimensions.iter().map(|d| d.score).sum::<f64>() / dimensions.len() as f64;
         let summary = Self::generate_summary(&dimensions, overall);
 
         MetacognitionScore {
@@ -102,11 +101,7 @@ impl MetacognitionGrader {
             .collect()
     }
 
-    fn grade_factual_accuracy(
-        &self,
-        expected: &str,
-        actual: &str,
-    ) -> Dimension {
+    fn grade_factual_accuracy(&self, expected: &str, actual: &str) -> Dimension {
         let expected_words: Vec<&str> = expected
             .split_whitespace()
             .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
@@ -130,11 +125,20 @@ impl MetacognitionGrader {
         let score = ratio.min(1.0);
 
         let reasoning = if score >= 0.8 {
-            format!("High factual overlap ({matches}/{} key terms)", expected_words.len())
+            format!(
+                "High factual overlap ({matches}/{} key terms)",
+                expected_words.len()
+            )
         } else if score >= 0.5 {
-            format!("Moderate factual overlap ({matches}/{} key terms)", expected_words.len())
+            format!(
+                "Moderate factual overlap ({matches}/{} key terms)",
+                expected_words.len()
+            )
         } else {
-            format!("Low factual overlap ({matches}/{} key terms)", expected_words.len())
+            format!(
+                "Low factual overlap ({matches}/{} key terms)",
+                expected_words.len()
+            )
         };
 
         Dimension {
@@ -144,11 +148,7 @@ impl MetacognitionGrader {
         }
     }
 
-    fn grade_self_awareness(
-        &self,
-        student_answer: &str,
-        self_explanation: &str,
-    ) -> Dimension {
+    fn grade_self_awareness(&self, student_answer: &str, self_explanation: &str) -> Dimension {
         let mut score: f64 = 0.0;
         let mut reasons = Vec::new();
         let expl_lower = self_explanation.to_lowercase();
@@ -160,9 +160,7 @@ impl MetacognitionGrader {
         }
 
         // Shows awareness of what they know
-        let confidence_markers = [
-            "I know", "I think", "I believe", "I'm sure", "confident",
-        ];
+        let confidence_markers = ["I know", "I think", "I believe", "I'm sure", "confident"];
         if confidence_markers
             .iter()
             .any(|m| expl_lower.contains(&m.to_lowercase()))
@@ -173,8 +171,13 @@ impl MetacognitionGrader {
 
         // Shows awareness of what they don't know
         let uncertainty_markers = [
-            "not sure", "don't know", "uncertain", "might be", "possibly",
-            "I'm unsure", "unclear",
+            "not sure",
+            "don't know",
+            "uncertain",
+            "might be",
+            "possibly",
+            "I'm unsure",
+            "unclear",
         ];
         if uncertainty_markers
             .iter()
@@ -207,8 +210,14 @@ impl MetacognitionGrader {
 
         // Explicit boundary markers
         let boundary_markers = [
-            "I know that", "I don't know", "beyond my", "outside of",
-            "not covered", "wasn't taught", "gap in", "limit",
+            "I know that",
+            "I don't know",
+            "beyond my",
+            "outside of",
+            "not covered",
+            "wasn't taught",
+            "gap in",
+            "limit",
         ];
         let boundary_count = boundary_markers
             .iter()
@@ -246,11 +255,7 @@ impl MetacognitionGrader {
         }
     }
 
-    fn grade_explanation_quality(
-        &self,
-        self_explanation: &str,
-        _question: &str,
-    ) -> Dimension {
+    fn grade_explanation_quality(&self, self_explanation: &str, _question: &str) -> Dimension {
         let mut score: f64 = 0.0;
         let mut reasons = Vec::new();
 
@@ -272,8 +277,14 @@ impl MetacognitionGrader {
 
         // Reasoning markers
         let reasoning_markers = [
-            "because", "therefore", "since", "due to", "as a result",
-            "this means", "which shows", "indicates",
+            "because",
+            "therefore",
+            "since",
+            "due to",
+            "as a result",
+            "this means",
+            "which shows",
+            "indicates",
         ];
         let reasoning_count = reasoning_markers
             .iter()
@@ -374,11 +385,7 @@ pub struct ReasoningTraceScore {
 }
 
 /// Grade metacognition from a reasoning trace (convenience function).
-pub fn grade_metacognition(
-    trace: &str,
-    answer_score: f64,
-    level: &str,
-) -> ReasoningTraceScore {
+pub fn grade_metacognition(trace: &str, answer_score: f64, level: &str) -> ReasoningTraceScore {
     let grader = MetacognitionGrader::default();
     let truncated: String = trace.chars().take(2000).collect();
 

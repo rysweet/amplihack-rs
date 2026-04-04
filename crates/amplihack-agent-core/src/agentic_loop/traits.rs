@@ -42,11 +42,7 @@ pub trait ActionExecutor: Send + Sync {
     fn available_actions(&self) -> Vec<String>;
 
     /// Execute `action_name` with the given params.
-    fn execute(
-        &self,
-        action_name: &str,
-        params: &HashMap<String, Value>,
-    ) -> ActionResult;
+    fn execute(&self, action_name: &str, params: &HashMap<String, Value>) -> ActionResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,13 +55,7 @@ pub trait MemoryRetriever: Send + Sync {
     fn search(&self, query: &str, limit: usize) -> Vec<MemoryFact>;
 
     /// Store a fact (from the LEARN phase).
-    fn store_fact(
-        &self,
-        context: &str,
-        fact: &str,
-        confidence: f64,
-        tags: &[String],
-    );
+    fn store_fact(&self, context: &str, fact: &str, confidence: f64, tags: &[String]);
 }
 
 // ---------------------------------------------------------------------------

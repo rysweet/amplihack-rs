@@ -16,7 +16,14 @@ use super::test_mocks::*;
 fn store_and_search_cognitive() {
     let mut adapter = make_adapter(BackendKind::Cognitive);
     adapter
-        .store_fact_full("Biology", "Cells are the basic unit of life", 0.9, &[], "", &HashMap::new())
+        .store_fact_full(
+            "Biology",
+            "Cells are the basic unit of life",
+            0.9,
+            &[],
+            "",
+            &HashMap::new(),
+        )
         .unwrap();
 
     let results = adapter.search_full("cells", 10, 0.0);
@@ -29,7 +36,14 @@ fn store_and_search_cognitive() {
 fn store_and_search_hierarchical() {
     let mut adapter = make_adapter(BackendKind::Hierarchical);
     adapter
-        .store_fact_full("History", "Rome was founded in 753 BC", 0.8, &[], "", &HashMap::new())
+        .store_fact_full(
+            "History",
+            "Rome was founded in 753 BC",
+            0.8,
+            &[],
+            "",
+            &HashMap::new(),
+        )
         .unwrap();
 
     let results = adapter.search_full("rome", 10, 0.0);

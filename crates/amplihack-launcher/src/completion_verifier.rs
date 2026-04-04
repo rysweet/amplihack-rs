@@ -56,8 +56,7 @@ impl CompletionVerifier {
     ) -> VerificationResult {
         let claimed_complete = Self::parse_completion_claim(evaluation_result);
         let signals_complete = signals.completion_score >= self.completion_threshold;
-        let discrepancies =
-            self.detect_discrepancies(evaluation_result, signals, claimed_complete);
+        let discrepancies = self.detect_discrepancies(evaluation_result, signals, claimed_complete);
 
         match (claimed_complete, signals_complete) {
             (true, true) if discrepancies.is_empty() => VerificationResult {
@@ -71,8 +70,7 @@ impl CompletionVerifier {
                 let ci_pending = discrepancies.iter().any(|d| d.contains("CI not passing"));
                 let score_close = signals.completion_score >= 0.7;
                 let lower = evaluation_result.to_lowercase();
-                let eval_ack_ci =
-                    lower.contains("waiting") || lower.contains("pending");
+                let eval_ack_ci = lower.contains("waiting") || lower.contains("pending");
 
                 if ci_pending
                     && score_close
@@ -83,8 +81,7 @@ impl CompletionVerifier {
                     return VerificationResult {
                         status: VerificationStatus::Incomplete,
                         verified: false,
-                        explanation: "Work mostly complete but CI checks still running"
-                            .to_string(),
+                        explanation: "Work mostly complete but CI checks still running".to_string(),
                         discrepancies,
                     };
                 }
@@ -224,29 +221,25 @@ impl CompletionVerifier {
         if (lower.contains("all tasks") || lower.contains("tasks completed"))
             && !signals.all_steps_complete
         {
-            discrepancies.push(
-                "Claims all tasks complete but TodoWrite shows pending tasks".into(),
-            );
-        } else if claimed_complete && !signals.all_steps_complete {
             discrepancies
-                .push("Claims complete but not all TodoWrite tasks finished".into());
+                .push("Claims all tasks complete but TodoWrite shows pending tasks".into());
+        } else if claimed_complete && !signals.all_steps_complete {
+            discrepancies.push("Claims complete but not all TodoWrite tasks finished".into());
         }
 
         // Uncommitted changes
         if (lower.contains("committed") || lower.contains("pushed"))
             && !signals.no_uncommitted_changes
         {
-            discrepancies
-                .push("Claims changes committed but uncommitted changes exist".into());
+            discrepancies.push("Claims changes committed but uncommitted changes exist".into());
         }
 
         // Mergeable
         if (lower.contains("ready to merge") || lower.contains("mergeable"))
             && !signals.pr_mergeable
         {
-            discrepancies.push(
-                "Claims ready to merge but PR has conflicts or is not mergeable".into(),
-            );
+            discrepancies
+                .push("Claims ready to merge but PR has conflicts or is not mergeable".into());
         }
 
         discrepancies
@@ -278,7 +271,6 @@ impl CompletionVerifier {
         lines.join("\n")
     }
 }
-
 
 #[cfg(test)]
 #[path = "completion_verifier_tests.rs"]

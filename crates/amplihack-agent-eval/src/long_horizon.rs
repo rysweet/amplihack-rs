@@ -28,8 +28,11 @@ pub const ALL_DIMENSIONS: &[&str] = &[
 pub const DETERMINISTIC_DIMENSIONS: &[&str] = &["factual_accuracy", "specificity"];
 
 /// Dimensions that always require LLM judgment.
-pub const LLM_ONLY_DIMENSIONS: &[&str] =
-    &["confidence_calibration", "source_attribution", "temporal_awareness"];
+pub const LLM_ONLY_DIMENSIONS: &[&str] = &[
+    "confidence_calibration",
+    "source_attribution",
+    "temporal_awareness",
+];
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -152,9 +155,8 @@ impl LongHorizonReport {
 
         // Overall score
         if !self.results.is_empty() {
-            self.overall_score =
-                self.results.iter().map(|r| r.overall_score).sum::<f64>()
-                    / self.results.len() as f64;
+            self.overall_score = self.results.iter().map(|r| r.overall_score).sum::<f64>()
+                / self.results.len() as f64;
         }
     }
 }
@@ -230,8 +232,8 @@ pub fn deterministic_grade(
         ratio = (ratio + paraphrase_hits as f64 * 0.25).min(1.0);
 
         // Check incorrect patterns
-        let all_keywords_matched = !rubric.required_keywords.is_empty()
-            && matched == rubric.required_keywords.len();
+        let all_keywords_matched =
+            !rubric.required_keywords.is_empty() && matched == rubric.required_keywords.len();
         let has_full_correct = all_keywords_matched || paraphrase_hits > 0;
 
         if !rubric.incorrect_patterns.is_empty() && !has_full_correct {

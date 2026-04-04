@@ -45,13 +45,21 @@ pub use domain_eval::{
     DomainEvalAgent, DomainEvalHarness, EvalReport, EvalScenario, ScenarioResult,
 };
 pub use error::EvalError;
+pub use five_agent_experiment::{AgentExperimentResult, ExperimentReport};
 pub use general_capability::{CapabilityReport, EvalTypeResult, ToolTrajectory};
 pub use grader::{Grader, SimpleGrader};
 pub use harness::HarnessRunner;
 pub use levels::TestLevel;
 pub use llm_grader::{LlmGrader, StubLlmGrader, extract_json, get_grader_model};
 pub use long_horizon::{DimensionScore, LongHorizonConfig, LongHorizonReport};
+pub use long_horizon_multi_seed::{
+    CategoryStats, MultiSeedReport, QuestionVariance, build_multi_seed_report,
+};
 pub use matrix_eval::{AgentConfig, MatrixReport, MatrixResult};
+pub use meta_eval_experiment::MetaEvalExperiment;
+pub use metacognition_grader::{
+    GradeItem, MetacognitionGrader, MetacognitionScore, ReasoningTraceScore, grade_metacognition,
+};
 pub use models::{
     GradeResult, HarnessConfig, LevelResult, ProgressiveConfig, ProgressiveResult,
     SelfImproveConfig, TestCase, TestQuestion,
@@ -59,22 +67,13 @@ pub use models::{
 pub use multi_source_collector::{NewsArticle, collect_news};
 pub use progressive::ProgressiveSuite;
 pub use quiz_generator::{QuizQuestion, generate_quiz};
+pub use run_domain_evals::{AgentEvalResult, DomainEvalReport, run_all_evals};
 pub use sdk_eval_loop::{MultiSdkReport, SdkEvalLoopConfig, SdkEvalReport};
 pub use security_log::{AttackCampaign, SecurityEvalReport, SecurityGradeResult, SecurityQuestion};
 pub use self_improve::{ErrorAnalyzer, PatchProposer, ReviewerVoting, SelfImproveRunner};
 pub use teaching_eval::{TeachingDimensionScore, TeachingEvalResult, TeachingResult};
 pub use teaching_session::{
-    DeterministicGenerator, MessageGenerator, SessionTurn, TeachingSession,
-    TeachingSessionConfig, TeachingSessionResult,
+    DeterministicGenerator, MessageGenerator, SessionTurn, TeachingSession, TeachingSessionConfig,
+    TeachingSessionResult,
 };
-pub use five_agent_experiment::{AgentExperimentResult, ExperimentReport};
-pub use long_horizon_multi_seed::{
-    build_multi_seed_report, CategoryStats, MultiSeedReport, QuestionVariance,
-};
-pub use meta_eval_experiment::MetaEvalExperiment;
-pub use metacognition_grader::{
-    grade_metacognition, GradeItem, MetacognitionGrader, MetacognitionScore,
-    ReasoningTraceScore,
-};
-pub use run_domain_evals::{run_all_evals, AgentEvalResult, DomainEvalReport};
-pub use teaching_subprocess::{teaching_phase, TeachingPhaseResult, TeachingSubprocessConfig};
+pub use teaching_subprocess::{TeachingPhaseResult, TeachingSubprocessConfig, teaching_phase};

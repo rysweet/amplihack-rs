@@ -67,9 +67,7 @@ where
         let name: String = agent_name.into();
         let trimmed = name.trim().to_string();
         if trimmed.is_empty() {
-            return Err(AgentError::ConfigError(
-                "agent_name cannot be empty".into(),
-            ));
+            return Err(AgentError::ConfigError("agent_name cannot be empty".into()));
         }
         Ok(Self {
             agent_name: trimmed,
@@ -154,12 +152,8 @@ where
             if !memories.is_empty() {
                 perception.push_str("\nRelevant past experiences:\n");
                 for (i, mem) in memories.iter().enumerate() {
-                    perception.push_str(&format!(
-                        "{}. {} → {}\n",
-                        i + 1,
-                        mem.context,
-                        mem.outcome,
-                    ));
+                    perception
+                        .push_str(&format!("{}. {} → {}\n", i + 1, mem.context, mem.outcome,));
                 }
             }
         }
@@ -172,10 +166,7 @@ where
     // ------------------------------------------------------------------
 
     /// REASON phase: call the LLM to decide what action to take.
-    pub async fn reason(
-        &self,
-        perception: &str,
-    ) -> HashMap<String, Value> {
+    pub async fn reason(&self, perception: &str) -> HashMap<String, Value> {
         let actions = self.executor.available_actions();
         let prompt = format!(
             "You are a goal-seeking agent. Based on the perception, decide what action to take.\n\n\
@@ -201,7 +192,10 @@ where
                     return parsed;
                 }
                 // Fallback: unparseable response.
-                error_action("Failed to parse LLM response", "Invalid LLM response format")
+                error_action(
+                    "Failed to parse LLM response",
+                    "Invalid LLM response format",
+                )
             }
             Err(e) => {
                 error!("LLM reasoning call failed: {e}");
@@ -253,9 +247,7 @@ where
         action: &HashMap<String, Value>,
         outcome: &Value,
     ) -> String {
-        let success = !outcome
-            .as_object()
-            .is_some_and(|m| m.contains_key("error"));
+        let success = !outcome.as_object().is_some_and(|m| m.contains_key("error"));
 
         let action_name = action
             .get("action")
@@ -266,9 +258,7 @@ where
             .map(|v| v.to_string())
             .unwrap_or_else(|| "{}".to_string());
 
-        let learning = format!(
-            "Action: {action_name} with {params_str}\nOutcome: {outcome}"
-        );
+        let learning = format!("Action: {action_name} with {params_str}\nOutcome: {outcome}");
         let outcome_summary = truncate(&learning, 500);
 
         if let Some(ref facade) = self.facade {
@@ -293,11 +283,7 @@ where
     // ------------------------------------------------------------------
 
     /// Run one iteration of the PERCEIVE→REASON→ACT→LEARN loop.
-    pub async fn run_iteration(
-        &mut self,
-        goal: &str,
-        observation: &str,
-    ) -> LoopState {
+    pub async fn run_iteration(&mut self, goal: &str, observation: &str) -> LoopState {
         self.iteration_count += 1;
 
         let perception = self.perceive(observation, goal);
@@ -371,5 +357,3 @@ where
         &self.retriever
     }
 }
-
-

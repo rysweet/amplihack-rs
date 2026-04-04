@@ -42,17 +42,25 @@ pub struct LocalEventBus {
 
 impl LocalEventBus {
     pub fn new() -> Self {
-        Self { subscriptions: HashMap::new(), mailboxes: HashMap::new(), closed: false }
+        Self {
+            subscriptions: HashMap::new(),
+            mailboxes: HashMap::new(),
+            closed: false,
+        }
     }
 }
 
 impl Default for LocalEventBus {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EventBus for LocalEventBus {
     fn publish(&mut self, event: BusEvent) -> Result<()> {
-        if self.closed { return Ok(()); }
+        if self.closed {
+            return Ok(());
+        }
         let agent_ids: Vec<String> = self.subscriptions.keys().cloned().collect();
         for agent_id in agent_ids {
             let sub = &self.subscriptions[&agent_id];
@@ -74,7 +82,8 @@ impl EventBus for LocalEventBus {
 
     fn subscribe(&mut self, agent_id: &str, event_types: Option<&[&str]>) -> Result<()> {
         let types = event_types.map(|t| t.iter().map(|s| s.to_string()).collect());
-        self.subscriptions.insert(agent_id.to_string(), Subscription { event_types: types });
+        self.subscriptions
+            .insert(agent_id.to_string(), Subscription { event_types: types });
         self.mailboxes.entry(agent_id.to_string()).or_default();
         Ok(())
     }

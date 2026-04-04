@@ -140,25 +140,27 @@ mod tests {
     #[test]
     fn complex_goal_adds_risk_factor() {
         let plan = ObjectivePlanner::new().plan(&complex_goal()).unwrap();
-        assert!(plan
-            .risk_factors
-            .iter()
-            .any(|r| r.contains("High complexity")));
+        assert!(
+            plan.risk_factors
+                .iter()
+                .any(|r| r.contains("High complexity"))
+        );
     }
 
     #[test]
     fn constraints_add_risk_factor() {
         let plan = ObjectivePlanner::new().plan(&complex_goal()).unwrap();
-        assert!(plan
-            .risk_factors
-            .iter()
-            .any(|r| r.contains("Constraints")));
+        assert!(plan.risk_factors.iter().any(|r| r.contains("Constraints")));
     }
 
     #[test]
     fn implementation_depends_on_analysis() {
         let plan = ObjectivePlanner::new().plan(&simple_goal()).unwrap();
-        assert!(plan.phases[1].dependencies.contains(&"analysis".to_string()));
+        assert!(
+            plan.phases[1]
+                .dependencies
+                .contains(&"analysis".to_string())
+        );
         assert!(!plan.phases[1].parallel_safe);
     }
 

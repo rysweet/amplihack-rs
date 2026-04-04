@@ -98,10 +98,7 @@ impl ActionExecutor for RegistryActionExecutor {
 
 /// Read and parse text content — returns word/char counts and a preview.
 pub fn action_read_content(params: &HashMap<String, Value>) -> Result<Value, String> {
-    let content = params
-        .get("content")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let content = params.get("content").and_then(Value::as_str).unwrap_or("");
 
     let trimmed = content.trim();
     if trimmed.is_empty() {
@@ -195,7 +192,10 @@ mod tests {
         .unwrap();
 
         assert!(exec.has_action("greet"));
-        let result = exec.execute("greet", &HashMap::from([("name".into(), Value::String("Alice".into()))]));
+        let result = exec.execute(
+            "greet",
+            &HashMap::from([("name".into(), Value::String("Alice".into()))]),
+        );
         assert!(result.success);
         assert_eq!(result.output, Value::String("Hello Alice!".into()));
     }
@@ -212,9 +212,7 @@ mod tests {
     fn register_empty_name_fails() {
         let mut exec = RegistryActionExecutor::new();
         assert!(exec.register("", Box::new(|_| Ok(Value::Null))).is_err());
-        assert!(exec
-            .register("  ", Box::new(|_| Ok(Value::Null)))
-            .is_err());
+        assert!(exec.register("  ", Box::new(|_| Ok(Value::Null))).is_err());
     }
 
     #[test]
@@ -317,7 +315,12 @@ mod tests {
         let params = HashMap::from([("expression".into(), Value::String("abc + 1".into()))]);
         let result = action_calculate(&params).unwrap();
         assert!(result["result"].is_null());
-        assert!(result["error"].as_str().unwrap().contains("Invalid characters"));
+        assert!(
+            result["error"]
+                .as_str()
+                .unwrap()
+                .contains("Invalid characters")
+        );
     }
 
     #[test]
@@ -336,7 +339,10 @@ mod tests {
 
     #[test]
     fn calculate_nested_parens() {
-        let params = HashMap::from([("expression".into(), Value::String("((2 + 3) * (4 - 1))".into()))]);
+        let params = HashMap::from([(
+            "expression".into(),
+            Value::String("((2 + 3) * (4 - 1))".into()),
+        )]);
         let result = action_calculate(&params).unwrap();
         assert_eq!(result["result"], 15.0);
     }

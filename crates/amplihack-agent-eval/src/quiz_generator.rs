@@ -26,7 +26,9 @@ pub fn generate_quiz(
     levels: Option<&[&str]>,
 ) -> Result<Vec<QuizQuestion>, EvalError> {
     if articles.is_empty() {
-        return Err(EvalError::config("cannot generate quiz from empty articles"));
+        return Err(EvalError::config(
+            "cannot generate quiz from empty articles",
+        ));
     }
     let default_levels = ["L1", "L2", "L3", "L4"];
     let levels = levels.unwrap_or(&default_levels);
@@ -157,7 +159,13 @@ fn extract_sentence_with_entity(content: &str, entity: &str) -> String {
 /// Extract the first sentence that contains causal/reasoning keywords.
 fn extract_reasoning_context(content: &str) -> String {
     const KEYWORDS: &[&str] = &[
-        "because", "due to", "as a result", "caused by", "led to", "therefore", "consequently",
+        "because",
+        "due to",
+        "as a result",
+        "caused by",
+        "led to",
+        "therefore",
+        "consequently",
     ];
     for sentence in split_sentences(content) {
         let lower = sentence.to_lowercase();
@@ -171,7 +179,13 @@ fn extract_reasoning_context(content: &str) -> String {
 /// Extract the first forward-looking sentence.
 fn extract_forward_looking_statement(content: &str) -> String {
     const KEYWORDS: &[&str] = &[
-        "will", "expect", "predict", "forecast", "plan to", "anticipate", "likely to",
+        "will",
+        "expect",
+        "predict",
+        "forecast",
+        "plan to",
+        "anticipate",
+        "likely to",
     ];
     for sentence in split_sentences(content) {
         let lower = sentence.to_lowercase();
@@ -198,7 +212,10 @@ fn identify_common_theme(a: &NewsArticle, b: &NewsArticle) -> String {
     }
 
     let top: Vec<&str> = common.into_iter().take(5).collect();
-    format!("Both articles discuss themes related to: {}", top.join(", "))
+    format!(
+        "Both articles discuss themes related to: {}",
+        top.join(", ")
+    )
 }
 
 /// Split text into sentences (split on `.`, `!`, `?` followed by whitespace or end).
@@ -210,10 +227,10 @@ fn split_sentences(text: &str) -> impl Iterator<Item = &str> {
 /// Extract significant words (lowercase, > 4 chars, not in stop-word list).
 fn significant_words(text: &str) -> Vec<&str> {
     const STOPS: &[&str] = &[
-        "about", "after", "being", "could", "every", "first", "found", "given", "great",
-        "having", "might", "never", "other", "right", "shall", "since", "still", "their",
-        "there", "these", "thing", "think", "those", "under", "until", "using", "where",
-        "which", "while", "world", "would",
+        "about", "after", "being", "could", "every", "first", "found", "given", "great", "having",
+        "might", "never", "other", "right", "shall", "since", "still", "their", "there", "these",
+        "thing", "think", "those", "under", "until", "using", "where", "which", "while", "world",
+        "would",
     ];
     text.split_whitespace()
         .filter(|w| w.len() > 4)
@@ -237,7 +254,10 @@ mod tests {
 
     #[test]
     fn generate_l1_from_single_article() {
-        let articles = vec![make_article("Rust Release", "Rust 1.75 was released today.")];
+        let articles = vec![make_article(
+            "Rust Release",
+            "Rust 1.75 was released today.",
+        )];
         let qs = generate_l1_recall(&articles);
         assert_eq!(qs.len(), 1);
         assert_eq!(qs[0].level, "L1");
@@ -272,8 +292,14 @@ mod tests {
     #[test]
     fn generate_l3_with_shared_theme() {
         let articles = vec![
-            make_article("AI Report", "Artificial intelligence continues rapid growth."),
-            make_article("ML Paper", "Artificial intelligence models improve accuracy."),
+            make_article(
+                "AI Report",
+                "Artificial intelligence continues rapid growth.",
+            ),
+            make_article(
+                "ML Paper",
+                "Artificial intelligence models improve accuracy.",
+            ),
         ];
         let qs = generate_l3_synthesis(&articles);
         assert_eq!(qs.len(), 1);

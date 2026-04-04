@@ -154,10 +154,7 @@ mod tests {
     #[test]
     fn classify_teaching_takes_priority() {
         let coord = CoordinatorAgent::new("test");
-        let route = coord.classify(
-            "Teach me about math",
-            &intent("mathematical_computation"),
-        );
+        let route = coord.classify("Teach me about math", &intent("mathematical_computation"));
         assert!(route.needs_teaching);
         assert!(!route.needs_reasoning);
     }

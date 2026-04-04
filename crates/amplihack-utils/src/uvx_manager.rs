@@ -207,10 +207,7 @@ impl UvxManager {
         let path_str = path.to_string_lossy();
 
         // Check for traversal patterns
-        if path_str.contains("/../")
-            || path_str.starts_with("../")
-            || path_str.ends_with("/..")
-        {
+        if path_str.contains("/../") || path_str.starts_with("../") || path_str.ends_with("/..") {
             warn!("Path contains directory traversal pattern: {}", path_str);
             return false;
         }

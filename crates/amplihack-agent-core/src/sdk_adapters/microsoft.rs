@@ -101,13 +101,15 @@ impl SdkAdapter for MicrosoftAdapter {
             ));
         }
 
-        let client = self.client.as_ref().ok_or_else(|| {
-            AgentError::ConfigError(
-                "Microsoft SDK client not configured".into(),
-            )
-        })?;
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| AgentError::ConfigError("Microsoft SDK client not configured".into()))?;
 
-        debug!(task_len = task.len(), max_turns, "Microsoft adapter running");
+        debug!(
+            task_len = task.len(),
+            max_turns, "Microsoft adapter running"
+        );
 
         match client
             .query(task, &self.system_prompt, &self.config.model, max_turns)
@@ -242,15 +244,13 @@ mod tests {
             if self.should_fail {
                 Err(AgentError::TaskFailed("mock failure".into()))
             } else {
-                Ok(SdkClientResponse::new(&self.response)
-                    .with_tool_calls(self.tool_calls.clone()))
+                Ok(SdkClientResponse::new(&self.response).with_tool_calls(self.tool_calls.clone()))
             }
         }
     }
 
     fn test_config() -> SdkAdapterConfig {
-        SdkAdapterConfig::new("test-ms", SdkType::Microsoft)
-            .with_model("gpt-4")
+        SdkAdapterConfig::new("test-ms", SdkType::Microsoft).with_model("gpt-4")
     }
 
     #[test]
@@ -317,9 +317,8 @@ mod tests {
 
     #[test]
     fn system_prompt_with_tools_and_instructions() {
-        let mut adapter = MicrosoftAdapter::new(
-            test_config().with_instructions("Focus on accuracy"),
-        );
+        let mut adapter =
+            MicrosoftAdapter::new(test_config().with_instructions("Focus on accuracy"));
         adapter.tools.push(AgentTool::new("memory", "Memory tool"));
         let prompt = adapter.build_system_prompt();
         assert!(prompt.contains("**memory**"));
@@ -328,8 +327,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_agent_success() {
-        let mut adapter = MicrosoftAdapter::new(test_config())
-            .with_client(MockClient::ok("Microsoft response"));
+        let mut adapter =
+            MicrosoftAdapter::new(test_config()).with_client(MockClient::ok("Microsoft response"));
         adapter.create_agent().unwrap();
 
         let result = adapter.run_agent("test task", 10).await.unwrap();
@@ -350,8 +349,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_agent_not_initialized() {
-        let mut adapter = MicrosoftAdapter::new(test_config())
-            .with_client(MockClient::ok("x"));
+        let mut adapter = MicrosoftAdapter::new(test_config()).with_client(MockClient::ok("x"));
         // Don't call create_agent!
         let err = adapter.run_agent("task", 5).await.unwrap_err();
         assert!(matches!(err, AgentError::ConfigError(_)));
@@ -368,8 +366,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_agent_propagates_error() {
-        let mut adapter = MicrosoftAdapter::new(test_config())
-            .with_client(MockClient::failing());
+        let mut adapter = MicrosoftAdapter::new(test_config()).with_client(MockClient::failing());
         adapter.create_agent().unwrap();
 
         let err = adapter.run_agent("task", 5).await.unwrap_err();
@@ -378,8 +375,7 @@ mod tests {
 
     #[tokio::test]
     async fn close_clears_state() {
-        let mut adapter = MicrosoftAdapter::new(test_config())
-            .with_client(MockClient::ok("x"));
+        let mut adapter = MicrosoftAdapter::new(test_config()).with_client(MockClient::ok("x"));
         adapter.create_agent().unwrap();
         adapter.close().await.unwrap();
         assert!(adapter.client.is_none());

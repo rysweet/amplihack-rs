@@ -63,9 +63,13 @@ impl BusEvent {
         }
     }
     /// Alias accessor for `topic`.
-    pub fn event_type(&self) -> &str { &self.topic }
+    pub fn event_type(&self) -> &str {
+        &self.topic
+    }
     /// Alias accessor for `source_id`.
-    pub fn source_agent(&self) -> &str { &self.source_id }
+    pub fn source_agent(&self) -> &str {
+        &self.source_id
+    }
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
@@ -75,7 +79,11 @@ impl BusEvent {
 }
 
 /// Factory for creating a [`BusEvent`] with a generated id and current unix timestamp.
-pub fn make_event(topic: impl Into<String>, source_id: impl Into<String>, payload: serde_json::Value) -> BusEvent {
+pub fn make_event(
+    topic: impl Into<String>,
+    source_id: impl Into<String>,
+    payload: serde_json::Value,
+) -> BusEvent {
     BusEvent {
         event_id: uuid::Uuid::new_v4().to_string(),
         topic: topic.into(),
@@ -108,7 +116,13 @@ pub struct HiveAgent {
 
 impl HiveAgent {
     pub fn new(agent_id: impl Into<String>, domain: impl Into<String>) -> Self {
-        Self { agent_id: agent_id.into(), domain: domain.into(), trust: DEFAULT_TRUST_SCORE, fact_count: 0, status: "active".into() }
+        Self {
+            agent_id: agent_id.into(),
+            domain: domain.into(),
+            trust: DEFAULT_TRUST_SCORE,
+            fact_count: 0,
+            status: "active".into(),
+        }
     }
 }
 
@@ -139,16 +153,32 @@ pub struct GraphStoreConfig {
     #[serde(default = "default_graph_backend")]
     pub backend: String,
 }
-fn default_graph_backend() -> String { "memory".into() }
-impl Default for GraphStoreConfig { fn default() -> Self { Self { backend: default_graph_backend() } } }
+fn default_graph_backend() -> String {
+    "memory".into()
+}
+impl Default for GraphStoreConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_graph_backend(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EventBusConfig {
     #[serde(default = "default_bus_type")]
     pub bus_type: String,
 }
-fn default_bus_type() -> String { "local".into() }
-impl Default for EventBusConfig { fn default() -> Self { Self { bus_type: default_bus_type() } } }
+fn default_bus_type() -> String {
+    "local".into()
+}
+impl Default for EventBusConfig {
+    fn default() -> Self {
+        Self {
+            bus_type: default_bus_type(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GatewayConfig {
@@ -157,9 +187,16 @@ pub struct GatewayConfig {
     #[serde(default = "default_contradiction_overlap")]
     pub contradiction_overlap: f64,
 }
-fn default_contradiction_overlap() -> f64 { DEFAULT_CONTRADICTION_OVERLAP }
+fn default_contradiction_overlap() -> f64 {
+    DEFAULT_CONTRADICTION_OVERLAP
+}
 impl Default for GatewayConfig {
-    fn default() -> Self { Self { trust_threshold: 0.0, contradiction_overlap: DEFAULT_CONTRADICTION_OVERLAP } }
+    fn default() -> Self {
+        Self {
+            trust_threshold: 0.0,
+            contradiction_overlap: DEFAULT_CONTRADICTION_OVERLAP,
+        }
+    }
 }
 
 /// Desired-state manifest describing an entire hive deployment.
@@ -218,7 +255,11 @@ pub struct GossipConfig {
 
 impl Default for GossipConfig {
     fn default() -> Self {
-        Self { fanout: 3, interval_ms: 1000, min_confidence: 0.5 }
+        Self {
+            fanout: 3,
+            interval_ms: 1000,
+            min_confidence: 0.5,
+        }
     }
 }
 
@@ -244,10 +285,15 @@ mod tests {
 
     fn sample_fact() -> HiveFact {
         HiveFact {
-            fact_id: "f-1".into(), concept: "rust".into(),
-            content: "Rust is a systems language".into(), confidence: 0.95,
-            source_id: "agent-a".into(), tags: vec!["lang".into(), "systems".into()],
-            created_at: Utc::now(), status: "promoted".into(), metadata: HashMap::new(),
+            fact_id: "f-1".into(),
+            concept: "rust".into(),
+            content: "Rust is a systems language".into(),
+            confidence: 0.95,
+            source_id: "agent-a".into(),
+            tags: vec!["lang".into(), "systems".into()],
+            created_at: Utc::now(),
+            status: "promoted".into(),
+            metadata: HashMap::new(),
         }
     }
 
@@ -270,7 +316,11 @@ mod tests {
 
     #[test]
     fn bus_event_serde_roundtrip() {
-        let event = make_event("knowledge.update", "bus-1", serde_json::json!({"key": "value"}));
+        let event = make_event(
+            "knowledge.update",
+            "bus-1",
+            serde_json::json!({"key": "value"}),
+        );
         let json = serde_json::to_string(&event).unwrap();
         let decoded: BusEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(event.topic, decoded.topic);
@@ -286,8 +336,13 @@ mod tests {
 
     #[test]
     fn agent_spec_serde_roundtrip() {
-        let spec = AgentSpec { name: "researcher".into(), role: "research".into(),
-            replicas: 3, memory_config: Some("shared".into()), domain: String::new() };
+        let spec = AgentSpec {
+            name: "researcher".into(),
+            role: "research".into(),
+            replicas: 3,
+            memory_config: Some("shared".into()),
+            domain: String::new(),
+        };
         let json = serde_json::to_string(&spec).unwrap();
         let decoded: AgentSpec = serde_json::from_str(&json).unwrap();
         assert_eq!(spec, decoded);
@@ -303,8 +358,13 @@ mod tests {
     #[test]
     fn hive_manifest_serde_roundtrip() {
         let manifest = HiveManifest {
-            agents: vec![AgentSpec { name: "worker".into(), role: "compute".into(),
-                replicas: 2, memory_config: None, domain: String::new() }],
+            agents: vec![AgentSpec {
+                name: "worker".into(),
+                role: "compute".into(),
+                replicas: 2,
+                memory_config: None,
+                domain: String::new(),
+            }],
             graph_config: serde_json::json!({}),
             event_bus_config: serde_json::json!({"capacity": 100}),
             gateway_config: serde_json::json!({"port": 8080}),
@@ -320,21 +380,30 @@ mod tests {
     #[test]
     fn hive_manifest_from_value_env_sub() {
         // SAFETY: test-only env manipulation; tests in this module run serially.
-        unsafe { std::env::set_var("TEST_HIVE_PORT", "9090"); }
+        unsafe {
+            std::env::set_var("TEST_HIVE_PORT", "9090");
+        }
         let v = serde_json::json!({
             "agents": [], "gateway": {"trust_threshold": 0.0,
                 "contradiction_overlap": 0.4}
         });
         let m = HiveManifest::from_value(v).unwrap();
         assert!(m.agents.is_empty());
-        unsafe { std::env::remove_var("TEST_HIVE_PORT"); }
+        unsafe {
+            std::env::remove_var("TEST_HIVE_PORT");
+        }
     }
 
     #[test]
     fn hive_state_serde_roundtrip() {
-        let state = HiveState { running_agents: vec![], graph_status: "ready".into(),
-            bus_status: "connected".into(), agents: HashMap::new(),
-            hive_store_connected: false, event_bus_connected: false };
+        let state = HiveState {
+            running_agents: vec![],
+            graph_status: "ready".into(),
+            bus_status: "connected".into(),
+            agents: HashMap::new(),
+            hive_store_connected: false,
+            event_bus_connected: false,
+        };
         let json = serde_json::to_string(&state).unwrap();
         let decoded: HiveState = serde_json::from_str(&json).unwrap();
         assert_eq!(state, decoded);
@@ -358,7 +427,11 @@ mod tests {
 
     #[test]
     fn gossip_message_serde_roundtrip() {
-        let msg = GossipMessage { facts: vec![sample_fact()], source_id: "node-1".into(), round: 42 };
+        let msg = GossipMessage {
+            facts: vec![sample_fact()],
+            source_id: "node-1".into(),
+            round: 42,
+        };
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: GossipMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(msg, decoded);
@@ -366,8 +439,11 @@ mod tests {
 
     #[test]
     fn merge_result_serde_roundtrip() {
-        let result = MergeResult { accepted: vec!["f-1".into()], rejected: vec!["f-2".into()],
-            conflicts: vec!["f-3".into()] };
+        let result = MergeResult {
+            accepted: vec!["f-1".into()],
+            rejected: vec!["f-2".into()],
+            conflicts: vec!["f-3".into()],
+        };
         let json = serde_json::to_string(&result).unwrap();
         let decoded: MergeResult = serde_json::from_str(&json).unwrap();
         assert_eq!(result, decoded);

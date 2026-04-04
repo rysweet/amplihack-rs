@@ -192,7 +192,10 @@ mod tests {
         assert_eq!(DomainAgentType::Security.to_string(), "security");
         assert_eq!(DomainAgentType::CodeSynthesis.to_string(), "code_synthesis");
         assert_eq!(DomainAgentType::CodeReview.to_string(), "code_review");
-        assert_eq!(DomainAgentType::MeetingSynthesizer.to_string(), "meeting_synthesizer");
+        assert_eq!(
+            DomainAgentType::MeetingSynthesizer.to_string(),
+            "meeting_synthesizer"
+        );
         assert_eq!(DomainAgentType::Learning.to_string(), "learning");
         assert_eq!(DomainAgentType::Research.to_string(), "research");
     }

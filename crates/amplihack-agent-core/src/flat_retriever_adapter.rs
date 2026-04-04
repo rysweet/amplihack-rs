@@ -9,9 +9,7 @@ use std::collections::HashMap;
 
 use crate::error::{AgentError, Result};
 use crate::hierarchical_memory_local::HierarchicalMemoryLocal;
-use crate::hierarchical_memory_types::{
-    KnowledgeNode, MemoryCategory, StoreKnowledgeParams,
-};
+use crate::hierarchical_memory_types::{KnowledgeNode, MemoryCategory, StoreKnowledgeParams};
 use crate::memory_retrieval::SearchResult;
 
 // ── FlatRetrieverAdapter ─────────────────────────────────────────────────
@@ -81,12 +79,7 @@ impl FlatRetrieverAdapter {
     }
 
     /// Search memory and return flat list of [`SearchResult`].
-    pub fn search(
-        &self,
-        query: &str,
-        limit: usize,
-        min_confidence: f64,
-    ) -> Vec<SearchResult> {
+    pub fn search(&self, query: &str, limit: usize, min_confidence: f64) -> Vec<SearchResult> {
         if query.trim().is_empty() {
             return Vec::new();
         }
@@ -181,7 +174,14 @@ mod tests {
     fn store_and_search() {
         let mut adapter = FlatRetrieverAdapter::new("test-agent");
         let id = adapter
-            .store_fact("Biology", "Cells are the basic unit of life", 0.9, &[], "", None)
+            .store_fact(
+                "Biology",
+                "Cells are the basic unit of life",
+                0.9,
+                &[],
+                "",
+                None,
+            )
             .unwrap();
         assert!(!id.is_empty());
 
@@ -208,8 +208,16 @@ mod tests {
     #[test]
     fn store_validation_bad_confidence() {
         let mut adapter = FlatRetrieverAdapter::new("test-agent");
-        assert!(adapter.store_fact("ctx", "fact", 1.5, &[], "", None).is_err());
-        assert!(adapter.store_fact("ctx", "fact", -0.1, &[], "", None).is_err());
+        assert!(
+            adapter
+                .store_fact("ctx", "fact", 1.5, &[], "", None)
+                .is_err()
+        );
+        assert!(
+            adapter
+                .store_fact("ctx", "fact", -0.1, &[], "", None)
+                .is_err()
+        );
     }
 
     #[test]
@@ -221,8 +229,12 @@ mod tests {
     #[test]
     fn search_min_confidence_filters() {
         let mut adapter = FlatRetrieverAdapter::new("test-agent");
-        adapter.store_fact("Topic", "low confidence fact", 0.3, &[], "", None).unwrap();
-        adapter.store_fact("Topic", "high confidence fact", 0.9, &[], "", None).unwrap();
+        adapter
+            .store_fact("Topic", "low confidence fact", 0.3, &[], "", None)
+            .unwrap();
+        adapter
+            .store_fact("Topic", "high confidence fact", 0.9, &[], "", None)
+            .unwrap();
 
         let results = adapter.search("confidence fact", 10, 0.5);
         assert!(results.iter().all(|r| r.confidence >= 0.5));
@@ -231,8 +243,12 @@ mod tests {
     #[test]
     fn get_all_facts_returns_all() {
         let mut adapter = FlatRetrieverAdapter::new("test-agent");
-        adapter.store_fact("A", "fact one", 0.9, &[], "", None).unwrap();
-        adapter.store_fact("B", "fact two", 0.8, &[], "", None).unwrap();
+        adapter
+            .store_fact("A", "fact one", 0.9, &[], "", None)
+            .unwrap();
+        adapter
+            .store_fact("B", "fact two", 0.8, &[], "", None)
+            .unwrap();
 
         let all = adapter.get_all_facts(50);
         assert_eq!(all.len(), 2);
@@ -241,8 +257,12 @@ mod tests {
     #[test]
     fn retrieve_by_entity_works() {
         let mut adapter = FlatRetrieverAdapter::new("test-agent");
-        adapter.store_fact("Mars", "Mars has polar ice caps", 0.9, &[], "", None).unwrap();
-        adapter.store_fact("Venus", "Venus is very hot", 0.8, &[], "", None).unwrap();
+        adapter
+            .store_fact("Mars", "Mars has polar ice caps", 0.9, &[], "", None)
+            .unwrap();
+        adapter
+            .store_fact("Venus", "Venus is very hot", 0.8, &[], "", None)
+            .unwrap();
 
         let results = adapter.retrieve_by_entity("mars", 10);
         assert_eq!(results.len(), 1);
@@ -252,8 +272,12 @@ mod tests {
     #[test]
     fn search_by_concept_works() {
         let mut adapter = FlatRetrieverAdapter::new("test-agent");
-        adapter.store_fact("Genetics", "DNA stores information", 0.9, &[], "", None).unwrap();
-        adapter.store_fact("Physics", "Light is a wave", 0.8, &[], "", None).unwrap();
+        adapter
+            .store_fact("Genetics", "DNA stores information", 0.9, &[], "", None)
+            .unwrap();
+        adapter
+            .store_fact("Physics", "Light is a wave", 0.8, &[], "", None)
+            .unwrap();
 
         let results = adapter.search_by_concept(&["genetics".into()], 10);
         assert_eq!(results.len(), 1);
@@ -262,8 +286,12 @@ mod tests {
     #[test]
     fn execute_aggregation_count() {
         let mut adapter = FlatRetrieverAdapter::new("test-agent");
-        adapter.store_fact("A", "fact1", 0.9, &[], "", None).unwrap();
-        adapter.store_fact("B", "fact2", 0.8, &[], "", None).unwrap();
+        adapter
+            .store_fact("A", "fact1", 0.9, &[], "", None)
+            .unwrap();
+        adapter
+            .store_fact("B", "fact2", 0.8, &[], "", None)
+            .unwrap();
 
         let result = adapter.execute_aggregation("count_entities", "");
         assert_eq!(result["count"], serde_json::json!(2));

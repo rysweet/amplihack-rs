@@ -185,7 +185,7 @@ fn select_peers_fewer_than_fanout() {
 
 // --- new: content dedup ---
 
-use amplihack_hive::{convergence_check, HiveGraph};
+use amplihack_hive::{HiveGraph, convergence_check};
 
 #[test]
 fn content_dedup_in_gossip_round() {
@@ -222,7 +222,9 @@ fn get_top_facts_by_confidence() {
 #[test]
 fn get_top_facts_excludes_retracted() {
     let mut hive = HiveGraph::new();
-    let id = hive.store_fact("a", "retracted", 0.95, "s", vec![]).unwrap();
+    let id = hive
+        .store_fact("a", "retracted", 0.95, "s", vec![])
+        .unwrap();
     hive.store_fact("a", "active", 0.5, "s", vec![]).unwrap();
     hive.retract_fact(&id, "wrong");
     let top = GossipProtocol::get_top_facts(&hive, 10);

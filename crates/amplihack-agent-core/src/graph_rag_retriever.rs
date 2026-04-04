@@ -51,7 +51,9 @@ impl<'a> GraphRagRetriever<'a> {
             return Vec::new();
         }
         let lower = keyword.trim().to_lowercase();
-        let mut matched: Vec<KnowledgeNode> = self.memory.nodes
+        let mut matched: Vec<KnowledgeNode> = self
+            .memory
+            .nodes
             .iter()
             .filter(|n| {
                 n.category == MemoryCategory::Semantic
@@ -75,8 +77,12 @@ impl<'a> GraphRagRetriever<'a> {
         node_id: &str,
         min_similarity: f64,
     ) -> Vec<(KnowledgeNode, f64)> {
-        let node_map: HashMap<&str, &KnowledgeNode> =
-            self.memory.nodes.iter().map(|n| (n.node_id.as_str(), n)).collect();
+        let node_map: HashMap<&str, &KnowledgeNode> = self
+            .memory
+            .nodes
+            .iter()
+            .map(|n| (n.node_id.as_str(), n))
+            .collect();
 
         let mut results = Vec::new();
         for edge in self.memory_edges() {
@@ -94,9 +100,7 @@ impl<'a> GraphRagRetriever<'a> {
                 results.push(((*target).clone(), edge.weight));
             }
         }
-        results.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         results
     }
 
@@ -217,21 +221,27 @@ mod tests {
             concept: "Biology",
             confidence: 0.9,
             category: MemoryCategory::Semantic,
-            source_id: "", tags: &[], temporal_metadata: None,
+            source_id: "",
+            tags: &[],
+            temporal_metadata: None,
         });
         mem.store_knowledge(StoreKnowledgeParams {
             content: "photosynthesis light energy plants produce oxygen",
             concept: "Biology",
             confidence: 0.85,
             category: MemoryCategory::Semantic,
-            source_id: "", tags: &[], temporal_metadata: None,
+            source_id: "",
+            tags: &[],
+            temporal_metadata: None,
         });
         mem.store_knowledge(StoreKnowledgeParams {
             content: "quantum tunneling allows particles to pass barriers",
             concept: "Physics",
             confidence: 0.8,
             category: MemoryCategory::Semantic,
-            source_id: "", tags: &[], temporal_metadata: None,
+            source_id: "",
+            tags: &[],
+            temporal_metadata: None,
         });
         mem
     }

@@ -50,21 +50,27 @@ mod tests {
     #[test]
     fn assemble_produces_ready_bundle() {
         let (goal, plan, skills) = make_parts();
-        let bundle = AgentAssembler::new().assemble(&goal, &plan, skills).unwrap();
+        let bundle = AgentAssembler::new()
+            .assemble(&goal, &plan, skills)
+            .unwrap();
         assert_eq!(bundle.status, BundleStatus::Ready);
     }
 
     #[test]
     fn assemble_sets_domain_agent_name() {
         let (goal, plan, skills) = make_parts();
-        let bundle = AgentAssembler::new().assemble(&goal, &plan, skills).unwrap();
+        let bundle = AgentAssembler::new()
+            .assemble(&goal, &plan, skills)
+            .unwrap();
         assert_eq!(bundle.name, "development-agent");
     }
 
     #[test]
     fn assembled_bundle_is_complete() {
         let (goal, plan, skills) = make_parts();
-        let bundle = AgentAssembler::new().assemble(&goal, &plan, skills).unwrap();
+        let bundle = AgentAssembler::new()
+            .assemble(&goal, &plan, skills)
+            .unwrap();
         assert!(bundle.is_complete());
     }
 
@@ -72,7 +78,9 @@ mod tests {
     fn assemble_preserves_goal_and_plan() {
         let (goal, plan, skills) = make_parts();
         let skill_count = skills.len();
-        let bundle = AgentAssembler::new().assemble(&goal, &plan, skills).unwrap();
+        let bundle = AgentAssembler::new()
+            .assemble(&goal, &plan, skills)
+            .unwrap();
         assert!(bundle.goal_definition.is_some());
         assert!(bundle.execution_plan.is_some());
         assert_eq!(bundle.skills.len(), skill_count);

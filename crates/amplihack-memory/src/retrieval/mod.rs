@@ -24,6 +24,4 @@ pub use strategies::{
     concept_retrieval, entity_retrieval, estimate_total_fact_count, extract_entity_ids,
     simple_retrieval, summarize_old_facts, tiered_retrieval,
 };
-pub use types::{
-    AggregationResult, Fact, IntentKind, MemorySearch, MemoryStatistics,
-};
+pub use types::{AggregationResult, Fact, IntentKind, MemorySearch, MemoryStatistics};

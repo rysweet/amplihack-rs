@@ -33,11 +33,7 @@ pub struct ScoredFact {
 
 impl HiveGraph {
     /// Keyword search: scores facts by word overlap with query.
-    pub fn keyword_query(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Vec<ScoredFact> {
+    pub fn keyword_query(&self, query: &str, limit: usize) -> Vec<ScoredFact> {
         let keywords = tokenize(query);
         if keywords.is_empty() {
             return Vec::new();
@@ -54,8 +50,7 @@ impl HiveGraph {
                 }
                 Some(ScoredFact {
                     fact: f.clone(),
-                    score: hits as f64
-                        + f.confidence * CONFIDENCE_SCORE_BOOST,
+                    score: hits as f64 + f.confidence * CONFIDENCE_SCORE_BOOST,
                 })
             })
             .collect();
@@ -69,11 +64,7 @@ impl HiveGraph {
     }
 
     /// Detect facts that contradict given content for a concept.
-    pub fn check_contradictions(
-        &self,
-        concept: &str,
-        content: &str,
-    ) -> Vec<HiveFact> {
+    pub fn check_contradictions(&self, concept: &str, content: &str) -> Vec<HiveFact> {
         let concept_lower = concept.to_lowercase();
         self.facts
             .iter()
@@ -99,8 +90,7 @@ impl HiveGraph {
             .filter(|a| a.status == "active")
             .map(|a| {
                 let domain_words = tokenize(&a.domain);
-                let overlap =
-                    keywords.intersection(&domain_words).count();
+                let overlap = keywords.intersection(&domain_words).count();
                 (a.agent_id.clone(), overlap)
             })
             .filter(|(_, score)| *score > 0)

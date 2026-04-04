@@ -117,9 +117,10 @@ impl SdkAdapter for CopilotAdapter {
     async fn run_agent(&mut self, task: &str, max_turns: u32) -> Result<AdapterResult> {
         self.tools_used.clear();
 
-        let client = self.client.as_ref().ok_or_else(|| {
-            AgentError::ConfigError("Copilot SDK client not configured".into())
-        })?;
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| AgentError::ConfigError("Copilot SDK client not configured".into()))?;
 
         debug!(task_len = task.len(), max_turns, "Copilot adapter running");
 
@@ -216,20 +217,40 @@ mod tests {
     use super::*;
 
     #[derive(Debug)]
-    struct MockClient { response: String, tool_calls: Vec<String>, error: Option<AgentError> }
+    struct MockClient {
+        response: String,
+        tool_calls: Vec<String>,
+        error: Option<AgentError>,
+    }
 
     impl MockClient {
         fn ok(response: &str) -> Box<dyn SdkClient> {
-            Box::new(Self { response: response.to_string(), tool_calls: vec![], error: None })
+            Box::new(Self {
+                response: response.to_string(),
+                tool_calls: vec![],
+                error: None,
+            })
         }
         fn with_tools(response: &str, tools: Vec<String>) -> Box<dyn SdkClient> {
-            Box::new(Self { response: response.to_string(), tool_calls: tools, error: None })
+            Box::new(Self {
+                response: response.to_string(),
+                tool_calls: tools,
+                error: None,
+            })
         }
         fn timeout() -> Box<dyn SdkClient> {
-            Box::new(Self { response: String::new(), tool_calls: vec![], error: Some(AgentError::TimeoutError(300)) })
+            Box::new(Self {
+                response: String::new(),
+                tool_calls: vec![],
+                error: Some(AgentError::TimeoutError(300)),
+            })
         }
         fn failing() -> Box<dyn SdkClient> {
-            Box::new(Self { response: String::new(), tool_calls: vec![], error: Some(AgentError::TaskFailed("mock failure".into())) })
+            Box::new(Self {
+                response: String::new(),
+                tool_calls: vec![],
+                error: Some(AgentError::TaskFailed("mock failure".into())),
+            })
         }
     }
 
@@ -240,7 +261,10 @@ mod tests {
                 Some(AgentError::TimeoutError(s)) => Err(AgentError::TimeoutError(*s)),
                 Some(AgentError::TaskFailed(s)) => Err(AgentError::TaskFailed(s.clone())),
                 Some(_) => Err(AgentError::TaskFailed("unknown".into())),
-                None => Ok(SdkClientResponse::new(&self.response).with_tool_calls(self.tool_calls.clone())),
+                None => {
+                    Ok(SdkClientResponse::new(&self.response)
+                        .with_tool_calls(self.tool_calls.clone()))
+                }
             }
         }
     }
@@ -261,9 +285,30 @@ mod tests {
 
     #[test]
     fn timeout_clamping() {
-        assert!((CopilotAdapter::new(test_config()).with_timeout(0.0).timeout() - 1.0).abs() < f64::EPSILON);
-        assert!((CopilotAdapter::new(test_config()).with_timeout(999.0).timeout() - MAX_TIMEOUT).abs() < f64::EPSILON);
-        assert!((CopilotAdapter::new(test_config()).with_timeout(120.0).timeout() - 120.0).abs() < f64::EPSILON);
+        assert!(
+            (CopilotAdapter::new(test_config())
+                .with_timeout(0.0)
+                .timeout()
+                - 1.0)
+                .abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (CopilotAdapter::new(test_config())
+                .with_timeout(999.0)
+                .timeout()
+                - MAX_TIMEOUT)
+                .abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (CopilotAdapter::new(test_config())
+                .with_timeout(120.0)
+                .timeout()
+                - 120.0)
+                .abs()
+                < f64::EPSILON
+        );
     }
 
     #[test]
@@ -282,14 +327,17 @@ mod tests {
         assert!(adapter.system_prompt.contains("GitHub Copilot"));
         assert!(adapter.system_prompt.contains("code-generation"));
 
-        adapter.register_tool(AgentTool::new("mem_search", "Search memory")).unwrap();
+        adapter
+            .register_tool(AgentTool::new("mem_search", "Search memory"))
+            .unwrap();
         assert!(adapter.system_prompt.contains("goal-seeking"));
         assert!(adapter.system_prompt.contains("mem_search"));
     }
 
     #[tokio::test]
     async fn run_agent_success() {
-        let mut adapter = CopilotAdapter::new(test_config()).with_client(MockClient::ok("Copilot response"));
+        let mut adapter =
+            CopilotAdapter::new(test_config()).with_client(MockClient::ok("Copilot response"));
         adapter.create_agent().unwrap();
         let result = adapter.run_agent("do something", 5).await.unwrap();
         assert!(result.goal_achieved);
@@ -298,8 +346,10 @@ mod tests {
 
     #[tokio::test]
     async fn run_agent_tracks_tools() {
-        let mut adapter = CopilotAdapter::new(test_config())
-            .with_client(MockClient::with_tools("done", vec!["file_system".into(), "git".into()]));
+        let mut adapter = CopilotAdapter::new(test_config()).with_client(MockClient::with_tools(
+            "done",
+            vec!["file_system".into(), "git".into()],
+        ));
         adapter.create_agent().unwrap();
         let result = adapter.run_agent("task", 5).await.unwrap();
         assert_eq!(result.tools_used.len(), 2);
@@ -325,7 +375,10 @@ mod tests {
     async fn run_agent_no_client() {
         let mut adapter = CopilotAdapter::new(test_config());
         adapter.create_agent().unwrap();
-        assert!(matches!(adapter.run_agent("task", 5).await.unwrap_err(), AgentError::ConfigError(_)));
+        assert!(matches!(
+            adapter.run_agent("task", 5).await.unwrap_err(),
+            AgentError::ConfigError(_)
+        ));
     }
 
     #[tokio::test]

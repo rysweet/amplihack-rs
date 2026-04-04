@@ -75,7 +75,10 @@ mod tests {
     fn partition_within_range() {
         for id in &["agent-0", "agent-5", "my-agent", "x"] {
             let p = partition_for_agent(id, DEFAULT_EVENT_HUB_PARTITIONS);
-            assert!(p < DEFAULT_EVENT_HUB_PARTITIONS, "partition {p} out of range");
+            assert!(
+                p < DEFAULT_EVENT_HUB_PARTITIONS,
+                "partition {p} out of range"
+            );
         }
     }
 

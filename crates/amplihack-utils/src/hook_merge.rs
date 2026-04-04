@@ -65,10 +65,7 @@ impl HookMergeUtility {
     }
 
     /// Merge required hooks into settings.json.
-    pub fn merge_hooks(
-        &self,
-        hooks: &[HookConfig],
-    ) -> Result<MergeResult, HookMergeError> {
+    pub fn merge_hooks(&self, hooks: &[HookConfig]) -> Result<MergeResult, HookMergeError> {
         // Load or create settings
         let mut settings = self.load_settings()?;
 
@@ -138,10 +135,7 @@ impl HookMergeUtility {
 
     fn default_settings() -> serde_json::Map<String, serde_json::Value> {
         let mut m = serde_json::Map::new();
-        m.insert(
-            "hooks".to_string(),
-            serde_json::Value::Array(Vec::new()),
-        );
+        m.insert("hooks".to_string(), serde_json::Value::Array(Vec::new()));
         m
     }
 
@@ -152,13 +146,8 @@ impl HookMergeUtility {
         if !self.settings_path.exists() {
             return Ok(String::new());
         }
-        let backup_name = format!(
-            "{}.backup",
-            self.settings_path.display()
-        );
-        let content = serde_json::to_string_pretty(
-            &serde_json::Value::Object(settings.clone()),
-        )?;
+        let backup_name = format!("{}.backup", self.settings_path.display());
+        let content = serde_json::to_string_pretty(&serde_json::Value::Object(settings.clone()))?;
         std::fs::write(&backup_name, content)?;
         Ok(backup_name)
     }
@@ -170,17 +159,12 @@ impl HookMergeUtility {
         if let Some(parent) = self.settings_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let content = serde_json::to_string_pretty(
-            &serde_json::Value::Object(settings.clone()),
-        )?;
+        let content = serde_json::to_string_pretty(&serde_json::Value::Object(settings.clone()))?;
         std::fs::write(&self.settings_path, content)?;
         Ok(())
     }
 
-    fn find_existing_hook(
-        hooks: &[serde_json::Value],
-        command: &str,
-    ) -> Option<usize> {
+    fn find_existing_hook(hooks: &[serde_json::Value], command: &str) -> Option<usize> {
         hooks.iter().position(|h| {
             h.get("command")
                 .and_then(|c| c.as_str())

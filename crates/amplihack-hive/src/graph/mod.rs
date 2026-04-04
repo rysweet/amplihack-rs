@@ -118,14 +118,10 @@ impl HiveGraph {
     }
 
     pub fn retract_fact(&mut self, fact_id: &str, reason: &str) -> bool {
-        if let Some(fact) =
-            self.facts.iter_mut().find(|f| f.fact_id == fact_id)
-        {
+        if let Some(fact) = self.facts.iter_mut().find(|f| f.fact_id == fact_id) {
             fact.status = "retracted".to_string();
-            fact.metadata.insert(
-                "retraction_reason".to_string(),
-                reason.to_string(),
-            );
+            fact.metadata
+                .insert("retraction_reason".to_string(), reason.to_string());
             true
         } else {
             false
@@ -149,14 +145,8 @@ impl HiveGraph {
         self.facts.clone()
     }
 
-    pub fn set_fact_confidence(
-        &mut self,
-        fact_id: &str,
-        confidence: f64,
-    ) -> bool {
-        if let Some(fact) =
-            self.facts.iter_mut().find(|f| f.fact_id == fact_id)
-        {
+    pub fn set_fact_confidence(&mut self, fact_id: &str, confidence: f64) -> bool {
+        if let Some(fact) = self.facts.iter_mut().find(|f| f.fact_id == fact_id) {
             fact.confidence = confidence.clamp(0.0, 1.0);
             true
         } else {

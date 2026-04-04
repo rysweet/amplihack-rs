@@ -52,16 +52,15 @@ pub(crate) use prompt_context::parse_memory_timestamp;
 pub(crate) use resolve::resolve_memory_cli_backend;
 pub(crate) use schema::{GRAPH_DB_TREE_BACKEND_NAME, HIERARCHICAL_SCHEMA};
 pub(crate) use types::{
-    BackendChoice, MemoryRecord, SessionLearningRecord, TransferFormat,
-    memory_home_paths, project_artifact_paths, transfer_format_cli_compatibility_notice,
+    BackendChoice, MemoryRecord, SessionLearningRecord, TransferFormat, memory_home_paths,
+    project_artifact_paths, transfer_format_cli_compatibility_notice,
 };
 
 // Private imports: accessible to descendant modules (tests) via `use super::*`.
-use serde_json::Value as JsonValue;
-#[cfg(test)]
-use anyhow::Result;
 #[cfg(test)]
 use self::backend::graph_db::resolve_memory_graph_db_path;
+#[cfg(test)]
+use anyhow::Result;
 #[cfg(test)]
 use learning::{build_learning_record, store_learning_with_backend};
 #[cfg(test)]
@@ -74,6 +73,7 @@ use resolve::{
     memory_graph_compatibility_notice, resolve_backend_with_autodetect,
     resolve_memory_backend_preference,
 };
+use serde_json::Value as JsonValue;
 #[cfg(test)]
 use std::path::Path;
 #[cfg(test)]

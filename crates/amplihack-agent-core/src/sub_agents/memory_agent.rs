@@ -14,10 +14,10 @@ use tracing::debug;
 use crate::agentic_loop::MemoryFact;
 
 use super::types::{
-    rerank_facts_by_query, RetrievalStrategy, SubAgentMemory, AGGREGATION_FACTS_LIMIT,
-    CONCEPT_DISPLAY_LIMIT, DEFAULT_TEMPORAL_INDEX, ENTITY_DISPLAY_LIMIT, MAX_RETRIEVAL_LIMIT,
-    MEMORY_AGENT_SMALL_KB_THRESHOLD, SEARCH_CANDIDATE_MULTIPLIER, SIMPLE_RETRIEVE_DEFAULT_LIMIT,
-    TWO_PHASE_BROAD_CAP,
+    AGGREGATION_FACTS_LIMIT, CONCEPT_DISPLAY_LIMIT, DEFAULT_TEMPORAL_INDEX, ENTITY_DISPLAY_LIMIT,
+    MAX_RETRIEVAL_LIMIT, MEMORY_AGENT_SMALL_KB_THRESHOLD, RetrievalStrategy,
+    SEARCH_CANDIDATE_MULTIPLIER, SIMPLE_RETRIEVE_DEFAULT_LIMIT, SubAgentMemory,
+    TWO_PHASE_BROAD_CAP, rerank_facts_by_query,
 };
 
 static MULTI_WORD_PROPER_NOUN: Lazy<Regex> =
@@ -125,27 +125,48 @@ impl<M: SubAgentMemory> MemoryAgent<M> {
         self.memory.get_all_facts(MAX_RETRIEVAL_LIMIT).len()
     }
 
-    fn aggregation_retrieve(&self, question: &str, _intent: &HashMap<String, Value>) -> Vec<MemoryFact> {
+    fn aggregation_retrieve(
+        &self,
+        question: &str,
+        _intent: &HashMap<String, Value>,
+    ) -> Vec<MemoryFact> {
         if !self.memory.has_aggregation_support() {
             return self.simple_all_retrieve(question, SIMPLE_RETRIEVE_DEFAULT_LIMIT);
         }
         let q_lower = question.to_lowercase();
         let mut results: Vec<MemoryFact> = Vec::new();
         let entity_type = ["project", "people", "person", "team", "member"]
-            .iter().find(|kw| q_lower.contains(*kw)).copied().unwrap_or("");
+            .iter()
+            .find(|kw| q_lower.contains(*kw))
+            .copied()
+            .unwrap_or("");
 
         if entity_type == "project" {
             let agg = self.memory.execute_aggregation("list_concepts", "project");
             if !agg.items.is_empty() {
-                results.push(agg_fact("agg_project", "Meta-memory: Project count",
-                    &format!("There are {} distinct project-related concepts: {}", agg.items.len(), agg.items.join(", "))));
+                results.push(agg_fact(
+                    "agg_project",
+                    "Meta-memory: Project count",
+                    &format!(
+                        "There are {} distinct project-related concepts: {}",
+                        agg.items.len(),
+                        agg.items.join(", ")
+                    ),
+                ));
             }
         }
         if matches!(entity_type, "people" | "person" | "member" | "team") {
             let agg = self.memory.execute_aggregation("list_entities", "");
             if !agg.items.is_empty() {
-                results.push(agg_fact("agg_entities", "Meta-memory: Entity list",
-                    &format!("There are {} distinct entities: {}", agg.items.len(), agg.items.join(", "))));
+                results.push(agg_fact(
+                    "agg_entities",
+                    "Meta-memory: Entity list",
+                    &format!(
+                        "There are {} distinct entities: {}",
+                        agg.items.len(),
+                        agg.items.join(", ")
+                    ),
+                ));
             }
         }
         if results.is_empty() {
@@ -157,17 +178,38 @@ impl<M: SubAgentMemory> MemoryAgent<M> {
                 parts.push(format!("Total facts: {count}"));
             }
             if !entity_agg.items.is_empty() {
-                let display: Vec<&str> = entity_agg.items.iter().take(ENTITY_DISPLAY_LIMIT).map(|s| s.as_str()).collect();
-                parts.push(format!("Entities ({}): {}", entity_agg.items.len(), display.join(", ")));
+                let display: Vec<&str> = entity_agg
+                    .items
+                    .iter()
+                    .take(ENTITY_DISPLAY_LIMIT)
+                    .map(|s| s.as_str())
+                    .collect();
+                parts.push(format!(
+                    "Entities ({}): {}",
+                    entity_agg.items.len(),
+                    display.join(", ")
+                ));
             }
             if !concept_agg.item_counts.is_empty() {
-                let mut top: Vec<(&str, &usize)> = concept_agg.item_counts.iter().map(|(k, v)| (k.as_str(), v)).collect();
+                let mut top: Vec<(&str, &usize)> = concept_agg
+                    .item_counts
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v))
+                    .collect();
                 top.sort_by(|a, b| b.1.cmp(a.1));
-                let display: Vec<String> = top.iter().take(CONCEPT_DISPLAY_LIMIT).map(|(c, n)| format!("{c} ({n})")).collect();
+                let display: Vec<String> = top
+                    .iter()
+                    .take(CONCEPT_DISPLAY_LIMIT)
+                    .map(|(c, n)| format!("{c} ({n})"))
+                    .collect();
                 parts.push(format!("Concepts: {}", display.join(", ")));
             }
             if !parts.is_empty() {
-                results.push(agg_fact("agg_summary", "Meta-memory summary", &parts.join(". ")));
+                results.push(agg_fact(
+                    "agg_summary",
+                    "Meta-memory summary",
+                    &parts.join(". "),
+                ));
             }
         }
         let regular = self.simple_all_retrieve(question, AGGREGATION_FACTS_LIMIT);
@@ -181,11 +223,18 @@ impl<M: SubAgentMemory> MemoryAgent<M> {
     }
 
     fn entity_retrieve(&self, question: &str, max_facts: usize) -> Vec<MemoryFact> {
-        if !self.memory.has_entity_support() { return Vec::new(); }
+        if !self.memory.has_entity_support() {
+            return Vec::new();
+        }
         let mut candidates: Vec<String> = MULTI_WORD_PROPER_NOUN
-            .find_iter(question).map(|m| m.as_str().to_string()).collect();
-        candidates.extend(POSSESSIVE_PROPER_NOUN.captures_iter(question)
-            .filter_map(|c| c.get(1).map(|m| m.as_str().to_string())));
+            .find_iter(question)
+            .map(|m| m.as_str().to_string())
+            .collect();
+        candidates.extend(
+            POSSESSIVE_PROPER_NOUN
+                .captures_iter(question)
+                .filter_map(|c| c.get(1).map(|m| m.as_str().to_string())),
+        );
         let mut all_facts: Vec<MemoryFact> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for candidate in &candidates {
@@ -195,7 +244,11 @@ impl<M: SubAgentMemory> MemoryAgent<M> {
                 }
             }
         }
-        if all_facts.is_empty() { Vec::new() } else { rerank_facts_by_query(&all_facts, question, None) }
+        if all_facts.is_empty() {
+            Vec::new()
+        } else {
+            rerank_facts_by_query(&all_facts, question, None)
+        }
     }
 
     fn temporal_retrieve(&self, question: &str, max_facts: usize) -> Vec<MemoryFact> {
@@ -240,11 +293,20 @@ fn has_entity_reference(question: &str) -> bool {
 
 /// Extract temporal index from a fact's metadata.
 fn temporal_index(fact: &MemoryFact) -> i64 {
-    fact.metadata.get("temporal_index").and_then(|v| v.as_i64()).unwrap_or(DEFAULT_TEMPORAL_INDEX)
+    fact.metadata
+        .get("temporal_index")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(DEFAULT_TEMPORAL_INDEX)
 }
 
 fn agg_fact(id: &str, context: &str, outcome: &str) -> MemoryFact {
-    MemoryFact { id: id.into(), context: context.into(), outcome: outcome.into(), confidence: 1.0, metadata: HashMap::new() }
+    MemoryFact {
+        id: id.into(),
+        context: context.into(),
+        outcome: outcome.into(),
+        confidence: 1.0,
+        metadata: HashMap::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -255,19 +317,30 @@ fn agg_fact(id: &str, context: &str, outcome: &str) -> MemoryFact {
 mod tests {
     use super::*;
 
-    struct MockMemory { facts: Vec<MemoryFact> }
+    struct MockMemory {
+        facts: Vec<MemoryFact>,
+    }
 
     impl MockMemory {
-        fn empty() -> Self { Self { facts: Vec::new() } }
-        fn with_facts(facts: Vec<MemoryFact>) -> Self { Self { facts } }
+        fn empty() -> Self {
+            Self { facts: Vec::new() }
+        }
+        fn with_facts(facts: Vec<MemoryFact>) -> Self {
+            Self { facts }
+        }
     }
 
     impl SubAgentMemory for MockMemory {
         fn search(&self, query: &str, limit: usize) -> Vec<MemoryFact> {
             let q = query.to_lowercase();
-            self.facts.iter()
-                .filter(|f| f.context.to_lowercase().contains(&q) || f.outcome.to_lowercase().contains(&q))
-                .take(limit).cloned().collect()
+            self.facts
+                .iter()
+                .filter(|f| {
+                    f.context.to_lowercase().contains(&q) || f.outcome.to_lowercase().contains(&q)
+                })
+                .take(limit)
+                .cloned()
+                .collect()
         }
         fn get_all_facts(&self, limit: usize) -> Vec<MemoryFact> {
             self.facts.iter().take(limit).cloned().collect()
@@ -303,7 +376,10 @@ mod tests {
         let agent = MemoryAgent::new(MockMemory::empty(), "test");
         let mut i = intent("simple_recall");
         i.insert("needs_temporal".into(), Value::Bool(true));
-        assert_eq!(agent.select_strategy("When?", &i), RetrievalStrategy::Temporal);
+        assert_eq!(
+            agent.select_strategy("When?", &i),
+            RetrievalStrategy::Temporal
+        );
     }
 
     #[test]
@@ -338,7 +414,10 @@ mod tests {
 
     #[test]
     fn retrieve_simple_all() {
-        let facts = vec![fact("1", "Sarah", "has a cat"), fact("2", "Bob", "likes dogs")];
+        let facts = vec![
+            fact("1", "Sarah", "has a cat"),
+            fact("2", "Bob", "likes dogs"),
+        ];
         let agent = MemoryAgent::new(MockMemory::with_facts(facts), "test");
         let result = agent.retrieve("pets?", &intent("simple_recall"), 10);
         assert_eq!(result.len(), 2);

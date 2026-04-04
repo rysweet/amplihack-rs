@@ -113,7 +113,12 @@ fn deterministic_grade_keyword_matching() {
 #[test]
 fn deterministic_grade_partial_match() {
     let rubric = GradingRubric {
-        required_keywords: vec!["alpha".into(), "beta".into(), "gamma".into(), "delta".into()],
+        required_keywords: vec![
+            "alpha".into(),
+            "beta".into(),
+            "gamma".into(),
+            "delta".into(),
+        ],
         ..Default::default()
     };
     let scores = deterministic_grade(&rubric, "alpha and beta present", &["factual_accuracy"]);
@@ -128,8 +133,11 @@ fn deterministic_grade_paraphrase_bonus() {
         acceptable_paraphrases: vec!["rephrased".into()],
         ..Default::default()
     };
-    let scores =
-        deterministic_grade(&rubric, "rephrased version", &["factual_accuracy", "specificity"]);
+    let scores = deterministic_grade(
+        &rubric,
+        "rephrased version",
+        &["factual_accuracy", "specificity"],
+    );
     let fa = scores["factual_accuracy"].score;
     assert!((fa - 0.25).abs() < 0.001);
 }
@@ -154,7 +162,10 @@ fn deterministic_grade_incorrect_pattern_with_correct_present() {
     };
     let scores = deterministic_grade(&rubric, "correct and wrong", &["factual_accuracy"]);
     let fa = scores["factual_accuracy"].score;
-    assert!(fa > 0.0, "Should not be zeroed when correct keyword present");
+    assert!(
+        fa > 0.0,
+        "Should not be zeroed when correct keyword present"
+    );
 }
 
 #[test]

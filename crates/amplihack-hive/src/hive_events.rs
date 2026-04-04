@@ -4,9 +4,9 @@
 //! - Named topic constants for Service Bus / local event routing
 //! - Factory functions for creating typed HiveEvent payloads
 
+use crate::error::Result;
 use crate::models::BusEvent;
 use crate::workload::HiveEvent;
-use crate::error::Result;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -94,7 +94,11 @@ pub fn make_query_event(question: &str) -> Result<(String, BusEvent)> {
 }
 
 /// Create a query-response event.
-pub fn make_query_response_event(query_id: &str, answer: &str, confidence: f64) -> Result<BusEvent> {
+pub fn make_query_response_event(
+    query_id: &str,
+    answer: &str,
+    confidence: f64,
+) -> Result<BusEvent> {
     if !(0.0..=1.0).contains(&confidence) {
         return Err(crate::error::HiveError::InvalidConfidence(confidence));
     }

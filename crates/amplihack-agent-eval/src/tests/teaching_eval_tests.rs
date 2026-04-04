@@ -44,7 +44,11 @@ fn make_empty_result() -> TeachingResult {
 fn grade_clarity_good_instruction() {
     let result = make_good_result();
     let score = grade_clarity(&result, "code_review");
-    assert!(score.score > 0.5, "Good instruction should score well: {}", score.score);
+    assert!(
+        score.score > 0.5,
+        "Good instruction should score well: {}",
+        score.score
+    );
     assert!(!score.details.is_empty());
 }
 
@@ -138,7 +142,11 @@ fn evaluate_teaching_composite() {
     assert_eq!(eval.dimension_scores.len(), 4);
     assert!(eval.composite_score > 0.0);
     // Composite should be sum of score * weight
-    let manual: f64 = eval.dimension_scores.iter().map(|d| d.score * d.weight).sum();
+    let manual: f64 = eval
+        .dimension_scores
+        .iter()
+        .map(|d| d.score * d.weight)
+        .sum();
     assert!((eval.composite_score - manual).abs() < 0.001);
 }
 

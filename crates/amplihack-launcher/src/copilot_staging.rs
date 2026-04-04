@@ -36,7 +36,8 @@ pub fn generate_copilot_instructions(copilot_home: &Path, agents_context: &str) 
     };
 
     let cleaned = remove_marker_section(&existing);
-    let section = format!("{INSTRUCTIONS_MARKER_START}\n{agents_context}\n{INSTRUCTIONS_MARKER_END}");
+    let section =
+        format!("{INSTRUCTIONS_MARKER_START}\n{agents_context}\n{INSTRUCTIONS_MARKER_END}");
     let final_content = if cleaned.trim().is_empty() {
         section
     } else {
@@ -242,46 +243,78 @@ mod tests {
         std::fs::create_dir_all(src.path().join("sub")).unwrap();
         std::fs::write(src.path().join("sub/nested.md"), "c").unwrap();
         std::fs::write(src.path().join("top.md"), "t").unwrap();
-        assert_eq!(stage_directory(src.path(), dest.path(), "workflows").unwrap(), 2);
-        assert!(dest.path().join("workflows/amplihack/sub/nested.md").exists());
+        assert_eq!(
+            stage_directory(src.path(), dest.path(), "workflows").unwrap(),
+            2
+        );
+        assert!(
+            dest.path()
+                .join("workflows/amplihack/sub/nested.md")
+                .exists()
+        );
     }
     #[test]
     fn generate_instructions_creates() {
         let h = tempfile::tempdir().unwrap();
         generate_copilot_instructions(h.path(), "# Test").unwrap();
         let c = std::fs::read_to_string(h.path().join("copilot-instructions.md")).unwrap();
-        assert!(c.contains("AMPLIHACK_INSTRUCTIONS_START")); assert!(c.contains("# Test"));
+        assert!(c.contains("AMPLIHACK_INSTRUCTIONS_START"));
+        assert!(c.contains("# Test"));
     }
     #[test]
     fn generate_instructions_replaces() {
         let h = tempfile::tempdir().unwrap();
         let p = h.path().join("copilot-instructions.md");
-        std::fs::write(&p, format!("User\n\n{INSTRUCTIONS_MARKER_START}\nOLD\n{INSTRUCTIONS_MARKER_END}")).unwrap();
+        std::fs::write(
+            &p,
+            format!("User\n\n{INSTRUCTIONS_MARKER_START}\nOLD\n{INSTRUCTIONS_MARKER_END}"),
+        )
+        .unwrap();
         generate_copilot_instructions(h.path(), "NEW").unwrap();
         let c = std::fs::read_to_string(&p).unwrap();
-        assert!(c.contains("User")); assert!(c.contains("NEW")); assert!(!c.contains("OLD"));
+        assert!(c.contains("User"));
+        assert!(c.contains("NEW"));
+        assert!(!c.contains("OLD"));
     }
     #[test]
-    fn remove_marker_noop() { assert_eq!(remove_marker_section("plain"), "plain"); }
+    fn remove_marker_noop() {
+        assert_eq!(remove_marker_section("plain"), "plain");
+    }
     #[test]
     fn hook_wrapper_rust() {
-        let w = generate_hook_wrapper("pre-tool-use", Path::new("/h.py"), Some(Path::new("/bin/amplihack-hooks")));
-        assert!(w.contains("amplihack-hooks")); assert!(w.contains("pre-tool-use"));
+        let w = generate_hook_wrapper(
+            "pre-tool-use",
+            Path::new("/h.py"),
+            Some(Path::new("/bin/amplihack-hooks")),
+        );
+        assert!(w.contains("amplihack-hooks"));
+        assert!(w.contains("pre-tool-use"));
     }
     #[test]
     fn hook_wrapper_python() {
         let w = generate_hook_wrapper("post", Path::new("/h.py"), None);
-        assert!(w.contains("python3")); assert!(w.contains("/h.py"));
+        assert!(w.contains("python3"));
+        assert!(w.contains("/h.py"));
     }
     #[test]
-    fn epoch_to_iso_known() { assert_eq!(epoch_to_iso(1704067200), "2024-01-01T00:00:00+00:00"); }
+    fn epoch_to_iso_known() {
+        assert_eq!(epoch_to_iso(1704067200), "2024-01-01T00:00:00+00:00");
+    }
     #[test]
     fn stage_hooks_creates() {
         let pkg = tempfile::tempdir().unwrap();
         let user = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(pkg.path().join("hooks")).unwrap();
-        std::fs::write(pkg.path().join("hooks/pre-tool-use"), "#!/bin/bash\necho hi").unwrap();
+        std::fs::write(
+            pkg.path().join("hooks/pre-tool-use"),
+            "#!/bin/bash\necho hi",
+        )
+        .unwrap();
         assert_eq!(stage_hooks(pkg.path(), user.path()).unwrap(), 1);
-        assert!(std::fs::read_to_string(user.path().join(".github/hooks/pre-tool-use")).unwrap().contains("amplihack"));
+        assert!(
+            std::fs::read_to_string(user.path().join(".github/hooks/pre-tool-use"))
+                .unwrap()
+                .contains("amplihack")
+        );
     }
 }

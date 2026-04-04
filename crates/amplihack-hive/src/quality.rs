@@ -299,7 +299,10 @@ mod tests {
     fn score_bounded_zero_to_one() {
         for text in &["a", "hello world test", "x".repeat(1000).as_str()] {
             let s = score_content_quality(text, "");
-            assert!((0.0..=1.0).contains(&s), "score {s} out of range for '{text}'");
+            assert!(
+                (0.0..=1.0).contains(&s),
+                "score {s} out of range for '{text}'"
+            );
         }
     }
 

@@ -59,7 +59,11 @@ pub struct StateSnapshot {
 }
 
 impl AutoModeState {
-    pub fn new(session_id: impl Into<String>, max_turns: u32, objective: impl Into<String>) -> Self {
+    pub fn new(
+        session_id: impl Into<String>,
+        max_turns: u32,
+        objective: impl Into<String>,
+    ) -> Self {
         Self {
             inner: Mutex::new(AutoModeStateInner {
                 session_id: session_id.into(),

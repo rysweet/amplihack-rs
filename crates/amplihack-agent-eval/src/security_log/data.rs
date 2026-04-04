@@ -71,23 +71,40 @@ pub fn c2_domains() -> Vec<&'static str> {
 pub fn techniques_for_objective(objective: &str) -> Vec<&'static str> {
     match objective {
         "data_exfiltration" => vec![
-            "T1566.001", "T1059.001", "T1003.001", "T1021.002",
-            "T1083", "T1560.001", "T1048.003",
+            "T1566.001",
+            "T1059.001",
+            "T1003.001",
+            "T1021.002",
+            "T1083",
+            "T1560.001",
+            "T1048.003",
         ],
         "ransomware" => vec![
-            "T1566.001", "T1059.003", "T1053.005", "T1021.001",
-            "T1562.001", "T1490", "T1486",
+            "T1566.001",
+            "T1059.003",
+            "T1053.005",
+            "T1021.001",
+            "T1562.001",
+            "T1490",
+            "T1486",
         ],
         "espionage" => vec![
-            "T1566.001", "T1059.001", "T1055.001", "T1003.001",
-            "T1087.002", "T1018", "T1071.001",
+            "T1566.001",
+            "T1059.001",
+            "T1055.001",
+            "T1003.001",
+            "T1087.002",
+            "T1018",
+            "T1071.001",
         ],
-        "cryptomining" => vec![
-            "T1059.001", "T1053.005", "T1543.003", "T1105",
-        ],
+        "cryptomining" => vec!["T1059.001", "T1053.005", "T1543.003", "T1105"],
         "supply_chain" => vec![
-            "T1059.001", "T1036.005", "T1547.001", "T1027",
-            "T1140", "T1218.011",
+            "T1059.001",
+            "T1036.005",
+            "T1547.001",
+            "T1027",
+            "T1140",
+            "T1218.011",
         ],
         _ => vec![],
     }
@@ -95,7 +112,13 @@ pub fn techniques_for_objective(objective: &str) -> Vec<&'static str> {
 
 /// All supported attack objectives.
 pub fn objectives() -> &'static [&'static str] {
-    &["data_exfiltration", "ransomware", "espionage", "cryptomining", "supply_chain"]
+    &[
+        "data_exfiltration",
+        "ransomware",
+        "espionage",
+        "cryptomining",
+        "supply_chain",
+    ]
 }
 
 /// Threat actor entries (name, description).
@@ -113,15 +136,14 @@ pub fn threat_actors() -> Vec<(&'static str, &'static str)> {
 /// Operation name fragments for campaign naming.
 pub fn operation_adjectives() -> &'static [&'static str] {
     &[
-        "Midnight", "Shadow", "Storm", "Glacier", "Phoenix",
-        "Cobalt", "Iron", "Crimson", "Azure", "Onyx", "Jade", "Ruby",
+        "Midnight", "Shadow", "Storm", "Glacier", "Phoenix", "Cobalt", "Iron", "Crimson", "Azure",
+        "Onyx", "Jade", "Ruby",
     ]
 }
 
 pub fn operation_animals() -> &'static [&'static str] {
     &[
-        "Wolf", "Bear", "Eagle", "Fox", "Lion",
-        "Hawk", "Viper", "Falcon",
+        "Wolf", "Bear", "Eagle", "Fox", "Lion", "Hawk", "Viper", "Falcon",
     ]
 }
 
@@ -220,7 +242,10 @@ pub fn generate_campaigns(seed: u64, num_campaigns: usize) -> Vec<AttackCampaign
             .collect();
         let campaign_c2: Vec<String> = {
             let n = rng.next_range(1, 3) as usize;
-            rng.sample(&c2, n).into_iter().map(|s| s.to_string()).collect()
+            rng.sample(&c2, n)
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect()
         };
 
         let campaign_hash = simple_hash(&format!("campaign-{i}-{actor_name}"));

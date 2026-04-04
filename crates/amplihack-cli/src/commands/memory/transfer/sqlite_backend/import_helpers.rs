@@ -35,14 +35,14 @@ where
             return Ok(val);
         }
         Err(e) if is_sqlite_busy(&e) => {
-            tracing::warn!(attempt = 1, delay_ms = 50, "SQLITE_BUSY on BEGIN IMMEDIATE, retrying");
+            tracing::warn!(
+                attempt = 1,
+                delay_ms = 50,
+                "SQLITE_BUSY on BEGIN IMMEDIATE, retrying"
+            );
             std::thread::sleep(std::time::Duration::from_millis(BUSY_BASE_DELAY_MS));
         }
-        Err(e) => {
-            return Err(
-                anyhow::anyhow!(e).context("failed to begin IMMEDIATE transaction"),
-            )
-        }
+        Err(e) => return Err(anyhow::anyhow!(e).context("failed to begin IMMEDIATE transaction")),
     }
     // Attempt 2
     match conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
@@ -52,14 +52,14 @@ where
             return Ok(val);
         }
         Err(e) if is_sqlite_busy(&e) => {
-            tracing::warn!(attempt = 2, delay_ms = 100, "SQLITE_BUSY on BEGIN IMMEDIATE, retrying");
+            tracing::warn!(
+                attempt = 2,
+                delay_ms = 100,
+                "SQLITE_BUSY on BEGIN IMMEDIATE, retrying"
+            );
             std::thread::sleep(std::time::Duration::from_millis(BUSY_BASE_DELAY_MS * 2));
         }
-        Err(e) => {
-            return Err(
-                anyhow::anyhow!(e).context("failed to begin IMMEDIATE transaction"),
-            )
-        }
+        Err(e) => return Err(anyhow::anyhow!(e).context("failed to begin IMMEDIATE transaction")),
     }
     // Attempt 3 (final)
     let tx = conn
@@ -305,8 +305,7 @@ mod tests {
         // Initialise schema from the main thread.
         {
             let init = SqliteConnection::open(&db_path).unwrap();
-            init.execute_batch("CREATE TABLE t (id INTEGER)")
-                .unwrap();
+            init.execute_batch("CREATE TABLE t (id INTEGER)").unwrap();
         }
 
         // Barrier so the background thread grabs the lock before we retry.
@@ -328,9 +327,7 @@ mod tests {
         barrier.wait(); // wait until lock is held
 
         let mut conn2 = SqliteConnection::open(&db_path).unwrap();
-        conn2
-            .busy_timeout(std::time::Duration::ZERO)
-            .unwrap();
+        conn2.busy_timeout(std::time::Duration::ZERO).unwrap();
 
         let result = with_retry_immediate_transaction(&mut conn2, |_tx| Ok(42));
         handle.join().unwrap();
@@ -351,8 +348,7 @@ mod tests {
 
         {
             let init = SqliteConnection::open(&db_path).unwrap();
-            init.execute_batch("CREATE TABLE t (id INTEGER)")
-                .unwrap();
+            init.execute_batch("CREATE TABLE t (id INTEGER)").unwrap();
         }
 
         let barrier = Arc::new(Barrier::new(2));
@@ -372,9 +368,7 @@ mod tests {
         barrier.wait();
 
         let mut conn2 = SqliteConnection::open(&db_path).unwrap();
-        conn2
-            .busy_timeout(std::time::Duration::ZERO)
-            .unwrap();
+        conn2.busy_timeout(std::time::Duration::ZERO).unwrap();
 
         let err = with_retry_immediate_transaction(&mut conn2, |_tx| Ok(()))
             .expect_err("all retries should fail while lock is held");

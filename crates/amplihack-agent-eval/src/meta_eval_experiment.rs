@@ -178,9 +178,7 @@ impl MetaEvalExperiment {
     /// Generate quiz questions (limited by config).
     pub fn generate_eval_quiz(&self) -> Vec<QuizQuestion> {
         let all = eval_quiz();
-        all.into_iter()
-            .take(self.config.quiz_questions)
-            .collect()
+        all.into_iter().take(self.config.quiz_questions).collect()
     }
 
     /// Run the experiment with deterministic grading.
@@ -198,14 +196,10 @@ impl MetaEvalExperiment {
                 let best_match = kb
                     .iter()
                     .max_by_key(|fact| {
-                        let q_words: Vec<&str> =
-                            q.question.split_whitespace().collect();
+                        let q_words: Vec<&str> = q.question.split_whitespace().collect();
                         q_words
                             .iter()
-                            .filter(|w| {
-                                fact.to_lowercase()
-                                    .contains(&w.to_lowercase())
-                            })
+                            .filter(|w| fact.to_lowercase().contains(&w.to_lowercase()))
                             .count()
                     })
                     .cloned()

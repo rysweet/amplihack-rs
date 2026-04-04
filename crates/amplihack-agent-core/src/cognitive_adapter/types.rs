@@ -58,12 +58,7 @@ pub trait CognitiveBackend: Send + Sync {
 
     /// Search facts by query, returning up to `limit` results above
     /// `min_confidence`.
-    fn search_facts(
-        &self,
-        query: &str,
-        limit: usize,
-        min_confidence: f64,
-    ) -> Vec<MemoryFact>;
+    fn search_facts(&self, query: &str, limit: usize, min_confidence: f64) -> Vec<MemoryFact>;
 
     /// Return all stored facts (up to `limit`).
     fn get_all_facts(&self, limit: usize) -> Vec<MemoryFact>;
@@ -94,11 +89,7 @@ pub trait CognitiveBackend: Send + Sync {
     // -- Procedural memory --
 
     /// Store a named procedure (step sequence).
-    fn store_procedure(
-        &mut self,
-        _name: &str,
-        _steps: &[String],
-    ) -> Option<String> {
+    fn store_procedure(&mut self, _name: &str, _steps: &[String]) -> Option<String> {
         None
     }
 

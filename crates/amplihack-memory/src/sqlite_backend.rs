@@ -149,7 +149,10 @@ impl SqliteBackend {
                 .query_map(rusqlite::params![query, limit as i64], |row| {
                     Self::row_to_entry(row)
                 })?
-                .filter_map(|r| r.map_err(|e| eprintln!("WARNING: skipping corrupted row: {e}")).ok())
+                .filter_map(|r| {
+                    r.map_err(|e| eprintln!("WARNING: skipping corrupted row: {e}"))
+                        .ok()
+                })
                 .collect();
             Ok(entries)
         }
@@ -165,13 +168,17 @@ impl SqliteBackend {
         let metadata_str: String = row.get(6)?;
         let tags_str: String = row.get(9)?;
         let memory_type_str: String = row.get(3)?;
-        let memory_type = match serde_json::from_str::<MemoryType>(&format!("\"{}\"", memory_type_str)) {
-            Ok(mt) => mt,
-            Err(_) => {
-                eprintln!("WARNING: unknown memory_type '{}', defaulting to Semantic", memory_type_str);
-                MemoryType::Semantic
-            }
-        };
+        let memory_type =
+            match serde_json::from_str::<MemoryType>(&format!("\"{}\"", memory_type_str)) {
+                Ok(mt) => mt,
+                Err(_) => {
+                    eprintln!(
+                        "WARNING: unknown memory_type '{}', defaulting to Semantic",
+                        memory_type_str
+                    );
+                    MemoryType::Semantic
+                }
+            };
         Ok(MemoryEntry {
             id: row.get(0)?,
             session_id: row.get(1)?,
@@ -267,7 +274,9 @@ impl MemoryBackend for SqliteBackend {
             sql.push_str(&format!(" AND content LIKE ?{idx}"));
             params.push(Box::new(format!("%{}%", query.query_text)));
             #[allow(unused_assignments)]
-            { idx += 1; }
+            {
+                idx += 1;
+            }
         }
 
         let limit = if query.limit > 0 { query.limit } else { 20 };
@@ -279,7 +288,10 @@ impl MemoryBackend for SqliteBackend {
         let mut stmt = conn.prepare(&sql)?;
         let entries = stmt
             .query_map(param_refs.as_slice(), Self::row_to_entry)?
-            .filter_map(|r| r.map_err(|e| eprintln!("WARNING: skipping corrupted row: {e}")).ok())
+            .filter_map(|r| {
+                r.map_err(|e| eprintln!("WARNING: skipping corrupted row: {e}"))
+                    .ok()
+            })
             .collect();
         Ok(entries)
     }
@@ -320,7 +332,10 @@ impl MemoryBackend for SqliteBackend {
                     last_accessed: row.get(3)?,
                 })
             })?
-            .filter_map(|r| r.map_err(|e| eprintln!("WARNING: skipping corrupted row: {e}")).ok())
+            .filter_map(|r| {
+                r.map_err(|e| eprintln!("WARNING: skipping corrupted row: {e}"))
+                    .ok()
+            })
             .collect();
         Ok(sessions)
     }

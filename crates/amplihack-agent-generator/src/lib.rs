@@ -34,10 +34,10 @@ pub use synthesizer::SkillSynthesizer;
 
 // Re-exports for newly ported modules
 pub use distributor::{DistributionResult, GitHubDistributor, PackageMeta};
-pub use documentation_generator::{generate_instructions, BundleDocMeta};
+pub use documentation_generator::{BundleDocMeta, generate_instructions};
 pub use repackage_generator::{
     generate_bash_script, generate_python_script, make_executable, sanitize_bundle_name,
     sanitize_version,
 };
 pub use repository_creator::{RepositoryCreator, RepositoryResult};
-pub use update_manager::{compute_checksum, UpdateInfo, UpdateManager, UpdateResult};
+pub use update_manager::{UpdateInfo, UpdateManager, UpdateResult, compute_checksum};

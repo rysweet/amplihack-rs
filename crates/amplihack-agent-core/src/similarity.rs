@@ -32,12 +32,13 @@ static QUERY_CUE_TOKENS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         .collect()
 });
 
-static APT_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\bapt(?:-| )?\d+\b").unwrap());
+static APT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bapt(?:-| )?\d+\b").unwrap());
 
 // ── Tokenization ─────────────────────────────────────────────────────────
 
-const PUNCT: &[char] = &['.', ',', ';', ':', '!', '?', '(', ')', '[', ']', '{', '}', '"', '\''];
+const PUNCT: &[char] = &[
+    '.', ',', ';', ':', '!', '?', '(', ')', '[', ']', '{', '}', '"', '\'',
+];
 
 fn tokenize(text: &str) -> HashSet<String> {
     if text.is_empty() {
@@ -121,37 +122,62 @@ fn entity_anchor_tokens(query: &str) -> HashSet<String> {
 // ── Public token extractors ──────────────────────────────────────────────
 
 /// Expose discriminative query anchors.
-pub fn extract_query_anchor_tokens(query: &str) -> HashSet<String> { anchor_tokens(query) }
+pub fn extract_query_anchor_tokens(query: &str) -> HashSet<String> {
+    anchor_tokens(query)
+}
 
 /// Expose discriminative ordered phrases.
-pub fn extract_query_phrases(query: &str) -> HashSet<String> { query_phrases(query) }
+pub fn extract_query_phrases(query: &str) -> HashSet<String> {
+    query_phrases(query)
+}
 
 /// Expose likely entity-identifying query tokens.
-pub fn extract_entity_anchor_tokens(query: &str) -> HashSet<String> { entity_anchor_tokens(query) }
+pub fn extract_entity_anchor_tokens(query: &str) -> HashSet<String> {
+    entity_anchor_tokens(query)
+}
 
 /// Expose tokenization for downstream use.
-pub fn tokenize_similarity_text(text: &str) -> HashSet<String> { tokenize(text) }
+pub fn tokenize_similarity_text(text: &str) -> HashSet<String> {
+    tokenize(text)
+}
 
 // ── Similarity functions ─────────────────────────────────────────────────
 
 /// Compute Jaccard similarity on tokenized words minus stop words.
 pub fn compute_word_similarity(text_a: &str, text_b: &str) -> f64 {
     let (a, b) = (tokenize(text_a), tokenize(text_b));
-    if a.is_empty() || b.is_empty() { return 0.0; }
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
     let union = a.union(&b).count();
-    if union == 0 { 0.0 } else { a.intersection(&b).count() as f64 / union as f64 }
+    if union == 0 {
+        0.0
+    } else {
+        a.intersection(&b).count() as f64 / union as f64
+    }
 }
 
 /// Compute Jaccard similarity between two tag lists.
 pub fn compute_tag_similarity(tags_a: &[String], tags_b: &[String]) -> f64 {
-    if tags_a.is_empty() || tags_b.is_empty() { return 0.0; }
+    if tags_a.is_empty() || tags_b.is_empty() {
+        return 0.0;
+    }
     let to_set = |tags: &[String]| -> HashSet<String> {
-        tags.iter().map(|t| t.to_lowercase().trim().to_string()).filter(|t| !t.is_empty()).collect()
+        tags.iter()
+            .map(|t| t.to_lowercase().trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect()
     };
     let (a, b) = (to_set(tags_a), to_set(tags_b));
-    if a.is_empty() || b.is_empty() { return 0.0; }
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
     let union = a.union(&b).count();
-    if union == 0 { 0.0 } else { a.intersection(&b).count() as f64 / union as f64 }
+    if union == 0 {
+        0.0
+    } else {
+        a.intersection(&b).count() as f64 / union as f64
+    }
 }
 
 /// Weighted composite similarity: 0.5×word + 0.2×tag + 0.3×concept.
@@ -173,9 +199,25 @@ pub struct NodeSimilarityInput {
 // ── Reranking ────────────────────────────────────────────────────────────
 
 static TEMPORAL_CUES: Lazy<Vec<&'static str>> = Lazy::new(|| {
-    vec!["change", "changed", "original", "before", "after", "previous", "current",
-         "first", "initially", "updated", "revised", "intermediate", "over time",
-         "history", "evolution", "timeline", "when"]
+    vec![
+        "change",
+        "changed",
+        "original",
+        "before",
+        "after",
+        "previous",
+        "current",
+        "first",
+        "initially",
+        "updated",
+        "revised",
+        "intermediate",
+        "over time",
+        "history",
+        "evolution",
+        "timeline",
+        "when",
+    ]
 });
 
 /// Rerank retrieved facts by keyword relevance to a query.
@@ -214,14 +256,16 @@ pub fn rerank_facts_by_query(
             }
 
             let overlap_base =
-                query_tokens.intersection(&fact_tokens).count() as f64
-                    / query_tokens.len() as f64;
+                query_tokens.intersection(&fact_tokens).count() as f64 / query_tokens.len() as f64;
             let anchor_overlap = if anchors.is_empty() {
                 0.0
             } else {
                 anchors.intersection(&fact_tokens).count() as f64 / anchors.len() as f64
             };
-            let phrase_hits = phrases.iter().filter(|p| fact_lower.contains(p.as_str())).count();
+            let phrase_hits = phrases
+                .iter()
+                .filter(|p| fact_lower.contains(p.as_str()))
+                .count();
             let phrase_bonus = if phrases.is_empty() {
                 0.0
             } else {
@@ -264,11 +308,18 @@ pub fn rerank_facts_by_query(
         })
         .collect();
 
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
-        .then_with(|| a.1.cmp(&b.1)));
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.cmp(&b.1))
+    });
 
     let reranked: Vec<SearchResult> = scored.into_iter().map(|(_, _, f)| f).collect();
-    if top_k > 0 { reranked.into_iter().take(top_k).collect() } else { reranked }
+    if top_k > 0 {
+        reranked.into_iter().take(top_k).collect()
+    } else {
+        reranked
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -303,7 +354,10 @@ mod tests {
 
     #[test]
     fn word_similarity_identical() {
-        let sim = compute_word_similarity("photosynthesis converts light", "photosynthesis converts light");
+        let sim = compute_word_similarity(
+            "photosynthesis converts light",
+            "photosynthesis converts light",
+        );
         assert!((sim - 1.0).abs() < f64::EPSILON);
     }
 
@@ -315,7 +369,10 @@ mod tests {
 
     #[test]
     fn word_similarity_cases() {
-        let sim = compute_word_similarity("photosynthesis plants energy", "photosynthesis light energy");
+        let sim = compute_word_similarity(
+            "photosynthesis plants energy",
+            "photosynthesis light energy",
+        );
         assert!(sim > 0.0 && sim < 1.0);
         assert!(compute_word_similarity("", "test").abs() < f64::EPSILON);
         assert!(compute_word_similarity("test", "").abs() < f64::EPSILON);
@@ -323,16 +380,30 @@ mod tests {
 
     #[test]
     fn tag_similarity_cases() {
-        let (a, b) = (vec!["biology".into(), "science".into()], vec!["biology".into(), "science".into()]);
+        let (a, b) = (
+            vec!["biology".into(), "science".into()],
+            vec!["biology".into(), "science".into()],
+        );
         assert!((compute_tag_similarity(&a, &b) - 1.0).abs() < f64::EPSILON);
         assert!(compute_tag_similarity(&[], &["x".into()]).abs() < f64::EPSILON);
-        assert!((compute_tag_similarity(&["Biology".into()], &["biology".into()]) - 1.0).abs() < f64::EPSILON);
+        assert!(
+            (compute_tag_similarity(&["Biology".into()], &["biology".into()]) - 1.0).abs()
+                < f64::EPSILON
+        );
     }
 
     #[test]
     fn composite_similarity() {
-        let a = NodeSimilarityInput { content: "cells unit life".into(), tags: vec!["bio".into()], concept: "cell bio".into() };
-        let b = NodeSimilarityInput { content: "cells mitosis".into(), tags: vec!["bio".into()], concept: "cell div".into() };
+        let a = NodeSimilarityInput {
+            content: "cells unit life".into(),
+            tags: vec!["bio".into()],
+            concept: "cell bio".into(),
+        };
+        let b = NodeSimilarityInput {
+            content: "cells mitosis".into(),
+            tags: vec!["bio".into()],
+            concept: "cell div".into(),
+        };
         let sim = compute_similarity(&a, &b);
         assert!(sim > 0.0 && sim <= 1.0);
     }
@@ -349,8 +420,13 @@ mod tests {
 
     fn sr(id: &str, ctx: &str, outcome: &str) -> SearchResult {
         SearchResult {
-            experience_id: id.into(), context: ctx.into(), outcome: outcome.into(),
-            confidence: 0.8, timestamp: String::new(), tags: vec![], metadata: HashMap::new(),
+            experience_id: id.into(),
+            context: ctx.into(),
+            outcome: outcome.into(),
+            confidence: 0.8,
+            timestamp: String::new(),
+            tags: vec![],
+            metadata: HashMap::new(),
         }
     }
 
@@ -361,8 +437,10 @@ mod tests {
 
     #[test]
     fn rerank_orders_by_relevance() {
-        let facts = vec![sr("1", "Cooking", "Pasta recipe with garlic"),
-                         sr("2", "Biology", "Photosynthesis converts light energy")];
+        let facts = vec![
+            sr("1", "Cooking", "Pasta recipe with garlic"),
+            sr("2", "Biology", "Photosynthesis converts light energy"),
+        ];
         let reranked = rerank_facts_by_query(&facts, "photosynthesis light", 0);
         assert_eq!(reranked[0].experience_id, "2");
     }

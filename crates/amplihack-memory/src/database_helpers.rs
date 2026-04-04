@@ -110,10 +110,8 @@ pub(crate) fn iso_to_epoch(iso: &str) -> f64 {
     let (h, min, s) = (time_parts[0], time_parts[1], time_parts[2]);
     let m_adj = if m <= 2 { m + 9 } else { m - 3 };
     let y_adj = if m <= 2 { y - 1 } else { y };
-    let days = y_adj * 365 + y_adj / 4 - y_adj / 100 + y_adj / 400
-        + (m_adj * 153 + 2) / 5
-        + d
-        - 719_469;
+    let days =
+        y_adj * 365 + y_adj / 4 - y_adj / 100 + y_adj / 400 + (m_adj * 153 + 2) / 5 + d - 719_469;
     (days * 86400 + h * 3600 + min * 60 + s) as f64
 }
 

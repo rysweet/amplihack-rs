@@ -8,7 +8,10 @@ use std::collections::HashMap;
 // ---------------------------------------------------------------------------
 
 /// Generate questions testing retrieval capabilities across campaigns.
-pub fn generate_questions(campaigns: &[AttackCampaign], max_questions: usize) -> Vec<SecurityQuestion> {
+pub fn generate_questions(
+    campaigns: &[AttackCampaign],
+    max_questions: usize,
+) -> Vec<SecurityQuestion> {
     let mut questions: Vec<SecurityQuestion> = Vec::new();
     let mut qid = 0u32;
 
@@ -17,7 +20,10 @@ pub fn generate_questions(campaigns: &[AttackCampaign], max_questions: usize) ->
         qid += 1;
         questions.push(SecurityQuestion {
             question_id: format!("SEC-{qid:04}"),
-            question: format!("What devices were targeted in campaign {}?", camp.campaign_id),
+            question: format!(
+                "What devices were targeted in campaign {}?",
+                camp.campaign_id
+            ),
             category: "alert_retrieval".into(),
             ground_truth_facts: camp
                 .target_devices
@@ -102,12 +108,12 @@ pub fn generate_questions(campaigns: &[AttackCampaign], max_questions: usize) ->
         qid += 1;
         questions.push(SecurityQuestion {
             question_id: format!("SEC-{qid:04}"),
-            question: format!(
-                "What was the objective of campaign {}?",
-                camp.campaign_id
-            ),
+            question: format!("What was the objective of campaign {}?", camp.campaign_id),
             category: "alert_retrieval".into(),
-            ground_truth_facts: vec![format!("{} objective: {}", camp.campaign_id, camp.objective)],
+            ground_truth_facts: vec![format!(
+                "{} objective: {}",
+                camp.campaign_id, camp.objective
+            )],
             required_keywords: vec![objective_keyword(&camp.objective)],
             campaign_ids: vec![camp.campaign_id.clone()],
             difficulty: "easy".into(),
@@ -127,7 +133,11 @@ pub fn generate_questions(campaigns: &[AttackCampaign], max_questions: usize) ->
     for (actor, actor_camps) in &actors {
         if actor_camps.len() >= 2 && questions.len() < max_questions {
             qid += 1;
-            let camp_ids: Vec<String> = actor_camps.iter().take(3).map(|c| c.campaign_id.clone()).collect();
+            let camp_ids: Vec<String> = actor_camps
+                .iter()
+                .take(3)
+                .map(|c| c.campaign_id.clone())
+                .collect();
             questions.push(SecurityQuestion {
                 question_id: format!("SEC-{qid:04}"),
                 question: format!(
@@ -147,4 +157,3 @@ pub fn generate_questions(campaigns: &[AttackCampaign], max_questions: usize) ->
     questions.truncate(max_questions);
     questions
 }
-

@@ -23,16 +23,13 @@ impl HiveGraph {
         &self.children_ids
     }
 
-    pub fn escalate_fact(
-        &self,
-        fact_id: &str,
-        parent: &mut HiveGraph,
-    ) -> Option<String> {
+    pub fn escalate_fact(&self, fact_id: &str, parent: &mut HiveGraph) -> Option<String> {
         let fact = self.facts.iter().find(|f| f.fact_id == fact_id)?;
-        if fact.tags.iter().any(|t| {
-            t.starts_with(ESCALATION_TAG_PREFIX)
-                || t.starts_with(BROADCAST_TAG_PREFIX)
-        }) {
+        if fact
+            .tags
+            .iter()
+            .any(|t| t.starts_with(ESCALATION_TAG_PREFIX) || t.starts_with(BROADCAST_TAG_PREFIX))
+        {
             return None;
         }
         let mut tags = fact.tags.clone();
@@ -58,10 +55,11 @@ impl HiveGraph {
             Some(f) => f.clone(),
             None => return result,
         };
-        if fact.tags.iter().any(|t| {
-            t.starts_with(BROADCAST_TAG_PREFIX)
-                || t.starts_with(ESCALATION_TAG_PREFIX)
-        }) {
+        if fact
+            .tags
+            .iter()
+            .any(|t| t.starts_with(BROADCAST_TAG_PREFIX) || t.starts_with(ESCALATION_TAG_PREFIX))
+        {
             return result;
         }
         for child in children.iter_mut() {

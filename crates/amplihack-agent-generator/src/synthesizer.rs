@@ -103,7 +103,11 @@ mod tests {
         let plan = make_plan(Complexity::Simple);
         let skills = SkillSynthesizer::new().synthesize(&plan).unwrap();
         for s in &skills {
-            assert!(!s.description.is_empty(), "skill {} has no description", s.name);
+            assert!(
+                !s.description.is_empty(),
+                "skill {} has no description",
+                s.name
+            );
         }
     }
 

@@ -134,9 +134,9 @@ pub fn search_expanded(
     let mut results = Vec::new();
 
     for variant in &expanded {
-        if let Ok(facts) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            search_fn(variant, limit)
-        })) {
+        if let Ok(facts) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| search_fn(variant, limit)))
+        {
             for fact in facts {
                 if seen.insert(fact.clone()) {
                     results.push(fact);

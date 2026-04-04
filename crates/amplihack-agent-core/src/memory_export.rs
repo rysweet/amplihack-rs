@@ -159,9 +159,13 @@ mod tests {
 
     fn sk(mem: &mut HierarchicalMemoryLocal, content: &str, concept: &str, confidence: f64) {
         mem.store_knowledge(StoreKnowledgeParams {
-            content, concept, confidence,
+            content,
+            concept,
+            confidence,
             category: MemoryCategory::Semantic,
-            source_id: "", tags: &[], temporal_metadata: None,
+            source_id: "",
+            tags: &[],
+            temporal_metadata: None,
         });
     }
 
@@ -219,7 +223,10 @@ mod tests {
         let meta = import_memory(&mut mem2, &path, ExportFormat::Json, false).unwrap();
 
         assert_eq!(meta.agent_name, "import-test");
-        assert_eq!(meta.statistics["source_agent"], serde_json::json!("export-test"));
+        assert_eq!(
+            meta.statistics["source_agent"],
+            serde_json::json!("export-test")
+        );
         assert_eq!(meta.statistics["imported_nodes"], serde_json::json!(2));
     }
 

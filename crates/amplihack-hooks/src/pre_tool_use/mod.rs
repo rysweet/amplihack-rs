@@ -93,9 +93,7 @@ fn normalize_command(command: &str) -> String {
         }
         // Skip past the value (until next unquoted space).
         let after_eq = &rest[eq_pos + 1..];
-        let value_end = after_eq
-            .find([' ', '\t'])
-            .unwrap_or(after_eq.len());
+        let value_end = after_eq.find([' ', '\t']).unwrap_or(after_eq.len());
         let after_value = after_eq[value_end..].trim_start();
         if after_value.is_empty() {
             break; // nothing left after the value — not a prefix
@@ -118,9 +116,7 @@ fn normalize_command(command: &str) -> String {
                 break;
             }
             let after_eq = &rest[eq_pos + 1..];
-            let value_end = after_eq
-                .find([' ', '\t'])
-                .unwrap_or(after_eq.len());
+            let value_end = after_eq.find([' ', '\t']).unwrap_or(after_eq.len());
             let after_value = after_eq[value_end..].trim_start();
             if after_value.is_empty() {
                 break;

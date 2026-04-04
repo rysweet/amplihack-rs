@@ -29,11 +29,7 @@ pub struct Transition {
 // ---------------------------------------------------------------------------
 
 /// Build a transition chain from candidate facts for a given entity/field.
-pub fn transition_chain_from_facts(
-    entity: &str,
-    field: &str,
-    facts: &[Fact],
-) -> Vec<Transition> {
+pub fn transition_chain_from_facts(entity: &str, field: &str, facts: &[Fact]) -> Vec<Transition> {
     let entity_lower = entity.to_lowercase();
     let field_lower = field.to_lowercase();
     let mut chain = Vec::new();
@@ -277,9 +273,9 @@ fn topo_sort(
                     *d -= 1;
                     if *d == 0 {
                         let fs = first_seen.get(&nk).copied().unwrap_or(usize::MAX);
-                        let pos = ready.iter().position(|r| {
-                            first_seen.get(r).copied().unwrap_or(usize::MAX) > fs
-                        });
+                        let pos = ready
+                            .iter()
+                            .position(|r| first_seen.get(r).copied().unwrap_or(usize::MAX) > fs);
                         match pos {
                             Some(p) => ready.insert(p, nk),
                             None => ready.push(nk),

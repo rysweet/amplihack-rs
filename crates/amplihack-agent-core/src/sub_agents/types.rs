@@ -336,7 +336,10 @@ mod tests {
     #[test]
     fn retrieval_strategy_display() {
         assert_eq!(RetrievalStrategy::TwoPhase.to_string(), "two_phase");
-        assert_eq!(RetrievalStrategy::EntityCentric.to_string(), "entity_centric");
+        assert_eq!(
+            RetrievalStrategy::EntityCentric.to_string(),
+            "entity_centric"
+        );
     }
 
     #[test]

@@ -136,13 +136,11 @@ impl RecipeParser {
             extract_u64(mapping, "timeout_seconds").or_else(|| extract_u64(mapping, "timeout"));
         let retry_count = extract_u64(mapping, "retry_count")
             .or_else(|| extract_u64(mapping, "retries"))
-            .map(|v| {
-                match u32::try_from(v) {
-                    Ok(n) => n,
-                    Err(_) => {
-                        warn!("retry_count value {v} exceeds u32::MAX, clamping");
-                        u32::MAX
-                    }
+            .map(|v| match u32::try_from(v) {
+                Ok(n) => n,
+                Err(_) => {
+                    warn!("retry_count value {v} exceeds u32::MAX, clamping");
+                    u32::MAX
                 }
             });
         let allow_failure = extract_bool(mapping, "allow_failure")

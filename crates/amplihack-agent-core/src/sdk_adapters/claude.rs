@@ -73,9 +73,10 @@ impl SdkAdapter for ClaudeAdapter {
     }
 
     async fn run_agent(&mut self, task: &str, max_turns: u32) -> Result<AdapterResult> {
-        let client = self.client.as_ref().ok_or_else(|| {
-            AgentError::ConfigError("Claude SDK client not configured".into())
-        })?;
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| AgentError::ConfigError("Claude SDK client not configured".into()))?;
 
         match client
             .query(task, &self.system_prompt, &self.config.model, max_turns)
@@ -203,8 +204,7 @@ mod tests {
     }
 
     fn test_config() -> SdkAdapterConfig {
-        SdkAdapterConfig::new("test-claude", SdkType::Claude)
-            .with_model("claude-test")
+        SdkAdapterConfig::new("test-claude", SdkType::Claude).with_model("claude-test")
     }
 
     #[test]
@@ -224,9 +224,7 @@ mod tests {
 
     #[test]
     fn create_agent_builds_prompt() {
-        let mut adapter = ClaudeAdapter::new(
-            test_config().with_instructions("Be precise"),
-        );
+        let mut adapter = ClaudeAdapter::new(test_config().with_instructions("Be precise"));
         adapter.create_agent().unwrap();
         assert!(adapter.system_prompt.contains("code-generation agent"));
         assert!(adapter.system_prompt.contains("Be precise"));
@@ -264,8 +262,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_agent_success() {
-        let mut adapter = ClaudeAdapter::new(test_config())
-            .with_client(MockClient::ok("Hello from Claude"));
+        let mut adapter =
+            ClaudeAdapter::new(test_config()).with_client(MockClient::ok("Hello from Claude"));
         adapter.create_agent().unwrap();
 
         let result = adapter.run_agent("test task", 5).await.unwrap();
@@ -275,8 +273,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_agent_empty_response() {
-        let mut adapter = ClaudeAdapter::new(test_config())
-            .with_client(MockClient::ok(""));
+        let mut adapter = ClaudeAdapter::new(test_config()).with_client(MockClient::ok(""));
         adapter.create_agent().unwrap();
 
         let result = adapter.run_agent("test", 5).await.unwrap();
@@ -285,8 +282,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_agent_client_error_returns_failure() {
-        let mut adapter = ClaudeAdapter::new(test_config())
-            .with_client(MockClient::failing());
+        let mut adapter = ClaudeAdapter::new(test_config()).with_client(MockClient::failing());
         adapter.create_agent().unwrap();
 
         let result = adapter.run_agent("test", 5).await.unwrap();
@@ -305,8 +301,7 @@ mod tests {
 
     #[tokio::test]
     async fn close_clears_client() {
-        let mut adapter = ClaudeAdapter::new(test_config())
-            .with_client(MockClient::ok("x"));
+        let mut adapter = ClaudeAdapter::new(test_config()).with_client(MockClient::ok("x"));
         adapter.close().await.unwrap();
         assert!(adapter.client.is_none());
     }

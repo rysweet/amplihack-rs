@@ -44,6 +44,6 @@ pub use memory_agent::MemoryAgent;
 pub use multi_agent::{AnswerContext, MultiAgentConfig, MultiAgentOrchestrator};
 pub use tool_injector::{get_sdk_tool_names, get_sdk_tools, inject_sdk_tools};
 pub use types::{
-    rerank_facts_by_query, AggregationResult, RetrievalStrategy, SpawnedAgent,
-    SpawnedAgentStatus, SpecialistType, SubAgentMemory, TaskRoute,
+    AggregationResult, RetrievalStrategy, SpawnedAgent, SpawnedAgentStatus, SpecialistType,
+    SubAgentMemory, TaskRoute, rerank_facts_by_query,
 };

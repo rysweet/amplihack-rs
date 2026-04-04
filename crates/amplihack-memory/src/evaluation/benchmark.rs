@@ -70,8 +70,16 @@ impl BenchmarkEvaluator {
         BenchmarkMetrics {
             storage_latency_ms: avg_store,
             retrieval_latency_ms: avg_retrieve,
-            storage_throughput: if avg_store > 0.0 { 1000.0 / avg_store } else { 0.0 },
-            retrieval_throughput: if avg_retrieve > 0.0 { 1000.0 / avg_retrieve } else { 0.0 },
+            storage_throughput: if avg_store > 0.0 {
+                1000.0 / avg_store
+            } else {
+                0.0
+            },
+            retrieval_throughput: if avg_retrieve > 0.0 {
+                1000.0 / avg_retrieve
+            } else {
+                0.0
+            },
             num_memories: ops,
             backend_name,
         }
@@ -175,16 +183,46 @@ fn calculate_ndcg(retrieved: &[&str], relevant: &HashSet<&str>) -> f64 {
 /// Create a default test set of queries with ground-truth relevance.
 pub fn create_test_set(backend: &mut dyn MemoryBackend) -> Vec<QueryTestCase> {
     let test_data: Vec<(&str, MemoryType)> = vec![
-        ("Discussed feature flags implementation approach", MemoryType::Episodic),
-        ("Reviewed pull request for auth module changes", MemoryType::Episodic),
-        ("Learned that Rust pattern matching is exhaustive", MemoryType::Semantic),
-        ("Discovered serde derive macro for serialization", MemoryType::Semantic),
-        ("Workflow: run cargo clippy before committing code", MemoryType::Procedural),
-        ("Step by step guide for deploying to production", MemoryType::Procedural),
-        ("TODO: refactor error handling in coordinator module", MemoryType::Prospective),
-        ("Reminder to update documentation before release", MemoryType::Prospective),
-        ("Currently debugging memory leak in graph store", MemoryType::Working),
-        ("Active task: implementing bloom filter optimization", MemoryType::Working),
+        (
+            "Discussed feature flags implementation approach",
+            MemoryType::Episodic,
+        ),
+        (
+            "Reviewed pull request for auth module changes",
+            MemoryType::Episodic,
+        ),
+        (
+            "Learned that Rust pattern matching is exhaustive",
+            MemoryType::Semantic,
+        ),
+        (
+            "Discovered serde derive macro for serialization",
+            MemoryType::Semantic,
+        ),
+        (
+            "Workflow: run cargo clippy before committing code",
+            MemoryType::Procedural,
+        ),
+        (
+            "Step by step guide for deploying to production",
+            MemoryType::Procedural,
+        ),
+        (
+            "TODO: refactor error handling in coordinator module",
+            MemoryType::Prospective,
+        ),
+        (
+            "Reminder to update documentation before release",
+            MemoryType::Prospective,
+        ),
+        (
+            "Currently debugging memory leak in graph store",
+            MemoryType::Working,
+        ),
+        (
+            "Active task: implementing bloom filter optimization",
+            MemoryType::Working,
+        ),
     ];
 
     let mut ids_by_type: std::collections::HashMap<&str, Vec<String>> =
@@ -216,7 +254,9 @@ pub fn create_test_set(backend: &mut dyn MemoryBackend) -> Vec<QueryTestCase> {
 }
 
 fn mean(values: &[f64]) -> f64 {
-    if values.is_empty() { return 0.0; }
+    if values.is_empty() {
+        return 0.0;
+    }
     values.iter().sum::<f64>() / values.len() as f64
 }
 

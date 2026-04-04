@@ -1,10 +1,9 @@
-use std::collections::HashMap;
 use amplihack_hive::{
-    AgentSpec, EventBusConfig, GatewayConfig, GraphStoreConfig, HiveController,
-    HiveManifest, InMemoryGateway, InMemoryGraphStore, HiveFact,
-    DEFAULT_CONTRADICTION_OVERLAP,
+    AgentSpec, DEFAULT_CONTRADICTION_OVERLAP, EventBusConfig, GatewayConfig, GraphStoreConfig,
+    HiveController, HiveFact, HiveManifest, InMemoryGateway, InMemoryGraphStore,
 };
 use chrono::Utc;
+use std::collections::HashMap;
 
 fn make_agent(name: &str, role: &str, replicas: u32) -> AgentSpec {
     AgentSpec {
@@ -99,8 +98,11 @@ fn apply_manifest_removes_stale_agents() {
 fn apply_manifest_with_domain() {
     let mut ctrl = HiveController::new();
     let agent = AgentSpec {
-        name: "domain-agent".into(), role: "worker".into(), replicas: 1,
-        memory_config: None, domain: "science".into(),
+        name: "domain-agent".into(),
+        role: "worker".into(),
+        replicas: 1,
+        memory_config: None,
+        domain: "science".into(),
     };
     let manifest = make_manifest(vec![agent]);
     ctrl.apply_manifest(manifest).unwrap();
@@ -112,7 +114,8 @@ fn apply_manifest_with_domain() {
 #[test]
 fn learn_stores_and_promotes() {
     let mut ctrl = HiveController::new();
-    ctrl.apply_manifest(make_manifest(vec![make_agent("a1", "r", 1)])).unwrap();
+    ctrl.apply_manifest(make_manifest(vec![make_agent("a1", "r", 1)]))
+        .unwrap();
     let result = ctrl.learn("a1", "rust", "systems language", 0.9).unwrap();
     assert!(!result.fact_id.is_empty());
     assert!(result.promoted);
@@ -127,7 +130,8 @@ fn learn_unknown_agent_errors() {
 #[test]
 fn promote_fact_works() {
     let mut ctrl = HiveController::new();
-    ctrl.apply_manifest(make_manifest(vec![make_agent("a1", "r", 1)])).unwrap();
+    ctrl.apply_manifest(make_manifest(vec![make_agent("a1", "r", 1)]))
+        .unwrap();
     let result = ctrl.learn("a1", "rust", "systems", 0.9).unwrap();
     let promoted = ctrl.promote_fact("a1", &result.fact_id).unwrap();
     assert!(promoted);
@@ -136,7 +140,8 @@ fn promote_fact_works() {
 #[test]
 fn query_agent_returns_facts() {
     let mut ctrl = HiveController::new();
-    ctrl.apply_manifest(make_manifest(vec![make_agent("a1", "r", 1)])).unwrap();
+    ctrl.apply_manifest(make_manifest(vec![make_agent("a1", "r", 1)]))
+        .unwrap();
     ctrl.learn("a1", "rust", "systems language", 0.9).unwrap();
     let facts = ctrl.query_agent("a1", "rust").unwrap();
     assert_eq!(facts.len(), 1);
@@ -147,8 +152,10 @@ fn query_agent_returns_facts() {
 fn query_routed_aggregates() {
     let mut ctrl = HiveController::new();
     ctrl.apply_manifest(make_manifest(vec![
-        make_agent("a1", "r", 1), make_agent("a2", "r", 1),
-    ])).unwrap();
+        make_agent("a1", "r", 1),
+        make_agent("a2", "r", 1),
+    ]))
+    .unwrap();
     ctrl.learn("a1", "rust", "systems language", 0.9).unwrap();
     ctrl.learn("a2", "rust", "memory safe", 0.85).unwrap();
     let facts = ctrl.query_routed("rust", 10).unwrap();
@@ -179,8 +186,10 @@ fn gateway_from_manifest_respects_threshold() {
 fn propagate_distributes_fact() {
     let mut ctrl = HiveController::new();
     ctrl.apply_manifest(make_manifest(vec![
-        make_agent("a1", "r", 1), make_agent("a2", "r", 1),
-    ])).unwrap();
+        make_agent("a1", "r", 1),
+        make_agent("a2", "r", 1),
+    ]))
+    .unwrap();
     ctrl.propagate("a1", "rust", "systems", 0.9).unwrap();
 }
 
@@ -189,7 +198,8 @@ fn propagate_distributes_fact() {
 #[test]
 fn shutdown_clears_state() {
     let mut ctrl = HiveController::new();
-    ctrl.apply_manifest(make_manifest(vec![make_agent("a1", "r", 1)])).unwrap();
+    ctrl.apply_manifest(make_manifest(vec![make_agent("a1", "r", 1)]))
+        .unwrap();
     ctrl.shutdown().unwrap();
     assert!(ctrl.status().running_agents.is_empty());
     assert_eq!(ctrl.status().graph_status, "stopped");
@@ -230,7 +240,8 @@ fn reconcile_with_manifest() {
 #[test]
 fn scale_agent_up() {
     let mut ctrl = HiveController::new();
-    ctrl.apply(make_manifest(vec![make_agent("learner", "learn", 2)])).unwrap();
+    ctrl.apply(make_manifest(vec![make_agent("learner", "learn", 2)]))
+        .unwrap();
     ctrl.reconcile().unwrap();
     ctrl.scale_agent("learner", 5).unwrap();
     assert_eq!(ctrl.status().running_agents[0].replicas, 5);
@@ -247,7 +258,8 @@ fn scale_agent_nonexistent() {
 #[test]
 fn remove_agent_existing() {
     let mut ctrl = HiveController::new();
-    ctrl.apply(make_manifest(vec![make_agent("learner", "learn", 2)])).unwrap();
+    ctrl.apply(make_manifest(vec![make_agent("learner", "learn", 2)]))
+        .unwrap();
     let removed = ctrl.remove_agent("learner").unwrap();
     assert!(removed);
 }
@@ -265,9 +277,15 @@ fn remove_agent_nonexistent() {
 fn graph_store_insert_and_get() {
     let mut store = InMemoryGraphStore::new();
     let fact = HiveFact {
-        fact_id: "f1".into(), concept: "rust".into(), content: "systems".into(),
-        confidence: 0.9, source_id: "a".into(), tags: vec![], created_at: Utc::now(),
-        status: "promoted".into(), metadata: HashMap::new(),
+        fact_id: "f1".into(),
+        concept: "rust".into(),
+        content: "systems".into(),
+        confidence: 0.9,
+        source_id: "a".into(),
+        tags: vec![],
+        created_at: Utc::now(),
+        status: "promoted".into(),
+        metadata: HashMap::new(),
     };
     store.insert(fact);
     assert_eq!(store.len(), 1);
@@ -279,9 +297,15 @@ fn graph_store_insert_and_get() {
 fn graph_store_query() {
     let mut store = InMemoryGraphStore::new();
     let fact = HiveFact {
-        fact_id: "f1".into(), concept: "rust".into(), content: "systems".into(),
-        confidence: 0.9, source_id: "a".into(), tags: vec![], created_at: Utc::now(),
-        status: "promoted".into(), metadata: HashMap::new(),
+        fact_id: "f1".into(),
+        concept: "rust".into(),
+        content: "systems".into(),
+        confidence: 0.9,
+        source_id: "a".into(),
+        tags: vec![],
+        created_at: Utc::now(),
+        status: "promoted".into(),
+        metadata: HashMap::new(),
     };
     store.insert(fact);
     let results = store.query("rust", 0.5);
@@ -309,9 +333,7 @@ fn gateway_passes_trust_threshold() {
 #[test]
 fn gateway_contradiction_detection() {
     let gw = InMemoryGateway::default();
-    assert!(gw.is_contradiction(
-        "the cat sat on the mat", "the cat sat on the floor"
-    ));
+    assert!(gw.is_contradiction("the cat sat on the mat", "the cat sat on the floor"));
     assert!(!gw.is_contradiction("hello world", "goodbye moon"));
 }
 

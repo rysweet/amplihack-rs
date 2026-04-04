@@ -31,11 +31,18 @@ fn publish_multiple_events() {
 fn publish_preserves_event_data() {
     let mut bus = LocalEventBus::new();
     bus.subscribe("handler-1", None).unwrap();
-    let event = make_event("metrics", "monitor-1", serde_json::json!({"cpu": 42, "mem": 1024}));
+    let event = make_event(
+        "metrics",
+        "monitor-1",
+        serde_json::json!({"cpu": 42, "mem": 1024}),
+    );
     bus.publish(event).unwrap();
     let events = bus.pending_events("handler-1").unwrap();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].payload, serde_json::json!({"cpu": 42, "mem": 1024}));
+    assert_eq!(
+        events[0].payload,
+        serde_json::json!({"cpu": 42, "mem": 1024})
+    );
     assert_eq!(events[0].source_id, "monitor-1");
 }
 

@@ -26,6 +26,6 @@ pub mod types;
 pub use loop_core::{AgenticLoop, DEFAULT_MODEL};
 pub use traits::{ActionExecutor, LlmClient, MemoryFacade, MemoryRetriever};
 pub use types::{
-    ActionResult, LlmMessage, LoopState, MemoryFact, ReasoningStep, ReasoningTrace,
-    RetrievalPlan, SufficiencyEvaluation,
+    ActionResult, LlmMessage, LoopState, MemoryFact, ReasoningStep, ReasoningTrace, RetrievalPlan,
+    SufficiencyEvaluation,
 };

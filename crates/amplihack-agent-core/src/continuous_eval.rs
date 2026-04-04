@@ -108,11 +108,7 @@ pub fn average_score(results: &[QuestionResult]) -> f64 {
 }
 
 /// Compute the aggregate summary from repeat results.
-pub fn aggregate_summary(
-    eval_name: &str,
-    turns: usize,
-    results: &[RepeatResult],
-) -> EvalSummary {
+pub fn aggregate_summary(eval_name: &str, turns: usize, results: &[RepeatResult]) -> EvalSummary {
     let n = results.len().max(1) as f64;
     let avg_score: f64 = results.iter().map(|r| r.avg_score).sum::<f64>() / n;
     let avg_tp: f64 = results.iter().map(|r| r.learn_throughput).sum::<f64>() / n;
@@ -155,16 +151,46 @@ pub fn default_content_pool() -> Vec<String> {
 /// Default evaluation questions: `(question, expected_substring)`.
 pub fn default_questions() -> Vec<EvalQuestion> {
     vec![
-        EvalQuestion { question: "What CVE is associated with the Log4Shell vulnerability?".into(), expected: "CVE-2021-44228".into() },
-        EvalQuestion { question: "Which threat actor is associated with APT29?".into(), expected: "Midnight Blizzard".into() },
-        EvalQuestion { question: "What happened in incident INC-2024-001?".into(), expected: "Ransomware encrypted 500 files".into() },
-        EvalQuestion { question: "How many documents did jsmith download?".into(), expected: "2,847".into() },
-        EvalQuestion { question: "What was the CVSS score of CVE-2021-44228?".into(), expected: "10.0".into() },
-        EvalQuestion { question: "Which malicious npm package was used in the supply chain attack?".into(), expected: "event-stream".into() },
-        EvalQuestion { question: "What IP address was the C2 server in INC-2024-002?".into(), expected: "185.220.101.45".into() },
-        EvalQuestion { question: "How were the encrypted files restored after INC-2024-001?".into(), expected: "restored from backup".into() },
-        EvalQuestion { question: "What is DNS tunneling used for in the APT29 campaign?".into(), expected: "exfiltrate data".into() },
-        EvalQuestion { question: "What security improvement was enforced after INC-2024-001?".into(), expected: "MFA".into() },
+        EvalQuestion {
+            question: "What CVE is associated with the Log4Shell vulnerability?".into(),
+            expected: "CVE-2021-44228".into(),
+        },
+        EvalQuestion {
+            question: "Which threat actor is associated with APT29?".into(),
+            expected: "Midnight Blizzard".into(),
+        },
+        EvalQuestion {
+            question: "What happened in incident INC-2024-001?".into(),
+            expected: "Ransomware encrypted 500 files".into(),
+        },
+        EvalQuestion {
+            question: "How many documents did jsmith download?".into(),
+            expected: "2,847".into(),
+        },
+        EvalQuestion {
+            question: "What was the CVSS score of CVE-2021-44228?".into(),
+            expected: "10.0".into(),
+        },
+        EvalQuestion {
+            question: "Which malicious npm package was used in the supply chain attack?".into(),
+            expected: "event-stream".into(),
+        },
+        EvalQuestion {
+            question: "What IP address was the C2 server in INC-2024-002?".into(),
+            expected: "185.220.101.45".into(),
+        },
+        EvalQuestion {
+            question: "How were the encrypted files restored after INC-2024-001?".into(),
+            expected: "restored from backup".into(),
+        },
+        EvalQuestion {
+            question: "What is DNS tunneling used for in the APT29 campaign?".into(),
+            expected: "exfiltrate data".into(),
+        },
+        EvalQuestion {
+            question: "What security improvement was enforced after INC-2024-001?".into(),
+            expected: "MFA".into(),
+        },
     ]
 }
 

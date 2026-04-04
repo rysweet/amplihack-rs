@@ -22,18 +22,15 @@ pub const MAX_CONTENT_LENGTH: usize = 50_000;
 // ---------------------------------------------------------------------------
 
 static TIMESTAMP_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        r"(?i)\bTimestamp:\s*(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?",
-    )
-    .unwrap()
+    Regex::new(r"(?i)\bTimestamp:\s*(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?")
+        .unwrap()
 });
 
 static ISO_DATE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\b(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?\b").unwrap()
 });
 
-static DAY_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\bDay\s+(\d{1,4})\b").unwrap());
+static DAY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bDay\s+(\d{1,4})\b").unwrap());
 
 // ---------------------------------------------------------------------------
 // Types
@@ -105,7 +102,12 @@ pub fn extract_source_label(content: &str) -> String {
     {
         return stripped[..end].trim().to_string();
     }
-    content.chars().take(60).collect::<String>().trim().to_string()
+    content
+        .chars()
+        .take(60)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Detect temporal metadata directly from the source text (fast path).
@@ -160,10 +162,7 @@ pub fn detect_temporal_metadata_fast(content: &str) -> Option<TemporalMetadata> 
 }
 
 /// Build the tags list for a prepared fact, merging temporal markers.
-pub fn build_fact_tags(
-    base_tags: &[String],
-    temporal: &TemporalMetadata,
-) -> Vec<String> {
+pub fn build_fact_tags(base_tags: &[String], temporal: &TemporalMetadata) -> Vec<String> {
     let mut tags: Vec<String> = base_tags.to_vec();
     if !temporal.source_date.is_empty() {
         tags.push(format!("date:{}", temporal.source_date));
@@ -224,7 +223,10 @@ mod tests {
     #[test]
     fn source_label_no_title() {
         let c = "Some content without a title prefix";
-        assert_eq!(extract_source_label(c), "Some content without a title prefix");
+        assert_eq!(
+            extract_source_label(c),
+            "Some content without a title prefix"
+        );
     }
 
     #[test]

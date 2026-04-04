@@ -114,12 +114,7 @@ impl GraphDbConnector {
     }
 
     /// Add a node to the graph.
-    pub fn add_node(
-        &mut self,
-        table: &str,
-        node_id: &str,
-        properties: Props,
-    ) {
+    pub fn add_node(&mut self, table: &str, node_id: &str, properties: Props) {
         self.nodes
             .entry(table.to_string())
             .or_default()
@@ -132,13 +127,7 @@ impl GraphDbConnector {
     }
 
     /// Add an edge between two nodes.
-    pub fn add_edge(
-        &mut self,
-        rel_type: &str,
-        from_id: &str,
-        to_id: &str,
-        properties: Props,
-    ) {
+    pub fn add_edge(&mut self, rel_type: &str, from_id: &str, to_id: &str, properties: Props) {
         self.edges.push(StoredEdge {
             rel_type: rel_type.to_string(),
             from_id: from_id.to_string(),
@@ -148,19 +137,13 @@ impl GraphDbConnector {
     }
 
     /// Get edges for a node.
-    pub fn get_edges(
-        &self,
-        node_id: &str,
-        direction: EdgeDirection,
-    ) -> Vec<EdgeRecord> {
+    pub fn get_edges(&self, node_id: &str, direction: EdgeDirection) -> Vec<EdgeRecord> {
         self.edges
             .iter()
             .filter(|e| match direction {
                 EdgeDirection::Outgoing => e.from_id == node_id,
                 EdgeDirection::Incoming => e.to_id == node_id,
-                EdgeDirection::Both => {
-                    e.from_id == node_id || e.to_id == node_id
-                }
+                EdgeDirection::Both => e.from_id == node_id || e.to_id == node_id,
             })
             .map(|e| EdgeRecord {
                 rel_type: e.rel_type.clone(),
@@ -262,21 +245,13 @@ impl CodeGraph {
     }
 
     /// Add a relationship between entities.
-    pub fn add_relation(
-        &mut self,
-        from_idx: usize,
-        relation: CodeRelation,
-        to_idx: usize,
-    ) {
+    pub fn add_relation(&mut self, from_idx: usize, relation: CodeRelation, to_idx: usize) {
         self.relations.push((from_idx, relation, to_idx));
     }
 
     /// Find entities by name.
     pub fn find_by_name(&self, name: &str) -> Vec<&CodeEntity> {
-        self.entities
-            .iter()
-            .filter(|e| e.name == name)
-            .collect()
+        self.entities.iter().filter(|e| e.name == name).collect()
     }
 
     /// Find entities in a file.
@@ -300,9 +275,7 @@ impl CodeGraph {
     pub fn callees_of(&self, entity_idx: usize) -> Vec<&CodeEntity> {
         self.relations
             .iter()
-            .filter(|(from, rel, _)| {
-                *rel == CodeRelation::Calls && *from == entity_idx
-            })
+            .filter(|(from, rel, _)| *rel == CodeRelation::Calls && *from == entity_idx)
             .filter_map(|(_, _, to)| self.entities.get(*to))
             .collect()
     }
@@ -339,12 +312,7 @@ impl SessionIntegration {
     }
 
     /// Store a fact linked to the current session.
-    pub fn store_session_fact(
-        &mut self,
-        fact_id: &str,
-        content: &str,
-        category: &str,
-    ) {
+    pub fn store_session_fact(&mut self, fact_id: &str, content: &str, category: &str) {
         let mut props = Props::new();
         props.insert(
             "content".to_string(),
@@ -377,9 +345,7 @@ impl SessionIntegration {
                             .map(|s| s == session_id)
                             .unwrap_or(false)
                     })
-                    .map(|(id, props)| {
-                        ("Fact".to_string(), id.clone(), props.clone())
-                    })
+                    .map(|(id, props)| ("Fact".to_string(), id.clone(), props.clone()))
                     .collect()
             })
             .unwrap_or_default()

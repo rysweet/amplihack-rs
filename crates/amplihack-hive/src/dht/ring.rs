@@ -1,4 +1,4 @@
-use super::{hash_key, VIRTUAL_NODES_PER_AGENT};
+use super::{VIRTUAL_NODES_PER_AGENT, hash_key};
 
 /// Consistent hash ring for distributing facts across agents.
 ///
@@ -40,8 +40,7 @@ impl HashRing {
             self.ring_to_agent.insert(pos, agent_id.to_string());
             positions.push(pos);
         }
-        self.agent_positions
-            .insert(agent_id.to_string(), positions);
+        self.agent_positions.insert(agent_id.to_string(), positions);
         self.ring = self.ring_to_agent.keys().copied().collect();
         self.ring.sort_unstable();
     }

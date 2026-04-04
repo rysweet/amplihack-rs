@@ -35,7 +35,7 @@ fn validate_working_dir_rejects_path_traversal() {
 #[test]
 fn validate_working_dir_accepts_existing_dir() {
     // The repo root must exist.
-    assert!(validate_working_dir("/home/azureuser/src/amplihack-rs").is_ok());
+    assert!(validate_working_dir(env!("CARGO_MANIFEST_DIR")).is_ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -117,7 +117,7 @@ fn claude_spawn_config() {
         .build_spawn_config(
             "test goal",
             "guide",
-            "/home/azureuser/src/amplihack-rs",
+            env!("CARGO_MANIFEST_DIR"),
             &env,
             &[],
             "ctx",
@@ -135,7 +135,7 @@ fn copilot_spawn_config() {
         .build_spawn_config(
             "goal",
             "qa_engineer",
-            "/home/azureuser/src/amplihack-rs",
+            env!("CARGO_MANIFEST_DIR"),
             &HashMap::new(),
             &[],
             "",
@@ -153,7 +153,7 @@ fn amplifier_spawn_config() {
         .build_spawn_config(
             "goal",
             "junior_dev",
-            "/home/azureuser/src/amplihack-rs",
+            env!("CARGO_MANIFEST_DIR"),
             &HashMap::new(),
             &[],
             "",
@@ -179,7 +179,7 @@ fn spawn_config_rejects_bad_extra_args() {
         .build_spawn_config(
             "g",
             "p",
-            "/home/azureuser/src/amplihack-rs",
+            env!("CARGO_MANIFEST_DIR"),
             &HashMap::new(),
             &["--evil".to_string()],
             "",

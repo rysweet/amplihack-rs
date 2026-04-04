@@ -104,8 +104,10 @@ fn ci_pending_incomplete_status() {
     let verifier = CompletionVerifier::default();
     // All steps done, PR created, but CI not passing — score just under threshold
     let signals = make_signals(true, true, false, false, true, true, 0.75, Some(5));
-    let result =
-        verifier.verify("All tasks completed. Evaluation: complete. CI still pending.", &signals);
+    let result = verifier.verify(
+        "All tasks completed. Evaluation: complete. CI still pending.",
+        &signals,
+    );
     // Score 0.75 >= 0.7, CI pending acknowledged, pr_created, all_steps_complete
     assert_eq!(result.status, VerificationStatus::Incomplete);
 }

@@ -14,7 +14,11 @@ fn complexity_ordering() {
 
 #[test]
 fn complexity_serde_roundtrip() {
-    for variant in [Complexity::Simple, Complexity::Moderate, Complexity::Complex] {
+    for variant in [
+        Complexity::Simple,
+        Complexity::Moderate,
+        Complexity::Complex,
+    ] {
         let json = serde_json::to_string(&variant).unwrap();
         let back: Complexity = serde_json::from_str(&json).unwrap();
         assert_eq!(variant, back);
@@ -23,9 +27,18 @@ fn complexity_serde_roundtrip() {
 
 #[test]
 fn complexity_serde_snake_case() {
-    assert_eq!(serde_json::to_string(&Complexity::Simple).unwrap(), "\"simple\"");
-    assert_eq!(serde_json::to_string(&Complexity::Moderate).unwrap(), "\"moderate\"");
-    assert_eq!(serde_json::to_string(&Complexity::Complex).unwrap(), "\"complex\"");
+    assert_eq!(
+        serde_json::to_string(&Complexity::Simple).unwrap(),
+        "\"simple\""
+    );
+    assert_eq!(
+        serde_json::to_string(&Complexity::Moderate).unwrap(),
+        "\"moderate\""
+    );
+    assert_eq!(
+        serde_json::to_string(&Complexity::Complex).unwrap(),
+        "\"complex\""
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +259,10 @@ fn goal_agent_bundle_rejects_long_name() {
 #[test]
 fn goal_agent_bundle_is_complete() {
     let mut b = GoalAgentBundle::new("test-bundle", "0.1.0").unwrap();
-    assert!(!b.is_complete(), "incomplete without goal/plan/skills/status");
+    assert!(
+        !b.is_complete(),
+        "incomplete without goal/plan/skills/status"
+    );
 
     b.goal_definition = Some(GoalDefinition::new("p", "g", "d").unwrap());
     assert!(!b.is_complete());

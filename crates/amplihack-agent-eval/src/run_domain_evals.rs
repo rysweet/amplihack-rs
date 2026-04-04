@@ -39,10 +39,7 @@ pub const AGENT_NAMES: [&str; 5] = [
 ///
 /// This is a structural port — actual eval execution requires concrete
 /// agent implementations. Returns a report skeleton with agent names.
-pub fn run_all_evals(
-    agent_names: Option<&[&str]>,
-    _output_dir: &str,
-) -> DomainEvalReport {
+pub fn run_all_evals(agent_names: Option<&[&str]>, _output_dir: &str) -> DomainEvalReport {
     let names: Vec<&str> = agent_names
         .map(|n| n.to_vec())
         .unwrap_or_else(|| AGENT_NAMES.to_vec());
@@ -63,17 +60,13 @@ pub fn run_all_evals(
                 overall_passed: false,
                 level_scores: HashMap::new(),
                 error: Some(
-                    "Structural port: concrete eval requires agent implementation"
-                        .to_string(),
+                    "Structural port: concrete eval requires agent implementation".to_string(),
                 ),
             },
         );
     }
 
-    let passed = results
-        .values()
-        .filter(|r| r.overall_passed)
-        .count();
+    let passed = results.values().filter(|r| r.overall_passed).count();
     let total = results.len();
     let summary = format!("{passed}/{total} agents passed evaluation");
 
@@ -114,8 +107,10 @@ mod tests {
 
     #[test]
     fn run_specific_agents() {
-        let report =
-            run_all_evals(Some(&["code_review", "meeting_synthesizer"]), "./test_output");
+        let report = run_all_evals(
+            Some(&["code_review", "meeting_synthesizer"]),
+            "./test_output",
+        );
         assert_eq!(report.results.len(), 2);
     }
 

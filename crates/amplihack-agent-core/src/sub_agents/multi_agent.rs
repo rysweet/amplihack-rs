@@ -16,7 +16,7 @@ use crate::agentic_loop::MemoryFact;
 use super::agent_spawner::AgentSpawner;
 use super::coordinator::CoordinatorAgent;
 use super::memory_agent::MemoryAgent;
-use super::types::{rerank_facts_by_query, SpawnedAgentStatus, SubAgentMemory, TaskRoute};
+use super::types::{SpawnedAgentStatus, SubAgentMemory, TaskRoute, rerank_facts_by_query};
 
 // ---------------------------------------------------------------------------
 // MultiAgentConfig
@@ -118,12 +118,7 @@ impl<M: SubAgentMemory> MultiAgentOrchestrator<M> {
         let memory_agent = MemoryAgent::new(memory, &config.agent_name);
 
         let spawner = if config.enable_spawning {
-            match AgentSpawner::new(
-                &config.agent_name,
-                &config.parent_memory_path,
-                "mini",
-                4,
-            ) {
+            match AgentSpawner::new(&config.agent_name, &config.parent_memory_path, "mini", 4) {
                 Ok(s) => Some(s),
                 Err(e) => {
                     warn!(error = %e, "Failed to initialize spawner");
@@ -334,7 +329,10 @@ mod tests {
     #[test]
     fn retrieve_returns_facts() {
         let config = MultiAgentConfig::new("test", "/data");
-        let facts = vec![fact("1", "Sarah", "has a cat"), fact("2", "Bob", "likes dogs")];
+        let facts = vec![
+            fact("1", "Sarah", "has a cat"),
+            fact("2", "Bob", "likes dogs"),
+        ];
         let mem = MockMem { facts };
         let mut orch = MultiAgentOrchestrator::new(config, mem);
 

@@ -104,8 +104,7 @@ steps:
 #[test]
 fn parse_enforces_size_limit() {
     let small_parser = RecipeParser::with_max_size(50);
-    let yaml =
-        "name: big\nsteps:\n  - id: s1\n    shell: echo this is too long for the limit\n";
+    let yaml = "name: big\nsteps:\n  - id: s1\n    shell: echo this is too long for the limit\n";
     let result = small_parser.parse(yaml);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("size limit"));

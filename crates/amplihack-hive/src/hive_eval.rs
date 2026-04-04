@@ -137,8 +137,8 @@ pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveE
     bus.subscribe(EVAL_HANDLER, Some(&[HIVE_QUERY_RESPONSE]))
         .map_err(|e| HiveError::EventBus(format!("Failed to subscribe for eval: {e}")))?;
 
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_secs(config.timeout_seconds);
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(config.timeout_seconds);
 
     info!(
         questions = config.questions.len(),

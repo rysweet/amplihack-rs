@@ -165,8 +165,7 @@ pub fn build_multi_seed_report(
             let scores_by_seed: HashMap<u64, f64> = seed_map
                 .into_iter()
                 .map(|(seed, scores)| {
-                    let avg = scores.iter().sum::<f64>()
-                        / scores.len().max(1) as f64;
+                    let avg = scores.iter().sum::<f64>() / scores.len().max(1) as f64;
                     (seed, avg)
                 })
                 .collect();
@@ -182,10 +181,7 @@ pub fn build_multi_seed_report(
                 mean_score: mean,
                 stddev: safe_stddev(&values),
                 min_score: values.iter().cloned().fold(f64::INFINITY, f64::min),
-                max_score: values
-                    .iter()
-                    .cloned()
-                    .fold(f64::NEG_INFINITY, f64::max),
+                max_score: values.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
                 scores_by_seed,
             }
         })

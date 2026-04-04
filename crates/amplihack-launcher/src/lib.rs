@@ -45,7 +45,7 @@ pub use session_capture::{CapturedMessage, MessageCapture, MessageRole};
 
 // Re-exports for ported supporting modules
 pub use agent_memory::{AgentMemory, Experience, ExperienceStore, ExperienceType};
-pub use append_handler::{append_instructions, AppendError, AppendResult};
+pub use append_handler::{AppendError, AppendResult, append_instructions};
 pub use auto_mode_coordinator::{AutoModeCoordinator, AutoModeRunner};
 pub use auto_mode_state::{AutoModeState, CostInfo, StateSnapshot};
 pub use auto_mode_ui::AutoModeUi;
@@ -63,4 +63,4 @@ pub use work_summary::{
 pub use auto_stager::{AutoStager, StagingResult};
 pub use claude_binary_manager::{BinaryInfo, ClaudeBinaryManager};
 pub use json_logger::JsonLogger;
-pub use platform_check::{check_platform_compatibility, is_native_windows, PlatformCheckResult};
+pub use platform_check::{PlatformCheckResult, check_platform_compatibility, is_native_windows};

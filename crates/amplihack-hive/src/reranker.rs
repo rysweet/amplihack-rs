@@ -147,7 +147,11 @@ pub fn rrf_merge(ranked_lists: &[&[impl RankedItem]], k: usize, limit: usize) ->
         .map(|(fact_id, score)| ScoredFact::new(fact_id, score, "rrf"))
         .collect();
 
-    result.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    result.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     result.truncate(limit);
     result
 }

@@ -156,10 +156,7 @@ impl LearningAgent {
     /// Begin learning phase.
     pub fn begin_learning(&mut self) -> Result<(), String> {
         if self.phase != LearningPhase::Idle {
-            return Err(format!(
-                "Cannot start learning from phase '{}'",
-                self.phase
-            ));
+            return Err(format!("Cannot start learning from phase '{}'", self.phase));
         }
         self.phase = LearningPhase::Learning;
         self.turn_count = 0;
@@ -244,10 +241,7 @@ impl LearningAgent {
             "facts_retrieved".to_string(),
             serde_json::json!(self.facts_retrieved),
         );
-        stats.insert(
-            "turn_count".to_string(),
-            serde_json::json!(self.turn_count),
-        );
+        stats.insert("turn_count".to_string(), serde_json::json!(self.turn_count));
         stats.insert(
             "snapshots".to_string(),
             serde_json::json!(self.snapshots.len()),
