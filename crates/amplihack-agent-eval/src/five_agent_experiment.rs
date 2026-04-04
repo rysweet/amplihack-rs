@@ -79,6 +79,8 @@ impl AgentExperimentResult {
 pub struct ExperimentReport {
     pub agent_results: Vec<AgentExperimentResult>,
     pub overall_eval_score: f64,
+    /// Note: In Python source, this equals overall_combined_score (both derived
+    /// from per-agent combined_score). Kept for API compatibility.
     pub overall_teaching_score: f64,
     pub overall_combined_score: f64,
     pub all_passed: bool,
