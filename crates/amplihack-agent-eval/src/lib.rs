@@ -31,6 +31,13 @@ pub(crate) mod self_improve_helpers;
 pub mod teaching_eval;
 pub mod teaching_session;
 
+pub mod five_agent_experiment;
+pub mod long_horizon_multi_seed;
+pub mod meta_eval_experiment;
+pub mod metacognition_grader;
+pub mod run_domain_evals;
+pub mod teaching_subprocess;
+
 pub use agent_adapter::{AgentAdapter, AgentResponse, MockAgentAdapter, SubprocessAdapter};
 pub use agent_subprocess::{AgentSubprocessConfig, Phase, ReasoningTrace};
 pub use distributed_adapter::{RemoteAgentAdapter, RemoteEndpointConfig};
@@ -60,3 +67,14 @@ pub use teaching_session::{
     DeterministicGenerator, MessageGenerator, SessionTurn, TeachingSession,
     TeachingSessionConfig, TeachingSessionResult,
 };
+pub use five_agent_experiment::{AgentExperimentResult, ExperimentReport};
+pub use long_horizon_multi_seed::{
+    build_multi_seed_report, CategoryStats, MultiSeedReport, QuestionVariance,
+};
+pub use meta_eval_experiment::MetaEvalExperiment;
+pub use metacognition_grader::{
+    grade_metacognition, GradeItem, MetacognitionGrader, MetacognitionScore,
+    ReasoningTraceScore,
+};
+pub use run_domain_evals::{run_all_evals, AgentEvalResult, DomainEvalReport};
+pub use teaching_subprocess::{teaching_phase, TeachingPhaseResult, TeachingSubprocessConfig};
