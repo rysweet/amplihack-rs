@@ -37,6 +37,7 @@ pub mod meta_eval_experiment;
 pub mod metacognition_grader;
 pub mod run_domain_evals;
 pub mod teaching_subprocess;
+pub mod trace_to_test;
 
 pub use agent_adapter::{AgentAdapter, AgentResponse, MockAgentAdapter, SubprocessAdapter};
 pub use agent_subprocess::{AgentSubprocessConfig, Phase, ReasoningTrace};
@@ -77,3 +78,6 @@ pub use teaching_session::{
     TeachingSessionResult,
 };
 pub use teaching_subprocess::{TeachingPhaseResult, TeachingSubprocessConfig, teaching_phase};
+pub use trace_to_test::{
+    TLCGraph, TLCState, TLCTransition, extract_traces, generate_test_code, parse_dot,
+};

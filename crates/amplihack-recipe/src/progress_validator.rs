@@ -365,6 +365,94 @@ pub fn validate_progress_file(
     Ok(payload)
 }
 
+// ── Workstream progress sidecar (PR #4075 port) ─────────────────────────────
+
+/// Workstream state entry persisted across recipe runs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkstreamState {
+    pub workstream_id: String,
+    pub status: ProgressStatus,
+    #[serde(default)]
+    pub last_step: Option<String>,
+    #[serde(default)]
+    pub timestamp: f64,
+    #[serde(default)]
+    pub error_message: Option<String>,
+    #[serde(default)]
+    pub elapsed_seconds: Option<f64>,
+}
+
+/// Return the path specified by `AMPLIHACK_WORKSTREAM_PROGRESS_FILE`, if set.
+///
+/// The recipe runner sets this variable so the progress sidecar knows where to
+/// write aggregated workstream progress.
+pub fn workstream_progress_sidecar_path() -> Option<std::path::PathBuf> {
+    std::env::var("AMPLIHACK_WORKSTREAM_PROGRESS_FILE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
+/// Return the path specified by `AMPLIHACK_WORKSTREAM_STATE_FILE`, if set.
+///
+/// Used for persisting per-workstream state so that timed-out workstreams can
+/// be resumed on the next run.
+pub fn workstream_state_file_path() -> Option<std::path::PathBuf> {
+    std::env::var("AMPLIHACK_WORKSTREAM_STATE_FILE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
+/// Read workstream state entries from the state file.
+///
+/// Returns an empty vec on any error (missing file, bad JSON, etc.).
+pub fn read_workstream_state(path: &Path) -> Vec<WorkstreamState> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+/// Merge workstream state into the progress sidecar file.
+///
+/// Reads the current state from `state_path`, folds it into whatever already
+/// exists at `progress_path`, and atomically writes the result.  Timed-out
+/// workstreams (status == `Running` with stale timestamps) are preserved so
+/// they can be resumed.
+pub fn merge_workstream_state_into_progress(
+    state_path: &Path,
+    progress_path: &Path,
+) -> std::io::Result<()> {
+    let states = read_workstream_state(state_path);
+    if states.is_empty() {
+        return Ok(());
+    }
+
+    // Read existing progress entries (if any).
+    let mut existing: Vec<WorkstreamState> = std::fs::read_to_string(progress_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    // Merge: newer state entries win by workstream_id.
+    for new_ws in &states {
+        if let Some(pos) = existing
+            .iter()
+            .position(|e| e.workstream_id == new_ws.workstream_id)
+        {
+            existing[pos] = new_ws.clone();
+        } else {
+            existing.push(new_ws.clone());
+        }
+    }
+
+    let value = serde_json::to_value(&existing)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    atomic_write_json(progress_path, &value)
+}
+
 #[cfg(test)]
 #[path = "tests/progress_validator_tests.rs"]
 mod tests;

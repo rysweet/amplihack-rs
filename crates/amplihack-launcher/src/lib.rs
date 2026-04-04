@@ -39,7 +39,7 @@ pub use codex::CodexInfo;
 pub use copilot_launcher::PluginEntry;
 pub use copilot_mcp::McpServerConfig;
 pub use fork_manager::{ForkConfig, ForkDecision, ForkManager};
-pub use launcher_core::{ClaudeLauncher, LauncherConfig};
+pub use launcher_core::{ClaudeLauncher, LauncherConfig, detect_repo_root};
 pub use memory_config::{MemoryConfig, MemoryPreference};
 pub use session_capture::{CapturedMessage, MessageCapture, MessageRole};
 
