@@ -47,10 +47,31 @@ pub fn launch_tail_terminal(file_path: &Path) -> LaunchResult {
     }
 }
 
+/// Sanitize a file path for safe shell interpolation.
+///
+/// Rejects paths containing shell metacharacters to prevent command injection.
+fn validate_path_for_shell(file_path: &Path) -> Result<String, &'static str> {
+    let s = file_path.to_string_lossy();
+    let dangerous = [';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '!', '\n', '\r'];
+    if s.chars().any(|c| dangerous.contains(&c)) {
+        return Err("path contains shell metacharacters");
+    }
+    Ok(s.into_owned())
+}
+
 fn launch_macos(file_path: &Path) -> LaunchResult {
+    let safe_path = match validate_path_for_shell(file_path) {
+        Ok(p) => p,
+        Err(_) => {
+            return LaunchResult {
+                success: false,
+                terminal: None,
+            }
+        }
+    };
     let script = format!(
-        "tell app \"Terminal\" to do script \"tail -f {}\"",
-        file_path.display()
+        "tell app \"Terminal\" to do script \"tail -f '{}'\"",
+        safe_path.replace('\'', "'\\''")
     );
     match Command::new("osascript")
         .args(["-e", &script])
@@ -70,7 +91,17 @@ fn launch_macos(file_path: &Path) -> LaunchResult {
 }
 
 fn launch_linux(file_path: &Path) -> LaunchResult {
-    let tail_cmd = format!("tail -f {}", file_path.display());
+    let safe_path = match validate_path_for_shell(file_path) {
+        Ok(p) => p,
+        Err(_) => {
+            return LaunchResult {
+                success: false,
+                terminal: None,
+            }
+        }
+    };
+    let quoted = safe_path.replace('\'', "'\\''");
+    let tail_cmd = format!("tail -f '{quoted}'");
 
     // Try terminal emulators in preference order
     let terminals = [
@@ -112,9 +143,18 @@ fn launch_linux(file_path: &Path) -> LaunchResult {
 }
 
 fn launch_windows(file_path: &Path) -> LaunchResult {
+    let safe_path = match validate_path_for_shell(file_path) {
+        Ok(p) => p,
+        Err(_) => {
+            return LaunchResult {
+                success: false,
+                terminal: None,
+            }
+        }
+    };
     let ps_cmd = format!(
         "Get-Content '{}' -Wait",
-        file_path.display()
+        safe_path.replace('\'', "''")
     );
 
     let terminals = [
@@ -193,5 +233,35 @@ mod tests {
         // sh should exist on any Unix
         #[cfg(unix)]
         assert!(which_exists("sh"));
+    }
+
+    #[test]
+    fn validate_path_safe() {
+        let p = Path::new("/tmp/my-log-file.log");
+        assert!(validate_path_for_shell(p).is_ok());
+    }
+
+    #[test]
+    fn validate_path_rejects_semicolon() {
+        let p = Path::new("/tmp/file; rm -rf /");
+        assert!(validate_path_for_shell(p).is_err());
+    }
+
+    #[test]
+    fn validate_path_rejects_pipe() {
+        let p = Path::new("/tmp/file | cat /etc/passwd");
+        assert!(validate_path_for_shell(p).is_err());
+    }
+
+    #[test]
+    fn validate_path_rejects_dollar() {
+        let p = Path::new("/tmp/$(whoami)");
+        assert!(validate_path_for_shell(p).is_err());
+    }
+
+    #[test]
+    fn validate_path_rejects_backtick() {
+        let p = Path::new("/tmp/`id`");
+        assert!(validate_path_for_shell(p).is_err());
     }
 }
