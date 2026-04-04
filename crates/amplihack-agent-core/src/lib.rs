@@ -20,9 +20,11 @@ pub mod graph_rag_retriever;
 pub mod hierarchical_memory_local;
 pub mod hierarchical_memory_types;
 pub mod input_events;
+pub mod json_utils;
 pub mod input_source;
 pub mod intent;
 pub mod knowledge_utils;
+pub mod learning_agent;
 pub mod learning_ingestion;
 pub mod lifecycle;
 pub mod memory_export;
@@ -82,6 +84,11 @@ pub use partition_routing::{
 pub use runtime_factory::{
     create_goal_agent_runtime, create_goal_agent_runtime_with, ConfiguredGoalAgentRuntime,
     GoalAgentRuntime, RuntimeConfig,
+};
+pub use json_utils::{parse_llm_json, parse_llm_json_list};
+pub use learning_agent::{
+    LearningAgent, LearningAgentConfig, LearningPhase, LearningPhaseResult,
+    EvalPhaseResult, AgentSnapshot, MemoryBackendKind,
 };
 pub use similarity::{
     compute_similarity, compute_tag_similarity, compute_word_similarity,

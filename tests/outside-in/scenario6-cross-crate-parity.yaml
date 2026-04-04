@@ -1,0 +1,40 @@
+name: feature-parity-cross-crate
+description: Validate cross-crate module ports (agent-core, memory, workflows, utils)
+agents:
+  - name: json-parser
+    type: agent-core
+    description: Tests LLM JSON parsing
+  - name: kuzu-connector
+    type: memory
+    description: Tests Kuzu graph DB connector
+  - name: gh-aw-compiler
+    type: workflow
+    description: Tests workflow frontmatter compiler
+steps:
+  - action: verify_json_parsing
+    description: Parse JSON from various LLM response formats
+    expect:
+      - Direct JSON object is parsed
+      - Fenced code blocks are extracted
+      - Embedded braces are found
+      - JSON lists are parsed
+  - action: verify_kuzu_connector
+    description: CRUD operations on Kuzu graph
+    expect:
+      - Nodes can be added and retrieved
+      - Edges connect nodes with direction
+      - Deletion removes associated edges
+      - Code graph supports entity/relation navigation
+  - action: verify_gh_aw_compiler
+    description: Validate workflow frontmatter
+    expect:
+      - Valid frontmatter produces no diagnostics
+      - Missing fields produce errors
+      - Typos produce suggestions
+      - Integer type-check on timeout-minutes
+  - action: verify_hook_merge
+    description: Merge hooks into settings.json
+    expect:
+      - Hooks are added to empty settings
+      - Duplicate merges are idempotent
+      - Backup is created before modification
