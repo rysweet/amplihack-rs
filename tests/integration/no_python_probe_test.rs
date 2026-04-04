@@ -367,7 +367,7 @@ fn tc06_query_code_stats_smoke_on_fresh_db_without_python() {
     // Create a temp file path for the code-graph DB. We pass the path to the
     // binary so it creates a fresh database — we do NOT pre-populate it.
     let temp_dir = tempfile::TempDir::new().expect("failed to create tempdir");
-    let db_path = temp_dir.path().join("probe_tc06.kuzu");
+    let db_path = temp_dir.path().join("probe_tc06.lbug");
 
     let output = cmd_without_python(&bin)
         .args([
@@ -439,7 +439,7 @@ fn tc08_index_code_and_query_code_work_without_python() {
     let temp_dir = tempfile::TempDir::new().expect("failed to create tempdir");
     let shim_dir = temp_dir.path().join("bin");
     let python_log = temp_dir.path().join("python.log");
-    let db_path = temp_dir.path().join("probe_tc08.kuzu");
+    let db_path = temp_dir.path().join("probe_tc08.lbug");
     let json_path = temp_dir.path().join("blarify.json");
 
     fs::write(

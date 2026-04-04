@@ -14,7 +14,7 @@ hash ring, in-memory store, models, and quality scoring).
 | `facade`       | `Memory` — high-level remember/recall API              |
 | `manager`      | `MemoryManager` — session-aware store/retrieve         |
 | `database`     | `MemoryDatabase` — SQLite storage implementation       |
-| `kuzu_store`   | `KuzuGraphStore` — Kuzu-backed graph storage           |
+| `graph_db`     | `GraphStore` — LadybugDB-backed graph storage        |
 | `backends`     | Backend trait and auto-detection                       |
 | `evaluation`   | Quality, performance, and reliability evaluators       |
 
@@ -187,15 +187,15 @@ impl MemoryDatabase {
 **Security**: Database files are created with `0o600` permissions (owner
 read/write only). Error messages are sanitized to prevent information leakage.
 
-## Kuzu Graph Store
+## LadybugDB Graph Store
 
-Embedded graph database backend using Kùzu:
+Embedded graph database backend using LadybugDB (formerly Kuzu):
 
 ```rust
-use amplihack_memory::KuzuGraphStore;
+use amplihack_memory::GraphStore;
 
-let store = KuzuGraphStore::new(
-    Some("/path/to/kuzu_db"),
+let store = GraphStore::new(
+    Some("/path/to/graph_db"),
     64 * 1024 * 1024,   // buffer pool: 64 MB
     1024 * 1024 * 1024,  // max db size: 1 GB
 )?;
@@ -209,10 +209,10 @@ store.create_node("Memory", &[
 let results = store.search_nodes("Memory", "content", "JWT")?;
 ```
 
-### KuzuGraphStore
+### GraphStore
 
 ```rust
-impl KuzuGraphStore {
+impl GraphStore {
     pub fn new(
         db_path: Option<&str>,
         buffer_pool_size: usize,
@@ -265,7 +265,7 @@ impl KuzuGraphStore {
 }
 ```
 
-**Requires**: `kuzu` feature flag enabled.
+**Requires**: `lbug` feature flag enabled.
 
 ## Evaluation Framework
 
@@ -352,7 +352,7 @@ pub fn run_evaluation(
 | Flag     | Enables                                          |
 |----------|--------------------------------------------------|
 | `sqlite` | SQLite-backed `MemoryDatabase` (via `rusqlite`)  |
-| `kuzu`   | Kuzu-backed `KuzuGraphStore` (via `kuzu` crate)  |
+| `lbug`   | LadybugDB-backed `GraphStore` (via `lbug` crate)   |
 | `redis`  | Redis transport for distributed topology         |
 
 Default features: `["sqlite"]`
@@ -366,6 +366,6 @@ Default features: `["sqlite"]`
 | `thiserror`| Error derives              | always     |
 | `tracing`  | Structured logging         | always     |
 | `rusqlite` | SQLite storage             | `sqlite`   |
-| `kuzu`     | Graph database             | `kuzu`     |
+| `lbug`     | Graph database             | `lbug`     |
 | `uuid`     | Memory ID generation       | always     |
 | `chrono`   | Timestamps                 | always     |

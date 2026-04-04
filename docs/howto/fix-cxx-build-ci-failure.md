@@ -60,7 +60,7 @@ pipeline.
 
 ## Why the pin must hold
 
-kuzu 0.11.3 pins its runtime dependency exactly:
+lbug 0.15.3 pins its runtime dependency exactly:
 
 ```toml
 cxx = "=1.0.138"
@@ -122,4 +122,4 @@ If the output is `1.0.138` the CI step will pass.
 ## Related
 
 - [The cxx/cxx-build Version Contract](../concepts/cxx-version-contract.md) — Why the two crates must be on the same version
-- [Resolve kuzu Linker Errors](./resolve-kuzu-linker-errors.md) — Fix `undefined reference` errors from a version mismatch
+- [Resolve LadybugDB Linker Errors](./resolve-kuzu-linker-errors.md) — Fix `undefined reference` errors from a version mismatch

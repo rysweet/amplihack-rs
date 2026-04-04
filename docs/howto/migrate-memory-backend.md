@@ -1,13 +1,13 @@
 # Migrate Memory to the SQLite Backend
 
 This guide walks through switching amplihack-rs memory storage from the
-graph-db (Kuzu) backend to SQLite, exporting existing hierarchical memory
+graph-db (LadybugDB, formerly Kuzu) backend to SQLite, exporting existing hierarchical memory
 to portable JSON, and verifying the migration succeeded.
 
 **When to use this guide:**
 
 - You are setting up amplihack on a new machine and want SQLite by default.
-- You are moving from a machine with a Kuzu installation to one without.
+- You are moving from a machine with a LadybugDB installation to one without.
 - You want to back up hierarchical memory to a portable format.
 - You want to verify that both backends contain the same data.
 
@@ -144,9 +144,9 @@ The `semantic_node_count` and `episodic_node_count` should match the
 original export. Edge counts should also match unless the source graph-db
 contained edges with missing node references (which the JSON import skips).
 
-## Step 5 — (Optional) Archive the Kuzu store
+## Step 5 — (Optional) Archive the LadybugDB store
 
-Once the migration is verified, archive or remove the Kuzu hierarchical
+Once the migration is verified, archive or remove the LadybugDB hierarchical
 directories:
 
 ```sh
@@ -179,7 +179,7 @@ amplihack memory tree
 ### `Invalid backend: postgres. Must be graph-db or sqlite`
 
 `AMPLIHACK_MEMORY_BACKEND` contains an unrecognised value. Valid values are
-`sqlite`, `graph-db`, and `kuzu`. Check for typos:
+`sqlite`, `graph-db`, and `kuzu` (backward-compatible alias). Check for typos:
 
 ```sh
 echo $AMPLIHACK_MEMORY_BACKEND

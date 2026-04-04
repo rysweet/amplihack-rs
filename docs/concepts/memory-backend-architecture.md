@@ -1,7 +1,7 @@
 # Memory Backend Architecture
 
 amplihack-rs stores agent memory in one of two interchangeable backends:
-**SQLite** (the default for new installs) and **graph-db** (Kuzu, kept for
+**SQLite** (the default for new installs) and **graph-db** (LadybugDB, formerly Kuzu; kept for
 existing installs and code-graph-enriched recall). Both backends implement
 the same three Rust traits, so every memory command works identically
 regardless of which backend is active.
@@ -25,9 +25,9 @@ regardless of which backend is active.
 
 ## Why two backends?
 
-The original memory subsystem used Kuzu exclusively — a graph database that
+The original memory subsystem used LadybugDB (formerly Kuzu) exclusively — a graph database that
 delivers rich relationship queries and code-context enrichment, but requires
-a native C++ shared library (`libkuzu`) to link. This creates friction on
+a native C++ shared library to link. This creates friction on
 platforms where the library is unavailable and couples every memory operation
 to the graph schema.
 
@@ -36,7 +36,7 @@ stores memory as a simple relational schema. It is the right default for new
 installs, CI environments, and contexts where graph-enriched recall is not
 needed.
 
-The two-backend design lets existing Kuzu users continue without disruption
+The two-backend design lets existing LadybugDB users continue without disruption
 while routing new installs to SQLite automatically. A single environment
 variable switches between them at any time.
 
@@ -116,13 +116,13 @@ fallback.
 Pass `--backend <value>` to any memory command to bypass auto-detection:
 
 ```sh
-# Inspect the SQLite store regardless of installed Kuzu DB
+# Inspect the SQLite store regardless of installed LadybugDB
 amplihack memory tree --backend sqlite
 
 # Force graph-db for a one-off query
 amplihack memory tree --backend graph-db
 
-# Legacy alias still accepted
+# Backward-compatible alias
 amplihack memory tree --backend kuzu
 ```
 
@@ -131,8 +131,8 @@ Valid values for `--backend` and `AMPLIHACK_MEMORY_BACKEND`:
 | Value | Maps to |
 |-------|---------|
 | `sqlite` | SQLite backend |
-| `graph-db` | Kuzu graph-db backend |
-| `kuzu` | Kuzu graph-db backend (legacy alias) |
+| `graph-db` | LadybugDB graph-db backend |
+| `kuzu` | LadybugDB graph-db backend (backward-compatible alias) |
 
 Any other value is rejected with a structured error; there is no silent
 degradation.
@@ -187,7 +187,7 @@ tables (2 node types, 4 edge types) and 14 covering indexes.
 
 Both tiers support both backends. The SQLite hierarchical backend writes a
 single file (`sqlite_hierarchical.db`); the graph-db hierarchical backend
-writes a Kuzu directory (`graph_db/`). The `memory export` / `memory import`
+writes a LadybugDB directory (`graph_db/`). The `memory export` / `memory import`
 commands use a portable JSON format that works across both backends, enabling
 migration without losing node/edge structure.
 
@@ -219,7 +219,7 @@ the complete format specification and security properties.
 ## Migration path forward
 
 The remaining blocker for full SQLite migration is **LadybugDB parity**: the
-code-graph query and code-context enrichment features that the Kuzu backend
+code-graph query and code-context enrichment features that the LadybugDB backend
 provides via `enrich_prompt_context_memories_with_code_context`. Until
 LadybugDB provides an equivalent, the graph-db backend is required for
 code-context-enriched recall.
@@ -236,4 +236,4 @@ auto-detection rule 3.
 - [Memory Backend Reference](../reference/memory-backend.md) — `BackendChoice` values, env vars, schema, security
 - [How to Migrate Memory to SQLite](../howto/migrate-memory-backend.md) — Step-by-step migration guide
 - [Environment Variables](../reference/environment-variables.md) — `AMPLIHACK_MEMORY_BACKEND` and related vars
-- [Kuzu Code Graph](./kuzu-code-graph.md) — Architecture of the graph-db code graph
+- [LadybugDB Code Graph](./kuzu-code-graph.md) — Architecture of the graph-db code graph

@@ -1,8 +1,8 @@
-//! Kuzu embedded graph database backend.
+//! LadybugDB embedded graph database backend.
 //!
-//! Ports Python `amplihack/memory/kuzu/`:
-//! - `KuzuConnector` — Graph database connector (Cypher query interface)
-//! - `KuzuCodeGraph` — Code navigation graph built from SCIP indexes
+//! Ports Python `amplihack/memory/kuzu/` (now LadybugDB):
+//! - `GraphDbConnector` — Graph database connector (Cypher query interface)
+//! - `CodeGraph` — Code navigation graph built from SCIP indexes
 //! - `QueryResult` — Structured query results
 //! - `SessionIntegration` — Session-aware graph operations
 
@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::graph_store::{EdgeDirection, EdgeRecord, NodeTriple, Props};
 
-/// Whether the Kuzu backend is available (compile-time constant for Rust).
-pub const KUZU_AVAILABLE: bool = true;
+/// Whether the graph database backend is available (compile-time constant for Rust).
+pub const GRAPH_DB_AVAILABLE: bool = true;
 
 /// Query result from the graph database.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -50,15 +50,15 @@ impl QueryResult {
     }
 }
 
-/// Configuration for the Kuzu connector.
+/// Configuration for the graph database connector.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KuzuConfig {
+pub struct GraphDbConfig {
     pub db_path: PathBuf,
     pub buffer_pool_size: usize,
     pub read_only: bool,
 }
 
-impl Default for KuzuConfig {
+impl Default for GraphDbConfig {
     fn default() -> Self {
         Self {
             db_path: PathBuf::from(".amplihack/kuzu_db"),
@@ -68,12 +68,12 @@ impl Default for KuzuConfig {
     }
 }
 
-/// Kuzu embedded graph database connector.
+/// LadybugDB embedded graph database connector.
 ///
 /// Provides Cypher query execution over a file-based graph database.
 /// Zero infrastructure — no server process needed.
-pub struct KuzuConnector {
-    config: KuzuConfig,
+pub struct GraphDbConnector {
+    config: GraphDbConfig,
     nodes: HashMap<String, HashMap<String, Props>>,
     edges: Vec<StoredEdge>,
 }
@@ -86,11 +86,11 @@ struct StoredEdge {
     props: Props,
 }
 
-impl KuzuConnector {
+impl GraphDbConnector {
     /// Create a new connector with default configuration.
     pub fn new(db_path: impl AsRef<Path>) -> Self {
         Self {
-            config: KuzuConfig {
+            config: GraphDbConfig {
                 db_path: db_path.as_ref().to_path_buf(),
                 ..Default::default()
             },
@@ -100,7 +100,7 @@ impl KuzuConnector {
     }
 
     /// Create with full config.
-    pub fn with_config(config: KuzuConfig) -> Self {
+    pub fn with_config(config: GraphDbConfig) -> Self {
         Self {
             config,
             nodes: HashMap::new(),
@@ -241,12 +241,12 @@ pub enum CodeRelation {
 ///
 /// Provides code navigation (find callers, find definitions, etc.)
 /// over an indexed codebase.
-pub struct KuzuCodeGraph {
+pub struct CodeGraph {
     entities: Vec<CodeEntity>,
     relations: Vec<(usize, CodeRelation, usize)>,
 }
 
-impl KuzuCodeGraph {
+impl CodeGraph {
     pub fn new() -> Self {
         Self {
             entities: Vec::new(),
@@ -318,7 +318,7 @@ impl KuzuCodeGraph {
     }
 }
 
-impl Default for KuzuCodeGraph {
+impl Default for CodeGraph {
     fn default() -> Self {
         Self::new()
     }
@@ -327,11 +327,11 @@ impl Default for KuzuCodeGraph {
 /// Session-aware graph integration.
 pub struct SessionIntegration {
     session_id: String,
-    connector: KuzuConnector,
+    connector: GraphDbConnector,
 }
 
 impl SessionIntegration {
-    pub fn new(session_id: impl Into<String>, connector: KuzuConnector) -> Self {
+    pub fn new(session_id: impl Into<String>, connector: GraphDbConnector) -> Self {
         Self {
             session_id: session_id.into(),
             connector,
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn connector_basic() {
-        let mut conn = KuzuConnector::new("/tmp/test_kuzu");
+        let mut conn = GraphDbConnector::new("/tmp/test_graph_db");
         let mut props = Props::new();
         props.insert(
             "name".to_string(),
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn connector_edges() {
-        let mut conn = KuzuConnector::new("/tmp/test_kuzu");
+        let mut conn = GraphDbConnector::new("/tmp/test_graph_db");
         conn.add_node("Person", "p1", Props::new());
         conn.add_node("Person", "p2", Props::new());
         conn.add_edge("KNOWS", "p1", "p2", Props::new());
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn connector_delete() {
-        let mut conn = KuzuConnector::new("/tmp/test_kuzu");
+        let mut conn = GraphDbConnector::new("/tmp/test_graph_db");
         conn.add_node("Person", "p1", Props::new());
         conn.add_edge("KNOWS", "p1", "p2", Props::new());
         assert!(conn.delete_node("Person", "p1"));
@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn code_graph_basic() {
-        let mut graph = KuzuCodeGraph::new();
+        let mut graph = CodeGraph::new();
         let idx1 = graph.add_entity(CodeEntity {
             name: "main".to_string(),
             kind: CodeEntityKind::Function,
@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn code_graph_find() {
-        let mut graph = KuzuCodeGraph::new();
+        let mut graph = CodeGraph::new();
         graph.add_entity(CodeEntity {
             name: "test_fn".to_string(),
             kind: CodeEntityKind::Function,
@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn session_integration() {
-        let conn = KuzuConnector::new("/tmp/test_kuzu");
+        let conn = GraphDbConnector::new("/tmp/test_graph_db");
         let mut sess = SessionIntegration::new("sess-1", conn);
 
         sess.store_session_fact("f1", "Rust is fast", "technical");
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn config_default() {
-        let cfg = KuzuConfig::default();
+        let cfg = GraphDbConfig::default();
         assert!(!cfg.read_only);
         assert!(cfg.buffer_pool_size > 0);
     }

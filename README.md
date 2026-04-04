@@ -19,7 +19,7 @@ Rust core runtime for amplihack's deterministic infrastructure layer.
 - **amplihack-context** — Runtime context detection, environment inference, session awareness
 
 ### Memory & Fleet
-- **amplihack-memory** — Memory backends (SQLite, Kuzu graph), bloom filters, transfer/export
+- **amplihack-memory** — Memory backends (SQLite, LadybugDB graph), bloom filters, transfer/export
 - **amplihack-fleet** — Multi-agent fleet coordination, tmux/Azure VM orchestration
 
 ### CLI & Recipes
@@ -45,9 +45,10 @@ Rust core runtime for amplihack's deterministic infrastructure layer.
 ## Installation
 
 ### Build Prerequisites
-**cmake** is required to build kuzu (the graph memory backend):
-- Ubuntu/Debian: `sudo apt install cmake build-essential`
-- macOS: `brew install cmake`
+- **Rust** (edition 2024, install via [rustup](https://rustup.rs))
+- **cmake** — required to build the LadybugDB (formerly Kuzu) graph database engine
+  - Ubuntu/Debian: `sudo apt install cmake build-essential`
+  - macOS: `brew install cmake`
 
 ### Install from source
 ```bash

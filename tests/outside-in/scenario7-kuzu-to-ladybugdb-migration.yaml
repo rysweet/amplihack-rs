@@ -1,0 +1,50 @@
+name: kuzu-to-ladybugdb-migration
+description: |
+  Verifies that the kuzu → lbug crate migration is complete and
+  backward-compatible.  Checks:
+    1. lbug FFI tests pass (Database, Connection, queries, schema init).
+    2. Cargo.lock contains lbug 0.15.3 and does NOT contain kuzu 0.11.3.
+    3. cxx-build pin is consistent between workspace and lbug transitive dep.
+    4. No Rust source files import `kuzu::` directly (only `lbug::`).
+    5. The graph_db module compiles and re-exports expected types.
+agents:
+  - name: lbug-ffi-verifier
+    type: cli
+    description: Verifies lbug FFI integration and crate migration
+  - name: cargo-lock-auditor
+    type: cli
+    description: Audits Cargo.lock for correct lbug/kuzu entries
+steps:
+  - action: verify_lbug_ffi
+    description: Run lbug FFI integration tests
+    expect:
+      - All 12 lbug FFI tests pass
+      - Database opens and Connection works
+      - Parameterized queries execute
+      - Full backend schema initializes
+
+  - action: verify_cargo_lock
+    description: Cargo.lock contains lbug, not kuzu
+    expect:
+      - lbug 0.15.3 present in Cargo.lock
+      - kuzu 0.11.3 absent from Cargo.lock
+      - cxx-build pin is consistent
+
+  - action: verify_no_kuzu_imports
+    description: "No Rust source files import kuzu directly"
+    expect:
+      - "Zero kuzu imports in crates/ and bins/"
+      - "lbug imports exist in graph_db backend module"
+
+  - action: verify_module_rename
+    description: graph_db.rs exists, kuzu.rs removed
+    expect:
+      - crates/amplihack-memory/src/graph_db.rs exists
+      - crates/amplihack-memory/src/kuzu.rs does not exist
+      - graph_db module exports GraphDbConnector type
+
+  - action: verify_workspace_compiles
+    description: Full workspace compilation check
+    expect:
+      - cargo check succeeds for entire workspace
+      - No compilation errors from migration

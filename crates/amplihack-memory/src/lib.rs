@@ -16,7 +16,7 @@ pub mod evaluation;
 pub mod facade;
 pub mod graph_store;
 pub mod hash_ring;
-pub mod kuzu;
+pub mod graph_db;
 pub mod maintenance;
 pub mod manager;
 pub mod memory_store;

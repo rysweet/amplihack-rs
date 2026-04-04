@@ -4,7 +4,7 @@
 //! ## Why this test exists (WS1)
 //!
 //! `cargo update` can silently bump `cxx-build` to a version incompatible
-//! with the kuzu C++ FFI ABI, causing obscure linker failures at build time:
+//! with the LadybugDB C++ FFI ABI, causing obscure linker failures at build time:
 //!
 //!   undefined reference to `cxxbridge1$string$new$1_0_138`
 //!
@@ -27,7 +27,7 @@
 //!
 //! - `tests/integration/cargo_lock_cxx_consistency_test.rs` — runtime Cargo.lock check
 //! - `crates/amplihack-cli/tests/cargo_cxx_pin_test.rs` — Cargo.toml pin check
-//! - docs/howto/resolve-kuzu-linker-errors.md
+//! - docs/howto/resolve-lbug-linker-errors.md
 
 use std::path::PathBuf;
 
@@ -106,7 +106,7 @@ fn ci_check_job_has_verify_cxx_build_pin_step() {
                  exit 1\n\
                fi\n\
          \n\
-         See docs/howto/resolve-kuzu-linker-errors.md"
+         See docs/howto/resolve-lbug-linker-errors.md"
     );
 }
 

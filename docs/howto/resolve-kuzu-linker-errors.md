@@ -1,4 +1,4 @@
-# Resolve kuzu Linker Errors
+# Resolve LadybugDB Linker Errors
 
 `cargo build` can fail with `undefined reference` linker errors when `cxx` and `cxx-build` resolve to different minor versions. This guide walks through diagnosis and the one-command fix.
 
@@ -14,12 +14,12 @@
 
 ## When this guide doesn't apply
 
-This guide is specific to `cxxbridge1$` symbol errors from `libkuzu.a`. If your linker error looks different, this fix will not help:
+This guide is specific to `cxxbridge1$` symbol errors from the LadybugDB (formerly Kuzu) library. If your linker error looks different, this fix will not help:
 
 | Symptom | Look elsewhere |
 |---|---|
 | Error symbol does **not** contain `cxxbridge1$` | Different FFI or C++ ABI issue |
-| Error comes from a crate other than `kuzu` | That crate's own FFI version mismatch |
+| Error comes from a crate other than `lbug` | That crate's own FFI version mismatch |
 | `undefined reference` to a non-`cxxbridge` symbol | Missing `pkg-config` library or `-sys` crate issue |
 | Compilation error (not a linker error) | Unrelated — check the compiler message |
 
@@ -40,7 +40,7 @@ error: linking with `cc` failed: exit status: 1
 
 Key indicators:
 - Error mentions `cxxbridge` symbols
-- Error comes from `libkuzu.a`, not from your code
+- Error comes from the LadybugDB library, not from your code
 - Build succeeds in CI but fails locally (or vice versa)
 
 ## Diagnose the version mismatch
@@ -155,9 +155,8 @@ Scanning Cargo.lock for vulnerabilities (159 crate dependencies)
 
 ### Track the upstream issue
 
-The root cause is in the kuzu-rs crate's `Cargo.toml`, which specifies `cxx-build = "^1.0"` (open range) instead of `cxx-build = "=1.0.138"` (exact pin to match `cxx`). This is an upstream deficiency — amplihack-rs's `Cargo.lock` pin is a workaround, not a design choice. Once kuzu-rs ships a corrected release, the local pin can be removed.
+The root cause is in the lbug crate's `Cargo.toml`, which specifies `cxx-build = "^1.0"` (open range) instead of `cxx-build = "=1.0.138"` (exact pin to match `cxx`). This is an upstream deficiency — amplihack-rs's `Cargo.lock` pin is a workaround, not a design choice. Once the lbug crate ships a corrected release, the local pin can be removed.
 
-Follow [kuzu-rs/issues](https://github.com/kuzudb/kuzu-rs/issues) for upstream progress on this fix.
 
 ## Related
 

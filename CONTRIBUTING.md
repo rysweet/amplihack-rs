@@ -31,7 +31,7 @@ On `pre-push`, the full workspace test suite runs (skipping heavy integration te
 ## Testing
 
 ```bash
-# Fast: skip kuzu C++ build and fleet probes
+# Fast: skip LadybugDB (formerly Kuzu) C++ build and fleet probes
 cargo test --workspace --skip fleet_probe --skip kuzu --skip fleet::fleet_local --skip memory::kuzu
 
 # Single crate

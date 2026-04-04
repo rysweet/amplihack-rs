@@ -63,10 +63,10 @@ Exit code 0 means the binary is Python-free on all tested paths.
 | TC-07: `memory query --help` | Memory query subcommand is registered and accessible |
 | TC-08: `memory query` smoke | `query-code stats` against an empty temp database exits without launching Python |
 
-TC-08 uses `mktemp` to create a temporary Kuzu database path, runs
+TC-08 uses `mktemp` to create a temporary LadybugDB database path, runs
 `query-code stats` against it, and cleans up via an `EXIT` trap. The test
 validates that the binary does not crash and does not invoke Python, even when
-the database is empty (Kuzu auto-creates the schema on first open).
+the database is empty (LadybugDB auto-creates the schema on first open).
 
 ## How the probe strips Python
 
@@ -102,7 +102,7 @@ while Python was absent from `PATH`. Common causes:
 | `--version` FAIL | Binary was not built or is not executable |
 | `fleet --help` FAIL | A `fleet` subcommand path panics at startup |
 | `memory index --help` FAIL | The `index-scip` subcommand is not registered in the CLI router |
-| `memory query` smoke FAIL | The `query-code` binary panics when Kuzu creates a new empty database |
+| `memory query` smoke FAIL | The `query-code` binary panics when LadybugDB creates a new empty database |
 
 Run the failing command manually with Python stripped:
 

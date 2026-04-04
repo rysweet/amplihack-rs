@@ -2,7 +2,7 @@
 //!
 //! ## Why this test exists (issue #35)
 //!
-//! The kuzu C++ FFI bridge uses the `cxx` crate for Rust ↔ C++ interop.
+//! The LadybugDB C++ FFI bridge uses the `cxx` crate for Rust ↔ C++ interop.
 //! The `cxx-build` crate generates the C++ glue code at build time.  Both
 //! crates must have the **identical** minor version, because `cxx-build`
 //! embeds the minor version in every generated bridge symbol, e.g.:
@@ -30,7 +30,7 @@
 //!
 //! - Issue:   https://github.com/rysweet/amplihack-rs/issues/35
 //! - PR:      https://github.com/rysweet/amplihack-rs/pull/43
-//! - How-to:  docs/howto/resolve-kuzu-linker-errors.md
+//! - How-to:  docs/howto/resolve-lbug-linker-errors.md
 //! - Concept: docs/concepts/cxx-version-contract.md
 
 use std::collections::HashMap;
@@ -131,11 +131,11 @@ fn cargo_lock_contains_cxx_and_cxx_build() {
 
     assert!(
         versions.contains_key("cxx"),
-        "cxx not found in Cargo.lock — is kuzu still a dependency?"
+        "cxx not found in Cargo.lock — is lbug still a dependency?"
     );
     assert!(
         versions.contains_key("cxx-build"),
-        "cxx-build not found in Cargo.lock — is kuzu still a dependency?"
+        "cxx-build not found in Cargo.lock — is lbug still a dependency?"
     );
 }
 
@@ -152,7 +152,7 @@ fn cargo_lock_contains_cxx_and_cxx_build() {
 /// FAIL MESSAGE (before fix):
 ///   thread 'cxx_and_cxx_build_versions_match' panicked at:
 ///   cxx (1.0.138) and cxx-build (1.0.194) must have the same version.
-///   Version mismatch causes undefined-symbol linker errors with kuzu.
+///   Version mismatch causes undefined-symbol linker errors with LadybugDB.
 ///   Fix: cargo update -p cxx-build --precise 1.0.138
 /// ```
 #[test]
@@ -171,13 +171,13 @@ fn cxx_and_cxx_build_versions_match() {
         cxx, cxx_build,
         "\n\
         ┌─────────────────────────────────────────────────────────────────────┐\n\
-        │  cxx version mismatch detected — kuzu C++ FFI will fail to link!    │\n\
+        │  cxx version mismatch detected — LadybugDB C++ FFI will fail to link!    │\n\
         ├─────────────────────────────────────────────────────────────────────┤\n\
         │  cxx         = {cxx:<60}│\n\
         │  cxx-build   = {cxx_build:<60}│\n\
         ├─────────────────────────────────────────────────────────────────────┤\n\
         │  Fix:  cargo update -p cxx-build --precise {cxx}                    \n\
-        │  Docs: docs/howto/resolve-kuzu-linker-errors.md                     │\n\
+        │  Docs: docs/howto/resolve-lbug-linker-errors.md                     │\n\
         │  Issue: https://github.com/rysweet/amplihack-rs/issues/35           │\n\
         └─────────────────────────────────────────────────────────────────────┘"
     );
@@ -210,19 +210,19 @@ fn cxxbridge_suite_versions_match_cxx() {
 }
 
 /// `cxx-build` must be pinned to patch version 138, which is the version
-/// required by kuzu 0.11.3.
+/// required by lbug 0.15.3.
 ///
 /// The cxx versioning scheme uses the **patch** number as the distinguishing
 /// identifier.  `cxx = "1.0.138"` means major=1, minor=0, patch=138.
 /// The bridge symbol token `$1_0_138` encodes all three parts.
 ///
-/// kuzu 0.11.3 specifies `cxx = "=1.0.138"` (exact pin), so cxx-build
+/// lbug 0.15.3 specifies `cxx = "=1.0.138"` (exact pin), so cxx-build
 /// must also have patch = 138: `cxx-build = "1.0.138"`.
 ///
 /// **FAILS** when patch ≠ 138 (e.g., cxx-build = 1.0.194 → patch = 194).
 /// **PASSES** after: `cargo update -p cxx-build --precise 1.0.138`
 #[test]
-fn cxx_build_patch_version_compatible_with_kuzu_0_11_3() {
+fn cxx_build_patch_version_compatible_with_lbug_0_15_3() {
     let path = cargo_lock_path();
     let versions = parse_cargo_lock_versions(&path);
 
@@ -252,25 +252,25 @@ fn cxx_build_patch_version_compatible_with_kuzu_0_11_3() {
     assert_eq!(
         patch, 138,
         "\n\
-        cxx-build patch version must be 138 to be compatible with kuzu 0.11.3.\n\
+        cxx-build patch version must be 138 to be compatible with lbug 0.15.3.\n\
         Found:    cxx-build = {cxx_build_version} (patch = {patch})\n\
         Required: cxx-build = 1.0.138            (patch = 138)\n\
         \n\
         Fix:  cargo update -p cxx-build --precise 1.0.138\n\
-        Docs: docs/howto/resolve-kuzu-linker-errors.md\n\
+        Docs: docs/howto/resolve-lbug-linker-errors.md\n\
         Issue: https://github.com/rysweet/amplihack-rs/issues/35"
     );
 }
 
-/// `cxx` itself must be pinned at 1.0.138 (the exact version kuzu requires).
+/// `cxx` itself must be pinned at 1.0.138 (the exact version lbug requires).
 ///
-/// kuzu 0.11.3 specifies `cxx = "=1.0.138"`.  The patch version (138) must
+/// lbug 0.15.3 specifies `cxx = "=1.0.138"`.  The patch version (138) must
 /// match to ensure symbol name compatibility in the generated bridge code.
 ///
 /// This test ensures the Cargo.lock has not been updated to a different cxx
-/// version that would require re-validating kuzu compatibility.
+/// version that would require re-validating lbug compatibility.
 #[test]
-fn cxx_version_is_kuzu_compatible() {
+fn cxx_version_is_lbug_compatible() {
     let path = cargo_lock_path();
     let versions = parse_cargo_lock_versions(&path);
 
@@ -288,8 +288,8 @@ fn cxx_version_is_kuzu_compatible() {
     assert_eq!(major, 1, "cxx major must be 1, got: {cxx_version}");
     assert_eq!(
         patch, 138,
-        "cxx patch version must be 138 (kuzu 0.11.3 requires cxx = '=1.0.138').\n\
-        If cxx has been upgraded, re-validate kuzu compatibility and update this test.\n\
+        "cxx patch version must be 138 (lbug 0.15.3 requires cxx = '=1.0.138').\n\
+        If cxx has been upgraded, re-validate lbug compatibility and update this test.\n\
         See docs/concepts/cxx-version-contract.md for the version compatibility table."
     );
 }

@@ -33,7 +33,7 @@ backend = "cognitive"
 topology = "single"
 storage_path = ".amplihack/memory.db"
 
-[memory.kuzu]
+[memory.kuzu]  # backward-compatible config section name
 buffer_pool_mb = 64
 max_db_size_mb = 1024
 
@@ -82,24 +82,24 @@ The cognitive backend stores memories using graph-based cognitive modeling with:
 - `0o600` file permissions
 - Full-text search support
 
-### Kuzu Graph Backend
+### LadybugDB Graph Backend
 
 ```toml
 [memory]
-backend = "kuzu"
+backend = "kuzu"  # backward-compatible alias for the LadybugDB graph backend
 
-[memory.kuzu]
+[memory.kuzu]  # backward-compatible config section name
 buffer_pool_mb = 64
 max_db_size_mb = 1024
-db_path = "~/.amplihack/kuzu_db"
+db_path = "~/.amplihack/kuzu_db"  # legacy path, backward-compatible
 ```
 
-The Kuzu backend provides graph storage for:
+The LadybugDB (formerly Kuzu) backend provides graph storage for:
 - Relationship-aware memory queries
 - Code graph integration
 - Cypher query support
 
-**Requires**: Build with `kuzu` feature flag.
+**Requires**: Build with `lbug` feature flag.
 
 ### In-Memory Backend
 
