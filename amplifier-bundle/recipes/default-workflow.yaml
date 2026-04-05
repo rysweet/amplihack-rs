@@ -380,6 +380,12 @@ steps:
       {{issue_creation}}
       EOFISSUECREATION
       )
+      # FIX (#4247): Capture task_description at top level (not inside if block)
+      # to avoid indented heredoc delimiters that bash cannot parse.
+      TASK_DESC_RAW=$(cat <<'EOFTASKDESC03B'
+      {{task_description}}
+      EOFTASKDESC03B
+      )
       # FIX (#4233): Match both issue URLs (issues/NNN) and PR URLs (pull/NNN).
       # If the output is a PR URL, resolve the linked issue via gh pr view.
       EXTRACTED=$(printf '%s' "$ISSUE_CREATION" | grep -oE 'issues/[0-9]+' | grep -oE '[0-9]+' | head -1)
@@ -399,11 +405,7 @@ steps:
       fi
       if [ -z "$EXTRACTED" ]; then
         # Last resort: scan for bare #NNNN references in the task description
-        TASK_DESC=$(cat <<'_AMPLIHACK_STEP03B_TASK_EOF_'
-        {{task_description}}
-        _AMPLIHACK_STEP03B_TASK_EOF_
-        )
-        EXTRACTED=$(printf '%s' "$TASK_DESC" | grep -oE '#[0-9]+' | grep -oE '[0-9]+' | head -1)
+        EXTRACTED=$(printf '%s' "$TASK_DESC_RAW" | grep -oE '#[0-9]+' | grep -oE '[0-9]+' | head -1)
       fi
       if [ -z "$EXTRACTED" ]; then
         echo "ERROR: step-03b failed to extract issue number from issue_creation output." >&2
@@ -761,6 +763,9 @@ steps:
   # --------------------------------------------------------------------------
   - id: "checkpoint-after-implementation"
     type: "bash"
+    # FIX (#4231): Limit env var size to prevent E2BIG when prior steps
+    # (implementation, test_spec, design_spec) produce large outputs.
+    max_env_value_bytes: 65536
     command: |
       cd {{worktree_setup.worktree_path}} 2>/dev/null || cd {{repo_path}} && \
       echo "=== Checkpoint: Staging Implementation ===" && \
@@ -940,6 +945,7 @@ steps:
   # --------------------------------------------------------------------------
   - id: "checkpoint-after-review-feedback"
     type: "bash"
+    max_env_value_bytes: 65536
     command: |
       cd {{worktree_setup.worktree_path}} 2>/dev/null || cd {{repo_path}} && \
       echo "=== Checkpoint: Staging Review Feedback ===" && \

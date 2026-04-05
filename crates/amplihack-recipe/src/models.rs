@@ -102,6 +102,13 @@ pub struct Step {
     pub allow_failure: bool,
     #[serde(default)]
     pub context: HashMap<String, serde_json::Value>,
+    /// Maximum size in bytes for env var values passed to bash steps.
+    /// When set, step outputs exceeding this size are written to temp
+    /// files and replaced with `@file:/path` references instead of
+    /// being passed as environment variables. Prevents E2BIG errors
+    /// when prior steps produce large outputs (issue #4231).
+    #[serde(default)]
+    pub max_env_value_bytes: Option<usize>,
 }
 
 impl Step {
@@ -119,7 +126,18 @@ impl Step {
             retry_count: None,
             allow_failure: false,
             context: HashMap::new(),
+            max_env_value_bytes: None,
         }
+    }
+
+    /// Default env value byte limit (128KB) — enough for most outputs,
+    /// well under the ~2MB Linux ARG_MAX.
+    pub const DEFAULT_MAX_ENV_BYTES: usize = 128 * 1024;
+
+    /// Returns the effective max env value size for this step.
+    pub fn effective_max_env_bytes(&self) -> usize {
+        self.max_env_value_bytes
+            .unwrap_or(Self::DEFAULT_MAX_ENV_BYTES)
     }
 }
 
