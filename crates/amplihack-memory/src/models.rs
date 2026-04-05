@@ -143,6 +143,43 @@ impl MemoryEntry {
         self.content.hash(&mut hasher);
         hasher.finish()
     }
+
+    /// Convert to a HashMap (matches Python `MemoryEntry.to_dict()`).
+    pub fn to_dict(&self) -> HashMap<String, serde_json::Value> {
+        let mut map = HashMap::new();
+        map.insert("id".into(), serde_json::json!(self.id));
+        map.insert("session_id".into(), serde_json::json!(self.session_id));
+        map.insert("agent_id".into(), serde_json::json!(self.agent_id));
+        map.insert(
+            "memory_type".into(),
+            serde_json::json!(self.memory_type.as_str()),
+        );
+        map.insert("title".into(), serde_json::json!(self.title));
+        map.insert("content".into(), serde_json::json!(self.content));
+        map.insert("metadata".into(), serde_json::json!(self.metadata));
+        map.insert("created_at".into(), serde_json::json!(self.created_at));
+        map.insert("accessed_at".into(), serde_json::json!(self.accessed_at));
+        map.insert("tags".into(), serde_json::json!(self.tags));
+        map.insert("importance".into(), serde_json::json!(self.importance));
+        map
+    }
+
+    /// Construct from a HashMap (matches Python `MemoryEntry.from_dict()`).
+    pub fn from_dict(map: &HashMap<String, serde_json::Value>) -> anyhow::Result<Self> {
+        let json_val =
+            serde_json::Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        serde_json::from_value(json_val).map_err(Into::into)
+    }
+
+    /// Serialize to JSON string (matches Python `MemoryEntry.to_json()`).
+    pub fn to_json(&self) -> anyhow::Result<String> {
+        serde_json::to_string(self).map_err(Into::into)
+    }
+
+    /// Deserialize from JSON string (matches Python `MemoryEntry.from_json()`).
+    pub fn from_json(json: &str) -> anyhow::Result<Self> {
+        serde_json::from_str(json).map_err(Into::into)
+    }
 }
 
 /// Session metadata.
@@ -153,6 +190,22 @@ pub struct SessionInfo {
     pub memory_count: usize,
     pub created_at: f64,
     pub last_accessed: f64,
+}
+
+impl SessionInfo {
+    /// Convert to a HashMap (matches Python `SessionInfo.to_dict()`).
+    pub fn to_dict(&self) -> HashMap<String, serde_json::Value> {
+        let mut map = HashMap::new();
+        map.insert("session_id".into(), serde_json::json!(self.session_id));
+        map.insert("agent_ids".into(), serde_json::json!(self.agent_ids));
+        map.insert("memory_count".into(), serde_json::json!(self.memory_count));
+        map.insert("created_at".into(), serde_json::json!(self.created_at));
+        map.insert(
+            "last_accessed".into(),
+            serde_json::json!(self.last_accessed),
+        );
+        map
+    }
 }
 
 /// Query parameters for memory retrieval.
@@ -192,6 +245,45 @@ impl MemoryQuery {
     pub fn with_types(mut self, types: Vec<MemoryType>) -> Self {
         self.memory_types = types;
         self
+    }
+
+    /// Build a SQL WHERE clause from this query (matches Python `MemoryQuery.to_sql_where()`).
+    pub fn to_sql_where(&self) -> (String, Vec<String>) {
+        let mut clauses = Vec::new();
+        let mut params = Vec::new();
+
+        if let Some(ref sid) = self.session_id {
+            clauses.push("session_id = ?".to_string());
+            params.push(sid.clone());
+        }
+        if let Some(ref aid) = self.agent_id {
+            clauses.push("agent_id = ?".to_string());
+            params.push(aid.clone());
+        }
+        if !self.memory_types.is_empty() {
+            let placeholders: Vec<_> = self.memory_types.iter().map(|_| "?").collect();
+            clauses.push(format!("memory_type IN ({})", placeholders.join(", ")));
+            for mt in &self.memory_types {
+                params.push(mt.as_str().to_string());
+            }
+        }
+        if !self.tags.is_empty() {
+            for tag in &self.tags {
+                clauses.push("tags LIKE ?".to_string());
+                params.push(format!("%{tag}%"));
+            }
+        }
+        if !self.query_text.is_empty() {
+            clauses.push("content LIKE ?".to_string());
+            params.push(format!("%{}%", self.query_text));
+        }
+
+        let where_clause = if clauses.is_empty() {
+            "1=1".to_string()
+        } else {
+            clauses.join(" AND ")
+        };
+        (where_clause, params)
     }
 }
 
@@ -295,5 +387,61 @@ mod tests {
         let json = serde_json::to_value(&e).unwrap();
         assert_eq!(json["memory_type"], "procedural");
         assert!(!json["id"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
+    fn entry_to_dict_roundtrip() {
+        let e = MemoryEntry::new("s1", "a1", MemoryType::Semantic, "knowledge");
+        let dict = e.to_dict();
+        assert_eq!(dict["content"], serde_json::json!("knowledge"));
+        assert_eq!(dict["memory_type"], serde_json::json!("semantic"));
+        assert_eq!(dict["session_id"], serde_json::json!("s1"));
+    }
+
+    #[test]
+    fn entry_to_json_from_json() {
+        let e = MemoryEntry::new("s1", "a1", MemoryType::Episodic, "event happened");
+        let json = e.to_json().unwrap();
+        let e2 = MemoryEntry::from_json(&json).unwrap();
+        assert_eq!(e.id, e2.id);
+        assert_eq!(e.content, e2.content);
+        assert_eq!(e.memory_type, e2.memory_type);
+    }
+
+    #[test]
+    fn session_info_to_dict() {
+        let si = SessionInfo {
+            session_id: "s1".into(),
+            agent_ids: vec!["a1".into()],
+            memory_count: 5,
+            created_at: 1000.0,
+            last_accessed: 2000.0,
+        };
+        let dict = si.to_dict();
+        assert_eq!(dict["session_id"], serde_json::json!("s1"));
+        assert_eq!(dict["memory_count"], serde_json::json!(5));
+    }
+
+    #[test]
+    fn query_to_sql_where_empty() {
+        let q = MemoryQuery::new("");
+        let (clause, params) = q.to_sql_where();
+        assert_eq!(clause, "1=1");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn query_to_sql_where_with_filters() {
+        let q = MemoryQuery::new("test")
+            .with_session("s1")
+            .with_types(vec![MemoryType::Semantic]);
+        let (clause, params) = q.to_sql_where();
+        assert!(clause.contains("session_id = ?"));
+        assert!(clause.contains("memory_type IN (?)"));
+        assert!(clause.contains("content LIKE ?"));
+        assert_eq!(params.len(), 3);
+        assert_eq!(params[0], "s1");
+        assert_eq!(params[1], "semantic");
+        assert!(params[2].contains("test"));
     }
 }

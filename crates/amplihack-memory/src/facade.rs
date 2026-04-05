@@ -145,4 +145,22 @@ impl MemoryFacade {
     pub fn config(&self) -> &MemoryConfig {
         &self.config
     }
+
+    /// Convenience alias matching Python `Memory.remember()`.
+    pub fn remember(&mut self, content: &str, options: StoreOptions) -> anyhow::Result<String> {
+        self.store_memory(content, options)
+    }
+
+    /// Get aggregate statistics from the backend.
+    pub fn stats(&self) -> anyhow::Result<HashMap<String, serde_json::Value>> {
+        let sessions = self.backend.list_sessions()?;
+        let total_memories: usize = sessions.iter().map(|s| s.memory_count).sum();
+        let mut stats = HashMap::new();
+        stats.insert("backend".into(), serde_json::json!(self.backend_name()));
+        stats.insert("session_count".into(), serde_json::json!(sessions.len()));
+        stats.insert("total_memories".into(), serde_json::json!(total_memories));
+        Ok(stats)
+    }
 }
+
+use std::collections::HashMap;

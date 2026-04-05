@@ -31,6 +31,9 @@ pub mod retrieval_pipeline;
 pub mod sqlite_backend;
 pub mod storage_pipeline;
 
+#[cfg(feature = "pyo3-bindings")]
+pub mod pyo3_bindings;
+
 pub use auto_backend::{DetectedBackend, detect_backend};
 pub use backend::{BackendHealth, InMemoryBackend, MemoryBackend};
 pub use bloom::BloomFilter;

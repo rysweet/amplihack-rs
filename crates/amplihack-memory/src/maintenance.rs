@@ -6,6 +6,7 @@
 
 #[cfg(feature = "sqlite")]
 use crate::database::MemoryDatabase;
+use crate::models::MemoryType;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -230,6 +231,33 @@ impl MemoryMaintenance {
         );
         report.set("total_duration_ms", start.elapsed().as_millis() as u64);
         Ok(report)
+    }
+
+    /// Export all memories for a session as JSON (matches Python `export_session_memories()`).
+    pub fn export_session_memories(&self, session_id: &str) -> anyhow::Result<String> {
+        use crate::database::DbQuery;
+
+        let types = vec![
+            MemoryType::Semantic,
+            MemoryType::Episodic,
+            MemoryType::Procedural,
+            MemoryType::Working,
+            MemoryType::Strategic,
+        ];
+
+        let mut all_entries = Vec::new();
+        for mt in &types {
+            let q = DbQuery {
+                session_id: Some(session_id.to_string()),
+                memory_type: Some(*mt),
+                limit: Some(10_000),
+                ..Default::default()
+            };
+            let entries = self.db.retrieve_memories(&q)?;
+            all_entries.extend(entries);
+        }
+
+        serde_json::to_string_pretty(&all_entries).map_err(Into::into)
     }
 }
 
