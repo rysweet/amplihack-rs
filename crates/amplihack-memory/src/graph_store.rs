@@ -149,6 +149,48 @@ pub mod schemas {
         .into_iter()
         .collect()
     }
+
+    /// Social memory schema (matches Python `SOCIAL_SCHEMA`).
+    pub fn social_schema() -> Props {
+        [
+            ("content".into(), json!("STRING")),
+            ("agent_id".into(), json!("STRING")),
+            ("relationship".into(), json!("STRING")),
+            ("trust_score".into(), json!("DOUBLE")),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    /// Relationship edge schema (matches Python `RELATED_TO_SCHEMA`).
+    pub fn related_to_schema() -> Props {
+        [
+            ("weight".into(), json!("DOUBLE")),
+            ("context".into(), json!("STRING")),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    /// Causal edge schema (matches Python `LEADS_TO_SCHEMA`).
+    pub fn leads_to_schema() -> Props {
+        [
+            ("confidence".into(), json!("DOUBLE")),
+            ("evidence".into(), json!("STRING")),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    /// Information-flow edge schema (matches Python `INFORMED_BY_SCHEMA`).
+    pub fn informed_by_schema() -> Props {
+        [
+            ("timestamp".into(), json!("INT64")),
+            ("source_type".into(), json!("STRING")),
+        ]
+        .into_iter()
+        .collect()
+    }
 }
 
 #[cfg(test)]
