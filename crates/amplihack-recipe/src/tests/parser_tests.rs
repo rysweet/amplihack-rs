@@ -225,6 +225,9 @@ fn parse_rejects_non_mapping() {
 fn step_type_parsing() {
     assert_eq!(parse_step_type("agent"), Some(StepType::Agent));
     assert_eq!(parse_step_type("Shell"), Some(StepType::Shell));
+    assert_eq!(parse_step_type("bash"), Some(StepType::Shell));
+    assert_eq!(parse_step_type("Bash"), Some(StepType::Shell));
+    assert_eq!(parse_step_type("command"), Some(StepType::Shell));
     assert_eq!(parse_step_type("sub_recipe"), Some(StepType::SubRecipe));
     assert_eq!(parse_step_type("subrecipe"), Some(StepType::SubRecipe));
     assert_eq!(parse_step_type("unknown"), None);

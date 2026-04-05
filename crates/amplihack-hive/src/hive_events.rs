@@ -40,7 +40,7 @@ pub fn make_learn_content_event(source: &str, content: &str) -> Result<BusEvent>
     };
     Ok(BusEvent {
         event_id: Uuid::new_v4().to_string(),
-        source_id: Uuid::new_v4().to_string(),
+        source_id: source.to_string(),
         topic: HIVE_LEARN_CONTENT.to_string(),
         payload: serde_json::to_value(&event)?,
         timestamp: chrono::Utc::now().timestamp() as f64,
@@ -55,7 +55,7 @@ pub fn make_feed_complete_event(feed_id: &str, items: u32) -> Result<BusEvent> {
     };
     Ok(BusEvent {
         event_id: Uuid::new_v4().to_string(),
-        source_id: Uuid::new_v4().to_string(),
+        source_id: feed_id.to_string(),
         topic: HIVE_FEED_COMPLETE.to_string(),
         payload: serde_json::to_value(&event)?,
         timestamp: chrono::Utc::now().timestamp() as f64,
@@ -69,7 +69,7 @@ pub fn make_agent_ready_event(agent_id: &str) -> Result<BusEvent> {
     };
     Ok(BusEvent {
         event_id: Uuid::new_v4().to_string(),
-        source_id: Uuid::new_v4().to_string(),
+        source_id: agent_id.to_string(),
         topic: HIVE_AGENT_READY.to_string(),
         payload: serde_json::to_value(&event)?,
         timestamp: chrono::Utc::now().timestamp() as f64,
@@ -78,6 +78,11 @@ pub fn make_agent_ready_event(agent_id: &str) -> Result<BusEvent> {
 
 /// Create a query event with auto-generated query ID.
 pub fn make_query_event(question: &str) -> Result<(String, BusEvent)> {
+    make_query_event_from("eval-coordinator", question)
+}
+
+/// Create a query event from a specific source with auto-generated query ID.
+pub fn make_query_event_from(source_id: &str, question: &str) -> Result<(String, BusEvent)> {
     let query_id = Uuid::new_v4().to_string();
     let event = HiveEvent::Query {
         query_id: query_id.clone(),
@@ -85,7 +90,7 @@ pub fn make_query_event(question: &str) -> Result<(String, BusEvent)> {
     };
     let bus_event = BusEvent {
         event_id: Uuid::new_v4().to_string(),
-        source_id: Uuid::new_v4().to_string(),
+        source_id: source_id.to_string(),
         topic: HIVE_QUERY.to_string(),
         payload: serde_json::to_value(&event)?,
         timestamp: chrono::Utc::now().timestamp() as f64,
@@ -93,8 +98,9 @@ pub fn make_query_event(question: &str) -> Result<(String, BusEvent)> {
     Ok((query_id, bus_event))
 }
 
-/// Create a query-response event.
+/// Create a query-response event from a specific agent.
 pub fn make_query_response_event(
+    agent_id: &str,
     query_id: &str,
     answer: &str,
     confidence: f64,
@@ -109,7 +115,7 @@ pub fn make_query_response_event(
     };
     Ok(BusEvent {
         event_id: Uuid::new_v4().to_string(),
-        source_id: Uuid::new_v4().to_string(),
+        source_id: agent_id.to_string(),
         topic: HIVE_QUERY_RESPONSE.to_string(),
         payload: serde_json::to_value(&event)?,
         timestamp: chrono::Utc::now().timestamp() as f64,
@@ -171,13 +177,32 @@ mod tests {
 
     #[test]
     fn make_query_response_event_has_confidence() {
-        let event = make_query_response_event("q1", "A language", 0.85).unwrap();
+        let event = make_query_response_event("agent-1", "q1", "A language", 0.85).unwrap();
         assert_eq!(event.topic, HIVE_QUERY_RESPONSE);
+        assert_eq!(event.source_id, "agent-1");
         let payload: HiveEvent = serde_json::from_value(event.payload).unwrap();
         let HiveEvent::QueryResponse { confidence, .. } = payload else {
             unreachable!("Expected QueryResponse, got {payload:?}");
         };
         assert!((confidence - 0.85).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn source_ids_reflect_caller() {
+        let learn = make_learn_content_event("src-1", "hello").unwrap();
+        assert_eq!(learn.source_id, "src-1");
+
+        let ready = make_agent_ready_event("agent-42").unwrap();
+        assert_eq!(ready.source_id, "agent-42");
+
+        let (_, query) = make_query_event("question?").unwrap();
+        assert_eq!(query.source_id, "eval-coordinator");
+
+        let (_, query2) = make_query_event_from("my-source", "question?").unwrap();
+        assert_eq!(query2.source_id, "my-source");
+
+        let resp = make_query_response_event("agent-7", "q1", "answer", 0.5).unwrap();
+        assert_eq!(resp.source_id, "agent-7");
     }
 
     #[test]

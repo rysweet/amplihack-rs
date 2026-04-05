@@ -276,7 +276,7 @@ fn extract_step_context(mapping: &serde_yaml::Mapping) -> HashMap<String, serde_
 fn parse_step_type(s: &str) -> Option<StepType> {
     match s.to_lowercase().as_str() {
         "agent" => Some(StepType::Agent),
-        "shell" => Some(StepType::Shell),
+        "shell" | "bash" | "command" => Some(StepType::Shell),
         "prompt" => Some(StepType::Prompt),
         "sub_recipe" | "subrecipe" => Some(StepType::SubRecipe),
         "checkpoint" => Some(StepType::Checkpoint),

@@ -7,8 +7,10 @@
 //! Uses `amplihack-memory` BloomFilter for knowledge deduplication.
 
 use amplihack_hive::event_bus::{EventBus, LocalEventBus};
-use amplihack_hive::hive_eval::{HiveEvalResult, build_default_eval_questions};
-use amplihack_hive::hive_events::{HIVE_QUERY, HIVE_QUERY_RESPONSE};
+use amplihack_hive::hive_eval::{
+    HiveEvalConfig, HiveEvalResult, build_default_eval_questions, run_eval_with_responder,
+};
+use amplihack_hive::hive_events::{HIVE_QUERY, HIVE_QUERY_RESPONSE, make_query_response_event};
 use amplihack_hive::models::BusEvent;
 use amplihack_hive::workload::HiveEvent;
 use amplihack_memory::bloom::BloomFilter;
@@ -503,4 +505,51 @@ fn eval_report_summary() {
     assert_eq!(result.total_queries, 5);
     assert_eq!(result.total_responses, 500);
     assert!(result.average_confidence > 0.1);
+}
+
+#[test]
+fn run_eval_with_responder_end_to_end() {
+    let questions = build_default_eval_questions();
+    let mut bus = LocalEventBus::new();
+
+    // Build 100 agents for the responder closure
+    let agents: Vec<SimulatedAgent> = (0..100)
+        .map(|i| SimulatedAgent::new(i, i % DOMAINS.len()))
+        .collect();
+
+    // The responder injects 100 agent responses for each query
+    let responder: amplihack_hive::hive_eval::EvalResponder = Box::new(
+        move |bus: &mut dyn EventBus, query_id: &str, question: &str| {
+            for agent in &agents {
+                let confidence = agent.confidence_for(question);
+                let answer = agent.answer_for(question);
+                let event =
+                    make_query_response_event(&agent.id, query_id, &answer, confidence).unwrap();
+                bus.publish(event).unwrap();
+            }
+        },
+    );
+
+    let config = HiveEvalConfig::new(questions).with_min_responses(10);
+    let result = run_eval_with_responder(&mut bus, &config, Some(responder)).unwrap();
+
+    assert_eq!(result.total_queries, 5);
+    assert_eq!(result.total_responses, 500, "100 agents × 5 questions");
+    assert!(
+        result.average_confidence > 0.1,
+        "Avg confidence: {}",
+        result.average_confidence
+    );
+
+    // Verify best answers come from domain specialists
+    for qr in &result.query_results {
+        assert_eq!(qr.response_count(), 100);
+        let best = qr.best_answer().unwrap();
+        assert!(
+            best.confidence > 0.5,
+            "Best answer for '{}' should have high confidence: {}",
+            qr.question,
+            best.confidence
+        );
+    }
 }
