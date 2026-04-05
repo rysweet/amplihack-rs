@@ -163,7 +163,8 @@ impl ClaudeLauncher {
                 break;
             }
         }
-        std::env::current_dir().ok()
+        // PR #3916 port: fall back to git repo root, then cwd — never empty.
+        detect_repo_root().or_else(|| std::env::current_dir().ok())
     }
 
     fn ensure_runtime_directories(&self, target_dir: &Path) -> Result<()> {
@@ -227,6 +228,31 @@ fn paths_are_same(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(ca), Ok(cb)) => ca == cb,
         _ => a == b,
+    }
+}
+
+/// Detect the repository root via `git rev-parse --show-toplevel`.
+///
+/// Falls back to the current working directory when git is unavailable or when
+/// the working directory is not inside a git repository (PR #3916 parity).
+pub fn detect_repo_root() -> Option<PathBuf> {
+    match Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if root.is_empty() {
+                debug!("git rev-parse --show-toplevel returned empty; falling back to cwd");
+                std::env::current_dir().ok()
+            } else {
+                Some(PathBuf::from(root))
+            }
+        }
+        _ => {
+            debug!("git rev-parse --show-toplevel failed; falling back to cwd");
+            std::env::current_dir().ok()
+        }
     }
 }
 
@@ -352,5 +378,11 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(l.find_target_directory().unwrap(), dir.path());
+    }
+    #[test]
+    fn detect_repo_root_never_empty() {
+        // Even outside a git repo, detect_repo_root falls back to cwd.
+        let result = detect_repo_root();
+        assert!(result.is_some(), "detect_repo_root must never return None");
     }
 }

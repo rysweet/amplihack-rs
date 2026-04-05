@@ -168,3 +168,110 @@ fn safe_name_strips_special_chars() {
     assert_eq!(safe_progress_name("my-recipe/v2!"), "v2_");
     assert_eq!(safe_progress_name("hello world"), "hello_world");
 }
+
+// ── Workstream sidecar (PR #4075) ────────────────────────────────────
+
+#[test]
+fn workstream_state_round_trip() {
+    let ws = WorkstreamState {
+        workstream_id: "ws-1".into(),
+        status: ProgressStatus::Running,
+        last_step: Some("step-3".into()),
+        timestamp: 1700000000.0,
+        error_message: None,
+        elapsed_seconds: Some(42.0),
+    };
+    let json = serde_json::to_string(&ws).unwrap();
+    let parsed: WorkstreamState = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.workstream_id, "ws-1");
+    assert_eq!(parsed.status, ProgressStatus::Running);
+    assert_eq!(parsed.elapsed_seconds, Some(42.0));
+}
+
+#[test]
+fn read_workstream_state_missing_file() {
+    let states = read_workstream_state(std::path::Path::new("/nonexistent/file.json"));
+    assert!(states.is_empty());
+}
+
+#[test]
+fn read_workstream_state_from_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ws-state.json");
+    let data = r#"[{"workstream_id":"w1","status":"completed","timestamp":1.0}]"#;
+    std::fs::write(&path, data).unwrap();
+    let states = read_workstream_state(&path);
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].workstream_id, "w1");
+}
+
+#[test]
+fn merge_workstream_creates_progress_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_path = dir.path().join("state.json");
+    let progress_path = dir.path().join("progress.json");
+
+    let state_data = serde_json::json!([
+        {"workstream_id": "ws-a", "status": "running", "timestamp": 1.0},
+        {"workstream_id": "ws-b", "status": "completed", "timestamp": 2.0}
+    ]);
+    std::fs::write(&state_path, state_data.to_string()).unwrap();
+
+    merge_workstream_state_into_progress(&state_path, &progress_path).unwrap();
+
+    let result: Vec<WorkstreamState> =
+        serde_json::from_str(&std::fs::read_to_string(&progress_path).unwrap()).unwrap();
+    assert_eq!(result.len(), 2);
+}
+
+#[test]
+fn merge_workstream_updates_existing() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_path = dir.path().join("state.json");
+    let progress_path = dir.path().join("progress.json");
+
+    // Pre-existing progress
+    let existing = serde_json::json!([
+        {"workstream_id": "ws-a", "status": "running", "timestamp": 1.0}
+    ]);
+    std::fs::write(&progress_path, existing.to_string()).unwrap();
+
+    // New state with updated status
+    let new_state = serde_json::json!([
+        {"workstream_id": "ws-a", "status": "completed", "timestamp": 2.0},
+        {"workstream_id": "ws-c", "status": "running", "timestamp": 3.0}
+    ]);
+    std::fs::write(&state_path, new_state.to_string()).unwrap();
+
+    merge_workstream_state_into_progress(&state_path, &progress_path).unwrap();
+
+    let result: Vec<WorkstreamState> =
+        serde_json::from_str(&std::fs::read_to_string(&progress_path).unwrap()).unwrap();
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].workstream_id, "ws-a");
+    assert_eq!(result[0].status, ProgressStatus::Completed);
+    assert_eq!(result[1].workstream_id, "ws-c");
+}
+
+#[test]
+fn merge_workstream_noop_when_state_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_path = dir.path().join("state.json");
+    let progress_path = dir.path().join("progress.json");
+    std::fs::write(&state_path, "[]").unwrap();
+
+    merge_workstream_state_into_progress(&state_path, &progress_path).unwrap();
+    assert!(!progress_path.exists());
+}
+
+#[test]
+fn workstream_env_paths_unset() {
+    // These env vars are not expected to be set in test env.
+    // Just verify the functions return None gracefully.
+    unsafe {
+        std::env::remove_var("AMPLIHACK_WORKSTREAM_PROGRESS_FILE");
+        std::env::remove_var("AMPLIHACK_WORKSTREAM_STATE_FILE");
+    }
+    assert!(workstream_progress_sidecar_path().is_none());
+    assert!(workstream_state_file_path().is_none());
+}
