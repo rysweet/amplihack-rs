@@ -31,9 +31,7 @@ fn parse_memory_type(s: &str) -> PyResult<MemoryType> {
         "error_pattern" => Ok(MemoryType::ErrorPattern),
         "conversation" => Ok(MemoryType::Conversation),
         "task" => Ok(MemoryType::Task),
-        _ => Err(PyRuntimeError::new_err(format!(
-            "Unknown memory type: {s}"
-        ))),
+        _ => Err(PyRuntimeError::new_err(format!("Unknown memory type: {s}"))),
     }
 }
 
@@ -48,10 +46,7 @@ fn entry_to_py_dict<'py>(py: Python<'py>, entry: &MemoryEntry) -> PyResult<Bound
     dict.set_item("created_at", entry.created_at)?;
     dict.set_item("accessed_at", entry.accessed_at)?;
     dict.set_item("importance", entry.importance)?;
-    dict.set_item(
-        "tags",
-        entry.tags.iter().collect::<Vec<_>>(),
-    )?;
+    dict.set_item("tags", entry.tags.iter().collect::<Vec<_>>())?;
     Ok(dict)
 }
 
@@ -149,10 +144,7 @@ impl PyMemory {
             .recall(query, opts)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-        entries
-            .iter()
-            .map(|e| entry_to_py_dict(py, e))
-            .collect()
+        entries.iter().map(|e| entry_to_py_dict(py, e)).collect()
     }
 
     /// Delete a memory by ID.

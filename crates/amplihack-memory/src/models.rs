@@ -150,7 +150,10 @@ impl MemoryEntry {
         map.insert("id".into(), serde_json::json!(self.id));
         map.insert("session_id".into(), serde_json::json!(self.session_id));
         map.insert("agent_id".into(), serde_json::json!(self.agent_id));
-        map.insert("memory_type".into(), serde_json::json!(self.memory_type.as_str()));
+        map.insert(
+            "memory_type".into(),
+            serde_json::json!(self.memory_type.as_str()),
+        );
         map.insert("title".into(), serde_json::json!(self.title));
         map.insert("content".into(), serde_json::json!(self.content));
         map.insert("metadata".into(), serde_json::json!(self.metadata));
@@ -163,11 +166,8 @@ impl MemoryEntry {
 
     /// Construct from a HashMap (matches Python `MemoryEntry.from_dict()`).
     pub fn from_dict(map: &HashMap<String, serde_json::Value>) -> anyhow::Result<Self> {
-        let json_val = serde_json::Value::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-        );
+        let json_val =
+            serde_json::Value::Object(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
         serde_json::from_value(json_val).map_err(Into::into)
     }
 
@@ -200,7 +200,10 @@ impl SessionInfo {
         map.insert("agent_ids".into(), serde_json::json!(self.agent_ids));
         map.insert("memory_count".into(), serde_json::json!(self.memory_count));
         map.insert("created_at".into(), serde_json::json!(self.created_at));
-        map.insert("last_accessed".into(), serde_json::json!(self.last_accessed));
+        map.insert(
+            "last_accessed".into(),
+            serde_json::json!(self.last_accessed),
+        );
         map
     }
 }
