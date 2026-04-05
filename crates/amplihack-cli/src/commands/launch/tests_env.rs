@@ -259,3 +259,82 @@ fn persist_launcher_context_writes_copilot_context_file() {
         Some("copilot")
     );
 }
+
+#[test]
+fn build_command_skips_dangerous_flag_for_copilot() {
+    let _home_guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let original_home = set_home(home.path());
+    let original_cwd = set_cwd(cwd.path()).unwrap();
+    let previous_uv_python = std::env::var_os("UV_PYTHON");
+    unsafe { std::env::set_var("UV_PYTHON", "1") };
+
+    let binary = BinaryInfo {
+        name: "copilot".to_string(),
+        path: PathBuf::from("/usr/bin/copilot"),
+        version: None,
+    };
+    // skip_permissions = true, but tool is copilot → no --dangerously-skip-permissions
+    let cmd = build_command(&binary, false, false, true, &[]);
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+
+    restore_cwd(&original_cwd).unwrap();
+    restore_home(original_home);
+    match previous_uv_python {
+        Some(value) => unsafe { std::env::set_var("UV_PYTHON", value) },
+        None => unsafe { std::env::remove_var("UV_PYTHON") },
+    }
+
+    assert!(
+        !args.contains(&"--dangerously-skip-permissions".to_string()),
+        "copilot must not receive --dangerously-skip-permissions, got: {args:?}"
+    );
+    // Copilot should also not get the Claude default model
+    assert!(
+        !args.iter().any(|a| a == "opus[1m]"),
+        "copilot must not get Claude's default model, got: {args:?}"
+    );
+}
+
+#[test]
+fn build_command_injects_dangerous_flag_for_claude() {
+    let _home_guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let original_home = set_home(home.path());
+    let original_cwd = set_cwd(cwd.path()).unwrap();
+    let previous_uv_python = std::env::var_os("UV_PYTHON");
+    unsafe { std::env::set_var("UV_PYTHON", "1") };
+
+    let binary = BinaryInfo {
+        name: "claude".to_string(),
+        path: PathBuf::from("/usr/bin/claude"),
+        version: None,
+    };
+    // skip_permissions = true + tool is claude → should inject
+    let cmd = build_command(&binary, false, false, true, &[]);
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+
+    restore_cwd(&original_cwd).unwrap();
+    restore_home(original_home);
+    match previous_uv_python {
+        Some(value) => unsafe { std::env::set_var("UV_PYTHON", value) },
+        None => unsafe { std::env::remove_var("UV_PYTHON") },
+    }
+
+    assert!(
+        args.contains(&"--dangerously-skip-permissions".to_string()),
+        "claude should receive --dangerously-skip-permissions, got: {args:?}"
+    );
+}

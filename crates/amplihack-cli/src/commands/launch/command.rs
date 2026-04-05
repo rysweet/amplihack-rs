@@ -39,15 +39,21 @@ pub(super) fn build_command_for_dir(
     // SEC-2: Only inject --dangerously-skip-permissions when the caller has
     // explicitly opted in via `--skip-permissions`.  This flag bypasses
     // Claude's interactive confirmation prompts and must not be on by default.
-    if skip_permissions {
+    // Only inject for Claude-compatible tools — Copilot and Codex don't support it.
+    let is_claude_compatible = matches!(
+        binary.name.as_str(),
+        "claude" | "rusty" | "rustyclawd" | "amplifier"
+    );
+    if skip_permissions && is_claude_compatible {
         cmd.arg("--dangerously-skip-permissions");
     }
 
     inject_uvx_plugin_args(&mut cmd, &binary.name, extra_args, add_dir_override);
 
-    // Inject --model unless user already supplied one
+    // Inject --model unless user already supplied one.
+    // Default model depends on the tool — Claude uses opus[1m], Copilot uses its own default.
     let user_has_model = extra_args.iter().any(|a| a == "--model");
-    if !user_has_model {
+    if !user_has_model && is_claude_compatible {
         let default_model =
             std::env::var("AMPLIHACK_DEFAULT_MODEL").unwrap_or_else(|_| "opus[1m]".to_string());
         cmd.arg("--model");
