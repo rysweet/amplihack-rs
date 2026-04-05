@@ -27,16 +27,80 @@ struct SimulatedAgent {
 
 /// Knowledge domains and their keywords for matching.
 const DOMAINS: &[(&str, &[&str])] = &[
-    ("ownership", &["ownership", "borrow", "lifetime", "move", "drop", "RAII"]),
-    ("concurrency", &["thread", "async", "race", "mutex", "channel", "sync", "send"]),
-    ("types", &["trait", "enum", "struct", "generic", "type", "polymorphism", "dyn"]),
-    ("errors", &["error", "result", "option", "panic", "unwrap", "?", "anyhow"]),
-    ("strings", &["str", "String", "UTF", "slice", "format", "display"]),
-    ("memory", &["heap", "stack", "allocation", "box", "rc", "arc", "reference"]),
-    ("unsafe", &["unsafe", "raw pointer", "FFI", "extern", "transmute"]),
-    ("macros", &["macro", "derive", "proc_macro", "attribute", "token"]),
-    ("cargo", &["cargo", "crate", "dependency", "build", "workspace", "feature"]),
-    ("testing", &["test", "assert", "mock", "benchmark", "criterion", "proptest"]),
+    (
+        "ownership",
+        &["ownership", "borrow", "lifetime", "move", "drop", "RAII"],
+    ),
+    (
+        "concurrency",
+        &[
+            "thread", "async", "race", "mutex", "channel", "sync", "send",
+        ],
+    ),
+    (
+        "types",
+        &[
+            "trait",
+            "enum",
+            "struct",
+            "generic",
+            "type",
+            "polymorphism",
+            "dyn",
+        ],
+    ),
+    (
+        "errors",
+        &[
+            "error", "result", "option", "panic", "unwrap", "?", "anyhow",
+        ],
+    ),
+    (
+        "strings",
+        &["str", "String", "UTF", "slice", "format", "display"],
+    ),
+    (
+        "memory",
+        &[
+            "heap",
+            "stack",
+            "allocation",
+            "box",
+            "rc",
+            "arc",
+            "reference",
+        ],
+    ),
+    (
+        "unsafe",
+        &["unsafe", "raw pointer", "FFI", "extern", "transmute"],
+    ),
+    (
+        "macros",
+        &["macro", "derive", "proc_macro", "attribute", "token"],
+    ),
+    (
+        "cargo",
+        &[
+            "cargo",
+            "crate",
+            "dependency",
+            "build",
+            "workspace",
+            "feature",
+        ],
+    ),
+    (
+        "testing",
+        &[
+            "test",
+            "assert",
+            "mock",
+            "benchmark",
+            "criterion",
+            "proptest",
+        ],
+    ),
 ];
 
 impl SimulatedAgent {
@@ -121,10 +185,7 @@ impl SimulatedAgent {
 /// 2. For each question, each agent produces a response event
 /// 3. Responses are pre-loaded into the bus (simulating async delivery)
 /// 4. `run_eval()` collects and aggregates results
-fn simulate_100_agents(
-    bus: &mut LocalEventBus,
-    questions: &[String],
-) -> Vec<SimulatedAgent> {
+fn simulate_100_agents(bus: &mut LocalEventBus, questions: &[String]) -> Vec<SimulatedAgent> {
     let agents: Vec<SimulatedAgent> = (0..100)
         .map(|i| SimulatedAgent::new(i, i % DOMAINS.len()))
         .collect();
@@ -230,8 +291,7 @@ fn hundred_agent_eval_produces_high_aggregate_confidence() {
 
     assert_eq!(result.total_queries, 5, "Should have 5 queries");
     assert_eq!(
-        result.total_responses,
-        500,
+        result.total_responses, 500,
         "100 agents × 5 questions = 500 responses"
     );
     assert!(
@@ -268,10 +328,7 @@ fn domain_specialists_outscore_generalists() {
     let mut domain_scores: HashMap<&str, Vec<f64>> = HashMap::new();
     for agent in &agents {
         let conf = agent.confidence_for(question);
-        domain_scores
-            .entry(agent.domain)
-            .or_default()
-            .push(conf);
+        domain_scores.entry(agent.domain).or_default().push(conf);
     }
 
     let ownership_avg: f64 = {
@@ -361,9 +418,7 @@ fn eval_result_serialization_roundtrip() {
 
     assert_eq!(restored.total_queries, eval_result.total_queries);
     assert_eq!(restored.total_responses, eval_result.total_responses);
-    assert!(
-        (restored.average_confidence - eval_result.average_confidence).abs() < f64::EPSILON
-    );
+    assert!((restored.average_confidence - eval_result.average_confidence).abs() < f64::EPSILON);
 }
 
 #[test]
@@ -426,18 +481,12 @@ fn eval_report_summary() {
     println!("\n=== 100-Agent Hive Eval Report ===");
     println!("Total queries:    {}", result.total_queries);
     println!("Total responses:  {}", result.total_responses);
-    println!(
-        "Avg confidence:   {:.4}",
-        result.average_confidence
-    );
+    println!("Avg confidence:   {:.4}", result.average_confidence);
     println!();
 
     for qr in &result.query_results {
         let best = qr.best_answer().unwrap();
-        println!(
-            "Q: {}",
-            &qr.question[..qr.question.len().min(60)]
-        );
+        println!("Q: {}", &qr.question[..qr.question.len().min(60)]);
         println!(
             "  Best: {} (confidence: {:.3})",
             best.agent_id, best.confidence
