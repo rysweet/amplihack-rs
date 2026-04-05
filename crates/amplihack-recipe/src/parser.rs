@@ -149,8 +149,7 @@ impl RecipeParser {
 
         let context = extract_step_context(mapping);
 
-        let max_env_value_bytes = extract_u64(mapping, "max_env_value_bytes")
-            .map(|v| v as usize);
+        let max_env_value_bytes = extract_u64(mapping, "max_env_value_bytes").map(|v| v as usize);
 
         warn_unrecognized_fields(mapping, &id);
 
