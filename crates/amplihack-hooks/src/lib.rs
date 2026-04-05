@@ -28,6 +28,15 @@ pub mod user_prompt;
 /// Workflow classification reminder hook: injects topic-boundary routing guidance.
 pub mod workflow_classification;
 
+/// Copilot stop handler utilities (continuation, lock cleanup, decision log).
+pub mod copilot_stop_handler;
+/// Hook file installation verification.
+pub mod hook_verification;
+/// Known amplihack skill name registry.
+pub mod known_skills;
+/// Host-specific hook strategies (Claude, Copilot).
+pub mod strategies;
+
 // Re-export hook structs for ergonomic access.
 /// Post-tool-use hook implementation.
 pub use post_tool_use::PostToolUseHook;

@@ -17,6 +17,7 @@ pub mod claude_binary_manager;
 pub mod codex;
 pub mod completion_signals;
 pub mod completion_verifier;
+pub mod copilot_auto_install;
 pub mod copilot_launcher;
 pub mod copilot_mcp;
 pub mod copilot_staging;
@@ -30,6 +31,8 @@ pub mod repo_checkout;
 pub mod session_capture;
 pub mod session_tracker;
 pub mod settings_manager;
+pub mod staging_cleanup;
+pub mod staging_safety;
 pub mod work_summary;
 
 pub use amplifier::AmplifierInfo;

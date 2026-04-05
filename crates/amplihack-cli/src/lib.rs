@@ -12,9 +12,11 @@ pub mod auto_mode_ui;
 pub mod auto_mode_work_summary;
 pub mod auto_mode_work_summary_generator;
 pub mod auto_stager;
+pub mod auto_update;
 pub mod binary_finder;
 pub mod bootstrap;
 mod cli_commands;
+pub mod cli_extensions;
 mod cli_subcommands;
 #[cfg(test)]
 mod cli_tests;
@@ -30,17 +32,21 @@ pub mod env_builder;
 /// sessions on the local machine.  Separate from Azure-VM fleet orchestration
 /// in `commands/fleet.rs`.
 pub mod fleet_local;
+pub mod health_check;
 pub mod launcher;
 pub mod launcher_context;
 pub mod memory_config;
 pub mod nesting;
 pub mod resolve_bundle_asset;
+pub mod runtime_assets;
+pub mod rust_trial;
 pub mod session_tracker;
 pub mod settings_manager;
 pub mod signals;
 #[cfg(test)]
 pub mod test_support;
 pub mod tool_update_check;
+pub mod uninstall;
 pub mod update;
 pub mod util;
 

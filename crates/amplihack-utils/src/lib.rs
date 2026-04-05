@@ -32,6 +32,7 @@ pub mod kb_types;
 pub mod knowledge_builder;
 pub mod litellm_callbacks;
 pub mod llm_client;
+pub mod observability;
 pub mod plugin_cli;
 pub mod plugin_manager;
 pub(crate) mod plugin_manager_paths;
@@ -42,6 +43,8 @@ pub mod prerequisites;
 pub mod process;
 pub mod project_init;
 pub(crate) mod project_init_detect;
+/// Secure file and directory creation with restrictive permissions.
+pub mod secure_files;
 pub mod send_input_allowlist;
 pub mod settings_generator;
 pub(crate) mod settings_helpers;
