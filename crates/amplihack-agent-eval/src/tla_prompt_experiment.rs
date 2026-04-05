@@ -69,7 +69,9 @@ impl ExperimentManifest {
                 message: format!("failed to parse manifest: {}", e),
             })?;
         // Default experiment_home to the manifest's parent directory.
-        if manifest.experiment_home.as_os_str().is_empty() && let Some(parent) = path.parent() {
+        if manifest.experiment_home.as_os_str().is_empty()
+            && let Some(parent) = path.parent()
+        {
             manifest.experiment_home = parent.to_path_buf();
         }
         Ok(manifest)
