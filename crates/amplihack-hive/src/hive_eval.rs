@@ -127,6 +127,24 @@ impl HiveEvalResult {
 /// Real response collection happens asynchronously via the event bus
 /// subscription; this function provides the query-side orchestration.
 pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveEvalResult> {
+    run_eval_with_responder(bus, config, None)
+}
+
+/// A responder callback invoked after each query is published.
+/// Receives the bus, query_id, and question text so it can inject agent responses.
+pub type EvalResponder = Box<dyn FnMut(&mut dyn EventBus, &str, &str)>;
+
+/// Run evaluation with an optional responder callback for local simulation.
+///
+/// When `responder` is `Some`, the callback is invoked after each query is
+/// published, giving it a chance to inject agent responses into the bus
+/// before `collect_responses` polls. This makes `run_eval` work correctly
+/// with `LocalEventBus` for testing and local simulation.
+pub fn run_eval_with_responder(
+    bus: &mut dyn EventBus,
+    config: &HiveEvalConfig,
+    mut responder: Option<EvalResponder>,
+) -> Result<HiveEvalResult> {
     if config.questions.is_empty() {
         return Err(HiveError::Workload(
             "No evaluation questions provided".into(),
@@ -157,7 +175,12 @@ pub fn run_eval(bus: &mut dyn EventBus, config: &HiveEvalConfig) -> Result<HiveE
             break;
         }
 
-        let result = eval_single_question(bus, question, config.min_responses_per_query);
+        let result = eval_single_question(
+            bus,
+            question,
+            config.min_responses_per_query,
+            &mut responder,
+        );
         query_results.push(result);
     }
 
@@ -182,6 +205,7 @@ fn eval_single_question(
     bus: &mut dyn EventBus,
     question: &str,
     min_responses: usize,
+    responder: &mut Option<EvalResponder>,
 ) -> QueryResult {
     let (query_id, event) = match make_query_event(question) {
         Ok(pair) => pair,
@@ -204,6 +228,11 @@ fn eval_single_question(
             question: question.to_string(),
             answers: vec![],
         };
+    }
+
+    // Let the responder inject agent responses before collecting
+    if let Some(cb) = responder {
+        cb(bus, &query_id, question);
     }
 
     let answers = collect_responses(bus, &query_id);

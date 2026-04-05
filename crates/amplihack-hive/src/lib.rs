@@ -37,7 +37,9 @@ pub use graph::{
     BROADCAST_TAG_PREFIX, CONFIDENCE_SCORE_BOOST, ESCALATION_TAG_PREFIX,
     GOSSIP_TAG_PREFIX as GRAPH_GOSSIP_TAG_PREFIX,
 };
-pub use hive_eval::{HiveEvalConfig, HiveEvalResult, QueryResult, run_eval};
+pub use hive_eval::{
+    EvalResponder, HiveEvalConfig, HiveEvalResult, QueryResult, run_eval, run_eval_with_responder,
+};
 pub use hive_events::{
     ALL_HIVE_TOPICS, HIVE_AGENT_READY, HIVE_FEED_COMPLETE, HIVE_LEARN_CONTENT, HIVE_QUERY,
     HIVE_QUERY_RESPONSE,
