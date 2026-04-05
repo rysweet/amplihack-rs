@@ -4,6 +4,8 @@
 //! and session discovery — matching the Python amplihack memory subsystem.
 
 pub mod auto_backend;
+/// Lazy memory library availability check.
+pub mod auto_install;
 pub mod backend;
 pub mod bloom;
 pub mod config;

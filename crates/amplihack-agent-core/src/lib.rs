@@ -31,6 +31,7 @@ pub mod memory_export;
 pub mod memory_retrieval;
 pub mod models;
 pub mod partition_routing;
+pub mod prompt_utils;
 pub mod runtime_factory;
 pub(crate) mod safe_calc;
 pub mod sdk_adapters;

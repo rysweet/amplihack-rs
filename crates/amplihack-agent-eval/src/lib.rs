@@ -37,6 +37,7 @@ pub mod meta_eval_experiment;
 pub mod metacognition_grader;
 pub mod run_domain_evals;
 pub mod teaching_subprocess;
+pub mod tla_prompt_experiment;
 pub mod trace_to_test;
 
 pub use agent_adapter::{AgentAdapter, AgentResponse, MockAgentAdapter, SubprocessAdapter};
