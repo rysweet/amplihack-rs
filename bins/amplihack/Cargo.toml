@@ -93,3 +93,7 @@ path = "../../tests/integration/security_hygiene_test.rs"
 [[test]]
 name = "kuzu_path_notice"
 path = "../../tests/integration/kuzu_path_notice_test.rs"
+
+[[test]]
+name = "cli_golden"
+path = "../../tests/integration/cli_golden_tests.rs"

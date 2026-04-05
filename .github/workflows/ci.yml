@@ -41,6 +41,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
 
+  install-smoke:
+    name: Install Smoke Test
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install from local checkout
+        run: cargo install --path bins/amplihack --locked
+      - name: Verify binary
+        run: |
+          amplihack --version
+          amplihack --help
+          amplihack recipe list || true
+
   cross-compile:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
