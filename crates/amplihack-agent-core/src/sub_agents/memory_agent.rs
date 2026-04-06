@@ -36,15 +36,14 @@ static POSSESSIVE_PROPER_NOUN: Lazy<Regex> =
 /// and delegates to the appropriate [`SubAgentMemory`] method.
 pub struct MemoryAgent<M> {
     memory: M,
-    #[allow(dead_code)]
-    agent_name: String,
+    _agent_name: String,
 }
 
 impl<M: SubAgentMemory> MemoryAgent<M> {
     pub fn new(memory: M, agent_name: impl Into<String>) -> Self {
         Self {
             memory,
-            agent_name: agent_name.into(),
+            _agent_name: agent_name.into(),
         }
     }
 

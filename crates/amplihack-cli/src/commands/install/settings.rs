@@ -1,7 +1,7 @@
 //! Settings.json configuration, hook contract validation, and framework verification.
 
 use super::hooks::{ensure_array, ensure_object, update_hook_paths};
-use super::paths::{global_settings_path, home_dir, xpia_hooks_dir};
+use super::paths::{global_settings_path, xpia_hooks_dir};
 use super::types::*;
 use anyhow::{Context, Result};
 use serde_json::{Map, Value, json};
@@ -293,24 +293,6 @@ fn format_optional_matcher(matcher: Option<&str>) -> String {
     matcher
         .map(str::to_string)
         .unwrap_or_else(|| "none".to_string())
-}
-
-#[allow(dead_code)]
-pub(super) fn missing_hook_paths(system: &str, files: &[&str]) -> Result<Vec<String>> {
-    let base = home_dir()?
-        .join(".amplihack")
-        .join(".claude")
-        .join("tools")
-        .join(system)
-        .join("hooks");
-    let mut missing = Vec::new();
-    for file in files {
-        let path = base.join(file);
-        if !path.exists() {
-            missing.push(format!("{system}/{file} (expected at {})", path.display()));
-        }
-    }
-    Ok(missing)
 }
 
 pub(super) fn missing_framework_paths(claude_dir: &Path) -> Result<Vec<String>> {

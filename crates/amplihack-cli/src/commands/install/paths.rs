@@ -51,18 +51,6 @@ pub(super) fn global_settings_path() -> Result<PathBuf> {
     Ok(global_claude_dir()?.join("settings.json"))
 }
 
-// Retained for symmetry with `xpia_hooks_dir()` and future install-asset
-// verification cleanup; current install code only reads the optional XPIA path.
-#[allow(dead_code)]
-pub(super) fn amplihack_hooks_dir() -> Result<PathBuf> {
-    Ok(home_dir()?
-        .join(".amplihack")
-        .join(".claude")
-        .join("tools")
-        .join("amplihack")
-        .join("hooks"))
-}
-
 /// Optional XPIA hook asset directory under the staged install.
 ///
 /// Fresh native installs use unified `amplihack-hooks <subcmd>` entries for the

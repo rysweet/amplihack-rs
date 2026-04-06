@@ -39,8 +39,7 @@ impl Default for BatchConfig {
 /// enriching parent nodes with child descriptions.
 pub struct BottomUpBatchProcessor<'a> {
     db_manager: &'a dyn DbManager,
-    #[allow(dead_code)]
-    graph_environment: GraphEnvironment,
+    _graph_environment: GraphEnvironment,
     config: BatchConfig,
     root_node: Option<NodeWithContentDto>,
     run_id: String,
@@ -63,7 +62,7 @@ impl<'a> BottomUpBatchProcessor<'a> {
         );
         Self {
             db_manager,
-            graph_environment,
+            _graph_environment: graph_environment,
             config,
             root_node,
             run_id,

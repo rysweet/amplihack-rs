@@ -204,36 +204,3 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 
     Ok(())
 }
-
-#[cfg(unix)]
-#[allow(dead_code)]
-pub(super) fn create_symlink(target: &Path, link: &Path) -> Result<()> {
-    std::os::unix::fs::symlink(target, link).with_context(|| {
-        format!(
-            "failed to create symlink {} -> {}",
-            link.display(),
-            target.display()
-        )
-    })?;
-    Ok(())
-}
-
-#[cfg(windows)]
-#[allow(dead_code)]
-pub(super) fn create_symlink(target: &Path, link: &Path) -> Result<()> {
-    let metadata = fs::metadata(target)
-        .with_context(|| format!("failed to inspect symlink target {}", target.display()))?;
-    if metadata.is_dir() {
-        std::os::windows::fs::symlink_dir(target, link)
-    } else {
-        std::os::windows::fs::symlink_file(target, link)
-    }
-    .with_context(|| {
-        format!(
-            "failed to create symlink {} -> {}",
-            link.display(),
-            target.display()
-        )
-    })?;
-    Ok(())
-}

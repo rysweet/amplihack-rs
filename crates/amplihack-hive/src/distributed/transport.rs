@@ -2,7 +2,7 @@
 
 use crate::dht::{DHTRouter, ShardFact};
 use crate::event_bus::{EventBus, LocalEventBus};
-use crate::models::{BusEvent, make_event};
+use crate::models::make_event;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -201,8 +201,8 @@ impl ShardTransport for EventBusShardTransport {
 }
 
 /// Handle an incoming SHARD_STORE event by storing the fact locally.
-#[allow(dead_code)]
-pub fn handle_shard_store(event: &BusEvent, router: &Mutex<DHTRouter>) {
+#[cfg(test)]
+pub(crate) fn handle_shard_store(event: &crate::models::BusEvent, router: &Mutex<DHTRouter>) {
     if let Some(fv) = event.payload.get("fact")
         && let Ok(fact) = serde_json::from_value::<ShardFact>(fv.clone())
         && let Ok(mut r) = router.lock()

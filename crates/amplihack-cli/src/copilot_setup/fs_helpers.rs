@@ -51,19 +51,3 @@ pub(super) fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
     }
     Ok(result)
 }
-
-#[allow(dead_code)] // Utility kept for staging operations
-pub(super) fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<()> {
-    fs::create_dir_all(dest)?;
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let source_path = entry.path();
-        let target_path = dest.join(entry.file_name());
-        if source_path.is_dir() {
-            copy_dir_recursive(&source_path, &target_path)?;
-        } else if source_path.is_file() {
-            fs::copy(&source_path, &target_path)?;
-        }
-    }
-    Ok(())
-}

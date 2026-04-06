@@ -32,12 +32,9 @@ pub type NotificationHandler = Box<dyn Fn(Value) + Send + Sync>;
 /// Tracks an open file buffer.
 struct FileBuffer {
     uri: String,
-    #[allow(dead_code)]
-    content: String,
-    #[allow(dead_code)]
-    version: i32,
-    #[allow(dead_code)]
-    language_id: String,
+    _content: String,
+    _version: i32,
+    _language_id: String,
 }
 
 /// Type alias for pending request response senders.
@@ -270,9 +267,9 @@ impl LspClient {
             relative_path.to_string(),
             FileBuffer {
                 uri: uri.clone(),
-                content,
-                version: 1,
-                language_id: language_id.to_string(),
+                _content: content,
+                _version: 1,
+                _language_id: language_id.to_string(),
             },
         );
 

@@ -62,8 +62,8 @@ fn load_skill_from_dir(dir: &Path, skill_name: &str) -> Option<SkillDef> {
     let content = fs::read_to_string(&path).ok()?;
     Some(SkillDef {
         name: skill_name.to_string(),
-        capabilities: vec![skill_name.to_string()],
-        description: format!("Skill loaded from {}", path.display()),
+        _capabilities: vec![skill_name.to_string()],
+        _description: format!("Skill loaded from {}", path.display()),
         content,
         match_score: 0.9,
     })
@@ -80,8 +80,8 @@ fn generate_generic_skill(name: &str) -> SkillDef {
     );
     SkillDef {
         name: name.to_string(),
-        capabilities: vec![name.to_string()],
-        description: format!("Generic {name} skill"),
+        _capabilities: vec![name.to_string()],
+        _description: format!("Generic {name} skill"),
         content,
         match_score: 0.5,
     }

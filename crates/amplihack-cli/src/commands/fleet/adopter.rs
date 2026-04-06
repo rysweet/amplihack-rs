@@ -1,6 +1,8 @@
+//! Session adoption — discovery and adoption of running agent sessions.
+#![allow(dead_code)]
+
 use super::*;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub(super) struct AdoptedSession {
     pub(super) vm_name: String,

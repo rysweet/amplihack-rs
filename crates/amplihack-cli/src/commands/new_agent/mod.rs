@@ -203,10 +203,8 @@ struct ExecutionPlan {
 
 struct SkillDef {
     name: String,
-    #[allow(dead_code)]
-    capabilities: Vec<String>,
-    #[allow(dead_code)]
-    description: String,
+    _capabilities: Vec<String>,
+    _description: String,
     content: String,
     match_score: f32,
 }
@@ -234,8 +232,7 @@ struct AgentBundle {
     sub_agent_configs: Vec<SubAgentConfig>,
     memory_enabled: bool,
     multi_agent: bool,
-    #[allow(dead_code)]
-    enable_spawning: bool,
+    _enable_spawning: bool,
     auto_mode_config: Value,
     metadata: Value,
 }

@@ -82,10 +82,8 @@ static CLASSIFICATION_RULES: &[ClassificationRule] = &[
 pub struct AgentSpawner {
     parent_agent_name: String,
     parent_memory_path: String,
-    #[allow(dead_code)]
-    sdk_type: String,
-    #[allow(dead_code)]
-    max_concurrent: usize,
+    _sdk_type: String,
+    _max_concurrent: usize,
     spawned: Vec<SpawnedAgent>,
     spawn_counter: usize,
     executors: HashMap<SpecialistType, ExecutorFn>,
@@ -116,8 +114,8 @@ impl AgentSpawner {
         Ok(Self {
             parent_agent_name: name.to_string(),
             parent_memory_path: parent_memory_path.to_string(),
-            sdk_type: sdk_type.to_string(),
-            max_concurrent: max_concurrent.clamp(1, 16),
+            _sdk_type: sdk_type.to_string(),
+            _max_concurrent: max_concurrent.clamp(1, 16),
             spawned: Vec::new(),
             spawn_counter: 0,
             executors,
@@ -323,9 +321,9 @@ mod tests {
     #[test]
     fn new_clamps_max_concurrent() {
         let s = AgentSpawner::new("p", "/m", "mini", 100).unwrap();
-        assert_eq!(s.max_concurrent, 16);
+        assert_eq!(s._max_concurrent, 16);
         let s2 = AgentSpawner::new("p", "/m", "mini", 0).unwrap();
-        assert_eq!(s2.max_concurrent, 1);
+        assert_eq!(s2._max_concurrent, 1);
     }
 
     #[test]

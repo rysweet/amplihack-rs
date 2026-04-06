@@ -113,7 +113,7 @@ pub(super) fn assemble_bundle(
         sub_agent_configs,
         memory_enabled: enable_memory,
         multi_agent,
-        enable_spawning,
+        _enable_spawning: enable_spawning,
         auto_mode_config,
         metadata,
     }
