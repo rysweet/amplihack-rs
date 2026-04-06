@@ -48,10 +48,7 @@ impl ClaudeBinaryManager {
     ///
     /// Search order: `CLAUDE_BINARY_PATH` env → `rustyclawd` → `claude`.
     pub fn detect_native_binary(&mut self) -> Option<&BinaryInfo> {
-        if self.cached.is_none() {
-            self.cached = Some(Self::detect_inner());
-        }
-        self.cached.as_ref().unwrap().as_ref()
+        self.cached.get_or_insert_with(Self::detect_inner).as_ref()
     }
 
     /// Build command-line arguments for launching the binary.
