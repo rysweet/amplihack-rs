@@ -8,12 +8,9 @@ use anyhow::{Result, bail};
 use tracing::{debug, warn};
 
 use super::controller::VersionController;
-use super::types::{
-    BlameCommit, BlameLineRange, CommitInfo, FileChange, PullRequestInfo, RepositoryInfo,
-};
+use super::types::{BlameCommit, CommitInfo, FileChange, RepositoryInfo};
 
 /// GitHub-backed version controller using the REST API.
-#[allow(dead_code)]
 pub struct GitHubController {
     owner: String,
     repo: String,
@@ -21,7 +18,6 @@ pub struct GitHubController {
     base_url: String,
 }
 
-#[allow(dead_code)]
 impl GitHubController {
     /// Create a new GitHub controller.
     pub fn new(owner: &str, repo: &str, token: Option<String>) -> Self {
@@ -49,52 +45,6 @@ impl GitHubController {
             "{}/repos/{}/{}/{}",
             self.base_url, self.owner, self.repo, path
         )
-    }
-
-    /// Format a blame commit DTO from raw blame data.
-    #[allow(dead_code)]
-    fn format_blame_commit(
-        &self,
-        sha: &str,
-        message: &str,
-        author: &str,
-        timestamp: &str,
-        start_line: i64,
-        end_line: i64,
-    ) -> BlameCommit {
-        BlameCommit {
-            sha: sha.into(),
-            message: message.into(),
-            author: author.into(),
-            author_email: None,
-            author_login: None,
-            timestamp: timestamp.into(),
-            url: format!(
-                "https://github.com/{}/{}/commit/{}",
-                self.owner, self.repo, sha
-            ),
-            additions: None,
-            deletions: None,
-            line_ranges: vec![BlameLineRange {
-                start: start_line,
-                end: end_line,
-            }],
-            pr_info: None,
-        }
-    }
-
-    /// Format a PR info DTO.
-    #[allow(dead_code)]
-    fn format_pr_info(&self, number: i64, title: &str, url: &str) -> PullRequestInfo {
-        PullRequestInfo {
-            number,
-            title: title.into(),
-            url: url.into(),
-            author: None,
-            merged_at: None,
-            state: "MERGED".into(),
-            body_text: None,
-        }
     }
 }
 

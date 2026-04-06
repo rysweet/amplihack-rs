@@ -101,7 +101,6 @@ impl FleetState {
     /// Returns `true` if `vm_name` is not in the exclude list.
     ///
     /// Used for managed/unmanaged labeling in the AllSessions subview.
-    #[allow(dead_code)]
     pub(super) fn is_managed_vm(&self, vm_name: &str) -> bool {
         !self.exclude_vms.iter().any(|name| name == vm_name)
     }

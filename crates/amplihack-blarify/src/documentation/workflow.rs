@@ -16,8 +16,7 @@ use crate::graph::node::GraphEnvironment;
 /// Creates and manages code workflow documentation.
 pub struct WorkflowCreator<'a> {
     db_manager: &'a dyn DbManager,
-    #[allow(dead_code)]
-    graph_environment: GraphEnvironment,
+    _graph_environment: GraphEnvironment,
 }
 
 impl<'a> WorkflowCreator<'a> {
@@ -25,7 +24,7 @@ impl<'a> WorkflowCreator<'a> {
     pub fn new(db_manager: &'a dyn DbManager, graph_environment: GraphEnvironment) -> Self {
         Self {
             db_manager,
-            graph_environment,
+            _graph_environment: graph_environment,
         }
     }
 

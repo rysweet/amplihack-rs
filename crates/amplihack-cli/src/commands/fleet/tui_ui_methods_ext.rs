@@ -151,14 +151,6 @@ impl FleetTuiUiState {
             .map(|c| c.output.clone())
     }
 
-    /// Remove all cached captures (e.g. on state reset).
-    #[allow(dead_code)]
-    pub(super) fn clear_capture_cache(&self) {
-        if let Ok(mut cache) = self.capture_cache.lock() {
-            cache.clear();
-        }
-    }
-
     // ── T4: Background channel helpers ─────────────────────────────────────
 
     /// Send a command to the background worker (best-effort; ignores broken channel).
@@ -286,7 +278,6 @@ impl FleetTuiUiState {
     }
 
     /// Discard the editor content without saving.
-    #[allow(dead_code)]
     pub(super) fn editor_discard(&mut self) {
         self.editor_active = false;
         self.editor_lines.clear();

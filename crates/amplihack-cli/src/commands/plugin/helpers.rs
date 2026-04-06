@@ -167,7 +167,7 @@ pub(super) fn is_valid_plugin_name(value: &str) -> bool {
 
 /// Fields in a plugin manifest whose values are file-system paths that may
 /// need to be resolved relative to the plugin root directory.
-#[allow(dead_code)] // Part of plugin manifest resolution API
+#[cfg(test)]
 const PATH_FIELDS: &[&str] = &["entry_point", "files", "cwd", "script", "path"];
 
 /// Resolve relative paths in a plugin manifest to absolute paths.
@@ -177,7 +177,7 @@ const PATH_FIELDS: &[&str] = &["entry_point", "files", "cwd", "script", "path"];
 /// paths anchored at `plugin_root`.  Nested objects are handled recursively.
 ///
 /// Absolute paths are left unchanged.
-#[allow(dead_code)] // Part of plugin manifest resolution API
+#[cfg(test)]
 pub(super) fn resolve_manifest_paths(manifest: &mut serde_json::Value, plugin_root: &Path) {
     if let Some(obj) = manifest.as_object_mut() {
         resolve_object_paths(obj, plugin_root);
@@ -185,7 +185,7 @@ pub(super) fn resolve_manifest_paths(manifest: &mut serde_json::Value, plugin_ro
 }
 
 /// Recursively resolve path fields inside a JSON object.
-#[allow(dead_code)] // Called by resolve_manifest_paths
+#[cfg(test)]
 fn resolve_object_paths(obj: &mut serde_json::Map<String, serde_json::Value>, plugin_root: &Path) {
     for (key, value) in obj.iter_mut() {
         let is_path_field = PATH_FIELDS.iter().any(|&f| f == key);

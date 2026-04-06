@@ -13,10 +13,9 @@ struct AgentRecord {
 
 /// A detected contradiction between two facts.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub struct Contradiction {
-    pub fact_a: String,
-    pub fact_b: String,
+pub(crate) struct Contradiction {
+    pub _fact_a: String,
+    pub _fact_b: String,
     pub resolved: bool,
 }
 
@@ -157,8 +156,8 @@ impl HiveCoordinator {
             self.contradictions.remove(0);
         }
         self.contradictions.push(Contradiction {
-            fact_a: fact_a.to_string(),
-            fact_b: fact_b.to_string(),
+            _fact_a: fact_a.to_string(),
+            _fact_b: fact_b.to_string(),
             resolved: false,
         });
     }

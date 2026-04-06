@@ -25,6 +25,7 @@
 
 use std::env;
 use std::fmt;
+use std::process::Command;
 
 use thiserror::Error;
 
@@ -82,28 +83,49 @@ pub fn is_sdk_available() -> bool {
 
 /// Send a completion request through the detected launcher.
 ///
-/// Because the Rust CLI does not embed LLM SDKs directly, this returns
-/// [`LlmClientError::NoSdkAvailable`] when no launcher is detected. When a
-/// launcher *is* detected the function currently returns a placeholder —
-/// actual subprocess delegation will be wired in a follow-up change.
+/// Delegates to the launcher binary via subprocess using `-p` flag.
+/// Returns [`LlmClientError::NoSdkAvailable`] when no launcher is detected.
 pub fn completion(prompt: &str) -> Result<String, LlmClientError> {
     let launcher = detect_launcher();
     match launcher {
         LauncherType::Unknown => Err(LlmClientError::NoSdkAvailable),
         _ => {
+            let binary = resolve_binary(&launcher);
             tracing::debug!(
                 launcher = %launcher,
+                binary = %binary,
                 prompt_len = prompt.len(),
-                "completion requested — delegating to launcher"
+                "completion requested — delegating to launcher subprocess"
             );
-            // TODO: delegate to launcher binary via subprocess.
-            // For now, return a placeholder indicating the launcher was found
-            // but direct completion is not yet wired.
-            Err(LlmClientError::LauncherError(format!(
-                "direct completion not yet implemented for {launcher}; \
-                 route LLM calls through the launcher binary"
-            )))
+            let output = Command::new(&binary)
+                .args(["-p", prompt, "--print"])
+                .output()
+                .map_err(|e| {
+                    LlmClientError::LauncherError(format!("failed to spawn {binary}: {e}"))
+                })?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(LlmClientError::LauncherError(format!(
+                    "{binary} exited with {}: {}",
+                    output.status,
+                    stderr.trim()
+                )));
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         }
+    }
+}
+
+/// Resolve the binary name for a given launcher type.
+fn resolve_binary(launcher: &LauncherType) -> String {
+    // Prefer the explicit env var if set.
+    if let Ok(bin) = env::var("AMPLIHACK_AGENT_BINARY") {
+        return bin;
+    }
+    match launcher {
+        LauncherType::ClaudeCode => "claude".to_string(),
+        LauncherType::CopilotCli => "copilot".to_string(),
+        LauncherType::Unknown => "claude".to_string(),
     }
 }
 

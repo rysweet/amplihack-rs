@@ -1,6 +1,8 @@
+//! Fleet API model DTOs — fields populated from API responses and TUI rendering.
+#![allow(dead_code)]
+
 use super::*;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AgentStatus {
     Unknown,
@@ -74,7 +76,6 @@ pub(super) struct ObservationResult {
     pub(super) matched_pattern: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(super) struct AuthResult {
     pub(super) service: String,
@@ -85,7 +86,6 @@ pub(super) struct AuthResult {
     pub(super) duration_seconds: f64,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ActionType {
     StartAgent,
@@ -191,7 +191,6 @@ pub(super) struct AdmiralStats {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Fields populated from API response for future TUI display
 pub(super) struct VmInfo {
     pub(super) name: String,
     pub(super) session_name: String,
