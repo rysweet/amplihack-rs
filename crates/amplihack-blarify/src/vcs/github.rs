@@ -15,7 +15,7 @@ pub struct GitHubController {
     owner: String,
     repo: String,
     token: Option<String>,
-    base_url: String,
+    _base_url: String,
 }
 
 impl GitHubController {
@@ -25,11 +25,12 @@ impl GitHubController {
             owner: owner.into(),
             repo: repo.into(),
             token,
-            base_url: "https://api.github.com".into(),
+            _base_url: "https://api.github.com".into(),
         }
     }
 
     /// Build authorization headers for API requests.
+    #[allow(dead_code)]
     fn auth_headers(&self) -> HashMap<String, String> {
         let mut headers = HashMap::new();
         headers.insert("Accept".into(), "application/vnd.github.v3+json".into());
@@ -40,10 +41,11 @@ impl GitHubController {
     }
 
     /// Build the full URL for an API endpoint.
+    #[allow(dead_code)]
     fn api_url(&self, path: &str) -> String {
         format!(
             "{}/repos/{}/{}/{}",
-            self.base_url, self.owner, self.repo, path
+            self._base_url, self.owner, self.repo, path
         )
     }
 }
