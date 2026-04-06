@@ -33,6 +33,23 @@ pub(super) fn extract_prompt_args(args: &[String]) -> Option<ParsedPromptArgs> {
         index += 1;
     }
 
+    // If no explicit -p/--prompt was given, treat the last non-flag passthrough
+    // arg as the prompt when it's the only such arg. This lets users write
+    // `amplihack copilot --auto -- "do X"` instead of `-- -p "do X"`.
+    // We only do this when there's exactly one non-flag arg to avoid ambiguity
+    // (e.g. `--model sonnet "prompt"` has two non-flag args: "sonnet" and "prompt").
+    if prompt.is_none() {
+        let non_flag_indices: Vec<usize> = passthrough_args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| !a.starts_with('-'))
+            .map(|(i, _)| i)
+            .collect();
+        if non_flag_indices.len() == 1 {
+            prompt = Some(passthrough_args.remove(non_flag_indices[0]));
+        }
+    }
+
     Some(ParsedPromptArgs {
         prompt: prompt?,
         passthrough_args,

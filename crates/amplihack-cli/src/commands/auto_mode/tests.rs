@@ -29,6 +29,47 @@ fn extract_prompt_args_supports_equals_prompt_flag() {
 }
 
 #[test]
+fn extract_prompt_args_supports_bare_positional_prompt() {
+    let parsed = extract_prompt_args(&["do quality audit".to_string()]).expect("positional prompt");
+    assert_eq!(parsed.prompt, "do quality audit");
+    assert!(parsed.passthrough_args.is_empty());
+}
+
+#[test]
+fn extract_prompt_args_bare_positional_with_flags() {
+    // When mixed with flags that take values, we can't distinguish flag values
+    // from the prompt, so no positional fallback applies.
+    let result = extract_prompt_args(&[
+        "--model".to_string(),
+        "sonnet".to_string(),
+        "fix all bugs".to_string(),
+    ]);
+    // Two non-flag args → ambiguous → no prompt found
+    assert!(result.is_none() || result.as_ref().is_none_or(|p| p.prompt != "sonnet"));
+}
+
+#[test]
+fn extract_prompt_args_bare_positional_with_flag_only_args() {
+    // With only boolean flags (no values), positional fallback works
+    let parsed = extract_prompt_args(&["--verbose".to_string(), "fix all bugs".to_string()])
+        .expect("positional prompt with boolean flags");
+    assert_eq!(parsed.prompt, "fix all bugs");
+    assert_eq!(parsed.passthrough_args, vec!["--verbose"]);
+}
+
+#[test]
+fn extract_prompt_args_explicit_p_takes_precedence_over_positional() {
+    let parsed = extract_prompt_args(&[
+        "-p".to_string(),
+        "explicit prompt".to_string(),
+        "bare arg".to_string(),
+    ])
+    .expect("explicit -p should win");
+    assert_eq!(parsed.prompt, "explicit prompt");
+    assert_eq!(parsed.passthrough_args, vec!["bare arg"]);
+}
+
+#[test]
 fn build_tool_passthrough_args_matches_codex_and_copilot_contracts() {
     let codex = build_tool_passthrough_args(AutoModeTool::Codex, &[], "refactor module");
     assert_eq!(

@@ -28,7 +28,7 @@ pub fn run_auto_mode(
     let result = (|| -> Result<()> {
         let parsed = extract_prompt_args(&raw_args).with_context(|| {
             format!(
-                "--auto requires a prompt via {} -- -p \"prompt\"",
+                "--auto requires a prompt: {} --auto -- \"prompt\" (or -- -p \"prompt\")",
                 tool.subcommand()
             )
         })?;
