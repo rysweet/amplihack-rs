@@ -103,9 +103,14 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ExitStatu
         Ok(result) => result.context("failed to wait for subprocess"),
         Err(_elapsed) => {
             #[cfg(unix)]
-            let _ = Command::new("kill")
-                .args(["-TERM", &pid.to_string()])
-                .status();
+            {
+                let kill_result = Command::new("kill")
+                    .args(["-TERM", &pid.to_string()])
+                    .status();
+                if let Err(e) = kill_result {
+                    tracing::warn!(pid, error = %e, "failed to terminate timed-out subprocess");
+                }
+            }
             bail!(
                 "subprocess timed out after {} seconds (pid {})",
                 timeout.as_secs(),
@@ -131,9 +136,14 @@ pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Ou
         Ok(result) => result.context("failed to wait for subprocess output"),
         Err(_elapsed) => {
             #[cfg(unix)]
-            let _ = Command::new("kill")
-                .args(["-TERM", &pid.to_string()])
-                .status();
+            {
+                let kill_result = Command::new("kill")
+                    .args(["-TERM", &pid.to_string()])
+                    .status();
+                if let Err(e) = kill_result {
+                    tracing::warn!(pid, error = %e, "failed to terminate timed-out subprocess");
+                }
+            }
             bail!(
                 "subprocess timed out after {} seconds (pid {})",
                 timeout.as_secs(),

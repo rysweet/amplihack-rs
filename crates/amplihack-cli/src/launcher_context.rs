@@ -113,7 +113,9 @@ fn restrict_permissions(path: &Path) {
     if let Ok(metadata) = fs::metadata(path) {
         let mut permissions = metadata.permissions();
         permissions.set_mode(0o600);
-        let _ = fs::set_permissions(path, permissions);
+        if let Err(e) = fs::set_permissions(path, permissions) {
+            tracing::warn!(path = %path.display(), error = %e, "failed to restrict file permissions");
+        }
     }
 }
 

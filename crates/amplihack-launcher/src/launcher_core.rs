@@ -136,9 +136,15 @@ impl ClaudeLauncher {
         let Some(ref repo) = self.config.checkout_repo else {
             return Ok(true);
         };
+        // SEC: Validate repo doesn't start with `-` to prevent git option injection,
+        // and use `--` terminator to separate options from the repository argument.
+        if repo.starts_with('-') {
+            warn!(repo = %repo, "Rejecting repository: must not start with '-'");
+            return Ok(false);
+        }
         info!(repo = %repo, "Checking out repository...");
         let status = Command::new("git")
-            .args(["clone", "--depth", "1", repo])
+            .args(["clone", "--depth", "1", "--", repo])
             .status()
             .context("failed to run git clone")?;
         if !status.success() {

@@ -30,13 +30,19 @@ struct SessionState {
 
 impl SettingsManager {
     pub fn new(settings_path: PathBuf, session_id: String, non_interactive: bool) -> Self {
+        // SEC: Sanitize session_id to prevent path traversal — only allow
+        // alphanumeric, hyphens, and underscores.
+        let safe_session_id: String = session_id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
         let home = dirs_or_home();
         let session_state_dir = home.join(".claude").join("runtime").join("sessions");
-        let session_state_file = session_state_dir.join(format!("{session_id}_backup.json"));
+        let session_state_file = session_state_dir.join(format!("{safe_session_id}_backup.json"));
 
         Self {
             settings_path,
-            session_id,
+            session_id: safe_session_id,
             non_interactive,
             backup_path: None,
             session_state_dir,
