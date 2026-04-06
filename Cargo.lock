@@ -25,7 +25,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "amplihack"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "amplihack-cli",
  "amplihack-hooks",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-core"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "amplihack-memory",
  "async-trait",
@@ -60,7 +60,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-eval"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "chrono",
  "serde",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-generator"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "chrono",
  "serde",
@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-asset-resolver-bin"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "amplihack-cli",
  "tracing",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-blarify"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "anyhow",
  "chrono",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-cli"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "amplihack-hive",
  "amplihack-state",
@@ -145,7 +145,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-context"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "anyhow",
  "chrono",
@@ -157,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-delegation"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "chrono",
  "globset",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-domain-agents"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "amplihack-agent-core",
  "amplihack-memory",
@@ -188,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-fleet"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "anyhow",
  "serde",
@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hive"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "amplihack-agent-core",
  "amplihack-memory",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "amplihack-cli",
  "amplihack-security",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks-bin"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "amplihack-hooks",
  "amplihack-state",
@@ -246,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-launcher"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "anyhow",
  "chrono",
@@ -261,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-memory"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "anyhow",
  "md-5",
@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-multilspy"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-recipe"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "anyhow",
  "libc",
@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-recovery"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "anyhow",
  "chrono",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-remote"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "anyhow",
  "chrono",
@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-safety"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "serde",
  "serde_json",
@@ -349,7 +349,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-security"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "once_cell",
  "regex",
@@ -362,7 +362,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-state"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "amplihack-types",
  "libc",
@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-types"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "serde",
  "serde_json",
@@ -385,7 +385,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-utils"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "chrono",
  "libc",
@@ -401,7 +401,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-workflows"
-version = "0.7.30"
+version = "0.7.31"
 dependencies = [
  "chrono",
  "serde",
