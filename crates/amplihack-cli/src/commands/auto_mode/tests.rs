@@ -30,8 +30,7 @@ fn extract_prompt_args_supports_equals_prompt_flag() {
 
 #[test]
 fn extract_prompt_args_supports_bare_positional_prompt() {
-    let parsed =
-        extract_prompt_args(&["do quality audit".to_string()]).expect("positional prompt");
+    let parsed = extract_prompt_args(&["do quality audit".to_string()]).expect("positional prompt");
     assert_eq!(parsed.prompt, "do quality audit");
     assert!(parsed.passthrough_args.is_empty());
 }
@@ -52,11 +51,8 @@ fn extract_prompt_args_bare_positional_with_flags() {
 #[test]
 fn extract_prompt_args_bare_positional_with_flag_only_args() {
     // With only boolean flags (no values), positional fallback works
-    let parsed = extract_prompt_args(&[
-        "--verbose".to_string(),
-        "fix all bugs".to_string(),
-    ])
-    .expect("positional prompt with boolean flags");
+    let parsed = extract_prompt_args(&["--verbose".to_string(), "fix all bugs".to_string()])
+        .expect("positional prompt with boolean flags");
     assert_eq!(parsed.prompt, "fix all bugs");
     assert_eq!(parsed.passthrough_args, vec!["--verbose"]);
 }
