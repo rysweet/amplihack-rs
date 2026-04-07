@@ -353,4 +353,48 @@ mod tests {
             other => panic!("expected RustyClawd command, got {other:?}"),
         }
     }
+
+    #[test]
+    fn copilot_passthrough_without_double_dash() {
+        // The user must be able to write `amplihack copilot --continue`
+        // and have `--continue` forwarded to the copilot binary without
+        // requiring `amplihack copilot -- --continue`.
+        let cli = Cli::try_parse_from(["amplihack", "copilot", "--continue"])
+            .expect("copilot should accept unknown --flags as passthrough args");
+        match cli.command {
+            Commands::Copilot { args, .. } => {
+                assert_eq!(args, vec!["--continue"]);
+            }
+            other => panic!("expected copilot command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn all_tool_commands_passthrough_unknown_flags() {
+        // Verify every tool subcommand forwards unknown --flags without
+        // requiring the explicit `--` separator (Python parity).
+        let cases: Vec<(&[&str], &str)> = vec![
+            (&["amplihack", "copilot", "--continue"], "copilot"),
+            (&["amplihack", "codex", "--quiet", "--model", "o3"], "codex"),
+            (&["amplihack", "amplifier", "--verbose"], "amplifier"),
+            (&["amplihack", "claude", "--print"], "claude"),
+            (&["amplihack", "launch", "--print"], "launch"),
+        ];
+        for (argv, label) in cases {
+            let cli = Cli::try_parse_from(argv)
+                .unwrap_or_else(|e| panic!("{label} should accept passthrough args: {e}"));
+            let extra = match cli.command {
+                Commands::Copilot { args, .. } => args,
+                Commands::Codex { args, .. } => args,
+                Commands::Amplifier { args, .. } => args,
+                Commands::Claude { claude_args, .. } => claude_args,
+                Commands::Launch { claude_args, .. } => claude_args,
+                other => panic!("unexpected variant for {label}: {other:?}"),
+            };
+            assert!(
+                !extra.is_empty(),
+                "{label}: passthrough args should not be empty"
+            );
+        }
+    }
 }
