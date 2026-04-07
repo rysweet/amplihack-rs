@@ -58,7 +58,7 @@ pub enum Commands {
         #[arg(long = "ui")]
         ui: bool,
         /// Extra args passed to claude
-        #[arg(trailing_var_arg = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
     },
     /// Launch Claude Code (alias)
@@ -88,7 +88,7 @@ pub enum Commands {
         #[arg(long = "ui")]
         ui: bool,
         /// Extra args passed to claude
-        #[arg(trailing_var_arg = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
     },
     /// Launch GitHub Copilot CLI
@@ -115,7 +115,7 @@ pub enum Commands {
         #[arg(long = "ui")]
         ui: bool,
         /// Extra args passed to copilot
-        #[arg(trailing_var_arg = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Launch OpenAI Codex CLI
@@ -142,7 +142,7 @@ pub enum Commands {
         #[arg(long = "ui")]
         ui: bool,
         /// Extra args passed to codex
-        #[arg(trailing_var_arg = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Launch Amplifier
@@ -169,7 +169,7 @@ pub enum Commands {
         #[arg(long = "ui")]
         ui: bool,
         /// Extra args passed to amplifier
-        #[arg(trailing_var_arg = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     /// Plugin management
