@@ -29,13 +29,14 @@ impl BinaryFinder {
     ///
     /// Search order:
     /// 1. `AMPLIHACK_{TOOL}_BINARY_PATH` env var (exact override)
-    /// 2. PATH search for known binary names
+    /// 2. `{TOOL}_BINARY_PATH` env var (Python parity, e.g. CLAUDE_BINARY_PATH)
+    /// 3. PATH search for known binary names
     ///
     /// Errors if the binary is not found. No fallbacks.
     pub fn find(tool: &str) -> Result<BinaryInfo> {
         let tool_upper = tool.to_uppercase();
 
-        // Check explicit override env var
+        // Check explicit override env var (amplihack-prefixed)
         let env_key = format!("AMPLIHACK_{tool_upper}_BINARY_PATH");
         if let Ok(explicit_path) = env::var(&env_key) {
             let path = PathBuf::from(&explicit_path);
@@ -48,6 +49,21 @@ impl BinaryFinder {
                 });
             }
             bail!("{env_key}={explicit_path} does not exist");
+        }
+
+        // Check tool-native env var (Python parity, e.g. CLAUDE_BINARY_PATH)
+        let native_env_key = format!("{tool_upper}_BINARY_PATH");
+        if let Ok(explicit_path) = env::var(&native_env_key) {
+            let path = PathBuf::from(&explicit_path);
+            if path.exists() {
+                let version = detect_version(&path);
+                return Ok(BinaryInfo {
+                    name: tool.to_string(),
+                    path,
+                    version,
+                });
+            }
+            bail!("{native_env_key}={explicit_path} does not exist");
         }
 
         // Search PATH for known binary names

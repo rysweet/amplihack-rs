@@ -40,9 +40,8 @@ impl RecipeCache {
     fn register(&mut self, info: RecipeInfo) {
         let bare = info.name.clone();
         let qualified = info.qualified_key.clone();
-        self.bare_to_qualified
-            .entry(bare)
-            .or_insert_with(|| qualified.clone());
+        // Last-wins: later search directories override earlier ones (Python parity).
+        self.bare_to_qualified.insert(bare, qualified.clone());
         self.by_qualified.insert(qualified, info);
     }
 
@@ -64,7 +63,7 @@ impl RecipeCache {
         self.by_qualified.keys().map(|s| s.as_str()).collect()
     }
 
-    /// Map of bare names to their first qualified key.
+    /// Map of bare names to their last-registered qualified key.
     pub fn bare_name_map(&self) -> &HashMap<String, String> {
         &self.bare_to_qualified
     }

@@ -83,6 +83,7 @@ pub(super) fn build_auto_command(
     } else {
         env_builder
     };
+    let env_builder = env_builder.set("AMPLIHACK_AUTO_MODE", "1");
     env_builder.apply_to_command(&mut command);
     command.arg(tool.subcommand());
     command.arg("--no-reflection");

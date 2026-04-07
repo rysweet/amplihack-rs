@@ -165,6 +165,12 @@ fn build_auto_command_propagates_launcher_environment() {
         env.get("NODE_OPTIONS").and_then(|value| value.as_deref()),
         Some("--max-old-space-size=16384")
     );
+    assert_eq!(
+        env.get("AMPLIHACK_AUTO_MODE")
+            .and_then(|value| value.as_deref()),
+        Some("1"),
+        "auto-mode sessions must set AMPLIHACK_AUTO_MODE=1 (Python parity)"
+    );
 }
 
 #[test]
