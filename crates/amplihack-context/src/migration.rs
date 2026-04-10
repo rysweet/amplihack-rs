@@ -148,6 +148,13 @@ fn dirs_path() -> Option<PathBuf> {
 
 /// Recursively copy a directory tree from `src` to `dst`.
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    // Guard: skip copy when source and dest resolve to the same directory (issue #4296).
+    if let (Ok(canon_src), Ok(canon_dst)) = (src.canonicalize(), dst.canonicalize()) {
+        if canon_src == canon_dst {
+            return Ok(());
+        }
+    }
+
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
@@ -239,5 +246,17 @@ mod tests {
         assert!(!info.can_migrate_to_local); // local already exists
         assert!(info.local_path.is_some());
         assert!(info.plugin_path.is_some());
+    }
+
+    #[test]
+    fn copy_dir_recursive_same_path_returns_ok() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("data");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("file.txt"), "content").unwrap();
+
+        copy_dir_recursive(&dir, &dir).unwrap();
+
+        assert_eq!(fs::read_to_string(dir.join("file.txt")).unwrap(), "content");
     }
 }

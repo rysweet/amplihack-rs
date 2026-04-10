@@ -177,6 +177,18 @@ fn confirm(input: &mut impl BufRead, out: &mut impl Write) -> Result<bool> {
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    // Guard: skip copy when source and dest resolve to the same directory (issue #4296).
+    if let (Ok(canon_src), Ok(canon_dst)) = (src.canonicalize(), dst.canonicalize()) {
+        if canon_src == canon_dst {
+            tracing::warn!(
+                src = %src.display(),
+                dst = %dst.display(),
+                "skipping copy: source and destination are the same path"
+            );
+            return Ok(());
+        }
+    }
+
     fs::create_dir_all(dst)
         .with_context(|| format!("failed to create directory {}", dst.display()))?;
 
@@ -203,4 +215,21 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_dir_recursive_same_path_returns_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("data");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("file.txt"), "content").unwrap();
+
+        copy_dir_recursive(&dir, &dir).unwrap();
+
+        assert_eq!(fs::read_to_string(dir.join("file.txt")).unwrap(), "content");
+    }
 }

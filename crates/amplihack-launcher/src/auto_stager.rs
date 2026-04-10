@@ -91,6 +91,18 @@ fn copy_claude_directory(source: &Path, dest: &Path) {
 
 /// Recursively copy a directory, skipping symlinks.
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    // Guard: skip copy when source and dest resolve to the same directory (issue #4296).
+    if let (Ok(canon_src), Ok(canon_dst)) = (src.canonicalize(), dst.canonicalize()) {
+        if canon_src == canon_dst {
+            tracing::warn!(
+                src = %src.display(),
+                dst = %dst.display(),
+                "skipping copy: source and destination are the same path"
+            );
+            return Ok(());
+        }
+    }
+
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
@@ -191,5 +203,17 @@ mod tests {
             fs::read_to_string(dst.join("sub").join("b.txt")).unwrap(),
             "world"
         );
+    }
+
+    #[test]
+    fn copy_dir_recursive_same_path_returns_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("data");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("file.txt"), "content").unwrap();
+
+        copy_dir_recursive(&dir, &dir).unwrap();
+
+        assert_eq!(fs::read_to_string(dir.join("file.txt")).unwrap(), "content");
     }
 }
