@@ -70,6 +70,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Evaluation Framework](./concepts/eval-framework.md) — Progressive L1–L12 evaluation, graders, and self-improvement
 - [Hive Orchestration](./concepts/hive-orchestration.md) — Multi-agent swarm deployment, events, and workload management
 - [Goal Agent Generator](./concepts/agent-generator.md) — Four-stage pipeline: analyze → plan → synthesize → assemble
+- [Same-Path Copy Guard](./concepts/same-path-copy-guard.md) — How `copy_dir_recursive` detects and skips self-copy when source and destination resolve to the same path
 
 ## Quick Start
 

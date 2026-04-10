@@ -151,6 +151,11 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     // Guard: skip copy when source and dest resolve to the same directory (issue #4296).
     if let (Ok(canon_src), Ok(canon_dst)) = (src.canonicalize(), dst.canonicalize()) {
         if canon_src == canon_dst {
+            tracing::warn!(
+                src = %src.display(),
+                dst = %dst.display(),
+                "skipping copy: source and destination are the same path"
+            );
             return Ok(());
         }
     }
