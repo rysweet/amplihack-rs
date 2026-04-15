@@ -73,16 +73,14 @@ impl SimpleGrader {
                     -0.1
                 }
             }
-            TestLevel::L5ContradictionHandling => {
+            TestLevel::L5ContradictionHandling
                 if actual_lower.contains("contradict")
                     || actual_lower.contains("outdated")
-                    || actual_lower.contains("incorrect")
-                {
-                    0.1
-                } else {
-                    0.0
-                }
+                    || actual_lower.contains("incorrect") =>
+            {
+                0.1
             }
+            TestLevel::L5ContradictionHandling => 0.0,
             _ => 0.0,
         };
 

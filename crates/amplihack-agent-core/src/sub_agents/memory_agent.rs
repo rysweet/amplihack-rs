@@ -195,7 +195,7 @@ impl<M: SubAgentMemory> MemoryAgent<M> {
                     .iter()
                     .map(|(k, v)| (k.as_str(), v))
                     .collect();
-                top.sort_by(|a, b| b.1.cmp(a.1));
+                top.sort_by_key(|item| std::cmp::Reverse(*item.1));
                 let display: Vec<String> = top
                     .iter()
                     .take(CONCEPT_DISPLAY_LIMIT)

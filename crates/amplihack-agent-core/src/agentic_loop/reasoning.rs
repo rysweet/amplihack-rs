@@ -94,7 +94,7 @@ where
             for query in &plan.search_queries {
                 total_queries += 1;
                 let (nodes, facts) = self.targeted_search(query, &seen_ids, search_max_nodes);
-                for (node, fact) in nodes.into_iter().zip(facts.into_iter()) {
+                for (node, fact) in nodes.into_iter().zip(facts) {
                     if seen_ids.insert(node.id.clone()) {
                         collected_nodes.push(node);
                         collected_facts.push(fact);

@@ -90,7 +90,7 @@ pub fn build_error_signatures(output: &str) -> Vec<Stage2ErrorSignature> {
     }
 
     let mut sigs: Vec<_> = sig_map.into_values().collect();
-    sigs.sort_by(|a, b| b.occurrences.cmp(&a.occurrences));
+    sigs.sort_by_key(|s| std::cmp::Reverse(s.occurrences));
     sigs
 }
 
