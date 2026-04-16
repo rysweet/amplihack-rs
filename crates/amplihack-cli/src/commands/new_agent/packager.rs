@@ -282,16 +282,40 @@ pub fn into_packaged_bundle(
 
 /// Recursively copy a directory tree.
 pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), BundleError> {
+    // Same-path guard.
+    if let (Ok(src_canon), Ok(dst_canon)) = (src.canonicalize(), dst.canonicalize())
+        && src_canon == dst_canon
+    {
+        return Err(pkg_err(format!(
+            "source and destination are the same path: {}",
+            src_canon.display()
+        )));
+    }
+
     fs::create_dir_all(dst).map_err(|e| pkg_err(format!("mkdir {}: {e}", dst.display())))?;
     for entry in fs::read_dir(src).map_err(|e| pkg_err(format!("read {}: {e}", src.display())))? {
         let entry = entry.map_err(|e| pkg_err(format!("entry: {e}")))?;
         let ft = entry
             .file_type()
             .map_err(|e| pkg_err(format!("ftype: {e}")))?;
-        let target = dst.join(entry.file_name());
+        let file_name = entry.file_name();
+        let target = dst.join(&file_name);
         if ft.is_dir() {
+            if matches!(
+                file_name.to_str(),
+                Some("__pycache__" | ".pytest_cache" | "node_modules")
+            ) {
+                continue;
+            }
             copy_dir_recursive(&entry.path(), &target)?;
         } else {
+            if file_name
+                .to_str()
+                .map(|s| s.ends_with(".pyc") || s.ends_with(".pyo"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
             fs::copy(entry.path(), &target).map_err(|e| pkg_err(format!("copy: {e}")))?;
         }
     }

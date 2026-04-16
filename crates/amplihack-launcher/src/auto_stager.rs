@@ -89,18 +89,53 @@ fn copy_claude_directory(source: &Path, dest: &Path) {
     }
 }
 
-/// Recursively copy a directory, skipping symlinks.
+/// Returns `true` for directory names that should be excluded from staging copies.
+fn is_excluded_dir(name: &std::ffi::OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some("__pycache__" | ".pytest_cache" | "node_modules")
+    )
+}
+
+/// Returns `true` for file extensions that should be excluded from staging copies.
+fn is_excluded_file(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .map(|s| s.ends_with(".pyc") || s.ends_with(".pyo"))
+        .unwrap_or(false)
+}
+
+/// Recursively copy a directory, skipping symlinks, `__pycache__`, and `.pyc` files.
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    // Same-path guard: bail if source and destination resolve to the same location.
+    if let (Ok(src_canon), Ok(dst_canon)) = (src.canonicalize(), dst.canonicalize())
+        && src_canon == dst_canon
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "source and destination are the same path: {}",
+                src_canon.display()
+            ),
+        ));
+    }
+
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let ty = entry.file_type()?;
-        let dest_path = dst.join(entry.file_name());
+        let file_name = entry.file_name();
+        let dest_path = dst.join(&file_name);
         if ty.is_symlink() {
             continue;
         } else if ty.is_dir() {
+            if is_excluded_dir(&file_name) {
+                continue;
+            }
             copy_dir_recursive(&entry.path(), &dest_path)?;
         } else {
+            if is_excluded_file(&file_name) {
+                continue;
+            }
             fs::copy(entry.path(), &dest_path)?;
         }
     }
@@ -190,6 +225,40 @@ mod tests {
         assert_eq!(
             fs::read_to_string(dst.join("sub").join("b.txt")).unwrap(),
             "world"
+        );
+    }
+
+    #[test]
+    fn copy_dir_recursive_skips_pycache_and_pyc() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let pycache = src.join("__pycache__");
+        fs::create_dir_all(&pycache).unwrap();
+        fs::write(src.join("main.py"), "print('hi')").unwrap();
+        fs::write(src.join("module.pyc"), "bytecode").unwrap();
+        fs::write(pycache.join("main.cpython-312.pyc"), "cached").unwrap();
+
+        let dst = tmp.path().join("dst");
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        assert!(dst.join("main.py").exists());
+        assert!(!dst.join("__pycache__").exists());
+        assert!(!dst.join("module.pyc").exists());
+    }
+
+    #[test]
+    fn copy_dir_recursive_rejects_same_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("dir");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("file.txt"), "data").unwrap();
+
+        let result = copy_dir_recursive(&dir, &dir);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("same"),
+            "expected same-path error, got: {err_msg}"
         );
     }
 }

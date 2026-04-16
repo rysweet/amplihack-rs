@@ -177,21 +177,45 @@ fn confirm(input: &mut impl BufRead, out: &mut impl Write) -> Result<bool> {
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    // Same-path guard: bail if source and destination resolve to the same location.
+    if let (Ok(src_canon), Ok(dst_canon)) = (src.canonicalize(), dst.canonicalize())
+        && src_canon == dst_canon
+    {
+        anyhow::bail!(
+            "source and destination are the same path: {}",
+            src_canon.display()
+        );
+    }
+
     fs::create_dir_all(dst)
         .with_context(|| format!("failed to create directory {}", dst.display()))?;
 
     for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
         let entry = entry?;
         let source_path = entry.path();
-        let target_path = dst.join(entry.file_name());
+        let file_name = entry.file_name();
+        let target_path = dst.join(&file_name);
         let file_type = entry.file_type()?;
 
         if file_type.is_symlink() {
             tracing::debug!("Skipping symlink: {}", source_path.display());
             continue;
         } else if file_type.is_dir() {
+            if matches!(
+                file_name.to_str(),
+                Some("__pycache__" | ".pytest_cache" | "node_modules")
+            ) {
+                continue;
+            }
             copy_dir_recursive(&source_path, &target_path)?;
         } else if file_type.is_file() {
+            if file_name
+                .to_str()
+                .map(|s| s.ends_with(".pyc") || s.ends_with(".pyo"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
             fs::copy(&source_path, &target_path).with_context(|| {
                 format!(
                     "failed to copy {} to {}",

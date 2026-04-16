@@ -224,13 +224,40 @@ fn detect_modified_files(
 }
 
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    // Same-path guard.
+    if let (Ok(src_canon), Ok(dst_canon)) = (src.canonicalize(), dst.canonicalize())
+        && src_canon == dst_canon
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "source and destination are the same path: {}",
+                src_canon.display()
+            ),
+        ));
+    }
+
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
-        let dest = dst.join(entry.file_name());
+        let file_name = entry.file_name();
+        let dest = dst.join(&file_name);
         if entry.file_type()?.is_dir() {
+            if matches!(
+                file_name.to_str(),
+                Some("__pycache__" | ".pytest_cache" | "node_modules")
+            ) {
+                continue;
+            }
             copy_dir_all(&entry.path(), &dest)?;
         } else {
+            if file_name
+                .to_str()
+                .map(|s| s.ends_with(".pyc") || s.ends_with(".pyo"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
             fs::copy(entry.path(), &dest)?;
         }
     }
