@@ -233,7 +233,7 @@ impl FleetAdmiral {
             .into_iter()
             .cloned()
             .collect::<Vec<_>>();
-        running.sort_by(|left, right| right.priority.rank().cmp(&left.priority.rank()));
+        running.sort_by_key(|t| std::cmp::Reverse(t.priority.rank()));
 
         let mut actions = Vec::new();
         for critical_task in critical_queued {

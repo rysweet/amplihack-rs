@@ -45,7 +45,7 @@ impl ProjectFileStats {
             }
         }
 
-        stats.sort_by(|a, b| b.size.cmp(&a.size));
+        stats.sort_by_key(|s| std::cmp::Reverse(s.size));
 
         Self { stats }
     }
