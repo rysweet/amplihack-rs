@@ -55,16 +55,76 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
     if needs_bootstrap {
         println!("🔧 Bootstrapping amplihack framework assets...");
         run_install(None)?;
-        return Ok(());
     }
 
-    let hooks_bin = find_hooks_binary()?;
-    let timestamp = unix_timestamp();
-    let (settings_ok, _events) = ensure_settings_json(&staging_dir, timestamp, &hooks_bin)?;
-    if !settings_ok {
-        bail!("failed to configure ~/.claude/settings.json for staged amplihack hooks");
+    // Verify hooks are registered in settings.json — even after a fresh install.
+    // This catches the case where `run_install` completed but hooks were not
+    // wired into settings.json (issue #202: silent unwiring on fresh env).
+    let hooks_bin = find_hooks_binary().context(
+        "amplihack-hooks binary not found. Run `amplihack install` to set up hooks, \
+         or set AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH to the binary location.",
+    )?;
+    let settings_path = global_settings_path()?;
+    if !hooks_registered_in_settings(&settings_path)? {
+        tracing::warn!("hooks not registered in settings.json — auto-repairing");
+        let timestamp = unix_timestamp();
+        let (settings_ok, _events) = ensure_settings_json(&staging_dir, timestamp, &hooks_bin)?;
+        if !settings_ok {
+            bail!(
+                "failed to configure ~/.claude/settings.json for amplihack hooks.\n\
+                 Run `amplihack install` to repair, or `amplihack doctor` to diagnose."
+            );
+        }
+        // Verify the repair actually worked
+        if !hooks_registered_in_settings(&settings_path)? {
+            bail!(
+                "hooks still not registered after auto-repair.\n\
+                 Run `amplihack install` manually to fix hook wiring."
+            );
+        }
+        println!("✅ Auto-repaired missing hook registrations in settings.json");
     }
     Ok(())
+}
+
+/// Check whether amplihack hooks are registered in `~/.claude/settings.json`.
+///
+/// Returns `true` if the settings file exists and its `hooks` section contains
+/// at least one entry referencing `amplihack-hooks` (the native binary).
+fn hooks_registered_in_settings(settings_path: &Path) -> Result<bool> {
+    if !settings_path.exists() {
+        return Ok(false);
+    }
+    let raw = fs::read_to_string(settings_path)
+        .with_context(|| format!("failed to read {}", settings_path.display()))?;
+    let json: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return Ok(false),
+    };
+    let has_hooks = json
+        .get("hooks")
+        .and_then(|h| h.as_object())
+        .map(|hooks_map| {
+            hooks_map.values().any(|wrappers| {
+                wrappers.as_array().is_some_and(|arr| {
+                    arr.iter().any(|wrapper| {
+                        wrapper
+                            .get("hooks")
+                            .and_then(|h| h.as_array())
+                            .is_some_and(|entries| {
+                                entries.iter().any(|entry| {
+                                    entry
+                                        .get("command")
+                                        .and_then(|c| c.as_str())
+                                        .is_some_and(|cmd| cmd.contains("amplihack-hooks"))
+                                })
+                            })
+                    })
+                })
+            })
+        })
+        .unwrap_or(false);
+    Ok(has_hooks)
 }
 
 pub fn run_uninstall() -> Result<()> {

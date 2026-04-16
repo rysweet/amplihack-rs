@@ -1,8 +1,10 @@
-//! Hook file verification.
+//! Hook file and registration verification.
 //!
 //! Checks that the expected amplihack hook files exist under
-//! `~/.amplihack/.claude/tools/{amplihack,xpia}/hooks/`.
+//! `~/.amplihack/.claude/tools/{amplihack,xpia}/hooks/` and that
+//! native hook commands are registered in `~/.claude/settings.json`.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
@@ -16,6 +18,17 @@ const REQUIRED_HOOKS: &[(&str, &str)] = &[
     ("amplihack", "UserPromptSubmit.js"),
     ("amplihack", "PreCompact.js"),
     ("xpia", "PreToolUse.js"),
+];
+
+/// Native hook subcommands that must be registered in settings.json.
+const REQUIRED_NATIVE_HOOKS: &[&str] = &[
+    "session-start",
+    "stop",
+    "pre-tool-use",
+    "post-tool-use",
+    "workflow-classification-reminder",
+    "user-prompt-submit",
+    "pre-compact",
 ];
 
 /// Resolve the amplihack home directory.
@@ -69,10 +82,86 @@ pub fn verify_hooks_at(root: &Path) -> bool {
     all_present
 }
 
+/// Verify that native `amplihack-hooks` commands are registered in
+/// `~/.claude/settings.json`.
+///
+/// Returns a list of missing subcommand names. An empty list means all
+/// required hooks are wired.
+pub fn verify_native_hook_registrations() -> Vec<String> {
+    let settings_path = match std::env::var_os("HOME") {
+        Some(h) => Path::new(&h).join(".claude").join("settings.json"),
+        None => {
+            warn!("HOME not set — cannot verify hook registrations");
+            return REQUIRED_NATIVE_HOOKS
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        }
+    };
+
+    verify_native_hook_registrations_at(&settings_path)
+}
+
+/// Verify native hook registrations against a specific settings file (for testing).
+pub fn verify_native_hook_registrations_at(settings_path: &Path) -> Vec<String> {
+    let raw = match fs::read_to_string(settings_path) {
+        Ok(r) => r,
+        Err(_) => {
+            return REQUIRED_NATIVE_HOOKS
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        }
+    };
+
+    let json: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => {
+            return REQUIRED_NATIVE_HOOKS
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        }
+    };
+
+    let registered = collect_registered_subcmds(&json);
+    REQUIRED_NATIVE_HOOKS
+        .iter()
+        .filter(|subcmd| !registered.iter().any(|r| r == *subcmd))
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Extract all `amplihack-hooks <subcmd>` subcommand names from settings JSON.
+fn collect_registered_subcmds(settings: &serde_json::Value) -> Vec<String> {
+    let mut subcmds = Vec::new();
+    let Some(hooks_map) = settings.get("hooks").and_then(|h| h.as_object()) else {
+        return subcmds;
+    };
+    for wrappers_val in hooks_map.values() {
+        let Some(wrappers) = wrappers_val.as_array() else {
+            continue;
+        };
+        for wrapper in wrappers {
+            let Some(hook_entries) = wrapper.get("hooks").and_then(|h| h.as_array()) else {
+                continue;
+            };
+            for entry in hook_entries {
+                if let Some(cmd) = entry.get("command").and_then(|c| c.as_str())
+                    && cmd.contains("amplihack-hooks")
+                    && let Some(subcmd) = cmd.split_whitespace().last()
+                {
+                    subcmds.push(subcmd.to_string());
+                }
+            }
+        }
+    }
+    subcmds
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
 
     fn create_all_hooks(root: &Path) {
         for (namespace, filename) in REQUIRED_HOOKS {
@@ -125,5 +214,65 @@ mod tests {
         for (_, filename) in REQUIRED_HOOKS {
             assert!(filename.ends_with(".js"), "{filename} should end with .js");
         }
+    }
+
+    #[test]
+    fn native_registration_missing_file_returns_all() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nonexistent.json");
+        let missing = verify_native_hook_registrations_at(&path);
+        assert_eq!(missing.len(), REQUIRED_NATIVE_HOOKS.len());
+    }
+
+    #[test]
+    fn native_registration_empty_settings_returns_all() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        fs::write(&path, "{}").unwrap();
+        let missing = verify_native_hook_registrations_at(&path);
+        assert_eq!(missing.len(), REQUIRED_NATIVE_HOOKS.len());
+    }
+
+    #[test]
+    fn native_registration_with_hooks_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": "amplihack-hooks session-start"}]}],
+                "Stop": [{"hooks": [{"type": "command", "command": "amplihack-hooks stop"}]}],
+                "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "amplihack-hooks pre-tool-use"}]}],
+                "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "amplihack-hooks post-tool-use"}]}],
+                "UserPromptSubmit": [
+                    {"hooks": [{"type": "command", "command": "amplihack-hooks workflow-classification-reminder"}]},
+                    {"hooks": [{"type": "command", "command": "amplihack-hooks user-prompt-submit"}]}
+                ],
+                "PreCompact": [{"hooks": [{"type": "command", "command": "amplihack-hooks pre-compact"}]}]
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+        let missing = verify_native_hook_registrations_at(&path);
+        assert!(
+            missing.is_empty(),
+            "expected no missing hooks, got: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn native_registration_partial_returns_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        let settings = serde_json::json!({
+            "hooks": {
+                "SessionStart": [{"hooks": [{"type": "command", "command": "amplihack-hooks session-start"}]}],
+                "Stop": [{"hooks": [{"type": "command", "command": "amplihack-hooks stop"}]}]
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+        let missing = verify_native_hook_registrations_at(&path);
+        assert!(missing.contains(&"pre-tool-use".to_string()));
+        assert!(missing.contains(&"post-tool-use".to_string()));
+        assert!(!missing.contains(&"session-start".to_string()));
+        assert!(!missing.contains(&"stop".to_string()));
     }
 }
