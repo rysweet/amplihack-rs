@@ -1,6 +1,41 @@
 # amplihack-rs
 
+[![CI](https://github.com/rysweet/amplihack-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/rysweet/amplihack-rs/actions/workflows/ci.yml)
+[![Docs](https://github.com/rysweet/amplihack-rs/actions/workflows/docs.yml/badge.svg)](https://rysweet.github.io/amplihack-rs/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
 Rust core runtime for amplihack's deterministic infrastructure layer.
+Native binary that bootstraps the complete amplihack environment — structured
+workflows, persistent memory, specialized agents, and quality gates — in a
+single command. No Python runtime required.
+
+**📚 [View Full Documentation](https://rysweet.github.io/amplihack-rs/)**
+
+---
+
+## Table of Contents
+
+- [Why Rust?](#why-rust)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Architecture](#architecture)
+- [Hook Binary](#hook-binary)
+- [Configuration](#configuration)
+- [CLI Parity Harness](#cli-parity-harness)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [Design Principles](#design-principles)
+- [License](#license)
+
+## Why Rust?
+
+The Python amplihack CLI works but carries a ~200 MB runtime dependency (Python + uv + venv).
+amplihack-rs compiles to a single static binary (~15 MB) with:
+
+- **Zero external runtime** — no Python, no Node.js, no interpreter at all
+- **Sub-millisecond hook latency** — hooks run in the critical path of every tool call
+- **Type-safe IPC** — serde-derived types eliminate serialization bugs
+- **Deterministic builds** — `cargo install --locked` reproduces the exact binary
 
 ## Architecture
 
@@ -193,9 +228,52 @@ Full documentation is in the [`docs/`](docs/index.md) directory:
 - [Hook specifications](docs/reference/hook-specifications.md)
 - [Bootstrap parity explained](docs/concepts/bootstrap-parity.md)
 
+## Configuration
+
+amplihack reads configuration from several sources (highest priority first):
+
+| Source | Location | Purpose |
+|--------|----------|---------|
+| Environment variables | `AMPLIHACK_*` | Runtime overrides |
+| Settings file | `~/.amplihack/settings.json` | Persistent user settings |
+| Project config | `.amplihack.toml` in repo root | Per-project overrides |
+| Defaults | Compiled into binary | Sensible defaults |
+
+Key environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AMPLIHACK_HOME` | `~/.amplihack` | Root of amplihack installation |
+| `AMPLIHACK_AGENT_BINARY` | Auto-detected | Which AI tool to use (`claude`, `copilot`, `codex`) |
+| `AMPLIHACK_MAX_DEPTH` | `3` | Max recursion depth for nested agent sessions |
+| `AMPLIHACK_NONINTERACTIVE` | unset | Set to `1` for CI/pipeline usage |
+| `AMPLIHACK_LOG_LEVEL` | `info` | Tracing verbosity (`trace`, `debug`, `info`, `warn`, `error`) |
+
+See [Environment Variables Reference](docs/reference/environment-variables.md) for the complete list.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, testing guidelines,
+and pull request process.
+
+**Quick version:**
+
+```bash
+git clone https://github.com/rysweet/amplihack-rs.git
+cd amplihack-rs
+cargo build
+cargo test --workspace --skip fleet_probe --skip kuzu --skip fleet::fleet_local --skip memory::kuzu
+```
+
+All PRs must pass `cargo fmt`, `cargo clippy -- -D warnings`, and the test suite.
+
 ## Design Principles
 
 1. **NO FALLBACKS** — Rust is the only implementation
 2. **Correctness over performance** — Type safety eliminates bug categories
 3. **Host-agnostic** — Works with Claude Code, Amplifier, and Copilot
 4. **Fail-open** — Non-security hooks output `{}` on error (don't break the user)
+
+## License
+
+This project is licensed under the [MIT License](https://opensource.org/licenses/MIT).
