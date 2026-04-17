@@ -7,6 +7,7 @@
 //! - Step type inference from fields
 //! - Bool/int field coercion
 
+use crate::condition_eval::validate_condition;
 use crate::models::{Recipe, Step, StepType};
 use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
@@ -55,6 +56,7 @@ impl RecipeParser {
         let version = extract_string(mapping, "version").unwrap_or_else(|| "1.0.0".to_string());
         let description = extract_string(mapping, "description");
         let on_failure = extract_string(mapping, "on_failure");
+        let default_step_timeout = extract_u64(mapping, "default_step_timeout");
 
         let steps_value = mapping
             .get(serde_yaml::Value::String("steps".into()))
@@ -84,6 +86,7 @@ impl RecipeParser {
             steps,
             context,
             on_failure,
+            default_step_timeout,
         })
     }
 
@@ -132,6 +135,14 @@ impl RecipeParser {
         let agent = extract_string(mapping, "agent");
         let description = extract_string(mapping, "description");
         let condition = extract_string(mapping, "condition");
+
+        // Validate condition expression syntax early (issue #212).
+        if let Some(ref cond_str) = condition
+            && let Err(e) = validate_condition(cond_str)
+        {
+            warn!(step_id = %id, error = %e, "Invalid condition expression");
+        }
+
         let timeout_seconds =
             extract_u64(mapping, "timeout_seconds").or_else(|| extract_u64(mapping, "timeout"));
         let retry_count = extract_u64(mapping, "retry_count")
@@ -202,6 +213,8 @@ const KNOWN_STEP_FIELDS: &[&str] = &[
     "sub_recipe",
     "parallel",
     "checkpoint",
+    "output",
+    "max_env_value_bytes",
 ];
 
 fn warn_unrecognized_fields(mapping: &serde_yaml::Mapping, step_id: &str) {

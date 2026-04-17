@@ -232,6 +232,85 @@ steps:
     );
 }
 
+// ── Condition evaluation (issue #212: LBracket support) ──
+
+#[test]
+fn condition_eval_list_literal() {
+    use amplihack_recipe::evaluate_condition;
+    use std::collections::HashMap;
+
+    let mut ctx = HashMap::new();
+    ctx.insert("task_type".to_string(), "Development".to_string());
+
+    // This pattern caused "unexpected token: LBracket" before the fix.
+    let result = evaluate_condition("task_type not in ['Q&A', 'Operations']", &ctx);
+    assert!(result.is_ok(), "LBracket must parse: {result:?}");
+    assert!(result.unwrap(), "Development is not in the list");
+}
+
+#[test]
+fn condition_eval_smart_orchestrator_patterns() {
+    use amplihack_recipe::evaluate_condition;
+    use std::collections::HashMap;
+
+    let mut ctx = HashMap::new();
+    ctx.insert("task_type".to_string(), "Development".to_string());
+    ctx.insert("workstream_count".to_string(), "1".to_string());
+    ctx.insert("force_single_workstream".to_string(), "false".to_string());
+    ctx.insert("round_1_result".to_string(), "output".to_string());
+
+    // Pattern from smart-orchestrator.yaml
+    assert!(evaluate_condition(
+        "'Development' in task_type and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') or force_single_workstream == 'true')",
+        &ctx,
+    ).unwrap());
+
+    // Pattern from reflect-round-1
+    assert!(
+        evaluate_condition(
+            "'Q&A' not in task_type and 'Operations' not in task_type and round_1_result",
+            &ctx,
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn all_recipe_conditions_are_valid() {
+    use amplihack_recipe::validate_condition;
+
+    let recipe_dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../amplifier-bundle/recipes"
+    );
+
+    for entry in std::fs::read_dir(recipe_dir).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "yaml" || e == "yml") {
+            let yaml = std::fs::read_to_string(&path).unwrap();
+            let recipe = parse_yaml(&yaml);
+            for step in &recipe.steps {
+                if let Some(ref cond) = step.condition {
+                    // Skip template expressions — contain {{...}} placeholders.
+                    if cond.contains("{{") {
+                        continue;
+                    }
+                    let result = validate_condition(cond);
+                    assert!(
+                        result.is_ok(),
+                        "Condition parse failed in {}:{}: {}\n  condition: {}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        step.id,
+                        result.unwrap_err(),
+                        cond.trim(),
+                    );
+                }
+            }
+        }
+    }
+}
+
 // ── Timeout and retry parsing ──
 
 #[test]
