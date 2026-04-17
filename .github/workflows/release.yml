@@ -12,7 +12,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── Auto-bump patch version on every push to main ─────────────────────
+  # ── Determine next version and create tag ─────────────────────────────
+  # Tag-based versioning: reads base version from Cargo.toml, increments
+  # patch from the latest release tag, and creates a lightweight tag.
+  # No commit to main required — works with branch protection.
   version-bump:
     name: Auto-bump version
     runs-on: ubuntu-latest
@@ -27,13 +30,13 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Bump patch version
+      - name: Compute next version from tags
         id: bump
         run: |
           set -euo pipefail
 
           CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-          echo "Current version: ${CURRENT}"
+          echo "Cargo.toml version: ${CURRENT}"
 
           IFS='.' read -r MAJOR MINOR PATCH <<< "${CURRENT}"
 
@@ -53,31 +56,27 @@ jobs:
           fi
 
           NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+          HEAD_SHA=$(git rev-parse HEAD)
 
-          if [ "${NEW_VERSION}" = "${CURRENT}" ]; then
-            echo "Version already at ${CURRENT} — no bump needed"
-            echo "version=${CURRENT}" >> "$GITHUB_OUTPUT"
-            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # Check if this exact commit already has a release tag
+          EXISTING=$(git tag --points-at HEAD | grep -E "^v${MAJOR}\.${MINOR}\." || true)
+          if [ -n "${EXISTING}" ]; then
+            echo "Commit already tagged: ${EXISTING} — skipping"
+            echo "version=${EXISTING#v}" >> "$GITHUB_OUTPUT"
+            echo "sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "Bumping: ${CURRENT} → ${NEW_VERSION}"
+          echo "Tagging: v${NEW_VERSION} at ${HEAD_SHA}"
 
-          # Update Cargo.toml workspace version
-          sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW_VERSION}\"/" Cargo.toml
-
-          # Regenerate lockfile
-          cargo generate-lockfile 2>/dev/null || true
-
-          # Commit and push
+          # Create and push a lightweight tag (no commit to main needed)
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock
-          git commit -m "chore: auto-bump version ${CURRENT} → ${NEW_VERSION} [skip ci]"
-          git push
+          git tag "v${NEW_VERSION}" "${HEAD_SHA}"
+          git push origin "v${NEW_VERSION}"
 
           echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
