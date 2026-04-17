@@ -55,7 +55,6 @@ jobs:
             echo "No prior v${MAJOR}.${MINOR}.x release found"
           fi
 
-          NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
           HEAD_SHA=$(git rev-parse HEAD)
 
           # Check if this exact commit already has a release tag
@@ -66,6 +65,13 @@ jobs:
             echo "sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
+          # Ensure the computed tag doesn't already exist on a different commit
+          while git rev-parse "v${MAJOR}.${MINOR}.${NEW_PATCH}" >/dev/null 2>&1; do
+            echo "Tag v${MAJOR}.${MINOR}.${NEW_PATCH} already exists, bumping"
+            NEW_PATCH=$((NEW_PATCH + 1))
+          done
+          NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
 
           echo "Tagging: v${NEW_VERSION} at ${HEAD_SHA}"
 
