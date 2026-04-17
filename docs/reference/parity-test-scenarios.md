@@ -283,7 +283,7 @@ python tests/parity/validate_cli_parity.py \
 
 ## Related
 
-- [validate_cli_parity.py](../../tests/parity/validate_cli_parity.py) — Harness source
+- [validate_cli_parity.py](https://github.com/rysweet/amplihack-rs/blob/main/tests/parity/validate_cli_parity.py) — Harness source
 - [Environment Variables](./environment-variables.md) — Reference for all variables injected during launch
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — Why `AMPLIHACK_AGENT_BINARY` exists
 - [Bootstrap Parity](../concepts/bootstrap-parity.md) — Design principles behind Python↔Rust parity

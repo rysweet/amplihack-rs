@@ -1,0 +1,19 @@
+/* amplihack-rs documentation custom styles */
+
+/* Rust-flavored accent for code blocks */
+.md-typeset code {
+  font-size: 0.85em;
+}
+
+/* Make admonition notes stand out a bit more */
+.md-typeset .admonition.note,
+.md-typeset details.note {
+  border-left-color: #ff6d00;
+}
+
+/* Wider content area for reference pages with long tables */
+@media screen and (min-width: 76.25em) {
+  .md-content {
+    max-width: 900px;
+  }
+}

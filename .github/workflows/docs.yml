@@ -1,44 +1,53 @@
-name: Docs
+name: Deploy Documentation
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
-      - 'docs/**'
-      - 'mkdocs.yml'
-      - 'README.md'
-      - '.github/workflows/docs.yml'
+      - "docs/**"
+      - "mkdocs.yml"
+      - "requirements-docs.txt"
+      - "README.md"
+      - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
+      - "CONTRIBUTING_RUST.md"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
-concurrency:
-  group: pages
-  cancel-in-progress: true
-
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install mkdocs-material
-      - run: mkdocs build --strict
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for git-revision-date-localized plugin
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install documentation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-docs.txt
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Build documentation
+        run: mkdocs build --strict
+
+      - name: Deploy to GitHub Pages
+        run: mkdocs gh-deploy --force
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

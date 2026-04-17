@@ -4,7 +4,7 @@
 > only — the check that runs before `claude`, `copilot`, or `codex` is invoked.
 > For the separate `amplihack` binary self-update system (GitHub release
 > downloads with SHA-256 verification), see
-> [Update the amplihack Binary](../reference/update.md).
+> Update the amplihack Binary (reference page coming soon).
 
 Before launching `claude`, `copilot`, or `codex`, `amplihack` checks whether a
 newer version of the npm-distributed tool is available. When an update is found,
@@ -263,4 +263,4 @@ visible text.
 - [Run amplihack in Non-interactive Mode](./run-in-noninteractive-mode.md) — Full CI and pipeline guide
 - [Environment Variables](../reference/environment-variables.md) — `AMPLIHACK_NONINTERACTIVE`, `AMPLIHACK_PARITY_TEST`, and `AMPLIHACK_NO_UPDATE_CHECK` reference
 - [Launch Flag Injection](../reference/launch-flag-injection.md) — How `amplihack` builds the subprocess command line
-- [amplihack launch](../reference/launch-command.md) — Full CLI reference for launch subcommands
+- amplihack launch — Full CLI reference for launch subcommands (reference page coming soon)

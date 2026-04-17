@@ -17,3 +17,6 @@ index.scip
 .amplihack/
 logs/
 outputs/
+-e 
+# MkDocs build output
+site/
