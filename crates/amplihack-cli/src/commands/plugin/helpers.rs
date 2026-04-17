@@ -4,6 +4,15 @@ pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     let src_root = src
         .canonicalize()
         .with_context(|| format!("failed to resolve source root {}", src.display()))?;
+    // Same-path guard.
+    if let Ok(dst_canon) = dst.canonicalize()
+        && src_root == dst_canon
+    {
+        anyhow::bail!(
+            "source and destination are the same path: {}",
+            src_root.display()
+        );
+    }
     copy_dir_recursive_inner(src, dst, &src_root)
 }
 
@@ -12,11 +21,25 @@ fn copy_dir_recursive_inner(src: &Path, dst: &Path, src_root: &Path) -> Result<(
     for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
         let entry = entry?;
         let source = entry.path();
-        let target = dst.join(entry.file_name());
+        let file_name = entry.file_name();
+        let target = dst.join(&file_name);
         let kind = entry.file_type()?;
         if kind.is_dir() {
+            if matches!(
+                file_name.to_str(),
+                Some("__pycache__" | ".pytest_cache" | "node_modules")
+            ) {
+                continue;
+            }
             copy_dir_recursive_inner(&source, &target, src_root)?;
         } else if kind.is_file() {
+            if file_name
+                .to_str()
+                .map(|s| s.ends_with(".pyc") || s.ends_with(".pyo"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
             fs::copy(&source, &target).with_context(|| {
                 format!(
                     "failed to copy {} to {}",

@@ -269,11 +269,22 @@ pub(super) fn get_existing_ids(conn: &SqliteConnection, agent_name: &str) -> Res
 }
 
 pub(super) fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    // Same-path guard.
+    if let (Ok(src_canon), Ok(dst_canon)) = (src.canonicalize(), dst.canonicalize())
+        && src_canon == dst_canon
+    {
+        anyhow::bail!(
+            "source and destination are the same path: {}",
+            src_canon.display()
+        );
+    }
+
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let from = entry.path();
-        let to = dst.join(entry.file_name());
+        let file_name = entry.file_name();
+        let to = dst.join(&file_name);
         let file_type = entry.file_type()?;
         // Skip symlinks to prevent directory-traversal attacks, mirroring the
         // behaviour of copy_dir_recursive_inner in the graph-db backend.
@@ -282,8 +293,21 @@ pub(super) fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> Result<(
             continue;
         }
         if file_type.is_dir() {
+            if matches!(
+                file_name.to_str(),
+                Some("__pycache__" | ".pytest_cache" | "node_modules")
+            ) {
+                continue;
+            }
             copy_dir(&from, &to)?;
         } else {
+            if file_name
+                .to_str()
+                .map(|s| s.ends_with(".pyc") || s.ends_with(".pyo"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
             fs::copy(&from, &to)?;
         }
     }

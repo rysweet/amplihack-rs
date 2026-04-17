@@ -100,7 +100,32 @@ fn copy_claude_directory(source: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Returns `true` for directory names that should be excluded from staging copies.
+fn is_excluded_dir(name: &std::ffi::OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some("__pycache__" | ".pytest_cache" | "node_modules")
+    )
+}
+
+/// Returns `true` for file extensions that should be excluded from staging copies.
+fn is_excluded_file(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .map(|s| s.ends_with(".pyc") || s.ends_with(".pyo"))
+        .unwrap_or(false)
+}
+
 fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<()> {
+    // Same-path guard: bail if source and destination resolve to the same location.
+    if let (Ok(src_canon), Ok(dst_canon)) = (source.canonicalize(), dest.canonicalize())
+        && src_canon == dst_canon
+    {
+        anyhow::bail!(
+            "source and destination are the same path: {}",
+            src_canon.display()
+        );
+    }
+
     fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
     for entry in
         fs::read_dir(source).with_context(|| format!("failed to read {}", source.display()))?
@@ -108,6 +133,7 @@ fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<()> {
         let entry =
             entry.with_context(|| format!("failed to read entry in {}", source.display()))?;
         let entry_path = entry.path();
+        let file_name = entry.file_name();
         let metadata = symlink_metadata(&entry_path)?;
         if metadata.file_type().is_symlink() {
             tracing::warn!(
@@ -117,10 +143,16 @@ fn copy_dir_recursive(source: &Path, dest: &Path) -> Result<()> {
             continue;
         }
 
-        let destination = dest.join(entry.file_name());
+        let destination = dest.join(&file_name);
         if metadata.is_dir() {
+            if is_excluded_dir(&file_name) {
+                continue;
+            }
             copy_dir_recursive(&entry_path, &destination)?;
         } else if metadata.is_file() {
+            if is_excluded_file(&file_name) {
+                continue;
+            }
             fs::copy(&entry_path, &destination).with_context(|| {
                 format!(
                     "failed to copy staged asset {} -> {}",
@@ -193,6 +225,59 @@ mod tests {
                 .unwrap()
                 .to_string_lossy()
                 .contains("___unsafe")
+        );
+    }
+
+    #[test]
+    fn stage_for_nested_execution_skips_pycache() {
+        let project = tempfile::tempdir().unwrap();
+        let source_claude = project.path().join(".claude");
+        let agents_dir = source_claude.join("agents");
+        let pycache = agents_dir.join("__pycache__");
+        fs::create_dir_all(&pycache).unwrap();
+        fs::write(agents_dir.join("agent.md"), "agent").unwrap();
+        fs::write(agents_dir.join("helper.pyc"), "bytecode").unwrap();
+        fs::write(pycache.join("agent.cpython-312.pyc"), "cached").unwrap();
+
+        let result =
+            AutoStager::stage_for_nested_execution(project.path(), "pycache-test").unwrap();
+
+        assert!(
+            result
+                .staged_claude
+                .join("agents")
+                .join("agent.md")
+                .exists()
+        );
+        assert!(
+            !result
+                .staged_claude
+                .join("agents")
+                .join("__pycache__")
+                .exists()
+        );
+        assert!(
+            !result
+                .staged_claude
+                .join("agents")
+                .join("helper.pyc")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn copy_dir_recursive_rejects_same_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("dir");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("file.txt"), "data").unwrap();
+
+        let result = copy_dir_recursive(&dir, &dir);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("same"),
+            "expected same-path error, got: {err_msg}"
         );
     }
 }

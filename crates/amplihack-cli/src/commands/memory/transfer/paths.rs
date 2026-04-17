@@ -131,6 +131,18 @@ fn copy_dir_recursive_inner(
             src.display()
         );
     }
+
+    // Same-path guard at the top level.
+    if depth == 0
+        && let (Ok(src_canon), Ok(dst_canon)) = (src.canonicalize(), dst.canonicalize())
+        && src_canon == dst_canon
+    {
+        anyhow::bail!(
+            "source and destination are the same path: {}",
+            src_canon.display()
+        );
+    }
+
     fs::create_dir_all(dst)?;
     let canonical = src.canonicalize().unwrap_or_else(|_| src.to_path_buf());
     if !seen.insert(canonical) {
@@ -139,15 +151,29 @@ fn copy_dir_recursive_inner(
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let kind = entry.file_type()?;
+        let file_name = entry.file_name();
         let from = entry.path();
-        let to = dst.join(entry.file_name());
+        let to = dst.join(&file_name);
         if kind.is_symlink() {
             // Skip symlinks with a warning to prevent directory traversal attacks
             println!("  Skipping symlink: {}", from.display());
             continue;
         } else if kind.is_dir() {
+            if matches!(
+                file_name.to_str(),
+                Some("__pycache__" | ".pytest_cache" | "node_modules")
+            ) {
+                continue;
+            }
             copy_dir_recursive_inner(&from, &to, depth + 1, seen)?;
         } else if kind.is_file() {
+            if file_name
+                .to_str()
+                .map(|s| s.ends_with(".pyc") || s.ends_with(".pyo"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
             ensure_parent_dir(&to)?;
             fs::copy(&from, &to)?;
         }

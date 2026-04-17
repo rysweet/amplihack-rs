@@ -105,14 +105,41 @@ pub(super) fn walk_all(root: &Path) -> Result<Vec<PathBuf>> {
     walk_bounded(root, |_| true)
 }
 
+/// Returns `true` for directory names that should be excluded from copy operations.
+fn is_excluded_dir(name: &std::ffi::OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some("__pycache__" | ".pytest_cache" | "node_modules")
+    )
+}
+
+/// Returns `true` for file extensions that should be excluded from copy operations.
+fn is_excluded_file(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .map(|s| s.ends_with(".pyc") || s.ends_with(".pyo"))
+        .unwrap_or(false)
+}
+
 /// Copy a directory recursively, skipping symlinks with a warning.
 /// Device files, sockets, and FIFOs are skipped silently.
+/// `__pycache__` directories and `.pyc`/`.pyo` files are excluded.
 pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    // Same-path guard: bail if source and destination resolve to the same location.
+    if let (Ok(src_canon), Ok(dst_canon)) = (src.canonicalize(), dst.canonicalize())
+        && src_canon == dst_canon
+    {
+        anyhow::bail!(
+            "source and destination are the same path: {}",
+            src_canon.display()
+        );
+    }
+
     fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
     for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
         let entry = entry?;
         let source = entry.path();
-        let target = dst.join(entry.file_name());
+        let file_name = entry.file_name();
+        let target = dst.join(&file_name);
         // Use entry.file_type() — symlink-safe (does not follow symlinks)
         let kind = entry.file_type()?;
         if kind.is_symlink() {
@@ -120,8 +147,14 @@ pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
             println!("  ⚠️  Skipping symlink: {}", source.display());
             continue;
         } else if kind.is_dir() {
+            if is_excluded_dir(&file_name) {
+                continue;
+            }
             copy_dir_recursive(&source, &target)?;
         } else if kind.is_file() {
+            if is_excluded_file(&file_name) {
+                continue;
+            }
             fs::copy(&source, &target).with_context(|| {
                 format!(
                     "failed to copy {} to {}",
