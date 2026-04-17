@@ -296,6 +296,134 @@ fn test_execute_recipe_via_rust_reports_signal_kill_clearly() {
     );
 }
 
+// -------------------------------------------------------------------------
+// pass_context — unit tests for E2BIG mitigation (issues #209, #211)
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_pass_context_uses_args_for_small_payloads() {
+    let mut context = BTreeMap::new();
+    context.insert("key1".to_string(), "value1".to_string());
+    context.insert("key2".to_string(), "value2".to_string());
+
+    let mut command = Command::new("echo");
+    let tmp = execute::pass_context(&mut command, &context).unwrap();
+
+    // Small payloads should not produce a temp file.
+    assert!(
+        tmp.is_none(),
+        "small context should use CLI args, not a file"
+    );
+}
+
+#[test]
+fn test_pass_context_uses_file_for_large_payloads() {
+    let mut context = BTreeMap::new();
+    // Create a payload well over the 128KB threshold.
+    let big_value = "x".repeat(200 * 1024);
+    context.insert("task_description".to_string(), big_value.clone());
+
+    let mut command = Command::new("echo");
+    let tmp = execute::pass_context(&mut command, &context).unwrap();
+
+    assert!(tmp.is_some(), "large context must use a temp file");
+
+    // Verify the temp file contains valid JSON with the context.
+    let file = tmp.unwrap();
+    let content = std::fs::read_to_string(file.path()).unwrap();
+    let parsed: BTreeMap<String, String> = serde_json::from_str(&content).unwrap();
+    assert_eq!(
+        parsed.get("task_description").map(String::as_str),
+        Some(big_value.as_str())
+    );
+}
+
+#[test]
+fn test_pass_context_empty_returns_none() {
+    let context = BTreeMap::new();
+    let mut command = Command::new("echo");
+    let tmp = execute::pass_context(&mut command, &context).unwrap();
+    assert!(tmp.is_none());
+}
+
+#[test]
+#[cfg(unix)]
+fn test_large_context_does_not_hit_e2big() {
+    // End-to-end: run a stub binary with a context value larger than typical
+    // ARG_MAX. The binary reads --context-file and echoes success.
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+
+    // Stub: if --context-file is present, cat it and report success.
+    // Otherwise report the --set args count.
+    std::fs::write(
+        &runner,
+        r#"#!/bin/sh
+CONTEXT_FILE=""
+for arg in "$@"; do
+    if [ "$prev" = "--context-file" ]; then
+        CONTEXT_FILE="$arg"
+    fi
+    prev="$arg"
+done
+if [ -n "$CONTEXT_FILE" ]; then
+    # Verify the file exists and is valid JSON
+    python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps({'recipe_name':'large-ctx','success':True,'step_results':[],'context':{'got_file':'true','keys':str(len(d))}}))" "$CONTEXT_FILE"
+else
+    echo '{"recipe_name":"large-ctx","success":true,"step_results":[],"context":{"got_file":"false"}}'
+fi
+"#,
+    )
+    .expect("failed to write runner stub");
+
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+            .expect("failed to chmod runner");
+    }
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: large-ctx\nsteps: []\n").expect("failed to write recipe");
+
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).unwrap();
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+    }
+
+    // Context of ~256KB — would exceed ARG_MAX on many systems.
+    let mut context = BTreeMap::new();
+    context.insert("task_description".to_string(), "x".repeat(256 * 1024));
+
+    let result = execute::execute_recipe_via_rust(&recipe, &context, true, temp.path());
+
+    match prev_runner {
+        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+    match prev_home {
+        Some(v) => unsafe { std::env::set_var("AMPLIHACK_HOME", v) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+    }
+
+    let run_result =
+        result.expect("execute_recipe_via_rust must not fail with E2BIG for large context");
+    assert_eq!(run_result.recipe_name, "large-ctx");
+    assert!(run_result.success);
+    assert_eq!(
+        run_result.context.get("got_file"),
+        Some(&serde_json::json!("true")),
+        "large context must be passed via --context-file, not --set args"
+    );
+}
+
 /// Returns true if recipe-runner-rs appears to be available on this system.
 fn which_recipe_runner_available() -> bool {
     if let Ok(p) = std::env::var("RECIPE_RUNNER_RS_PATH")
