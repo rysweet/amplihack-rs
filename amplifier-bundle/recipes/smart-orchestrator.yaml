@@ -8,6 +8,12 @@ version: "1.5.0"
 author: "Amplihack Team"
 tags: ["orchestration", "routing", "parallel", "auto-classify", "goal-seeking"]
 
+# Agent steps launch full Claude sessions (including plugin installation)
+# which can easily exceed the recipe-runner's built-in 60s default.
+# Set a 5-minute recipe-level default so steps without an explicit
+# timeout_seconds still get adequate time.  Fixes #210.
+default_step_timeout: 300
+
 context:
   task_description: ""
   repo_path: "."
@@ -75,6 +81,7 @@ steps:
 
   - id: "classify-and-decompose"
     type: "agent"
+    timeout_seconds: 300
     agent: "amplihack:core:architect"
     prompt: |
       === [RECIPE PROGRESS] Step: classify-and-decompose ===
@@ -303,6 +310,7 @@ steps:
 
   - id: "handle-qa"
     type: "agent"
+    timeout_seconds: 300
     condition: "'Q&A' in task_type"
     agent: "amplihack:core:analyzer"
     prompt: |
@@ -323,6 +331,7 @@ steps:
 
   - id: "handle-ops-agent"
     type: "agent"
+    timeout_seconds: 300
     condition: "'Operations' in task_type"
     agent: "amplihack:core:builder"
     prompt: |
@@ -718,6 +727,7 @@ steps:
 
   - id: "reflect-round-1"
     type: "agent"
+    timeout_seconds: 300
     condition: |
       'Q&A' not in task_type and 'Operations' not in task_type and round_1_result
     agent: "amplihack:core:reviewer"
@@ -761,6 +771,7 @@ steps:
 
   - id: "execute-round-2"
     type: "agent"
+    timeout_seconds: 600
     condition: |
       reflection_1 and ('PARTIAL' in reflection_1 or 'NOT_ACHIEVED' in reflection_1 or 'HOLLOW' in reflection_1)
     agent: "amplihack:core:builder"
@@ -778,6 +789,7 @@ steps:
 
   - id: "reflect-round-2"
     type: "agent"
+    timeout_seconds: 300
     condition: |
       round_2_result and ('PARTIAL' in reflection_1 or 'NOT_ACHIEVED' in reflection_1)
     agent: "amplihack:core:reviewer"
@@ -796,6 +808,7 @@ steps:
 
   - id: "execute-round-3"
     type: "agent"
+    timeout_seconds: 600
     condition: |
       reflection_2 and ('PARTIAL' in reflection_2 or 'NOT_ACHIEVED' in reflection_2)
     agent: "amplihack:core:builder"
@@ -813,6 +826,7 @@ steps:
 
   - id: "reflect-final"
     type: "agent"
+    timeout_seconds: 300
     condition: "'Q&A' not in task_type and 'Operations' not in task_type and round_1_result"
     agent: "amplihack:core:reviewer"
     prompt: |
@@ -846,6 +860,7 @@ steps:
 
   - id: "validate-outside-in-testing"
     type: "agent"
+    timeout_seconds: 300
     condition: "'Q&A' not in task_type and 'Operations' not in task_type and 'Development' in task_type and round_1_result"
     agent: "amplihack:core:reviewer"
     prompt: |
@@ -919,6 +934,7 @@ steps:
 
   - id: "summarize"
     type: "agent"
+    timeout_seconds: 300
     condition: "'Q&A' not in task_type and 'Operations' not in task_type and round_1_result"
     agent: "amplihack:core:architect"
     prompt: |

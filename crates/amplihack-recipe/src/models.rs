@@ -139,6 +139,12 @@ impl Step {
         self.max_env_value_bytes
             .unwrap_or(Self::DEFAULT_MAX_ENV_BYTES)
     }
+
+    /// Returns the effective timeout for this step, falling back to
+    /// `recipe_default` if the step has no explicit timeout.
+    pub fn effective_timeout(&self, recipe_default: Option<u64>) -> Option<u64> {
+        self.timeout_seconds.or(recipe_default)
+    }
 }
 
 /// A complete recipe definition.
@@ -154,6 +160,11 @@ pub struct Recipe {
     pub context: HashMap<String, serde_json::Value>,
     #[serde(default)]
     pub on_failure: Option<String>,
+    /// Default timeout (seconds) applied to steps that don't specify their own.
+    /// When set, the recipe runner should use this value instead of its
+    /// built-in default for any step with `timeout_seconds: None`.
+    #[serde(default)]
+    pub default_step_timeout: Option<u64>,
 }
 
 fn default_version() -> String {
@@ -169,6 +180,7 @@ impl Recipe {
             steps,
             context: HashMap::new(),
             on_failure: None,
+            default_step_timeout: None,
         }
     }
 
