@@ -217,7 +217,7 @@ fn workflow_evidence_clears_tracking_state() {
 
     let warning = update_workflow_enforcement(
         "Bash",
-        &serde_json::json!({"command": "PYTHONPATH=src python3 -c 'from amplihack.recipes import run_recipe_by_name'"}),
+        &serde_json::json!({"command": "amplihack recipe run smart-orchestrator -c task_description='fix bug' -c repo_path=."}),
         Some("session-1"),
     );
     let state = read_workflow_state(&dirs, Some("session-1"));
