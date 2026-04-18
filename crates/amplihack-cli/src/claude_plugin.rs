@@ -28,9 +28,9 @@ const MIRRORED_ASSETS: &[&str] = &["agents", "skills", "commands", "context", "w
 
 /// Ensure amplihack is installed as a Claude Code plugin.
 ///
-/// Idempotent: safe to call on every launcher start. Errors are converted
-/// to warnings and do not abort the launch — a failed plugin install should
-/// not block the user from running Claude.
+/// Idempotent: safe to call on every launcher start. Returns install and
+/// registration errors to the caller; callers should treat failures as
+/// non-fatal so a plugin issue does not block Claude launch.
 pub fn ensure_claude_plugin_installed() -> Result<()> {
     let staged = staged_framework_dir()?;
     if !staged.is_dir() {

@@ -110,24 +110,37 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<()> {
 /// on substring rather than equality. Runs with a short timeout so a hung
 /// or broken binary cannot stall the caller.
 fn verify_installed_version(binary: &Path, expected: &str) -> Result<()> {
-    use std::sync::mpsc;
-    use std::thread;
-
-    let (tx, rx) = mpsc::channel();
-    let binary_for_thread = binary.to_path_buf();
-    thread::spawn(move || {
-        let result = Command::new(&binary_for_thread)
-            .arg("--version")
-            .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
-            .env("AMPLIHACK_NONINTERACTIVE", "1")
-            .output();
-        let _ = tx.send(result);
-    });
-
-    let output = rx
-        .recv_timeout(Duration::from_secs(5))
-        .context("timed out waiting for --version from updated binary")?
+    let mut child = Command::new(binary)
+        .arg("--version")
+        .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
+        .env("AMPLIHACK_NONINTERACTIVE", "1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .context("failed to exec updated binary with --version")?;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if child
+            .try_wait()
+            .context("failed while waiting for updated binary --version")?
+            .is_some()
+        {
+            break;
+        }
+
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("timed out waiting for --version from updated binary");
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let output = child
+        .wait_with_output()
+        .context("failed while collecting output from updated binary --version")?;
 
     if !output.status.success() {
         bail!(

@@ -79,9 +79,19 @@ fn which(tool: &str) -> Option<PathBuf> {
 pub fn ensure_tool_available(tool: &str) -> Result<BinaryInfo> {
     if let Ok(binary) = BinaryFinder::find(tool) {
         let _ = maybe_upgrade_tool(tool);
-        return BinaryFinder::find(tool)
+        return match BinaryFinder::find(tool)
             .with_context(|| format!("failed to re-locate '{tool}' after upgrade"))
-            .or(Ok(binary));
+        {
+            Ok(relocated_binary) => Ok(relocated_binary),
+            Err(err) => {
+                tracing::warn!(
+                    tool,
+                    %err,
+                    "failed to re-locate binary after upgrade; using previously located binary"
+                );
+                Ok(binary)
+            }
+        };
     }
 
     install_tool(tool)?;
