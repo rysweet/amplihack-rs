@@ -35,6 +35,7 @@ const WORKFLOW_EVIDENCE_BASH: &[&str] = &[
     "smart-orchestrator",
     "recipe_runner",
     "amplihack.recipes",
+    "amplihack recipe run",
     "git checkout -b",
     "git switch -c",
     "git branch ",
