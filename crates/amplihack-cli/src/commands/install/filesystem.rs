@@ -123,6 +123,7 @@ fn is_excluded_file(name: &std::ffi::OsStr) -> bool {
 /// Copy a directory recursively, skipping symlinks with a warning.
 /// Device files, sockets, and FIFOs are skipped silently.
 /// `__pycache__` directories and `.pyc`/`.pyo` files are excluded.
+/// Broken symlinks are removed during traversal.
 pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     // Same-path guard: bail if source and destination resolve to the same location.
     if let (Ok(src_canon), Ok(dst_canon)) = (src.canonicalize(), dst.canonicalize())
@@ -196,6 +197,61 @@ pub(super) fn set_script_permissions(path: &Path) -> Result<()> {
         perms.set_mode(perms.mode() | 0o110);
         fs::set_permissions(path, perms)
             .with_context(|| format!("failed to chmod {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Remove broken symlinks from a directory tree.
+///
+/// Walks the directory non-recursively by default (set `recursive` for deep scan).
+/// Returns the number of broken symlinks removed.
+pub(super) fn clean_broken_symlinks(dir: &Path, recursive: bool) -> Result<usize> {
+    let mut removed = 0usize;
+    if !dir.exists() {
+        return Ok(0);
+    }
+    clean_broken_symlinks_inner(dir, recursive, &mut removed, 0)?;
+    Ok(removed)
+}
+
+fn clean_broken_symlinks_inner(
+    dir: &Path,
+    recursive: bool,
+    removed: &mut usize,
+    depth: usize,
+) -> Result<()> {
+    if depth > MAX_WALK_DEPTH {
+        return Ok(());
+    }
+    let entries =
+        fs::read_dir(dir).with_context(|| format!("failed to read dir {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let meta = match path.symlink_metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.file_type().is_symlink() {
+            // Check if the symlink target exists (broken = target missing)
+            if !path.exists() {
+                match fs::remove_file(&path) {
+                    Ok(()) => {
+                        println!("  🗑️  Removed broken symlink: {}", path.display());
+                        *removed += 1;
+                    }
+                    Err(e) => {
+                        println!(
+                            "  ⚠️  Could not remove broken symlink {}: {}",
+                            path.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        } else if recursive && meta.is_dir() {
+            clean_broken_symlinks_inner(&path, recursive, removed, depth + 1)?;
+        }
     }
     Ok(())
 }
