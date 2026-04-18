@@ -40,6 +40,10 @@ pub enum AgentError {
     #[error("config error: {0}")]
     ConfigError(String),
 
+    /// A subprocess execution failed.
+    #[error("subprocess error: {0}")]
+    SubprocessError(String),
+
     /// An operation timed out.
     #[error("timeout after {0} seconds")]
     TimeoutError(u64),

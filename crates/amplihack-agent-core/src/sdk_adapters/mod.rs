@@ -41,6 +41,7 @@
 pub mod base;
 pub mod claude;
 pub mod copilot;
+pub mod copilot_cli_client;
 pub mod factory;
 pub mod microsoft;
 pub mod types;
@@ -49,6 +50,7 @@ pub mod types;
 pub use base::{SdkAdapter, SdkClient, SdkClientResponse};
 pub use claude::ClaudeAdapter;
 pub use copilot::CopilotAdapter;
+pub use copilot_cli_client::CopilotCliClient;
 pub use factory::{create_adapter, create_adapter_by_name};
 pub use microsoft::MicrosoftAdapter;
 pub use types::{AdapterResult, AgentTool, Goal, SdkAdapterConfig, SdkType, ToolCategory};
