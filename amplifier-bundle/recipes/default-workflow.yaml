@@ -56,6 +56,10 @@ context:
   # Workstream name for parallel workflows (optional)
   workstream: ""
 
+  # Resume support: set to a checkpoint ID to skip steps already completed.
+  # Valid values: "", "checkpoint-after-implementation", "checkpoint-after-review-feedback"
+  resume_checkpoint: ""
+
   # Outputs populated during execution
   clarified_requirements: ""
   issue_number: ""
@@ -709,6 +713,7 @@ steps:
   # ==========================================================================
   - id: "step-07-write-tests"
     agent: "amplihack:tester"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
       # Step 7: TDD - Write Tests First
 
@@ -738,6 +743,7 @@ steps:
   # ==========================================================================
   - id: "step-08-implement"
     agent: "amplihack:builder"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
       # Step 8: Implement the Solution
 
@@ -767,6 +773,7 @@ steps:
 
   - id: "step-08b-integration"
     agent: "amplihack:integration"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
       # Step 8b: External Service Integration
 
@@ -787,6 +794,7 @@ steps:
   # --------------------------------------------------------------------------
   - id: "checkpoint-after-implementation"
     type: "bash"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     # FIX (#4231): Limit env var size to prevent E2BIG when prior steps
     # (implementation, test_spec, design_spec) produce large outputs.
     max_env_value_bytes: 65536
