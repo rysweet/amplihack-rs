@@ -3,7 +3,7 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Instant;
 
@@ -102,8 +102,8 @@ impl Workstream {
         description: String,
         task: String,
         recipe: String,
-        base_dir: &PathBuf,
-        state_dir: &PathBuf,
+        base_dir: &Path,
+        state_dir: &Path,
     ) -> Self {
         let safe_id = sanitize_id(&issue.to_string());
         Self {

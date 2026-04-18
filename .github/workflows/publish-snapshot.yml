@@ -69,12 +69,27 @@ jobs:
         if: matrix.cross
         run: cargo install cross --locked
 
+      # Snapshot builds get a +snapshot.<sha> semver metadata suffix so
+      # `amplihack --version` reflects that the binary is pre-release.
+      # `amplihack update` still compares against the latest stable tag.
+      - name: Compute snapshot version
+        id: snapshot-version
+        shell: bash
+        run: |
+          SHORT_SHA=$(git rev-parse --short=7 "${GITHUB_SHA}")
+          BASE=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "version=${BASE}+snapshot.${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
       - name: Build (native)
         if: "!matrix.cross"
+        env:
+          AMPLIHACK_RELEASE_VERSION: ${{ steps.snapshot-version.outputs.version }}
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Build (cross)
         if: matrix.cross
+        env:
+          AMPLIHACK_RELEASE_VERSION: ${{ steps.snapshot-version.outputs.version }}
         run: cross build --release --locked --target ${{ matrix.target }}
 
       - name: Package snapshot artifact

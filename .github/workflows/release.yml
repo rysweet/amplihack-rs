@@ -130,6 +130,15 @@ jobs:
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
 
       - name: Build release
+        # `AMPLIHACK_RELEASE_VERSION` is read at build time by `option_env!` in
+        # `amplihack_cli::VERSION` (and by the matching `const VERSION` in the
+        # amplihack-hooks binary). Setting it here pins every released binary
+        # to the tag computed in version-bump — without this, binaries still
+        # bake in whatever `CARGO_PKG_VERSION` happens to be in `Cargo.toml`,
+        # which is the bug that caused the self-update prompt to loop forever
+        # after a "successful" upgrade.
+        env:
+          AMPLIHACK_RELEASE_VERSION: ${{ needs.version-bump.outputs.version }}
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package

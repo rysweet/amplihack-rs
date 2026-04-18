@@ -324,10 +324,11 @@ impl EnvBuilder {
         }
 
         // Sanitize PYTHONSTARTUP if it references amplihack
-        if let Ok(startup) = env::var("PYTHONSTARTUP") {
-            if startup.contains("amplihack") && !startup.contains("amplihack-rs") {
-                self.removed_vars.insert("PYTHONSTARTUP".to_string());
-            }
+        if let Ok(startup) = env::var("PYTHONSTARTUP")
+            && startup.contains("amplihack")
+            && !startup.contains("amplihack-rs")
+        {
+            self.removed_vars.insert("PYTHONSTARTUP".to_string());
         }
 
         // Filter PATH: remove directories containing a Python amplihack that
@@ -381,7 +382,7 @@ impl EnvBuilder {
         };
 
         self.set("AMPLIHACK_RUST_RUNTIME", "1")
-            .set("AMPLIHACK_VERSION", env!("CARGO_PKG_VERSION"))
+            .set("AMPLIHACK_VERSION", crate::VERSION)
             .set("NODE_OPTIONS", node_opts_value)
     }
 

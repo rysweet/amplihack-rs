@@ -198,7 +198,7 @@ mod tests {
             !msg.is_empty(),
             "amplihack version message must not be empty"
         );
-        let pkg_version = env!("CARGO_PKG_VERSION");
+        let pkg_version = crate::VERSION;
         assert!(
             msg.contains(pkg_version),
             "message should contain the package version '{pkg_version}'; got: {msg}"

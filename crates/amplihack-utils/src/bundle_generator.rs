@@ -121,9 +121,7 @@ impl BundleGeneratorError {
             Self::Validation { .. } => {
                 "Review validation failures and correct the identified issues."
             }
-            Self::Packaging { .. } => {
-                "Check file permissions and available disk space."
-            }
+            Self::Packaging { .. } => "Check file permissions and available disk space.",
             Self::Distribution { .. } => {
                 "Check network connectivity and authentication. Verify repository permissions."
             }
@@ -693,7 +691,9 @@ pub trait BundleBuilder: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Unsafe system directories that must not be used as output targets.
-const UNSAFE_PATHS: &[&str] = &["/", "/etc", "/usr", "/bin", "/sbin", "/sys", "/proc", "/dev"];
+const UNSAFE_PATHS: &[&str] = &[
+    "/", "/etc", "/usr", "/bin", "/sbin", "/sys", "/proc", "/dev",
+];
 
 /// Creates complete filesystem packages for agent bundles.
 ///
@@ -746,7 +746,9 @@ impl FilesystemPackager {
 
         // Write agent files.
         for agent in &bundle.agents {
-            let agent_file = package_path.join("agents").join(format!("{}.md", agent.name));
+            let agent_file = package_path
+                .join("agents")
+                .join(format!("{}.md", agent.name));
             std::fs::write(&agent_file, &agent.content)?;
         }
 
@@ -775,9 +777,7 @@ impl FilesystemPackager {
 
 /// Validate that `output_dir` is not a system directory.
 fn validate_output_dir(path: &Path) -> Result<(), BundleGeneratorError> {
-    let resolved = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let resolved_str = resolved.to_string_lossy();
 
     for &unsafe_path in UNSAFE_PATHS {

@@ -130,22 +130,23 @@ pub fn check_gadugi_available() -> bool {
     // is actually unreachable (issue #229).
     if let Ok(home) = std::env::var("HOME") {
         let npx_cache = std::path::PathBuf::from(&home).join(".npm").join("_npx");
-        if npx_cache.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&npx_cache) {
-                for entry in entries.flatten() {
-                    let gadugi_bin = entry
-                        .path()
-                        .join("node_modules")
-                        .join(".bin")
-                        .join("gadugi-test");
-                    // Check for broken symlink: symlink_metadata succeeds but
-                    // the target doesn't exist
-                    if let Ok(meta) = gadugi_bin.symlink_metadata() {
-                        if meta.file_type().is_symlink() && !gadugi_bin.exists() {
-                            // Remove the broken symlink silently
-                            let _ = std::fs::remove_file(&gadugi_bin);
-                        }
-                    }
+        if npx_cache.is_dir()
+            && let Ok(entries) = std::fs::read_dir(&npx_cache)
+        {
+            for entry in entries.flatten() {
+                let gadugi_bin = entry
+                    .path()
+                    .join("node_modules")
+                    .join(".bin")
+                    .join("gadugi-test");
+                // Check for broken symlink: symlink_metadata succeeds but
+                // the target doesn't exist
+                if let Ok(meta) = gadugi_bin.symlink_metadata()
+                    && meta.file_type().is_symlink()
+                    && !gadugi_bin.exists()
+                {
+                    // Remove the broken symlink silently
+                    let _ = std::fs::remove_file(&gadugi_bin);
                 }
             }
         }

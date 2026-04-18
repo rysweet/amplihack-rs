@@ -15,6 +15,7 @@ pub mod auto_stager;
 pub mod auto_update;
 pub mod binary_finder;
 pub mod bootstrap;
+pub mod claude_plugin;
 mod cli_commands;
 pub mod cli_extensions;
 mod cli_subcommands;
@@ -32,6 +33,7 @@ pub mod env_builder;
 /// sessions on the local machine.  Separate from Azure-VM fleet orchestration
 /// in `commands/fleet.rs`.
 pub mod fleet_local;
+pub mod freshness;
 pub mod health_check;
 pub mod launcher;
 pub mod launcher_context;
@@ -55,9 +57,28 @@ use clap::{
     builder::{PossibleValue, PossibleValuesParser},
 };
 
+/// The version amplihack reports to users via `--version`, update checks,
+/// plugin manifests, and the `AMPLIHACK_VERSION` env var.
+///
+/// Prefers the `AMPLIHACK_RELEASE_VERSION` env var *set at build time* (used by
+/// the release workflow to pin every binary to its tagged version) and falls
+/// back to `CARGO_PKG_VERSION` for local/dev builds.
+///
+/// The root cause of the self-update prompt loop was that release binaries
+/// were shipped with `CARGO_PKG_VERSION` baked in from a stale `Cargo.toml`,
+/// so a binary tagged `v0.7.46` still self-reported `0.7.32` and the update
+/// check kept offering the "newer" version forever. Feeding the release tag
+/// through `AMPLIHACK_RELEASE_VERSION` at build time closes that gap without
+/// needing to sed both `Cargo.toml` and `Cargo.lock` on every release.
+pub const VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 pub use cli_commands::Commands;
 pub use cli_subcommands::{
-    MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands, QueryCodeCommands, RecipeCommands,
+    MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands, QueryCodeCommands,
+    RecipeCommands,
 };
 
 fn graph_db_backend_value_parser() -> PossibleValuesParser {
@@ -80,7 +101,7 @@ fn raw_db_format_value_parser() -> PossibleValuesParser {
 #[derive(Parser, Debug)]
 #[command(
     name = "amplihack",
-    version,
+    version = VERSION,
     about = "amplihack CLI — Rust core runtime"
 )]
 pub struct Cli {

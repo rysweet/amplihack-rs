@@ -206,9 +206,7 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
             println!(
                 "       2. Reorder PATH so ~/.local/bin comes first:  export PATH=\"$HOME/.local/bin:$PATH\""
             );
-            println!(
-                "       3. Uninstall the Python package:  pip uninstall amplihack"
-            );
+            println!("       3. Uninstall the Python package:  pip uninstall amplihack");
         } else {
             println!(
                 "  ⚠️  `amplihack` currently resolves to {} instead of the Rust binary at {}.",
@@ -231,15 +229,14 @@ fn is_python_script(path: &std::path::Path) -> bool {
         return true;
     }
     // Read the first line to check for a Python shebang
-    if let Ok(content) = std::fs::read(path) {
-        if let Some(first_line) = content
+    if let Ok(content) = std::fs::read(path)
+        && let Some(first_line) = content
             .split(|&b| b == b'\n')
             .next()
             .and_then(|line| std::str::from_utf8(line).ok())
-        {
-            return first_line.starts_with("#!")
-                && (first_line.contains("python") || first_line.contains("Python"));
-        }
+    {
+        return first_line.starts_with("#!")
+            && (first_line.contains("python") || first_line.contains("Python"));
     }
     false
 }

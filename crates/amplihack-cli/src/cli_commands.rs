@@ -4,7 +4,10 @@ use clap::Subcommand;
 use clap_complete::Shell;
 use std::path::PathBuf;
 
-use super::{MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands, QueryCodeCommands, RecipeCommands};
+use super::{
+    MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands, QueryCodeCommands,
+    RecipeCommands,
+};
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
