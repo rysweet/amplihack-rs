@@ -10,6 +10,7 @@ pub mod install;
 pub mod launch;
 pub mod memory;
 pub mod mode;
+pub mod multitask;
 pub mod new_agent;
 pub mod plugin;
 pub mod query_code;
@@ -17,7 +18,7 @@ pub mod recipe;
 pub mod rustyclawd;
 pub mod uvx_help;
 
-use crate::{Commands, MemoryCommands, ModeCommands, PluginCommands, RecipeCommands};
+use crate::{Commands, MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands, RecipeCommands};
 use anyhow::Result;
 
 /// Dispatch a parsed CLI command to the appropriate handler.
@@ -305,6 +306,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::UvxHelp { find_path, info } => uvx_help::run_uvx_help(find_path, info),
         Commands::Completions { shell } => completions::run_completions(shell),
         Commands::Doctor => doctor::run_doctor(),
+        Commands::Multitask { command } => dispatch_multitask(command),
     }
 }
 
@@ -389,5 +391,27 @@ fn dispatch_mode(command: ModeCommands) -> Result<()> {
         ModeCommands::Detect => mode::run_detect(),
         ModeCommands::ToPlugin => mode::run_to_plugin(),
         ModeCommands::ToLocal => mode::run_to_local(),
+    }
+}
+
+fn dispatch_multitask(command: MultitaskCommands) -> Result<()> {
+    match command {
+        MultitaskCommands::Run {
+            config,
+            mode,
+            recipe,
+            max_runtime,
+            timeout_policy,
+            dry_run,
+        } => multitask::run_multitask(
+            &config,
+            &mode,
+            &recipe,
+            max_runtime,
+            timeout_policy.as_deref(),
+            dry_run,
+        ),
+        MultitaskCommands::Cleanup { config, dry_run } => multitask::run_cleanup(&config, dry_run),
+        MultitaskCommands::Status { base_dir } => multitask::run_status(base_dir.as_deref()),
     }
 }
