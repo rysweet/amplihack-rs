@@ -69,6 +69,28 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<()> {
         .context("current executable has no parent directory")?;
     let hooks_dest = install_dir.join(binary_filename("amplihack-hooks"));
 
+    // Preflight: verify the destination filesystem has enough space for the
+    // new binaries. Without this, a low-disk host can crash `fs::copy` with a
+    // partial write that leaves a corrupt `.tmp` file behind — the user sees
+    // "Updated amplihack" but the rename actually failed (or wrote a
+    // truncated binary), and every subsequent launch re-prompts for update.
+    let new_hooks_size = fs::metadata(&new_hooks)
+        .with_context(|| format!("stat {}", new_hooks.display()))?
+        .len();
+    let new_amplihack_size = fs::metadata(&new_amplihack)
+        .with_context(|| format!("stat {}", new_amplihack.display()))?
+        .len();
+    let existing_hooks_size = fs::metadata(&hooks_dest).map(|m| m.len()).unwrap_or(0);
+    let existing_amplihack_size = fs::metadata(&current_exe).map(|m| m.len()).unwrap_or(0);
+    // Worst case: both destinations keep their current contents while the
+    // `.tmp` files are written, so we need headroom for every new_* byte
+    // plus a safety margin. `saturating_sub` keeps us honest if a future
+    // build shrinks the binaries below the existing sizes.
+    let required_free = new_hooks_size.saturating_sub(existing_hooks_size)
+        + new_amplihack_size.saturating_sub(existing_amplihack_size)
+        + 8 * 1024 * 1024;
+    check_free_space(install_dir, required_free)?;
+
     install_binary_atomic(&new_hooks, &hooks_dest)?;
     install_binary_atomic(&new_amplihack, &current_exe)?;
 
@@ -180,6 +202,50 @@ fn verify_installed_version(binary: &Path, expected: &str) -> Result<()> {
             stdout.trim()
         );
     }
+    Ok(())
+}
+
+/// Refuse to start the binary swap when the destination filesystem can't
+/// hold the new binaries plus a small safety margin.
+///
+/// On Unix we use `statvfs`. On other platforms we soft-fail open (log the
+/// attempt and let the copy run) — better to let the error surface from
+/// `fs::copy` than to block updates on hosts we can't probe.
+#[cfg(unix)]
+fn check_free_space(dir: &Path, required_bytes: u64) -> Result<()> {
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path =
+        CString::new(dir.as_os_str().as_bytes()).context("install dir contains a NUL byte")?;
+    let mut stat = MaybeUninit::<libc::statvfs>::uninit();
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        // Can't measure — don't block the update.
+        tracing::warn!(
+            "statvfs({}) failed; skipping free-space preflight",
+            dir.display()
+        );
+        return Ok(());
+    }
+    let stat = unsafe { stat.assume_init() };
+    // All our published release targets are 64-bit (see
+    // `supported_release_target` in update/mod.rs), so `c_ulong` is `u64` here.
+    let available: u64 = stat.f_bavail.saturating_mul(stat.f_frsize);
+    if available < required_bytes {
+        bail!(
+            "not enough free space to install update: {} needs {} bytes free but has {} bytes. Free up disk and re-run `amplihack update`.",
+            dir.display(),
+            required_bytes,
+            available
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn check_free_space(_dir: &Path, _required_bytes: u64) -> Result<()> {
     Ok(())
 }
 
