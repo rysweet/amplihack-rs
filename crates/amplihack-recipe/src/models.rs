@@ -147,6 +147,57 @@ impl Step {
     }
 }
 
+/// Validation rule for a context variable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextValidationRule {
+    /// Value must be non-empty.
+    Nonempty,
+    /// Value must point to an existing git repository.
+    GitRepo,
+    /// Value must be a valid file path.
+    FilePath,
+    /// Value must be a valid directory path.
+    DirPath,
+}
+
+impl ContextValidationRule {
+    pub fn from_str_loose(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "nonempty" | "non_empty" | "required" => Some(Self::Nonempty),
+            "git_repo" | "gitrepo" | "git" => Some(Self::GitRepo),
+            "file_path" | "filepath" | "file" => Some(Self::FilePath),
+            "dir_path" | "dirpath" | "dir" | "directory" => Some(Self::DirPath),
+            _ => None,
+        }
+    }
+}
+
+/// Recursion guard configuration for nested recipe invocations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecursionConfig {
+    #[serde(default = "default_max_depth")]
+    pub max_depth: u32,
+    #[serde(default = "default_max_total_steps")]
+    pub max_total_steps: u32,
+}
+
+fn default_max_depth() -> u32 {
+    3
+}
+fn default_max_total_steps() -> u32 {
+    50
+}
+
+impl Default for RecursionConfig {
+    fn default() -> Self {
+        Self {
+            max_depth: default_max_depth(),
+            max_total_steps: default_max_total_steps(),
+        }
+    }
+}
+
 /// A complete recipe definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Recipe {
@@ -165,6 +216,18 @@ pub struct Recipe {
     /// built-in default for any step with `timeout_seconds: None`.
     #[serde(default)]
     pub default_step_timeout: Option<u64>,
+    /// Validation rules for context variables (e.g. `task_description: nonempty`).
+    #[serde(default)]
+    pub context_validation: HashMap<String, String>,
+    /// Recursion guard configuration for nested recipe invocations.
+    #[serde(default)]
+    pub recursion: Option<RecursionConfig>,
+    /// Recipe author (informational).
+    #[serde(default)]
+    pub author: Option<String>,
+    /// Tags for recipe categorization.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 fn default_version() -> String {
@@ -181,6 +244,64 @@ impl Recipe {
             context: HashMap::new(),
             on_failure: None,
             default_step_timeout: None,
+            context_validation: HashMap::new(),
+            recursion: None,
+            author: None,
+            tags: Vec::new(),
+        }
+    }
+
+    /// Validate context variables against the recipe's `context_validation` rules.
+    pub fn validate_context(&self, context: &HashMap<String, String>) -> Result<(), Vec<String>> {
+        let mut errors = Vec::new();
+        for (key, rule_str) in &self.context_validation {
+            let Some(rule) = ContextValidationRule::from_str_loose(rule_str) else {
+                errors.push(format!(
+                    "Unknown validation rule '{rule_str}' for key '{key}'"
+                ));
+                continue;
+            };
+            let value = context.get(key).map(|s| s.as_str()).unwrap_or("");
+            match rule {
+                ContextValidationRule::Nonempty => {
+                    if value.trim().is_empty() {
+                        errors.push(format!("Context variable '{key}' must be non-empty"));
+                    }
+                }
+                ContextValidationRule::GitRepo => {
+                    if value.trim().is_empty() {
+                        errors.push(format!(
+                            "Context variable '{key}' must be a git repository path"
+                        ));
+                    } else {
+                        let git_dir = std::path::Path::new(value).join(".git");
+                        if !git_dir.exists() {
+                            errors.push(format!(
+                                "Context variable '{key}' = '{value}' is not a git repository"
+                            ));
+                        }
+                    }
+                }
+                ContextValidationRule::FilePath => {
+                    if !std::path::Path::new(value).is_file() {
+                        errors.push(format!(
+                            "Context variable '{key}' = '{value}' is not a valid file path"
+                        ));
+                    }
+                }
+                ContextValidationRule::DirPath => {
+                    if !std::path::Path::new(value).is_dir() {
+                        errors.push(format!(
+                            "Context variable '{key}' = '{value}' is not a valid directory"
+                        ));
+                    }
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
         }
     }
 
