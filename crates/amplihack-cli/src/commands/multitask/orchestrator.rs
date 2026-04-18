@@ -820,7 +820,10 @@ export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
         unsafe {
             let mut stat: libc::statvfs = std::mem::zeroed();
             if libc::statvfs(path_cstr.as_ptr(), &mut stat) == 0 {
-                let free_bytes = stat.f_bavail * stat.f_frsize;
+                // macOS `statvfs` uses `u32` fields; Linux uses `u64`. Cast
+                // both so the multiplication type-checks on every target.
+                #[allow(clippy::unnecessary_cast)]
+                let free_bytes = (stat.f_bavail as u64) * (stat.f_frsize as u64);
                 let free_gb = free_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
                 if free_gb < min_free_gb {
                     bail!(

@@ -230,9 +230,12 @@ fn check_free_space(dir: &Path, required_bytes: u64) -> Result<()> {
         return Ok(());
     }
     let stat = unsafe { stat.assume_init() };
-    // All our published release targets are 64-bit (see
-    // `supported_release_target` in update/mod.rs), so `c_ulong` is `u64` here.
-    let available: u64 = stat.f_bavail.saturating_mul(stat.f_frsize);
+    // `statvfs` field widths differ by OS: Linux uses `c_ulong` (u64 on our
+    // 64-bit targets), macOS uses `u32`. Cast both to `u64` so the math works
+    // on every supported host. Clippy flags the cast as unnecessary on Linux
+    // but it's mandatory on macOS, so silence the lint on the one line.
+    #[allow(clippy::unnecessary_cast)]
+    let available: u64 = (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64);
     if available < required_bytes {
         bail!(
             "not enough free space to install update: {} needs {} bytes free but has {} bytes. Free up disk and re-run `amplihack update`.",
