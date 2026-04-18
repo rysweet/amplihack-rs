@@ -15,14 +15,17 @@ pub mod domain_eval;
 pub mod error;
 pub mod general_capability;
 pub mod grader;
+pub mod gym;
 pub mod harness;
 pub mod levels;
 pub mod llm_grader;
 pub mod long_horizon;
+pub mod long_horizon_eval;
 pub mod matrix_eval;
 pub mod models;
 pub mod multi_source_collector;
 pub mod progressive;
+pub mod progressive_levels;
 pub mod quiz_generator;
 pub mod sdk_eval_loop;
 pub mod security_log;
@@ -81,4 +84,12 @@ pub use teaching_session::{
 pub use teaching_subprocess::{TeachingPhaseResult, TeachingSubprocessConfig, teaching_phase};
 pub use trace_to_test::{
     TLCGraph, TLCState, TLCTransition, extract_traces, generate_test_code, parse_dot,
+};
+
+// Native gym/eval API (replaces Python simard_gym_bridge.py)
+pub use gym::{GymConfig, GymRunner, GymScenario, GymScenarioResult, GymSuiteResult};
+pub use long_horizon_eval::LongHorizonMemoryEval;
+pub use progressive_levels::{
+    Article, LevelQuestion, LevelScenario, advanced_levels, all_levels, novel_skill_levels,
+    teacher_student_levels, transfer_levels,
 };
