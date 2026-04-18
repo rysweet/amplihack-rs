@@ -7,6 +7,7 @@ pub mod meeting_synthesizer;
 pub mod models;
 pub mod router;
 pub mod security;
+pub mod skill_catalog;
 pub mod skill_injector;
 pub mod teaching;
 
@@ -23,5 +24,6 @@ pub use models::{
 };
 pub use router::IntentRouter;
 pub use security::SecurityAuditor;
+pub use skill_catalog::{Skill, SkillCatalog, SkillMeta};
 pub use skill_injector::SkillInjector;
 pub use teaching::TeachingAgent;
