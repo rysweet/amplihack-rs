@@ -18,7 +18,9 @@ pub mod recipe;
 pub mod rustyclawd;
 pub mod uvx_help;
 
-use crate::{Commands, MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands, RecipeCommands};
+use crate::{
+    Commands, MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands, RecipeCommands,
+};
 use anyhow::Result;
 
 /// Dispatch a parsed CLI command to the appropriate handler.

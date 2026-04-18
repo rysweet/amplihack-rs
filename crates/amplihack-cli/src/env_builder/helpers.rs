@@ -151,13 +151,11 @@ pub(super) fn is_file_python_script(path: &std::path::Path) -> bool {
         use std::io::Read;
         let mut buf = [0u8; 128];
         let mut reader = std::io::BufReader::new(file);
-        if let Ok(n) = reader.read(&mut buf) {
-            if let Ok(first_line) = std::str::from_utf8(&buf[..n]) {
-                if let Some(line) = first_line.lines().next() {
-                    return line.starts_with("#!")
-                        && (line.contains("python") || line.contains("Python"));
-                }
-            }
+        if let Ok(n) = reader.read(&mut buf)
+            && let Ok(first_line) = std::str::from_utf8(&buf[..n])
+            && let Some(line) = first_line.lines().next()
+        {
+            return line.starts_with("#!") && (line.contains("python") || line.contains("Python"));
         }
     }
     false

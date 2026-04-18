@@ -51,7 +51,12 @@ pub fn run_multitask(
     if dry_run {
         println!("Dry-run: {} workstreams would be launched", items.len());
         for item in &items {
-            println!("  [{}] {} (recipe: {})", item.issue, item.description_or_default(), item.recipe.as_deref().unwrap_or(recipe));
+            println!(
+                "  [{}] {} (recipe: {})",
+                item.issue,
+                item.description_or_default(),
+                item.recipe.as_deref().unwrap_or(recipe)
+            );
         }
         return Ok(());
     }
@@ -80,11 +85,14 @@ pub fn run_cleanup(config_path: &str, dry_run: bool) -> Result<()> {
 pub fn run_status(base_dir: Option<&str>) -> Result<()> {
     let base = base_dir
         .map(|s| s.to_string())
-        .unwrap_or_else(|| orchestrator::default_base_dir());
+        .unwrap_or_else(orchestrator::default_base_dir);
     let state_dir = Path::new(&base).join("state");
 
     if !state_dir.exists() {
-        println!("No workstream state directory found at {}", state_dir.display());
+        println!(
+            "No workstream state directory found at {}",
+            state_dir.display()
+        );
         return Ok(());
     }
 
@@ -93,14 +101,22 @@ pub fn run_status(base_dir: Option<&str>) -> Result<()> {
         let entry = entry?;
         let path = entry.path();
         if path.extension().is_some_and(|e| e == "json")
-            && !path.file_name().is_some_and(|n| n.to_string_lossy().contains(".progress."))
+            && !path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().contains(".progress."))
         {
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
                     if let Ok(state) = serde_json::from_str::<serde_json::Value>(&text) {
                         let issue = state.get("issue").and_then(|v| v.as_i64()).unwrap_or(0);
-                        let lifecycle = state.get("lifecycle_state").and_then(|v| v.as_str()).unwrap_or("unknown");
-                        let step = state.get("current_step").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let lifecycle = state
+                            .get("lifecycle_state")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        let step = state
+                            .get("current_step")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
                         let branch = state.get("branch").and_then(|v| v.as_str()).unwrap_or("");
                         println!("[{issue}] {lifecycle:20} step={step:30} branch={branch}");
                         found = true;
@@ -128,14 +144,13 @@ fn detect_repo_url() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
-            std::env::var("AMPLIHACK_REPO_PATH")
-                .unwrap_or_else(|_| {
-                    let cwd = std::env::current_dir()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|_| ".".to_string());
-                    eprintln!("WARNING: No git remote 'origin'; using local path: {cwd}");
-                    cwd
-                })
+            std::env::var("AMPLIHACK_REPO_PATH").unwrap_or_else(|_| {
+                let cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string());
+                eprintln!("WARNING: No git remote 'origin'; using local path: {cwd}");
+                cwd
+            })
         })
 }
 

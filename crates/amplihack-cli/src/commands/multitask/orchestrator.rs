@@ -70,14 +70,11 @@ impl ParallelOrchestrator {
     }
 
     pub fn set_default_timeout_policy(&mut self, policy: &str) {
-        if policy == INTERRUPT_PRESERVE_TIMEOUT_POLICY
-            || policy == CONTINUE_PRESERVE_TIMEOUT_POLICY
+        if policy == INTERRUPT_PRESERVE_TIMEOUT_POLICY || policy == CONTINUE_PRESERVE_TIMEOUT_POLICY
         {
             self.default_timeout_policy = policy.to_string();
         } else {
-            warn!(
-                "Invalid timeout policy {policy:?}; using default {DEFAULT_TIMEOUT_POLICY:?}"
-            );
+            warn!("Invalid timeout policy {policy:?}; using default {DEFAULT_TIMEOUT_POLICY:?}");
         }
     }
 
@@ -88,9 +85,8 @@ impl ParallelOrchestrator {
     pub fn setup(&self) -> Result<()> {
         fs::create_dir_all(&self.base_dir)
             .with_context(|| format!("Failed to create base dir: {}", self.base_dir.display()))?;
-        fs::create_dir_all(&self.state_dir).with_context(|| {
-            format!("Failed to create state dir: {}", self.state_dir.display())
-        })?;
+        fs::create_dir_all(&self.state_dir)
+            .with_context(|| format!("Failed to create state dir: {}", self.state_dir.display()))?;
 
         // Check disk space
         self.check_disk_space(5.0)?;
@@ -132,8 +128,7 @@ impl ParallelOrchestrator {
             self.apply_saved_state(&mut ws, state);
         }
 
-        let reuse_existing =
-            saved.is_some() && !ws.cleanup_eligible && ws.work_dir.exists();
+        let reuse_existing = saved.is_some() && !ws.cleanup_eligible && ws.work_dir.exists();
 
         if !reuse_existing && ws.work_dir.exists() {
             let _ = fs::remove_dir_all(&ws.work_dir);
@@ -142,7 +137,11 @@ impl ParallelOrchestrator {
         let default_branch = self.resolve_default_branch();
 
         if reuse_existing {
-            println!("[{}] Reusing preserved work dir {}", issue, ws.work_dir.display());
+            println!(
+                "[{}] Reusing preserved work dir {}",
+                issue,
+                ws.work_dir.display()
+            );
         } else {
             println!(
                 "[{}] Cloning default branch '{}' from remote...",
@@ -234,11 +233,11 @@ impl ParallelOrchestrator {
 
         thread::spawn(move || {
             let mut child_guard = child_arc.lock().unwrap();
-            if let Some(ref mut child) = *child_guard {
-                if let Some(stdout) = child.stdout.take() {
-                    drop(child_guard);
-                    tail_output(stdout, &log_file, issue, max_log_bytes);
-                }
+            if let Some(ref mut child) = *child_guard
+                && let Some(stdout) = child.stdout.take()
+            {
+                drop(child_guard);
+                tail_output(stdout, &log_file, issue, max_log_bytes);
             }
         });
 
@@ -287,10 +286,11 @@ impl ParallelOrchestrator {
 
             // Auto-cleanup completed workstream directories
             for ws in &self.workstreams {
-                if !self.cleaned_up.contains(&ws.issue) && ws.exit_code.is_some() {
-                    if Workstream::derive_cleanup_eligible(&ws.lifecycle_state) {
-                        self.cleanup_workstream_dir(ws);
-                    }
+                if !self.cleaned_up.contains(&ws.issue)
+                    && ws.exit_code.is_some()
+                    && Workstream::derive_cleanup_eligible(&ws.lifecycle_state)
+                {
+                    self.cleanup_workstream_dir(ws);
                 }
             }
 
@@ -335,7 +335,9 @@ impl ParallelOrchestrator {
                 failed += 1;
                 format!(
                     "FAILED (exit {})",
-                    ws.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "?".to_string())
+                    ws.exit_code
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "?".to_string())
                 )
             };
 
@@ -346,11 +348,19 @@ impl ParallelOrchestrator {
             lines.push(format!("  Runtime:   {runtime}"));
             lines.push(format!(
                 "  Checkpoint: {}",
-                if ws.checkpoint_id.is_empty() { "n/a" } else { &ws.checkpoint_id }
+                if ws.checkpoint_id.is_empty() {
+                    "n/a"
+                } else {
+                    &ws.checkpoint_id
+                }
             ));
             lines.push(format!(
                 "  Worktree: {}",
-                if ws.worktree_path.is_empty() { "n/a" } else { &ws.worktree_path }
+                if ws.worktree_path.is_empty() {
+                    "n/a"
+                } else {
+                    &ws.worktree_path
+                }
             ));
             lines.push(format!("  Log:       {}", ws.log_file.display()));
             lines.push(format!("  Cleanup eligible: {}", ws.cleanup_eligible));
@@ -404,7 +414,15 @@ impl ParallelOrchestrator {
 
             // Check if PR is merged via gh CLI
             let is_merged = Command::new("gh")
-                .args(["pr", "view", &item.branch, "--json", "state", "-q", ".state"])
+                .args([
+                    "pr",
+                    "view",
+                    &item.branch,
+                    "--json",
+                    "state",
+                    "-q",
+                    ".state",
+                ])
                 .output()
                 .ok()
                 .filter(|o| o.status.success())
@@ -460,7 +478,13 @@ impl ParallelOrchestrator {
 
             let maybe_code = proc.and_then(|arc| {
                 let mut guard = arc.lock().unwrap();
-                guard.as_mut().and_then(|child| child.try_wait().ok().flatten().map(|s| s.code().unwrap_or(-1)))
+                guard.as_mut().and_then(|child| {
+                    child
+                        .try_wait()
+                        .ok()
+                        .flatten()
+                        .map(|s| s.code().unwrap_or(-1))
+                })
             });
 
             if let Some(code) = maybe_code {
@@ -502,13 +526,13 @@ impl ParallelOrchestrator {
                 ws.max_runtime
             );
 
-            if ws.timeout_policy == INTERRUPT_PRESERVE_TIMEOUT_POLICY {
-                if let Some(proc_arc) = self.processes.get(&issue) {
-                    let mut guard = proc_arc.lock().unwrap();
-                    if let Some(ref mut child) = *guard {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
+            if ws.timeout_policy == INTERRUPT_PRESERVE_TIMEOUT_POLICY
+                && let Some(proc_arc) = self.processes.get(&issue)
+            {
+                let mut guard = proc_arc.lock().unwrap();
+                if let Some(ref mut child) = *guard {
+                    let _ = child.kill();
+                    let _ = child.wait();
                 }
             }
 
@@ -557,9 +581,7 @@ impl ParallelOrchestrator {
             if VALID_DELEGATES.contains(&delegate.as_str()) {
                 return delegate;
             }
-            warn!(
-                "AMPLIHACK_DELEGATE={delegate:?} is not valid. Using default."
-            );
+            warn!("AMPLIHACK_DELEGATE={delegate:?} is not valid. Using default.");
         }
         // Default to claude
         "amplihack claude".to_string()
@@ -643,8 +665,8 @@ sys.exit(0 if result.success else 1)
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
-        let tree_id = std::env::var("AMPLIHACK_TREE_ID")
-            .unwrap_or_else(|_| format!("{:08x}", rand_u32()));
+        let tree_id =
+            std::env::var("AMPLIHACK_TREE_ID").unwrap_or_else(|_| format!("{:08x}", rand_u32()));
         let max_depth = std::env::var("AMPLIHACK_MAX_DEPTH").unwrap_or_else(|_| "3".to_string());
         let max_sessions =
             std::env::var("AMPLIHACK_MAX_SESSIONS").unwrap_or_else(|_| "10".to_string());
@@ -693,8 +715,8 @@ exec python3 -u launcher.py
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
-        let tree_id = std::env::var("AMPLIHACK_TREE_ID")
-            .unwrap_or_else(|_| format!("{:08x}", rand_u32()));
+        let tree_id =
+            std::env::var("AMPLIHACK_TREE_ID").unwrap_or_else(|_| format!("{:08x}", rand_u32()));
         let max_depth = std::env::var("AMPLIHACK_MAX_DEPTH").unwrap_or_else(|_| "3".to_string());
         let max_sessions =
             std::env::var("AMPLIHACK_MAX_SESSIONS").unwrap_or_else(|_| "10".to_string());
@@ -729,10 +751,7 @@ export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
             "repo_path".to_string(),
             serde_json::Value::String(".".to_string()),
         );
-        ctx.insert(
-            "issue_number".to_string(),
-            serde_json::json!(ws.issue),
-        );
+        ctx.insert("issue_number".to_string(), serde_json::json!(ws.issue));
         ctx.insert(
             "workstream_state_file".to_string(),
             serde_json::Value::String(ws.state_file.to_string_lossy().to_string()),
@@ -770,8 +789,8 @@ export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
         if !state.lifecycle_state.is_empty() {
             ws.lifecycle_state = state.lifecycle_state.clone();
         }
-        ws.cleanup_eligible = state.cleanup_eligible
-            || Workstream::derive_cleanup_eligible(&ws.lifecycle_state);
+        ws.cleanup_eligible =
+            state.cleanup_eligible || Workstream::derive_cleanup_eligible(&ws.lifecycle_state);
         if !state.worktree_path.is_empty() {
             ws.worktree_path = state.worktree_path.clone();
         }
@@ -801,7 +820,7 @@ export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
         unsafe {
             let mut stat: libc::statvfs = std::mem::zeroed();
             if libc::statvfs(path_cstr.as_ptr(), &mut stat) == 0 {
-                let free_bytes = stat.f_bavail as u64 * stat.f_frsize as u64;
+                let free_bytes = stat.f_bavail * stat.f_frsize;
                 let free_gb = free_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
                 if free_gb < min_free_gb {
                     bail!(
@@ -924,14 +943,12 @@ fn tail_output(stdout: impl std::io::Read, log_file: &Path, issue_id: i64, max_l
         let Ok(line) = line else { break };
         let line_bytes = line.len() as u64 + 1; // +1 for newline
 
-        if log_bytes_written < max_log_bytes {
-            if log_bytes_written + line_bytes <= max_log_bytes {
-                if let Some(ref mut w) = log_writer {
-                    let _ = writeln!(w, "{line}");
-                    let _ = w.flush();
-                }
-                log_bytes_written += line_bytes;
+        if log_bytes_written < max_log_bytes && log_bytes_written + line_bytes <= max_log_bytes {
+            if let Some(ref mut w) = log_writer {
+                let _ = writeln!(w, "{line}");
+                let _ = w.flush();
             }
+            log_bytes_written += line_bytes;
         }
 
         // Prefix output to stdout

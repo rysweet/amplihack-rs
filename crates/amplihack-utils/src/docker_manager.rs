@@ -87,9 +87,7 @@ impl DockerManager {
             Some(p) => p.to_path_buf(),
             None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         };
-        let work_dir = work_dir
-            .canonicalize()
-            .unwrap_or_else(|_| work_dir.clone());
+        let work_dir = work_dir.canonicalize().unwrap_or_else(|_| work_dir.clone());
 
         let mut docker_cmd = vec![
             "run".to_string(),
@@ -177,11 +175,9 @@ fn validate_api_key(key_name: &str, value: &str) -> bool {
     }
 
     match key_name {
-        "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" => {
-            Regex::new(r"^sk-[a-zA-Z0-9\-_]+$")
-                .map(|re| re.is_match(value))
-                .unwrap_or(false)
-        }
+        "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" => Regex::new(r"^sk-[a-zA-Z0-9\-_]+$")
+            .map(|re| re.is_match(value))
+            .unwrap_or(false),
         "GITHUB_TOKEN" | "GH_TOKEN" => {
             let prefixed = Regex::new(r"^(ghp_|ghs_|github_pat_|gho_|ghu_)[a-zA-Z0-9_]+$")
                 .map(|re| re.is_match(value))
@@ -191,11 +187,9 @@ fn validate_api_key(key_name: &str, value: &str) -> bool {
                 .unwrap_or(false);
             prefixed || classic
         }
-        _ => {
-            Regex::new(r"^[a-zA-Z0-9\-_./+=]+$")
-                .map(|re| re.is_match(value))
-                .unwrap_or(false)
-        }
+        _ => Regex::new(r"^[a-zA-Z0-9\-_./+=]+$")
+            .map(|re| re.is_match(value))
+            .unwrap_or(false),
     }
 }
 
@@ -204,7 +198,12 @@ fn get_env_vars() -> Vec<(String, String)> {
     let mut vars = Vec::new();
 
     // API keys with validation.
-    for key in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"] {
+    for key in [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+    ] {
         if let Ok(value) = std::env::var(key) {
             let sanitized = sanitize_env_value(&value);
             if validate_api_key(key, &sanitized) {
@@ -247,21 +246,33 @@ mod tests {
 
     #[test]
     fn validate_anthropic_key() {
-        assert!(validate_api_key("ANTHROPIC_API_KEY", "sk-ant-api03-abcdef1234567890"));
+        assert!(validate_api_key(
+            "ANTHROPIC_API_KEY",
+            "sk-ant-api03-abcdef1234567890"
+        ));
         assert!(!validate_api_key("ANTHROPIC_API_KEY", "invalid"));
         assert!(!validate_api_key("ANTHROPIC_API_KEY", "short"));
     }
 
     #[test]
     fn validate_github_token_prefixed() {
-        assert!(validate_api_key("GITHUB_TOKEN", "ghp_1234567890abcdef1234567890abcdef12345678"));
+        assert!(validate_api_key(
+            "GITHUB_TOKEN",
+            "ghp_1234567890abcdef1234567890abcdef12345678"
+        ));
         assert!(validate_api_key("GITHUB_TOKEN", "ghs_1234567890abcdef"));
-        assert!(validate_api_key("GITHUB_TOKEN", "github_pat_1234567890abcdef"));
+        assert!(validate_api_key(
+            "GITHUB_TOKEN",
+            "github_pat_1234567890abcdef"
+        ));
     }
 
     #[test]
     fn validate_github_token_classic() {
-        assert!(validate_api_key("GITHUB_TOKEN", "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"));
+        assert!(validate_api_key(
+            "GITHUB_TOKEN",
+            "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        ));
     }
 
     #[test]
