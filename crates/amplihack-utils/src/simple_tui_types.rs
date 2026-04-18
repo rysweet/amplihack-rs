@@ -119,9 +119,36 @@ pub fn is_ci_environment() -> bool {
 /// Check whether the `gadugi-test` binary is reachable through `npx`.
 ///
 /// Returns `false` in CI environments to avoid hanging on auto-install prompts.
+/// Also detects stale/broken npx cache entries that would cause runtime failures.
 pub fn check_gadugi_available() -> bool {
     if is_ci_environment() {
         return false;
+    }
+
+    // Check for broken gadugi-test symlinks in the npx cache before probing.
+    // Stale cache entries can cause npx to report success while the binary
+    // is actually unreachable (issue #229).
+    if let Ok(home) = std::env::var("HOME") {
+        let npx_cache = std::path::PathBuf::from(&home).join(".npm").join("_npx");
+        if npx_cache.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&npx_cache) {
+                for entry in entries.flatten() {
+                    let gadugi_bin = entry
+                        .path()
+                        .join("node_modules")
+                        .join(".bin")
+                        .join("gadugi-test");
+                    // Check for broken symlink: symlink_metadata succeeds but
+                    // the target doesn't exist
+                    if let Ok(meta) = gadugi_bin.symlink_metadata() {
+                        if meta.file_type().is_symlink() && !gadugi_bin.exists() {
+                            // Remove the broken symlink silently
+                            let _ = std::fs::remove_file(&gadugi_bin);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Verify npx itself is available.
