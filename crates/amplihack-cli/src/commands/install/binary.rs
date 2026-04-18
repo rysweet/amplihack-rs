@@ -188,16 +188,58 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
         && let Some(on_path) = find_binary("amplihack")
         && on_path != *amplihack_dst
     {
-        println!(
-            "  ⚠️  `amplihack` currently resolves to {} instead of the Rust binary at {}.",
-            on_path.display(),
-            amplihack_dst.display()
-        );
-        println!(
-            "     Use {} directly for the Rust CLI, or move ~/.local/bin ahead of older amplihack installs.",
-            amplihack_dst.display()
-        );
+        let is_python = is_python_script(&on_path);
+        if is_python {
+            println!(
+                "  ⚠️  A Python `amplihack` script at {} shadows the Rust binary at {}.",
+                on_path.display(),
+                amplihack_dst.display()
+            );
+            println!(
+                "     The Python script will intercept `amplihack` commands, preventing the Rust CLI from running."
+            );
+            println!("     To fix, do one of the following:");
+            println!(
+                "       1. Remove the Python script:  rm {}",
+                on_path.display()
+            );
+            println!(
+                "       2. Reorder PATH so ~/.local/bin comes first:  export PATH=\"$HOME/.local/bin:$PATH\""
+            );
+            println!(
+                "       3. Uninstall the Python package:  pip uninstall amplihack"
+            );
+        } else {
+            println!(
+                "  ⚠️  `amplihack` currently resolves to {} instead of the Rust binary at {}.",
+                on_path.display(),
+                amplihack_dst.display()
+            );
+            println!(
+                "     Use {} directly for the Rust CLI, or move ~/.local/bin ahead of older amplihack installs.",
+                amplihack_dst.display()
+            );
+        }
     }
 
     Ok(deployed)
+}
+
+/// Check whether a file is a Python script (shebang or .py extension).
+fn is_python_script(path: &std::path::Path) -> bool {
+    if path.extension().and_then(|e| e.to_str()) == Some("py") {
+        return true;
+    }
+    // Read the first line to check for a Python shebang
+    if let Ok(content) = std::fs::read(path) {
+        if let Some(first_line) = content
+            .split(|&b| b == b'\n')
+            .next()
+            .and_then(|line| std::str::from_utf8(line).ok())
+        {
+            return first_line.starts_with("#!")
+                && (first_line.contains("python") || first_line.contains("Python"));
+        }
+    }
+    false
 }
