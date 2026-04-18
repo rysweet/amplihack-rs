@@ -45,16 +45,37 @@ pub fn run_install(local: Option<PathBuf>) -> Result<()> {
 
     let temp_dir = tempfile::tempdir().context("failed to create temp dir for install")?;
     let extracted_root = download_and_extract_framework_repo(temp_dir.path())?;
-    local_install(&extracted_root)
+    local_install(&extracted_root)?;
+
+    // Record the upstream SHA the staged framework now reflects, so the
+    // freshness check can compare against it on subsequent launches. This
+    // is best-effort — a failed SHA fetch doesn't roll back the install.
+    if let Some(sha) = crate::freshness::current_framework_remote_sha() {
+        crate::freshness::record_framework_installed_sha(&sha);
+    }
+    Ok(())
 }
 
 pub(crate) fn ensure_framework_installed() -> Result<()> {
     let staging_dir = staging_claude_dir()?;
-    let needs_bootstrap =
+    let presence_bootstrap_needed =
         !staging_dir.exists() || !missing_framework_paths(&staging_dir)?.is_empty();
-    if needs_bootstrap {
+    // Freshness check only runs when the presence check passes. A missing
+    // framework gets handled by the branch below; a stale-but-complete
+    // framework gets re-installed here.
+    let freshness_refresh_needed =
+        !presence_bootstrap_needed && crate::freshness::framework_needs_refresh();
+    if presence_bootstrap_needed {
         println!("🔧 Bootstrapping amplihack framework assets...");
         run_install(None)?;
+    } else if freshness_refresh_needed {
+        println!("🔄 Refreshing amplihack framework assets (upstream has new commits) ...");
+        if let Err(err) = run_install(None) {
+            // A failed refresh is survivable — the staged framework is
+            // complete, just not on the latest commit.
+            eprintln!("⚠️  Framework refresh failed: {err:#}");
+            eprintln!("   Continuing with the existing staged framework.");
+        }
     }
 
     // Verify hooks are registered in settings.json — even after a fresh install.

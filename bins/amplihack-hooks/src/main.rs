@@ -32,6 +32,12 @@ fn main() {
     let subcommand = args.get(1).map(String::as_str).unwrap_or("");
 
     match subcommand {
+        "--version" | "-V" => {
+            // Mirrors clap's default `--version` output. Used by the self-update
+            // post-install check to verify the hooks binary was replaced in
+            // lockstep with the amplihack binary.
+            println!("amplihack-hooks {}", env!("CARGO_PKG_VERSION"));
+        }
         "pre-tool-use" => run_hook(PreToolUseHook),
         "post-tool-use" => run_hook(PostToolUseHook),
         "stop" => run_hook(StopHook),

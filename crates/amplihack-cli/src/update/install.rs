@@ -79,28 +79,53 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<()> {
     // self-reports the old version — which then retriggers the update prompt
     // forever. We warn (not fail) because the binary swap did happen; the
     // user can choose to re-run or ignore.
-    match verify_installed_version(&current_exe, &release.version) {
-        Ok(()) => {
+    let amplihack_ok = verify_installed_version(&current_exe, &release.version);
+    // Verify the hooks binary as well — a version skew between amplihack and
+    // amplihack-hooks can silently break hook execution at runtime if the
+    // wire protocol changes between releases.
+    let hooks_ok = verify_installed_version(&hooks_dest, &release.version);
+
+    match (&amplihack_ok, &hooks_ok) {
+        (Ok(()), Ok(())) => {
             println!(
                 "Updated amplihack: {} -> {}",
                 CURRENT_VERSION, release.version
             );
             println!("Restart amplihack to use the new version.");
         }
-        Err(err) => {
+        _ => {
+            if let Err(err) = &amplihack_ok {
+                eprintln!(
+                    "⚠️  amplihack was written to {} but reports an unexpected version: {err}",
+                    current_exe.display()
+                );
+            }
+            if let Err(err) = &hooks_ok {
+                eprintln!(
+                    "⚠️  amplihack-hooks was written to {} but reports an unexpected version: {err}",
+                    hooks_dest.display()
+                );
+            }
             eprintln!(
-                "⚠️  Update wrote {} but the installed binary reports an unexpected version: {err}",
-                current_exe.display()
-            );
-            eprintln!(
-                "   Expected v{} — if the next launch still offers an update, the release asset may have been built without a version bump.",
+                "   Expected v{} in both binaries. If the next launch still offers an update, the release asset may have been built without a version bump.",
                 release.version
             );
             eprintln!(
-                "   To stop the loop, set AMPLIHACK_NO_UPDATE_CHECK=1 and report the mismatch."
+                "   To stop the update loop, set AMPLIHACK_NO_UPDATE_CHECK=1 and report the mismatch."
             );
         }
     }
+
+    // Invalidate the startup update cache regardless of outcome — its entry
+    // was written by the previous (pre-swap) binary and may lie about what
+    // version is actually installed now. Leaving it in place causes the new
+    // binary to trust the old cache for up to 24h. (Belt-and-braces: the
+    // cache's mtime-line check should already refuse stale entries, but we
+    // delete here to avoid waiting for the next launch to discover that.)
+    if let Ok(path) = super::cache_path() {
+        let _ = fs::remove_file(&path);
+    }
+
     Ok(())
 }
 

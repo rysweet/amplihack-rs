@@ -33,6 +33,7 @@ pub mod env_builder;
 /// sessions on the local machine.  Separate from Azure-VM fleet orchestration
 /// in `commands/fleet.rs`.
 pub mod fleet_local;
+pub mod freshness;
 pub mod health_check;
 pub mod launcher;
 pub mod launcher_context;

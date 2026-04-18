@@ -4,6 +4,7 @@ use crate::binary_finder::{BinaryFinder, BinaryInfo};
 use crate::claude_plugin;
 use crate::commands::install;
 use crate::copilot_setup;
+use crate::freshness;
 use crate::tool_update_check::{get_installed_version, get_latest_version, sanitize_version};
 use crate::util::{is_noninteractive, run_with_timeout};
 use anyhow::{Context, Result, anyhow, bail};
@@ -32,6 +33,13 @@ pub fn prepare_launcher(tool: &str) -> Result<()> {
 
     check_required_tools()?;
     install::ensure_framework_installed()?;
+
+    // Best-effort: bring the recipe runner up to date with upstream HEAD.
+    // Runs on a 24h cooldown and can be disabled via
+    // AMPLIHACK_NO_FRESHNESS_CHECK=1 or the standard non-interactive guards.
+    // Network failures are logged and swallowed — launch must not depend on
+    // reaching GitHub.
+    freshness::ensure_recipe_runner_up_to_date();
 
     match tool {
         "copilot" => copilot_setup::ensure_copilot_home_staged()?,
