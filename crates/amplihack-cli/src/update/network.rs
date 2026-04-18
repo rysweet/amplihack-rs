@@ -129,10 +129,7 @@ pub(crate) fn http_get(url: &str) -> Result<Vec<u8>> {
         .build()
         .get(url)
         .set("Accept", "application/vnd.github+json")
-        .set(
-            "User-Agent",
-            concat!("amplihack/", env!("CARGO_PKG_VERSION")),
-        )
+        .set("User-Agent", &format!("amplihack/{}", crate::VERSION))
         .call()
     {
         Ok(response) => response,

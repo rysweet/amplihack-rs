@@ -256,6 +256,10 @@ mod tests {
         // Simulate the hyenas2 scenario: copilot is installed at
         // ~/.npm-global/bin/copilot but the shell's $PATH was captured
         // before .bashrc was updated, so the shell doesn't include it.
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
         let temp = tempfile::tempdir().unwrap();
         let fake_home = temp.path();
         let bin_dir = fake_home.join(".npm-global/bin");
@@ -268,13 +272,11 @@ mod tests {
             std::fs::set_permissions(&fake_tool, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        // Deliberately strip any .npm-global from PATH and point HOME at
-        // the temp dir so install_fallback_dirs() finds the binary.
-        // SAFETY: Serialized by #[ignore]-free unit tests running with --test-threads=1
-        // fallbacks plus the home_env_lock is overkill here; no other test
-        // looks at `needle-tool-xyz`.
+        // Strip .npm-global from PATH and point HOME at the temp dir so
+        // install_fallback_dirs() is the only way the binary is found.
         let prev_home = env::var_os("HOME");
         let prev_path = env::var_os("PATH");
+        // SAFETY: Serialized via home_env_lock above.
         unsafe {
             env::set_var("HOME", fake_home);
             env::set_var("PATH", "/nonexistent-just-for-this-test");
@@ -282,6 +284,7 @@ mod tests {
 
         let result = BinaryFinder::find("needle-tool-xyz");
 
+        // SAFETY: Still inside the home_env_lock critical section.
         unsafe {
             if let Some(v) = prev_home {
                 env::set_var("HOME", v);

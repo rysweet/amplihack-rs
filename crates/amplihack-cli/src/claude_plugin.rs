@@ -19,7 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const PLUGIN_NAME: &str = "amplihack";
-const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
+const PLUGIN_VERSION: &str = crate::VERSION;
 
 /// Top-level plugin assets mirrored from the staged framework dir into the
 /// Claude Code plugin dir. Only asset types Claude Code discovers need to

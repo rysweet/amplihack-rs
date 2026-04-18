@@ -382,7 +382,7 @@ impl EnvBuilder {
         };
 
         self.set("AMPLIHACK_RUST_RUNTIME", "1")
-            .set("AMPLIHACK_VERSION", env!("CARGO_PKG_VERSION"))
+            .set("AMPLIHACK_VERSION", crate::VERSION)
             .set("NODE_OPTIONS", node_opts_value)
     }
 

@@ -254,7 +254,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Recipe { command } => dispatch_recipe(command),
         Commands::Mode { command } => dispatch_mode(command),
         Commands::Version => {
-            println!("amplihack-rs {}", env!("CARGO_PKG_VERSION"));
+            println!("amplihack-rs {}", crate::VERSION);
             Ok(())
         }
         Commands::Update => crate::update::run_update(),

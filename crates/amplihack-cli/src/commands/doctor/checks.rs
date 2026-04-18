@@ -162,9 +162,11 @@ pub fn check_tmux_installed() -> (bool, String) {
 
 /// Check 6 — amplihack binary version (compile-time constant).
 ///
-/// Returns the version baked in at compile time via `env!("CARGO_PKG_VERSION")`.
+/// Returns the version baked in at compile time. Prefers the
+/// `AMPLIHACK_RELEASE_VERSION` env override set by the release workflow and
+/// falls back to `CARGO_PKG_VERSION` for dev builds. See `amplihack_cli::VERSION`.
 /// This check always passes on a valid install and cannot fail at runtime.
 pub fn check_amplihack_version() -> (bool, String) {
-    let version = env!("CARGO_PKG_VERSION");
+    let version = crate::VERSION;
     (true, format!("amplihack v{version}"))
 }
