@@ -2,6 +2,8 @@ use super::*;
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
+use std::process::Command;
+use std::time::Duration;
 use tar::Archive;
 
 /// Verify a downloaded archive against its SHA-256 checksum.
@@ -70,11 +72,76 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<()> {
     install_binary_atomic(&new_hooks, &hooks_dest)?;
     install_binary_atomic(&new_amplihack, &current_exe)?;
 
-    println!(
-        "Updated amplihack: {} -> {}",
-        CURRENT_VERSION, release.version
-    );
-    println!("Restart amplihack to use the new version.");
+    // Defensive verification: exec the replaced binary with `--version` and
+    // confirm its self-reported version actually matches the release tag.
+    // This catches the "release asset was built from an un-bumped Cargo.toml"
+    // failure mode where the update claims success but the new binary still
+    // self-reports the old version — which then retriggers the update prompt
+    // forever. We warn (not fail) because the binary swap did happen; the
+    // user can choose to re-run or ignore.
+    match verify_installed_version(&current_exe, &release.version) {
+        Ok(()) => {
+            println!(
+                "Updated amplihack: {} -> {}",
+                CURRENT_VERSION, release.version
+            );
+            println!("Restart amplihack to use the new version.");
+        }
+        Err(err) => {
+            eprintln!(
+                "⚠️  Update wrote {} but the installed binary reports an unexpected version: {err}",
+                current_exe.display()
+            );
+            eprintln!(
+                "   Expected v{} — if the next launch still offers an update, the release asset may have been built without a version bump.",
+                release.version
+            );
+            eprintln!(
+                "   To stop the loop, set AMPLIHACK_NO_UPDATE_CHECK=1 and report the mismatch."
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Invoke `<binary> --version` and confirm the output contains `expected`.
+///
+/// `clap`'s default `--version` output is `"<name> <version>"`, so we match
+/// on substring rather than equality. Runs with a short timeout so a hung
+/// or broken binary cannot stall the caller.
+fn verify_installed_version(binary: &Path, expected: &str) -> Result<()> {
+    use std::sync::mpsc;
+    use std::thread;
+
+    let (tx, rx) = mpsc::channel();
+    let binary_for_thread = binary.to_path_buf();
+    thread::spawn(move || {
+        let result = Command::new(&binary_for_thread)
+            .arg("--version")
+            .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
+            .env("AMPLIHACK_NONINTERACTIVE", "1")
+            .output();
+        let _ = tx.send(result);
+    });
+
+    let output = rx
+        .recv_timeout(Duration::from_secs(5))
+        .context("timed out waiting for --version from updated binary")?
+        .context("failed to exec updated binary with --version")?;
+
+    if !output.status.success() {
+        bail!(
+            "updated binary exited with status {} when run with --version",
+            output.status
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.contains(expected) {
+        bail!(
+            "expected `{expected}` in --version output, got: {}",
+            stdout.trim()
+        );
+    }
     Ok(())
 }
 

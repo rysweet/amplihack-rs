@@ -1,8 +1,10 @@
 //! First-run bootstrap for framework assets and host CLIs.
 
 use crate::binary_finder::{BinaryFinder, BinaryInfo};
+use crate::claude_plugin;
 use crate::commands::install;
 use crate::copilot_setup;
+use crate::tool_update_check::{get_installed_version, get_latest_version, sanitize_version};
 use crate::util::{is_noninteractive, run_with_timeout};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -33,6 +35,17 @@ pub fn prepare_launcher(tool: &str) -> Result<()> {
 
     match tool {
         "copilot" => copilot_setup::ensure_copilot_home_staged()?,
+        "claude" => {
+            // Register amplihack as a Claude Code plugin so the agents,
+            // skills, and commands staged under ~/.amplihack/.claude/ are
+            // discoverable through Claude Code's plugin system. A failure
+            // here must not block the launch — hooks are still wired via
+            // settings.json even if the plugin registration fails.
+            if let Err(err) = claude_plugin::ensure_claude_plugin_installed() {
+                tracing::warn!(%err, "failed to register amplihack Claude plugin");
+                eprintln!("⚠️  Failed to register amplihack as a Claude Code plugin: {err}");
+            }
+        }
         "codex" => configure_codex()?,
         _ => {}
     }
@@ -65,7 +78,10 @@ fn which(tool: &str) -> Option<PathBuf> {
 
 pub fn ensure_tool_available(tool: &str) -> Result<BinaryInfo> {
     if let Ok(binary) = BinaryFinder::find(tool) {
-        return Ok(binary);
+        let _ = maybe_upgrade_tool(tool);
+        return BinaryFinder::find(tool)
+            .with_context(|| format!("failed to re-locate '{tool}' after upgrade"))
+            .or(Ok(binary));
     }
 
     install_tool(tool)?;
@@ -73,14 +89,57 @@ pub fn ensure_tool_available(tool: &str) -> Result<BinaryInfo> {
         .with_context(|| format!("failed to locate '{tool}' after installation"))
 }
 
-fn install_tool(tool: &str) -> Result<()> {
+/// Map a tool name to the npm package used for installation and upgrades.
+///
+/// This is the single source of truth — both `install_tool` and
+/// `maybe_upgrade_tool` read through here so they can never disagree on
+/// which package backs a given tool.
+fn npm_package_for_install(tool: &str) -> Option<&'static str> {
     match tool {
-        "claude" => install_npm_package(tool, "@anthropic-ai/claude-code"),
-        "copilot" => install_npm_package(tool, "@github/copilot"),
-        "codex" => install_npm_package(tool, "@openai/codex-cli"),
+        "claude" => Some("@anthropic-ai/claude-code"),
+        "copilot" => Some("@github/copilot"),
+        "codex" => Some("@openai/codex"),
+        _ => None,
+    }
+}
+
+fn install_tool(tool: &str) -> Result<()> {
+    if let Some(pkg) = npm_package_for_install(tool) {
+        return install_npm_package(tool, pkg);
+    }
+    match tool {
         "amplifier" => install_amplifier(),
         other => bail!("automatic installation is not implemented for '{other}'"),
     }
+}
+
+/// If the tool is an npm-backed CLI whose installed version is older than the
+/// latest published version, reinstall the package in place. Silent no-op when
+/// npm is unavailable, the tool isn't npm-backed, or versions match.
+fn maybe_upgrade_tool(tool: &str) -> Result<()> {
+    if is_noninteractive() {
+        return Ok(());
+    }
+    let Some(pkg) = npm_package_for_install(tool) else {
+        return Ok(());
+    };
+    let installed = match get_installed_version(pkg) {
+        Some(v) => sanitize_version(&v),
+        None => return Ok(()),
+    };
+    let latest = match get_latest_version(pkg) {
+        Some(v) => sanitize_version(&v),
+        None => return Ok(()),
+    };
+    if installed.is_empty() || latest.is_empty() || installed == latest {
+        return Ok(());
+    }
+
+    println!("📦 Upgrading {tool} ({pkg}): {installed} → {latest}");
+    if let Err(err) = install_npm_package(tool, pkg) {
+        tracing::warn!(%err, tool, pkg, "tool upgrade failed; continuing with existing install");
+    }
+    Ok(())
 }
 
 fn install_npm_package(tool: &str, package: &str) -> Result<()> {
@@ -95,12 +154,35 @@ fn install_npm_package(tool: &str, package: &str) -> Result<()> {
 
     prepend_path(&bin_dir)?;
     println!("📦 Installing {tool} via npm package {package}...");
+
+    // Clean any stale temp dirs npm left behind from a prior failed install
+    // (e.g. `@github/.copilot-YYsO5Mpa`). Left in place, these cause
+    // `ENOTEMPTY: directory not empty, rename ...` on every subsequent install.
+    clean_stale_npm_temp_dirs(&prefix, package);
+
+    match run_npm_install(&npm, &prefix, package) {
+        Ok(()) => {}
+        Err(err) => {
+            // Last-ditch: clean again and retry once. npm's own rename can fail
+            // if a concurrent install (or even the first part of this one) raced.
+            tracing::warn!(%err, "npm install failed; cleaning stale temp dirs and retrying once");
+            clean_stale_npm_temp_dirs(&prefix, package);
+            remove_package_install_dir(&prefix, package);
+            run_npm_install(&npm, &prefix, package)?;
+        }
+    }
+
+    persist_path_hint(&bin_dir)?;
+    Ok(())
+}
+
+fn run_npm_install(npm: &Path, prefix: &Path, package: &str) -> Result<()> {
     let mut npm_cmd = Command::new(npm);
     npm_cmd
         .arg("install")
         .arg("-g")
         .arg("--prefix")
-        .arg(&prefix)
+        .arg(prefix)
         .arg(package)
         .arg("--ignore-scripts");
     let status =
@@ -109,9 +191,71 @@ fn install_npm_package(tool: &str, package: &str) -> Result<()> {
     if !status.success() {
         bail!("npm install failed for package {package}");
     }
-
-    persist_path_hint(&bin_dir)?;
     Ok(())
+}
+
+/// Remove stale `.<name>-XXXX` temp dirs that npm leaves behind in the scope
+/// directory after a crashed install.
+///
+/// For a scoped package like `@github/copilot`, npm stages the new copy in
+/// `$prefix/lib/node_modules/@github/.copilot-XXXX` and then renames over the
+/// final directory. If the rename fails (or npm is killed mid-install), the
+/// temp dir is left behind and every subsequent `npm install` trips ENOTEMPTY.
+///
+/// For an unscoped package `foo`, npm stages it as
+/// `$prefix/lib/node_modules/.foo-XXXX`.
+fn clean_stale_npm_temp_dirs(prefix: &Path, package: &str) {
+    let node_modules = prefix.join("lib").join("node_modules");
+    let (scope_dir, dot_prefix) = match split_npm_package(package) {
+        Some((scope, name)) => (node_modules.join(format!("@{scope}")), format!(".{name}-")),
+        None => (node_modules, format!(".{package}-")),
+    };
+    let Ok(entries) = fs::read_dir(&scope_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        if !name_str.starts_with(&dot_prefix) {
+            continue;
+        }
+        let path = entry.path();
+        tracing::warn!(path = %path.display(), "removing stale npm temp dir");
+        if let Err(err) = fs::remove_dir_all(&path) {
+            tracing::warn!(%err, path = %path.display(), "failed to remove stale npm temp dir");
+        } else {
+            println!("  🧹 Removed stale npm temp dir: {}", path.display());
+        }
+    }
+}
+
+/// Remove the installed package directory (if present) so `npm install` can
+/// recreate it from scratch. Used as a final fallback when the rename path is
+/// still wedged.
+fn remove_package_install_dir(prefix: &Path, package: &str) {
+    let node_modules = prefix.join("lib").join("node_modules");
+    let install_dir = match split_npm_package(package) {
+        Some((scope, name)) => node_modules.join(format!("@{scope}")).join(name),
+        None => node_modules.join(package),
+    };
+    if install_dir.exists() {
+        tracing::warn!(
+            path = %install_dir.display(),
+            "removing existing package install dir before retry"
+        );
+        let _ = fs::remove_dir_all(&install_dir);
+    }
+}
+
+fn split_npm_package(package: &str) -> Option<(&str, &str)> {
+    let rest = package.strip_prefix('@')?;
+    let (scope, name) = rest.split_once('/')?;
+    if scope.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some((scope, name))
 }
 
 fn install_amplifier() -> Result<()> {

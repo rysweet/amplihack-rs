@@ -15,6 +15,7 @@ pub mod auto_stager;
 pub mod auto_update;
 pub mod binary_finder;
 pub mod bootstrap;
+pub mod claude_plugin;
 mod cli_commands;
 pub mod cli_extensions;
 mod cli_subcommands;
