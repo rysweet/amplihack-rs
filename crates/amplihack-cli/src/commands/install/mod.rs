@@ -337,6 +337,23 @@ fn local_install(repo_root: &Path) -> Result<()> {
     create_runtime_dirs(&claude_dir)?;
 
     println!();
+    println!("🧹 Cleaning broken symlinks:");
+    let broken_count = filesystem::clean_broken_symlinks(&claude_dir, true)?;
+    if broken_count > 0 {
+        println!("   Removed {broken_count} broken symlink(s)");
+    } else {
+        println!("   No broken symlinks found");
+    }
+    // Also clean broken symlinks in ~/.local/bin (stale gadugi-test, etc.)
+    if let Ok(home) = paths::home_dir() {
+        let local_bin = home.join(".local").join("bin");
+        let local_broken = filesystem::clean_broken_symlinks(&local_bin, false)?;
+        if local_broken > 0 {
+            println!("   Removed {local_broken} broken symlink(s) from ~/.local/bin");
+        }
+    }
+
+    println!();
     println!("⚙️  Configuring settings.json:");
     let (settings_ok, registered_events) =
         ensure_settings_json(&claude_dir, timestamp, &hooks_bin)?;

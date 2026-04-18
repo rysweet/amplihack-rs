@@ -170,6 +170,8 @@ impl RecipeParser {
 
         let max_env_value_bytes = extract_u64(mapping, "max_env_value_bytes").map(|v| v as usize);
 
+        let output_key = extract_string(mapping, "output");
+
         warn_unrecognized_fields(mapping, &id);
 
         Ok(Step {
@@ -185,6 +187,7 @@ impl RecipeParser {
             retry_count,
             allow_failure,
             context,
+            output_key,
             max_env_value_bytes,
         })
     }

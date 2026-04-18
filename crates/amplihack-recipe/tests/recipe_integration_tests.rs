@@ -276,6 +276,36 @@ fn condition_eval_smart_orchestrator_patterns() {
 }
 
 #[test]
+fn condition_eval_resume_checkpoint_compat() {
+    // Issue #222: resume_checkpoint conditions must use != instead of
+    // `not in [...]` list syntax to remain compatible with older
+    // recipe-runner binaries that lack LBracket support.
+    use amplihack_recipe::evaluate_condition;
+    use std::collections::HashMap;
+
+    let cond = "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'";
+
+    // Empty resume_checkpoint → condition true (step should run)
+    let mut ctx = HashMap::new();
+    ctx.insert("resume_checkpoint".to_string(), "".to_string());
+    assert!(evaluate_condition(cond, &ctx).unwrap());
+
+    // Matching first checkpoint → condition false (step should skip)
+    ctx.insert(
+        "resume_checkpoint".to_string(),
+        "checkpoint-after-implementation".to_string(),
+    );
+    assert!(!evaluate_condition(cond, &ctx).unwrap());
+
+    // Matching second checkpoint → condition false (step should skip)
+    ctx.insert(
+        "resume_checkpoint".to_string(),
+        "checkpoint-after-review-feedback".to_string(),
+    );
+    assert!(!evaluate_condition(cond, &ctx).unwrap());
+}
+
+#[test]
 fn all_recipe_conditions_are_valid() {
     use amplihack_recipe::validate_condition;
 

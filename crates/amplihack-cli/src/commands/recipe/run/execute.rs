@@ -37,6 +37,7 @@ pub(super) fn execute_recipe_via_rust(
         .with_session_tree_context()
         .with_amplihack_home()
         .with_asset_resolver()
+        .with_python_sanitization()
         .with_project_graph_db(working_dir)?
         .apply_to_command(&mut command);
 

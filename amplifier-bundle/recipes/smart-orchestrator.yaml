@@ -36,6 +36,7 @@ context:
   force_single_workstream: "false" # set to "true" to prevent parallel decomposition
   adaptive_recipe: "" # set by detect-execution-gap when routing fails
   infra_error_details: "" # diagnostic info for infrastructure failures
+  ops_modified_files: "" # set by ops-file-change-check when Operations modifies files
 
 context_validation:
   task_description: "nonempty"
@@ -342,6 +343,23 @@ steps:
 
       Perform the operation, report what was done. End with "STATUS: COMPLETE".
     output: "round_1_result"
+
+  # Detect if Operations modified tracked files (fix #227).
+  # When files were changed, downstream review/cleanup/summarize steps
+  # must still run so changes get reviewed and committed properly.
+  - id: "ops-file-change-check"
+    type: "bash"
+    condition: "'Operations' in task_type"
+    command: |
+      cd "{{repo_path}}" 2>/dev/null || true
+      CHANGED=$(git diff --name-only 2>/dev/null | head -1)
+      UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null | head -1)
+      if [ -n "$CHANGED" ] || [ -n "$UNTRACKED" ]; then
+        echo "true"
+      else
+        echo ""
+      fi
+    output: "ops_modified_files"
 
   # ─────────────────────────────────────────────────────────────────────────
   # Recursion guard -- derive from session_info (registered atomically in setup-session)
@@ -729,7 +747,7 @@ steps:
     type: "agent"
     timeout_seconds: 300
     condition: |
-      'Q&A' not in task_type and 'Operations' not in task_type and round_1_result
+      'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result
     agent: "amplihack:core:reviewer"
     prompt: |
       Evaluate goal achievement after round 1.
@@ -739,19 +757,28 @@ steps:
 
       Was each success criterion met?
 
-      ## Hollow Success Detection (CRITICAL)
+      ## Hollow Success Detection
 
-      A hollow success is when execution completes structurally but produces
-      no meaningful results. Check for these patterns:
-      - Agent reports "no codebase exists" or "I could not access the code"
-      - Round result is mostly boilerplate with no concrete findings or changes
-      - PR URLs are absent for Development tasks that should produce code changes
-      - Success criteria are marked met without evidence or verification
-      - Agent output repeats the goal description without showing work done
+      A hollow success is when execution completes structurally but agents
+      clearly could not perform the work. Only flag HOLLOW when ALL of these
+      are true:
+      1. Agent explicitly states it cannot access the codebase, repository,
+         or files (e.g. "no codebase exists", "I could not access the code",
+         "cannot find the repository")
+      2. No concrete code changes, findings, or artifacts are described
+      3. The round result contains no file paths, diff output, test results,
+         or specific code references
+
+      Do NOT flag HOLLOW when:
+      - The agent completed the work but results are partial or imperfect
+      - Some success criteria are met but others are not (use PARTIAL instead)
+      - The agent produced real output with specific findings, even if brief
+      - The task was investigative and the agent reported concrete conclusions
 
       If the result is a hollow success, use GOAL_STATUS: HOLLOW and explain
-      what specific outputs are missing. Do NOT mark ACHIEVED when agents
-      produced no meaningful work.
+      what specific outputs are missing. When in doubt between HOLLOW and
+      PARTIAL, choose PARTIAL — it triggers a follow-up round rather than
+      flagging a false infrastructure failure.
 
       ## Adaptive Strategy Context
 
@@ -827,7 +854,7 @@ steps:
   - id: "reflect-final"
     type: "agent"
     timeout_seconds: 300
-    condition: "'Q&A' not in task_type and 'Operations' not in task_type and round_1_result"
+    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result"
     agent: "amplihack:core:reviewer"
     prompt: |
       Final assessment after all execution rounds.
@@ -861,7 +888,7 @@ steps:
   - id: "validate-outside-in-testing"
     type: "agent"
     timeout_seconds: 300
-    condition: "'Q&A' not in task_type and 'Operations' not in task_type and 'Development' in task_type and round_1_result"
+    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and 'Development' in task_type and round_1_result"
     agent: "amplihack:core:reviewer"
     prompt: |
       Outside-in testing validation check.
@@ -935,7 +962,7 @@ steps:
   - id: "summarize"
     type: "agent"
     timeout_seconds: 300
-    condition: "'Q&A' not in task_type and 'Operations' not in task_type and round_1_result"
+    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result"
     agent: "amplihack:core:architect"
     prompt: |
       Produce a concise execution summary.

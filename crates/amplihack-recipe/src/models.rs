@@ -102,6 +102,13 @@ pub struct Step {
     pub allow_failure: bool,
     #[serde(default)]
     pub context: HashMap<String, serde_json::Value>,
+    /// Name of the context variable to store this step's output in.
+    /// When set, the executor stores the step's stdout/output under
+    /// this key instead of the default `{step_id}_output`. This maps
+    /// the YAML `output: "var_name"` field so downstream steps can
+    /// reference `{{var_name}}` in templates (fix #226).
+    #[serde(default)]
+    pub output_key: Option<String>,
     /// Maximum size in bytes for env var values passed to bash steps.
     /// When set, step outputs exceeding this size are written to temp
     /// files and replaced with `@file:/path` references instead of
@@ -126,6 +133,7 @@ impl Step {
             retry_count: None,
             allow_failure: false,
             context: HashMap::new(),
+            output_key: None,
             max_env_value_bytes: None,
         }
     }

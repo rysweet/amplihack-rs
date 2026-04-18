@@ -146,7 +146,13 @@ impl<A: AgentBackend> RecipeExecutor<A> {
                 step_result.status.to_string(),
             );
             if let Some(ref output) = step_result.output {
-                context.insert(format!("{}_output", step.id), output.clone());
+                // Store under the YAML-specified output key if present (fix #226),
+                // otherwise use the default `{step_id}_output` key.
+                let key = step
+                    .output_key
+                    .clone()
+                    .unwrap_or_else(|| format!("{}_output", step.id));
+                context.insert(key, output.clone());
             }
 
             result.add_step(step_result);
@@ -324,20 +330,35 @@ impl<A: AgentBackend> RecipeExecutor<A> {
         cmd.arg("-c").arg(&expanded);
         cmd.current_dir(&self.config.working_dir);
 
-        // Pass context as environment variables, respecting size limits
+        // Pass context as environment variables, respecting per-value and
+        // cumulative size limits to prevent E2BIG (fix #224).
         let max_env_bytes = step.effective_max_env_bytes();
+        // Reserve headroom for existing process env + the command itself.
+        const TOTAL_ENV_BUDGET: usize = 1_500_000; // ~1.5MB of ~2MB ARG_MAX
+        let mut cumulative_env_bytes: usize = 0;
         for (k, v) in context {
             let env_key = k.to_uppercase().replace('-', "_");
-            if v.len() <= max_env_bytes {
-                cmd.env(&env_key, v);
-            } else {
+            let entry_size = env_key.len() + v.len() + 1; // key=value\0
+            if v.len() > max_env_bytes {
                 debug!(
                     step_id = %step.id,
                     key = %env_key,
                     size = v.len(),
-                    "Env value exceeds max_env_value_bytes, skipping"
+                    "Env value exceeds per-value limit, skipping"
                 );
+                continue;
             }
+            if cumulative_env_bytes + entry_size > TOTAL_ENV_BUDGET {
+                debug!(
+                    step_id = %step.id,
+                    key = %env_key,
+                    cumulative = cumulative_env_bytes,
+                    "Env budget exhausted, skipping remaining vars"
+                );
+                break;
+            }
+            cumulative_env_bytes += entry_size;
+            cmd.env(&env_key, v);
         }
 
         let output = cmd

@@ -21,12 +21,16 @@
 //! - [`simple_tui`] — Simple TUI testing framework with gadugi and subprocess fallback
 //! - [`knowledge_builder`] — Knowledge Builder orchestrator (Socratic method pipeline)
 //! - [`llm_client`] — SDK launcher detection and LLM completion routing
+//! - [`bundle_generator`] — Agent bundle generation, packaging, and distribution
+//! - [`docker_manager`] — Docker container management for isolated execution
 
+pub mod bundle_generator;
 pub mod claude_cli;
 pub mod claude_md;
 pub mod cleanup;
 pub mod defensive;
 pub mod docker_detector;
+pub mod docker_manager;
 pub mod hook_merge;
 pub mod kb_types;
 pub mod knowledge_builder;
