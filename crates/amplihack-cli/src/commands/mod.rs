@@ -308,6 +308,10 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::UvxHelp { find_path, info } => uvx_help::run_uvx_help(find_path, info),
         Commands::Completions { shell } => completions::run_completions(shell),
         Commands::Doctor => doctor::run_doctor(),
+        Commands::ResolveBundleAsset { asset } => {
+            let code = crate::resolve_bundle_asset::run_cli(&asset);
+            std::process::exit(code);
+        }
         Commands::Multitask { command } => dispatch_multitask(command),
     }
 }

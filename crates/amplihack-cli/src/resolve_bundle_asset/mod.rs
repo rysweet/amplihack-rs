@@ -422,3 +422,86 @@ mod tests {
         assert_eq!(code, 0, "run_cli should return 0 when named asset found");
     }
 }
+
+#[cfg(test)]
+mod cli_dispatch_tests {
+    //! Verify the `amplihack resolve-bundle-asset <asset>` clap subcommand
+    //! parses correctly and that recipes don't regress to the old
+    //! `python3 -m amplihack.runtime_assets ...` invocation.
+    use crate::{Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn parses_named_asset_argument() {
+        let cli =
+            Cli::try_parse_from(["amplihack", "resolve-bundle-asset", "helper-path"]).unwrap();
+        match cli.command {
+            Commands::ResolveBundleAsset { asset } => assert_eq!(asset, "helper-path"),
+            other => panic!("expected ResolveBundleAsset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_relative_path_argument() {
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "resolve-bundle-asset",
+            "amplifier-bundle/tools/orch_helper.py",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::ResolveBundleAsset { asset } => {
+                assert_eq!(asset, "amplifier-bundle/tools/orch_helper.py")
+            }
+            other => panic!("expected ResolveBundleAsset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_missing_argument() {
+        let result = Cli::try_parse_from(["amplihack", "resolve-bundle-asset"]);
+        assert!(
+            result.is_err(),
+            "missing asset argument should be a parse error"
+        );
+    }
+
+    #[test]
+    fn recipes_do_not_invoke_python_runtime_assets() {
+        // Regression guard for the bug where smart-orchestrator preflight
+        // failed because `python3 -m amplihack.runtime_assets` is not
+        // available on machines that only have the Rust binary installed.
+        // Recipes must use `amplihack resolve-bundle-asset` instead.
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let recipes_dir = manifest
+            .join("..")
+            .join("..")
+            .join("amplifier-bundle")
+            .join("recipes");
+        if !recipes_dir.is_dir() {
+            // Crate may be built outside the workspace (e.g., crates.io
+            // packaging); recipes only exist in the source repo.
+            eprintln!(
+                "skipping: recipes dir not found at {}",
+                recipes_dir.display()
+            );
+            return;
+        }
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(&recipes_dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).unwrap();
+            if body.contains("python3 -m amplihack.runtime_assets") {
+                offenders.push(path.display().to_string());
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "recipes still invoke the legacy Python runtime_assets module \
+             instead of `amplihack resolve-bundle-asset`: {offenders:?}"
+        );
+    }
+}
