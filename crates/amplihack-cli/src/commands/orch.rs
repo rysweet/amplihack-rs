@@ -325,14 +325,41 @@ fn has_strong_dev_signals(task: &str) -> bool {
     }
 
     // 3. Verb signals (word-boundary aware to avoid e.g. "report" → "port").
-    let dev_verbs = ["add", "extend", "implement", "create", "build", "refactor", "port"];
+    let dev_verbs = [
+        "add",
+        "extend",
+        "implement",
+        "create",
+        "build",
+        "refactor",
+        "port",
+    ];
     let has_dev_verb = dev_verbs.iter().any(|v| contains_word(&lower, v));
 
     // 4. Source-file/path signals.
     let path_markers = [
-        "src/", "crates/", "bins/", "lib/", "tests/", "amplifier-bundle/",
-        ".rs ", ".rs.", ".rs:", ".rs,", ".py ", ".py.", ".py:", ".py,",
-        ".ts ", ".tsx", ".js ", ".go ", ".java ", ".cpp ", ".c ", ".h ",
+        "src/",
+        "crates/",
+        "bins/",
+        "lib/",
+        "tests/",
+        "amplifier-bundle/",
+        ".rs ",
+        ".rs.",
+        ".rs:",
+        ".rs,",
+        ".py ",
+        ".py.",
+        ".py:",
+        ".py,",
+        ".ts ",
+        ".tsx",
+        ".js ",
+        ".go ",
+        ".java ",
+        ".cpp ",
+        ".c ",
+        ".h ",
     ];
     let has_path = path_markers.iter().any(|p| lower.contains(p))
         || lower.contains(".rs)")
@@ -873,13 +900,22 @@ mod tests {
     fn reclassify_passes_through_non_operations_types() {
         let dev_signal_task = "Add unit tests and open a PR for src/foo.rs";
         assert_eq!(reclassify_task_type("Q&A", dev_signal_task), "Q&A");
-        assert_eq!(reclassify_task_type("Investigation", dev_signal_task), "Investigation");
-        assert_eq!(reclassify_task_type("Development", dev_signal_task), "Development");
+        assert_eq!(
+            reclassify_task_type("Investigation", dev_signal_task),
+            "Investigation"
+        );
+        assert_eq!(
+            reclassify_task_type("Development", dev_signal_task),
+            "Development"
+        );
     }
 
     #[test]
     fn reclassify_normalises_unknown_current_to_development() {
-        assert_eq!(reclassify_task_type("garbage", "do anything"), "Development");
+        assert_eq!(
+            reclassify_task_type("garbage", "do anything"),
+            "Development"
+        );
     }
 
     #[test]
