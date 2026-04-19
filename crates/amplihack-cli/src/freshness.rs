@@ -1,22 +1,23 @@
-//! Upstream freshness checks for ancillary tooling and framework assets.
+//! Upstream freshness checks for ancillary tooling.
 //!
-//! The launcher's update path only keeps the amplihack binaries themselves
-//! up to date. Two other things can silently drift:
+//! The launcher's update path keeps the amplihack binaries themselves up to
+//! date.  One ancillary tool can silently drift:
 //!
 //! - `recipe-runner-rs`, installed via `cargo install --git`. Once present
 //!   it stays on whatever commit was current at install time.
-//! - The staged amplihack framework at `~/.amplihack/.claude/` — agents,
-//!   skills, commands, and hook specs sourced from `rysweet/amplihack`.
-//!   `ensure_framework_installed` only reinstalls when files are missing,
-//!   so a user who installed six months ago keeps using six-month-old
-//!   skills.
 //!
-//! This module adds optional, cooldown-gated freshness checks. Each check:
+//! **Framework assets** (agents, skills, commands, hook specs) are now bundled
+//! in the amplihack-rs source tree and delivered via binary updates (issue
+//! #254).  The former upstream freshness check against `rysweet/amplihack`
+//! has been removed.
+//!
+//! For the recipe-runner check, this module adds optional, cooldown-gated
+//! freshness checks:
 //!
 //! 1. Reads the installed SHA from a small JSON state file.
 //! 2. If the 24h cooldown has not expired, does nothing.
 //! 3. Otherwise fetches the upstream HEAD SHA via the GitHub commits API.
-//! 4. If the SHAs differ, runs the upgrade (cargo install / `amplihack install`).
+//! 4. If the SHAs differ, runs the upgrade (`cargo install`).
 //! 5. Records the new SHA + timestamp on success.
 //!
 //! Every step is best-effort — a network failure, rate-limit, or even a
@@ -239,76 +240,27 @@ fn install_recipe_runner_from_git() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Framework (rysweet/amplihack)
+// Framework (rysweet/amplihack) — DEPRECATED (issue #254)
 // ---------------------------------------------------------------------------
+//
+// Framework assets are now bundled in the amplihack-rs source tree and
+// delivered via binary updates.  The upstream freshness check against
+// `rysweet/amplihack` is no longer performed.  The public functions below
+// are kept as no-ops so that callers in `commands::install` continue to
+// compile without changes during the transition period.
 
-const FRAMEWORK_REPO: &str = "rysweet/amplihack";
-const FRAMEWORK_BRANCH: &str = "main";
+/// No-op.  Upstream SHA tracking is no longer used (issue #254).
+pub fn record_framework_installed_sha(_sha: &str) {}
 
-fn framework_state_path() -> Result<PathBuf> {
-    Ok(state_dir()?.join("framework.json"))
-}
-
-/// Record the upstream SHA that seeded the staged framework. Called after
-/// a successful `amplihack install` so the next freshness check has an
-/// anchor to diff against.
-pub fn record_framework_installed_sha(sha: &str) {
-    if sha.is_empty() {
-        return;
-    }
-    let Ok(path) = framework_state_path() else {
-        return;
-    };
-    let state = FreshnessState {
-        installed_sha: sha.to_string(),
-        checked_at: now_secs(),
-    };
-    if let Err(err) = state.write(&path) {
-        tracing::warn!(%err, "failed to record framework installed sha");
-    }
-}
-
-/// Best-effort fetch of the framework repo's current HEAD SHA. Returns
-/// `None` when the network is unavailable or rate-limited.
+/// Always returns `None`.  Upstream SHA fetching is no longer used (#254).
 pub fn current_framework_remote_sha() -> Option<String> {
-    fetch_branch_head_sha(FRAMEWORK_REPO, FRAMEWORK_BRANCH).ok()
+    None
 }
 
-/// Returns `true` when a freshness check would trigger a framework
-/// reinstall right now. Callers are expected to perform the reinstall
-/// themselves (to avoid a circular dependency between this module and
-/// `commands::install`) and then call `record_framework_installed_sha`.
-///
-/// Guarantees (per contract):
-/// - Returns `false` whenever freshness checks are disabled, the cooldown
-///   has not elapsed, or the remote SHA cannot be fetched. This makes the
-///   caller's decision path "trigger install only when we're certain the
-///   local copy is stale" — we never force-reinstall on uncertainty.
-/// - Updates the `checked_at` timestamp on every call so repeated launches
-///   don't bombard the GitHub API.
+/// Always returns `false`.  Framework freshness is now tied to the
+/// amplihack-rs binary version, not upstream rysweet/amplihack commits.
 pub fn framework_needs_refresh() -> bool {
-    if skip_freshness_checks() {
-        return false;
-    }
-    let Ok(path) = framework_state_path() else {
-        return false;
-    };
-    let mut state = FreshnessState::read(&path);
-    if state.is_in_cooldown() {
-        return false;
-    }
-    let remote = match current_framework_remote_sha() {
-        Some(sha) => sha,
-        None => {
-            state.checked_at = now_secs();
-            let _ = state.write(&path);
-            return false;
-        }
-    };
-    let stale = !state.installed_sha.is_empty() && state.installed_sha != remote;
-    state.checked_at = now_secs();
-    let _ = state.write(&path);
-    stale
+    false
 }
 
 // ---------------------------------------------------------------------------

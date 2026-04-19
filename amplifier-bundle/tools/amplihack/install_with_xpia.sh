@@ -2,7 +2,8 @@
 # Enhanced install script with XPIA security hook integration
 # Fixes Issue #137: XPIA hooks not configured during installation
 
-AMPLIHACK_INSTALL_LOCATION=${AMPLIHACK_INSTALL_LOCATION:-https://github.com/rysweet/amplihack}
+# Issue #254: default install source is now the amplihack-rs repo
+AMPLIHACK_INSTALL_LOCATION=${AMPLIHACK_INSTALL_LOCATION:-https://github.com/rysweet/amplihack-rs}
 
 # Colors for output
 RED='\033[0;31m'
