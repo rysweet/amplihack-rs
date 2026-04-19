@@ -21,44 +21,66 @@ can override the defaults.
 
 ## Injected flags overview
 
-| Flag | Always injected? | Override mechanism |
-|------|-----------------|-------------------|
-| `--dangerously-skip-permissions` | yes (for all launch commands) | not overridable |
-| `--model <value>` | yes, unless user supplies `--model` | `AMPLIHACK_DEFAULT_MODEL` or `--model` on the command line |
-| `--resume` | only when `amplihack launch --resume` | pass `--resume` to the `launch` subcommand |
-| `--continue` | only when `amplihack launch --continue` | pass `--continue` to the `launch` subcommand |
+| Flag | Injected when? | Applicable tools | Override mechanism |
+|------|----------------|-------------------|-------------------|
+| `--dangerously-skip-permissions` | `--skip-permissions` passed AND tool is Claude-compatible | `claude`, `rustyclawd`, `amplifier` | omit `--skip-permissions` |
+| `--model <value>` | user did not pass `--model` AND tool is Claude-compatible | `claude`, `rustyclawd`, `amplifier` | `AMPLIHACK_DEFAULT_MODEL` or `--model` on the command line |
+| `--resume` | only when `amplihack launch --resume` | `launch` only (not `claude`) | pass `--resume` to the `launch` subcommand |
+| `--continue` | only when `amplihack launch --continue` | `launch` only (not `claude`) | pass `--continue` to the `launch` subcommand |
 
 ---
 
 ## --dangerously-skip-permissions
 
-`amplihack` always passes `--dangerously-skip-permissions` to the tool
-subprocess. This suppresses the tool's interactive permission-confirmation
-prompt, which would otherwise block automated workflows.
+`amplihack` passes `--dangerously-skip-permissions` to the tool subprocess only
+when **both** conditions are met:
+
+1. The user passed `--skip-permissions` on the amplihack command line.
+2. The target tool is **Claude-compatible** (`claude`, `rustyclawd`, or `amplifier`).
+
+Tools that are not Claude-compatible (`copilot`, `codex`) never receive this
+flag because they do not support it.
 
 ```sh
-# User runs:
-amplihack claude
+# User explicitly opts in:
+amplihack launch --skip-permissions
 
 # amplihack spawns:
 claude --dangerously-skip-permissions --model opus[1m]
 ```
 
-**Rationale:** The permission prompt is designed for first-time interactive use.
-`amplihack` manages its own framework bootstrap and hook registration — by the
-time the tool is launched, the user has already accepted the amplihack install
-flow. Requiring a second confirmation in the tool would be redundant.
+```sh
+# Without --skip-permissions, the flag is NOT injected:
+amplihack claude
 
-**Python launcher parity:** The Python launcher in
-`amplihack/launcher/core.py` unconditionally injects `--dangerously-skip-permissions`.
-The Rust launcher matches this behaviour exactly.
+# amplihack spawns:
+claude --model opus[1m]
+```
+
+```sh
+# Non-Claude tools never receive it, even with --skip-permissions:
+amplihack copilot --skip-permissions
+
+# amplihack spawns:
+copilot <extra_args...>
+```
+
+**Rationale:** The `--dangerously-skip-permissions` flag bypasses Claude's
+interactive confirmation prompts. It is gated behind an explicit opt-in
+(`--skip-permissions`) so that users in trusted automated environments can
+suppress the prompt, while interactive sessions retain the safety check.
+
+**Python launcher note:** The Python launcher in `amplihack/launcher/core.py`
+may behave differently. Verify Python launcher behavior independently.
 
 ---
 
 ## --model
 
 `amplihack` injects `--model <value>` into the subprocess command line to set
-the AI model variant used for the session.
+the AI model variant used for the session. This flag is only injected for
+**Claude-compatible** tools (`claude`, `rustyclawd`, `amplifier`). Non-Claude
+tools (`copilot`, `codex`) use their own default model selection.
 
 ### Default model
 
@@ -135,18 +157,21 @@ Examples that work at time of writing:
 ## --resume and --continue
 
 These flags are passed through only when the user explicitly requests them on
-the `launch` or `claude` subcommands. They are never injected automatically.
+the `launch` subcommand. They are never injected automatically.
+
+**Important:** The `claude` subcommand does **not** support `--resume` or
+`--continue`. Only `launch` exposes these flags.
 
 ```sh
-amplihack launch --resume
+amplihack launch --resume --skip-permissions
 # spawns: claude --dangerously-skip-permissions --model opus[1m] --resume
 
-amplihack launch --continue
+amplihack launch --continue --skip-permissions
 # spawns: claude --dangerously-skip-permissions --model opus[1m] --continue
 ```
 
-The `copilot`, `codex`, and `amplifier` subcommands do not support `--resume`
-or `--continue`.
+The `claude`, `copilot`, `codex`, and `amplifier` subcommands do not support
+`--resume` or `--continue`.
 
 ---
 
@@ -177,11 +202,12 @@ the subprocess receives.
 the final command line. The assembly order is:
 
 1. Binary path (resolved by `bootstrap::ensure_tool_available()`)
-2. `--dangerously-skip-permissions` (if `skip_permissions == true`, which is
-   always `true` for all launch commands)
-3. `--model <value>` (if `--model` not already present in `extra_args`)
-4. `--resume` (if requested)
-5. `--continue` (if requested)
+2. `--dangerously-skip-permissions` — only if `skip_permissions == true` **and**
+   the tool is Claude-compatible (`claude`, `rustyclawd`, `amplifier`)
+3. `--model <value>` — only if `--model` not already present in `extra_args`
+   **and** the tool is Claude-compatible
+4. `--resume` (if requested — `launch` subcommand only)
+5. `--continue` (if requested — `launch` subcommand only)
 6. All `extra_args` in the order they were passed on the command line
 
 The following examples show the full assembled command for each launch
@@ -189,18 +215,21 @@ subcommand with no extra args:
 
 ```sh
 amplihack claude
+# → claude --model opus[1m]
+
+amplihack claude --skip-permissions
 # → claude --dangerously-skip-permissions --model opus[1m]
 
 amplihack copilot
-# → copilot --dangerously-skip-permissions --model opus[1m]
+# → copilot
 
 amplihack codex
-# → codex --dangerously-skip-permissions --model opus[1m]
+# → codex
 
 amplihack amplifier
-# → amplifier --dangerously-skip-permissions --model opus[1m]
+# → amplifier --model opus[1m]
 
-amplihack launch
+amplihack launch --skip-permissions
 # → claude --dangerously-skip-permissions --model opus[1m]
 ```
 
@@ -214,11 +243,11 @@ contract:
 
 | Behaviour | Python launcher | Rust launcher |
 |-----------|----------------|---------------|
-| `--dangerously-skip-permissions` | always injected | always injected |
-| `--model <default>` | `opus[1m]` unless `AMPLIHACK_DEFAULT_MODEL` set | same |
+| `--dangerously-skip-permissions` | always injected | conditional: Claude-compatible tool AND `--skip-permissions` |
+| `--model <default>` | `opus[1m]` unless `AMPLIHACK_DEFAULT_MODEL` set | same, Claude-compatible tools only |
 | `--model` suppressed when user provides it | yes | yes |
-| `--resume` passthrough | yes | yes |
-| `--continue` passthrough | yes | yes |
+| `--resume` passthrough | yes | `launch` subcommand only |
+| `--continue` passthrough | yes | `launch` subcommand only |
 | `extra_args` forwarded verbatim | yes | yes |
 
 Intentional divergences (not bugs) are documented in

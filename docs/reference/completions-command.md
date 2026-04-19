@@ -86,10 +86,18 @@ After installing completions, confirm they are active by typing `amplihack ` and
 
 ```
 $ amplihack <TAB>
-claude        completions   copilot       doctor        install
-launch        list          mode          run           show
-uninstall     update        validate
+RustyClawd          amplifier           claude              codex
+completions         copilot             doctor              fleet
+index-code          index-scip          install             launch
+memory              mode                multitask           new
+plugin              query-code          recipe              resolve-bundle-asset
+uninstall           update              uvx-help            version
 ```
+
+> **Note:** Subcommands with explicit `#[command(name = "...")]` attributes
+> (e.g. `RustyClawd`, `uvx-help`, `resolve-bundle-asset`) use that exact
+> casing. All others use clap's default kebab-case. This list may grow with
+> future releases — regenerate completions after upgrading.
 
 Pressing Tab after a flag also completes values where they are enumerated:
 
