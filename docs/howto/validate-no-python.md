@@ -134,5 +134,5 @@ before it. If you want to validate the release binary, pass `--release`:
 ## Related
 
 - [No-Python Compliance (AC9)](../concepts/kuzu-code-graph.md#security-model) — why this matters
-- [`scripts/probe-no-python.sh`](../../scripts/probe-no-python.sh) — the probe script itself
-- [Parity Test Scenarios](./parity-test-scenarios.md) — full parity test matrix
+- [`scripts/probe-no-python.sh`](https://github.com/rysweet/amplihack-rs/blob/main/scripts/probe-no-python.sh) — the probe script itself
+- [Parity Test Scenarios](../reference/parity-test-scenarios.md) — full parity test matrix

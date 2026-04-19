@@ -15,19 +15,19 @@ and what behaviour each tier validates.
   - [Comparison targets](#comparison-targets)
   - [Environment variable expansion](#environment-variable-expansion)
 - [Tier files](#tier-files)
-  - [tier1.yaml — Mode detection](#tier1yaml--mode-detection)
-  - [tier2-install.yaml — Install command](#tier2-installyaml--install-command)
-  - [tier2-plugin.yaml — Plugin command](#tier2-pluginyaml--plugin-command)
-  - [tier3-memory.yaml — Memory command](#tier3-memoryyaml--memory-command)
-  - [tier4-recipe-run.yaml — Recipe run](#tier4-recipe-runyaml--recipe-run)
-  - [tier5-e2e.yaml — End-to-end launch](#tier5-e2eyaml--end-to-end-launch)
-  - [tier5-gap-tests.yaml — Known gaps](#tier5-gap-testsyaml--known-gaps)
-  - [tier5-launcher.yaml — Launcher flags](#tier5-launcheryaml--launcher-flags)
-  - [tier5-live-recipe.yaml — Live recipe execution](#tier5-live-recipeyaml--live-recipe-execution)
-  - [tier5-malformed-yaml.yaml — Error handling](#tier5-malformed-yamalyaml--error-handling)
-  - [tier6-qa-bugfixes.yaml — QA regressions](#tier6-qa-bugfixesyaml--qa-regressions)
-  - [tier7-launcher-parity.yaml — Launcher gaps](#tier7-launcher-parityyaml--launcher-gaps)
-  - [tier8-env-vars.yaml — Environment variable injection](#tier8-env-varsyaml--environment-variable-injection)
+  - [tier1.yaml — Mode detection](#tier1yaml-mode-detection)
+  - [tier2-install.yaml — Install command](#tier2-installyaml-install-command)
+  - [tier2-plugin.yaml — Plugin command](#tier2-pluginyaml-plugin-command)
+  - [tier3-memory.yaml — Memory command](#tier3-memoryyaml-memory-command)
+  - [tier4-recipe-run.yaml — Recipe run](#tier4-recipe-runyaml-recipe-run)
+  - [tier5-e2e.yaml — End-to-end launch](#tier5-e2eyaml-end-to-end-launch)
+  - [tier5-gap-tests.yaml — Known gaps](#tier5-gap-testsyaml-known-gaps)
+  - [tier5-launcher.yaml — Launcher flags](#tier5-launcheryaml-launcher-flags)
+  - [tier5-live-recipe.yaml — Live recipe execution](#tier5-live-recipeyaml-live-recipe-execution)
+  - [tier5-malformed-yaml.yaml — Error handling](#tier5-malformed-yamlyaml-error-handling)
+  - [tier6-qa-bugfixes.yaml — QA regressions](#tier6-qa-bugfixesyaml-qa-regressions)
+  - [tier7-launcher-parity.yaml — Launcher gaps](#tier7-launcher-parityyaml-launcher-gaps)
+  - [tier8-env-vars.yaml — Environment variable injection](#tier8-env-varsyaml-environment-variable-injection)
 - [Related](#related)
 
 ---
@@ -283,7 +283,7 @@ python tests/parity/validate_cli_parity.py \
 
 ## Related
 
-- [validate_cli_parity.py](../../tests/parity/validate_cli_parity.py) — Harness source
+- [validate_cli_parity.py](https://github.com/rysweet/amplihack-rs/blob/main/tests/parity/validate_cli_parity.py) — Harness source
 - [Environment Variables](./environment-variables.md) — Reference for all variables injected during launch
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — Why `AMPLIHACK_AGENT_BINARY` exists
 - [Bootstrap Parity](../concepts/bootstrap-parity.md) — Design principles behind Python↔Rust parity

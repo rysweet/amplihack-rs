@@ -10,7 +10,7 @@ opening a separate terminal for each VM.
 - [Prerequisites](#prerequisites)
 - [Run a scout report](#run-a-scout-report)
 - [Advance sessions interactively](#advance-sessions-interactively)
-- [Automate advance with --force](#automate-advance-with---force)
+- [Automate advance with --force](#automate-advance-with-force)
 - [Save reports to disk](#save-reports-to-disk)
 - [Use incremental scouting](#use-incremental-scouting)
 - [Target a single VM or session](#target-a-single-vm-or-session)
