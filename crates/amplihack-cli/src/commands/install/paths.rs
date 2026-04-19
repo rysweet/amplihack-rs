@@ -55,7 +55,6 @@ pub(super) fn staging_claude_dir() -> Result<PathBuf> {
 /// `smart-orchestrator`, `default-workflow`, and `investigation-workflow`
 /// recipes, plus `tools/orch_helper.py` — without it, the dev-orchestrator's
 /// "REQUIRED" execution path is unreachable on a fresh install.
-#[allow(dead_code)]
 pub(super) fn staging_amplifier_bundle_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".amplihack").join("amplifier-bundle"))
 }

@@ -577,3 +577,113 @@ fn read_manifest_accepts_valid_relative_paths() {
         result.err()
     );
 }
+
+#[test]
+fn copy_amplifier_bundle_errors_when_source_missing() {
+    // Issue #243: missing source bundle must be a hard error during install,
+    // because missing_framework_paths() now treats the bundle as required —
+    // a silent skip would cause an infinite re-install loop on every launcher
+    // boot.
+    let temp = tempfile::tempdir().unwrap();
+    let repo_root = temp.path().join("repo-without-bundle");
+    let claude_dir = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(&repo_root).unwrap();
+    fs::create_dir_all(&claude_dir).unwrap();
+
+    let result = directories::copy_amplifier_bundle(&repo_root, &claude_dir);
+
+    assert!(
+        result.is_err(),
+        "missing source amplifier-bundle must error, not silently warn"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("amplifier-bundle"),
+        "error must mention amplifier-bundle, got: {err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_amplifier_bundle_rejects_symlinked_source_root() {
+    // Defense-in-depth: a malicious local repo could symlink amplifier-bundle/
+    // at an arbitrary readable directory and have it copied into the user's
+    // staging area. The bundle root must be a real directory.
+    let temp = tempfile::tempdir().unwrap();
+    let repo_root = temp.path().join("repo");
+    fs::create_dir_all(&repo_root).unwrap();
+    let claude_dir = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+
+    let elsewhere = temp.path().join("evil");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::write(elsewhere.join("secret.txt"), "private").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, repo_root.join("amplifier-bundle")).unwrap();
+
+    let result = directories::copy_amplifier_bundle(&repo_root, &claude_dir);
+
+    assert!(
+        result.is_err(),
+        "symlinked amplifier-bundle root must be rejected"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("symlink"),
+        "error must mention symlink rejection, got: {err}"
+    );
+    assert!(
+        !claude_dir
+            .parent()
+            .unwrap()
+            .join("amplifier-bundle")
+            .exists(),
+        "no bundle must have been staged from the symlinked source"
+    );
+}
+
+#[test]
+fn copy_amplifier_bundle_replaces_existing_atomically() {
+    // The copy must use a temp-dir + rename pattern so a failed mid-flight
+    // refresh never destroys an existing working bundle. Verify both the
+    // happy path (new content replaces old) and that no leftover staging
+    // dirs remain in the parent.
+    let temp = tempfile::tempdir().unwrap();
+    let repo_root = temp.path().join("repo");
+    let claude_dir = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+
+    let bundle_src = repo_root.join("amplifier-bundle");
+    fs::create_dir_all(bundle_src.join("recipes")).unwrap();
+    fs::write(bundle_src.join("recipes/smart-orchestrator.yaml"), "v1\n").unwrap();
+    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+
+    let staged = temp.path().join(".amplihack/amplifier-bundle");
+    assert_eq!(
+        fs::read_to_string(staged.join("recipes/smart-orchestrator.yaml")).unwrap(),
+        "v1\n"
+    );
+
+    fs::write(bundle_src.join("recipes/smart-orchestrator.yaml"), "v2\n").unwrap();
+    fs::write(bundle_src.join("recipes/new-recipe.yaml"), "fresh\n").unwrap();
+    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(staged.join("recipes/smart-orchestrator.yaml")).unwrap(),
+        "v2\n",
+        "re-install must replace existing content"
+    );
+    assert!(
+        staged.join("recipes/new-recipe.yaml").is_file(),
+        "re-install must add new files from the source"
+    );
+
+    let parent = temp.path().join(".amplihack");
+    assert!(
+        !parent.join("amplifier-bundle.staging").exists(),
+        "no staging temp dir must remain after a successful install"
+    );
+    assert!(
+        !parent.join("amplifier-bundle.old").exists(),
+        "no backup dir must remain after a successful install"
+    );
+}

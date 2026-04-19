@@ -203,22 +203,21 @@ pub fn run_uninstall() -> Result<()> {
     // Issue #243: amplifier-bundle is staged at ~/.amplihack/amplifier-bundle/
     // (sibling of the .claude staging dir). Remove it on uninstall so a stale
     // bundle does not remain after the framework is removed.
-    if let Some(staging_root) = claude_dir.parent() {
-        let bundle = staging_root.join("amplifier-bundle");
-        if bundle.exists() {
-            match fs::remove_dir_all(&bundle) {
-                Ok(()) => {
-                    removed_any = true;
-                    removed_dirs += 1;
-                    println!("  🗑️  Removed amplifier-bundle at {}", bundle.display());
-                }
-                Err(error) => {
-                    println!(
-                        "  ⚠️  Could not remove amplifier-bundle at {}: {}",
-                        bundle.display(),
-                        error
-                    );
-                }
+    if let Ok(bundle) = staging_amplifier_bundle_dir()
+        && bundle.exists()
+    {
+        match fs::remove_dir_all(&bundle) {
+            Ok(()) => {
+                removed_any = true;
+                removed_dirs += 1;
+                println!("  🗑️  Removed amplifier-bundle at {}", bundle.display());
+            }
+            Err(error) => {
+                println!(
+                    "  ⚠️  Could not remove amplifier-bundle at {}: {}",
+                    bundle.display(),
+                    error
+                );
             }
         }
     }
@@ -353,7 +352,7 @@ fn local_install(repo_root: &Path) -> Result<()> {
 
     println!();
     println!("📦 Staging amplifier-bundle (recipes, modules, tools):");
-    let bundle_staged = copy_amplifier_bundle(repo_root, &claude_dir)?;
+    copy_amplifier_bundle(repo_root, &claude_dir)?;
 
     println!();
     println!("📝 Initializing PROJECT.md:");
@@ -436,7 +435,7 @@ fn local_install(repo_root: &Path) -> Result<()> {
 
     println!();
     println!("============================================================");
-    if settings_ok && hooks_ok && !copied_dirs.is_empty() && bundle_staged {
+    if settings_ok && hooks_ok && !copied_dirs.is_empty() {
         println!("✅ Amplihack installation completed successfully!");
         println!();
         println!("📍 Installed to: {}", claude_dir.display());
@@ -466,12 +465,6 @@ fn local_install(repo_root: &Path) -> Result<()> {
         }
         if copied_dirs.is_empty() {
             println!("   • No directories were copied");
-        }
-        if !bundle_staged {
-            println!(
-                "   • amplifier-bundle was not staged — dev-orchestrator recipe \
-                 execution will be unavailable (see issue #243)"
-            );
         }
         println!();
         println!("💡 You may need to manually verify the installation");
