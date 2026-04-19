@@ -500,7 +500,8 @@ fn verify_sha256_with_getter_succeeds_on_matching_checksum() {
 
     let getter = |_url: &str| -> Result<Vec<u8>> { Ok(checksum_body.as_bytes().to_vec()) };
 
-    let result = verify_sha256_with_getter(archive_bytes, "https://github.com/test.sha256", &getter);
+    let result =
+        verify_sha256_with_getter(archive_bytes, "https://github.com/test.sha256", &getter);
     assert!(
         result.is_ok(),
         "verify_sha256_with_getter should succeed when checksum matches: {:?}",
@@ -633,7 +634,8 @@ fn verify_sha256_with_getter_accepts_bare_hex_digest() {
 
     let getter = |_url: &str| -> Result<Vec<u8>> { Ok(checksum_body.as_bytes().to_vec()) };
 
-    let result = verify_sha256_with_getter(archive_bytes, "https://github.com/test.sha256", &getter);
+    let result =
+        verify_sha256_with_getter(archive_bytes, "https://github.com/test.sha256", &getter);
     assert!(
         result.is_ok(),
         "should accept checksum file with bare hex digest: {:?}",

@@ -8,7 +8,11 @@ use tar::Archive;
 
 /// Verify a downloaded archive against its SHA-256 checksum.
 pub(super) fn verify_sha256(archive_bytes: &[u8], checksum_url: &str) -> Result<()> {
-    verify_sha256_with_getter(archive_bytes, checksum_url, &super::network::http_get_with_retry)
+    verify_sha256_with_getter(
+        archive_bytes,
+        checksum_url,
+        &super::network::http_get_with_retry,
+    )
 }
 
 /// Testable core of [`verify_sha256`]: accepts an HTTP getter so tests can
