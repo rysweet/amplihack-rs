@@ -334,4 +334,13 @@ pub enum Commands {
         #[command(subcommand)]
         command: MultitaskCommands,
     },
+
+    /// Smart-orchestrator helper utilities (extract-json, normalise-type).
+    ///
+    /// Replaces `python3 -m ... orch_helper` calls in
+    /// `amplifier-bundle/recipes/smart-orchestrator.yaml` (issue #270).
+    Orch {
+        #[command(subcommand)]
+        command: crate::commands::orch::OrchCommands,
+    },
 }
