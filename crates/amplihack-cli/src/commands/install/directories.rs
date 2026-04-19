@@ -167,9 +167,7 @@ pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Resu
     let source_bundle = repo_root.join("amplifier-bundle");
     if !source_bundle.is_dir() {
         println!("  ⚠️  Warning: amplifier-bundle not found in source, skipping");
-        println!(
-            "     dev-orchestrator recipe execution will be unavailable on this install"
-        );
+        println!("     dev-orchestrator recipe execution will be unavailable on this install");
         return Ok(false);
     }
 
@@ -191,7 +189,10 @@ pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Resu
     }
 
     copy_dir_recursive(&source_bundle, &target_bundle)?;
-    println!("  ✅ Staged amplifier-bundle to {}", target_bundle.display());
+    println!(
+        "  ✅ Staged amplifier-bundle to {}",
+        target_bundle.display()
+    );
     Ok(true)
 }
 
