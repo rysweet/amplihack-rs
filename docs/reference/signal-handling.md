@@ -8,7 +8,7 @@ in each case.
 
 - [Signal handler registration](#signal-handler-registration)
 - [Exit code contract](#exit-code-contract)
-  - [SIGINT — Ctrl-C](#sigint--ctrl-c)
+  - [SIGINT — Ctrl-C](#sigint-ctrl-c)
   - [Normal child exit](#normal-child-exit)
   - [Signal-killed child (no exit code)](#signal-killed-child-no-exit-code)
 - [Python launcher parity](#python-launcher-parity)

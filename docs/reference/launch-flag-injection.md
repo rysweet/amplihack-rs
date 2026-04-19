@@ -9,9 +9,9 @@ can override the defaults.
 ## Contents
 
 - [Injected flags overview](#injected-flags-overview)
-- [--dangerously-skip-permissions](#--dangerously-skip-permissions)
-- [--model](#--model)
-- [--resume and --continue](#--resume-and---continue)
+- [--dangerously-skip-permissions](#dangerously-skip-permissions)
+- [--model](#model)
+- [--resume and --continue](#resume-and-continue)
 - [Extra args passthrough](#extra-args-passthrough)
 - [Complete command-line assembly](#complete-command-line-assembly)
 - [Python launcher parity](#python-launcher-parity)
@@ -30,7 +30,7 @@ can override the defaults.
 
 ---
 
-## --dangerously-skip-permissions
+## --dangerously-skip-permissions { #dangerously-skip-permissions }
 
 `amplihack` passes `--dangerously-skip-permissions` to the tool subprocess only
 when **both** conditions are met:
@@ -75,7 +75,7 @@ may behave differently. Verify Python launcher behavior independently.
 
 ---
 
-## --model
+## --model { #model }
 
 `amplihack` injects `--model <value>` into the subprocess command line to set
 the AI model variant used for the session. This flag is only injected for
@@ -154,7 +154,7 @@ Examples that work at time of writing:
 
 ---
 
-## --resume and --continue
+## --resume and --continue { #resume-and-continue }
 
 These flags are passed through only when the user explicitly requests them on
 the `launch` subcommand. They are never injected automatically.
