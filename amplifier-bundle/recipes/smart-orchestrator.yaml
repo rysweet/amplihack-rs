@@ -108,6 +108,19 @@ steps:
                 "investigate X then implement Y" -> 2 workstreams
          - recipe: "default-workflow" (dev) | "investigation-workflow" (research)
 
+      **Classification rules — read carefully (#269)**:
+      - **Operations** is ONLY for one-shot read-only or trivial mutating
+        commands the user could type themselves: "git status", "ls", "delete
+        old logs", "show disk usage", "run cargo test". Operations NEVER
+        writes new functions, NEVER opens PRs, NEVER writes tests, NEVER
+        modifies source files in `src/`, `crates/`, `bins/`, etc.
+      - **Development** is the correct type whenever the task asks you to:
+        "Add", "Extend", "Implement", "Create", "Build", "Refactor", or "Port"
+        ANY code; OR write/add tests; OR open a PR; OR modify files in
+        `src/` / `crates/` / `bins/`. Multi-requirement tasks with numbered
+        items `(1)`, `(2)`, `(3)` are almost always Development.
+      - When in doubt between Operations and Development, choose Development.
+
       **Decomposition override**: {{force_single_workstream}} — if "true", use exactly 1 workstream regardless of task structure.
 
       **Output exactly this JSON**:
@@ -153,7 +166,20 @@ steps:
       # Rust call: pipe extracted JSON into a small inline tool. We use
       # `amplihack orch helper normalise-type` directly on the raw value.
       RAW_TYPE=$(printf '%s' "$RAW_OBJ" | amplihack orch helper extract-field --field task_type --default Development)
-      printf '%s' "$RAW_TYPE" | amplihack orch helper normalise-type
+      CANONICAL_TYPE=$(printf '%s' "$RAW_TYPE" | amplihack orch helper normalise-type)
+      # Deterministic safety net (#269): if the LLM said Operations but the
+      # task description has strong development signals (file paths, "Add"+
+      # path, PR mention, tests, multi-requirement), promote to Development.
+      _TASK_TMPFILE=$(mktemp)
+      cat > "$_TASK_TMPFILE" <<__TASK_EOF__
+      {{task_description}}
+      __TASK_EOF__
+      FINAL_TYPE=$(amplihack orch helper reclassify-task-type --current "$CANONICAL_TYPE" < "$_TASK_TMPFILE")
+      rm -f "$_TASK_TMPFILE"
+      if [ "$FINAL_TYPE" != "$CANONICAL_TYPE" ]; then
+        echo "[dev-orchestrator] Reclassified $CANONICAL_TYPE → $FINAL_TYPE based on task description signals (#269)" >&2
+      fi
+      echo "$FINAL_TYPE"
     output: "task_type"
 
   # activate-workflow: compute workstream_count, set workflow semaphore, announce.

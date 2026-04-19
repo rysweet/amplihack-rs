@@ -74,6 +74,20 @@ pub enum OrchHelperCommands {
         #[arg(long, default_value = "")]
         default: String,
     },
+
+    /// Reclassify a task type using deterministic dev-signal heuristics (#269).
+    ///
+    /// Reads the task description from stdin and the current task type from
+    /// `--current`. Promotes `Operations` → `Development` when the task
+    /// contains strong development signals (file paths, PR mention, unit
+    /// test mention, "Add"/"Extend"/"Implement"/"Create" keywords, multiple
+    /// numbered requirements). Never demotes any other classification.
+    /// Prints the (possibly updated) task type.
+    ReclassifyTaskType {
+        /// The current task type (e.g. "Operations").
+        #[arg(long)]
+        current: String,
+    },
 }
 
 /// Extract and parse the FIRST complete JSON object from LLM output.
@@ -226,7 +240,116 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
             println!("{out}");
             Ok(())
         }
+        OrchHelperCommands::ReclassifyTaskType { current } => {
+            let task = read_stdin()?;
+            let out = reclassify_task_type(&current, &task);
+            println!("{out}");
+            Ok(())
+        }
     }
+}
+
+/// Promote a task type to `Development` when the task description contains
+/// strong development signals that the LLM classifier may have missed (#269).
+///
+/// Rules:
+/// - Only promotes `Operations` → `Development`. All other types pass through
+///   unchanged (including `Q&A`, `Investigation`, and already-`Development`).
+/// - Counts dev signals and promotes if any of:
+///   * Task explicitly mentions opening a PR
+///   * Task mentions writing tests / unit tests
+///   * Task contains a source file path (`src/`, `crates/`, `bins/`, `.rs`,
+///     `.py`, `.ts`, etc.) AND any one Add/Extend/Implement/Create keyword
+///   * Three or more enumerated requirements (e.g. `(1) ... (2) ... (3) ...`)
+///     AND any one Add/Extend/Implement/Create keyword
+pub fn reclassify_task_type(current: &str, task: &str) -> String {
+    let canonical = normalise_type(current);
+    if canonical != "Operations" {
+        return canonical.to_string();
+    }
+    if has_strong_dev_signals(task) {
+        return "Development".to_string();
+    }
+    canonical.to_string()
+}
+
+/// True if `haystack` contains `needle` as a whole word (separated by
+/// non-alphanumeric chars or string boundaries). All inputs assumed lowercase.
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    let nlen = needle.len();
+    if nlen == 0 || nlen > haystack.len() {
+        return false;
+    }
+    let bytes = haystack.as_bytes();
+    let mut start = 0;
+    while let Some(idx) = haystack[start..].find(needle) {
+        let abs = start + idx;
+        let before_ok = abs == 0 || !bytes[abs - 1].is_ascii_alphanumeric();
+        let after = abs + nlen;
+        let after_ok = after == bytes.len() || !bytes[after].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        start = abs + 1;
+    }
+    false
+}
+
+fn has_strong_dev_signals(task: &str) -> bool {
+    let lower = task.to_lowercase();
+
+    // 1. Explicit PR mention is an unambiguous dev signal.
+    let mentions_pr = lower.contains("open a pr")
+        || lower.contains("open pr")
+        || lower.contains("pull request")
+        || lower.contains("opens a pr");
+    if mentions_pr {
+        return true;
+    }
+
+    // 2. Test-writing language — Operations doesn't write tests.
+    let mentions_tests = lower.contains("unit test")
+        || lower.contains("unit tests")
+        || lower.contains("write tests")
+        || lower.contains("add tests")
+        || lower.contains("add a test")
+        || lower.contains("test coverage");
+    if mentions_tests {
+        return true;
+    }
+
+    // 3. Verb signals (word-boundary aware to avoid e.g. "report" → "port").
+    let dev_verbs = ["add", "extend", "implement", "create", "build", "refactor", "port"];
+    let has_dev_verb = dev_verbs.iter().any(|v| contains_word(&lower, v));
+
+    // 4. Source-file/path signals.
+    let path_markers = [
+        "src/", "crates/", "bins/", "lib/", "tests/", "amplifier-bundle/",
+        ".rs ", ".rs.", ".rs:", ".rs,", ".py ", ".py.", ".py:", ".py,",
+        ".ts ", ".tsx", ".js ", ".go ", ".java ", ".cpp ", ".c ", ".h ",
+    ];
+    let has_path = path_markers.iter().any(|p| lower.contains(p))
+        || lower.contains(".rs)")
+        || lower.contains(".py)")
+        || lower.ends_with(".rs")
+        || lower.ends_with(".py");
+
+    if has_dev_verb && has_path {
+        return true;
+    }
+
+    // 5. Multi-requirement structure: 3+ enumerated items like "(1)", "(2)".
+    let mut req_count = 0;
+    for n in 1..=9 {
+        if lower.contains(&format!("({n})")) {
+            req_count += 1;
+        }
+    }
+    if req_count >= 3 && has_dev_verb {
+        return true;
+    }
+
+    false
 }
 
 /// Extract `field` from a top-level JSON object. Returns the string form of
@@ -655,5 +778,103 @@ mod tests {
             Some(r#"{"x":1}"#.to_string())
         );
         assert_eq!(extract_field(r#"{"x": null}"#, "x"), Some(String::new()));
+    }
+
+    // --- reclassify_task_type (#269) -----------------------------------------
+
+    #[test]
+    fn reclassify_promotes_issue_269_repro_task() {
+        let task = "Add an agentic disk-cleanup loop to the Simard OODA daemon. \
+            Requirements: (1) Extend src/cmd_cleanup.rs with a new function \
+            agentic_wip_safe_cleanup() that runs as part of the existing per-cycle \
+            handle_cleanup() pipeline. (2) Trigger only when free disk on /home or \
+            /tmp is below 25 GB. (3) WIP-aware: scan all git worktrees... \
+            (5) Add unit tests for free_disk_gb()... \
+            (6) Open a PR titled fix(cleanup): agentic WIP-safe target dir reclamation";
+        assert_eq!(reclassify_task_type("Operations", task), "Development");
+    }
+
+    #[test]
+    fn reclassify_promotes_on_pr_mention_alone() {
+        assert_eq!(
+            reclassify_task_type("Operations", "Open a PR that does X"),
+            "Development"
+        );
+        assert_eq!(
+            reclassify_task_type("Operations", "Please open a pull request for the fix"),
+            "Development"
+        );
+    }
+
+    #[test]
+    fn reclassify_promotes_on_test_mention_alone() {
+        assert_eq!(
+            reclassify_task_type("Operations", "Write unit tests for the parser"),
+            "Development"
+        );
+        assert_eq!(
+            reclassify_task_type("Operations", "Add tests covering the new helper"),
+            "Development"
+        );
+    }
+
+    #[test]
+    fn reclassify_promotes_on_verb_plus_file_path() {
+        assert_eq!(
+            reclassify_task_type("Operations", "Extend src/foo.rs with a new function"),
+            "Development"
+        );
+        assert_eq!(
+            reclassify_task_type("Operations", "Add a flag to crates/cli/src/main.rs"),
+            "Development"
+        );
+        assert_eq!(
+            reclassify_task_type("Operations", "Implement amplifier-bundle/recipes/foo.yaml"),
+            "Development"
+        );
+    }
+
+    #[test]
+    fn reclassify_promotes_on_three_plus_numbered_reqs_with_dev_verb() {
+        let task = "Add a feature: (1) parse input, (2) validate config, \
+                    (3) emit metrics, (4) record audit log";
+        assert_eq!(reclassify_task_type("Operations", task), "Development");
+    }
+
+    #[test]
+    fn reclassify_does_not_promote_pure_ops_tasks() {
+        for task in [
+            "Run cargo test and report failures",
+            "Show me git status",
+            "Clean up tmp files",
+            "Delete the build directory",
+            "List the files in target/",
+        ] {
+            assert_eq!(
+                reclassify_task_type("Operations", task),
+                "Operations",
+                "task should stay Operations: {task:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn reclassify_passes_through_non_operations_types() {
+        let dev_signal_task = "Add unit tests and open a PR for src/foo.rs";
+        assert_eq!(reclassify_task_type("Q&A", dev_signal_task), "Q&A");
+        assert_eq!(reclassify_task_type("Investigation", dev_signal_task), "Investigation");
+        assert_eq!(reclassify_task_type("Development", dev_signal_task), "Development");
+    }
+
+    #[test]
+    fn reclassify_normalises_unknown_current_to_development() {
+        assert_eq!(reclassify_task_type("garbage", "do anything"), "Development");
+    }
+
+    #[test]
+    fn reclassify_does_not_promote_three_reqs_without_dev_verb() {
+        let task = "Please do the following: (1) check disk space, \
+                    (2) report free GB, (3) print the result";
+        assert_eq!(reclassify_task_type("Operations", task), "Operations");
     }
 }
