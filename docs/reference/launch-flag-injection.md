@@ -23,8 +23,8 @@ can override the defaults.
 
 | Flag | Injected when? | Applicable tools | Override mechanism |
 |------|----------------|-------------------|-------------------|
-| `--dangerously-skip-permissions` | `--skip-permissions` passed AND tool is Claude-compatible | `claude`, `rustyclawd`, `amplifier` | omit `--skip-permissions` |
-| `--model <value>` | user did not pass `--model` AND tool is Claude-compatible | `claude`, `rustyclawd`, `amplifier` | `AMPLIHACK_DEFAULT_MODEL` or `--model` on the command line |
+| `--dangerously-skip-permissions` | `--skip-permissions` passed AND tool is Claude-compatible | `claude`, `rusty`, `rustyclawd`, `amplifier` | omit `--skip-permissions` |
+| `--model <value>` | user did not pass `--model` AND tool is Claude-compatible | `claude`, `rusty`, `rustyclawd`, `amplifier` | `AMPLIHACK_DEFAULT_MODEL` or `--model` on the command line |
 | `--resume` | only when `amplihack launch --resume` | `launch` only (not `claude`) | pass `--resume` to the `launch` subcommand |
 | `--continue` | only when `amplihack launch --continue` | `launch` only (not `claude`) | pass `--continue` to the `launch` subcommand |
 
@@ -36,7 +36,7 @@ can override the defaults.
 when **both** conditions are met:
 
 1. The user passed `--skip-permissions` on the amplihack command line.
-2. The target tool is **Claude-compatible** (`claude`, `rustyclawd`, or `amplifier`).
+2. The target tool is **Claude-compatible** (`claude`, `rusty`, `rustyclawd`, or `amplifier`).
 
 Tools that are not Claude-compatible (`copilot`, `codex`) never receive this
 flag because they do not support it.
@@ -79,7 +79,7 @@ may behave differently. Verify Python launcher behavior independently.
 
 `amplihack` injects `--model <value>` into the subprocess command line to set
 the AI model variant used for the session. This flag is only injected for
-**Claude-compatible** tools (`claude`, `rustyclawd`, `amplifier`). Non-Claude
+**Claude-compatible** tools (`claude`, `rusty`, `rustyclawd`, `amplifier`). Non-Claude
 tools (`copilot`, `codex`) use their own default model selection.
 
 ### Default model
@@ -94,7 +94,7 @@ The default model is `opus[1m]`. It is used when:
 amplihack claude
 
 # amplihack spawns:
-claude --dangerously-skip-permissions --model opus[1m]
+claude --model opus[1m]
 ```
 
 ### Override via environment variable
@@ -107,7 +107,7 @@ export AMPLIHACK_DEFAULT_MODEL=sonnet
 amplihack claude
 
 # amplihack spawns:
-claude --dangerously-skip-permissions --model sonnet
+claude --model sonnet
 ```
 
 This is the recommended approach for teams or CI environments that standardise
@@ -121,7 +121,7 @@ env:
 
 steps:
   - run: amplihack claude --print 'Run the lint checks'
-    # spawns: claude --dangerously-skip-permissions --model sonnet --print 'Run the lint checks'
+    # spawns: claude --model sonnet --print 'Run the lint checks'
 ```
 
 ### Override via command-line flag
@@ -133,7 +133,7 @@ is forwarded unchanged and `AMPLIHACK_DEFAULT_MODEL` is ignored:
 amplihack claude --model haiku
 
 # amplihack spawns:
-claude --dangerously-skip-permissions --model haiku
+claude --model haiku
 ```
 
 Detection is substring-based: if any element of the extra args list equals
@@ -188,7 +188,7 @@ verbatim to the tool subprocess after the injected flags. Order is:
 amplihack claude --print 'Fix the failing tests' --output-format json
 
 # amplihack spawns:
-claude --dangerously-skip-permissions --model opus[1m] --print 'Fix the failing tests' --output-format json
+claude --model opus[1m] --print 'Fix the failing tests' --output-format json
 ```
 
 There is no processing or escaping of `extra_args`. What the user types is what
@@ -203,7 +203,7 @@ the final command line. The assembly order is:
 
 1. Binary path (resolved by `bootstrap::ensure_tool_available()`)
 2. `--dangerously-skip-permissions` — only if `skip_permissions == true` **and**
-   the tool is Claude-compatible (`claude`, `rustyclawd`, `amplifier`)
+   the tool is Claude-compatible (`claude`, `rusty`, `rustyclawd`, `amplifier`)
 3. `--model <value>` — only if `--model` not already present in `extra_args`
    **and** the tool is Claude-compatible
 4. `--resume` (if requested — `launch` subcommand only)

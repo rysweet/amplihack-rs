@@ -97,3 +97,10 @@ path = "../../tests/integration/kuzu_path_notice_test.rs"
 [[test]]
 name = "cli_golden"
 path = "../../tests/integration/cli_golden_tests.rs"
+
+# Issue #259: Documentation-vs-code drift detection tests.
+# Verify docs match source code for flag injection, completions,
+# memory index output format, and all new reference docs.
+[[test]]
+name = "doc_code_drift"
+path = "../../tests/integration/doc_code_drift_test.rs"
