@@ -146,6 +146,123 @@ pub(super) fn prune_legacy_amplihack_hook_assets(claude_dir: &Path) -> Result<us
     Ok(removed)
 }
 
+/// Stage the `amplifier-bundle/` tree from the source repo into
+/// `~/.amplihack/amplifier-bundle/`.
+///
+/// The dev-orchestrator skill's mandatory execution path
+/// (`amplihack recipe run smart-orchestrator`) is unreachable without these
+/// recipes (`smart-orchestrator.yaml`, `default-workflow.yaml`,
+/// `investigation-workflow.yaml`) and the `tools/orch_helper.py` referenced
+/// by the parse-decomposition step. See issue #243.
+///
+/// The bundle is copied to `~/.amplihack/amplifier-bundle/` so the recipe
+/// runner's `AMPLIHACK_HOME/amplifier-bundle/recipes` lookup (and the
+/// skill's `AMPLIHACK_HOME` auto-detection that walks for an
+/// `amplifier-bundle/` folder) both succeed.
+///
+/// Returns `Ok(true)` if the bundle was staged. Returns an error if the
+/// source repo lacks an `amplifier-bundle/` directory, since
+/// [`super::settings::missing_framework_paths`] treats the bundle's recipes
+/// and `tools/orch_helper.py` as required framework assets — a missing
+/// source bundle would cause every subsequent launcher boot to attempt
+/// (and fail) a re-install in a tight loop.
+///
+/// The copy is performed via a temp-dir + atomic-rename pattern so a failed
+/// mid-flight copy never destroys an existing working bundle.
+///
+/// The source `amplifier-bundle/` root must be a real directory; symlinked
+/// roots are rejected to prevent a malicious local repo from copying an
+/// arbitrary readable directory into the user's staging area.
+pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Result<bool> {
+    let source_bundle = repo_root.join("amplifier-bundle");
+    let source_meta = fs::symlink_metadata(&source_bundle).with_context(|| {
+        format!(
+            "amplifier-bundle not found at {} — required for dev-orchestrator \
+             recipe execution (#243)",
+            source_bundle.display()
+        )
+    })?;
+    if source_meta.file_type().is_symlink() {
+        anyhow::bail!(
+            "refusing to stage amplifier-bundle from symlinked source root at {} \
+             — bundle root must be a real directory (#243)",
+            source_bundle.display()
+        );
+    }
+    if !source_meta.is_dir() {
+        anyhow::bail!(
+            "amplifier-bundle source at {} is not a directory",
+            source_bundle.display()
+        );
+    }
+
+    let target_bundle = claude_dir
+        .parent()
+        .context("staging .claude dir missing parent")?
+        .join("amplifier-bundle");
+    if let Some(parent) = target_bundle.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    // Atomic replacement: copy into sibling temp dir first, then swap.
+    // If the copy fails, the existing bundle remains intact — this matters
+    // because `ensure_framework_installed` swallows refresh errors and
+    // expects the previous staged framework to still be usable.
+    let staging_temp = target_bundle.with_extension("staging");
+    if staging_temp.exists() {
+        fs::remove_dir_all(&staging_temp).with_context(|| {
+            format!(
+                "failed to clean stale staging dir {}",
+                staging_temp.display()
+            )
+        })?;
+    }
+    copy_dir_recursive(&source_bundle, &staging_temp).with_context(|| {
+        format!(
+            "failed to copy amplifier-bundle into staging dir {}",
+            staging_temp.display()
+        )
+    })?;
+
+    if target_bundle.exists() {
+        let backup = target_bundle.with_extension("old");
+        if backup.exists() {
+            fs::remove_dir_all(&backup).ok();
+        }
+        fs::rename(&target_bundle, &backup).with_context(|| {
+            format!(
+                "failed to back up existing amplifier-bundle at {}",
+                target_bundle.display()
+            )
+        })?;
+        if let Err(err) = fs::rename(&staging_temp, &target_bundle) {
+            // Roll the previous bundle back into place so the install isn't bricked.
+            let _ = fs::rename(&backup, &target_bundle);
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to swap new amplifier-bundle into {}",
+                    target_bundle.display()
+                )
+            });
+        }
+        let _ = fs::remove_dir_all(&backup);
+    } else {
+        fs::rename(&staging_temp, &target_bundle).with_context(|| {
+            format!(
+                "failed to move new amplifier-bundle into {}",
+                target_bundle.display()
+            )
+        })?;
+    }
+
+    println!(
+        "  ✅ Staged amplifier-bundle to {}",
+        target_bundle.display()
+    );
+    Ok(true)
+}
+
 pub(super) fn initialize_project_md(claude_dir: &Path) -> Result<()> {
     let project_md = claude_dir.join("context").join("PROJECT.md");
     if let Some(parent) = project_md.parent() {

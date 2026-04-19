@@ -313,12 +313,34 @@ pub(super) fn missing_framework_paths(claude_dir: &Path) -> Result<Vec<String>> 
             missing.push(format!("{file} (expected at {})", path.display()));
         }
     }
-    let claude_md = claude_dir
+    let staging_root = claude_dir
         .parent()
-        .context("staging .claude dir missing parent")?
-        .join("CLAUDE.md");
+        .context("staging .claude dir missing parent")?;
+    let claude_md = staging_root.join("CLAUDE.md");
     if !claude_md.exists() {
         missing.push(format!("CLAUDE.md (expected at {})", claude_md.display()));
     }
+
+    // Issue #243: amplifier-bundle MUST be staged on every startup. Without
+    // these recipe yamls and `tools/orch_helper.py`, the dev-orchestrator
+    // skill's required execution path (`amplihack recipe run smart-orchestrator`)
+    // is unreachable.
+    let bundle_dir = staging_root.join("amplifier-bundle");
+    let required_bundle_paths: &[&str] = &[
+        "recipes/smart-orchestrator.yaml",
+        "recipes/default-workflow.yaml",
+        "recipes/investigation-workflow.yaml",
+        "tools/orch_helper.py",
+    ];
+    for rel in required_bundle_paths {
+        let path = bundle_dir.join(rel);
+        if !path.exists() {
+            missing.push(format!(
+                "amplifier-bundle/{rel} (expected at {})",
+                path.display()
+            ));
+        }
+    }
+
     Ok(missing)
 }

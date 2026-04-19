@@ -16,6 +16,24 @@ pub(super) fn create_source_repo(root: &Path) {
     fs::write(root.join(".claude/tools/statusline.sh"), "echo hi\n").unwrap();
     fs::write(root.join(".claude/AMPLIHACK.md"), "framework\n").unwrap();
     fs::write(root.join("CLAUDE.md"), "root\n").unwrap();
+
+    // Issue #243: source repos must ship `amplifier-bundle/` so the install
+    // can stage recipes + orch_helper.py for dev-orchestrator.
+    let bundle = root.join("amplifier-bundle");
+    fs::create_dir_all(bundle.join("recipes")).unwrap();
+    fs::create_dir_all(bundle.join("tools")).unwrap();
+    for recipe in [
+        "smart-orchestrator.yaml",
+        "default-workflow.yaml",
+        "investigation-workflow.yaml",
+    ] {
+        fs::write(
+            bundle.join("recipes").join(recipe),
+            "name: test-recipe\nsteps: []\n",
+        )
+        .unwrap();
+    }
+    fs::write(bundle.join("tools/orch_helper.py"), "# stub\n").unwrap();
 }
 
 pub(super) fn create_minimal_staged_assets(root: &Path) {
@@ -26,6 +44,23 @@ pub(super) fn create_minimal_staged_assets(root: &Path) {
     fs::write(claude_dir.join("tools/statusline.sh"), "echo hi\n").unwrap();
     fs::write(claude_dir.join("AMPLIHACK.md"), "framework\n").unwrap();
     fs::write(root.join(".amplihack/CLAUDE.md"), "root\n").unwrap();
+
+    // Issue #243: staged amplifier-bundle is now part of the presence check.
+    let bundle = root.join(".amplihack/amplifier-bundle");
+    fs::create_dir_all(bundle.join("recipes")).unwrap();
+    fs::create_dir_all(bundle.join("tools")).unwrap();
+    for recipe in [
+        "smart-orchestrator.yaml",
+        "default-workflow.yaml",
+        "investigation-workflow.yaml",
+    ] {
+        fs::write(
+            bundle.join("recipes").join(recipe),
+            "name: test-recipe\nsteps: []\n",
+        )
+        .unwrap();
+    }
+    fs::write(bundle.join("tools/orch_helper.py"), "# stub\n").unwrap();
 }
 
 /// Creates an executable stub at `dir/name` (755 perms on Unix).

@@ -200,6 +200,28 @@ pub fn run_uninstall() -> Result<()> {
         }
     }
 
+    // Issue #243: amplifier-bundle is staged at ~/.amplihack/amplifier-bundle/
+    // (sibling of the .claude staging dir). Remove it on uninstall so a stale
+    // bundle does not remain after the framework is removed.
+    if let Ok(bundle) = staging_amplifier_bundle_dir()
+        && bundle.exists()
+    {
+        match fs::remove_dir_all(&bundle) {
+            Ok(()) => {
+                removed_any = true;
+                removed_dirs += 1;
+                println!("  🗑️  Removed amplifier-bundle at {}", bundle.display());
+            }
+            Err(error) => {
+                println!(
+                    "  ⚠️  Could not remove amplifier-bundle at {}: {}",
+                    bundle.display(),
+                    error
+                );
+            }
+        }
+    }
+
     // Phase 3: remove binaries listed in manifest
     for binary_path in &manifest.binaries {
         let p = PathBuf::from(binary_path);
@@ -329,6 +351,10 @@ fn local_install(repo_root: &Path) -> Result<()> {
     }
 
     println!();
+    println!("📦 Staging amplifier-bundle (recipes, modules, tools):");
+    copy_amplifier_bundle(repo_root, &claude_dir)?;
+
+    println!();
     println!("📝 Initializing PROJECT.md:");
     initialize_project_md(&claude_dir)?;
 
@@ -418,6 +444,7 @@ fn local_install(repo_root: &Path) -> Result<()> {
         for dir in &copied_dirs {
             println!("   • {dir}");
         }
+        println!("   • amplifier-bundle (recipes, modules, tools)");
         println!();
         println!("🎯 Features enabled:");
         println!("   • Session start hook");
@@ -425,6 +452,7 @@ fn local_install(repo_root: &Path) -> Result<()> {
         println!("   • Post-tool-use hook");
         println!("   • Pre-compact hook");
         println!("   • Runtime logging and metrics");
+        println!("   • dev-orchestrator recipe execution");
         println!();
         println!("💡 To uninstall: amplihack uninstall");
     } else {
