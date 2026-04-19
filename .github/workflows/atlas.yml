@@ -1,0 +1,46 @@
+name: Code Atlas
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  CARGO_TERM_COLOR: always
+  NODE_OPTIONS: "--max-old-space-size=32768"
+
+jobs:
+  atlas:
+    name: Build Code Atlas
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install amplihack
+        run: cargo install --path bins/amplihack --locked
+
+      - name: Install diagram tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq graphviz
+          npm install -g @mermaid-js/mermaid-cli
+
+      - name: Run code-atlas recipe
+        continue-on-error: true
+        run: amplihack recipe run amplifier-bundle/recipes/code-atlas.yaml
+
+      - name: Upload atlas artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-atlas
+          path: docs/atlas/
+          if-no-files-found: warn
+          retention-days: 90

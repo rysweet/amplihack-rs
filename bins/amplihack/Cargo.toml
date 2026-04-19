@@ -104,3 +104,18 @@ path = "../../tests/integration/cli_golden_tests.rs"
 [[test]]
 name = "doc_code_drift"
 path = "../../tests/integration/doc_code_drift_test.rs"
+# Issue #258: Code Atlas CI workflow structural tests (TDD).
+# Verify .github/workflows/atlas.yml has correct triggers, permissions,
+# timeouts, toolchain setup, recipe execution, and artifact upload.
+# Tests FAIL until atlas.yml is created per the spec.
+[[test]]
+name = "atlas_workflow"
+path = "../../tests/integration/atlas_workflow_test.rs"
+
+# Issue #258: Code Atlas output directory tests (TDD).
+# Verify docs/atlas/ exists with at least a README.md placeholder,
+# contains no secrets, and uses relative paths only.
+# Tests FAIL until the recipe runs and output is committed.
+[[test]]
+name = "atlas_output"
+path = "../../tests/integration/atlas_output_test.rs"

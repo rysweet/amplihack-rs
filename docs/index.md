@@ -15,6 +15,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Run amplihack in Non-interactive Mode](./howto/run-in-noninteractive-mode.md) — Use amplihack in CI pipelines, Docker containers, and piped scripts without interactive prompts
 - [Manage Tool Update Notifications](./howto/manage-tool-update-checks.md) — Control or disable the pre-launch npm update check for `claude`, `copilot`, and `codex`
 - [Run a Recipe End-to-End](./howto/run-a-recipe.md) — Find, inspect, dry-run, and execute YAML recipes through the Rust CLI
+- [Run the Code Atlas Recipe](./howto/run-code-atlas.md) — Generate multi-layer architecture diagrams with dual-format bug hunting
 - [Index a Project with the Native SCIP Pipeline](./howto/index-a-project.md) — Build the LadybugDB code-graph from source using native SCIP indexers
 - [Validate No-Python Compliance](./howto/validate-no-python.md) — Run the AC9 probe to confirm the binary operates without a Python interpreter
 - [Use the Fleet Dashboard](./howto/use-fleet-dashboard.md) — Open the cockpit, start and adopt sessions, search sessions, run the reasoner from the TUI, and exit cleanly
@@ -50,6 +51,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [amplihack-hive API](./reference/hive-api.md) — Multi-agent orchestration and workload management
 - [amplihack-agent-generator API](./reference/agent-generator-api.md) — Goal-to-agent pipeline
 - [amplihack-memory Extended API](./reference/memory-extended-api.md) — Memory facade, manager, LadybugDB store, and evaluation
+- [Atlas CI Workflow](./reference/atlas-ci-workflow.md) — GitHub Actions workflow that rebuilds the code atlas on push to main
 
 ### Concepts
 
@@ -70,6 +72,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Evaluation Framework](./concepts/eval-framework.md) — Progressive L1–L12 evaluation, graders, and self-improvement
 - [Hive Orchestration](./concepts/hive-orchestration.md) — Multi-agent swarm deployment, events, and workload management
 - [Goal Agent Generator](./concepts/agent-generator.md) — Four-stage pipeline: analyze → plan → synthesize → assemble
+- [Code Atlas Architecture](./concepts/code-atlas-architecture.md) — Eight-layer architecture atlas with dual-format diagrams and multi-agent bug validation
 
 ## Quick Start
 
