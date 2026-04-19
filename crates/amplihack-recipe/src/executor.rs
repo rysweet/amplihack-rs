@@ -714,4 +714,46 @@ steps:
         assert_eq!(merged.get("b").unwrap(), "3");
         assert_eq!(merged.get("c").unwrap(), "4");
     }
+
+    /// Regression for #268 (closed not-reproducible): the recipe runner must
+    /// inherit the parent process environment when launching `bash` steps, so
+    /// users can pass things like `PYTHONPATH` or arbitrary custom env vars
+    /// from their shell into the recipe. Rust's `Command` inherits by default;
+    /// this test pins that behavior so we don't accidentally introduce
+    /// `env_clear()` / `env_remove()` in `execute_shell_step`.
+    #[test]
+    fn shell_step_inherits_parent_env_vars() {
+        // SAFETY: env vars are set/removed in a single-threaded test.
+        let key = "AMPLIHACK_INHERIT_PROBE_268";
+        let value = "propagated-from-parent";
+        unsafe {
+            std::env::set_var(key, value);
+        }
+
+        let yaml = format!(
+            r#"
+name: env-inherit-probe
+steps:
+  - id: probe
+    type: shell
+    command: 'printf "%s" "${}"'
+"#,
+            key
+        );
+        let recipe = crate::parser::RecipeParser::new().parse(&yaml).unwrap();
+        let executor = RecipeExecutor::new(ExecutorConfig::default(), DryRunAgentBackend);
+        let result = executor.execute(&recipe, HashMap::new()).unwrap();
+
+        unsafe {
+            std::env::remove_var(key);
+        }
+
+        assert!(result.success, "recipe should succeed");
+        assert_eq!(result.step_results[0].status, StepStatus::Succeeded);
+        assert_eq!(
+            result.step_results[0].output.as_deref(),
+            Some(value),
+            "shell step did not inherit parent env var (regression for #268)"
+        );
+    }
 }
