@@ -3,6 +3,7 @@
 use super::binary::{validate_binary_path, validate_hook_command_string};
 use super::types::{HookCommandKind, HookSpec};
 use serde_json::{Map, Value};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 pub(super) fn update_hook_paths(
@@ -17,21 +18,44 @@ pub(super) fn update_hook_paths(
         .or_insert_with(|| Value::Object(Map::new()));
     let hooks = ensure_object(hooks);
 
+    // Group specs by event so we can rewrite each event's wrappers in the
+    // canonical order defined by `specs`. This is the only way to reliably
+    // heal drift from an older install that wrote the native hooks in a
+    // different order — update-in-place would keep the wrong order forever.
+    let mut events: Vec<&'static str> = Vec::new();
+    let mut seen: BTreeSet<&'static str> = BTreeSet::new();
     for spec in specs {
+        if seen.insert(spec.event) {
+            events.push(spec.event);
+        }
+    }
+
+    for event in events {
+        let event_specs: Vec<&HookSpec> = specs.iter().filter(|spec| spec.event == event).collect();
         let wrappers = hooks
-            .entry(spec.event)
+            .entry(event)
             .or_insert_with(|| Value::Array(Vec::new()));
         let wrappers = ensure_array(wrappers);
-        let desired = build_hook_wrapper(spec, hooks_bin);
 
-        if let Some(existing) = wrappers
-            .iter_mut()
-            .find(|wrapper| wrapper_matches(wrapper, spec, hook_system))
-        {
-            *existing = desired;
-        } else {
-            wrappers.push(desired);
-        }
+        // Strip out every wrapper that matches any of our specs — preserves
+        // third-party hooks (the `wrapper_matches` filter is scoped to our
+        // own native binary and legacy Python paths).
+        wrappers.retain(|wrapper| {
+            !event_specs
+                .iter()
+                .any(|spec| wrapper_matches(wrapper, spec, hook_system))
+        });
+
+        // Re-insert in canonical order at the front. Canonical order for the
+        // UserPromptSubmit event is intentional: workflow-classification
+        // reminder must run before user-prompt-submit.
+        let rebuilt: Vec<Value> = event_specs
+            .iter()
+            .map(|spec| build_hook_wrapper(spec, hooks_bin))
+            .collect();
+        let existing: Vec<Value> = std::mem::take(wrappers);
+        wrappers.extend(rebuilt);
+        wrappers.extend(existing);
     }
 }
 

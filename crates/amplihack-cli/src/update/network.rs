@@ -12,6 +12,30 @@ const HTTP_MAX_ATTEMPTS: u32 = 3;
 /// Initial backoff delay in milliseconds (doubles on each retry).
 const HTTP_INITIAL_BACKOFF_MS: u64 = 500;
 
+/// Fetch the current HEAD commit SHA for `<owner>/<repo>` on `branch`.
+///
+/// Uses the GitHub commits API — the full object is large, so we ask for
+/// just one commit from the branch ref and extract the sha field. Returns
+/// the full 40-character hex SHA on success.
+///
+/// Used by the "is my framework/recipe-runner up to date?" checks to
+/// detect upstream-side changes without reaching for the heavier releases
+/// endpoint (neither repo publishes tagged releases we can rely on).
+pub(crate) fn fetch_branch_head_sha(owner_repo: &str, branch: &str) -> Result<String> {
+    let url = format!("https://api.github.com/repos/{owner_repo}/commits/{branch}");
+    let body = http_get(&url).with_context(|| format!("failed to query {url}"))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&body).with_context(|| format!("invalid JSON from {url}"))?;
+    let sha = value
+        .get("sha")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("response from {url} is missing a sha field"))?;
+    if sha.len() < 7 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("response from {url} returned a malformed sha: {sha}");
+    }
+    Ok(sha.to_string())
+}
+
 pub(super) fn fetch_latest_release() -> Result<UpdateRelease> {
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
     let asset_name = expected_archive_name()?;
@@ -105,10 +129,7 @@ pub(crate) fn http_get(url: &str) -> Result<Vec<u8>> {
         .build()
         .get(url)
         .set("Accept", "application/vnd.github+json")
-        .set(
-            "User-Agent",
-            concat!("amplihack/", env!("CARGO_PKG_VERSION")),
-        )
+        .set("User-Agent", &format!("amplihack/{}", crate::VERSION))
         .call()
     {
         Ok(response) => response,

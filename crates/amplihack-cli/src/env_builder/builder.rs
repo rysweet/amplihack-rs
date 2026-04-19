@@ -5,8 +5,9 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use super::helpers::{
-    build_path, find_asset_resolver_binary, generate_session_id, resolve_session_tree_depth,
-    resolve_session_tree_id, session_tree_context_present,
+    build_path, find_asset_resolver_binary, generate_session_id, is_file_python_script,
+    is_python_amplihack_path, resolve_session_tree_depth, resolve_session_tree_id,
+    session_tree_context_present,
 };
 
 /// Builder for constructing the environment passed to child processes.
@@ -294,6 +295,69 @@ impl EnvBuilder {
         self
     }
 
+    /// Sanitize the child process environment to prevent re-entry into the
+    /// Python amplihack stack.
+    ///
+    /// When agent subprocesses are spawned by the Rust recipe runner, they may
+    /// inherit PATH/PYTHONPATH entries that cause them to pick up the Python
+    /// `amplihack` package instead of the Rust binary. This method:
+    ///
+    /// 1. Removes PYTHONPATH entries containing `amplihack` (but not `amplihack-rs`)
+    /// 2. Filters PATH entries that contain a Python `amplihack` script that would
+    ///    shadow the Rust binary
+    /// 3. Unsets `PYTHONSTARTUP` if it references amplihack
+    pub fn with_python_sanitization(mut self) -> Self {
+        // Sanitize PYTHONPATH: remove entries referencing Python amplihack
+        if let Ok(pythonpath) = env::var("PYTHONPATH") {
+            let filtered: Vec<&str> = pythonpath
+                .split(':')
+                .filter(|entry| !is_python_amplihack_path(entry))
+                .collect();
+            if filtered.is_empty() {
+                self.removed_vars.insert("PYTHONPATH".to_string());
+            } else {
+                let cleaned = filtered.join(":");
+                if cleaned != pythonpath {
+                    self = self.set("PYTHONPATH", cleaned);
+                }
+            }
+        }
+
+        // Sanitize PYTHONSTARTUP if it references amplihack
+        if let Ok(startup) = env::var("PYTHONSTARTUP")
+            && startup.contains("amplihack")
+            && !startup.contains("amplihack-rs")
+        {
+            self.removed_vars.insert("PYTHONSTARTUP".to_string());
+        }
+
+        // Filter PATH: remove directories containing a Python amplihack that
+        // would shadow the Rust binary. We mark dirs for removal if they contain
+        // an `amplihack` file that is a Python script (not an ELF binary).
+        if let Ok(path_var) = env::var("PATH") {
+            let filtered: Vec<&str> = path_var
+                .split(':')
+                .filter(|dir| {
+                    if dir.is_empty() {
+                        return true;
+                    }
+                    let candidate = Path::new(dir).join("amplihack");
+                    if !candidate.is_file() {
+                        return true; // no amplihack binary here, keep dir
+                    }
+                    // Keep the dir if the amplihack binary is NOT a Python script
+                    !is_file_python_script(&candidate)
+                })
+                .collect();
+            let cleaned = filtered.join(":");
+            if cleaned != path_var {
+                self = self.set("PATH", cleaned);
+            }
+        }
+
+        self
+    }
+
     /// Add standard AMPLIHACK_* variables and NODE_OPTIONS.
     pub fn with_amplihack_vars(self) -> Self {
         // Merge NODE_OPTIONS: append if existing (and not already present), set fresh otherwise
@@ -318,7 +382,7 @@ impl EnvBuilder {
         };
 
         self.set("AMPLIHACK_RUST_RUNTIME", "1")
-            .set("AMPLIHACK_VERSION", env!("CARGO_PKG_VERSION"))
+            .set("AMPLIHACK_VERSION", crate::VERSION)
             .set("NODE_OPTIONS", node_opts_value)
     }
 

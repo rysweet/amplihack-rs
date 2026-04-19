@@ -216,3 +216,41 @@ pub enum ModeCommands {
     /// Switch to local mode
     ToLocal,
 }
+
+#[derive(Subcommand, Debug)]
+pub enum MultitaskCommands {
+    /// Run parallel workstreams from a JSON config file
+    Run {
+        /// Path to workstreams JSON config file
+        config: String,
+        /// Execution mode
+        #[arg(long, default_value = "recipe", value_parser = ["recipe", "classic"])]
+        mode: String,
+        /// Recipe name for recipe mode
+        #[arg(long, default_value = "default-workflow")]
+        recipe: String,
+        /// Override workstream runtime budget in seconds
+        #[arg(long = "max-runtime")]
+        max_runtime: Option<u64>,
+        /// Timeout policy for active workstreams
+        #[arg(long = "timeout-policy", value_parser = ["interrupt-preserve", "continue-preserve"])]
+        timeout_policy: Option<String>,
+        /// Show what would be executed without launching
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Clean up workstreams with merged PRs
+    Cleanup {
+        /// Path to workstreams JSON config file
+        config: String,
+        /// Show what would be deleted without deleting
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Show status of existing workstreams
+    Status {
+        /// Base directory for workstream artifacts
+        #[arg(long = "base-dir")]
+        base_dir: Option<String>,
+    },
+}

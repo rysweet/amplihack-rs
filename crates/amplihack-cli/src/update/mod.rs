@@ -7,7 +7,7 @@ pub use check::{
     should_skip_update_check_for_subcommand,
 };
 pub(crate) use install::extract_archive;
-pub(crate) use network::{http_get, validate_download_url};
+pub(crate) use network::{fetch_branch_head_sha, http_get, validate_download_url};
 
 use anyhow::{Result, anyhow, bail};
 use semver::Version;
@@ -17,7 +17,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const CURRENT_VERSION: &str = crate::VERSION;
 const GITHUB_REPO: &str = "rysweet/amplihack-rs";
 const NO_UPDATE_CHECK_ENV: &str = "AMPLIHACK_NO_UPDATE_CHECK";
 const UPDATE_CACHE_RELATIVE_PATH: &str = ".config/amplihack/last_update_check";
@@ -95,11 +95,27 @@ fn cache_path_from_home(home: &Path) -> PathBuf {
     home.join(UPDATE_CACHE_RELATIVE_PATH)
 }
 
+/// Cache format: `<cached_version>\n<checked_at_unix>\n<exe_mtime_unix>\n`.
+///
+/// The exe_mtime line is optional for backward compatibility with caches
+/// written by older builds. When present, a mismatch against the current
+/// binary's mtime signals the binary was swapped (self-update, package
+/// manager reinstall, manual replace) and the cache should not be trusted.
 fn read_cache(path: &Path) -> Option<(String, u64)> {
     let content = fs::read_to_string(path).ok()?;
     let mut lines = content.lines();
     let version = lines.next()?.to_string();
-    let timestamp = lines.next()?.parse().ok()?;
+    let timestamp: u64 = lines.next()?.parse().ok()?;
+    let cached_exe_mtime: Option<u64> = lines.next().and_then(|line| line.parse().ok());
+
+    // If the binary's mtime has changed since the cache was written, the
+    // entry was authored by a different installed version — ignore it.
+    if let Some(cached) = cached_exe_mtime
+        && let Some(current) = current_exe_mtime_secs()
+        && cached != current
+    {
+        return None;
+    }
     Some((version, timestamp))
 }
 
@@ -108,8 +124,14 @@ fn write_cache(path: &Path, version: &str) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    fs::write(path, format!("{}\n{}", version, now_secs()))
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    let mtime_line = current_exe_mtime_secs()
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    fs::write(
+        path,
+        format!("{}\n{}\n{}\n", version, now_secs(), mtime_line),
+    )
+    .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 
@@ -118,6 +140,20 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Read the mtime of the currently-running executable, in seconds since the
+/// UNIX epoch. Returns `None` if the path can't be determined or stat'd —
+/// callers treat `None` as "mtime unknown, don't key the cache on it" so we
+/// degrade gracefully to the old behavior.
+fn current_exe_mtime_secs() -> Option<u64> {
+    let exe = std::env::current_exe().ok()?;
+    let metadata = fs::metadata(&exe).ok()?;
+    let modified = metadata.modified().ok()?;
+    modified
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
 }
 
 use anyhow::Context;

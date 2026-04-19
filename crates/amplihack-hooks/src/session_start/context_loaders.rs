@@ -85,10 +85,16 @@ pub(super) fn check_version(dirs: &ProjectDirs) -> Option<String> {
         return None;
     }
 
+    // Mirrors `amplihack_cli::VERSION`: prefer the build-time
+    // `AMPLIHACK_RELEASE_VERSION` override, fall back to Cargo.toml.
+    const FALLBACK_VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
+        Some(v) => v,
+        None => env!("CARGO_PKG_VERSION"),
+    };
     let package_version = std::env::var("AMPLIHACK_VERSION")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        .unwrap_or_else(|| FALLBACK_VERSION.to_string());
 
     if package_version == project_version {
         return None;

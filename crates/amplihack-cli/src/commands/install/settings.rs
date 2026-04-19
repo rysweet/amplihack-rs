@@ -80,7 +80,11 @@ pub(super) fn ensure_settings_json(
     if hook_contract_drift.is_empty() {
         println!("  ✅ Native amplihack hook contract matches hooks.json");
     } else {
-        println!("  ⚠️  Native amplihack hook contract drift detected:");
+        // `update_hook_paths` rewrites amplihack-native hooks in canonical
+        // order on every install, so surviving drift here indicates a real
+        // spec mismatch (new hook added upstream, third-party wrapper that
+        // masquerades as ours, etc.) rather than harmless reordering.
+        println!("  ⚠️  Native amplihack hook contract drift detected after reorder:");
         for issue in hook_contract_drift {
             println!("     • {issue}");
         }

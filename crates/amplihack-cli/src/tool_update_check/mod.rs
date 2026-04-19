@@ -83,7 +83,10 @@ pub fn maybe_print_npm_update_notice(tool: &str, skip: bool) {
 pub fn npm_package_for_tool(tool: &str) -> Option<&'static str> {
     match tool {
         "claude" => Some("@anthropic-ai/claude-code"),
-        "copilot" => Some("@github/copilot-cli"),
+        // NOTE: must stay in lockstep with `npm_package_for_install` in
+        // `bootstrap.rs` — otherwise the update check queries one package
+        // while the installer writes another, silently suppressing updates.
+        "copilot" => Some("@github/copilot"),
         "codex" => Some("@openai/codex"),
         // amplifier is not npm-distributed
         _ => None,
@@ -112,12 +115,13 @@ mod tests {
     }
 
     /// WS3-UNIT-2: copilot maps to the GitHub Copilot CLI package.
+    /// Must match `npm_package_for_install` in `bootstrap.rs`.
     #[test]
     fn npm_package_for_copilot_returns_github_package() {
         assert_eq!(
             npm_package_for_tool("copilot"),
-            Some("@github/copilot-cli"),
-            "copilot must map to @github/copilot-cli"
+            Some("@github/copilot"),
+            "copilot must map to @github/copilot"
         );
     }
 

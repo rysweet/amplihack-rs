@@ -66,12 +66,23 @@ impl BinaryFinder {
             bail!("{native_env_key}={explicit_path} does not exist");
         }
 
-        // Search PATH for known binary names
+        // Search PATH for known binary names, then fall back to the
+        // directories where `amplihack install_tool` actually writes
+        // binaries. Without the fallback we re-install npm/cargo tools on
+        // every launch when the user's shell PATH hasn't been updated yet
+        // (e.g. a pre-existing tmux or ssh session whose PATH was captured
+        // before `persist_path_hint` wrote to `.bashrc`).
         let candidates = binary_candidates(tool);
-        let path_dirs = search_path_dirs();
+        let mut search_dirs = search_path_dirs();
+        let fallback_dirs = install_fallback_dirs();
+        for dir in &fallback_dirs {
+            if !search_dirs.contains(dir) {
+                search_dirs.push(dir.clone());
+            }
+        }
 
         for candidate in &candidates {
-            for dir in &path_dirs {
+            for dir in &search_dirs {
                 let full_path = dir.join(candidate);
                 if full_path.is_file() && is_executable(&full_path) {
                     let version = detect_version(&full_path);
@@ -85,7 +96,7 @@ impl BinaryFinder {
         }
 
         bail!(
-            "binary for '{tool}' not found in PATH (searched for: {})",
+            "binary for '{tool}' not found in PATH or known install dirs (searched for: {})",
             candidates.join(", ")
         );
     }
@@ -137,6 +148,27 @@ fn search_path_dirs() -> Vec<PathBuf> {
         }
     }
 
+    dirs
+}
+
+/// Known locations where `amplihack install_tool` writes binaries, regardless
+/// of whether those directories are on the shell's `$PATH`.
+///
+/// Keeps binary discovery working for users whose `.bashrc` / `.zshrc` PATH
+/// update hasn't been sourced yet (persistent tmux sessions, SSH sessions
+/// started before the first amplihack install, Docker shells that inherit a
+/// minimal PATH, etc.).
+fn install_fallback_dirs() -> Vec<PathBuf> {
+    let home = env::var_os("HOME").map(PathBuf::from);
+    let mut dirs = Vec::new();
+    if let Some(home) = home {
+        // npm global prefix set by `install_npm_package`.
+        dirs.push(home.join(".npm-global").join("bin"));
+        // `cargo install` default.
+        dirs.push(home.join(".cargo").join("bin"));
+        // `uv tool install` + legacy Python amplihack install target.
+        dirs.push(home.join(".local").join("bin"));
+    }
     dirs
 }
 
@@ -217,6 +249,57 @@ mod tests {
     fn find_nonexistent_binary_errors() {
         let result = BinaryFinder::find("definitely_not_a_real_binary_xyz_123");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn find_falls_back_to_npm_global_when_not_on_path() {
+        // Simulate the hyenas2 scenario: copilot is installed at
+        // ~/.npm-global/bin/copilot but the shell's $PATH was captured
+        // before .bashrc was updated, so the shell doesn't include it.
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let temp = tempfile::tempdir().unwrap();
+        let fake_home = temp.path();
+        let bin_dir = fake_home.join(".npm-global/bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let fake_tool = bin_dir.join("needle-tool-xyz");
+        std::fs::write(&fake_tool, "#!/bin/sh\necho needle\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        // Strip .npm-global from PATH and point HOME at the temp dir so
+        // install_fallback_dirs() is the only way the binary is found.
+        let prev_home = env::var_os("HOME");
+        let prev_path = env::var_os("PATH");
+        // SAFETY: Serialized via home_env_lock above.
+        unsafe {
+            env::set_var("HOME", fake_home);
+            env::set_var("PATH", "/nonexistent-just-for-this-test");
+        }
+
+        let result = BinaryFinder::find("needle-tool-xyz");
+
+        // SAFETY: Still inside the home_env_lock critical section.
+        unsafe {
+            if let Some(v) = prev_home {
+                env::set_var("HOME", v);
+            } else {
+                env::remove_var("HOME");
+            }
+            if let Some(v) = prev_path {
+                env::set_var("PATH", v);
+            } else {
+                env::remove_var("PATH");
+            }
+        }
+
+        let info = result.expect("fallback dir lookup should succeed");
+        assert_eq!(info.path, fake_tool);
     }
 
     #[test]

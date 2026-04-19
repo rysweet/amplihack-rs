@@ -31,7 +31,24 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let subcommand = args.get(1).map(String::as_str).unwrap_or("");
 
+    // Keeps the hooks binary on the same version-override contract as the
+    // main `amplihack` binary (see `amplihack_cli::VERSION`). Without the
+    // `AMPLIHACK_RELEASE_VERSION` env override here, the hooks binary would
+    // self-report the stale Cargo.toml version while amplihack itself
+    // reports the tagged release version, tripping the post-update
+    // `verify_installed_version` check.
+    const VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
+        Some(v) => v,
+        None => env!("CARGO_PKG_VERSION"),
+    };
+
     match subcommand {
+        "--version" | "-V" => {
+            // Mirrors clap's default `--version` output. Used by the self-update
+            // post-install check to verify the hooks binary was replaced in
+            // lockstep with the amplihack binary.
+            println!("amplihack-hooks {VERSION}");
+        }
         "pre-tool-use" => run_hook(PreToolUseHook),
         "post-tool-use" => run_hook(PostToolUseHook),
         "stop" => run_hook(StopHook),

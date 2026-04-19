@@ -127,3 +127,36 @@ pub(super) fn resolve_session_tree_depth(increment: bool) -> String {
     };
     depth.to_string()
 }
+
+/// Check whether a PATH/PYTHONPATH entry looks like it references the Python
+/// amplihack package (not amplihack-rs).
+pub(super) fn is_python_amplihack_path(entry: &str) -> bool {
+    if entry.is_empty() {
+        return false;
+    }
+    // Match paths containing amplihack that aren't amplihack-rs
+    let lower = entry.to_lowercase();
+    (lower.contains("amplihack") && !lower.contains("amplihack-rs") && !lower.contains("amplihack_rs"))
+        // Also catch pip/site-packages installs
+        || (lower.contains("site-packages") && lower.contains("amplihack"))
+}
+
+/// Check whether a file is a Python script by reading its shebang or checking extension.
+pub(super) fn is_file_python_script(path: &std::path::Path) -> bool {
+    if path.extension().and_then(|e| e.to_str()) == Some("py") {
+        return true;
+    }
+    // Read just enough bytes to check for a Python shebang
+    if let Ok(file) = std::fs::File::open(path) {
+        use std::io::Read;
+        let mut buf = [0u8; 128];
+        let mut reader = std::io::BufReader::new(file);
+        if let Ok(n) = reader.read(&mut buf)
+            && let Ok(first_line) = std::str::from_utf8(&buf[..n])
+            && let Some(line) = first_line.lines().next()
+        {
+            return line.starts_with("#!") && (line.contains("python") || line.contains("Python"));
+        }
+    }
+    false
+}

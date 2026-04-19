@@ -57,6 +57,10 @@ impl RecipeParser {
         let description = extract_string(mapping, "description");
         let on_failure = extract_string(mapping, "on_failure");
         let default_step_timeout = extract_u64(mapping, "default_step_timeout");
+        let author = extract_string(mapping, "author");
+        let tags = extract_string_list(mapping, "tags");
+        let context_validation = extract_string_map(mapping, "context_validation");
+        let recursion = extract_recursion_config(mapping);
 
         let steps_value = mapping
             .get(serde_yaml::Value::String("steps".into()))
@@ -87,6 +91,10 @@ impl RecipeParser {
             context,
             on_failure,
             default_step_timeout,
+            context_validation,
+            recursion,
+            author,
+            tags,
         })
     }
 
@@ -162,6 +170,8 @@ impl RecipeParser {
 
         let max_env_value_bytes = extract_u64(mapping, "max_env_value_bytes").map(|v| v as usize);
 
+        let output_key = extract_string(mapping, "output");
+
         warn_unrecognized_fields(mapping, &id);
 
         Ok(Step {
@@ -177,6 +187,7 @@ impl RecipeParser {
             retry_count,
             allow_failure,
             context,
+            output_key,
             max_env_value_bytes,
         })
     }
@@ -296,6 +307,52 @@ fn parse_step_type(s: &str) -> Option<StepType> {
         "parallel" => Some(StepType::Parallel),
         _ => None,
     }
+}
+
+fn extract_string_list(mapping: &serde_yaml::Mapping, key: &str) -> Vec<String> {
+    mapping
+        .get(serde_yaml::Value::String(key.into()))
+        .and_then(|v| v.as_sequence())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn extract_string_map(mapping: &serde_yaml::Mapping, key: &str) -> HashMap<String, String> {
+    mapping
+        .get(serde_yaml::Value::String(key.into()))
+        .and_then(|v| v.as_mapping())
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| {
+                    let ks = k.as_str()?;
+                    let vs = match v {
+                        serde_yaml::Value::String(s) => s.clone(),
+                        other => format!("{other:?}"),
+                    };
+                    Some((ks.to_string(), vs))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn extract_recursion_config(
+    mapping: &serde_yaml::Mapping,
+) -> Option<crate::models::RecursionConfig> {
+    let val = mapping.get(serde_yaml::Value::String("recursion".into()))?;
+    let m = val.as_mapping()?;
+    let max_depth = extract_u64(m, "max_depth").map(|v| v as u32).unwrap_or(3);
+    let max_total_steps = extract_u64(m, "max_total_steps")
+        .map(|v| v as u32)
+        .unwrap_or(50);
+    Some(crate::models::RecursionConfig {
+        max_depth,
+        max_total_steps,
+    })
 }
 
 #[cfg(test)]
