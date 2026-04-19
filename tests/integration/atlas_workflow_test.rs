@@ -33,26 +33,25 @@
 //! - Issue #258: Code Atlas Recipe + CI Workflow
 
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Locate `.github/workflows/atlas.yml` relative to this test's workspace.
-fn atlas_yml_path() -> PathBuf {
+/// Workspace-root-relative path to `atlas.yml`, computed once.
+static ATLAS_YML_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop(); // bins/amplihack → bins/
     path.pop(); // bins/ → workspace root
-    path.push(".github");
-    path.push("workflows");
-    path.push("atlas.yml");
+    path.push(".github/workflows/atlas.yml");
     path
-}
+});
 
-/// Read atlas.yml content, panicking with a clear message if missing.
-fn read_atlas_yml() -> String {
-    let path = atlas_yml_path();
-    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+/// atlas.yml contents, read from disk once across all tests.
+static ATLAS_YML_CONTENT: LazyLock<String> = LazyLock::new(|| {
+    let path = &*ATLAS_YML_PATH;
+    std::fs::read_to_string(path).unwrap_or_else(|e| {
         panic!(
             "atlas.yml not found at {path:?}\n\
              Create .github/workflows/atlas.yml for the code-atlas CI workflow.\n\
@@ -60,6 +59,16 @@ fn read_atlas_yml() -> String {
              Error: {e}"
         )
     })
+});
+
+/// Locate `.github/workflows/atlas.yml` relative to this test's workspace.
+fn atlas_yml_path() -> &'static PathBuf {
+    &ATLAS_YML_PATH
+}
+
+/// Read atlas.yml content (cached — single disk read across all tests).
+fn read_atlas_yml() -> &'static str {
+    &ATLAS_YML_CONTENT
 }
 
 // ---------------------------------------------------------------------------
@@ -75,9 +84,10 @@ fn atlas_yml_file_is_present() {
     let path = atlas_yml_path();
     assert!(
         path.exists(),
-        "FAIL: .github/workflows/atlas.yml not found at {path:?}.\n\
+        "FAIL: .github/workflows/atlas.yml not found at {:?}.\n\
          This file must exist for the code-atlas CI workflow.\n\
-         See Issue #258."
+         See Issue #258.",
+        path
     );
 }
 

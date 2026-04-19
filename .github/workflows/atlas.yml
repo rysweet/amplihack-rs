@@ -26,11 +26,15 @@ jobs:
       - name: Install amplihack
         run: cargo install --path bins/amplihack --locked
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Install diagram tools
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq graphviz
-          npm install -g @mermaid-js/mermaid-cli
+          sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends graphviz &
+          npm install -g @mermaid-js/mermaid-cli &
+          wait
 
       - name: Run code-atlas recipe
         continue-on-error: true

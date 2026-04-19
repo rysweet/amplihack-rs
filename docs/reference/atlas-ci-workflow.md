@@ -38,9 +38,10 @@ Read-only repository access. No write-back to the repository — the workflow pr
 | 2 | Rust toolchain | `dtolnay/rust-toolchain@stable` |
 | 3 | Rust cache | `Swatinem/rust-cache@v2` |
 | 4 | Install amplihack | `cargo install --path bins/amplihack --locked` |
-| 5 | Install diagram tools | `sudo apt-get install -y graphviz` and `npm install -g @mermaid-js/mermaid-cli` |
-| 6 | Run atlas recipe | `amplihack recipe run amplifier-bundle/recipes/code-atlas.yaml` with `continue-on-error: true` |
-| 7 | Upload artifact | `actions/upload-artifact@v4` — uploads `docs/atlas/` as artifact named `code-atlas` |
+| 5 | Node.js setup | `actions/setup-node@v4` (node 22, enables npm cache) |
+| 6 | Install diagram tools | graphviz (apt) and mermaid-cli (npm) installed in parallel |
+| 7 | Run atlas recipe | `amplihack recipe run amplifier-bundle/recipes/code-atlas.yaml` with `continue-on-error: true` |
+| 8 | Upload artifact | `actions/upload-artifact@v4` — uploads `docs/atlas/` as artifact named `code-atlas` |
 
 ### Recipe Step Behavior
 

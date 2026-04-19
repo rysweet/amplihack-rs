@@ -27,19 +27,29 @@
 //! - Issue #258: Code Atlas Recipe + CI Workflow
 
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Locate `docs/atlas/` relative to the workspace root.
-fn atlas_dir() -> PathBuf {
+/// Workspace-root-relative path to `docs/atlas/`, computed once.
+static ATLAS_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop(); // bins/amplihack → bins/
     path.pop(); // bins/ → workspace root
-    path.push("docs");
-    path.push("atlas");
+    path.push("docs/atlas");
     path
+});
+
+/// All files under `docs/atlas/`, walked once across all tests.
+static ATLAS_FILES: LazyLock<Vec<PathBuf>> = LazyLock::new(|| {
+    walkdir(&ATLAS_DIR)
+});
+
+/// Locate `docs/atlas/` relative to the workspace root.
+fn atlas_dir() -> &'static PathBuf {
+    &ATLAS_DIR
 }
 
 
@@ -55,13 +65,15 @@ fn docs_atlas_directory_exists() {
     let dir = atlas_dir();
     assert!(
         dir.exists(),
-        "FAIL: docs/atlas/ directory not found at {dir:?}.\n\
+        "FAIL: docs/atlas/ directory not found at {:?}.\n\
          Run the code-atlas recipe to generate output, or create a placeholder.\n\
-         See Issue #258."
+         See Issue #258.",
+        dir
     );
     assert!(
         dir.is_dir(),
-        "FAIL: docs/atlas exists but is not a directory at {dir:?}."
+        "FAIL: docs/atlas exists but is not a directory at {:?}.",
+        dir
     );
 }
 
@@ -116,8 +128,7 @@ fn docs_atlas_readme_is_not_empty() {
 /// This is a REGRESSION GUARD — it should always pass.
 #[test]
 fn docs_atlas_contains_no_secrets() {
-    let dir = atlas_dir();
-    if !dir.exists() {
+    if !atlas_dir().exists() {
         return; // Let existence test handle this
     }
 
@@ -131,8 +142,8 @@ fn docs_atlas_contains_no_secrets() {
         "Bearer eyJ",    // JWT tokens
     ];
 
-    for entry in walkdir(&dir) {
-        if let Ok(content) = std::fs::read_to_string(&entry) {
+    for entry in ATLAS_FILES.iter() {
+        if let Ok(content) = std::fs::read_to_string(entry) {
             for pattern in &secret_patterns {
                 assert!(
                     !content.contains(pattern),
@@ -201,18 +212,16 @@ fn docs_atlas_does_not_store_bug_reports_inline() {
 /// Absolute paths would break portability across machines.
 #[test]
 fn docs_atlas_uses_relative_paths_only() {
-    let dir = atlas_dir();
-    if !dir.exists() {
+    if !atlas_dir().exists() {
         return;
     }
 
-    for entry in walkdir(&dir) {
+    for entry in ATLAS_FILES.iter() {
         if entry.extension().map_or(false, |e| e == "md") {
-            if let Ok(content) = std::fs::read_to_string(&entry) {
+            if let Ok(content) = std::fs::read_to_string(entry) {
                 // Check for absolute paths in links: [text](/absolute/path)
                 // or image refs: ![alt](/absolute/path)
-                let lines: Vec<&str> = content.lines().collect();
-                for (i, line) in lines.iter().enumerate() {
+                for (i, line) in content.lines().enumerate() {
                     // Skip code blocks
                     if line.trim_start().starts_with("```") {
                         continue;
