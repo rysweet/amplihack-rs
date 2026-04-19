@@ -43,15 +43,12 @@ static ATLAS_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
 });
 
 /// All files under `docs/atlas/`, walked once across all tests.
-static ATLAS_FILES: LazyLock<Vec<PathBuf>> = LazyLock::new(|| {
-    walkdir(&ATLAS_DIR)
-});
+static ATLAS_FILES: LazyLock<Vec<PathBuf>> = LazyLock::new(|| walkdir(&ATLAS_DIR));
 
 /// Locate `docs/atlas/` relative to the workspace root.
 fn atlas_dir() -> &'static PathBuf {
     &ATLAS_DIR
 }
-
 
 // ---------------------------------------------------------------------------
 // TEST 1: docs/atlas/ directory exists
@@ -133,13 +130,13 @@ fn docs_atlas_contains_no_secrets() {
     }
 
     let secret_patterns = [
-        "sk-ant-",       // Anthropic API key prefix
-        "sk-proj-",      // OpenAI API key prefix
-        "ghp_",          // GitHub personal access token
-        "AKIA",          // AWS access key prefix
-        "password=",     // Hardcoded passwords
-        "secret_key=",   // Generic secret keys
-        "Bearer eyJ",    // JWT tokens
+        "sk-ant-",     // Anthropic API key prefix
+        "sk-proj-",    // OpenAI API key prefix
+        "ghp_",        // GitHub personal access token
+        "AKIA",        // AWS access key prefix
+        "password=",   // Hardcoded passwords
+        "secret_key=", // Generic secret keys
+        "Bearer eyJ",  // JWT tokens
     ];
 
     for entry in ATLAS_FILES.iter() {
