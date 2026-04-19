@@ -20,8 +20,7 @@ fn workspace_root() -> PathBuf {
 
 fn read_doc(relative: &str) -> String {
     let path = workspace_root().join(relative);
-    fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -52,8 +51,7 @@ mod launch_flag_injection {
         let doc = read_doc("docs/reference/launch-flag-injection.md");
         // Check sections before the parity table (which legitimately describes
         // Python's "always injected" behavior).
-        let parity_start = doc.find("## Python launcher parity")
-            .unwrap_or(doc.len());
+        let parity_start = doc.find("## Python launcher parity").unwrap_or(doc.len());
         let rust_sections = &doc[..parity_start];
         let lower = rust_sections.to_lowercase();
         assert!(
@@ -79,9 +77,14 @@ mod launch_flag_injection {
     fn model_injection_is_claude_compatible_only() {
         let doc = read_doc("docs/reference/launch-flag-injection.md");
         // The --model section must mention Claude-compatible restriction
-        let model_section_start = doc.find("## --model").expect("Doc must have --model section");
+        let model_section_start = doc
+            .find("## --model")
+            .expect("Doc must have --model section");
         let model_section = &doc[model_section_start..];
-        let next_section = model_section[3..].find("## ").map(|i| i + 3).unwrap_or(model_section.len());
+        let next_section = model_section[3..]
+            .find("## ")
+            .map(|i| i + 3)
+            .unwrap_or(model_section.len());
         let model_text = &model_section[..next_section];
         assert!(
             model_text.contains("Claude-compatible"),
@@ -133,7 +136,10 @@ mod launch_flag_injection {
                 let context: String = doc.lines().skip(i).take(5).collect::<Vec<_>>().join("\n");
                 if context.contains("# amplihack spawns:") || context.contains("# →") {
                     // The spawned command after bare `amplihack claude` must not have --dangerously-skip-permissions
-                    let spawned_line = doc.lines().skip(i).take(5)
+                    let spawned_line = doc
+                        .lines()
+                        .skip(i)
+                        .take(5)
                         .find(|l| l.contains("claude --") || l.starts_with("# →"));
                     if let Some(spawned) = spawned_line {
                         if !context.contains("--skip-permissions") {
@@ -153,7 +159,8 @@ mod launch_flag_injection {
     #[test]
     fn parity_table_rust_column_conditional() {
         let doc = read_doc("docs/reference/launch-flag-injection.md");
-        let parity_start = doc.find("## Python launcher parity")
+        let parity_start = doc
+            .find("## Python launcher parity")
             .expect("Doc must have Python launcher parity section");
         let parity_text = &doc[parity_start..];
         // Rust column for --dangerously-skip-permissions must say "conditional"
@@ -168,7 +175,8 @@ mod launch_flag_injection {
     #[test]
     fn assembly_section_has_claude_compatible_condition() {
         let doc = read_doc("docs/reference/launch-flag-injection.md");
-        let assembly_start = doc.find("## Complete command-line assembly")
+        let assembly_start = doc
+            .find("## Complete command-line assembly")
             .expect("Doc must have assembly section");
         let assembly_text = &doc[assembly_start..];
         assert!(
@@ -212,8 +220,8 @@ mod completions_command {
             "update",
             "fleet",
             "new",
-            "RustyClawd",         // explicit #[command(name = "RustyClawd")]
-            "uvx-help",           // explicit #[command(name = "uvx-help")]
+            "RustyClawd", // explicit #[command(name = "RustyClawd")]
+            "uvx-help",   // explicit #[command(name = "uvx-help")]
             "completions",
             "doctor",
             "resolve-bundle-asset", // explicit #[command(name = "resolve-bundle-asset")]
@@ -236,7 +244,8 @@ mod completions_command {
         // real subcommands, that's a drift bug.
         // We check that the verification section doesn't contain commands
         // that aren't in the Commands enum.
-        let verification_start = doc.find("## Verification")
+        let verification_start = doc
+            .find("## Verification")
             .expect("Doc must have Verification section");
         let verification_text = &doc[verification_start..];
 
@@ -293,12 +302,14 @@ mod memory_index_command {
     #[test]
     fn index_scip_output_is_plain_text() {
         let doc = read_doc("docs/reference/memory-index-command.md");
-        let output_section = doc.find("## Output format")
+        let output_section = doc
+            .find("## Output format")
             .expect("Doc must have Output format section");
         let output_text = &doc[output_section..];
 
         // Find the index-scip subsection
-        let scip_start = output_text.find("index-scip")
+        let scip_start = output_text
+            .find("index-scip")
             .expect("Output format section must mention index-scip");
         let scip_text = &output_text[scip_start..];
 
@@ -339,11 +350,7 @@ mod memory_index_command {
     #[test]
     fn index_scip_example_has_key_value_pairs() {
         let doc = read_doc("docs/reference/memory-index-command.md");
-        let expected_keys = [
-            "Success:",
-            "Completed:",
-            "Imported: files=",
-        ];
+        let expected_keys = ["Success:", "Completed:", "Imported: files="];
         for key in &expected_keys {
             assert!(
                 doc.contains(key),
@@ -359,9 +366,9 @@ mod memory_index_command {
         // Find index-scip output subsection specifically
         let output_section = doc.find("## Output format").unwrap();
         let output_text = &doc[output_section..];
-        let scip_start = output_text.find("### index-scip").unwrap_or(
-            output_text.find("index-scip").unwrap()
-        );
+        let scip_start = output_text
+            .find("### index-scip")
+            .unwrap_or(output_text.find("index-scip").unwrap());
         let scip_text = &output_text[scip_start..];
         // Limit to this subsection
         let next_section = scip_text[1..].find("## ").unwrap_or(scip_text.len());
@@ -381,7 +388,8 @@ mod memory_index_command {
         let output_text = &doc[output_section..];
 
         // index-code subsection should have JSON
-        let code_start = output_text.find("### index-code")
+        let code_start = output_text
+            .find("### index-code")
             .expect("Output format must have index-code subsection");
         let code_text = &output_text[code_start..];
         let scip_start = code_text.find("### index-scip").unwrap_or(code_text.len());
@@ -449,8 +457,10 @@ mod rustyclawd_command {
     #[test]
     fn has_exit_codes() {
         let doc = read_doc("docs/reference/rustyclawd-command.md");
-        assert!(doc.contains("## Exit Codes") || doc.contains("## Exit codes"),
-            "Must have exit codes section");
+        assert!(
+            doc.contains("## Exit Codes") || doc.contains("## Exit codes"),
+            "Must have exit codes section"
+        );
     }
 
     #[test]
@@ -480,22 +490,30 @@ mod uvx_help_command {
     fn has_synopsis() {
         let doc = read_doc("docs/reference/uvx-help-command.md");
         assert!(doc.contains("## Synopsis"), "Must have Synopsis section");
-        assert!(doc.contains("uvx-help"), "Synopsis must use 'uvx-help' name");
+        assert!(
+            doc.contains("uvx-help"),
+            "Synopsis must use 'uvx-help' name"
+        );
     }
 
     /// Two flags from cli_commands.rs UvxHelp variant.
     #[test]
     fn documents_both_flags() {
         let doc = read_doc("docs/reference/uvx-help-command.md");
-        assert!(doc.contains("--find-path"), "Must document --find-path flag");
+        assert!(
+            doc.contains("--find-path"),
+            "Must document --find-path flag"
+        );
         assert!(doc.contains("--info"), "Must document --info flag");
     }
 
     #[test]
     fn has_exit_codes() {
         let doc = read_doc("docs/reference/uvx-help-command.md");
-        assert!(doc.contains("## Exit Codes") || doc.contains("## Exit codes"),
-            "Must have exit codes section");
+        assert!(
+            doc.contains("## Exit Codes") || doc.contains("## Exit codes"),
+            "Must have exit codes section"
+        );
     }
 }
 
@@ -538,8 +556,14 @@ mod resolve_bundle_asset_command {
     fn has_three_exit_codes() {
         let doc = read_doc("docs/reference/resolve-bundle-asset-command.md");
         assert!(doc.contains("| `0`"), "Must document exit code 0 (success)");
-        assert!(doc.contains("| `1`"), "Must document exit code 1 (not found)");
-        assert!(doc.contains("| `2`"), "Must document exit code 2 (invalid input)");
+        assert!(
+            doc.contains("| `1`"),
+            "Must document exit code 1 (not found)"
+        );
+        assert!(
+            doc.contains("| `2`"),
+            "Must document exit code 2 (invalid input)"
+        );
     }
 
     /// Security: must mention path traversal protection.
@@ -579,8 +603,14 @@ mod multitask_command {
         let doc = read_doc("docs/reference/multitask-command.md");
         let lower = doc.to_lowercase();
         assert!(lower.contains("run"), "Must document 'run' subcommand");
-        assert!(lower.contains("cleanup"), "Must document 'cleanup' subcommand");
-        assert!(lower.contains("status"), "Must document 'status' subcommand");
+        assert!(
+            lower.contains("cleanup"),
+            "Must document 'cleanup' subcommand"
+        );
+        assert!(
+            lower.contains("status"),
+            "Must document 'status' subcommand"
+        );
     }
 
     /// run subcommand flags match MultitaskCommands::Run struct fields.
@@ -607,7 +637,8 @@ mod multitask_command {
     fn cleanup_subcommand_has_dry_run() {
         let doc = read_doc("docs/reference/multitask-command.md");
         // Find the cleanup section and verify --dry-run is there
-        let cleanup_start = doc.find("### cleanup")
+        let cleanup_start = doc
+            .find("### cleanup")
             .or_else(|| doc.find("### Cleanup"))
             .expect("Must have cleanup subsection");
         let cleanup_text = &doc[cleanup_start..];
@@ -621,7 +652,8 @@ mod multitask_command {
     #[test]
     fn status_subcommand_has_base_dir() {
         let doc = read_doc("docs/reference/multitask-command.md");
-        let status_start = doc.find("### status")
+        let status_start = doc
+            .find("### status")
             .or_else(|| doc.find("### Status"))
             .expect("Must have status subsection");
         let status_text = &doc[status_start..];
@@ -634,8 +666,10 @@ mod multitask_command {
     #[test]
     fn has_exit_codes() {
         let doc = read_doc("docs/reference/multitask-command.md");
-        assert!(doc.contains("## Exit Codes") || doc.contains("## Exit codes"),
-            "Must have exit codes section");
+        assert!(
+            doc.contains("## Exit Codes") || doc.contains("## Exit codes"),
+            "Must have exit codes section"
+        );
     }
 }
 
@@ -686,10 +720,10 @@ mod mkdocs_navigation {
     #[test]
     fn new_entries_in_reference_section() {
         let config = read_doc("mkdocs.yml");
-        let reference_start = config.find("Reference:")
+        let reference_start = config
+            .find("Reference:")
             .expect("mkdocs.yml must have Reference: section");
-        let concepts_start = config.find("Concepts:")
-            .unwrap_or(config.len());
+        let concepts_start = config.find("Concepts:").unwrap_or(config.len());
         let reference_section = &config[reference_start..concepts_start];
 
         for doc_file in &[
@@ -721,10 +755,19 @@ mod cross_doc_consistency {
         let rusty_doc = read_doc("docs/reference/rustyclawd-command.md");
 
         // launch-flag-injection.md must list all four
-        assert!(launch_doc.contains("`claude`"), "launch doc must list claude");
+        assert!(
+            launch_doc.contains("`claude`"),
+            "launch doc must list claude"
+        );
         assert!(launch_doc.contains("`rusty`"), "launch doc must list rusty");
-        assert!(launch_doc.contains("`rustyclawd`"), "launch doc must list rustyclawd");
-        assert!(launch_doc.contains("`amplifier`"), "launch doc must list amplifier");
+        assert!(
+            launch_doc.contains("`rustyclawd`"),
+            "launch doc must list rustyclawd"
+        );
+        assert!(
+            launch_doc.contains("`amplifier`"),
+            "launch doc must list amplifier"
+        );
 
         // rustyclawd-command.md must reference being Claude-compatible
         assert!(
@@ -738,7 +781,8 @@ mod cross_doc_consistency {
     fn completions_tab_example_has_24_commands() {
         let doc = read_doc("docs/reference/completions-command.md");
         // Find the TAB completion example block
-        let tab_start = doc.find("amplihack <TAB>")
+        let tab_start = doc
+            .find("amplihack <TAB>")
             .expect("Must have TAB completion example");
         // Count the command names in the subsequent lines
         let after_tab = &doc[tab_start..];
@@ -747,7 +791,8 @@ mod cross_doc_consistency {
         let block = &after_tab[..block_end];
 
         // Count unique command names (whitespace-separated tokens on indented lines)
-        let commands: Vec<&str> = block.lines()
+        let commands: Vec<&str> = block
+            .lines()
             .filter(|l| !l.starts_with("$") && !l.starts_with("amplihack") && !l.trim().is_empty())
             .flat_map(|l| l.split_whitespace())
             .collect();
