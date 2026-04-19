@@ -61,6 +61,7 @@ nav:
       - Generate Agent from Goal: howto/generate-agent-from-goal.md
       - Fix cxx-build CI Failure: howto/fix-cxx-build-ci-failure.md
       - Resolve LadybugDB Linker Errors: howto/resolve-kuzu-linker-errors.md
+      - Run Code Atlas: howto/run-code-atlas.md
   - Reference:
       - install Command: reference/install-command.md
       - Install Manifest: reference/install-manifest.md
@@ -88,6 +89,9 @@ nav:
       - agent-generator API: reference/agent-generator-api.md
       - uvx-help Command: reference/uvx-help-command.md
       - Memory Extended API: reference/memory-extended-api.md
+      - Atlas CI Workflow: reference/atlas-ci-workflow.md
+  - Code Atlas:
+      - Overview: atlas/README.md
   - Concepts:
       - Bootstrap Parity: concepts/bootstrap-parity.md
       - Idempotent Installation: concepts/idempotent-installation.md
@@ -106,3 +110,4 @@ nav:
       - Evaluation Framework: concepts/eval-framework.md
       - Hive Orchestration: concepts/hive-orchestration.md
       - Goal Agent Generator: concepts/agent-generator.md
+      - Code Atlas Architecture: concepts/code-atlas-architecture.md
