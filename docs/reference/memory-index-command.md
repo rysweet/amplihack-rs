@@ -126,7 +126,7 @@ the summary — partial success is valid.
 cd ~/src/myproject
 amplihack index-scip
 
-# Output:
+# Output (plain-text, not JSON):
 # Native SCIP indexing summary
 # ========================================
 # Success: true
@@ -146,22 +146,40 @@ amplihack index-scip --project-path /repo --language rust --language go
 
 ## Output format
 
-Both commands print a JSON object to stdout on success:
+### index-code
+
+`index-code` prints a JSON object to stdout on success:
 
 ```json
 {
-  "files": 89,
-  "classes": 24,
-  "functions": 412,
-  "imports": 156,
-  "relationships": 538
+  "files": 42,
+  "classes": 18,
+  "functions": 157,
+  "imports": 83,
+  "relationships": 201
 }
 ```
 
-`index-scip` additionally prints a human-readable preamble before the JSON
-import counts.
+### index-scip
 
-Errors go to stderr. Warnings (e.g. missing blarify.json, skipped languages)
+`index-scip` prints a **plain-text summary** to stdout — not JSON. The output
+is human-readable and follows this format:
+
+```
+Native SCIP indexing summary
+========================================
+Success: true
+Completed: python, rust
+Skipped: typescript
+Artifact: /home/user/src/myproject/.amplihack/indexes/python.scip
+Artifact: /home/user/src/myproject/.amplihack/indexes/rust.scip
+Imported: files=89, classes=24, functions=412, imports=156, relationships=538
+```
+
+Each line is a key-value pair. Failed languages and error details appear on
+additional lines when applicable.
+
+Errors go to stderr. Warnings (e.g. missing prerequisites, skipped languages)
 are emitted to the structured log at `WARN` level and do not appear on stderr
 by default.
 
