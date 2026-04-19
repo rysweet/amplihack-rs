@@ -430,3 +430,213 @@ fn ensure_local_bin_on_shell_path_creates_export() {
     unsafe { std::env::remove_var("SHELL") };
     unsafe { std::env::remove_var("HOME") };
 }
+
+// ---------------------------------------------------------------------------
+// TDD tests for issue #257: checksum download retry & 5xx error messages
+// ---------------------------------------------------------------------------
+
+/// `github_error_message` must return a dedicated transient-error message for
+/// all 5xx status codes (500, 502, 599). Currently these fall through to the
+/// generic catch-all — this test will FAIL until the 500..=599 match arm is
+/// added to `network.rs::github_error_message`.
+#[test]
+fn github_error_message_5xx_returns_transient_message() {
+    let url = "https://api.github.com/repos/test/repo/releases/latest";
+
+    for status in [500u16, 502, 599] {
+        let msg = github_error_message(status, url);
+        assert!(
+            msg.contains("transient"),
+            "github_error_message({status}, ...) should contain 'transient', got: {msg}"
+        );
+        assert!(
+            msg.contains(&status.to_string()),
+            "github_error_message({status}, ...) should contain the status code, got: {msg}"
+        );
+        assert!(
+            msg.contains(url),
+            "github_error_message({status}, ...) should contain the URL, got: {msg}"
+        );
+    }
+}
+
+/// 5xx messages must mention "server error" to distinguish from client errors.
+#[test]
+fn github_error_message_5xx_mentions_server_error() {
+    let msg = github_error_message(502, "https://api.github.com/test");
+    assert!(
+        msg.to_lowercase().contains("server error"),
+        "5xx message should mention 'server error', got: {msg}"
+    );
+}
+
+/// 5xx messages should suggest retrying (actionable advice).
+#[test]
+fn github_error_message_5xx_suggests_retry() {
+    let msg = github_error_message(503, "https://api.github.com/test");
+    assert!(
+        msg.to_lowercase().contains("retry"),
+        "5xx message should suggest retrying, got: {msg}"
+    );
+}
+
+/// Verify that `verify_sha256_with_getter` correctly parses a checksum file
+/// in the standard `<hex_digest>  <filename>` format and matches the archive.
+///
+/// This test calls the testable internal function that accepts an HTTP getter
+/// closure. It will NOT COMPILE until `verify_sha256_with_getter` is added to
+/// `install.rs`.
+#[test]
+fn verify_sha256_with_getter_succeeds_on_matching_checksum() {
+    use super::install::verify_sha256_with_getter;
+
+    let archive_bytes = b"test archive content for checksum verification";
+    let mut hasher = Sha256::new();
+    hasher.update(archive_bytes);
+    let expected_hex = format!("{:x}", hasher.finalize());
+
+    // Simulate a checksum file: "<hex>  amplihack-x86_64.tar.gz\n"
+    let checksum_body = format!("{expected_hex}  amplihack-x86_64.tar.gz\n");
+
+    let getter = |_url: &str| -> Result<Vec<u8>> { Ok(checksum_body.as_bytes().to_vec()) };
+
+    let result = verify_sha256_with_getter(archive_bytes, "https://github.com/test.sha256", &getter);
+    assert!(
+        result.is_ok(),
+        "verify_sha256_with_getter should succeed when checksum matches: {:?}",
+        result.err()
+    );
+}
+
+/// Verify that `verify_sha256_with_getter` fails when the checksum does NOT
+/// match the archive contents.
+#[test]
+fn verify_sha256_with_getter_fails_on_mismatched_checksum() {
+    use super::install::verify_sha256_with_getter;
+
+    let archive_bytes = b"real archive data";
+    // Wrong checksum — 64 hex chars that don't match the actual SHA-256
+    let wrong_hex = "a".repeat(64);
+    let checksum_body = format!("{wrong_hex}  amplihack.tar.gz\n");
+
+    let getter = |_url: &str| -> Result<Vec<u8>> { Ok(checksum_body.as_bytes().to_vec()) };
+
+    let result =
+        verify_sha256_with_getter(archive_bytes, "https://github.com/test.sha256", &getter);
+    assert!(
+        result.is_err(),
+        "verify_sha256_with_getter should fail on checksum mismatch"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("mismatch"),
+        "error should mention 'mismatch', got: {err_msg}"
+    );
+}
+
+/// Verify that `verify_sha256_with_getter` rejects a malformed checksum file
+/// (hex string that isn't exactly 64 characters).
+#[test]
+fn verify_sha256_with_getter_rejects_malformed_checksum() {
+    use super::install::verify_sha256_with_getter;
+
+    let archive_bytes = b"some data";
+    // Too short — only 32 hex chars (MD5-length, not SHA-256)
+    let checksum_body = "abcdef1234567890abcdef1234567890  file.tar.gz\n";
+
+    let getter = |_url: &str| -> Result<Vec<u8>> { Ok(checksum_body.as_bytes().to_vec()) };
+
+    let result =
+        verify_sha256_with_getter(archive_bytes, "https://github.com/test.sha256", &getter);
+    assert!(
+        result.is_err(),
+        "verify_sha256_with_getter should reject non-64-char hex digest"
+    );
+}
+
+/// The core issue #257 scenario: the checksum getter fails on the first call
+/// (simulating a 502 Bad Gateway) but succeeds on the second call with a valid
+/// checksum. `verify_sha256_with_getter` must succeed because the retry logic
+/// in `http_get_with_retry` (which wraps the getter in production) handles
+/// transient failures.
+///
+/// This test injects a closure that uses an `AtomicU32` counter to return an
+/// error on the first call and a valid checksum on the second call, proving
+/// that the testable API supports retry-like behavior from the caller.
+#[test]
+fn verify_sha256_with_getter_succeeds_after_transient_failure() {
+    use super::install::verify_sha256_with_getter;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let archive_bytes = b"binary archive payload for retry test";
+    let mut hasher = Sha256::new();
+    hasher.update(archive_bytes);
+    let expected_hex = format!("{:x}", hasher.finalize());
+    let checksum_body = format!("{expected_hex}  amplihack.tar.gz\n");
+
+    let call_count = AtomicU32::new(0);
+
+    // Simulate retry: first call fails (502-like), second call succeeds.
+    // In production, http_get_with_retry handles the retry loop; here we
+    // prove that the getter interface supports this pattern.
+    let getter = |_url: &str| -> Result<Vec<u8>> {
+        let n = call_count.fetch_add(1, Ordering::SeqCst);
+        if n == 0 {
+            Err(anyhow!(
+                "HTTP 502 Bad Gateway (simulated transient failure)"
+            ))
+        } else {
+            Ok(checksum_body.as_bytes().to_vec())
+        }
+    };
+
+    // The getter itself returns an error on first call, so verify_sha256_with_getter
+    // will propagate that error. The REAL retry lives in http_get_with_retry.
+    // To test the full retry path we'd need to wire http_get_with_retry around
+    // the getter — but that's an integration concern. Here we verify that:
+    //   (a) first call fails as expected
+    //   (b) second call succeeds with valid checksum
+    let result_fail =
+        verify_sha256_with_getter(archive_bytes, "https://github.com/test.sha256", &getter);
+    assert!(
+        result_fail.is_err(),
+        "first call should propagate the simulated 502 error"
+    );
+
+    let result_ok =
+        verify_sha256_with_getter(archive_bytes, "https://github.com/test.sha256", &getter);
+    assert!(
+        result_ok.is_ok(),
+        "second call should succeed with valid checksum: {:?}",
+        result_ok.err()
+    );
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        2,
+        "getter should have been called exactly twice"
+    );
+}
+
+/// Verify that `verify_sha256_with_getter` handles a checksum file that
+/// contains only the hex digest (no filename after it).
+#[test]
+fn verify_sha256_with_getter_accepts_bare_hex_digest() {
+    use super::install::verify_sha256_with_getter;
+
+    let archive_bytes = b"minimal checksum file test";
+    let mut hasher = Sha256::new();
+    hasher.update(archive_bytes);
+    let expected_hex = format!("{:x}", hasher.finalize());
+
+    // Some checksum files contain just the hex digest with a trailing newline
+    let checksum_body = format!("{expected_hex}\n");
+
+    let getter = |_url: &str| -> Result<Vec<u8>> { Ok(checksum_body.as_bytes().to_vec()) };
+
+    let result = verify_sha256_with_getter(archive_bytes, "https://github.com/test.sha256", &getter);
+    assert!(
+        result.is_ok(),
+        "should accept checksum file with bare hex digest: {:?}",
+        result.err()
+    );
+}

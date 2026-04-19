@@ -8,7 +8,17 @@ use tar::Archive;
 
 /// Verify a downloaded archive against its SHA-256 checksum.
 pub(super) fn verify_sha256(archive_bytes: &[u8], checksum_url: &str) -> Result<()> {
-    let checksum_body = super::network::http_get(checksum_url)
+    verify_sha256_with_getter(archive_bytes, checksum_url, &super::network::http_get_with_retry)
+}
+
+/// Testable core of [`verify_sha256`]: accepts an HTTP getter so tests can
+/// inject fake responses without hitting the network or bypassing URL validation.
+pub(super) fn verify_sha256_with_getter(
+    archive_bytes: &[u8],
+    checksum_url: &str,
+    http_getter: &dyn Fn(&str) -> Result<Vec<u8>>,
+) -> Result<()> {
+    let checksum_body = http_getter(checksum_url)
         .with_context(|| format!("failed to download checksum from {checksum_url}"))?;
     let checksum_text =
         std::str::from_utf8(&checksum_body).context("checksum file is not valid UTF-8")?;

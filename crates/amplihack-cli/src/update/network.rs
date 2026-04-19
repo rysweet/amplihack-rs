@@ -82,6 +82,10 @@ pub(super) fn github_error_message(status: u16, url: &str) -> String {
             "GitHub rate limit exceeded for {url}. \
             Please wait a few minutes before retrying."
         ),
+        500..=599 => format!(
+            "GitHub returned a transient server error (HTTP {status}) for {url}. \
+            Retrying should resolve this."
+        ),
         _ => format!("HTTP {status} from {url}"),
     }
 }
