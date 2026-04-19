@@ -148,8 +148,8 @@ fn scan_raw_braces(text: &str) -> Option<serde_json::Value> {
     let mut pos = 0usize;
     while let Some(rel) = bytes[pos..].iter().position(|&b| b == b'{') {
         let start = pos + rel;
-        let mut stream = serde_json::Deserializer::from_str(&text[start..])
-            .into_iter::<serde_json::Value>();
+        let mut stream =
+            serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
         if let Some(Ok(v @ serde_json::Value::Object(_))) = stream.next() {
             return Some(v);
         }
@@ -165,10 +165,16 @@ fn scan_raw_braces(text: &str) -> Option<serde_json::Value> {
 /// short-circuit `any()` chain.
 pub fn normalise_type(raw: &str) -> &'static str {
     let t = raw.to_ascii_lowercase();
-    if ["q&a", "qa", "question", "answer"].iter().any(|k| t.contains(k)) {
+    if ["q&a", "qa", "question", "answer"]
+        .iter()
+        .any(|k| t.contains(k))
+    {
         return "Q&A";
     }
-    if ["ops", "operation", "admin", "command"].iter().any(|k| t.contains(k)) {
+    if ["ops", "operation", "admin", "command"]
+        .iter()
+        .any(|k| t.contains(k))
+    {
         return "Operations";
     }
     if ["invest", "research", "explor", "analys", "understand"]
@@ -321,7 +327,9 @@ pub fn build_workstreams_config_to_tempfile(decomp: &str) -> Result<String> {
         std::fs::set_permissions(tmp.path(), perms)?;
     }
 
-    let (_, path) = tmp.keep().context("failed to persist workstreams tempfile")?;
+    let (_, path) = tmp
+        .keep()
+        .context("failed to persist workstreams tempfile")?;
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -357,7 +365,10 @@ pub fn dispatch(command: OrchCommands) -> Result<()> {
 
 /// Public guard so callers can give a friendly error for invalid types.
 pub fn is_known_type(label: &str) -> bool {
-    matches!(label, "Q&A" | "Operations" | "Investigation" | "Development")
+    matches!(
+        label,
+        "Q&A" | "Operations" | "Investigation" | "Development"
+    )
 }
 
 // Compile-time guarantee that `bail!` import isn't dead; used in tests below
@@ -430,7 +441,10 @@ mod tests {
     fn extract_json_returns_none_when_no_object_present() {
         assert!(extract_json("just words, no JSON here at all").is_none());
         assert!(extract_json("").is_none());
-        assert!(extract_json("[1, 2, 3]").is_none(), "arrays alone are not objects");
+        assert!(
+            extract_json("[1, 2, 3]").is_none(),
+            "arrays alone are not objects"
+        );
     }
 
     #[test]
@@ -642,10 +656,7 @@ mod tests {
 
     #[test]
     fn extract_field_handles_scalars_and_nested_values() {
-        assert_eq!(
-            extract_field(r#"{"n": 42}"#, "n"),
-            Some("42".to_string())
-        );
+        assert_eq!(extract_field(r#"{"n": 42}"#, "n"), Some("42".to_string()));
         assert_eq!(
             extract_field(r#"{"b": true}"#, "b"),
             Some("true".to_string())
