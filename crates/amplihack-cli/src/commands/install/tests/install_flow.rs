@@ -3,6 +3,122 @@ use super::*;
 use std::fs;
 
 #[test]
+fn local_install_stages_amplifier_bundle_for_dev_orchestrator() {
+    // Issue #243: the dev-orchestrator skill's required execution path
+    // (`amplihack recipe run smart-orchestrator`) is unreachable unless
+    // amplihack install stages the amplifier-bundle (recipes + orch_helper.py)
+    // to ~/.amplihack/amplifier-bundle/.
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    let bin_dir = temp.path().join("stub_bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
+
+    let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+    let prev_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+        let new_path = format!(
+            "{}:{}",
+            bin_dir.display(),
+            prev_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        );
+        std::env::set_var("PATH", &new_path);
+    }
+
+    create_source_repo(temp.path());
+    local_install(temp.path()).unwrap();
+
+    if let Some(v) = prev_hooks {
+        unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
+    } else {
+        unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") };
+    }
+    if let Some(v) = prev_path {
+        unsafe { std::env::set_var("PATH", v) };
+    }
+    crate::test_support::restore_home(previous);
+
+    let bundle = temp.path().join(".amplihack/amplifier-bundle");
+    assert!(
+        bundle.is_dir(),
+        "amplifier-bundle must be staged at ~/.amplihack/amplifier-bundle/ after install"
+    );
+    for recipe in [
+        "recipes/smart-orchestrator.yaml",
+        "recipes/default-workflow.yaml",
+        "recipes/investigation-workflow.yaml",
+    ] {
+        assert!(
+            bundle.join(recipe).is_file(),
+            "{recipe} must be staged so dev-orchestrator can execute it"
+        );
+    }
+    assert!(
+        bundle.join("tools/orch_helper.py").is_file(),
+        "tools/orch_helper.py must be staged so parse-decomposition can run"
+    );
+
+    // The presence check used by ensure_framework_installed must now treat
+    // a missing bundle as a reason to re-install on next launch.
+    let staging_claude = temp.path().join(".amplihack/.claude");
+    assert!(
+        settings::missing_framework_paths(&staging_claude)
+            .unwrap()
+            .is_empty(),
+        "fully-staged install must report no missing framework paths"
+    );
+    fs::remove_dir_all(&bundle).unwrap();
+    let missing = settings::missing_framework_paths(&staging_claude).unwrap();
+    assert!(
+        missing
+            .iter()
+            .any(|m| m.contains("amplifier-bundle/recipes/smart-orchestrator.yaml")),
+        "missing amplifier-bundle must be reported by presence check (issue #243), got: {missing:?}"
+    );
+}
+
+#[test]
+fn uninstall_removes_staged_amplifier_bundle() {
+    // Issue #243 follow-up: uninstall must clean up the staged bundle so
+    // a stale tree does not linger after the framework is removed.
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    fs::create_dir_all(temp.path().join(".amplihack/.claude/install")).unwrap();
+    let bundle = temp.path().join(".amplihack/amplifier-bundle/recipes");
+    fs::create_dir_all(&bundle).unwrap();
+    fs::write(bundle.join("smart-orchestrator.yaml"), "x\n").unwrap();
+    let manifest = InstallManifest::default();
+    manifest::write_manifest(
+        &temp
+            .path()
+            .join(".amplihack/.claude/install/amplihack-manifest.json"),
+        &manifest,
+    )
+    .unwrap();
+
+    run_uninstall().unwrap();
+
+    assert!(
+        !temp.path().join(".amplihack/amplifier-bundle").exists(),
+        "uninstall must remove ~/.amplihack/amplifier-bundle/"
+    );
+
+    crate::test_support::restore_home(previous);
+}
+
+#[test]
 fn local_install_writes_manifest() {
     let _guard = crate::test_support::home_env_lock()
         .lock()

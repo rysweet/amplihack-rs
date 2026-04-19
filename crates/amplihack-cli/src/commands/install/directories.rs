@@ -146,6 +146,55 @@ pub(super) fn prune_legacy_amplihack_hook_assets(claude_dir: &Path) -> Result<us
     Ok(removed)
 }
 
+/// Stage the `amplifier-bundle/` tree from the source repo into
+/// `~/.amplihack/amplifier-bundle/`.
+///
+/// The dev-orchestrator skill's mandatory execution path
+/// (`amplihack recipe run smart-orchestrator`) is unreachable without these
+/// recipes (`smart-orchestrator.yaml`, `default-workflow.yaml`,
+/// `investigation-workflow.yaml`) and the `tools/orch_helper.py` referenced
+/// by the parse-decomposition step. See issue #243.
+///
+/// The bundle is copied to `~/.amplihack/amplifier-bundle/` so the recipe
+/// runner's `AMPLIHACK_HOME/amplifier-bundle/recipes` lookup (and the
+/// skill's `AMPLIHACK_HOME` auto-detection that walks for an
+/// `amplifier-bundle/` folder) both succeed.
+///
+/// Returns `Ok(true)` if the bundle was staged, `Ok(false)` if the source
+/// repo did not contain an `amplifier-bundle/` directory (warned but not
+/// fatal — older source layouts may lack it).
+pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Result<bool> {
+    let source_bundle = repo_root.join("amplifier-bundle");
+    if !source_bundle.is_dir() {
+        println!("  ⚠️  Warning: amplifier-bundle not found in source, skipping");
+        println!(
+            "     dev-orchestrator recipe execution will be unavailable on this install"
+        );
+        return Ok(false);
+    }
+
+    let target_bundle = claude_dir
+        .parent()
+        .context("staging .claude dir missing parent")?
+        .join("amplifier-bundle");
+    if target_bundle.exists() {
+        fs::remove_dir_all(&target_bundle).with_context(|| {
+            format!(
+                "failed to remove stale amplifier-bundle at {}",
+                target_bundle.display()
+            )
+        })?;
+    }
+    if let Some(parent) = target_bundle.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    copy_dir_recursive(&source_bundle, &target_bundle)?;
+    println!("  ✅ Staged amplifier-bundle to {}", target_bundle.display());
+    Ok(true)
+}
+
 pub(super) fn initialize_project_md(claude_dir: &Path) -> Result<()> {
     let project_md = claude_dir.join("context").join("PROJECT.md");
     if let Some(parent) = project_md.parent() {

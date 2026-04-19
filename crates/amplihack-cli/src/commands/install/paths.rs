@@ -47,6 +47,19 @@ pub(super) fn staging_claude_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".amplihack").join(".claude"))
 }
 
+/// Staged location for the `amplifier-bundle/` tree.
+///
+/// The dev-orchestrator skill, recipe runner, and parse-decomposition tooling
+/// all expect `AMPLIHACK_HOME/amplifier-bundle/` to exist (where
+/// `AMPLIHACK_HOME` defaults to `~/.amplihack`). The bundle ships the
+/// `smart-orchestrator`, `default-workflow`, and `investigation-workflow`
+/// recipes, plus `tools/orch_helper.py` — without it, the dev-orchestrator's
+/// "REQUIRED" execution path is unreachable on a fresh install.
+#[allow(dead_code)]
+pub(super) fn staging_amplifier_bundle_dir() -> Result<PathBuf> {
+    Ok(home_dir()?.join(".amplihack").join("amplifier-bundle"))
+}
+
 pub(super) fn global_settings_path() -> Result<PathBuf> {
     Ok(global_claude_dir()?.join("settings.json"))
 }
