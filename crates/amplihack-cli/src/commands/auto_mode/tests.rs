@@ -4,6 +4,7 @@ use super::helpers::{
 };
 use super::run::render_auto_session_argv;
 use super::*;
+use crate::test_support::{ClearedGraphDbEnv, env_lock};
 use std::collections::HashMap;
 
 #[test]
@@ -116,6 +117,10 @@ fn render_auto_session_argv_includes_auto_flags() {
 
 #[test]
 fn build_auto_command_propagates_launcher_environment() {
+    let _env_guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _graph_guard = ClearedGraphDbEnv::new();
     let dir = tempfile::tempdir().unwrap();
 
     let command = build_auto_command(
@@ -175,6 +180,10 @@ fn build_auto_command_propagates_launcher_environment() {
 
 #[test]
 fn build_auto_command_marks_staged_execution_context() {
+    let _env_guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _graph_guard = ClearedGraphDbEnv::new();
     let execution_dir = tempfile::tempdir().unwrap();
     let project_dir = tempfile::tempdir().unwrap();
 

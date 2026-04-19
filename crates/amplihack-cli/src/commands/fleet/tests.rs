@@ -1,6 +1,6 @@
 use super::*;
 use crate::command_error;
-use crate::test_support::{home_env_lock, restore_cwd, set_cwd};
+use crate::test_support::{ClearedGraphDbEnv, home_env_lock, restore_cwd, set_cwd};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
@@ -27,6 +27,7 @@ fn native_reasoner_backend_propagates_shared_env_context() {
     let _home_guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _graph_guard = ClearedGraphDbEnv::new();
     let temp = tempfile::tempdir().unwrap();
     let reasoner = temp.path().join("claude");
     let amplihack_home = temp.path().join("amplihack-home");
