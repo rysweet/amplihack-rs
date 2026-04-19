@@ -1,0 +1,56 @@
+graph LR
+    subgraph "Input Sources"
+        user_prompt["User Prompt<br/>(stdin)"]
+        recipe_yaml["Recipe YAML<br/>(file)"]
+        hook_event["Hook Event<br/>(JSON stdin)"]
+    end
+
+    subgraph "Parsing & Validation"
+        clap_parse["Clap CLI Parser<br/>(cli::Cli)"]
+        recipe_parse["recipe::parser<br/>(serde_yaml)"]
+        hook_deser["HookInput<br/>(serde_json)"]
+        security_check["security::XpiaDefender<br/>(pattern scan)"]
+    end
+
+    subgraph "Routing & Classification"
+        cmd_dispatch["commands::dispatch<br/>(match on Command enum)"]
+        workflow_class["workflows::WorkflowClassifier<br/>(Q&A/Investigation/Dev)"]
+        recipe_condition["recipe::condition_eval"]
+    end
+
+    subgraph "Execution"
+        agent_session["agent_core::session<br/>(conversation state)"]
+        agent_loop_exec["agentic_loop::loop_core<br/>(tool-use cycle)"]
+        recipe_step_exec["recipe::executor<br/>(step runner)"]
+    end
+
+    subgraph "State Persistence"
+        atomic_json["state::AtomicJsonFile<br/>(file lock + write)"]
+        memory_store["memory::backend<br/>(store/retrieve)"]
+        kuzu_graph["LadybugDB (Kuzu)<br/>(graph insert/query)"]
+    end
+
+    subgraph "Output"
+        stdout_out["stdout<br/>(user response)"]
+        file_out["File Output<br/>(generated code)"]
+        gh_issue["GitHub Issue<br/>(gh API)"]
+    end
+
+    user_prompt --> clap_parse
+    recipe_yaml --> recipe_parse
+    hook_event --> hook_deser
+    hook_deser --> security_check
+    clap_parse --> cmd_dispatch
+    recipe_parse --> recipe_condition
+    security_check --> workflow_class
+    cmd_dispatch --> agent_session
+    cmd_dispatch --> recipe_step_exec
+    workflow_class --> agent_session
+    recipe_condition --> recipe_step_exec
+    agent_session --> agent_loop_exec
+    agent_loop_exec --> memory_store
+    agent_loop_exec --> stdout_out
+    recipe_step_exec --> file_out
+    memory_store --> kuzu_graph
+    memory_store --> atomic_json
+    recipe_step_exec --> gh_issue

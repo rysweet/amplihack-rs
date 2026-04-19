@@ -1,0 +1,58 @@
+# staleness-map.yaml
+# Maps file-glob patterns to atlas layers that should be regenerated when those files change.
+# Used by CI to detect when the atlas may be stale.
+
+layers:
+  repo-surface:
+    globs:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "mkdocs.yml"
+      - "package.json"
+      - "crates/*/Cargo.toml"
+      - "bins/*/Cargo.toml"
+
+  ast-lsp-bindings:
+    globs:
+      - "crates/*/src/**/*.rs"
+      - "bins/*/src/**/*.rs"
+
+  compile-deps:
+    globs:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/*/Cargo.toml"
+
+  runtime-topology:
+    globs:
+      - "crates/amplihack-cli/src/commands/**/*.rs"
+      - "crates/amplihack-hooks/src/**/*.rs"
+      - "crates/amplihack-recipe/src/**/*.rs"
+      - "crates/amplihack-agent-core/src/**/*.rs"
+      - "amplifier-bundle/tools/**/*.py"
+
+  api-contracts:
+    globs:
+      - "crates/amplihack-cli/src/cli_subcommands.rs"
+      - "crates/amplihack-cli/src/commands/**/*.rs"
+      - "crates/amplihack-types/src/**/*.rs"
+      - "crates/amplihack-hooks/src/**/*.rs"
+
+  data-flow:
+    globs:
+      - "crates/amplihack-cli/src/**/*.rs"
+      - "crates/amplihack-recipe/src/**/*.rs"
+      - "crates/amplihack-memory/src/**/*.rs"
+      - "crates/amplihack-security/src/**/*.rs"
+
+  service-components:
+    globs:
+      - "crates/*/src/**/*.rs"
+
+  user-journeys:
+    globs:
+      - "crates/amplihack-cli/src/commands/**/*.rs"
+      - "crates/amplihack-hooks/src/**/*.rs"
+      - "crates/amplihack-recipe/src/**/*.rs"
+      - "crates/amplihack-fleet/src/**/*.rs"
+      - "crates/amplihack-memory/src/**/*.rs"

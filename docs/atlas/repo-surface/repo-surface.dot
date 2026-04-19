@@ -1,0 +1,76 @@
+digraph repo_surface {
+    rankdir=TB;
+    node [shape=box, style=filled, fillcolor="#E8E8E8", fontname="Helvetica"];
+    edge [fontname="Helvetica", fontsize=10];
+
+    subgraph cluster_root {
+        label="Root";
+        style=dashed;
+        Cargo_toml [label="Cargo.toml\n(workspace)", fillcolor="#FFD700"];
+        mkdocs_yml [label="mkdocs.yml"];
+        package_json [label="package.json"];
+    }
+
+    subgraph cluster_bins {
+        label="bins/";
+        style=dashed;
+        bin_amplihack [label="amplihack\nmain.rs", fillcolor="#87CEEB"];
+        bin_asset_resolver [label="amplihack-asset-resolver", fillcolor="#87CEEB"];
+        bin_hooks [label="amplihack-hooks", fillcolor="#87CEEB"];
+    }
+
+    subgraph cluster_crates {
+        label="crates/ (23 crates)";
+        style=dashed;
+        cli [label="amplihack-cli", fillcolor="#98FB98"];
+        types [label="amplihack-types", fillcolor="#98FB98"];
+        state [label="amplihack-state", fillcolor="#98FB98"];
+        security [label="amplihack-security", fillcolor="#98FB98"];
+        workflows [label="amplihack-workflows", fillcolor="#98FB98"];
+        hooks [label="amplihack-hooks", fillcolor="#98FB98"];
+        memory [label="amplihack-memory", fillcolor="#98FB98"];
+        recipe [label="amplihack-recipe", fillcolor="#98FB98"];
+        launcher [label="amplihack-launcher", fillcolor="#98FB98"];
+        fleet [label="amplihack-fleet", fillcolor="#98FB98"];
+        agent_core [label="amplihack-agent-core", fillcolor="#98FB98"];
+        agent_eval [label="amplihack-agent-eval", fillcolor="#98FB98"];
+        agent_gen [label="amplihack-agent-generator", fillcolor="#98FB98"];
+        domain_agents [label="amplihack-domain-agents", fillcolor="#98FB98"];
+        hive [label="amplihack-hive", fillcolor="#98FB98"];
+        blarify [label="amplihack-blarify", fillcolor="#98FB98"];
+        multilspy [label="amplihack-multilspy", fillcolor="#98FB98"];
+        context [label="amplihack-context", fillcolor="#98FB98"];
+        delegation [label="amplihack-delegation", fillcolor="#98FB98"];
+        recovery [label="amplihack-recovery", fillcolor="#98FB98"];
+        remote [label="amplihack-remote", fillcolor="#98FB98"];
+        safety [label="amplihack-safety", fillcolor="#98FB98"];
+        utils [label="amplihack-utils", fillcolor="#98FB98"];
+    }
+
+    subgraph cluster_bundle {
+        label="amplifier-bundle/";
+        style=dashed;
+        bundle_recipes [label="recipes/"];
+        bundle_tools [label="tools/"];
+        bundle_agents [label="agents/"];
+        bundle_skills [label="skills/"];
+        bundle_behaviors [label="behaviors/"];
+    }
+
+    subgraph cluster_docs {
+        label="docs/";
+        style=dashed;
+        docs_howto [label="howto/"];
+        docs_ref [label="reference/"];
+        docs_concepts [label="concepts/"];
+    }
+
+    Cargo_toml -> bin_amplihack [label="workspace member"];
+    Cargo_toml -> cli [label="workspace member"];
+    Cargo_toml -> types [label="workspace member"];
+    Cargo_toml -> state [label="workspace member"];
+    Cargo_toml -> memory [label="workspace member"];
+    mkdocs_yml -> docs_howto;
+    mkdocs_yml -> docs_ref;
+    mkdocs_yml -> docs_concepts;
+}

@@ -1,0 +1,56 @@
+graph LR
+    subgraph "CLI Entry"
+        main_rs["bins/amplihack<br/>main.rs"]
+    end
+
+    subgraph "Command Dispatch"
+        cli_commands["cli::commands::dispatch"]
+        cli_subcommands["cli::cli_subcommands"]
+    end
+
+    subgraph "Core Types"
+        types_hook_io["types::HookInput"]
+        types_paths["types::ProjectDirs"]
+        types_settings["types::Settings"]
+    end
+
+    subgraph "State Management"
+        state_atomic["state::AtomicJsonFile"]
+        state_counter["state::AtomicCounter"]
+        state_env["state::EnvVar"]
+        state_lock["state::FileLock"]
+    end
+
+    subgraph "Hook System"
+        hooks_pre_tool["hooks::pre_tool_use"]
+        hooks_post_tool["hooks::post_tool_use"]
+        hooks_session["hooks::session_start"]
+        hooks_stop["hooks::stop"]
+        hooks_workflow["hooks::workflow_classification"]
+    end
+
+    subgraph "Agent System"
+        agent_core_agent["agent_core::agent"]
+        agent_core_loop["agent_core::agentic_loop"]
+        agent_core_session["agent_core::session"]
+        agent_core_sdk["agent_core::sdk_adapters"]
+    end
+
+    subgraph "Memory System"
+        memory_backend["memory::backend"]
+        memory_db["memory::database"]
+        memory_discoveries["memory::discoveries"]
+    end
+
+    main_rs --> cli_commands
+    cli_commands --> cli_subcommands
+    cli_commands --> types_hook_io
+    cli_commands --> types_settings
+    hooks_pre_tool --> types_hook_io
+    hooks_post_tool --> types_hook_io
+    hooks_session --> types_settings
+    hooks_workflow --> types_settings
+    state_atomic --> types_paths
+    agent_core_agent --> memory_backend
+    agent_core_session --> memory_discoveries
+    agent_core_sdk --> agent_core_loop

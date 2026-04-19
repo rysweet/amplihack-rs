@@ -1,0 +1,70 @@
+digraph api_contracts {
+    rankdir=TB;
+    node [shape=box, style=filled, fontname="Helvetica", fontsize=10];
+    edge [fontname="Helvetica", fontsize=9];
+
+    subgraph cluster_cli_cmds {
+        label="CLI Commands (amplihack-cli)";
+        style=dashed;
+        cmd_install [label="amplihack install", fillcolor="#87CEEB"];
+        cmd_launch [label="amplihack launch", fillcolor="#87CEEB"];
+        cmd_recipe [label="amplihack recipe run", fillcolor="#87CEEB"];
+        cmd_memory [label="amplihack memory index", fillcolor="#87CEEB"];
+        cmd_fleet [label="amplihack fleet", fillcolor="#87CEEB"];
+        cmd_doctor [label="amplihack doctor", fillcolor="#87CEEB"];
+        cmd_completions [label="amplihack completions", fillcolor="#87CEEB"];
+        cmd_query_code [label="amplihack query-code", fillcolor="#87CEEB"];
+        cmd_orch [label="amplihack orch", fillcolor="#87CEEB"];
+        cmd_new_agent [label="amplihack new-agent", fillcolor="#87CEEB"];
+        cmd_hive [label="amplihack hive", fillcolor="#87CEEB"];
+    }
+
+    subgraph cluster_hooks {
+        label="Hook Protocol (JSON over stdio)";
+        style=dashed;
+        hook_session_start [label="session_start\n-> HookInput", fillcolor="#98FB98"];
+        hook_pre_tool [label="pre_tool_use\n-> HookInput", fillcolor="#98FB98"];
+        hook_post_tool [label="post_tool_use\n-> HookInput", fillcolor="#98FB98"];
+        hook_stop [label="stop\n-> HookInput", fillcolor="#98FB98"];
+        hook_user_prompt [label="user_prompt\n-> HookInput", fillcolor="#98FB98"];
+    }
+
+    subgraph cluster_recipe_steps {
+        label="Recipe Step Types";
+        style=dashed;
+        step_skill [label="type: skill\nskill name + task", fillcolor="#FFD700"];
+        step_agent [label="type: agent\nagent ref + description", fillcolor="#FFD700"];
+        step_bash [label="type: bash\nshell command", fillcolor="#FFD700"];
+    }
+
+    subgraph cluster_memory_api {
+        label="Memory API";
+        style=dashed;
+        mem_store [label="store_discovery()", fillcolor="#DDA0DD"];
+        mem_get [label="get_recent_discoveries()", fillcolor="#DDA0DD"];
+        mem_index [label="index_project()", fillcolor="#DDA0DD"];
+        mem_query [label="query_graph()", fillcolor="#DDA0DD"];
+    }
+
+    subgraph cluster_fleet_api {
+        label="Fleet API";
+        style=dashed;
+        fleet_scout [label="fleet scout", fillcolor="#FFA07A"];
+        fleet_advance [label="fleet advance", fillcolor="#FFA07A"];
+        fleet_status [label="fleet status", fillcolor="#FFA07A"];
+        fleet_dashboard [label="fleet dashboard", fillcolor="#FFA07A"];
+    }
+
+    cmd_install -> hook_session_start [label="stages bundle"];
+    cmd_launch -> hook_session_start [label="starts claude"];
+    cmd_recipe -> step_skill [label="parses YAML"];
+    cmd_recipe -> step_agent;
+    cmd_recipe -> step_bash;
+    cmd_memory -> mem_index [label="indexes"];
+    cmd_query_code -> mem_query [label="queries"];
+    cmd_fleet -> fleet_scout;
+    cmd_fleet -> fleet_advance;
+    cmd_fleet -> fleet_status;
+    cmd_fleet -> fleet_dashboard;
+    hook_pre_tool -> hook_post_tool [label="validates"];
+}

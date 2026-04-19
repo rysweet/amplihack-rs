@@ -1,0 +1,87 @@
+graph TD
+    subgraph "amplihack-cli"
+        cli_commands_mod["commands/"]
+        cli_install["commands/install"]
+        cli_launch["commands/launch"]
+        cli_recipe_cmd["commands/recipe"]
+        cli_fleet_cmd["commands/fleet"]
+        cli_doctor_cmd["commands/doctor"]
+        cli_new_agent["commands/new_agent"]
+        cli_orch_cmd["commands/orch"]
+        cli_hive_cmd["commands/hive_haymaker"]
+        cli_auto_mode["auto_mode_*"]
+        cli_update["update/"]
+        cli_signals["signals"]
+        cli_copilot["copilot_setup/"]
+        cli_fleet_local["fleet_local/"]
+    end
+
+    subgraph "amplihack-agent-core"
+        ac_agent["agent"]
+        ac_agentic_loop["agentic_loop/"]
+        ac_sdk["sdk_adapters/"]
+        ac_sub_agents["sub_agents/"]
+        ac_answer_synth["answer_synth/"]
+        ac_cognitive["cognitive_adapter/"]
+        ac_session["session"]
+        ac_memory_retrieval["memory_retrieval"]
+        ac_temporal["temporal_reasoning/"]
+    end
+
+    subgraph "amplihack-hooks"
+        hk_session_start["session_start"]
+        hk_pre_tool["pre_tool_use"]
+        hk_post_tool["post_tool_use"]
+        hk_stop["stop"]
+        hk_user_prompt["user_prompt"]
+        hk_workflow["workflow_classification"]
+        hk_protocol["protocol"]
+    end
+
+    subgraph "amplihack-memory"
+        mem_backend["backend"]
+        mem_database["database"]
+        mem_discoveries["discoveries"]
+        mem_bloom["bloom"]
+        mem_config["config"]
+        mem_coordinator["coordinator"]
+        mem_evaluation["evaluation"]
+    end
+
+    subgraph "amplihack-recipe"
+        rcp_parser["parser"]
+        rcp_executor["executor"]
+        rcp_models["models"]
+        rcp_condition["condition_eval"]
+        rcp_template["template"]
+        rcp_discovery["discovery"]
+        rcp_agent_resolver["agent_resolver"]
+    end
+
+    subgraph "amplihack-hive"
+        hv_controller["controller"]
+        hv_distributed["distributed/"]
+        hv_crdt["crdt"]
+        hv_dht["dht"]
+        hv_embeddings["embeddings"]
+        hv_event_bus["event_bus"]
+        hv_feed["feed"]
+    end
+
+    cli_commands_mod --> cli_install
+    cli_commands_mod --> cli_launch
+    cli_commands_mod --> cli_recipe_cmd
+    cli_commands_mod --> cli_fleet_cmd
+    ac_agent --> ac_agentic_loop
+    ac_agent --> ac_sdk
+    ac_agent --> ac_sub_agents
+    ac_agentic_loop --> ac_answer_synth
+    ac_agentic_loop --> ac_cognitive
+    hk_protocol --> hk_session_start
+    hk_protocol --> hk_pre_tool
+    hk_protocol --> hk_post_tool
+    rcp_executor --> rcp_parser
+    rcp_executor --> rcp_condition
+    rcp_executor --> rcp_template
+    hv_controller --> hv_distributed
+    hv_controller --> hv_event_bus

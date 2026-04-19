@@ -1,0 +1,68 @@
+digraph ast_lsp_bindings {
+    rankdir=LR;
+    node [shape=box, style=filled, fillcolor="#E8E8E8", fontname="Helvetica", fontsize=10];
+    edge [fontname="Helvetica", fontsize=9];
+
+    subgraph cluster_entry {
+        label="CLI Entry";
+        main_rs [label="bins/amplihack\nmain.rs", fillcolor="#87CEEB"];
+    }
+
+    subgraph cluster_dispatch {
+        label="Command Dispatch";
+        cli_commands [label="cli::commands::dispatch", fillcolor="#FFD700"];
+        cli_subcommands [label="cli::cli_subcommands", fillcolor="#FFD700"];
+    }
+
+    subgraph cluster_types {
+        label="Core Types";
+        types_hook_io [label="types::HookInput", fillcolor="#DDA0DD"];
+        types_paths [label="types::ProjectDirs", fillcolor="#DDA0DD"];
+        types_settings [label="types::Settings", fillcolor="#DDA0DD"];
+    }
+
+    subgraph cluster_state {
+        label="State Management";
+        state_atomic [label="state::AtomicJsonFile", fillcolor="#FFA07A"];
+        state_counter [label="state::AtomicCounter", fillcolor="#FFA07A"];
+        state_env [label="state::EnvVar", fillcolor="#FFA07A"];
+        state_lock [label="state::FileLock", fillcolor="#FFA07A"];
+    }
+
+    subgraph cluster_hooks {
+        label="Hook System";
+        hooks_pre_tool [label="hooks::pre_tool_use", fillcolor="#98FB98"];
+        hooks_post_tool [label="hooks::post_tool_use", fillcolor="#98FB98"];
+        hooks_session [label="hooks::session_start", fillcolor="#98FB98"];
+        hooks_stop [label="hooks::stop", fillcolor="#98FB98"];
+        hooks_workflow [label="hooks::workflow_classification", fillcolor="#98FB98"];
+    }
+
+    subgraph cluster_agent {
+        label="Agent System";
+        agent_core_agent [label="agent_core::agent", fillcolor="#ADD8E6"];
+        agent_core_loop [label="agent_core::agentic_loop", fillcolor="#ADD8E6"];
+        agent_core_session [label="agent_core::session", fillcolor="#ADD8E6"];
+        agent_core_sdk [label="agent_core::sdk_adapters", fillcolor="#ADD8E6"];
+    }
+
+    subgraph cluster_memory {
+        label="Memory System";
+        memory_backend [label="memory::backend", fillcolor="#F0E68C"];
+        memory_db [label="memory::database", fillcolor="#F0E68C"];
+        memory_discoveries [label="memory::discoveries", fillcolor="#F0E68C"];
+    }
+
+    main_rs -> cli_commands [label="parse & dispatch"];
+    cli_commands -> cli_subcommands [label="route"];
+    cli_commands -> types_hook_io [label="uses"];
+    cli_commands -> types_settings [label="reads"];
+    hooks_pre_tool -> types_hook_io [label="deserializes"];
+    hooks_post_tool -> types_hook_io [label="deserializes"];
+    hooks_session -> types_settings [label="reads"];
+    hooks_workflow -> types_settings [label="reads"];
+    state_atomic -> types_paths [label="path resolution"];
+    agent_core_agent -> memory_backend [label="stores/retrieves"];
+    agent_core_session -> memory_discoveries [label="queries"];
+    agent_core_sdk -> agent_core_loop [label="drives"];
+}

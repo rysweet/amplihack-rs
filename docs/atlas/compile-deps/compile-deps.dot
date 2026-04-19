@@ -1,0 +1,79 @@
+digraph compile_deps {
+    rankdir=TB;
+    node [shape=box, style=filled, fontname="Helvetica", fontsize=10];
+    edge [fontname="Helvetica", fontsize=9];
+
+    // Foundation Layer
+    subgraph cluster_foundation {
+        label="Foundation Layer";
+        style=dashed; color="#999999";
+        types [label="amplihack-types", fillcolor="#FFDAB9"];
+        state [label="amplihack-state", fillcolor="#FFDAB9"];
+        utils [label="amplihack-utils", fillcolor="#FFDAB9"];
+        security [label="amplihack-security", fillcolor="#FFDAB9"];
+        safety [label="amplihack-safety", fillcolor="#FFDAB9"];
+    }
+
+    // Core Infrastructure
+    subgraph cluster_core {
+        label="Core Infrastructure";
+        style=dashed; color="#999999";
+        memory [label="amplihack-memory", fillcolor="#ADD8E6"];
+        workflows [label="amplihack-workflows", fillcolor="#ADD8E6"];
+        recipe [label="amplihack-recipe", fillcolor="#ADD8E6"];
+        context [label="amplihack-context", fillcolor="#ADD8E6"];
+        delegation [label="amplihack-delegation", fillcolor="#ADD8E6"];
+        recovery [label="amplihack-recovery", fillcolor="#ADD8E6"];
+    }
+
+    // Agent Layer
+    subgraph cluster_agent {
+        label="Agent Layer";
+        style=dashed; color="#999999";
+        agent_core [label="amplihack-agent-core", fillcolor="#98FB98"];
+        agent_eval [label="amplihack-agent-eval", fillcolor="#98FB98"];
+        agent_gen [label="amplihack-agent-generator", fillcolor="#98FB98"];
+        domain_agents [label="amplihack-domain-agents", fillcolor="#98FB98"];
+    }
+
+    // Orchestration Layer
+    subgraph cluster_orch {
+        label="Orchestration Layer";
+        style=dashed; color="#999999";
+        hive [label="amplihack-hive", fillcolor="#DDA0DD"];
+        fleet [label="amplihack-fleet", fillcolor="#DDA0DD"];
+        remote [label="amplihack-remote", fillcolor="#DDA0DD"];
+    }
+
+    // Integration Layer
+    subgraph cluster_integration {
+        label="Integration Layer";
+        style=dashed; color="#999999";
+        cli [label="amplihack-cli", fillcolor="#FFD700"];
+        hooks [label="amplihack-hooks", fillcolor="#FFD700"];
+        launcher [label="amplihack-launcher", fillcolor="#FFD700"];
+        blarify [label="amplihack-blarify", fillcolor="#FFD700"];
+        multilspy [label="amplihack-multilspy", fillcolor="#FFD700"];
+    }
+
+    // Binary
+    bin_amplihack [label="bins/amplihack", fillcolor="#FF6347", shape=doubleoctagon];
+
+    // Dependencies
+    state -> types [label="uses"];
+    agent_core -> memory [label="stores"];
+    domain_agents -> agent_core [label="extends"];
+    domain_agents -> memory [label="uses"];
+    domain_agents -> workflows [label="classifies"];
+    hive -> agent_core [label="orchestrates"];
+    hive -> memory [label="shared state"];
+    cli -> types [label="uses"];
+    cli -> state [label="uses"];
+    cli -> hive [label="optional"];
+    hooks -> types [label="uses"];
+    hooks -> state [label="uses"];
+    hooks -> cli [label="uses"];
+    hooks -> security [label="validates"];
+    hooks -> workflows [label="classifies"];
+    bin_amplihack -> cli [label="dispatches"];
+}

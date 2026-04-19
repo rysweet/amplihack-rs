@@ -1,0 +1,76 @@
+sequenceDiagram
+    participant U as User
+    participant CLI as amplihack CLI
+    participant Inst as Install Module
+    participant Claude as Claude Code
+    participant Hooks as Hook Runtime
+    participant WF as Workflow Classifier
+    participant Recipe as Recipe Runner
+    participant Agent as Agent Loop
+    participant Mem as Memory Store
+    participant GH as GitHub API
+
+    Note over U,GH: Journey 1: First-Time Install & Launch
+
+    U->>CLI: amplihack install
+    CLI->>Inst: commands::install::run()
+    Inst->>Inst: stage amplifier-bundle
+    Inst->>Inst: write hooks to .claude/
+    Inst-->>CLI: install complete
+    U->>CLI: amplihack launch
+    CLI->>Claude: spawn claude process
+    Claude->>Hooks: session_start hook
+    Hooks->>WF: classify initial context
+    WF-->>Hooks: Q&A workflow
+    Hooks-->>Claude: session initialized
+
+    Note over U,GH: Journey 2: Development Task via /dev
+
+    U->>Claude: /dev "Add auth to API"
+    Claude->>Hooks: user_prompt hook
+    Hooks->>WF: classify task
+    WF-->>Hooks: DEVELOPMENT
+    Hooks->>Recipe: smart-orchestrator recipe
+    Recipe->>Recipe: parse YAML steps
+    Recipe->>Agent: spawn builder agent
+    Agent->>Mem: get_recent_discoveries()
+    Mem-->>Agent: relevant context
+    Agent->>Agent: generate code
+    Agent->>Mem: store_discovery()
+    Agent-->>Recipe: step complete
+    Recipe-->>Claude: task complete
+    Claude-->>U: response with changes
+
+    Note over U,GH: Journey 3: Recipe Execution
+
+    U->>CLI: amplihack recipe run code-atlas.yaml
+    CLI->>Recipe: executor::run()
+    Recipe->>Recipe: parse + validate
+    Recipe->>Agent: build layers 1-4
+    Agent->>Mem: store atlas data
+    Agent-->>Recipe: layers built
+    Recipe->>Agent: build layers 5-8
+    Agent-->>Recipe: layers built
+    Recipe->>Agent: verify all layers
+    Recipe->>GH: file issues (if bug hunt)
+    Recipe-->>CLI: atlas complete
+
+    Note over U,GH: Journey 4: Fleet Operations
+
+    U->>CLI: amplihack fleet scout
+    CLI->>GH: list repos
+    GH-->>CLI: repo list
+    CLI->>CLI: evaluate each repo
+    CLI-->>U: scout report
+    U->>CLI: amplihack fleet advance
+    CLI->>GH: create PRs
+    GH-->>CLI: PR URLs
+    CLI-->>U: advancement complete
+
+    Note over U,GH: Journey 5: Memory Query
+
+    U->>CLI: amplihack query-code "find auth"
+    CLI->>Mem: query_graph("find auth")
+    Mem->>Mem: graph traversal
+    Mem-->>CLI: matching nodes
+    CLI-->>U: results

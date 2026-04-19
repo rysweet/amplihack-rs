@@ -1,0 +1,55 @@
+graph TD
+    subgraph "CLI Commands (amplihack-cli)"
+        cmd_install["amplihack install"]
+        cmd_launch["amplihack launch"]
+        cmd_recipe["amplihack recipe run"]
+        cmd_memory["amplihack memory index"]
+        cmd_fleet["amplihack fleet"]
+        cmd_doctor["amplihack doctor"]
+        cmd_completions["amplihack completions"]
+        cmd_query_code["amplihack query-code"]
+        cmd_orch["amplihack orch"]
+        cmd_new_agent["amplihack new-agent"]
+        cmd_hive["amplihack hive"]
+    end
+
+    subgraph "Hook Protocol (JSON over stdio)"
+        hook_session_start["session_start<br/>→ HookInput"]
+        hook_pre_tool["pre_tool_use<br/>→ HookInput"]
+        hook_post_tool["post_tool_use<br/>→ HookInput"]
+        hook_stop["stop<br/>→ HookInput"]
+        hook_user_prompt["user_prompt<br/>→ HookInput"]
+    end
+
+    subgraph "Recipe Steps"
+        step_skill["type: skill<br/>→ skill name + task"]
+        step_agent["type: agent<br/>→ agent ref + description"]
+        step_bash["type: bash<br/>→ shell command"]
+    end
+
+    subgraph "Memory API"
+        mem_store["store_discovery()"]
+        mem_get["get_recent_discoveries()"]
+        mem_index["index_project()"]
+        mem_query["query_graph()"]
+    end
+
+    subgraph "Fleet API"
+        fleet_scout["fleet scout"]
+        fleet_advance["fleet advance"]
+        fleet_status["fleet status"]
+        fleet_dashboard["fleet dashboard"]
+    end
+
+    cmd_install -->|"stages bundle"| hook_session_start
+    cmd_launch -->|"starts claude"| hook_session_start
+    cmd_recipe -->|"parses YAML"| step_skill
+    cmd_recipe --> step_agent
+    cmd_recipe --> step_bash
+    cmd_memory --> mem_index
+    cmd_query_code --> mem_query
+    cmd_fleet --> fleet_scout
+    cmd_fleet --> fleet_advance
+    cmd_fleet --> fleet_status
+    cmd_fleet --> fleet_dashboard
+    hook_pre_tool -->|"validates"| hook_post_tool

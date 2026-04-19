@@ -1,0 +1,73 @@
+digraph data_flow {
+    rankdir=LR;
+    node [shape=box, style=filled, fontname="Helvetica", fontsize=10];
+    edge [fontname="Helvetica", fontsize=9];
+
+    subgraph cluster_input {
+        label="Input Sources";
+        style=dashed;
+        user_prompt [label="User Prompt\n(stdin)", fillcolor="#FFFFFF", shape=ellipse];
+        recipe_yaml [label="Recipe YAML\n(file)", fillcolor="#FFFFFF", shape=ellipse];
+        hook_event [label="Hook Event\n(JSON stdin)", fillcolor="#FFFFFF", shape=ellipse];
+    }
+
+    subgraph cluster_parse {
+        label="Parsing & Validation";
+        style=dashed;
+        clap_parse [label="Clap CLI Parser\n(cli::Cli)", fillcolor="#87CEEB"];
+        recipe_parse [label="recipe::parser\n(serde_yaml)", fillcolor="#87CEEB"];
+        hook_deser [label="HookInput\n(serde_json)", fillcolor="#87CEEB"];
+        security_check [label="security::XpiaDefender\n(pattern scan)", fillcolor="#FF6347"];
+    }
+
+    subgraph cluster_route {
+        label="Routing & Classification";
+        style=dashed;
+        cmd_dispatch [label="commands::dispatch\n(match on Command enum)", fillcolor="#FFD700"];
+        workflow_class [label="workflows::WorkflowClassifier\n(Q&A / Investigation / Dev)", fillcolor="#FFD700"];
+        recipe_condition [label="recipe::condition_eval", fillcolor="#FFD700"];
+    }
+
+    subgraph cluster_exec {
+        label="Execution";
+        style=dashed;
+        agent_session [label="agent_core::session\n(conversation state)", fillcolor="#98FB98"];
+        agent_loop_exec [label="agentic_loop::loop_core\n(tool-use cycle)", fillcolor="#98FB98"];
+        recipe_step_exec [label="recipe::executor\n(step runner)", fillcolor="#98FB98"];
+    }
+
+    subgraph cluster_persist {
+        label="State Persistence";
+        style=dashed;
+        atomic_json [label="state::AtomicJsonFile\n(file lock + write)", fillcolor="#F0E68C"];
+        memory_store [label="memory::backend\n(store/retrieve)", fillcolor="#F0E68C"];
+        kuzu_graph [label="LadybugDB (Kuzu)\n(graph insert/query)", fillcolor="#F0E68C"];
+    }
+
+    subgraph cluster_output {
+        label="Output";
+        style=dashed;
+        stdout_out [label="stdout\n(user response)", fillcolor="#D3D3D3", shape=ellipse];
+        file_out [label="File Output\n(generated code)", fillcolor="#D3D3D3", shape=ellipse];
+        gh_issue [label="GitHub Issue\n(gh API)", fillcolor="#D3D3D3", shape=ellipse];
+    }
+
+    user_prompt -> clap_parse [label="args"];
+    recipe_yaml -> recipe_parse [label="YAML"];
+    hook_event -> hook_deser [label="JSON"];
+    hook_deser -> security_check [label="validated"];
+    clap_parse -> cmd_dispatch [label="Command enum"];
+    recipe_parse -> recipe_condition [label="steps"];
+    security_check -> workflow_class [label="safe input"];
+    cmd_dispatch -> agent_session [label="run"];
+    cmd_dispatch -> recipe_step_exec [label="recipe run"];
+    workflow_class -> agent_session [label="classified"];
+    recipe_condition -> recipe_step_exec [label="eval"];
+    agent_session -> agent_loop_exec [label="drives"];
+    agent_loop_exec -> memory_store [label="persist"];
+    agent_loop_exec -> stdout_out [label="response"];
+    recipe_step_exec -> file_out [label="writes"];
+    memory_store -> kuzu_graph [label="graph ops"];
+    memory_store -> atomic_json [label="file ops"];
+    recipe_step_exec -> gh_issue [label="files"];
+}

@@ -107,3 +107,13 @@ nav:
       - Evaluation Framework: concepts/eval-framework.md
       - Hive Orchestration: concepts/hive-orchestration.md
       - Goal Agent Generator: concepts/agent-generator.md
+  - Code Atlas:
+      - Overview: atlas/index.md
+      - "Layer 1: Repo Surface": atlas/repo-surface/README.md
+      - "Layer 2: AST/LSP Bindings": atlas/ast-lsp-bindings/README.md
+      - "Layer 3: Compile Dependencies": atlas/compile-deps/README.md
+      - "Layer 4: Runtime Topology": atlas/runtime-topology/README.md
+      - "Layer 5: API Contracts": atlas/api-contracts/README.md
+      - "Layer 6: Data Flow": atlas/data-flow/README.md
+      - "Layer 7: Service Components": atlas/service-components/README.md
+      - "Layer 8: User Journeys": atlas/user-journeys/README.md

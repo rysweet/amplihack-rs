@@ -1,0 +1,61 @@
+graph TD
+    subgraph "Root"
+        Cargo_toml["Cargo.toml<br/>(workspace)"]
+        mkdocs_yml["mkdocs.yml"]
+        package_json["package.json"]
+    end
+
+    subgraph "bins/"
+        bin_amplihack["bins/amplihack<br/>main.rs"]
+        bin_asset_resolver["bins/amplihack-asset-resolver"]
+        bin_hooks["bins/amplihack-hooks"]
+    end
+
+    subgraph "crates/ (23 crates)"
+        cli["amplihack-cli"]
+        types["amplihack-types"]
+        state["amplihack-state"]
+        security["amplihack-security"]
+        workflows["amplihack-workflows"]
+        hooks["amplihack-hooks"]
+        memory["amplihack-memory"]
+        recipe["amplihack-recipe"]
+        launcher["amplihack-launcher"]
+        fleet["amplihack-fleet"]
+        agent_core["amplihack-agent-core"]
+        agent_eval["amplihack-agent-eval"]
+        agent_gen["amplihack-agent-generator"]
+        domain_agents["amplihack-domain-agents"]
+        hive["amplihack-hive"]
+        blarify["amplihack-blarify"]
+        multilspy["amplihack-multilspy"]
+        context["amplihack-context"]
+        delegation["amplihack-delegation"]
+        recovery["amplihack-recovery"]
+        remote["amplihack-remote"]
+        safety["amplihack-safety"]
+        utils["amplihack-utils"]
+    end
+
+    subgraph "amplifier-bundle/"
+        bundle_recipes["recipes/"]
+        bundle_tools["tools/"]
+        bundle_agents["agents/"]
+        bundle_skills["skills/"]
+        bundle_behaviors["behaviors/"]
+    end
+
+    subgraph "docs/"
+        docs_howto["howto/"]
+        docs_ref["reference/"]
+        docs_concepts["concepts/"]
+    end
+
+    Cargo_toml --> bin_amplihack
+    Cargo_toml --> cli
+    Cargo_toml --> types
+    Cargo_toml --> state
+    Cargo_toml --> memory
+    mkdocs_yml --> docs_howto
+    mkdocs_yml --> docs_ref
+    mkdocs_yml --> docs_concepts
