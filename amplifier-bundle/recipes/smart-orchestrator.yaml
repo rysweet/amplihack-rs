@@ -125,126 +125,78 @@ steps:
 
   # parse-decomposition: extract task_type from architect JSON output.
   # Outputs ONLY the canonical task_type string (e.g. "Development").
-  # Previously also extracted workstream_count here; that moved to activate-workflow.
+  # Uses native Rust `amplihack orch helper` (#270).
   - id: "parse-decomposition"
     type: "bash"
     command: |
-      HELPER_PATH="$(amplihack resolve-bundle-asset helper-path 2>/dev/null || true)"
-      if [ ! -f "$HELPER_PATH" ]; then
-          echo "ERROR: orch_helper.py not found at: $HELPER_PATH" >&2
-          echo "Ensure amplihack is installed correctly, or set AMPLIHACK_HOME to a valid runtime root." >&2
-          exit 1
-      fi
       _DECOMP_TMPFILE=$(mktemp)
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
       cat > "$_DECOMP_TMPFILE" <<__DECOMP_EOF__
       {{decomposition_json}}
       __DECOMP_EOF__
-      export DECOMP_TMPFILE="$_DECOMP_TMPFILE"
-      export HELPER_PATH
-      python3 - <<'PYEOF'
-      import sys, json, os, importlib.util
+      RAW_OBJ=$(amplihack orch helper extract-json < "$_DECOMP_TMPFILE")
+      if [ "$RAW_OBJ" = "{}" ]; then
+        cat <<'WARN' >&2
 
-      helper_path = os.environ['HELPER_PATH']
-      with open(os.environ['DECOMP_TMPFILE']) as f:
-          decomp_json = f.read()
-
-      spec = importlib.util.spec_from_file_location('orch_helper', helper_path)
-      h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
-      obj = h.extract_json(decomp_json)
-
-      if not obj:
-          msg = (
-              "\n"
-              "╔══════════════════════════════════════════════════════════════════╗\n"
-              "║  ERROR: decomposition JSON parse failed                         ║\n"
-              "║  The architect agent returned non-JSON prose instead of the     ║\n"
-              "║  expected structured plan.                                      ║\n"
-              "║                                                                 ║\n"
-              "║  Action: defaulting to task_type=Development so execution can   ║\n"
-              "║  continue. The adaptive strategy step will evaluate whether     ║\n"
-              "║  direct recipe invocation should be attempted.                  ║\n"
-              "╚══════════════════════════════════════════════════════════════════╝\n"
-          )
-          print(msg, file=sys.stderr)
-          # Do NOT print to stdout — stdout is captured as the output variable
-          # and box-drawing characters would corrupt downstream template substitution
-
-      task_type = h.normalise_type(obj.get("task_type", "Development"))
-      print(task_type)
-      PYEOF
+      ╔══════════════════════════════════════════════════════════════════╗
+      ║  ERROR: decomposition JSON parse failed                         ║
+      ║  The architect agent returned non-JSON prose instead of the     ║
+      ║  expected structured plan.                                      ║
+      ║                                                                 ║
+      ║  Action: defaulting to task_type=Development so execution can   ║
+      ║  continue. The adaptive strategy step will evaluate whether     ║
+      ║  direct recipe invocation should be attempted.                  ║
+      ║                                                                 ║
+      WARN
+      fi
+      # Extract the task_type field from the JSON object via a one-liner
+      # Rust call: pipe extracted JSON into a small inline tool. We use
+      # `amplihack orch helper normalise-type` directly on the raw value.
+      RAW_TYPE=$(printf '%s' "$RAW_OBJ" | amplihack orch helper extract-field --field task_type --default Development)
+      printf '%s' "$RAW_TYPE" | amplihack orch helper normalise-type
     output: "task_type"
 
   # activate-workflow: compute workstream_count, set workflow semaphore, announce.
-  # Replaces the former extract-workstream-count + announce-classification steps.
+  # Uses native Rust `amplihack orch helper count-workstreams` (#270). The
+  # only Python that remains is the `dev_intent_router` hook integration —
+  # tracked separately as a follow-up port.
   - id: "activate-workflow"
     type: "bash"
     command: |
-      HELPER_PATH="$(amplihack resolve-bundle-asset helper-path 2>/dev/null || true)"
-      if [ ! -f "$HELPER_PATH" ]; then
-          echo "ERROR: orch_helper.py not found at: $HELPER_PATH" >&2
-          echo "Ensure amplihack is installed correctly, or set AMPLIHACK_HOME to a valid runtime root." >&2
-          exit 1
-      fi
-      DECOMP_JSON=$(cat <<EOFDECOMP
-      {{decomposition_json}}
-      EOFDECOMP
-      )
-      TASK_TYPE={{task_type}}
-      FORCE_SINGLE={{force_single_workstream}}
-      HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir 2>/dev/null || true)"
       _DECOMP_TMPFILE=$(mktemp)
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
       cat > "$_DECOMP_TMPFILE" <<__DECOMP_EOF__
       {{decomposition_json}}
       __DECOMP_EOF__
-      export DECOMP_TMPFILE="$_DECOMP_TMPFILE"
-      export TASK_TYPE=$(printf '%s' {{task_type}})
-      export FORCE_SINGLE=$(printf '%s' "$FORCE_SINGLE")
-      export HELPER_PATH HOOKS_DIR
-      python3 - <<'PYEOF'
-      import os, sys, io, importlib.util
+      TASK_TYPE={{task_type}}
+      FORCE_SINGLE={{force_single_workstream}}
+      HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir 2>/dev/null || true)"
 
-      helper_path = os.environ['HELPER_PATH']
-      with open(os.environ['DECOMP_TMPFILE']) as f:
-          decomp_json = f.read()
-      task_type = os.environ['TASK_TYPE']
-      hooks_dir = os.environ['HOOKS_DIR']
-      force_single = os.environ.get('FORCE_SINGLE', 'false').strip().lower() in ('true', '1')
+      RAW_COUNT=$(amplihack orch helper count-workstreams < "$_DECOMP_TMPFILE")
+      case "$(printf '%s' "$FORCE_SINGLE" | tr '[:upper:]' '[:lower:]')" in
+        true|1) COUNT=1 ;;
+        *)      COUNT="$RAW_COUNT" ;;
+      esac
 
-      # Compute workstream count from decomposition JSON
-      spec = importlib.util.spec_from_file_location('orch_helper', helper_path)
-      h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
-      obj = h.extract_json(decomp_json)
-      raw_count = max(1, len(obj.get("workstreams", [])))
-
-      # Enforce force_single_workstream override (fix #3130)
-      count = 1 if force_single else raw_count
-
-      # Set workflow-active semaphore so the hook skips injection during execution
-      # Redirect stdout during import to prevent pollution of captured output
-      _saved_stdout = sys.stdout
-      sys.stdout = io.StringIO()
-      try:
-          sys.path.insert(0, hooks_dir)
-          from dev_intent_router import set_workflow_active
-          set_workflow_active(task_type, count)
-      except Exception:
-          pass  # Hook may not exist in all environments
-      finally:
-          sys.stdout = _saved_stdout
-
-      # Announce classification to stderr (visible to user, not captured as output)
-      if force_single and raw_count != count:
-          print(f"[dev-orchestrator] force_single_workstream=true — overriding {raw_count} workstreams to 1", file=sys.stderr)
-      print(f"[dev-orchestrator] Classified as: {task_type} | Workstreams: {count} — starting execution...", file=sys.stderr)
-
-      # Output workstream count (captured by recipe runner).
-      # Use sys.stdout.write to avoid trailing newline — the recipe runner
-      # stores step output as-is, and a trailing '\n' breaks exact string
-      # comparisons in downstream conditions (fix #3570).
-      sys.stdout.write(str(count))
+      # Set workflow-active semaphore so the hook skips injection during execution.
+      # This is the only remaining Python in this step; tracked as a follow-up
+      # port (the hooks system itself hasn't been ported yet).
+      if [ -d "$HOOKS_DIR" ]; then
+        TASK_TYPE="$TASK_TYPE" COUNT="$COUNT" HOOKS_DIR="$HOOKS_DIR" python3 - <<'PYEOF' >/dev/null 2>&1 || true
+      import os, sys
+      sys.path.insert(0, os.environ['HOOKS_DIR'])
+      from dev_intent_router import set_workflow_active
+      set_workflow_active(os.environ['TASK_TYPE'], int(os.environ['COUNT']))
       PYEOF
+      fi
+
+      if [ "$COUNT" != "$RAW_COUNT" ]; then
+        echo "[dev-orchestrator] force_single_workstream=true — overriding $RAW_COUNT workstreams to 1" >&2
+      fi
+      echo "[dev-orchestrator] Classified as: $TASK_TYPE | Workstreams: $COUNT — starting execution..." >&2
+
+      # Output workstream count without trailing newline (fix #3570).
+      printf '%s' "$COUNT"
     output: "workstream_count"
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -434,42 +386,12 @@ steps:
     condition: |
       ('Development' in task_type or 'Investigation' in task_type) and workstream_count != 1 and workstream_count != '1' and workstream_count != '' and 'ALLOWED' in recursion_guard and force_single_workstream != 'true'
     command: |
-      HELPER_PATH="$(amplihack resolve-bundle-asset helper-path 2>/dev/null || true)"
-      if [ ! -f "$HELPER_PATH" ]; then
-          echo "ERROR: orch_helper.py not found at: $HELPER_PATH" >&2
-          echo "Ensure amplihack is installed correctly, or set AMPLIHACK_HOME to a valid runtime root." >&2
-          exit 1
-      fi
       _DECOMP_TMPFILE=$(mktemp)
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
       cat > "$_DECOMP_TMPFILE" <<__DECOMP_EOF__
       {{decomposition_json}}
       __DECOMP_EOF__
-      export DECOMP_TMPFILE="$_DECOMP_TMPFILE"
-      export HELPER_PATH
-      python3 - <<'PYEOF'
-      import json, os, re, tempfile, sys
-      sys.path.insert(0, os.path.dirname(os.environ['HELPER_PATH']))
-      import orch_helper
-      with open(os.environ['DECOMP_TMPFILE']) as f:
-          decomp = f.read()
-      obj = orch_helper.extract_json(decomp)
-      config = []
-      for i, ws in enumerate(obj.get("workstreams", [])):
-          name = ws.get("name", f"workstream-{i+1}")
-          slug = re.sub(r'[^a-z0-9-]', '-', name.lower())[:30].strip('-') or f"ws-{i+1}"
-          config.append({
-              "issue": "TBD",
-              "branch": f"feat/orch-{i+1}-{slug}",
-              "description": name,
-              "task": ws.get("description", name),
-              "recipe": ws.get("recipe", "default-workflow")
-          })
-      fd, p = tempfile.mkstemp(prefix="smart-orch-ws-", suffix=".json", dir="/tmp")
-      os.chmod(p, 0o600)
-      with os.fdopen(fd, "w") as f: json.dump(config, f, indent=2)
-      print(p)
-      PYEOF
+      amplihack orch helper build-workstreams-config < "$_DECOMP_TMPFILE"
     output: "workstreams_file"
 
   - id: "launch-parallel-round-1"
