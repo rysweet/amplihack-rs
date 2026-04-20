@@ -156,9 +156,13 @@ fn test_execute_recipe_via_rust_propagates_asset_resolver_env() {
             amplihack_home.to_string_lossy().into_owned()
         ))
     );
+    let expected_graph = temp.path().join(".amplihack").join("graph_db");
     assert_eq!(
         result.context.get("graph"),
-        Some(&JsonValue::String("/custom/graph".to_string()))
+        Some(&JsonValue::String(
+            expected_graph.to_string_lossy().into_owned()
+        )),
+        "explicit project_root (temp dir) must win over inherited AMPLIHACK_GRAPH_DB_PATH (issue #250)"
     );
     assert_eq!(
         result.context.get("legacy_graph_alias"),

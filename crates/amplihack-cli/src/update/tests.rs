@@ -428,7 +428,13 @@ fn shell_profile_path_unknown() {
 fn ensure_local_bin_on_shell_path_creates_export() {
     use crate::commands::install::paths::ensure_local_bin_on_shell_path;
     let tmp = tempfile::TempDir::new().unwrap();
-    let _lock = crate::test_support::env_lock();
+    // Use home_env_lock so we serialize with HOME-reading tests like
+    // test_resolve_binary_path_expands_tilde_to_home_dir.
+    let _lock = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let prev_home = std::env::var_os("HOME");
+    let prev_shell = std::env::var_os("SHELL");
     unsafe { std::env::set_var("HOME", tmp.path().as_os_str()) };
     unsafe { std::env::set_var("SHELL", "/bin/bash") };
     ensure_local_bin_on_shell_path().unwrap();
@@ -442,6 +448,12 @@ fn ensure_local_bin_on_shell_path_creates_export() {
     let content2 = std::fs::read_to_string(tmp.path().join(".bashrc")).unwrap();
     let count = content2.matches("export PATH").count();
     assert_eq!(count, 1, "should not duplicate the export line");
-    unsafe { std::env::remove_var("SHELL") };
-    unsafe { std::env::remove_var("HOME") };
+    match prev_shell {
+        Some(v) => unsafe { std::env::set_var("SHELL", v) },
+        None => unsafe { std::env::remove_var("SHELL") },
+    }
+    match prev_home {
+        Some(v) => unsafe { std::env::set_var("HOME", v) },
+        None => unsafe { std::env::remove_var("HOME") },
+    }
 }
