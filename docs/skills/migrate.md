@@ -185,5 +185,5 @@ shared or untrusted destinations.
 
 ## See Also
 
-- [`/amplihack:remote`](../../amplifier-bundle/skills/remote-work/SKILL.md) — related skill that does **not** copy credentials.
+- **Remote work skill** — related skill that does **not** copy credentials.
 - [azlin](https://github.com/rysweet/azlin) — destination provisioning and transport.
