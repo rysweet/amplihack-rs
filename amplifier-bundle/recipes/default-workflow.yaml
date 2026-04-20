@@ -1984,28 +1984,29 @@ steps:
       export ISSUE_VAL
       PR_VAL=$(printf '%s' {{pr_url}})
       export PR_VAL
-      python3 << 'PYEOF'
-      import json, os
-      print(json.dumps({
-          "workflow": "default-workflow",
-          "version": "2.0.0",
-          "task": os.environ.get("TASK_VAL", ""),
-          "issue_number": os.environ.get("ISSUE_VAL", ""),
-          "pr_url": os.environ.get("PR_VAL", ""),
-          "status": "complete",
-          "steps_completed": 23,
-          "phases_completed": [
-              "requirements-clarification", "design", "implementation",
-              "testing", "review", "merge"
+      jq -n \
+        --arg task "$TASK_VAL" \
+        --arg issue "$ISSUE_VAL" \
+        --arg pr "$PR_VAL" \
+        '{
+          workflow: "default-workflow",
+          version: "2.0.0",
+          task: $task,
+          issue_number: $issue,
+          pr_url: $pr,
+          status: "complete",
+          steps_completed: 23,
+          phases_completed: [
+            "requirements-clarification", "design", "implementation",
+            "testing", "review", "merge"
           ],
-          "mandatory_steps_completed": {
-              "step_0_preparation": True,
-              "step_14_version_bump": True,
-              "step_17_pr_review": True,
-              "step_18_implement_feedback": True
+          mandatory_steps_completed: {
+            step_0_preparation: true,
+            step_14_version_bump: true,
+            step_17_pr_review: true,
+            step_18_implement_feedback: true
           },
-          "philosophy_compliant": True,
-          "ready_to_merge": True
-      }, indent=2))
-      PYEOF
+          philosophy_compliant: true,
+          ready_to_merge: true
+        }'
     output: "workflow_result"

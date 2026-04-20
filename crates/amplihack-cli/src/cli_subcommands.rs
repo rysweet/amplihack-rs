@@ -218,6 +218,54 @@ pub enum ModeCommands {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum OrchestratorHelperCommands {
+    /// Extract first JSON object from stdin (prints {} on failure)
+    #[command(name = "extract-json")]
+    ExtractJson,
+    /// Normalise a task type string to: Q&A | Operations | Investigation | Development
+    #[command(name = "normalise-type")]
+    NormaliseType,
+    /// Build workstream config JSON from decomposition JSON file
+    #[command(name = "create-workstreams-config")]
+    CreateWorkstreamsConfig {
+        /// Path to decomposition JSON file
+        #[arg(long)]
+        input: String,
+    },
+    /// Print 8-char hex UUID to stdout
+    Uuid,
+    /// Build JSON object from key=value positional args and print to stdout
+    #[command(name = "json-output")]
+    JsonOutput {
+        /// key=value pairs
+        pairs: Vec<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SessionTreeCommands {
+    /// Advisory check if a new child session can be spawned
+    Check,
+    /// Register a session in the tree atomically
+    Register {
+        /// Session identifier
+        session_id: String,
+        /// Optional parent session identifier
+        parent_id: Option<String>,
+    },
+    /// Mark a session as completed
+    Complete {
+        /// Session identifier to mark completed
+        session_id: String,
+    },
+    /// Show tree status as JSON
+    Status {
+        /// Tree ID (defaults to AMPLIHACK_TREE_ID env var)
+        tree_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum MultitaskCommands {
     /// Run parallel workstreams from a JSON config file
     Run {

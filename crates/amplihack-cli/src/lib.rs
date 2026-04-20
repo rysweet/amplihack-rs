@@ -77,8 +77,8 @@ pub const VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
 
 pub use cli_commands::Commands;
 pub use cli_subcommands::{
-    MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands, QueryCodeCommands,
-    RecipeCommands,
+    MemoryCommands, ModeCommands, MultitaskCommands, OrchestratorHelperCommands, PluginCommands,
+    QueryCodeCommands, RecipeCommands, SessionTreeCommands,
 };
 
 fn graph_db_backend_value_parser() -> PossibleValuesParser {

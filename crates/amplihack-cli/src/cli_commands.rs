@@ -5,8 +5,8 @@ use clap_complete::Shell;
 use std::path::PathBuf;
 
 use super::{
-    MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands, QueryCodeCommands,
-    RecipeCommands,
+    MemoryCommands, ModeCommands, MultitaskCommands, OrchestratorHelperCommands, PluginCommands,
+    QueryCodeCommands, RecipeCommands, SessionTreeCommands,
 };
 
 #[derive(Subcommand, Debug)]
@@ -333,5 +333,19 @@ pub enum Commands {
     Multitask {
         #[command(subcommand)]
         command: MultitaskCommands,
+    },
+
+    /// Orchestrator helper utilities (native Rust replacement for orch_helper.py)
+    #[command(name = "orch-helper")]
+    OrchestratorHelper {
+        #[command(subcommand)]
+        command: OrchestratorHelperCommands,
+    },
+
+    /// Session tree management for orchestration recursion control
+    #[command(name = "session-tree")]
+    SessionTree {
+        #[command(subcommand)]
+        command: SessionTreeCommands,
     },
 }

@@ -12,7 +12,9 @@ pub mod memory;
 pub mod mode;
 pub mod multitask;
 pub mod new_agent;
+pub mod orch_helper;
 pub mod plugin;
+pub mod session_tree;
 pub mod query_code;
 pub mod recipe;
 pub mod rustyclawd;
@@ -313,6 +315,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
             std::process::exit(code);
         }
         Commands::Multitask { command } => dispatch_multitask(command),
+        Commands::OrchestratorHelper { command } => orch_helper::dispatch(command),
+        Commands::SessionTree { command } => session_tree::run_session_tree(command),
     }
 }
 
