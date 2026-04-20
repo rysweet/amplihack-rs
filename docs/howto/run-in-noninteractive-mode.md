@@ -130,7 +130,15 @@ AMPLIHACK_NONINTERACTIVE=1 amplihack claude ...
 AMPLIHACK_NONINTERACTIVE=true amplihack claude ...
 ```
 
+## Recipe steps are always non-interactive
+
+Recipe steps executed by `amplihack recipe run` are always treated as non-interactive, regardless of whether `AMPLIHACK_NONINTERACTIVE` is set. The recipe executor injects `CI=true`, `NONINTERACTIVE=1`, and `DEBIAN_FRONTEND=noninteractive` into every shell step, and passes `NONINTERACTIVE=1` in every agent step's context map.
+
+See [Recipe Executor Environment](../reference/recipe-executor-environment.md) for the full specification.
+
 ## Related
 
 - [Environment Variables](../reference/environment-variables.md#amplihack_noninteractive) — Full reference for `AMPLIHACK_NONINTERACTIVE`
 - [Bootstrap Parity](../concepts/bootstrap-parity.md) — How the Rust CLI matches Python's non-interactive detection
+- [Recipe Executor Environment](../reference/recipe-executor-environment.md) — Environment variables injected into recipe steps
+- [Troubleshoot Recipe Execution](./troubleshoot-recipe-execution.md) — Diagnosing common recipe failures

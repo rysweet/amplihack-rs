@@ -149,7 +149,10 @@ fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
 pub(super) fn find_framework_repo_root(root: &Path) -> Result<PathBuf> {
     let mut queue = VecDeque::from([root.to_path_buf()]);
     while let Some(dir) = queue.pop_front() {
-        if dir.join(".claude").is_dir() {
+        // Accept either `.claude/` (Python repo layout) or
+        // `amplifier-bundle/` (Rust repo layout) as a repo root marker
+        // (fix #254).
+        if dir.join(".claude").is_dir() || dir.join("amplifier-bundle").is_dir() {
             return Ok(dir);
         }
         for entry in
@@ -164,7 +167,7 @@ pub(super) fn find_framework_repo_root(root: &Path) -> Result<PathBuf> {
     }
 
     bail!(
-        "downloaded framework archive did not contain a repository root with .claude under {}",
+        "downloaded framework archive did not contain a repository root with .claude or amplifier-bundle under {}",
         root.display()
     )
 }

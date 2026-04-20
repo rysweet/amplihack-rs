@@ -42,6 +42,15 @@ pub fn run_update() -> Result<()> {
     );
     super::install::download_and_replace(&release)?;
     write_cache(&cache_path()?, &release.version)?;
+
+    // Re-stage framework assets after binary swap (fix #249).
+    // The new binary may depend on updated assets in amplifier-bundle.
+    if let Err(err) = crate::commands::install::ensure_framework_installed() {
+        eprintln!(
+            "⚠️  Binary updated but framework asset refresh failed: {err:#}\n   \
+             Run `amplihack install` to refresh assets manually."
+        );
+    }
     Ok(())
 }
 
