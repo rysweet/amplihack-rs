@@ -1,0 +1,104 @@
+digraph service_components {
+    rankdir=TB;
+    node [shape=box, style=filled, fontname="Helvetica", fontsize=9];
+    edge [fontname="Helvetica", fontsize=8];
+
+    subgraph cluster_cli {
+        label="amplihack-cli";
+        style=dashed; color="#4169E1";
+        cli_commands_mod [label="commands/", fillcolor="#87CEEB"];
+        cli_install [label="commands/install", fillcolor="#87CEEB"];
+        cli_launch [label="commands/launch", fillcolor="#87CEEB"];
+        cli_recipe_cmd [label="commands/recipe", fillcolor="#87CEEB"];
+        cli_fleet_cmd [label="commands/fleet", fillcolor="#87CEEB"];
+        cli_doctor_cmd [label="commands/doctor", fillcolor="#87CEEB"];
+        cli_new_agent [label="commands/new_agent", fillcolor="#87CEEB"];
+        cli_orch_cmd [label="commands/orch", fillcolor="#87CEEB"];
+        cli_hive_cmd [label="commands/hive_haymaker", fillcolor="#87CEEB"];
+        cli_auto_mode [label="auto_mode_*", fillcolor="#87CEEB"];
+        cli_update [label="update/", fillcolor="#87CEEB"];
+        cli_signals [label="signals", fillcolor="#87CEEB"];
+        cli_copilot [label="copilot_setup/", fillcolor="#87CEEB"];
+        cli_fleet_local [label="fleet_local/", fillcolor="#87CEEB"];
+    }
+
+    subgraph cluster_agent_core {
+        label="amplihack-agent-core";
+        style=dashed; color="#228B22";
+        ac_agent [label="agent", fillcolor="#98FB98"];
+        ac_agentic_loop [label="agentic_loop/", fillcolor="#98FB98"];
+        ac_sdk [label="sdk_adapters/", fillcolor="#98FB98"];
+        ac_sub_agents [label="sub_agents/", fillcolor="#98FB98"];
+        ac_answer_synth [label="answer_synth/", fillcolor="#98FB98"];
+        ac_cognitive [label="cognitive_adapter/", fillcolor="#98FB98"];
+        ac_session [label="session", fillcolor="#98FB98"];
+        ac_memory_retrieval [label="memory_retrieval", fillcolor="#98FB98"];
+        ac_temporal [label="temporal_reasoning/", fillcolor="#98FB98"];
+    }
+
+    subgraph cluster_hooks {
+        label="amplihack-hooks";
+        style=dashed; color="#8B0000";
+        hk_session_start [label="session_start", fillcolor="#FFA07A"];
+        hk_pre_tool [label="pre_tool_use", fillcolor="#FFA07A"];
+        hk_post_tool [label="post_tool_use", fillcolor="#FFA07A"];
+        hk_stop [label="stop", fillcolor="#FFA07A"];
+        hk_user_prompt [label="user_prompt", fillcolor="#FFA07A"];
+        hk_workflow [label="workflow_classification", fillcolor="#FFA07A"];
+        hk_protocol [label="protocol", fillcolor="#FFA07A"];
+    }
+
+    subgraph cluster_memory {
+        label="amplihack-memory";
+        style=dashed; color="#DAA520";
+        mem_backend [label="backend", fillcolor="#F0E68C"];
+        mem_database [label="database", fillcolor="#F0E68C"];
+        mem_discoveries [label="discoveries", fillcolor="#F0E68C"];
+        mem_bloom [label="bloom", fillcolor="#F0E68C"];
+        mem_config [label="config", fillcolor="#F0E68C"];
+        mem_coordinator [label="coordinator", fillcolor="#F0E68C"];
+        mem_evaluation [label="evaluation", fillcolor="#F0E68C"];
+    }
+
+    subgraph cluster_recipe {
+        label="amplihack-recipe";
+        style=dashed; color="#800080";
+        rcp_parser [label="parser", fillcolor="#DDA0DD"];
+        rcp_executor [label="executor", fillcolor="#DDA0DD"];
+        rcp_models [label="models", fillcolor="#DDA0DD"];
+        rcp_condition [label="condition_eval", fillcolor="#DDA0DD"];
+        rcp_template [label="template", fillcolor="#DDA0DD"];
+        rcp_discovery [label="discovery", fillcolor="#DDA0DD"];
+        rcp_agent_resolver [label="agent_resolver", fillcolor="#DDA0DD"];
+    }
+
+    subgraph cluster_hive {
+        label="amplihack-hive";
+        style=dashed; color="#006400";
+        hv_controller [label="controller", fillcolor="#90EE90"];
+        hv_distributed [label="distributed/", fillcolor="#90EE90"];
+        hv_crdt [label="crdt", fillcolor="#90EE90"];
+        hv_dht [label="dht", fillcolor="#90EE90"];
+        hv_embeddings [label="embeddings", fillcolor="#90EE90"];
+        hv_event_bus [label="event_bus", fillcolor="#90EE90"];
+        hv_feed [label="feed", fillcolor="#90EE90"];
+    }
+
+    cli_commands_mod -> cli_install;
+    cli_commands_mod -> cli_launch;
+    cli_commands_mod -> cli_recipe_cmd;
+    cli_commands_mod -> cli_fleet_cmd;
+    ac_agent -> ac_agentic_loop;
+    ac_agent -> ac_sdk;
+    ac_agent -> ac_sub_agents;
+    ac_agentic_loop -> ac_answer_synth;
+    ac_agentic_loop -> ac_cognitive;
+    hk_protocol -> hk_session_start;
+    hk_protocol -> hk_pre_tool;
+    hk_protocol -> hk_post_tool;
+    rcp_executor -> rcp_parser;
+    rcp_executor -> rcp_condition;
+    rcp_executor -> rcp_template;
+    hv_controller -> hv_distributed;
+    hv_controller -> hv_event_bus;
+}

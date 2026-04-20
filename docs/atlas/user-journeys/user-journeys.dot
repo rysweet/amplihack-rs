@@ -1,0 +1,90 @@
+digraph user_journeys {
+    rankdir=TB;
+    node [shape=box, style=filled, fontname="Helvetica", fontsize=10];
+    edge [fontname="Helvetica", fontsize=9];
+    compound=true;
+
+    // Journey 1: Install & Launch
+    subgraph cluster_j1 {
+        label="Journey 1: First-Time Install & Launch";
+        style=dashed; color="#4169E1";
+        j1_user [label="User", shape=ellipse, fillcolor="#FFFFFF"];
+        j1_install [label="amplihack install", fillcolor="#87CEEB"];
+        j1_stage [label="Stage amplifier-bundle", fillcolor="#98FB98"];
+        j1_write_hooks [label="Write hooks to .claude/", fillcolor="#98FB98"];
+        j1_launch [label="amplihack launch", fillcolor="#87CEEB"];
+        j1_claude [label="Spawn Claude Code", fillcolor="#FFD700"];
+        j1_session [label="session_start hook", fillcolor="#FFA07A"];
+
+        j1_user -> j1_install;
+        j1_install -> j1_stage;
+        j1_stage -> j1_write_hooks;
+        j1_write_hooks -> j1_launch;
+        j1_launch -> j1_claude;
+        j1_claude -> j1_session;
+    }
+
+    // Journey 2: Dev Task
+    subgraph cluster_j2 {
+        label="Journey 2: Development Task via /dev";
+        style=dashed; color="#228B22";
+        j2_prompt [label="/dev 'Add auth'", shape=ellipse, fillcolor="#FFFFFF"];
+        j2_classify [label="Workflow Classifier\n-> DEVELOPMENT", fillcolor="#FFD700"];
+        j2_recipe [label="smart-orchestrator\nrecipe", fillcolor="#DDA0DD"];
+        j2_agent [label="Builder Agent", fillcolor="#98FB98"];
+        j2_memory [label="Memory\nget/store discoveries", fillcolor="#F0E68C"];
+        j2_output [label="Code Changes", shape=ellipse, fillcolor="#FFFFFF"];
+
+        j2_prompt -> j2_classify;
+        j2_classify -> j2_recipe;
+        j2_recipe -> j2_agent;
+        j2_agent -> j2_memory;
+        j2_agent -> j2_output;
+    }
+
+    // Journey 3: Recipe Run
+    subgraph cluster_j3 {
+        label="Journey 3: Recipe Execution";
+        style=dashed; color="#800080";
+        j3_cmd [label="amplihack recipe run\ncode-atlas.yaml", fillcolor="#87CEEB"];
+        j3_parse [label="Parse & Validate\nYAML", fillcolor="#DDA0DD"];
+        j3_layers14 [label="Build Layers 1-4", fillcolor="#98FB98"];
+        j3_layers58 [label="Build Layers 5-8", fillcolor="#98FB98"];
+        j3_verify [label="Verify All Layers", fillcolor="#FF6347"];
+        j3_publish [label="Publish Atlas", fillcolor="#98FB98"];
+
+        j3_cmd -> j3_parse;
+        j3_parse -> j3_layers14;
+        j3_layers14 -> j3_layers58;
+        j3_layers58 -> j3_verify;
+        j3_verify -> j3_publish;
+    }
+
+    // Journey 4: Fleet
+    subgraph cluster_j4 {
+        label="Journey 4: Fleet Operations";
+        style=dashed; color="#DAA520";
+        j4_scout [label="amplihack fleet scout", fillcolor="#87CEEB"];
+        j4_gh [label="GitHub API\nlist repos", fillcolor="#D3D3D3"];
+        j4_eval [label="Evaluate repos", fillcolor="#FFD700"];
+        j4_advance [label="amplihack fleet advance", fillcolor="#87CEEB"];
+        j4_prs [label="Create PRs", fillcolor="#98FB98"];
+
+        j4_scout -> j4_gh;
+        j4_gh -> j4_eval;
+        j4_eval -> j4_advance;
+        j4_advance -> j4_prs;
+    }
+
+    // Journey 5: Memory Query
+    subgraph cluster_j5 {
+        label="Journey 5: Memory Query";
+        style=dashed; color="#8B0000";
+        j5_query [label="amplihack query-code\n'find auth'", fillcolor="#87CEEB"];
+        j5_graph [label="Graph Traversal\n(LadybugDB)", fillcolor="#F0E68C"];
+        j5_results [label="Matching Nodes", shape=ellipse, fillcolor="#FFFFFF"];
+
+        j5_query -> j5_graph;
+        j5_graph -> j5_results;
+    }
+}

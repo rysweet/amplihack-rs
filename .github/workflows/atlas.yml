@@ -1,0 +1,33 @@
+name: Code Atlas
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-atlas:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Graphviz
+        run: sudo apt-get update && sudo apt-get install -y graphviz
+
+      - name: Render DOT diagrams
+        run: |
+          for layer in repo-surface ast-lsp-bindings compile-deps runtime-topology \
+                       api-contracts data-flow service-components user-journeys; do
+            dot -Tsvg "docs/atlas/$layer/$layer.dot" \
+                -o "docs/atlas/$layer/${layer}-dot.svg"
+          done
+
+      - name: Upload atlas artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-atlas
+          path: docs/atlas/
+          retention-days: 90

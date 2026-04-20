@@ -1,0 +1,71 @@
+graph TD
+    subgraph "Foundation Layer"
+        types["amplihack-types"]
+        state["amplihack-state"]
+        utils["amplihack-utils"]
+        security["amplihack-security"]
+        safety["amplihack-safety"]
+    end
+
+    subgraph "Core Infrastructure"
+        memory["amplihack-memory"]
+        workflows["amplihack-workflows"]
+        recipe["amplihack-recipe"]
+        context["amplihack-context"]
+        delegation["amplihack-delegation"]
+        recovery["amplihack-recovery"]
+    end
+
+    subgraph "Agent Layer"
+        agent_core["amplihack-agent-core"]
+        agent_eval["amplihack-agent-eval"]
+        agent_gen["amplihack-agent-generator"]
+        domain_agents["amplihack-domain-agents"]
+    end
+
+    subgraph "Orchestration Layer"
+        hive["amplihack-hive"]
+        fleet["amplihack-fleet"]
+        remote["amplihack-remote"]
+    end
+
+    subgraph "Integration Layer"
+        cli["amplihack-cli"]
+        hooks["amplihack-hooks"]
+        launcher["amplihack-launcher"]
+        blarify["amplihack-blarify"]
+        multilspy["amplihack-multilspy"]
+    end
+
+    subgraph "Binary Layer"
+        bin_amplihack["bins/amplihack"]
+    end
+
+    %% Foundation deps
+    state --> types
+
+    %% Core Infrastructure deps
+    %% (memory, workflows, recipe standalone)
+
+    %% Agent Layer deps
+    agent_core --> memory
+    domain_agents --> agent_core
+    domain_agents --> memory
+    domain_agents --> workflows
+
+    %% Orchestration Layer deps
+    hive --> agent_core
+    hive --> memory
+
+    %% Integration Layer deps
+    cli --> types
+    cli --> state
+    cli --> hive
+    hooks --> types
+    hooks --> state
+    hooks --> cli
+    hooks --> security
+    hooks --> workflows
+
+    %% Binary deps
+    bin_amplihack --> cli

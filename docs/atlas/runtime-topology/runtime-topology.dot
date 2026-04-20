@@ -1,0 +1,91 @@
+digraph runtime_topology {
+    rankdir=TB;
+    node [shape=box, style=filled, fontname="Helvetica", fontsize=10];
+    edge [fontname="Helvetica", fontsize=9];
+    compound=true;
+
+    subgraph cluster_shell {
+        label="User Shell";
+        style=dashed;
+        user [label="User", shape=ellipse, fillcolor="#FFFFFF"];
+    }
+
+    subgraph cluster_cli {
+        label="CLI Process";
+        style=dashed;
+        amplihack_bin [label="amplihack binary\n(bins/amplihack)", fillcolor="#87CEEB"];
+        cli_dispatch [label="cli::commands::dispatch", fillcolor="#87CEEB"];
+    }
+
+    subgraph cluster_claude {
+        label="Claude Code Host";
+        style=dashed;
+        claude_code [label="Claude Code\n(claude)", fillcolor="#FFD700"];
+        hooks_runtime [label="Hook Runtime\n(amplihack-hooks)", fillcolor="#FFD700"];
+        mcp_server [label="MCP Server\n(amplihack-hooks/bins)", fillcolor="#FFD700"];
+    }
+
+    subgraph cluster_recipe {
+        label="Recipe Runner";
+        style=dashed;
+        recipe_exec [label="recipe::executor", fillcolor="#98FB98"];
+        recipe_parser [label="recipe::parser", fillcolor="#98FB98"];
+        session_tree [label="session_tree.py\n(recursion guard)", fillcolor="#98FB98"];
+    }
+
+    subgraph cluster_agent_rt {
+        label="Agent Runtime";
+        style=dashed;
+        agent_loop [label="agentic_loop::loop_core", fillcolor="#DDA0DD"];
+        sdk_claude [label="sdk_adapters::claude", fillcolor="#DDA0DD"];
+        sdk_copilot [label="sdk_adapters::copilot", fillcolor="#DDA0DD"];
+        sdk_ms [label="sdk_adapters::microsoft", fillcolor="#DDA0DD"];
+    }
+
+    subgraph cluster_memory_rt {
+        label="Memory Store";
+        style=dashed;
+        memory_backend_rt [label="memory::backend", fillcolor="#F0E68C"];
+        kuzu_db [label="LadybugDB\n(Kuzu graph)", fillcolor="#F0E68C"];
+        json_store [label="JSON file store", fillcolor="#F0E68C"];
+    }
+
+    subgraph cluster_fleet {
+        label="Remote Fleet";
+        style=dashed;
+        fleet_vm [label="Fleet VMs\n(Azure)", fillcolor="#FFA07A"];
+        fleet_tmux [label="tmux sessions", fillcolor="#FFA07A"];
+        fleet_health [label="health monitor", fillcolor="#FFA07A"];
+    }
+
+    subgraph cluster_external {
+        label="External Services";
+        style=dashed;
+        gh_api [label="GitHub API", fillcolor="#D3D3D3"];
+        anthropic_api [label="Anthropic API", fillcolor="#D3D3D3"];
+        azure_api [label="Azure API", fillcolor="#D3D3D3"];
+    }
+
+    user -> amplihack_bin [label="invokes"];
+    amplihack_bin -> cli_dispatch [label="parses args"];
+    cli_dispatch -> claude_code [label="launch"];
+    claude_code -> hooks_runtime [label="hook events"];
+    hooks_runtime -> mcp_server [label="tool calls"];
+    cli_dispatch -> recipe_exec [label="recipe run"];
+    recipe_exec -> recipe_parser [label="parse YAML"];
+    recipe_exec -> session_tree [label="depth check"];
+    recipe_exec -> agent_loop [label="spawn agent"];
+    agent_loop -> sdk_claude [label="Anthropic"];
+    agent_loop -> sdk_copilot [label="Copilot"];
+    agent_loop -> sdk_ms [label="Microsoft"];
+    agent_loop -> memory_backend_rt [label="store/retrieve"];
+    memory_backend_rt -> kuzu_db [label="graph queries"];
+    memory_backend_rt -> json_store [label="file I/O"];
+    sdk_claude -> anthropic_api [label="HTTP"];
+    sdk_copilot -> gh_api [label="HTTP"];
+    sdk_ms -> azure_api [label="HTTP"];
+    cli_dispatch -> fleet_vm [label="fleet cmd"];
+    fleet_vm -> fleet_tmux [label="sessions"];
+    fleet_vm -> fleet_health [label="monitor"];
+    fleet_health -> gh_api [label="status"];
+}

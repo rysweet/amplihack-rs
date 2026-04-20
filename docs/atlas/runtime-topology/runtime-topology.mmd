@@ -1,0 +1,69 @@
+graph TD
+    subgraph "User Shell"
+        user["User"]
+    end
+
+    subgraph "CLI Process"
+        amplihack_bin["amplihack binary<br/>(bins/amplihack)"]
+        cli_dispatch["cli::commands::dispatch"]
+    end
+
+    subgraph "Claude Code Host"
+        claude_code["Claude Code<br/>(claude)"]
+        hooks_runtime["Hook Runtime<br/>(amplihack-hooks)"]
+        mcp_server["MCP Server<br/>(amplihack-hooks/bins)"]
+    end
+
+    subgraph "Recipe Runner"
+        recipe_exec["recipe::executor"]
+        recipe_parser["recipe::parser"]
+        session_tree["session_tree.py<br/>(recursion guard)"]
+    end
+
+    subgraph "Agent Runtime"
+        agent_loop["agentic_loop::loop_core"]
+        sdk_claude["sdk_adapters::claude"]
+        sdk_copilot["sdk_adapters::copilot"]
+        sdk_ms["sdk_adapters::microsoft"]
+    end
+
+    subgraph "Memory Store"
+        memory_backend_rt["memory::backend"]
+        kuzu_db["LadybugDB<br/>(Kuzu graph)"]
+        json_store["JSON file store"]
+    end
+
+    subgraph "Remote Fleet"
+        fleet_vm["Fleet VMs<br/>(Azure)"]
+        fleet_tmux["tmux sessions"]
+        fleet_health["health monitor"]
+    end
+
+    subgraph "External Services"
+        gh_api["GitHub API"]
+        anthropic_api["Anthropic API"]
+        azure_api["Azure API"]
+    end
+
+    user --> amplihack_bin
+    amplihack_bin --> cli_dispatch
+    cli_dispatch -->|"launch"| claude_code
+    claude_code --> hooks_runtime
+    hooks_runtime --> mcp_server
+    cli_dispatch -->|"recipe run"| recipe_exec
+    recipe_exec --> recipe_parser
+    recipe_exec --> session_tree
+    recipe_exec -->|"spawn agent"| agent_loop
+    agent_loop --> sdk_claude
+    agent_loop --> sdk_copilot
+    agent_loop --> sdk_ms
+    agent_loop --> memory_backend_rt
+    memory_backend_rt --> kuzu_db
+    memory_backend_rt --> json_store
+    sdk_claude --> anthropic_api
+    sdk_copilot --> gh_api
+    sdk_ms --> azure_api
+    cli_dispatch -->|"fleet"| fleet_vm
+    fleet_vm --> fleet_tmux
+    fleet_vm --> fleet_health
+    fleet_health --> gh_api
