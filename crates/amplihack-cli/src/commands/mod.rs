@@ -12,6 +12,7 @@ pub mod memory;
 pub mod mode;
 pub mod multitask;
 pub mod new_agent;
+pub mod orch;
 pub mod plugin;
 pub mod query_code;
 pub mod recipe;
@@ -313,6 +314,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             std::process::exit(code);
         }
         Commands::Multitask { command } => dispatch_multitask(command),
+        Commands::Orch { command } => orch::dispatch(command),
     }
 }
 
