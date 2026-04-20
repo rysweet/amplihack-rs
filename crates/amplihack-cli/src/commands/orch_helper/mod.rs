@@ -224,11 +224,7 @@ fn make_slug(name: &str, index: usize) -> String {
         })
         .collect();
 
-    let truncated = if slug.len() > 30 {
-        &slug[..30]
-    } else {
-        &slug
-    };
+    let truncated = if slug.len() > 30 { &slug[..30] } else { &slug };
 
     let trimmed = truncated.trim_matches('-').to_string();
     if trimmed.is_empty() {

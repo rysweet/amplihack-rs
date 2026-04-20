@@ -165,8 +165,8 @@ struct FileLock {
 impl FileLock {
     fn acquire(tree_id: &str) -> Result<Self> {
         let path = lock_path(tree_id)?;
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs_f64(LOCK_TIMEOUT_SECS);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs_f64(LOCK_TIMEOUT_SECS);
         let pid = std::process::id();
 
         loop {
@@ -186,8 +186,7 @@ impl FileLock {
                     if let Ok(content) = fs::read_to_string(&path) {
                         if let Ok(holder_pid) = content.trim().parse::<i32>() {
                             // kill(pid, 0) checks if process exists
-                            let alive =
-                                unsafe { libc::kill(holder_pid, 0) } == 0;
+                            let alive = unsafe { libc::kill(holder_pid, 0) } == 0;
                             if !alive {
                                 // Stale lock — remove it
                                 let _ = fs::remove_file(&path);
@@ -369,10 +368,7 @@ fn check_can_spawn() -> (bool, String, u32, u32) {
     (true, "ok".to_string(), active_count, depth)
 }
 
-fn register_session(
-    session_id: &str,
-    parent_id: Option<&str>,
-) -> Result<(String, u32)> {
+fn register_session(session_id: &str, parent_id: Option<&str>) -> Result<(String, u32)> {
     let ctx = get_tree_context();
     let tree_id = if ctx.tree_id.is_empty() {
         generate_short_id()
@@ -395,9 +391,7 @@ fn register_session(
         .count() as u32;
 
     if active_count >= max_sessions {
-        bail!(
-            "max_sessions={max_sessions} reached ({active_count} active)"
-        );
+        bail!("max_sessions={max_sessions} reached ({active_count} active)");
     }
     if depth > max_depth {
         bail!("depth={depth} exceeds max_depth={max_depth}");
@@ -411,9 +405,7 @@ fn register_session(
         completed_at: 0.0,
         children: Vec::new(),
     };
-    state
-        .sessions
-        .insert(session_id.to_string(), entry);
+    state.sessions.insert(session_id.to_string(), entry);
 
     if let Some(pid) = parent_id {
         if let Some(parent) = state.sessions.get_mut(pid) {
@@ -493,26 +485,23 @@ pub fn run_session_tree(command: SessionTreeCommands) -> Result<()> {
         SessionTreeCommands::Register {
             session_id,
             parent_id,
-        } => {
-            match register_session(&session_id, parent_id.as_deref()) {
-                Ok((tree_id, depth)) => {
-                    println!("TREE_ID={tree_id} DEPTH={depth}");
-                    Ok(())
-                }
-                Err(e) => {
-                    eprintln!("ERROR: {e}");
-                    std::process::exit(1);
-                }
+        } => match register_session(&session_id, parent_id.as_deref()) {
+            Ok((tree_id, depth)) => {
+                println!("TREE_ID={tree_id} DEPTH={depth}");
+                Ok(())
             }
-        }
+            Err(e) => {
+                eprintln!("ERROR: {e}");
+                std::process::exit(1);
+            }
+        },
         SessionTreeCommands::Complete { session_id } => {
             complete_session(&session_id)?;
             Ok(())
         }
         SessionTreeCommands::Status { tree_id } => {
-            let tid = tree_id.unwrap_or_else(|| {
-                std::env::var("AMPLIHACK_TREE_ID").unwrap_or_default()
-            });
+            let tid =
+                tree_id.unwrap_or_else(|| std::env::var("AMPLIHACK_TREE_ID").unwrap_or_default());
             if tid.is_empty() {
                 eprintln!("No AMPLIHACK_TREE_ID set");
                 std::process::exit(1);
