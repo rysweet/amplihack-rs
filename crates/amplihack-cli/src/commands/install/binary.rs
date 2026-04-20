@@ -95,6 +95,8 @@ pub(super) fn validate_hook_command_string(cmd: &str) -> Result<()> {
 /// Emits a PATH advisory if `~/.local/bin` is not in `$PATH`.
 /// Returns the list of deployed paths for the manifest.
 pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
+    use super::filesystem::deploy_binary;
+
     let home = home_dir()?;
     let local_bin = home.join(".local").join("bin");
     fs::create_dir_all(&local_bin)
@@ -102,44 +104,25 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
 
     let hooks_src = find_hooks_binary()?;
     let hooks_dst = local_bin.join("amplihack-hooks");
-
-    fs::copy(&hooks_src, &hooks_dst).with_context(|| {
+    deploy_binary(&hooks_src, &hooks_dst).with_context(|| {
         format!(
-            "failed to copy {} to {}",
+            "failed to deploy {} to {}",
             hooks_src.display(),
             hooks_dst.display()
         )
     })?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&hooks_dst, std::fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("failed to chmod {}", hooks_dst.display()))?;
-    }
-
     let mut deployed = vec![hooks_dst.clone()];
 
-    // Also copy self (the amplihack binary) if it differs from the destination
+    // Also copy self (the amplihack binary) if it differs from the destination.
+    // Uses atomic rename-then-replace (issue #304) so it succeeds even when the
+    // destination is the currently-running binary.
     if let Ok(self_exe) = std::env::current_exe() {
         let self_dst = local_bin.join("amplihack");
         if self_exe != self_dst {
-            fs::copy(&self_exe, &self_dst).with_context(|| {
-                format!("failed to copy amplihack binary to {}", self_dst.display())
+            deploy_binary(&self_exe, &self_dst).with_context(|| {
+                format!("failed to deploy amplihack binary to {}", self_dst.display())
             })?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if let Err(e) =
-                    fs::set_permissions(&self_dst, std::fs::Permissions::from_mode(0o755))
-                {
-                    tracing::warn!(
-                        "failed to set executable bit on {}: {}",
-                        self_dst.display(),
-                        e
-                    );
-                }
-            }
             deployed.push(self_dst);
         }
 
@@ -151,19 +134,13 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
         if let Some(resolver_src) = resolver_src {
             let resolver_dst = local_bin.join("amplihack-asset-resolver");
             if resolver_src != resolver_dst {
-                fs::copy(&resolver_src, &resolver_dst).with_context(|| {
+                deploy_binary(&resolver_src, &resolver_dst).with_context(|| {
                     format!(
-                        "failed to copy {} to {}",
+                        "failed to deploy {} to {}",
                         resolver_src.display(),
                         resolver_dst.display()
                     )
                 })?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    fs::set_permissions(&resolver_dst, std::fs::Permissions::from_mode(0o755))
-                        .with_context(|| format!("failed to chmod {}", resolver_dst.display()))?;
-                }
                 deployed.push(resolver_dst);
             }
         }

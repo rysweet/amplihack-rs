@@ -5,6 +5,89 @@ use std::collections::{BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Atomically deploy a binary from `src` to `dst` using rename-then-replace.
+///
+/// Linux returns `ETXTBSY` (errno 26) if you try `fs::copy` over a binary that
+/// is currently being executed (issue #304). The fix is to write the new bytes
+/// to a sibling tempfile and `rename(2)` it over the destination — `rename`
+/// swaps the inode rather than overwriting the busy text segment, so it works
+/// even if the target binary is currently running.
+///
+/// Behavior:
+/// - If `src` and `dst` resolve to the same file, returns `Ok(())` (no-op).
+/// - On Unix, sets the destination mode to `0o755` before rename so the
+///   replacement is atomically visible as executable.
+/// - On `EXDEV` (cross-filesystem rename), falls back to a copy-then-rename
+///   inside the destination filesystem.
+pub(super) fn deploy_binary(src: &Path, dst: &Path) -> Result<()> {
+    // Same-file no-op (issue #302).
+    if let (Ok(s), Ok(d)) = (src.canonicalize(), dst.canonicalize())
+        && s == d
+    {
+        return Ok(());
+    }
+
+    let dst_dir = dst
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("destination has no parent: {}", dst.display()))?;
+    fs::create_dir_all(dst_dir)
+        .with_context(|| format!("failed to create {}", dst_dir.display()))?;
+
+    let dst_name = dst
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow::anyhow!("destination has no file name: {}", dst.display()))?;
+    let temp_name = format!(".{}.new.{}", dst_name, std::process::id());
+    let temp_path = dst_dir.join(&temp_name);
+
+    // Best-effort cleanup of any leftover temp from a prior failed run.
+    let _ = fs::remove_file(&temp_path);
+
+    fs::copy(src, &temp_path).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            src.display(),
+            temp_path.display()
+        )
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o755)) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(e)
+                .with_context(|| format!("failed to chmod {}", temp_path.display()));
+        }
+    }
+
+    if let Err(rename_err) = fs::rename(&temp_path, dst) {
+        // EXDEV (cross-device link): rename fails across filesystems. Fall back
+        // to a direct copy, but only after cleaning up the temp file.
+        let is_exdev = rename_err.raw_os_error() == Some(libc::EXDEV);
+        let _ = fs::remove_file(&temp_path);
+        if is_exdev {
+            fs::copy(src, dst).with_context(|| {
+                format!(
+                    "failed to copy {} to {} (cross-device fallback)",
+                    src.display(),
+                    dst.display()
+                )
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(dst, std::fs::Permissions::from_mode(0o755));
+            }
+        } else {
+            return Err(rename_err)
+                .with_context(|| format!("failed to rename to {}", dst.display()));
+        }
+    }
+
+    Ok(())
+}
+
 pub(super) fn all_rel_dirs(claude_dir: &Path) -> Result<BTreeSet<String>> {
     let mut result = BTreeSet::new();
     if !claude_dir.exists() {
@@ -125,14 +208,18 @@ fn is_excluded_file(name: &std::ffi::OsStr) -> bool {
 /// `__pycache__` directories and `.pyc`/`.pyo` files are excluded.
 /// Broken symlinks are removed during traversal.
 pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
-    // Same-path guard: bail if source and destination resolve to the same location.
+    // Same-path guard (issue #302): if source and destination resolve to the
+    // same location, this is a legitimate re-stage-after-update workflow
+    // (`amplihack install` from `~/.amplihack` when target is `~/.amplihack/.claude`).
+    // Skip the copy and return Ok rather than bailing.
     if let (Ok(src_canon), Ok(dst_canon)) = (src.canonicalize(), dst.canonicalize())
         && src_canon == dst_canon
     {
-        anyhow::bail!(
-            "source and destination are the same path: {}",
+        println!(
+            "  ↩️  Skipping {}: source and destination are identical",
             src_canon.display()
         );
+        return Ok(());
     }
 
     fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
@@ -154,6 +241,13 @@ pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
             copy_dir_recursive(&source, &target)?;
         } else if kind.is_file() {
             if is_excluded_file(&file_name) {
+                continue;
+            }
+            // Per-file same-path guard: protects against the case where the
+            // top-level dirs differ but a recursed subdirectory aliases back.
+            if let (Ok(s), Ok(t)) = (source.canonicalize(), target.canonicalize())
+                && s == t
+            {
                 continue;
             }
             fs::copy(&source, &target).with_context(|| {

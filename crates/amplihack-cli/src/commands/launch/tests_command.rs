@@ -274,3 +274,86 @@ fn build_command_without_skip_permissions_and_with_flags() {
         assert_eq!(args, &["--resume", "--continue", "--model", "opus"]);
     });
 }
+
+#[test]
+fn copilot_gets_allow_all_injected_by_default() {
+    // Issue #303: amplihack should pass --allow-all to copilot by default so
+    // unattended orchestrator loops are not blocked by tool/path/url prompts.
+    with_uvx_detection_disabled(|| {
+        // Clear the opt-out env var in case the test environment has it set.
+        // Safety: tests in this file are serialized via home_env_lock().
+        unsafe { std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL"); }
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.iter().any(|a| a == "--allow-all"),
+            "copilot launch must include --allow-all by default; got {args:?}"
+        );
+    });
+}
+
+#[test]
+fn copilot_skips_allow_all_when_user_sets_one() {
+    with_uvx_detection_disabled(|| {
+        unsafe { std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL"); }
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        // User already passed --allow-all-tools; we must NOT inject another flag.
+        let extra = vec!["--allow-all-tools".to_string()];
+        let cmd = build_command(&binary, false, false, false, &extra);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        let allow_all_count = args.iter().filter(|a| a.as_str() == "--allow-all").count();
+        assert_eq!(allow_all_count, 0, "should not inject --allow-all when user supplied --allow-all-tools; got {args:?}");
+    });
+}
+
+#[test]
+fn copilot_skips_allow_all_when_env_opt_out() {
+    with_uvx_detection_disabled(|| {
+        // Safety: serialized via home_env_lock(); restored at end.
+        unsafe { std::env::set_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL", "1"); }
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        unsafe { std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL"); }
+        assert!(!args.iter().any(|a| a == "--allow-all"), "opt-out must suppress allow-all; got {args:?}");
+    });
+}
+
+#[test]
+fn claude_does_not_get_allow_all_injected() {
+    with_uvx_detection_disabled(|| {
+        let binary = BinaryInfo {
+            name: "claude".to_string(),
+            path: PathBuf::from("/usr/bin/claude"),
+            version: None,
+        };
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(!args.iter().any(|a| a == "--allow-all"), "non-copilot tools must not get --allow-all; got {args:?}");
+    });
+}
