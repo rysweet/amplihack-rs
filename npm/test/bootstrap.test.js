@@ -17,6 +17,7 @@ const {
   parseChecksumHex,
   releaseTargetFor,
   releaseUrls,
+  resolveLatestReleaseTag,
   validateDownloadUrl,
   verifyArchiveChecksum,
 } = require('../lib/bootstrap');
@@ -118,4 +119,39 @@ test('package version stays aligned with Cargo workspace version', () => {
   const match = cargoToml.match(/\[workspace\.package\][\s\S]*?version = "([^"]+)"/u);
   assert.ok(match, 'workspace.package.version must exist');
   assert.equal(packageJson.version, match[1]);
+});
+
+test('resolveLatestReleaseTag honors AMPLIHACK_NPM_VERSION override', async () => {
+  const prev = process.env.AMPLIHACK_NPM_VERSION;
+  process.env.AMPLIHACK_NPM_VERSION = 'v9.9.9';
+  try {
+    const tag = await resolveLatestReleaseTag('0.0.1');
+    assert.equal(tag, '9.9.9', 'leading v stripped from override');
+  } finally {
+    if (prev === undefined) {
+      delete process.env.AMPLIHACK_NPM_VERSION;
+    } else {
+      process.env.AMPLIHACK_NPM_VERSION = prev;
+    }
+  }
+});
+
+test('resolveLatestReleaseTag falls back when network disabled', async () => {
+  const prev = process.env.AMPLIHACK_NPM_NO_LATEST;
+  const prevExplicit = process.env.AMPLIHACK_NPM_VERSION;
+  process.env.AMPLIHACK_NPM_NO_LATEST = '1';
+  delete process.env.AMPLIHACK_NPM_VERSION;
+  try {
+    const tag = await resolveLatestReleaseTag('1.2.3');
+    assert.equal(tag, '1.2.3');
+  } finally {
+    if (prev === undefined) {
+      delete process.env.AMPLIHACK_NPM_NO_LATEST;
+    } else {
+      process.env.AMPLIHACK_NPM_NO_LATEST = prev;
+    }
+    if (prevExplicit !== undefined) {
+      process.env.AMPLIHACK_NPM_VERSION = prevExplicit;
+    }
+  }
 });
