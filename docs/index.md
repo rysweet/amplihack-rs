@@ -20,6 +20,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Use the Fleet Dashboard](./howto/use-fleet-dashboard.md) — Open the cockpit, start and adopt sessions, search sessions, run the reasoner from the TUI, and exit cleanly
 - [Run Fleet Scout and Advance on Azure VMs](./howto/run-fleet-scout-and-advance.md) — Discover sessions across VMs, reason about them with the LLM backend, and execute recommended actions
 - [Migrate Memory to the SQLite Backend](./howto/migrate-memory-backend.md) — Export hierarchical memory to portable JSON, switch to SQLite, and verify the migration
+- [Troubleshoot Recipe Execution Failures](./howto/troubleshoot-recipe-execution.md) — Diagnose shell step hangs, agent context issues, missing prerequisites, and workflow misclassification
 - [Diagnose Problems with amplihack doctor](./howto/diagnose-with-doctor.md) — Run system health checks and fix failing prerequisites
 - [Create a Custom Agent](./howto/create-custom-agent.md) — Build a domain agent with memory integration and evaluation
 - [Run Agent Evaluations](./howto/run-agent-evaluations.md) — Evaluate agent performance across progressive difficulty levels
@@ -37,6 +38,8 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Launch Flag Injection](./reference/launch-flag-injection.md) — How `amplihack` builds the subprocess command line: `--dangerously-skip-permissions`, `--model`, and extra args passthrough
 - [Signal Handling and Exit Codes](./reference/signal-handling.md) — SIGINT, SIGTERM, SIGHUP behavior and exit code contract (Python parity)
 - [amplihack recipe](./reference/recipe-command.md) — Full CLI reference for `recipe list`, `recipe show`, `recipe validate`, and `recipe run`
+- [Recipe Executor Environment](./reference/recipe-executor-environment.md) — Environment variables, prerequisite checks, and context propagation for recipe steps
+- [Workflow Classifier](./reference/workflow-classifier.md) — Keyword tables, classification algorithm, and constructive-verb disambiguation
 - [Parity Test Scenarios](./reference/parity-test-scenarios.md) — Every parity tier file, its test cases, and expected Python↔Rust divergence
 - [amplihack index-code and index-scip](./reference/memory-index-command.md) — Full CLI reference for code-graph ingestion commands
 - [amplihack query-code](./reference/query-code-command.md) — Full CLI reference for querying the native LadybugDB code-graph

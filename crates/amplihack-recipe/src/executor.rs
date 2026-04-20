@@ -319,6 +319,24 @@ impl<A: AgentBackend> RecipeExecutor<A> {
 
         let expanded = expand_template(command, context);
 
+        // Prereq guard: fail fast when a shell step requires python3 but it is
+        // not on PATH (fix #242). This prevents 2-hour runs from dying at the
+        // last step because a Python sidecar script is missing.
+        if (expanded.contains("python3") || expanded.contains("python "))
+            && std::process::Command::new("python3")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_err()
+        {
+            return Err(anyhow::anyhow!(
+                "Shell step '{}' requires python3 but it is not installed or not on PATH. \
+                 Recipe steps should use deterministic Rust tools instead of Python sidecars.",
+                step.id
+            ));
+        }
+
         if self.config.dry_run {
             return Ok(format!(
                 "[dry-run] shell: {}",
@@ -330,14 +348,50 @@ impl<A: AgentBackend> RecipeExecutor<A> {
         cmd.arg("-c").arg(&expanded);
         cmd.current_dir(&self.config.working_dir);
 
+        // Ensure a sane non-interactive environment (fix #277).
+        // Many tools (npm, apt, git credential helpers) try interactive prompts
+        // unless told otherwise; in recipe execution there is no TTY to respond.
+        cmd.env(
+            "HOME",
+            std::env::var("HOME").unwrap_or_else(|_| "/root".into()),
+        );
+        cmd.env(
+            "PATH",
+            std::env::var("PATH").unwrap_or_else(|_| {
+                "/usr/local/bin:/usr/bin:/bin".into()
+            }),
+        );
+        cmd.env("NONINTERACTIVE", "1");
+        cmd.env("DEBIAN_FRONTEND", "noninteractive");
+        cmd.env("CI", "true");
+
         // Pass context as environment variables, respecting per-value and
         // cumulative size limits to prevent E2BIG (fix #224).
         let max_env_bytes = step.effective_max_env_bytes();
         // Reserve headroom for existing process env + the command itself.
         const TOTAL_ENV_BUDGET: usize = 1_500_000; // ~1.5MB of ~2MB ARG_MAX
         let mut cumulative_env_bytes: usize = 0;
+        // Deny context keys from overriding safety-critical env vars set above.
+        // Without this guard, a recipe context key like `path` or `ld_preload`
+        // would overwrite the hardened defaults via the to_uppercase transform.
+        const PROTECTED_ENV: &[&str] = &[
+            "PATH",
+            "HOME",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+        ];
         for (k, v) in context {
             let env_key = k.to_uppercase().replace('-', "_");
+            if PROTECTED_ENV.contains(&env_key.as_str()) {
+                debug!(
+                    step_id = %step.id,
+                    key = %env_key,
+                    "Skipping protected env var from context"
+                );
+                continue;
+            }
             let entry_size = env_key.len() + v.len() + 1; // key=value\0
             if v.len() > max_env_bytes {
                 debug!(
@@ -391,7 +445,18 @@ impl<A: AgentBackend> RecipeExecutor<A> {
         let expanded = expand_template(prompt, context);
         let agent_ref = step.agent.as_deref();
 
-        self.agent_backend.run_agent(agent_ref, &expanded, context)
+        // Augment context with working directory and non-interactive flag so
+        // the agent knows where to read/write files (fix #251).
+        let mut augmented = context.clone();
+        augmented
+            .entry("working_directory".to_string())
+            .or_insert_with(|| self.config.working_dir.clone());
+        augmented
+            .entry("NONINTERACTIVE".to_string())
+            .or_insert_with(|| "1".to_string());
+
+        self.agent_backend
+            .run_agent(agent_ref, &expanded, &augmented)
     }
 
     fn execute_sub_recipe_step(
@@ -699,6 +764,116 @@ steps:
         unsafe {
             std::env::remove_var("AMPLIHACK_TEST_KEY_123");
         }
+    }
+
+    #[test]
+    fn shell_step_inherits_noninteractive_env() {
+        // Verify that shell steps always get HOME, PATH, and NONINTERACTIVE
+        // environment variables (fix #277).
+        let yaml = r#"
+name: env-test
+steps:
+  - id: check-env
+    type: shell
+    command: "echo HOME=$HOME NONINTERACTIVE=$NONINTERACTIVE CI=$CI"
+"#;
+        let recipe = crate::parser::RecipeParser::new().parse(yaml).unwrap();
+        let config = ExecutorConfig::default();
+        let executor = RecipeExecutor::new(config, DryRunAgentBackend);
+        let result = executor.execute(&recipe, HashMap::new()).unwrap();
+        assert!(result.success);
+        let output = result.step_results[0].output.as_ref().unwrap();
+        assert!(output.contains("NONINTERACTIVE=1"), "missing NONINTERACTIVE");
+        assert!(output.contains("CI=true"), "missing CI");
+    }
+
+    /// Agent backend that records the context it receives for test assertions.
+    struct CapturingAgentBackend {
+        captured: std::sync::Mutex<Option<HashMap<String, String>>>,
+    }
+
+    impl CapturingAgentBackend {
+        fn new() -> Self {
+            Self {
+                captured: std::sync::Mutex::new(None),
+            }
+        }
+    }
+
+    impl AgentBackend for CapturingAgentBackend {
+        fn run_agent(
+            &self,
+            _agent_ref: Option<&str>,
+            _prompt: &str,
+            context: &HashMap<String, String>,
+        ) -> Result<String> {
+            *self.captured.lock().unwrap() = Some(context.clone());
+            Ok("ok".to_string())
+        }
+    }
+
+    #[test]
+    fn agent_step_receives_working_directory() {
+        // Verify that agent steps get working_directory in their context (fix #251).
+        let yaml = r#"
+name: agent-context-test
+steps:
+  - id: agent
+    type: agent
+    prompt: "do work"
+"#;
+        let recipe = crate::parser::RecipeParser::new().parse(yaml).unwrap();
+        let config = ExecutorConfig {
+            working_dir: "/tmp/test-workdir".to_string(),
+            ..Default::default()
+        };
+        let backend = CapturingAgentBackend::new();
+        let executor = RecipeExecutor::new(config, backend);
+        let result = executor.execute(&recipe, HashMap::new()).unwrap();
+        assert!(result.success);
+        let captured = executor.agent_backend.captured.lock().unwrap();
+        let ctx = captured.as_ref().expect("agent should have been called");
+        assert_eq!(
+            ctx.get("working_directory").map(|s| s.as_str()),
+            Some("/tmp/test-workdir")
+        );
+        assert_eq!(
+            ctx.get("NONINTERACTIVE").map(|s| s.as_str()),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn agent_step_does_not_overwrite_existing_working_directory() {
+        // If context already has working_directory, don't overwrite it.
+        let yaml = r#"
+name: agent-context-preserve-test
+steps:
+  - id: agent
+    type: agent
+    prompt: "do work"
+"#;
+        let recipe = crate::parser::RecipeParser::new().parse(yaml).unwrap();
+        let config = ExecutorConfig {
+            working_dir: "/tmp/executor-dir".to_string(),
+            ..Default::default()
+        };
+        let backend = CapturingAgentBackend::new();
+        let executor = RecipeExecutor::new(config, backend);
+        let mut ctx = HashMap::new();
+        ctx.insert(
+            "working_directory".to_string(),
+            "/tmp/caller-dir".to_string(),
+        );
+        let result = executor.execute(&recipe, ctx).unwrap();
+        assert!(result.success);
+        let captured = executor.agent_backend.captured.lock().unwrap();
+        let ctx = captured.as_ref().expect("agent should have been called");
+        // Should keep the caller's working_directory, not overwrite with executor's
+        assert_eq!(
+            ctx.get("working_directory").map(|s| s.as_str()),
+            Some("/tmp/caller-dir")
+        );
     }
 
     #[test]

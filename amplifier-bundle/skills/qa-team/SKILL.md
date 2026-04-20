@@ -13,9 +13,21 @@ issue: https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding/issues/13
 
 # QA Team Skill
 
+## Repo-Type Detection
+
+Before running test commands, detect the repository type and use the appropriate tooling:
+
+| Indicator | Repo Type | Test Command | Parity Harness |
+|---|---|---|---|
+| `Cargo.toml` at root | **Rust CLI** | `cargo test` | `tests/parity/validate_cli_parity.py` with `tests/parity/scenarios/*.yaml` |
+| `package.json` at root | **Node/Electron** | `gadugi-test run <scenario>.yaml` | gadugi-agentic-test framework |
+| `setup.py` / `pyproject.toml` | **Python** | `pytest` or `gadugi-test run` | gadugi-agentic-test framework |
+
+**For Rust CLI repos** (e.g. amplihack-rs): substitute `cargo test` for all `gadugi-test run` invocations below, and use `tests/parity/scenarios/*.yaml` for cross-cutting CLI parity validation. Do **not** require the gadugi-agentic-test framework to be installed.
+
 ## Purpose [LEVEL 1]
 
-This skill helps you create **agentic outside-in tests** that verify application behavior from an external user's perspective without any knowledge of internal implementation. Using the gadugi-agentic-test framework, you write declarative YAML scenarios that AI agents execute, observe, and validate.
+This skill helps you create **agentic outside-in tests** that verify application behavior from an external user's perspective without any knowledge of internal implementation. Using the gadugi-agentic-test framework (or `cargo test` for Rust CLI repos), you write declarative YAML scenarios that AI agents execute, observe, and validate.
 
 **Key Principle**: Tests describe WHAT should happen, not HOW it's implemented. Agents figure out the execution details.
 

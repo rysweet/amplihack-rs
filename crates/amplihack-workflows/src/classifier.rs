@@ -218,6 +218,11 @@ fn default_keyword_map() -> HashMap<WorkflowType, Vec<String>> {
         .map(String::from)
         .collect(),
     );
+    // OPS keywords must be specific multi-word phrases to avoid stealing
+    // development tasks that incidentally mention "cleanup" or "manage"
+    // (fix #269). Single generic words like "cleanup" and "manage" matched
+    // as substrings inside code paths (e.g. "cmd_cleanup.rs") and task
+    // descriptions ("Add ... disk-cleanup loop"), causing misclassification.
     m.insert(
         WorkflowType::Ops,
         vec![
@@ -226,10 +231,9 @@ fn default_keyword_map() -> HashMap<WorkflowType, Vec<String>> {
             "repo management",
             "git operations",
             "delete files",
-            "cleanup",
-            "organize",
-            "clean up",
-            "manage",
+            "organize files",
+            "clean up temp",
+            "manage repos",
         ]
         .into_iter()
         .map(String::from)
@@ -318,6 +322,17 @@ mod tests {
         let c = WorkflowClassifier::default();
         // "delete files" matches OPS but "delete" also matches DEFAULT
         let r = c.classify("delete files and fix the build");
+        assert_eq!(r.workflow, WorkflowType::Default);
+    }
+
+    #[test]
+    fn multi_req_add_task_not_misclassified_as_ops() {
+        // Regression test for #269: a complex "Add" task with code references
+        // like "cmd_cleanup.rs" must not be stolen by OPS keywords.
+        let c = WorkflowClassifier::default();
+        let r = c.classify(
+            "Add an agentic disk-cleanup loop. Extend src/cmd_cleanup.rs with a new function.",
+        );
         assert_eq!(r.workflow, WorkflowType::Default);
     }
 

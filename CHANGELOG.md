@@ -5,6 +5,55 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ---
 
+## [Unreleased] — Recipe Execution Hardening
+
+### Fixed
+
+- **executor.rs: shell steps hang in non-interactive environments (#277)** —
+  Recipe shell steps now receive `HOME`, `PATH`, `NONINTERACTIVE=1`,
+  `DEBIAN_FRONTEND=noninteractive`, and `CI=true` in their environment.
+  Prevents tools like `apt`, `npm`, and git credential helpers from waiting
+  on TTY input that will never arrive.
+
+- **executor.rs: agent steps ignore working directory (#251)** — The context
+  map passed to agent backends is now augmented with `working_directory`
+  (from the recipe's configured working dir) and `NONINTERACTIVE=1`. Agents
+  can locate and write files in the correct directory instead of defaulting
+  to an unexpected location.
+
+- **executor.rs: missing python3 wastes hours of recipe execution (#242)** —
+  Shell steps that reference `python3` or `python ` now run a pre-flight
+  availability check. If Python is not on PATH, the step fails immediately
+  with a clear error message instead of failing silently hours into a recipe.
+
+- **install.rs: checksum fetch fails on transient network errors (#257)** —
+  `verify_sha256()` now uses `http_get_with_retry()` with exponential backoff
+  (up to 3 attempts) instead of a single `http_get()` call.
+
+- **clone.rs: install fails with Rust repository layout (#254)** —
+  `find_framework_repo_root()` now accepts both `.claude/` (Python repo
+  layout) and `amplifier-bundle/` (Rust repo layout) as valid repository
+  root markers. Repository archive and git clone URLs updated to point to
+  `amplihack-rs`.
+
+- **check.rs: update leaves framework assets stale (#249)** — `run_update()`
+  now calls `ensure_framework_installed()` after binary replacement to
+  re-stage framework assets. If re-staging fails, a warning is printed and
+  the user is directed to run `amplihack install` manually.
+
+- **classifier.rs: development tasks misclassified as Ops (#269)** — OPS
+  workflow keywords changed from single words (`cleanup`, `manage`) to
+  multi-word phrases (`disk cleanup`, `manage repos`). Single words matched
+  as substrings in code paths and task descriptions, causing false positives.
+
+### Changed
+
+- **SKILL.md: merge-ready skill lacks Rust support (#280)** — The merge-ready
+  skill now includes a repo-type detection table that selects `cargo test`
+  for Rust repos, `npm test` for Node repos, and `pytest` for Python repos.
+
+---
+
 ## [0.6.1] — 2026-03-16 — Test stability fixes
 
 ### Fixed

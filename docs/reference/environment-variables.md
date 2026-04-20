@@ -16,6 +16,10 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_RUST_RUNTIME](#amplihack_rust_runtime)
   - [AMPLIHACK_VERSION](#amplihack_version)
   - [NODE_OPTIONS](#node_options)
+- [Variables injected by recipe executor](#variables-injected-by-recipe-executor)
+  - [NONINTERACTIVE](#noninteractive)
+  - [DEBIAN_FRONTEND](#debian_frontend)
+  - [CI (recipe context)](#ci-recipe-context)
 - [Variables read by amplihack](#variables-read-by-amplihack)
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
   - [HOME](#home)
@@ -66,8 +70,8 @@ echo $AMPLIHACK_AGENT_BINARY
 
 ### AMPLIHACK_ASSET_RESOLVER
 
-**Type:** path  
-**Example:** `/home/alice/.local/bin/amplihack-asset-resolver`  
+**Type:** path
+**Example:** `/home/alice/.local/bin/amplihack-asset-resolver`
 **Set by:** `EnvBuilder::with_asset_resolver()`
 
 Absolute path to the native bundle-asset resolver. Child processes can execute this binary with a single relative asset path argument, for example:
@@ -273,6 +277,42 @@ When startup does not supply an explicit value, `EnvBuilder` still falls back to
 
 ---
 
+## Variables injected by recipe executor
+
+These variables are set by the recipe executor (`amplihack recipe run`) in every shell step's child process. They are always set — there is no opt-out. See [Recipe Executor Environment](./recipe-executor-environment.md) for full details.
+
+---
+
+### NONINTERACTIVE
+
+**Type:** string
+**Value:** `1`
+**Set by:** Recipe executor, `execute_shell_step()`
+
+Signals to general-purpose tools that they should not attempt interactive prompts. Not specific to any one tool — serves as a generic non-interactive flag.
+
+---
+
+### DEBIAN_FRONTEND
+
+**Type:** string
+**Value:** `noninteractive`
+**Set by:** Recipe executor, `execute_shell_step()`
+
+Suppresses interactive prompts from `dpkg` and `apt`. Standard Debian/Ubuntu convention for headless package management.
+
+---
+
+### CI (recipe context)
+
+**Type:** string
+**Value:** `true`
+**Set by:** Recipe executor, `execute_shell_step()`
+
+Signals CI-like behavior to npm, yarn, pip, and other tools that check this variable before prompting. Note: this is set by the recipe executor for all recipe steps, independent of whether the top-level process is actually running in a CI system.
+
+---
+
 ## Variables read by amplihack
 
 These variables influence `amplihack`'s behaviour but are not set by it.
@@ -356,8 +396,8 @@ command line.
 
 ### AMPLIHACK_ENABLE_BLARIFY
 
-**Type:** flag  
-**Values:** `1` enables launcher-side code-indexing checks; absence or any other value disables them  
+**Type:** flag
+**Values:** `1` enables launcher-side code-indexing checks; absence or any other value disables them
 **Read by:** `commands::launch::should_prompt_blarify_indexing()`
 
 Opt-in gate for launcher-side code indexing. When set to `1` for `amplihack claude`, the Rust launcher checks whether code-graph artifacts are missing or stale, and whether the project-local `.amplihack/graph_db` store already exists, then either prompts or follows `AMPLIHACK_BLARIFY_MODE` if that mode is set.
@@ -389,8 +429,8 @@ amplihack index-scip --project-path .
 
 ### AMPLIHACK_BLARIFY_MODE
 
-**Type:** string  
-**Values:** `skip` | `sync` | `background`  
+**Type:** string
+**Values:** `skip` | `sync` | `background`
 **Read by:** `commands::launch::blarify_mode()`
 
 Controls how launcher-side code indexing behaves once `AMPLIHACK_ENABLE_BLARIFY=1` has opted the project in.
