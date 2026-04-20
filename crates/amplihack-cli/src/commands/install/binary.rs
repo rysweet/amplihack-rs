@@ -53,7 +53,7 @@ pub(super) fn find_hooks_binary() -> Result<PathBuf> {
 
     bail!(
         "amplihack-hooks binary not found. Install it with:\n  \
-         cargo install --git https://github.com/rysweet/amplihack amplihack-hooks\n  \
+         cargo install --git https://github.com/rysweet/amplihack-rs amplihack-hooks\n  \
          or set AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH to its location."
     )
 }

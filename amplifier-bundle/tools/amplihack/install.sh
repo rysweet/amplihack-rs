@@ -1,7 +1,8 @@
 #!/bin/bash
 # Enhanced install script for dual-mode hook path management
-# if the AMPLIHACK_INSTALL_LOCATION variable is not set, default to https://github.com/rysweet/amplihack
-AMPLIHACK_INSTALL_LOCATION=${AMPLIHACK_INSTALL_LOCATION:-https://github.com/rysweet/amplihack}
+# Issue #254: default install source is now the amplihack-rs repo (which bundles framework assets)
+# if the AMPLIHACK_INSTALL_LOCATION variable is not set, default to https://github.com/rysweet/amplihack-rs
+AMPLIHACK_INSTALL_LOCATION=${AMPLIHACK_INSTALL_LOCATION:-https://github.com/rysweet/amplihack-rs}
 
 # clone the repository to a tmp local directory
 # make sure the dir does not exist first - exit if it does

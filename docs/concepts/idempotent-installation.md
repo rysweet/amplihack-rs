@@ -53,21 +53,23 @@ Each install writes a fresh manifest, replacing the previous one. The manifest a
 
 ## Upgrading
 
-Running `amplihack install` after pulling a new version of the framework is the upgrade mechanism:
+Running `amplihack install` after updating the amplihack-rs binary is the upgrade mechanism. Framework assets are now bundled in the amplihack-rs source tree (issue #254), so updating the binary automatically updates the framework:
 
 ```sh
-# Pull latest framework
-cd ~/src/amplihack
-git pull
+# Update the binary (framework assets update automatically)
+cargo install --git https://github.com/rysweet/amplihack-rs amplihack-cli
 
 # Re-install to stage updated assets and update hook paths
-amplihack install --local ~/src/amplihack
+amplihack install
 ```
 
-Or to pull and install in one command:
+Or from a local checkout:
 
 ```sh
-amplihack install   # no --local: clones latest from GitHub
+cd ~/src/amplihack-rs
+git pull
+cargo build --release
+amplihack install --local .
 ```
 
 Hook command strings in `settings.json` are updated to point to the newly deployed binary.
@@ -79,7 +81,7 @@ The second run of `amplihack install` produces output identical to the first, bu
 ```
 ✓ Python 3.11.4 detected
 ✓ amplihack Python package detected
-✓ Cloning from https://github.com/rysweet/amplihack...
+✓ Using bundled framework assets...
 ✓ Updated amplihack → ~/.local/bin/amplihack
 ✓ Updated amplihack-hooks → ~/.local/bin/amplihack-hooks
 ✓ Staged framework assets (47 files, 12 directories)

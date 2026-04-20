@@ -9,7 +9,9 @@ amplihack uninstall
 
 ## amplihack install
 
-Bootstraps the amplihack environment on the current machine. On first run, it performs full setup: obtains the framework source, deploys native binaries, stages framework assets, and registers Claude Code hooks. Subsequent runs are idempotent — they update existing registrations in place without duplication.
+Bootstraps the amplihack environment on the current machine. On first run, it performs full setup: locates the bundled framework source (or falls back to network download), deploys native binaries, stages framework assets, and registers Claude Code hooks. Subsequent runs are idempotent — they update existing registrations in place without duplication.
+
+Since issue #254, framework assets are bundled in the amplihack-rs source tree. The installer resolves the framework source in this order: (1) compile-time workspace root, (2) `AMPLIHACK_HOME`, (3) walk-up from executable, (4) `~/.amplihack`, (5) network download from upstream (legacy fallback).
 
 You can invoke the same command through the npm wrapper package when desired:
 
@@ -29,7 +31,7 @@ fall back to a source build.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--local <PATH>` | `PathBuf` | absent | Install from a local directory instead of cloning from GitHub. The path must exist, be a directory, and contain a `.claude` subdirectory (at `<PATH>/.claude` or `<PATH>/../.claude`). |
+| `--local <PATH>` | `PathBuf` | absent | Install from a specific local directory instead of using the bundled source. The path must exist, be a directory, and contain a `.claude` subdirectory (at `<PATH>/.claude` or `<PATH>/../.claude`). Without `--local`, the installer uses bundled framework assets from the amplihack-rs source tree. |
 
 ### Exit Codes
 
@@ -46,7 +48,7 @@ fall back to a source build.
 ```
 amplihack install
 │
-├── 1. GitHub archive OR --local path — obtain framework source
+├── 1. Bundled source, --local path, OR GitHub fallback — obtain framework source
 ├── 2. deploy_binaries()          — copy amplihack + amplihack-hooks (+ asset resolver when present) to ~/.local/bin
 ├── 3. copy framework assets      — stage .claude/ tree to ~/.amplihack/.claude/
 ├── 4. create_runtime_dirs()      — create runtime/ subdirs with 0o755 permissions
@@ -69,7 +71,7 @@ These variables are read during install. All are optional; the installer works w
 Successful install prints a phase-by-phase progress summary:
 
 ```
-✓ Downloaded framework archive from https://github.com/rysweet/amplihack
+✓ Using bundled framework assets from /path/to/amplihack-rs
 ✓ Deployed amplihack → ~/.local/bin/amplihack
 ✓ Deployed amplihack-hooks → ~/.local/bin/amplihack-hooks
 ✓ Deployed amplihack-asset-resolver → ~/.local/bin/amplihack-asset-resolver
@@ -142,7 +144,7 @@ The functions below are in `crates/amplihack-cli/src/commands/install.rs`.
 
 ### `run_install(local: Option<PathBuf>) -> Result<()>`
 
-Entry point called by the command dispatcher. Canonicalizes and validates `--local` path when provided. Delegates to `local_install()` directly (local mode) or after downloading and extracting the GitHub repository archive in native Rust (network mode).
+Entry point called by the command dispatcher. Canonicalizes and validates `--local` path when provided. Without `--local`, resolves the bundled framework root from the amplihack-rs source tree (compile-time path, `AMPLIHACK_HOME`, executable walk-up, `~/.amplihack`). Falls back to network download only when no local source is found.
 
 ### `run_uninstall() -> Result<()>`
 

@@ -14,7 +14,7 @@ mod types;
 mod tests;
 
 use binary::{deploy_binaries, find_hooks_binary};
-use clone::download_and_extract_framework_repo;
+use clone::{download_and_extract_framework_repo, find_bundled_framework_root};
 use directories::*;
 use filesystem::{all_rel_dirs, get_all_files_and_dirs};
 use hooks::ensure_object;
@@ -43,6 +43,19 @@ pub fn run_install(local: Option<PathBuf>) -> Result<()> {
         return local_install(&canonical);
     }
 
+    // Issue #254: prefer bundled framework assets from the amplihack-rs source
+    // tree.  Only fall back to network download when the local source tree is
+    // not reachable (e.g. binary installed via `cargo install` on a machine
+    // that doesn't have the checkout).
+    if let Some(bundled_root) = find_bundled_framework_root() {
+        println!(
+            "📦 Using bundled framework assets from {}",
+            bundled_root.display()
+        );
+        return local_install(&bundled_root);
+    }
+
+    println!("⚠️  Bundled framework source not found, falling back to network download...");
     let temp_dir = tempfile::tempdir().context("failed to create temp dir for install")?;
     let extracted_root = download_and_extract_framework_repo(temp_dir.path())?;
     local_install(&extracted_root)?;
@@ -60,22 +73,12 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
     let staging_dir = staging_claude_dir()?;
     let presence_bootstrap_needed =
         !staging_dir.exists() || !missing_framework_paths(&staging_dir)?.is_empty();
-    // Freshness check only runs when the presence check passes. A missing
-    // framework gets handled by the branch below; a stale-but-complete
-    // framework gets re-installed here.
-    let freshness_refresh_needed =
-        !presence_bootstrap_needed && crate::freshness::framework_needs_refresh();
+    // Issue #254: framework assets are now bundled in the amplihack-rs source
+    // tree.  The upstream freshness check against rysweet/amplihack is removed;
+    // framework updates are delivered via amplihack-rs binary updates instead.
     if presence_bootstrap_needed {
         println!("🔧 Bootstrapping amplihack framework assets...");
         run_install(None)?;
-    } else if freshness_refresh_needed {
-        println!("🔄 Refreshing amplihack framework assets (upstream has new commits) ...");
-        if let Err(err) = run_install(None) {
-            // A failed refresh is survivable — the staged framework is
-            // complete, just not on the latest commit.
-            eprintln!("⚠️  Framework refresh failed: {err:#}");
-            eprintln!("   Continuing with the existing staged framework.");
-        }
     }
 
     // Verify hooks are registered in settings.json — even after a fresh install.
