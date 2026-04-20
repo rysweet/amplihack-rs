@@ -85,7 +85,7 @@ fn build_tool_passthrough_args_matches_codex_and_copilot_contracts() {
     let copilot = build_tool_passthrough_args(AutoModeTool::Copilot, &[], "add logging");
     assert_eq!(
         copilot,
-        vec!["--allow-all-tools", "--add-dir", "/", "-p", "add logging"]
+        vec!["--allow-all", "--add-dir", "/", "-p", "add logging"]
     );
 }
 
@@ -268,7 +268,7 @@ fn copilot_strips_claude_only_flags_from_passthrough() {
     assert!(!args.contains(&"--disallowed-tools".to_string()));
     assert!(!args.contains(&"Bash,Write".to_string()));
     assert!(args.contains(&"--model".to_string()));
-    assert!(args.contains(&"--allow-all-tools".to_string()));
+    assert!(args.contains(&"--allow-all".to_string()));
 }
 
 #[test]
@@ -285,5 +285,5 @@ fn copilot_strips_equals_style_claude_flags() {
             .any(|a| a.starts_with("--dangerously-skip-permissions"))
     );
     assert!(!args.iter().any(|a| a.starts_with("--disallowed-tools")));
-    assert!(args.contains(&"--allow-all-tools".to_string()));
+    assert!(args.contains(&"--allow-all".to_string()));
 }

@@ -214,8 +214,15 @@ pub(super) fn build_tool_passthrough_args(
         AutoModeTool::Copilot => {
             // Strip Claude-only flags from Copilot invocations (PR #4142).
             args = strip_claude_only_flags(args);
-            if !args.iter().any(|arg| arg == "--allow-all-tools") {
-                args.push("--allow-all-tools".to_string());
+            // #277: use `--allow-all` (tools + paths + urls) in non-interactive
+            // mode. `--allow-all-tools` alone permits the tools but keeps the
+            // path-allowlist gate in effect, which causes shell commands to
+            // fail with "could not request permission from user" when the
+            // worktree is outside an explicitly-added directory.
+            let has_allow_all = args.iter().any(|a| a == "--allow-all");
+            let has_allow_all_tools = args.iter().any(|a| a == "--allow-all-tools");
+            if !has_allow_all && !has_allow_all_tools {
+                args.push("--allow-all".to_string());
             }
             if !args.iter().any(|arg| arg == "--add-dir") {
                 args.push("--add-dir".to_string());
