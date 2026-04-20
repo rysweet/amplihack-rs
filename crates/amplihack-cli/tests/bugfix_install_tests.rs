@@ -66,7 +66,10 @@ fn find_framework_repo_root_searches_nested_directories() {
             }
         }
     }
-    assert!(found, "BFS should find amplifier-bundle/ in nested directory");
+    assert!(
+        found,
+        "BFS should find amplifier-bundle/ in nested directory"
+    );
 }
 
 #[test]
@@ -146,16 +149,15 @@ fn update_check_source_includes_framework_restage() {
     // Contract: run_update() must call ensure_framework_installed() after
     // the binary swap. We verify this at the source level since we can't
     // easily mock the network calls in an integration test.
-    let check_src = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/update/check.rs"
-    ));
+    let check_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/update/check.rs"));
     assert!(
         check_src.contains("ensure_framework_installed"),
         "run_update() must call ensure_framework_installed() after binary swap"
     );
     // Verify it's in the run_update function, not just imported
-    let run_update_start = check_src.find("fn run_update()").expect("run_update must exist");
+    let run_update_start = check_src
+        .find("fn run_update()")
+        .expect("run_update must exist");
     let run_update_body = &check_src[run_update_start..];
     // Find the end of the function (next `fn ` at the same indentation level)
     let next_fn = run_update_body[1..]
@@ -172,13 +174,11 @@ fn update_check_source_includes_framework_restage() {
 fn update_check_handles_framework_restage_failure_gracefully() {
     // Contract: If ensure_framework_installed() fails after binary swap,
     // run_update() must print a warning but NOT return an error.
-    let check_src = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/update/check.rs"
-    ));
+    let check_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/update/check.rs"));
     // The call should be in an `if let Err(err) = ...` block
     assert!(
-        check_src.contains("if let Err(err) = crate::commands::install::ensure_framework_installed()"),
+        check_src
+            .contains("if let Err(err) = crate::commands::install::ensure_framework_installed()"),
         "ensure_framework_installed errors must be handled gracefully"
     );
     // Should print a warning, not bail

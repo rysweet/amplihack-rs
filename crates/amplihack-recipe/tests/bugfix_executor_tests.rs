@@ -553,8 +553,7 @@ steps:
     assert!(result.success);
     let output = result.step_results[0].output.as_ref().unwrap().trim();
     let expected = std::fs::canonicalize(tmp.path()).unwrap();
-    let actual =
-        std::fs::canonicalize(output).unwrap_or_else(|_| std::path::PathBuf::from(output));
+    let actual = std::fs::canonicalize(output).unwrap_or_else(|_| std::path::PathBuf::from(output));
     assert_eq!(
         actual, expected,
         "shell step must run in configured working_dir"
@@ -615,7 +614,11 @@ steps:
     let result = executor.execute(&recipe, HashMap::new()).unwrap();
     assert!(result.success);
     let captured = store.lock().unwrap();
-    assert_eq!(captured.len(), 2, "both agent steps should have been called");
+    assert_eq!(
+        captured.len(),
+        2,
+        "both agent steps should have been called"
+    );
     for (i, ctx) in captured.iter().enumerate() {
         assert_eq!(
             ctx.get("working_directory").map(String::as_str),

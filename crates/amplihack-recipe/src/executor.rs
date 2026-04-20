@@ -357,9 +357,7 @@ impl<A: AgentBackend> RecipeExecutor<A> {
         );
         cmd.env(
             "PATH",
-            std::env::var("PATH").unwrap_or_else(|_| {
-                "/usr/local/bin:/usr/bin:/bin".into()
-            }),
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
         );
         cmd.env("NONINTERACTIVE", "1");
         cmd.env("DEBIAN_FRONTEND", "noninteractive");
@@ -783,7 +781,10 @@ steps:
         let result = executor.execute(&recipe, HashMap::new()).unwrap();
         assert!(result.success);
         let output = result.step_results[0].output.as_ref().unwrap();
-        assert!(output.contains("NONINTERACTIVE=1"), "missing NONINTERACTIVE");
+        assert!(
+            output.contains("NONINTERACTIVE=1"),
+            "missing NONINTERACTIVE"
+        );
         assert!(output.contains("CI=true"), "missing CI");
     }
 
@@ -837,10 +838,7 @@ steps:
             ctx.get("working_directory").map(|s| s.as_str()),
             Some("/tmp/test-workdir")
         );
-        assert_eq!(
-            ctx.get("NONINTERACTIVE").map(|s| s.as_str()),
-            Some("1")
-        );
+        assert_eq!(ctx.get("NONINTERACTIVE").map(|s| s.as_str()), Some("1"));
     }
 
     #[test]
