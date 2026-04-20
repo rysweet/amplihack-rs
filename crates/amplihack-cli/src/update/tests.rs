@@ -135,6 +135,21 @@ fn github_error_message_contains_actionable_advice() {
 }
 
 #[test]
+fn github_error_message_5xx_indicates_transient() {
+    for status in [500u16, 502, 503, 504] {
+        let msg = github_error_message(status, "https://api.github.com/test");
+        assert!(
+            msg.contains("Transient server error"),
+            "expected transient-error message for {status}, got: {msg}"
+        );
+        assert!(
+            msg.contains("retried automatically"),
+            "expected retry hint for {status}, got: {msg}"
+        );
+    }
+}
+
+#[test]
 fn validate_download_url_accepts_allowed_hosts() {
     assert!(validate_download_url("https://api.github.com/repos/x/y/releases/latest").is_ok());
     assert!(validate_download_url("https://github.com/x/y/releases/download/v1/x.tar.gz").is_ok());
