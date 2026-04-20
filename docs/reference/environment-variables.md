@@ -25,6 +25,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_NO_UPDATE_CHECK](#amplihack_no_update_check)
   - [AMPLIHACK_PARITY_TEST](#amplihack_parity_test)
   - [UV_TOOL_BIN_DIR](#uv_tool_bin_dir)
+- [Variables injected by recipe executor](#variables-injected-by-recipe-executor)
 
 ---
 
@@ -485,6 +486,24 @@ Override the directory where `uv tool install` places the `amplifier` binary. De
 
 ---
 
+## Variables injected by recipe executor
+
+The recipe executor injects additional variables into **shell recipe steps**
+(not into the main launch subprocess). These are separate from the launch
+variables above.
+
+| Variable          | Value              | Purpose                          |
+|-------------------|--------------------|----------------------------------|
+| `HOME`            | Inherited or `/root`| Preserve user config paths       |
+| `PATH`            | Inherited or standard| Preserve tool availability       |
+| `NONINTERACTIVE`  | `1`                | Signal non-interactive to tools  |
+| `DEBIAN_FRONTEND` | `noninteractive`   | Suppress apt prompts             |
+| `CI`              | `true`             | Signal CI-like environment       |
+
+See [Recipe Executor Environment](./recipe-executor-environment.md) for full details.
+
+---
+
 ## Related
 
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — Why `AMPLIHACK_AGENT_BINARY` exists and how recipe runner uses it
@@ -492,3 +511,4 @@ Override the directory where `uv tool install` places the `amplifier` binary. De
 - [Bootstrap Parity](../concepts/bootstrap-parity.md) — How the Rust CLI matches the Python launcher's environment contract
 - [Memory Backend Reference](./memory-backend.md) — `AMPLIHACK_MEMORY_BACKEND` values, storage paths, schema, and security
 - [amplihack install](./install-command.md) — Variables read during installation
+- [Recipe Executor Environment](./recipe-executor-environment.md) — Shell step env injection and agent context augmentation

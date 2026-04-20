@@ -112,6 +112,7 @@ dependencies = [
 name = "amplihack-cli"
 version = "0.7.32"
 dependencies = [
+ "amplihack-eval",
  "amplihack-hive",
  "amplihack-state",
  "amplihack-types",
@@ -179,6 +180,19 @@ dependencies = [
  "amplihack-workflows",
  "chrono",
  "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "amplihack-eval"
+version = "0.7.32"
+dependencies = [
+ "anyhow",
+ "chrono",
  "serde",
  "serde_json",
  "tempfile",

@@ -4,7 +4,10 @@ use clap::Subcommand;
 use clap_complete::Shell;
 use std::path::PathBuf;
 
-use super::{MemoryCommands, ModeCommands, PluginCommands, QueryCodeCommands, RecipeCommands};
+use super::{
+    EvalCommands, LockCommands, MemoryCommands, ModeCommands, MultitaskCommands,
+    OrchHelperCommands, PluginCommands, QueryCodeCommands, RecipeCommands, SessionTreeCommands,
+};
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
@@ -315,4 +318,47 @@ pub enum Commands {
 
     /// Run system health checks
     Doctor,
+
+    /// Parallel workstream orchestration
+    Multitask {
+        #[command(subcommand)]
+        command: MultitaskCommands,
+    },
+
+    /// Lock/unlock continuous work mode
+    Lock {
+        #[command(subcommand)]
+        command: LockCommands,
+    },
+
+    /// Validate YAML frontmatter in markdown files
+    ValidateFrontmatter {
+        /// File to validate (validates all .md in cwd if omitted)
+        #[arg(long)]
+        file: Option<String>,
+    },
+
+    /// Session tree management for orchestration recursion prevention
+    SessionTree {
+        #[command(subcommand)]
+        command: SessionTreeCommands,
+    },
+
+    /// Orchestration helper functions (JSON extraction, type normalization)
+    OrchHelper {
+        #[command(subcommand)]
+        command: OrchHelperCommands,
+    },
+
+    /// Resolve a bundle asset path (internal use)
+    ResolveBundleAsset {
+        /// Asset name to resolve
+        asset: String,
+    },
+
+    /// Evaluation framework: run benchmarks, score results, generate reports
+    Eval {
+        #[command(subcommand)]
+        command: EvalCommands,
+    },
 }

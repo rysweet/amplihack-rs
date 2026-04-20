@@ -5,6 +5,47 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **#277 (CRITICAL)**: Shell recipe steps now inject `HOME`, `PATH`,
+  `NONINTERACTIVE=1`, `DEBIAN_FRONTEND=noninteractive`, and `CI=true`
+  environment variables to prevent non-interactive shell hangs.
+
+- **#251 (CRITICAL)**: Agent recipe steps now receive working directory
+  context (path + file listing) in their prompt, preventing zero-change
+  outcomes when agents don't know where to write files.
+
+- **#257 (HIGH)**: `verify_sha256()` checksum download now uses
+  `http_get_with_retry()` with exponential backoff, preventing transient
+  502 errors from killing the update process.
+
+- **#249 (HIGH)**: `amplihack update` now calls `ensure_framework_installed()`
+  after binary replacement to re-stage assets (skills, recipes, hooks).
+  Failures are warned but do not abort the update.
+
+- **#254 (HIGH)**: Install URLs changed from Python repo
+  (`rysweet/amplihack`) to Rust repo (`rysweet/amplihack-rs`).
+  `find_framework_repo_root()` now accepts both `.claude/` and
+  `amplifier-bundle/` directory markers.
+
+- **#269 (MEDIUM)**: Workflow classifier OPS keywords changed from
+  single-word `"manage"` to multi-word phrases (`"manage infrastructure"`,
+  `"manage deployment"`, etc.). Added constructive-verb override: requests
+  containing OPS keywords + constructive verbs (add, create, build, etc.)
+  now correctly classify as DEFAULT.
+
+- **#280 (MEDIUM)**: QA team skill now includes repo-type detection table
+  for selecting the correct test command (`cargo test` for Rust,
+  `gadugi-test` for Node, `pytest` for Python).
+
+- **#242 (LOW)**: Added `validate_shell_prerequisites()` guard that checks
+  for known tools (python3, node, cargo, etc.) before shell step execution,
+  providing clear "tool not found" errors instead of cryptic failures.
+
+---
+
 ## [0.6.1] — 2026-03-16 — Test stability fixes
 
 ### Fixed

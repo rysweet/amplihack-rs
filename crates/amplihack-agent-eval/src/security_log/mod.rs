@@ -142,10 +142,11 @@ pub struct SecurityGradeResult {
 /// Precision penalizes hallucinated campaign IDs.
 pub fn grade_answer(question: &SecurityQuestion, answer: &str) -> SecurityGradeResult {
     let answer_lower = answer.to_lowercase();
-    let mut matched = Vec::new();
+    let mut matched = Vec::with_capacity(question.required_keywords.len());
     let mut missing = Vec::new();
 
     for kw in &question.required_keywords {
+        // Keywords are typically short identifiers; lowercase once per keyword
         if answer_lower.contains(&kw.to_lowercase()) {
             matched.push(kw.clone());
         } else {
@@ -161,13 +162,13 @@ pub fn grade_answer(question: &SecurityQuestion, answer: &str) -> SecurityGradeR
     };
 
     // Precision: penalize hallucinated campaign IDs
-    let mut mentioned_camps = Vec::new();
+    let mut mentioned_camps = Vec::with_capacity(4);
     let mut start = 0;
     while let Some(pos) = answer[start..].find("CAMP-") {
         let abs_pos = start + pos;
         let end = (abs_pos + 16).min(answer.len());
         mentioned_camps.push(&answer[abs_pos..end]);
-        start = abs_pos + 1;
+        start = abs_pos + 5; // skip past "CAMP-" to avoid overlapping matches
     }
 
     let precision = if !mentioned_camps.is_empty() {
@@ -264,30 +265,42 @@ impl SecurityEvalReport {
             return report;
         }
 
-        let n = results.len() as f64;
-        report.overall_score = results.iter().map(|r| r.score).sum::<f64>() / n;
-        report.overall_precision = results.iter().map(|r| r.precision).sum::<f64>() / n;
-        report.overall_recall = results.iter().map(|r| r.recall).sum::<f64>() / n;
-        report.overall_f1 = results.iter().map(|r| r.f1).sum::<f64>() / n;
+        // Single-pass accumulation for overall and per-category metrics
+        let mut total_score = 0.0;
+        let mut total_precision = 0.0;
+        let mut total_recall = 0.0;
+        let mut total_f1 = 0.0;
+        let mut by_cat: HashMap<String, CategoryMetrics> = HashMap::new();
 
-        // By category
-        let mut by_cat: HashMap<String, Vec<&SecurityGradeResult>> = HashMap::new();
         for r in results {
-            by_cat.entry(r.category.clone()).or_default().push(r);
+            total_score += r.score;
+            total_precision += r.precision;
+            total_recall += r.recall;
+            total_f1 += r.f1;
+
+            let entry = by_cat.entry(r.category.clone()).or_default();
+            entry.score += r.score;
+            entry.precision += r.precision;
+            entry.recall += r.recall;
+            entry.f1 += r.f1;
+            entry.count += 1;
         }
-        for (cat, cat_results) in &by_cat {
-            let cn = cat_results.len() as f64;
-            report.category_scores.insert(
-                cat.clone(),
-                CategoryMetrics {
-                    score: cat_results.iter().map(|r| r.score).sum::<f64>() / cn,
-                    precision: cat_results.iter().map(|r| r.precision).sum::<f64>() / cn,
-                    recall: cat_results.iter().map(|r| r.recall).sum::<f64>() / cn,
-                    f1: cat_results.iter().map(|r| r.f1).sum::<f64>() / cn,
-                    count: cat_results.len(),
-                },
-            );
+
+        let n = results.len() as f64;
+        report.overall_score = total_score / n;
+        report.overall_precision = total_precision / n;
+        report.overall_recall = total_recall / n;
+        report.overall_f1 = total_f1 / n;
+
+        // Convert accumulated sums to averages
+        for metrics in by_cat.values_mut() {
+            let cn = metrics.count as f64;
+            metrics.score /= cn;
+            metrics.precision /= cn;
+            metrics.recall /= cn;
+            metrics.f1 /= cn;
         }
+        report.category_scores = by_cat;
 
         // By difficulty
         let mut by_diff: HashMap<String, Vec<&SecurityGradeResult>> = HashMap::new();

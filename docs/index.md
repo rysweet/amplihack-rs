@@ -25,6 +25,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Run Agent Evaluations](./howto/run-agent-evaluations.md) — Evaluate agent performance across progressive difficulty levels
 - [Deploy a Hive Swarm](./howto/deploy-hive-swarm.md) — Deploy multi-agent hive on Azure Container Apps
 - [Generate an Agent from a Goal](./howto/generate-agent-from-goal.md) — Create specialized agents from natural-language descriptions
+- [Troubleshoot Recipe Execution](./howto/troubleshoot-recipe-execution.md) — Fix shell hangs, agent zero-changes, missing tools, misclassification, and stale assets
 
 ### Reference
 
@@ -50,6 +51,8 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [amplihack-hive API](./reference/hive-api.md) — Multi-agent orchestration and workload management
 - [amplihack-agent-generator API](./reference/agent-generator-api.md) — Goal-to-agent pipeline
 - [amplihack-memory Extended API](./reference/memory-extended-api.md) — Memory facade, manager, LadybugDB store, and evaluation
+- [Recipe Executor Environment](./reference/recipe-executor-environment.md) — Shell env injection, agent context augmentation, and prerequisite validation
+- [Workflow Classifier](./reference/workflow-classifier.md) — Keyword tables, classification algorithm, and constructive-verb disambiguation
 
 ### Concepts
 

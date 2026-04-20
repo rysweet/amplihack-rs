@@ -116,8 +116,8 @@ pub fn build_multi_seed_report(
     }
 
     // Compute per-question variance
-    let mut all_variances = Vec::new();
-    let mut noisy = Vec::new();
+    let mut all_variances = Vec::with_capacity(question_scores.len());
+    let mut noisy_indices = Vec::new();
 
     for (qid, seed_scores) in &question_scores {
         let (text, cat) = question_meta.get(qid).cloned().unwrap_or_default();
@@ -130,7 +130,10 @@ pub fn build_multi_seed_report(
         let std_val = safe_stddev(&values);
         let is_noisy = std_val > (NOISY_THRESHOLD_PP / 100.0);
 
-        let qv = QuestionVariance {
+        if is_noisy {
+            noisy_indices.push(all_variances.len());
+        }
+        all_variances.push(QuestionVariance {
             question_id: qid.clone(),
             question_text: text,
             category: cat,
@@ -138,13 +141,14 @@ pub fn build_multi_seed_report(
             mean_score: mean_val,
             stddev: std_val,
             is_noisy,
-        };
-
-        if is_noisy {
-            noisy.push(qv.clone());
-        }
-        all_variances.push(qv);
+        });
     }
+
+    // Build noisy list by cloning only flagged entries (avoids cloning every entry)
+    let noisy: Vec<QuestionVariance> = noisy_indices
+        .iter()
+        .map(|&i| all_variances[i].clone())
+        .collect();
 
     // Per-category stats
     let mut categories: HashMap<String, HashMap<u64, Vec<f64>>> = HashMap::new();

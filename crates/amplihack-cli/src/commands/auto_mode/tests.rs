@@ -116,6 +116,11 @@ fn render_auto_session_argv_includes_auto_flags() {
 
 #[test]
 fn build_auto_command_propagates_launcher_environment() {
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let prev_graph_db = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+    unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
     let dir = tempfile::tempdir().unwrap();
 
     let command = build_auto_command(
@@ -171,10 +176,20 @@ fn build_auto_command_propagates_launcher_environment() {
         Some("1"),
         "auto-mode sessions must set AMPLIHACK_AUTO_MODE=1 (Python parity)"
     );
+
+    match prev_graph_db {
+        Some(v) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", v) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+    }
 }
 
 #[test]
 fn build_auto_command_marks_staged_execution_context() {
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let prev_graph_db = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+    unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
     let execution_dir = tempfile::tempdir().unwrap();
     let project_dir = tempfile::tempdir().unwrap();
 
@@ -220,6 +235,11 @@ fn build_auto_command_marks_staged_execution_context() {
                 .as_ref()
         )
     );
+
+    match prev_graph_db {
+        Some(v) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", v) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },
+    }
 }
 
 #[test]

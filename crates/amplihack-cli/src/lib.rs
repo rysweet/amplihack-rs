@@ -57,7 +57,8 @@ use clap::{
 
 pub use cli_commands::Commands;
 pub use cli_subcommands::{
-    MemoryCommands, ModeCommands, PluginCommands, QueryCodeCommands, RecipeCommands,
+    EvalCommands, LockCommands, MemoryCommands, ModeCommands, MultitaskCommands,
+    OrchHelperCommands, PluginCommands, QueryCodeCommands, RecipeCommands, SessionTreeCommands,
 };
 
 fn graph_db_backend_value_parser() -> PossibleValuesParser {

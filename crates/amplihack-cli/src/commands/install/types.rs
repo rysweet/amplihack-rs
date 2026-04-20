@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 pub(super) const REPO_ARCHIVE_URL: &str =
-    "https://github.com/rysweet/amplihack/archive/refs/heads/main.tar.gz";
-pub(super) const REPO_GIT_URL: &str = "https://github.com/rysweet/amplihack";
+    "https://github.com/rysweet/amplihack-rs/archive/refs/heads/main.tar.gz";
+pub(super) const REPO_GIT_URL: &str = "https://github.com/rysweet/amplihack-rs";
 pub(super) const ESSENTIAL_DIRS: &[&str] = &[
     "agents/amplihack",
     "commands/amplihack",

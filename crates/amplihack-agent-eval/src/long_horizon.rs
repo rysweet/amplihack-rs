@@ -205,61 +205,70 @@ pub fn deterministic_grade(
     let answer_lower = actual_answer.to_lowercase();
     let mut scores = HashMap::new();
 
+    // Pre-lowercase rubric strings once (avoids re-lowercasing per dimension)
+    let keywords_lower: Vec<String> = rubric
+        .required_keywords
+        .iter()
+        .map(|kw| kw.to_lowercase())
+        .collect();
+    let paraphrases_lower: Vec<String> = rubric
+        .acceptable_paraphrases
+        .iter()
+        .map(|p| p.to_lowercase())
+        .collect();
+    let incorrect_lower: Vec<String> = rubric
+        .incorrect_patterns
+        .iter()
+        .map(|pat| pat.to_lowercase())
+        .collect();
+
+    // Pre-compute match counts (shared across dimensions)
+    let matched = keywords_lower
+        .iter()
+        .filter(|kw| answer_lower.contains(kw.as_str()))
+        .count();
+    let paraphrase_hits = paraphrases_lower
+        .iter()
+        .filter(|p| answer_lower.contains(p.as_str()))
+        .count();
+    let all_keywords_matched = !keywords_lower.is_empty() && matched == keywords_lower.len();
+    let has_full_correct = all_keywords_matched || paraphrase_hits > 0;
+    let found_incorrect = !incorrect_lower.is_empty()
+        && incorrect_lower
+            .iter()
+            .any(|pat| answer_lower.contains(pat.as_str()));
+
+    let mut ratio = if keywords_lower.is_empty() {
+        0.5
+    } else {
+        matched as f64 / keywords_lower.len() as f64
+    };
+    ratio = (ratio + paraphrase_hits as f64 * 0.25).min(1.0);
+
     for &dim in dimensions {
         if !DETERMINISTIC_DIMENSIONS.contains(&dim) {
             continue;
         }
 
-        // Keyword matching
-        let matched = rubric
-            .required_keywords
-            .iter()
-            .filter(|kw| answer_lower.contains(&kw.to_lowercase()))
-            .count();
-
-        let mut ratio = if rubric.required_keywords.is_empty() {
-            0.5
-        } else {
-            matched as f64 / rubric.required_keywords.len() as f64
-        };
-
-        // Paraphrase bonus
-        let paraphrase_hits = rubric
-            .acceptable_paraphrases
-            .iter()
-            .filter(|p| answer_lower.contains(&p.to_lowercase()))
-            .count();
-        ratio = (ratio + paraphrase_hits as f64 * 0.25).min(1.0);
-
         // Check incorrect patterns
-        let all_keywords_matched =
-            !rubric.required_keywords.is_empty() && matched == rubric.required_keywords.len();
-        let has_full_correct = all_keywords_matched || paraphrase_hits > 0;
-
-        if !rubric.incorrect_patterns.is_empty() && !has_full_correct {
-            let found_incorrect = rubric
-                .incorrect_patterns
-                .iter()
-                .any(|pat| answer_lower.contains(&pat.to_lowercase()));
-            if found_incorrect {
-                scores.insert(
-                    dim.to_string(),
-                    DimensionScore::new(
-                        dim,
-                        0.0,
-                        "Answer contains incorrect pattern without correct keywords",
-                    ),
-                );
-                continue;
-            }
+        if found_incorrect && !has_full_correct {
+            scores.insert(
+                dim.to_string(),
+                DimensionScore::new(
+                    dim,
+                    0.0,
+                    "Answer contains incorrect pattern without correct keywords",
+                ),
+            );
+            continue;
         }
 
         let mut reasoning_parts = Vec::new();
-        if !rubric.required_keywords.is_empty() {
+        if !keywords_lower.is_empty() {
             reasoning_parts.push(format!(
                 "Matched {}/{} required keywords",
                 matched,
-                rubric.required_keywords.len()
+                keywords_lower.len()
             ));
         }
         if paraphrase_hits > 0 {
@@ -339,46 +348,47 @@ pub fn multi_vote_grade(
 
     let mut result = Vec::new();
     for &dim in dimensions {
-        let mut vote_scores: Vec<f64> = Vec::new();
-        let mut reasonings: Vec<String> = Vec::new();
-        for grade_set in &grades {
+        // Collect (score, reasoning) pairs, deferring reasoning clone
+        let mut vote_entries: Vec<(f64, usize)> = Vec::new();
+        for (gi, grade_set) in grades.iter().enumerate() {
             if let Some(ds) = grade_set.iter().find(|d| d.dimension == dim) {
-                vote_scores.push(ds.score);
-                reasonings.push(ds.reasoning.clone());
+                vote_entries.push((ds.score, gi));
             }
         }
 
-        if vote_scores.is_empty() {
+        if vote_entries.is_empty() {
             result.push(DimensionScore::new(dim, 0.0, "Not graded"));
             continue;
         }
 
-        vote_scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let median = if vote_scores.len().is_multiple_of(2) {
-            let mid = vote_scores.len() / 2;
-            (vote_scores[mid - 1] + vote_scores[mid]) / 2.0
+        vote_entries
+            .sort_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = vote_entries.len();
+        let median = if n.is_multiple_of(2) {
+            let mid = n / 2;
+            (vote_entries[mid - 1].0 + vote_entries[mid].0) / 2.0
         } else {
-            vote_scores[vote_scores.len() / 2]
+            vote_entries[n / 2].0
         };
 
-        // Pick reasoning closest to median
-        let best_idx = vote_scores
+        // Pick reasoning closest to median — only clone the one we need
+        let best_entry = vote_entries
             .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| {
-                ((**a) - median)
+            .min_by(|(a, _), (b, _)| {
+                (*a - median)
                     .abs()
-                    .partial_cmp(&((**b) - median).abs())
+                    .partial_cmp(&(*b - median).abs())
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .map(|(i, _)| i)
-            .unwrap_or(0);
+            .unwrap();
 
-        let reasoning = format!(
-            "{} [median of {} votes]",
-            reasonings.get(best_idx).cloned().unwrap_or_default(),
-            vote_scores.len()
-        );
+        let best_reasoning = grades[best_entry.1]
+            .iter()
+            .find(|d| d.dimension == dim)
+            .map(|d| d.reasoning.as_str())
+            .unwrap_or("");
+
+        let reasoning = format!("{best_reasoning} [median of {n} votes]");
 
         result.push(DimensionScore::new(dim, median, reasoning));
     }

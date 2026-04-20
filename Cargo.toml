@@ -17,6 +17,7 @@ members = [
     "crates/amplihack-utils",
     "crates/amplihack-delegation",
     "crates/amplihack-agent-eval",
+    "crates/amplihack-eval",
     "crates/amplihack-agent-core",
     "crates/amplihack-domain-agents",
     "crates/amplihack-hive",
@@ -74,6 +75,7 @@ amplihack-safety = { path = "crates/amplihack-safety" }
 amplihack-utils = { path = "crates/amplihack-utils" }
 amplihack-delegation = { path = "crates/amplihack-delegation" }
 amplihack-agent-eval = { path = "crates/amplihack-agent-eval" }
+amplihack-eval = { path = "crates/amplihack-eval" }
 amplihack-agent-core = { path = "crates/amplihack-agent-core" }
 amplihack-domain-agents = { path = "crates/amplihack-domain-agents" }
 amplihack-hive = { path = "crates/amplihack-hive" }

@@ -93,10 +93,16 @@ fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+/// BFS search for the framework repo root.
+///
+/// Accepts directories containing either `.claude/` (Python repo layout) or
+/// `amplifier-bundle/` (Rust repo layout) as markers. This allows the install
+/// to work with both the legacy Python repo and the current Rust repo.
 pub(super) fn find_framework_repo_root(root: &Path) -> Result<PathBuf> {
+    let markers = [".claude", "amplifier-bundle"];
     let mut queue = VecDeque::from([root.to_path_buf()]);
     while let Some(dir) = queue.pop_front() {
-        if dir.join(".claude").is_dir() {
+        if markers.iter().any(|m| dir.join(m).is_dir()) {
             return Ok(dir);
         }
         for entry in
@@ -111,7 +117,8 @@ pub(super) fn find_framework_repo_root(root: &Path) -> Result<PathBuf> {
     }
 
     bail!(
-        "downloaded framework archive did not contain a repository root with .claude under {}",
+        "downloaded framework archive did not contain a repository root \
+         with .claude/ or amplifier-bundle/ under {}",
         root.display()
     )
 }

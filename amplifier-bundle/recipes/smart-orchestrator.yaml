@@ -53,9 +53,8 @@ steps:
       elif ! git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
         ERRORS="${ERRORS}\n  ✗ repo_path '$REPO' is not a git repository"
       fi
-      HELPER_PATH="$(python3 -m amplihack.runtime_assets helper-path 2>/dev/null || true)"
-      if [ -z "$HELPER_PATH" ] || [ ! -f "$HELPER_PATH" ]; then
-        ERRORS="${ERRORS}\n  ✗ Cannot find orch_helper.py — set AMPLIHACK_HOME to a valid amplihack root"
+      if ! command -v amplihack >/dev/null 2>&1; then
+        ERRORS="${ERRORS}\n  ✗ amplihack binary not found — install via cargo install or uvx"
       fi
       if ! command -v recipe-runner-rs >/dev/null 2>&1 && [ ! -f "$HOME/.cargo/bin/recipe-runner-rs" ]; then
         ERRORS="${ERRORS}\n  ✗ recipe-runner-rs not found (run: cargo install --git https://github.com/rysweet/amplihack-recipe-runner)"
@@ -121,50 +120,16 @@ steps:
   - id: "parse-decomposition"
     type: "bash"
     command: |
-      HELPER_PATH="$(python3 -m amplihack.runtime_assets helper-path 2>/dev/null || true)"
-      if [ ! -f "$HELPER_PATH" ]; then
-          echo "ERROR: orch_helper.py not found at: $HELPER_PATH" >&2
-          echo "Ensure amplihack is installed correctly, or set AMPLIHACK_HOME to a valid runtime root." >&2
-          exit 1
-      fi
-      _DECOMP_TMPFILE=$(mktemp)
-      trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
-      cat > "$_DECOMP_TMPFILE" <<__DECOMP_EOF__
+      # Extract task_type from decomposition JSON using native Rust CLI
+      EXTRACTED=$(cat <<'__DECOMP_EOF__'
       {{decomposition_json}}
       __DECOMP_EOF__
-      export DECOMP_TMPFILE="$_DECOMP_TMPFILE"
-      export HELPER_PATH
-      python3 - <<'PYEOF'
-      import sys, json, os, importlib.util
-
-      helper_path = os.environ['HELPER_PATH']
-      with open(os.environ['DECOMP_TMPFILE']) as f:
-          decomp_json = f.read()
-
-      spec = importlib.util.spec_from_file_location('orch_helper', helper_path)
-      h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
-      obj = h.extract_json(decomp_json)
-
-      if not obj:
-          msg = (
-              "\n"
-              "╔══════════════════════════════════════════════════════════════════╗\n"
-              "║  ERROR: decomposition JSON parse failed                         ║\n"
-              "║  The architect agent returned non-JSON prose instead of the     ║\n"
-              "║  expected structured plan.                                      ║\n"
-              "║                                                                 ║\n"
-              "║  Action: defaulting to task_type=Development so execution can   ║\n"
-              "║  continue. The adaptive strategy step will evaluate whether     ║\n"
-              "║  direct recipe invocation should be attempted.                  ║\n"
-              "╚══════════════════════════════════════════════════════════════════╝\n"
-          )
-          print(msg, file=sys.stderr)
-          # Do NOT print to stdout — stdout is captured as the output variable
-          # and box-drawing characters would corrupt downstream template substitution
-
-      task_type = h.normalise_type(obj.get("task_type", "Development"))
-      print(task_type)
-      PYEOF
+      )
+      TASK_TYPE_RAW=$(echo "$EXTRACTED" | amplihack orch-helper extract-json | amplihack orch-helper extract-json 2>/dev/null | head -1 || echo '{}')
+      # Extract task_type field, fall back to "Development"
+      RAW_TYPE=$(echo "$EXTRACTED" | amplihack orch-helper extract-json 2>/dev/null | sed -n 's/.*"task_type"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' || echo "Development")
+      [ -z "$RAW_TYPE" ] && RAW_TYPE="Development"
+      echo "$RAW_TYPE" | amplihack orch-helper normalise-type
     output: "task_type"
 
   # activate-workflow: compute workstream_count, set workflow semaphore, announce.
@@ -172,71 +137,32 @@ steps:
   - id: "activate-workflow"
     type: "bash"
     command: |
-      HELPER_PATH="$(python3 -m amplihack.runtime_assets helper-path 2>/dev/null || true)"
-      if [ ! -f "$HELPER_PATH" ]; then
-          echo "ERROR: orch_helper.py not found at: $HELPER_PATH" >&2
-          echo "Ensure amplihack is installed correctly, or set AMPLIHACK_HOME to a valid runtime root." >&2
-          exit 1
-      fi
-      DECOMP_JSON=$(cat <<EOFDECOMP
-      {{decomposition_json}}
-      EOFDECOMP
-      )
       TASK_TYPE={{task_type}}
       FORCE_SINGLE={{force_single_workstream}}
-      HOOKS_DIR="$(python3 -m amplihack.runtime_assets hooks-dir 2>/dev/null || true)"
-      _DECOMP_TMPFILE=$(mktemp)
-      trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
-      cat > "$_DECOMP_TMPFILE" <<__DECOMP_EOF__
+
+      # Extract workstream count from decomposition JSON using native Rust CLI
+      DECOMP_JSON=$(cat <<'__DECOMP_EOF__'
       {{decomposition_json}}
       __DECOMP_EOF__
-      export DECOMP_TMPFILE="$_DECOMP_TMPFILE"
-      export TASK_TYPE=$(printf '%s' {{task_type}})
-      export FORCE_SINGLE=$(printf '%s' "$FORCE_SINGLE")
-      export HELPER_PATH HOOKS_DIR
-      python3 - <<'PYEOF'
-      import os, sys, io, importlib.util
-
-      helper_path = os.environ['HELPER_PATH']
-      with open(os.environ['DECOMP_TMPFILE']) as f:
-          decomp_json = f.read()
-      task_type = os.environ['TASK_TYPE']
-      hooks_dir = os.environ['HOOKS_DIR']
-      force_single = os.environ.get('FORCE_SINGLE', 'false').strip().lower() in ('true', '1')
-
-      # Compute workstream count from decomposition JSON
-      spec = importlib.util.spec_from_file_location('orch_helper', helper_path)
-      h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
-      obj = h.extract_json(decomp_json)
-      raw_count = max(1, len(obj.get("workstreams", [])))
+      )
+      EXTRACTED=$(echo "$DECOMP_JSON" | amplihack orch-helper extract-json 2>/dev/null || echo '{}')
+      # Count workstreams array length from extracted JSON
+      RAW_COUNT=$(echo "$EXTRACTED" | sed -n 's/.*"workstreams"[[:space:]]*:[[:space:]]*\[/\n/p' | tr ',' '\n' | grep -c '"name"' || echo 1)
+      [ "$RAW_COUNT" -lt 1 ] 2>/dev/null && RAW_COUNT=1
 
       # Enforce force_single_workstream override (fix #3130)
-      count = 1 if force_single else raw_count
+      FORCE_LOWER=$(echo "$FORCE_SINGLE" | tr '[:upper:]' '[:lower:]')
+      if [ "$FORCE_LOWER" = "true" ] || [ "$FORCE_LOWER" = "1" ]; then
+        if [ "$RAW_COUNT" -ne 1 ]; then
+          echo "[dev-orchestrator] force_single_workstream=true — overriding $RAW_COUNT workstreams to 1" >&2
+        fi
+        COUNT=1
+      else
+        COUNT=$RAW_COUNT
+      fi
 
-      # Set workflow-active semaphore so the hook skips injection during execution
-      # Redirect stdout during import to prevent pollution of captured output
-      _saved_stdout = sys.stdout
-      sys.stdout = io.StringIO()
-      try:
-          sys.path.insert(0, hooks_dir)
-          from dev_intent_router import set_workflow_active
-          set_workflow_active(task_type, count)
-      except Exception:
-          pass  # Hook may not exist in all environments
-      finally:
-          sys.stdout = _saved_stdout
-
-      # Announce classification to stderr (visible to user, not captured as output)
-      if force_single and raw_count != count:
-          print(f"[dev-orchestrator] force_single_workstream=true — overriding {raw_count} workstreams to 1", file=sys.stderr)
-      print(f"[dev-orchestrator] Classified as: {task_type} | Workstreams: {count} — starting execution...", file=sys.stderr)
-
-      # Output workstream count (captured by recipe runner).
-      # Use sys.stdout.write to avoid trailing newline — the recipe runner
-      # stores step output as-is, and a trailing '\n' breaks exact string
-      # comparisons in downstream conditions (fix #3570).
-      sys.stdout.write(str(count))
-      PYEOF
+      echo "[dev-orchestrator] Classified as: $TASK_TYPE | Workstreams: $COUNT — starting execution..." >&2
+      printf '%s' "$COUNT"
     output: "workstream_count"
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -263,37 +189,22 @@ steps:
     type: "bash"
     condition: "'Development' in task_type or 'Investigation' in task_type or task_type == ''"
     command: |
-      TREE_SCRIPT="$(python3 -m amplihack.runtime_assets session-tree-path 2>/dev/null || true)"
-      SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4().hex[:8])")
-
-      if [ -f "$TREE_SCRIPT" ]; then
-        # Register this session — atomic check+register under lock
-        if OUTPUT=$(python3 "$TREE_SCRIPT" register "$SESSION_ID" 2>&1); then
-          # Output: "TREE_ID=abc123 DEPTH=0"
-          TREE_ID=$(echo "$OUTPUT" | grep -oE 'TREE_ID=[A-Za-z0-9_-]+' | head -1 | cut -d= -f2)
-          DEPTH_STR=$(echo "$OUTPUT" | grep -oE 'DEPTH=[0-9]+' | head -1 | cut -d= -f2)
-          DEPTH_VAL=${DEPTH_STR:-0}
-          # Validate extracted values
-          if ! echo "$TREE_ID" | grep -qE '^[A-Za-z0-9_-]+$'; then
-            python3 -c "import json; print(json.dumps({'session_id': 'error', 'tree_id': 'error', 'depth': 0, 'status': 'registration_failed', 'error': 'invalid tree_id extracted'}))"
-            exit 0
-          fi
-          python3 -c "import sys,json; sid,tid,depth=sys.argv[1],sys.argv[2],int(sys.argv[3]); print(json.dumps({'session_id':sid,'tree_id':tid,'depth':depth,'status':'ok'}))" "$SESSION_ID" "$TREE_ID" "$DEPTH_VAL"
-        else
-          # Registration failed (capacity exceeded or depth limit) — encode structured error
-          echo "NOTE: Session registration failed — proceeding without recursion tracking." >&2
-          python3 -c "import json; print(json.dumps({'session_id': 'none', 'tree_id': 'none', 'depth': 0, 'status': 'registration_failed'}))"
+      # Register session using native Rust CLI (replaces python3 session_tree.py)
+      if OUTPUT=$(amplihack session-tree register 2>&1); then
+        # Output: "TREE_ID=abc123 DEPTH=0"
+        TREE_ID=$(echo "$OUTPUT" | grep -oE 'TREE_ID=[A-Za-z0-9_-]+' | head -1 | cut -d= -f2)
+        SESSION_ID=$(echo "$TREE_ID" | head -c8)  # use first 8 chars as session ID
+        DEPTH_STR=$(echo "$OUTPUT" | grep -oE 'DEPTH=[0-9]+' | head -1 | cut -d= -f2)
+        DEPTH_VAL=${DEPTH_STR:-0}
+        # Validate extracted values
+        if ! echo "$TREE_ID" | grep -qE '^[A-Za-z0-9_-]+$'; then
+          echo '{"session_id":"error","tree_id":"error","depth":0,"status":"registration_failed","error":"invalid tree_id extracted"}'
+          exit 0
         fi
+        printf '{"session_id":"%s","tree_id":"%s","depth":%d,"status":"ok"}' "$SESSION_ID" "$TREE_ID" "$DEPTH_VAL"
       else
-        # No session_tree.py — generate a tree_id from env or fresh uuid
-        TREE_ID=$(echo "${AMPLIHACK_TREE_ID:-}" | grep -E '^[A-Za-z0-9_-]+$' | head -1)
-        if [ -z "$TREE_ID" ]; then
-          TREE_ID=$(python3 -c "import uuid; print(uuid.uuid4().hex[:8])")
-        fi
-        DEPTH_RAW="${AMPLIHACK_SESSION_DEPTH:-0}"
-        # Validate it's an integer (default to 0 if not)
-        DEPTH_VAL=$(echo "$DEPTH_RAW" | grep -E '^[0-9]+$' || echo '0')
-        python3 -c "import sys,json; sid,tid,depth=sys.argv[1],sys.argv[2],int(sys.argv[3]); print(json.dumps({'session_id':sid,'tree_id':tid,'depth':depth,'status':'no_tree_script'}))" "$SESSION_ID" "$TREE_ID" "$DEPTH_VAL"
+        echo "NOTE: Session registration failed — proceeding without recursion tracking." >&2
+        echo '{"session_id":"none","tree_id":"none","depth":0,"status":"registration_failed"}'
       fi
     output: "session_info"
 
@@ -407,42 +318,37 @@ steps:
     condition: |
       ('Development' in task_type or 'Investigation' in task_type) and workstream_count != 1 and workstream_count != '1' and workstream_count != '' and 'ALLOWED' in recursion_guard and force_single_workstream != 'true'
     command: |
-      HELPER_PATH="$(python3 -m amplihack.runtime_assets helper-path 2>/dev/null || true)"
-      if [ ! -f "$HELPER_PATH" ]; then
-          echo "ERROR: orch_helper.py not found at: $HELPER_PATH" >&2
-          echo "Ensure amplihack is installed correctly, or set AMPLIHACK_HOME to a valid runtime root." >&2
-          exit 1
-      fi
-      _DECOMP_TMPFILE=$(mktemp)
-      trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
-      cat > "$_DECOMP_TMPFILE" <<__DECOMP_EOF__
+      # Extract workstreams from decomposition JSON using native Rust CLI
+      DECOMP_JSON=$(cat <<'__DECOMP_EOF__'
       {{decomposition_json}}
       __DECOMP_EOF__
-      export DECOMP_TMPFILE="$_DECOMP_TMPFILE"
-      export HELPER_PATH
-      python3 - <<'PYEOF'
-      import json, os, re, tempfile, sys
-      sys.path.insert(0, os.path.dirname(os.environ['HELPER_PATH']))
-      import orch_helper
-      with open(os.environ['DECOMP_TMPFILE']) as f:
-          decomp = f.read()
-      obj = orch_helper.extract_json(decomp)
-      config = []
-      for i, ws in enumerate(obj.get("workstreams", [])):
-          name = ws.get("name", f"workstream-{i+1}")
-          slug = re.sub(r'[^a-z0-9-]', '-', name.lower())[:30].strip('-') or f"ws-{i+1}"
-          config.append({
-              "issue": "TBD",
-              "branch": f"feat/orch-{i+1}-{slug}",
-              "description": name,
-              "task": ws.get("description", name),
-              "recipe": ws.get("recipe", "default-workflow")
-          })
-      fd, p = tempfile.mkstemp(prefix="smart-orch-ws-", suffix=".json", dir="/tmp")
-      os.chmod(p, 0o600)
-      with os.fdopen(fd, "w") as f: json.dump(config, f, indent=2)
-      print(p)
-      PYEOF
+      )
+      EXTRACTED=$(echo "$DECOMP_JSON" | amplihack orch-helper extract-json 2>/dev/null || echo '{}')
+
+      # Generate workstreams config using jq-like processing in bash
+      WS_FILE=$(mktemp -p /tmp smart-orch-ws-XXXXXX.json)
+      chmod 600 "$WS_FILE"
+
+      # Parse workstreams from extracted JSON and build config
+      # Use amplihack orch-helper generate-workstream-config for the heavy lifting
+      echo "$EXTRACTED" | amplihack orch-helper generate-workstream-config > "$WS_FILE.raw" 2>/dev/null
+
+      # Transform the raw decomposition into multitask config format
+      # Extract workstreams array and reformat for the orchestrator
+      if command -v jq >/dev/null 2>&1; then
+        jq '[.workstreams // [] | to_entries[] | {
+          issue: "TBD",
+          branch: ("feat/orch-" + ((.key + 1) | tostring) + "-" + (.value.name // ("ws-" + ((.key + 1) | tostring))) | gsub("[^a-z0-9-]"; "-") | .[0:30]),
+          description: (.value.name // ("workstream-" + ((.key + 1) | tostring))),
+          task: (.value.description // .value.name // ""),
+          recipe: (.value.recipe // "default-workflow")
+        }]' "$WS_FILE.raw" > "$WS_FILE" 2>/dev/null
+      else
+        # Fallback: use the raw JSON directly (workstreams array)
+        cp "$WS_FILE.raw" "$WS_FILE"
+      fi
+      rm -f "$WS_FILE.raw"
+      echo "$WS_FILE"
     output: "workstreams_file"
 
   - id: "launch-parallel-round-1"
@@ -460,28 +366,13 @@ steps:
       {{session_info}}
       EOFSESSIONJSON
       )
-      # Parse tree_id, depth, and validate workstreams file in one Python subprocess.
-      # Uses env vars instead of pipe+heredoc to avoid stdin conflict (issue #2581).
-      export SESSION_JSON WS_FILE
-      read -r TREE_ID SESSION_DEPTH WS_COUNT_CHECK < <(python3 <<'PYEOF'
-      import os, json
-      try:
-          d = json.loads(os.environ.get('SESSION_JSON', '{}'))
-          tid = d.get('tree_id', '')
-          depth = d.get('depth', 0)
-      except Exception:
-          tid, depth = '', 0
-      ws_file = os.environ.get('WS_FILE', '')
-      ws_count = 0
-      if ws_file:
-          try:
-              with open(ws_file) as f:
-                  ws_count = len(json.load(f))
-          except Exception:
-              pass
-      print(tid, depth, ws_count)
-      PYEOF
-      )
+      # Parse tree_id, depth, and validate workstreams file using native tools
+      TREE_ID=$(echo "$SESSION_JSON" | sed -n 's/.*"tree_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+      SESSION_DEPTH=$(echo "$SESSION_JSON" | sed -n 's/.*"depth"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' | head -1)
+      WS_COUNT_CHECK=0
+      if [ -n "$WS_FILE" ] && [ -f "$WS_FILE" ]; then
+        WS_COUNT_CHECK=$(grep -c '"branch"' "$WS_FILE" 2>/dev/null || echo 0)
+      fi
       TREE_ID=${TREE_ID:-}
       SESSION_DEPTH=${SESSION_DEPTH:-0}
       WS_COUNT_CHECK=${WS_COUNT_CHECK:-0}
@@ -505,36 +396,14 @@ steps:
       fi
       cd "$REPO_PATH"
 
-      # Resolve multitask orchestrator from AMPLIHACK_HOME, not from repo root.
-      # The orchestrator.py is an amplihack asset, not a repo file (#3762).
-      ORCH_SCRIPT=""
-      for candidate in \
-        "${AMPLIHACK_HOME:+$AMPLIHACK_HOME/.claude/skills/multitask/orchestrator.py}" \
-        "${HOME}/.amplihack/.claude/skills/multitask/orchestrator.py" \
-        "${HOME}/.copilot/skills/multitask/orchestrator.py" \
-        ".claude/skills/multitask/orchestrator.py"; do
-        if [ -n "$candidate" ] && [ -f "$candidate" ]; then
-          ORCH_SCRIPT="$candidate"
-          break
-        fi
-      done
-      if [ -z "$ORCH_SCRIPT" ]; then
-        echo "ERROR: multitask orchestrator.py not found." >&2
-        echo "  Searched: AMPLIHACK_HOME/.claude/skills/multitask/orchestrator.py" >&2
-        echo "  Set AMPLIHACK_HOME or ensure amplihack is installed." >&2
-        emit_step_transition fail
-        exit 1
-      fi
-      echo "Selected orchestrator source: $ORCH_SCRIPT" >&2
-
-      echo "Launching parallel workstreams (tree: $TREE_ID, depth: $SESSION_DEPTH):"
+      echo "Launching parallel workstreams via native Rust orchestrator (tree: $TREE_ID, depth: $SESSION_DEPTH):"
       cat "$WS_FILE"
       echo "---"
       status=0
       AMPLIHACK_TREE_ID="$TREE_ID" AMPLIHACK_SESSION_DEPTH="$SESSION_DEPTH" \
         AMPLIHACK_PARENT_STEP="launch-parallel-round-1" \
         AMPLIHACK_REPO_PATH="$REPO_PATH" \
-        python3 -u "$ORCH_SCRIPT" "$WS_FILE" | tee /dev/stderr || status=$?
+        amplihack multitask run "$WS_FILE" 2>&1 | tee /dev/stderr || status=$?
       # Clean up workstreams file now, before this step's output inflates
       # the recipe context. Doing it here avoids the E2BIG error that
       # occurs when a later bash step inherits megabytes of env vars
@@ -958,36 +827,13 @@ steps:
       {{session_info}}
       EOFSESSIONJSON
       )
-      TREE_SCRIPT="$(python3 -m amplihack.runtime_assets session-tree-path 2>/dev/null || true)"
-      HOOKS_DIR="$(python3 -m amplihack.runtime_assets hooks-dir 2>/dev/null || true)"
-      # Parse session fields and clear workflow semaphore in one Python subprocess.
-      # Uses env vars instead of pipe+heredoc to avoid stdin conflict (issue #2581).
-      export SESSION_JSON HOOKS_DIR
-      read -r SESSION_ID TREE_ID STATUS < <(python3 <<'PYEOF'
-      import json, os, sys
-      try:
-          d = json.loads(os.environ.get('SESSION_JSON', '{}'))
-          sid, tid, status = d.get('session_id',''), d.get('tree_id',''), d.get('status','')
-      except Exception:
-          sid, tid, status = '', '', ''
-      # Clear workflow-active semaphore so the hook resumes injection
-      try:
-          hooks_dir = os.environ.get('HOOKS_DIR', '')
-          if hooks_dir:
-              sys.path.insert(0, hooks_dir)
-              from dev_intent_router import clear_workflow_active
-              clear_workflow_active()
-      except Exception:
-          pass
-      print(sid, tid, status)
-      PYEOF
-      )
-      SESSION_ID=${SESSION_ID:-}
-      TREE_ID=${TREE_ID:-}
-      STATUS=${STATUS:-}
+      # Parse session fields using native tools (replaces python3)
+      SESSION_ID=$(echo "$SESSION_JSON" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+      TREE_ID=$(echo "$SESSION_JSON" | sed -n 's/.*"tree_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+      STATUS=$(echo "$SESSION_JSON" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 
-      if [ -n "$SESSION_ID" ] && [ "$STATUS" = "ok" ] && [ -f "$TREE_SCRIPT" ]; then
-        AMPLIHACK_TREE_ID="$TREE_ID" python3 "$TREE_SCRIPT" complete "$SESSION_ID"
+      if [ -n "$SESSION_ID" ] && [ "$STATUS" = "ok" ]; then
+        AMPLIHACK_TREE_ID="$TREE_ID" amplihack session-tree complete "$SESSION_ID"
         echo "Session $SESSION_ID completed in tree $TREE_ID"
       else
         echo "No session to complete (status: ${STATUS:-empty})"

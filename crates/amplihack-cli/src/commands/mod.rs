@@ -4,20 +4,29 @@ pub mod append;
 pub mod auto_mode;
 pub mod completions;
 pub mod doctor;
+pub mod eval;
 pub mod fleet;
 pub mod hive_haymaker;
 pub mod install;
 pub mod launch;
+pub mod lock;
 pub mod memory;
 pub mod mode;
+pub mod multitask;
 pub mod new_agent;
+pub mod orch_helper;
 pub mod plugin;
 pub mod query_code;
 pub mod recipe;
 pub mod rustyclawd;
+pub mod session_tree;
 pub mod uvx_help;
+pub mod validate_frontmatter;
 
-use crate::{Commands, MemoryCommands, ModeCommands, PluginCommands, RecipeCommands};
+use crate::{
+    Commands, EvalCommands, LockCommands, MemoryCommands, ModeCommands, MultitaskCommands,
+    OrchHelperCommands, PluginCommands, RecipeCommands, SessionTreeCommands,
+};
 use anyhow::Result;
 
 /// Dispatch a parsed CLI command to the appropriate handler.
@@ -305,6 +314,18 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::UvxHelp { find_path, info } => uvx_help::run_uvx_help(find_path, info),
         Commands::Completions { shell } => completions::run_completions(shell),
         Commands::Doctor => doctor::run_doctor(),
+        Commands::Multitask { command } => dispatch_multitask(command),
+        Commands::Lock { command } => dispatch_lock(command),
+        Commands::ValidateFrontmatter { file } => {
+            validate_frontmatter::run_validate_frontmatter(file.as_deref())
+        }
+        Commands::SessionTree { command } => dispatch_session_tree(command),
+        Commands::OrchHelper { command } => dispatch_orch_helper(command),
+        Commands::ResolveBundleAsset { asset } => {
+            let code = crate::resolve_bundle_asset::run_cli(&asset);
+            std::process::exit(code);
+        }
+        Commands::Eval { command } => dispatch_eval(command),
     }
 }
 
@@ -389,5 +410,73 @@ fn dispatch_mode(command: ModeCommands) -> Result<()> {
         ModeCommands::Detect => mode::run_detect(),
         ModeCommands::ToPlugin => mode::run_to_plugin(),
         ModeCommands::ToLocal => mode::run_to_local(),
+    }
+}
+
+fn dispatch_multitask(command: MultitaskCommands) -> Result<()> {
+    match command {
+        MultitaskCommands::Run {
+            config,
+            mode,
+            recipe,
+            max_runtime,
+            timeout_policy,
+            dry_run,
+        } => multitask::run_multitask(
+            &config,
+            &mode,
+            &recipe,
+            max_runtime,
+            timeout_policy.as_deref(),
+            dry_run,
+        ),
+        MultitaskCommands::Cleanup { config, dry_run } => multitask::run_cleanup(&config, dry_run),
+        MultitaskCommands::Status { base_dir } => multitask::run_status(base_dir.as_deref()),
+    }
+}
+
+fn dispatch_lock(command: LockCommands) -> Result<()> {
+    match command {
+        LockCommands::Lock { message } => lock::run_lock(message.as_deref()),
+        LockCommands::Unlock => lock::run_unlock(),
+        LockCommands::Check => lock::run_check(),
+    }
+}
+
+fn dispatch_session_tree(command: SessionTreeCommands) -> Result<()> {
+    match command {
+        SessionTreeCommands::Check => session_tree::run_check(),
+        SessionTreeCommands::Register {
+            session_id,
+            parent_id,
+        } => session_tree::run_register(session_id, parent_id),
+        SessionTreeCommands::Complete { session_id } => session_tree::run_complete(session_id),
+        SessionTreeCommands::Status { tree_id } => session_tree::run_status(tree_id),
+    }
+}
+
+fn dispatch_orch_helper(command: OrchHelperCommands) -> Result<()> {
+    match command {
+        OrchHelperCommands::ExtractJson => orch_helper::run_extract_json(),
+        OrchHelperCommands::NormaliseType => orch_helper::run_normalise_type(),
+        OrchHelperCommands::GenerateWorkstreamConfig => {
+            orch_helper::run_generate_workstream_config()
+        }
+    }
+}
+
+fn dispatch_eval(command: EvalCommands) -> Result<()> {
+    match command {
+        EvalCommands::Run {
+            config,
+            format,
+            threshold,
+        } => eval::run_eval_run(&config, &format, threshold),
+        EvalCommands::Compare {
+            baseline,
+            candidate,
+            format,
+        } => eval::run_eval_compare(&baseline, &candidate, &format),
+        EvalCommands::Report { result, format } => eval::run_eval_report(&result, &format),
     }
 }

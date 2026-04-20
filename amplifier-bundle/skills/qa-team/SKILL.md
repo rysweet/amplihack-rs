@@ -965,6 +965,34 @@ scenario:
 
 ## Framework Integration [LEVEL 2]
 
+### Repo-Type Detection — Test Command Selection
+
+Before running tests, detect the repository type and select the appropriate
+test command. This prevents failures when `gadugi-test` (Node/Electron tooling)
+is not available in non-Node repositories.
+
+| Marker file     | Repo type  | Test command                                   | Scenario validation                        |
+|-----------------|------------|------------------------------------------------|--------------------------------------------|
+| `Cargo.toml`    | Rust       | `cargo test` + `cargo clippy`                  | `tests/parity/scenarios/*.yaml`            |
+| `package.json`  | Node.js    | `gadugi-test run tests/agentic/*.yaml`         | `tests/agentic/*.yaml`                     |
+| `pyproject.toml`| Python     | `python -m pytest`                             | `tests/scenarios/*.feature`                |
+| *(fallback)*    | Unknown    | `gadugi-test run tests/agentic/*.yaml`         | *(gadugi-test default)*                    |
+
+**Detection logic** (apply in order, first match wins):
+
+```bash
+if [ -f Cargo.toml ]; then
+    cargo test --workspace
+    cargo clippy --workspace -- -D warnings
+elif [ -f package.json ]; then
+    gadugi-test run tests/agentic/*.yaml
+elif [ -f pyproject.toml ] || [ -f setup.py ]; then
+    python -m pytest
+else
+    gadugi-test run tests/agentic/*.yaml
+fi
+```
+
 ### Running Tests
 
 **Single test**:

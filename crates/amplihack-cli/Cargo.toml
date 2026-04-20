@@ -10,6 +10,7 @@ doctest = false
 
 [dependencies]
 amplihack-hive = { path = "../amplihack-hive" }
+amplihack-eval = { workspace = true }
 amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
 anyhow = { workspace = true }

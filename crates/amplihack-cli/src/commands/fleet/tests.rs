@@ -41,6 +41,7 @@ fn native_reasoner_backend_propagates_shared_env_context() {
     let prev_depth = env::var_os("AMPLIHACK_SESSION_DEPTH");
     let prev_max_depth = env::var_os("AMPLIHACK_MAX_DEPTH");
     let prev_max_sessions = env::var_os("AMPLIHACK_MAX_SESSIONS");
+    let prev_graph_db = env::var_os("AMPLIHACK_GRAPH_DB_PATH");
     let previous_cwd = set_cwd(temp.path()).unwrap();
     unsafe {
         env::set_var("AMPLIHACK_HOME", &amplihack_home);
@@ -48,6 +49,7 @@ fn native_reasoner_backend_propagates_shared_env_context() {
         env::set_var("AMPLIHACK_SESSION_DEPTH", "2");
         env::set_var("AMPLIHACK_MAX_DEPTH", "4");
         env::set_var("AMPLIHACK_MAX_SESSIONS", "12");
+        env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
     }
 
     let output = NativeReasonerBackend::Claude(reasoner)
@@ -60,6 +62,7 @@ fn native_reasoner_backend_propagates_shared_env_context() {
     restore_var("AMPLIHACK_SESSION_DEPTH", prev_depth);
     restore_var("AMPLIHACK_MAX_DEPTH", prev_max_depth);
     restore_var("AMPLIHACK_MAX_SESSIONS", prev_max_sessions);
+    restore_var("AMPLIHACK_GRAPH_DB_PATH", prev_graph_db);
 
     assert_eq!(
         output.trim(),

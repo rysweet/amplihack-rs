@@ -216,3 +216,123 @@ pub enum ModeCommands {
     /// Switch to local mode
     ToLocal,
 }
+
+#[derive(Subcommand, Debug)]
+pub enum LockCommands {
+    /// Enable continuous work mode
+    Lock {
+        /// Custom instruction for Claude
+        #[arg(short, long)]
+        message: Option<String>,
+    },
+    /// Disable continuous work mode
+    Unlock,
+    /// Check lock status
+    Check,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SessionTreeCommands {
+    /// Check if a new child session can be spawned
+    Check,
+    /// Register a session in the tree
+    Register {
+        /// Session identifier
+        session_id: Option<String>,
+        /// Parent session identifier
+        parent_id: Option<String>,
+    },
+    /// Mark a session as completed
+    Complete {
+        /// Session identifier
+        session_id: Option<String>,
+    },
+    /// Show tree status
+    Status {
+        /// Tree identifier (defaults to AMPLIHACK_TREE_ID env var)
+        tree_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MultitaskCommands {
+    /// Run parallel workstreams from a config file
+    Run {
+        /// Path to workstreams JSON config
+        config: String,
+        /// Execution mode (recipe or classic)
+        #[arg(long, default_value = "")]
+        mode: String,
+        /// Recipe to use for each workstream
+        #[arg(long, default_value = "")]
+        recipe: String,
+        /// Maximum runtime in seconds
+        #[arg(long, default_value_t = 0)]
+        max_runtime: u64,
+        /// Timeout policy (interrupt-preserve or continue-preserve)
+        #[arg(long)]
+        timeout_policy: Option<String>,
+        /// Show what would be executed
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Clean up completed workstream directories
+    Cleanup {
+        /// Path to workstreams JSON config
+        config: String,
+        /// Show what would be removed
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Show workstream status
+    Status {
+        /// Base directory for workstreams
+        #[arg(long)]
+        base_dir: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum OrchHelperCommands {
+    /// Extract first JSON object from LLM output on stdin
+    ExtractJson,
+    /// Normalise task type from stdin to: Q&A, Operations, Investigation, Development
+    NormaliseType,
+    /// Generate workstream config from decomposition JSON on stdin
+    GenerateWorkstreamConfig,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EvalCommands {
+    /// Run a benchmark from a JSON config file and print results
+    Run {
+        /// Path to benchmark config JSON (or "-" to read from stdin)
+        #[arg(value_name = "CONFIG")]
+        config: String,
+        /// Output format
+        #[arg(short, long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+        /// Pass threshold override in [0.0, 1.0]
+        #[arg(long)]
+        threshold: Option<f64>,
+    },
+    /// Compare two benchmark result JSON files (baseline vs candidate)
+    Compare {
+        /// Baseline result JSON file
+        baseline: String,
+        /// Candidate result JSON file
+        candidate: String,
+        /// Output format
+        #[arg(short, long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
+    /// Print a benchmark result JSON file in the requested format
+    Report {
+        /// Path to benchmark result JSON file (or "-" for stdin)
+        #[arg(value_name = "RESULT")]
+        result: String,
+        /// Output format
+        #[arg(short, long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
+}

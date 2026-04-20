@@ -42,6 +42,24 @@ pub fn run_update() -> Result<()> {
     );
     super::install::download_and_replace(&release)?;
     write_cache(&cache_path()?, &release.version)?;
+
+    // #249: Re-stage framework assets after binary replacement.
+    // The new binary may bundle updated assets (skills, recipes, hooks).
+    // We call ensure_framework_installed() to refresh them. Failures are
+    // logged but do not abort the update — the binary itself is already
+    // in place and functional.
+    if let Err(err) = crate::commands::install::ensure_framework_installed() {
+        tracing::warn!(
+            error = %err,
+            "failed to re-stage framework assets after update; \
+             run 'amplihack install' manually to refresh"
+        );
+        eprintln!(
+            "⚠️  Binary updated successfully, but asset re-staging failed: {err:#}\n   \
+             Run 'amplihack install' to refresh framework assets."
+        );
+    }
+
     Ok(())
 }
 
