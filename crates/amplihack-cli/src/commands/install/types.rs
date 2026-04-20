@@ -2,12 +2,14 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Legacy upstream archive URL — only used as a network fallback when the
+/// Upstream archive URL — only used as a network fallback when the
 /// bundled framework root cannot be resolved locally (issue #254).
+/// Points to amplihack-rs (current canonical repo) per #249.
 pub(super) const REPO_ARCHIVE_URL: &str =
-    "https://github.com/rysweet/amplihack/archive/refs/heads/main.tar.gz";
-/// Legacy upstream git URL — only used as a network fallback (issue #254).
-pub(super) const REPO_GIT_URL: &str = "https://github.com/rysweet/amplihack";
+    "https://github.com/rysweet/amplihack-rs/archive/refs/heads/main.tar.gz";
+/// Upstream git URL — only used as a network fallback (issue #254).
+/// Points to amplihack-rs (current canonical repo) per #249.
+pub(super) const REPO_GIT_URL: &str = "https://github.com/rysweet/amplihack-rs";
 pub(super) const ESSENTIAL_DIRS: &[&str] = &[
     "agents/amplihack",
     "commands/amplihack",
