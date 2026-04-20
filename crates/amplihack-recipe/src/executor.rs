@@ -714,4 +714,57 @@ steps:
         assert_eq!(merged.get("b").unwrap(), "3");
         assert_eq!(merged.get("c").unwrap(), "4");
     }
+
+    /// Regression for #268 (closed not-reproducible): the recipe runner must
+    /// inherit the parent process environment when launching `bash` steps, so
+    /// users can pass things like `PYTHONPATH` or arbitrary custom env vars
+    /// from their shell into the recipe. Rust's `Command` inherits by default;
+    /// this test pins that behavior so we don't accidentally introduce
+    /// `env_clear()` / `env_remove()` in `execute_shell_step`.
+    #[test]
+    fn shell_step_inherits_parent_env_vars() {
+        // RAII guard so the env var is removed even if an assertion or
+        // executor call panics — env vars are process-global and cargo runs
+        // tests in parallel, so a leak would contaminate sibling tests.
+        struct EnvGuard(&'static str);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                // SAFETY: removing a var we set; no other thread observes
+                // this unique key.
+                unsafe {
+                    std::env::remove_var(self.0);
+                }
+            }
+        }
+
+        let key = "AMPLIHACK_INHERIT_PROBE_268";
+        let value = "propagated-from-parent";
+        // SAFETY: unique key, no concurrent reader of this name.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        let _guard = EnvGuard(key);
+
+        let yaml = format!(
+            r#"
+name: env-inherit-probe
+steps:
+  - id: probe
+    type: shell
+    command: 'printf "%s" "${}"'
+"#,
+            key
+        );
+        let recipe = crate::parser::RecipeParser::new().parse(&yaml).unwrap();
+        let executor = RecipeExecutor::new(ExecutorConfig::default(), DryRunAgentBackend);
+        let result = executor.execute(&recipe, HashMap::new()).unwrap();
+
+        assert!(result.success, "recipe should succeed");
+        assert_eq!(result.step_results[0].status, StepStatus::Succeeded);
+        assert_eq!(
+            result.step_results[0].output.as_deref(),
+            Some(value),
+            "shell step did not inherit parent env var (regression for #268)"
+        );
+    }
 }
