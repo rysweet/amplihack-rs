@@ -62,6 +62,8 @@ nav:
       - Generate Agent from Goal: howto/generate-agent-from-goal.md
       - Fix cxx-build CI Failure: howto/fix-cxx-build-ci-failure.md
       - Resolve LadybugDB Linker Errors: howto/resolve-kuzu-linker-errors.md
+  - Skills:
+      - Migrate Session: skills/migrate.md
   - Reference:
       - install Command: reference/install-command.md
       - Install Manifest: reference/install-manifest.md
