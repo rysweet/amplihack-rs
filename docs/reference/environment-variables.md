@@ -9,7 +9,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_ASSET_RESOLVER](#amplihack_asset_resolver)
   - [AMPLIHACK_HOME](#amplihack_home)
   - [AMPLIHACK_GRAPH_DB_PATH](#amplihack_graph_db_path)
-  - [AMPLIHACK_KUZU_DB_PATH](#amplihack_kuzu_db_path-legacy-alias)
+  - [AMPLIHACK_KUZU_DB_PATH](#amplihack_kuzu_db_path-backward-compatible-alias)
   - [AMPLIHACK_NONINTERACTIVE](#amplihack_noninteractive)
   - [AMPLIHACK_SESSION_ID](#amplihack_session_id)
   - [AMPLIHACK_DEPTH](#amplihack_depth)

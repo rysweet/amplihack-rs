@@ -161,6 +161,6 @@ The root cause is in the lbug crate's `Cargo.toml`, which specifies `cxx-build =
 ## Related
 
 - [The cxx/cxx-build Version Contract](../concepts/cxx-version-contract.md) — Why the versions must match
-- [CONTRIBUTING_RUST.md](../../CONTRIBUTING_RUST.md) — Build and test commands
+- [CONTRIBUTING_RUST.md](https://github.com/rysweet/amplihack-rs/blob/main/CONTRIBUTING_RUST.md) — Build and test commands
 - [GitHub Issue #35](https://github.com/rysweet/amplihack-rs/issues/35) — Original report and investigation
 - [GitHub PR #43](https://github.com/rysweet/amplihack-rs/pull/43) — The fix

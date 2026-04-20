@@ -89,5 +89,5 @@ amplihack uninstall
 
 ## Related
 
-- [README](../README.md) — Architecture overview and design principles
-- [CONTRIBUTING_RUST.md](../CONTRIBUTING_RUST.md) — Developer setup, build targets, test harness
+- [README](https://github.com/rysweet/amplihack-rs/blob/main/README.md) — Architecture overview and design principles
+- [CONTRIBUTING_RUST.md](https://github.com/rysweet/amplihack-rs/blob/main/CONTRIBUTING_RUST.md) — Developer setup, build targets, test harness

@@ -9,9 +9,9 @@ can override the defaults.
 ## Contents
 
 - [Injected flags overview](#injected-flags-overview)
-- [--dangerously-skip-permissions](#--dangerously-skip-permissions)
-- [--model](#--model)
-- [--resume and --continue](#--resume-and---continue)
+- [--dangerously-skip-permissions](#-dangerously-skip-permissions)
+- [--model](#-model)
+- [--resume and --continue](#-resume-and-continue)
 - [Extra args passthrough](#extra-args-passthrough)
 - [Complete command-line assembly](#complete-command-line-assembly)
 - [Python launcher parity](#python-launcher-parity)
