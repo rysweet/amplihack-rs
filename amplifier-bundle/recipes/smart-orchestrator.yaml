@@ -250,7 +250,8 @@ steps:
     condition: "'Development' in task_type or 'Investigation' in task_type or task_type == ''"
     command: |
       TREE_SCRIPT="$(amplihack resolve-bundle-asset session-tree-path 2>/dev/null || true)"
-      SESSION_ID=$(python3 -c "import uuid; print(uuid.uuid4().hex[:8])")
+      # #283: replace python3 uuid with /proc/sys/kernel/random/uuid (POSIX)
+      SESSION_ID=$(tr -d '-' < /proc/sys/kernel/random/uuid | head -c 8)
 
       if [ -f "$TREE_SCRIPT" ]; then
         # Register this session — atomic check+register under lock
@@ -261,25 +262,28 @@ steps:
           DEPTH_VAL=${DEPTH_STR:-0}
           # Validate extracted values
           if ! echo "$TREE_ID" | grep -qE '^[A-Za-z0-9_-]+$'; then
-            python3 -c "import json; print(json.dumps({'session_id': 'error', 'tree_id': 'error', 'depth': 0, 'status': 'registration_failed', 'error': 'invalid tree_id extracted'}))"
+            # #283: replace python3 json with printf (inputs are fixed literals)
+            printf '{"session_id":"error","tree_id":"error","depth":0,"status":"registration_failed","error":"invalid tree_id extracted"}\n'
             exit 0
           fi
-          python3 -c "import sys,json; sid,tid,depth=sys.argv[1],sys.argv[2],int(sys.argv[3]); print(json.dumps({'session_id':sid,'tree_id':tid,'depth':depth,'status':'ok'}))" "$SESSION_ID" "$TREE_ID" "$DEPTH_VAL"
+          # #283: DEPTH_VAL is already validated as numeric above; SESSION_ID
+          # and TREE_ID are both constrained to [A-Za-z0-9_-], safe for JSON
+          printf '{"session_id":"%s","tree_id":"%s","depth":%d,"status":"ok"}\n' "$SESSION_ID" "$TREE_ID" "$DEPTH_VAL"
         else
           # Registration failed (capacity exceeded or depth limit) — encode structured error
           echo "NOTE: Session registration failed — proceeding without recursion tracking." >&2
-          python3 -c "import json; print(json.dumps({'session_id': 'none', 'tree_id': 'none', 'depth': 0, 'status': 'registration_failed'}))"
+          printf '{"session_id":"none","tree_id":"none","depth":0,"status":"registration_failed"}\n'
         fi
       else
         # No session_tree.py — generate a tree_id from env or fresh uuid
         TREE_ID=$(echo "${AMPLIHACK_TREE_ID:-}" | grep -E '^[A-Za-z0-9_-]+$' | head -1)
         if [ -z "$TREE_ID" ]; then
-          TREE_ID=$(python3 -c "import uuid; print(uuid.uuid4().hex[:8])")
+          TREE_ID=$(tr -d '-' < /proc/sys/kernel/random/uuid | head -c 8)
         fi
         DEPTH_RAW="${AMPLIHACK_SESSION_DEPTH:-0}"
         # Validate it's an integer (default to 0 if not)
         DEPTH_VAL=$(echo "$DEPTH_RAW" | grep -E '^[0-9]+$' || echo '0')
-        python3 -c "import sys,json; sid,tid,depth=sys.argv[1],sys.argv[2],int(sys.argv[3]); print(json.dumps({'session_id':sid,'tree_id':tid,'depth':depth,'status':'no_tree_script'}))" "$SESSION_ID" "$TREE_ID" "$DEPTH_VAL"
+        printf '{"session_id":"%s","tree_id":"%s","depth":%d,"status":"no_tree_script"}\n' "$SESSION_ID" "$TREE_ID" "$DEPTH_VAL"
       fi
     output: "session_info"
 
@@ -435,28 +439,15 @@ steps:
       {{session_info}}
       EOFSESSIONJSON
       )
-      # Parse tree_id, depth, and validate workstreams file in one Python subprocess.
-      # Uses env vars instead of pipe+heredoc to avoid stdin conflict (issue #2581).
-      export SESSION_JSON WS_FILE
-      read -r TREE_ID SESSION_DEPTH WS_COUNT_CHECK < <(python3 <<'PYEOF'
-      import os, json
-      try:
-          d = json.loads(os.environ.get('SESSION_JSON', '{}'))
-          tid = d.get('tree_id', '')
-          depth = d.get('depth', 0)
-      except Exception:
-          tid, depth = '', 0
-      ws_file = os.environ.get('WS_FILE', '')
-      ws_count = 0
-      if ws_file:
-          try:
-              with open(ws_file) as f:
-                  ws_count = len(json.load(f))
-          except Exception:
-              pass
-      print(tid, depth, ws_count)
-      PYEOF
-      )
+      # #283: parse tree_id, depth, and workstreams count using jq instead of
+      # inline Python. jq is a standard CLI tool and removes a python3 heredoc.
+      TREE_ID=$(printf '%s' "$SESSION_JSON" | jq -r '.tree_id // ""' 2>/dev/null || echo "")
+      SESSION_DEPTH=$(printf '%s' "$SESSION_JSON" | jq -r '.depth // 0' 2>/dev/null || echo "0")
+      if [ -n "$WS_FILE" ] && [ -f "$WS_FILE" ]; then
+        WS_COUNT_CHECK=$(jq 'length' "$WS_FILE" 2>/dev/null || echo "0")
+      else
+        WS_COUNT_CHECK=0
+      fi
       TREE_ID=${TREE_ID:-}
       SESSION_DEPTH=${SESSION_DEPTH:-0}
       WS_COUNT_CHECK=${WS_COUNT_CHECK:-0}
@@ -951,28 +942,23 @@ steps:
       )
       TREE_SCRIPT="$(amplihack resolve-bundle-asset session-tree-path 2>/dev/null || true)"
       HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir 2>/dev/null || true)"
-      # Parse session fields and clear workflow semaphore in one Python subprocess.
-      # Uses env vars instead of pipe+heredoc to avoid stdin conflict (issue #2581).
-      export SESSION_JSON HOOKS_DIR
-      read -r SESSION_ID TREE_ID STATUS < <(python3 <<'PYEOF'
-      import json, os, sys
+      # #283: parse session fields via jq instead of inline Python.
+      SESSION_ID=$(printf '%s' "$SESSION_JSON" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+      TREE_ID=$(printf '%s' "$SESSION_JSON" | jq -r '.tree_id // ""' 2>/dev/null || echo "")
+      STATUS=$(printf '%s' "$SESSION_JSON" | jq -r '.status // ""' 2>/dev/null || echo "")
+      # Clear workflow-active semaphore so the hook resumes injection.
+      # The dev_intent_router hook is still Python; tracked separately in #285.
+      if [ -n "$HOOKS_DIR" ] && [ -d "$HOOKS_DIR" ]; then
+        HOOKS_DIR="$HOOKS_DIR" python3 <<'PYEOF' 2>/dev/null || true
+      import os, sys
       try:
-          d = json.loads(os.environ.get('SESSION_JSON', '{}'))
-          sid, tid, status = d.get('session_id',''), d.get('tree_id',''), d.get('status','')
-      except Exception:
-          sid, tid, status = '', '', ''
-      # Clear workflow-active semaphore so the hook resumes injection
-      try:
-          hooks_dir = os.environ.get('HOOKS_DIR', '')
-          if hooks_dir:
-              sys.path.insert(0, hooks_dir)
-              from dev_intent_router import clear_workflow_active
-              clear_workflow_active()
+          sys.path.insert(0, os.environ.get('HOOKS_DIR', ''))
+          from dev_intent_router import clear_workflow_active
+          clear_workflow_active()
       except Exception:
           pass
-      print(sid, tid, status)
       PYEOF
-      )
+      fi
       SESSION_ID=${SESSION_ID:-}
       TREE_ID=${TREE_ID:-}
       STATUS=${STATUS:-}
