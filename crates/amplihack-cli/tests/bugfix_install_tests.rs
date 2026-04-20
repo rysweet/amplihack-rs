@@ -2,7 +2,7 @@
 //!
 //! These tests verify:
 //! - #254: REPO_ARCHIVE_URL and REPO_GIT_URL point to amplihack-rs;
-//!         find_framework_repo_root() accepts `amplifier-bundle/` marker
+//!   find_framework_repo_root() accepts `amplifier-bundle/` marker
 //! - #249: run_update() calls ensure_framework_installed() after binary swap
 //! - #257: verify_sha256() uses http_get_with_retry() (tested via contract)
 

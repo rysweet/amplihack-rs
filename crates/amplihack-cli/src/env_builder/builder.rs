@@ -1,7 +1,7 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::helpers::{
@@ -128,61 +128,16 @@ impl EnvBuilder {
 
     /// Set the backend-neutral code-graph DB path for child processes.
     ///
-    /// Prefer an existing backend-neutral `AMPLIHACK_GRAPH_DB_PATH`, then accept
-    /// a legacy `AMPLIHACK_KUZU_DB_PATH` as input-only compatibility. Child
-    /// processes receive `AMPLIHACK_GRAPH_DB_PATH` and have the legacy alias
-    /// explicitly removed so the neutral contract is what propagates forward.
+    /// The explicit `project_root` argument is authoritative — it always wins
+    /// over any inherited `AMPLIHACK_GRAPH_DB_PATH` / `AMPLIHACK_KUZU_DB_PATH`
+    /// in the parent environment (issue #250). The legacy alias is unset so
+    /// only the neutral contract propagates forward.
     pub fn with_project_graph_db(self, project_root: &Path) -> Result<Self> {
         debug_assert!(
             project_root.is_absolute(),
             "project_root must be an absolute path; got: {}",
             project_root.display()
         );
-        fn validate_graph_db_path(candidate: &str, env_var: &str) -> Result<String> {
-            let path = Path::new(candidate);
-            if !path.is_absolute() {
-                bail!(
-                    "invalid {env_var} override: graph DB path must be absolute: {}",
-                    path.display()
-                );
-            }
-            if path
-                .components()
-                .any(|component| matches!(component, Component::ParentDir))
-            {
-                bail!(
-                    "invalid {env_var} override: graph DB path must not contain parent traversal: {}",
-                    path.display()
-                );
-            }
-            for blocked in [Path::new("/proc"), Path::new("/sys"), Path::new("/dev")] {
-                if path.starts_with(blocked) {
-                    bail!(
-                        "invalid {env_var} override: graph DB path uses blocked prefix {}: {}",
-                        blocked.display(),
-                        path.display()
-                    );
-                }
-            }
-            Ok(candidate.to_string())
-        }
-
-        if let Ok(existing) = env::var("AMPLIHACK_GRAPH_DB_PATH")
-            && !existing.is_empty()
-        {
-            let existing = validate_graph_db_path(&existing, "AMPLIHACK_GRAPH_DB_PATH")?;
-            return Ok(self
-                .unset("AMPLIHACK_KUZU_DB_PATH")
-                .set("AMPLIHACK_GRAPH_DB_PATH", existing));
-        }
-        if let Ok(existing) = env::var("AMPLIHACK_KUZU_DB_PATH")
-            && !existing.is_empty()
-        {
-            let existing = validate_graph_db_path(&existing, "AMPLIHACK_KUZU_DB_PATH")?;
-            return Ok(self
-                .unset("AMPLIHACK_KUZU_DB_PATH")
-                .set("AMPLIHACK_GRAPH_DB_PATH", existing));
-        }
 
         let path = project_root.join(".amplihack").join("graph_db");
         let path = path.to_string_lossy().into_owned();
