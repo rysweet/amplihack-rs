@@ -231,7 +231,10 @@ mod tests {
             let entry = &arr[0];
             assert_eq!(entry["type"], "command", "{event} entry type");
             assert!(
-                entry["bash"].as_str().unwrap_or("").contains(event_basename(event)),
+                entry["bash"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains(event_basename(event)),
                 "{event} bash path mismatch: {entry}"
             );
             assert!(
@@ -240,7 +243,12 @@ mod tests {
             );
         }
         // None of our event names should be the legacy kebab-case form.
-        for legacy in ["session-start", "user-prompt-submit", "post-tool-use", "stop"] {
+        for legacy in [
+            "session-start",
+            "user-prompt-submit",
+            "post-tool-use",
+            "stop",
+        ] {
             assert!(
                 !hooks_obj.contains_key(legacy),
                 "legacy event name leaked: {legacy}"

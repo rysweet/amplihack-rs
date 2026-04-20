@@ -92,7 +92,10 @@ pub(super) fn write_user_level_hooks(copilot_home: &Path) -> Result<()> {
             serde_json::json!({})
         } else {
             serde_json::from_str(&raw).with_context(|| {
-                format!("parse {} as JSON before merging hooks", config_path.display())
+                format!(
+                    "parse {} as JSON before merging hooks",
+                    config_path.display()
+                )
             })?
         }
     } else {
