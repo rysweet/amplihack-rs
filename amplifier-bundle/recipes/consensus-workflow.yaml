@@ -578,7 +578,7 @@ steps:
       fi
 
       # Create branch name
-      TASK_DESC=$(cat <<EOFTASKDESC
+      TASK_DESC=$(cat <<'EOFTASKDESC'
       {{task_description}}
       EOFTASKDESC
       )

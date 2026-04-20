@@ -139,7 +139,7 @@ steps:
       # FIX (issues #3045/#3076/#3117): unquoted heredoc for safe variable capture.
       # Unquoted heredoc allows Rust runner env-var expansion ($RECIPE_VAR_*).
       # Shell expansion is single-pass: expanded values are NOT re-processed.
-      TASK_DESC=$(cat <<EOFTASKDESC
+      TASK_DESC=$(cat <<'EOFTASKDESC'
       {{task_description}}
       EOFTASKDESC
       )
@@ -448,13 +448,15 @@ steps:
       # update consensus-workflow.yaml in the same commit. See Issue #2952 for context.
       #
       # Generate branch name from task description.
-      # FIX (issue #3087): Use UNQUOTED heredoc so the Rust recipe runner's
-      # env-var expansion ($RECIPE_VAR_task_description) works correctly.
-      # Single-quoted heredoc (<<'EOF') prevented variable expansion, producing
-      # garbled branch names like "feat/issue--recipevartaskdescription".
+      # FIX (issue #3087 / #301): Template substitution of {{task_description}}
+      # happens BEFORE the bash script runs — so a single-quoted heredoc is
+      # correct here and safer. An UNQUOTED heredoc would re-interpret any
+      # `$NAME` literals in the task description as bash variables, which
+      # with `set -u` aborts the step when the user mentions things like
+      # `$TREE_SCRIPT` or `$ORCH_SCRIPT` in their task text.
       # Security note: the sanitization pipeline (tr -cd 'a-z0-9-') strips all
       # shell metacharacters from the output, mitigating injection risk.
-      TASK_DESC=$(cat <<EOFTASKDESC
+      TASK_DESC=$(cat <<'EOFTASKDESC'
       {{task_description}}
       EOFTASKDESC
       )
@@ -1213,7 +1215,7 @@ steps:
       echo ""
       echo "--- Creating Commit ---"
       # FIX (#3045/#3076/#3117): unquoted heredoc — safe variable capture
-      TASK_DESC=$(cat <<EOFTASKDESC
+      TASK_DESC=$(cat <<'EOFTASKDESC'
       {{task_description}}
       EOFTASKDESC
       )
@@ -1330,7 +1332,7 @@ steps:
 
       # Normal path: 1+ commits ahead, no existing PR — create the PR
       # FIX (#3045/#3076/#3117): unquoted heredoc — safe variable capture
-      TASK_DESC=$(cat <<EOFTASKDESC
+      TASK_DESC=$(cat <<'EOFTASKDESC'
       {{task_description}}
       EOFTASKDESC
       )
@@ -1969,7 +1971,7 @@ steps:
       gh pr view --json state,mergeable,reviews,statusCheckRollup && \
       echo "" && \
       # FIX (#3045/#3076/#3117): unquoted heredoc — safe variable capture
-      TASK_DESC=$(cat <<EOFTASKDESC
+      TASK_DESC=$(cat <<'EOFTASKDESC'
       {{task_description}}
       EOFTASKDESC
       ) && \
@@ -1988,7 +1990,7 @@ steps:
     parse_json: true
     command: |
       # FIX (#3045/#3076/#3117): unquoted heredoc — safe variable capture
-      TASK_DESC=$(cat <<EOFTASKDESC
+      TASK_DESC=$(cat <<'EOFTASKDESC'
       {{task_description}}
       EOFTASKDESC
       )
