@@ -282,7 +282,9 @@ fn copilot_gets_allow_all_injected_by_default() {
     with_uvx_detection_disabled(|| {
         // Clear the opt-out env var in case the test environment has it set.
         // Safety: tests in this file are serialized via home_env_lock().
-        unsafe { std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL"); }
+        unsafe {
+            std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL");
+        }
         let binary = BinaryInfo {
             name: "copilot".to_string(),
             path: PathBuf::from("/usr/bin/copilot"),
@@ -303,7 +305,9 @@ fn copilot_gets_allow_all_injected_by_default() {
 #[test]
 fn copilot_skips_allow_all_when_user_sets_one() {
     with_uvx_detection_disabled(|| {
-        unsafe { std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL"); }
+        unsafe {
+            std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL");
+        }
         let binary = BinaryInfo {
             name: "copilot".to_string(),
             path: PathBuf::from("/usr/bin/copilot"),
@@ -317,7 +321,10 @@ fn copilot_skips_allow_all_when_user_sets_one() {
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
         let allow_all_count = args.iter().filter(|a| a.as_str() == "--allow-all").count();
-        assert_eq!(allow_all_count, 0, "should not inject --allow-all when user supplied --allow-all-tools; got {args:?}");
+        assert_eq!(
+            allow_all_count, 0,
+            "should not inject --allow-all when user supplied --allow-all-tools; got {args:?}"
+        );
     });
 }
 
@@ -325,7 +332,9 @@ fn copilot_skips_allow_all_when_user_sets_one() {
 fn copilot_skips_allow_all_when_env_opt_out() {
     with_uvx_detection_disabled(|| {
         // Safety: serialized via home_env_lock(); restored at end.
-        unsafe { std::env::set_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL", "1"); }
+        unsafe {
+            std::env::set_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL", "1");
+        }
         let binary = BinaryInfo {
             name: "copilot".to_string(),
             path: PathBuf::from("/usr/bin/copilot"),
@@ -336,8 +345,13 @@ fn copilot_skips_allow_all_when_env_opt_out() {
             .get_args()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
-        unsafe { std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL"); }
-        assert!(!args.iter().any(|a| a == "--allow-all"), "opt-out must suppress allow-all; got {args:?}");
+        unsafe {
+            std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL");
+        }
+        assert!(
+            !args.iter().any(|a| a == "--allow-all"),
+            "opt-out must suppress allow-all; got {args:?}"
+        );
     });
 }
 
@@ -354,6 +368,9 @@ fn claude_does_not_get_allow_all_injected() {
             .get_args()
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
-        assert!(!args.iter().any(|a| a == "--allow-all"), "non-copilot tools must not get --allow-all; got {args:?}");
+        assert!(
+            !args.iter().any(|a| a == "--allow-all"),
+            "non-copilot tools must not get --allow-all; got {args:?}"
+        );
     });
 }

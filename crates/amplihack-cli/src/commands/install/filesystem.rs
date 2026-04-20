@@ -56,8 +56,7 @@ pub(super) fn deploy_binary(src: &Path, dst: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         if let Err(e) = fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o755)) {
             let _ = fs::remove_file(&temp_path);
-            return Err(e)
-                .with_context(|| format!("failed to chmod {}", temp_path.display()));
+            return Err(e).with_context(|| format!("failed to chmod {}", temp_path.display()));
         }
     }
 

@@ -69,11 +69,10 @@ fn deploy_binary_cleans_up_temp_on_success() {
     let leftovers: Vec<_> = fs::read_dir(tmp.path())
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .contains(".new.")
-        })
+        .filter(|e| e.file_name().to_string_lossy().contains(".new."))
         .collect();
-    assert!(leftovers.is_empty(), "no temp files should remain: {leftovers:?}");
+    assert!(
+        leftovers.is_empty(),
+        "no temp files should remain: {leftovers:?}"
+    );
 }

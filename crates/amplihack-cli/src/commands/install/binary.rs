@@ -121,7 +121,10 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
         let self_dst = local_bin.join("amplihack");
         if self_exe != self_dst {
             deploy_binary(&self_exe, &self_dst).with_context(|| {
-                format!("failed to deploy amplihack binary to {}", self_dst.display())
+                format!(
+                    "failed to deploy amplihack binary to {}",
+                    self_dst.display()
+                )
             })?;
             deployed.push(self_dst);
         }
