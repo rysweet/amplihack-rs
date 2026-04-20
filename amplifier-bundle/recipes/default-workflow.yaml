@@ -1222,13 +1222,29 @@ steps:
       if [ -n "$(git diff --cached --name-only)" ]; then
         git commit -m "$COMMIT_MSG"
       else
-        echo "ERROR: Nothing staged to commit. The implementation step may have written files" >&2
-        echo "outside the worktree ({{worktree_setup.worktree_path}}), or no code changes were produced." >&2
-        echo "This is a hollow-success condition — the workflow completed structurally but" >&2
-        echo "produced no git artifacts. Check that agents created files in the worktree," >&2
-        echo "not in AMPLIHACK_HOME or other locations." >&2
-        git --no-pager status >&2
-        exit 1
+        # FIX (#282): hollow-success false-positive when agent worked in an
+        # alternate worktree. Check if the current branch has new commits
+        # in any other worktree before declaring hollow success.
+        CURRENT_BRANCH=$(git branch --show-current)
+        ALT_WORKTREE_COMMITS=0
+        if [ -n "$CURRENT_BRANCH" ] && git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+          ALT_WORKTREE_COMMITS=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
+        fi
+        if [ "$ALT_WORKTREE_COMMITS" -gt 0 ]; then
+          echo "INFO: Nothing staged in {{worktree_setup.worktree_path}}, but the" >&2
+          echo "current branch '$CURRENT_BRANCH' is $ALT_WORKTREE_COMMITS commit(s) ahead of" >&2
+          echo "its upstream. The agent likely committed via an alternate worktree on" >&2
+          echo "the same branch; treating as success." >&2
+          git --no-pager log --oneline -"$ALT_WORKTREE_COMMITS" >&2
+        else
+          echo "ERROR: Nothing staged to commit. The implementation step may have written files" >&2
+          echo "outside the worktree ({{worktree_setup.worktree_path}}), or no code changes were produced." >&2
+          echo "This is a hollow-success condition — the workflow completed structurally but" >&2
+          echo "produced no git artifacts. Check that agents created files in the worktree," >&2
+          echo "not in AMPLIHACK_HOME or other locations." >&2
+          git --no-pager status >&2
+          exit 1
+        fi
       fi
       echo ""
       echo "--- Pushing to Remote ---"
