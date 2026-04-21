@@ -139,12 +139,11 @@ steps:
       # FIX (issues #3045/#3076/#3117): unquoted heredoc for safe variable capture.
       # Unquoted heredoc allows Rust runner env-var expansion ($RECIPE_VAR_*).
       # Shell expansion is single-pass: expanded values are NOT re-processed.
-      TASK_DESC=$(cat <<'EOFTASKDESC'
-      {{task_description}}
-      EOFTASKDESC
-      )
+      # FIX (#311): use exported env var instead of template-substituted heredoc
+      # — bulletproof against any content (newlines, terminators, quotes).
+      TASK_DESC="${TASK_DESCRIPTION:-}"
       printf 'Task: %s\n' "$TASK_DESC"
-      printf 'Repository: %s\n' {{repo_path}}
+      printf 'Repository: %s\n' "${REPO_PATH:-{{repo_path}}}"
     output: "workflow_init"
 
   # ==========================================================================
@@ -302,18 +301,13 @@ steps:
       # The recipe runner performs {{variable}} substitution before bash executes,
       # so quoted delimiters are safe and correct.
       # Use unique delimiter unlikely to appear in user task descriptions.
-      TASK_DESC=$(cat <<'_AMPLIHACK_STEP03_TASK_EOF_'
-      {{task_description}}
-      _AMPLIHACK_STEP03_TASK_EOF_
-      )
+      # FIX (#311): use exported env vars instead of template-substituted heredocs.
+      TASK_DESC="${TASK_DESCRIPTION:-}"
       # Bash builtins replace tr|cut pipeline — avoids 2 subprocess spawns (matches step-16)
       ISSUE_TITLE="${TASK_DESC//$'\n'/ }"
       ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"
       ISSUE_TITLE="${ISSUE_TITLE:0:200}"
-      ISSUE_REQS=$(cat <<'_AMPLIHACK_STEP03_REQS_EOF_'
-      {{final_requirements}}
-      _AMPLIHACK_STEP03_REQS_EOF_
-      )
+      ISSUE_REQS="${FINAL_REQUIREMENTS:-}"
 
       # Idempotency Guard 1: Reuse issue referenced in task_description (#NNNN)
       # Mirrors step-16-create-draft-pr idempotency pattern (#3324).
@@ -374,22 +368,14 @@ steps:
     type: "bash"
     command: |
       # Extract issue number from the creation output.
-      # FIX (issue #3022): Use safe heredoc capture instead of echo {{variable}} to
-      # prevent shell metacharacter injection from issue body content.  Use head -1
-      # instead of tail -1 so the canonical URL (first match) wins — not a trailing
+      # FIX (#311): use exported env vars (ISSUE_CREATION, TASK_DESCRIPTION)
+      # instead of fragile template-substituted heredocs. The recipe runner
+      # exports every context key as an env var, immune to delimiter collisions
+      # and shell metacharacter injection regardless of content.
+      # Use head -1 so the canonical URL (first match) wins — not a trailing
       # noise number captured via 2>&1 in step-03a.
-      # EOFISSUECREATION delimiter is intentionally long/specific to prevent accidental
-      # collision with issue body text that might contain common delimiters like "EOF".
-      ISSUE_CREATION=$(cat <<'EOFISSUECREATION'
-      {{issue_creation}}
-      EOFISSUECREATION
-      )
-      # FIX (#4247): Capture task_description at top level (not inside if block)
-      # to avoid indented heredoc delimiters that bash cannot parse.
-      TASK_DESC_RAW=$(cat <<'EOFTASKDESC03B'
-      {{task_description}}
-      EOFTASKDESC03B
-      )
+      ISSUE_CREATION="${ISSUE_CREATION:-}"
+      TASK_DESC_RAW="${TASK_DESCRIPTION:-}"
       # FIX (#4233): Match both issue URLs (issues/NNN) and PR URLs (pull/NNN).
       # If the output is a PR URL, resolve the linked issue via gh pr view.
       EXTRACTED=$(printf '%s' "$ISSUE_CREATION" | grep -oE 'issues/[0-9]+' | grep -oE '[0-9]+' | head -1)
@@ -456,10 +442,7 @@ steps:
       # `$TREE_SCRIPT` or `$ORCH_SCRIPT` in their task text.
       # Security note: the sanitization pipeline (tr -cd 'a-z0-9-') strips all
       # shell metacharacters from the output, mitigating injection risk.
-      TASK_DESC=$(cat <<'EOFTASKDESC'
-      {{task_description}}
-      EOFTASKDESC
-      )
+      TASK_DESC="${TASK_DESCRIPTION:-}"
       TASK_SLUG=$(printf '%s' "$TASK_DESC" | tr '\n\r' '  ' | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | sed 's/-\{2,\}/-/g' | sed 's/^-//;s/-$//' | cut -c1-50 | sed 's/-$//')
       # Guard: empty slug (blank/all-symbol input) produces a trailing-hyphen branch that
       # git check-ref-format accepts as valid but is undesirable. Catch it explicitly first.
@@ -1214,11 +1197,8 @@ steps:
       git add -A
       echo ""
       echo "--- Creating Commit ---"
-      # FIX (#3045/#3076/#3117): unquoted heredoc — safe variable capture
-      TASK_DESC=$(cat <<'EOFTASKDESC'
-      {{task_description}}
-      EOFTASKDESC
-      )
+      # FIX (#311): use exported env var instead of fragile heredoc substitution
+      TASK_DESC="${TASK_DESCRIPTION:-}"
       COMMIT_TITLE=$(printf 'feat: %.72s' "$(printf '%s' "$TASK_DESC" | tr '\n\r' ' ' | head -1)")
       COMMIT_MSG=$(printf '%s\n\nImplements issue #%s\n\nChanges:\n- Implementation as per design specification\n- Tests added for new functionality\n- Documentation updated\n\nCloses #%s' "$COMMIT_TITLE" {{issue_number}} {{issue_number}})
       if [ -n "$(git diff --cached --name-only)" ]; then
@@ -1331,19 +1311,13 @@ steps:
       fi
 
       # Normal path: 1+ commits ahead, no existing PR — create the PR
-      # FIX (#3045/#3076/#3117): unquoted heredoc — safe variable capture
-      TASK_DESC=$(cat <<'EOFTASKDESC'
-      {{task_description}}
-      EOFTASKDESC
-      )
+      # FIX (#311): use exported env var instead of fragile heredoc substitution
+      TASK_DESC="${TASK_DESCRIPTION:-}"
       # Bash builtins replace the `tr | cut` pipeline — avoids 2 subprocess spawns
       PR_TITLE="${TASK_DESC//$'\n'/ }"
       PR_TITLE="${PR_TITLE//$'\r'/ }"
       PR_TITLE="${PR_TITLE:0:200}"
-      PR_DESIGN=$(cat <<EOFDESIGN
-      {{design_spec}}
-      EOFDESIGN
-      )
+      PR_DESIGN="${DESIGN_SPEC:-}"
       PR_BODY=$(printf '## Summary\n%s\n\n## Issue\nCloses #%s\n\n## Changes\n%s\n\n## Testing\n- Unit tests added\n- Local testing completed\n- Pre-commit hooks pass\n\n## Checklist\n- [x] Tests pass\n- [x] Documentation updated\n- [x] No stubs or TODOs\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$TASK_DESC" "$ISSUE_NUM" "$PR_DESIGN")
       # timeout 120: gh pr create contacts GitHub GraphQL API — cap wait to 2 minutes
       # 2>/dev/null: suppress gh stderr to prevent output contract corruption of pr_url
@@ -1752,14 +1726,8 @@ steps:
       # ARG_MAX guard: large template variables (philosophy_check, patterns_check)
       # are captured via heredoc and truncated to 1 KB summaries.  Echoing them
       # raw caused ARG_MAX overflow — see #3366 / b1f87112b.
-      PHIL_CHECK=$(cat <<'EOFPHILCHECK'
-      {{philosophy_check}}
-      EOFPHILCHECK
-      )
-      PAT_CHECK=$(cat <<'EOFPATCHECK'
-      {{patterns_check}}
-      EOFPATCHECK
-      )
+      PHIL_CHECK="${PHILOSOPHY_CHECK:-}"
+      PAT_CHECK="${PATTERNS_CHECK:-}"
       PHIL_SUMMARY=$(printf '%.1024s' "$PHIL_CHECK")
       PAT_SUMMARY=$(printf '%.1024s' "$PAT_CHECK")
 
@@ -1970,11 +1938,8 @@ steps:
       echo "PR Status:" && \
       gh pr view --json state,mergeable,reviews,statusCheckRollup && \
       echo "" && \
-      # FIX (#3045/#3076/#3117): unquoted heredoc — safe variable capture
-      TASK_DESC=$(cat <<'EOFTASKDESC'
-      {{task_description}}
-      EOFTASKDESC
-      ) && \
+      # FIX (#311): use exported env var instead of fragile heredoc substitution
+      TASK_DESC="${TASK_DESCRIPTION:-}" && \
       printf '=== Task: %s ===\n' "$TASK_DESC" && \
       printf '=== Issue: #%s ===\n' {{issue_number}} && \
       printf '=== PR: %s ===\n' {{pr_url}} && \
@@ -1989,11 +1954,8 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      # FIX (#3045/#3076/#3117): unquoted heredoc — safe variable capture
-      TASK_DESC=$(cat <<'EOFTASKDESC'
-      {{task_description}}
-      EOFTASKDESC
-      )
+      # FIX (#311): use exported env var instead of fragile heredoc substitution
+      TASK_DESC="${TASK_DESCRIPTION:-}"
       TASK_VAL=$(printf '%s' "$TASK_DESC")
       export TASK_VAL
       # {{issue_number}} and {{pr_url}} are system-generated integers/URLs —

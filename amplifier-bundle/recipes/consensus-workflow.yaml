@@ -578,10 +578,8 @@ steps:
       fi
 
       # Create branch name
-      TASK_DESC=$(cat <<'EOFTASKDESC'
-      {{task_description}}
-      EOFTASKDESC
-      )
+      # FIX (#311): use exported env var instead of fragile heredoc substitution
+      TASK_DESC="${TASK_DESCRIPTION:-}"
       TASK_SLUG=$(printf '%s' "$TASK_DESC" | tr '\n\r' '  ' | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | sed 's/-\{2,\}/-/g;s/^-//;s/-$//' | cut -c1-30 | sed 's/-$//')
       # Guard: empty slug (blank/all-symbol input) produces a trailing-hyphen branch that
       # git check-ref-format accepts as valid but is undesirable. Catch it explicitly first.
