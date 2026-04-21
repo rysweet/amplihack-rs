@@ -229,6 +229,38 @@ function download(url) {
   });
 }
 
+/**
+ * Resolve the latest published release tag for the configured GitHub repo.
+ *
+ * Returns the bare semver string (e.g. "0.7.63"). Falls back to the
+ * fallbackVersion parameter when the API call fails (offline, rate-limited,
+ * etc.) so installation degrades gracefully — only the freshness suffers.
+ *
+ * Honors AMPLIHACK_NPM_VERSION as an explicit override (set by users or CI
+ * who want a specific pinned version).
+ */
+async function resolveLatestReleaseTag(fallbackVersion) {
+  const explicit = process.env.AMPLIHACK_NPM_VERSION;
+  if (explicit) {
+    return explicit.replace(/^v/, '');
+  }
+  if (process.env.AMPLIHACK_NPM_NO_LATEST === '1') {
+    return fallbackVersion;
+  }
+  const url = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+  try {
+    const body = await download(url);
+    const data = JSON.parse(body.toString('utf8'));
+    const tag = typeof data.tag_name === 'string' ? data.tag_name.replace(/^v/, '') : '';
+    if (!/^\d+\.\d+\.\d+/.test(tag)) {
+      return fallbackVersion;
+    }
+    return tag;
+  } catch {
+    return fallbackVersion;
+  }
+}
+
 async function installFromRelease(version, installRoot) {
   const target = releaseTargetFor();
   if (!target) {
@@ -302,7 +334,14 @@ async function buildFromSource(root, installRoot) {
 }
 
 async function ensureNativeBinaries({ root, version }) {
-  const installRoot = cacheRoot(version);
+  // Resolve the freshest available release tag at install time. The
+  // package.json `version` field can drift behind the latest published
+  // release (the release workflow publishes new tags without rewriting
+  // package.json), so trusting `pkg.version` results in npx installs that
+  // ship a stale binary. Falling back to `version` keeps offline / API-
+  // rate-limited installs working.
+  const effectiveVersion = await resolveLatestReleaseTag(version);
+  const installRoot = cacheRoot(effectiveVersion);
   const binDir = path.join(installRoot, 'bin');
   const mainBinary = path.join(binDir, binaryFilename('amplihack'));
   const hooksBinary = path.join(binDir, binaryFilename('amplihack-hooks'));
@@ -323,7 +362,7 @@ async function ensureNativeBinaries({ root, version }) {
 
     if (!forceSource) {
       try {
-        await installFromRelease(version, installRoot);
+        await installFromRelease(effectiveVersion, installRoot);
         return { mainBinary, hooksBinary, installRoot };
       } catch (error) {
         errors.push(`release download failed: ${error.message}`);
@@ -371,6 +410,7 @@ module.exports = {
   parseChecksumHex,
   releaseTargetFor,
   releaseUrls,
+  resolveLatestReleaseTag,
   runAmplihack,
   validateDownloadUrl,
   verifyArchiveChecksum,
