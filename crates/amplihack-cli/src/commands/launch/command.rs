@@ -66,8 +66,35 @@ pub(super) fn build_command_for_dir(
     if continue_session {
         cmd.arg("--continue");
     }
+
+    // Inject --allow-all for Copilot by default (issue #303). Copilot's
+    // `--allow-all` is shorthand for `--allow-all-tools + --allow-all-paths +
+    // --allow-all-urls`. Without it, Copilot prompts for tool/path/url
+    // permission on its first action, which blocks unattended orchestrator
+    // loops launched by amplihack. Skip injection if the user already set any
+    // allow-all-* flag, or if AMPLIHACK_COPILOT_NO_ALLOW_ALL=1.
+    if binary.name == "copilot" && should_inject_copilot_allow_all(extra_args) {
+        cmd.arg("--allow-all");
+    }
+
     cmd.args(extra_args);
     cmd
+}
+
+/// Decide whether `amplihack` should inject `--allow-all` into a Copilot
+/// invocation. Returns false if the user already supplied any allow-all-*
+/// flag, or if the `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` env var is set.
+pub(crate) fn should_inject_copilot_allow_all(extra_args: &[String]) -> bool {
+    if std::env::var("AMPLIHACK_COPILOT_NO_ALLOW_ALL").as_deref() == Ok("1") {
+        return false;
+    }
+    let already_present = extra_args.iter().any(|a| {
+        a == "--allow-all"
+            || a == "--allow-all-tools"
+            || a == "--allow-all-paths"
+            || a == "--allow-all-urls"
+    });
+    !already_present
 }
 
 fn inject_uvx_plugin_args(
