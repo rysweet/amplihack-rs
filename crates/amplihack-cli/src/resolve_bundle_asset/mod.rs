@@ -25,6 +25,18 @@ const NAMED_ASSETS: &[(&str, &[&str])] = &[
             "amplifier-bundle/tools/amplihack/hooks",
         ],
     ),
+    // FIX (rysweet/amplihack-rs#283/#248): expose the multitask-orchestrator
+    // script under a stable named-asset key so smart-orchestrator's
+    // launch-parallel-round-1 step can resolve it via the Rust CLI instead of
+    // the legacy `python3 -m amplihack.runtime_assets multitask-orchestrator`
+    // shim. The candidate paths mirror those in `runtime_assets::asset_relative_paths`.
+    (
+        "multitask-orchestrator",
+        &[
+            ".claude/skills/multitask/orchestrator.py",
+            "amplifier-bundle/skills/multitask/orchestrator.py",
+        ],
+    ),
 ];
 
 pub fn validate_relative_path(relative_path: &str) -> Result<()> {
@@ -299,6 +311,63 @@ mod tests {
             resolved.ends_with("amplifier-bundle/tools/session_tree.py"),
             "expected session_tree.py path, got {:?}",
             resolved
+        );
+    }
+
+    #[test]
+    fn resolve_named_asset_multitask_orchestrator_uses_amplihack_home() {
+        let _home_guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        make_named_asset_file(
+            temp.path(),
+            "amplifier-bundle/skills/multitask/orchestrator.py",
+        );
+
+        let prev_home = crate::test_support::set_home(temp.path());
+        let prev = env::var_os("AMPLIHACK_HOME");
+        unsafe { env::set_var("AMPLIHACK_HOME", temp.path()) };
+
+        let result = resolve_named_asset("multitask-orchestrator");
+
+        match prev {
+            Some(v) => unsafe { env::set_var("AMPLIHACK_HOME", v) },
+            None => unsafe { env::remove_var("AMPLIHACK_HOME") },
+        }
+        crate::test_support::restore_home(prev_home);
+
+        let resolved = result.unwrap();
+        assert!(
+            resolved.ends_with("amplifier-bundle/skills/multitask/orchestrator.py"),
+            "expected multitask orchestrator.py path, got {:?}",
+            resolved
+        );
+    }
+
+    #[test]
+    fn run_cli_resolves_multitask_orchestrator_named_asset() {
+        let _home_guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        make_named_asset_file(temp.path(), ".claude/skills/multitask/orchestrator.py");
+
+        let prev_home = crate::test_support::set_home(temp.path());
+        let prev = env::var_os("AMPLIHACK_HOME");
+        unsafe { env::set_var("AMPLIHACK_HOME", temp.path()) };
+
+        let exit = run_cli("multitask-orchestrator");
+
+        match prev {
+            Some(v) => unsafe { env::set_var("AMPLIHACK_HOME", v) },
+            None => unsafe { env::remove_var("AMPLIHACK_HOME") },
+        }
+        crate::test_support::restore_home(prev_home);
+
+        assert_eq!(
+            exit, 0,
+            "expected resolve-bundle-asset multitask-orchestrator to succeed"
         );
     }
 
