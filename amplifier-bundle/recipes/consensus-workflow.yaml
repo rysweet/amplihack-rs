@@ -111,13 +111,13 @@ steps:
     type: "bash"
     command: |
       ERRORS=""
-      REPO="{{repo_path}}"
+      REPO="$REPO_PATH"
       if [ ! -d "$REPO" ]; then
         ERRORS="${ERRORS}\n  ✗ repo_path '$REPO' does not exist"
       elif ! git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
         ERRORS="${ERRORS}\n  ✗ repo_path '$REPO' is not a git repository"
       fi
-      if [ -z "{{task_description}}" ]; then
+      if [ -z "$TASK_DESCRIPTION" ]; then
         ERRORS="${ERRORS}\n  ✗ task_description is empty"
       fi
       if [ -n "$ERRORS" ]; then
@@ -495,38 +495,47 @@ steps:
     type: "bash"
     command: |
       # Create GitHub issue from consensus requirements
-      echo "Creating GitHub issue for: {{task_description}}"
+      echo "Creating GitHub issue for: $TASK_DESCRIPTION"
 
-      # Format issue body
-      ISSUE_BODY=$(cat << 'ISSUE_EOF'
+      # FIX (#311): Use env vars — safe against injection and word-splitting.
+      _TASK_DESC="$TASK_DESCRIPTION"
+      _REQS_EXPLICIT="$FINAL_REQUIREMENTS_EXPLICIT_REQUIREMENTS"
+      _REQS_SUCCESS="$FINAL_REQUIREMENTS_SUCCESS_CRITERIA"
+      _REQS_CONSTRAINTS="$FINAL_REQUIREMENTS_CONSTRAINTS"
+      _REQS_MECHANISM="$FINAL_REQUIREMENTS_CONSENSUS_MECHANISM_USED"
+      _REQS_AGENTS="$FINAL_REQUIREMENTS_AGENTS_INVOLVED"
+      _REQS_CONFIDENCE="$FINAL_REQUIREMENTS_CONFIDENCE_LEVEL"
+      _CRITICALITY="$CRITICALITY"
+      # NOTE: Unquoted heredoc — $VAR expansion runs with invoking user's privileges (no escalation).
+      ISSUE_BODY=$(cat <<ISSUE_EOF
       ## Task Description
-      {{task_description}}
+      $_TASK_DESC
 
       ## Requirements (Consensus-Validated)
-      {{final_requirements.explicit_requirements}}
+      $_REQS_EXPLICIT
 
       ## Success Criteria
-      {{final_requirements.success_criteria}}
+      $_REQS_SUCCESS
 
       ## Constraints
-      {{final_requirements.constraints}}
+      $_REQS_CONSTRAINTS
 
       ## Consensus Process
-      - Mechanism Used: {{final_requirements.consensus_mechanism_used}}
-      - Agents Involved: {{final_requirements.agents_involved}}
-      - Confidence: {{final_requirements.confidence_level}}
+      - Mechanism Used: $_REQS_MECHANISM
+      - Agents Involved: $_REQS_AGENTS
+      - Confidence: $_REQS_CONFIDENCE
 
       ---
-      Labels: consensus-validated, {{criticality}}
+      Labels: consensus-validated, $_CRITICALITY
       ISSUE_EOF
       )
 
       # Create issue (truncate title to 200 chars)
-      ISSUE_TITLE=$(printf '%s' {{task_description}} | tr '\n\r' ' ' | cut -c1-200)
+      ISSUE_TITLE=$(printf '%s' "$_TASK_DESC" | tr '\n\r' ' ' | cut -c1-200)
       gh issue create \
         --title "$ISSUE_TITLE" \
         --body "$ISSUE_BODY" \
-        --label "consensus,{{criticality}}" 2>/dev/null || echo "Issue creation skipped (no gh CLI or not in repo)"
+        --label "consensus,$_CRITICALITY" 2>/dev/null || echo "Issue creation skipped (no gh CLI or not in repo)"
 
       echo '{"issue_created": true, "step": "step2-create-issue"}'
     output: "issue_creation"
@@ -577,11 +586,8 @@ steps:
         BASE_REF="HEAD"
       fi
 
-      # Create branch name
-      TASK_DESC=$(cat <<'EOFTASKDESC'
-      {{task_description}}
-      EOFTASKDESC
-      )
+      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
+      TASK_DESC="$TASK_DESCRIPTION"
       TASK_SLUG=$(printf '%s' "$TASK_DESC" | tr '\n\r' '  ' | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | sed 's/-\{2,\}/-/g;s/^-//;s/-$//' | cut -c1-30 | sed 's/-$//')
       # Guard: empty slug (blank/all-symbol input) produces a trailing-hyphen branch that
       # git check-ref-format accepts as valid but is undesirable. Catch it explicitly first.
@@ -626,7 +632,7 @@ steps:
       fi
 
       # Idempotency guard (mirrors default-workflow three-state check)
-      WORKTREE_PATH="{{worktree_dir}}/$BRANCH_NAME"
+      WORKTREE_PATH="$WORKTREE_DIR/$BRANCH_NAME"
       BRANCH_EXISTS=$(git branch --list "$BRANCH_NAME")
       WORKTREE_EXISTS=$(git worktree list --porcelain | grep -Fx "worktree $WORKTREE_PATH" || true)
 
@@ -1648,22 +1654,27 @@ steps:
       # Stage all changes
       git add -A
 
-      # Create commit message (truncate title to 72 chars for git convention)
-      SHORT_DESC=$(printf '%s' {{task_description}} | tr '\n\r' ' ' | cut -c1-72)
-      COMMIT_MSG=$(cat << COMMIT_EOF
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      _TASK_DESC="$TASK_DESCRIPTION"
+      _REQS_SUMMARY="$FINAL_REQUIREMENTS_TASK_SUMMARY"
+      _IS_CRITICAL="$IS_CRITICAL_CODE"
+      _ISSUE_NUM="$ISSUE_NUMBER"
+      SHORT_DESC=$(printf '%s' "$_TASK_DESC" | tr '\n\r' ' ' | cut -c1-72)
+      # NOTE: Unquoted heredoc — $VAR expansion runs with invoking user's privileges (no escalation).
+      COMMIT_MSG=$(cat <<COMMIT_EOF
       feat: ${SHORT_DESC}
 
-      Implements {{final_requirements.task_summary}}
+      Implements $_REQS_SUMMARY
 
       Consensus Mechanisms Used:
       - Multi-Agent Debate: Requirements clarification
       - Multi-Agent Debate: Architecture design
-      - N-Version Programming: {{is_critical_code}}
+      - N-Version Programming: $_IS_CRITICAL
       - Expert Panel: Refactoring review
 
       Requirements validated by consensus process.
 
-      Resolves #{{issue_number}}
+      Resolves #$_ISSUE_NUM
       COMMIT_EOF
       )
 
@@ -1694,12 +1705,21 @@ steps:
     command: |
       echo "Creating pull request..."
 
-      PR_BODY=$(cat << 'PR_EOF'
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      _TASK_DESC="$TASK_DESCRIPTION"
+      _REQS_EXPLICIT="$FINAL_REQUIREMENTS_EXPLICIT_REQUIREMENTS"
+      _REQS_MECHANISM="$FINAL_REQUIREMENTS_CONSENSUS_MECHANISM_USED"
+      _IS_CRITICAL="$IS_CRITICAL_CODE"
+      _TDD_TOTAL="$TDD_TESTS_TOTAL_TESTS"
+      _LOCAL_PASSED="$LOCAL_TESTING_ALL_SCENARIOS_PASSED"
+      _ISSUE_NUM="$ISSUE_NUMBER"
+      # NOTE: Unquoted heredoc — $VAR expansion runs with invoking user's privileges (no escalation).
+      PR_BODY=$(cat <<PR_EOF
       ## Description
-      {{task_description}}
+      $_TASK_DESC
 
       ## Requirements (Consensus-Validated)
-      {{final_requirements.explicit_requirements}}
+      $_REQS_EXPLICIT
 
       ## Design Decisions
       Architecture consensus achieved with:
@@ -1708,14 +1728,14 @@ steps:
       - All conflicts resolved with documented rationale
 
       ## Consensus Mechanisms Applied
-      - [x] Multi-Agent Debate: Requirements ({{final_requirements.consensus_mechanism_used}})
+      - [x] Multi-Agent Debate: Requirements ($_REQS_MECHANISM)
       - [x] Multi-Agent Debate: Architecture design
-      - [x] N-Version Programming: {{is_critical_code}}
+      - [x] N-Version Programming: $_IS_CRITICAL
       - [x] Expert Panel: Refactoring review
 
       ## Test Plan
-      - Unit tests: {{tdd_tests.total_tests}} tests
-      - Local testing: {{local_testing.all_scenarios_passed}}
+      - Unit tests: $_TDD_TOTAL tests
+      - Local testing: $_LOCAL_PASSED
       - Coverage: All requirements mapped to tests
 
       ## Checklist
@@ -1725,14 +1745,14 @@ steps:
       - [x] Local testing completed
       - [x] No stubs/TODOs/placeholders
 
-      Resolves #{{issue_number}}
+      Resolves #$_ISSUE_NUM
 
       ---
       Label: consensus-validated
       PR_EOF
       )
 
-      PR_TITLE=$(printf '%s' {{task_description}} | tr '\n\r' ' ' | cut -c1-200)
+      PR_TITLE=$(printf '%s' "$_TASK_DESC" | tr '\n\r' ' ' | cut -c1-200)
       PR_CREATED=false
       if git remote get-url origin >/dev/null 2>&1; then
         if gh pr create \
@@ -2367,30 +2387,41 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      cat << 'EOF'
-      {
-        "workflow": "consensus-workflow",
-        "version": "2.0.0",
-        "task": "{{task_description}}",
-        "criticality": "{{criticality}}",
-        "status": "complete",
-        "consensus_gates_completed": {
-          "gate1_requirements_debate": "{{final_requirements.consensus_mechanism_used}}",
-          "gate2_design_debate": "{{design_consensus.consensus_achieved}}",
-          "gate3_n_version": "{{is_critical_code}}",
-          "gate4_refactoring_panel": "{{refactoring_consensus.unanimous_approval}}",
-          "gate5_pr_review_panel": "{{pr_review_consensus.unanimous_approval}}",
-          "gate6_philosophy_panel": "{{philosophy_consensus.unanimous_philosophy_approval}}",
-          "gate7_final_quality_panel": "{{final_consensus.final_unanimous_approval}}"
-        },
-        "agents_involved": [
-          "prompt-writer", "analyzer", "architect", "security", "api-designer",
-          "database", "tester", "worktree-manager", "builder", "cleanup",
-          "optimizer", "reviewer", "patterns", "pre-commit-diagnostic",
-          "ci-diagnostic-workflow", "philosophy-guardian"
-        ],
-        "final_approval": "{{final_consensus.production_ready}}",
-        "pr_ready_to_merge": "{{final_consensus.pr_approved_for_merge}}"
-      }
-      EOF
+      # FIX (#469/#311): Use jq --arg with "$ENV_VAR" — safe against injection and word-splitting.
+      jq -n \
+        --arg task "$TASK_DESCRIPTION" \
+        --arg criticality "$CRITICALITY" \
+        --arg gate1 "$FINAL_REQUIREMENTS_CONSENSUS_MECHANISM_USED" \
+        --arg gate2 "$DESIGN_CONSENSUS_CONSENSUS_ACHIEVED" \
+        --arg gate3 "$IS_CRITICAL_CODE" \
+        --arg gate4 "$REFACTORING_CONSENSUS_UNANIMOUS_APPROVAL" \
+        --arg gate5 "$PR_REVIEW_CONSENSUS_UNANIMOUS_APPROVAL" \
+        --arg gate6 "$PHILOSOPHY_CONSENSUS_UNANIMOUS_PHILOSOPHY_APPROVAL" \
+        --arg gate7 "$FINAL_CONSENSUS_FINAL_UNANIMOUS_APPROVAL" \
+        --arg final_approval "$FINAL_CONSENSUS_PRODUCTION_READY" \
+        --arg pr_ready "$FINAL_CONSENSUS_PR_APPROVED_FOR_MERGE" \
+        '{
+          workflow: "consensus-workflow",
+          version: "2.0.0",
+          task: $task,
+          criticality: $criticality,
+          status: "complete",
+          consensus_gates_completed: {
+            gate1_requirements_debate: $gate1,
+            gate2_design_debate: $gate2,
+            gate3_n_version: $gate3,
+            gate4_refactoring_panel: $gate4,
+            gate5_pr_review_panel: $gate5,
+            gate6_philosophy_panel: $gate6,
+            gate7_final_quality_panel: $gate7
+          },
+          agents_involved: [
+            "prompt-writer", "analyzer", "architect", "security", "api-designer",
+            "database", "tester", "worktree-manager", "builder", "cleanup",
+            "optimizer", "reviewer", "patterns", "pre-commit-diagnostic",
+            "ci-diagnostic-workflow", "philosophy-guardian"
+          ],
+          final_approval: $final_approval,
+          pr_ready_to_merge: $pr_ready
+        }'
     output: "workflow_result"

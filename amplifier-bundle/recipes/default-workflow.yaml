@@ -136,15 +136,10 @@ steps:
       echo "  Step 21: Convert PR to Ready"
       echo "  Step 22: Ensure PR Mergeable"
       echo ""
-      # FIX (issues #3045/#3076/#3117): unquoted heredoc for safe variable capture.
-      # Unquoted heredoc allows Rust runner env-var expansion ($RECIPE_VAR_*).
-      # Shell expansion is single-pass: expanded values are NOT re-processed.
-      TASK_DESC=$(cat <<'EOFTASKDESC'
-      {{task_description}}
-      EOFTASKDESC
-      )
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      TASK_DESC="$TASK_DESCRIPTION"
       printf 'Task: %s\n' "$TASK_DESC"
-      printf 'Repository: %s\n' {{repo_path}}
+      printf 'Repository: %s\n' "$REPO_PATH"
     output: "workflow_init"
 
   # ==========================================================================
@@ -155,7 +150,7 @@ steps:
   - id: "step-01-prepare-workspace"
     type: "bash"
     command: |
-      cd {{repo_path}} && \
+      cd "$REPO_PATH" && \
       echo "=== Step 1: Preparing Workspace ===" && \
       echo "" && \
       echo "Current directory: $(pwd)" && \
@@ -294,26 +289,16 @@ steps:
     type: "bash"
     command: |
       set -euo pipefail
-      cd "{{repo_path}}"
+      cd "$REPO_PATH"
       echo "=== Step 3: Creating GitHub Issue ===" >&2
 
-      # FIX (#4221): Use quoted heredoc (<<'DELIM') to prevent bash from expanding
-      # $(), backticks, or other shell metacharacters in template-substituted content.
-      # The recipe runner performs {{variable}} substitution before bash executes,
-      # so quoted delimiters are safe and correct.
-      # Use unique delimiter unlikely to appear in user task descriptions.
-      TASK_DESC=$(cat <<'_AMPLIHACK_STEP03_TASK_EOF_'
-      {{task_description}}
-      _AMPLIHACK_STEP03_TASK_EOF_
-      )
+      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
+      TASK_DESC="$TASK_DESCRIPTION"
       # Bash builtins replace tr|cut pipeline — avoids 2 subprocess spawns (matches step-16)
       ISSUE_TITLE="${TASK_DESC//$'\n'/ }"
       ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"
       ISSUE_TITLE="${ISSUE_TITLE:0:200}"
-      ISSUE_REQS=$(cat <<'_AMPLIHACK_STEP03_REQS_EOF_'
-      {{final_requirements}}
-      _AMPLIHACK_STEP03_REQS_EOF_
-      )
+      ISSUE_REQS="$FINAL_REQUIREMENTS"
 
       # Idempotency Guard 1: Reuse issue referenced in task_description (#NNNN)
       # Mirrors step-16-create-draft-pr idempotency pattern (#3324).
@@ -374,22 +359,9 @@ steps:
     type: "bash"
     command: |
       # Extract issue number from the creation output.
-      # FIX (issue #3022): Use safe heredoc capture instead of echo {{variable}} to
-      # prevent shell metacharacter injection from issue body content.  Use head -1
-      # instead of tail -1 so the canonical URL (first match) wins — not a trailing
-      # noise number captured via 2>&1 in step-03a.
-      # EOFISSUECREATION delimiter is intentionally long/specific to prevent accidental
-      # collision with issue body text that might contain common delimiters like "EOF".
-      ISSUE_CREATION=$(cat <<'EOFISSUECREATION'
-      {{issue_creation}}
-      EOFISSUECREATION
-      )
-      # FIX (#4247): Capture task_description at top level (not inside if block)
-      # to avoid indented heredoc delimiters that bash cannot parse.
-      TASK_DESC_RAW=$(cat <<'EOFTASKDESC03B'
-      {{task_description}}
-      EOFTASKDESC03B
-      )
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      ISSUE_CREATION="$ISSUE_CREATION"
+      TASK_DESC_RAW="$TASK_DESCRIPTION"
       # FIX (#4233): Match both issue URLs (issues/NNN) and PR URLs (pull/NNN).
       # If the output is a PR URL, resolve the linked issue via gh pr view.
       EXTRACTED=$(printf '%s' "$ISSUE_CREATION" | grep -oE 'issues/[0-9]+' | grep -oE '[0-9]+' | head -1)
@@ -431,11 +403,11 @@ steps:
     command: |
       set -euo pipefail
       # Guard: fail-fast if repo_path does not exist (prevents path traversal, catches misconfiguration).
-      if [ ! -d "{{repo_path}}" ]; then
-        echo "ERROR: repo_path '{{repo_path}}' does not exist or is not a directory" >&2
+      if [ ! -d "$REPO_PATH" ]; then
+        echo "ERROR: repo_path '$REPO_PATH' does not exist or is not a directory" >&2
         exit 1
       fi
-      cd {{repo_path}}
+      cd "$REPO_PATH"
 
       echo "=== Step 4: Creating Worktree and Branch ===" >&2
       echo "" >&2
@@ -448,37 +420,28 @@ steps:
       # update consensus-workflow.yaml in the same commit. See Issue #2952 for context.
       #
       # Generate branch name from task description.
-      # FIX (issue #3087 / #301): Template substitution of {{task_description}}
-      # happens BEFORE the bash script runs — so a single-quoted heredoc is
-      # correct here and safer. An UNQUOTED heredoc would re-interpret any
-      # `$NAME` literals in the task description as bash variables, which
-      # with `set -u` aborts the step when the user mentions things like
-      # `$TREE_SCRIPT` or `$ORCH_SCRIPT` in their task text.
-      # Security note: the sanitization pipeline (tr -cd 'a-z0-9-') strips all
-      # shell metacharacters from the output, mitigating injection risk.
-      TASK_DESC=$(cat <<'EOFTASKDESC'
-      {{task_description}}
-      EOFTASKDESC
-      )
+      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
+      # Sanitization pipeline (tr -cd 'a-z0-9-') strips all shell metacharacters.
+      TASK_DESC="$TASK_DESCRIPTION"
       TASK_SLUG=$(printf '%s' "$TASK_DESC" | tr '\n\r' '  ' | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | sed 's/-\{2,\}/-/g' | sed 's/^-//;s/-$//' | cut -c1-50 | sed 's/-$//')
       # Guard: empty slug (blank/all-symbol input) produces a trailing-hyphen branch that
       # git check-ref-format accepts as valid but is undesirable. Catch it explicitly first.
       if [ -z "$TASK_SLUG" ]; then
         echo "WARNING: task_description produced an empty slug — falling back to task-unnamed" >&2
         # FIX (issue #3023 / BL-002 fallback hardening): Use hardcoded 'feat/' prefix rather
-        # than {{branch_prefix}} to prevent injection via an invalid or malicious branch_prefix
+        # than $BRANCH_PREFIX to prevent injection via an invalid or malicious branch_prefix
         # value (e.g. '; rm -rf /' or '../../etc'). The prefix is not user-configurable in
         # the fallback path; configurable prefix only applies when a valid slug exists.
         BRANCH_NAME="feat/task-unnamed-$(date +%s)"
       else
-        BRANCH_NAME="{{branch_prefix}}/issue-{{issue_number}}-${TASK_SLUG}"
+        BRANCH_NAME="${BRANCH_PREFIX}/issue-${ISSUE_NUMBER}-${TASK_SLUG}"
         # Validate with authoritative git ref checker; fall back to safe unique name on failure
         if ! git check-ref-format --branch "${BRANCH_NAME}" >/dev/null 2>&1; then
           echo "WARNING: derived branch name '${BRANCH_NAME}' is invalid — falling back to task-unnamed" >&2
           BRANCH_NAME="feat/task-unnamed-$(date +%s)"
         fi
       fi
-      WORKTREE_PATH="{{repo_path}}/worktrees/${BRANCH_NAME}"
+      WORKTREE_PATH="${REPO_PATH}/worktrees/${BRANCH_NAME}"
 
       echo "Branch: ${BRANCH_NAME}" >&2
       echo "Worktree: ${WORKTREE_PATH}" >&2
@@ -801,7 +764,7 @@ steps:
     # (implementation, test_spec, design_spec) produce large outputs.
     max_env_value_bytes: 65536
     command: |
-      cd {{worktree_setup.worktree_path}} 2>/dev/null || cd {{repo_path}} && \
+      cd "$WORKTREE_SETUP_WORKTREE_PATH" 2>/dev/null || cd "$REPO_PATH" && \
       echo "=== Checkpoint: Staging Implementation ===" && \
       git add -A && \
       STAGED=$(git diff --cached --name-only) && \
@@ -981,7 +944,7 @@ steps:
     type: "bash"
     max_env_value_bytes: 65536
     command: |
-      cd {{worktree_setup.worktree_path}} 2>/dev/null || cd {{repo_path}} && \
+      cd "$WORKTREE_SETUP_WORKTREE_PATH" 2>/dev/null || cd "$REPO_PATH" && \
       echo "=== Checkpoint: Staging Review Feedback ===" && \
       git add -A && \
       STAGED=$(git diff --cached --name-only) && \
@@ -1207,20 +1170,18 @@ steps:
     type: "bash"
     command: |
       set -euo pipefail
-      cd "{{worktree_setup.worktree_path}}"
+      cd "$WORKTREE_SETUP_WORKTREE_PATH"
       echo "=== Step 15: Commit and Push ==="
       echo ""
       echo "--- Staging Changes ---"
       git add -A
       echo ""
       echo "--- Creating Commit ---"
-      # FIX (#3045/#3076/#3117): unquoted heredoc — safe variable capture
-      TASK_DESC=$(cat <<'EOFTASKDESC'
-      {{task_description}}
-      EOFTASKDESC
-      )
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      TASK_DESC="$TASK_DESCRIPTION"
+      ISSUE_NUMBER="$ISSUE_NUMBER"
       COMMIT_TITLE=$(printf 'feat: %.72s' "$(printf '%s' "$TASK_DESC" | tr '\n\r' ' ' | head -1)")
-      COMMIT_MSG=$(printf '%s\n\nImplements issue #%s\n\nChanges:\n- Implementation as per design specification\n- Tests added for new functionality\n- Documentation updated\n\nCloses #%s' "$COMMIT_TITLE" {{issue_number}} {{issue_number}})
+      COMMIT_MSG=$(printf '%s\n\nImplements issue #%s\n\nChanges:\n- Implementation as per design specification\n- Tests added for new functionality\n- Documentation updated\n\nCloses #%s' "$COMMIT_TITLE" "$ISSUE_NUMBER" "$ISSUE_NUMBER")
       if [ -n "$(git diff --cached --name-only)" ]; then
         git commit -m "$COMMIT_MSG"
       else
@@ -1233,14 +1194,14 @@ steps:
           ALT_WORKTREE_COMMITS=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
         fi
         if [ "$ALT_WORKTREE_COMMITS" -gt 0 ]; then
-          echo "INFO: Nothing staged in {{worktree_setup.worktree_path}}, but the" >&2
+          echo "INFO: Nothing staged in $WORKTREE_SETUP_WORKTREE_PATH, but the" >&2
           echo "current branch '$CURRENT_BRANCH' is $ALT_WORKTREE_COMMITS commit(s) ahead of" >&2
           echo "its upstream. The agent likely committed via an alternate worktree on" >&2
           echo "the same branch; treating as success." >&2
           git --no-pager log --oneline -"$ALT_WORKTREE_COMMITS" >&2
         else
           echo "ERROR: Nothing staged to commit. The implementation step may have written files" >&2
-          echo "outside the worktree ({{worktree_setup.worktree_path}}), or no code changes were produced." >&2
+          echo "outside the worktree ($WORKTREE_SETUP_WORKTREE_PATH), or no code changes were produced." >&2
           echo "This is a hollow-success condition — the workflow completed structurally but" >&2
           echo "produced no git artifacts. Check that agents created files in the worktree," >&2
           echo "not in AMPLIHACK_HOME or other locations." >&2
@@ -1276,7 +1237,7 @@ steps:
     type: "bash"
     command: |
       set -euo pipefail
-      cd "{{worktree_setup.worktree_path}}"
+      cd "$WORKTREE_SETUP_WORKTREE_PATH"
       echo "=== Step 16: Creating Draft PR ===" >&2
 
       # FIX (#3324): Idempotency guard — detect pre-existing PRs before creating one
@@ -1284,7 +1245,7 @@ steps:
       # Root cause: step-09-refactor may create PR on a different branch, leaving
       # the worktree branch with 0 commits ahead of main.
       CURRENT_BRANCH=$(git branch --show-current)
-      ISSUE_NUM="{{issue_number}}"
+      ISSUE_NUM="$ISSUE_NUMBER"
 
       # SECURITY: Validate ISSUE_NUM is numeric before interpolating into jq regex
       # Without this, a non-numeric value could inject into the jq test() filter.
@@ -1331,19 +1292,13 @@ steps:
       fi
 
       # Normal path: 1+ commits ahead, no existing PR — create the PR
-      # FIX (#3045/#3076/#3117): unquoted heredoc — safe variable capture
-      TASK_DESC=$(cat <<'EOFTASKDESC'
-      {{task_description}}
-      EOFTASKDESC
-      )
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      TASK_DESC="$TASK_DESCRIPTION"
+      PR_DESIGN="$DESIGN_SPEC"
       # Bash builtins replace the `tr | cut` pipeline — avoids 2 subprocess spawns
       PR_TITLE="${TASK_DESC//$'\n'/ }"
       PR_TITLE="${PR_TITLE//$'\r'/ }"
       PR_TITLE="${PR_TITLE:0:200}"
-      PR_DESIGN=$(cat <<EOFDESIGN
-      {{design_spec}}
-      EOFDESIGN
-      )
       PR_BODY=$(printf '## Summary\n%s\n\n## Issue\nCloses #%s\n\n## Changes\n%s\n\n## Testing\n- Unit tests added\n- Local testing completed\n- Pre-commit hooks pass\n\n## Checklist\n- [x] Tests pass\n- [x] Documentation updated\n- [x] No stubs or TODOs\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$TASK_DESC" "$ISSUE_NUM" "$PR_DESIGN")
       # timeout 120: gh pr create contacts GitHub GraphQL API — cap wait to 2 minutes
       # 2>/dev/null: suppress gh stderr to prevent output contract corruption of pr_url
@@ -1453,7 +1408,7 @@ steps:
     command: |
       echo "=== Step 17a: Step 13 Compliance Verification ===" && \
       echo "" && \
-      GATE_OUTPUT={{local_testing_gate}} && \
+      GATE_OUTPUT="$LOCAL_TESTING_GATE" && \
       if [ -z "$GATE_OUTPUT" ] || [ "$GATE_OUTPUT" = "''" ]; then \
         echo "COMPLIANCE FAILURE: Step 13 (outside-in testing) produced no output." && \
         echo "" && \
@@ -1629,7 +1584,7 @@ steps:
   - id: "step-18c-push-feedback-changes"
     type: "bash"
     command: |
-      cd {{worktree_setup.worktree_path}} && \
+      cd "$WORKTREE_SETUP_WORKTREE_PATH" && \
       echo "=== Pushing Review Feedback Changes ===" && \
       git add -A && \
       if [ -n "$(git diff --cached --name-only)" ]; then \
@@ -1725,7 +1680,7 @@ steps:
     type: "bash"
     command: |
       echo "=== ZERO-BS VERIFICATION ===" && \
-      cd {{worktree_setup.worktree_path}} && \
+      cd "$WORKTREE_SETUP_WORKTREE_PATH" && \
       echo "" && \
       echo "Scanning for Zero-BS violations..." && \
       echo "" && \
@@ -1749,17 +1704,10 @@ steps:
   - id: "step-19d-verification-gate"
     type: "bash"
     command: |
-      # ARG_MAX guard: large template variables (philosophy_check, patterns_check)
-      # are captured via heredoc and truncated to 1 KB summaries.  Echoing them
-      # raw caused ARG_MAX overflow — see #3366 / b1f87112b.
-      PHIL_CHECK=$(cat <<'EOFPHILCHECK'
-      {{philosophy_check}}
-      EOFPHILCHECK
-      )
-      PAT_CHECK=$(cat <<'EOFPATCHECK'
-      {{patterns_check}}
-      EOFPATCHECK
-      )
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      # ARG_MAX guard: truncated to 1 KB summaries below (#3366 / b1f87112b).
+      PHIL_CHECK="$PHILOSOPHY_CHECK"
+      PAT_CHECK="$PATTERNS_CHECK"
       PHIL_SUMMARY=$(printf '%.1024s' "$PHIL_CHECK")
       PAT_SUMMARY=$(printf '%.1024s' "$PAT_CHECK")
 
@@ -1819,7 +1767,7 @@ steps:
   - id: "step-20b-push-cleanup"
     type: "bash"
     command: |
-      cd {{worktree_setup.worktree_path}} && \
+      cd "$WORKTREE_SETUP_WORKTREE_PATH" && \
       echo "=== Pushing Cleanup Changes ===" && \
       git add -A && \
       git diff --cached --quiet || (git commit -m "final cleanup pass" && git pull --rebase 2>/dev/null && git push) && \
@@ -1904,7 +1852,7 @@ steps:
   - id: "step-21-pr-ready"
     type: "bash"
     command: |
-      cd {{worktree_setup.worktree_path}} && \
+      cd "$WORKTREE_SETUP_WORKTREE_PATH" && \
       echo "=== Step 20: Converting PR to Ready ===" && \
       echo "" && \
       echo "--- Verifying All Steps Complete ---" && \
@@ -1964,20 +1912,19 @@ steps:
   - id: "step-22b-final-status"
     type: "bash"
     command: |
-      cd {{repo_path}} && \
+      cd "$REPO_PATH" && \
       echo "=== WORKFLOW COMPLETE ===" && \
       echo "" && \
       echo "PR Status:" && \
       gh pr view --json state,mergeable,reviews,statusCheckRollup && \
       echo "" && \
-      # FIX (#3045/#3076/#3117): unquoted heredoc — safe variable capture
-      TASK_DESC=$(cat <<'EOFTASKDESC'
-      {{task_description}}
-      EOFTASKDESC
-      ) && \
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      TASK_DESC="$TASK_DESCRIPTION" && \
+      ISSUE_NUMBER="$ISSUE_NUMBER" && \
+      PR_URL="$PR_URL" && \
       printf '=== Task: %s ===\n' "$TASK_DESC" && \
-      printf '=== Issue: #%s ===\n' {{issue_number}} && \
-      printf '=== PR: %s ===\n' {{pr_url}} && \
+      printf '=== Issue: #%s ===\n' "$ISSUE_NUMBER" && \
+      printf '=== PR: %s ===\n' "$PR_URL" && \
       echo "" && \
       echo "All 23 workflow steps completed successfully."
     output: "final_status"
@@ -1989,18 +1936,12 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      # FIX (#3045/#3076/#3117): unquoted heredoc — safe variable capture
-      TASK_DESC=$(cat <<'EOFTASKDESC'
-      {{task_description}}
-      EOFTASKDESC
-      )
-      TASK_VAL=$(printf '%s' "$TASK_DESC")
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      TASK_VAL="$TASK_DESCRIPTION"
       export TASK_VAL
-      # {{issue_number}} and {{pr_url}} are system-generated integers/URLs —
-      # no user-controlled metacharacters possible; heredoc not required.
-      ISSUE_VAL=$(printf '%s' {{issue_number}})
+      ISSUE_VAL="$ISSUE_NUMBER"
       export ISSUE_VAL
-      PR_VAL=$(printf '%s' {{pr_url}})
+      PR_VAL="$PR_URL"
       export PR_VAL
       python3 << 'PYEOF'
       import json, os

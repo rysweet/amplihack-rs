@@ -50,8 +50,8 @@ steps:
     type: "bash"
     command: |
       ERRORS=""
-      REPO="{{repo_path}}"
-      TASK="{{task_description}}"
+      REPO="$REPO_PATH"
+      TASK="$TASK_DESCRIPTION"
       if [ -z "$TASK" ]; then
         ERRORS="${ERRORS}\n  ✗ task_description is empty"
       fi
@@ -144,9 +144,8 @@ steps:
     command: |
       _DECOMP_TMPFILE=$(mktemp)
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
-      cat > "$_DECOMP_TMPFILE" <<__DECOMP_EOF__
-      {{decomposition_json}}
-      __DECOMP_EOF__
+      # FIX (heredoc-bulletproof): use env var — no heredoc needed.
+      printf '%s' "$DECOMPOSITION_JSON" > "$_DECOMP_TMPFILE"
       RAW_OBJ=$(amplihack orch helper extract-json < "$_DECOMP_TMPFILE")
       if [ "$RAW_OBJ" = "{}" ]; then
         cat <<'WARN' >&2
@@ -171,9 +170,8 @@ steps:
       # task description has strong development signals (file paths, "Add"+
       # path, PR mention, tests, multi-requirement), promote to Development.
       _TASK_TMPFILE=$(mktemp)
-      cat > "$_TASK_TMPFILE" <<__TASK_EOF__
-      {{task_description}}
-      __TASK_EOF__
+      # FIX (heredoc-bulletproof): use env var — no heredoc needed.
+      printf '%s' "$TASK_DESCRIPTION" > "$_TASK_TMPFILE"
       FINAL_TYPE=$(amplihack orch helper reclassify-task-type --current "$CANONICAL_TYPE" < "$_TASK_TMPFILE")
       rm -f "$_TASK_TMPFILE"
       if [ "$FINAL_TYPE" != "$CANONICAL_TYPE" ]; then
@@ -191,11 +189,10 @@ steps:
     command: |
       _DECOMP_TMPFILE=$(mktemp)
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
-      cat > "$_DECOMP_TMPFILE" <<__DECOMP_EOF__
-      {{decomposition_json}}
-      __DECOMP_EOF__
-      TASK_TYPE={{task_type}}
-      FORCE_SINGLE={{force_single_workstream}}
+      # FIX (heredoc-bulletproof): use env var — no heredoc needed.
+      printf '%s' "$DECOMPOSITION_JSON" > "$_DECOMP_TMPFILE"
+      TASK_TYPE="$TASK_TYPE"
+      FORCE_SINGLE="$FORCE_SINGLE_WORKSTREAM"
       HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir 2>/dev/null || true)"
 
       RAW_COUNT=$(amplihack orch helper count-workstreams < "$_DECOMP_TMPFILE")
@@ -231,12 +228,12 @@ steps:
   # The Rust runner's --set flag updates template variables ({{...}}) but
   # the condition evaluator only sees step outputs and initial context.
   # This step bridges the gap by echoing the context value to stdout.
-  # NOTE: Use bare {{var}} — single-quoted '{{var}}' prevents expansion.
+  # NOTE: Use "$ENV_VAR" — safe against word-splitting and injection.
   # ─────────────────────────────────────────────────────────────────────────
   - id: "materialize-force-single-workstream"
     type: "bash"
     command: |
-      printf '%s' {{force_single_workstream}}
+      printf '%s' "$FORCE_SINGLE_WORKSTREAM"
     output: "force_single_workstream"
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -333,7 +330,7 @@ steps:
     type: "bash"
     condition: "'Operations' in task_type"
     command: |
-      cd "{{repo_path}}" 2>/dev/null || true
+      cd "$REPO_PATH" 2>/dev/null || true
       CHANGED=$(git diff --name-only 2>/dev/null | head -1)
       UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null | head -1)
       if [ -n "$CHANGED" ] || [ -n "$UNTRACKED" ]; then
@@ -352,10 +349,8 @@ steps:
     type: "bash"
     condition: "'Development' in task_type or 'Investigation' in task_type"
     command: |
-      SESSION_JSON=$(cat <<EOFSESSIONJSON
-      {{session_info}}
-      EOFSESSIONJSON
-      )
+      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
+      SESSION_JSON="$SESSION_INFO"
       # Extract status using shell grep — no Python subprocess needed
       if echo "$SESSION_JSON" | grep -qE '"status" *: *"ok"'; then
         echo "ALLOWED"
@@ -418,9 +413,8 @@ steps:
     command: |
       _DECOMP_TMPFILE=$(mktemp)
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
-      cat > "$_DECOMP_TMPFILE" <<__DECOMP_EOF__
-      {{decomposition_json}}
-      __DECOMP_EOF__
+      # FIX (heredoc-bulletproof): use env var — no heredoc needed.
+      printf '%s' "$DECOMPOSITION_JSON" > "$_DECOMP_TMPFILE"
       amplihack orch helper build-workstreams-config < "$_DECOMP_TMPFILE"
     output: "workstreams_file"
 
@@ -433,12 +427,10 @@ steps:
       set -o pipefail
       # Emit step-transition marker for progress tracking (#3625)
       echo '{"transition":"step_started","step":"launch-parallel-round-1","timestamp":'$(date +%s)'}' >&2
-      REPO_PATH={{repo_path}}
-      WS_FILE={{workstreams_file}}
-      SESSION_JSON=$(cat <<EOFSESSIONJSON
-      {{session_info}}
-      EOFSESSIONJSON
-      )
+      REPO_PATH="$REPO_PATH"
+      WS_FILE="$WORKSTREAMS_FILE"
+      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
+      SESSION_JSON="$SESSION_INFO"
       # #283: parse tree_id, depth, and workstreams count using jq instead of
       # inline Python. jq is a standard CLI tool and removes a python3 heredoc.
       TREE_ID=$(printf '%s' "$SESSION_JSON" | jq -r '.tree_id // ""' 2>/dev/null || echo "")
@@ -553,10 +545,10 @@ steps:
     condition: |
       ('Development' in task_type or 'Investigation' in task_type) and not round_1_result
     command: |
-      TASK_TYPE={{task_type}}
-      WS_COUNT={{workstream_count}}
-      FORCE_SINGLE={{force_single_workstream}}
-      GUARD={{recursion_guard}}
+      TASK_TYPE="$TASK_TYPE"
+      WS_COUNT="$WORKSTREAM_COUNT"
+      FORCE_SINGLE="$FORCE_SINGLE_WORKSTREAM"
+      GUARD="$RECURSION_GUARD"
 
       cat >&2 <<ERRMSG
 
@@ -591,12 +583,13 @@ steps:
     condition: |
       adaptive_recipe and adaptive_recipe != ''
     command: |
-      TASK_TYPE={{task_type}}
-      WS_COUNT={{workstream_count}}
-      FORCE_SINGLE={{force_single_workstream}}
-      GUARD={{recursion_guard}}
-      RECIPE={{adaptive_recipe}}
-      TASK_DESC=$(printf '%s' {{task_description}})
+      TASK_TYPE="$TASK_TYPE"
+      WS_COUNT="$WORKSTREAM_COUNT"
+      FORCE_SINGLE="$FORCE_SINGLE_WORKSTREAM"
+      GUARD="$RECURSION_GUARD"
+      RECIPE="$ADAPTIVE_RECIPE"
+      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
+      TASK_DESC="$TASK_DESCRIPTION"
 
       # Build diagnostic body
       BODY=$(cat <<EOFBODY
@@ -936,10 +929,8 @@ steps:
   - id: "complete-session"
     type: "bash"
     command: |
-      SESSION_JSON=$(cat <<EOFSESSIONJSON
-      {{session_info}}
-      EOFSESSIONJSON
-      )
+      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
+      SESSION_JSON="$SESSION_INFO"
       TREE_SCRIPT="$(amplihack resolve-bundle-asset session-tree-path 2>/dev/null || true)"
       HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir 2>/dev/null || true)"
       # #283: parse session fields via jq instead of inline Python.
