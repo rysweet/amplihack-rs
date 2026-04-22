@@ -194,8 +194,8 @@ steps:
       cat > "$_DECOMP_TMPFILE" <<__DECOMP_EOF__
       {{decomposition_json}}
       __DECOMP_EOF__
-      TASK_TYPE={{task_type}}
-      FORCE_SINGLE={{force_single_workstream}}
+      TASK_TYPE="{{task_type}}"
+      FORCE_SINGLE="{{force_single_workstream}}"
       HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir 2>/dev/null || true)"
 
       RAW_COUNT=$(amplihack orch helper count-workstreams < "$_DECOMP_TMPFILE")
@@ -353,7 +353,7 @@ steps:
     condition: "'Development' in task_type or 'Investigation' in task_type"
     command: |
       # FIX (#469): Direct assignment — no heredoc delimiter collision risk.
-      SESSION_JSON={{session_info}}
+      SESSION_JSON="{{session_info}}"
       # Extract status using shell grep — no Python subprocess needed
       if echo "$SESSION_JSON" | grep -qE '"status" *: *"ok"'; then
         echo "ALLOWED"
@@ -431,10 +431,10 @@ steps:
       set -o pipefail
       # Emit step-transition marker for progress tracking (#3625)
       echo '{"transition":"step_started","step":"launch-parallel-round-1","timestamp":'$(date +%s)'}' >&2
-      REPO_PATH={{repo_path}}
-      WS_FILE={{workstreams_file}}
+      REPO_PATH="{{repo_path}}"
+      WS_FILE="{{workstreams_file}}"
       # FIX (#469): Direct assignment — no heredoc delimiter collision risk.
-      SESSION_JSON={{session_info}}
+      SESSION_JSON="{{session_info}}"
       # #283: parse tree_id, depth, and workstreams count using jq instead of
       # inline Python. jq is a standard CLI tool and removes a python3 heredoc.
       TREE_ID=$(printf '%s' "$SESSION_JSON" | jq -r '.tree_id // ""' 2>/dev/null || echo "")
@@ -549,10 +549,10 @@ steps:
     condition: |
       ('Development' in task_type or 'Investigation' in task_type) and not round_1_result
     command: |
-      TASK_TYPE={{task_type}}
-      WS_COUNT={{workstream_count}}
-      FORCE_SINGLE={{force_single_workstream}}
-      GUARD={{recursion_guard}}
+      TASK_TYPE="{{task_type}}"
+      WS_COUNT="{{workstream_count}}"
+      FORCE_SINGLE="{{force_single_workstream}}"
+      GUARD="{{recursion_guard}}"
 
       cat >&2 <<ERRMSG
 
@@ -587,13 +587,13 @@ steps:
     condition: |
       adaptive_recipe and adaptive_recipe != ''
     command: |
-      TASK_TYPE={{task_type}}
-      WS_COUNT={{workstream_count}}
-      FORCE_SINGLE={{force_single_workstream}}
-      GUARD={{recursion_guard}}
-      RECIPE={{adaptive_recipe}}
+      TASK_TYPE="{{task_type}}"
+      WS_COUNT="{{workstream_count}}"
+      FORCE_SINGLE="{{force_single_workstream}}"
+      GUARD="{{recursion_guard}}"
+      RECIPE="{{adaptive_recipe}}"
       # FIX (#469): Direct assignment — avoids word-split on unquoted {{task_description}}.
-      TASK_DESC={{task_description}}
+      TASK_DESC="{{task_description}}"
 
       # Build diagnostic body
       BODY=$(cat <<EOFBODY
@@ -934,7 +934,7 @@ steps:
     type: "bash"
     command: |
       # FIX (#469): Direct assignment — no heredoc delimiter collision risk.
-      SESSION_JSON={{session_info}}
+      SESSION_JSON="{{session_info}}"
       TREE_SCRIPT="$(amplihack resolve-bundle-asset session-tree-path 2>/dev/null || true)"
       HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir 2>/dev/null || true)"
       # #283: parse session fields via jq instead of inline Python.
