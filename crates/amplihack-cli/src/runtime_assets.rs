@@ -27,6 +27,16 @@ pub fn asset_relative_paths() -> HashMap<&'static str, Vec<&'static str>> {
             "amplifier-bundle/tools/amplihack/hooks",
         ],
     );
+    // FIX (rysweet/amplihack-rs#283/#248): expose the multitask-orchestrator
+    // script so smart-orchestrator.yaml can drop its remaining
+    // `python3 -m amplihack.runtime_assets multitask-orchestrator` shim.
+    m.insert(
+        "multitask-orchestrator",
+        vec![
+            ".claude/skills/multitask/orchestrator.py",
+            "amplifier-bundle/skills/multitask/orchestrator.py",
+        ],
+    );
     m
 }
 
@@ -160,6 +170,16 @@ mod tests {
         assert!(paths.contains_key("helper-path"));
         assert!(paths.contains_key("session-tree-path"));
         assert!(paths.contains_key("hooks-dir"));
+        assert!(paths.contains_key("multitask-orchestrator"));
+    }
+
+    #[test]
+    fn multitask_orchestrator_has_two_candidates() {
+        let paths = asset_relative_paths();
+        let orch = &paths["multitask-orchestrator"];
+        assert_eq!(orch.len(), 2);
+        assert!(orch[0].contains(".claude/skills/multitask"));
+        assert!(orch[1].contains("amplifier-bundle/skills/multitask"));
     }
 
     #[test]
