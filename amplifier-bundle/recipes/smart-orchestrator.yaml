@@ -144,9 +144,8 @@ steps:
     command: |
       _DECOMP_TMPFILE=$(mktemp)
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
-      cat > "$_DECOMP_TMPFILE" <<__DECOMP_EOF__
-      {{decomposition_json}}
-      __DECOMP_EOF__
+      # FIX (heredoc-bulletproof): use env var — no heredoc needed.
+      printf '%s' "$DECOMPOSITION_JSON" > "$_DECOMP_TMPFILE"
       RAW_OBJ=$(amplihack orch helper extract-json < "$_DECOMP_TMPFILE")
       if [ "$RAW_OBJ" = "{}" ]; then
         cat <<'WARN' >&2
@@ -171,9 +170,8 @@ steps:
       # task description has strong development signals (file paths, "Add"+
       # path, PR mention, tests, multi-requirement), promote to Development.
       _TASK_TMPFILE=$(mktemp)
-      cat > "$_TASK_TMPFILE" <<__TASK_EOF__
-      {{task_description}}
-      __TASK_EOF__
+      # FIX (heredoc-bulletproof): use env var — no heredoc needed.
+      printf '%s' "$TASK_DESCRIPTION" > "$_TASK_TMPFILE"
       FINAL_TYPE=$(amplihack orch helper reclassify-task-type --current "$CANONICAL_TYPE" < "$_TASK_TMPFILE")
       rm -f "$_TASK_TMPFILE"
       if [ "$FINAL_TYPE" != "$CANONICAL_TYPE" ]; then
@@ -191,9 +189,8 @@ steps:
     command: |
       _DECOMP_TMPFILE=$(mktemp)
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
-      cat > "$_DECOMP_TMPFILE" <<__DECOMP_EOF__
-      {{decomposition_json}}
-      __DECOMP_EOF__
+      # FIX (heredoc-bulletproof): use env var — no heredoc needed.
+      printf '%s' "$DECOMPOSITION_JSON" > "$_DECOMP_TMPFILE"
       TASK_TYPE="{{task_type}}"
       FORCE_SINGLE="{{force_single_workstream}}"
       HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir 2>/dev/null || true)"
@@ -416,9 +413,8 @@ steps:
     command: |
       _DECOMP_TMPFILE=$(mktemp)
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
-      cat > "$_DECOMP_TMPFILE" <<__DECOMP_EOF__
-      {{decomposition_json}}
-      __DECOMP_EOF__
+      # FIX (heredoc-bulletproof): use env var — no heredoc needed.
+      printf '%s' "$DECOMPOSITION_JSON" > "$_DECOMP_TMPFILE"
       amplihack orch helper build-workstreams-config < "$_DECOMP_TMPFILE"
     output: "workstreams_file"
 
