@@ -320,7 +320,10 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        make_named_asset_file(temp.path(), "amplifier-bundle/skills/multitask/orchestrator.py");
+        make_named_asset_file(
+            temp.path(),
+            "amplifier-bundle/skills/multitask/orchestrator.py",
+        );
 
         let prev_home = crate::test_support::set_home(temp.path());
         let prev = env::var_os("AMPLIHACK_HOME");
@@ -362,7 +365,10 @@ mod tests {
         }
         crate::test_support::restore_home(prev_home);
 
-        assert_eq!(exit, 0, "expected resolve-bundle-asset multitask-orchestrator to succeed");
+        assert_eq!(
+            exit, 0,
+            "expected resolve-bundle-asset multitask-orchestrator to succeed"
+        );
     }
 
     #[test]
