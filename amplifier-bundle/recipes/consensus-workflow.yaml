@@ -111,13 +111,13 @@ steps:
     type: "bash"
     command: |
       ERRORS=""
-      REPO="{{repo_path}}"
+      REPO="$REPO_PATH"
       if [ ! -d "$REPO" ]; then
         ERRORS="${ERRORS}\n  ✗ repo_path '$REPO' does not exist"
       elif ! git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
         ERRORS="${ERRORS}\n  ✗ repo_path '$REPO' is not a git repository"
       fi
-      if [ -z "{{task_description}}" ]; then
+      if [ -z "$TASK_DESCRIPTION" ]; then
         ERRORS="${ERRORS}\n  ✗ task_description is empty"
       fi
       if [ -n "$ERRORS" ]; then
@@ -495,17 +495,17 @@ steps:
     type: "bash"
     command: |
       # Create GitHub issue from consensus requirements
-      echo "Creating GitHub issue for: {{task_description}}"
+      echo "Creating GitHub issue for: $TASK_DESCRIPTION"
 
-      # FIX (#469): Assign template vars to shell vars first — avoids heredoc delimiter collision.
-      _TASK_DESC="{{task_description}}"
-      _REQS_EXPLICIT="{{final_requirements.explicit_requirements}}"
-      _REQS_SUCCESS="{{final_requirements.success_criteria}}"
-      _REQS_CONSTRAINTS="{{final_requirements.constraints}}"
-      _REQS_MECHANISM="{{final_requirements.consensus_mechanism_used}}"
-      _REQS_AGENTS="{{final_requirements.agents_involved}}"
-      _REQS_CONFIDENCE="{{final_requirements.confidence_level}}"
-      _CRITICALITY="{{criticality}}"
+      # FIX (#311): Use env vars — safe against injection and word-splitting.
+      _TASK_DESC="$TASK_DESCRIPTION"
+      _REQS_EXPLICIT="$FINAL_REQUIREMENTS_EXPLICIT_REQUIREMENTS"
+      _REQS_SUCCESS="$FINAL_REQUIREMENTS_SUCCESS_CRITERIA"
+      _REQS_CONSTRAINTS="$FINAL_REQUIREMENTS_CONSTRAINTS"
+      _REQS_MECHANISM="$FINAL_REQUIREMENTS_CONSENSUS_MECHANISM_USED"
+      _REQS_AGENTS="$FINAL_REQUIREMENTS_AGENTS_INVOLVED"
+      _REQS_CONFIDENCE="$FINAL_REQUIREMENTS_CONFIDENCE_LEVEL"
+      _CRITICALITY="$CRITICALITY"
       # NOTE: Unquoted heredoc — $VAR expansion runs with invoking user's privileges (no escalation).
       ISSUE_BODY=$(cat <<ISSUE_EOF
       ## Task Description
@@ -586,8 +586,8 @@ steps:
         BASE_REF="HEAD"
       fi
 
-      # FIX (#469): Direct assignment — no heredoc delimiter collision risk.
-      TASK_DESC="{{task_description}}"
+      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
+      TASK_DESC="$TASK_DESCRIPTION"
       TASK_SLUG=$(printf '%s' "$TASK_DESC" | tr '\n\r' '  ' | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | sed 's/-\{2,\}/-/g;s/^-//;s/-$//' | cut -c1-30 | sed 's/-$//')
       # Guard: empty slug (blank/all-symbol input) produces a trailing-hyphen branch that
       # git check-ref-format accepts as valid but is undesirable. Catch it explicitly first.
@@ -632,7 +632,7 @@ steps:
       fi
 
       # Idempotency guard (mirrors default-workflow three-state check)
-      WORKTREE_PATH="{{worktree_dir}}/$BRANCH_NAME"
+      WORKTREE_PATH="$WORKTREE_DIR/$BRANCH_NAME"
       BRANCH_EXISTS=$(git branch --list "$BRANCH_NAME")
       WORKTREE_EXISTS=$(git worktree list --porcelain | grep -Fx "worktree $WORKTREE_PATH" || true)
 
@@ -1654,11 +1654,11 @@ steps:
       # Stage all changes
       git add -A
 
-      # FIX (#469): Assign template vars to shell vars — avoids heredoc delimiter collision.
-      _TASK_DESC="{{task_description}}"
-      _REQS_SUMMARY="{{final_requirements.task_summary}}"
-      _IS_CRITICAL="{{is_critical_code}}"
-      _ISSUE_NUM="{{issue_number}}"
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      _TASK_DESC="$TASK_DESCRIPTION"
+      _REQS_SUMMARY="$FINAL_REQUIREMENTS_TASK_SUMMARY"
+      _IS_CRITICAL="$IS_CRITICAL_CODE"
+      _ISSUE_NUM="$ISSUE_NUMBER"
       SHORT_DESC=$(printf '%s' "$_TASK_DESC" | tr '\n\r' ' ' | cut -c1-72)
       # NOTE: Unquoted heredoc — $VAR expansion runs with invoking user's privileges (no escalation).
       COMMIT_MSG=$(cat <<COMMIT_EOF
@@ -1705,14 +1705,14 @@ steps:
     command: |
       echo "Creating pull request..."
 
-      # FIX (#469): Assign template vars to shell vars — avoids heredoc delimiter collision.
-      _TASK_DESC="{{task_description}}"
-      _REQS_EXPLICIT="{{final_requirements.explicit_requirements}}"
-      _REQS_MECHANISM="{{final_requirements.consensus_mechanism_used}}"
-      _IS_CRITICAL="{{is_critical_code}}"
-      _TDD_TOTAL="{{tdd_tests.total_tests}}"
-      _LOCAL_PASSED="{{local_testing.all_scenarios_passed}}"
-      _ISSUE_NUM="{{issue_number}}"
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      _TASK_DESC="$TASK_DESCRIPTION"
+      _REQS_EXPLICIT="$FINAL_REQUIREMENTS_EXPLICIT_REQUIREMENTS"
+      _REQS_MECHANISM="$FINAL_REQUIREMENTS_CONSENSUS_MECHANISM_USED"
+      _IS_CRITICAL="$IS_CRITICAL_CODE"
+      _TDD_TOTAL="$TDD_TESTS_TOTAL_TESTS"
+      _LOCAL_PASSED="$LOCAL_TESTING_ALL_SCENARIOS_PASSED"
+      _ISSUE_NUM="$ISSUE_NUMBER"
       # NOTE: Unquoted heredoc — $VAR expansion runs with invoking user's privileges (no escalation).
       PR_BODY=$(cat <<PR_EOF
       ## Description
@@ -2387,19 +2387,19 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      # FIX (#469): Use jq --arg for safe JSON construction — no heredoc delimiter collision.
+      # FIX (#469/#311): Use jq --arg with "$ENV_VAR" — safe against injection and word-splitting.
       jq -n \
-        --arg task {{task_description}} \
-        --arg criticality {{criticality}} \
-        --arg gate1 {{final_requirements.consensus_mechanism_used}} \
-        --arg gate2 {{design_consensus.consensus_achieved}} \
-        --arg gate3 {{is_critical_code}} \
-        --arg gate4 {{refactoring_consensus.unanimous_approval}} \
-        --arg gate5 {{pr_review_consensus.unanimous_approval}} \
-        --arg gate6 {{philosophy_consensus.unanimous_philosophy_approval}} \
-        --arg gate7 {{final_consensus.final_unanimous_approval}} \
-        --arg final_approval {{final_consensus.production_ready}} \
-        --arg pr_ready {{final_consensus.pr_approved_for_merge}} \
+        --arg task "$TASK_DESCRIPTION" \
+        --arg criticality "$CRITICALITY" \
+        --arg gate1 "$FINAL_REQUIREMENTS_CONSENSUS_MECHANISM_USED" \
+        --arg gate2 "$DESIGN_CONSENSUS_CONSENSUS_ACHIEVED" \
+        --arg gate3 "$IS_CRITICAL_CODE" \
+        --arg gate4 "$REFACTORING_CONSENSUS_UNANIMOUS_APPROVAL" \
+        --arg gate5 "$PR_REVIEW_CONSENSUS_UNANIMOUS_APPROVAL" \
+        --arg gate6 "$PHILOSOPHY_CONSENSUS_UNANIMOUS_PHILOSOPHY_APPROVAL" \
+        --arg gate7 "$FINAL_CONSENSUS_FINAL_UNANIMOUS_APPROVAL" \
+        --arg final_approval "$FINAL_CONSENSUS_PRODUCTION_READY" \
+        --arg pr_ready "$FINAL_CONSENSUS_PR_APPROVED_FOR_MERGE" \
         '{
           workflow: "consensus-workflow",
           version: "2.0.0",
