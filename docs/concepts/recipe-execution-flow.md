@@ -57,7 +57,9 @@ The executor applies two layers of defensive configuration before running any st
 
 ### Shell steps
 
-Every `bash -c` subprocess receives `HOME`, `PATH`, `NONINTERACTIVE=1`, `DEBIAN_FRONTEND=noninteractive`, and `CI=true` in its environment. These values are injected unconditionally — recipe steps are automated and must never prompt for input.
+Every shell subprocess receives `HOME`, `PATH`, `NONINTERACTIVE=1`, `DEBIAN_FRONTEND=noninteractive`, and `CI=true` in its environment. These values are injected unconditionally — recipe steps are automated and must never prompt for input.
+
+Command bodies up to 64 KiB are passed inline via `bash -c <body>`. Larger bodies are written to a tempfile and executed as `bash <path>` to avoid `Argument list too long (E2BIG)` from kernel `ARG_MAX` (~128 KiB on Linux). Both paths receive identical environment, working directory, and stdio handling; only the argv shape differs.
 
 If the shell command references `python3` or `python `, the executor runs a pre-flight `python3 --version` check and aborts the step immediately if Python is unavailable.
 
