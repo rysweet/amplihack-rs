@@ -6,12 +6,16 @@
 //! - Integer literals: `1`, `42`
 //! - Identifiers (context variables): `task_type`, `round_1_result`
 //! - Dot access: `obj.field.subfield`
+//! - Bracket access: `obj['key']`, `items[0]` (string-key or integer-index;
+//!   flattened into the dot-access lookup key, so `obj['k']` is equivalent
+//!   to `obj.k` against the flat string context map)
 //! - Boolean operators: `and`, `or`, `not`
 //! - Comparison: `==`, `!=`, `>=`, `<=`, `>`, `<`
 //! - Containment: `'x' in var`, `'x' not in var`
 //! - List literals: `['a', 'b', 'c']`
 //! - Parenthesized groups: `(expr)`
-//! - Function calls: `int(x)`
+//! - Function calls: `int(x)` (postfix `.field` / `['k']` / `[i]` chains
+//!   are honored on call arguments via the shared primary parser)
 //! - Truthiness: bare identifiers are truthy if non-empty and not `"false"`
 
 use std::collections::HashMap;
@@ -525,23 +529,55 @@ fn parse_primary(
             let name = name.clone();
             *pos += 1;
 
-            // Dot-access: ident.field.subfield
+            // Postfix accessor chain: `.field`, `['key']`, `[index]`.
+            // String-key and integer-index bracket access flatten into the
+            // dot-access lookup key (mirrors recipe-runner #71/#92 semantics
+            // adapted to amplihack-rs's flat string context model), so
+            // `obj['confirmed_count']` is looked up as `obj.confirmed_count`.
             let mut lookup_key = name.clone();
-            while *pos < tokens.len() && tokens[*pos] == Token::Dot {
-                *pos += 1;
-                if *pos >= tokens.len() {
-                    return Err(ConditionError::Parse(
-                        "expected identifier after '.'".to_string(),
-                    ));
-                }
-                if let Token::Ident(field) = &tokens[*pos] {
-                    lookup_key = format!("{lookup_key}.{field}");
+            loop {
+                if *pos < tokens.len() && tokens[*pos] == Token::Dot {
                     *pos += 1;
+                    if *pos >= tokens.len() {
+                        return Err(ConditionError::Parse(
+                            "expected identifier after '.'".to_string(),
+                        ));
+                    }
+                    if let Token::Ident(field) = &tokens[*pos] {
+                        lookup_key = format!("{lookup_key}.{field}");
+                        *pos += 1;
+                    } else {
+                        return Err(ConditionError::Parse(format!(
+                            "expected identifier after '.', got {:?}",
+                            tokens[*pos]
+                        )));
+                    }
+                } else if *pos < tokens.len() && tokens[*pos] == Token::LBracket {
+                    *pos += 1;
+                    if *pos >= tokens.len() {
+                        return Err(ConditionError::Parse(
+                            "unexpected end of expression after '['".to_string(),
+                        ));
+                    }
+                    let key = match &tokens[*pos] {
+                        Token::Str(s) => s.clone(),
+                        Token::Int(n) => n.to_string(),
+                        other => {
+                            return Err(ConditionError::Parse(format!(
+                                "expected string or integer key inside '[...]', got {other:?}"
+                            )));
+                        }
+                    };
+                    *pos += 1;
+                    if *pos >= tokens.len() || tokens[*pos] != Token::RBracket {
+                        return Err(ConditionError::Parse(
+                            "expected ']' after subscript key".to_string(),
+                        ));
+                    }
+                    *pos += 1;
+                    lookup_key = format!("{lookup_key}.{key}");
                 } else {
-                    return Err(ConditionError::Parse(format!(
-                        "expected identifier after '.', got {:?}",
-                        tokens[*pos]
-                    )));
+                    break;
                 }
             }
 
@@ -897,5 +933,100 @@ mod tests {
     fn complex_condition_with_dot_and_equality() {
         let c = ctx(&[("initial_requirements.requires_debate", "true")]);
         assert!(evaluate_condition("initial_requirements.requires_debate == 'true'", &c).unwrap());
+    }
+
+    // -- Bracket access (mirrors recipe-runner #71/#92) --
+
+    #[test]
+    fn bracket_access_string_key() {
+        let c = ctx(&[("validated_findings.confirmed_count", "3")]);
+        assert!(evaluate_condition("int(validated_findings['confirmed_count']) > 0", &c).unwrap());
+    }
+
+    #[test]
+    fn bracket_access_missing_key_is_falsy() {
+        let c = ctx(&[("validated_findings.rejected_count", "1")]);
+        assert!(!evaluate_condition("validated_findings['confirmed_count']", &c).unwrap());
+    }
+
+    #[test]
+    fn bracket_access_integer_index() {
+        let c = ctx(&[("items.0", "alpha")]);
+        assert!(evaluate_condition("items[0] == 'alpha'", &c).unwrap());
+    }
+
+    #[test]
+    fn bracket_access_chains_with_dot() {
+        // obj.a['b'] flattens to obj.a.b
+        let c = ctx(&[("obj.a.b", "v")]);
+        assert!(evaluate_condition("obj.a['b'] == 'v'", &c).unwrap());
+        // obj['a'].b flattens to obj.a.b
+        assert!(evaluate_condition("obj['a'].b == 'v'", &c).unwrap());
+    }
+
+    #[test]
+    fn bracket_access_consecutive_brackets() {
+        // obj['a']['b'] must flatten the same as obj.a.b — verifies the
+        // accessor loop iterates correctly over multiple bracket terms.
+        let c = ctx(&[("obj.a.b", "v")]);
+        assert!(evaluate_condition("obj['a']['b'] == 'v'", &c).unwrap());
+    }
+
+    #[test]
+    fn bracket_access_key_containing_dot() {
+        // obj['a.b'] flattens to lookup key obj.a.b — same as obj.a.b and
+        // obj['a']['b']. Documents that dotted keys are NOT round-tripped
+        // through the flat HashMap context (matches existing dot-access).
+        let c = ctx(&[("obj.a.b", "v")]);
+        assert!(evaluate_condition("obj['a.b'] == 'v'", &c).unwrap());
+    }
+
+    #[test]
+    fn bracket_access_inside_function_arg() {
+        // Postfix bracket on a function/method call argument must parse.
+        // Mirrors recipe-runner #92 regression
+        // (`obj.contains(items['key'])`-style usage).
+        let c = ctx(&[("validated_findings.confirmed_count", "5")]);
+        assert!(evaluate_condition("int(validated_findings['confirmed_count']) >= 5", &c).unwrap());
+    }
+
+    #[test]
+    fn bracket_access_quality_audit_pattern() {
+        // Real condition shape from quality-audit-cycle.yaml:
+        // `validated_findings and validated_findings['confirmed_count'] > 0`
+        let c = ctx(&[
+            ("validated_findings", "{\"confirmed_count\":3}"),
+            ("validated_findings.confirmed_count", "3"),
+        ]);
+        assert!(
+            evaluate_condition(
+                "validated_findings and int(validated_findings['confirmed_count']) > 0",
+                &c,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn bracket_access_validate_only() {
+        // Validation path (lenient mode) must accept the syntax.
+        assert!(validate_condition("obj['k'] == 'v'").is_ok());
+        assert!(validate_condition("int(obj['k']) > 0").is_ok());
+        assert!(validate_condition("items[0]").is_ok());
+        assert!(validate_condition("a.b['c'].d['e']").is_ok());
+    }
+
+    #[test]
+    fn bracket_access_invalid_key_errors() {
+        // Bare identifier inside brackets is not a valid key (must be string
+        // literal or integer).
+        let c = HashMap::new();
+        assert!(evaluate_condition("obj[bad]", &c).is_err());
+    }
+
+    #[test]
+    fn bracket_access_missing_close_errors() {
+        let c = HashMap::new();
+        assert!(evaluate_condition("obj['k'", &c).is_err());
     }
 }
