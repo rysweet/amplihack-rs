@@ -17,10 +17,14 @@ use tracing::{debug, info, warn};
 /// Threshold above which a bash command body is spilled to a tempfile and
 /// executed as a script (`/bin/bash <path>`) instead of passed inline via
 /// `bash -c <body>`. Mirrors recipe-runner #80/#90: argv + env must fit in
-/// `ARG_MAX` (~128 KiB on Linux), and when smart-orchestrator final steps
-/// accumulate round results from many parallel workstreams the inlined
-/// script body alone can exceed this and fail with `Argument list too long
-/// (os error 7)`. 64 KiB leaves headroom for env vector + binary args.
+/// the kernel's `ARG_MAX` budget (currently 2 MiB on Linux ≥ 2.6.23, but as
+/// little as 128 KiB on older kernels and some other Unix variants). When
+/// smart-orchestrator final steps accumulate round results from many parallel
+/// workstreams, the inlined script body alone can exceed this and fail with
+/// `Argument list too long (os error 7)`. 64 KiB is a conservative threshold
+/// that leaves headroom for the env vector + binary args even on lower-bound
+/// systems, and is well clear of the per-step env budget defined inside
+/// `execute_shell_step`.
 const BASH_INLINE_LIMIT: usize = 64 * 1024;
 
 /// Wrap `body` in a `bash` `Command`, spilling to a tempfile when the body
@@ -38,9 +42,10 @@ fn build_bash_command(
             .with_context(|| "Failed to create tempfile for large bash step")?;
         tf.write_all(body.as_bytes())
             .with_context(|| "Failed to write large bash step to tempfile")?;
-        // Best-effort flush: close-on-drop will also flush, but explicit
-        // flush surfaces I/O errors before we attempt to spawn bash.
-        tf.flush().ok();
+        // Explicit flush so any I/O errors (disk full, quota exceeded, etc.)
+        // surface BEFORE we spawn bash against a possibly-truncated script.
+        tf.flush()
+            .with_context(|| "Failed to flush large bash step tempfile")?;
         let mut cmd = std::process::Command::new("/bin/bash");
         cmd.arg(tf.path());
         Ok((cmd, Some(tf)))
