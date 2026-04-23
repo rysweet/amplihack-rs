@@ -331,82 +331,47 @@ steps:
       export THRESHOLD="{{validation_threshold}}"
       export CYCLE="{{cycle_number}}"
 
-      python3 - <<'PYEOF'
-      import json, os, sys
-
-      SEVERITY_ORDER = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
-      threshold = int(os.environ.get('THRESHOLD', '2'))
-      cycle = os.environ.get('CYCLE', '1')
-
-      def load_validator(path):
-          try:
-              with open(path) as f:
-                  return json.loads(f.read())
-          except (json.JSONDecodeError, FileNotFoundError) as e:
-              print(f"load_validator: failed to parse {path}: {e}", file=sys.stderr)
-              return {'validated': []}
-
-      validators = [
-          load_validator(os.environ['V1_FILE']),
-          load_validator(os.environ['V2_FILE']),
-          load_validator(os.environ['V3_FILE']),
-      ]
-
-      # Collect votes per finding_id
-      votes = {}
-      for v in validators:
-          for item in v.get('validated', []):
-              fid = item.get('finding_id')
-              if fid is None:
-                  continue
-              votes.setdefault(fid, []).append({
-                  'verdict': item.get('verdict', 'false_positive'),
-                  'new_severity': item.get('new_severity', 'medium'),
-                  'reasoning': item.get('reasoning', ''),
-              })
-
-      # Merge using threshold
-      merged = []
-      confirmed_count = 0
-      fp_count = 0
-      for fid in sorted(votes.keys(), key=lambda x: (isinstance(x, str), x)):
-          vote_list = votes[fid]
-          confirm_votes = [v for v in vote_list if v['verdict'] in ('confirmed', 'downgraded')]
-          fp_votes = [v for v in vote_list if v['verdict'] == 'false_positive']
-
-          if len(confirm_votes) >= threshold:
-              severities = [v['new_severity'] for v in confirm_votes]
-              final_sev = min(severities, key=lambda s: SEVERITY_ORDER.get(s, 1))
-              reasoning = '; '.join(v['reasoning'] for v in confirm_votes if v['reasoning'])
-              merged.append({
-                  'finding_id': fid,
-                  'verdict': 'confirmed',
-                  'final_severity': final_sev,
-                  'votes': {'confirmed': len(confirm_votes), 'false_positive': len(fp_votes)},
-                  'reasoning': reasoning or 'majority confirmed',
-              })
-              confirmed_count += 1
-          else:
-              reasoning = '; '.join(v['reasoning'] for v in fp_votes if v['reasoning'])
-              merged.append({
-                  'finding_id': fid,
-                  'verdict': 'false_positive',
-                  'final_severity': 'n/a',
-                  'votes': {'confirmed': len(confirm_votes), 'false_positive': len(fp_votes)},
-                  'reasoning': reasoning or 'majority ruled false positive',
-              })
-              fp_count += 1
-
-      total = confirmed_count + fp_count
-      result = {
-          'cycle': int(cycle) if cycle.isdigit() else cycle,
-          'validated': merged,
-          'confirmed_count': confirmed_count,
-          'false_positive_count': fp_count,
-          'false_positive_rate': f'{fp_count * 100 // max(total, 1)}%',
-      }
-      print(json.dumps(result, indent=2))
-      PYEOF
+      jq -n \
+        --slurpfile v1 "$V1_FILE" \
+        --slurpfile v2 "$V2_FILE" \
+        --slurpfile v3 "$V3_FILE" \
+        --argjson threshold "${THRESHOLD:-2}" \
+        --arg cycle "$CYCLE" '
+        def sev_order: {"low":0,"medium":1,"high":2,"critical":3,"n/a":-1};
+        ([$v1[0].validated[]?, $v2[0].validated[]?, $v3[0].validated[]?]
+          | group_by(.finding_id // empty)
+          | map({finding_id: .[0].finding_id, votes_list: .})) as $grouped
+        | ($grouped | map(
+            .finding_id as $fid
+            | (.votes_list | map(select(.verdict=="confirmed" or .verdict=="downgraded"))) as $confirm
+            | (.votes_list | map(select(.verdict=="false_positive"))) as $fp
+            | if ($confirm | length) >= $threshold then
+                {
+                  finding_id: $fid,
+                  verdict: "confirmed",
+                  final_severity: ($confirm | map(.new_severity // "medium") | min_by(sev_order[.] // 1)),
+                  votes: {confirmed: ($confirm | length), false_positive: ($fp | length)},
+                  reasoning: ($confirm | map(.reasoning // "" | select(. != "")) | join("; ") | if . == "" then "majority confirmed" else . end)
+                }
+              else
+                {
+                  finding_id: $fid,
+                  verdict: "false_positive",
+                  final_severity: "n/a",
+                  votes: {confirmed: ($confirm | length), false_positive: ($fp | length)},
+                  reasoning: ($fp | map(.reasoning // "" | select(. != "")) | join("; ") | if . == "" then "majority ruled false positive" else . end)
+                }
+              end
+          )) as $merged
+        | ($merged | map(select(.verdict=="confirmed")) | length) as $cc
+        | ($merged | map(select(.verdict=="false_positive")) | length) as $fc
+        | {
+            cycle: ($cycle | tonumber? // $cycle),
+            validated: $merged,
+            confirmed_count: $cc,
+            false_positive_count: $fc,
+            false_positive_rate: "\(($fc * 100) / (($cc + $fc) | if . == 0 then 1 else . end) | floor)%"
+          }'
     output: "validated_findings"
 
   # ========================================================================
@@ -502,52 +467,30 @@ steps:
       export VALIDATED_FILE="$_VALIDATED_TMPFILE"
       export FIX_RESULTS_FILE="$_FIX_RESULTS_TMPFILE"
 
-      python3 - <<'PYEOF'
-      import json, sys, os
-
-      fix_all = os.environ.get('FIX_ALL', '').lower() == 'true'
-
-      try:
-          with open(os.environ['VALIDATED_FILE']) as f:
-              validated = json.loads(f.read())
-          with open(os.environ['FIX_RESULTS_FILE']) as f:
-              fixes = json.loads(f.read())
-      except (json.JSONDecodeError, FileNotFoundError) as e:
-          # If we can't parse, report but don't block
-          print(f'WARNING: Could not parse JSON for fix verification: {e}')
-          print('VERIFY: SKIP (unparseable)')
-          sys.exit(0)
-
-      confirmed_ids = set()
-      for v in validated.get('validated', []):
-          if v.get('verdict') == 'confirmed':
-              confirmed_ids.add(v.get('finding_id'))
-
-      fixed_ids = set()
-      for f in fixes.get('fixes_applied', []):
-          fixed_ids.add(f.get('finding_id'))
-
-      skipped_ids = set()
-      for s in fixes.get('fixes_skipped', []):
-          skipped_ids.add(s.get('finding_id'))
-
-      unfixed = confirmed_ids - fixed_ids - skipped_ids
-      total_confirmed = len(confirmed_ids)
-      total_fixed = len(fixed_ids)
-
-      print(f'Confirmed findings: {total_confirmed}')
-      print(f'Fixed: {total_fixed}')
-      print(f'Skipped (false positive): {len(skipped_ids)}')
-      print(f'Unfixed: {len(unfixed)}')
-
-      if unfixed and fix_all:
-          print(f'VERIFY: FAIL — {len(unfixed)} confirmed findings not fixed: {sorted(unfixed)}')
-          print('The fix-all-per-cycle rule requires ALL confirmed findings to be addressed.')
-      elif total_fixed == total_confirmed:
-          print('VERIFY: PASS — all confirmed findings fixed')
-      else:
-          print(f'VERIFY: PASS — {total_fixed}/{total_confirmed} fixed, rest skipped as false positive')
-      PYEOF
+      jq -n -r \
+        --slurpfile validated "$VALIDATED_FILE" \
+        --slurpfile fixes "$FIX_RESULTS_FILE" \
+        --arg fix_all "$FIX_ALL" '
+        ($validated[0].validated // [] | map(select(.verdict=="confirmed") | .finding_id)) as $confirmed
+        | ($fixes[0].fixes_applied // [] | map(.finding_id)) as $fixed
+        | ($fixes[0].fixes_skipped // [] | map(.finding_id)) as $skipped
+        | ($confirmed | length) as $total_confirmed
+        | ($fixed | length) as $total_fixed
+        | ($skipped | length) as $total_skipped
+        | ($confirmed - $fixed - $skipped) as $unfixed
+        | ($unfixed | length) as $unfixed_count
+        | "Confirmed findings: \($total_confirmed)",
+          "Fixed: \($total_fixed)",
+          "Skipped (false positive): \($total_skipped)",
+          "Unfixed: \($unfixed_count)",
+          (if ($unfixed_count > 0 and ($fix_all | ascii_downcase) == "true") then
+            "VERIFY: FAIL — \($unfixed_count) confirmed findings not fixed: \($unfixed | sort)\nThe fix-all-per-cycle rule requires ALL confirmed findings to be addressed."
+          elif $total_fixed == $total_confirmed then
+            "VERIFY: PASS — all confirmed findings fixed"
+          else
+            "VERIFY: PASS — \($total_fixed)/\($total_confirmed) fixed, rest skipped as false positive"
+          end)' \
+        2>/dev/null || { echo "WARNING: Could not parse JSON for fix verification"; echo "VERIFY: SKIP (unparseable)"; }
     output: "fix_verification"
 
   # ========================================================================
@@ -641,24 +584,14 @@ steps:
       # The decision should be: did this cycle find new issues? If yes, continue.
       # NOT: are there old unfixed issues remaining?
       export VALIDATED_FILE="$_VALIDATED_TMPFILE"
-      read -r HIGH_COUNT CRITICAL_COUNT MEDIUM_COUNT CONFIRMED <<< $(python3 -c "
-      import json, os
-      try:
-          with open(os.environ['VALIDATED_FILE']) as f:
-              data = json.loads(f.read())
-          high = critical = medium = confirmed = 0
-          for v in data.get('validated', []):
-              if v.get('verdict') == 'confirmed':
-                  confirmed += 1
-                  sev = v.get('final_severity')
-                  if sev == 'critical': critical += 1
-                  elif sev == 'high': high += 1
-                  elif sev == 'medium': medium += 1
-          print(f'{high} {critical} {medium} {confirmed}')
-      except Exception as e:
-          print(f'recurse-decision: severity counting failed: {e}', file=sys.stderr)
-          print('0 0 0 0')
-      ")
+      read -r HIGH_COUNT CRITICAL_COUNT MEDIUM_COUNT CONFIRMED <<< $(jq -r '
+        [.validated[] | select(.verdict=="confirmed")] as $c
+        | [($c | map(select(.final_severity=="high")) | length),
+           ($c | map(select(.final_severity=="critical")) | length),
+           ($c | map(select(.final_severity=="medium")) | length),
+           ($c | length)]
+        | "\(.[0]) \(.[1]) \(.[2]) \(.[3])"
+      ' "$VALIDATED_FILE" 2>/dev/null || echo '0 0 0 0')
 
       echo "New findings this cycle: $CONFIRMED (critical=$CRITICAL_COUNT, high=$HIGH_COUNT, medium=$MEDIUM_COUNT)"
 
@@ -681,81 +614,37 @@ steps:
   # The recipe runner does not implicitly loop on CONTINUE, so we must
   # re-invoke quality-audit-cycle explicitly with carried-forward state.
   # ========================================================================
-  - id: "run-recursive-cycle"
+  - id: "compute-next-cycle"
     type: "bash"
     condition: "'CONTINUE:' in recurse_decision"
     command: |
       NEXT_CYCLE=$(printf '%s\n' "{{recurse_decision}}" | sed -n 's/.*CONTINUE:\([0-9][0-9]*\).*/\1/p' | head -n 1)
       if [ -z "$NEXT_CYCLE" ]; then
-        echo "run-recursive-cycle: could not parse CONTINUE target from recurse_decision" >&2
+        echo "compute-next-cycle: could not parse CONTINUE target from recurse_decision" >&2
         exit 1
       fi
+      printf '%s' "$NEXT_CYCLE"
+    output: "next_cycle"
 
-      _HISTORY_TMPFILE=$(mktemp)
-      chmod 600 "$_HISTORY_TMPFILE"
-      trap 'rm -f "$_HISTORY_TMPFILE"' EXIT
-      cat > "$_HISTORY_TMPFILE" <<'__AMPLIHACK_SAFE_HEREDOC_HISTORY_STEP5B__'
-      {{cycle_history}}
-      __AMPLIHACK_SAFE_HEREDOC_HISTORY_STEP5B__
-
-      export NEXT_CYCLE
-      export HISTORY_FILE="$_HISTORY_TMPFILE"
-      export REPO_PATH="{{repo_path}}"
-      export TARGET_PATH="{{target_path}}"
-      export MIN_CYCLES="{{min_cycles}}"
-      export MAX_CYCLES="{{max_cycles}}"
-      export VALIDATION_THRESHOLD="{{validation_threshold}}"
-      export SEVERITY_THRESHOLD="{{severity_threshold}}"
-      export MODULE_LOC_LIMIT="{{module_loc_limit}}"
-      export FIX_ALL_PER_CYCLE="{{fix_all_per_cycle}}"
-      export CATEGORIES="{{categories}}"
-      export OUTPUT_DIR="{{output_dir}}"
-
-      python3 - <<'PY'
-      import json
-      import os
-      from pathlib import Path
-
-      from amplihack.recipes import run_recipe_by_name
-
-      history = Path(os.environ["HISTORY_FILE"]).read_text()
-      next_cycle = os.environ["NEXT_CYCLE"]
-
-      result = run_recipe_by_name(
-          "quality-audit-cycle",
-          user_context={
-              "task_description": """{{task_description}}""",
-              "repo_path": os.environ["REPO_PATH"],
-              "target_path": os.environ["TARGET_PATH"],
-              "min_cycles": os.environ["MIN_CYCLES"],
-              "max_cycles": os.environ["MAX_CYCLES"],
-              "validation_threshold": os.environ["VALIDATION_THRESHOLD"],
-              "severity_threshold": os.environ["SEVERITY_THRESHOLD"],
-              "module_loc_limit": os.environ["MODULE_LOC_LIMIT"],
-              "fix_all_per_cycle": os.environ["FIX_ALL_PER_CYCLE"],
-              "categories": os.environ["CATEGORIES"],
-              "output_dir": os.environ["OUTPUT_DIR"],
-              "cycle_number": next_cycle,
-              "cycle_history": history,
-          },
-          progress=True,
-      )
-
-      ctx = result.context if isinstance(result.context, dict) else {}
-      final_report = ctx.get("final_report")
-      if not isinstance(final_report, dict) or not final_report:
-          final_report = {
-              "cycle_number": str(ctx.get("cycle_number", next_cycle)),
-              "recurse_decision": str(ctx.get("recurse_decision", "")),
-              "summary": str(ctx.get("summary", "")),
-              "self_improvement_results": str(ctx.get("self_improvement_results", "")),
-              "target_path": str(ctx.get("target_path", os.environ["TARGET_PATH"])),
-          }
-
-      print(json.dumps(final_report))
-      PY
+  - id: "run-recursive-cycle"
+    type: "recipe"
+    recipe: "quality-audit-cycle"
+    condition: "'CONTINUE:' in recurse_decision"
+    sub_context:
+      task_description: "{{task_description}}"
+      repo_path: "{{repo_path}}"
+      target_path: "{{target_path}}"
+      min_cycles: "{{min_cycles}}"
+      max_cycles: "{{max_cycles}}"
+      validation_threshold: "{{validation_threshold}}"
+      severity_threshold: "{{severity_threshold}}"
+      module_loc_limit: "{{module_loc_limit}}"
+      fix_all_per_cycle: "{{fix_all_per_cycle}}"
+      categories: "{{categories}}"
+      output_dir: "{{output_dir}}"
+      cycle_number: "{{next_cycle}}"
+      cycle_history: "{{cycle_history}}"
     output: "final_report"
-    parse_json: true
 
   # ========================================================================
   # STEP 6: SUMMARY — Final report across all cycles
@@ -863,23 +752,19 @@ steps:
       export FINAL_DECISION="{{recurse_decision}}"
       export FINAL_TARGET="{{target_path}}"
 
-      python3 - <<'PY'
-      import json
-      import os
-      from pathlib import Path
-
-      print(
-          json.dumps(
-              {
-                  "cycle_number": os.environ["FINAL_CYCLE"],
-                  "recurse_decision": os.environ["FINAL_DECISION"],
-                  "summary": Path(os.environ["SUMMARY_FILE"]).read_text(),
-                  "self_improvement_results": Path(os.environ["SELF_IMPROVE_FILE"]).read_text(),
-                  "target_path": os.environ["FINAL_TARGET"],
-              }
-          )
-      )
-      PY
+      jq -n \
+        --arg cycle "${FINAL_CYCLE}" \
+        --arg decision "${FINAL_DECISION}" \
+        --rawfile summary "${SUMMARY_FILE}" \
+        --rawfile self_improve "${SELF_IMPROVE_FILE}" \
+        --arg target "${FINAL_TARGET}" \
+        '{
+          cycle_number: $cycle,
+          recurse_decision: $decision,
+          summary: $summary,
+          self_improvement_results: $self_improve,
+          target_path: $target
+        }'
     output: "final_report"
     parse_json: true
 
