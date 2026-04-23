@@ -92,6 +92,12 @@ impl SessionTracker {
 
     fn append_line<T: Serialize>(&self, entry: &T) -> Result<()> {
         let line = serde_json::to_string(entry).context("failed to encode session entry")?;
+        // Issue #97: tolerate missing parent dir — the cosmetic ENOENT at
+        // shutdown was because `create(true)` does not create intermediate
+        // directories. Ensure the runtime dir exists before opening.
+        if let Some(parent) = self.log_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -142,6 +148,27 @@ fn restrict_permissions(_path: &Path) {}
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn append_line_creates_missing_runtime_dir() {
+        // Issue #97: session tracker must auto-create the parent runtime
+        // directory. Previously `OpenOptions::create(true)` only created the
+        // file, not intermediate dirs, so ending a session before any prior
+        // write produced a cosmetic ENOENT on shutdown that surfaced as
+        // "Status: ✗ Failed" in recipe-runner consumers.
+        let temp = tempfile::tempdir().unwrap();
+        let tracker = SessionTracker::new(temp.path()).unwrap();
+        // Simulate the race: runtime dir removed between tracker construction
+        // and append (e.g. by a sibling cleanup hook).
+        let runtime = tracker.log_path.parent().unwrap().to_path_buf();
+        assert!(runtime.exists());
+        std::fs::remove_dir_all(&runtime).unwrap();
+        assert!(!runtime.exists());
+        tracker
+            .complete_session("no-prior-session")
+            .expect("complete_session must tolerate missing runtime dir");
+        assert!(runtime.join("sessions.jsonl").exists());
+    }
 
     #[test]
     fn session_tracker_writes_start_and_complete_entries() {
