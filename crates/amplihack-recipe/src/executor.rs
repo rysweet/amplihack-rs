@@ -10,8 +10,51 @@ use crate::sub_recipe_recovery::{FailureContext, SubRecipeRecovery};
 use crate::template::expand_template;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::io::Write;
 use std::time::Instant;
 use tracing::{debug, info, warn};
+
+/// Threshold above which a bash command body is spilled to a tempfile and
+/// executed as a script (`/bin/bash <path>`) instead of passed inline via
+/// `bash -c <body>`. Mirrors recipe-runner #80/#90: argv + env must fit in
+/// the kernel's `ARG_MAX` budget (currently 2 MiB on Linux ≥ 2.6.23, but as
+/// little as 128 KiB on older kernels and some other Unix variants). When
+/// smart-orchestrator final steps accumulate round results from many parallel
+/// workstreams, the inlined script body alone can exceed this and fail with
+/// `Argument list too long (os error 7)`. 64 KiB is a conservative threshold
+/// that leaves headroom for the env vector + binary args even on lower-bound
+/// systems, and is well clear of the per-step env budget defined inside
+/// `execute_shell_step`.
+const BASH_INLINE_LIMIT: usize = 64 * 1024;
+
+/// Wrap `body` in a `bash` `Command`, spilling to a tempfile when the body
+/// exceeds [`BASH_INLINE_LIMIT`]. The returned `NamedTempFile` (when
+/// present) MUST outlive the spawned process — drop it only after the
+/// process has exited, otherwise the script file disappears mid-execution.
+fn build_bash_command(
+    body: &str,
+) -> Result<(std::process::Command, Option<tempfile::NamedTempFile>)> {
+    if body.len() > BASH_INLINE_LIMIT {
+        let mut tf = tempfile::Builder::new()
+            .prefix("recipe-bash-step-")
+            .suffix(".sh")
+            .tempfile()
+            .with_context(|| "Failed to create tempfile for large bash step")?;
+        tf.write_all(body.as_bytes())
+            .with_context(|| "Failed to write large bash step to tempfile")?;
+        // Explicit flush so any I/O errors (disk full, quota exceeded, etc.)
+        // surface BEFORE we spawn bash against a possibly-truncated script.
+        tf.flush()
+            .with_context(|| "Failed to flush large bash step tempfile")?;
+        let mut cmd = std::process::Command::new("/bin/bash");
+        cmd.arg(tf.path());
+        Ok((cmd, Some(tf)))
+    } else {
+        let mut cmd = std::process::Command::new("bash");
+        cmd.arg("-c").arg(body);
+        Ok((cmd, None))
+    }
+}
 
 /// Trait for executing agent steps. Implementors provide the actual agent
 /// invocation logic (e.g. spawning a Claude session).
@@ -344,8 +387,7 @@ impl<A: AgentBackend> RecipeExecutor<A> {
             ));
         }
 
-        let mut cmd = std::process::Command::new("bash");
-        cmd.arg("-c").arg(&expanded);
+        let (mut cmd, _script_file) = build_bash_command(&expanded)?;
         cmd.current_dir(&self.config.working_dir);
 
         // Ensure a sane non-interactive environment (fix #277).
@@ -416,6 +458,9 @@ impl<A: AgentBackend> RecipeExecutor<A> {
         let output = cmd
             .output()
             .with_context(|| format!("Failed to execute shell step '{}'", step.id))?;
+        // _script_file (if Some) is dropped here, after bash has exited —
+        // moving the drop earlier would yank the script file mid-execution.
+        drop(_script_file);
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -494,12 +539,12 @@ impl<A: AgentBackend> RecipeExecutor<A> {
         // Checkpoint steps run their command (typically git commit) if present
         if let Some(ref command) = step.command {
             let expanded = expand_template(command, context);
-            let output = std::process::Command::new("bash")
-                .arg("-c")
-                .arg(&expanded)
+            let (mut cmd, _script_file) = build_bash_command(&expanded)?;
+            let output = cmd
                 .current_dir(&self.config.working_dir)
                 .output()
                 .with_context(|| format!("Checkpoint step '{}' failed", step.id))?;
+            drop(_script_file);
 
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             if output.status.success() {
@@ -938,6 +983,69 @@ steps:
             result.step_results[0].output.as_deref(),
             Some(value),
             "shell step did not inherit parent env var (regression for #268)"
+        );
+    }
+
+    // ---- BASH_INLINE_LIMIT spill (mirrors recipe-runner #80/#90) ----
+
+    #[test]
+    fn build_bash_command_inline_for_small_body() {
+        let body = "echo hi";
+        let (cmd, tf) = build_bash_command(body).unwrap();
+        assert!(tf.is_none(), "small body should NOT spill to tempfile");
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "-c");
+        assert_eq!(args[1], body);
+    }
+
+    #[test]
+    fn build_bash_command_spills_for_oversized_body() {
+        // Body > BASH_INLINE_LIMIT must use the file-backed form.
+        let big = "a".repeat(64 * 1024 + 1);
+        let (cmd, tf) = build_bash_command(&big).unwrap();
+        let tf = tf.expect("oversized body must spill to tempfile");
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        // Single arg = the script path; no `-c` form.
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0], tf.path().as_os_str());
+        // Tempfile actually contains the body.
+        let on_disk = std::fs::read_to_string(tf.path()).unwrap();
+        assert_eq!(on_disk.len(), big.len());
+    }
+
+    #[test]
+    fn shell_step_executes_oversized_body_via_tempfile() {
+        // End-to-end: a shell step whose body is > 64 KiB must execute
+        // successfully (would fail with `Argument list too long` if we
+        // still used `bash -c`).
+        let mut padding = String::with_capacity(80 * 1024);
+        for i in 0..1300 {
+            padding.push_str(&format!(
+                "# padding {i:04} aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+            ));
+        }
+        padding.push_str("printf SPILL_OK\n");
+        assert!(padding.len() > 64 * 1024);
+
+        let yaml = "
+name: spill-test
+steps:
+  - id: big
+    type: shell
+    command: 'placeholder'
+"
+        .to_string();
+        let mut recipe = crate::parser::RecipeParser::new().parse(&yaml).unwrap();
+        recipe.steps[0].command = Some(padding);
+
+        let executor = RecipeExecutor::new(ExecutorConfig::default(), DryRunAgentBackend);
+        let result = executor.execute(&recipe, HashMap::new()).unwrap();
+        assert!(result.success, "oversized shell step failed: {result:?}");
+        let out = result.step_results[0].output.as_deref().unwrap_or("");
+        assert!(
+            out.contains("SPILL_OK"),
+            "oversized shell step did not run; output={out:?}"
         );
     }
 }
