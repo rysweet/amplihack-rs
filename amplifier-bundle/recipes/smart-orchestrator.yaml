@@ -202,16 +202,20 @@ steps:
       esac
 
       # Set workflow-active semaphore so the hook skips injection during execution.
-      # This is the only remaining Python in this step; tracked as a follow-up
-      # port (the hooks system itself hasn't been ported yet).
-      if [ -d "$HOOKS_DIR" ]; then
-        TASK_TYPE="$TASK_TYPE" COUNT="$COUNT" HOOKS_DIR="$HOOKS_DIR" python3 - <<'PYEOF' >/dev/null 2>&1 || true
-      import os, sys
-      sys.path.insert(0, os.environ['HOOKS_DIR'])
-      from dev_intent_router import set_workflow_active
-      set_workflow_active(os.environ['TASK_TYPE'], int(os.environ['COUNT']))
-      PYEOF
-      fi
+      # Pure-bash: write JSON matching the Rust hook's expected schema in
+      # is_workflow_active (amplihack-hooks/src/session_start/context_loaders.rs).
+      # CLAUDE_PROJECT_DIR is honored when set; otherwise pwd. PID = parent
+      # process (recipe runner), not this ephemeral bash step.
+      _PROJ_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+      _SEMA_DIR="$_PROJ_DIR/.claude/runtime/locks"
+      mkdir -p "$_SEMA_DIR"
+      jq -n \
+        --arg task_type "$TASK_TYPE" \
+        --argjson workstreams "$COUNT" \
+        --argjson pid "$PPID" \
+        --argjson started_at "$(date +%s)" \
+        '{active: true, task_type: $task_type, workstreams: $workstreams, started_at: $started_at, pid: $pid}' \
+        > "$_SEMA_DIR/.workflow_active" 2>/dev/null || true
 
       if [ "$COUNT" != "$RAW_COUNT" ]; then
         echo "[dev-orchestrator] force_single_workstream=true — overriding $RAW_COUNT workstreams to 1" >&2
@@ -938,18 +942,9 @@ steps:
       TREE_ID=$(printf '%s' "$SESSION_JSON" | jq -r '.tree_id // ""' 2>/dev/null || echo "")
       STATUS=$(printf '%s' "$SESSION_JSON" | jq -r '.status // ""' 2>/dev/null || echo "")
       # Clear workflow-active semaphore so the hook resumes injection.
-      # The dev_intent_router hook is still Python; tracked separately in #285.
-      if [ -n "$HOOKS_DIR" ] && [ -d "$HOOKS_DIR" ]; then
-        HOOKS_DIR="$HOOKS_DIR" python3 <<'PYEOF' 2>/dev/null || true
-      import os, sys
-      try:
-          sys.path.insert(0, os.environ.get('HOOKS_DIR', ''))
-          from dev_intent_router import clear_workflow_active
-          clear_workflow_active()
-      except Exception:
-          pass
-      PYEOF
-      fi
+      # Pure-bash deletion; matches Rust hook expectations.
+      _PROJ_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+      rm -f "$_PROJ_DIR/.claude/runtime/locks/.workflow_active" 2>/dev/null || true
       SESSION_ID=${SESSION_ID:-}
       TREE_ID=${TREE_ID:-}
       STATUS=${STATUS:-}
