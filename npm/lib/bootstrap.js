@@ -334,7 +334,18 @@ async function buildFromSource(root, installRoot) {
 }
 
 async function ensureNativeBinaries({ root, version }) {
-  // Resolve the freshest available release tag at install time. The
+  // Fast path: check the package.json version cache first to avoid a
+  // network round-trip when binaries are already installed. The GitHub API
+  // call is deferred until we know the local cache is stale.
+  const knownRoot = cacheRoot(version);
+  const knownBinDir = path.join(knownRoot, 'bin');
+  const knownMain = path.join(knownBinDir, binaryFilename('amplihack'));
+  const knownHooks = path.join(knownBinDir, binaryFilename('amplihack-hooks'));
+  if (fs.existsSync(knownMain) && fs.existsSync(knownHooks)) {
+    return { mainBinary: knownMain, hooksBinary: knownHooks, installRoot: knownRoot };
+  }
+
+  // Cache miss — resolve the freshest available release tag. The
   // package.json `version` field can drift behind the latest published
   // release (the release workflow publishes new tags without rewriting
   // package.json), so trusting `pkg.version` results in npx installs that

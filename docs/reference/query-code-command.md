@@ -96,7 +96,7 @@ Code context for memory 'mem-query':
   Files:
     - src/example/module.py [python] (10 bytes)
   Functions:
-    - helper :: 
+    - helper ::
   Classes: none
 ```
 

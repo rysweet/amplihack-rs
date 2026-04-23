@@ -373,5 +373,3 @@ Use CONSENSUS_WORKFLOW for: ambiguous requirements, architectural changes, criti
 Use `/amplihack:customize` to view or modify (`set`, `show`, `reset`, `learn`).
 
 <!-- AMPLIHACK_CONTEXT_END -->
-
-

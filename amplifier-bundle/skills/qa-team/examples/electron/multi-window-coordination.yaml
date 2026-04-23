@@ -215,7 +215,7 @@ scenario:
     # Test Case 10: Verify Other Windows Unaffected
     - action: window_action
       window: 1
-      action: focus
+      sub_action: focus
 
     - action: verify_element
       selector: ".chat-active"

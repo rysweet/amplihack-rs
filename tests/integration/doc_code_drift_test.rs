@@ -141,14 +141,14 @@ mod launch_flag_injection {
                         .skip(i)
                         .take(5)
                         .find(|l| l.contains("claude --") || l.starts_with("# →"));
-                    if let Some(spawned) = spawned_line {
-                        if !context.contains("--skip-permissions") {
-                            assert!(
-                                !spawned.contains("--dangerously-skip-permissions"),
-                                "Line {}: bare `amplihack claude` must NOT inject --dangerously-skip-permissions.\nContext:\n{context}",
-                                i + 1
-                            );
-                        }
+                    if let Some(spawned) = spawned_line
+                        && !context.contains("--skip-permissions")
+                    {
+                        assert!(
+                            !spawned.contains("--dangerously-skip-permissions"),
+                            "Line {}: bare `amplihack claude` must NOT inject --dangerously-skip-permissions.\nContext:\n{context}",
+                            i + 1
+                        );
                     }
                 }
             }

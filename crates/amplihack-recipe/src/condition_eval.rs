@@ -124,13 +124,16 @@ impl Value {
         }
     }
 
-    fn as_str(&self) -> String {
+    /// Returns a borrowed string representation when possible, or an owned
+    /// `Cow` for non-string variants. Avoids heap allocation for the common
+    /// `Value::Str` case (equality checks, containment tests).
+    fn as_str(&self) -> std::borrow::Cow<'_, str> {
         match self {
-            Value::Str(s) => s.clone(),
-            Value::Int(n) => n.to_string(),
-            Value::Bool(b) => b.to_string(),
-            Value::List(_) => "<list>".to_string(),
-            Value::None => String::new(),
+            Value::Str(s) => std::borrow::Cow::Borrowed(s),
+            Value::Int(n) => std::borrow::Cow::Owned(n.to_string()),
+            Value::Bool(b) => std::borrow::Cow::Owned(b.to_string()),
+            Value::List(_) => std::borrow::Cow::Borrowed("<list>"),
+            Value::None => std::borrow::Cow::Borrowed(""),
         }
     }
 
@@ -138,9 +141,12 @@ impl Value {
         match self {
             Value::Str(haystack) => {
                 let needle_str = needle.as_str();
-                haystack.contains(&needle_str)
+                haystack.contains(&*needle_str)
             }
-            Value::List(items) => items.iter().any(|item| item.as_str() == needle.as_str()),
+            Value::List(items) => {
+                let needle_str = needle.as_str();
+                items.iter().any(|item| item.as_str() == needle_str)
+            }
             _ => false,
         }
     }
@@ -177,12 +183,14 @@ enum Token {
 
 fn tokenize(input: &str) -> Result<Vec<Token>, ConditionError> {
     let mut tokens = Vec::new();
-    let chars: Vec<char> = input.chars().collect();
-    let len = chars.len();
+    // Work directly on byte slices — all grammar tokens are ASCII, so byte
+    // indexing is safe and avoids the heap allocation of `chars().collect()`.
+    let bytes = input.as_bytes();
+    let len = bytes.len();
     let mut i = 0;
 
     while i < len {
-        let ch = chars[i];
+        let ch = bytes[i];
 
         if ch.is_ascii_whitespace() {
             i += 1;
@@ -191,24 +199,23 @@ fn tokenize(input: &str) -> Result<Vec<Token>, ConditionError> {
 
         // Two-character operators
         if i + 1 < len {
-            let two = &input[i..i + 2];
-            match two {
-                "==" => {
+            match (ch, bytes[i + 1]) {
+                (b'=', b'=') => {
                     tokens.push(Token::Eq);
                     i += 2;
                     continue;
                 }
-                "!=" => {
+                (b'!', b'=') => {
                     tokens.push(Token::Ne);
                     i += 2;
                     continue;
                 }
-                ">=" => {
+                (b'>', b'=') => {
                     tokens.push(Token::Ge);
                     i += 2;
                     continue;
                 }
-                "<=" => {
+                (b'<', b'=') => {
                     tokens.push(Token::Le);
                     i += 2;
                     continue;
@@ -218,42 +225,42 @@ fn tokenize(input: &str) -> Result<Vec<Token>, ConditionError> {
         }
 
         match ch {
-            '>' => {
+            b'>' => {
                 tokens.push(Token::Gt);
                 i += 1;
                 continue;
             }
-            '<' => {
+            b'<' => {
                 tokens.push(Token::Lt);
                 i += 1;
                 continue;
             }
-            '(' => {
+            b'(' => {
                 tokens.push(Token::LParen);
                 i += 1;
                 continue;
             }
-            ')' => {
+            b')' => {
                 tokens.push(Token::RParen);
                 i += 1;
                 continue;
             }
-            '[' => {
+            b'[' => {
                 tokens.push(Token::LBracket);
                 i += 1;
                 continue;
             }
-            ']' => {
+            b']' => {
                 tokens.push(Token::RBracket);
                 i += 1;
                 continue;
             }
-            ',' => {
+            b',' => {
                 tokens.push(Token::Comma);
                 i += 1;
                 continue;
             }
-            '.' => {
+            b'.' => {
                 tokens.push(Token::Dot);
                 i += 1;
                 continue;
@@ -262,11 +269,13 @@ fn tokenize(input: &str) -> Result<Vec<Token>, ConditionError> {
         }
 
         // String literals
-        if ch == '\'' || ch == '"' {
+        if ch == b'\'' || ch == b'"' {
             let quote = ch;
             i += 1;
             let start = i;
-            while i < len && chars[i] != quote {
+            while i < len && bytes[i] != quote {
+                // Non-ASCII bytes inside string literals are fine — we just
+                // scan for the closing quote byte, which is always ASCII.
                 i += 1;
             }
             if i >= len {
@@ -274,7 +283,10 @@ fn tokenize(input: &str) -> Result<Vec<Token>, ConditionError> {
                     "unterminated string literal starting at position {start}"
                 )));
             }
-            let s: String = chars[start..i].iter().collect();
+            // SAFETY: `start..i` boundaries were advanced byte-by-byte from
+            // a valid UTF-8 `&str` and the quote byte is ASCII, so the
+            // interior slice is valid UTF-8.
+            let s = input[start..i].to_string();
             tokens.push(Token::Str(s));
             i += 1;
             continue;
@@ -283,10 +295,10 @@ fn tokenize(input: &str) -> Result<Vec<Token>, ConditionError> {
         // Numbers
         if ch.is_ascii_digit() {
             let start = i;
-            while i < len && chars[i].is_ascii_digit() {
+            while i < len && bytes[i].is_ascii_digit() {
                 i += 1;
             }
-            let num_str: String = chars[start..i].iter().collect();
+            let num_str = &input[start..i];
             let n: i64 = num_str
                 .parse()
                 .map_err(|_| ConditionError::Parse(format!("invalid integer: {num_str}")))?;
@@ -295,20 +307,20 @@ fn tokenize(input: &str) -> Result<Vec<Token>, ConditionError> {
         }
 
         // Identifiers and keywords
-        if ch.is_ascii_alphanumeric() || ch == '_' {
+        if ch.is_ascii_alphanumeric() || ch == b'_' {
             let start = i;
-            while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
                 i += 1;
             }
-            let word: String = chars[start..i].iter().collect();
-            let tok = match word.as_str() {
+            let word = &input[start..i];
+            let tok = match word {
                 "and" => Token::And,
                 "or" => Token::Or,
                 "not" => Token::Not,
                 "in" => Token::In,
                 "true" | "True" => Token::True,
                 "false" | "False" => Token::False,
-                _ => Token::Ident(word),
+                _ => Token::Ident(word.to_string()),
             };
             tokens.push(tok);
             continue;
@@ -317,7 +329,8 @@ fn tokenize(input: &str) -> Result<Vec<Token>, ConditionError> {
         // Special: &amp; in YAML gets decoded to & — handle & in identifiers
         // like 'Q&A' which appear as string literals, not bare identifiers.
         return Err(ConditionError::Parse(format!(
-            "unexpected character: '{ch}' at position {i}"
+            "unexpected character: '{}' at position {i}",
+            ch as char
         )));
     }
 

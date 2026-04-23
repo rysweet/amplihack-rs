@@ -419,9 +419,28 @@ amplihack recipe run recipe.yaml -c task_description="..."
 
 ---
 
+## Failure modes
+
+Recipe execution can fail at multiple levels. For diagnosis:
+
+| Failure | Symptom | See |
+|---|---|---|
+| Runner binary missing | `recipe-runner-rs: command not found` | [Recipe search path](#recipe-search-path) and [Binary Resolution](./binary-resolution.md) |
+| Step timeout | Step killed after `timeout_seconds` | [Recipe Executor Environment](./recipe-executor-environment.md) |
+| Routing gap (no step runs) | Empty result after execution phase | [Smart-Orchestrator Recovery](../concepts/smart-orchestrator-recovery.md) |
+| Duplicate issues filed | Repeated `gh issue create` on retries | [Issue Deduplication](./issue-dedup.md) |
+| Condition parse error | `condition` field uses unsupported expression | [Agentic Step Patterns](../concepts/agentic-step-patterns.md) |
+| Context variable missing | `{{var}}` renders as empty string | [Context variables](#context-variables) |
+
+For general troubleshooting, see [Troubleshoot Recipe Execution Failures](../howto/troubleshoot-recipe-execution.md).
+
+---
+
 ## Related
 
 - [Run a Recipe End-to-End](../howto/run-a-recipe.md) — Step-by-step guide to executing recipes
 - [Environment Variables](./environment-variables.md) — `AMPLIHACK_CONTEXT_*`, `AMPLIHACK_TASK_DESCRIPTION`, `RECIPE_RUNNER_RS_PATH`
 - [Parity Test Scenarios](./parity-test-scenarios.md) — `tier4-recipe-run.yaml` test cases
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — How `AMPLIHACK_AGENT_BINARY` affects recipe step execution
+- [Recipe Runner Architecture](../concepts/recipe-runner-architecture.md) — Why the runner is an external binary
+- [Agentic Step Patterns](../concepts/agentic-step-patterns.md) — When to use bash vs agent vs recipe steps
