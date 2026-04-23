@@ -965,6 +965,23 @@ mod tests {
     }
 
     #[test]
+    fn bracket_access_consecutive_brackets() {
+        // obj['a']['b'] must flatten the same as obj.a.b — verifies the
+        // accessor loop iterates correctly over multiple bracket terms.
+        let c = ctx(&[("obj.a.b", "v")]);
+        assert!(evaluate_condition("obj['a']['b'] == 'v'", &c).unwrap());
+    }
+
+    #[test]
+    fn bracket_access_key_containing_dot() {
+        // obj['a.b'] flattens to lookup key obj.a.b — same as obj.a.b and
+        // obj['a']['b']. Documents that dotted keys are NOT round-tripped
+        // through the flat HashMap context (matches existing dot-access).
+        let c = ctx(&[("obj.a.b", "v")]);
+        assert!(evaluate_condition("obj['a.b'] == 'v'", &c).unwrap());
+    }
+
+    #[test]
     fn bracket_access_inside_function_arg() {
         // Postfix bracket on a function/method call argument must parse.
         // Mirrors recipe-runner #92 regression
