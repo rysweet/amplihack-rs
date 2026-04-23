@@ -134,10 +134,7 @@ steps:
   - id: "extract-analysis"
     type: "bash"
     command: |
-      echo {{analysis_json}} | python3 -c "
-      import sys, json
-      data = json.load(sys.stdin)
-      print(json.dumps(data.get('migration_priority', [])))" 2>/dev/null || echo '[]'
+      echo {{analysis_json}} | jq -c '.migration_priority // []' 2>/dev/null || echo '[]'
     output: "migration_priority"
 
   # ========================================================================
@@ -195,21 +192,13 @@ steps:
   - id: "extract-test-coverage"
     type: "bash"
     command: |
-      echo {{test_completeness_result}} | python3 -c "
-      import sys, json
-      data = json.load(sys.stdin)
-      pct = data.get('test_coverage_percentage', 0)
-      print(pct)" 2>/dev/null || echo '0'
+      echo {{test_completeness_result}} | jq -r '.test_coverage_percentage // 0' 2>/dev/null || echo '0'
     output: "test_coverage_percentage"
 
   - id: "check-test-sufficiency"
     type: "bash"
     command: |
-      echo {{test_completeness_result}} | python3 -c "
-      import sys, json
-      data = json.load(sys.stdin)
-      sufficient = data.get('coverage_sufficient', False)
-      print('true' if sufficient else 'false')" 2>/dev/null || echo 'false'
+      echo {{test_completeness_result}} | jq -r '.coverage_sufficient // false | tostring' 2>/dev/null || echo 'false'
     output: "test_coverage_sufficient"
 
   # If tests are insufficient, write the missing tests FIRST
@@ -398,10 +387,7 @@ steps:
     type: "bash"
     condition: "convergence_status != 'CONVERGED'"
     command: |
-      echo {{next_module_json}} | python3 -c "
-      import sys, json
-      data = json.load(sys.stdin)
-      print(data.get('module_name', ''))" 2>/dev/null || echo ''
+      echo {{next_module_json}} | jq -r '.module_name // ""' 2>/dev/null || echo ''
     output: "current_module"
 
   - id: "phase-4-implement-module"
@@ -559,10 +545,7 @@ steps:
     type: "bash"
     condition: "convergence_status != 'CONVERGED'"
     command: |
-      echo {{comparison_result}} | python3 -c "
-      import sys, json
-      data = json.load(sys.stdin)
-      print(data.get('parity_percentage', 0))" 2>/dev/null || echo '0'
+      echo {{comparison_result}} | jq -r '.parity_percentage // 0' 2>/dev/null || echo '0'
     output: "parity_percentage"
 
   # Quality audit — rigorous, minimum 3 cycles
@@ -725,10 +708,7 @@ steps:
   - id: "extract-convergence"
     type: "bash"
     command: |
-      echo {{convergence_json}} | python3 -c "
-      import sys, json
-      data = json.load(sys.stdin)
-      print(data.get('convergence_status', 'NOT_CONVERGED'))" 2>/dev/null || echo 'NOT_CONVERGED'
+      echo {{convergence_json}} | jq -r '.convergence_status // "NOT_CONVERGED"' 2>/dev/null || echo 'NOT_CONVERGED'
     output: "convergence_status"
 
   - id: "increment-iteration"
@@ -766,8 +746,7 @@ steps:
     type: "bash"
     condition: "convergence_status == 'NOT_CONVERGED'"
     command: |
-      echo {{next_module_json}} | python3 -c "
-      import sys, json; print(json.load(sys.stdin).get('module_name',''))" 2>/dev/null || echo ''
+      echo {{next_module_json}} | jq -r '.module_name // ""' 2>/dev/null || echo ''
     output: "current_module"
 
   - id: "loop-2-implement"
@@ -801,8 +780,7 @@ steps:
     type: "bash"
     condition: "convergence_status == 'NOT_CONVERGED'"
     command: |
-      echo {{comparison_result}} | python3 -c "
-      import sys, json; print(json.load(sys.stdin).get('parity_percentage',0))" 2>/dev/null || echo '0'
+      echo {{comparison_result}} | jq -r '.parity_percentage // 0' 2>/dev/null || echo '0'
     output: "parity_percentage"
 
   - id: "loop-2-quality-gate"
@@ -857,8 +835,7 @@ steps:
     type: "bash"
     condition: "convergence_status == 'NOT_CONVERGED'"
     command: |
-      echo {{convergence_json}} | python3 -c "
-      import sys, json; print(json.load(sys.stdin).get('convergence_status','NOT_CONVERGED'))" 2>/dev/null || echo 'NOT_CONVERGED'
+      echo {{convergence_json}} | jq -r '.convergence_status // "NOT_CONVERGED"' 2>/dev/null || echo 'NOT_CONVERGED'
     output: "convergence_status"
 
   - id: "loop-2-increment"
@@ -883,8 +860,7 @@ steps:
     type: "bash"
     condition: "convergence_status == 'NOT_CONVERGED'"
     command: |
-      echo {{next_module_json}} | python3 -c "
-      import sys, json; print(json.load(sys.stdin).get('module_name',''))" 2>/dev/null || echo ''
+      echo {{next_module_json}} | jq -r '.module_name // ""' 2>/dev/null || echo ''
     output: "current_module"
 
   - id: "loop-3-implement"
@@ -915,8 +891,7 @@ steps:
     type: "bash"
     condition: "convergence_status == 'NOT_CONVERGED'"
     command: |
-      echo {{comparison_result}} | python3 -c "
-      import sys, json; print(json.load(sys.stdin).get('parity_percentage',0))" 2>/dev/null || echo '0'
+      echo {{comparison_result}} | jq -r '.parity_percentage // 0' 2>/dev/null || echo '0'
     output: "parity_percentage"
 
   - id: "loop-3-quality"
@@ -967,8 +942,7 @@ steps:
     type: "bash"
     condition: "convergence_status == 'NOT_CONVERGED'"
     command: |
-      echo {{convergence_json}} | python3 -c "
-      import sys, json; print(json.load(sys.stdin).get('convergence_status','NOT_CONVERGED'))" 2>/dev/null || echo 'NOT_CONVERGED'
+      echo {{convergence_json}} | jq -r '.convergence_status // "NOT_CONVERGED"' 2>/dev/null || echo 'NOT_CONVERGED'
     output: "convergence_status"
 
   - id: "loop-3-increment"
@@ -993,8 +967,7 @@ steps:
     type: "bash"
     condition: "convergence_status == 'NOT_CONVERGED'"
     command: |
-      echo {{next_module_json}} | python3 -c "
-      import sys, json; print(json.load(sys.stdin).get('module_name',''))" 2>/dev/null || echo ''
+      echo {{next_module_json}} | jq -r '.module_name // ""' 2>/dev/null || echo ''
     output: "current_module"
 
   - id: "loop-4-implement"
@@ -1025,8 +998,7 @@ steps:
     type: "bash"
     condition: "convergence_status == 'NOT_CONVERGED'"
     command: |
-      echo {{comparison_result}} | python3 -c "
-      import sys, json; print(json.load(sys.stdin).get('parity_percentage',0))" 2>/dev/null || echo '0'
+      echo {{comparison_result}} | jq -r '.parity_percentage // 0' 2>/dev/null || echo '0'
     output: "parity_percentage"
 
   - id: "loop-4-quality"
@@ -1077,8 +1049,7 @@ steps:
     type: "bash"
     condition: "convergence_status == 'NOT_CONVERGED'"
     command: |
-      echo {{convergence_json}} | python3 -c "
-      import sys, json; print(json.load(sys.stdin).get('convergence_status','NOT_CONVERGED'))" 2>/dev/null || echo 'NOT_CONVERGED'
+      echo {{convergence_json}} | jq -r '.convergence_status // "NOT_CONVERGED"' 2>/dev/null || echo 'NOT_CONVERGED'
     output: "convergence_status"
 
   - id: "loop-4-increment"
@@ -1103,8 +1074,7 @@ steps:
     type: "bash"
     condition: "convergence_status == 'NOT_CONVERGED'"
     command: |
-      echo {{next_module_json}} | python3 -c "
-      import sys, json; print(json.load(sys.stdin).get('module_name',''))" 2>/dev/null || echo ''
+      echo {{next_module_json}} | jq -r '.module_name // ""' 2>/dev/null || echo ''
     output: "current_module"
 
   - id: "loop-5-implement"
@@ -1135,8 +1105,7 @@ steps:
     type: "bash"
     condition: "convergence_status == 'NOT_CONVERGED'"
     command: |
-      echo {{comparison_result}} | python3 -c "
-      import sys, json; print(json.load(sys.stdin).get('parity_percentage',0))" 2>/dev/null || echo '0'
+      echo {{comparison_result}} | jq -r '.parity_percentage // 0' 2>/dev/null || echo '0'
     output: "parity_percentage"
 
   - id: "loop-5-quality"
@@ -1188,8 +1157,7 @@ steps:
     type: "bash"
     condition: "convergence_status == 'NOT_CONVERGED'"
     command: |
-      echo {{convergence_json}} | python3 -c "
-      import sys, json; print(json.load(sys.stdin).get('convergence_status','NOT_CONVERGED'))" 2>/dev/null || echo 'NOT_CONVERGED'
+      echo {{convergence_json}} | jq -r '.convergence_status // "NOT_CONVERGED"' 2>/dev/null || echo 'NOT_CONVERGED'
     output: "convergence_status"
 
   # ========================================================================
