@@ -28,6 +28,9 @@ pub mod user_prompt;
 /// Workflow classification reminder hook: injects topic-boundary routing guidance.
 pub mod workflow_classification;
 
+/// Fingerprint-based GitHub issue deduplication (R1).
+pub mod issue_dedup;
+
 /// Copilot stop handler utilities (continuation, lock cleanup, decision log).
 pub mod copilot_stop_handler;
 /// Hook file installation verification.

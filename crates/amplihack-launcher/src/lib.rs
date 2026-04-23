@@ -21,6 +21,7 @@ pub mod copilot_auto_install;
 pub mod copilot_launcher;
 pub mod copilot_mcp;
 pub mod copilot_staging;
+pub mod flag_matrix;
 pub mod fork_manager;
 pub mod json_logger;
 pub mod launcher_core;
