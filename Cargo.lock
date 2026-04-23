@@ -295,22 +295,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "amplihack-recipe"
-version = "0.8.0"
-dependencies = [
- "anyhow",
- "libc",
- "regex",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "tempfile",
- "thiserror",
- "tracing",
-]
-
-[[package]]
 name = "amplihack-recovery"
 version = "0.8.0"
 dependencies = [
