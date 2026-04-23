@@ -355,6 +355,52 @@ fn copilot_skips_allow_all_when_env_opt_out() {
     });
 }
 
+/// Copilot is NOT Claude-compatible, so even when skip_permissions=true the
+/// `--dangerously-skip-permissions` flag MUST NOT appear.  This locks the
+/// `is_claude_compatible` whitelist against accidental expansion.
+#[test]
+fn copilot_does_not_get_skip_permissions_even_when_requested() {
+    with_uvx_detection_disabled(|| {
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        let cmd = build_command(&binary, false, false, true, &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().any(|a| a == "--dangerously-skip-permissions"),
+            "copilot must never receive --dangerously-skip-permissions, \
+             even when skip_permissions=true; got {args:?}"
+        );
+    });
+}
+
+/// Same invariant as copilot: Codex is NOT Claude-compatible.
+#[test]
+fn codex_does_not_get_skip_permissions_even_when_requested() {
+    with_uvx_detection_disabled(|| {
+        let binary = BinaryInfo {
+            name: "codex".to_string(),
+            path: PathBuf::from("/usr/bin/codex"),
+            version: None,
+        };
+        let cmd = build_command(&binary, false, false, true, &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().any(|a| a == "--dangerously-skip-permissions"),
+            "codex must never receive --dangerously-skip-permissions, \
+             even when skip_permissions=true; got {args:?}"
+        );
+    });
+}
+
 #[test]
 fn claude_does_not_get_allow_all_injected() {
     with_uvx_detection_disabled(|| {

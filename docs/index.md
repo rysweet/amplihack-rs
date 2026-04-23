@@ -40,6 +40,8 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [amplihack recipe](./reference/recipe-command.md) — Full CLI reference for `recipe list`, `recipe show`, `recipe validate`, and `recipe run`
 - [Recipe Executor Environment](./reference/recipe-executor-environment.md) — Environment variables, prerequisite checks, and context propagation for recipe steps
 - [Workflow Classifier](./reference/workflow-classifier.md) — Keyword tables, classification algorithm, and constructive-verb disambiguation
+- [Issue Deduplication](./reference/issue-dedup.md) — Idempotency guards, dedup decision tree, and proposed fingerprint algorithm for avoiding duplicate GitHub issues
+- [Launch Flag Matrix](./reference/flag-matrix.md) — Per-tool capability matrix for `--dangerously-skip-permissions`, `--model`, `--allow-all`, and proposed type-safe refactoring
 - [Parity Test Scenarios](./reference/parity-test-scenarios.md) — Every parity tier file, its test cases, and expected Python↔Rust divergence
 - [amplihack index-code and index-scip](./reference/memory-index-command.md) — Full CLI reference for code-graph ingestion commands
 - [amplihack query-code](./reference/query-code-command.md) — Full CLI reference for querying the native LadybugDB code-graph
@@ -73,6 +75,10 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Evaluation Framework](./concepts/eval-framework.md) — Progressive L1–L12 evaluation, graders, and self-improvement
 - [Hive Orchestration](./concepts/hive-orchestration.md) — Multi-agent swarm deployment, events, and workload management
 - [Goal Agent Generator](./concepts/agent-generator.md) — Four-stage pipeline: analyze → plan → synthesize → assemble
+- [Recipe Runner Architecture](./concepts/recipe-runner-architecture.md) — Why the runner is an external binary, resolution logic, invocation contract, and Python coexistence
+- [Agentic Step Patterns](./concepts/agentic-step-patterns.md) — Decision rules for bash vs agent vs recipe step types, prompt writing guide, and anti-patterns
+- [Smart-Orchestrator Recovery](./concepts/smart-orchestrator-recovery.md) — Failure taxonomy, four-stage recovery pipeline, hollow-success detection, and goal status values
+- [amplihack Retirement Direction](./concepts/amplihack-retirement-direction.md) — Python-to-Rust migration status, compatibility guarantees, and milestone tracking
 
 ## Quick Start
 

@@ -490,16 +490,26 @@ impl<A: AgentBackend> RecipeExecutor<A> {
 
         // Augment context with working directory and non-interactive flag so
         // the agent knows where to read/write files (fix #251).
-        let mut augmented = context.clone();
-        augmented
-            .entry("working_directory".to_string())
-            .or_insert_with(|| self.config.working_dir.clone());
-        augmented
-            .entry("NONINTERACTIVE".to_string())
-            .or_insert_with(|| "1".to_string());
-
-        self.agent_backend
-            .run_agent(agent_ref, &expanded, &augmented)
+        // Only clone when we actually need to insert missing keys to avoid
+        // a full HashMap clone on every agent step.
+        let needs_wd = !context.contains_key("working_directory");
+        let needs_ni = !context.contains_key("NONINTERACTIVE");
+        if needs_wd || needs_ni {
+            let mut augmented = context.clone();
+            if needs_wd {
+                augmented.insert(
+                    "working_directory".to_string(),
+                    self.config.working_dir.clone(),
+                );
+            }
+            if needs_ni {
+                augmented.insert("NONINTERACTIVE".to_string(), "1".to_string());
+            }
+            self.agent_backend
+                .run_agent(agent_ref, &expanded, &augmented)
+        } else {
+            self.agent_backend.run_agent(agent_ref, &expanded, context)
+        }
     }
 
     fn execute_sub_recipe_step(

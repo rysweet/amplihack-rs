@@ -195,9 +195,9 @@ where
 
     /// Execute the complete Socratic knowledge-building workflow.
     ///
-    /// 1. Generate questions  
-    /// 2. Answer questions  
-    /// 3. Generate artefacts  
+    /// 1. Generate questions
+    /// 2. Answer questions
+    /// 3. Generate artefacts
     ///
     /// Returns the output directory on success.
     ///
