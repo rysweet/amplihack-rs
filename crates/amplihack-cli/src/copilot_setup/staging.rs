@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
 
-use super::fs_helpers;
+use super::{fs_helpers, jsonc};
 
 pub(super) fn stage_agents(source_agents: &Path, copilot_home: &Path) -> Result<usize> {
     let dest = copilot_home.join("agents").join("amplihack");
@@ -118,10 +118,20 @@ pub(super) fn register_plugin(source_commands: &Path, copilot_home: &Path) -> Re
     )?;
 
     let config_path = copilot_home.join("config.json");
-    let mut config: Value = if config_path.is_file() {
-        serde_json::from_str(&fs::read_to_string(&config_path)?)?
+    let (mut config, prefix): (Value, String) = if config_path.is_file() {
+        let raw = fs::read_to_string(&config_path)
+            .with_context(|| format!("read {}", config_path.display()))?;
+        let prefix = jsonc::leading_comment_prefix(&raw).to_string();
+        let stripped = jsonc::strip_jsonc_comments(&raw);
+        let value = if stripped.trim().is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str(&stripped)
+                .with_context(|| format!("parse {}", config_path.display()))?
+        };
+        (value, prefix)
     } else {
-        json!({})
+        (json!({}), String::new())
     };
 
     let plugins = config
@@ -145,7 +155,9 @@ pub(super) fn register_plugin(source_commands: &Path, copilot_home: &Path) -> Re
         }));
     }
 
-    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+    let body = serde_json::to_string_pretty(&config)?;
+    fs::write(&config_path, jsonc::apply_prefix(&prefix, body))
+        .with_context(|| format!("write {}", config_path.display()))?;
 
     Ok(true)
 }

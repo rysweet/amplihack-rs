@@ -8,7 +8,7 @@ use std::path::Path;
 
 use super::{
     COPILOT_HOOK_TIMEOUT_SEC, COPILOT_HOOK_WRAPPERS, HookWrapperSpec, INSTRUCTIONS_MARKER_END,
-    INSTRUCTIONS_MARKER_START, fs_helpers,
+    INSTRUCTIONS_MARKER_START, fs_helpers, jsonc,
 };
 
 /// Build the Copilot hooks manifest as JSON. Hook entries reference absolute
@@ -85,29 +85,34 @@ pub(super) fn write_user_level_hooks(copilot_home: &Path) -> Result<()> {
     }
 
     let config_path = copilot_home.join("config.json");
-    let mut root: serde_json::Value = if config_path.is_file() {
+    let (mut root, prefix): (serde_json::Value, String) = if config_path.is_file() {
         let raw = fs::read_to_string(&config_path)
             .with_context(|| format!("read {}", config_path.display()))?;
-        if raw.trim().is_empty() {
+        let prefix = jsonc::leading_comment_prefix(&raw).to_string();
+        let stripped = jsonc::strip_jsonc_comments(&raw);
+        let value = if stripped.trim().is_empty() {
             serde_json::json!({})
         } else {
-            serde_json::from_str(&raw).with_context(|| {
+            serde_json::from_str(&stripped).with_context(|| {
                 format!(
                     "parse {} as JSON before merging hooks",
                     config_path.display()
                 )
             })?
-        }
+        };
+        (value, prefix)
     } else {
-        serde_json::json!({})
+        (serde_json::json!({}), String::new())
     };
 
     let manifest = build_copilot_hooks_manifest(&hooks_dir);
-    let amplihack_hooks = manifest
-        .get("hooks")
-        .and_then(|h| h.as_object())
-        .cloned()
-        .unwrap_or_default();
+    let amplihack_hooks = match manifest {
+        serde_json::Value::Object(mut m) => match m.remove("hooks") {
+            Some(serde_json::Value::Object(h)) => h,
+            _ => serde_json::Map::new(),
+        },
+        _ => serde_json::Map::new(),
+    };
 
     let obj = root
         .as_object_mut()
@@ -122,22 +127,22 @@ pub(super) fn write_user_level_hooks(copilot_home: &Path) -> Result<()> {
     // Replace amplihack-owned entries; keep any user-defined non-amplihack
     // hooks the user has registered for the same event by appending after.
     for (event, new_arr_value) in amplihack_hooks {
-        let new_arr = new_arr_value.as_array().cloned().unwrap_or_default();
-        let preserved: Vec<serde_json::Value> = hooks_obj
-            .get(&event)
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|entry| !is_amplihack_owned(entry))
-            .collect();
-        let mut merged = new_arr;
-        merged.extend(preserved);
+        let mut merged = match new_arr_value {
+            serde_json::Value::Array(a) => a,
+            _ => Vec::new(),
+        };
+        if let Some(serde_json::Value::Array(existing)) = hooks_obj.remove(&event) {
+            merged.extend(
+                existing
+                    .into_iter()
+                    .filter(|entry| !is_amplihack_owned(entry)),
+            );
+        }
         hooks_obj.insert(event, serde_json::Value::Array(merged));
     }
 
-    let serialized = serde_json::to_string_pretty(&root)? + "\n";
-    fs::write(&config_path, serialized)
+    let body = serde_json::to_string_pretty(&root)? + "\n";
+    fs::write(&config_path, jsonc::apply_prefix(&prefix, body))
         .with_context(|| format!("write {}", config_path.display()))?;
     Ok(())
 }
