@@ -121,3 +121,10 @@ path = "../../tests/integration/doc_code_drift_test.rs"
 [[test]]
 name = "orch_run_cli"
 path = "../../tests/integration/orch_run_cli_test.rs"
+
+# Issues #248 / #285: sdk-comparison.yaml graceful skip when the optional
+# `amplihack.eval.sdk_eval_loop` Python module is unavailable. TDD tests
+# specifying the contract for the graceful-skip refactor.
+[[test]]
+name = "sdk_comparison_optional_python"
+path = "../../tests/integration/sdk_comparison_optional_python_test.rs"
