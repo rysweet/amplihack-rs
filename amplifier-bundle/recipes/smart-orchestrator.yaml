@@ -250,41 +250,28 @@ steps:
     type: "bash"
     condition: "'Development' in task_type or 'Investigation' in task_type or task_type == ''"
     command: |
-      TREE_SCRIPT="$(amplihack resolve-bundle-asset session-tree-path 2>/dev/null || true)"
       # #283: replace python3 uuid with /proc/sys/kernel/random/uuid (POSIX)
       SESSION_ID=$(tr -d '-' < /proc/sys/kernel/random/uuid | head -c 8)
 
-      if [ -f "$TREE_SCRIPT" ]; then
-        # Register this session — atomic check+register under lock
-        if OUTPUT=$(python3 "$TREE_SCRIPT" register "$SESSION_ID" 2>&1); then
-          # Output: "TREE_ID=abc123 DEPTH=0"
-          TREE_ID=$(echo "$OUTPUT" | grep -oE 'TREE_ID=[A-Za-z0-9_-]+' | head -1 | cut -d= -f2)
-          DEPTH_STR=$(echo "$OUTPUT" | grep -oE 'DEPTH=[0-9]+' | head -1 | cut -d= -f2)
-          DEPTH_VAL=${DEPTH_STR:-0}
-          # Validate extracted values
-          if ! echo "$TREE_ID" | grep -qE '^[A-Za-z0-9_-]+$'; then
-            # #283: replace python3 json with printf (inputs are fixed literals)
-            printf '{"session_id":"error","tree_id":"error","depth":0,"status":"registration_failed","error":"invalid tree_id extracted"}\n'
-            exit 0
-          fi
-          # #283: DEPTH_VAL is already validated as numeric above; SESSION_ID
-          # and TREE_ID are both constrained to [A-Za-z0-9_-], safe for JSON
-          printf '{"session_id":"%s","tree_id":"%s","depth":%d,"status":"ok"}\n' "$SESSION_ID" "$TREE_ID" "$DEPTH_VAL"
-        else
-          # Registration failed (capacity exceeded or depth limit) — encode structured error
-          echo "NOTE: Session registration failed — proceeding without recursion tracking." >&2
-          printf '{"session_id":"none","tree_id":"none","depth":0,"status":"registration_failed"}\n'
+      # #331: native Rust subcommand replaces python3 $TREE_SCRIPT register
+      if OUTPUT=$(amplihack session-tree register "$SESSION_ID" 2>&1); then
+        # Output: "TREE_ID=abc123 DEPTH=0"
+        TREE_ID=$(echo "$OUTPUT" | grep -oE 'TREE_ID=[A-Za-z0-9_-]+' | head -1 | cut -d= -f2)
+        DEPTH_STR=$(echo "$OUTPUT" | grep -oE 'DEPTH=[0-9]+' | head -1 | cut -d= -f2)
+        DEPTH_VAL=${DEPTH_STR:-0}
+        # Validate extracted values
+        if ! echo "$TREE_ID" | grep -qE '^[A-Za-z0-9_-]+$'; then
+          # #283: replace python3 json with printf (inputs are fixed literals)
+          printf '{"session_id":"error","tree_id":"error","depth":0,"status":"registration_failed","error":"invalid tree_id extracted"}\n'
+          exit 0
         fi
+        # #283: DEPTH_VAL is already validated as numeric above; SESSION_ID
+        # and TREE_ID are both constrained to [A-Za-z0-9_-], safe for JSON
+        printf '{"session_id":"%s","tree_id":"%s","depth":%d,"status":"ok"}\n' "$SESSION_ID" "$TREE_ID" "$DEPTH_VAL"
       else
-        # No session_tree.py — generate a tree_id from env or fresh uuid
-        TREE_ID=$(echo "${AMPLIHACK_TREE_ID:-}" | grep -E '^[A-Za-z0-9_-]+$' | head -1)
-        if [ -z "$TREE_ID" ]; then
-          TREE_ID=$(tr -d '-' < /proc/sys/kernel/random/uuid | head -c 8)
-        fi
-        DEPTH_RAW="${AMPLIHACK_SESSION_DEPTH:-0}"
-        # Validate it's an integer (default to 0 if not)
-        DEPTH_VAL=$(echo "$DEPTH_RAW" | grep -E '^[0-9]+$' || echo '0')
-        printf '{"session_id":"%s","tree_id":"%s","depth":%d,"status":"no_tree_script"}\n' "$SESSION_ID" "$TREE_ID" "$DEPTH_VAL"
+        # Registration failed (capacity exceeded or depth limit) — encode structured error
+        echo "NOTE: Session registration failed — proceeding without recursion tracking." >&2
+        printf '{"session_id":"none","tree_id":"none","depth":0,"status":"registration_failed"}\n'
       fi
     output: "session_info"
 
@@ -935,7 +922,6 @@ steps:
     command: |
       # FIX (#469/#311): Use env var — safe against injection and word-splitting.
       SESSION_JSON="$SESSION_INFO"
-      TREE_SCRIPT="$(amplihack resolve-bundle-asset session-tree-path 2>/dev/null || true)"
       HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir 2>/dev/null || true)"
       # #283: parse session fields via jq instead of inline Python.
       SESSION_ID=$(printf '%s' "$SESSION_JSON" | jq -r '.session_id // ""' 2>/dev/null || echo "")
@@ -949,8 +935,9 @@ steps:
       TREE_ID=${TREE_ID:-}
       STATUS=${STATUS:-}
 
-      if [ -n "$SESSION_ID" ] && [ "$STATUS" = "ok" ] && [ -f "$TREE_SCRIPT" ]; then
-        AMPLIHACK_TREE_ID="$TREE_ID" python3 "$TREE_SCRIPT" complete "$SESSION_ID"
+      # #331: native Rust subcommand replaces python3 $TREE_SCRIPT complete
+      if [ -n "$SESSION_ID" ] && [ "$STATUS" = "ok" ]; then
+        AMPLIHACK_TREE_ID="$TREE_ID" amplihack session-tree complete "$SESSION_ID"
         echo "Session $SESSION_ID completed in tree $TREE_ID"
       else
         echo "No session to complete (status: ${STATUS:-empty})"

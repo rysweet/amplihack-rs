@@ -37,6 +37,8 @@ lbug = "0.15.3"
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 prost = "0.13"
 lru = { workspace = true }
+fs4 = { version = "0.13", features = ["sync"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
