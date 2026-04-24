@@ -343,4 +343,15 @@ pub enum Commands {
         #[command(subcommand)]
         command: crate::commands::orch::OrchCommands,
     },
+
+    /// Session-tree management (atomic recursion / fan-out tracking).
+    ///
+    /// Native Rust port of `amplifier-bundle/tools/session_tree.py`.
+    /// Replaces `python3 $TREE_SCRIPT register|complete` invocations in
+    /// `amplifier-bundle/recipes/smart-orchestrator.yaml` (issue #331).
+    #[command(name = "session-tree")]
+    SessionTree {
+        #[command(subcommand)]
+        command: crate::commands::session_tree::SessionTreeCommands,
+    },
 }

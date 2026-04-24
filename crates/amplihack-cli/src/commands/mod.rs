@@ -17,6 +17,7 @@ pub mod plugin;
 pub mod query_code;
 pub mod recipe;
 pub mod rustyclawd;
+pub mod session_tree;
 pub mod uvx_help;
 
 use crate::{
@@ -315,6 +316,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         }
         Commands::Multitask { command } => dispatch_multitask(command),
         Commands::Orch { command } => orch::dispatch(command),
+        Commands::SessionTree { command } => session_tree::run(command),
     }
 }
 
