@@ -4,15 +4,25 @@
 //! source tree (`amplifier-bundle/`) and no longer fetched from the upstream
 //! `rysweet/amplihack` repository at install time.
 //!
-//! Resolution order:
-//! 1. **Compile-time workspace root** — the `CARGO_MANIFEST_DIR` embedded at
+//! Resolution order (fix #341 — prefer the user's actual checkout over any
+//! baked-at-build-time path):
+//! 1. **`AMPLIHACK_HOME`** — explicit user-configured override (highest
+//!    priority).
+//! 2. **CWD walk-up** — walks parent directories of the current working
+//!    directory looking for `amplifier-bundle/`. This is the path that
+//!    correctly identifies "the checkout the user is installing from" when
+//!    they invoke `amplihack install` from inside a clone, even if the
+//!    binary was built elsewhere.
+//! 3. **Walk-up from executable** — walks parent directories of
+//!    `current_exe()` looking for `amplifier-bundle/` (in-tree dev binary
+//!    under `target/`).
+//! 4. **Compile-time workspace root** — the `CARGO_MANIFEST_DIR` embedded at
 //!    build time points two levels up to the workspace root that contains
-//!    `amplifier-bundle/` and (if present) a `.claude/` directory.
-//! 2. **`AMPLIHACK_HOME`** — user-configured override.
-//! 3. **Walk-up from executable** — walks parent directories looking for
-//!    `amplifier-bundle/`.
-//! 4. **`~/.amplihack`** — staged install location from a prior run.
-//! 5. **Network download** (legacy fallback) — `git clone` / tarball from
+//!    `amplifier-bundle/`. Only meaningful for `cargo run`-style invocations
+//!    from the workspace itself; demoted because for an installed binary it
+//!    pins the bundle to whatever was on disk at compile time (issue #341).
+//! 5. **`~/.amplihack`** — staged install location from a prior run.
+//! 6. **Network download** (legacy fallback) — `git clone` / tarball from
 //!    upstream, only attempted when none of the above yields a usable root.
 
 use super::types::{REPO_ARCHIVE_URL, REPO_GIT_URL};
@@ -31,18 +41,7 @@ use std::process::Stdio;
 /// binary was installed via `cargo install` and the original checkout was
 /// deleted).
 pub(super) fn find_bundled_framework_root() -> Option<PathBuf> {
-    // 1. Compile-time workspace root
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf);
-    if let Some(ref root) = workspace_root
-        && root.join("amplifier-bundle").is_dir()
-    {
-        return Some(root.clone());
-    }
-
-    // 2. AMPLIHACK_HOME env var
+    // 1. AMPLIHACK_HOME env var — explicit user override
     if let Ok(home) = std::env::var("AMPLIHACK_HOME") {
         let p = PathBuf::from(&home);
         if p.join("amplifier-bundle").is_dir() {
@@ -50,7 +49,18 @@ pub(super) fn find_bundled_framework_root() -> Option<PathBuf> {
         }
     }
 
-    // 3. Walk up from executable
+    // 2. CWD walk-up — the checkout the user is installing from (fix #341)
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut dir: Option<PathBuf> = Some(cwd);
+        while let Some(d) = dir {
+            if d.join("amplifier-bundle").is_dir() {
+                return Some(d);
+            }
+            dir = d.parent().map(Path::to_path_buf);
+        }
+    }
+
+    // 3. Walk up from executable (in-tree dev binary under `target/`)
     if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.parent().map(Path::to_path_buf);
         while let Some(d) = dir {
@@ -61,7 +71,20 @@ pub(super) fn find_bundled_framework_root() -> Option<PathBuf> {
         }
     }
 
-    // 4. ~/.amplihack (from prior staged install)
+    // 4. Compile-time workspace root (only meaningful for `cargo run` from
+    //    the workspace; demoted because for installed binaries it pins the
+    //    bundle to whatever was on disk at build time — issue #341).
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    if let Some(ref root) = workspace_root
+        && root.join("amplifier-bundle").is_dir()
+    {
+        return Some(root.clone());
+    }
+
+    // 5. ~/.amplihack (from prior staged install)
     if let Ok(home) = std::env::var("HOME") {
         let dot = PathBuf::from(home).join(".amplihack");
         if dot.join("amplifier-bundle").is_dir() && dot.join(".claude").is_dir() {
