@@ -59,10 +59,8 @@ fn smart_orchestrator_yaml() -> PathBuf {
 
 /// Load a recipe YAML and return the parsed serde_yaml::Value.
 fn load_recipe(path: &Path) -> Value {
-    let text =
-        fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    serde_yaml::from_str(&text)
-        .unwrap_or_else(|e| panic!("parse {} as YAML: {e}", path.display()))
+    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {} as YAML: {e}", path.display()))
 }
 
 /// Find a step by id under `steps:` and return its `command:` body.
@@ -137,7 +135,10 @@ impl GitFixture {
         let repo = TempDir::new().expect("repo tempdir");
         let rp = repo.path().to_path_buf();
         git(&rp, &["init", "-b", "main"]);
-        git(&rp, &["remote", "add", "origin", origin.path().to_str().unwrap()]);
+        git(
+            &rp,
+            &["remote", "add", "origin", origin.path().to_str().unwrap()],
+        );
         fs::write(rp.join("README.md"), "init\n").unwrap();
         git(&rp, &["add", "README.md"]);
         git(&rp, &["commit", "-m", "init"]);
@@ -257,8 +258,7 @@ fn parse_json(stdout: &str) -> serde_json::Value {
         panic!("no closing brace in stdout:\n{stdout}");
     });
     let candidate = &slice[..=end];
-    serde_json::from_str(candidate)
-        .unwrap_or_else(|e| panic!("invalid JSON {candidate:?}: {e}"))
+    serde_json::from_str(candidate).unwrap_or_else(|e| panic!("invalid JSON {candidate:?}: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -336,7 +336,10 @@ fn consensus_workflow_declares_pr_number_context_var() {
 // ---------------------------------------------------------------------------
 
 fn step04_body() -> String {
-    extract_step_body(&load_recipe(&default_workflow_yaml()), "step-04-setup-worktree")
+    extract_step_body(
+        &load_recipe(&default_workflow_yaml()),
+        "step-04-setup-worktree",
+    )
 }
 
 fn base_env(fix: &GitFixture) -> HashMap<&'static str, String> {
@@ -344,7 +347,10 @@ fn base_env(fix: &GitFixture) -> HashMap<&'static str, String> {
     env.insert("REPO_PATH", fix.repo_path.to_string_lossy().into_owned());
     env.insert("BRANCH_PREFIX", "feat".to_owned());
     env.insert("ISSUE_NUMBER", "342".to_owned());
-    env.insert("TASK_DESCRIPTION", "issue 342 existing branch context".to_owned());
+    env.insert(
+        "TASK_DESCRIPTION",
+        "issue 342 existing branch context".to_owned(),
+    );
     env.insert("EXISTING_BRANCH", String::new());
     env.insert("PR_NUMBER", String::new());
     env
@@ -358,7 +364,11 @@ fn case1_empty_existing_branch_preserves_legacy_behaviour() {
     let env = base_env(&fix);
 
     let r = run_bash(&body, &env, &fix.repo_path);
-    assert_eq!(r.status, 0, "step exited {} stderr=\n{}", r.status, r.stderr);
+    assert_eq!(
+        r.status, 0,
+        "step exited {} stderr=\n{}",
+        r.status, r.stderr
+    );
     let json = parse_json(&r.stdout);
     assert_eq!(json["created"], serde_json::Value::Bool(true));
     let bn = json["branch_name"].as_str().unwrap();
@@ -381,7 +391,11 @@ fn case2_existing_local_branch_reused_without_creating() {
     env.insert("GIT_TRACE", "1".to_owned());
 
     let r = run_bash(&body, &env, &fix.repo_path);
-    assert_eq!(r.status, 0, "step exited {} stderr=\n{}", r.status, r.stderr);
+    assert_eq!(
+        r.status, 0,
+        "step exited {} stderr=\n{}",
+        r.status, r.stderr
+    );
     let json = parse_json(&r.stdout);
     assert_eq!(
         json["branch_name"].as_str().unwrap(),
@@ -409,7 +423,11 @@ fn case3_remote_only_branch_fetched_and_attached() {
     env.insert("GIT_TRACE", "1".to_owned());
 
     let r = run_bash(&body, &env, &fix.repo_path);
-    assert_eq!(r.status, 0, "step exited {} stderr=\n{}", r.status, r.stderr);
+    assert_eq!(
+        r.status, 0,
+        "step exited {} stderr=\n{}",
+        r.status, r.stderr
+    );
     let json = parse_json(&r.stdout);
     assert_eq!(
         json["branch_name"].as_str().unwrap(),
@@ -417,7 +435,10 @@ fn case3_remote_only_branch_fetched_and_attached() {
         "branch_name must equal existing_branch"
     );
     let wp = json["worktree_path"].as_str().unwrap();
-    assert!(Path::new(wp).is_dir(), "worktree path must exist on disk: {wp}");
+    assert!(
+        Path::new(wp).is_dir(),
+        "worktree path must exist on disk: {wp}"
+    );
     assert!(
         !r.stderr.contains("branch -b"),
         "remote-only attach must not use `git branch -b`. stderr=\n{}",
@@ -443,7 +464,11 @@ fn case5_pr_number_resolves_via_gh_shim() {
     env.insert("PATH", path);
 
     let r = run_bash(&body, &env, &fix.repo_path);
-    assert_eq!(r.status, 0, "step exited {} stderr=\n{}", r.status, r.stderr);
+    assert_eq!(
+        r.status, 0,
+        "step exited {} stderr=\n{}",
+        r.status, r.stderr
+    );
     let json = parse_json(&r.stdout);
     assert_eq!(json["branch_name"].as_str().unwrap(), "feat/pr-resolved");
     assert_eq!(json["created"], serde_json::Value::Bool(false));
@@ -470,7 +495,11 @@ fn case6_both_set_existing_branch_wins_with_warning() {
     env.insert("PATH", path);
 
     let r = run_bash(&body, &env, &fix.repo_path);
-    assert_eq!(r.status, 0, "step exited {} stderr=\n{}", r.status, r.stderr);
+    assert_eq!(
+        r.status, 0,
+        "step exited {} stderr=\n{}",
+        r.status, r.stderr
+    );
     let json = parse_json(&r.stdout);
     assert_eq!(json["branch_name"].as_str().unwrap(), "feat/wins");
     let warn_lc = r.stderr.to_lowercase();
@@ -494,7 +523,11 @@ fn sec_case_invalid_ref_name_rejected() {
     env.insert("EXISTING_BRANCH", "invalid..name".to_owned());
 
     let r = run_bash(&body, &env, &fix.repo_path);
-    assert_ne!(r.status, 0, "must reject invalid ref names; stdout=\n{}", r.stdout);
+    assert_ne!(
+        r.status, 0,
+        "must reject invalid ref names; stdout=\n{}",
+        r.stdout
+    );
     let s = r.stderr.to_lowercase();
     assert!(
         s.contains("check-ref-format") || s.contains("invalid"),
@@ -521,7 +554,10 @@ fn sec_case_shell_metachar_rejected() {
     let fix = GitFixture::new();
     let body = step04_body();
     let mut env = base_env(&fix);
-    env.insert("EXISTING_BRANCH", "feat/$(touch /tmp/pwn-issue-342)".to_owned());
+    env.insert(
+        "EXISTING_BRANCH",
+        "feat/$(touch /tmp/pwn-issue-342)".to_owned(),
+    );
 
     let r = run_bash(&body, &env, &fix.repo_path);
     assert_ne!(r.status, 0, "shell metachars must be rejected");
@@ -566,7 +602,10 @@ fn sec_case_pr_number_leading_dash_rejected() {
     env.insert("PR_NUMBER", "-1".to_owned());
 
     let r = run_bash(&body, &env, &fix.repo_path);
-    assert_ne!(r.status, 0, "negative/leading-dash PR_NUMBER must be rejected");
+    assert_ne!(
+        r.status, 0,
+        "negative/leading-dash PR_NUMBER must be rejected"
+    );
 }
 
 /// Security: malicious `gh` response (invalid ref) is re-validated and rejected.
