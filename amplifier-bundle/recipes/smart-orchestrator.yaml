@@ -459,41 +459,16 @@ steps:
       fi
       cd "$REPO_PATH"
 
-      # Resolve multitask orchestrator from AMPLIHACK_HOME, not from repo root.
-      # The orchestrator.py is an amplihack asset, not a repo file (#3762).
-      ORCH_SCRIPT=""
-      for candidate in \
-        "${AMPLIHACK_HOME:+$AMPLIHACK_HOME/.claude/skills/multitask/orchestrator.py}" \
-        "${HOME}/.amplihack/.claude/skills/multitask/orchestrator.py" \
-        "${HOME}/.copilot/skills/multitask/orchestrator.py" \
-        ".claude/skills/multitask/orchestrator.py"; do
-        if [ -n "$candidate" ] && [ -f "$candidate" ]; then
-          ORCH_SCRIPT="$candidate"
-          break
-        fi
-      done
-      if [ -z "$ORCH_SCRIPT" ]; then
-        echo "ERROR: multitask orchestrator.py not found." >&2
-        echo "  Searched: AMPLIHACK_HOME/.claude/skills/multitask/orchestrator.py" >&2
-        echo "  Set AMPLIHACK_HOME or ensure amplihack is installed." >&2
-        emit_step_transition fail
-        exit 1
-      fi
-      echo "Selected orchestrator source: $ORCH_SCRIPT" >&2
-
       echo "Launching parallel workstreams (tree: $TREE_ID, depth: $SESSION_DEPTH):"
       cat "$WS_FILE"
       echo "---"
+      set -o pipefail
+      trap 'rm -f -- "$WS_FILE" 2>/dev/null || true' EXIT
       status=0
       AMPLIHACK_TREE_ID="$TREE_ID" AMPLIHACK_SESSION_DEPTH="$SESSION_DEPTH" \
         AMPLIHACK_PARENT_STEP="launch-parallel-round-1" \
         AMPLIHACK_REPO_PATH="$REPO_PATH" \
-        python3 -u "$ORCH_SCRIPT" "$WS_FILE" | tee /dev/stderr || status=$?
-      # Clean up workstreams file now, before this step's output inflates
-      # the recipe context. Doing it here avoids the E2BIG error that
-      # occurs when a later bash step inherits megabytes of env vars
-      # from accumulated round_1_result (fix: cleanup-helper-arg-overflow).
-      rm -f "$WS_FILE" 2>/dev/null || true
+        "${AMPLIHACK_BIN:-amplihack}" orch run -- "$WS_FILE" 2>&1 | tee /dev/stderr || status=$?
       exit $status
     output: "round_1_result"
 

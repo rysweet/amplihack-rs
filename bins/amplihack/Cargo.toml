@@ -114,3 +114,10 @@ path = "../../tests/integration/existing_branch_context_test.rs"
 [[test]]
 name = "doc_code_drift"
 path = "../../tests/integration/doc_code_drift_test.rs"
+
+# Issue #248: Native `amplihack orch run <WS_FILE>` regression test.
+# Verifies the subcommand is wired into clap and short-circuits cleanly on an
+# empty workstreams JSON array (matches multitask::run_multitask semantics).
+[[test]]
+name = "orch_run_cli"
+path = "../../tests/integration/orch_run_cli_test.rs"
