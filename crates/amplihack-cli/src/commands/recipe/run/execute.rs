@@ -46,23 +46,54 @@ pub(super) fn execute_recipe_via_rust(
         .context("failed to spawn recipe-runner-rs")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let parsed: RecipeRunResult = serde_json::from_str(&stdout).map_err(|_| {
-        if output.status.success() {
-            anyhow::anyhow!(
-                "Rust recipe runner returned unparseable output (exit {}): {}",
-                exit_status_label(&output.status),
-                stdout.chars().take(500).collect::<String>()
-            )
-        } else {
-            anyhow::anyhow!(
-                "Rust recipe runner failed (exit {}): {}",
-                exit_status_label(&output.status),
-                format_runner_failure_detail(&output.status, &stderr)
-            )
-        }
-    })?;
 
-    Ok(parsed)
+    parse_recipe_output(&stdout, &stderr, output.status.success()).with_context(|| {
+        format!(
+            "recipe-runner-rs exited with {}",
+            exit_status_label(&output.status)
+        )
+    })
+}
+
+/// Pure parser for recipe-runner-rs subprocess output.
+///
+/// Behavior (issue #332):
+/// - Empty/whitespace-only stdout + success: returns a default `RecipeRunResult`
+///   with `success = true` (treats "ran but produced no JSON" as a no-op success).
+/// - Empty/whitespace-only stdout + failure: errors with the meaningful stderr
+///   tail surfaced so callers see the upstream cause.
+/// - Non-empty stdout: parses as JSON; on failure, errors with a bounded stdout
+///   preview (first 200 chars) and stderr tail in the `anyhow::Context`.
+///
+/// `RecipeRunResult` does not use `deny_unknown_fields`, so future
+/// recipe-runner-rs versions may add fields without breaking us.
+pub(super) fn parse_recipe_output(
+    stdout: &str,
+    stderr: &str,
+    exit_success: bool,
+) -> Result<RecipeRunResult> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        if exit_success {
+            return Ok(RecipeRunResult {
+                success: true,
+                ..RecipeRunResult::default()
+            });
+        }
+        anyhow::bail!(
+            "recipe-runner-rs produced no output and exited with failure\nstderr tail:\n{}",
+            meaningful_stderr_tail(stderr)
+        );
+    }
+
+    serde_json::from_str::<RecipeRunResult>(trimmed).with_context(|| {
+        let preview: String = trimmed.chars().take(200).collect();
+        format!(
+            "recipe-runner-rs produced non-JSON stdout (first 200 chars): {}\nstderr tail:\n{}",
+            preview,
+            meaningful_stderr_tail(stderr)
+        )
+    })
 }
 
 /// Pass context key-value pairs to the command. When total serialised size
@@ -104,33 +135,12 @@ pub(super) fn pass_context(
     Ok(Some(tmp))
 }
 
-fn format_runner_failure_detail(status: &std::process::ExitStatus, stderr: &str) -> String {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-
-        if let Some(signal) = status.signal() {
-            return format!(
-                "killed by signal {} ({}). The process was terminated externally before producing output.",
-                signal_name(signal),
-                signal
-            );
-        }
-    }
-
-    if stderr.is_empty() {
-        return "no stderr".to_string();
-    }
-
-    meaningful_stderr_tail(stderr)
-}
-
 fn exit_status_label(status: &std::process::ExitStatus) -> String {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
         if let Some(signal) = status.signal() {
-            return format!("signal {signal}");
+            return format!("signal {} ({})", signal_name(signal), signal);
         }
     }
 
@@ -138,6 +148,18 @@ fn exit_status_label(status: &std::process::ExitStatus) -> String {
         .code()
         .map(|code| code.to_string())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+#[cfg(unix)]
+fn signal_name(signal: i32) -> &'static str {
+    match signal {
+        2 => "SIGINT",
+        6 => "SIGABRT",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        15 => "SIGTERM",
+        _ => "signal",
+    }
 }
 
 pub(super) fn meaningful_stderr_tail(stderr: &str) -> String {
@@ -170,16 +192,4 @@ pub(super) fn meaningful_stderr_tail(stderr: &str) -> String {
     };
 
     selected.into_iter().rev().collect::<Vec<_>>().join("\n")
-}
-
-#[cfg(unix)]
-fn signal_name(signal: i32) -> &'static str {
-    match signal {
-        2 => "SIGINT",
-        6 => "SIGABRT",
-        9 => "SIGKILL",
-        11 => "SIGSEGV",
-        15 => "SIGTERM",
-        _ => "signal",
-    }
 }

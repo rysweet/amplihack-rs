@@ -258,11 +258,14 @@ fn test_execute_recipe_via_rust_reports_nonzero_exit_with_stderr() {
     }
 
     let error = result.expect_err("nonzero runner exit must return an error");
+    let chain = format!("{error:?}");
     assert!(
-        error
-            .to_string()
-            .contains("Rust recipe runner failed (exit 2): runner exploded"),
-        "nonzero exit must surface stderr clearly. Got: {error}"
+        chain.contains("exited with 2"),
+        "nonzero exit must surface exit code clearly. Got: {chain}"
+    );
+    assert!(
+        chain.contains("runner exploded"),
+        "nonzero exit must surface stderr tail in error chain. Got: {chain}"
     );
 }
 
@@ -445,4 +448,120 @@ fn which_recipe_runner_available() -> bool {
         }
     }
     false
+}
+
+// -------------------------------------------------------------------------
+// parse_recipe_output — pure parser unit tests (issue #332)
+// -------------------------------------------------------------------------
+
+/// Empty stdout + exit success: must return a default RecipeRunResult with
+/// success = true, not an error. This resolves issue #332 where
+/// recipe-runner-rs producing no output crashed the launcher.
+#[test]
+fn parse_empty_stdout_success_returns_default_with_success_true() {
+    let result =
+        execute::parse_recipe_output("", "", true).expect("empty stdout on success must not error");
+    assert!(result.success, "success flag must be true on empty+success");
+    assert_eq!(
+        result.recipe_name, "",
+        "default recipe_name is empty string"
+    );
+    assert!(result.step_results.is_empty(), "no step results expected");
+    assert!(result.context.is_empty(), "no context expected");
+}
+
+/// Empty stdout + exit failure: must error with stderr tail surfaced
+/// in the message so callers can diagnose upstream failures.
+#[test]
+fn parse_empty_stdout_failure_errors_with_stderr_tail() {
+    let stderr = "warm-up line\nERROR: recipe-runner crashed\nbacktrace omitted";
+    let err = execute::parse_recipe_output("", stderr, false)
+        .expect_err("empty stdout on failure must error");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("ERROR: recipe-runner crashed"),
+        "stderr tail must appear in error chain, got: {msg}"
+    );
+}
+
+/// Plain (non-JSON) text on stdout must error with context that includes
+/// a stdout preview so users can see what was actually returned.
+#[test]
+fn parse_plain_text_stdout_errors_with_context() {
+    let stdout = "this is not JSON, just a plain text line";
+    let err =
+        execute::parse_recipe_output(stdout, "", true).expect_err("plain text stdout must error");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("plain text"),
+        "stdout preview must appear in error context, got: {msg}"
+    );
+}
+
+/// Malformed JSON on stdout must error with context (truncated preview
+/// + stderr tail) so the user sees the bad payload.
+#[test]
+fn parse_malformed_json_errors_with_context() {
+    let stdout = r#"{"recipe_name": "x", "success": tru"#; // truncated
+    let stderr = "stderr-marker-xyz";
+    let err =
+        execute::parse_recipe_output(stdout, stderr, true).expect_err("malformed JSON must error");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("recipe_name") || msg.contains("success"),
+        "stdout preview must appear in error, got: {msg}"
+    );
+    assert!(
+        msg.contains("stderr-marker-xyz"),
+        "stderr tail must appear in error, got: {msg}"
+    );
+}
+
+/// Valid JSON must parse successfully into RecipeRunResult.
+#[test]
+fn parse_valid_json_succeeds() {
+    let stdout = r#"{
+        "recipe_name": "demo",
+        "success": true,
+        "step_results": [
+            {"step_id": "s1", "status": "ok", "output": "hello", "error": ""}
+        ],
+        "context": {"k": "v"}
+    }"#;
+    let result = execute::parse_recipe_output(stdout, "", true).expect("valid JSON must parse");
+    assert_eq!(result.recipe_name, "demo");
+    assert!(result.success);
+    assert_eq!(result.step_results.len(), 1);
+    assert_eq!(result.step_results[0].step_id, "s1");
+    assert_eq!(
+        result.context.get("k").and_then(serde_json::Value::as_str),
+        Some("v")
+    );
+}
+
+/// Valid JSON with extra/unknown top-level fields must still parse —
+/// serde ignores unknown fields by default and we rely on that contract
+/// for forward compatibility with future recipe-runner-rs versions.
+#[test]
+fn parse_valid_json_with_unknown_fields_succeeds() {
+    let stdout = r#"{
+        "recipe_name": "demo",
+        "success": true,
+        "step_results": [],
+        "context": {},
+        "future_field_xyz": 42,
+        "another_unknown": {"nested": "value"}
+    }"#;
+    let result = execute::parse_recipe_output(stdout, "", true)
+        .expect("unknown fields must be ignored, not rejected");
+    assert_eq!(result.recipe_name, "demo");
+    assert!(result.success);
+}
+
+/// Whitespace-only stdout (e.g. trailing newline) must be treated as empty.
+#[test]
+fn parse_whitespace_only_stdout_success_returns_default() {
+    let result = execute::parse_recipe_output("   \n\t  \n", "", true)
+        .expect("whitespace-only stdout on success must not error");
+    assert!(result.success);
 }
