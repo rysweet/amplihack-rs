@@ -1089,6 +1089,166 @@ class TestStep16CreateDraftPR(unittest.TestCase):
 
 
 # ===========================================================================
+# ISSUE #342: existing_branch / pr_number context vars (parity layer)
+# ===========================================================================
+#
+# These tests are written FIRST (TDD red). They MUST fail until the
+# corresponding YAML changes land in step-04-setup-worktree:
+#
+#   * EXISTING_BRANCH=""     → legacy slug derivation (created=true)  [BL-002 unchanged]
+#   * EXISTING_BRANCH=<name> → reuse existing branch (created=false), no `branch -b`
+#   * EXISTING_BRANCH invalid → fail check-ref-format
+#   * PR_NUMBER=<N>          → resolve via `gh pr view`, then take reuse path
+#   * PR_NUMBER non-numeric  → fail before invoking gh
+#   * Both vars set          → existing_branch wins, WARNING on stderr
+#
+# A Rust integration test in tests/integration/existing_branch_context_test.rs
+# enforces the same contract; this Python layer prevents drift between
+# default-workflow.yaml and consensus-workflow.yaml and provides a fast
+# stdlib-only check developers can run without `cargo test`.
+
+
+def _run_step4_with_env(
+    raw_cmd: str,
+    repo_path: str,
+    env_overrides: dict,
+    extra_path: str | None = None,
+) -> subprocess.CompletedProcess:
+    """Run the YAML-extracted step-04 bash with explicit env vars (issue #342)."""
+    env = os.environ.copy()
+    env.setdefault("REPO_PATH", repo_path)
+    env.setdefault("BRANCH_PREFIX", "feat")
+    env.setdefault("ISSUE_NUMBER", "342")
+    env.setdefault("TASK_DESCRIPTION", "issue 342 existing branch")
+    env.setdefault("EXISTING_BRANCH", "")
+    env.setdefault("PR_NUMBER", "")
+    env.update(env_overrides)
+    if extra_path:
+        env["PATH"] = f"{extra_path}:{env.get('PATH', '/usr/bin:/bin')}"
+    return subprocess.run(
+        ["bash", "-c", raw_cmd],
+        capture_output=True,
+        text=True,
+        cwd=repo_path,
+        env=env,
+    )
+
+
+def _make_gh_shim(tmpdir: str, branch_name: str) -> str:
+    """Write a `gh` PATH shim that emits `branch_name` for `pr view`."""
+    p = Path(tmpdir) / "gh"
+    p.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "pr" ] && [ "$2" = "view" ]; then\n'
+        f"  printf '%s' '{branch_name}'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 2\n"
+    )
+    p.chmod(0o755)
+    return tmpdir
+
+
+class TestIssue342ExistingBranchContext(unittest.TestCase):
+    """Parity tests for issue #342 — existing_branch / pr_number context vars."""
+
+    def setUp(self):
+        self.origin_dir = tempfile.mkdtemp(prefix="iss342_origin_")
+        subprocess.run(
+            ["git", "init", "--bare", "-b", "main", self.origin_dir],
+            check=True,
+            capture_output=True,
+        )
+        self.repo_dir = tempfile.mkdtemp(prefix="iss342_repo_")
+        _git("init", "-b", "main", cwd=self.repo_dir)
+        _git("config", "user.email", "test@test", cwd=self.repo_dir)
+        _git("config", "user.name", "test", cwd=self.repo_dir)
+        _git("remote", "add", "origin", self.origin_dir, cwd=self.repo_dir)
+        Path(self.repo_dir, "README.md").write_text("init\n")
+        _git("add", "README.md", cwd=self.repo_dir)
+        _git("commit", "-m", "init", cwd=self.repo_dir)
+        _git("push", "-u", "origin", "HEAD:main", cwd=self.repo_dir)
+        self.shim_dir = tempfile.mkdtemp(prefix="iss342_shim_")
+        self.raw_cmd = _extract_step_command(_WORKFLOW_YAML, "step-04-setup-worktree")
+
+    def tearDown(self):
+        subprocess.run(["git", "worktree", "prune"], cwd=self.repo_dir, capture_output=True)
+        shutil.rmtree(self.origin_dir, ignore_errors=True)
+        shutil.rmtree(self.repo_dir, ignore_errors=True)
+        shutil.rmtree(self.shim_dir, ignore_errors=True)
+
+    def test_existing_branch_empty_preserves_legacy_behaviour(self):
+        """EXISTING_BRANCH='' must take the legacy slug path (BL-002 unchanged)."""
+        r = _run_step4_with_env(self.raw_cmd, self.repo_dir, {})
+        self.assertEqual(r.returncode, 0, f"stderr:\n{r.stderr}")
+        out = json.loads(r.stdout[r.stdout.index("{"):])
+        self.assertTrue(out["created"], f"legacy path must emit created=true; got {out}")
+        self.assertTrue(
+            out["branch_name"].startswith("feat/issue-342-"),
+            f"legacy slug must derive from TASK_DESCRIPTION; got {out['branch_name']}",
+        )
+
+    def test_existing_branch_local_is_reused(self):
+        """Local branch listed in EXISTING_BRANCH is reused (created=false)."""
+        _git("branch", "feat/already-here", "main", cwd=self.repo_dir)
+        r = _run_step4_with_env(
+            self.raw_cmd, self.repo_dir, {"EXISTING_BRANCH": "feat/already-here"}
+        )
+        self.assertEqual(r.returncode, 0, f"stderr:\n{r.stderr}")
+        out = json.loads(r.stdout[r.stdout.index("{"):])
+        self.assertEqual(out["branch_name"], "feat/already-here")
+        self.assertFalse(out["created"], f"reuse path must emit created=false; got {out}")
+
+    def test_existing_branch_invalid_ref_rejected(self):
+        """Invalid ref name must fail check-ref-format gate."""
+        r = _run_step4_with_env(
+            self.raw_cmd, self.repo_dir, {"EXISTING_BRANCH": "invalid..name"}
+        )
+        self.assertNotEqual(r.returncode, 0, f"stdout:\n{r.stdout}")
+
+    def test_pr_number_resolves_via_gh_shim(self):
+        """PR_NUMBER must resolve to a branch via `gh pr view`."""
+        _git("branch", "feat/pr-resolved", "main", cwd=self.repo_dir)
+        _make_gh_shim(self.shim_dir, "feat/pr-resolved")
+        r = _run_step4_with_env(
+            self.raw_cmd,
+            self.repo_dir,
+            {"PR_NUMBER": "342"},
+            extra_path=self.shim_dir,
+        )
+        self.assertEqual(r.returncode, 0, f"stderr:\n{r.stderr}")
+        out = json.loads(r.stdout[r.stdout.index("{"):])
+        self.assertEqual(out["branch_name"], "feat/pr-resolved")
+        self.assertFalse(out["created"])
+
+    def test_pr_number_non_numeric_rejected(self):
+        """Non-numeric PR_NUMBER must fail BEFORE invoking gh (arg-injection guard)."""
+        r = _run_step4_with_env(
+            self.raw_cmd, self.repo_dir, {"PR_NUMBER": "342 --repo evil/x"}
+        )
+        self.assertNotEqual(r.returncode, 0, f"stdout:\n{r.stdout}")
+
+    def test_both_vars_set_existing_branch_wins_with_warning(self):
+        """When both vars are set, EXISTING_BRANCH wins; precedence WARNING on stderr."""
+        _git("branch", "feat/wins", "main", cwd=self.repo_dir)
+        _make_gh_shim(self.shim_dir, "feat/loses")
+        r = _run_step4_with_env(
+            self.raw_cmd,
+            self.repo_dir,
+            {"EXISTING_BRANCH": "feat/wins", "PR_NUMBER": "342"},
+            extra_path=self.shim_dir,
+        )
+        self.assertEqual(r.returncode, 0, f"stderr:\n{r.stderr}")
+        out = json.loads(r.stdout[r.stdout.index("{"):])
+        self.assertEqual(out["branch_name"], "feat/wins")
+        sl = r.stderr.lower()
+        self.assertTrue(
+            "warning" in sl and "existing_branch" in sl,
+            f"precedence WARNING missing on stderr:\n{r.stderr}",
+        )
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 
