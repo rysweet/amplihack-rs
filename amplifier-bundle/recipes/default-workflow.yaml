@@ -53,6 +53,19 @@ context:
   # Branch name prefix (default: feat)
   branch_prefix: "feat"
 
+  # Issue #342: target an existing PR branch instead of deriving a new one.
+  # When set, step-04-setup-worktree skips slug derivation and reuses the
+  # named branch. Empty string => legacy behaviour (derive a new branch).
+  # SECURITY: validated via `git check-ref-format --branch` before any use.
+  existing_branch: ""
+
+  # Issue #342: alternative to existing_branch — resolve a PR number to its
+  # head branch via `gh pr view <N> --json headRefName -q .headRefName`.
+  # Empty string => legacy behaviour. Must be a positive integer (regex-validated
+  # before invoking gh; the gh response is re-validated through check-ref-format).
+  # Precedence: if both are set, `existing_branch` wins and a WARNING is emitted.
+  pr_number: ""
+
   # Workstream name for parallel workflows (optional)
   workstream: ""
 
@@ -411,6 +424,116 @@ steps:
 
       echo "=== Step 4: Creating Worktree and Branch ===" >&2
       echo "" >&2
+
+      # ========================================================================
+      # NEW (#342): Existing-branch / PR targeting path.
+      # When EXISTING_BRANCH or PR_NUMBER is set, reuse an existing branch
+      # instead of deriving a slug from TASK_DESCRIPTION. EXISTING_BRANCH wins
+      # when both are set (a WARNING is emitted to stderr).
+      #
+      # MIRROR: consensus-workflow.yaml step3-setup-worktree must keep the same
+      # validation gates and resolution algorithm. Do not patch one without the
+      # other. The Python parity test in
+      # amplifier-bundle/tools/test_default_workflow_fixes.py guards drift.
+      # ========================================================================
+      EXISTING_BRANCH="${EXISTING_BRANCH:-}"
+      PR_NUMBER="${PR_NUMBER:-}"
+
+      if [ -n "$EXISTING_BRANCH" ] || [ -n "$PR_NUMBER" ]; then
+        # Precedence: existing_branch wins on tie.
+        if [ -n "$EXISTING_BRANCH" ] && [ -n "$PR_NUMBER" ]; then
+          echo "WARNING: both 'existing_branch' and 'pr_number' set — using existing_branch ('$EXISTING_BRANCH'), ignoring pr_number ('$PR_NUMBER')." >&2
+        fi
+
+        if [ -n "$EXISTING_BRANCH" ]; then
+          BRANCH_NAME="$EXISTING_BRANCH"
+        else
+          # SECURITY: PR_NUMBER must be a positive integer before passing to gh.
+          # Rejects arg-injection like '342 --repo evil/x', '-1', or '$(rm)'.
+          if ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "ERROR: pr_number '$PR_NUMBER' is not a valid positive integer (arg-injection guard)." >&2
+            exit 1
+          fi
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "ERROR: pr_number is set but the 'gh' CLI is not on PATH." >&2
+            exit 1
+          fi
+          # gh stderr suppressed to avoid leaking auth/token diagnostics; we
+          # surface a sanitized error instead.
+          BRANCH_NAME="$(gh pr view "$PR_NUMBER" --json headRefName -q .headRefName 2>/dev/null || true)"
+          if [ -z "$BRANCH_NAME" ]; then
+            echo "ERROR: 'gh pr view $PR_NUMBER' returned no branch name (PR not found, no auth, or gh failure)." >&2
+            exit 1
+          fi
+        fi
+
+        # SECURITY: validate the branch name with the authoritative git ref
+        # checker BEFORE using it in any path or git invocation. This rejects
+        # '..', leading '-', shell metachars, and control chars. Re-applied
+        # to gh output so we never trust an upstream API response.
+        if ! git check-ref-format --branch "$BRANCH_NAME" >/dev/null 2>&1; then
+          echo "ERROR: branch name '$BRANCH_NAME' is invalid (git check-ref-format rejection)." >&2
+          exit 1
+        fi
+
+        echo "INFO: Targeting existing branch '$BRANCH_NAME' (issue #342 path)." >&2
+
+        # Best-effort fetch so remote-only branches resolve. Explicit refspec
+        # creates the local remote-tracking ref. Branch name is validated above.
+        git fetch origin "+refs/heads/${BRANCH_NAME}:refs/remotes/origin/${BRANCH_NAME}" >&2 2>/dev/null || true
+
+        # Resolve worktree path:
+        #   (a) reuse if a worktree already exists for the branch
+        #   (b) else use REPO_PATH if it is itself checked out on the branch
+        #   (c) else attach a new worktree at REPO_PATH/worktrees/<branch>
+        WORKTREE_PATH=""
+        EXISTING_WT="$(git worktree list --porcelain | awk -v b="refs/heads/$BRANCH_NAME" '
+          $1=="worktree" { wt=$2 }
+          $1=="branch" && $2==b { print wt; exit }
+        ')"
+        if [ -n "$EXISTING_WT" ]; then
+          WORKTREE_PATH="$EXISTING_WT"
+          echo "INFO: Reusing existing worktree at '$WORKTREE_PATH'." >&2
+        else
+          HEAD_BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
+          if [ "$HEAD_BRANCH" = "$BRANCH_NAME" ]; then
+            WORKTREE_PATH="$REPO_PATH"
+            echo "INFO: Caller already on branch '$BRANCH_NAME'; using REPO_PATH as worktree." >&2
+          else
+            # SECURITY: WORKTREE_PATH construction is safe because BRANCH_NAME
+            # has passed git check-ref-format above (rejects .., leading -, etc.).
+            WORKTREE_PATH="${REPO_PATH}/worktrees/${BRANCH_NAME}"
+            if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+              # Local branch exists: attach without -b (safe re-attach).
+              git worktree add -- "$WORKTREE_PATH" "$BRANCH_NAME" >&2
+            elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
+              # Remote-only: create local tracking branch on attach.
+              git worktree add --track -b "$BRANCH_NAME" -- "$WORKTREE_PATH" "origin/$BRANCH_NAME" >&2
+            else
+              echo "ERROR: branch '$BRANCH_NAME' not found locally or on origin." >&2
+              exit 1
+            fi
+          fi
+        fi
+
+        # When reusing an existing branch, `created=false` reflects that the
+        # branch was not created by this step (its worktree may be new).
+        CREATED=false
+
+        # Push/upstream best-effort (idempotent on existing PR branches).
+        git -C "$WORKTREE_PATH" push origin "$BRANCH_NAME" > /dev/null 2>&1 || true
+        git -C "$WORKTREE_PATH" branch --set-upstream-to="origin/${BRANCH_NAME}" "$BRANCH_NAME" > /dev/null 2>&1 || true
+
+        echo "" >&2
+        echo "=== Worktree Setup Complete (existing-branch path) ===" >&2
+
+        # Stdout reserved for the JSON contract; all human-readable lines go to stderr.
+        # NOTE: printf (not heredoc) — heredoc terminator must be at column 0 after
+        # YAML strips block indent, which conflicts with the indented if-block here.
+        printf '{"worktree_path": "%s", "branch_name": "%s", "created": %s}\n' \
+          "$WORKTREE_PATH" "$BRANCH_NAME" "$CREATED"
+        exit 0
+      fi
 
       # Fetch latest refs
       git fetch origin main >&2
