@@ -17,6 +17,9 @@
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use std::io::Read;
+use std::path::PathBuf;
+
+use crate::commands::multitask;
 
 #[derive(Subcommand, Debug)]
 pub enum OrchCommands {
@@ -24,6 +27,17 @@ pub enum OrchCommands {
     Helper {
         #[command(subcommand)]
         command: OrchHelperCommands,
+    },
+    /// Run parallel workstreams from a JSON config file (WS_FILE).
+    ///
+    /// Native port of the `python3 -u multitask/orchestrator.py $WS_FILE`
+    /// invocation in `smart-orchestrator.yaml`. Delegates to the existing
+    /// `multitask run` implementation with default flags (recipe mode,
+    /// `default-workflow` recipe, no runtime override, no dry-run).
+    Run {
+        /// Path to the workstreams JSON config file.
+        #[arg(value_name = "WS_FILE")]
+        ws_file: PathBuf,
     },
 }
 
@@ -510,7 +524,21 @@ fn slugify(name: &str, idx: usize) -> String {
 pub fn dispatch(command: OrchCommands) -> Result<()> {
     match command {
         OrchCommands::Helper { command } => run(command),
+        OrchCommands::Run { ws_file } => run_orch_run(ws_file),
     }
+}
+
+/// Native equivalent of `python3 -u multitask/orchestrator.py <WS_FILE>`.
+///
+/// Delegates to [`multitask::run_multitask`] with the same defaults the YAML
+/// recipe used to invoke the Python orchestrator with (recipe mode,
+/// `default-workflow` recipe, no runtime override, no timeout policy
+/// override, not a dry-run).
+pub fn run_orch_run(ws_file: PathBuf) -> Result<()> {
+    let path = ws_file
+        .to_str()
+        .with_context(|| format!("workstreams file path is not valid UTF-8: {ws_file:?}"))?;
+    multitask::run_multitask(path, "recipe", "default-workflow", None, None, false)
 }
 
 /// Public guard so callers can give a friendly error for invalid types.
