@@ -258,7 +258,7 @@ steps:
       # #283: replace python3 uuid with /proc/sys/kernel/random/uuid (POSIX)
       SESSION_ID=$(tr -d '-' < /proc/sys/kernel/random/uuid | head -c 8)
 
-      # #331: native Rust subcommand replaces python3 $TREE_SCRIPT register
+      # #248: native Rust subcommand for session tree registration
       if OUTPUT=$(amplihack session-tree register "$SESSION_ID" 2>&1); then
         # Output: "TREE_ID=abc123 DEPTH=0"
         TREE_ID=$(echo "$OUTPUT" | grep -oE 'TREE_ID=[A-Za-z0-9_-]+' | head -1 | cut -d= -f2)
@@ -940,7 +940,7 @@ steps:
       TREE_ID=${TREE_ID:-}
       STATUS=${STATUS:-}
 
-      # #331: native Rust subcommand replaces python3 $TREE_SCRIPT complete
+      # #248: native Rust subcommand for session tree completion
       if [ -n "$SESSION_ID" ] && [ "$STATUS" = "ok" ]; then
         AMPLIHACK_TREE_ID="$TREE_ID" amplihack session-tree complete "$SESSION_ID"
         echo "Session $SESSION_ID completed in tree $TREE_ID"
