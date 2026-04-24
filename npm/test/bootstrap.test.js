@@ -27,7 +27,18 @@ test('release target mapping matches published targets', () => {
   assert.equal(releaseTargetFor('linux', 'arm64'), 'aarch64-unknown-linux-gnu');
   assert.equal(releaseTargetFor('darwin', 'x64'), 'x86_64-apple-darwin');
   assert.equal(releaseTargetFor('darwin', 'arm64'), 'aarch64-apple-darwin');
-  assert.equal(releaseTargetFor('win32', 'x64'), null);
+  assert.equal(releaseTargetFor('win32', 'x64'), 'x86_64-pc-windows-msvc');
+  assert.equal(releaseTargetFor('win32', 'arm64'), null);
+  assert.equal(releaseTargetFor('freebsd', 'x64'), null);
+});
+
+test('windows release URL targets the canonical msvc artifact', () => {
+  const target = releaseTargetFor('win32', 'x64');
+  const urls = releaseUrls('1.2.3', target);
+  assert.equal(
+    urls.archiveUrl,
+    'https://github.com/rysweet/amplihack-rs/releases/download/v1.2.3/amplihack-x86_64-pc-windows-msvc.tar.gz',
+  );
 });
 
 test('binary filename adds .exe only on windows', () => {

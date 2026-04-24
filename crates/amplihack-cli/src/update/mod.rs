@@ -61,6 +61,8 @@ fn supported_release_target() -> Option<&'static str> {
         Some("x86_64-apple-darwin")
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         Some("aarch64-apple-darwin")
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Some("x86_64-pc-windows-msvc")
     } else {
         None
     }
@@ -69,7 +71,7 @@ fn supported_release_target() -> Option<&'static str> {
 fn required_release_target() -> Result<&'static str> {
     supported_release_target().ok_or_else(|| {
         anyhow!(
-            "self-update is only supported on published release targets (linux/macos x86_64 and aarch64)"
+            "self-update is only supported on published release targets (linux/macos x86_64 and aarch64; windows x86_64)"
         )
     })
 }

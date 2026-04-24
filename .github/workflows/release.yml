@@ -107,6 +107,10 @@ jobs:
           - target: aarch64-apple-darwin
             runner: macos-latest
             gnu_cross_toolchain: false
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            gnu_cross_toolchain: false
+            exe_suffix: ".exe"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -120,6 +124,7 @@ jobs:
 
       - name: Install GNU cross toolchain
         if: matrix.gnu_cross_toolchain
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
@@ -137,15 +142,22 @@ jobs:
         # bake in whatever `CARGO_PKG_VERSION` happens to be in `Cargo.toml`,
         # which is the bug that caused the self-update prompt to loop forever
         # after a "successful" upgrade.
+        shell: bash
         env:
           AMPLIHACK_RELEASE_VERSION: ${{ needs.version-bump.outputs.version }}
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package
+        # Use bash on every runner (Git Bash on windows-latest provides
+        # tar+sha256sum) so the .sha256 line format stays byte-identical
+        # across platforms — the npm wrapper's parseChecksumHex relies on
+        # the canonical "<hex>  <file>" sha256sum format. Do NOT switch
+        # this to certutil on Windows; its output is not parseable.
+        shell: bash
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/amplihack dist/ 2>/dev/null || true
-          cp target/${{ matrix.target }}/release/amplihack-hooks dist/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/amplihack${{ matrix.exe_suffix }} dist/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/amplihack-hooks${{ matrix.exe_suffix }} dist/ 2>/dev/null || true
           cd dist && tar czf ../amplihack-${{ matrix.target }}.tar.gz *
           cd .. && sha256sum amplihack-${{ matrix.target }}.tar.gz > amplihack-${{ matrix.target }}.tar.gz.sha256
 
@@ -207,6 +219,9 @@ jobs:
 
             # macOS ARM64 (Apple Silicon)
             curl -fsSL https://github.com/rysweet/amplihack-rs/releases/download/v${{ needs.version-bump.outputs.version }}/amplihack-aarch64-apple-darwin.tar.gz | tar xz -C ~/.local/bin/
+
+            # Windows x86_64 (PowerShell)
+            # iwr https://github.com/rysweet/amplihack-rs/releases/download/v${{ needs.version-bump.outputs.version }}/amplihack-x86_64-pc-windows-msvc.tar.gz -OutFile amplihack.tar.gz; tar xzf amplihack.tar.gz
             ```
 
             Or: `amplihack update`
