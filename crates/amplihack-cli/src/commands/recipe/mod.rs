@@ -113,7 +113,7 @@ pub(crate) struct RecipeInfo {
     pub(crate) step_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct RecipeRunResult {
     pub(crate) recipe_name: String,
     pub(crate) success: bool,
