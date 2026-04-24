@@ -2,6 +2,7 @@
 
 pub(crate) mod fs_helpers;
 mod hooks;
+mod jsonc;
 mod staging;
 
 use anyhow::{Context, Result};
@@ -323,6 +324,68 @@ mod tests {
         assert!(script.contains("\"$HOOKS_BIN\" workflow-classification-reminder"));
         assert!(script.contains("\"$HOOKS_BIN\" user-prompt-submit"));
         assert!(!script.contains("python3"));
+    }
+
+    #[test]
+    fn ensure_copilot_home_preserves_leading_jsonc_comments_in_config() {
+        // Regression: GitHub Copilot CLI writes ~/.copilot/config.json as
+        // JSONC with a two-line `//` header. amplihack must (a) parse it
+        // without choking on the comments and (b) preserve the comment block
+        // when it writes the file back after registering the plugin and
+        // wiring user-level hooks.
+        let _home_guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous_home = crate::test_support::set_home(temp.path());
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).unwrap();
+        let previous_cwd = crate::test_support::set_cwd(&repo_root).unwrap();
+
+        // Seed a JSONC config.json mirroring what real Copilot CLI writes.
+        let copilot_dir = temp.path().join(".copilot");
+        fs::create_dir_all(&copilot_dir).unwrap();
+        let seeded = "// User settings belong in settings.json.\n\
+                      // This file is managed automatically.\n\
+                      {}\n";
+        fs::write(copilot_dir.join("config.json"), seeded).unwrap();
+
+        // Minimal staged framework so ensure_copilot_home_staged() succeeds.
+        let staged = temp.path().join(".amplihack/.claude");
+        fs::create_dir_all(staged.join("commands/amplihack")).unwrap();
+        fs::write(staged.join("commands/amplihack/dev.md"), "command").unwrap();
+        fs::write(
+            staged.join("commands/amplihack/plugin.json"),
+            "{\"name\":\"amplihack\"}",
+        )
+        .unwrap();
+
+        ensure_copilot_home_staged().unwrap();
+
+        let after = fs::read_to_string(copilot_dir.join("config.json")).unwrap();
+        assert!(
+            after.starts_with("// User settings belong in settings.json.\n// This file is managed automatically.\n"),
+            "leading JSONC comment block was not preserved; got:\n{after}"
+        );
+
+        // Strip comments before parsing to verify the JSON body is valid and
+        // the plugin/hook entries were merged in.
+        let body = jsonc::strip_jsonc_comments(&after);
+        let config: serde_json::Value = serde_json::from_str(&body).expect("body parses as JSON");
+        let plugins = config["plugins"].as_array().expect("plugins array");
+        assert!(
+            plugins
+                .iter()
+                .any(|p| p.get("name").and_then(|n| n.as_str()) == Some("amplihack")),
+            "amplihack plugin entry missing: {config}"
+        );
+        assert!(
+            config["hooks"].is_object(),
+            "user-level hooks were not merged: {config}"
+        );
+
+        crate::test_support::restore_cwd(&previous_cwd).unwrap();
+        crate::test_support::restore_home(previous_home);
     }
 
     #[test]
