@@ -20,6 +20,10 @@ const ALLOWED_DOWNLOAD_PREFIXES = [
 const INSTALL_LOCK_FILE = '.install-lock';
 const INSTALL_LOCK_TIMEOUT_MS = 120000;
 const INSTALL_LOCK_POLL_MS = 200;
+const LATEST_TAG_CACHE_FILE = '.latest-tag.json';
+const LATEST_TAG_CACHE_SCHEMA = 1;
+const DEFAULT_LATEST_TAG_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const TAG_REGEX = /^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/u;
 
 function binaryFilename(name, platform = process.platform) {
   return platform === 'win32' ? `${name}.exe` : name;
@@ -37,6 +41,9 @@ function releaseTargetFor(platform = process.platform, arch = process.arch) {
   }
   if (platform === 'darwin' && arch === 'arm64') {
     return 'aarch64-apple-darwin';
+  }
+  if (platform === 'win32' && arch === 'x64') {
+    return 'x86_64-pc-windows-msvc';
   }
   return null;
 }
@@ -60,6 +67,94 @@ function cacheRoot(version, platform = process.platform, arch = process.arch) {
     return path.resolve(explicit);
   }
   return path.join(os.homedir(), '.cache', 'amplihack', 'npm-wrapper', version, `${platform}-${arch}`);
+}
+
+/**
+ * Directory where shared (cross-version) wrapper state lives, including the
+ * latest-tag cache. Located one level above the per-version cacheRoot so it
+ * survives `npx` reinstalls that swap pkg.version. Honors the same
+ * AMPLIHACK_NPM_WRAPPER_CACHE override as cacheRoot for test isolation.
+ */
+function cacheStateRoot() {
+  const explicit = process.env.AMPLIHACK_NPM_WRAPPER_CACHE;
+  if (explicit) {
+    return path.resolve(explicit);
+  }
+  return path.join(os.homedir(), '.cache', 'amplihack', 'npm-wrapper');
+}
+
+function latestTagCachePath() {
+  return path.join(cacheStateRoot(), LATEST_TAG_CACHE_FILE);
+}
+
+function latestTagTtlMs() {
+  const raw = process.env.AMPLIHACK_NPM_LATEST_TTL_MS;
+  if (raw === undefined || raw === '') {
+    return DEFAULT_LATEST_TAG_TTL_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_LATEST_TAG_TTL_MS;
+  }
+  return parsed;
+}
+
+function readLatestTagCache(now = Date.now()) {
+  const ttl = latestTagTtlMs();
+  if (ttl === 0) {
+    return null;
+  }
+  let raw;
+  try {
+    raw = fs.readFileSync(latestTagCachePath(), 'utf8');
+  } catch {
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return null;
+  }
+  if (parsed.schema !== LATEST_TAG_CACHE_SCHEMA) {
+    return null;
+  }
+  if (typeof parsed.tag !== 'string' || !TAG_REGEX.test(parsed.tag)) {
+    return null;
+  }
+  if (typeof parsed.fetched_at !== 'number' || !Number.isFinite(parsed.fetched_at)) {
+    return null;
+  }
+  if (now - parsed.fetched_at > ttl) {
+    return null;
+  }
+  return parsed.tag;
+}
+
+function writeLatestTagCache(tag, now = Date.now()) {
+  if (latestTagTtlMs() === 0) {
+    return;
+  }
+  if (typeof tag !== 'string' || !TAG_REGEX.test(tag)) {
+    return;
+  }
+  const dir = cacheStateRoot();
+  const file = latestTagCachePath();
+  const tmp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(tmp, JSON.stringify({
+      schema: LATEST_TAG_CACHE_SCHEMA,
+      tag,
+      fetched_at: now,
+    }));
+    fs.renameSync(tmp, file);
+  } catch {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+  }
 }
 
 function hasLocalCargoWorkspace(root) {
@@ -247,16 +342,28 @@ async function resolveLatestReleaseTag(fallbackVersion) {
   if (process.env.AMPLIHACK_NPM_NO_LATEST === '1') {
     return fallbackVersion;
   }
+  // Check TTL cache before hitting the network.
+  const cached = readLatestTagCache();
+  if (cached) {
+    return cached;
+  }
   const url = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
   try {
     const body = await download(url);
     const data = JSON.parse(body.toString('utf8'));
     const tag = typeof data.tag_name === 'string' ? data.tag_name.replace(/^v/, '') : '';
-    if (!/^\d+\.\d+\.\d+/.test(tag)) {
+    if (!TAG_REGEX.test(tag)) {
+      // Network response was unparseable: fall back without poisoning the cache.
+      process.stderr.write(`amplihack: could not parse latest release tag, using fallback v${fallbackVersion}\n`);
       return fallbackVersion;
     }
+    writeLatestTagCache(tag);
     return tag;
-  } catch {
+  } catch (error) {
+    // Network failure: fall back to pkg.version. Do NOT write to cache so the
+    // next call retries. Warn once so the user knows the version may be stale.
+    const reason = error && error.message ? error.message : 'unknown error';
+    process.stderr.write(`amplihack: failed to resolve latest release (${reason}); using fallback v${fallbackVersion}\n`);
     return fallbackVersion;
   }
 }
@@ -334,23 +441,16 @@ async function buildFromSource(root, installRoot) {
 }
 
 async function ensureNativeBinaries({ root, version }) {
-  // Fast path: check the package.json version cache first to avoid a
-  // network round-trip when binaries are already installed. The GitHub API
-  // call is deferred until we know the local cache is stale.
-  const knownRoot = cacheRoot(version);
-  const knownBinDir = path.join(knownRoot, 'bin');
-  const knownMain = path.join(knownBinDir, binaryFilename('amplihack'));
-  const knownHooks = path.join(knownBinDir, binaryFilename('amplihack-hooks'));
-  if (fs.existsSync(knownMain) && fs.existsSync(knownHooks)) {
-    return { mainBinary: knownMain, hooksBinary: knownHooks, installRoot: knownRoot };
-  }
-
-  // Cache miss — resolve the freshest available release tag. The
-  // package.json `version` field can drift behind the latest published
-  // release (the release workflow publishes new tags without rewriting
-  // package.json), so trusting `pkg.version` results in npx installs that
-  // ship a stale binary. Falling back to `version` keeps offline / API-
-  // rate-limited installs working.
+  // Resolve the latest published release tag first. The package.json `version`
+  // field can drift behind the latest published release (the release workflow
+  // publishes new tags without rewriting package.json), so trusting
+  // `pkg.version` as the cache key results in npx installs serving stale
+  // binaries even after a new release ships (issue #333).
+  //
+  // resolveLatestReleaseTag is cheap when the TTL cache is warm (no network
+  // call), so this runs in milliseconds on repeat invocations. On cache miss
+  // it makes one GitHub API call, with graceful fallback to `version` on
+  // network failure.
   const effectiveVersion = await resolveLatestReleaseTag(version);
   const installRoot = cacheRoot(effectiveVersion);
   const binDir = path.join(installRoot, 'bin');
@@ -412,17 +512,21 @@ module.exports = {
   acquireInstallLock,
   binaryFilename,
   cacheRoot,
+  cacheStateRoot,
   copyFileAtomic,
   ensureNativeBinaries,
   findBinary,
   hasLocalCargoWorkspace,
   installFromRelease,
+  latestTagCachePath,
   packageRoot,
   parseChecksumHex,
+  readLatestTagCache,
   releaseTargetFor,
   releaseUrls,
   resolveLatestReleaseTag,
   runAmplihack,
   validateDownloadUrl,
   verifyArchiveChecksum,
+  writeLatestTagCache,
 };

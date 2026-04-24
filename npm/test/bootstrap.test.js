@@ -10,16 +10,20 @@ const { setTimeout: delay } = require('node:timers/promises');
 const {
   acquireInstallLock,
   binaryFilename,
+  cacheStateRoot,
   copyFileAtomic,
   findBinary,
   hasLocalCargoWorkspace,
+  latestTagCachePath,
   packageRoot,
   parseChecksumHex,
+  readLatestTagCache,
   releaseTargetFor,
   releaseUrls,
   resolveLatestReleaseTag,
   validateDownloadUrl,
   verifyArchiveChecksum,
+  writeLatestTagCache,
 } = require('../lib/bootstrap');
 
 test('release target mapping matches published targets', () => {
@@ -27,7 +31,18 @@ test('release target mapping matches published targets', () => {
   assert.equal(releaseTargetFor('linux', 'arm64'), 'aarch64-unknown-linux-gnu');
   assert.equal(releaseTargetFor('darwin', 'x64'), 'x86_64-apple-darwin');
   assert.equal(releaseTargetFor('darwin', 'arm64'), 'aarch64-apple-darwin');
-  assert.equal(releaseTargetFor('win32', 'x64'), null);
+  assert.equal(releaseTargetFor('win32', 'x64'), 'x86_64-pc-windows-msvc');
+  assert.equal(releaseTargetFor('win32', 'arm64'), null);
+  assert.equal(releaseTargetFor('freebsd', 'x64'), null);
+});
+
+test('windows release URL targets the canonical msvc artifact', () => {
+  const target = releaseTargetFor('win32', 'x64');
+  const urls = releaseUrls('1.2.3', target);
+  assert.equal(
+    urls.archiveUrl,
+    'https://github.com/rysweet/amplihack-rs/releases/download/v1.2.3/amplihack-x86_64-pc-windows-msvc.tar.gz',
+  );
 });
 
 test('binary filename adds .exe only on windows', () => {
@@ -155,3 +170,104 @@ test('resolveLatestReleaseTag falls back when network disabled', async () => {
     }
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #333: TTL cache for latest release tag.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function withIsolatedCache(testFn) {
+  return async (t) => {
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'amplihack-tagcache-'));
+    const prevCache = process.env.AMPLIHACK_NPM_WRAPPER_CACHE;
+    const prevVersion = process.env.AMPLIHACK_NPM_VERSION;
+    const prevNoLatest = process.env.AMPLIHACK_NPM_NO_LATEST;
+    const prevTtl = process.env.AMPLIHACK_NPM_LATEST_TTL_MS;
+    process.env.AMPLIHACK_NPM_WRAPPER_CACHE = tempDir;
+    delete process.env.AMPLIHACK_NPM_VERSION;
+    delete process.env.AMPLIHACK_NPM_NO_LATEST;
+    delete process.env.AMPLIHACK_NPM_LATEST_TTL_MS;
+    try {
+      await testFn(t, tempDir);
+    } finally {
+      if (prevCache === undefined) delete process.env.AMPLIHACK_NPM_WRAPPER_CACHE;
+      else process.env.AMPLIHACK_NPM_WRAPPER_CACHE = prevCache;
+      if (prevVersion === undefined) delete process.env.AMPLIHACK_NPM_VERSION;
+      else process.env.AMPLIHACK_NPM_VERSION = prevVersion;
+      if (prevNoLatest === undefined) delete process.env.AMPLIHACK_NPM_NO_LATEST;
+      else process.env.AMPLIHACK_NPM_NO_LATEST = prevNoLatest;
+      if (prevTtl === undefined) delete process.env.AMPLIHACK_NPM_LATEST_TTL_MS;
+      else process.env.AMPLIHACK_NPM_LATEST_TTL_MS = prevTtl;
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+  };
+}
+
+test('latest-tag cache lives in cacheStateRoot, not per-version cacheRoot', withIsolatedCache(async () => {
+  const expected = path.join(cacheStateRoot(), '.latest-tag.json');
+  assert.equal(latestTagCachePath(), expected);
+}));
+
+test('readLatestTagCache returns null when cache file is missing', withIsolatedCache(async () => {
+  assert.equal(readLatestTagCache(), null);
+}));
+
+test('writeLatestTagCache + readLatestTagCache roundtrip a valid tag', withIsolatedCache(async () => {
+  writeLatestTagCache('1.2.3', 1_000_000);
+  assert.equal(readLatestTagCache(1_000_000), '1.2.3');
+}));
+
+test('readLatestTagCache returns null after TTL expiry', withIsolatedCache(async () => {
+  process.env.AMPLIHACK_NPM_LATEST_TTL_MS = '60000';
+  writeLatestTagCache('1.2.3', 1_000_000);
+  assert.equal(readLatestTagCache(1_000_000), '1.2.3');
+  assert.equal(readLatestTagCache(1_000_000 + 60_001), null);
+}));
+
+test('TTL=0 disables the cache entirely', withIsolatedCache(async () => {
+  process.env.AMPLIHACK_NPM_LATEST_TTL_MS = '0';
+  writeLatestTagCache('1.2.3', 1_000_000);
+  assert.equal(readLatestTagCache(1_000_000), null);
+}));
+
+test('readLatestTagCache rejects corrupt JSON without throwing', withIsolatedCache(async (_, tempDir) => {
+  await fs.promises.writeFile(latestTagCachePath(), 'this is not json{{{');
+  assert.equal(readLatestTagCache(), null);
+}));
+
+test('readLatestTagCache rejects unknown schema versions', withIsolatedCache(async () => {
+  await fs.promises.writeFile(latestTagCachePath(), JSON.stringify({
+    schema: 99,
+    tag: '1.2.3',
+    fetched_at: Date.now(),
+  }));
+  assert.equal(readLatestTagCache(), null);
+}));
+
+test('writeLatestTagCache rejects malformed tags', withIsolatedCache(async () => {
+  writeLatestTagCache('not-a-version', 1_000_000);
+  assert.equal(fs.existsSync(latestTagCachePath()), false);
+}));
+
+test('AMPLIHACK_NPM_NO_LATEST=1 bypasses cache and returns fallback', withIsolatedCache(async () => {
+  // Even with a fresh cache entry, the env var override must win.
+  writeLatestTagCache('9.9.9', Date.now());
+  process.env.AMPLIHACK_NPM_NO_LATEST = '1';
+  const tag = await resolveLatestReleaseTag('1.2.3');
+  assert.equal(tag, '1.2.3');
+}));
+
+test('AMPLIHACK_NPM_VERSION override beats both cache and AMPLIHACK_NPM_NO_LATEST', withIsolatedCache(async () => {
+  writeLatestTagCache('9.9.9', Date.now());
+  process.env.AMPLIHACK_NPM_NO_LATEST = '1';
+  process.env.AMPLIHACK_NPM_VERSION = 'v7.7.7';
+  const tag = await resolveLatestReleaseTag('1.2.3');
+  assert.equal(tag, '7.7.7');
+}));
+
+test('resolveLatestReleaseTag returns cached tag without network call', withIsolatedCache(async () => {
+  // Pre-populate cache; if resolveLatestReleaseTag tried the network here it
+  // would hit api.github.com — but the cache should short-circuit first.
+  writeLatestTagCache('5.6.7', Date.now());
+  const tag = await resolveLatestReleaseTag('1.2.3');
+  assert.equal(tag, '5.6.7');
+}));
