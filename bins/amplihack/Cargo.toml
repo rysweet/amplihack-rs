@@ -28,6 +28,7 @@ clap = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 tempfile = { workspace = true }
 libc = { workspace = true }
 
@@ -97,6 +98,15 @@ path = "../../tests/integration/kuzu_path_notice_test.rs"
 [[test]]
 name = "cli_golden"
 path = "../../tests/integration/cli_golden_tests.rs"
+
+# Issue #342: Targeting existing PR branch via context (existing_branch / pr_number).
+# Verifies step-04-setup-worktree (default-workflow.yaml) and step3-setup-worktree
+# (consensus-workflow.yaml) skip branch creation when an existing branch is supplied,
+# resolve pr_number via `gh`, validate inputs against shell/path injection, and
+# preserve byte-identical legacy behaviour when both vars are empty.
+[[test]]
+name = "existing_branch_context"
+path = "../../tests/integration/existing_branch_context_test.rs"
 
 # Issue #259: Documentation-vs-code drift detection tests.
 # Verify docs match source code for flag injection, completions,

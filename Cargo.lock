@@ -35,6 +35,7 @@ dependencies = [
  "clap",
  "libc",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "tracing",
  "tracing-subscriber",

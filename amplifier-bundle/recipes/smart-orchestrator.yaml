@@ -17,6 +17,11 @@ default_step_timeout: 300
 context:
   task_description: ""
   repo_path: "."
+  # Issue #342: target an existing PR branch in sub-recipes.
+  # Propagated automatically to default-workflow / consensus-workflow via
+  # context-merging. Empty strings preserve legacy behaviour.
+  existing_branch: ""
+  pr_number: ""
   decomposition_json: ""
   session_id: ""
   tree_id: ""
