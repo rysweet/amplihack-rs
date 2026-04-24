@@ -1,3 +1,36 @@
+# =============================================================================
+# Trade-off: graceful skip for optional Python module (refs #248, #285)
+# =============================================================================
+#
+# This recipe historically required the Python module
+# `amplihack.eval.sdk_eval_loop` (a multi-SDK evaluation harness) to be
+# importable. As part of the parity work for issues #248 and #285, the four
+# eval steps below now perform a probe for the module and gracefully skip
+# (with a clear `[skip]` warning to stderr and a fallback JSON payload to
+# stdout) when it is not available, so the recipe always loads/parses and
+# downstream steps can proceed.
+#
+# Why graceful skip instead of a native port:
+#   - `amplihack.eval.sdk_eval_loop` is a multi-SDK evaluation harness whose
+#     full port to native Rust would substantially exceed the scope of the
+#     parity-cleanup tracked by #248 / #285.
+#   - The skip path preserves the existing JSON contract (`{"sdk": "<name>",
+#     "error": "..."}`), so the downstream `generate-comparison` step keeps
+#     working — it simply receives an explicit "skipped" marker instead of
+#     real eval data.
+#   - Operators who do have the Python module installed see no behaviour
+#     change: the probe succeeds and the original eval runs verbatim.
+#
+# Skip contract per eval step:
+#   - Probe order: `python3` then `python`.
+#   - Probe imports `amplihack.eval.sdk_eval_loop` with `PYTHONPATH=src` so
+#     the probe and the real run resolve the module via the same path.
+#   - On absence: `[skip] ...` warning -> stderr (visible in audit logs);
+#     fallback JSON `{"sdk":"<name>","error":"..."}` -> stdout (sole/last
+#     JSON object so `parse_json: true` still works); `exit 0`.
+#   - On presence: original behaviour, with `python` -> `"$PY"`.
+# =============================================================================
+
 name: "sdk-comparison"
 description: "Run L1-L12 eval on all 4 SDKs and generate comparative report"
 version: "1.0.0"
@@ -66,12 +99,29 @@ steps:
     command: |
       echo "=== Step 1: Evaluating Mini SDK ==="
 
+      # Probe for python + amplihack.eval.sdk_eval_loop (refs #248 / #285).
+      PY=""
+      for cand in python3 python; do
+        if command -v "$cand" >/dev/null 2>&1; then
+          if PYTHONPATH=src "$cand" -c 'import amplihack.eval.sdk_eval_loop' >/dev/null 2>&1; then
+            PY="$cand"
+            break
+          fi
+        fi
+      done
+
+      if [ -z "$PY" ]; then
+        echo "[skip] amplihack.eval.sdk_eval_loop not available; skipping eval-mini" >&2
+        echo '{"sdk":"mini","error":"amplihack.eval.sdk_eval_loop not installed; step skipped"}'
+        exit 0
+      fi
+
       LEVELS_ARGS=""
       for level in {{levels}}; do
         LEVELS_ARGS="$LEVELS_ARGS $level"
       done
 
-      PYTHONPATH=src python -m amplihack.eval.sdk_eval_loop \
+      PYTHONPATH=src "$PY" -m amplihack.eval.sdk_eval_loop \
         --sdks mini \
         --loops {{loops_per_sdk}} \
         --levels $LEVELS_ARGS \
@@ -97,12 +147,29 @@ steps:
     command: |
       echo "=== Step 2: Evaluating Claude SDK ==="
 
+      # Probe for python + amplihack.eval.sdk_eval_loop (refs #248 / #285).
+      PY=""
+      for cand in python3 python; do
+        if command -v "$cand" >/dev/null 2>&1; then
+          if PYTHONPATH=src "$cand" -c 'import amplihack.eval.sdk_eval_loop' >/dev/null 2>&1; then
+            PY="$cand"
+            break
+          fi
+        fi
+      done
+
+      if [ -z "$PY" ]; then
+        echo "[skip] amplihack.eval.sdk_eval_loop not available; skipping eval-claude" >&2
+        echo '{"sdk":"claude","error":"amplihack.eval.sdk_eval_loop not installed; step skipped"}'
+        exit 0
+      fi
+
       LEVELS_ARGS=""
       for level in {{levels}}; do
         LEVELS_ARGS="$LEVELS_ARGS $level"
       done
 
-      PYTHONPATH=src python -m amplihack.eval.sdk_eval_loop \
+      PYTHONPATH=src "$PY" -m amplihack.eval.sdk_eval_loop \
         --sdks claude \
         --loops {{loops_per_sdk}} \
         --levels $LEVELS_ARGS \
@@ -128,12 +195,29 @@ steps:
     command: |
       echo "=== Step 3: Evaluating Copilot SDK ==="
 
+      # Probe for python + amplihack.eval.sdk_eval_loop (refs #248 / #285).
+      PY=""
+      for cand in python3 python; do
+        if command -v "$cand" >/dev/null 2>&1; then
+          if PYTHONPATH=src "$cand" -c 'import amplihack.eval.sdk_eval_loop' >/dev/null 2>&1; then
+            PY="$cand"
+            break
+          fi
+        fi
+      done
+
+      if [ -z "$PY" ]; then
+        echo "[skip] amplihack.eval.sdk_eval_loop not available; skipping eval-copilot" >&2
+        echo '{"sdk":"copilot","error":"amplihack.eval.sdk_eval_loop not installed; step skipped"}'
+        exit 0
+      fi
+
       LEVELS_ARGS=""
       for level in {{levels}}; do
         LEVELS_ARGS="$LEVELS_ARGS $level"
       done
 
-      PYTHONPATH=src python -m amplihack.eval.sdk_eval_loop \
+      PYTHONPATH=src "$PY" -m amplihack.eval.sdk_eval_loop \
         --sdks copilot \
         --loops {{loops_per_sdk}} \
         --levels $LEVELS_ARGS \
@@ -159,12 +243,29 @@ steps:
     command: |
       echo "=== Step 4: Evaluating Microsoft SDK ==="
 
+      # Probe for python + amplihack.eval.sdk_eval_loop (refs #248 / #285).
+      PY=""
+      for cand in python3 python; do
+        if command -v "$cand" >/dev/null 2>&1; then
+          if PYTHONPATH=src "$cand" -c 'import amplihack.eval.sdk_eval_loop' >/dev/null 2>&1; then
+            PY="$cand"
+            break
+          fi
+        fi
+      done
+
+      if [ -z "$PY" ]; then
+        echo "[skip] amplihack.eval.sdk_eval_loop not available; skipping eval-microsoft" >&2
+        echo '{"sdk":"microsoft","error":"amplihack.eval.sdk_eval_loop not installed; step skipped"}'
+        exit 0
+      fi
+
       LEVELS_ARGS=""
       for level in {{levels}}; do
         LEVELS_ARGS="$LEVELS_ARGS $level"
       done
 
-      PYTHONPATH=src python -m amplihack.eval.sdk_eval_loop \
+      PYTHONPATH=src "$PY" -m amplihack.eval.sdk_eval_loop \
         --sdks microsoft \
         --loops {{loops_per_sdk}} \
         --levels $LEVELS_ARGS \
