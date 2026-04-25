@@ -10,6 +10,7 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -932,13 +933,14 @@ fn tail_output(stdout: impl std::io::Read, log_file: &Path, issue_id: i64, max_l
     let reader = BufReader::new(stdout);
     let mut log_bytes_written: u64 = 0;
 
-    // Open log file with 0o600 permissions
-    let log_fd = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(log_file);
+    // Open log file with 0o600 permissions on Unix, default permissions on Windows.
+    let log_fd = {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        opts.mode(0o600);
+        opts.open(log_file)
+    };
 
     let mut log_writer = log_fd.ok();
 
@@ -965,24 +967,31 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     let tmp_path = path.with_extension("tmp");
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp_path)?;
+    let mut file = {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        opts.mode(0o600);
+        opts.open(&tmp_path)?
+    };
     file.write_all(data)?;
     file.flush()?;
     fs::rename(&tmp_path, path)?;
     Ok(())
 }
 
-/// Set a file as executable (chmod +x).
+/// Set a file as executable (chmod +x). No-op on Windows.
+#[cfg(unix)]
 fn set_executable(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mut perms = fs::metadata(path)?.permissions();
     perms.set_mode(0o755);
     fs::set_permissions(path, perms)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_executable(_path: &Path) -> Result<()> {
     Ok(())
 }
 
