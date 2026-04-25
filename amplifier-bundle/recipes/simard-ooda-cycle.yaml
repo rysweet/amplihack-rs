@@ -106,25 +106,30 @@ steps:
     on_error: fail
     output: planned_actions_path
 
-  # --- Act: dispatch planned actions ---
+  # --- Act: dispatch planned actions via live bridges ---
   #
-  # TODO(#1270): Per-action dispatch via `type: recipe` composition:
-  #   - ActionKind::AdvanceGoal      → recipe: simard-engineer-loop
-  #   - ActionKind::RunImprovement   → recipe: simard-self-improve-cycle
-  #   - ActionKind::ConsolidateMemory → bash: simard-memory-step consolidate
-  #   - other kinds                  → bash: simard-ooda-step act-stub
-  #
-  # The current cut requires the caller to provide `outcomes_json_path` so
-  # the review/curate phases can run without bridge-dependent dispatch.
-  - id: act-passthrough
+  # When `outcomes_json_path` is provided, we replay caller-provided
+  # outcomes (escape hatch for parity tests). Otherwise the helper bin
+  # connects bridges via state_root and calls the existing
+  # `ooda_actions::dispatch_actions`. Per-action `type: recipe` dispatch
+  # (AdvanceGoal → simard-engineer-loop, etc.) remains a future
+  # refinement — `dispatch_actions` already orchestrates this internally.
+  - id: act
     type: bash
     command: |
-      if [ -z "{{outcomes_json_path}}" ]; then
-        echo "[ooda-cycle] act: TODO — bridge-dispatch not implemented; pass --outcomes-json-path with pre-computed outcomes" >&2
-        echo "[]" > "{{state_root}}/outcomes.json"
-      else
+      if [ -n "{{outcomes_json_path}}" ]; then
         cp "{{outcomes_json_path}}" "{{state_root}}/outcomes.json"
-        echo "[ooda-cycle] act: $(jq 'length' "{{state_root}}/outcomes.json") outcomes from caller-provided file"
+        cp "{{state_root}}/post_observe_state.json" "{{state_root}}/post_act_state.json"
+        echo "[ooda-cycle] act: replayed $(jq 'length' "{{state_root}}/outcomes.json") outcome(s)"
+      else
+        "{{helper_bin}}" act \
+          --state-json "{{state_root}}/post_observe_state.json" \
+          --actions-json "{{state_root}}/planned_actions.json" \
+          --state-root "{{state_root}}" \
+          > "{{state_root}}/act_result.json"
+        jq '.outcomes' "{{state_root}}/act_result.json" > "{{state_root}}/outcomes.json"
+        jq '.snapshot' "{{state_root}}/act_result.json" > "{{state_root}}/post_act_state.json"
+        echo "[ooda-cycle] act: $(jq 'length' "{{state_root}}/outcomes.json") outcome(s) from live dispatch"
       fi
     on_error: fail
 
@@ -145,7 +150,7 @@ steps:
     type: bash
     command: |
       "{{helper_bin}}" curate \
-        --state-json "{{state_json_path}}" \
+        --state-json "{{state_root}}/post_act_state.json" \
         > "{{state_root}}/curate_result.json"
       jq '.snapshot' "{{state_root}}/curate_result.json" > "{{state_root}}/post_state_snapshot.json"
       echo "[ooda-cycle] curate: archived $(jq '.archived_goal_ids | length' "{{state_root}}/curate_result.json") goal(s)"
