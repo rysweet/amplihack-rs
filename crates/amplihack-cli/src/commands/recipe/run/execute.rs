@@ -75,18 +75,38 @@ pub(super) fn execute_recipe_via_rust(
 /// stderr tail. (#357)
 fn spawn_with_streaming_stderr(mut command: Command) -> Result<RecipeRunResult> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().context("failed to spawn recipe-runner-rs")?;
+    let mut child = command
+        .spawn()
+        .context("failed to spawn recipe-runner-rs")?;
 
     let captured_stderr: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let stderr_handle = child.stderr.take().expect("piped stderr");
     let captured_clone = Arc::clone(&captured_stderr);
     let pump = thread::spawn(move || {
-        let reader = BufReader::new(stderr_handle);
+        // Read RAW BYTES, not str-typed lines(): an Err(InvalidData) from
+        // non-UTF-8 stderr would otherwise terminate the pump silently and
+        // the child can then block on a full pipe (#366 / COE feedback).
+        let mut reader = BufReader::new(stderr_handle);
         let stderr = io::stderr();
-        for line in reader.lines().map_while(Result::ok) {
-            // Forward live so the user sees progress in real time.
-            let _ = writeln!(stderr.lock(), "{line}");
-            captured_clone.lock().expect("stderr mutex").push(line);
+        let mut buf: Vec<u8> = Vec::with_capacity(4096);
+        loop {
+            buf.clear();
+            match reader.read_until(b'\n', &mut buf) {
+                Ok(0) => break, // EOF
+                Ok(_) => {
+                    let line = String::from_utf8_lossy(&buf);
+                    let trimmed = line.trim_end_matches(['\r', '\n']);
+                    let _ = writeln!(stderr.lock(), "{trimmed}");
+                    captured_clone
+                        .lock()
+                        .expect("stderr mutex")
+                        .push(trimmed.to_string());
+                }
+                // I/O error reading from the pipe: log and stop pumping —
+                // we MUST NOT spin or leak the thread, but the child will
+                // still close stderr at exit and `wait()` will return.
+                Err(_) => break,
+            }
         }
     });
 
