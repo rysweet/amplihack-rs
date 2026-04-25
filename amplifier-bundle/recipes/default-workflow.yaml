@@ -824,21 +824,42 @@ steps:
         exit 0
       fi
       # closedByPullRequestsReferences items DO NOT carry .state; we must
-      # fetch each PR's mergedAt explicitly. (Verified live; documented in
-      # PR #367 cohort review.)
-      CLOSING_PR_NUMS=$(gh issue view "$ISSUE_NUM" \
+      # fetch each PR's mergedAt explicitly. Capture (number, owner/repo)
+      # pairs so cross-repo closing PRs are looked up in the correct repo
+      # rather than silently misresolved against the current repo (COE
+      # cohort review #2, REAL_BUG #2).
+      CLOSING_PR_REFS=$(gh issue view "$ISSUE_NUM" \
         --json closedByPullRequestsReferences \
-        --jq '[.closedByPullRequestsReferences[]?.number] | join(" ")' \
+        --jq '[.closedByPullRequestsReferences[]? | "\(.number) \(.repository.owner.login)/\(.repository.name)"] | join("\n")' \
         2>/dev/null || true)
-      for PR_NUM in $CLOSING_PR_NUMS; do
-        PR_MERGED=$(gh pr view "$PR_NUM" --json mergedAt --jq '.mergedAt' 2>/dev/null || true)
+      # Cap the fan-out (DESIGN_RISK #3): an issue with hundreds of linked
+      # PRs would otherwise serially walk the GitHub API and chew rate
+      # limit; the typical real case is 1-2 PRs.
+      MAX_PROBE=10
+      probed=0
+      while IFS= read -r ref; do
+        [ -z "$ref" ] && continue
+        probed=$((probed + 1))
+        if [ "$probed" -gt "$MAX_PROBE" ]; then
+          echo "WARN: hit MAX_PROBE=${MAX_PROBE} linked-PR cap; assuming goal not met." >&2
+          break
+        fi
+        PR_NUM=$(printf '%s' "$ref" | awk '{print $1}')
+        PR_REPO=$(printf '%s' "$ref" | awk '{print $2}')
+        # Cap each gh call at 30s to prevent stalling the whole workflow on
+        # a slow API response (DESIGN_RISK #3).
+        if [ -n "$PR_REPO" ] && [ "$PR_REPO" != "/" ]; then
+          PR_MERGED=$(timeout 30 gh pr view "$PR_NUM" --repo "$PR_REPO" --json mergedAt --jq '.mergedAt' 2>/dev/null || true)
+        else
+          PR_MERGED=$(timeout 30 gh pr view "$PR_NUM" --json mergedAt --jq '.mergedAt' 2>/dev/null || true)
+        fi
         if [ -n "$PR_MERGED" ] && [ "$PR_MERGED" != "null" ]; then
-          echo "INFO: issue #${ISSUE_NUM} is already CLOSED by merged PR #${PR_NUM}." >&2
-          echo "  Short-circuiting steps 07/08/08c — goal already met (#368)." >&2
+          echo "INFO: issue #${ISSUE_NUM} is already CLOSED by merged PR ${PR_REPO}#${PR_NUM}." >&2
+          echo "  Short-circuiting steps 07/08/08c/08b/09-16b — goal already met (#368)." >&2
           echo "true"
           exit 0
         fi
-      done
+      done <<< "$CLOSING_PR_REFS"
       echo "false"
     output: "goal_already_met"
 
@@ -972,20 +993,32 @@ steps:
         ISSUE_STATE=$(gh issue view "$ISSUE_NUM" --json state --jq '.state' 2>/dev/null || true)
         if [ "$ISSUE_STATE" = "CLOSED" ]; then
           # closedByPullRequestsReferences items DO NOT carry .state.
-          # Fetch PR numbers, then probe each PR's mergedAt explicitly.
-          CLOSING_PR_NUMS=$(gh issue view "$ISSUE_NUM" \
+          # Fetch (number, owner/repo) pairs so cross-repo PRs are looked
+          # up correctly (COE cohort review #2).
+          CLOSING_PR_REFS=$(gh issue view "$ISSUE_NUM" \
             --json closedByPullRequestsReferences \
-            --jq '[.closedByPullRequestsReferences[]?.number] | join(" ")' \
+            --jq '[.closedByPullRequestsReferences[]? | "\(.number) \(.repository.owner.login)/\(.repository.name)"] | join("\n")' \
             2>/dev/null || true)
+          MAX_PROBE=10
+          probed=0
           MERGED_FOUND=0
-          for PR_NUM in $CLOSING_PR_NUMS; do
-            PR_MERGED=$(gh pr view "$PR_NUM" --json mergedAt --jq '.mergedAt' 2>/dev/null || true)
+          while IFS= read -r ref; do
+            [ -z "$ref" ] && continue
+            probed=$((probed + 1))
+            if [ "$probed" -gt "$MAX_PROBE" ]; then break; fi
+            PR_NUM=$(printf '%s' "$ref" | awk '{print $1}')
+            PR_REPO=$(printf '%s' "$ref" | awk '{print $2}')
+            if [ -n "$PR_REPO" ] && [ "$PR_REPO" != "/" ]; then
+              PR_MERGED=$(timeout 30 gh pr view "$PR_NUM" --repo "$PR_REPO" --json mergedAt --jq '.mergedAt' 2>/dev/null || true)
+            else
+              PR_MERGED=$(timeout 30 gh pr view "$PR_NUM" --json mergedAt --jq '.mergedAt' 2>/dev/null || true)
+            fi
             # mergedAt is null for unmerged PRs and a timestamp string for merged ones.
             if [ -n "$PR_MERGED" ] && [ "$PR_MERGED" != "null" ]; then
               MERGED_FOUND=1
               break
             fi
-          done
+          done <<< "$CLOSING_PR_REFS"
           if [ "$MERGED_FOUND" -eq 1 ]; then
             echo "INFO: step-08-implement produced no file changes, but issue" >&2
             echo "  #${ISSUE_NUM} is already CLOSED by a merged pull request." >&2
@@ -1007,7 +1040,7 @@ steps:
 
   - id: "step-08b-integration"
     agent: "amplihack:integration"
-    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback' and goal_already_met != 'true'"
     prompt: |
       # Step 8b: External Service Integration
 
@@ -1054,6 +1087,7 @@ steps:
   # ==========================================================================
   - id: "step-09-refactor"
     agent: "amplihack:cleanup"
+    condition: "goal_already_met != 'true'"
     prompt: |
       # Step 9: Refactor and Simplify
 
@@ -1082,6 +1116,7 @@ steps:
 
   - id: "step-09b-optimize"
     agent: "amplihack:optimizer"
+    condition: "goal_already_met != 'true'"
     prompt: |
       # Step 9b: Performance Optimization
 
@@ -1102,6 +1137,7 @@ steps:
   # ==========================================================================
   - id: "step-10-pre-commit-review"
     agent: "amplihack:reviewer"
+    condition: "goal_already_met != 'true'"
     prompt: |
       # Step 10: Review Pass Before Commit
 
@@ -1133,6 +1169,7 @@ steps:
 
   - id: "step-10b-security-review"
     agent: "amplihack:security"
+    condition: "goal_already_met != 'true'"
     prompt: |
       # Step 10b: Security Review
 
@@ -1152,6 +1189,7 @@ steps:
 
   - id: "step-10c-philosophy-check"
     agent: "amplihack:philosophy-guardian"
+    condition: "goal_already_met != 'true'"
     prompt: |
       # Step 10c: Philosophy Compliance Check
 
@@ -1173,6 +1211,7 @@ steps:
   # ==========================================================================
   - id: "step-11-incorporate-feedback"
     agent: "amplihack:architect"
+    condition: "goal_already_met != 'true'"
     prompt: |
       # Step 11: Assess Review Feedback
 
@@ -1190,6 +1229,7 @@ steps:
 
   - id: "step-11b-implement-feedback"
     agent: "amplihack:builder"
+    condition: "goal_already_met != 'true'"
     prompt: |
       # Step 11b: Implement Review Feedback
 
@@ -1234,6 +1274,7 @@ steps:
   # ==========================================================================
   - id: "step-12-run-precommit"
     agent: "amplihack:pre-commit-diagnostic"
+    condition: "goal_already_met != 'true'"
     prompt: |
       # Step 12: Run Tests and Pre-commit Hooks
 
@@ -1271,6 +1312,7 @@ steps:
   # ==========================================================================
   - id: "step-13-local-testing"
     agent: "amplihack:builder"
+    condition: "goal_already_met != 'true'"
     prompt: |
       # Step 13: Mandatory Outside-In Testing (CANNOT BE SKIPPED)
 
@@ -1353,6 +1395,7 @@ steps:
   # ==========================================================================
   - id: "step-14-bump-version"
     agent: "amplihack:architect"
+    condition: "goal_already_met != 'true'"
     prompt: |
       # Step 14: Bump Version in pyproject.toml (MANDATORY - DO NOT SKIP)
 
@@ -1437,6 +1480,7 @@ steps:
   # ==========================================================================
   - id: "step-15-commit-push"
     type: "bash"
+    condition: "goal_already_met != 'true'"
     command: |
       set -euo pipefail
       cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}"
@@ -1504,6 +1548,7 @@ steps:
   # ==========================================================================
   - id: "step-16-create-draft-pr"
     type: "bash"
+    condition: "goal_already_met != 'true'"
     command: |
       set -euo pipefail
       cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}"
@@ -1591,6 +1636,7 @@ steps:
   # ==========================================================================
   - id: "step-16b-outside-in-fix-loop"
     agent: "amplihack:builder"
+    condition: "goal_already_met != 'true'"
     prompt: |
       # Step 16b: Outside-In Testing and Fix Loop (MANDATORY)
 
