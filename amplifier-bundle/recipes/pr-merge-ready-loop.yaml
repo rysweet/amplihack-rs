@@ -55,13 +55,15 @@ steps:
     on_error: fail
 
   # --- 2. Mechanical autofix for common CI failures ---
+  # IMPORTANT: only formats files already in the PR diff to avoid pulling
+  # unrelated changes (e.g. modified .github/hooks/* from running sessions)
+  # into the PR — that would violate criterion 6 (clean diff scope).
   - id: autofix-mechanical
     type: bash
     command: |
       set -euo pipefail
       cd "{{repo_path}}"
 
-      # Only run if we're on the PR branch or can switch to it
       CURRENT=$(git rev-parse --abbrev-ref HEAD)
       if [ "$CURRENT" != "{{branch_name}}" ]; then
         git fetch origin "{{branch_name}}" 2>&1 | tail -2 || true
@@ -69,28 +71,40 @@ steps:
       fi
       git pull --no-rebase 2>&1 | tail -2 || true
 
-      CHANGED=0
+      # Stash unrelated working-tree changes so autofix can't sweep them in
+      STASHED=0
+      if ! git diff --quiet || [ -n "$(git status --porcelain)" ]; then
+        git stash push -u -m "merge-ready autofix stash" 2>&1 | tail -2
+        STASHED=1
+      fi
 
-      # rustfmt — only if Cargo.toml present
+      CHANGED=0
       if [ -f Cargo.toml ]; then
-        echo "[merge-ready] running cargo fmt ..."
-        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/home/azureuser/src/Simard/worktrees/meeting-ux-762/target}" \
-          cargo fmt 2>&1 | tail -3 || true
-        if ! git diff --quiet; then
-          echo "[merge-ready] rustfmt changed files:"
-          git diff --stat
-          git add -A
-          git commit --no-verify -m "style: cargo fmt (merge-ready autofix)" \
-            -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
-          CHANGED=1
+        # Only format files that are part of the PR diff
+        PR_FILES=$(git diff --name-only origin/main...HEAD | grep -E '\.rs$' || true)
+        if [ -n "$PR_FILES" ]; then
+          echo "[merge-ready] running rustfmt on PR-only files:"
+          echo "$PR_FILES" | sed 's/^/  /'
+          echo "$PR_FILES" | xargs -r rustfmt --edition 2021 2>&1 | tail -5 || true
+          if ! git diff --quiet -- $PR_FILES; then
+            git add -- $PR_FILES
+            git commit --no-verify -m "style: cargo fmt (merge-ready autofix)" \
+              -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+            CHANGED=1
+          fi
         fi
       fi
 
       if [ "$CHANGED" -eq 1 ]; then
         git push --no-verify 2>&1 | tail -3
-        echo "{\"autofix_applied\": true}" > "{{state_root}}/autofix.json"
+        echo '{"autofix_applied": true}' > "{{state_root}}/autofix.json"
       else
-        echo "{\"autofix_applied\": false}" > "{{state_root}}/autofix.json"
+        echo '{"autofix_applied": false}' > "{{state_root}}/autofix.json"
+      fi
+
+      # Restore stashed unrelated changes
+      if [ "$STASHED" -eq 1 ]; then
+        git stash pop 2>&1 | tail -2 || true
       fi
     on_error: fail
 
@@ -116,58 +130,73 @@ steps:
     on_error: fail
 
   # --- 4. Dispatch agent to satisfy non-mechanical merge-ready criteria ---
-  # The agent invokes the merge-ready skill; addresses qa-team, docs,
-  # quality-audit, PR description; re-pushes; verifies CI converges.
   - id: drive-merge-ready
     type: agent
     prompt: |
-      You are running the merge-ready workflow for PR #{{pr_number}}
+      You are running merge-ready criteria checks for PR #{{pr_number}}
       in repository {{pr_repo}}.
 
       Working directory: {{repo_path}}
       PR branch: {{branch_name}}
-      Evidence directory (JSON files from prior steps): {{state_root}}
+      Evidence directory: {{state_root}}
 
       Read {{state_root}}/pr.json, {{state_root}}/pr_postfix.json, and
       {{state_root}}/ci_state.json for current state.
 
-      Invoke the `merge-ready` skill (/home/azureuser/.copilot/skills/merge-ready/SKILL.md)
-      and drive this PR to satisfy ALL six criteria:
+      Drive this PR to satisfy ALL six merge-ready criteria:
 
-        1. qa-team scenarios (validated AND run via gadugi-test)
-        2. Docs updated for any user-facing surface change
-        3. quality-audit ≥3 SEEK→VALIDATE→FIX cycles, clean final cycle
-        4. CI green, 0 failures
-        5. PR description contains concrete evidence for criteria 1-4 and 6
-        6. Diff contains no unrelated changes
+        1. qa-team scenarios — written or updated, validated with
+           `gadugi-test validate`, and run with `gadugi-test run`.
+           If gadugi-test is unavailable on this host, document that
+           as a gap (do not silently downgrade).
+        2. Docs updated for any user-facing surface change (CLI, API,
+           config, deployment). For internal-only changes, list the
+           changed surfaces reviewed and explain why each is internal.
+        3. quality-audit ≥3 SEEK→VALIDATE→FIX cycles, ending on a
+           clean final cycle (0 critical/high findings). Use the
+           quality-audit skill or invoke quality-audit-cycle recipe.
+        4. CI green with 0 failures (check via `gh pr checks`).
+        5. PR description contains concrete evidence for criteria 1-4
+           and 6. Update the PR body via `gh pr edit --body-file`.
+        6. Diff scope clean — only contains changes related to the
+           stated PR purpose (no incidental file modifications).
 
-      For each gap:
-        - If mechanical (lint, format, simple test fix) — fix and push
-        - If qa-team scenarios missing — author them, validate, run
-        - If docs missing — write them and link from PR description
-        - If quality-audit not run — invoke the quality-audit skill on the diff
-        - If unrelated changes — extract them to a separate branch/PR
+      For each gap, fix it directly:
+        - mechanical (lint, format, test fix) → fix and push
+        - missing scenarios → author them, validate, run
+        - missing docs → write them and link from PR description
+        - missing audit → run quality-audit on the diff
+        - unrelated changes → revert from this branch
 
-      After addressing all gaps, update the PR description to include
-      a "Merge-Ready Evidence" section with concrete proof for each
-      criterion (file paths, command outputs, links to runs).
+      Then update the PR description with a "Merge-Ready Evidence"
+      section. Use this template:
 
-      When done, write a JSON summary to {{state_root}}/merge_ready_verdict.json
-      with structure:
+        ## Merge-Ready Evidence
+
+        - **qa-team:** <scenario file paths + validate/run output summary>
+        - **docs:** <doc file paths> OR <"n/a — internal change. Surfaces reviewed: ...">
+        - **quality-audit:** <N cycles run, final clean? findings link>
+        - **CI:** <pass/fail summary, link to latest run>
+        - **diff scope:** <"clean" or list of unrelated changes removed>
+
+      ALWAYS write a JSON verdict to {{state_root}}/merge_ready_verdict.json
+      before exiting, even if you couldn't address all gaps. Use this
+      structure (use "blocked: <reason>" when a tool/access is missing):
+
         {
           "ready": true|false,
           "criteria": {
-            "qa_team": "satisfied|gap: <description>",
-            "docs": "satisfied|n/a: <reason>|gap: <description>",
-            "quality_audit": "satisfied: <cycles_run> cycles, final clean|gap: <description>",
-            "ci": "green|failures: <count>",
+            "qa_team":        "satisfied|blocked: <reason>|gap: <description>",
+            "docs":           "satisfied|n/a: <reason>|gap: <description>",
+            "quality_audit":  "satisfied: <cycles> cycles, final clean|gap: <description>",
+            "ci":             "green|failures: <count>|in_progress: <count>",
             "pr_description": "updated|gap: <description>",
-            "diff_scope": "clean|gap: <description>"
+            "diff_scope":     "clean|gap: <description>"
           },
           "blocking_summary": "<one line; empty if ready>"
         }
 
-      DO NOT merge the PR — that is the next step.
+      DO NOT merge the PR — verdict-and-merge handles that.
     on_error: continue
 
   # --- 5. Final verdict + conditional merge ---
@@ -179,8 +208,21 @@ steps:
 
       VERDICT="{{state_root}}/merge_ready_verdict.json"
       if [ ! -f "$VERDICT" ]; then
-        echo "[merge-ready] FATAL: agent did not write verdict file at $VERDICT"
-        exit 1
+        # Agent did not produce a verdict → treat as blocked
+        cat > "$VERDICT" <<EOF
+      {
+        "ready": false,
+        "criteria": {
+          "qa_team":        "blocked: agent step did not run",
+          "docs":           "blocked: agent step did not run",
+          "quality_audit":  "blocked: agent step did not run",
+          "ci":             "see ci_state.json",
+          "pr_description": "blocked: agent step did not run",
+          "diff_scope":     "see autofix.json"
+        },
+        "blocking_summary": "drive-merge-ready agent step did not produce verdict file"
+      }
+      EOF
       fi
 
       cat "$VERDICT"
