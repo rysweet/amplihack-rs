@@ -1249,6 +1249,90 @@ class TestIssue342ExistingBranchContext(unittest.TestCase):
 
 
 # ===========================================================================
+class TestWorktreePathFallback(unittest.TestCase):
+    """
+    Regression test for issue #362.
+
+    Bug: default-workflow.yaml steps that consume WORKTREE_SETUP_WORKTREE_PATH
+    used a bare reference (`$VAR`) under `set -euo pipefail`. When the BLOCKED
+    fallback path (or any code path that skips step-04-setup-worktree) runs
+    those steps, `set -u` aborts at variable expansion BEFORE any `cd … || cd
+    $REPO_PATH` fallback can take effect.
+
+    Fix: every consumer must use `${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}`
+    (or `:-(unset)` for echo).
+
+    This test asserts no bare `$WORKTREE_SETUP_WORKTREE_PATH` reference remains
+    in default-workflow.yaml, so any future bare reuse fails CI immediately.
+    """
+
+    def test_no_bare_worktree_path_references(self):
+        text = _WORKFLOW_YAML.read_text()
+        bare_refs: list[tuple[int, str]] = []
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            # Find $WORKTREE_SETUP_WORKTREE_PATH that is NOT inside ${...:-...}
+            # i.e., a literal `$WORKTREE_SETUP_WORKTREE_PATH` not preceded by `{`.
+            # Acceptable: ${WORKTREE_SETUP_WORKTREE_PATH:-...}
+            # Unacceptable: $WORKTREE_SETUP_WORKTREE_PATH (bare)
+            if "$WORKTREE_SETUP_WORKTREE_PATH" in line and "${WORKTREE_SETUP_WORKTREE_PATH" not in line:
+                bare_refs.append((lineno, line.rstrip()))
+        self.assertEqual(
+            bare_refs,
+            [],
+            "Bare $WORKTREE_SETUP_WORKTREE_PATH references found — these will\n"
+            "abort `set -u` when the var is unset (see issue #362).\n"
+            "Use ${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH} (or :-(unset) for echo).\n"
+            f"Offenders:\n" + "\n".join(f"  L{n}: {l}" for n, l in bare_refs),
+        )
+
+    def test_step15_runs_under_set_u_with_unset_worktree_path(self):
+        """
+        End-to-end: extract step-15-commit-push command, invoke it in a temp
+        git repo with WORKTREE_SETUP_WORKTREE_PATH UNSET. Before the fix, it
+        aborts at line 1 with `unbound variable`. After the fix, it falls
+        through to REPO_PATH and reaches the staging logic.
+        """
+        raw_cmd = _extract_step_command(_WORKFLOW_YAML, "step-15-commit-push")
+        tmp = tempfile.mkdtemp()
+        try:
+            subprocess.run(
+                ["git", "-c", "user.name=test", "-c", "user.email=t@t",
+                 "init", "-q", "-b", "main", tmp],
+                check=True,
+            )
+            # Make at least one commit so HEAD exists.
+            (Path(tmp) / "README.md").write_text("hi\n")
+            subprocess.run(["git", "-C", tmp, "add", "-A"], check=True)
+            subprocess.run(
+                ["git", "-C", tmp, "-c", "user.name=test", "-c", "user.email=t@t",
+                 "commit", "-q", "-m", "init"],
+                check=True,
+            )
+            env = {
+                "PATH": os.environ["PATH"],
+                "REPO_PATH": tmp,
+                "TASK_DESCRIPTION": "test",
+                "ISSUE_NUMBER": "0",
+                # WORKTREE_SETUP_WORKTREE_PATH deliberately unset.
+            }
+            result = subprocess.run(
+                ["bash", "-c", raw_cmd],
+                capture_output=True, text=True, env=env, cwd=tmp,
+            )
+            # Must NOT abort with unbound variable. Either succeeds (nothing to
+            # commit → exits via hollow-success branch which is fine for this test
+            # since upstream isn't configured), or exits 1 with a meaningful
+            # diagnostic — but never with "unbound variable".
+            self.assertNotIn(
+                "unbound variable",
+                result.stderr,
+                f"set -u aborted on bare WORKTREE_SETUP_WORKTREE_PATH:\n{result.stderr}",
+            )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 
