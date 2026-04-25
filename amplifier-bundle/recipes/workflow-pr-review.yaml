@@ -1,0 +1,355 @@
+name: "workflow-pr-review"
+description: "Phase 7: PR review cycle — compliance, reviewer, gates (17a-19d)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["development", "review", "pr"]
+
+# workflow-pr-review: extracted from default-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — the layered review steps the LLM
+# converges through must remain intact. Context flows in from the parent
+# workflow via recipe-runner's automatic context-merging in
+# `_execute_sub_recipe()`; outputs declared by these steps propagate back to
+# the parent and are visible to subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 80
+
+context: {}
+
+steps:
+  - id: "step-17a-compliance-verification"
+    type: "bash"
+    # FIX (#2925): Previously this step only echoed instructions without
+    # checking anything — it was a no-op that never enforced step-13 completion.
+    # Now it reads local_testing_gate (step-13 output) and FAILS hard if the
+    # gate is empty, blocking the review phase until testing is done.
+    command: |
+      echo "=== Step 17a: Step 13 Compliance Verification ===" && \
+      echo "" && \
+      GATE_OUTPUT="$LOCAL_TESTING_GATE" && \
+      if [ -z "$GATE_OUTPUT" ] || [ "$GATE_OUTPUT" = "''" ]; then \
+        echo "COMPLIANCE FAILURE: Step 13 (outside-in testing) produced no output." && \
+        echo "" && \
+        echo "The outside-in testing step (step-13-local-testing) must be completed" && \
+        echo "before the PR review phase can begin." && \
+        echo "" && \
+        echo "Required: Invoke the qa-team skill (outside-in-testing alias also works) and document at least" && \
+        echo "2 test scenarios in the PR description under 'Step 13: Local Testing Results'." && \
+        exit 1 ; \
+      fi && \
+      echo "Compliance check: local_testing_gate is populated." && \
+      echo "" && \
+      echo "Verify PR description contains 'Step 13: Local Testing Results' section" && \
+      echo "with actual test execution evidence (not just planning)." && \
+      echo "" && \
+      echo "=== Compliance Check PASSED ==="
+    output: "step_13_compliance_check"
+
+  - id: "step-17b-reviewer-agent"
+    agent: "amplihack:reviewer"
+    prompt: |
+      # Step 17b: Comprehensive Code Review (MANDATORY)
+
+      **PR URL:** {{pr_url}}
+      **Requirements:** {{final_requirements}}
+      **Implementation:** {{review_feedback}}
+
+      **REQUIRED FOR ALL PRs** - Quality gates exist for a reason.
+
+      **Review Checklist:**
+      - [ ] Code quality and standards
+      - [ ] Test coverage adequate
+      - [ ] No TODOs, stubs, or swallowed exceptions
+      - [ ] No unimplemented functions
+      - [ ] Logic correctness
+      - [ ] Edge case handling
+
+      **Actions:**
+      1. Perform comprehensive code review
+      2. Identify issues and improvements
+      3. **POST review comments on PR** (this is required evidence)
+
+      **Output:** Structured review findings AND confirmation that review was posted to PR.
+    output: "pr_review"
+
+  - id: "step-17c-security-review"
+    agent: "amplihack:security"
+    prompt: |
+      # Step 17c: Security Review (MANDATORY)
+
+      **PR URL:** {{pr_url}}
+      **Implementation:** {{review_feedback}}
+      **Previous Review:** {{pr_review}}
+
+      Security review of the PR:
+      - [ ] Verify all security requirements met
+      - [ ] Check for any new vulnerabilities
+      - [ ] Confirm sensitive data handling
+      - [ ] Review authentication/authorization if applicable
+      - [ ] Check for injection vulnerabilities
+
+      **Actions:**
+      1. Perform security analysis
+      2. **POST security findings as PR comments** (this is required evidence)
+
+      **Output:** Security review findings AND confirmation that review was posted to PR.
+    output: "pr_security_review"
+
+  - id: "step-17d-philosophy-guardian"
+    agent: "amplihack:philosophy-guardian"
+    prompt: |
+      # Step 17d: Philosophy Guardian Review (MANDATORY)
+
+      **PR URL:** {{pr_url}}
+      **Implementation:** {{review_feedback}}
+      **Code Review:** {{pr_review}}
+
+      Philosophy compliance review:
+      - [ ] Ruthless simplicity achieved
+      - [ ] Bricks & studs pattern followed
+      - [ ] Zero-BS implementation (no stubs, faked APIs, swallowed exceptions)
+      - [ ] No over-engineering
+      - [ ] Clean module boundaries
+
+      **Actions:**
+      1. Verify philosophy compliance
+      2. **POST philosophy check as PR comment** (this is required evidence)
+
+      **Output:** Philosophy compliance status AND confirmation that review was posted to PR.
+    output: "pr_philosophy_review"
+
+  - id: "step-17e-address-blocking-issues"
+    agent: "amplihack:builder"
+    prompt: |
+      # Step 17e: Address Blocking Issues (MANDATORY)
+
+      **PR Review:** {{pr_review}}
+      **Security Review:** {{pr_security_review}}
+      **Philosophy Review:** {{pr_philosophy_review}}
+
+      Review all findings from Steps 16a-16d and address any blocking issues:
+
+      1. Identify blocking issues from each review
+      2. Implement fixes for each blocking issue
+      3. If issues found, re-run applicable reviews after fixing
+
+      **Output:** Summary of blocking issues found and how they were addressed.
+      If no blocking issues, state "No blocking issues found."
+    output: "blocking_issues_addressed"
+
+  - id: "step-17f-verification-gate"
+    type: "bash"
+    command: |
+      echo "=== STEP 17 VERIFICATION GATE ===" && \
+      echo "" && \
+      echo "Before proceeding, verify ALL of the following:" && \
+      echo "" && \
+      echo "  ✓ Did I invoke the REVIEWER agent? → Yes (output captured)" && \
+      echo "  ✓ Did I invoke the SECURITY agent? → Yes (output captured)" && \
+      echo "  ✓ Did I invoke the PHILOSOPHY-GUARDIAN agent? → Yes (output captured)" && \
+      echo "  ✓ Did I check for FORBIDDEN PATTERN violations? → Yes" && \
+      echo "  ✓ Are all three reviews POSTED to the PR as comments?" && \
+      echo "  ✓ All blocking issues have been addressed?" && \
+      echo "" && \
+      echo "If any verification fails, STOP and complete the missing step." && \
+      echo "" && \
+      echo "=== GATE PASSED - Proceed to Step 18 ==="
+    output: "step_17_gate_status"
+
+  # ==========================================================================
+  # STEP 18: IMPLEMENT REVIEW FEEDBACK (MANDATORY - DO NOT SKIP)
+  # Granular sub-steps to ensure thorough feedback implementation.
+  # ==========================================================================
+  - id: "step-18a-analyze-feedback"
+    agent: "amplihack:architect"
+    prompt: |
+      # Step 18a: Analyze Review Feedback (MANDATORY)
+
+      **PR Review:** {{pr_review}}
+      **Security Review:** {{pr_security_review}}
+      **Philosophy Review:** {{pr_philosophy_review}}
+
+      Analyze ALL feedback from Step 16 reviews:
+      1. Categorize each item: blocking issues vs. suggestions vs. questions
+      2. Prioritize blocking issues first
+      3. Create action plan for addressing each item
+
+      **Output:** Structured analysis of all feedback with action plan.
+    output: "feedback_analysis"
+
+  - id: "step-18b-implement-feedback"
+    agent: "amplihack:builder"
+    prompt: |
+      # Step 18b: Implement Review Feedback (MANDATORY)
+
+      **Feedback Analysis:** {{feedback_analysis}}
+      **PR Review:** {{pr_review}}
+      **Security Review:** {{pr_security_review}}
+      **Philosophy Review:** {{pr_philosophy_review}}
+      **Current Implementation:** {{review_feedback}}
+
+      **REQUIRED FOR ALL PRs** - Unaddressed feedback means the review was pointless.
+
+      **Checklist:**
+      - [ ] Address EVERY blocking issue
+      - [ ] Address suggestions where appropriate
+      - [ ] For disagreements, document reasoning
+      - [ ] Ensure changes don't introduce new issues
+
+      **Output:** Updated implementation with summary of changes for each feedback item.
+    output: "pr_feedback_changes"
+
+  - id: "step-18c-push-feedback-changes"
+    type: "bash"
+    command: |
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
+      echo "=== Pushing Review Feedback Changes ===" && \
+      git add -A && \
+      if [ -n "$(git diff --cached --name-only)" ]; then \
+        git commit -m "address review feedback
+
+      - Implemented reviewer suggestions
+      - Fixed identified issues
+      - Updated per security review
+      - Addressed philosophy compliance items" ; \
+      else \
+        echo "WARNING: Nothing to commit - feedback changes already committed" ; \
+      fi && \
+      if git rev-list --count @{u}..HEAD 2>/dev/null | grep -qv '^0$'; then \
+        git pull --rebase 2>/dev/null && git push ; \
+      else \
+        echo "WARNING: Nothing to push - branch is up to date with remote" ; \
+      fi && \
+      echo "=== Changes Pushed ==="
+    output: "feedback_push_result"
+
+  - id: "step-18d-respond-to-comments"
+    type: "bash"
+    command: |
+      echo "=== Responding to Review Comments ===" && \
+      echo "" && \
+      echo "Post responses to each review comment on the PR explaining:" && \
+      echo "  - What was done to address the feedback" && \
+      echo "  - Any disagreements with reasoning" && \
+      echo "" && \
+      echo "Use: gh pr comment <pr_number> --body 'Response text'" && \
+      echo "" && \
+      echo "=== Comment Responses Complete ==="
+    output: "comment_responses"
+
+  - id: "step-18e-verification-gate"
+    type: "bash"
+    command: |
+      echo "=== STEP 18 VERIFICATION GATE ===" && \
+      echo "" && \
+      echo "Before proceeding, verify ALL of the following:" && \
+      echo "" && \
+      echo "  ✓ Did I address EVERY feedback comment (not just some)?" && \
+      echo "  ✓ Did I respond to each comment on the PR?" && \
+      echo "  ✓ Did I use the builder agent for implementation changes?" && \
+      echo "  ✓ Are all tests still passing?" && \
+      echo "" && \
+      echo "If any verification fails, STOP and complete the missing step." && \
+      echo "" && \
+      echo "=== GATE PASSED - Proceed to Step 19 ==="
+    output: "step_18_gate_status"
+
+  # ==========================================================================
+  # STEP 19: PHILOSOPHY COMPLIANCE CHECK
+  # Granular sub-steps with verification gate to prevent completion bias.
+  # ==========================================================================
+  - id: "step-19a-philosophy-check"
+    agent: "amplihack:reviewer"
+    prompt: |
+      # Step 19a: Philosophy Compliance Review (MANDATORY)
+
+      **Implementation:** {{pr_feedback_changes}}
+      **Requirements:** {{final_requirements}}
+
+      Philosophy compliance verification:
+      - [ ] Ruthless simplicity achieved
+      - [ ] No over-engineering or unnecessary complexity
+      - [ ] Implementation aligns with project philosophy
+      - [ ] No Forbidden Pattern violations (FORBIDDEN_PATTERNS.md): no error swallowing, no silent fallbacks, no data loss, no shell anti-patterns (|| true, >/dev/null), no async misuse, no config divergence, no validation gaps
+      - [ ] All tests passing
+      - [ ] Documentation complete and accurate
+
+      **Output:** Detailed philosophy compliance findings.
+    output: "philosophy_check"
+
+  - id: "step-19b-patterns-check"
+    agent: "amplihack:patterns"
+    prompt: |
+      # Step 19b: Pattern Compliance Review (MANDATORY)
+
+      **Implementation:** {{pr_feedback_changes}}
+
+      Pattern compliance verification:
+      - [ ] Design patterns used correctly
+      - [ ] Architectural patterns followed
+      - [ ] Code organization patterns maintained
+      - [ ] No anti-patterns introduced
+      - [ ] No Forbidden Patterns (error swallowing, silent fallbacks, || true, >/dev/null, fire-and-forget async, unchecked HTTP responses, log-only catches)
+
+      **Output:** Pattern compliance findings with any violations.
+    output: "patterns_check"
+
+  - id: "step-19c-zero-bs-verification"
+    type: "bash"
+    command: |
+      echo "=== ZERO-BS VERIFICATION ===" && \
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
+      echo "" && \
+      echo "Scanning for Zero-BS violations..." && \
+      echo "" && \
+      echo "--- Checking for TODO/FIXME comments ---" && \
+      (grep -r -E "(TODO|FIXME)" --include="*.py" --include="*.ts" --include="*.js" . 2>/dev/null || echo "None found") && \
+      echo "" && \
+      echo "--- Checking for stub indicators ---" && \
+      (grep -r -E "(NotImplementedError|raise NotImplemented|pass  # stub)" --include="*.py" . 2>/dev/null || echo "None found") && \
+      echo "" && \
+      echo "--- Checking for Forbidden Patterns ---" && \
+      echo "  Shell: || true, >/dev/null 2>&1, set +e" && \
+      (grep -rn "|| true\||| :\|>/dev/null 2>&1\|2>/dev/null\|&>/dev/null\|set +e" --include="*.sh" --include="*.bash" --include="Makefile" --include="Dockerfile" . 2>/dev/null || echo "  None found") && \
+      echo "  Python: bare except, except pass, return None in except" && \
+      (grep -rn "except:$\|except .*:.*pass$\|except.*:.*return None" --include="*.py" . 2>/dev/null || echo "  None found") && \
+      echo "  TypeScript/JS: empty catch, catch return undefined" && \
+      (grep -rn "catch.*{.*}$\|catch.*return undefined\|catch.*return \[\]" --include="*.ts" --include="*.js" . 2>/dev/null || echo "  None found") && \
+      echo "" && \
+      echo "=== Zero-BS Verification Complete ==="
+    output: "zero_bs_check"
+
+  - id: "step-19d-verification-gate"
+    type: "bash"
+    command: |
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      # ARG_MAX guard: truncated to 1 KB summaries below (#3366 / b1f87112b).
+      PHIL_CHECK="$PHILOSOPHY_CHECK"
+      PAT_CHECK="$PATTERNS_CHECK"
+      PHIL_SUMMARY=$(printf '%.1024s' "$PHIL_CHECK")
+      PAT_SUMMARY=$(printf '%.1024s' "$PAT_CHECK")
+
+      echo "=== STEP 19 VERIFICATION GATE ==="
+      echo ""
+      echo "Before proceeding, verify ALL of the following:"
+      echo ""
+      echo "  ✓ Did I invoke the REVIEWER agent for philosophy check?"
+      echo "  ✓ Did I invoke the PATTERNS agent?"
+      echo "  ✓ Did I complete the zero-BS verification?"
+      echo "  ✓ Did I check for Forbidden Pattern violations?"
+      echo "  ✓ Are all findings documented?"
+      echo "  ✓ Any issues found have been addressed?"
+      echo ""
+      echo "Philosophy check (first 1KB): $PHIL_SUMMARY"
+      echo "Patterns check (first 1KB): $PAT_SUMMARY"
+      echo ""
+      echo "If any verification fails, STOP and complete the missing step."
+      echo ""
+      echo "=== GATE PASSED - Proceed to Step 20 ==="
+    output: "step_19_gate_status"
+
+  # ==========================================================================
+  # STEP 20: FINAL CLEANUP AND VERIFICATION
+  # ==========================================================================

@@ -1,0 +1,240 @@
+name: "workflow-tdd"
+description: "Phase 3: TDD — tests, implement, no-op guard (07-08c)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["development", "tdd", "implementation"]
+
+# workflow-tdd: extracted from default-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — the layered review steps the LLM
+# converges through must remain intact. Context flows in from the parent
+# workflow via recipe-runner's automatic context-merging in
+# `_execute_sub_recipe()`; outputs declared by these steps propagate back to
+# the parent and are visible to subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 80
+
+context: {}
+
+steps:
+  - id: "step-07-write-tests"
+    agent: "amplihack:tester"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback' and goal_already_met != 'true'"
+    prompt: |
+      # Step 7: TDD - Write Tests First
+
+      **Task:** {{task_description}}
+      **Requirements:** {{final_requirements}}
+      **Design Specification:** {{design_spec}}
+      **Documentation:** {{final_documentation}}
+
+      Following Test-Driven Development methodology:
+
+      Write FAILING tests that specify the expected behavior:
+      - Unit tests for each component
+      - Integration tests for workflows
+      - Edge case tests
+      - Error handling tests
+
+      These tests should:
+      - Define the contract for the implementation
+      - Fail initially (code doesn't exist yet)
+      - Pass once implementation is complete
+
+      Output test files with clear file path headers.
+    output: "test_spec"
+
+  # ==========================================================================
+  # STEP 8: IMPLEMENT THE SOLUTION
+  # ==========================================================================
+  - id: "step-08-implement"
+    agent: "amplihack:builder"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback' and goal_already_met != 'true'"
+    prompt: |
+      # Step 8: Implement the Solution
+
+      **Task:** {{task_description}}
+      **Requirements:** {{final_requirements}}
+      **Design Specification:** {{design_spec}}
+      **Documentation:** {{final_documentation}}
+      **Tests (must pass):** {{test_spec}}
+
+      Implement the solution following the design.
+
+      **Rules (in order of authority):**
+      0. **The user's task description is authoritative.** If the existing code already
+         appears to satisfy the requirements, that is a SIGNAL THAT YOU MISREAD THE
+         TASK — re-read it more carefully and apply the requested change anyway. Do
+         NOT exit without modifying files unless the task is provably impossible
+         (e.g., contradicts laws of physics, references nonexistent platforms). A
+         "no-op" outcome must be explicitly justified in the output.
+      1. You MUST modify or create at least one file unless rule 0's "provably
+         impossible" exception applies. Reading code is not implementing.
+      2. Follow the design closely.
+      3. Make failing tests pass iteratively.
+      4. NO stubs, TODOs, or placeholder code.
+      5. NO swallowed exceptions.
+      6. NO faked APIs or data.
+      7. Clear error messages.
+      8. Appropriate logging.
+
+      **Self-verification before declaring done:**
+      - Run `git status` and `git diff --stat` in your working directory.
+      - If the diff is empty, you have NOT implemented anything. Re-read the task
+        and try again. Do not produce a final output until you have either (a)
+        written changes that show in `git diff`, or (b) determined the task is
+        provably impossible per rule 0.
+
+      **Output (structured — all sections required):**
+      - `Files modified:` — newline-separated list of paths you created or edited.
+        If empty, you must include a `No-op justification:` section explaining why
+        rule 0's "provably impossible" exception applies. Empty list with no
+        justification = workflow failure.
+      - `Diff summary:` — one line per file describing the change.
+      - Complete implementation code (all files), with `# File: path/to/file.py`
+        headers.
+      - Brief explanation of key decisions.
+      - Any deviations from design (with justification).
+    output: "implementation"
+
+  - id: "step-08c-implementation-no-op-guard"
+    type: "bash"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback' and goal_already_met != 'true'"
+    # Hard-fail early (before checkpoint, refactor, review) if step-08 declared
+    # success but reported zero file edits. This catches prompt-misalignment
+    # (issue #251 / amplihack-rs #251) closer to the root cause than the
+    # commit-stage hollow-success guard at step-15.
+    command: |
+      set -euo pipefail
+      IMPL="${IMPLEMENTATION:-}"
+      if [ -z "$IMPL" ]; then
+        echo "ERROR: step-08-implement produced no output." >&2
+        exit 1
+      fi
+      # Look for the structured "Files modified:" line.
+      FILES_LINE=$(printf '%s\n' "$IMPL" | grep -m1 -i '^[[:space:]]*[*-]\?[[:space:]]*Files modified:' || true)
+      JUSTIFICATION=$(printf '%s\n' "$IMPL" | grep -m1 -i '^[[:space:]]*[*-]\?[[:space:]]*No-op justification:' || true)
+      if [ -z "$FILES_LINE" ]; then
+        echo "WARNING: step-08-implement output is missing the required" >&2
+        echo "'Files modified:' section. The agent did not follow the structured" >&2
+        echo "output schema. Check the implementer prompt and output." >&2
+        # Soft-warn rather than hard-fail to remain backward-compatible with
+        # agents that ignore the schema. The git-diff guard below is the hard gate.
+      fi
+      # Check git diff in the worktree as the source of truth.
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$PWD}"
+      if ! git diff --quiet || ! git diff --cached --quiet || \
+         [ -n "$(git ls-files --others --exclude-standard)" ]; then
+        echo "step-08 produced file changes — guard passed."
+        exit 0
+      fi
+      if [ -n "$JUSTIFICATION" ]; then
+        echo "step-08 produced no file changes but declared a no-op justification:" >&2
+        echo "$JUSTIFICATION" >&2
+        echo "Allowing workflow to continue under rule 0 exception." >&2
+        exit 0
+      fi
+      # Issue #360: detect "goal already met" — the desired change is already
+      # in main (e.g., a previous orchestrator round merged it) before treating
+      # this as a hollow-success failure. Probe the linked GitHub issue: if it
+      # is closed by a merged PR, exit 0 with a "pre-existing" marker rather
+      # than failing the round.
+      ISSUE_NUM="${ISSUE_NUMBER:-}"
+      if [ -n "$ISSUE_NUM" ] && command -v gh >/dev/null 2>&1; then
+        ISSUE_STATE=$(gh issue view "$ISSUE_NUM" --json state --jq '.state' 2>/dev/null || true)
+        if [ "$ISSUE_STATE" = "CLOSED" ]; then
+          # closedByPullRequestsReferences items DO NOT carry .state.
+          # Fetch (number, owner/repo) pairs so cross-repo PRs are looked
+          # up correctly (COE cohort review #2).
+          CLOSING_PR_REFS=$(gh issue view "$ISSUE_NUM" \
+            --json closedByPullRequestsReferences \
+            --jq '[.closedByPullRequestsReferences[]? | "\(.number) \(.repository.owner.login)/\(.repository.name)"] | join("\n")' \
+            2>/dev/null || true)
+          MAX_PROBE=10
+          probed=0
+          MERGED_FOUND=0
+          while IFS= read -r ref; do
+            [ -z "$ref" ] && continue
+            probed=$((probed + 1))
+            if [ "$probed" -gt "$MAX_PROBE" ]; then break; fi
+            PR_NUM=$(printf '%s' "$ref" | awk '{print $1}')
+            PR_REPO=$(printf '%s' "$ref" | awk '{print $2}')
+            if [ -n "$PR_REPO" ] && [ "$PR_REPO" != "/" ]; then
+              PR_MERGED=$(timeout 30 gh pr view "$PR_NUM" --repo "$PR_REPO" --json mergedAt --jq '.mergedAt' 2>/dev/null || true)
+            else
+              PR_MERGED=$(timeout 30 gh pr view "$PR_NUM" --json mergedAt --jq '.mergedAt' 2>/dev/null || true)
+            fi
+            # mergedAt is null for unmerged PRs and a timestamp string for merged ones.
+            if [ -n "$PR_MERGED" ] && [ "$PR_MERGED" != "null" ]; then
+              MERGED_FOUND=1
+              break
+            fi
+          done <<< "$CLOSING_PR_REFS"
+          if [ "$MERGED_FOUND" -eq 1 ]; then
+            echo "INFO: step-08-implement produced no file changes, but issue" >&2
+            echo "  #${ISSUE_NUM} is already CLOSED by a merged pull request." >&2
+            echo "  This is a 'goal already met' (#360) — not a hollow success." >&2
+            echo "  Treating as pre-existing success and continuing." >&2
+            exit 0
+          fi
+        fi
+      fi
+      echo "ERROR: step-08-implement claimed success but produced ZERO file changes" >&2
+      echo "and no 'No-op justification:' was provided. This is a hollow-success" >&2
+      echo "condition, almost certainly caused by prompt-misalignment — see" >&2
+      echo "https://github.com/rysweet/amplihack-rs/issues/251." >&2
+      echo "" >&2
+      echo "Working directory: $PWD" >&2
+      git --no-pager status >&2
+      exit 1
+    output: "implementation_noop_guard"
+
+  - id: "step-08b-integration"
+    agent: "amplihack:integration"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback' and goal_already_met != 'true'"
+    prompt: |
+      # Step 8b: External Service Integration
+
+      **Implementation:** {{implementation}}
+      **Design Specification:** {{design_spec}}
+
+      Handle external service connections:
+      - API client implementations
+      - Service adapters
+      - Error handling for external calls
+      - Retry logic and resilience
+
+      Skip if no external integrations are required.
+    output: "integration_code"
+
+  # --------------------------------------------------------------------------
+  # CHECKPOINT: Stage implementation work to prevent loss if later steps fail
+  # --------------------------------------------------------------------------
+  - id: "checkpoint-after-implementation"
+    type: "bash"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
+    # FIX (#4231): Limit env var size to prevent E2BIG when prior steps
+    # (implementation, test_spec, design_spec) produce large outputs.
+    max_env_value_bytes: 65536
+    command: |
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" 2>/dev/null || cd "$REPO_PATH" && \
+      echo "=== Checkpoint: Staging Implementation ===" && \
+      git add -A && \
+      STAGED=$(git diff --cached --name-only) && \
+      if [ -n "$STAGED" ]; then \
+        git commit -m "wip: checkpoint after implementation (steps 7-8)
+
+      Automatic checkpoint to preserve work in progress.
+      Tests and implementation saved before refactoring phase." && \
+        echo "Checkpoint commit created with $(wc -l <<< "$STAGED") file(s)" ; \
+      else \
+        echo "No changes to checkpoint" ; \
+      fi && \
+      echo "=== Checkpoint Complete ==="
+    output: "impl_checkpoint"
+
+  # ==========================================================================
+  # STEP 9: REFACTOR AND SIMPLIFY
+  # ==========================================================================

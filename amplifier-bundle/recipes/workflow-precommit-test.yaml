@@ -1,0 +1,142 @@
+name: "workflow-precommit-test"
+description: "Phase 5: pre-commit hooks + local testing (12-13)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["development", "testing", "quality"]
+
+# workflow-precommit-test: extracted from default-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — the layered review steps the LLM
+# converges through must remain intact. Context flows in from the parent
+# workflow via recipe-runner's automatic context-merging in
+# `_execute_sub_recipe()`; outputs declared by these steps propagate back to
+# the parent and are visible to subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 80
+
+context: {}
+
+steps:
+  - id: "step-12-run-precommit"
+    agent: "amplihack:pre-commit-diagnostic"
+    condition: "goal_already_met != 'true'"
+    prompt: |
+      # Step 12: Run Tests and Pre-commit Hooks
+
+      **Worktree:** {{worktree_setup}}
+      **Implementation:** {{review_feedback}}
+
+      Execute pre-commit validation:
+
+      1. **Check hooks installed:**
+         ```bash
+         test -f .pre-commit-config.yaml && echo "Config found"
+         test -f "$(git rev-parse --git-path hooks/pre-commit)" && echo "Hooks installed"
+         ```
+
+      2. **Install if needed:** `pre-commit install`
+
+      3. **Run all checks:**
+         ```bash
+         pre-commit run --all-files
+         pytest
+         ```
+
+      4. **Fix any issues:**
+         - Linting issues
+         - Formatting issues
+         - Type checking errors
+
+      Iterate until all checks pass. Report results.
+    output: "precommit_results"
+
+  # ==========================================================================
+  # STEP 13: MANDATORY OUTSIDE-IN TESTING
+  # Use the qa-team skill (outside-in-testing alias supported) to test this PR as a user would from
+  # the PR branch. No bash echo — the agent must actually execute the tests.
+  # ==========================================================================
+  - id: "step-13-local-testing"
+    agent: "amplihack:builder"
+    condition: "goal_already_met != 'true'"
+    prompt: |
+      # Step 13: Mandatory Outside-In Testing (CANNOT BE SKIPPED)
+
+      **Task:** {{task_description}}
+      **Repository:** {{repo_path}}
+      **Branch:** Run `git branch --show-current` to get the current branch name.
+
+      You MUST perform outside-in testing using the `qa-team` skill (`outside-in-testing` remains an alias)
+      to verify this change as a real user would — from the PR branch, not just
+      the working directory.
+
+      ## Required Actions
+
+      1. **Get the current branch name:**
+         ```bash
+         git branch --show-current
+         ```
+
+      2. **Get the remote URL (for uvx testing):**
+         ```bash
+         git remote get-url origin
+         ```
+
+      3. **Invoke the `qa-team` skill** to generate and execute
+         agentic outside-in tests for this change. Pass the PR branch name and
+         repository URL so tests run against the actual branch:
+         ```
+         Skill(skill="qa-team")
+         ```
+
+      4. **Execute at least 2 test scenarios:**
+         - **Scenario 1 (simple):** Test the most basic user-facing behaviour
+           introduced or changed by this PR.
+         - **Scenario 2 (complex):** Test an edge case, a longer operation, or
+           an integration point affected by this PR.
+
+         Test from the PR branch using the pattern:
+         ```bash
+         uvx --from git+<remote-url>@<branch-name> amplihack <command>
+         ```
+
+      5. **Document results** — write the following section into the PR
+         description (you will paste it in Step 16 when creating the PR):
+
+         ```
+         ## Step 13: Local Testing Results
+
+         ### Scenario 1 — <brief description>
+         Command: `uvx --from git+...@<branch> amplihack <command>`
+         Result: PASS / FAIL
+         Output: <key output lines>
+
+         ### Scenario 2 — <brief description>
+         Command: `uvx --from git+...@<branch> amplihack <command>`
+         Result: PASS / FAIL
+         Output: <key output lines>
+         ```
+
+      ## What Counts as Testing
+
+      - Running the actual changed code with test inputs via `uvx --from git+...`
+      - Verifying error messages, output format, and user experience
+      - Checking that existing functionality still works (regression check)
+
+      ## What Does NOT Count
+
+      - Planning tests without executing them
+      - CI/CD checks only (local execution required IN ADDITION)
+      - Assuming "documentation can't be tested"
+
+      Report the full test output and confirm both scenarios passed (or document
+      any failures with root cause analysis).
+    output: "local_testing_gate"
+
+  # ==========================================================================
+  # STEP 14: BUMP VERSION IN PYPROJECT.TOML (MANDATORY - DO NOT SKIP)
+  # Before committing, bump version to reflect change type.
+  # CI will block PRs that don't bump version.
+  # Git tags are auto-created on merge matching the version.
+  # ==========================================================================

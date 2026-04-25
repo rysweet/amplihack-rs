@@ -1,0 +1,208 @@
+name: "workflow-refactor-review"
+description: "Phase 4: refactor + 3 pre-commit reviews + feedback (09-11b)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["development", "refactor", "review"]
+
+# workflow-refactor-review: extracted from default-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — the layered review steps the LLM
+# converges through must remain intact. Context flows in from the parent
+# workflow via recipe-runner's automatic context-merging in
+# `_execute_sub_recipe()`; outputs declared by these steps propagate back to
+# the parent and are visible to subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 80
+
+context: {}
+
+steps:
+  - id: "step-09-refactor"
+    agent: "amplihack:cleanup"
+    condition: "goal_already_met != 'true'"
+    prompt: |
+      # Step 9: Refactor and Simplify
+
+      **CRITICAL:** User requirements that CANNOT be removed:
+      {{final_requirements}}
+
+      **Implementation to refactor:** {{implementation}}
+      **Integration code:** {{integration_code}}
+
+      Apply ruthless simplification WITHIN user constraints:
+
+      1. Remove unnecessary abstractions (not explicitly requested)
+      2. Eliminate dead code (unless user wanted it)
+      3. Simplify complex logic (without violating specs)
+      4. Ensure single responsibility principle
+      5. Verify no placeholders remain
+
+      **Zero-BS Checklist:**
+      - [ ] No stubs
+      - [ ] No TODOs
+      - [ ] No swallowed exceptions
+      - [ ] No unimplemented functions
+
+      **VALIDATE:** All explicit user requirements still preserved.
+    output: "refactored_code"
+
+  - id: "step-09b-optimize"
+    agent: "amplihack:optimizer"
+    condition: "goal_already_met != 'true'"
+    prompt: |
+      # Step 9b: Performance Optimization
+
+      **Refactored Code:** {{refactored_code}}
+      **Requirements:** {{final_requirements}}
+
+      Review for performance improvements:
+      - Algorithm efficiency
+      - Resource usage
+      - Caching opportunities
+      - Unnecessary operations
+
+      Apply optimizations without sacrificing clarity or correctness.
+    output: "optimized_code"
+
+  # ==========================================================================
+  # STEP 10: REVIEW PASS BEFORE COMMIT
+  # ==========================================================================
+  - id: "step-10-pre-commit-review"
+    agent: "amplihack:reviewer"
+    condition: "goal_already_met != 'true'"
+    prompt: |
+      # Step 10: Review Pass Before Commit
+
+      **Requirements:** {{final_requirements}}
+      **Design:** {{design_spec}}
+      **Implementation:** {{optimized_code}}
+      **Tests:** {{test_spec}}
+
+      Comprehensive code review before committing:
+
+      **Checklist:**
+      - [ ] Meets all requirements
+      - [ ] Follows the design
+      - [ ] No stubs/TODOs/placeholders
+      - [ ] Proper error handling
+      - [ ] Adequate test coverage
+      - [ ] Code is as simple as possible
+      - [ ] Clear naming and documentation
+      - [ ] No debugging code (console.log, print, breakpoint)
+      - [ ] No temporary files
+
+      **PR Cleanliness Check:**
+      - [ ] All changes directly related to issue
+      - [ ] No experimental code
+      - [ ] No "while I'm here" improvements
+
+      Provide review summary with issues and recommendations.
+    output: "pre_commit_review"
+
+  - id: "step-10b-security-review"
+    agent: "amplihack:security"
+    condition: "goal_already_met != 'true'"
+    prompt: |
+      # Step 10b: Security Review
+
+      **Implementation:** {{optimized_code}}
+      **Security Requirements:** {{security_requirements}}
+
+      Security review checklist:
+      - [ ] Input validation
+      - [ ] Output encoding
+      - [ ] Authentication/authorization
+      - [ ] Sensitive data handling
+      - [ ] No hardcoded secrets
+      - [ ] Proper error messages (no info leakage)
+
+      Report any security issues found.
+    output: "security_review"
+
+  - id: "step-10c-philosophy-check"
+    agent: "amplihack:philosophy-guardian"
+    condition: "goal_already_met != 'true'"
+    prompt: |
+      # Step 10c: Philosophy Compliance Check
+
+      **Implementation:** {{optimized_code}}
+      **Review:** {{pre_commit_review}}
+      **Security Review:** {{security_review}}
+
+      Verify philosophy compliance:
+      - Ruthless Simplicity: Is this as simple as possible?
+      - Zero-BS: No stubs, faked data, swallowed exceptions?
+      - Modular Design: Clean boundaries?
+      - Test-Driven: Adequate coverage?
+
+      Report any philosophy violations.
+    output: "philosophy_review"
+
+  # ==========================================================================
+  # STEP 11: INCORPORATE REVIEW FEEDBACK
+  # ==========================================================================
+  - id: "step-11-incorporate-feedback"
+    agent: "amplihack:architect"
+    condition: "goal_already_met != 'true'"
+    prompt: |
+      # Step 11: Assess Review Feedback
+
+      **Pre-Commit Review:** {{pre_commit_review}}
+      **Security Review:** {{security_review}}
+      **Philosophy Review:** {{philosophy_review}}
+
+      Assess all review feedback and determine:
+      1. What changes are required?
+      2. Priority of changes
+      3. Implementation approach
+
+      Provide guidance for the builder agent.
+    output: "feedback_assessment"
+
+  - id: "step-11b-implement-feedback"
+    agent: "amplihack:builder"
+    condition: "goal_already_met != 'true'"
+    prompt: |
+      # Step 11b: Implement Review Feedback
+
+      **Current Code:** {{optimized_code}}
+      **Feedback Assessment:** {{feedback_assessment}}
+      **Reviews:**
+      - Pre-commit: {{pre_commit_review}}
+      - Security: {{security_review}}
+      - Philosophy: {{philosophy_review}}
+
+      Implement all required changes from the reviews.
+      Update documentation as needed.
+
+      Output the updated implementation.
+    output: "review_feedback"
+
+  # --------------------------------------------------------------------------
+  # CHECKPOINT: Stage review feedback changes before pre-commit hooks
+  # --------------------------------------------------------------------------
+  - id: "checkpoint-after-review-feedback"
+    type: "bash"
+    max_env_value_bytes: 65536
+    command: |
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" 2>/dev/null || cd "$REPO_PATH" && \
+      echo "=== Checkpoint: Staging Review Feedback ===" && \
+      git add -A && \
+      STAGED=$(git diff --cached --name-only) && \
+      if [ -n "$STAGED" ]; then \
+        git commit -m "wip: checkpoint after review feedback (steps 10-11)
+
+      Automatic checkpoint to preserve review-addressed changes.
+      Saved before running pre-commit hooks and tests." && \
+        echo "Checkpoint commit created with $(wc -l <<< "$STAGED") file(s)" ; \
+      else \
+        echo "No changes to checkpoint" ; \
+      fi && \
+      echo "=== Checkpoint Complete ==="
+    output: "review_checkpoint"
+
+  # ==========================================================================
+  # STEP 12: RUN TESTS AND PRE-COMMIT HOOKS
+  # ==========================================================================

@@ -1,0 +1,245 @@
+name: "workflow-design"
+description: "Phase 2: architecture, API/DB/security design, docs (05-06d)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["development", "design", "architecture"]
+
+# workflow-design: extracted from default-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — the layered review steps the LLM
+# converges through must remain intact. Context flows in from the parent
+# workflow via recipe-runner's automatic context-merging in
+# `_execute_sub_recipe()`; outputs declared by these steps propagate back to
+# the parent and are visible to subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 80
+
+context: {}
+
+steps:
+  - id: "step-05-architecture"
+    agent: "amplihack:architect"
+    prompt: |
+      # Step 5: Research and Design - Architecture
+
+      **Task:** {{task_description}}
+      **Requirements:** {{final_requirements}}
+      **Codebase Analysis:** {{codebase_analysis}}
+      **Worktree:** {{worktree_setup}}
+
+      Design the solution architecture:
+
+      1. Identify components involved
+      2. Define module boundaries
+      3. Plan implementation approach
+      4. Document module specifications
+      5. Identify risks and dependencies
+
+      Consider the INVESTIGATION-FIRST PATTERN if the codebase is unfamiliar.
+
+      Output a comprehensive design specification.
+    output: "architecture_design"
+
+  - id: "step-05b-api-design"
+    agent: "amplihack:api-designer"
+    prompt: |
+      # Step 5b: API Design (if applicable)
+
+      **Architecture:** {{architecture_design}}
+      **Requirements:** {{final_requirements}}
+
+      Design API contracts:
+      - Endpoint definitions
+      - Request/response schemas
+      - Error handling patterns
+      - Versioning strategy
+
+      Skip if no API work is required.
+    output: "api_design"
+
+  - id: "step-05c-database-design"
+    agent: "amplihack:database"
+    prompt: |
+      # Step 5c: Database Design (if applicable)
+
+      **Architecture:** {{architecture_design}}
+      **Requirements:** {{final_requirements}}
+
+      Design data model:
+      - Schema definitions
+      - Migrations needed
+      - Indexes and constraints
+      - Data relationships
+
+      Skip if no database work is required.
+    output: "database_design"
+
+  - id: "step-05d-security-review"
+    agent: "amplihack:security"
+    prompt: |
+      # Step 5d: Security Requirements Review
+
+      **Architecture:** {{architecture_design}}
+      **Requirements:** {{final_requirements}}
+      **API Design:** {{api_design}}
+      **Database Design:** {{database_design}}
+
+      Identify security requirements:
+      - Authentication/authorization needs
+      - Input validation requirements
+      - Data protection considerations
+      - Security risks and mitigations
+
+      Provide security guidelines for implementation.
+    output: "security_requirements"
+
+  - id: "step-05e-design-consolidation"
+    agent: "amplihack:architect"
+    prompt: |
+      # Step 5e: Design Consolidation
+
+      **Architecture:** {{architecture_design}}
+      **API Design:** {{api_design}}
+      **Database Design:** {{database_design}}
+      **Security Requirements:** {{security_requirements}}
+
+      Consolidate all design inputs into a final implementation plan:
+
+      ```json
+      {
+        "components": [{"name": "...", "action": "create/modify", "purpose": "..."}],
+        "files_to_change": ["list of file paths"],
+        "new_files": ["files to create"],
+        "test_files": ["test files to create/modify"],
+        "implementation_order": ["ordered steps"],
+        "risks": ["potential issues"],
+        "security_considerations": ["security notes"]
+      }
+      ```
+    output: "design_spec"
+    parse_json: true
+
+  # ==========================================================================
+  # STEP 6: RETCON DOCUMENTATION WRITING
+  # ==========================================================================
+  - id: "step-06-documentation"
+    agent: "amplihack:documentation-writer"
+    prompt: |
+      # Step 6: Retcon Documentation Writing
+
+      **Task:** {{task_description}}
+      **Requirements:** {{final_requirements}}
+      **Design Specification:** {{design_spec}}
+
+      Write documentation for the feature AS IF IT ALREADY EXISTS.
+      This is "retcon" documentation - describing the finished state.
+
+      Write ONLY the documentation, NOT the code:
+      - Usage documentation
+      - API documentation (if applicable)
+      - Configuration documentation
+      - Examples and tutorials
+
+      This documentation serves as the specification for implementation.
+    output: "documentation"
+
+  - id: "step-06b-documentation-review"
+    agent: "amplihack:architect"
+    prompt: |
+      # Step 6b: Documentation Review
+
+      **Design Specification:** {{design_spec}}
+      **Documentation:** {{documentation}}
+
+      Review the documentation to verify:
+      1. Aligns with the architectural vision
+      2. Accurately describes intended behavior
+      3. Highlights any changes needed to the design
+
+      Provide feedback for documentation refinement.
+    output: "doc_review_feedback"
+
+  - id: "step-06c-documentation-refinement"
+    agent: "amplihack:documentation-writer"
+    prompt: |
+      # Step 6c: Documentation Refinement
+
+      **Original Documentation:** {{documentation}}
+      **Architect Feedback:** {{doc_review_feedback}}
+
+      Revise the documentation based on the architect's review.
+      Ensure it accurately represents the feature we will build.
+    output: "final_documentation"
+
+  # ==========================================================================
+  # STEP 6d: PRE-FLIGHT "GOAL ALREADY MET" PROBE (#368)
+  # ==========================================================================
+  # Detect whether the linked GitHub issue is already CLOSED by a merged PR
+  # *before* paying for tests + implementation. When the goal is already met
+  # this short-circuits steps 07/08/08c, saving ~30min of agent runtime per
+  # round (typical case: a previous orchestrator round shipped the fix and
+  # this round was queued as a duplicate).
+  #
+  # Defensive: if `gh` is missing, ISSUE_NUMBER is unset, or any probe call
+  # fails, we set goal_already_met="false" and let the workflow proceed
+  # normally — never short-circuit on uncertainty.
+  - id: "step-06d-goal-already-met-probe"
+    type: "bash"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
+    command: |
+      set -euo pipefail
+      ISSUE_NUM="${ISSUE_NUMBER:-}"
+      if [ -z "$ISSUE_NUM" ] || ! command -v gh >/dev/null 2>&1; then
+        echo "false"
+        exit 0
+      fi
+      ISSUE_STATE=$(gh issue view "$ISSUE_NUM" --json state --jq '.state' 2>/dev/null || true)
+      if [ "$ISSUE_STATE" != "CLOSED" ]; then
+        echo "false"
+        exit 0
+      fi
+      # closedByPullRequestsReferences items DO NOT carry .state; we must
+      # fetch each PR's mergedAt explicitly. Capture (number, owner/repo)
+      # pairs so cross-repo closing PRs are looked up in the correct repo
+      # rather than silently misresolved against the current repo (COE
+      # cohort review #2, REAL_BUG #2).
+      CLOSING_PR_REFS=$(gh issue view "$ISSUE_NUM" \
+        --json closedByPullRequestsReferences \
+        --jq '[.closedByPullRequestsReferences[]? | "\(.number) \(.repository.owner.login)/\(.repository.name)"] | join("\n")' \
+        2>/dev/null || true)
+      # Cap the fan-out (DESIGN_RISK #3): an issue with hundreds of linked
+      # PRs would otherwise serially walk the GitHub API and chew rate
+      # limit; the typical real case is 1-2 PRs.
+      MAX_PROBE=10
+      probed=0
+      while IFS= read -r ref; do
+        [ -z "$ref" ] && continue
+        probed=$((probed + 1))
+        if [ "$probed" -gt "$MAX_PROBE" ]; then
+          echo "WARN: hit MAX_PROBE=${MAX_PROBE} linked-PR cap; assuming goal not met." >&2
+          break
+        fi
+        PR_NUM=$(printf '%s' "$ref" | awk '{print $1}')
+        PR_REPO=$(printf '%s' "$ref" | awk '{print $2}')
+        # Cap each gh call at 30s to prevent stalling the whole workflow on
+        # a slow API response (DESIGN_RISK #3).
+        if [ -n "$PR_REPO" ] && [ "$PR_REPO" != "/" ]; then
+          PR_MERGED=$(timeout 30 gh pr view "$PR_NUM" --repo "$PR_REPO" --json mergedAt --jq '.mergedAt' 2>/dev/null || true)
+        else
+          PR_MERGED=$(timeout 30 gh pr view "$PR_NUM" --json mergedAt --jq '.mergedAt' 2>/dev/null || true)
+        fi
+        if [ -n "$PR_MERGED" ] && [ "$PR_MERGED" != "null" ]; then
+          echo "INFO: issue #${ISSUE_NUM} is already CLOSED by merged PR ${PR_REPO}#${PR_NUM}." >&2
+          echo "  Short-circuiting steps 07/08/08c/08b/09-16b — goal already met (#368)." >&2
+          echo "true"
+          exit 0
+        fi
+      done <<< "$CLOSING_PR_REFS"
+      echo "false"
+    output: "goal_already_met"
+
+  # ==========================================================================
+  # STEP 7: TDD - WRITE TESTS FIRST
+  # ==========================================================================
