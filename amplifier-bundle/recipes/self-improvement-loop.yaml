@@ -89,12 +89,33 @@ steps:
       echo "Output: {{output_dir}}/baseline"
       echo ""
 
+      # Probe for python + amplihack.eval.progressive_test_suite (refs #248).
+      # Mirrors the graceful-skip pattern from sdk-comparison.yaml (PR #347):
+      # if neither python3 nor python provides the optional module, emit a
+      # `[skip]` warning to stderr, a synthetic JSON payload to stdout, and
+      # exit 0 so the recipe stays runnable in pure-Rust environments.
+      PY=""
+      for cand in python3 python; do
+        if command -v "$cand" >/dev/null 2>&1; then
+          if PYTHONPATH=src "$cand" -c 'import amplihack.eval.progressive_test_suite' >/dev/null 2>&1; then
+            PY="$cand"
+            break
+          fi
+        fi
+      done
+
+      if [ -z "$PY" ]; then
+        echo "[skip] amplihack.eval.progressive_test_suite not available; skipping run-baseline-eval" >&2
+        echo '{"skipped":true,"reason":"amplihack.eval.progressive_test_suite not installed; step skipped"}'
+        exit 0
+      fi
+
       LEVELS_ARGS=""
       for level in {{levels}}; do
         LEVELS_ARGS="$LEVELS_ARGS $level"
       done
 
-      PYTHONPATH=src python -m amplihack.eval.progressive_test_suite \
+      PYTHONPATH=src "$PY" -m amplihack.eval.progressive_test_suite \
         --output-dir "{{output_dir}}/baseline" \
         --agent-name "{{agent_name}}_baseline_$(date +%s)" \
         --sdk "{{sdk}}" \
@@ -311,12 +332,30 @@ steps:
         exit 0
       fi
 
+      # Probe for python + amplihack.eval.progressive_test_suite (refs #248).
+      # Same graceful-skip pattern as run-baseline-eval / PR #347.
+      PY=""
+      for cand in python3 python; do
+        if command -v "$cand" >/dev/null 2>&1; then
+          if PYTHONPATH=src "$cand" -c 'import amplihack.eval.progressive_test_suite' >/dev/null 2>&1; then
+            PY="$cand"
+            break
+          fi
+        fi
+      done
+
+      if [ -z "$PY" ]; then
+        echo "[skip] amplihack.eval.progressive_test_suite not available; skipping re-eval-affected" >&2
+        echo '{"skipped":true,"reason":"amplihack.eval.progressive_test_suite not installed; step skipped"}'
+        exit 0
+      fi
+
       LEVELS_ARGS=""
       for level in {{levels}}; do
         LEVELS_ARGS="$LEVELS_ARGS $level"
       done
 
-      PYTHONPATH=src python -m amplihack.eval.progressive_test_suite \
+      PYTHONPATH=src "$PY" -m amplihack.eval.progressive_test_suite \
         --output-dir "{{output_dir}}/re_eval" \
         --agent-name "{{agent_name}}_reeval_$(date +%s)" \
         --sdk "{{sdk}}" \
