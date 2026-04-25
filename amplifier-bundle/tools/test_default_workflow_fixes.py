@@ -1334,6 +1334,145 @@ class TestWorktreePathFallback(unittest.TestCase):
 
 # ===========================================================================
 # Entry point
+
+
+class TestNoopGuardPreExisting(unittest.TestCase):
+    """
+    Regression tests for issue #360.
+
+    Bug: step-08c-implementation-no-op-guard treated "no files modified"
+    as hollow-success failure, even when the desired change had ALREADY
+    been merged to main by a previous round (orchestrator wastes ~30 min
+    of agent time and then incorrectly marks the round FAILED).
+
+    Fix: when ISSUE_NUMBER is set and the issue is CLOSED by a merged
+    PR, exit 0 with a "goal already met" / pre-existing message.
+
+    Tests use a stub `gh` binary on PATH (outside the test git repo so
+    untracked-files probe stays clean) to mock the GitHub API.
+    """
+
+    def _build_repo_and_gh_stub(self, gh_script: str):
+        """Returns (repo, bindir, env) — caller is responsible for cleanup."""
+        repo = tempfile.mkdtemp()
+        bindir = tempfile.mkdtemp()
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t",
+             "init", "-q", "-b", "main", repo],
+            check=True,
+        )
+        Path(bindir, "gh").write_text(gh_script)
+        os.chmod(Path(bindir, "gh"), 0o755)
+        env = {
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "REPO_PATH": repo,
+            "WORKTREE_SETUP_WORKTREE_PATH": repo,
+            "ISSUE_NUMBER": "999",
+            "IMPLEMENTATION": "Files modified: (none)",
+        }
+        return repo, bindir, env
+
+    def test_skips_when_issue_closed_by_merged_pr(self):
+        # Stub matches the actual call sequence:
+        #   1. gh issue view N --json state --jq .state           → CLOSED
+        #   2. gh issue view N --json closedByPullRequestsReferences --jq '...number...'
+        #                                                          → "999"
+        #   3. gh pr view 999 --json mergedAt --jq .mergedAt      → timestamp (merged)
+        gh_stub = (
+            "#!/bin/bash\n"
+            'if [[ "$*" == *"issue view"*"--jq .state"* ]]; then echo CLOSED; exit 0; fi\n'
+            'if [[ "$*" == *"issue view"*closedByPullRequestsReferences* ]]; then echo 999; exit 0; fi\n'
+            'if [[ "$*" == *"pr view"*"--jq .mergedAt"* ]]; then echo "2026-01-01T00:00:00Z"; exit 0; fi\n'
+            "exit 1\n"
+        )
+        repo, bindir, env = self._build_repo_and_gh_stub(gh_stub)
+        try:
+            raw = _extract_step_command(_WORKFLOW_YAML, "step-08c-implementation-no-op-guard")
+            r = subprocess.run(
+                ["bash", "-c", raw], capture_output=True, text=True, env=env, cwd=repo,
+            )
+            self.assertEqual(
+                r.returncode, 0,
+                f"Expected exit 0 (pre-existing) when issue closed by merged PR. "
+                f"Got rc={r.returncode}\nstderr: {r.stderr}",
+            )
+            self.assertIn("goal already met", r.stderr)
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+            shutil.rmtree(bindir, ignore_errors=True)
+
+    def test_still_fails_when_issue_open(self):
+        gh_stub = (
+            "#!/bin/bash\n"
+            'if [[ "$*" == *"issue view"*"--jq .state"* ]]; then echo OPEN; exit 0; fi\n'
+            "exit 1\n"
+        )
+        repo, bindir, env = self._build_repo_and_gh_stub(gh_stub)
+        try:
+            raw = _extract_step_command(_WORKFLOW_YAML, "step-08c-implementation-no-op-guard")
+            r = subprocess.run(
+                ["bash", "-c", raw], capture_output=True, text=True, env=env, cwd=repo,
+            )
+            self.assertEqual(
+                r.returncode, 1,
+                "Open issue must still fail-fast as hollow-success.",
+            )
+            self.assertIn("hollow-success", r.stderr)
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+            shutil.rmtree(bindir, ignore_errors=True)
+
+    def test_still_fails_when_issue_closed_but_no_merged_pr(self):
+        """Manual close (no PR merged) must NOT count as 'goal met'.
+
+        Stub returns null for every PR's mergedAt, simulating
+        unmerged/closed-without-merge PR references.
+        """
+        gh_stub = (
+            "#!/bin/bash\n"
+            'if [[ "$*" == *"issue view"*"--jq .state"* ]]; then echo CLOSED; exit 0; fi\n'
+            'if [[ "$*" == *"issue view"*closedByPullRequestsReferences* ]]; then echo 999; exit 0; fi\n'
+            'if [[ "$*" == *"pr view"*"--jq .mergedAt"* ]]; then echo null; exit 0; fi\n'
+            "exit 1\n"
+        )
+        repo, bindir, env = self._build_repo_and_gh_stub(gh_stub)
+        try:
+            raw = _extract_step_command(_WORKFLOW_YAML, "step-08c-implementation-no-op-guard")
+            r = subprocess.run(
+                ["bash", "-c", raw], capture_output=True, text=True, env=env, cwd=repo,
+            )
+            self.assertEqual(
+                r.returncode, 1,
+                "Issue closed without a merged PR must still fail-fast.",
+            )
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+            shutil.rmtree(bindir, ignore_errors=True)
+
+    def test_still_fails_when_issue_has_no_pr_references(self):
+        """Closed issue with empty closedByPullRequestsReferences must fail."""
+        gh_stub = (
+            "#!/bin/bash\n"
+            'if [[ "$*" == *"issue view"*"--jq .state"* ]]; then echo CLOSED; exit 0; fi\n'
+            # Empty join produces empty string → no PRs to probe
+            'if [[ "$*" == *"issue view"*closedByPullRequestsReferences* ]]; then echo ""; exit 0; fi\n'
+            "exit 1\n"
+        )
+        repo, bindir, env = self._build_repo_and_gh_stub(gh_stub)
+        try:
+            raw = _extract_step_command(_WORKFLOW_YAML, "step-08c-implementation-no-op-guard")
+            r = subprocess.run(
+                ["bash", "-c", raw], capture_output=True, text=True, env=env, cwd=repo,
+            )
+            self.assertEqual(
+                r.returncode, 1,
+                "Closed issue with no PR references must still fail-fast.",
+            )
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+            shutil.rmtree(bindir, ignore_errors=True)
+
+
 # ===========================================================================
 
 if __name__ == "__main__":
