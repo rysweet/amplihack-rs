@@ -18,13 +18,10 @@ const NAMED_ASSETS: &[(&str, &[&str])] = &[
         "session-tree-path",
         &["amplifier-bundle/tools/session_tree.py"],
     ),
-    (
-        "hooks-dir",
-        &[
-            ".claude/tools/amplihack/hooks",
-            "amplifier-bundle/tools/amplihack/hooks",
-        ],
-    ),
+    // NOTE (rysweet/amplihack-rs#285): the "hooks-dir" named asset was removed.
+    // Its only consumers in smart-orchestrator.yaml assigned the result with
+    // `|| true` and never read it; the bundled amplifier-bundle/tools/amplihack/
+    // hooks/ directory has been deleted along with this entry.
     // FIX (rysweet/amplihack-rs#283/#248): expose the multitask-orchestrator
     // script under a stable named-asset key so smart-orchestrator's
     // launch-parallel-round-1 step can resolve it via the Rust CLI instead of
@@ -243,12 +240,6 @@ mod tests {
 
     // ── Named asset tests ─────────────────────────────────────────────────────
 
-    fn make_named_asset_dir(base: &std::path::Path, rel_path: &str) -> std::path::PathBuf {
-        let target = base.join(rel_path);
-        std::fs::create_dir_all(&target).unwrap();
-        target
-    }
-
     fn make_named_asset_file(base: &std::path::Path, rel_path: &str) -> std::path::PathBuf {
         let target = base.join(rel_path);
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
@@ -372,34 +363,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_named_asset_hooks_dir_uses_amplihack_home() {
-        let _home_guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let temp = tempfile::tempdir().unwrap();
-        make_named_asset_dir(temp.path(), ".claude/tools/amplihack/hooks");
-
-        let prev_home = crate::test_support::set_home(temp.path());
-        let prev = env::var_os("AMPLIHACK_HOME");
-        unsafe { env::set_var("AMPLIHACK_HOME", temp.path()) };
-
-        let result = resolve_named_asset("hooks-dir");
-
-        match prev {
-            Some(v) => unsafe { env::set_var("AMPLIHACK_HOME", v) },
-            None => unsafe { env::remove_var("AMPLIHACK_HOME") },
-        }
-        crate::test_support::restore_home(prev_home);
-
-        let resolved = result.unwrap();
-        assert!(
-            resolved.to_string_lossy().contains("hooks"),
-            "expected hooks dir path, got {:?}",
-            resolved
-        );
-    }
-
-    #[test]
     fn resolve_named_asset_falls_back_to_dot_amplihack() {
         let _home_guard = crate::test_support::home_env_lock()
             .lock()
@@ -431,9 +394,42 @@ mod tests {
     #[test]
     fn resolve_named_asset_unknown_name_returns_error() {
         let err = resolve_named_asset("nonexistent-asset").unwrap_err();
-        assert!(err.to_string().contains("Unknown asset name"));
-        assert!(err.to_string().contains("helper-path"));
-        assert!(err.to_string().contains("hooks-dir"));
+        let msg = err.to_string();
+        assert!(msg.contains("Unknown asset name"));
+        assert!(msg.contains("helper-path"));
+        // Regression for rysweet/amplihack-rs#285: hooks-dir must no longer
+        // appear in the diagnostic — it is no longer a valid asset name.
+        assert!(
+            !msg.contains("hooks-dir"),
+            "hooks-dir must not be advertised in diagnostics (see rysweet/amplihack-rs#285): {msg}"
+        );
+    }
+
+    /// Regression for rysweet/amplihack-rs#285: `resolve-bundle-asset hooks-dir`
+    /// must now fail loudly with the unknown-asset diagnostic instead of
+    /// silently returning a candidate path. Pairs with the data-table guard
+    /// in [`hooks_dir_is_not_in_named_assets_see_issue_285`] to lock both
+    /// the name table and the resolver behaviour.
+    #[test]
+    fn resolve_named_asset_hooks_dir_now_returns_unknown_asset_error() {
+        let err = resolve_named_asset("hooks-dir").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Unknown asset name"),
+            "hooks-dir must produce the unknown-asset diagnostic: {msg}"
+        );
+    }
+
+    /// Regression guard for rysweet/amplihack-rs#285: `hooks-dir` must remain
+    /// absent from `NAMED_ASSETS`. Re-introducing it without restoring real
+    /// consumers would re-create the dead code path the umbrella issue
+    /// removed.
+    #[test]
+    fn hooks_dir_is_not_in_named_assets_see_issue_285() {
+        assert!(
+            !NAMED_ASSETS.iter().any(|(name, _)| *name == "hooks-dir"),
+            "hooks-dir must remain unregistered (see rysweet/amplihack-rs#285)"
+        );
     }
 
     #[test]

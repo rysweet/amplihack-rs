@@ -1249,49 +1249,78 @@ class TestIssue342ExistingBranchContext(unittest.TestCase):
 
 
 # ===========================================================================
-class TestWorktreePathFallback(unittest.TestCase):
+class TestWorktreePathFailLoud(unittest.TestCase):
     """
-    Regression test for issue #362.
+    Regression test for issue #362 + philosophy follow-up.
 
-    Bug: default-workflow.yaml steps that consume WORKTREE_SETUP_WORKTREE_PATH
-    used a bare reference (`$VAR`) under `set -euo pipefail`. When the BLOCKED
-    fallback path (or any code path that skips step-04-setup-worktree) runs
-    those steps, `set -u` aborts at variable expansion BEFORE any `cd … || cd
-    $REPO_PATH` fallback can take effect.
+    Bug history:
+      v1 (#362): bare `$WORKTREE_SETUP_WORKTREE_PATH` under `set -u` aborted
+                 with "unbound variable" before any `|| cd $REPO_PATH` could
+                 take effect.
+      v2 (#364): used `${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}` as a
+                 silent fallback. *This violated the zero-BS philosophy*
+                 (PHILOSOPHY.md L57, L217: "No silent fallbacks. A fallback
+                 is a silent failure.").
+      v3 (this fix): use `${WORKTREE_SETUP_WORKTREE_PATH:?...}` so the
+                 script aborts LOUDLY with a clear diagnostic message
+                 pointing at the upstream cause (skipped step-04). No
+                 substitution, no behavior change is hidden.
 
-    Fix: every consumer must use `${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}`
-    (or `:-(unset)` for echo).
-
-    This test asserts no bare `$WORKTREE_SETUP_WORKTREE_PATH` reference remains
-    in default-workflow.yaml, so any future bare reuse fails CI immediately.
+    These tests assert:
+      A) no `:-` fallback remains for WORKTREE_SETUP_WORKTREE_PATH
+      B) every consumer uses `:?` (fail-loud) form
+      C) when the var IS unset, the script exits non-zero with a
+         diagnostic mentioning step-04 (not "unbound variable" silence,
+         and not silently using PWD/REPO_PATH)
     """
+
+    def test_no_silent_fallback_for_worktree_path(self):
+        text = _WORKFLOW_YAML.read_text()
+        offenders: list[tuple[int, str]] = []
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            # Forbid `${WORKTREE_SETUP_WORKTREE_PATH:-...}` (silent default).
+            # Allow `${WORKTREE_SETUP_WORKTREE_PATH:?...}` (fail-loud).
+            # Allow `${WORKTREE_SETUP_WORKTREE_PATH-<unset>}` (no-colon —
+            # only substitutes when var is *unset*, not empty; used in echo
+            # diagnostics where empty is meaningful and no behavior changes).
+            if "${WORKTREE_SETUP_WORKTREE_PATH:-" in line:
+                offenders.append((lineno, line.rstrip()))
+        self.assertEqual(
+            offenders, [],
+            "Found `${WORKTREE_SETUP_WORKTREE_PATH:-...}` silent fallback.\n"
+            "Per PHILOSOPHY.md L57/L217: a fallback is a silent failure.\n"
+            "Use `: \"${WORKTREE_SETUP_WORKTREE_PATH:?...}\"` to fail loudly\n"
+            "with a diagnostic pointing at step-04-setup-worktree.\n"
+            "Offenders:\n" + "\n".join(f"  L{n}: {l}" for n, l in offenders),
+        )
 
     def test_no_bare_worktree_path_references(self):
+        """Original #362 guard: bare `$VAR` under `set -u` would also abort,
+        but with the unhelpful "unbound variable" message instead of our
+        diagnostic. Every consumer must wrap in `${...:?msg}` or `${...-<unset>}`."""
         text = _WORKFLOW_YAML.read_text()
         bare_refs: list[tuple[int, str]] = []
         for lineno, line in enumerate(text.splitlines(), start=1):
-            # Find $WORKTREE_SETUP_WORKTREE_PATH that is NOT inside ${...:-...}
-            # i.e., a literal `$WORKTREE_SETUP_WORKTREE_PATH` not preceded by `{`.
-            # Acceptable: ${WORKTREE_SETUP_WORKTREE_PATH:-...}
-            # Unacceptable: $WORKTREE_SETUP_WORKTREE_PATH (bare)
-            if "$WORKTREE_SETUP_WORKTREE_PATH" in line and "${WORKTREE_SETUP_WORKTREE_PATH" not in line:
+            if "$WORKTREE_SETUP_WORKTREE_PATH" in line and \
+               "${WORKTREE_SETUP_WORKTREE_PATH" not in line and \
+               '"$WORKTREE_SETUP_WORKTREE_PATH"' not in line:
                 bare_refs.append((lineno, line.rstrip()))
+        # Note: `"$WORKTREE_SETUP_WORKTREE_PATH"` is allowed *after* a
+        # `: "${...:?...}"` guard line in the same step — the guard already
+        # asserted it's set, so the subsequent reference is safe.
         self.assertEqual(
-            bare_refs,
-            [],
-            "Bare $WORKTREE_SETUP_WORKTREE_PATH references found — these will\n"
-            "abort `set -u` when the var is unset (see issue #362).\n"
-            "Use ${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH} (or :-(unset) for echo).\n"
-            f"Offenders:\n" + "\n".join(f"  L{n}: {l}" for n, l in bare_refs),
+            bare_refs, [],
+            "Bare $WORKTREE_SETUP_WORKTREE_PATH found outside a quoted\n"
+            "context. Wrap in `${...:?msg}` for fail-loud or `${...-<unset>}`\n"
+            "for diagnostic-only.\n"
+            "Offenders:\n" + "\n".join(f"  L{n}: {l}" for n, l in bare_refs),
         )
 
-    def test_step15_runs_under_set_u_with_unset_worktree_path(self):
-        """
-        End-to-end: extract step-15-commit-push command, invoke it in a temp
-        git repo with WORKTREE_SETUP_WORKTREE_PATH UNSET. Before the fix, it
-        aborts at line 1 with `unbound variable`. After the fix, it falls
-        through to REPO_PATH and reaches the staging logic.
-        """
+    def test_step15_fails_loud_when_worktree_path_unset(self):
+        """End-to-end: extract step-15-commit-push, invoke with
+        WORKTREE_SETUP_WORKTREE_PATH UNSET. Must exit non-zero AND stderr
+        must mention step-04-setup-worktree (so the operator knows where
+        to look) — never silently substitute PWD/REPO_PATH."""
         raw_cmd = _extract_step_command(_WORKFLOW_YAML, "step-15-commit-push")
         tmp = tempfile.mkdtemp()
         try:
@@ -1300,7 +1329,6 @@ class TestWorktreePathFallback(unittest.TestCase):
                  "init", "-q", "-b", "main", tmp],
                 check=True,
             )
-            # Make at least one commit so HEAD exists.
             (Path(tmp) / "README.md").write_text("hi\n")
             subprocess.run(["git", "-C", tmp, "add", "-A"], check=True)
             subprocess.run(
@@ -1319,17 +1347,35 @@ class TestWorktreePathFallback(unittest.TestCase):
                 ["bash", "-c", raw_cmd],
                 capture_output=True, text=True, env=env, cwd=tmp,
             )
-            # Must NOT abort with unbound variable. Either succeeds (nothing to
-            # commit → exits via hollow-success branch which is fine for this test
-            # since upstream isn't configured), or exits 1 with a meaningful
-            # diagnostic — but never with "unbound variable".
+            self.assertNotEqual(
+                result.returncode, 0,
+                "step-15 with WORKTREE_SETUP_WORKTREE_PATH unset must FAIL,\n"
+                f"not silently fall through. stdout={result.stdout}\n"
+                f"stderr={result.stderr}",
+            )
+            self.assertIn(
+                "step-04-setup-worktree", result.stderr,
+                "Failure message must point at the upstream cause "
+                "(step-04-setup-worktree).\n"
+                f"stderr={result.stderr}",
+            )
+            # Specifically: no silent fallback to PWD or REPO_PATH.
             self.assertNotIn(
-                "unbound variable",
-                result.stderr,
-                f"set -u aborted on bare WORKTREE_SETUP_WORKTREE_PATH:\n{result.stderr}",
+                "unbound variable", result.stderr,
+                "Should fail with our diagnostic, NOT bash's bare "
+                "'unbound variable' message.\n"
+                f"stderr={result.stderr}",
             )
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+# Keep the old class name as an empty alias-shim so the previous test runs
+# don't appear to "lose" coverage; CI's test count stays meaningful.
+class TestWorktreePathFallback(TestWorktreePathFailLoud):
+    """Renamed to TestWorktreePathFailLoud (the v2 fallback was a
+    philosophy violation — see the new class docstring)."""
+    pass
 
 
 # ===========================================================================

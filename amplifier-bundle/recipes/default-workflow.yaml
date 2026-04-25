@@ -870,27 +870,88 @@ steps:
     agent: "amplihack:tester"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback' and goal_already_met != 'true'"
     prompt: |
-      # Step 7: TDD - Write Tests First
+      # Step 7: TDD — Write Tests First (Formal-Spec-Driven)
 
       **Task:** {{task_description}}
       **Requirements:** {{final_requirements}}
       **Design Specification:** {{design_spec}}
       **Documentation:** {{final_documentation}}
 
-      Following Test-Driven Development methodology:
+      You are writing the **executable specification** of the change. The tests
+      are the contract; the implementation in the next step is merely whatever
+      makes them pass. Aim for **provable correctness**, not anecdotal coverage.
 
-      Write FAILING tests that specify the expected behavior:
-      - Unit tests for each component
-      - Integration tests for workflows
-      - Edge case tests
-      - Error handling tests
+      ## 1. Formal specification (write this BEFORE any test)
 
-      These tests should:
-      - Define the contract for the implementation
-      - Fail initially (code doesn't exist yet)
-      - Pass once implementation is complete
+      Express the change as a precise specification:
 
-      Output test files with clear file path headers.
+      - **Inputs** — types, valid ranges, preconditions (what callers MUST provide)
+      - **Outputs** — types, postconditions (what we GUARANTEE on success)
+      - **Invariants** — properties that hold across all inputs (e.g. "`len(out) == len(in)`",
+        "`f(f(x)) == f(x)`", "no panics on any UTF-8 string", "monotonic in arg N")
+      - **Error set** — every failure mode with its preconditions and observable signal
+        (returned `Err`, raised exception, exit code, log line). No fail-open paths
+        unless explicitly justified in the spec.
+      - **Concurrency / ordering** — if relevant, what serializability or visibility is required
+      - **Resource bounds** — max time / memory / file handles / DB calls
+
+      Write this as a comment block at the top of the test file (or a separate
+      `SPEC.md` next to it). It is the source of truth — tests below trace back
+      to specific clauses.
+
+      ## 2. Tests, in priority order
+
+      Every test must cite the spec clause it proves (e.g. `// proves: invariant 2`).
+
+      1. **Property-based / invariant tests** — exhaustive within a domain, or
+         randomized via `proptest` / `quickcheck` / `hypothesis`. These prove the
+         invariants from the spec hold for ALL inputs in scope, not just chosen
+         examples. Prefer these wherever feasible.
+      2. **Error-set completeness tests** — one test per documented failure mode.
+         Together they MUST cover every branch in the error set. A failure mode
+         not covered by a test is not real.
+      3. **Boundary / edge-case tests** — empty input, single element, max size,
+         off-by-one, overflow, unicode boundaries, zero / negative / NaN, expired
+         tokens, empty strings, null bytes, etc.
+      4. **Example / regression tests** — concrete inputs and outputs from the
+         requirements. Cheapest but weakest; keep them but do not rely on them
+         alone.
+      5. **Integration tests** — end-to-end flows across module boundaries proving
+         the sequenced postconditions hold.
+
+      ## 3. Hard rules
+
+      - Tests MUST fail initially (run them and verify red — note the failure mode).
+      - NO mocks for the system under test. Mock only true external collaborators.
+      - NO swallowed assertions (no `assert(true)`, no commented-out checks).
+      - NO test that only verifies the implementation's current behavior — it must
+        verify the SPEC.
+      - For each non-trivial branch, prefer one property over ten examples.
+      - If you cannot express an invariant as a property, write a comment explaining
+        why and add the example tests that approximate it.
+
+      ## 4. Output
+
+      For each test file, emit:
+
+      ```
+      # File: path/to/test_file.{ext}
+      <full file content>
+      ```
+
+      Include a **trace matrix** at the end of the response:
+
+      ```
+      ## Spec → Test Trace Matrix
+      | Spec clause          | Test name(s)                 | Coverage type     |
+      |----------------------|------------------------------|-------------------|
+      | invariant 1          | test_idempotent_*, prop_*    | property + example|
+      | error: TimeoutError  | test_timeout_returns_err     | error-set         |
+      | postcondition 3      | test_output_len_matches_in_* | property          |
+      ```
+
+      A spec clause with no row in the matrix is a coverage gap — call it out
+      explicitly so the implementation step can address it (or the spec amended).
     output: "test_spec"
 
   # ==========================================================================
@@ -971,7 +1032,8 @@ steps:
         # agents that ignore the schema. The git-diff guard below is the hard gate.
       fi
       # Check git diff in the worktree as the source of truth.
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$PWD}"
+      : "${WORKTREE_SETUP_WORKTREE_PATH:?WORKTREE_SETUP_WORKTREE_PATH is required (set by step-04-setup-worktree). If this step ran without it, step-04 was skipped — fix the upstream gap rather than substituting a default (philosophy: no silent fallbacks).}"
+      cd "$WORKTREE_SETUP_WORKTREE_PATH"
       if ! git diff --quiet || ! git diff --cached --quiet || \
          [ -n "$(git ls-files --others --exclude-standard)" ]; then
         echo "step-08 produced file changes — guard passed."
@@ -1066,7 +1128,8 @@ steps:
     # (implementation, test_spec, design_spec) produce large outputs.
     max_env_value_bytes: 65536
     command: |
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" 2>/dev/null || cd "$REPO_PATH" && \
+      : "${WORKTREE_SETUP_WORKTREE_PATH:?WORKTREE_SETUP_WORKTREE_PATH is required (set by step-04-setup-worktree). No silent fallback per philosophy.}"
+      cd "$WORKTREE_SETUP_WORKTREE_PATH" && \
       echo "=== Checkpoint: Staging Implementation ===" && \
       git add -A && \
       STAGED=$(git diff --cached --name-only) && \
@@ -1253,7 +1316,8 @@ steps:
     type: "bash"
     max_env_value_bytes: 65536
     command: |
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" 2>/dev/null || cd "$REPO_PATH" && \
+      : "${WORKTREE_SETUP_WORKTREE_PATH:?WORKTREE_SETUP_WORKTREE_PATH is required (set by step-04-setup-worktree). No silent fallback per philosophy.}"
+      cd "$WORKTREE_SETUP_WORKTREE_PATH" && \
       echo "=== Checkpoint: Staging Review Feedback ===" && \
       git add -A && \
       STAGED=$(git diff --cached --name-only) && \
@@ -1483,7 +1547,8 @@ steps:
     condition: "goal_already_met != 'true'"
     command: |
       set -euo pipefail
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}"
+      : "${WORKTREE_SETUP_WORKTREE_PATH:?WORKTREE_SETUP_WORKTREE_PATH is required (set by step-04-setup-worktree). No silent fallback per philosophy.}"
+      cd "$WORKTREE_SETUP_WORKTREE_PATH"
       echo "=== Step 15: Commit and Push ==="
       echo ""
       echo "--- Staging Changes ---"
@@ -1507,14 +1572,14 @@ steps:
           ALT_WORKTREE_COMMITS=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
         fi
         if [ "$ALT_WORKTREE_COMMITS" -gt 0 ]; then
-          echo "INFO: Nothing staged in ${WORKTREE_SETUP_WORKTREE_PATH:-(unset)}, but the" >&2
+          echo "INFO: Nothing staged in ${WORKTREE_SETUP_WORKTREE_PATH-<unset>}, but the" >&2
           echo "current branch '$CURRENT_BRANCH' is $ALT_WORKTREE_COMMITS commit(s) ahead of" >&2
           echo "its upstream. The agent likely committed via an alternate worktree on" >&2
           echo "the same branch; treating as success." >&2
           git --no-pager log --oneline -"$ALT_WORKTREE_COMMITS" >&2
         else
           echo "ERROR: Nothing staged to commit. The implementation step may have written files" >&2
-          echo "outside the worktree (${WORKTREE_SETUP_WORKTREE_PATH:-(unset)}), or no code changes were produced." >&2
+          echo "outside the worktree (${WORKTREE_SETUP_WORKTREE_PATH-<unset>}), or no code changes were produced." >&2
           echo "This is a hollow-success condition — the workflow completed structurally but" >&2
           echo "produced no git artifacts. Check that agents created files in the worktree," >&2
           echo "not in AMPLIHACK_HOME or other locations." >&2
@@ -1551,7 +1616,8 @@ steps:
     condition: "goal_already_met != 'true'"
     command: |
       set -euo pipefail
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}"
+      : "${WORKTREE_SETUP_WORKTREE_PATH:?WORKTREE_SETUP_WORKTREE_PATH is required (set by step-04-setup-worktree). No silent fallback per philosophy.}"
+      cd "$WORKTREE_SETUP_WORKTREE_PATH"
       echo "=== Step 16: Creating Draft PR ===" >&2
 
       # FIX (#3324): Idempotency guard — detect pre-existing PRs before creating one
@@ -1899,7 +1965,8 @@ steps:
   - id: "step-18c-push-feedback-changes"
     type: "bash"
     command: |
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
+      : "${WORKTREE_SETUP_WORKTREE_PATH:?WORKTREE_SETUP_WORKTREE_PATH is required (set by step-04-setup-worktree). No silent fallback per philosophy.}"
+      cd "$WORKTREE_SETUP_WORKTREE_PATH" && \
       echo "=== Pushing Review Feedback Changes ===" && \
       git add -A && \
       if [ -n "$(git diff --cached --name-only)" ]; then \
@@ -1995,7 +2062,8 @@ steps:
     type: "bash"
     command: |
       echo "=== ZERO-BS VERIFICATION ===" && \
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
+      : "${WORKTREE_SETUP_WORKTREE_PATH:?WORKTREE_SETUP_WORKTREE_PATH is required (set by step-04-setup-worktree). No silent fallback per philosophy.}"
+      cd "$WORKTREE_SETUP_WORKTREE_PATH" && \
       echo "" && \
       echo "Scanning for Zero-BS violations..." && \
       echo "" && \
@@ -2082,7 +2150,8 @@ steps:
   - id: "step-20b-push-cleanup"
     type: "bash"
     command: |
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
+      : "${WORKTREE_SETUP_WORKTREE_PATH:?WORKTREE_SETUP_WORKTREE_PATH is required (set by step-04-setup-worktree). No silent fallback per philosophy.}"
+      cd "$WORKTREE_SETUP_WORKTREE_PATH" && \
       echo "=== Pushing Cleanup Changes ===" && \
       git add -A && \
       git diff --cached --quiet || (git commit -m "final cleanup pass" && git pull --rebase 2>/dev/null && git push) && \
@@ -2167,7 +2236,8 @@ steps:
   - id: "step-21-pr-ready"
     type: "bash"
     command: |
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
+      : "${WORKTREE_SETUP_WORKTREE_PATH:?WORKTREE_SETUP_WORKTREE_PATH is required (set by step-04-setup-worktree). No silent fallback per philosophy.}"
+      cd "$WORKTREE_SETUP_WORKTREE_PATH" && \
       echo "=== Step 20: Converting PR to Ready ===" && \
       echo "" && \
       echo "--- Verifying All Steps Complete ---" && \
