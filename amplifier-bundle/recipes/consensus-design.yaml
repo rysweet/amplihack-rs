@@ -1,0 +1,338 @@
+name: "consensus-design"
+description: "Phase 3: 3-round architecture design debate (5 perspectives, step 4-design-*)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["consensus", "design", "debate", "architecture"]
+
+# consensus-design: extracted from consensus-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — every debate round, every panel
+# perspective, every consensus gate. The user's design constraint: the LLM
+# converges on correct behaviour through many recursive review layers, so
+# no layer may be silently dropped. Context flows in from the parent
+# consensus-workflow context via _execute_sub_recipe()'s automatic merging;
+# outputs propagate back to the parent for subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 100
+
+context: {}
+
+steps:
+  - id: "step4-design-round1-architect"
+    agent: "amplihack:architect"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      MANDATORY ARCHITECTURE DEBATE - ROUND 1: Independent Design (Architect)
+
+      **Task:** {{task_description}}
+      **Requirements:** {{final_requirements}}
+      **Codebase Context:** {{codebase_analysis}}
+      **Criticality:** {{criticality}}
+
+      As the ARCHITECT, propose your design:
+      - System architecture and module boundaries
+      - Design patterns to use
+      - Component interactions
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "architect",
+        "proposed_design": {
+          "architecture_style": "style/pattern",
+          "components": [
+            {"name": "...", "responsibility": "...", "interfaces": ["..."]}
+          ],
+          "module_boundaries": ["boundary definitions"],
+          "patterns_used": ["design patterns"],
+          "data_flow": "how data flows through system"
+        },
+        "rationale": "why this design",
+        "trade_offs": ["trade-offs accepted"],
+        "risks": ["identified risks"],
+        "confidence": "high/medium/low"
+      }
+      ```
+    output: "design_architect"
+    parse_json: true
+
+  - id: "step4-design-round1-api"
+    agent: "amplihack:api-designer"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      MANDATORY ARCHITECTURE DEBATE - ROUND 1: Independent Design (API Designer)
+
+      **Task:** {{task_description}}
+      **Requirements:** {{final_requirements}}
+      **Codebase Context:** {{codebase_analysis}}
+      **Criticality:** {{criticality}}
+
+      As the API DESIGNER, propose your design:
+      - API contracts and interfaces
+      - Integration points
+      - Consumer experience
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "api-designer",
+        "proposed_design": {
+          "api_style": "REST/GraphQL/RPC/etc",
+          "endpoints": [
+            {"path": "...", "method": "...", "purpose": "..."}
+          ],
+          "interfaces": ["interface definitions"],
+          "contracts": ["API contracts"],
+          "versioning_strategy": "how to version"
+        },
+        "rationale": "why this API design",
+        "trade_offs": ["trade-offs accepted"],
+        "risks": ["identified risks"],
+        "confidence": "high/medium/low"
+      }
+      ```
+    output: "design_api"
+    parse_json: true
+
+  - id: "step4-design-round1-database"
+    agent: "amplihack:database"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      MANDATORY ARCHITECTURE DEBATE - ROUND 1: Independent Design (Database)
+
+      **Task:** {{task_description}}
+      **Requirements:** {{final_requirements}}
+      **Codebase Context:** {{codebase_analysis}}
+      **Criticality:** {{criticality}}
+
+      As the DATABASE expert, propose your design:
+      - Data models and schemas
+      - Query patterns
+      - Data integrity approach
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "database",
+        "proposed_design": {
+          "data_model": "description of data model",
+          "schemas": [
+            {"entity": "...", "fields": ["..."], "relationships": ["..."]}
+          ],
+          "query_patterns": ["common queries"],
+          "indexes": ["recommended indexes"],
+          "integrity_constraints": ["constraints"]
+        },
+        "rationale": "why this data design",
+        "trade_offs": ["trade-offs accepted"],
+        "risks": ["identified risks"],
+        "confidence": "high/medium/low"
+      }
+      ```
+    output: "design_database"
+    parse_json: true
+
+  - id: "step4-design-round1-security"
+    agent: "amplihack:security"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      MANDATORY ARCHITECTURE DEBATE - ROUND 1: Independent Design (Security)
+
+      **Task:** {{task_description}}
+      **Requirements:** {{final_requirements}}
+      **Codebase Context:** {{codebase_analysis}}
+      **Criticality:** {{criticality}}
+
+      As the SECURITY expert, provide security design:
+      - Threat model
+      - Security requirements
+      - Mitigations
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "security",
+        "proposed_design": {
+          "threat_model": {
+            "threats": ["identified threats"],
+            "attack_vectors": ["possible attacks"],
+            "assets_at_risk": ["what needs protection"]
+          },
+          "security_requirements": ["security must-haves"],
+          "mitigations": [
+            {"threat": "...", "mitigation": "...", "implementation": "..."}
+          ],
+          "authentication": "auth approach",
+          "authorization": "authz approach"
+        },
+        "rationale": "why these security measures",
+        "trade_offs": ["security vs usability trade-offs"],
+        "risks": ["remaining risks"],
+        "confidence": "high/medium/low"
+      }
+      ```
+    output: "design_security"
+    parse_json: true
+
+  - id: "step4-design-round1-tester"
+    agent: "amplihack:tester"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      MANDATORY ARCHITECTURE DEBATE - ROUND 1: Independent Design (Tester)
+
+      **Task:** {{task_description}}
+      **Requirements:** {{final_requirements}}
+      **Codebase Context:** {{codebase_analysis}}
+      **Criticality:** {{criticality}}
+
+      As the TESTER, provide testability analysis and TDD approach:
+      - Test strategy
+      - Testability concerns
+      - TDD approach
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "tester",
+        "proposed_design": {
+          "test_strategy": "overall approach",
+          "test_levels": {
+            "unit": ["unit test areas"],
+            "integration": ["integration test areas"],
+            "e2e": ["end-to-end scenarios"]
+          },
+          "testability_requirements": ["design requirements for testability"],
+          "tdd_approach": "how to apply TDD",
+          "test_data_strategy": "how to handle test data"
+        },
+        "rationale": "why this test approach",
+        "concerns": ["testability concerns with other designs"],
+        "risks": ["testing risks"],
+        "confidence": "high/medium/low"
+      }
+      ```
+    output: "design_tester"
+    parse_json: true
+
+  - id: "step4-design-round2-cross-examination"
+    agent: "amplihack:architect"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      MANDATORY ARCHITECTURE DEBATE - ROUND 2: Cross-Examination
+
+      Review all design proposals and challenge assumptions:
+
+      **Architect Design:** {{design_architect}}
+      **API Design:** {{design_api}}
+      **Database Design:** {{design_database}}
+      **Security Design:** {{design_security}}
+      **Test Design:** {{design_tester}}
+
+      Cross-examine:
+      1. Identify CONFLICTS between designs
+      2. Question ASSUMPTIONS and trade-offs
+      3. Explore EDGE CASES and failure modes
+      4. Debate SCALABILITY and maintainability
+
+      Return as JSON:
+      ```json
+      {
+        "design_agreements": ["points all designs align on"],
+        "design_conflicts": [
+          {
+            "issue": "the conflict",
+            "positions": {
+              "architect": "...",
+              "api": "...",
+              "database": "...",
+              "security": "...",
+              "tester": "..."
+            },
+            "impact": "high/medium/low",
+            "resolution_options": ["possible resolutions"]
+          }
+        ],
+        "challenged_assumptions": [
+          {"design": "perspective", "assumption": "...", "challenge": "..."}
+        ],
+        "edge_cases": ["edge cases all designs must handle"],
+        "scalability_concerns": ["scalability issues raised"],
+        "maintainability_concerns": ["maintainability issues raised"]
+      }
+      ```
+    output: "design_cross_examination"
+    parse_json: true
+
+  - id: "step4-design-round3-consensus"
+    agent: "amplihack:architect"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      MANDATORY ARCHITECTURE DEBATE - ROUND 3: Consensus Building
+
+      Synthesize unified design from all perspectives:
+
+      **All Designs:**
+      - Architect: {{design_architect}}
+      - API: {{design_api}}
+      - Database: {{design_database}}
+      - Security: {{design_security}}
+      - Tester: {{design_tester}}
+
+      **Cross-Examination:** {{design_cross_examination}}
+
+      Build consensus design:
+      1. Resolve all conflicts through reasoned debate
+      2. Document trade-off decisions with rationale
+      3. Create integrated design specification
+      4. Ensure ALL agents agree on final approach
+
+      Return as JSON:
+      ```json
+      {
+        "consensus_achieved": true/false,
+        "unified_design": {
+          "architecture": {
+            "style": "...",
+            "components": [{"name": "...", "responsibility": "...", "interfaces": ["..."]}],
+            "patterns": ["patterns used"],
+            "module_boundaries": ["boundaries"]
+          },
+          "api": {
+            "style": "...",
+            "endpoints": [{"path": "...", "method": "...", "purpose": "..."}],
+            "contracts": ["contracts"]
+          },
+          "data": {
+            "model": "...",
+            "schemas": [{"entity": "...", "fields": ["..."]}],
+            "integrity": ["constraints"]
+          },
+          "security": {
+            "threat_model": "summary",
+            "mitigations": ["mitigations"],
+            "auth": "approach"
+          },
+          "testing": {
+            "strategy": "...",
+            "tdd_approach": "...",
+            "coverage_targets": ["targets"]
+          }
+        },
+        "resolved_conflicts": [
+          {"conflict": "...", "resolution": "...", "rationale": "...", "agreed_by": ["all"]}
+        ],
+        "trade_off_decisions": [
+          {"decision": "...", "rationale": "...", "alternatives_rejected": ["..."]}
+        ],
+        "dissenting_opinions": [
+          {"perspective": "...", "opinion": "...", "documented_but_overruled": true}
+        ],
+        "implementation_order": ["ordered steps to implement"],
+        "all_agents_approved": true/false
+      }
+      ```
+    output: "design_consensus"
+    parse_json: true
+

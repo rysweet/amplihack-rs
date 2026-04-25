@@ -1,0 +1,157 @@
+name: "consensus-publish"
+description: "Phase 7: commit + create PR (steps 9-10)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["consensus", "commit", "pr"]
+
+# consensus-publish: extracted from consensus-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — every debate round, every panel
+# perspective, every consensus gate. The user's design constraint: the LLM
+# converges on correct behaviour through many recursive review layers, so
+# no layer may be silently dropped. Context flows in from the parent
+# consensus-workflow context via _execute_sub_recipe()'s automatic merging;
+# outputs propagate back to the parent for subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 100
+
+context: {}
+
+steps:
+  - id: "step9-commit"
+    type: "bash"
+    command: |
+      echo "Committing changes..."
+
+      # Stage all changes
+      git add -A
+
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      _TASK_DESC="$TASK_DESCRIPTION"
+      _REQS_SUMMARY="$FINAL_REQUIREMENTS_TASK_SUMMARY"
+      _IS_CRITICAL="$IS_CRITICAL_CODE"
+      _ISSUE_NUM="$ISSUE_NUMBER"
+      SHORT_DESC=$(printf '%s' "$_TASK_DESC" | tr '\n\r' ' ' | cut -c1-72)
+      # NOTE: Unquoted heredoc — $VAR expansion runs with invoking user's privileges (no escalation).
+      COMMIT_MSG=$(cat <<COMMIT_EOF
+      feat: ${SHORT_DESC}
+
+      Implements $_REQS_SUMMARY
+
+      Consensus Mechanisms Used:
+      - Multi-Agent Debate: Requirements clarification
+      - Multi-Agent Debate: Architecture design
+      - N-Version Programming: $_IS_CRITICAL
+      - Expert Panel: Refactoring review
+
+      Requirements validated by consensus process.
+
+      Resolves #$_ISSUE_NUM
+      COMMIT_EOF
+      )
+
+      git commit -m "$COMMIT_MSG" 2>/dev/null || echo "Commit prepared"
+      PUSH_RESULT=false
+      PUSH_REASON="no_remote"
+      if git remote get-url origin >/dev/null 2>&1; then
+        if git pull --rebase 2>/dev/null && git push 2>/dev/null; then
+          PUSH_RESULT=true
+          PUSH_REASON="success"
+        else
+          PUSH_REASON="push_failed"
+        fi
+      else
+        echo "Skipping push — no remote configured" >&2
+      fi
+
+      echo "{\"committed\": true, \"pushed\": $PUSH_RESULT, \"push_reason\": \"$PUSH_REASON\"}"
+    output: "commit_result"
+    parse_json: true
+
+  # ============================================================================
+  # STEP 10: OPEN PULL REQUEST
+  # ============================================================================
+
+  - id: "step10-create-pr"
+    type: "bash"
+    command: |
+      echo "Creating pull request..."
+
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      _TASK_DESC="$TASK_DESCRIPTION"
+      _REQS_EXPLICIT="$FINAL_REQUIREMENTS_EXPLICIT_REQUIREMENTS"
+      _REQS_MECHANISM="$FINAL_REQUIREMENTS_CONSENSUS_MECHANISM_USED"
+      _IS_CRITICAL="$IS_CRITICAL_CODE"
+      _TDD_TOTAL="$TDD_TESTS_TOTAL_TESTS"
+      _LOCAL_PASSED="$LOCAL_TESTING_ALL_SCENARIOS_PASSED"
+      _ISSUE_NUM="$ISSUE_NUMBER"
+      # NOTE: Unquoted heredoc — $VAR expansion runs with invoking user's privileges (no escalation).
+      PR_BODY=$(cat <<PR_EOF
+      ## Description
+      $_TASK_DESC
+
+      ## Requirements (Consensus-Validated)
+      $_REQS_EXPLICIT
+
+      ## Design Decisions
+      Architecture consensus achieved with:
+      - Architect, API Designer, Database, Security, Tester agents
+      - 3 rounds of structured debate
+      - All conflicts resolved with documented rationale
+
+      ## Consensus Mechanisms Applied
+      - [x] Multi-Agent Debate: Requirements ($_REQS_MECHANISM)
+      - [x] Multi-Agent Debate: Architecture design
+      - [x] N-Version Programming: $_IS_CRITICAL
+      - [x] Expert Panel: Refactoring review
+
+      ## Test Plan
+      - Unit tests: $_TDD_TOTAL tests
+      - Local testing: $_LOCAL_PASSED
+      - Coverage: All requirements mapped to tests
+
+      ## Checklist
+      - [x] Consensus design followed
+      - [x] All tests passing
+      - [x] Pre-commit hooks passing
+      - [x] Local testing completed
+      - [x] No stubs/TODOs/placeholders
+
+      Resolves #$_ISSUE_NUM
+
+      ---
+      Label: consensus-validated
+      PR_EOF
+      )
+
+      PR_TITLE=$(printf '%s' "$_TASK_DESC" | tr '\n\r' ' ' | cut -c1-200)
+      PR_CREATED=false
+      if git remote get-url origin >/dev/null 2>&1; then
+        if gh pr create \
+          --title "$PR_TITLE" \
+          --body "$PR_BODY" \
+          --label "consensus-validated" 2>/dev/null; then
+          PR_CREATED=true
+        else
+          echo "PR creation failed" >&2
+        fi
+      else
+        echo "Skipping PR creation — no remote configured" >&2
+      fi
+
+      echo "{\"pr_created\": $PR_CREATED}"
+    output: "pr_result"
+    parse_json: true
+
+  # ============================================================================
+  # STEP 11: REVIEW THE PR (ALWAYS EXPERT PANEL)
+  # MANDATORY CONSENSUS TRIGGER: Final PR review requires expert panel
+  # ============================================================================
+
+  # ---------------------------------------------------------------------------
+  # CONSENSUS GATE 5: Expert Panel for PR Review (MANDATORY)
+  # Deploy: reviewer, security, optimizer, patterns, tester agents
+  # ---------------------------------------------------------------------------
+

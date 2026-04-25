@@ -1,0 +1,313 @@
+name: "consensus-requirements-debate"
+description: "Phase 1b: 3-round requirements debate (5 perspectives + cross-exam + consensus, step 1-debate-*)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["consensus", "debate", "requirements"]
+
+# consensus-requirements-debate: extracted from consensus-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — every debate round, every panel
+# perspective, every consensus gate. The user's design constraint: the LLM
+# converges on correct behaviour through many recursive review layers, so
+# no layer may be silently dropped. Context flows in from the parent
+# consensus-workflow context via _execute_sub_recipe()'s automatic merging;
+# outputs propagate back to the parent for subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 100
+
+context: {}
+
+steps:
+  - id: "step1-debate-round1-architect"
+    condition: "initial_requirements.requires_debate == 'true'"
+    agent: "amplihack:architect"
+    prompt: |
+      MULTI-AGENT DEBATE - ROUND 1: Independent Analysis (Architect Perspective)
+
+      **Task:** {{task_description}}
+      **Initial Requirements:** {{initial_requirements}}
+      **Codebase Context:** {{codebase_analysis}}
+      **Ambiguities to Resolve:** {{initial_requirements.ambiguities_detected}}
+
+      As the ARCHITECT, provide your interpretation of the requirements:
+      - Focus on system architecture implications
+      - Consider module boundaries and patterns
+      - Identify architectural constraints
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "architect",
+        "interpretation": "your interpretation of the requirements",
+        "key_points": ["important architectural considerations"],
+        "proposed_clarifications": [
+          {"ambiguity": "...", "resolution": "...", "rationale": "..."}
+        ],
+        "concerns": ["concerns about other interpretations"],
+        "confidence": "high/medium/low"
+      }
+      ```
+    output: "debate_architect"
+    parse_json: true
+
+  - id: "step1-debate-round1-security"
+    condition: "initial_requirements.requires_debate == 'true'"
+    agent: "amplihack:security"
+    prompt: |
+      MULTI-AGENT DEBATE - ROUND 1: Independent Analysis (Security Perspective)
+
+      **Task:** {{task_description}}
+      **Initial Requirements:** {{initial_requirements}}
+      **Codebase Context:** {{codebase_analysis}}
+      **Ambiguities to Resolve:** {{initial_requirements.ambiguities_detected}}
+
+      As the SECURITY expert, provide your interpretation:
+      - Focus on security implications
+      - Identify threat vectors
+      - Consider compliance requirements
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "security",
+        "interpretation": "your interpretation of the requirements",
+        "key_points": ["important security considerations"],
+        "proposed_clarifications": [
+          {"ambiguity": "...", "resolution": "...", "rationale": "..."}
+        ],
+        "concerns": ["security concerns with requirements"],
+        "confidence": "high/medium/low"
+      }
+      ```
+    output: "debate_security"
+    parse_json: true
+
+  - id: "step1-debate-round1-api"
+    condition: "initial_requirements.requires_debate == 'true'"
+    agent: "amplihack:api-designer"
+    prompt: |
+      MULTI-AGENT DEBATE - ROUND 1: Independent Analysis (API Designer Perspective)
+
+      **Task:** {{task_description}}
+      **Initial Requirements:** {{initial_requirements}}
+      **Codebase Context:** {{codebase_analysis}}
+      **Ambiguities to Resolve:** {{initial_requirements.ambiguities_detected}}
+
+      As the API DESIGNER, provide your interpretation:
+      - Focus on API contracts and interfaces
+      - Consider integration points
+      - Think about consumer experience
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "api-designer",
+        "interpretation": "your interpretation of the requirements",
+        "key_points": ["important API/interface considerations"],
+        "proposed_clarifications": [
+          {"ambiguity": "...", "resolution": "...", "rationale": "..."}
+        ],
+        "concerns": ["concerns about API implications"],
+        "confidence": "high/medium/low"
+      }
+      ```
+    output: "debate_api"
+    parse_json: true
+
+  - id: "step1-debate-round1-database"
+    condition: "initial_requirements.requires_debate == 'true'"
+    agent: "amplihack:database"
+    prompt: |
+      MULTI-AGENT DEBATE - ROUND 1: Independent Analysis (Database Perspective)
+
+      **Task:** {{task_description}}
+      **Initial Requirements:** {{initial_requirements}}
+      **Codebase Context:** {{codebase_analysis}}
+      **Ambiguities to Resolve:** {{initial_requirements.ambiguities_detected}}
+
+      As the DATABASE expert, provide your interpretation:
+      - Focus on data models and schemas
+      - Consider query patterns
+      - Think about data integrity
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "database",
+        "interpretation": "your interpretation of the requirements",
+        "key_points": ["important data considerations"],
+        "proposed_clarifications": [
+          {"ambiguity": "...", "resolution": "...", "rationale": "..."}
+        ],
+        "concerns": ["concerns about data implications"],
+        "confidence": "high/medium/low"
+      }
+      ```
+    output: "debate_database"
+    parse_json: true
+
+  - id: "step1-debate-round1-tester"
+    condition: "initial_requirements.requires_debate == 'true'"
+    agent: "amplihack:tester"
+    prompt: |
+      MULTI-AGENT DEBATE - ROUND 1: Independent Analysis (Tester Perspective)
+
+      **Task:** {{task_description}}
+      **Initial Requirements:** {{initial_requirements}}
+      **Codebase Context:** {{codebase_analysis}}
+      **Ambiguities to Resolve:** {{initial_requirements.ambiguities_detected}}
+
+      As the TESTER, provide your interpretation:
+      - Focus on testability
+      - Consider edge cases
+      - Think about verification criteria
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "tester",
+        "interpretation": "your interpretation of the requirements",
+        "key_points": ["important testing considerations"],
+        "proposed_clarifications": [
+          {"ambiguity": "...", "resolution": "...", "rationale": "..."}
+        ],
+        "concerns": ["concerns about testability"],
+        "confidence": "high/medium/low"
+      }
+      ```
+    output: "debate_tester"
+    parse_json: true
+
+  - id: "step1-debate-round2-cross-examination"
+    condition: "initial_requirements.requires_debate == 'true'"
+    agent: "amplihack:architect"
+    prompt: |
+      MULTI-AGENT DEBATE - ROUND 2: Cross-Examination
+
+      Review all perspectives and identify conflicts:
+
+      **Architect:** {{debate_architect}}
+      **Security:** {{debate_security}}
+      **API Designer:** {{debate_api}}
+      **Database:** {{debate_database}}
+      **Tester:** {{debate_tester}}
+
+      Perform cross-examination:
+      1. Identify CONFLICTS between interpretations
+      2. Challenge ASSUMPTIONS made by each perspective
+      3. Explore EDGE CASES and failure modes
+      4. Debate TRADE-OFFS between perspectives
+
+      Return as JSON:
+      ```json
+      {
+        "agreements": ["points all perspectives agree on"],
+        "conflicts": [
+          {
+            "issue": "the conflict",
+            "perspectives": {
+              "architect": "position",
+              "security": "position",
+              "api": "position",
+              "database": "position",
+              "tester": "position"
+            },
+            "resolution_options": ["possible resolutions"]
+          }
+        ],
+        "challenged_assumptions": [
+          {"assumption": "...", "challenge": "...", "by": "perspective"}
+        ],
+        "edge_cases_identified": ["edge cases to handle"],
+        "trade_offs": [
+          {"trade_off": "...", "favors": "perspective", "rationale": "..."}
+        ]
+      }
+      ```
+    output: "debate_cross_examination"
+    parse_json: true
+
+  - id: "step1-debate-round3-consensus"
+    condition: "initial_requirements.requires_debate == 'true'"
+    agent: "amplihack:architect"
+    prompt: |
+      MULTI-AGENT DEBATE - ROUND 3: Consensus Building
+
+      Synthesize a unified requirements specification:
+
+      **All Perspectives:**
+      - Architect: {{debate_architect}}
+      - Security: {{debate_security}}
+      - API: {{debate_api}}
+      - Database: {{debate_database}}
+      - Tester: {{debate_tester}}
+
+      **Cross-Examination Results:** {{debate_cross_examination}}
+
+      Build consensus:
+      1. Resolve all conflicts through reasoned debate
+      2. Document trade-off decisions with rationale
+      3. Create integrated requirements specification
+      4. Document any dissenting opinions
+
+      Return as JSON:
+      ```json
+      {
+        "consensus_achieved": true/false,
+        "unified_requirements": {
+          "explicit": ["finalized explicit requirements"],
+          "implicit": ["finalized implicit requirements"],
+          "constraints": ["agreed constraints"],
+          "success_criteria": ["agreed success criteria"]
+        },
+        "resolved_ambiguities": [
+          {"ambiguity": "...", "resolution": "...", "rationale": "...", "agreed_by": ["perspectives"]}
+        ],
+        "trade_off_decisions": [
+          {"decision": "...", "rationale": "...", "alternatives_rejected": ["..."]}
+        ],
+        "dissenting_opinions": [
+          {"perspective": "...", "opinion": "...", "noted_but_overruled": "..."}
+        ],
+        "final_confidence": "high/medium/low"
+      }
+      ```
+    output: "requirements_debate"
+    parse_json: true
+
+  - id: "step1-finalize-requirements"
+    agent: "amplihack:prompt-writer"
+    prompt: |
+      Finalize the requirements specification:
+
+      **Initial Analysis:** {{initial_requirements}}
+      **Codebase Context:** {{codebase_analysis}}
+      **Debate Results (if any):** {{requirements_debate}}
+
+      Create the final, unambiguous requirements document:
+
+      ```json
+      {
+        "task_summary": "one-line summary",
+        "explicit_requirements": ["MUST-HAVE requirements that cannot be removed"],
+        "implicit_requirements": ["derived requirements"],
+        "constraints": ["all constraints"],
+        "success_criteria": ["measurable criteria"],
+        "acceptance_criteria": ["how to verify completion"],
+        "out_of_scope": ["what this does NOT include"],
+        "consensus_mechanism_used": "none/debate",
+        "agents_involved": ["list of agents"],
+        "confidence_level": "high/medium/low"
+      }
+      ```
+
+      CRITICAL: Pass these requirements to ALL subsequent steps.
+    output: "final_requirements"
+    parse_json: true
+
+  # ============================================================================
+  # STEP 2: CREATE GITHUB ISSUE
+  # ============================================================================
+

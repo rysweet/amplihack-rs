@@ -1,0 +1,107 @@
+name: "consensus-test-fix"
+description: "Phase 6: run tests + fix issues + local testing (steps 7-8)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["consensus", "testing", "quality"]
+
+# consensus-test-fix: extracted from consensus-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — every debate round, every panel
+# perspective, every consensus gate. The user's design constraint: the LLM
+# converges on correct behaviour through many recursive review layers, so
+# no layer may be silently dropped. Context flows in from the parent
+# consensus-workflow context via _execute_sub_recipe()'s automatic merging;
+# outputs propagate back to the parent for subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 100
+
+context: {}
+
+steps:
+  - id: "step7-run-tests"
+    type: "bash"
+    command: |
+      echo "Running tests and pre-commit hooks..."
+
+      # Run tests
+      python -m pytest tests/ -v 2>/dev/null || echo "Tests need verification"
+
+      # Run pre-commit
+      pre-commit run --all-files 2>/dev/null || echo "Pre-commit checks need attention"
+
+      echo '{"tests_run": true, "precommit_run": true}'
+    output: "test_results"
+    parse_json: true
+
+  - id: "step7-fix-issues"
+    condition: "test_results.tests_run == 'true'"
+    agent: "amplihack:pre-commit-diagnostic"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      Diagnose and fix any test or pre-commit failures:
+
+      **Test Results:** {{test_results}}
+      **Implementation:** {{refactored_implementation}}
+
+      If there are failures:
+      1. Diagnose the root cause
+      2. Propose fixes
+      3. Ensure fixes don't violate requirements
+
+      Return as JSON:
+      ```json
+      {
+        "issues_found": ["list of issues"],
+        "fixes_applied": ["fixes made"],
+        "all_passing": true/false
+      }
+      ```
+    output: "hook_fixes"
+    parse_json: true
+
+  # ============================================================================
+  # STEP 8: MANDATORY LOCAL TESTING
+  # ============================================================================
+
+  - id: "step8-local-testing"
+    agent: "amplihack:tester"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      Perform mandatory local testing:
+
+      **Implementation:** {{refactored_implementation}}
+      **Requirements:** {{final_requirements}}
+      **Design:** {{design_consensus}}
+
+      Test scenarios:
+      1. Simple use cases - basic functionality
+      2. Complex use cases - edge cases
+      3. Consensus-critical paths - critical code sections
+      4. Integration points - external dependencies
+
+      Return as JSON:
+      ```json
+      {
+        "test_scenarios": [
+          {
+            "scenario": "description",
+            "type": "simple/complex/critical/integration",
+            "test_steps": ["steps taken"],
+            "result": "pass/fail",
+            "notes": "observations"
+          }
+        ],
+        "all_scenarios_passed": true/false,
+        "regressions_found": ["any regressions"],
+        "ready_to_commit": true/false
+      }
+      ```
+    output: "local_testing"
+    parse_json: true
+
+  # ============================================================================
+  # STEP 9: COMMIT AND PUSH
+  # ============================================================================
+

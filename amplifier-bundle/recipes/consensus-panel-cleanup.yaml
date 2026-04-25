@@ -1,0 +1,244 @@
+name: "consensus-panel-cleanup"
+description: "Phase 5: 4-perspective expert-panel cleanup + apply-refactoring (step 6)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["consensus", "refactor", "panel", "review"]
+
+# consensus-panel-cleanup: extracted from consensus-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — every debate round, every panel
+# perspective, every consensus gate. The user's design constraint: the LLM
+# converges on correct behaviour through many recursive review layers, so
+# no layer may be silently dropped. Context flows in from the parent
+# consensus-workflow context via _execute_sub_recipe()'s automatic merging;
+# outputs propagate back to the parent for subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 100
+
+context: {}
+
+steps:
+  - id: "step6-panel-cleanup"
+    agent: "amplihack:cleanup"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      EXPERT PANEL REVIEW - Cleanup Agent
+
+      **CRITICAL: Original user requirements that CANNOT be removed:**
+      {{final_requirements.explicit_requirements}}
+
+      **Implementation to Review:** {{implementation}}
+      **Design:** {{design_consensus}}
+
+      As the CLEANUP agent, propose simplifications:
+      - Ruthless simplification opportunities WITHIN constraints
+      - Remove unnecessary complexity
+      - Eliminate dead code
+      - Simplify logic WITHOUT violating requirements
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "cleanup",
+        "simplifications": [
+          {
+            "location": "file:line",
+            "current": "current code/pattern",
+            "proposed": "simplified version",
+            "rationale": "why simpler",
+            "requirements_preserved": true/false
+          }
+        ],
+        "dead_code": ["code that can be removed"],
+        "unnecessary_abstractions": ["abstractions to remove"],
+        "approved": true/false,
+        "concerns": ["any concerns"]
+      }
+      ```
+    output: "panel_cleanup"
+    parse_json: true
+
+  - id: "step6-panel-optimizer"
+    agent: "amplihack:optimizer"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      EXPERT PANEL REVIEW - Optimizer Agent
+
+      **CRITICAL: Original user requirements that CANNOT be removed:**
+      {{final_requirements.explicit_requirements}}
+
+      **Implementation to Review:** {{implementation}}
+      **Design:** {{design_consensus}}
+
+      As the OPTIMIZER agent, propose performance improvements:
+      - Performance optimization opportunities
+      - Resource efficiency improvements
+      - Algorithmic improvements
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "optimizer",
+        "optimizations": [
+          {
+            "location": "file:line",
+            "current": "current approach",
+            "proposed": "optimized version",
+            "expected_improvement": "what improves",
+            "requirements_preserved": true/false
+          }
+        ],
+        "bottlenecks_identified": ["performance bottlenecks"],
+        "approved": true/false,
+        "concerns": ["any concerns"]
+      }
+      ```
+    output: "panel_optimizer"
+    parse_json: true
+
+  - id: "step6-panel-reviewer"
+    agent: "amplihack:reviewer"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      EXPERT PANEL REVIEW - Reviewer Agent
+
+      **CRITICAL: Original user requirements that CANNOT be removed:**
+      {{final_requirements.explicit_requirements}}
+
+      **Implementation to Review:** {{implementation}}
+      **Design:** {{design_consensus}}
+
+      As the REVIEWER agent, assess code quality:
+      - Code quality and maintainability
+      - Naming and documentation
+      - Error handling completeness
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "reviewer",
+        "quality_issues": [
+          {
+            "severity": "high/medium/low",
+            "location": "file:line",
+            "issue": "the issue",
+            "fix": "how to fix"
+          }
+        ],
+        "maintainability_score": 1-10,
+        "documentation_adequate": true/false,
+        "error_handling_complete": true/false,
+        "approved": true/false,
+        "concerns": ["any concerns"]
+      }
+      ```
+    output: "panel_reviewer"
+    parse_json: true
+
+  - id: "step6-panel-patterns"
+    agent: "amplihack:patterns"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      EXPERT PANEL REVIEW - Patterns Agent
+
+      **CRITICAL: Original user requirements that CANNOT be removed:**
+      {{final_requirements.explicit_requirements}}
+
+      **Implementation to Review:** {{implementation}}
+      **Design:** {{design_consensus}}
+
+      As the PATTERNS agent, assess pattern compliance:
+      - Design pattern correctness
+      - Best practices adherence
+      - Anti-pattern detection
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "patterns",
+        "pattern_issues": [
+          {
+            "pattern": "pattern name",
+            "issue": "how it's misused",
+            "fix": "correct usage"
+          }
+        ],
+        "anti_patterns_detected": ["anti-patterns found"],
+        "best_practices_violations": ["violations"],
+        "approved": true/false,
+        "concerns": ["any concerns"]
+      }
+      ```
+    output: "panel_patterns"
+    parse_json: true
+
+  - id: "step6-panel-consensus"
+    agent: "amplihack:architect"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      EXPERT PANEL CONSENSUS - Refactoring Approval
+
+      **Panel Reviews:**
+      - Cleanup: {{panel_cleanup}}
+      - Optimizer: {{panel_optimizer}}
+      - Reviewer: {{panel_reviewer}}
+      - Patterns: {{panel_patterns}}
+
+      **Requirements to Preserve:** {{final_requirements.explicit_requirements}}
+
+      Build consensus on refactoring:
+      1. Cross-check all proposed changes
+      2. Verify NO requirements are violated
+      3. Agree on final refactoring plan
+      4. ALL agents must approve each change
+
+      Return as JSON:
+      ```json
+      {
+        "unanimous_approval": true/false,
+        "approved_changes": [
+          {"change": "...", "approved_by": ["all agents"], "rationale": "..."}
+        ],
+        "rejected_changes": [
+          {"change": "...", "rejected_by": ["agent"], "reason": "..."}
+        ],
+        "requirements_validation": {
+          "all_preserved": true/false,
+          "verification": ["how each requirement is preserved"]
+        },
+        "final_refactoring_plan": ["ordered changes to make"],
+        "panel_signoff": {
+          "cleanup": true/false,
+          "optimizer": true/false,
+          "reviewer": true/false,
+          "patterns": true/false
+        }
+      }
+      ```
+    output: "refactoring_consensus"
+    parse_json: true
+
+  - id: "step6-apply-refactoring"
+    agent: "amplihack:builder"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      Apply consensus-approved refactoring:
+
+      **Original Implementation:** {{implementation}}
+      **Approved Refactoring Plan:** {{refactoring_consensus.final_refactoring_plan}}
+      **Requirements to Preserve:** {{final_requirements.explicit_requirements}}
+
+      Apply ONLY the approved changes:
+      1. Implement each approved change
+      2. Run tests to verify no breakage
+      3. Verify all requirements still met
+
+      Provide the refactored implementation.
+    output: "refactored_implementation"
+
+  # ============================================================================
+  # STEP 7: RUN TESTS AND PRE-COMMIT HOOKS
+  # ============================================================================
+

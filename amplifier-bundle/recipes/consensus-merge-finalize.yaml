@@ -1,0 +1,301 @@
+name: "consensus-merge-finalize"
+description: "Phase 10: CI + mergeable + final cleanup + 4-perspective final panel (steps 14-15 + final-output)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["consensus", "merge", "finalize", "panel"]
+
+# consensus-merge-finalize: extracted from consensus-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — every debate round, every panel
+# perspective, every consensus gate. The user's design constraint: the LLM
+# converges on correct behaviour through many recursive review layers, so
+# no layer may be silently dropped. Context flows in from the parent
+# consensus-workflow context via _execute_sub_recipe()'s automatic merging;
+# outputs propagate back to the parent for subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 100
+
+context: {}
+
+steps:
+  - id: "step14-check-ci"
+    type: "bash"
+    command: |
+      echo "Checking CI status..."
+      if git remote get-url origin >/dev/null 2>&1; then
+        gh pr checks 2>/dev/null || echo "CI check pending"
+      else
+        echo "Skipping CI check — no remote configured" >&2
+      fi
+      echo '{"ci_checked": true}'
+    output: "ci_status"
+    parse_json: true
+
+  - id: "step14-diagnose-ci"
+    condition: "ci_status.ci_checked == 'true'"
+    agent: "amplihack:ci-diagnostic-workflow"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      Diagnose any CI failures:
+
+      **CI Status:** {{ci_status}}
+      **Implementation:** {{refined_implementation}}
+
+      If CI is failing:
+      1. Diagnose root cause
+      2. Propose fixes
+      3. Ensure fixes don't violate requirements
+
+      Return as JSON:
+      ```json
+      {
+        "ci_passing": true/false,
+        "failures": ["any failures"],
+        "fixes_needed": ["fixes required"],
+        "pr_mergeable": true/false
+      }
+      ```
+    output: "ci_diagnosis"
+    parse_json: true
+
+  - id: "step14-verify-mergeable"
+    agent: "amplihack:reviewer"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      Verify PR is mergeable:
+
+      **CI Status:** {{ci_diagnosis}}
+      **PR Review Consensus:** {{pr_review_consensus}}
+      **Philosophy Consensus:** {{philosophy_consensus}}
+
+      Mergeable criteria:
+      - All CI checks passing
+      - All tests passing
+      - Expert panel approval received
+      - No unresolved review comments
+      - Consensus decisions documented
+      - Philosophy compliance confirmed
+
+      Return as JSON:
+      ```json
+      {
+        "mergeable": true/false,
+        "criteria_met": {
+          "ci_passing": true/false,
+          "tests_passing": true/false,
+          "panel_approved": true/false,
+          "comments_resolved": true/false,
+          "consensus_documented": true/false,
+          "philosophy_compliant": true/false
+        },
+        "blocking_issues": ["any blocking issues"],
+        "ready_to_merge": true/false
+      }
+      ```
+    output: "mergeable_status"
+    parse_json: true
+
+  # ============================================================================
+  # STEP 15: FINAL CLEANUP AND VERIFICATION (EXPERT PANEL)
+  # MANDATORY CONSENSUS TRIGGER: Final quality gate
+  # ============================================================================
+
+  # ---------------------------------------------------------------------------
+  # CONSENSUS GATE 7: Final Quality Panel (MANDATORY)
+  # Deploy: cleanup, reviewer, patterns agents
+  # ---------------------------------------------------------------------------
+
+  - id: "step15-final-cleanup"
+    agent: "amplihack:cleanup"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      FINAL QUALITY PANEL - Cleanup Agent
+
+      **CRITICAL: Original user requirements (provide AGAIN):**
+      {{final_requirements.explicit_requirements}}
+
+      **Implementation:** {{refined_implementation}}
+
+      Final quality pass:
+      - Remove temporary artifacts (unless user wanted them)
+      - Eliminate unnecessary complexity (within requirements)
+      - Verify zero dead code or stub implementations
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "cleanup",
+        "artifacts_removed": ["removed items"],
+        "complexity_eliminated": ["simplified items"],
+        "requirements_still_preserved": true/false,
+        "final_approved": true/false
+      }
+      ```
+    output: "final_cleanup"
+    parse_json: true
+
+  - id: "step15-final-reviewer"
+    agent: "amplihack:reviewer"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      FINAL QUALITY PANEL - Reviewer Agent
+
+      **CRITICAL: Original user requirements (provide AGAIN):**
+      {{final_requirements.explicit_requirements}}
+
+      **Implementation:** {{refined_implementation}}
+
+      Final review:
+      - All changes comply with philosophy
+      - All requirements preserved
+      - Ready for production
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "reviewer",
+        "philosophy_compliant": true/false,
+        "requirements_preserved": true/false,
+        "production_ready": true/false,
+        "final_approved": true/false
+      }
+      ```
+    output: "final_reviewer"
+    parse_json: true
+
+  - id: "step15-final-patterns"
+    agent: "amplihack:patterns"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      FINAL QUALITY PANEL - Patterns Agent
+
+      **CRITICAL: Original user requirements (provide AGAIN):**
+      {{final_requirements.explicit_requirements}}
+
+      **Implementation:** {{refined_implementation}}
+      **Design:** {{design_consensus}}
+
+      Final patterns verification:
+      - Module boundaries remain clean
+      - Regeneratable design intact
+      - All patterns correctly applied
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "patterns",
+        "boundaries_clean": true/false,
+        "regeneratable_intact": true/false,
+        "patterns_correct": true/false,
+        "final_approved": true/false
+      }
+      ```
+    output: "final_patterns"
+    parse_json: true
+
+  - id: "step15-final-consensus"
+    agent: "amplihack:architect"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      FINAL QUALITY CONSENSUS - Unanimous Approval Required
+
+      **CRITICAL: Verify ALL explicit requirements preserved:**
+      {{final_requirements.explicit_requirements}}
+
+      **Final Panel Reviews:**
+      - Cleanup: {{final_cleanup}}
+      - Reviewer: {{final_reviewer}}
+      - Patterns: {{final_patterns}}
+
+      **All Consensus Gates:**
+      - Requirements Debate: {{final_requirements.consensus_mechanism_used}}
+      - Design Consensus: {{design_consensus.consensus_achieved}}
+      - N-Version (if applicable): {{n_version_implementations}}
+      - Refactoring Consensus: {{refactoring_consensus.unanimous_approval}}
+      - PR Review Consensus: {{pr_review_consensus.unanimous_approval}}
+      - Philosophy Consensus: {{philosophy_consensus.unanimous_philosophy_approval}}
+
+      Final consensus:
+      1. ALL explicit user requirements preserved
+      2. ALL consensus mechanisms properly applied
+      3. Expert panel unanimously approves final state
+      4. Document lessons learned
+
+      Return as JSON:
+      ```json
+      {
+        "final_unanimous_approval": true/false,
+        "requirements_final_check": {
+          "all_preserved": true/false,
+          "verification": ["requirement -> how preserved"]
+        },
+        "panel_final_signoff": {
+          "cleanup": true/false,
+          "reviewer": true/false,
+          "patterns": true/false
+        },
+        "consensus_mechanisms_summary": {
+          "requirements_debate": "used/not_used",
+          "design_debate": "completed",
+          "n_version": "used/not_used",
+          "refactoring_panel": "completed",
+          "pr_review_panel": "completed",
+          "philosophy_panel": "completed",
+          "final_quality_panel": "completed"
+        },
+        "lessons_learned": ["insights from consensus process"],
+        "production_ready": true/false,
+        "pr_approved_for_merge": true/false
+      }
+      ```
+    output: "final_consensus"
+    parse_json: true
+
+  # ============================================================================
+  # FINAL OUTPUT SUMMARY
+  # ============================================================================
+
+  - id: "final-output"
+    type: "bash"
+    parse_json: true
+    command: |
+      # FIX (#469/#311): Use jq --arg with "$ENV_VAR" — safe against injection and word-splitting.
+      jq -n \
+        --arg task "$TASK_DESCRIPTION" \
+        --arg criticality "$CRITICALITY" \
+        --arg gate1 "$FINAL_REQUIREMENTS_CONSENSUS_MECHANISM_USED" \
+        --arg gate2 "$DESIGN_CONSENSUS_CONSENSUS_ACHIEVED" \
+        --arg gate3 "$IS_CRITICAL_CODE" \
+        --arg gate4 "$REFACTORING_CONSENSUS_UNANIMOUS_APPROVAL" \
+        --arg gate5 "$PR_REVIEW_CONSENSUS_UNANIMOUS_APPROVAL" \
+        --arg gate6 "$PHILOSOPHY_CONSENSUS_UNANIMOUS_PHILOSOPHY_APPROVAL" \
+        --arg gate7 "$FINAL_CONSENSUS_FINAL_UNANIMOUS_APPROVAL" \
+        --arg final_approval "$FINAL_CONSENSUS_PRODUCTION_READY" \
+        --arg pr_ready "$FINAL_CONSENSUS_PR_APPROVED_FOR_MERGE" \
+        '{
+          workflow: "consensus-workflow",
+          version: "2.0.0",
+          task: $task,
+          criticality: $criticality,
+          status: "complete",
+          consensus_gates_completed: {
+            gate1_requirements_debate: $gate1,
+            gate2_design_debate: $gate2,
+            gate3_n_version: $gate3,
+            gate4_refactoring_panel: $gate4,
+            gate5_pr_review_panel: $gate5,
+            gate6_philosophy_panel: $gate6,
+            gate7_final_quality_panel: $gate7
+          },
+          agents_involved: [
+            "prompt-writer", "analyzer", "architect", "security", "api-designer",
+            "database", "tester", "worktree-manager", "builder", "cleanup",
+            "optimizer", "reviewer", "patterns", "pre-commit-diagnostic",
+            "ci-diagnostic-workflow", "philosophy-guardian"
+          ],
+          final_approval: $final_approval,
+          pr_ready_to_merge: $pr_ready
+        }'
+    output: "workflow_result"

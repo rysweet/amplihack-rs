@@ -1,0 +1,176 @@
+name: "consensus-pr-feedback"
+description: "Phase 9: implement PR feedback + push + 4-perspective philosophy panel (steps 12-13)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["consensus", "feedback", "philosophy"]
+
+# consensus-pr-feedback: extracted from consensus-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — every debate round, every panel
+# perspective, every consensus gate. The user's design constraint: the LLM
+# converges on correct behaviour through many recursive review layers, so
+# no layer may be silently dropped. Context flows in from the parent
+# consensus-workflow context via _execute_sub_recipe()'s automatic merging;
+# outputs propagate back to the parent for subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 100
+
+context: {}
+
+steps:
+  - id: "step12-push-updates"
+    condition: "pr_review_consensus.final_verdict == 'needs_work'"
+    type: "bash"
+    command: |
+      echo "Pushing review updates..."
+      git add -A
+      git commit -m "Address PR review feedback" 2>/dev/null || true
+      if git remote get-url origin >/dev/null 2>&1; then
+        git pull --rebase 2>/dev/null && git push 2>/dev/null || true
+      else
+        echo "Skipping push — no remote configured" >&2
+      fi
+      echo '{"updates_pushed": true}'
+    output: "review_updates"
+    parse_json: true
+
+  # ============================================================================
+  # STEP 13: PHILOSOPHY COMPLIANCE CHECK (EXPERT PANEL)
+  # MANDATORY CONSENSUS TRIGGER: Final philosophy validation
+  # ============================================================================
+
+  # ---------------------------------------------------------------------------
+  # CONSENSUS GATE 6: Philosophy Compliance Panel (MANDATORY)
+  # Deploy: reviewer, patterns, cleanup + philosophy-guardian
+  # ---------------------------------------------------------------------------
+
+  - id: "step13-philosophy-reviewer"
+    agent: "amplihack:reviewer"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      PHILOSOPHY COMPLIANCE - Reviewer Agent
+
+      **Implementation:** {{refined_implementation}}
+      **Requirements:** {{final_requirements}}
+
+      Final philosophy validation:
+      - Zero-BS verification (no stubs, TODOs, placeholders)
+      - Ruthless simplicity achieved WITHIN user requirements
+      - All tests passing
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "reviewer",
+        "zero_bs_violations": ["any violations"],
+        "simplicity_assessment": "achieved/needs_work",
+        "complexity_justified": ["complexity justified by requirements"],
+        "approved": true/false
+      }
+      ```
+    output: "philosophy_reviewer"
+    parse_json: true
+
+  - id: "step13-philosophy-patterns"
+    agent: "amplihack:patterns"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      PHILOSOPHY COMPLIANCE - Patterns Agent
+
+      **Implementation:** {{refined_implementation}}
+      **Design:** {{design_consensus}}
+
+      Pattern compliance verification:
+      - Bricks & studs pattern followed
+      - Regeneratable design verified
+      - Clean module boundaries
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "patterns",
+        "bricks_studs_compliant": true/false,
+        "regeneratable": true/false,
+        "module_boundaries_clean": true/false,
+        "violations": ["any violations"],
+        "approved": true/false
+      }
+      ```
+    output: "philosophy_patterns"
+    parse_json: true
+
+  - id: "step13-philosophy-cleanup"
+    agent: "amplihack:cleanup"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      PHILOSOPHY COMPLIANCE - Cleanup Agent
+
+      **Implementation:** {{refined_implementation}}
+      **Requirements:** {{final_requirements}}
+
+      Final cleanup verification:
+      - No dead code
+      - No stubs remaining
+      - Ruthless simplicity achieved
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "cleanup",
+        "dead_code_found": ["any dead code"],
+        "stubs_found": ["any stubs"],
+        "simplicity_achieved": true/false,
+        "approved": true/false
+      }
+      ```
+    output: "philosophy_cleanup"
+    parse_json: true
+
+  - id: "step13-philosophy-guardian"
+    agent: "amplihack:philosophy-guardian"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      PHILOSOPHY GUARDIAN - Final Validation
+
+      **Implementation:** {{refined_implementation}}
+      **Requirements:** {{final_requirements}}
+      **Panel Reviews:**
+      - Reviewer: {{philosophy_reviewer}}
+      - Patterns: {{philosophy_patterns}}
+      - Cleanup: {{philosophy_cleanup}}
+
+      As the Philosophy Guardian, perform final validation:
+      1. All agents must agree code meets philosophy
+      2. Verify ruthless simplicity WITHIN user requirements
+      3. Confirm bricks & studs pattern followed
+      4. Ensure zero-BS implementation
+
+      Return as JSON:
+      ```json
+      {
+        "unanimous_philosophy_approval": true/false,
+        "panel_signoff": {
+          "reviewer": true/false,
+          "patterns": true/false,
+          "cleanup": true/false
+        },
+        "philosophy_principles_met": {
+          "ruthless_simplicity": true/false,
+          "bricks_and_studs": true/false,
+          "zero_bs": true/false,
+          "regeneratable": true/false,
+          "test_driven": true/false
+        },
+        "complexity_justified_by_requirements": ["justified complexity"],
+        "final_approval": true/false
+      }
+      ```
+    output: "philosophy_consensus"
+    parse_json: true
+
+  # ============================================================================
+  # STEP 14: ENSURE PR IS MERGEABLE
+  # ============================================================================
+

@@ -1,0 +1,350 @@
+name: "consensus-tdd-impl"
+description: "Phase 4: write tests + standard impl + N-version (3 builders + vote, steps 4-tests, 5-*)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["consensus", "tdd", "nversion", "implementation"]
+
+# consensus-tdd-impl: extracted from consensus-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — every debate round, every panel
+# perspective, every consensus gate. The user's design constraint: the LLM
+# converges on correct behaviour through many recursive review layers, so
+# no layer may be silently dropped. Context flows in from the parent
+# consensus-workflow context via _execute_sub_recipe()'s automatic merging;
+# outputs propagate back to the parent for subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 100
+
+context: {}
+
+steps:
+  - id: "step4-write-tests"
+    agent: "amplihack:tester"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      Write comprehensive failing tests based on consensus design (TDD):
+
+      **Requirements:** {{final_requirements}}
+      **Consensus Design:** {{design_consensus}}
+
+      Write tests that:
+      1. Cover ALL agreed-upon requirements
+      2. Include edge cases identified during debate
+      3. Follow TDD - tests should FAIL initially
+      4. Cover security requirements
+      5. Cover data integrity requirements
+
+      Provide:
+      1. Unit test file(s)
+      2. Integration test file(s)
+      3. Test coverage mapping to requirements
+
+      Format with file headers:
+      ```python
+      # File: tests/test_<component>.py
+      [test code]
+      ```
+
+      Return test summary as JSON:
+      ```json
+      {
+        "test_files": ["list of test files created"],
+        "requirements_coverage": [
+          {"requirement": "...", "tests": ["test names"]}
+        ],
+        "edge_cases_covered": ["edge cases with tests"],
+        "total_tests": 0,
+        "tests_should_fail": true
+      }
+      ```
+    output: "tdd_tests"
+    parse_json: true
+
+  # ============================================================================
+  # STEP 5: IMPLEMENT THE SOLUTION (N-VERSION FOR CRITICAL CODE)
+  # CONSENSUS TRIGGER: If implementation involves critical code paths
+  # ============================================================================
+
+  - id: "step5-standard-implementation"
+    condition: "is_critical_code == 'false'"
+    agent: "amplihack:builder"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      Implement the solution following the consensus design:
+
+      **Task:** {{task_description}}
+      **Requirements:** {{final_requirements}}
+      **Consensus Design:** {{design_consensus}}
+      **TDD Tests:** {{tdd_tests}}
+
+      Implementation rules:
+      1. Follow the consensus architecture design EXACTLY
+      2. Make the failing tests PASS
+      3. NO stubs, NO TODOs, NO placeholders
+      4. Comprehensive error handling for ALL failure modes
+      5. Add inline documentation for complex logic
+      6. Log critical decision points
+
+      Provide:
+      1. Complete implementation code (all files)
+      2. Explanation of key decisions
+      3. Any minor deviations from design (with justification)
+
+      Format with file headers:
+      ```python
+      # File: path/to/file.py
+      [code]
+      ```
+    output: "implementation"
+
+  # ---------------------------------------------------------------------------
+  # CONSENSUS GATE 3: N-Version Programming for Critical Code
+  # Deploy 2-3 builder agents independently for critical sections
+  # ---------------------------------------------------------------------------
+
+  - id: "step5-nversion-identify-critical"
+    condition: "is_critical_code == 'true'"
+    agent: "amplihack:architect"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      Identify critical code sections for N-Version programming:
+
+      **Requirements:** {{final_requirements}}
+      **Consensus Design:** {{design_consensus}}
+      **Criticality:** {{criticality}}
+
+      Identify sections that need N-Version implementation:
+      - Security checks (authentication, authorization)
+      - Financial calculations
+      - Data integrity logic
+      - Safety-critical paths
+
+      Return as JSON:
+      ```json
+      {
+        "critical_sections": [
+          {
+            "name": "section name",
+            "description": "what it does",
+            "why_critical": "why N-version needed",
+            "specification": "detailed spec for independent implementation"
+          }
+        ],
+        "non_critical_sections": ["sections for standard implementation"],
+        "num_versions_recommended": 2 or 3
+      }
+      ```
+    output: "critical_sections"
+    parse_json: true
+
+  - id: "step5-nversion-builder1-conservative"
+    condition: "is_critical_code == 'true'"
+    agent: "amplihack:builder"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      N-VERSION IMPLEMENTATION - Version 1: CONSERVATIVE Approach
+
+      **Critical Sections:** {{critical_sections}}
+      **Design:** {{design_consensus}}
+      **Requirements:** {{final_requirements}}
+
+      Implement using CONSERVATIVE approach:
+      - Proven design patterns
+      - Comprehensive error handling
+      - Defensive programming
+      - Prioritize safety over cleverness
+
+      Implement ONLY the critical sections identified.
+      Other sections will use standard implementation.
+
+      Return as JSON:
+      ```json
+      {
+        "version": "conservative",
+        "implementation": "full code here",
+        "approach_rationale": "why this approach",
+        "error_handling": ["error cases handled"],
+        "trade_offs": ["trade-offs made"]
+      }
+      ```
+    output: "nversion_v1"
+    parse_json: true
+
+  - id: "step5-nversion-builder2-pragmatic"
+    condition: "is_critical_code == 'true'"
+    agent: "amplihack:builder"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      N-VERSION IMPLEMENTATION - Version 2: PRAGMATIC Approach
+
+      **Critical Sections:** {{critical_sections}}
+      **Design:** {{design_consensus}}
+      **Requirements:** {{final_requirements}}
+
+      Implement using PRAGMATIC approach:
+      - Balance simplicity and robustness
+      - Standard library solutions where possible
+      - Practical trade-offs
+      - Focus on maintainability
+
+      Implement ONLY the critical sections identified.
+      DO NOT look at Version 1 - implement independently.
+
+      Return as JSON:
+      ```json
+      {
+        "version": "pragmatic",
+        "implementation": "full code here",
+        "approach_rationale": "why this approach",
+        "error_handling": ["error cases handled"],
+        "trade_offs": ["trade-offs made"]
+      }
+      ```
+    output: "nversion_v2"
+    parse_json: true
+
+  - id: "step5-nversion-builder3-minimalist"
+    condition: "is_critical_code == 'true'"
+    agent: "amplihack:builder"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      N-VERSION IMPLEMENTATION - Version 3: MINIMALIST Approach
+
+      **Critical Sections:** {{critical_sections}}
+      **Design:** {{design_consensus}}
+      **Requirements:** {{final_requirements}}
+
+      Implement using MINIMALIST approach:
+      - Ruthless simplification
+      - Minimal dependencies
+      - Direct implementation
+      - Remove all unnecessary abstraction
+
+      Implement ONLY the critical sections identified.
+      DO NOT look at Versions 1-2 - implement independently.
+
+      Return as JSON:
+      ```json
+      {
+        "version": "minimalist",
+        "implementation": "full code here",
+        "approach_rationale": "why this approach",
+        "error_handling": ["error cases handled"],
+        "trade_offs": ["trade-offs made"]
+      }
+      ```
+    output: "nversion_v3"
+    parse_json: true
+
+  - id: "step5-nversion-compare"
+    condition: "is_critical_code == 'true'"
+    agent: "amplihack:architect"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      N-VERSION COMPARISON: Evaluate all implementations
+
+      **Version 1 (Conservative):** {{nversion_v1}}
+      **Version 2 (Pragmatic):** {{nversion_v2}}
+      **Version 3 (Minimalist):** {{nversion_v3}}
+      **Requirements:** {{final_requirements}}
+
+      Compare implementations for:
+      1. Logic correctness
+      2. Edge case handling
+      3. Error handling approaches
+      4. Performance characteristics
+      5. Security considerations
+
+      Return as JSON:
+      ```json
+      {
+        "comparison_matrix": [
+          {
+            "version": "conservative",
+            "correctness": {"pass": true/false, "notes": "..."},
+            "security": {"pass": true/false, "notes": "..."},
+            "simplicity": {"score": 1-10, "notes": "..."},
+            "error_handling": {"score": 1-10, "notes": "..."},
+            "performance": {"score": 1-10, "notes": "..."},
+            "strengths": ["..."],
+            "weaknesses": ["..."]
+          }
+        ],
+        "recommendation": {
+          "selected": "version name or 'hybrid'",
+          "rationale": "why selected",
+          "if_hybrid": {
+            "components_from": {"v1": ["..."], "v2": ["..."], "v3": ["..."]}
+          }
+        },
+        "all_versions_meet_requirements": true/false
+      }
+      ```
+    output: "nversion_comparison"
+    parse_json: true
+
+  - id: "step5-nversion-synthesize"
+    condition: "is_critical_code == 'true'"
+    agent: "amplihack:builder"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      N-VERSION SYNTHESIS: Create final implementation
+
+      **Comparison:** {{nversion_comparison}}
+      **Version 1:** {{nversion_v1}}
+      **Version 2:** {{nversion_v2}}
+      **Version 3:** {{nversion_v3}}
+      **Design:** {{design_consensus}}
+      **Requirements:** {{final_requirements}}
+
+      Create the final implementation:
+      1. Use the recommended version/hybrid approach
+      2. Combine best aspects from each version
+      3. Include non-critical sections
+      4. Ensure ALL requirements are met
+
+      Return complete implementation with all files.
+    output: "implementation"
+
+  - id: "step5-nversion-vote"
+    condition: "is_critical_code == 'true'"
+    agent: "amplihack:architect"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      N-VERSION CONSENSUS VOTE: Final approval for critical code
+
+      **Final Implementation:** {{implementation}}
+      **Comparison Results:** {{nversion_comparison}}
+      **Requirements:** {{final_requirements}}
+
+      All agents must review and approve:
+
+      Return as JSON:
+      ```json
+      {
+        "votes": {
+          "architect": {"approved": true/false, "concerns": "..."},
+          "security": {"approved": true/false, "concerns": "..."},
+          "tester": {"approved": true/false, "concerns": "..."}
+        },
+        "consensus_reached": true/false,
+        "majority_approved": true/false,
+        "blocking_concerns": ["any blocking issues"],
+        "final_approval": true/false
+      }
+      ```
+    output: "n_version_implementations"
+    parse_json: true
+
+  # ============================================================================
+  # STEP 6: REFACTOR AND SIMPLIFY (EXPERT PANEL REVIEW)
+  # MANDATORY CONSENSUS TRIGGER: Refactoring requires validation
+  # ============================================================================
+
+  # ---------------------------------------------------------------------------
+  # CONSENSUS GATE 4: Expert Panel for Refactoring (MANDATORY)
+  # Deploy: cleanup, optimizer, reviewer, patterns agents
+  # ---------------------------------------------------------------------------
+
