@@ -96,7 +96,6 @@ Mandatory gates: 0[X] 10[>] 16[ ] 17[ ]
 ## Integration Points
 
 - **TodoWrite**: Step numbers in todos should match workflow_state.yaml
-- **workflow_tracker.py**: Historical logging (complements state tracking)
 - **power_steering**: Uses `dev_workflow_complete` consideration for session-end checks
 
 ## Honest Limitations
@@ -123,7 +122,6 @@ Mandatory gates: 0[X] 10[>] 16[ ] 17[ ]
 
 - `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md` - Canonical workflow definition
 - `~/.amplihack/.claude/templates/workflow_state.yaml.template` - State file template
-- `~/.amplihack/.claude/tools/amplihack/hooks/workflow_tracker.py` - Historical logging
 - `~/.amplihack/.claude/tools/amplihack/considerations.yaml` - Power steering checks
 
 ## Reference

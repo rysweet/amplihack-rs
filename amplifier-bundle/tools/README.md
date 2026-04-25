@@ -22,13 +22,6 @@ This directory contains the core infrastructure for the Amplihack framework's in
 ```
 .claude/tools/
 ├── amplihack/                  # Main amplihack framework tools
-│   ├── hooks/                  # Claude Code lifecycle hooks
-│   │   ├── hook_processor.py   # Base class for all hooks
-│   │   ├── session_start.py    # Session initialization
-│   │   ├── stop.py             # Stop event handling with lock support
-│   │   ├── user_prompt_submit.py # User preference injection
-│   │   ├── post_tool_use.py    # Tool usage tracking
-│   │   └── pre_compact.py      # Conversation export before compaction
 │   ├── builders/               # Transcript and documentation builders
 │   │   ├── claude_transcript_builder.py    # Session transcripts
 │   │   ├── codex_transcripts_builder.py    # Codex-optimized exports
@@ -194,30 +187,10 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 ### Base Hook Processor
 
-All hooks inherit from `HookProcessor` which provides:
-
-```python
-from amplihack.hooks.hook_processor import HookProcessor
-
-class MyHook(HookProcessor):
-    def __init__(self):
-        super().__init__("my_hook")
-
-    def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        # Your hook logic here
-        self.log("Processing hook")
-        self.save_metric("metric_name", value)
-        return {"result": "success"}
-```
-
-**Features**:
-
-- JSON input/output handling
-- Structured logging to `~/.amplihack/.claude/runtime/logs/`
-- Metric collection to `~/.amplihack/.claude/runtime/metrics/`
-- Error handling with graceful fallback
-- Path validation and security
-- Session data management
+> **Note (rysweet/amplihack-rs#285):** the bundled `amplihack/hooks/` Python
+> tree (including `hook_processor.py`) was removed. Hook orchestration in
+> amplihack-rs is implemented in the Rust `amplihack-hooks` crate; consult
+> that crate for the current API.
 
 ## Builders
 
@@ -679,12 +652,9 @@ print(f"Issue URL: {result['url']}")
 
 ### 1. Basic Hook Usage
 
-Hooks are automatically triggered by Claude Code. To enable:
-
-```bash
-# Hooks are in .claude/tools/amplihack/hooks/
-# Claude Code automatically discovers and runs them
-```
+> **Note (rysweet/amplihack-rs#285):** Claude Code hooks are now provided
+> by the Rust `amplihack-hooks` crate; the bundled `amplihack/hooks/`
+> Python directory was removed.
 
 ### 2. Session Management
 
@@ -786,43 +756,10 @@ with toolkit.session("comprehensive_analysis") as session:
 
 ### Custom Hook Example
 
-```python
-from amplihack.hooks.hook_processor import HookProcessor
-from typing import Any, Dict
-
-class CustomHook(HookProcessor):
-    """Custom hook for specific workflow needs."""
-
-    def __init__(self):
-        super().__init__("custom_hook")
-
-    def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Process custom logic."""
-        # Log activity
-        self.log("Custom hook triggered")
-
-        # Extract data
-        prompt = input_data.get("prompt", "")
-
-        # Your logic here
-        if "special_keyword" in prompt:
-            self.log("Special keyword detected")
-            self.save_metric("special_triggers", 1)
-
-            return {
-                "additionalContext": "Special mode activated!"
-            }
-
-        # Default behavior
-        return {}
-
-def main():
-    hook = CustomHook()
-    hook.run()
-
-if __name__ == "__main__":
-    main()
-```
+> **Note (rysweet/amplihack-rs#285):** the `amplihack.hooks.hook_processor`
+> Python base class was removed alongside the bundled `amplihack/hooks/`
+> tree. Custom hooks are now implemented in the Rust `amplihack-hooks`
+> crate; refer to that crate for the current extension API.
 
 ## Performance Considerations
 
@@ -870,10 +807,10 @@ Reflection system uses `security.py` to sanitize all content before GitHub issue
 
 ### Hook Not Running
 
-1. Check `~/.amplihack/.claude/tools/amplihack/hooks/` exists
-2. Verify hooks are executable
-3. Check logs in `~/.amplihack/.claude/runtime/logs/<hook_name>.log`
-4. Enable debug mode: `export AMPLIHACK_DEBUG=1`
+> **Note (rysweet/amplihack-rs#285):** hooks are implemented in the Rust
+> `amplihack-hooks` crate, not as Python files under `.claude/tools/`.
+> Refer to that crate's diagnostics and the runtime logs in
+> `~/.amplihack/.claude/runtime/logs/` when troubleshooting.
 
 ### Memory Not Persisting
 

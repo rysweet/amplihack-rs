@@ -20,13 +20,11 @@ pub fn asset_relative_paths() -> HashMap<&'static str, Vec<&'static str>> {
         "session-tree-path",
         vec!["amplifier-bundle/tools/session_tree.py"],
     );
-    m.insert(
-        "hooks-dir",
-        vec![
-            ".claude/tools/amplihack/hooks",
-            "amplifier-bundle/tools/amplihack/hooks",
-        ],
-    );
+    // NOTE (rysweet/amplihack-rs#285): the "hooks-dir" named asset was removed.
+    // Its only consumers were two `HOOKS_DIR=$(...) || true` lines in
+    // smart-orchestrator.yaml that never read the variable. Both the asset
+    // entry and those shell lines were deleted as part of the first slice of
+    // the umbrella issue eliminating the bundled-Python tools/amplihack/ tree.
     // FIX (rysweet/amplihack-rs#283/#248): expose the multitask-orchestrator
     // script so smart-orchestrator.yaml can drop its remaining
     // `python3 -m amplihack.runtime_assets multitask-orchestrator` shim.
@@ -169,7 +167,6 @@ mod tests {
         let paths = asset_relative_paths();
         assert!(paths.contains_key("helper-path"));
         assert!(paths.contains_key("session-tree-path"));
-        assert!(paths.contains_key("hooks-dir"));
         assert!(paths.contains_key("multitask-orchestrator"));
     }
 
@@ -182,13 +179,19 @@ mod tests {
         assert!(orch[1].contains("amplifier-bundle/skills/multitask"));
     }
 
+    /// Regression guard for rysweet/amplihack-rs#285: the "hooks-dir" named
+    /// asset and the underlying amplifier-bundle/tools/amplihack/hooks/
+    /// directory have been deleted. Re-introducing the asset key without
+    /// also restoring real consumers would re-create the dead code path
+    /// (HOOKS_DIR was assigned with `|| true` and never read), which is
+    /// exactly what this slice removed.
     #[test]
-    fn hooks_dir_has_two_candidates() {
+    fn hooks_dir_is_not_registered_see_issue_285() {
         let paths = asset_relative_paths();
-        let hooks = &paths["hooks-dir"];
-        assert_eq!(hooks.len(), 2);
-        assert!(hooks[0].contains("claude/tools"));
-        assert!(hooks[1].contains("amplifier-bundle"));
+        assert!(
+            !paths.contains_key("hooks-dir"),
+            "hooks-dir asset must remain unregistered (see rysweet/amplihack-rs#285)"
+        );
     }
 
     #[test]

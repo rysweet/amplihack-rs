@@ -10,7 +10,6 @@ explicit_triggers:
   - /amplihack:workflow-enforcement
 related_files:
   - .claude/workflow/DEFAULT_WORKFLOW.md
-  - .claude/tools/amplihack/hooks/workflow_tracker.py
   - .claude/tools/amplihack/considerations.yaml
   - .claude/templates/workflow_state.yaml.template
 implementation_status: specification
@@ -160,7 +159,6 @@ This skill was created because an agent skipped workflow steps while building a 
 1. Verify all steps completed (or explicitly skipped with documented reason)
 2. Final progress: `[######################] 22/22 Steps Complete`
 3. Delete `~/.amplihack/.claude/runtime/workflow_state.yaml` if used
-4. Log completion to workflow_tracker.py
 
 ## Visual Progress Formats
 
@@ -398,6 +396,5 @@ If state file is missing or corrupt:
 
 - **DEFAULT_WORKFLOW.md**: Canonical workflow definition with Step 0 guidance
 - **templates/workflow_state.yaml.template**: Template for structured state tracking
-- **workflow_tracker.py**: Historical logging (JSONL format)
 - **power_steering_checker.py**: Session-end enforcement (transcript-based)
 - **considerations.yaml**: `dev_workflow_complete` consideration definition
