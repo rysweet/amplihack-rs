@@ -1581,6 +1581,85 @@ class TestGoalAlreadyMetProbe(unittest.TestCase):
         finally:
             shutil.rmtree(bindir, ignore_errors=True)
 
+    def test_cross_repo_closing_pr_uses_explicit_repo_flag(self):
+        """
+        COE finding (cohort #2): closedByPullRequestsReferences may point at
+        a PR in a different repo. The probe must pass `--repo owner/name`
+        when looking up that PR, otherwise it queries the current repo and
+        either silently misses (false negative) or worse, reads the wrong
+        PR with the same number.
+        """
+        # Stub records the args it sees so we can assert --repo was passed.
+        bindir = tempfile.mkdtemp()
+        try:
+            log = Path(bindir) / "calls.log"
+            gh_script = (
+                "#!/bin/bash\n"
+                f'echo "$*" >> {log}\n'
+                'if [[ "$*" == *"issue view"*"--jq .state"* ]]; then echo CLOSED; exit 0; fi\n'
+                'if [[ "$*" == *"issue view"*closedByPullRequestsReferences* ]]; then\n'
+                # Return one cross-repo PR ref: number=42, repo=upstream/other
+                '  echo "42 upstream/other"; exit 0\n'
+                'fi\n'
+                'if [[ "$*" == *"pr view 42"*"--repo upstream/other"*"--jq .mergedAt"* ]]; then\n'
+                '  echo "2026-01-01T00:00:00Z"; exit 0\n'
+                'fi\n'
+                # If --repo was NOT passed, return null so the test fails loudly.
+                'if [[ "$*" == *"pr view 42"*"--jq .mergedAt"* ]]; then echo null; exit 0; fi\n'
+                "exit 1\n"
+            )
+            Path(bindir, "gh").write_text(gh_script)
+            os.chmod(Path(bindir, "gh"), 0o755)
+            env = {
+                "PATH": f"{bindir}:{os.environ['PATH']}",
+                "ISSUE_NUMBER": "999",
+            }
+            self._run_probe(env, expect="true")
+            calls = log.read_text()
+            self.assertIn("--repo upstream/other", calls,
+                          f"probe must pass --repo for cross-repo PR. calls:\n{calls}")
+        finally:
+            shutil.rmtree(bindir, ignore_errors=True)
+
+    def test_caps_fan_out_at_max_probe(self):
+        """
+        DESIGN_RISK (cohort #2): an issue with many linked PRs must not
+        chew through the rate limit; cap is MAX_PROBE=10. After the cap,
+        the probe falls through to "false" rather than continuing to walk.
+        """
+        bindir = tempfile.mkdtemp()
+        try:
+            log = Path(bindir) / "calls.log"
+            # Generate 20 unmerged PR refs.
+            refs = "\\n".join(f"{i} owner/repo" for i in range(1, 21))
+            gh_script = (
+                "#!/bin/bash\n"
+                f'echo "$*" >> {log}\n'
+                'if [[ "$*" == *"issue view"*"--jq .state"* ]]; then echo CLOSED; exit 0; fi\n'
+                'if [[ "$*" == *"issue view"*closedByPullRequestsReferences* ]]; then\n'
+                f'  printf "{refs}\\n"; exit 0\n'
+                'fi\n'
+                # All PRs unmerged.
+                'if [[ "$*" == *"pr view"*"--jq .mergedAt"* ]]; then echo null; exit 0; fi\n'
+                "exit 1\n"
+            )
+            Path(bindir, "gh").write_text(gh_script)
+            os.chmod(Path(bindir, "gh"), 0o755)
+            env = {
+                "PATH": f"{bindir}:{os.environ['PATH']}",
+                "ISSUE_NUMBER": "999",
+            }
+            self._run_probe(env, expect="false")
+            # Count pr-view calls — must be at most 10 (the cap).
+            calls = log.read_text()
+            pr_view_calls = sum(1 for line in calls.splitlines() if "pr view" in line)
+            self.assertLessEqual(
+                pr_view_calls, 10,
+                f"probe walked {pr_view_calls} PRs; cap is 10. calls:\n{calls}",
+            )
+        finally:
+            shutil.rmtree(bindir, ignore_errors=True)
+
 
 # ===========================================================================
 
