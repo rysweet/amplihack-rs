@@ -1,0 +1,146 @@
+name: simard-ooda-cycle
+version: 1.0.0
+description: |
+  Phase 3 of the recipes-first Simard rebuild (rysweet/Simard#1270).
+
+  Replaces `src/ooda_loop/mod.rs::run_ooda_cycle` with a declarative
+  pipeline of deterministic phase steps that round-trip OodaStateSnapshot
+  JSON between invocations of the `simard-ooda-step` helper bin.
+
+  Bridge-dependent phases (observe, prepare-context, act, memory ops,
+  budget-check) are out of scope for the initial cut and are documented
+  inline as TODO steps. They will be implemented as `type: recipe` calls
+  to simard-engineer-loop and simard-self-improve-cycle once the
+  bridge-instantiation surface lands.
+
+  Companion: simard-engineer-loop.yaml (Phase 2),
+             simard-self-improve-cycle.yaml (Phase 1).
+
+inputs:
+  state_json_path:
+    description: Path to OodaStateSnapshot JSON on disk
+    required: true
+  observation_json_path:
+    description: Path to Observation JSON for this cycle
+    required: true
+  outcomes_json_path:
+    description: Path to Vec<ActionOutcome> JSON from the act phase
+    required: false
+    default: ""
+  config_json_path:
+    description: Path to OodaConfig JSON; defaults to OodaConfig::default()
+    required: false
+    default: ""
+  helper_bin:
+    description: Path to the simard-ooda-step binary
+    required: false
+    default: "./target/debug/simard-ooda-step"
+  state_root:
+    description: Where to write the post-cycle snapshot + reports
+    required: true
+  act_elapsed_millis:
+    description: Wall-clock duration of the act phase in milliseconds
+    required: false
+    default: "0"
+
+steps:
+  # --- Orient: rank priorities from observation + goal failure counts ---
+  - id: orient
+    type: bash
+    command: |
+      mkdir -p "{{state_root}}"
+      "{{helper_bin}}" orient \
+        --state-json "{{state_json_path}}" \
+        --observation-json "{{observation_json_path}}" \
+        > "{{state_root}}/priorities.json"
+      echo "[ooda-cycle] orient: emitted $(jq 'length' "{{state_root}}/priorities.json") priorities"
+    on_error: fail
+    output: priorities_path
+
+  # --- Decide: select planned actions from priorities ---
+  - id: decide
+    type: bash
+    command: |
+      DECIDE_ARGS=(--priorities-json "{{state_root}}/priorities.json")
+      if [ -n "{{config_json_path}}" ]; then
+        DECIDE_ARGS+=(--config-json "{{config_json_path}}")
+      fi
+      "{{helper_bin}}" decide "${DECIDE_ARGS[@]}" \
+        > "{{state_root}}/planned_actions.json"
+      echo "[ooda-cycle] decide: planned $(jq 'length' "{{state_root}}/planned_actions.json") actions"
+    on_error: fail
+    output: planned_actions_path
+
+  # --- Act: dispatch planned actions ---
+  #
+  # TODO(#1270): Per-action dispatch via `type: recipe` composition:
+  #   - ActionKind::AdvanceGoal      → recipe: simard-engineer-loop
+  #   - ActionKind::RunImprovement   → recipe: simard-self-improve-cycle
+  #   - ActionKind::ConsolidateMemory → bash: simard-memory-step consolidate
+  #   - other kinds                  → bash: simard-ooda-step act-stub
+  #
+  # The current cut requires the caller to provide `outcomes_json_path` so
+  # the review/curate phases can run without bridge-dependent dispatch.
+  - id: act-passthrough
+    type: bash
+    command: |
+      if [ -z "{{outcomes_json_path}}" ]; then
+        echo "[ooda-cycle] act: TODO — bridge-dispatch not implemented; pass --outcomes-json-path with pre-computed outcomes" >&2
+        echo "[]" > "{{state_root}}/outcomes.json"
+      else
+        cp "{{outcomes_json_path}}" "{{state_root}}/outcomes.json"
+        echo "[ooda-cycle] act: $(jq 'length' "{{state_root}}/outcomes.json") outcomes from caller-provided file"
+      fi
+    on_error: fail
+
+  # --- Review: synthesise improvement directives from outcomes ---
+  - id: review
+    type: bash
+    command: |
+      "{{helper_bin}}" review \
+        --outcomes-json "{{state_root}}/outcomes.json" \
+        --act-elapsed-millis "{{act_elapsed_millis}}" \
+        > "{{state_root}}/review_directives.json"
+      echo "[ooda-cycle] review: $(jq 'length' "{{state_root}}/review_directives.json") improvement directive(s)"
+    on_error: fail
+    output: review_directives_path
+
+  # --- Curate: archive completed goals + promote backlog into freed slots ---
+  - id: curate
+    type: bash
+    command: |
+      "{{helper_bin}}" curate \
+        --state-json "{{state_json_path}}" \
+        > "{{state_root}}/curate_result.json"
+      jq '.snapshot' "{{state_root}}/curate_result.json" > "{{state_root}}/post_state_snapshot.json"
+      echo "[ooda-cycle] curate: archived $(jq '.archived_goal_ids | length' "{{state_root}}/curate_result.json") goal(s)"
+    on_error: fail
+    output: post_state_snapshot_path
+
+  # --- Emit final cycle report ---
+  - id: emit-final
+    type: bash
+    command: |
+      jq -n \
+        --slurpfile priorities "{{state_root}}/priorities.json" \
+        --slurpfile planned_actions "{{state_root}}/planned_actions.json" \
+        --slurpfile outcomes "{{state_root}}/outcomes.json" \
+        --slurpfile review_directives "{{state_root}}/review_directives.json" \
+        --slurpfile post_state "{{state_root}}/post_state_snapshot.json" \
+        '{
+          priorities: $priorities[0],
+          planned_actions: $planned_actions[0],
+          outcomes: $outcomes[0],
+          review_directives: $review_directives[0],
+          post_state: $post_state[0]
+        }' > "{{state_root}}/cycle_report.json"
+      echo "[ooda-cycle] complete: cycle_report.json written to {{state_root}}/"
+    on_error: fail
+
+outputs:
+  cycle_report_path:
+    description: Path to the consolidated CycleReport-equivalent JSON
+    value: "{{state_root}}/cycle_report.json"
+  post_state_snapshot_path:
+    description: Path to the post-cycle OodaStateSnapshot JSON
+    value: "{{state_root}}/post_state_snapshot.json"
