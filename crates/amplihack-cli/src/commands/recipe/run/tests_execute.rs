@@ -42,7 +42,8 @@ steps:
     let recipe_path = tmp.path();
     let context = BTreeMap::new();
 
-    let result = execute::execute_recipe_via_rust(recipe_path, &context, true, Path::new("."));
+    let result =
+        execute::execute_recipe_via_rust(recipe_path, &context, true, false, Path::new("."));
 
     assert!(
         result.is_ok(),
@@ -118,8 +119,9 @@ fn test_execute_recipe_via_rust_propagates_asset_resolver_env() {
         std::env::remove_var("AMPLIHACK_ASSET_RESOLVER");
     }
 
-    let result = execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, temp.path())
-        .expect("recipe run must succeed");
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path())
+            .expect("recipe run must succeed");
 
     match prev_runner {
         Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
@@ -205,8 +207,9 @@ fn test_execute_recipe_via_rust_propagates_agent_binary_env() {
         std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot");
     }
 
-    let result = execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, temp.path())
-        .expect("recipe run must succeed");
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path())
+            .expect("recipe run must succeed");
 
     match prev_runner {
         Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
@@ -250,7 +253,8 @@ fn test_execute_recipe_via_rust_reports_nonzero_exit_with_stderr() {
     let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
 
-    let result = execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, temp.path());
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path());
 
     match prev_runner {
         Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
@@ -289,7 +293,8 @@ fn test_execute_recipe_via_rust_reports_signal_kill_clearly() {
     let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
 
-    let result = execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, temp.path());
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path());
 
     match prev_runner {
         Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
@@ -409,7 +414,7 @@ fi
     let mut context = BTreeMap::new();
     context.insert("task_description".to_string(), "x".repeat(256 * 1024));
 
-    let result = execute::execute_recipe_via_rust(&recipe, &context, true, temp.path());
+    let result = execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path());
 
     match prev_runner {
         Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
@@ -564,4 +569,167 @@ fn parse_whitespace_only_stdout_success_returns_default() {
     let result = execute::parse_recipe_output("   \n\t  \n", "", true)
         .expect("whitespace-only stdout on success must not error");
     assert!(result.success);
+}
+
+// Issue #357: when verbose=true, --progress is propagated AND child stderr is
+// streamed live (not buffered until the child exits).
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_verbose_passes_progress_flag_to_child() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let arg_log = temp.path().join("args.log");
+    // Stub records its argv and exits 0 with empty stdout (parser treats as success).
+    std::fs::write(
+        &runner,
+        format!(
+            "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
+            log = arg_log.display()
+        ),
+    )
+    .expect("failed to write runner stub");
+
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to chmod runner");
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        false, // dry_run
+        true,  // verbose
+        temp.path(),
+    );
+
+    match prev_runner {
+        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+
+    result.expect("verbose mode with empty stdout success must not error");
+    let logged = std::fs::read_to_string(&arg_log).expect("argv log must exist");
+    assert!(
+        logged.lines().any(|l| l == "--progress"),
+        "verbose=true must propagate --progress to recipe-runner-rs.\nargv was:\n{logged}",
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_non_verbose_does_not_pass_progress() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let arg_log = temp.path().join("args.log");
+    std::fs::write(
+        &runner,
+        format!(
+            "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
+            log = arg_log.display()
+        ),
+    )
+    .expect("failed to write runner stub");
+
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to chmod runner");
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+
+    let _ = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        false, // dry_run
+        false, // verbose
+        temp.path(),
+    );
+
+    match prev_runner {
+        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+
+    let logged = std::fs::read_to_string(&arg_log).expect("argv log must exist");
+    assert!(
+        !logged.lines().any(|l| l == "--progress"),
+        "verbose=false must NOT pass --progress.\nargv was:\n{logged}",
+    );
+}
+
+// Issue #366 (COE feedback): when child writes non-UTF-8 bytes to stderr,
+// the pump must NOT terminate (would risk a stalled-pipe hang on the child).
+// We use a stub that emits raw 0xFF bytes followed by valid UTF-8 lines and
+// then exits 0 with empty stdout. If the pump dies on the bad bytes, the
+// trailing UTF-8 lines won't be captured AND the child can't progress past
+// a full pipe.
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    // The stub writes 0xFF (invalid UTF-8 start byte), then a valid line,
+    // then enough valid lines to fill a typical pipe buffer (~64KB on Linux).
+    std::fs::write(
+        &runner,
+        "#!/bin/sh\n\
+         printf '\\xff\\n' >&2\n\
+         echo 'after-bad-bytes' >&2\n\
+         i=0; while [ $i -lt 200 ]; do echo \"flood-line-$i\" >&2; i=$((i+1)); done\n\
+         exit 0\n",
+    )
+    .expect("failed to write runner stub");
+
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to chmod runner");
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+
+    // The real assertion is that this does not hang. If the pump dies, the
+    // child's stderr pipe fills (~64KB) and SIGPIPE/blocking-write hangs the
+    // child. With a 30s test timeout, that hang would manifest as the test
+    // being killed by the runner — but locally just observed via wall-clock.
+    let start = std::time::Instant::now();
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        false, // dry_run
+        true,  // verbose
+        temp.path(),
+    );
+    let elapsed = start.elapsed();
+
+    match prev_runner {
+        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+
+    result.expect("non-UTF-8 stderr must NOT abort the pump or hang the child");
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "non-UTF-8 stderr caused suspiciously slow run ({elapsed:?}) — \
+         pump likely died and child blocked on full stderr pipe"
+    );
 }
