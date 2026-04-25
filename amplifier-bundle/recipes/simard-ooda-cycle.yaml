@@ -4,14 +4,18 @@ description: |
   Phase 3 of the recipes-first Simard rebuild (rysweet/Simard#1270).
 
   Replaces `src/ooda_loop/mod.rs::run_ooda_cycle` with a declarative
-  pipeline of deterministic phase steps that round-trip OodaStateSnapshot
-  JSON between invocations of the `simard-ooda-step` helper bin.
+  pipeline of phase steps that round-trip OodaStateSnapshot JSON between
+  invocations of the `simard-ooda-step` helper bin.
 
-  Bridge-dependent phases (observe, prepare-context, act, memory ops,
-  budget-check) are out of scope for the initial cut and are documented
-  inline as TODO steps. They will be implemented as `type: recipe` calls
-  to simard-engineer-loop and simard-self-improve-cycle once the
-  bridge-instantiation surface lands.
+  - Observe is bridge-dependent: helper bin loads bridges from
+    `state_root` via `bridge_factory`. Provide `observation_json_path`
+    to skip live observation and replay a prior observation instead.
+  - Orient / Decide / Review / Curate are pure-data and always run
+    against the in-memory snapshot.
+  - Act dispatch is still TODO: the current cut requires the caller to
+    provide pre-computed outcomes via `outcomes_json_path`. Per-action
+    `type: recipe` dispatch (AdvanceGoal → simard-engineer-loop,
+    RunImprovement → simard-self-improve-cycle) is the next step.
 
   Companion: simard-engineer-loop.yaml (Phase 2),
              simard-self-improve-cycle.yaml (Phase 1).
@@ -21,8 +25,12 @@ inputs:
     description: Path to OodaStateSnapshot JSON on disk
     required: true
   observation_json_path:
-    description: Path to Observation JSON for this cycle
-    required: true
+    description: |
+      Path to Observation JSON. When omitted, the recipe runs the `observe`
+      step itself (using simard-ooda-step + bridge_factory). Provide a path
+      to skip live observation and replay a prior observation instead.
+    required: false
+    default: ""
   outcomes_json_path:
     description: Path to Vec<ActionOutcome> JSON from the act phase
     required: false
@@ -44,14 +52,41 @@ inputs:
     default: "0"
 
 steps:
+  # --- Observe: gather goal/env/gym/memory state from live bridges ---
+  #
+  # Bridge-dependent. Connects to the IPC memory server when the OODA
+  # daemon is running, otherwise opens NativeCognitiveMemory directly on
+  # state_root. Launches fresh Python knowledge/gym subprocesses.
+  #
+  # If `observation_json_path` is provided, we skip live observation and
+  # use the supplied file (useful for replay / parity tests).
+  - id: observe
+    type: bash
+    command: |
+      mkdir -p "{{state_root}}"
+      if [ -n "{{observation_json_path}}" ]; then
+        cp "{{observation_json_path}}" "{{state_root}}/observation.json"
+        cp "{{state_json_path}}" "{{state_root}}/post_observe_state.json"
+        echo "[ooda-cycle] observe: replayed observation from {{observation_json_path}}"
+      else
+        "{{helper_bin}}" observe \
+          --state-json "{{state_json_path}}" \
+          --state-root "{{state_root}}" \
+          > "{{state_root}}/observe_result.json"
+        jq '.observation' "{{state_root}}/observe_result.json" > "{{state_root}}/observation.json"
+        jq '.snapshot'    "{{state_root}}/observe_result.json" > "{{state_root}}/post_observe_state.json"
+        echo "[ooda-cycle] observe: live observation captured"
+      fi
+    on_error: fail
+    output: observation_path
+
   # --- Orient: rank priorities from observation + goal failure counts ---
   - id: orient
     type: bash
     command: |
-      mkdir -p "{{state_root}}"
       "{{helper_bin}}" orient \
-        --state-json "{{state_json_path}}" \
-        --observation-json "{{observation_json_path}}" \
+        --state-json "{{state_root}}/post_observe_state.json" \
+        --observation-json "{{state_root}}/observation.json" \
         > "{{state_root}}/priorities.json"
       echo "[ooda-cycle] orient: emitted $(jq 'length' "{{state_root}}/priorities.json") priorities"
     on_error: fail
