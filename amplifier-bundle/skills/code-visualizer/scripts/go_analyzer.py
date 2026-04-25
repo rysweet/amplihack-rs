@@ -19,7 +19,7 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
-from graph import Edge, Graph, Node
+from graph import Edge, Graph, Node, common_root, make_node_id
 
 LOG = logging.getLogger(__name__)
 MAX_BYTES = 5 * 1024 * 1024
@@ -50,17 +50,20 @@ def normalize(paths: Iterable[Path]) -> Graph:
     edges: list[Edge] = []
     seen: set[str] = set()
 
-    for raw in paths:
-        path = Path(raw)
+    materialised = [Path(p) for p in paths]
+    root = common_root(materialised)
+
+    for path in materialised:
         if not path.is_file():
             continue
         text = _read(path)
         if not text:
             continue
 
-        src_id = path.stem
+        # Repo-relative id keeps `main.go` in different packages distinct (#363).
+        src_id = make_node_id(path, root)
         if src_id not in seen:
-            nodes.append(Node(id=src_id, label=src_id, language="go", file_path=str(path)))
+            nodes.append(Node(id=src_id, label=path.stem, language="go", file_path=str(path)))
             seen.add(src_id)
 
         for spec in _RE_SINGLE.findall(text):

@@ -38,3 +38,19 @@ def test_empty(tmp_path: Path):
     g = normalize([])
     assert g.language == "rust"
     assert g.edges == []
+
+
+def test_no_node_id_collision_across_crates(tmp_path: Path):
+    """#363: two `mod.rs` files in different crates must not share a node id."""
+    from rust_analyzer import normalize
+
+    a = _write(tmp_path / "crate_a" / "src" / "mod.rs", "use foo::bar;\n")
+    b = _write(tmp_path / "crate_b" / "src" / "mod.rs", "use baz::qux;\n")
+
+    g = normalize([a, b])
+    ids = [n.id for n in g.nodes]
+    assert len(ids) == 2, f"expected 2 distinct nodes, got {ids}"
+    assert len(set(ids)) == 2, f"node ids collided: {ids}"
+    # Labels may repeat (display name) — only ids must be unique.
+    labels = {n.label for n in g.nodes}
+    assert "mod" in labels

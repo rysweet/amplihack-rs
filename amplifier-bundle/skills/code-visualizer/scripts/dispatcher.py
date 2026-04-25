@@ -43,6 +43,8 @@ IGNORE_DIRS = frozenset(
         ".mypy_cache",
         ".pytest_cache",
         ".ruff_cache",
+        "worktrees",  # amplihack worktree pool — scanning these duplicates source files
+        ".amplihack-worktrees",
     }
 )
 
