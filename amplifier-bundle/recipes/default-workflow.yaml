@@ -954,7 +954,7 @@ steps:
     # (implementation, test_spec, design_spec) produce large outputs.
     max_env_value_bytes: 65536
     command: |
-      cd "$WORKTREE_SETUP_WORKTREE_PATH" 2>/dev/null || cd "$REPO_PATH" && \
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" 2>/dev/null || cd "$REPO_PATH" && \
       echo "=== Checkpoint: Staging Implementation ===" && \
       git add -A && \
       STAGED=$(git diff --cached --name-only) && \
@@ -1134,7 +1134,7 @@ steps:
     type: "bash"
     max_env_value_bytes: 65536
     command: |
-      cd "$WORKTREE_SETUP_WORKTREE_PATH" 2>/dev/null || cd "$REPO_PATH" && \
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" 2>/dev/null || cd "$REPO_PATH" && \
       echo "=== Checkpoint: Staging Review Feedback ===" && \
       git add -A && \
       STAGED=$(git diff --cached --name-only) && \
@@ -1360,7 +1360,7 @@ steps:
     type: "bash"
     command: |
       set -euo pipefail
-      cd "$WORKTREE_SETUP_WORKTREE_PATH"
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}"
       echo "=== Step 15: Commit and Push ==="
       echo ""
       echo "--- Staging Changes ---"
@@ -1384,14 +1384,14 @@ steps:
           ALT_WORKTREE_COMMITS=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
         fi
         if [ "$ALT_WORKTREE_COMMITS" -gt 0 ]; then
-          echo "INFO: Nothing staged in $WORKTREE_SETUP_WORKTREE_PATH, but the" >&2
+          echo "INFO: Nothing staged in ${WORKTREE_SETUP_WORKTREE_PATH:-(unset)}, but the" >&2
           echo "current branch '$CURRENT_BRANCH' is $ALT_WORKTREE_COMMITS commit(s) ahead of" >&2
           echo "its upstream. The agent likely committed via an alternate worktree on" >&2
           echo "the same branch; treating as success." >&2
           git --no-pager log --oneline -"$ALT_WORKTREE_COMMITS" >&2
         else
           echo "ERROR: Nothing staged to commit. The implementation step may have written files" >&2
-          echo "outside the worktree ($WORKTREE_SETUP_WORKTREE_PATH), or no code changes were produced." >&2
+          echo "outside the worktree (${WORKTREE_SETUP_WORKTREE_PATH:-(unset)}), or no code changes were produced." >&2
           echo "This is a hollow-success condition — the workflow completed structurally but" >&2
           echo "produced no git artifacts. Check that agents created files in the worktree," >&2
           echo "not in AMPLIHACK_HOME or other locations." >&2
@@ -1427,7 +1427,7 @@ steps:
     type: "bash"
     command: |
       set -euo pipefail
-      cd "$WORKTREE_SETUP_WORKTREE_PATH"
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}"
       echo "=== Step 16: Creating Draft PR ===" >&2
 
       # FIX (#3324): Idempotency guard — detect pre-existing PRs before creating one
@@ -1774,7 +1774,7 @@ steps:
   - id: "step-18c-push-feedback-changes"
     type: "bash"
     command: |
-      cd "$WORKTREE_SETUP_WORKTREE_PATH" && \
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
       echo "=== Pushing Review Feedback Changes ===" && \
       git add -A && \
       if [ -n "$(git diff --cached --name-only)" ]; then \
@@ -1870,7 +1870,7 @@ steps:
     type: "bash"
     command: |
       echo "=== ZERO-BS VERIFICATION ===" && \
-      cd "$WORKTREE_SETUP_WORKTREE_PATH" && \
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
       echo "" && \
       echo "Scanning for Zero-BS violations..." && \
       echo "" && \
@@ -1957,7 +1957,7 @@ steps:
   - id: "step-20b-push-cleanup"
     type: "bash"
     command: |
-      cd "$WORKTREE_SETUP_WORKTREE_PATH" && \
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
       echo "=== Pushing Cleanup Changes ===" && \
       git add -A && \
       git diff --cached --quiet || (git commit -m "final cleanup pass" && git pull --rebase 2>/dev/null && git push) && \
@@ -2042,7 +2042,7 @@ steps:
   - id: "step-21-pr-ready"
     type: "bash"
     command: |
-      cd "$WORKTREE_SETUP_WORKTREE_PATH" && \
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
       echo "=== Step 20: Converting PR to Ready ===" && \
       echo "" && \
       echo "--- Verifying All Steps Complete ---" && \
