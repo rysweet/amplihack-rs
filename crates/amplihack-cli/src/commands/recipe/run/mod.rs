@@ -47,6 +47,7 @@ pub fn run_recipe(
         &validated_path,
         &merged_context,
         dry_run,
+        verbose,
         &abs_working_dir,
     ) {
         Ok(result) => result,

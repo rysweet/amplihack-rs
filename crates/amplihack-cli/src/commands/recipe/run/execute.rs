@@ -1,6 +1,9 @@
 use super::*;
 use crate::env_builder::{EnvBuilder, active_agent_binary};
-use std::io::Write as IoWrite;
+use std::io::{BufRead, BufReader, Write as IoWrite};
+use std::process::Stdio;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 const STDERR_TAIL_LINES: usize = 5;
 
@@ -13,6 +16,7 @@ pub(super) fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
     dry_run: bool,
+    verbose: bool,
     working_dir: &Path,
 ) -> Result<RecipeRunResult> {
     let binary = super::binary::find_recipe_runner_binary()?;
@@ -28,6 +32,13 @@ pub(super) fn execute_recipe_via_rust(
         command.arg("--dry-run");
     }
 
+    // Issue #357: propagate --progress so step transitions are visible on
+    // stderr in real time. Without this, the only signal the user sees
+    // before the recipe finishes is the single "Executing recipe: …" line.
+    if verbose {
+        command.arg("--progress");
+    }
+
     // Pass context as a file when the total size would risk E2BIG (os error 7).
     // The temp file is kept alive until command.output() completes.
     let _context_file = pass_context(&mut command, context)?;
@@ -41,16 +52,62 @@ pub(super) fn execute_recipe_via_rust(
         .with_project_graph_db(working_dir)?
         .apply_to_command(&mut command);
 
-    let output = command
-        .output()
-        .context("failed to spawn recipe-runner-rs")?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    if verbose {
+        spawn_with_streaming_stderr(command)
+    } else {
+        let output = command
+            .output()
+            .context("failed to spawn recipe-runner-rs")?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        parse_recipe_output(&stdout, &stderr, output.status.success()).with_context(|| {
+            format!(
+                "recipe-runner-rs exited with {}",
+                exit_status_label(&output.status)
+            )
+        })
+    }
+}
 
-    parse_recipe_output(&stdout, &stderr, output.status.success()).with_context(|| {
+/// Spawn the runner with stdout captured (we need to parse JSON from it)
+/// and stderr "teed": each line is forwarded live to our own stderr AND
+/// captured in a buffer so the error path can still surface a meaningful
+/// stderr tail. (#357)
+fn spawn_with_streaming_stderr(mut command: Command) -> Result<RecipeRunResult> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().context("failed to spawn recipe-runner-rs")?;
+
+    let captured_stderr: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_handle = child.stderr.take().expect("piped stderr");
+    let captured_clone = Arc::clone(&captured_stderr);
+    let pump = thread::spawn(move || {
+        let reader = BufReader::new(stderr_handle);
+        let stderr = io::stderr();
+        for line in reader.lines().map_while(Result::ok) {
+            // Forward live so the user sees progress in real time.
+            let _ = writeln!(stderr.lock(), "{line}");
+            captured_clone.lock().expect("stderr mutex").push(line);
+        }
+    });
+
+    let mut stdout_buf = String::new();
+    let mut stdout_handle = child.stdout.take().expect("piped stdout");
+    use std::io::Read;
+    stdout_handle
+        .read_to_string(&mut stdout_buf)
+        .context("failed to read recipe-runner-rs stdout")?;
+
+    let status = child
+        .wait()
+        .context("failed to wait for recipe-runner-rs")?;
+    pump.join().expect("stderr pump thread panicked");
+
+    let captured = captured_stderr.lock().expect("stderr mutex");
+    let stderr_joined = captured.join("\n");
+    parse_recipe_output(&stdout_buf, &stderr_joined, status.success()).with_context(|| {
         format!(
             "recipe-runner-rs exited with {}",
-            exit_status_label(&output.status)
+            exit_status_label(&status)
         )
     })
 }
