@@ -31,6 +31,7 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 tempfile = { workspace = true }
 libc = { workspace = true }
+regex = { workspace = true }
 
 [[test]]
 name = "cli_launch"
@@ -128,3 +129,12 @@ path = "../../tests/integration/orch_run_cli_test.rs"
 [[test]]
 name = "sdk_comparison_optional_python"
 path = "../../tests/integration/sdk_comparison_optional_python_test.rs"
+
+# Issue #248 / PR #348: self-improvement-loop.yaml graceful-skip contract.
+# TDD regression tests pinning the probe-then-skip behaviour for the optional
+# `amplihack.eval.progressive_test_suite` Python module across both eval steps
+# (run-baseline-eval, re-eval-affected) and auditing that no bare unprobed
+# python eval invocations remain in amplifier-bundle/recipes/.
+[[test]]
+name = "self_improvement_loop_skip"
+path = "../../tests/integration/self_improvement_loop_skip_test.rs"
