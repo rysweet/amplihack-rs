@@ -134,9 +134,19 @@ impl Workstream {
 
     #[allow(dead_code)]
     pub fn is_running(&self) -> bool {
-        if let Some(pid) = self.pid {
+        let Some(pid) = self.pid else {
+            return false;
+        };
+        #[cfg(unix)]
+        {
             unsafe { libc::kill(pid as i32, 0) == 0 }
-        } else {
+        }
+        #[cfg(not(unix))]
+        {
+            // Windows fallback: assume not running unless we have a tighter
+            // signal. The orchestrator does not currently rely on this on
+            // Windows; if it ever does, port to OpenProcess + GetExitCodeProcess.
+            let _ = pid;
             false
         }
     }
