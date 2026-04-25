@@ -870,27 +870,88 @@ steps:
     agent: "amplihack:tester"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback' and goal_already_met != 'true'"
     prompt: |
-      # Step 7: TDD - Write Tests First
+      # Step 7: TDD — Write Tests First (Formal-Spec-Driven)
 
       **Task:** {{task_description}}
       **Requirements:** {{final_requirements}}
       **Design Specification:** {{design_spec}}
       **Documentation:** {{final_documentation}}
 
-      Following Test-Driven Development methodology:
+      You are writing the **executable specification** of the change. The tests
+      are the contract; the implementation in the next step is merely whatever
+      makes them pass. Aim for **provable correctness**, not anecdotal coverage.
 
-      Write FAILING tests that specify the expected behavior:
-      - Unit tests for each component
-      - Integration tests for workflows
-      - Edge case tests
-      - Error handling tests
+      ## 1. Formal specification (write this BEFORE any test)
 
-      These tests should:
-      - Define the contract for the implementation
-      - Fail initially (code doesn't exist yet)
-      - Pass once implementation is complete
+      Express the change as a precise specification:
 
-      Output test files with clear file path headers.
+      - **Inputs** — types, valid ranges, preconditions (what callers MUST provide)
+      - **Outputs** — types, postconditions (what we GUARANTEE on success)
+      - **Invariants** — properties that hold across all inputs (e.g. "`len(out) == len(in)`",
+        "`f(f(x)) == f(x)`", "no panics on any UTF-8 string", "monotonic in arg N")
+      - **Error set** — every failure mode with its preconditions and observable signal
+        (returned `Err`, raised exception, exit code, log line). No fail-open paths
+        unless explicitly justified in the spec.
+      - **Concurrency / ordering** — if relevant, what serializability or visibility is required
+      - **Resource bounds** — max time / memory / file handles / DB calls
+
+      Write this as a comment block at the top of the test file (or a separate
+      `SPEC.md` next to it). It is the source of truth — tests below trace back
+      to specific clauses.
+
+      ## 2. Tests, in priority order
+
+      Every test must cite the spec clause it proves (e.g. `// proves: invariant 2`).
+
+      1. **Property-based / invariant tests** — exhaustive within a domain, or
+         randomized via `proptest` / `quickcheck` / `hypothesis`. These prove the
+         invariants from the spec hold for ALL inputs in scope, not just chosen
+         examples. Prefer these wherever feasible.
+      2. **Error-set completeness tests** — one test per documented failure mode.
+         Together they MUST cover every branch in the error set. A failure mode
+         not covered by a test is not real.
+      3. **Boundary / edge-case tests** — empty input, single element, max size,
+         off-by-one, overflow, unicode boundaries, zero / negative / NaN, expired
+         tokens, empty strings, null bytes, etc.
+      4. **Example / regression tests** — concrete inputs and outputs from the
+         requirements. Cheapest but weakest; keep them but do not rely on them
+         alone.
+      5. **Integration tests** — end-to-end flows across module boundaries proving
+         the sequenced postconditions hold.
+
+      ## 3. Hard rules
+
+      - Tests MUST fail initially (run them and verify red — note the failure mode).
+      - NO mocks for the system under test. Mock only true external collaborators.
+      - NO swallowed assertions (no `assert(true)`, no commented-out checks).
+      - NO test that only verifies the implementation's current behavior — it must
+        verify the SPEC.
+      - For each non-trivial branch, prefer one property over ten examples.
+      - If you cannot express an invariant as a property, write a comment explaining
+        why and add the example tests that approximate it.
+
+      ## 4. Output
+
+      For each test file, emit:
+
+      ```
+      # File: path/to/test_file.{ext}
+      <full file content>
+      ```
+
+      Include a **trace matrix** at the end of the response:
+
+      ```
+      ## Spec → Test Trace Matrix
+      | Spec clause          | Test name(s)                 | Coverage type     |
+      |----------------------|------------------------------|-------------------|
+      | invariant 1          | test_idempotent_*, prop_*    | property + example|
+      | error: TimeoutError  | test_timeout_returns_err     | error-set         |
+      | postcondition 3      | test_output_len_matches_in_* | property          |
+      ```
+
+      A spec clause with no row in the matrix is a coverage gap — call it out
+      explicitly so the implementation step can address it (or the spec amended).
     output: "test_spec"
 
   # ==========================================================================
