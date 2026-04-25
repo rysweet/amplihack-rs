@@ -24,6 +24,8 @@ jobs:
             echo "Run: cargo update -p cxx-build --precise 1.0.138"
             exit 1
           fi
+      - name: Recipes — no bare python invocations (issue #248)
+        run: scripts/check-recipes-no-python.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
