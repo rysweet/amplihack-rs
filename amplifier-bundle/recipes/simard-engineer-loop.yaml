@@ -1,0 +1,216 @@
+name: "simard-engineer-loop"
+description: "Simard local engineer loop expressed as a deterministic agentic workflow. Replaces run_local_engineer_loop() in src/engineer_loop/mod.rs."
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["simard", "engineer-loop", "rebuild", "recipes-first"]
+
+# SIMARD_ENGINEER_LOOP
+#
+# Phase 2 of the recipes-first Simard rebuild. This recipe is the
+# **deterministic agentic** rewrite of `engineer_loop::run_local_engineer_loop`.
+#
+# Architecture pivot: orchestration in YAML; primitives in Rust.
+# Each of the 7 phases of run_local_engineer_loop becomes an explicit recipe
+# step. Deterministic phases (inspect, select, execute, verify, persist) shell
+# out to the `simard-engineer-step` helper bin via JSON IPC. The optional
+# `review` phase becomes an explicit agent step instead of a hidden LLM call
+# inside Rust — visible, tunable, instrumentable.
+#
+# Preserved behavior from the Rust loop:
+#   - Phase order: inspect → load-bridge-context → select → execute → verify
+#                  → review → persist
+#   - Pillar 11 fail-fast on any deterministic phase failure
+#   - Optional review only runs for mutating actions when LLM is available
+#   - Same RepoInspection / SelectedEngineerAction / ExecutedEngineerAction /
+#     VerificationReport / EngineerLoopRun output shape (JSON-equivalent)
+#
+# Inputs (recipe context):
+#   workspace_root  (string, required)  — repo root to operate on
+#   objective       (string, required)  — natural-language objective text
+#   topology        (string, default "single-process")
+#                                        — RuntimeTopology serde kebab name
+#   state_root      (string, required)  — directory for persistence + bridge ctx
+#   helper_bin      (string, default "simard-engineer-step")
+#   skip_review     (string, default "")  — set to "1" to skip the agent review
+#
+# Outputs:
+#   inspection_json     RepoInspection JSON
+#   selected_json       SelectedEngineerAction JSON
+#   executed_json       ExecutedEngineerAction JSON
+#   verification_json   VerificationReport JSON
+#   final_status        "ok" on success
+
+recursion:
+  max_depth: 4
+  max_total_steps: 16
+
+context:
+  workspace_root: "."
+  objective: ""
+  topology: "single-process"
+  state_root: ".simard/state"
+  helper_bin: "simard-engineer-step"
+  skip_review: ""
+
+steps:
+  # ────────────────────────────────────────────────────────────────────────
+  # Phase 1: Inspect the workspace (deterministic, Rust)
+  # ────────────────────────────────────────────────────────────────────────
+  - id: "inspect"
+    type: "bash"
+    command: |
+      {{helper_bin}} inspect \
+        --workspace "{{workspace_root}}" \
+        --state-root "{{state_root}}"
+    on_error: "fail"
+    outputs:
+      - name: "inspection_json"
+        from: "stdout"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Phase 2: Select the engineer action from the objective (deterministic)
+  # ────────────────────────────────────────────────────────────────────────
+  - id: "select"
+    type: "bash"
+    command: |
+      {{helper_bin}} select \
+        --inspection-json '{{inspection_json}}' \
+        --objective "{{objective}}"
+    on_error: "fail"
+    outputs:
+      - name: "selected_json"
+        from: "stdout"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Phase 3: Execute the action against the workspace (deterministic)
+  # ────────────────────────────────────────────────────────────────────────
+  - id: "execute"
+    type: "bash"
+    command: |
+      REPO_ROOT=$(echo '{{inspection_json}}' | sed -n 's/.*"repo_root":"\([^"]*\)".*/\1/p')
+      {{helper_bin}} execute \
+        --repo-root "$REPO_ROOT" \
+        --selected-json '{{selected_json}}'
+    on_error: "fail"
+    outputs:
+      - name: "executed_json"
+        from: "stdout"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Phase 4: Verify the action's effects (deterministic)
+  # ────────────────────────────────────────────────────────────────────────
+  - id: "verify"
+    type: "bash"
+    command: |
+      {{helper_bin}} verify \
+        --inspection-json '{{inspection_json}}' \
+        --action-json '{{executed_json}}' \
+        --state-root "{{state_root}}"
+    on_error: "fail"
+    outputs:
+      - name: "verification_json"
+        from: "stdout"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Phase 5a: Optional agent review of the executed action.
+  #
+  # Today the equivalent is `run_optional_review()` calling LLM internals
+  # from inside Rust. Hoisting it into an explicit agent step makes the
+  # prompt visible, tunable, and instrumentable — the LLM is no longer
+  # hidden behind a function call.
+  # ────────────────────────────────────────────────────────────────────────
+  - id: "review-decision"
+    type: "bash"
+    command: |
+      if [ -n "{{skip_review}}" ]; then
+        echo "SKIP"
+      else
+        # Only review mutating actions (matches Rust gate in run_optional_review)
+        case '{{executed_json}}' in
+          *'"ReadOnlyScan"'*|*'"CargoTest"'*|*'"CargoCheck"'*) echo "SKIP" ;;
+          *) echo "REVIEW" ;;
+        esac
+      fi
+    outputs:
+      - name: "review_decision"
+        from: "stdout"
+
+  - id: "review-action"
+    type: "agent"
+    condition: "{{review_decision}} == 'REVIEW'"
+    agent: "{{agent_binary | default('copilot')}}"
+    prompt: |
+      You are the Simard philosophy reviewer for the engineer loop.
+      Evaluate the change made by this engineer action.
+
+      PHILOSOPHY (mandatory):
+      Ruthless simplicity. No unnecessary abstractions. Modules under 400
+      lines. Every public function tested. Clippy clean. No panics in
+      library code.
+
+      OBJECTIVE: {{objective}}
+
+      EXECUTED ACTION (JSON):
+      {{executed_json}}
+
+      VERIFICATION REPORT (JSON):
+      {{verification_json}}
+
+      Output STRICT JSON:
+      {
+        "findings": [
+          {"severity": "critical|major|minor", "message": "...", "file": "..."}
+        ],
+        "should_persist": true|false
+      }
+
+      `should_persist` must be `false` if any finding has severity "critical".
+      No prose, no fences — only the JSON object.
+    outputs:
+      - name: "review_json"
+        from: "stdout"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Phase 6: Run the deterministic Rust review gate (no-op if no LLM
+  # session available — matches existing behavior of run_optional_review)
+  # ────────────────────────────────────────────────────────────────────────
+  - id: "review-gate"
+    type: "bash"
+    command: |
+      {{helper_bin}} review \
+        --inspection-json '{{inspection_json}}' \
+        --action-json '{{executed_json}}'
+    on_error: "fail"
+    outputs:
+      - name: "review_gate_status"
+        from: "stdout"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Phase 7: Persist the loop artifacts (memory + evidence stores)
+  # ────────────────────────────────────────────────────────────────────────
+  - id: "persist"
+    type: "bash"
+    command: |
+      {{helper_bin}} persist \
+        --state-root "{{state_root}}" \
+        --topology "{{topology}}" \
+        --objective "{{objective}}" \
+        --inspection-json '{{inspection_json}}' \
+        --action-json '{{executed_json}}' \
+        --verification-json '{{verification_json}}'
+    on_error: "fail"
+    outputs:
+      - name: "persist_status"
+        from: "stdout"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Phase 8: Emit final status
+  # ────────────────────────────────────────────────────────────────────────
+  - id: "emit-final"
+    type: "bash"
+    command: |
+      printf '{"status":"ok","inspection":%s,"action":%s,"verification":%s}\n' \
+        '{{inspection_json}}' '{{executed_json}}' '{{verification_json}}'
+    outputs:
+      - name: "final_status"
+        from: "stdout"
