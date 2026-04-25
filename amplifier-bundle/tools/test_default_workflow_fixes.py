@@ -1473,6 +1473,115 @@ class TestNoopGuardPreExisting(unittest.TestCase):
             shutil.rmtree(bindir, ignore_errors=True)
 
 
+class TestGoalAlreadyMetProbe(unittest.TestCase):
+    """
+    Regression tests for issue #368.
+
+    The pre-flight `step-06d-goal-already-met-probe` short-circuits steps
+    07/08/08c when the linked GitHub issue is already closed by a merged
+    PR — saving ~30min of agent runtime per duplicate round vs relying on
+    the post-implement noop-guard (#360).
+
+    Contract:
+      stdout MUST be exactly "true\n" or "false\n" (consumed by step
+      conditions `goal_already_met != 'true'`); never crash.
+    """
+
+    def _run_probe(self, env: dict, *, expect: str) -> subprocess.CompletedProcess:
+        raw = _extract_step_command(_WORKFLOW_YAML, "step-06d-goal-already-met-probe")
+        r = subprocess.run(
+            ["bash", "-c", raw], capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(r.returncode, 0, f"probe must never fail-hard. stderr={r.stderr}")
+        self.assertEqual(
+            r.stdout.strip(), expect,
+            f"probe stdout mismatch: expected {expect!r}, got {r.stdout!r}\n"
+            f"stderr: {r.stderr}",
+        )
+        return r
+
+    def _gh_stub(self, script: str) -> tuple[str, dict]:
+        bindir = tempfile.mkdtemp()
+        Path(bindir, "gh").write_text(script)
+        os.chmod(Path(bindir, "gh"), 0o755)
+        env = {
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "ISSUE_NUMBER": "999",
+        }
+        return bindir, env
+
+    def test_returns_true_when_issue_closed_by_merged_pr(self):
+        gh_stub = (
+            "#!/bin/bash\n"
+            'if [[ "$*" == *"issue view"*"--jq .state"* ]]; then echo CLOSED; exit 0; fi\n'
+            'if [[ "$*" == *"issue view"*closedByPullRequestsReferences* ]]; then echo 999; exit 0; fi\n'
+            'if [[ "$*" == *"pr view"*"--jq .mergedAt"* ]]; then echo "2026-01-01T00:00:00Z"; exit 0; fi\n'
+            "exit 1\n"
+        )
+        bindir, env = self._gh_stub(gh_stub)
+        try:
+            r = self._run_probe(env, expect="true")
+            self.assertIn("goal already met", r.stderr)
+        finally:
+            shutil.rmtree(bindir, ignore_errors=True)
+
+    def test_returns_false_when_issue_open(self):
+        gh_stub = (
+            "#!/bin/bash\n"
+            'if [[ "$*" == *"issue view"*"--jq .state"* ]]; then echo OPEN; exit 0; fi\n'
+            "exit 1\n"
+        )
+        bindir, env = self._gh_stub(gh_stub)
+        try:
+            self._run_probe(env, expect="false")
+        finally:
+            shutil.rmtree(bindir, ignore_errors=True)
+
+    def test_returns_false_when_closed_but_no_pr_merged(self):
+        gh_stub = (
+            "#!/bin/bash\n"
+            'if [[ "$*" == *"issue view"*"--jq .state"* ]]; then echo CLOSED; exit 0; fi\n'
+            'if [[ "$*" == *"issue view"*closedByPullRequestsReferences* ]]; then echo 999; exit 0; fi\n'
+            'if [[ "$*" == *"pr view"*"--jq .mergedAt"* ]]; then echo null; exit 0; fi\n'
+            "exit 1\n"
+        )
+        bindir, env = self._gh_stub(gh_stub)
+        try:
+            self._run_probe(env, expect="false")
+        finally:
+            shutil.rmtree(bindir, ignore_errors=True)
+
+    def test_returns_false_when_issue_number_unset(self):
+        # No ISSUE_NUMBER → defensive default to "false" (run normally).
+        env = {"PATH": os.environ["PATH"]}
+        self._run_probe(env, expect="false")
+
+    def test_returns_false_when_gh_missing(self):
+        # PATH without gh → defensive default to "false".
+        # Use a tempdir as PATH so bash itself remains available via the
+        # absolute interpreter; ensure no `gh` binary is present there.
+        bindir = tempfile.mkdtemp()
+        try:
+            env = {"PATH": bindir, "ISSUE_NUMBER": "999"}
+            raw = _extract_step_command(_WORKFLOW_YAML, "step-06d-goal-already-met-probe")
+            r = subprocess.run(
+                ["/bin/bash", "-c", raw], capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(r.returncode, 0, f"stderr={r.stderr}")
+            self.assertEqual(r.stdout.strip(), "false")
+        finally:
+            shutil.rmtree(bindir, ignore_errors=True)
+
+    def test_returns_false_when_gh_call_errors(self):
+        # gh exits 1 (e.g. rate-limited or auth fail) → "false", never crash.
+        gh_stub = "#!/bin/bash\nexit 1\n"
+        bindir, env = self._gh_stub(gh_stub)
+        try:
+            self._run_probe(env, expect="false")
+        finally:
+            shutil.rmtree(bindir, ignore_errors=True)
+
+
 # ===========================================================================
 
 if __name__ == "__main__":

@@ -797,11 +797,57 @@ steps:
     output: "final_documentation"
 
   # ==========================================================================
+  # STEP 6d: PRE-FLIGHT "GOAL ALREADY MET" PROBE (#368)
+  # ==========================================================================
+  # Detect whether the linked GitHub issue is already CLOSED by a merged PR
+  # *before* paying for tests + implementation. When the goal is already met
+  # this short-circuits steps 07/08/08c, saving ~30min of agent runtime per
+  # round (typical case: a previous orchestrator round shipped the fix and
+  # this round was queued as a duplicate).
+  #
+  # Defensive: if `gh` is missing, ISSUE_NUMBER is unset, or any probe call
+  # fails, we set goal_already_met="false" and let the workflow proceed
+  # normally — never short-circuit on uncertainty.
+  - id: "step-06d-goal-already-met-probe"
+    type: "bash"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
+    command: |
+      set -euo pipefail
+      ISSUE_NUM="${ISSUE_NUMBER:-}"
+      if [ -z "$ISSUE_NUM" ] || ! command -v gh >/dev/null 2>&1; then
+        echo "false"
+        exit 0
+      fi
+      ISSUE_STATE=$(gh issue view "$ISSUE_NUM" --json state --jq '.state' 2>/dev/null || true)
+      if [ "$ISSUE_STATE" != "CLOSED" ]; then
+        echo "false"
+        exit 0
+      fi
+      # closedByPullRequestsReferences items DO NOT carry .state; we must
+      # fetch each PR's mergedAt explicitly. (Verified live; documented in
+      # PR #367 cohort review.)
+      CLOSING_PR_NUMS=$(gh issue view "$ISSUE_NUM" \
+        --json closedByPullRequestsReferences \
+        --jq '[.closedByPullRequestsReferences[]?.number] | join(" ")' \
+        2>/dev/null || true)
+      for PR_NUM in $CLOSING_PR_NUMS; do
+        PR_MERGED=$(gh pr view "$PR_NUM" --json mergedAt --jq '.mergedAt' 2>/dev/null || true)
+        if [ -n "$PR_MERGED" ] && [ "$PR_MERGED" != "null" ]; then
+          echo "INFO: issue #${ISSUE_NUM} is already CLOSED by merged PR #${PR_NUM}." >&2
+          echo "  Short-circuiting steps 07/08/08c — goal already met (#368)." >&2
+          echo "true"
+          exit 0
+        fi
+      done
+      echo "false"
+    output: "goal_already_met"
+
+  # ==========================================================================
   # STEP 7: TDD - WRITE TESTS FIRST
   # ==========================================================================
   - id: "step-07-write-tests"
     agent: "amplihack:tester"
-    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback' and goal_already_met != 'true'"
     prompt: |
       # Step 7: TDD - Write Tests First
 
@@ -831,7 +877,7 @@ steps:
   # ==========================================================================
   - id: "step-08-implement"
     agent: "amplihack:builder"
-    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback' and goal_already_met != 'true'"
     prompt: |
       # Step 8: Implement the Solution
 
@@ -881,7 +927,7 @@ steps:
 
   - id: "step-08c-implementation-no-op-guard"
     type: "bash"
-    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback' and goal_already_met != 'true'"
     # Hard-fail early (before checkpoint, refactor, review) if step-08 declared
     # success but reported zero file edits. This catches prompt-misalignment
     # (issue #251 / amplihack-rs #251) closer to the root cause than the
