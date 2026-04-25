@@ -816,23 +816,33 @@ export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
     }
 
     fn check_disk_space(&self, min_free_gb: f64) -> Result<()> {
-        // Use statvfs to check available space
-        let path_cstr = std::ffi::CString::new(self.base_dir.to_string_lossy().as_bytes())?;
-        unsafe {
-            let mut stat: libc::statvfs = std::mem::zeroed();
-            if libc::statvfs(path_cstr.as_ptr(), &mut stat) == 0 {
-                // macOS `statvfs` uses `u32` fields; Linux uses `u64`. Cast
-                // both so the multiplication type-checks on every target.
-                #[allow(clippy::unnecessary_cast)]
-                let free_bytes = (stat.f_bavail as u64) * (stat.f_frsize as u64);
-                let free_gb = free_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-                if free_gb < min_free_gb {
-                    bail!(
-                        "Insufficient disk space: {free_gb:.1}GB free, need {min_free_gb}GB minimum"
-                    );
+        #[cfg(unix)]
+        {
+            // Use statvfs to check available space
+            let path_cstr = std::ffi::CString::new(self.base_dir.to_string_lossy().as_bytes())?;
+            unsafe {
+                let mut stat: libc::statvfs = std::mem::zeroed();
+                if libc::statvfs(path_cstr.as_ptr(), &mut stat) == 0 {
+                    // macOS `statvfs` uses `u32` fields; Linux uses `u64`. Cast
+                    // both so the multiplication type-checks on every target.
+                    #[allow(clippy::unnecessary_cast)]
+                    let free_bytes = (stat.f_bavail as u64) * (stat.f_frsize as u64);
+                    let free_gb = free_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                    if free_gb < min_free_gb {
+                        bail!(
+                            "Insufficient disk space: {free_gb:.1}GB free, need {min_free_gb}GB minimum"
+                        );
+                    }
+                    debug!("Disk space check: {free_gb:.1}GB available");
                 }
-                debug!("Disk space check: {free_gb:.1}GB available");
             }
+        }
+        #[cfg(not(unix))]
+        {
+            // Windows: skip the precondition check. multitask is not yet
+            // wired into Windows release flows; if/when it is, port via
+            // GetDiskFreeSpaceExW. Silently passing is safer than failing.
+            let _ = min_free_gb;
         }
         Ok(())
     }
