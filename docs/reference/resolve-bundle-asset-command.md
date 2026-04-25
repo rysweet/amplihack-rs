@@ -18,7 +18,7 @@ steps, providing the same path-resolution logic without a Python dependency.
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `<ASSET>` | yes | A named asset key (e.g. `helper-path`, `session-tree-path`, `hooks-dir`) or a relative path starting with `amplifier-bundle/`. |
+| `<ASSET>` | yes | A named asset key (e.g. `helper-path`, `session-tree-path`, `multitask-orchestrator`) or a relative path starting with `amplifier-bundle/`. |
 
 ### Named Assets
 
@@ -26,10 +26,10 @@ steps, providing the same path-resolution logic without a Python dependency.
 |------|-------------|
 | `helper-path` | `amplifier-bundle/tools/orch_helper.py` |
 | `session-tree-path` | `amplifier-bundle/tools/session_tree.py` |
-| `hooks-dir` | `.claude/tools/amplihack/hooks` or `amplifier-bundle/tools/amplihack/hooks` |
+| `multitask-orchestrator` | `.claude/skills/multitask/orchestrator.py` or `amplifier-bundle/skills/multitask/orchestrator.py` |
 
-For `hooks-dir`, multiple candidate paths are tried in order; the first that
-exists is returned.
+For named assets with multiple candidates, paths are tried in order; the first
+that exists is returned.
 
 ### Relative Paths
 
