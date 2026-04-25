@@ -207,6 +207,7 @@ jobs:
           name: "amplihack-rs v${{ needs.version-bump.outputs.version }}"
           files: release-assets/*
           generate_release_notes: true
+          make_latest: "true"
           body: |
             ## Install
 
