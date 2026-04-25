@@ -50,6 +50,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Share cache namespace with the native linux build in cross-compile,
+          # so once that job has populated the cache the install-smoke run
+          # hydrates instead of rebuilding the workspace from scratch.
+          key: x86_64-unknown-linux-gnu
       - name: Install from local checkout
         run: cargo install --path bins/amplihack --locked
       - name: Verify binary
