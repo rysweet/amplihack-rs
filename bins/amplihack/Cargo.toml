@@ -27,11 +27,16 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 
 [dev-dependencies]
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 tempfile = { workspace = true }
 libc = { workspace = true }
 regex = { workspace = true }
+
+[[test]]
+name = "investigation_workflow_decomposition"
+path = "../../tests/integration/investigation_workflow_decomposition_test.rs"
 
 [[test]]
 name = "cli_launch"

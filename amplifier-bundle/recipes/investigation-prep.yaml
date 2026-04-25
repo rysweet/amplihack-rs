@@ -1,0 +1,176 @@
+name: "investigation-prep"
+description: "Phase 0+1+2: preflight + question + tracking + scope + clarify"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["investigation", "prep", "scope"]
+
+# investigation-prep: extracted from investigation-workflow.yaml as a composable phase brick.
+# Every original step preserved verbatim. Context flows in from the parent
+# investigation-workflow context via _execute_sub_recipe()'s automatic merging.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 60
+
+context: {}
+
+steps:
+  # ==========================================================================
+  # PRE-FLIGHT VALIDATION
+  # ==========================================================================
+  - id: "preflight-validation"
+    type: "bash"
+    command: |
+      ERRORS=""
+      REPO="{{repo_path}}"
+      if [ ! -d "$REPO" ]; then
+        ERRORS="${ERRORS}\n  ✗ repo_path '$REPO' does not exist"
+      elif ! git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+        ERRORS="${ERRORS}\n  ✗ repo_path '$REPO' is not a git repository"
+      fi
+      if [ -z "{{task_description}}" ]; then
+        ERRORS="${ERRORS}\n  ✗ task_description is empty"
+      fi
+      if [ -n "$ERRORS" ]; then
+        echo "=== INVESTIGATION-WORKFLOW PRE-FLIGHT FAILED ===" >&2
+        printf "%b\n" "$ERRORS" >&2
+        echo "Restart: run_recipe_by_name('investigation-workflow', user_context={...}, progress=True)" >&2
+        exit 1
+      fi
+      echo "=== Pre-flight passed ==="
+    output: "preflight_status"
+
+  # ==========================================================================
+  # NORMALIZE QUESTION
+  # When this recipe is launched from smart-orchestrator's multitask path or
+  # any other caller that forwards `task_description` but not
+  # `investigation_question`, promote `task_description` so downstream prompts
+  # have a non-empty question. Without this, every deep-dive agent receives
+  # the literal empty default and reports "no investigation question was
+  # provided", producing hollow success (recipe exits 0 but no real
+  # investigation occurs). An explicitly-supplied `investigation_question`
+  # is preserved unchanged.
+  #
+  # Mirrors amplihack PR #4444 — adapted for amplihack-rs's executor, which
+  # exposes context vars as uppercase env vars (e.g. `task_description` →
+  # `TASK_DESCRIPTION`) without the Python recipe-runner's `RECIPE_VAR_`
+  # prefix. The `output:` key overwrites the empty default in place.
+  # ==========================================================================
+  - id: "normalize-question"
+    type: "bash"
+    command: |
+      if [ -z "${INVESTIGATION_QUESTION:-}" ] && [ -n "${TASK_DESCRIPTION:-}" ]; then
+        printf '%s' "${TASK_DESCRIPTION}"
+      else
+        printf '%s' "${INVESTIGATION_QUESTION:-}"
+      fi
+    output: "investigation_question"
+
+  # ==========================================================================
+  # INITIALIZATION: Track start time for efficiency metrics
+  # ==========================================================================
+  - id: "init-tracking"
+    type: "bash"
+    command: |
+      echo "{\"start_time\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"message_count\": 1}"
+    output: "tracking"
+    parse_json: true
+
+  # ==========================================================================
+  # PHASE 1: SCOPE DEFINITION
+  # Define investigation boundaries and success criteria
+  # Uses: prompt-writer (scope), ambiguity (if needed)
+  # ==========================================================================
+  - id: "scope-definition"
+    agent: "amplihack:prompt-writer"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      Define the scope for this investigation task.
+
+      **Investigation Question:** {{investigation_question}}
+      **Codebase Focus:** {{codebase_path}}
+      **Investigation Type:** {{investigation_type}}
+      **Depth:** {{depth}}
+
+      ## Your Task
+
+      1. **Identify explicit user requirements** - What specific questions must be answered?
+      2. **Define what counts as "understanding achieved"**
+      3. **List specific questions that must be answered**
+      4. **Identify known unknowns** (what we know we don't know)
+      5. **Set boundaries** - What's in scope vs. out of scope
+      6. **Estimate investigation depth needed** (surface-level vs. deep dive)
+
+      ## Agent Selection Guidelines
+
+      Based on the investigation type, recommend agents for Phase 3:
+      - **Code investigation:** analyzer + patterns
+      - **Architecture investigation:** architect + api-designer
+      - **Performance investigation:** optimizer + analyzer
+      - **Security investigation:** security + patterns
+      - **Integration investigation:** integration + database
+
+      Provide scope definition as JSON:
+      ```json
+      {
+        "core_questions": ["list of specific questions to answer"],
+        "success_criteria": ["measurable criteria - e.g., 'can explain system flow', 'can diagram architecture'"],
+        "in_scope": ["what's included in this investigation"],
+        "out_of_scope": ["what's explicitly excluded"],
+        "known_unknowns": ["what we know we don't know"],
+        "estimated_complexity": "low|medium|high",
+        "estimated_depth": "surface|standard|deep",
+        "has_ambiguities": true|false,
+        "ambiguities": ["list of unclear aspects if any"],
+        "recommended_agents": {
+          "primary": "amplihack:analyzer",
+          "secondary": "amplihack:patterns",
+          "tertiary": "amplihack:architect",
+          "specialist": null
+        }
+      }
+      ```
+
+      Be specific and measurable in success criteria.
+    output: "scope"
+    parse_json: true
+
+  - id: "clarify-ambiguities"
+    agent: "amplihack:ambiguity"
+    working_dir: "{{repo_path}}"
+    # recipe-runner-rs supports dotted access in conditions but rejects
+    # bracket subscripts like scope['has_ambiguities'] with a parse error.
+    # Short-circuit on falsy/missing scope before reading the nested flag.
+    condition: "scope and scope.has_ambiguities"
+    prompt: |
+      The scope definition identified ambiguities that need clarification.
+
+      **Original Question:** {{investigation_question}}
+      **Identified Ambiguities:** {{scope.ambiguities}}
+
+      ## Your Task
+
+      For each ambiguity:
+      1. Analyze what makes it unclear
+      2. Propose reasonable interpretations
+      3. Recommend the most likely intended meaning
+      4. Flag any that require user clarification
+
+      Provide clarifications as JSON:
+      ```json
+      {
+        "clarified_ambiguities": [
+          {
+            "original": "the ambiguous aspect",
+            "interpretation": "our interpretation",
+            "confidence": "high|medium|low",
+            "requires_user_input": false
+          }
+        ],
+        "updated_core_questions": ["refined questions incorporating clarifications"],
+        "blockers": ["any ambiguities that absolutely require user input"]
+      }
+      ```
+    output: "ambiguity_resolution"
+    parse_json: true
+
