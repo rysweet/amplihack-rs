@@ -46,6 +46,9 @@ nav:
       - Install from Local Repo: howto/local-install.md
       - Uninstall: howto/uninstall.md
       - Migrate from Python: howto/migrate-from-python.md
+      - Ladybug Migration: howto/ladybug-migration-guide.md
+      - Migration Guide: howto/migration-guide.md
+      - Migration Worktree Support: howto/migration-worktree-support.md
       - Enable Shell Completions: howto/enable-shell-completions.md
       - Non-interactive Mode: howto/run-in-noninteractive-mode.md
       - Manage Update Checks: howto/manage-tool-update-checks.md
