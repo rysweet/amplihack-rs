@@ -79,7 +79,7 @@ steps:
       REPO="{{repo_path}}"
       cd "$REPO"
       gh pr list --author=@me --state=open --limit 50 \
-        --json number,title,headRefName,mergeable,isDraft,authorAssociation,headRepositoryOwner,baseRepositoryOwner,statusCheckRollup,updatedAt \
+        --json number,title,headRefName,mergeable,isDraft,statusCheckRollup,updatedAt \
         | jq '
           def classify(p):
             (p.statusCheckRollup // []) as $c
@@ -118,9 +118,8 @@ steps:
         if ! [[ "$NUM" =~ ^[0-9]+$ ]]; then
           echo "drive-green-prs-to-merge: invalid PR number '$NUM'" >&2; exit 1
         fi
-        ASSOC="$(printf '%s' "$pr" | jq -r '.authorAssociation')"
-        HEAD_OWNER="$(printf '%s' "$pr" | jq -r '.headRepositoryOwner.login // ""')"
-        BASE_OWNER="$(printf '%s' "$pr" | jq -r '.baseRepositoryOwner.login // ""')"
+        PR_META="$(gh pr view "$NUM" --json authorAssociation,headRepositoryOwner,baseRepositoryOwner)"
+        IFS=$'\t' read -r ASSOC HEAD_OWNER BASE_OWNER <<<"$(printf '%s' "$PR_META" | jq -r '[.authorAssociation,(.headRepositoryOwner.login // ""),(.baseRepositoryOwner.login // "")] | @tsv')"
         case "$ASSOC" in
           OWNER|MEMBER|COLLABORATOR) ;;
           *) SKIPPED+=("$NUM:assoc=$ASSOC"); continue ;;
