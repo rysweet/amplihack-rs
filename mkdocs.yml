@@ -70,6 +70,8 @@ nav:
       - Configure Hooks: howto/configure-hooks.md
       - Develop amplihack: howto/develop-amplihack.md
       - Create Your Own Tools: howto/create-your-own-tools.md
+      - Recipe CLI Examples: howto/recipe-cli-examples.md
+      - Recipe Discovery Troubleshooting: howto/recipe-discovery-troubleshooting.md
   - Skills:
       - Migrate Session: skills/migrate.md
   - Reference:
@@ -107,6 +109,7 @@ nav:
       - Doc Graph Quick Reference: reference/doc-graph-quick-reference.md
       - JSON Logging: reference/json-logging.md
       - Benchmarking: reference/benchmarking.md
+      - Recipe Quick Reference: reference/recipe-quick-reference.md
       - Code Review Practices: reference/code-review.md
       - Prerequisites: reference/prerequisites.md
   - Concepts:
