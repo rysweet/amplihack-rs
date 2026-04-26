@@ -561,6 +561,7 @@ class TestStep4Idempotency(unittest.TestCase):
 
 _RECIPES_DIR = Path(__file__).parent.parent / "recipes"
 _WORKFLOW_YAML = _RECIPES_DIR / "default-workflow.yaml"
+_WORKFLOW_TDD_YAML = _RECIPES_DIR / "workflow-tdd.yaml"
 
 
 def _extract_step_command(yaml_path: Path, step_id: str) -> str:
@@ -1708,6 +1709,252 @@ class TestGoalAlreadyMetProbe(unittest.TestCase):
 
 
 # ===========================================================================
+
+class TestIssue410Regression(unittest.TestCase):
+    """
+    Regression tests for issue #410: step-08c-implementation-no-op-guard
+    in workflow-tdd.yaml inspected the parent repo (silent fallback to $PWD)
+    instead of the worktree, producing false-positive hollow-success failures.
+
+    Fix:
+      A) Use ${WORKTREE_SETUP_WORKTREE_PATH:?...} fail-loud instead of :- silent.
+      B) Diagnostic block must include `Inspected worktree: $WORKTREE_SETUP_WORKTREE_PATH`.
+
+    Stale-fixture note: prior to this fix, _WORKFLOW_YAML pointed at
+    default-workflow.yaml (post-decomposition stub with no step-08c).
+    Tests scanning _WORKFLOW_YAML for step-08c passed vacuously and the
+    regression slipped past CI. These tests scan _WORKFLOW_TDD_YAML.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = _WORKFLOW_TDD_YAML.read_text()
+        cls.step_cmd = _extract_step_command(
+            _WORKFLOW_TDD_YAML, "step-08c-implementation-no-op-guard"
+        )
+
+    def test_fixture_targets_workflow_tdd_yaml(self):
+        self.assertIn(
+            'id: "step-08c-implementation-no-op-guard"',
+            self.text,
+            "step-08c not found in workflow-tdd.yaml — fixture path is wrong "
+            "or the step has been renamed/removed.",
+        )
+
+    def test_step_08c_uses_fail_loud_worktree_path(self):
+        """
+        TDD RED: current step-08c uses ${WORKTREE_SETUP_WORKTREE_PATH:-$PWD}
+        TDD GREEN: must use ${WORKTREE_SETUP_WORKTREE_PATH:?...} fail-loud.
+        """
+        self.assertNotIn(
+            "${WORKTREE_SETUP_WORKTREE_PATH:-",
+            self.step_cmd,
+            "step-08c must NOT use ${WORKTREE_SETUP_WORKTREE_PATH:-...} "
+            "silent fallback (issue #410). Use `:?` fail-loud form instead.",
+        )
+        self.assertIn(
+            "${WORKTREE_SETUP_WORKTREE_PATH:?",
+            self.step_cmd,
+            "step-08c must use ${WORKTREE_SETUP_WORKTREE_PATH:?diagnostic} "
+            "to fail loud when worktree_setup.worktree_path is missing.",
+        )
+
+    def test_step_08c_fail_loud_diagnostic_mentions_step_04(self):
+        m = re.search(
+            r"\$\{WORKTREE_SETUP_WORKTREE_PATH:\?([^}]+)\}", self.step_cmd
+        )
+        self.assertIsNotNone(
+            m, "Could not locate ${WORKTREE_SETUP_WORKTREE_PATH:?...} pattern."
+        )
+        diagnostic = m.group(1)
+        self.assertIn(
+            "step-04", diagnostic,
+            f"Fail-loud diagnostic must reference step-04 (worktree-setup). "
+            f"Got: {diagnostic!r}",
+        )
+        self.assertIn(
+            "worktree", diagnostic.lower(),
+            f"Fail-loud diagnostic must mention 'worktree'. Got: {diagnostic!r}",
+        )
+
+    def test_step_08c_no_silent_fallback_around_cd(self):
+        lines = self.step_cmd.splitlines()
+        cd_idx = next(
+            (i for i, ln in enumerate(lines)
+             if "WORKTREE_SETUP_WORKTREE_PATH" in ln and ln.strip().startswith("cd ")),
+            None,
+        )
+        self.assertIsNotNone(
+            cd_idx, "Could not find `cd ...WORKTREE_SETUP_WORKTREE_PATH` line."
+        )
+        cd_line = lines[cd_idx]
+        for forbidden in ("|| true", "|| cd ", "2>/dev/null"):
+            self.assertNotIn(
+                forbidden, cd_line,
+                f"step-08c cd must not silently fall back ({forbidden!r}). "
+                f"Got: {cd_line!r}",
+            )
+
+    def test_step_08c_diagnostic_includes_inspected_worktree(self):
+        """
+        TDD RED: failure block prints only `Working directory: $PWD`.
+        TDD GREEN: must also print `Inspected worktree: $WORKTREE_SETUP_WORKTREE_PATH`.
+        """
+        self.assertRegex(
+            self.step_cmd,
+            r"Inspected worktree:\s*\$\{?WORKTREE_SETUP_WORKTREE_PATH",
+            "step-08c failure diagnostic must include "
+            "'Inspected worktree: ${WORKTREE_SETUP_WORKTREE_PATH}' so "
+            "reviewers can verify which directory was inspected (#410).",
+        )
+
+    def test_step_08c_still_inspects_git_status(self):
+        self.assertIn("git diff --quiet", self.step_cmd)
+        self.assertIn("git ls-files --others --exclude-standard", self.step_cmd)
+        self.assertIn("hollow-success", self.step_cmd)
+
+    def test_step_08c_fails_loud_when_worktree_path_unset(self):
+        with tempfile.TemporaryDirectory() as repo:
+            subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                 "init", "-q", "-b", "main", repo],
+                check=True,
+            )
+            env = {
+                "PATH": os.environ["PATH"],
+                "REPO_PATH": repo,
+                "ISSUE_NUMBER": "999",
+                "IMPLEMENTATION": "Files modified: (none)",
+                # WORKTREE_SETUP_WORKTREE_PATH deliberately UNSET.
+            }
+            r = subprocess.run(
+                ["bash", "-c", self.step_cmd],
+                capture_output=True, text=True, env=env, cwd=repo,
+            )
+            self.assertNotEqual(
+                r.returncode, 0,
+                "step-08c must fail loud when WORKTREE_SETUP_WORKTREE_PATH is unset.\n"
+                f"stdout: {r.stdout}\nstderr: {r.stderr}",
+            )
+            stderr_lower = r.stderr.lower()
+            self.assertTrue(
+                "step-04" in stderr_lower or "worktree" in stderr_lower,
+                f"Fail-loud stderr must reference step-04/worktree.\nstderr: {r.stderr}",
+            )
+            self.assertNotIn(
+                "hollow-success", r.stderr,
+                "When WORKTREE_SETUP_WORKTREE_PATH is unset, step must fail at "
+                "the `cd` boundary, NOT proceed to inspect $PWD and emit a "
+                "hollow-success diagnostic about the wrong directory.",
+            )
+
+    def test_step_08c_passes_when_worktree_dirty_parent_clean(self):
+        """
+        Reproduce #410 exactly: parent repo clean, worktree has untracked file.
+        Before fix: cd's into parent (clean) → trips hollow-success.
+        After fix:  cd's into worktree (dirty) → passes.
+        """
+        with tempfile.TemporaryDirectory() as parent_dir, \
+             tempfile.TemporaryDirectory() as wt_dir:
+            for d in (parent_dir, wt_dir):
+                subprocess.run(
+                    ["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                     "init", "-q", "-b", "main", d],
+                    check=True,
+                )
+                Path(d, "README.md").write_text("# r\n")
+                subprocess.run(
+                    ["git", "-C", d, "-c", "user.name=t",
+                     "-c", "user.email=t@t", "add", "README.md"],
+                    check=True,
+                )
+                subprocess.run(
+                    ["git", "-C", d, "-c", "user.name=t",
+                     "-c", "user.email=t@t", "commit", "-q", "-m", "init"],
+                    check=True,
+                )
+            # Add untracked file ONLY in worktree.
+            Path(wt_dir, "feature.py").write_text("def f(): return 1\n")
+            env = {
+                "PATH": os.environ["PATH"],
+                "REPO_PATH": parent_dir,
+                "WORKTREE_SETUP_WORKTREE_PATH": wt_dir,
+                "ISSUE_NUMBER": "999",
+                "IMPLEMENTATION": "Files modified: feature.py",
+            }
+            r = subprocess.run(
+                ["bash", "-c", self.step_cmd],
+                capture_output=True, text=True, env=env,
+                cwd=parent_dir,  # caller cwd is parent — exposes the bug
+            )
+            self.assertEqual(
+                r.returncode, 0,
+                "Issue #410 regression: guard tripped false-positive when "
+                "parent is clean but worktree has changes.\n"
+                f"stdout: {r.stdout}\nstderr: {r.stderr}",
+            )
+
+    def test_step_08c_still_fails_on_genuine_noop_in_worktree(self):
+        """Worktree clean + no justification → must still fail (R4)."""
+        with tempfile.TemporaryDirectory() as wt_dir:
+            subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                 "init", "-q", "-b", "main", wt_dir],
+                check=True,
+            )
+            Path(wt_dir, "README.md").write_text("# wt\n")
+            subprocess.run(
+                ["git", "-C", wt_dir, "-c", "user.name=t",
+                 "-c", "user.email=t@t", "add", "README.md"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", wt_dir, "-c", "user.name=t",
+                 "-c", "user.email=t@t", "commit", "-q", "-m", "init"],
+                check=True,
+            )
+            env = {
+                "PATH": os.environ["PATH"],
+                "REPO_PATH": wt_dir,
+                "WORKTREE_SETUP_WORKTREE_PATH": wt_dir,
+                "IMPLEMENTATION": "Files modified: (none)",
+            }
+            r = subprocess.run(
+                ["bash", "-c", self.step_cmd],
+                capture_output=True, text=True, env=env, cwd=wt_dir,
+            )
+            self.assertEqual(
+                r.returncode, 1,
+                "Genuine no-op in worktree must still fail (R4).\n"
+                f"stdout: {r.stdout}\nstderr: {r.stderr}",
+            )
+            self.assertIn("hollow-success", r.stderr)
+            self.assertIn(
+                "Inspected worktree:", r.stderr,
+                "Failure block must include 'Inspected worktree:' (R5).",
+            )
+            self.assertIn(
+                wt_dir, r.stderr,
+                "'Inspected worktree:' line must contain the actual worktree path.",
+            )
+
+
+class TestWorktreePathFailLoudInTddRecipe(unittest.TestCase):
+    """Mirror of TestWorktreePathFailLoud, scoped to workflow-tdd.yaml (#410)."""
+
+    def test_no_silent_fallback_for_worktree_path_in_tdd(self):
+        text = _WORKFLOW_TDD_YAML.read_text()
+        offenders = []
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if "${WORKTREE_SETUP_WORKTREE_PATH:-" in line:
+                offenders.append(f"  line {lineno}: {line.strip()}")
+        self.assertEqual(
+            offenders, [],
+            "Found `${WORKTREE_SETUP_WORKTREE_PATH:-...}` silent fallback in "
+            "workflow-tdd.yaml. Use fail-loud `${WORKTREE_SETUP_WORKTREE_PATH:?...}`.\n"
+            "Issue #410.\n" + "\n".join(offenders),
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

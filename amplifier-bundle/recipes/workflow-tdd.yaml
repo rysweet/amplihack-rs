@@ -124,7 +124,10 @@ steps:
         # agents that ignore the schema. The git-diff guard below is the hard gate.
       fi
       # Check git diff in the worktree as the source of truth.
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$PWD}"
+      # Fail-loud (Zero-BS, issue #410): require worktree path from step-04 instead
+      # of silently falling back to $PWD (which is the parent repo and produces
+      # false-positive no-op failures when the worktree contains real work).
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-08c requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       if ! git diff --quiet || ! git diff --cached --quiet || \
          [ -n "$(git ls-files --others --exclude-standard)" ]; then
         echo "step-08 produced file changes — guard passed."
@@ -186,6 +189,7 @@ steps:
       echo "condition, almost certainly caused by prompt-misalignment — see" >&2
       echo "https://github.com/rysweet/amplihack-rs/issues/251." >&2
       echo "" >&2
+      echo "Inspected worktree: ${WORKTREE_SETUP_WORKTREE_PATH}" >&2
       echo "Working directory: $PWD" >&2
       git --no-pager status >&2
       exit 1
@@ -219,7 +223,7 @@ steps:
     # (implementation, test_spec, design_spec) produce large outputs.
     max_env_value_bytes: 65536
     command: |
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" 2>/dev/null || cd "$REPO_PATH" && \
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?checkpoint-after-implementation requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}" && \
       echo "=== Checkpoint: Staging Implementation ===" && \
       git add -A && \
       STAGED=$(git diff --cached --name-only) && \
