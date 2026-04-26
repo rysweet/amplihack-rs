@@ -104,6 +104,7 @@ nav:
       - Security Recommendations: reference/security-recommendations.md
       - "Security Audit: Copilot CLI Flags": reference/security-audit-copilot-cli-flags.md
       - Eval Retrieval Methods: reference/eval-retrieval-reference.md
+      - Doc Graph Quick Reference: reference/doc-graph-quick-reference.md
       - Code Review Practices: reference/code-review.md
       - Prerequisites: reference/prerequisites.md
   - Concepts:
@@ -141,6 +142,8 @@ nav:
       - Auto Mode: concepts/auto-mode.md
       - Automode Safety: concepts/automode-safety.md
       - Recipe Resilience: concepts/recipe-resilience.md
+      - Documentation Knowledge Graph: concepts/documentation-knowledge-graph.md
+      - External Knowledge Integration: concepts/external-knowledge-integration.md
   - Code Atlas:
       - Overview: atlas/index.md
       - "Layer 1: Repo Surface": atlas/repo-surface/README.md
