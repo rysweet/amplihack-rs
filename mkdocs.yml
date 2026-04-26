@@ -124,7 +124,9 @@ nav:
       - JSON Logging: reference/json-logging.md
       - Benchmarking: reference/benchmarking.md
       - Recipe Quick Reference: reference/recipe-quick-reference.md
+      - Recipe Runner Audit: reference/recipe-runner-audit.md
       - Security API Reference: reference/security-api.md
+      - Git Utils API: reference/git-utils-api.md
       - Goal Agent Example Prompt: reference/goal-agent-example-prompt.md
       - Code Review Practices: reference/code-review.md
       - Prerequisites: reference/prerequisites.md
@@ -153,6 +155,7 @@ nav:
       - Goal Agent Generator: concepts/agent-generator.md
       - Hive Mind (Distributed): concepts/hive-mind-distributed.md
       - Agent Bundle Generator: concepts/agent-bundle-generator.md
+      - Blarify Architecture: concepts/blarify-architecture.md
       - Blarify Integration: concepts/blarify-integration.md
       - Worktree Support: concepts/worktree-support.md
       - Workspace Pattern: concepts/workspace-pattern.md
