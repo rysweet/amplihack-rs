@@ -99,6 +99,8 @@ nav:
       - Memory Extended API: reference/memory-extended-api.md
       - Power Steering Compaction API: reference/power-steering-compaction-api.md
       - Shell Command Hook: reference/shell-command-hook.md
+      - Security Recommendations: reference/security-recommendations.md
+      - "Security Audit: Copilot CLI Flags": reference/security-audit-copilot-cli-flags.md
   - Concepts:
       - Philosophy: concepts/philosophy.md
       - Patterns: concepts/patterns.md
@@ -128,6 +130,7 @@ nav:
       - Agent Memory Architecture: concepts/agent-memory-architecture.md
       - Power Steering Compaction: concepts/power-steering-compaction.md
       - Hooks Comparison: concepts/hooks-comparison.md
+      - Security Context Preservation: concepts/security-context-preservation.md
   - Code Atlas:
       - Overview: atlas/index.md
       - "Layer 1: Repo Surface": atlas/repo-surface/README.md
