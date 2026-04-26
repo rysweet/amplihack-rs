@@ -56,6 +56,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [amplihack-hive API](./reference/hive-api.md) — Multi-agent orchestration and workload management
 - [amplihack-agent-generator API](./reference/agent-generator-api.md) — Goal-to-agent pipeline
 - [amplihack-memory Extended API](./reference/memory-extended-api.md) — Memory facade, manager, LadybugDB store, and evaluation
+- [LadybugDB Reference](./reference/ladybug-reference.md) — `lbug` crate API surface: schema, node/edge CRUD, querying, import/export, concurrency, and security
 
 ### Concepts
 
@@ -80,6 +81,8 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Agentic Step Patterns](./concepts/agentic-step-patterns.md) — Decision rules for bash vs agent vs recipe step types, prompt writing guide, and anti-patterns
 - [Smart-Orchestrator Recovery](./concepts/smart-orchestrator-recovery.md) — Failure taxonomy, four-stage recovery pipeline, hollow-success detection, and goal status values
 - [amplihack Retirement Direction](./concepts/amplihack-retirement-direction.md) — Python-to-Rust migration status, compatibility guarantees, and milestone tracking
+- [Memory Tree](./concepts/memory-tree.md) — Mental model and CLI surface for the `amplihack memory tree` command
+- [Five-Type Memory (Superseded)](./concepts/five-type-memory.md) — Redirect from the legacy 5-type memory guide to current memory documentation
 
 ## Quick Start
 
