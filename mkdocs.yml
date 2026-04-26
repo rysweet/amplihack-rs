@@ -68,6 +68,8 @@ nav:
       - Troubleshoot Worktree: howto/troubleshoot-worktree.md
       - Integrate Agent Memory: howto/integrate-agent-memory.md
       - Configure Hooks: howto/configure-hooks.md
+      - Develop amplihack: howto/develop-amplihack.md
+      - Create Your Own Tools: howto/create-your-own-tools.md
   - Skills:
       - Migrate Session: skills/migrate.md
   - Reference:
@@ -102,6 +104,8 @@ nav:
       - Security Recommendations: reference/security-recommendations.md
       - "Security Audit: Copilot CLI Flags": reference/security-audit-copilot-cli-flags.md
       - Eval Retrieval Methods: reference/eval-retrieval-reference.md
+      - Code Review Practices: reference/code-review.md
+      - Prerequisites: reference/prerequisites.md
   - Concepts:
       - Philosophy: concepts/philosophy.md
       - Patterns: concepts/patterns.md
