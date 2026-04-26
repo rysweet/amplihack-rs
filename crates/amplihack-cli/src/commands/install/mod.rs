@@ -60,6 +60,28 @@ pub fn run_install(local: Option<PathBuf>) -> Result<()> {
     let extracted_root = download_and_extract_framework_repo(temp_dir.path())?;
     local_install(&extracted_root)?;
 
+    // Network-fallback hard-error: every entry in the active layout's
+    // destination set must have been staged. Read the .layout marker the
+    // install just wrote to know which layout to verify.
+    let staging_dir = staging_claude_dir()?;
+    let layout = read_layout_marker(&staging_dir)?.unwrap_or(SourceLayout::LegacyClaude);
+    let mut missing_essentials = Vec::new();
+    for dst in essential_destinations(layout) {
+        if !staging_dir.join(dst).exists() {
+            missing_essentials.push(*dst);
+        }
+    }
+    if !missing_essentials.is_empty() {
+        bail!(
+            "network-fallback install completed but the staged tree at {} is missing \
+             required essentials for layout `{}`: {:?}. \
+             Re-run `amplihack install` or check upstream archive integrity.",
+            staging_dir.display(),
+            layout.marker_str(),
+            missing_essentials
+        );
+    }
+
     // Record the upstream SHA the staged framework now reflects, so the
     // freshness check can compare against it on subsequent launches. This
     // is best-effort — a failed SHA fetch doesn't roll back the install.
@@ -67,6 +89,71 @@ pub fn run_install(local: Option<PathBuf>) -> Result<()> {
         crate::freshness::record_framework_installed_sha(&sha);
     }
     Ok(())
+}
+
+/// Path of the `.layout` marker inside the staged `.claude` dir.
+fn layout_marker_path(claude_dir: &Path) -> PathBuf {
+    claude_dir.join(".layout")
+}
+
+/// Atomically write the `.layout` marker via temp-file + rename so partial
+/// writes never produce a torn read in `read_layout_marker`.
+pub(super) fn write_layout_marker(claude_dir: &Path, layout: SourceLayout) -> Result<()> {
+    fs::create_dir_all(claude_dir)
+        .with_context(|| format!("failed to create {}", claude_dir.display()))?;
+    let final_path = layout_marker_path(claude_dir);
+    let tmp_path = claude_dir.join(".layout.tmp");
+    let body = format!("{}\n", layout.marker_str());
+    fs::write(&tmp_path, body.as_bytes())
+        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o644));
+    }
+    fs::rename(&tmp_path, &final_path).with_context(|| {
+        format!(
+            "failed to rename {} to {}",
+            tmp_path.display(),
+            final_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+/// Read the `.layout` marker. Returns `Ok(None)` for a missing marker
+/// (silent — pre-fix installs lack one). Malformed contents are warned and
+/// treated as None (caller may default to `LegacyClaude` for compat).
+pub(super) fn read_layout_marker(claude_dir: &Path) -> Result<Option<SourceLayout>> {
+    let path = layout_marker_path(claude_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    // Hard cap to avoid logging huge attacker-controlled blobs in the warn
+    // path; the legitimate file is a single-line word.
+    if raw.len() > 64 {
+        tracing::warn!(
+            "{} is unexpectedly large ({} bytes); ignoring",
+            path.display(),
+            raw.len()
+        );
+        return Ok(None);
+    }
+    match raw.trim() {
+        "bundle" => Ok(Some(SourceLayout::Bundle)),
+        "legacy" => Ok(Some(SourceLayout::LegacyClaude)),
+        other => {
+            tracing::warn!(
+                "{} contains unrecognised layout `{}` ({} bytes); defaulting to legacy",
+                path.display(),
+                other,
+                raw.len()
+            );
+            Ok(None)
+        }
+    }
 }
 
 pub(crate) fn ensure_framework_installed() -> Result<()> {
@@ -343,15 +430,26 @@ fn local_install(repo_root: &Path) -> Result<()> {
 
     println!();
     println!("📁 Copying essential directories:");
-    let source_claude = find_source_claude_dir(repo_root)?;
-    let copied_dirs = copytree_manifest(&source_claude, &claude_dir)?;
+    let (source_root, layout) = find_source_root(repo_root)?;
+    println!(
+        "   Source layout: {} (from {})",
+        layout.marker_str(),
+        source_root.display()
+    );
+    let copied_dirs = copytree_manifest(&source_root, layout, &claude_dir)?;
     if copied_dirs.is_empty() {
-        println!();
-        println!("❌ No directories were copied. Installation may be incomplete.");
-        println!("   Please check that the source repository is valid.");
-        println!();
-        return Ok(());
+        bail!(
+            "no essential directories were copied from {} (layout: {}). \
+             The source repository appears to be missing all framework assets. \
+             Verify the checkout is complete.",
+            source_root.display(),
+            layout.marker_str()
+        );
     }
+
+    // Write the .layout marker atomically so subsequent presence checks
+    // (missing_framework_paths) know which mapping to consult.
+    write_layout_marker(&claude_dir, layout)?;
 
     println!();
     println!("📦 Staging amplifier-bundle (recipes, modules, tools):");
@@ -406,7 +504,7 @@ fn local_install(repo_root: &Path) -> Result<()> {
     println!("📝 Generating uninstall manifest:");
     let manifest_path = manifest_path()?;
     let mut tracked_roots = Vec::new();
-    for dir in ESSENTIAL_DIRS {
+    for dir in essential_destinations(layout) {
         let full = claude_dir.join(dir);
         if full.exists() {
             tracked_roots.push(full);
