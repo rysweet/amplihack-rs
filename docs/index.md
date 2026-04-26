@@ -20,6 +20,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Use the Fleet Dashboard](./howto/use-fleet-dashboard.md) — Open the cockpit, start and adopt sessions, search sessions, run the reasoner from the TUI, and exit cleanly
 - [Run Fleet Scout and Advance on Azure VMs](./howto/run-fleet-scout-and-advance.md) — Discover sessions across VMs, reason about them with the LLM backend, and execute recommended actions
 - [Migrate Memory to the SQLite Backend](./howto/migrate-memory-backend.md) — Export hierarchical memory to portable JSON, switch to SQLite, and verify the migration
+- [Agent Memory Quickstart](./howto/agent-memory-quickstart.md) — Inspect the memory graph, generate a memory-enabled agent with `amplihack new --enable-memory`, and use `memory tree`/`export`/`import`/`clean`
 - [Troubleshoot Recipe Execution Failures](./howto/troubleshoot-recipe-execution.md) — Diagnose shell step hangs, agent context issues, missing prerequisites, and workflow misclassification
 - [Diagnose Problems with amplihack doctor](./howto/diagnose-with-doctor.md) — Run system health checks and fix failing prerequisites
 - [Create a Custom Agent](./howto/create-custom-agent.md) — Build a domain agent with memory integration and evaluation
