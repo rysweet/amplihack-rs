@@ -1,127 +1,159 @@
-# Distributed Hive Evaluation
+# Hive Mind — Evaluation
 
-`amplihack-rs` owns the **agent/runtime side** of the distributed eval story.
-
-- `deploy/azure_hive/` contains the Azure Container Apps and Event Hubs
-  deployment assets
-- [`amplihack-hive::hive_eval`](../reference/hive-api.md) is the native Rust
-  evaluation harness used from this repo
-- The local long-horizon and multi-seed wrappers are exposed through the
-  `amplihack hive eval` subcommand
-  (`crates/amplihack-cli/src/commands/hive_haymaker.rs`)
-
-The authoritative long-horizon dataset generator and Azure distributed
-runner live in the sibling `amplihack-agent-eval` repo.
+This page describes the **in-process evaluation harness** that ships in
+`amplihack-hive` today. It is the contract that any future cloud-backed
+runner must preserve.
 
 > **Rust port note**
-> Upstream `amplihack` invokes the long-horizon eval as
-> `python -m amplihack.eval.long_horizon_memory`. In `amplihack-rs` the same
-> behavior is exposed via `amplihack hive eval ...`, backed by the
-> [`amplihack-hive`](../reference/hive-api.md) crate and persisted through
-> the [`lbug`](../reference/ladybug-reference.md) graph backend.
+> Upstream `amplihack` runs the long-horizon eval as
+> `python -m amplihack.eval.long_horizon_memory` against an Azure-deployed
+> hive (Container Apps + Service Bus / Event Hubs). The Rust port at
+> [`amplihack-hive::hive_eval`](../reference/hive-api.md) keeps the same
+> event-loop contract but executes against an in-process [`LocalEventBus`].
+> Cloud transport and packaged eval reports are upstream responsibilities
+> until the Rust port wires those backends — see
+> [Getting Started → Status](../tutorials/hive-mind-getting-started.md#status).
 
-## Read This Next
+## What Lives In This Repo
 
-- [Hive Mind Getting Started](../tutorials/hive-mind-getting-started.md) —
-  fastest path from a clean checkout to a real distributed eval
-- [Hive Mind Tutorial](../tutorials/hive-mind-tutorial.md) — full walkthrough
-  of the federated hive mind APIs
-- [`amplihack-hive` API reference](../reference/hive-api.md) — the Rust
-  surface that powers `amplihack hive`
+- The native eval loop:
+  [`amplihack_hive::run_eval`](../reference/hive-api.md) and
+  [`amplihack_hive::run_eval_with_responder`](../reference/hive-api.md)
+- The companion learning feed:
+  [`amplihack_hive::feed::run_feed`](../reference/hive-api.md)
+- CLI argument structs and runner functions in
+  `crates/amplihack-cli/src/commands/hive_haymaker.rs` (not yet routed as
+  `amplihack` subcommands)
 
-## Use This Repo For
+## What Does **Not** Live In This Repo
 
-- changing the agent runtime
-- changing the Azure deployment shape
-- running the thin local wrappers while you are editing `amplihack-rs`
+- Long-horizon dataset generation
+- Azure Container Apps / Service Bus / Event Hubs deployment assets
+- The packaged `run_distributed_eval.sh` wrapper and report bundle layout
+- Standard / holdout question slicing
 
-## Use `amplihack-agent-eval` For
+Those continue to live in upstream `rysweet/amplihack` (Python). The Rust
+port intentionally focuses on the runtime side.
 
-- authoritative long-horizon question generation
-- the Event Hubs distributed runner
-- packaged eval reports and rerun metadata
-- the end-to-end `run_distributed_eval.sh` wrapper
+## Eval Loop Contract
 
-## Local Wrapper: Single Run
+```rust
+use amplihack_hive::{HiveEvalConfig, LocalEventBus, run_eval_with_responder};
 
-The local wrapper delegates to the
-[`amplihack-hive`](../reference/hive-api.md) crate's `hive_eval` module:
+let cfg = HiveEvalConfig::new(vec![
+    "What port does PostgreSQL use?".into(),
+    "What is the default Nginx port?".into(),
+])
+.with_timeout(10)               // seconds to wait for responses per query
+.with_min_responses(1);         // minimum responses before moving on
 
-```bash
-amplihack hive eval \
-  --turns 100 \
-  --questions 20 \
-  --output-dir /tmp/eval-run
+let mut bus = LocalEventBus::new();
+let result = run_eval_with_responder(&mut bus, &cfg, |question| {
+    // Replace this stub with real agents / SDK calls.
+    vec![("agent-1".into(), format!("echo: {question}"), 0.5)]
+})?;
+
+assert_eq!(result.total_queries, cfg.questions.len());
 ```
 
-Useful flags from this wrapper:
+Topics involved (from `amplihack_hive::hive_events`):
 
-- `--sdk {mini,claude,copilot,microsoft}`
-- `--memory-type {auto,hierarchical,cognitive}`
-- `--answer-mode {single-shot,agentic}`
-- `--parallel-workers <N>`
-- `--load-db` and `--skip-learning`
+| Topic                  | Direction         | Payload                                  |
+| ---------------------- | ----------------- | ---------------------------------------- |
+| `HIVE_QUERY`           | harness → agents  | `{ query_id, question }`                 |
+| `HIVE_QUERY_RESPONSE`  | agents → harness  | `{ query_id, agent_id, answer, confidence }` |
+| `HIVE_LEARN_CONTENT`   | feeder → agents   | `{ feed_id, item }`                      |
+| `HIVE_FEED_COMPLETE`   | feeder → agents   | `{ feed_id, items_published }`           |
+| `HIVE_AGENT_READY`     | agents → harness  | `{ agent_id }`                           |
 
-If you need `standard` versus `holdout` question slices, use the
-`amplihack-agent-eval` CLI or distributed runner rather than the thin
-wrappers in this repo.
+`run_eval(bus, &cfg)` is the no-responder form: it publishes queries and
+collects whatever subscribers are already on the bus. Use it when wiring
+real agents in advance; use `run_eval_with_responder` for self-contained
+tests and demos.
 
-## Local Wrapper: Multi-Seed Comparison
+## Output
 
-```bash
-amplihack hive eval \
-  --mode multi-seed \
-  --turns 100 \
-  --questions 20 \
-  --seeds 42,123,456,789 \
-  --output-dir /tmp/eval-compare
+`HiveEvalResult` contains:
+
+- `query_results: Vec<QueryResult>` — one entry per question with all
+  collected `AgentAnswer { agent_id, answer, confidence }`
+- `total_queries: usize`
+- `total_responses: usize`
+- `average_confidence: f64`
+
+Render to text with the helper in `hive_haymaker.rs`:
+
+```rust
+use amplihack_cli::commands::hive_haymaker::format_eval_text;
+println!("{}", format_eval_text(&result));
 ```
 
-## Distributed Azure Run
+JSON output is via `serde_json::to_string_pretty(&result)?`.
 
-For real Azure distributed runs, switch to the sibling
-`amplihack-agent-eval` repo and use its wrapper or direct runner.
+## Library API: Feed + Eval In One Process
 
-```bash
-cd /path/to/amplihack-agent-eval
+```rust
+use amplihack_hive::{
+    FeedConfig, HiveEvalConfig, LocalEventBus, feed::run_feed,
+    run_eval_with_responder,
+};
 
-export ANTHROPIC_API_KEY=...
-export AMPLIHACK_SOURCE_ROOT=/path/to/amplihack-rs
+let mut bus = LocalEventBus::new();
 
-./run_distributed_eval.sh \
-  --agents 100 \
-  --turns 5000 \
-  --questions 50 \
-  --question-set standard
+// 1. Seed content into the hive.
+let feed = run_feed(
+    &mut bus,
+    &FeedConfig::new("smoke", vec!["Photosynthesis happens in chloroplasts.".into()]),
+)?;
+assert_eq!(feed.items_published, 1);
+
+// 2. Run questions against agents. (Stub responder for illustration.)
+let cfg = HiveEvalConfig::new(vec!["Where does photosynthesis happen?".into()]);
+let result = run_eval_with_responder(&mut bus, &cfg, |q| {
+    vec![("a1".into(), format!("answer to {q}"), 0.8)]
+})?;
+assert_eq!(result.total_queries, 1);
 ```
 
-That path drives the Azure deployment assets from this repo, but the
-harness and reporting stay centralized in `amplihack-agent-eval`.
+## CLI Surface (Planned — Not Yet Wired)
 
-## Question Sets
+`hive_haymaker.rs` defines `HiveFeedArgs` and `HiveEvalArgs`. Today these
+are exercised via unit tests and direct library calls, **not** via
+`amplihack hive feed` or `amplihack hive eval` — those subcommands are not
+registered in `cli_subcommands.rs` yet. A tracking issue should land before
+the docs claim a CLI invocation form.
 
-| Value      | Meaning                                                       |
-| ---------- | ------------------------------------------------------------- |
-| `standard` | Canonical deterministic question slice                        |
-| `holdout`  | Alternate deterministic slice for anti-overfitting validation |
+The argument shape that *will* be exposed once wired:
 
-`holdout` changes which questions are asked. It does not generate a second
-fact universe.
+| Struct          | Field            | Default       | Notes                                            |
+| --------------- | ---------------- | ------------- | ------------------------------------------------ |
+| `HiveFeedArgs`  | `deployment_id`  | (required)    | Logical hive identifier                          |
+|                 | `turns`          | `100`         | Number of `HIVE_LEARN_CONTENT` events            |
+|                 | `topic`          | env / default | Override Service Bus topic name                  |
+|                 | `sb_conn_str`    | `""`          | **Stub** — logs a warning and uses `LocalEventBus` |
+| `HiveEvalArgs`  | `deployment_id`  | (required)    | Logical hive identifier                          |
+|                 | `repeats`        | `3`           | Question rounds                                  |
+|                 | `wait_for_ready` | `0`           | Stubbed — never blocks                           |
+|                 | `timeout`        | `600`         | Per-round timeout (seconds)                      |
+|                 | `topic`          | env / default | Override Service Bus topic name                  |
+|                 | `sb_conn_str`    | `""`          | **Stub** — logs a warning and uses `LocalEventBus` |
+|                 | `output`         | `Text`        | `Text` or `Json`                                 |
 
-## Important Checkout Note
+There are no `--mode`, `--question-set`, `--agents`, `--seeds`,
+`--memory-type`, `--sdk`, `--answer-mode`, `--parallel-workers`, `--load-db`,
+or `--skip-learning` flags in this port today. Those concepts live upstream.
 
-`amplihack-rs` is a Cargo workspace; the eval entry points are shipped as
-part of the `amplihack` binary. As long as you launch through
-`cargo run -p amplihack -- hive eval ...` (or an installed `amplihack`
-binary), there is no `PYTHONPATH` to manage. When validating local changes
-to a sibling `amplihack-agent-eval` checkout, use its own runner; do not
-mix Python wrappers into the Rust evaluation path.
+## Cloud Transport (Planned — Stubbed Today)
 
-## Current Verified Results
+Both runners check `sb_conn_str`; if non-empty the runner logs:
 
-A current validation snapshot, including the accepted Azure scores and the
-latest reproducible local test commands, lives upstream at
-`docs/hive_mind/current-validation-results.md` in `rysweet/amplihack`.
+```
+Service Bus transport is not yet implemented in Rust; using local event bus
+```
+
+…and continues against a fresh `LocalEventBus`. There is no silent
+fall-through to noop and no Event Hubs path. The cloud transport story will
+land alongside the wired CLI subcommand.
 
 ## Related Docs
 
@@ -130,5 +162,3 @@ latest reproducible local test commands, lives upstream at
 - [Hive Mind Design](./hive-mind-design.md)
 - [`amplihack-hive` API reference](../reference/hive-api.md)
 - [LadybugDB reference](../reference/ladybug-reference.md)
-- `amplihack-agent-eval/docs/distributed-hive-eval.md`
-- `amplihack-agent-eval/docs/running-evals.md`

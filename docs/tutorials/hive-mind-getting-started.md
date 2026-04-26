@@ -1,99 +1,130 @@
-# Distributed Hive Eval — Getting Started
+# Hive Mind — Getting Started
 
-This page is the fastest way to get from a clean checkout to a real distributed
-eval running against the [`amplihack-hive`](../reference/hive-api.md) crate.
+Run a hive-mind smoke check against the actual `amplihack-hive` crate. This
+page targets the **library API that ships today**. The `amplihack hive …`
+CLI surface and the Azure deployment described in upstream `amplihack` are
+**planned but not yet wired** — see [Status](#status) below.
 
 > **Rust port note**
-> Upstream `amplihack` ships the hive eval as Python wrappers
-> (`python -m amplihack.eval.long_horizon_memory`). In `amplihack-rs` the same
-> functionality is reached through the native `amplihack hive ...` subcommands
-> (wired through `crates/amplihack-cli/src/commands/hive_haymaker.rs`) backed
-> by the [`amplihack-hive`](../reference/hive-api.md) crate. The local
-> code-graph each agent owns is stored in [`lbug`](../reference/ladybug-reference.md),
-> the native Rust embedded graph database (formerly `kuzu`).
+> Upstream `amplihack` (Python) ships the hive mind as
+> `from amplihack.agents.goal_seeking.hive_mind …` and a `python -m
+> amplihack.eval.long_horizon_memory` runner backed by Azure Event
+> Hubs / Service Bus. The Rust port at
+> [`crates/amplihack-hive/`](../reference/hive-api.md) re-implements the
+> in-process layers natively. Cloud transport is intentionally stubbed in
+> this port — `crates/amplihack-cli/src/commands/hive_haymaker.rs`
+> defaults to an in-memory [`LocalEventBus`] and logs a warning if a
+> Service Bus connection string is supplied.
 
 ## Prerequisites
 
-You need a checkout of `amplihack-rs` plus, for distributed Azure runs, the
-sibling `amplihack-agent-eval` repository:
+- A working Rust toolchain (`cargo --version`)
+- This repo checked out (no sibling repos required for the smoke run)
 
-- `amplihack-rs` — agent runtime, native CLI, and Azure deployment assets
-- `amplihack-agent-eval` — dataset generation, distributed runner, and reports
-
-You also need:
-
-- Azure CLI authenticated to the target subscription
-- A working Rust toolchain (`cargo --version`) for building `amplihack`
-- `ANTHROPIC_API_KEY` set for grading and the default learning-agent runtime
-
-## Local Smoke Run From This Repo
-
-Use the thin local subcommand when you are editing `amplihack-rs` and want a
-fast local check.
+## Build
 
 ```bash
 cd /path/to/amplihack-rs
-
-amplihack hive eval \
-  --turns 100 \
-  --questions 20 \
-  --question-set standard \
-  --output-dir /tmp/eval-run
+cargo build -p amplihack-hive
 ```
 
-Behind the scenes this calls into
-[`amplihack_hive::hive_eval`](../reference/hive-api.md) using the in-process
-`LocalEventBus`, so it does not require any cloud resources.
+## 30-Second Smoke Run (Library API)
 
-## Real Azure Distributed Run
+Drop this into `examples/hive_smoke.rs` (or any binary in your workspace):
 
-Switch to the eval repo for the end-to-end wrapper.
+```rust
+use amplihack_hive::{HiveMindOrchestrator, Result};
 
-```bash
-cd /path/to/amplihack-agent-eval
+fn main() -> Result<()> {
+    let mut hive = HiveMindOrchestrator::with_default_policy()
+        .with_agent_id("smoke-agent".to_string());
 
-export ANTHROPIC_API_KEY=...
-export AMPLIHACK_SOURCE_ROOT=/path/to/amplihack-rs
+    // Store a fact and let the default promotion policy decide.
+    let outcome = hive.store_and_promote(
+        "networking",
+        "PostgreSQL listens on TCP 5432",
+        0.95,
+        "smoke-agent",
+    )?;
 
-./run_distributed_eval.sh \
-  --agents 100 \
-  --turns 5000 \
-  --questions 50 \
-  --question-set standard
+    println!(
+        "stored fact_id={} promoted={} broadcast={}",
+        outcome.fact_id, outcome.promoted, outcome.broadcast
+    );
+
+    for fact in hive.query("networking")? {
+        println!("  [{:.0}%] {}", fact.confidence * 100.0, fact.content);
+    }
+    Ok(())
+}
 ```
 
-Reuse an existing deployment instead of redeploying:
+That confirms storage, promotion, and query — no event bus, no peers, no
+network.
 
-```bash
-SKIP_DEPLOY=1 \
-HIVE_NAME=amplihive3175e \
-HIVE_RESOURCE_GROUP=hive-pr3175-rg \
-./run_distributed_eval.sh \
-  --agents 100 \
-  --turns 5000 \
-  --questions 50 \
-  --question-set holdout
+## Run the In-Process Eval Harness
+
+`amplihack-hive` ships a real eval harness that drives a `LocalEventBus`
+end-to-end. Use it from Rust to validate the request/response loop:
+
+```rust
+use amplihack_hive::{
+    HiveEvalConfig, LocalEventBus, run_eval_with_responder,
+};
+
+fn main() -> amplihack_hive::Result<()> {
+    let questions = vec![
+        "What port does PostgreSQL use?".to_string(),
+        "What is the default Nginx port?".to_string(),
+    ];
+    let config = HiveEvalConfig::new(questions).with_timeout(5);
+
+    let mut bus = LocalEventBus::new();
+
+    // The responder closure decides how each query is answered.
+    let result = run_eval_with_responder(&mut bus, &config, |q| {
+        vec![(
+            "smoke-agent".to_string(),
+            format!("echo: {q}"),
+            0.5,
+        )]
+    })?;
+
+    println!(
+        "queries={} responses={} avg_conf={:.2}",
+        result.total_queries, result.total_responses, result.average_confidence
+    );
+    Ok(())
+}
 ```
 
-## What To Expect
+## Status
 
-- the wrapper deploys or refreshes Azure Container Apps from
-  `deploy/azure_hive/`
-- agent traffic uses Event Hubs, not Service Bus
-- the result bundle includes the final report JSON, logs, and rerun metadata
+What works **today** in `amplihack-rs`:
 
-## Standard vs Holdout
+| Capability                                                 | Where                                                  |
+| ---------------------------------------------------------- | ------------------------------------------------------ |
+| In-process hive (`HiveMindOrchestrator`, `HiveGraph`)      | `crates/amplihack-hive/src/{orchestrator,graph}`       |
+| Local event bus + eval harness                             | `crates/amplihack-hive/src/{event_bus,hive_eval,feed}` |
+| Distributed primitives (`AgentNode`, `HiveCoordinator`)    | `crates/amplihack-hive/src/distributed/`               |
+| Bloom filters, CRDTs, gossip, DHT, embeddings              | re-exports from `crates/amplihack-hive/src/lib.rs`     |
+| `hive feed` / `hive eval` argument types and runners       | `crates/amplihack-cli/src/commands/hive_haymaker.rs`   |
 
-Use `--question-set standard` for the canonical slice and
-`--question-set holdout` for a deterministic alternate slice.
+What is **not yet wired** (planned — track via repo issues):
 
-That makes it possible to re-evaluate the same runtime against a different
-question subset without changing the fact-generation path.
+- `amplihack hive {feed,eval,deploy,status,teardown}` is **not** a registered
+  subcommand of the `amplihack` binary today. `hive_haymaker.rs` defines the
+  arg structs and runner functions, but `cli_subcommands.rs` does not yet
+  route to them.
+- Azure Service Bus / Event Hubs transport is **stubbed**. Supplying
+  `sb_conn_str` logs a warning and falls back to `LocalEventBus`.
+- `deploy/azure_hive/` does not exist in this repo. Azure Container Apps
+  provisioning lives upstream in `rysweet/amplihack` (Python).
 
 ## Where To Read Next
 
-- [Distributed Hive Evaluation](../concepts/hive-mind-eval.md)
-- [Hive Mind Tutorial](./hive-mind-tutorial.md)
-- [Hive Mind Design](../concepts/hive-mind-design.md)
+- [Hive Mind Tutorial](./hive-mind-tutorial.md) — full library walkthrough
+- [Hive Mind Design](../concepts/hive-mind-design.md) — layered architecture
+- [Hive Mind Eval](../concepts/hive-mind-eval.md) — eval harness contract
 - [`amplihack-hive` API reference](../reference/hive-api.md)
-- [LadybugDB reference](../reference/ladybug-reference.md)
+- [LadybugDB reference](../reference/ladybug-reference.md) — embedded graph DB
