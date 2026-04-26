@@ -101,6 +101,7 @@ nav:
       - Shell Command Hook: reference/shell-command-hook.md
       - Security Recommendations: reference/security-recommendations.md
       - "Security Audit: Copilot CLI Flags": reference/security-audit-copilot-cli-flags.md
+      - Eval Retrieval Methods: reference/eval-retrieval-reference.md
   - Concepts:
       - Philosophy: concepts/philosophy.md
       - Patterns: concepts/patterns.md
@@ -131,6 +132,8 @@ nav:
       - Power Steering Compaction: concepts/power-steering-compaction.md
       - Hooks Comparison: concepts/hooks-comparison.md
       - Security Context Preservation: concepts/security-context-preservation.md
+      - Eval System Architecture: concepts/eval-system-architecture.md
+      - Eval Grading Improvements: concepts/eval-grading-improvements.md
   - Code Atlas:
       - Overview: atlas/index.md
       - "Layer 1: Repo Surface": atlas/repo-surface/README.md
