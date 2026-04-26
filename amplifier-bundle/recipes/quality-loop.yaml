@@ -365,34 +365,9 @@ steps:
       fi
       printf '%s' "$OUT_FILE"
     output: "coe_diff_out"
-  - id: "merge-ready-gate"
-    type: "bash"
-    description: "Asserts all three verdicts are ready by reading verdict files (cat). Skipped entirely when no task was selected — does NOT pass in that case (gate simply did not run, distinguishing 'no work' from 'all ready')."
-    condition: "task_description != ''"
-    command: |
-      set -euo pipefail
-      IFS=$'\n\t'
-      check() {
-        local label="$1" path="$2"
-        if [ -z "$path" ] || [ ! -s "$path" ]; then
-          echo "merge-ready-gate: $label has no verdict file ('$path')" >&2; return 1
-        fi
-        local content
-        content="$(cat "$path")"
-        case "$content" in
-          *"VERDICT: ready"*) echo "merge-ready-gate: $label = ready" ;;
-          *"VERDICT: not_ready"*) echo "merge-ready-gate: $label = NOT READY" >&2; return 1 ;;
-          *) echo "merge-ready-gate: $label has no VERDICT line" >&2; return 1 ;;
-        esac
-      }
-      check "design"   "{{coe_design}}"
-      check "audit"    "{{audit_verdict_out}}"
-      check "coe-diff" "{{coe_diff_out}}"
-      echo "merge-ready-gate: all verdicts ready"
-    output: "gate_status"
   - id: "post-pr-summary"
     type: "bash"
-    description: "Posts a summary comment on the new PR. Runs only when a task was implemented. Reads verdict text from files (cat), never interpolates LLM output into shell quotes."
+    description: "Posts a summary comment on the new PR. Runs BEFORE merge-ready-gate so PR feedback is always posted regardless of gate outcome (#386). Runs only when a task was implemented. Reads verdict text from files (cat), never interpolates LLM output into shell quotes."
     condition: "task_description != ''"
     command: |
       set -euo pipefail
@@ -419,6 +394,31 @@ steps:
       fi
       echo "post-pr-summary: commented on PR #$NEW_PR"
     output: "pr_comment_status"
+  - id: "merge-ready-gate"
+    type: "bash"
+    description: "Asserts all three verdicts are ready by reading verdict files (cat). Skipped entirely when no task was selected — does NOT pass in that case (gate simply did not run, distinguishing 'no work' from 'all ready')."
+    condition: "task_description != ''"
+    command: |
+      set -euo pipefail
+      IFS=$'\n\t'
+      check() {
+        local label="$1" path="$2"
+        if [ -z "$path" ] || [ ! -s "$path" ]; then
+          echo "merge-ready-gate: $label has no verdict file ('$path')" >&2; return 1
+        fi
+        local content
+        content="$(cat "$path")"
+        case "$content" in
+          *"VERDICT: ready"*) echo "merge-ready-gate: $label = ready" ;;
+          *"VERDICT: not_ready"*) echo "merge-ready-gate: $label = NOT READY" >&2; return 1 ;;
+          *) echo "merge-ready-gate: $label has no VERDICT line" >&2; return 1 ;;
+        esac
+      }
+      check "design"   "{{coe_design}}"
+      check "audit"    "{{audit_verdict_out}}"
+      check "coe-diff" "{{coe_diff_out}}"
+      echo "merge-ready-gate: all verdicts ready"
+    output: "gate_status"
   - id: "update-plan"
     type: "bash"
     command: |
