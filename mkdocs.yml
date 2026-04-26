@@ -92,6 +92,10 @@ nav:
       - uvx-help Command: reference/uvx-help-command.md
       - Memory Extended API: reference/memory-extended-api.md
   - Concepts:
+      - Philosophy: concepts/philosophy.md
+      - Patterns: concepts/patterns.md
+      - Trust & Anti-Sycophancy: concepts/trust.md
+      - Default Workflow (23 steps): concepts/default-workflow.md
       - Bootstrap Parity: concepts/bootstrap-parity.md
       - Idempotent Installation: concepts/idempotent-installation.md
       - cxx/cxx-build Contract: concepts/cxx-version-contract.md
