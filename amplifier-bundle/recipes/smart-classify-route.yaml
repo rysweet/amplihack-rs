@@ -218,6 +218,33 @@ steps:
     output: "force_single_workstream"
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Issue #425: emit `allow_no_op` so step-08c (workflow-tdd) skips its
+  # hollow-success guard for orchestration / docs-only / audit / meta tasks.
+  #
+  # Allowlist (case-insensitive substring match against task_description):
+  #   audit, docs-only, orchestration, meta
+  # Default: false. Step-08c uses STRICT equality with the literal "true",
+  # so coerced values (1, yes, on, True) cannot accidentally bypass the
+  # guard for code-producing classifications.
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: "materialize-allow-no-op"
+    type: "bash"
+    command: |
+      set -euo pipefail
+      _TASK_LC=$(printf '%s' "${TASK_DESCRIPTION:-}" | tr '[:upper:]' '[:lower:]')
+      _ALLOW="false"
+      case "$_TASK_LC" in
+        *audit*|*docs-only*|*"docs only"*|*orchestration*|*meta-task*|*"meta task"*)
+          _ALLOW="true"
+          ;;
+      esac
+      if [ "$_ALLOW" = "true" ]; then
+        echo "[dev-orchestrator] allow_no_op=true (orchestration / docs-only / audit / meta classification — issue #425)" >&2
+      fi
+      printf '%s' "$_ALLOW"
+    output: "allow_no_op"
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Setup: register this session in the session tree (atomic check+register)
   # Runs for Development and Investigation tasks before any workstream spawning.
   # session_info output format: JSON {"session_id":..,"tree_id":..,"depth":..,"status":..}
@@ -251,4 +278,3 @@ steps:
         printf '{"session_id":"none","tree_id":"none","depth":0,"status":"registration_failed"}\n'
       fi
     output: "session_info"
-

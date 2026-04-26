@@ -66,6 +66,19 @@ context:
   issue_number: ""
   branch_name: ""
   worktree_path: ""
+  # Issue #425: nested-recipe context propagation for the worktree-setup
+  # output object and the orchestration opt-out flag.
+  #
+  # `worktree_setup` mirrors the workflow-worktree (step-04) output object
+  # so the recipe-runner threads it across nested recipe boundaries
+  # (smart-execute-routing -> default-workflow -> workflow-tdd, where step-08c
+  # reads ${WORKTREE_SETUP_WORKTREE_PATH}).
+  #
+  # `allow_no_op` opts orchestration / docs-only / audit / meta tasks out of
+  # the step-08c hollow-success guard. Defaults to false; smart-classify-route
+  # flips it to true when classification permits no working-tree edits.
+  worktree_setup: ""
+  allow_no_op: false
   design_spec: ""
   documentation: ""
   test_spec: ""

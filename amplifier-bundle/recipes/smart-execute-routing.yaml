@@ -121,6 +121,13 @@ steps:
     condition: |
       'Development' in task_type and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') or force_single_workstream == 'true')
     recipe: "default-workflow"
+    # Issue #425: explicitly forward worktree_setup and allow_no_op so the
+    # recipe-runner threads them across the smart-execute-routing ->
+    # default-workflow -> workflow-tdd boundary. task_description and
+    # repo_path continue to flow via automatic merging in _execute_sub_recipe().
+    context:
+      worktree_setup: "{{worktree_setup}}"
+      allow_no_op: "{{allow_no_op}}"
     # No explicit context needed: task_description and repo_path flow through
     # from the parent smart-orchestrator context automatically via context merging
     # in _execute_sub_recipe().
@@ -228,6 +235,11 @@ steps:
     condition: |
       'Development' in task_type and 'BLOCKED' in recursion_guard and workstream_count != 1 and workstream_count != '1' and workstream_count != ''
     recipe: "default-workflow"
+    # Issue #425: forward worktree_setup and allow_no_op (see execute-single-
+    # round-1-development for rationale).
+    context:
+      worktree_setup: "{{worktree_setup}}"
+      allow_no_op: "{{allow_no_op}}"
     # No explicit context needed: task_description and repo_path flow through
     # from the parent smart-orchestrator context automatically.
     output: "round_1_result"
@@ -358,6 +370,12 @@ steps:
     condition: |
       adaptive_recipe == 'default-workflow'
     recipe: "default-workflow"
+    # Issue #425: forward worktree_setup and allow_no_op for adaptive recovery
+    # path so orchestration tasks routed through adaptive recovery still get
+    # the opt-out flag and worktree setup output object.
+    context:
+      worktree_setup: "{{worktree_setup}}"
+      allow_no_op: "{{allow_no_op}}"
     output: "round_1_result"
 
   - id: "adaptive-execute-investigation"
@@ -380,4 +398,3 @@ steps:
       rm -f /tmp/smart-orch-ws-*.json 2>/dev/null || true
       echo "ok"
     output: "cleanup_status"
-

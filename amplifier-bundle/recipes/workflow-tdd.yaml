@@ -113,6 +113,37 @@ steps:
         echo "ERROR: step-08-implement produced no output." >&2
         exit 1
       fi
+      # ----------------------------------------------------------------------
+      # Issue #425: orchestration opt-out.
+      #
+      # Some smart-orchestrator routes (audit, docs-only, orchestration, meta)
+      # legitimately produce no working-tree edits — their "implementation"
+      # is filing GitHub issues, opening child PRs, or coordinating downstream
+      # work. For those classifications the hollow-success guard below is a
+      # FALSE POSITIVE and must be skipped.
+      #
+      # Two opt-out mechanisms (precedence: sentinel > flag):
+      #   1. Sentinel match in implementer output. Canonical bytes (em-dash
+      #      U+2014, exact match via grep -F): "No files modified — orchestration task"
+      #   2. ALLOW_NO_OP context flag, strict equality "true" only. We refuse
+      #      to coerce 1 / yes / on / True so callers cannot accidentally
+      #      bypass the guard with shell-style truthiness.
+      #
+      # These checks MUST run BEFORE the `cd` so orchestration tasks pass
+      # even if WORKTREE_SETUP_WORKTREE_PATH is unset (orchestration mode
+      # may skip worktree setup entirely).
+      # ----------------------------------------------------------------------
+      _ORCH_SENTINEL='No files modified — orchestration task'
+      if printf '%s' "$IMPL" | grep -qF -- "$_ORCH_SENTINEL"; then
+        echo "INFO: step-08c orchestration opt-out — sentinel matched (issue #425)." >&2
+        echo "  Skipping hollow-success guard for orchestration / docs-only task." >&2
+        exit 0
+      fi
+      if [ "${ALLOW_NO_OP:-false}" = "true" ]; then
+        echo "INFO: step-08c orchestration opt-out — ALLOW_NO_OP=true (issue #425)." >&2
+        echo "  Skipping hollow-success guard; classification permits no working-tree edits." >&2
+        exit 0
+      fi
       # Look for the structured "Files modified:" line.
       FILES_LINE=$(printf '%s\n' "$IMPL" | grep -m1 -i '^[[:space:]]*[*-]\?[[:space:]]*Files modified:' || true)
       JUSTIFICATION=$(printf '%s\n' "$IMPL" | grep -m1 -i '^[[:space:]]*[*-]\?[[:space:]]*No-op justification:' || true)
