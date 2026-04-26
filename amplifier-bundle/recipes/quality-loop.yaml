@@ -102,7 +102,7 @@ steps:
       REPO="{{repo_path}}"
       cd "$REPO"
       ADMIN_MERGE="{{admin_merge}}"
-      GREEN_JSON="$(printf '%s' '{{pr_survey}}' | jq -c '.green')"
+      GREEN_JSON="$(printf '%s' {{pr_survey}} | jq -c '.green')"
       MERGED=()
       SKIPPED=()
       COUNT=0
@@ -144,7 +144,7 @@ steps:
     command: |
       set -euo pipefail
       IFS=$'\n\t'
-      printf '%s' '{{pr_survey}}' \
+      printf '%s' {{pr_survey}} \
         | jq -r '
           [ .stale[] | "  - PR #\(.number): \(.title) (updated \(.updatedAt))" ]
           | (["triage-stale-prs:"] + .) | join("\n")'
@@ -157,7 +157,7 @@ steps:
       IFS=$'\n\t'
       REPO="{{repo_path}}"
       cd "$REPO"
-      RED_JSON="$(printf '%s' '{{pr_survey}}' | jq -c '.red')"
+      RED_JSON="$(printf '%s' {{pr_survey}} | jq -c '.red')"
       DISPATCHED=()
       COUNT=0
       CAP=10
@@ -476,7 +476,7 @@ steps:
       DESIGN_LINE="$(verdict_line "{{coe_design}}")"
       AUDIT_LINE="$(verdict_line "{{audit_verdict_out}}")"
       DIFF_LINE="$(verdict_line "{{coe_diff_out}}")"
-      STALE_REMAINING="$(printf '%s' '{{pr_survey}}' | jq '[.stale[].number]')"
+      STALE_REMAINING="$(printf '%s' {{pr_survey}} | jq '[.stale[].number]')"
       jq -n \
         --arg merged "$MERGED" \
         --arg dispatched "$DISPATCHED" \
