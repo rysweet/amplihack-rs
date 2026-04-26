@@ -1,295 +1,255 @@
-# Distributed Hive Mind — Tutorial
+# Hive Mind — Tutorial
 
-Get multiple goal-seeking agents sharing knowledge through a federated hive
-mind, implemented natively on top of the
-[`amplihack-hive`](../reference/hive-api.md) crate and the
-[`lbug`](../reference/ladybug-reference.md) graph backend.
+Walk through the [`amplihack-hive`](../reference/hive-api.md) library API end
+to end: storing facts, gossiping between peers, running the eval harness, and
+driving the distributed primitives. Every snippet below uses symbols that are
+re-exported from `amplihack_hive::*` today.
 
 > **Rust port note**
-> Upstream `amplihack` exposes the hive mind through Python imports
-> (`from amplihack.agents.goal_seeking.hive_mind...`). The Rust port at
-> `crates/amplihack-hive/` exposes equivalent types as a normal Rust library
-> and wires user-facing entry points through the `amplihack` CLI. Examples
-> below show the Rust API; see [`hive-api.md`](../reference/hive-api.md) for
-> the full surface.
+> Upstream `amplihack` (Python) exposes the hive mind through
+> `from amplihack.agents.goal_seeking.hive_mind …`. The Rust port keeps the
+> same conceptual layers (storage, transport, discovery, query) but with a
+> trimmed public surface — see
+> [`hive-api.md`](../reference/hive-api.md) for the authoritative list. The
+> CLI bridge (`amplihack hive …`) and Azure deployment surface are planned
+> but **not wired** yet. See the [Getting Started](./hive-mind-getting-started.md#status)
+> page for the current status.
 
 ## Prerequisites
 
 ```bash
-# From the amplihack-rs repo root
-cargo build --release -p amplihack
+cd /path/to/amplihack-rs
+cargo build -p amplihack-hive
 ```
 
-## 1. Local Quick Start (In-Memory, Single Process)
+## 1. Single-Process Hive (`HiveMindOrchestrator`)
 
-The fastest way to see the hive mind work. All state lives in process memory.
+`HiveMindOrchestrator` wraps a [`HiveGraph`], a [`LocalEventBus`], an optional
+[`GossipProtocol`], and a [`PromotionPolicy`]. It is the "hello world"
+entry point.
 
 ```rust
-use amplihack_hive::graph::{InMemoryHiveGraph, HiveFact, create_hive_graph};
+use amplihack_hive::{HiveMindOrchestrator, Result};
 
-// Create a hive
-let mut hive = create_hive_graph("memory", "my-hive");
+fn main() -> Result<()> {
+    let mut hive = HiveMindOrchestrator::with_default_policy()
+        .with_agent_id("alice".to_string());
 
-// Register agents
-hive.register_agent("alice", "security");
-hive.register_agent("bob", "infrastructure");
+    let outcome = hive.store_and_promote(
+        "networking",
+        "PostgreSQL listens on TCP 5432",
+        0.95,
+        "alice",
+    )?;
+    assert!(outcome.promoted);
 
-// Alice promotes a fact
-hive.promote_fact("alice", HiveFact {
-    fact_id: String::new(),
-    content: "SSH runs on port 22".into(),
-    concept: "networking".into(),
-    confidence: 0.95,
-});
-
-// Bob promotes a fact
-hive.promote_fact("bob", HiveFact {
-    fact_id: String::new(),
-    content: "Nginx default port is 80".into(),
-    concept: "networking".into(),
-    confidence: 0.9,
-});
-
-// Query the hive
-for fact in hive.query_facts("port networking", 10) {
-    println!("  [{:.0}%] {}", fact.confidence * 100.0, fact.content);
+    for fact in hive.query("networking")? {
+        println!("  [{:.0}%] {}", fact.confidence * 100.0, fact.content);
+    }
+    Ok(())
 }
 ```
 
-## 2. Federation (Multiple Hives in a Tree)
+The default [`DefaultPromotionPolicy`] thresholds are
+`promote=0.7 / broadcast=0.9 / gossip=0.5`. Pass a custom `Box<dyn
+PromotionPolicy>` to [`HiveMindOrchestrator::new`] to override.
 
-Split agents across domain-specific hives, then query across the whole tree.
+## 2. Multi-Peer Federation Through Orchestrators
+
+Federation in `amplihack-hive` today is composed by attaching peer
+orchestrators. `query_unified` aggregates and de-duplicates across the local
+graph and every attached peer.
 
 ```rust
-use amplihack_hive::graph::{InMemoryHiveGraph, HiveFact};
+use amplihack_hive::{HiveMindOrchestrator, Result};
 
-// Create a tree: root -> [security, infrastructure, data]
-let mut root = InMemoryHiveGraph::new("root");
+fn main() -> Result<()> {
+    let mut security = HiveMindOrchestrator::with_default_policy()
+        .with_agent_id("sec-1".to_string());
+    security.store_fact("vulnerabilities", "CVE-2024-1234 hits OpenSSL 3.x", 0.95, "sec-1")?;
 
-let mut security = InMemoryHiveGraph::new("security");
-let mut infra    = InMemoryHiveGraph::new("infrastructure");
-let mut data     = InMemoryHiveGraph::new("data");
+    let mut infra = HiveMindOrchestrator::with_default_policy()
+        .with_agent_id("infra-1".to_string());
+    infra.store_fact("servers", "prod-db-01 = 10.0.1.5:5432", 0.90, "infra-1")?;
 
-for child in [&mut security, &mut infra, &mut data] {
-    root.add_child(child);
-    child.set_parent(&root);
+    let mut root = HiveMindOrchestrator::with_default_policy()
+        .with_agent_id("root".to_string());
+    root.add_peer(security);
+    root.add_peer(infra);
+
+    let merged = root.query_unified("vulnerabilities")?;
+    println!("federated hits: {}", merged.len());
+    Ok(())
 }
+```
 
-// Each hive has its own agents and facts
-security.register_agent("sec-1", "security");
-security.promote_fact("sec-1", HiveFact {
-    fact_id: String::new(),
-    content: "CVE-2024-1234 affects OpenSSL 3.x".into(),
-    concept: "vulnerabilities".into(),
-    confidence: 0.95,
-});
+There is **no** tree-shaped federation API (no `set_parent` / `add_child` on
+`HiveGraph`) in the public re-exports today. If you need a hierarchy, compose
+peer orchestrators recursively or use the lower-level
+`crate::graph::federation` helpers.
 
-infra.register_agent("infra-1", "infrastructure");
-infra.promote_fact("infra-1", HiveFact {
-    fact_id: String::new(),
-    content: "Server prod-db-01 runs on 10.0.1.5 port 5432".into(),
-    concept: "servers".into(),
-    confidence: 0.9,
-});
+## 3. Distributed Primitives (`AgentNode` + `HiveCoordinator`)
 
-data.register_agent("data-1", "data");
-data.promote_fact("data-1", HiveFact {
-    fact_id: String::new(),
-    content: "Users table has 2.5M rows with daily growth of 10K".into(),
-    concept: "schema".into(),
-    confidence: 0.85,
-});
+`AgentNode` is the per-agent unit; `HiveCoordinator` tracks domain experts,
+trust scores, and contradictions. They are wired together by the test
+harnesses in `crates/amplihack-hive/src/distributed/`.
 
-// Federated query from root finds facts across ALL hives
-for fact in root.query_federated("server port infrastructure", 10) {
-    println!("  [{:.0}%] {}", fact.confidence * 100.0, fact.content);
+```rust
+use std::sync::{Arc, Mutex};
+use amplihack_hive::distributed::{AgentNode, HiveCoordinator};
+use amplihack_hive::LocalEventBus;
+
+fn main() -> amplihack_hive::Result<()> {
+    let bus = Arc::new(Mutex::new(LocalEventBus::new()));
+    let coordinator = Arc::new(Mutex::new(HiveCoordinator::new()));
+    coordinator.lock().unwrap().register_agent("bio-agent", "biology");
+
+    let mut agent = AgentNode::new("bio-agent", "biology");
+    agent.join_hive(bus.clone(), coordinator.clone());
+    agent.learn(
+        "biology",
+        "Mitosis is the process of nuclear cell division",
+        0.9,
+        Some(vec!["intro".into()]),
+    )?;
+
+    let hits = agent.query("cell division", 10);
+    println!("local hits: {}", hits.len());
+    Ok(())
 }
-
-// Federated query from a child also traverses the tree
-let results = security.query_federated("server database port", 10);
-println!("Security hive found {} results across federation", results.len());
 ```
 
-## 3. LearningAgent with Hive Store (Recommended)
+`AgentNode::join_hive(bus, coordinator)` is the only constructor that wires
+in the bus and coordinator; there is **no** builder API and **no**
+`hive_store` parameter today.
 
-Connect a real LLM-backed `LearningAgent` to a shared hive for distributed
-memory. Facts learned by the agent are auto-promoted to the hive; queries
-merge local + hive facts.
+## 4. Eval Harness (`run_eval_with_responder`)
+
+`amplihack_hive::run_eval_with_responder` drives a `HIVE_QUERY` /
+`HIVE_QUERY_RESPONSE` event loop on a `LocalEventBus`. The closure represents
+the population of agents that would normally subscribe.
 
 ```rust
-use std::path::PathBuf;
-use amplihack_agent_core::learning_agent::LearningAgent;
-use amplihack_hive::graph::InMemoryHiveGraph;
+use amplihack_hive::{HiveEvalConfig, LocalEventBus, run_eval_with_responder};
 
-// Create shared hive
-let mut hive = InMemoryHiveGraph::new("shared-hive");
-hive.register_agent("agent_a", "general");
-hive.register_agent("agent_b", "general");
+fn main() -> amplihack_hive::Result<()> {
+    let cfg = HiveEvalConfig::new(vec![
+        "What port does PostgreSQL use?".into(),
+        "What is the default Nginx port?".into(),
+    ])
+    .with_timeout(5)
+    .with_min_responses(1);
 
-// Create agents with hive_store
-let mut agent_a = LearningAgent::builder()
-    .agent_name("agent_a")
-    .storage_path(PathBuf::from("/tmp/agent_a_db"))
-    .use_hierarchical(true)
-    .hive_store(hive.clone())  // Auto-promotes facts to hive
-    .build()?;
+    let mut bus = LocalEventBus::new();
+    let result = run_eval_with_responder(&mut bus, &cfg, |question| {
+        // Two stubbed agents for illustration.
+        vec![
+            ("agent-a".into(), format!("a says: {question}"), 0.7),
+            ("agent-b".into(), format!("b says: {question}"), 0.4),
+        ]
+    })?;
 
-let mut agent_b = LearningAgent::builder()
-    .agent_name("agent_b")
-    .storage_path(PathBuf::from("/tmp/agent_b_db"))
-    .use_hierarchical(true)
-    .hive_store(hive.clone())
-    .build()?;
-
-// Agent A learns biology
-agent_a.learn_from_content(
-    "Photosynthesis converts sunlight into chemical energy in chloroplasts.",
-)?;
-
-// Agent B learns chemistry
-agent_b.learn_from_content(
-    "Water (H2O) has a bent molecular geometry with a 104.5 degree bond angle.",
-)?;
-
-// Agent B can answer questions about biology (facts shared via hive)
-let answer = agent_b.answer_question("How do plants convert sunlight to energy?")?;
-println!("{answer}");
+    for qr in &result.query_results {
+        println!("Q: {}", qr.question);
+        for ans in &qr.answers {
+            println!("  [{}] {} (conf={:.2})", ans.agent_id, ans.answer, ans.confidence);
+        }
+    }
+    Ok(())
+}
 ```
 
-**How auto-promotion works**: when `CognitiveAdapter::store_fact()` is called
-(inside `learn_from_content`), it stores the fact in the agent's local
-[`lbug`](../reference/ladybug-reference.md) graph DB **and** promotes it to
-the hive. When `search()` or `get_all_facts()` is called (inside
-`answer_question`), it queries both the local `lbug` store and the hive,
-deduplicates by content, and returns merged results.
+The bare `run_eval(bus, &cfg)` form runs without a responder and will
+report `0` responses against an unsubscribed bus — use it only when wiring
+your own subscribers in advance.
 
-## 4. Distributed Agents with `lbug` (Full Stack)
+## 5. Learning Feed (`run_feed`)
 
-Each agent owns its own `lbug` database. A shared `HiveGraphStore` acts as
-the federation layer. `FederatedGraphStore` composes local + hive for
-unified queries.
+The companion to `run_eval` is `run_feed`, which publishes
+`HIVE_LEARN_CONTENT` events followed by a `HIVE_FEED_COMPLETE` sentinel.
 
 ```rust
-use amplihack_hive::distributed::{AgentNode, create_event_bus};
+use amplihack_hive::{LocalEventBus, FeedConfig, feed::run_feed};
 
-// Create event bus (local for testing, "redis" or "azure" for production)
-let bus = create_event_bus("local");
+fn main() -> amplihack_hive::Result<()> {
+    let items = vec![
+        "Photosynthesis happens in chloroplasts.".to_string(),
+        "Water has a 104.5° bond angle.".to_string(),
+    ];
+    let cfg = FeedConfig::new("smoke-deploy", items);
 
-// Create agents with their own lbug databases
-let mut agent_a = AgentNode::builder()
-    .agent_id("bio-agent")
-    .domain("biology")
-    .db_path("/tmp/hive_eval/bio-agent")
-    .hive_store(None)        // or pass a HiveGraphStore for federation
-    .event_bus(bus.clone())
-    .build()?;
-
-// Learn and query
-agent_a.learn("Mitosis is cell division", &["biology"])?;
-let results = agent_a.query("cell division")?;
-println!("Found: {results:?}");
+    let mut bus = LocalEventBus::new();
+    let result = run_feed(&mut bus, &cfg)?;
+    println!("published={} errors={}", result.items_published, result.errors.len());
+    Ok(())
+}
 ```
 
-## 5. Deploy to Azure
+## 6. CLI Surface (Planned — Not Yet Wired)
 
-The deploy flow provisions everything idempotently through the
-`amplihack hive` CLI:
+`crates/amplihack-cli/src/commands/hive_haymaker.rs` defines two arg structs
+plus runner functions:
 
-```bash
-# Set your API key
-export ANTHROPIC_API_KEY="your-api-key-here"  # pragma: allowlist secret
-
-# Deploy 20 agents + 1 adversary to Azure Container Apps
-amplihack hive deploy --agents 20 --adversary 1
-
-# Check status
-amplihack hive status
-
-# Run the eval against deployed agents
-amplihack hive eval --turns 5000 --questions 50
-
-# Tear down when done
-amplihack hive teardown
+```text
+HiveFeedArgs { deployment_id, turns, topic, sb_conn_str }
+HiveEvalArgs { deployment_id, repeats, wait_for_ready, timeout, topic, sb_conn_str, output }
+fn run_hive_feed(&HiveFeedArgs) -> Result<FeedResult>
+fn run_hive_eval(&HiveEvalArgs) -> Result<HiveEvalResult>
 ```
 
-### What Gets Provisioned
+These functions are exercised by unit tests but are **not yet exposed as
+`amplihack` subcommands** — `cli_subcommands.rs` contains zero `hive`
+references at the time of writing. To use them, call `run_hive_feed` /
+`run_hive_eval` directly from Rust as a library API. Wiring them as real
+CLI subcommands is tracked as planned work.
 
-| Resource           | Details                                                              |
-| ------------------ | -------------------------------------------------------------------- |
-| Resource Group     | `hive-mind-rg` (eastus)                                              |
-| Container Registry | `hivacrhivemind` — Basic SKU, admin enabled                          |
-| Service Bus        | `hive-sb-dj2qo2w7vu5zi` — Standard SKU, `hive-events` topic, 21 subs |
-| Storage Account    | Azure Files share for `lbug` DB persistence                          |
-| Container Apps     | 21 apps (20 domain + 1 adversary), 2.0 CPU / 4.0 GiB each            |
+## 7. Cloud Transport (Planned — Stubbed Today)
 
-### Environment Overrides
-
-```bash
-export HIVE_RESOURCE_GROUP="my-rg"      # Default: hive-mind-rg
-export HIVE_LOCATION="westus2"           # Default: eastus
-export HIVE_AGENT_COUNT=10               # Default: 20
-export HIVE_IMAGE_TAG="v2"               # Default: latest
-```
-
-## 6. Running the Learning Agent Eval
-
-Compare single vs flat-sharing vs federated using real LLM agents:
-
-```bash
-# LearningAgent eval — real LLM fact extraction + synthesis
-amplihack hive eval \
-  --mode learning-agent \
-  --turns 100 --questions 20 --agents 5 --groups 2
-
-# Run just single condition (faster iteration)
-amplihack hive eval \
-  --mode learning-agent \
-  --turns 50 --questions 10 --conditions single
-
-# Use a specific model
-amplihack hive eval \
-  --mode learning-agent \
-  --model claude-sonnet-4-5-20250929 \
-  --turns 100 --questions 20
-```
-
-For keyword-based eval modes (no LLM, faster but less realistic):
-
-```bash
-# 20-agent distributed eval with lbug DBs
-amplihack hive eval --mode distributed --agents 20
-
-# 20-agent distributed eval with event bus
-amplihack hive eval --mode full-distributed --agents 20
-```
-
-## Architecture
+`HiveFeedArgs::sb_conn_str` and `HiveEvalArgs::sb_conn_str` exist for
+forward-compatibility but are not consumed. The runner logs:
 
 ```
-         Root Hive (InMemoryHiveGraph)
-        ┌────┼────────┐─────────┐
-    People Tech  Data  Ops  Misc
-     Hive  Hive  Hive  Hive  Hive
-      │     │     │     │     │
-   agents agents agents agents agents
-   (own    (own   (own   (own   (own
-   lbug)  lbug)  lbug)  lbug)  lbug)
+Service Bus transport is not yet implemented in Rust; using local event bus
 ```
 
-- Each agent owns its own [`lbug`](../reference/ladybug-reference.md) DB
-  (private knowledge)
-- Hive nodes are `HiveGraph` instances (shared knowledge)
-- Federation enables recursive cross-tree queries
-- `EventBus` propagates facts between agents (Local/Redis/Azure Service Bus)
-- `HiveController` reconciles desired state from YAML manifests
+…and falls back to a fresh `LocalEventBus`. There is no Event Hubs path
+either. Treat any cloud-mode discussion as design intent until those
+transports land.
+
+## Architecture Snapshot
+
+```
+HiveMindOrchestrator (per agent)
+  ├── HiveGraph              (storage)
+  ├── LocalEventBus          (transport, in-process)
+  ├── GossipProtocol         (optional, peer discovery)
+  ├── PromotionPolicy        (DefaultPromotionPolicy)
+  └── peers: Vec<HiveMindOrchestrator>   (federation by composition)
+
+distributed::HiveCoordinator   ← shared expert registry & trust ledger
+distributed::AgentNode         ← per-agent unit, joins via Arc<Mutex<…>>
+hive_eval::run_eval_*          ← event-loop harness
+feed::run_feed                 ← event-loop content publisher
+controller::HiveController     ← desired-state YAML manifests (HiveManifest)
+```
 
 ## Key Modules
 
-| Module                                                | Purpose                                           |
-| ----------------------------------------------------- | ------------------------------------------------- |
-| `crates/amplihack-hive/src/graph/`                    | `HiveGraph` trait, `InMemoryHiveGraph`, federation |
-| `crates/amplihack-hive/src/controller.rs`             | `HiveController` (desired-state YAML manifests)   |
-| `crates/amplihack-hive/src/distributed/`              | `AgentNode`, `HiveCoordinator`                    |
-| `crates/amplihack-hive/src/event_bus.rs`              | `EventBus` trait + Local/Azure SB/Redis backends  |
-| `crates/amplihack-hive/tests/`                        | Integration tests                                 |
-| `crates/amplihack-cli/src/commands/hive_haymaker.rs`  | CLI bridge for `amplihack hive` subcommands       |
+| Module                                               | Public surface                                                  |
+| ---------------------------------------------------- | --------------------------------------------------------------- |
+| `crates/amplihack-hive/src/orchestrator.rs`          | `HiveMindOrchestrator`, `DefaultPromotionPolicy`, `PromotionResult` |
+| `crates/amplihack-hive/src/graph/`                   | `HiveGraph` (struct), `tokenize`, `word_overlap`, search helpers |
+| `crates/amplihack-hive/src/distributed/`             | `AgentNode`, `HiveCoordinator`                                  |
+| `crates/amplihack-hive/src/event_bus.rs`             | `EventBus` trait, `LocalEventBus` (only impl re-exported)       |
+| `crates/amplihack-hive/src/{feed,hive_eval}.rs`      | `run_feed`, `run_eval`, `run_eval_with_responder`               |
+| `crates/amplihack-hive/src/controller.rs`            | `HiveController`, `InMemoryGraphStore`, `InMemoryGateway`       |
+| `crates/amplihack-hive/src/{bloom,crdt,dht,gossip}.rs` | `BloomFilter`, CRDTs, `DHTRouter`, `GossipProtocol`           |
+| `crates/amplihack-cli/src/commands/hive_haymaker.rs` | `HiveFeedArgs`, `HiveEvalArgs`, `run_hive_feed`, `run_hive_eval` (not yet routed) |
+
+## Related
+
+- [Hive Mind Getting Started](./hive-mind-getting-started.md)
+- [Hive Mind Design](../concepts/hive-mind-design.md)
+- [Hive Mind Eval](../concepts/hive-mind-eval.md)
+- [`amplihack-hive` API reference](../reference/hive-api.md)
+- [LadybugDB reference](../reference/ladybug-reference.md)

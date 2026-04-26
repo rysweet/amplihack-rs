@@ -142,6 +142,16 @@ path = "../../tests/integration/existing_branch_context_test.rs"
 name = "doc_code_drift"
 path = "../../tests/integration/doc_code_drift_test.rs"
 
+# Issue #420 Doc Parity Batch E: hive-mind documentation port.
+# Verifies the four ported docs (tutorials/getting-started, tutorials/tutorial,
+# concepts/design, concepts/eval) exist at kebab-case Diataxis paths, are
+# linked from docs/index.md, reference only real amplihack-hive symbols
+# (no fabricated APIs), use `amplihack hive` CLI calls (not Python), and
+# reference the `lbug` graph backend (not `kuzu`).
+[[test]]
+name = "hive_mind_doc_parity"
+path = "../../tests/integration/hive_mind_doc_parity_test.rs"
+
 # Issue #248: Native `amplihack orch run <WS_FILE>` regression test.
 # Verifies the subcommand is wired into clap and short-circuits cleanly on an
 # empty workstreams JSON array (matches multitask::run_multitask semantics).
