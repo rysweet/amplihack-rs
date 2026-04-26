@@ -134,6 +134,9 @@ nav:
       - Security Context Preservation: concepts/security-context-preservation.md
       - Eval System Architecture: concepts/eval-system-architecture.md
       - Eval Grading Improvements: concepts/eval-grading-improvements.md
+      - Auto Mode: concepts/auto-mode.md
+      - Automode Safety: concepts/automode-safety.md
+      - Recipe Resilience: concepts/recipe-resilience.md
   - Code Atlas:
       - Overview: atlas/index.md
       - "Layer 1: Repo Surface": atlas/repo-surface/README.md
