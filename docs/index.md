@@ -4,6 +4,11 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 
 ## Contents
 
+### Tutorials
+
+- [Hive Mind — Getting Started](./tutorials/hive-mind-getting-started.md) — Fastest path from a clean checkout to a real distributed hive eval using `amplihack hive`
+- [Hive Mind — Tutorial](./tutorials/hive-mind-tutorial.md) — Federated hive mind walkthrough: in-memory, federation, LearningAgent integration, distributed agents, Azure deployment, eval
+
 ### How-To Guides
 
 - [Install amplihack for the First Time](./howto/first-install.md) — Bootstrap from scratch, including optional legacy-Python checks, binary deployment, and hook registration
@@ -78,6 +83,8 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Domain Agents](./concepts/domain-agents.md) — Specialized goal-seeking agents: teaching, code review, meeting synthesis
 - [Evaluation Framework](./concepts/eval-framework.md) — Progressive L1–L12 evaluation, graders, and self-improvement
 - [Hive Orchestration](./concepts/hive-orchestration.md) — Multi-agent swarm deployment, events, and workload management
+- [Hive Mind Design](./concepts/hive-mind-design.md) — Layered architecture (storage / transport / discovery / query) and module reference for the unified hive mind
+- [Hive Mind Eval](./concepts/hive-mind-eval.md) — How the distributed hive evaluation harness fits together (local wrappers, Azure runs, question sets)
 - [Goal Agent Generator](./concepts/agent-generator.md) — Four-stage pipeline: analyze → plan → synthesize → assemble
 - [Recipe Runner Architecture](./concepts/recipe-runner-architecture.md) — Why the runner is an external binary, resolution logic, invocation contract, and Python coexistence
 - [Agentic Step Patterns](./concepts/agentic-step-patterns.md) — Decision rules for bash vs agent vs recipe step types, prompt writing guide, and anti-patterns
