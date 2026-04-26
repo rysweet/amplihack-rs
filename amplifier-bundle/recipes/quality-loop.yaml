@@ -298,12 +298,11 @@ steps:
     command: |
       set -euo pipefail
       IFS=$'\n\t'
-      REPO="{{repo_path}}"
-      cd "$REPO"
-      NEW_PR="$(gh pr list --author=@me --state=open --limit 5 \
-        --json number,createdAt | jq -r 'sort_by(.createdAt) | reverse | .[0].number // empty')"
-      [[ "$NEW_PR" =~ ^[0-9]+$ ]] || { echo "capture-new-pr: could not determine new PR number ('$NEW_PR')" >&2; exit 1; }
-      printf '%s' "$NEW_PR"
+      PR_URL={{implement_result.pr_url}}
+      [[ -n "$PR_URL" ]] || { echo "capture-new-pr: implement_result.pr_url is empty; sub-recipe did not produce a PR URL" >&2; exit 1; }
+      pr_number=$(printf '%s' "$PR_URL" | sed -E 's@.*/pull/([0-9]+).*@\1@')
+      [[ "$pr_number" =~ ^[0-9]+$ ]] || { echo "capture-new-pr: could not parse PR number from URL '$PR_URL'" >&2; exit 1; }
+      printf '%s' "$pr_number"
     output: "new_pr_number"
   - id: "quality-audit"
     type: "bash"
