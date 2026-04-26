@@ -487,7 +487,12 @@ steps:
         #   (b) else use REPO_PATH if it is itself checked out on the branch
         #   (c) else attach a new worktree at REPO_PATH/worktrees/<branch>
         WORKTREE_PATH=""
-        EXISTING_WT="$(git worktree list --porcelain | awk -v b="refs/heads/$BRANCH_NAME" '
+        # Buffer git output into a variable before piping to awk. Without this,
+        # awk's early `exit` closes the pipe and `git worktree list --porcelain`
+        # is killed by SIGPIPE, causing the pipeline to return 141 under
+        # `set -euo pipefail`. See issue #397.
+        WT_LIST="$(git worktree list --porcelain)"
+        EXISTING_WT="$(printf '%s\n' "$WT_LIST" | awk -v b="refs/heads/$BRANCH_NAME" '
           $1=="worktree" { wt=$2 }
           $1=="branch" && $2==b { print wt; exit }
         ')"
