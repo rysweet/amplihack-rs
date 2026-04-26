@@ -18,11 +18,15 @@ single command. No Python runtime required.
 - [Why Rust?](#why-rust)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Core Concepts](#core-concepts)
+- [Features](#features)
 - [Architecture](#architecture)
 - [Hook Binary](#hook-binary)
 - [Configuration](#configuration)
 - [CLI Parity Harness](#cli-parity-harness)
 - [Documentation](#documentation)
+- [Documentation Navigator](#documentation-navigator)
+- [Windows Support](#windows-support)
 - [Contributing](#contributing)
 - [Design Principles](#design-principles)
 - [License](#license)
@@ -208,6 +212,136 @@ Register with your hook host:
 {"command": "/path/to/amplihack-hooks pre-tool-use", "timeout": 10}
 ```
 
+## Core Concepts
+
+| Term             | Definition                                                                                            |
+| ---------------- | ----------------------------------------------------------------------------------------------------- |
+| **Agent**        | A specialized AI role (e.g., architect, builder, reviewer) with a defined responsibility              |
+| **Workflow**     | A structured step-by-step process that guides task execution (e.g., the 23-step `DEFAULT_WORKFLOW`)   |
+| **Orchestrator** | Routes tasks to the right workflow and coordinates agents                                             |
+| **Recipe**       | A code-enforced workflow definition (YAML) that the model cannot skip or shortcut                     |
+| **Skill**        | A self-contained capability that auto-activates based on context (e.g., PDF processing, Azure admin)  |
+| **Hive**         | A pool of cooperating agents that converge on an answer through bounded message-passing rounds        |
+| **Fleet**        | A set of long-running coding sessions distributed across remote VMs, supervised by a fleet admiral    |
+| **Atlas**        | Multi-layer code map (repo surface → AST/LSP → compile deps → runtime topology → user journeys)       |
+
+Deeper reading lives in [`docs/concepts/`](docs/concepts/) — start with
+[Recipe Execution Flow](docs/concepts/recipe-execution-flow.md) and
+[Hive Orchestration](docs/concepts/hive-orchestration.md).
+
+### Workflows
+
+All work flows through structured workflows that classify user intent and guide
+execution. For most tasks, run `amplihack recipe run smart-orchestrator -c task_description="…"`
+(or use `/dev <task>` from inside an agent session) — the smart-orchestrator
+automatically selects the right workflow.
+
+- **DEFAULT_WORKFLOW** — 23-step systematic development process for features,
+  bugs, and refactors
+- **INVESTIGATION_WORKFLOW** — knowledge-excavation flow for understanding
+  existing systems
+- **Q&A_WORKFLOW** — minimal flow for simple questions and quick answers
+- **OPS_WORKFLOW** — single-step flow for administrative operations
+
+Workflow definitions live in `amplifier-bundle/recipes/` and are runnable via
+`amplihack recipe list` / `amplihack recipe run <name>`.
+
+## Features
+
+### What most people use
+
+| Feature                  | What it does                                                                  |
+| ------------------------ | ----------------------------------------------------------------------------- |
+| `amplihack recipe run`   | Run any code-enforced workflow (smart-orchestrator, default-workflow, …)      |
+| `amplihack launch`       | Launch a Claude Code / Copilot / Amplifier session with amplihack installed   |
+| `amplihack install`      | Idempotent install of the amplihack framework into `~/.amplihack/`            |
+| `amplihack memory`       | Persistent code-graph memory backed by LadybugDB                              |
+| `amplihack fleet`        | Discover, monitor, and advance long-running coding sessions across Azure VMs  |
+| `amplihack doctor`       | Diagnose installation, hook, and binary-resolution problems                   |
+
+### Everything else
+
+<details>
+<summary>Orchestration & execution</summary>
+
+- **Recipe runner** — Code-enforced YAML workflows the model cannot skip; see
+  [Recipe Execution Flow](docs/concepts/recipe-execution-flow.md) and
+  [`recipe` command reference](docs/reference/recipe-command.md).
+- **Smart orchestrator** — Classifies tasks (DEV/INVESTIGATE/Q&A/OPS) and routes
+  to the right workflow with recovery on failure; see
+  [Smart Orchestrator Recovery](docs/concepts/smart-orchestrator-recovery.md).
+- **Hive orchestration** — Cooperative multi-agent answer convergence; see
+  [Hive Orchestration](docs/concepts/hive-orchestration.md) and the
+  [Hive API reference](docs/reference/hive-api.md).
+- **Multitask** — Parallel workstream execution; see
+  [`multitask` command reference](docs/reference/multitask-command.md).
+
+</details>
+
+<details>
+<summary>Memory & knowledge</summary>
+
+- **LadybugDB code graph** — Persistent code-aware memory backed by an embedded
+  graph database; see [LadybugDB Code Graph](docs/concepts/kuzu-code-graph.md)
+  and [Memory Backend Architecture](docs/concepts/memory-backend-architecture.md).
+- **Memory CLI** — `amplihack index-code` imports a code graph; `amplihack
+  query-code` queries it; `amplihack memory tree/export/import/clean` manages
+  the store. See [`memory index` reference](docs/reference/memory-index-command.md)
+  and [`query-code` reference](docs/reference/query-code-command.md).
+- **Code Atlas** — Eight-layer architectural map of the repository; see
+  [docs/atlas/](docs/atlas/index.md).
+
+</details>
+
+<details>
+<summary>Agents, evaluation, and customization</summary>
+
+- **Goal-seeking agent generator** — Generate a working agent from a natural-
+  language goal; see [Goal Agent Generator](docs/concepts/agent-generator.md)
+  and the [How-To](docs/howto/generate-agent-from-goal.md).
+- **Evaluation framework** — L1–L12 progressive eval with self-improvement; see
+  [Evaluation Framework](docs/concepts/eval-framework.md) and the
+  [How-To](docs/howto/run-agent-evaluations.md).
+- **Domain agents** — Pluggable specialized agents; see
+  [Domain Agents](docs/concepts/domain-agents.md) and the
+  [API reference](docs/reference/domain-agents-api.md).
+
+</details>
+
+<details>
+<summary>Fleet management</summary>
+
+Manage coding agents (Claude Code, Copilot, Amplifier, RustyClawd) running
+across multiple Azure VMs. The fleet admiral monitors sessions, reasons about
+what each agent needs, and can send commands autonomously.
+
+```bash
+amplihack fleet              # Interactive TUI dashboard
+amplihack fleet scout        # Discover all VMs/sessions, dry-run reasoning
+amplihack fleet advance      # Send next commands to sessions (live)
+amplihack fleet status       # Quick text overview
+```
+
+See [Fleet Dashboard](docs/howto/use-fleet-dashboard.md),
+[Fleet Admiral Reasoning](docs/concepts/fleet-admiral-reasoning.md), and the
+[`fleet` command reference](docs/reference/fleet-command.md).
+
+</details>
+
+<details>
+<summary>Hooks, safety, and security</summary>
+
+- **Hook binary** — Single statically-linked binary that implements every Claude
+  Code hook (pre/post tool use, session start, stop, pre-compact, user-prompt-
+  submit). See [Hook Specifications](docs/reference/hook-specifications.md) and
+  the [Hook Binary](#hook-binary) section below.
+- **XPIA / prompt-injection defense** — Cross-prompt injection analysis runs in
+  the pre-tool-use hook critical path.
+- **Safety guardrails** — Conflict detection, atomic file ops, signal-handling
+  lifecycle (see [Signal Handling Lifecycle](docs/concepts/signal-handling-lifecycle.md)).
+
+</details>
+
 ## CLI Parity Harness
 
 `tests/parity/validate_cli_parity.py` is the migration loop for native CLI work:
@@ -250,6 +384,84 @@ Key environment variables:
 | `AMPLIHACK_LOG_LEVEL` | `info` | Tracing verbosity (`trace`, `debug`, `info`, `warn`, `error`) |
 
 See [Environment Variables Reference](docs/reference/environment-variables.md) for the complete list.
+
+## Documentation Navigator
+
+Curated entry points into the [full docs site](https://rysweet.github.io/amplihack-rs/).
+
+### Getting started
+
+- [First-time install guide](docs/howto/first-install.md)
+- [Install from a local repository](docs/howto/local-install.md)
+- [Migrate from Python amplihack](docs/howto/migrate-from-python.md)
+- [Enable shell completions](docs/howto/enable-shell-completions.md)
+- [Run a recipe](docs/howto/run-a-recipe.md)
+
+### Core concepts
+
+- [Recipe Execution Flow](docs/concepts/recipe-execution-flow.md)
+- [Bootstrap Parity](docs/concepts/bootstrap-parity.md)
+- [Idempotent Installation](docs/concepts/idempotent-installation.md)
+- [Agent Binary Routing](docs/concepts/agent-binary-routing.md)
+- [LadybugDB Code Graph](docs/concepts/kuzu-code-graph.md)
+
+### Hive, fleet, and agents
+
+- [Hive Orchestration](docs/concepts/hive-orchestration.md) · [Deploy Hive Swarm](docs/howto/deploy-hive-swarm.md) · [Hive API](docs/reference/hive-api.md)
+- [Fleet Dashboard](docs/howto/use-fleet-dashboard.md) · [Admiral Reasoning](docs/concepts/fleet-admiral-reasoning.md) · [Fleet command](docs/reference/fleet-command.md)
+- [Goal Agent Generator](docs/concepts/agent-generator.md) · [Generate from goal](docs/howto/generate-agent-from-goal.md) · [`agent-generator` API](docs/reference/agent-generator-api.md)
+- [Evaluation Framework](docs/concepts/eval-framework.md) · [Run agent evaluations](docs/howto/run-agent-evaluations.md) · [`agent-eval` API](docs/reference/agent-eval-api.md)
+
+### Reference
+
+- [`amplihack install` reference](docs/reference/install-command.md)
+- [Environment variables](docs/reference/environment-variables.md)
+- [Hook specifications](docs/reference/hook-specifications.md)
+- [`recipe` command](docs/reference/recipe-command.md)
+- [`memory index` command](docs/reference/memory-index-command.md)
+- [`query-code` command](docs/reference/query-code-command.md)
+- [`fleet` command](docs/reference/fleet-command.md)
+- [`doctor` command](docs/reference/doctor-command.md)
+
+### Code Atlas
+
+- [Atlas overview](docs/atlas/index.md) · all eight layers under [`docs/atlas/`](docs/atlas/)
+
+### Troubleshooting
+
+- [Diagnose with `amplihack doctor`](docs/howto/diagnose-with-doctor.md)
+- [Fix `cxx-build` CI failure](docs/howto/fix-cxx-build-ci-failure.md)
+- [Resolve LadybugDB linker errors](docs/howto/resolve-kuzu-linker-errors.md)
+- [Troubleshoot recipe execution](docs/howto/troubleshoot-recipe-execution.md)
+
+## Windows Support
+
+amplihack-rs targets Linux and macOS as primary platforms. Windows native
+support is currently best-effort: the core `amplihack` binary builds, but
+several integrations require WSL.
+
+| Feature                                   |        Windows native        | WSL / macOS / Linux |
+| ----------------------------------------- | :--------------------------: | :-----------------: |
+| Core CLI (`amplihack` build & run)        |              ⚠️              |         ✅          |
+| Workflows & recipes (`amplihack recipe`)  |              ⚠️              |         ✅          |
+| Persistent memory (`amplihack memory`)    |              ⚠️              |         ✅          |
+| Code Atlas (`amplihack atlas`)            |              ⚠️              |         ✅          |
+| Hook binary (`amplihack-hooks`)           |              ⚠️              |         ✅          |
+| Fleet management (multi-VM)               |   ❌ (requires tmux/SSH)     |         ✅          |
+| LadybugDB native bindings                 |   ⚠️ (cxx toolchain quirks)  |         ✅          |
+
+**Recommended on Windows:** install [WSL](https://learn.microsoft.com/en-us/windows/wsl/install)
+and follow the Linux instructions in [Quick Start](#quick-start).
+
+**Known limitations on Windows native:**
+
+- Fleet commands (`amplihack fleet …`) require tmux + SSH and are unavailable.
+- LadybugDB / `cxx-build` may need extra setup on MSVC; see
+  [Resolve LadybugDB Linker Errors](docs/howto/resolve-kuzu-linker-errors.md).
+- File-mode bits (chmod) are no-ops; the installer skips permission tweaks.
+
+If you hit a Windows-specific issue, please file it with platform = `windows`
+so we can prioritise.
 
 ## Contributing
 
