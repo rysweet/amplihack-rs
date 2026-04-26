@@ -141,6 +141,7 @@ steps:
 
   - id: "step-02b-analyze-codebase"
     agent: "amplihack:architect"
+    timeout_seconds: 1800
     prompt: |
       # Step 2b: Analyze Existing Codebase Context
 
