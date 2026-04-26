@@ -45,6 +45,10 @@ fn default_workflow_yaml() -> PathBuf {
     workspace_root().join("amplifier-bundle/recipes/default-workflow.yaml")
 }
 
+fn workflow_worktree_yaml() -> PathBuf {
+    workspace_root().join("amplifier-bundle/recipes/workflow-worktree.yaml")
+}
+
 fn consensus_workflow_yaml() -> PathBuf {
     workspace_root().join("amplifier-bundle/recipes/consensus-workflow.yaml")
 }
@@ -337,7 +341,7 @@ fn consensus_workflow_declares_pr_number_context_var() {
 
 fn step04_body() -> String {
     extract_step_body(
-        &load_recipe(&default_workflow_yaml()),
+        &load_recipe(&workflow_worktree_yaml()),
         "step-04-setup-worktree",
     )
 }
