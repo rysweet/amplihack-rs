@@ -40,6 +40,8 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Signal Handling and Exit Codes](./reference/signal-handling.md) — SIGINT, SIGTERM, SIGHUP behavior and exit code contract (Python parity)
 - [amplihack recipe](./reference/recipe-command.md) — Full CLI reference for `recipe list`, `recipe show`, `recipe validate`, and `recipe run`
 - [Recipe Executor Environment](./reference/recipe-executor-environment.md) — Environment variables, prerequisite checks, and context propagation for recipe steps
+- [step-03-create-issue: Idempotency Guards](./reference/recipe-step-03-idempotency.md) — Reference and title-search guards that deduplicate issue creation in `default-workflow.yaml`
+- [step-04-setup-worktree: Re-Prune After Orphan Cleanup](./reference/recipe-step-04-worktree-reattach-prune.md) — `git worktree prune` semantics for the three-state idempotency guard
 - [Workflow Classifier](./reference/workflow-classifier.md) — Keyword tables, classification algorithm, and constructive-verb disambiguation
 - [Issue Deduplication](./reference/issue-dedup.md) — Idempotency guards, dedup decision tree, and proposed fingerprint algorithm for avoiding duplicate GitHub issues
 - [Launch Flag Matrix](./reference/flag-matrix.md) — Per-tool capability matrix for `--dangerously-skip-permissions`, `--model`, `--allow-all`, and proposed type-safe refactoring
