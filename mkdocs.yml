@@ -105,6 +105,8 @@ nav:
       - "Security Audit: Copilot CLI Flags": reference/security-audit-copilot-cli-flags.md
       - Eval Retrieval Methods: reference/eval-retrieval-reference.md
       - Doc Graph Quick Reference: reference/doc-graph-quick-reference.md
+      - JSON Logging: reference/json-logging.md
+      - Benchmarking: reference/benchmarking.md
       - Code Review Practices: reference/code-review.md
       - Prerequisites: reference/prerequisites.md
   - Concepts:
@@ -144,6 +146,7 @@ nav:
       - Recipe Resilience: concepts/recipe-resilience.md
       - Documentation Knowledge Graph: concepts/documentation-knowledge-graph.md
       - External Knowledge Integration: concepts/external-knowledge-integration.md
+      - Native Binary Trace Logging: concepts/native-binary-trace-logging.md
   - Code Atlas:
       - Overview: atlas/index.md
       - "Layer 1: Repo Surface": atlas/repo-surface/README.md
