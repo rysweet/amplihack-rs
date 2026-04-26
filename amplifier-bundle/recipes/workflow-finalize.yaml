@@ -1,0 +1,259 @@
+name: "workflow-finalize"
+description: "Phase 8: cleanup, quality audit, mergeable, complete (20-22b)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["development", "cleanup", "merge"]
+
+# workflow-finalize: extracted from default-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — the layered review steps the LLM
+# converges through must remain intact. Context flows in from the parent
+# workflow via recipe-runner's automatic context-merging in
+# `_execute_sub_recipe()`; outputs declared by these steps propagate back to
+# the parent and are visible to subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 80
+
+context: {}
+
+steps:
+  - id: "step-20-final-cleanup"
+    agent: "amplihack:cleanup"
+    prompt: |
+      # Step 20: Final Cleanup and Verification
+
+      **CRITICAL:** Original user requirements:
+      {{final_requirements}}
+
+      **Implementation:** {{pr_feedback_changes}}
+      **Philosophy Check:** {{philosophy_check}}
+      **Patterns Check:** {{patterns_check}}
+
+      Final quality pass:
+
+      1. Review all changes for philosophy compliance WITHIN user constraints
+      2. Review all changes for Forbidden Pattern violations (FORBIDDEN_PATTERNS.md)
+      3. Remove temporary artifacts or test files (unless user wanted them)
+      4. Eliminate unnecessary complexity (without violating requirements)
+      5. Verify module boundaries remain clean
+      6. Ensure zero dead code or stub implementations
+
+      **PR Cleanliness Final Check:**
+      - [ ] Full diff review - all changes intentional
+      - [ ] No temporary patterns (test_*.py, temp_*.js, etc.)
+      - [ ] No debugging code
+      - [ ] Documentation audit passed
+      - [ ] Git hygiene verified
+
+      **FINAL CHECK:** All explicit user requirements preserved.
+    output: "final_cleanup"
+
+  - id: "step-20b-push-cleanup"
+    type: "bash"
+    command: |
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
+      echo "=== Pushing Cleanup Changes ===" && \
+      git add -A && \
+      git diff --cached --quiet || (git commit -m "final cleanup pass" && git pull --rebase 2>/dev/null && git push) && \
+      echo "=== Cleanup Complete ==="
+    output: "cleanup_push_result"
+
+  # ==========================================================================
+  # STEP 20c: QUALITY AUDIT LOOP
+  # Runs quality-audit-cycle: seek → multi-agent validate → fix → recurse.
+  # Minimum 3 iterations with escalating depth. Continues if >3 medium or
+  # any high/critical severity findings remain after cycle 3.
+  # Placed AFTER philosophy compliance and cleanup, BEFORE marking PR ready.
+  # Added per issues #2805, #2809, #2810.
+  # ==========================================================================
+  - id: "step-20c-quality-audit"
+    agent: "amplihack:core:reviewer"
+    prompt: |
+      # Step 20c: Quality Audit Loop
+
+      **Requirements:** {{final_requirements}}
+      **PR URL:** {{pr_url}}
+      **Repository:** {{repo_path}}
+
+      Run a comprehensive, iterative quality audit on all files changed in
+      this PR. This step follows the quality-audit-cycle recipe (v3.0).
+
+      NOTE: When recipe-in-recipe support is available (see issue #2821),
+      this step should use `type: "recipe"` with `recipe: "quality-audit-cycle"`.
+      Until then, execute the audit inline following these instructions.
+
+      ## Execution: Run 3+ Audit Cycles
+
+      For each cycle (minimum 3, maximum 6):
+
+      ### A. SEEK — Scan changed files for issues in 9 categories:
+      1. Security (hardcoded secrets, missing input validation)
+      2. Reliability (missing timeouts, bare except clauses)
+      3. Dead Code (unused imports, unreachable branches)
+      4. Test Gaps (files without tests, tests without assertions)
+      5. Doc Gaps (public functions without docstrings)
+      6. Silent Fallbacks (except:pass, broad catches returning defaults)
+      7. Error Swallowing (catch blocks with no logging/re-raise)
+      8. Structural Issues (files >500 LOC, functions >50 lines, nesting >4)
+      9. Documentation (point-in-time content, unprofessional tone like
+         pirate speak "fer"/"ye"/"arr", quality/correctness vs code)
+
+      Escalate depth each cycle: cycle 1 = broad scan, cycle 2 = deeper,
+      cycle 3+ = challenge assumptions, examine module interactions.
+
+      ### B. VALIDATE — For each finding, verify by reading actual code.
+      Deploy 3 independent validation perspectives:
+      - Technical merits check
+      - Skeptical verification (assume findings are wrong until proven)
+      - Adversarial review (look for reasons the finding is incorrect)
+      A finding is confirmed only if ≥2 perspectives agree.
+
+      ### C. FIX — Fix all confirmed findings:
+      1. Understand the finding and its context
+      2. Write or update tests that verify the fix
+      3. Implement the minimal fix
+      4. Run tests to verify nothing is broken
+
+      ### D. DECIDE — Continue or stop:
+      - Below cycle 3: always continue
+      - At cycle 3+: stop if ≤3 medium findings and no high/critical
+      - At cycle 6: always stop (safety valve)
+
+      ## After All Cycles: Self-Improvement
+
+      Step back and ask: "How else would you improve this code?"
+      Look for systemic issues, architectural improvements, and patterns
+      the audit missed. Fix any CRITICAL improvements found.
+
+      **Output:** "QUALITY AUDIT: CLEAN" if final cycle has no confirmed
+      findings, otherwise list remaining findings and fixes applied.
+    output: "quality_audit_results"
+
+  # ==========================================================================
+  # STEP 21: CONVERT PR TO READY FOR REVIEW
+  # Convert draft PR to ready-for-review.
+  # ==========================================================================
+  - id: "step-21-pr-ready"
+    type: "bash"
+    command: |
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
+      echo "=== Step 20: Converting PR to Ready ===" && \
+      echo "" && \
+      echo "--- Verifying All Steps Complete ---" && \
+      echo "" && \
+      echo "--- Converting PR to Ready ---" && \
+      gh pr ready && \
+      echo "" && \
+      echo "--- Adding Ready Comment ---" && \
+      gh pr comment --body "## Ready for Final Review
+
+      All workflow steps completed:
+      - [x] Requirements clarified
+      - [x] Design approved
+      - [x] Implementation complete
+      - [x] Tests passing
+      - [x] Code review addressed
+      - [x] Philosophy compliance verified
+      - [x] Final cleanup complete
+      - [x] Quality audit passed
+
+      Ready for merge approval." && \
+      echo "" && \
+      echo "=== PR Marked Ready ==="
+    output: "pr_ready_result"
+
+  # ==========================================================================
+  # STEP 22: ENSURE PR IS MERGEABLE
+  # ==========================================================================
+  - id: "step-22-ensure-mergeable"
+    agent: "amplihack:ci-diagnostic-workflow"
+    prompt: |
+      # Step 21: Ensure PR is Mergeable (TASK COMPLETION POINT)
+
+      **PR URL:** {{pr_url}}
+      **Repository:** {{repo_path}}
+
+      Final verification that PR is ready to merge:
+
+      **Checklist:**
+      - [ ] CI status - all checks passing
+      - [ ] No merge conflicts
+      - [ ] All review comments addressed
+      - [ ] PR is approved
+
+      **Actions:**
+      1. Check CI status
+      2. If CI fails, diagnose and fix
+      3. Resolve any merge conflicts
+      4. Verify all review comments addressed (including any that appeared after marking ready)
+      5. Confirm PR is approved
+      6. Notify that PR is ready to merge
+
+      **THIS IS THE TASK COMPLETION POINT**
+      Task is complete when this step passes.
+    output: "ci_status"
+
+  - id: "step-22b-final-status"
+    type: "bash"
+    command: |
+      cd "$REPO_PATH" && \
+      echo "=== WORKFLOW COMPLETE ===" && \
+      echo "" && \
+      echo "PR Status:" && \
+      gh pr view --json state,mergeable,reviews,statusCheckRollup && \
+      echo "" && \
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      TASK_DESC="$TASK_DESCRIPTION" && \
+      ISSUE_NUMBER="$ISSUE_NUMBER" && \
+      PR_URL="$PR_URL" && \
+      printf '=== Task: %s ===\n' "$TASK_DESC" && \
+      printf '=== Issue: #%s ===\n' "$ISSUE_NUMBER" && \
+      printf '=== PR: %s ===\n' "$PR_URL" && \
+      echo "" && \
+      echo "All 23 workflow steps completed successfully."
+    output: "final_status"
+
+  # ==========================================================================
+  # FINAL OUTPUT
+  # ==========================================================================
+  - id: "workflow-complete"
+    type: "bash"
+    parse_json: true
+    command: |
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      TASK_VAL="$TASK_DESCRIPTION"
+      export TASK_VAL
+      ISSUE_VAL="$ISSUE_NUMBER"
+      export ISSUE_VAL
+      PR_VAL="$PR_URL"
+      export PR_VAL
+      # Pure jq — no Python dependency (#242).
+      # jq -n constructs the object; --arg passes env vars in safely (no quoting hazards).
+      jq -n \
+        --arg task "${TASK_VAL}" \
+        --arg issue "${ISSUE_VAL}" \
+        --arg pr "${PR_VAL}" \
+        '{
+          workflow: "default-workflow",
+          version: "2.0.0",
+          task: $task,
+          issue_number: $issue,
+          pr_url: $pr,
+          status: "complete",
+          steps_completed: 23,
+          phases_completed: [
+            "requirements-clarification", "design", "implementation",
+            "testing", "review", "merge"
+          ],
+          mandatory_steps_completed: {
+            step_0_preparation: true,
+            step_14_version_bump: true,
+            step_17_pr_review: true,
+            step_18_implement_feedback: true
+          },
+          philosophy_compliant: true,
+          ready_to_merge: true
+        }'
+    output: "workflow_result"

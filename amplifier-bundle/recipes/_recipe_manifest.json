@@ -4,7 +4,7 @@
   "code-atlas": "086c4299a3fd331d",
   "consensus-workflow": "79baac1a8e0cef8b",
   "debate-workflow": "cf667901c45b498b",
-  "default-workflow": "80b323714dce8123",
+  "default-workflow": "3ab0c0868df4cdf9",
   "guide": "3a317f9f004c1ddb",
   "investigation-explore": "a56fbb3ff6df9812",
   "investigation-prep": "64d4d26702bcb4f3",
@@ -18,5 +18,14 @@
   "sdk-comparison": "a4ead8f91eb1e93a",
   "self-improvement-loop": "f9fe001854a0742b",
   "smart-orchestrator": "d471df6ad3564969",
-  "verification-workflow": "5227881f37c97325"
+  "verification-workflow": "5227881f37c97325",
+  "workflow-design": "5f9e2b0a27b06f55",
+  "workflow-finalize": "824c5bc6245b2231",
+  "workflow-pr-review": "64a08e62308ae9d1",
+  "workflow-precommit-test": "6862b817b8c65b8f",
+  "workflow-prep": "3e1dfe776ced6d26",
+  "workflow-publish": "250aae725873ae9f",
+  "workflow-refactor-review": "ad94b72c16cecd5d",
+  "workflow-tdd": "4a8574462bc30532",
+  "workflow-worktree": "6ed477c9530e4426"
 }

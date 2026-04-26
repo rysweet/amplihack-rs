@@ -67,6 +67,15 @@ path = "../../tests/integration/recipe_e2e_test.rs"
 name = "no_python_probe"
 path = "../../tests/integration/no_python_probe_test.rs"
 
+# Default-workflow decomposition parity tests.
+# Locks the v3 contract: composer calls 9 phase sub-recipes, every original
+# step ID is preserved in order, no duplicates, every brick stays under 400
+# LOC, and mandatory steps (0/14/17/18) remain present. Pure structural,
+# no recipe-runner needed.
+[[test]]
+name = "default_workflow_decomposition"
+path = "../../tests/integration/default_workflow_decomposition_test.rs"
+
 # Issue #78 / v0.5.0: Fleet local dashboard probe tests (TC-09 through TC-12).
 # These tests validate the local session management dashboard:
 #   TC-09: fleet --help exits 0

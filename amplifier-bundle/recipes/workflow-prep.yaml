@@ -1,0 +1,335 @@
+name: "workflow-prep"
+description: "Phase 1a: requirements + issue creation (steps 00-03b)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["development", "prep", "requirements"]
+
+# workflow-prep: extracted from default-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — the layered review steps the LLM
+# converges through must remain intact. Context flows in from the parent
+# workflow via recipe-runner's automatic context-merging in
+# `_execute_sub_recipe()`; outputs declared by these steps propagate back to
+# the parent and are visible to subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 80
+
+context: {}
+
+steps:
+  # ==========================================================================
+  # STEP 0: WORKFLOW PREPARATION (MANDATORY - DO NOT SKIP)
+  # Creates tracking structure for all 23 workflow steps.
+  # CRITICAL: Must complete before ANY implementation work begins.
+  # Prevents "completion bias" - ensures mandatory review steps (0, 14, 17-18) not skipped.
+  # ==========================================================================
+  - id: "step-00-workflow-preparation"
+    type: "bash"
+    command: |
+      echo "=== WORKFLOW PREPARATION COMPLETE ==="
+      echo ""
+      echo "23-Step Workflow Initialized (with granular sub-steps for Steps 17-19):"
+      echo "  Step 0: Workflow Preparation - CURRENT"
+      echo "  Step 1: Prepare Workspace"
+      echo "  Step 2: Rewrite/Clarify Requirements"
+      echo "  Step 3: Create GitHub Issue"
+      echo "  Step 4: Setup Worktree/Branch"
+      echo "  Step 5: Research and Design"
+      echo "  Step 6: Retcon Documentation"
+      echo "  Step 7: TDD - Write Tests First"
+      echo "  Step 8: Implement Solution"
+      echo "  Step 9: Refactor and Simplify"
+      echo "  Step 10: Review Before Commit"
+      echo "  Step 11: Incorporate Feedback"
+      echo "  Step 12: Run Pre-commit Hooks"
+      echo "  Step 13: Mandatory Local Testing"
+      echo "  Step 14: Bump Version (MANDATORY)"
+      echo "  Step 15: Commit and Push"
+      echo "  Step 16: Open PR as Draft"
+      echo "  Step 17: Review the PR (MANDATORY - 6 sub-steps with verification gate)"
+      echo "    17a: Step 13 Compliance Verification"
+      echo "    17b: Comprehensive Code Review (reviewer agent)"
+      echo "    17c: Security Review (security agent)"
+      echo "    17d: Philosophy Guardian Review (philosophy-guardian agent)"
+      echo "    17e: Address Blocking Issues (builder agent)"
+      echo "    17f: Verification Gate"
+      echo "  Step 18: Implement Review Feedback (MANDATORY - 5 sub-steps with verification gate)"
+      echo "    18a: Analyze Feedback"
+      echo "    18b: Implement Feedback (builder agent)"
+      echo "    18c: Push Changes"
+      echo "    18d: Respond to Comments"
+      echo "    18e: Verification Gate"
+      echo "  Step 19: Philosophy Compliance Check (4 sub-steps with verification gate)"
+      echo "    19a: Philosophy Review (reviewer agent)"
+      echo "    19b: Pattern Check (patterns agent)"
+      echo "    19c: Zero-BS Verification"
+      echo "    19d: Verification Gate"
+      echo "  Step 20: Final Cleanup"
+      echo "  Step 20c: Quality Audit Loop (3+ cycles, multi-agent validation)"
+      echo "  Step 21: Convert PR to Ready"
+      echo "  Step 22: Ensure PR Mergeable"
+      echo ""
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      TASK_DESC="$TASK_DESCRIPTION"
+      printf 'Task: %s\n' "$TASK_DESC"
+      printf 'Repository: %s\n' "$REPO_PATH"
+    output: "workflow_init"
+
+  # ==========================================================================
+  # STEP 1: PREPARE THE WORKSPACE
+  # Ensure a clean local environment that is up to date.
+  # Actions: verify no unstashed changes, git fetch, check git status
+  # ==========================================================================
+  - id: "step-01-prepare-workspace"
+    type: "bash"
+    command: |
+      cd "$REPO_PATH" && \
+      echo "=== Step 1: Preparing Workspace ===" && \
+      echo "" && \
+      echo "Current directory: $(pwd)" && \
+      echo "" && \
+      echo "--- Git Status ---" && \
+      git status && \
+      echo "" && \
+      echo "--- Fetching Latest ---" && \
+      git fetch --all && \
+      echo "" && \
+      echo "--- Current Branch ---" && \
+      git branch --show-current && \
+      echo "" && \
+      echo "=== Workspace Prepared ==="
+    output: "workspace_status"
+
+  # ==========================================================================
+  # STEP 2: REWRITE AND CLARIFY REQUIREMENTS
+  # ==========================================================================
+  - id: "step-02-clarify-requirements"
+    agent: "amplihack:prompt-writer"
+    prompt: |
+      # Step 2: Rewrite and Clarify Requirements
+
+      **Task Description:** {{task_description}}
+      **Initial Requirements:** {{requirements}}
+
+      Your role is to clarify and structure the task requirements.
+
+      **Actions Required:**
+      1. Identify explicit user requirements that CANNOT be optimized away
+      2. Remove ambiguity from the task description
+      3. Define clear success criteria
+      4. Document acceptance criteria
+
+      **Output Format:**
+      ```json
+      {
+        "task_summary": "one-line clear summary",
+        "explicit_requirements": ["list of must-have features"],
+        "acceptance_criteria": ["how to verify completion"],
+        "out_of_scope": ["what this does NOT include"],
+        "assumptions": ["assumptions being made"],
+        "questions_resolved": ["clarifications made autonomously"],
+        "estimated_complexity": "low/medium/high",
+        "classification": "feature/bugfix/refactor/other"
+      }
+      ```
+
+      Use your best judgment to work autonomously. Pass explicit requirements to ALL subsequent agents.
+    output: "clarified_requirements"
+    parse_json: true
+
+  - id: "step-02b-analyze-codebase"
+    agent: "amplihack:architect"
+    prompt: |
+      # Step 2b: Analyze Existing Codebase Context
+
+      **Task:** {{task_description}}
+      **Clarified Requirements:** {{clarified_requirements}}
+      **Repository:** {{repo_path}}
+
+      ## IMPORTANT: Emit progress markers throughout this analysis
+
+      This step runs under a watchdog that times out if no output is seen for
+      60+ seconds. You MUST emit a progress line before each major exploration
+      phase so the recipe runner can see activity. Use this format:
+
+      ```
+      ## Progress: [Phase name] — [brief description]
+      ```
+
+      ## Exploration Phases
+
+      Work through these phases in order, emitting a progress marker before each:
+
+      **Phase 1 — Project structure**
+      Print: `## Progress: Phase 1/4 — Scanning project structure`
+      Use Glob to identify top-level layout, key config files (pyproject.toml,
+      package.json, Cargo.toml, etc.), and source directory organization.
+
+      **Phase 2 — Relevant code paths**
+      Print: `## Progress: Phase 2/4 — Searching for task-relevant code`
+      Use Grep to find code related to the task: relevant class/function names,
+      imports, config keys, and patterns mentioned in the requirements.
+
+      **Phase 3 — Dependencies and integration points**
+      Print: `## Progress: Phase 3/4 — Analyzing dependencies and interfaces`
+      Read key files (imports, interfaces, config) to understand how components
+      connect. Identify external dependencies relevant to the task.
+
+      **Phase 4 — Synthesis**
+      Print: `## Progress: Phase 4/4 — Synthesizing findings`
+      Compile findings into a structured summary.
+
+      ## Output
+
+      Provide a codebase context summary covering:
+      1. Relevant existing code and patterns
+      2. Files that will likely need modification
+      3. Dependencies and integration points
+      4. Potential conflicts or considerations
+
+      Use glob and grep to explore the codebase. Avoid web searches.
+    output: "codebase_analysis"
+
+  - id: "step-02c-resolve-ambiguity"
+    agent: "amplihack:ambiguity"
+    prompt: |
+      # Step 2c: Resolve Any Remaining Ambiguity
+
+      **Task:** {{task_description}}
+      **Clarified Requirements:** {{clarified_requirements}}
+      **Codebase Analysis:** {{codebase_analysis}}
+
+      Review for any remaining ambiguity in the requirements.
+
+      If ambiguity exists:
+      - Resolve it using best judgment
+      - Document the decisions made
+      - Explain rationale
+
+      If no ambiguity:
+      - Confirm requirements are clear
+      - Proceed with confidence
+
+      Output final, unambiguous requirements ready for design phase.
+    output: "final_requirements"
+
+  # ==========================================================================
+  # STEP 3: CREATE GITHUB ISSUE
+  # Create a GitHub issue documenting the task with problem description,
+  # requirements, constraints, success criteria, and appropriate labels.
+  # ==========================================================================
+  - id: "step-03-create-issue"
+    type: "bash"
+    command: |
+      set -euo pipefail
+      cd "$REPO_PATH"
+      echo "=== Step 3: Creating GitHub Issue ===" >&2
+
+      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
+      TASK_DESC="$TASK_DESCRIPTION"
+      # Bash builtins replace tr|cut pipeline — avoids 2 subprocess spawns (matches step-16)
+      ISSUE_TITLE="${TASK_DESC//$'\n'/ }"
+      ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"
+      ISSUE_TITLE="${ISSUE_TITLE:0:200}"
+      ISSUE_REQS="$FINAL_REQUIREMENTS"
+
+      # Idempotency Guard 1: Reuse issue referenced in task_description (#NNNN)
+      # Mirrors step-16-create-draft-pr idempotency pattern (#3324).
+      # Bash regex replaces printf|grep|head|tr pipeline — avoids 4 subprocess spawns
+      if [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then
+          REF_ISSUE_NUM="${BASH_REMATCH[1]}"
+      else
+          REF_ISSUE_NUM=""
+      fi
+      # Defense-in-depth: validate numeric before interpolating into gh command
+      if [ -n "$REF_ISSUE_NUM" ] && ! [[ "$REF_ISSUE_NUM" =~ ^[0-9]+$ ]]; then
+          echo "WARN: Extracted issue reference is not numeric: $REF_ISSUE_NUM — skipping guard 1" >&2
+          REF_ISSUE_NUM=""
+      fi
+      if [ -n "$REF_ISSUE_NUM" ]; then
+          echo "INFO: task_description references issue #$REF_ISSUE_NUM — verifying it exists" >&2
+          EXISTING_URL=$(timeout 60 gh issue view "$REF_ISSUE_NUM" --json url --jq '.url // ""' 2>/dev/null || echo '')
+          if [ -n "$EXISTING_URL" ]; then
+              echo "INFO: Reusing existing issue #$REF_ISSUE_NUM — skipping creation" >&2
+              printf '%s\n' "$EXISTING_URL"
+              exit 0
+          fi
+          echo "WARN: Referenced issue #$REF_ISSUE_NUM not found — will search or create" >&2
+      fi
+
+      # Idempotency Guard 2: Search open issues for similar title
+      SEARCH_QUERY="${ISSUE_TITLE:0:100}"
+      if [ -n "$SEARCH_QUERY" ]; then
+          echo "INFO: Searching open issues for similar title" >&2
+          FOUND_URL=$(timeout 60 gh issue list --state open --search "$SEARCH_QUERY" --json url --jq '.[0].url // ""' 2>/dev/null || echo '')
+          if [ -n "$FOUND_URL" ]; then
+              echo "INFO: Found existing open issue matching title — skipping creation" >&2
+              printf '%s\n' "$FOUND_URL"
+              exit 0
+          fi
+          echo "INFO: No matching open issue found — proceeding to create" >&2
+      fi
+
+      # Normal path: create a new issue
+      ISSUE_BODY=$(printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$ISSUE_REQS")
+      LABEL_NAME="workflow:default"
+      if ! gh label list --limit 1000 2>/dev/null | grep -qw "$LABEL_NAME"; then
+        gh label create "$LABEL_NAME" \
+          --color "0366d6" \
+          --description "Created by default-workflow recipe" 2>/dev/null || true
+      fi
+      gh issue create \
+        --title "$ISSUE_TITLE" \
+        --body "$ISSUE_BODY" \
+        --label "$LABEL_NAME" 2>&1 || \
+      gh issue create \
+        --title "$ISSUE_TITLE" \
+        --body "$ISSUE_BODY"
+    output: "issue_creation"
+    parse_json: false
+
+  - id: "step-03b-extract-issue-number"
+    type: "bash"
+    command: |
+      # Extract issue number from the creation output.
+      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
+      ISSUE_CREATION="$ISSUE_CREATION"
+      TASK_DESC_RAW="$TASK_DESCRIPTION"
+      # FIX (#4233): Match both issue URLs (issues/NNN) and PR URLs (pull/NNN).
+      # If the output is a PR URL, resolve the linked issue via gh pr view.
+      EXTRACTED=$(printf '%s' "$ISSUE_CREATION" | grep -oE 'issues/[0-9]+' | grep -oE '[0-9]+' | head -1)
+      if [ -z "$EXTRACTED" ]; then
+        # Try PR URL — step-03 may have returned a PR URL if reusing an existing PR
+        PR_NUMBER=$(printf '%s' "$ISSUE_CREATION" | grep -oE 'pull/[0-9]+' | grep -oE '[0-9]+' | head -1)
+        if [ -n "$PR_NUMBER" ]; then
+          echo "INFO: step-03b found PR URL (not issue URL) — resolving linked issue from PR #$PR_NUMBER" >&2
+          EXTRACTED=$(timeout 60 gh pr view "$PR_NUMBER" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // ""' 2>/dev/null || echo '')
+          # If no linked issue, use the PR number as the issue number
+          # (downstream steps can handle PR-only workflows)
+          if [ -z "$EXTRACTED" ]; then
+            echo "INFO: PR #$PR_NUMBER has no linked issue — using PR number as reference" >&2
+            EXTRACTED="$PR_NUMBER"
+          fi
+        fi
+      fi
+      if [ -z "$EXTRACTED" ]; then
+        # Last resort: scan for bare #NNNN references in the task description
+        EXTRACTED=$(printf '%s' "$TASK_DESC_RAW" | grep -oE '#[0-9]+' | grep -oE '[0-9]+' | head -1)
+      fi
+      if [ -z "$EXTRACTED" ]; then
+        echo "ERROR: step-03b failed to extract issue number from issue_creation output." >&2
+        echo "Raw issue_creation output was:" >&2
+        printf '%s\n' "$ISSUE_CREATION" >&2
+        echo "This means step-03a (create-issue) likely failed or returned unexpected output." >&2
+        echo "Downstream steps (commit, PR) will fail without a valid issue number." >&2
+        exit 1
+      fi
+      printf '%s' "$EXTRACTED"
+    output: "issue_number"
+
+  # ==========================================================================
+  # STEP 4: SETUP WORKTREE AND BRANCH
+  # Creates isolated worktree and outputs structured JSON for subsequent steps.
+  # ==========================================================================
