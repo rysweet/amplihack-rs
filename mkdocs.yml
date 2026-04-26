@@ -72,6 +72,7 @@ nav:
       - Create Your Own Tools: howto/create-your-own-tools.md
       - Recipe CLI Examples: howto/recipe-cli-examples.md
       - Recipe Discovery Troubleshooting: howto/recipe-discovery-troubleshooting.md
+      - Goal-Seeking Agent Tutorial: howto/goal-seeking-agent-tutorial.md
       - Token Sanitization: howto/token-sanitization.md
       - Security Testing: howto/security-testing.md
   - Skills:
@@ -113,6 +114,7 @@ nav:
       - Benchmarking: reference/benchmarking.md
       - Recipe Quick Reference: reference/recipe-quick-reference.md
       - Security API Reference: reference/security-api.md
+      - Goal Agent Example Prompt: reference/goal-agent-example-prompt.md
       - Code Review Practices: reference/code-review.md
       - Prerequisites: reference/prerequisites.md
   - Concepts:
@@ -153,6 +155,7 @@ nav:
       - Documentation Knowledge Graph: concepts/documentation-knowledge-graph.md
       - External Knowledge Integration: concepts/external-knowledge-integration.md
       - Native Binary Trace Logging: concepts/native-binary-trace-logging.md
+      - Goal-Seeking Agents: concepts/goal-seeking-agents.md
   - Code Atlas:
       - Overview: atlas/index.md
       - "Layer 1: Repo Surface": atlas/repo-surface/README.md
