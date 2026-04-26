@@ -1,0 +1,316 @@
+name: "investigation-explore"
+description: "Phase 3+4: exploration strategy + past-check + historical + deep-dives + consolidate"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["investigation", "explore", "deep-dive"]
+
+# investigation-explore: extracted from investigation-workflow.yaml as a composable phase brick.
+# Every original step preserved verbatim. Context flows in from the parent
+# investigation-workflow context via _execute_sub_recipe()'s automatic merging.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 60
+
+context: {}
+
+steps:
+  # ==========================================================================
+  # PHASE 2: EXPLORATION STRATEGY
+  # Plan which agents to deploy and what to investigate
+  # Uses: architect (strategy), patterns (past investigations), knowledge-archaeologist (history)
+  # ==========================================================================
+  - id: "exploration-strategy"
+    agent: "amplihack:architect"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      Design an exploration strategy for this investigation.
+
+      **Investigation Question:** {{investigation_question}}
+      **Investigation Type:** {{investigation_type}}
+      **Scope:** {{scope}}
+      **Ambiguity Resolution:** {{ambiguity_resolution}}
+
+      ## Agent Selection Guidelines (CRITICAL)
+
+      Select agents based on investigation type:
+      - **Code investigation:** amplihack:analyzer + amplihack:patterns
+      - **Architecture investigation:** amplihack:architect + amplihack:api-designer
+      - **Performance investigation:** amplihack:optimizer + amplihack:analyzer
+      - **Security investigation:** amplihack:security + amplihack:patterns
+      - **Integration investigation:** amplihack:integration + amplihack:database
+
+      Additional agents as needed:
+      - amplihack:knowledge-archaeologist (for historical context)
+      - amplihack:reviewer (for validation)
+
+      ## Your Task
+
+      1. **Identify key areas to explore** (code paths, configurations, documentation)
+      2. **Select specialized agents for parallel deployment in Phase 3**
+      3. **Create investigation roadmap with priorities**
+      4. **Identify potential dead ends to avoid**
+      5. **Plan verification approach** (how to test understanding)
+
+      Create an exploration plan as JSON:
+      ```json
+      {
+        "exploration_areas": [
+          {
+            "area": "area name",
+            "agent": "amplihack:agent-name",
+            "focus": "specific focus for this agent",
+            "expected_output": "what we expect to learn",
+            "priority": 1
+          }
+        ],
+        "parallel_deployment": {
+          "primary_agent": "amplihack:analyzer",
+          "primary_focus": "specific focus area",
+          "secondary_agent": "amplihack:patterns",
+          "secondary_focus": "specific focus area",
+          "tertiary_agent": "amplihack:architect",
+          "tertiary_focus": "specific focus area",
+          "specialist_agent": null,
+          "specialist_focus": null
+        },
+        "priority_order": ["ordered list of exploration areas"],
+        "potential_dead_ends": ["areas to avoid or deprioritize"],
+        "verification_approach": "how to test and validate understanding",
+        "historical_context_needed": true|false
+      }
+      ```
+    output: "strategy"
+    parse_json: true
+
+  - id: "check-past-investigations"
+    agent: "amplihack:patterns"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      Check for similar past investigations and reusable patterns.
+
+      **Investigation Question:** {{investigation_question}}
+      **Strategy:** {{strategy}}
+
+      ## Your Task
+
+      1. Search for similar investigations in DISCOVERIES.md
+      2. Check PATTERNS.md for relevant patterns
+      3. Identify reusable knowledge that can accelerate this investigation
+      4. Note any related documentation that might help
+
+      Provide findings as JSON:
+      ```json
+      {
+        "related_discoveries": [
+          {
+            "title": "discovery title",
+            "relevance": "how it relates",
+            "key_insight": "what we can reuse"
+          }
+        ],
+        "applicable_patterns": [
+          {
+            "pattern": "pattern name",
+            "applicability": "how to apply it here"
+          }
+        ],
+        "suggested_starting_points": ["files or areas to start with"],
+        "warnings": ["pitfalls from past investigations"]
+      }
+      ```
+    output: "past_investigations"
+    parse_json: true
+
+  - id: "historical-research"
+    agent: "amplihack:knowledge-archaeologist"
+    working_dir: "{{repo_path}}"
+    condition: "strategy and strategy.historical_context_needed"
+    prompt: |
+      Research historical context for this investigation.
+
+      **Investigation Question:** {{investigation_question}}
+      **Strategy:** {{strategy}}
+
+      ## Your Task
+
+      1. Examine git history for relevant changes
+      2. Find original design decisions and their rationale
+      3. Identify evolution of the system over time
+      4. Note any deprecated approaches or migrations
+
+      Provide historical context as JSON:
+      ```json
+      {
+        "historical_timeline": [
+          {
+            "period": "description",
+            "key_changes": ["changes"],
+            "rationale": "why"
+          }
+        ],
+        "original_design_decisions": ["key decisions and their reasons"],
+        "evolution_notes": ["how the system evolved"],
+        "deprecated_approaches": ["things that no longer apply"]
+      }
+      ```
+    output: "historical_context"
+    parse_json: true
+
+  # ==========================================================================
+  # PHASE 3: DEEP DIVES
+  # Deploy multiple exploration agents for comprehensive investigation
+  # Uses: analyzer (primary), patterns (secondary), architect (tertiary)
+  # ==========================================================================
+  - id: "deep-dive-primary"
+    agent: "amplihack:architect"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      Conduct a deep dive exploration as the PRIMARY investigator.
+
+      **Investigation Question:** {{investigation_question}}
+      **Your Focus:** {{strategy.parallel_deployment.primary_focus}}
+      **Codebase Path:** {{codebase_path}}
+      **Strategy:** {{strategy}}
+      **Past Investigations:** {{past_investigations}}
+      **Historical Context:** {{historical_context}}
+
+      ## Your Task (Primary Investigation)
+
+      1. **Map the relevant code structure** in your focus area
+      2. **Identify key files, functions, and classes**
+      3. **Trace data flows and dependencies**
+      4. **Note patterns, anomalies, and unexpected behaviors**
+      5. **Document code paths with file:line references**
+
+      Provide findings in a structured format:
+      - File paths and line numbers for key discoveries
+      - Code snippets for important sections
+      - Dependency relationships
+      - Open questions that emerged
+      - Connections to other areas (for synthesis)
+    output: "primary_findings"
+
+  - id: "deep-dive-secondary"
+    agent: "amplihack:patterns"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      Conduct a deep dive exploration as the SECONDARY investigator.
+
+      **Investigation Question:** {{investigation_question}}
+      **Your Focus:** {{strategy.parallel_deployment.secondary_focus}}
+      **Codebase Path:** {{codebase_path}}
+      **Strategy:** {{strategy}}
+      **Past Investigations:** {{past_investigations}}
+
+      ## Your Task (Secondary Investigation)
+
+      1. **Explore your assigned focus area thoroughly**
+      2. **Identify patterns and anti-patterns**
+      3. **Look for connections to other system components**
+      4. **Note design decisions and their implications**
+      5. **Document findings with evidence**
+
+      Provide findings focusing on:
+      - Patterns discovered
+      - Design rationale observed
+      - Integration points
+      - Potential concerns or improvements
+      - Questions for verification phase
+    output: "secondary_findings"
+
+  - id: "deep-dive-tertiary"
+    agent: "amplihack:architect"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      Conduct a deep dive exploration as the TERTIARY investigator.
+
+      **Investigation Question:** {{investigation_question}}
+      **Your Focus:** {{strategy.parallel_deployment.tertiary_focus}}
+      **Codebase Path:** {{codebase_path}}
+      **Strategy:** {{strategy}}
+
+      ## Your Task (Tertiary Investigation)
+
+      1. **Analyze architectural aspects** in your focus area
+      2. **Examine component boundaries and responsibilities**
+      3. **Identify integration points and interfaces**
+      4. **Assess design quality and potential issues**
+      5. **Document structural insights**
+
+      Provide findings focusing on:
+      - Architectural observations
+      - Component interactions
+      - Interface analysis
+      - Structural concerns
+      - Recommendations for understanding
+    output: "tertiary_findings"
+
+  - id: "deep-dive-specialist"
+    agent: "amplihack:security"
+    working_dir: "{{repo_path}}"
+    condition: "strategy and strategy.parallel_deployment and strategy.parallel_deployment.specialist_agent"
+    prompt: |
+      Conduct a SPECIALIST deep dive for this investigation.
+
+      **Investigation Question:** {{investigation_question}}
+      **Your Specialty Focus:** {{strategy.parallel_deployment.specialist_focus}}
+      **Codebase Path:** {{codebase_path}}
+      **Strategy:** {{strategy}}
+
+      ## Your Task (Specialist Investigation)
+
+      As a specialist, provide domain-specific analysis:
+      1. **Apply your specialized knowledge** to the focus area
+      2. **Identify domain-specific concerns** (security, performance, etc.)
+      3. **Evaluate against best practices** in your domain
+      4. **Provide expert recommendations**
+
+      Provide specialist findings with domain-specific insights.
+    output: "specialist_findings"
+
+  - id: "consolidate-findings"
+    agent: "amplihack:patterns"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      Consolidate findings from all parallel deep dives.
+
+      **Investigation Question:** {{investigation_question}}
+      **Primary Findings:** {{primary_findings}}
+      **Secondary Findings:** {{secondary_findings}}
+      **Tertiary Findings:** {{tertiary_findings}}
+      **Specialist Findings:** {{specialist_findings}}
+
+      ## Your Task
+
+      1. **Identify connections** between findings from different agents
+      2. **Note any contradictions** that need resolution
+      3. **Highlight unexpected discoveries** across all explorations
+      4. **Create unified understanding** from parallel explorations
+      5. **List open questions** for verification phase
+
+      Provide consolidated findings as JSON:
+      ```json
+      {
+        "unified_findings": {
+          "key_discoveries": ["major discoveries across all explorations"],
+          "code_paths_mapped": ["critical paths identified"],
+          "patterns_identified": ["patterns found"],
+          "architectural_insights": ["structural understanding"]
+        },
+        "connections": [
+          {
+            "finding_a": "from agent A",
+            "finding_b": "from agent B",
+            "connection": "how they relate"
+          }
+        ],
+        "contradictions": ["any conflicting findings to resolve"],
+        "unexpected_discoveries": ["anomalies or surprises"],
+        "open_questions": ["questions for verification"],
+        "confidence_assessment": "high|medium|low"
+      }
+      ```
+    output: "consolidated_findings"
+    parse_json: true
+

@@ -1,0 +1,312 @@
+name: "investigation-verify"
+description: "Phase 5+6: hypotheses + verification + validation + patterns + synthesis"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["investigation", "hypothesis", "verify", "synthesize"]
+
+# investigation-verify: extracted from investigation-workflow.yaml as a composable phase brick.
+# Every original step preserved verbatim. Context flows in from the parent
+# investigation-workflow context via _execute_sub_recipe()'s automatic merging.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 60
+
+context: {}
+
+steps:
+  # ==========================================================================
+  # PHASE 4: VERIFICATION & TESTING
+  # Hypothesis-based verification with practical tests
+  # Uses: analyzer (verification), reviewer (validation)
+  # ==========================================================================
+  - id: "formulate-hypotheses"
+    agent: "amplihack:architect"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      Formulate hypotheses based on the consolidated findings.
+
+      **Investigation Question:** {{investigation_question}}
+      **Scope:** {{scope}}
+      **Consolidated Findings:** {{consolidated_findings}}
+
+      ## Your Task
+
+      For each key discovery, create a testable hypothesis:
+      1. **State the hypothesis clearly**
+      2. **Identify evidence that would confirm it**
+      3. **Identify evidence that would refute it**
+      4. **Design a practical test** to verify
+
+      Provide hypotheses as JSON:
+      ```json
+      {
+        "hypotheses": [
+          {
+            "id": "H1",
+            "statement": "clear hypothesis statement",
+            "based_on": "which finding this comes from",
+            "confirming_evidence": ["what would confirm this"],
+            "refuting_evidence": ["what would refute this"],
+            "practical_test": {
+              "description": "how to test this",
+              "method": "trace_code|examine_logs|test_behavior|verify_config",
+              "specific_steps": ["step 1", "step 2"]
+            },
+            "priority": "high|medium|low"
+          }
+        ],
+        "test_order": ["H1", "H2", "..."]
+      }
+      ```
+    output: "hypotheses"
+    parse_json: true
+
+  - id: "execute-verification"
+    agent: "amplihack:architect"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      Execute practical verification tests for each hypothesis.
+
+      **Investigation Question:** {{investigation_question}}
+      **Hypotheses:** {{hypotheses}}
+      **Consolidated Findings:** {{consolidated_findings}}
+
+      ## Verification Methods
+
+      For each hypothesis, execute appropriate verification:
+      - **trace_code**: Manually trace code paths, examine actual implementation
+      - **examine_logs**: Look at logs, outputs, debug information
+      - **test_behavior**: Test edge cases and assumptions
+      - **verify_config**: Check configuration effects
+
+      ## Your Task
+
+      1. **Execute each practical test** in priority order
+      2. **Document what was tested** with specific files/lines
+      3. **Record results** - confirmed, refuted, or inconclusive
+      4. **Identify gaps** in understanding
+      5. **Refine hypotheses** based on test results
+
+      Provide verification results as JSON:
+      ```json
+      {
+        "verification_results": [
+          {
+            "hypothesis_id": "H1",
+            "test_executed": "description of what was done",
+            "evidence_found": ["specific evidence with file:line references"],
+            "result": "confirmed|refuted|inconclusive",
+            "confidence": "high|medium|low",
+            "notes": "observations during verification"
+          }
+        ],
+        "confirmed_understanding": [
+          {
+            "aspect": "what we now understand",
+            "evidence": ["supporting evidence"],
+            "confidence": "high|medium|low"
+          }
+        ],
+        "remaining_gaps": ["what's still unclear"],
+        "updated_hypotheses": ["any refined hypotheses"],
+        "contradictions_resolved": ["how contradictions were resolved"]
+      }
+      ```
+    output: "verification_results"
+    parse_json: true
+
+  - id: "validate-verification"
+    agent: "amplihack:reviewer"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      Validate the verification results and overall understanding.
+
+      **Original Question:** {{investigation_question}}
+      **Scope:** {{scope}}
+      **Verification Results:** {{verification_results}}
+
+      ## Your Task
+
+      1. **Check completeness** - Are all core questions answered?
+      2. **Assess evidence quality** - Is the evidence sufficient?
+      3. **Identify weak points** - Where is confidence low?
+      4. **Recommend additional verification** if needed
+
+      Provide validation as JSON:
+      ```json
+      {
+        "completeness_check": {
+          "questions_answered": ["list of answered questions"],
+          "questions_unanswered": ["list of unanswered questions"],
+          "completeness_score": "0-100%"
+        },
+        "evidence_quality": {
+          "strong_evidence": ["well-supported findings"],
+          "weak_evidence": ["findings needing more support"],
+          "assumptions_made": ["assumptions in our understanding"]
+        },
+        "ready_for_synthesis": true|false,
+        "additional_verification_needed": ["what else to verify if not ready"]
+      }
+      ```
+    output: "verification_validation"
+    parse_json: true
+
+  # ==========================================================================
+  # PHASE 5: SYNTHESIS
+  # Compile findings into 5 required outputs
+  # Uses: reviewer (completeness), patterns (patterns), architect (visual aids)
+  # ==========================================================================
+  - id: "identify-patterns"
+    agent: "amplihack:patterns"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      Identify reusable patterns discovered during this investigation.
+
+      **Investigation Question:** {{investigation_question}}
+      **Consolidated Findings:** {{consolidated_findings}}
+      **Verification Results:** {{verification_results}}
+
+      ## Your Task
+
+      1. **Identify reusable patterns** discovered
+      2. **Note anti-patterns** observed
+      3. **Extract generalizable insights**
+      4. **Prepare patterns for PATTERNS.md update**
+
+      Provide patterns as JSON:
+      ```json
+      {
+        "patterns_discovered": [
+          {
+            "name": "pattern name",
+            "description": "what the pattern is",
+            "context": "when to use it",
+            "example": "where we found it",
+            "benefits": ["why it's useful"],
+            "add_to_patterns_md": true|false
+          }
+        ],
+        "anti_patterns_observed": [
+          {
+            "name": "anti-pattern name",
+            "description": "what to avoid",
+            "why_problematic": "explanation",
+            "better_alternative": "what to do instead"
+          }
+        ],
+        "generalizable_insights": ["insights applicable beyond this investigation"]
+      }
+      ```
+    output: "patterns_analysis"
+    parse_json: true
+
+  - id: "synthesis"
+    agent: "amplihack:architect"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      Synthesize all findings into the 5 REQUIRED outputs.
+
+      **Original Question:** {{investigation_question}}
+      **Scope:** {{scope}}
+      **Consolidated Findings:** {{consolidated_findings}}
+      **Verification Results:** {{verification_results}}
+      **Verification Validation:** {{verification_validation}}
+      **Patterns Analysis:** {{patterns_analysis}}
+
+      ## CRITICAL: Generate ALL 5 Synthesis Outputs
+
+      ### Output 1: Executive Summary
+      2-3 sentence answer to the main investigation question.
+      Clear, concise, suitable for quick understanding.
+
+      ### Output 2: Detailed Explanation
+      Complete technical explanation with:
+      - Full technical depth
+      - Supporting evidence with file:line references
+      - Code flow descriptions
+      - Component interactions
+
+      ### Output 3: Visual Aids
+      Text-based diagrams showing:
+      - System flow diagrams (using ASCII or Mermaid)
+      - Architecture diagrams
+      - Data flow charts
+      - Component relationships
+
+      ### Output 4: Key Insights
+      Bulleted list of:
+      - Non-obvious discoveries
+      - Important patterns found
+      - Critical understanding points
+      - Things that weren't expected
+
+      ### Output 5: Remaining Unknowns
+      Honest assessment of:
+      - What's still unclear
+      - Gaps in understanding
+      - Areas needing further investigation
+      - Assumptions we're making
+
+      Provide complete synthesis as JSON:
+      ```json
+      {
+        "executive_summary": "2-3 sentence answer to the main question",
+        "detailed_explanation": "Complete technical explanation with full depth...",
+        "visual_aids": {
+          "diagrams": ["```mermaid or ASCII diagram```"],
+          "flow_charts": ["flow descriptions"],
+          "architecture_views": ["architectural diagrams"]
+        },
+        "key_insights": [
+          "Non-obvious discovery 1",
+          "Important pattern 2",
+          "Critical understanding point 3"
+        ],
+        "remaining_unknowns": [
+          "What's still unclear",
+          "Gaps identified",
+          "Areas for future investigation"
+        ],
+        "recommendations": ["suggestions for next steps or improvements"]
+      }
+      ```
+    output: "synthesis"
+    parse_json: true
+
+  - id: "validate-synthesis"
+    agent: "amplihack:reviewer"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      Validate the synthesis addresses all original questions.
+
+      **Original Scope:** {{scope}}
+      **Synthesis:** {{synthesis}}
+
+      ## Your Task
+
+      For each core question in the scope:
+      1. Is it answered in the synthesis?
+      2. Is the answer supported by evidence?
+      3. Is the explanation clear?
+
+      Provide validation as JSON:
+      ```json
+      {
+        "questions_coverage": [
+          {
+            "question": "original question",
+            "answered": true|false,
+            "answer_location": "where in synthesis",
+            "evidence_quality": "strong|adequate|weak"
+          }
+        ],
+        "overall_quality": "excellent|good|adequate|needs_improvement",
+        "synthesis_approved": true|false,
+        "improvement_suggestions": ["if not approved, what to improve"]
+      }
+      ```
+    output: "synthesis_validation"
+    parse_json: true
+

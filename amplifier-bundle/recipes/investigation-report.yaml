@@ -1,0 +1,177 @@
+name: "investigation-report"
+description: "Phase 7-10: discoveries + report + transition + efficiency + final-output"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["investigation", "report", "output"]
+
+# investigation-report: extracted from investigation-workflow.yaml as a composable phase brick.
+# Every original step preserved verbatim. Context flows in from the parent
+# investigation-workflow context via _execute_sub_recipe()'s automatic merging.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 60
+
+context: {}
+
+steps:
+  # ==========================================================================
+  # PHASE 6: KNOWLEDGE CAPTURE
+  # Update DISCOVERIES.md, PATTERNS.md, create investigation report
+  # ==========================================================================
+  - id: "update-discoveries"
+    type: "bash"
+    command: |
+      # Create output directory if needed
+      mkdir -p "{{output_dir}}"
+
+      # Output status - actual file updates handled by synthesis agent
+      echo '{"discoveries_updated": true, "output_dir": "{{output_dir}}", "investigation_question": "{{investigation_question}}", "investigation_type": "{{investigation_type}}"}'
+    output: "discoveries_update"
+    parse_json: true
+
+  - id: "update-patterns"
+    type: "bash"
+    condition: "patterns_analysis and patterns_analysis.patterns_discovered"
+    command: |
+      # Output status - actual file updates handled by synthesis agent
+      echo '{"patterns_updated": true, "patterns_path": "{{patterns_path}}", "investigation_type": "{{investigation_type}}"}'
+    output: "patterns_update"
+    parse_json: true
+
+  - id: "create-investigation-report"
+    type: "bash"
+    command: |
+      # Create output directory
+      mkdir -p "{{output_dir}}"
+
+      # Output report metadata - actual report generation handled by synthesis agent
+      echo '{"report_path": "{{output_dir}}/investigation_report.md", "status": "created", "investigation_question": "{{investigation_question}}", "investigation_type": "{{investigation_type}}", "depth": "{{depth}}"}'
+    output: "report_creation"
+    parse_json: true
+
+  # ==========================================================================
+  # TRANSITION GUIDANCE
+  # Provide guidance for transitioning to DEFAULT_WORKFLOW if needed
+  # ==========================================================================
+  - id: "transition-guidance"
+    agent: "amplihack:patterns"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      Analyze whether this investigation should transition to implementation.
+
+      **Investigation Question:** {{investigation_question}}
+      **Synthesis:** {{synthesis}}
+      **Recommendations:** {{synthesis.recommendations}}
+
+      ## Your Task
+
+      Determine if and how to transition to DEFAULT_WORKFLOW:
+
+      1. **Does this investigation reveal implementation needs?**
+      2. **If transitioning, at which step should DEFAULT_WORKFLOW resume?**
+         - Step 4 (Research and Design) - if design guidance is needed
+         - Step 5 (Implementation) - if design is clear from investigation
+      3. **What knowledge from this investigation should inform the implementation?**
+
+      Provide transition guidance as JSON:
+      ```json
+      {
+        "transition_recommended": true|false,
+        "reason": "why transition is or isn't recommended",
+        "implementation_needs_identified": ["list of implementation tasks revealed"],
+        "resume_at_step": "Step 4: Research and Design" | "Step 5: Implementation" | null,
+        "knowledge_to_carry_forward": [
+          {
+            "insight": "key insight",
+            "applies_to": "which implementation aspect"
+          }
+        ],
+        "suggested_next_action": "specific next action to take"
+      }
+      ```
+    output: "transition_guidance"
+    parse_json: true
+
+  # ==========================================================================
+  # EFFICIENCY METRICS
+  # Track and report efficiency vs ad-hoc investigation
+  # Target: 30-40% message reduction
+  # ==========================================================================
+  - id: "efficiency-report"
+    type: "bash"
+    command: |
+      START_TIME={{tracking.start_time}}
+      END_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+      # Calculate steps completed (each agent call = ~1-2 messages in ad-hoc)
+      # This workflow uses ~15 structured steps vs estimated 40-60 ad-hoc messages
+      WORKFLOW_STEPS=15
+      ESTIMATED_ADHOC_MESSAGES=55
+      EFFICIENCY_GAIN=$(echo "scale=0; 100 - ($WORKFLOW_STEPS * 100 / $ESTIMATED_ADHOC_MESSAGES)" | bc)
+
+      cat << EOF
+      {
+        "start_time": "$START_TIME",
+        "end_time": "$END_TIME",
+        "workflow_steps": $WORKFLOW_STEPS,
+        "estimated_adhoc_messages": $ESTIMATED_ADHOC_MESSAGES,
+        "efficiency_gain_percent": $EFFICIENCY_GAIN,
+        "target_met": $([ $EFFICIENCY_GAIN -ge 30 ] && echo "true" || echo "false"),
+        "efficiency_sources": [
+          "Scope definition prevented scope creep",
+          "Exploration strategy prevented random exploration",
+          "Parallel deep dives maximized information gathering",
+          "Hypothesis verification caught misunderstandings early",
+          "Synthesis ensured all questions answered",
+          "Knowledge capture prevents repeat investigations"
+        ]
+      }
+      EOF
+    output: "efficiency_metrics"
+    parse_json: true
+
+  # ==========================================================================
+  # FINAL OUTPUT
+  # ==========================================================================
+  - id: "final-output"
+    type: "bash"
+    parse_json: true
+    command: |
+      cat << 'EOF'
+      {
+        "workflow": "investigation-workflow",
+        "version": "2.0.0",
+        "question": "{{investigation_question}}",
+        "investigation_type": "{{investigation_type}}",
+        "status": "complete",
+        "phases_completed": 6,
+        "phases": [
+          "1. Scope Definition",
+          "2. Exploration Strategy",
+          "3. Parallel Deep Dives",
+          "4. Verification & Testing",
+          "5. Synthesis (5 outputs)",
+          "6. Knowledge Capture"
+        ],
+        "outputs": {
+          "report": "{{output_dir}}/investigation_report.md",
+          "discoveries_updated": "{{discoveries_path}}",
+          "patterns_updated": "{{patterns_path}}"
+        },
+        "synthesis_summary": {
+          "executive_summary": "{{synthesis.executive_summary}}",
+          "key_insights_count": "{{synthesis.key_insights.length}}",
+          "remaining_unknowns_count": "{{synthesis.remaining_unknowns.length}}"
+        },
+        "transition": {
+          "recommended": "{{transition_guidance.transition_recommended}}",
+          "resume_at": "{{transition_guidance.resume_at_step}}"
+        },
+        "efficiency": {
+          "gain_percent": "{{efficiency_metrics.efficiency_gain_percent}}",
+          "target_met": "{{efficiency_metrics.target_met}}"
+        }
+      }
+      EOF
+    output: "final_result"
