@@ -72,7 +72,6 @@ steps:
     output: "refresh_status"
   - id: "survey-open-prs"
     type: "bash"
-    parse_json: true
     command: |
       set -euo pipefail
       IFS=$'\n\t'
