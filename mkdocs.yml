@@ -137,6 +137,7 @@ nav:
       - Signal Handling Lifecycle: concepts/signal-handling-lifecycle.md
       - Recipe Execution Flow: concepts/recipe-execution-flow.md
       - Memory Backend Migration: concepts/memory-backend-migration.md
+      - Memory-OODA Integration: concepts/memory-ooda-integration.md
       - Agent Lifecycle: concepts/agent-lifecycle.md
       - Domain Agents: concepts/domain-agents.md
       - Evaluation Framework: concepts/eval-framework.md
@@ -147,6 +148,7 @@ nav:
       - Blarify Integration: concepts/blarify-integration.md
       - Worktree Support: concepts/worktree-support.md
       - Agent Memory Architecture: concepts/agent-memory-architecture.md
+      - Agent Type Memory Sharing: concepts/agent-type-memory-sharing.md
       - Power Steering Compaction: concepts/power-steering-compaction.md
       - Hooks Comparison: concepts/hooks-comparison.md
       - Security Context Preservation: concepts/security-context-preservation.md
