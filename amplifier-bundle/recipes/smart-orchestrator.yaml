@@ -126,6 +126,12 @@ steps:
         items `(1)`, `(2)`, `(3)` are almost always Development.
       - When in doubt between Operations and Development, choose Development.
 
+      **Scope anchors (#381)**:
+      - The repository is whatever `repo_path` resolves to. Do NOT invent file paths from project names mentioned in conversational context.
+      - If the task description names a specific file path (e.g., `amplifier-bundle/recipes/quality-loop.yaml`), the workstream description MUST cite that exact path verbatim.
+      - Do NOT propose writes to directories that do not exist in `repo_path`.
+      - If the task names a project unfamiliar to you (e.g., "Simard", "Foo"), do NOT translate file paths through that name. The repository's directory structure is the only source of truth.
+
       **Decomposition override**: {{force_single_workstream}} — if "true", use exactly 1 workstream regardless of task structure.
 
       **Output exactly this JSON**:
@@ -184,6 +190,36 @@ steps:
       fi
       echo "$FINAL_TYPE"
     output: "task_type"
+
+  # verify-decomposition-paths (#381): fail-fast if the decomposition references
+  # file paths whose parent directory does not exist in repo_path. This blocks
+  # scope-drift bugs where the architect invents paths from conversational
+  # context (e.g., a phantom 'Simard' project's src/self_improve/cycle.rs).
+  # Gated to Development/Investigation — Q&A and Operations have no workstreams.
+  - id: "verify-decomposition-paths"
+    type: "bash"
+    command: |
+      set -euo pipefail
+      if [ "$TASK_TYPE" != "Development" ] && [ "$TASK_TYPE" != "Investigation" ]; then
+        echo "[verify-decomposition-paths] task_type=$TASK_TYPE — skipping (no workstreams to verify)."
+        exit 0
+      fi
+      cd "$REPO_PATH"
+      TRACKED_DIRS=$(git ls-files | xargs -n1 dirname | sort -u)
+      CANDIDATES=$(printf '%s' "$DECOMPOSITION_JSON" \
+        | jq -r '.workstreams[].description' \
+        | grep -oE '[A-Za-z0-9_./-]+\.(rs|ya?ml|toml|md|py|sh|json)' \
+        | sort -u || true)
+      for P in $CANDIDATES; do
+        case "$P" in */*) ;; *) continue ;; esac
+        PARENT=$(dirname "$P")
+        if [ "$PARENT" = "." ]; then continue; fi
+        if printf '%s\n' "$TRACKED_DIRS" | grep -qxF "$PARENT"; then continue; fi
+        if [ -d "$PARENT" ]; then continue; fi
+        echo "ERROR: planned path '$P' has no parent directory in repo." >&2
+        exit 1
+      done
+      echo "[verify-decomposition-paths] OK — all candidate paths have valid parent directories."
 
   # activate-workflow: compute workstream_count, set workflow semaphore, announce.
   # Uses native Rust `amplihack orch helper count-workstreams` (#270). The
