@@ -1956,5 +1956,468 @@ class TestWorktreePathFailLoudInTddRecipe(unittest.TestCase):
         )
 
 
+# ===========================================================================
+# Issues #425 + #412: orchestration opt-out + sibling-recipe fail-loud audit
+# ===========================================================================
+#
+# Issue #425: when smart-orchestrator routes a docs-only / audit /
+# orchestration meta-task whose "implementation" is filing GitHub issues +
+# opening child PRs (no working-tree edits), step-08c fails twice:
+#   1. WARNING about missing 'Files modified:' section.
+#   2. step-08c bails because WORKTREE_SETUP_WORKTREE_PATH is unset (the
+#      :? diagnostic from #410 firing — root cause is propagation gap at
+#      the smart-execute-routing -> default-workflow -> workflow-tdd
+#      composer boundary).
+#
+# Issue #412: same silent-fallback pattern (`${WORKTREE_*:-…}`) that #410
+# fixed in workflow-tdd / workflow-publish still exists in 4 sibling
+# recipes (workflow-finalize ×2, workflow-pr-review ×2,
+# workflow-refactor-review ×1 with a triple fallback chain).
+#
+# Fix: (A) propagate `worktree_setup` and `allow_no_op` through composers;
+# (B) add an opt-out path to step-08c (sentinel + ALLOW_NO_OP flag);
+# (C) convert the 5 remaining silent fallbacks to fail-loud `:?`.
+#
+# These tests are RED until the YAML changes are in place.
+
+_DEFAULT_WORKFLOW_YAML = _RECIPES_DIR / "default-workflow.yaml"
+_SMART_EXECUTE_ROUTING_YAML = _RECIPES_DIR / "smart-execute-routing.yaml"
+_SMART_CLASSIFY_ROUTE_YAML = _RECIPES_DIR / "smart-classify-route.yaml"
+_WORKFLOW_FINALIZE_YAML = _RECIPES_DIR / "workflow-finalize.yaml"
+_WORKFLOW_PR_REVIEW_YAML = _RECIPES_DIR / "workflow-pr-review.yaml"
+_WORKFLOW_REFACTOR_REVIEW_YAML = _RECIPES_DIR / "workflow-refactor-review.yaml"
+_WORKFLOW_PUBLISH_YAML = _RECIPES_DIR / "workflow-publish.yaml"
+
+# Canonical opt-out sentinel — exact bytes (em-dash U+2014).
+_ORCHESTRATION_SENTINEL = "No files modified \u2014 orchestration task"
+
+
+def _scrubbed_env(**overrides) -> dict:
+    """Build a minimal env with no inherited secrets (security contract).
+
+    Per design spec section A8: must use env -i + explicit allowlist (PATH,
+    HOME, plus test-specific vars). Never os.environ.copy().
+    """
+    base = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", "/tmp"),
+        # Avoid bash spitting locale warnings on minimal CI images.
+        "LC_ALL": "C",
+    }
+    base.update(overrides)
+    return base
+
+
+def _init_git_repo(path: str) -> None:
+    """Initialize a minimal git repo with one commit so `git diff` works."""
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t",
+         "init", "-q", "-b", "main", path],
+        check=True,
+    )
+    Path(path, "README.md").write_text("# init\n")
+    subprocess.run(
+        ["git", "-C", path, "-c", "user.name=t", "-c", "user.email=t@t",
+         "add", "README.md"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", path, "-c", "user.name=t", "-c", "user.email=t@t",
+         "commit", "-q", "-m", "init"],
+        check=True,
+    )
+
+
+class TestNoopGuardOrchestrationOptOut(unittest.TestCase):
+    """Issue #425: step-08c must allow orchestration / docs-only tasks
+    that legitimately produce no working-tree edits to pass.
+
+    Opt-out precedence (per design spec A2):
+      1. Sentinel match in IMPLEMENTATION output → exit 0
+      2. ALLOW_NO_OP=="true" (strict equality) → exit 0
+      3. Existing no-op-justification path → exit 0
+      4. Existing closed-PR / goal-already-met path → exit 0
+      5. Otherwise → fail loud (hollow-success guard preserved).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.step_cmd = _extract_step_command(
+            _WORKFLOW_TDD_YAML, "step-08c-implementation-no-op-guard"
+        )
+
+    def test_sentinel_opt_out_exits_zero_with_no_diff(self):
+        """When the implementer emits the canonical sentinel and there are
+        no working-tree edits, step-08c MUST exit 0 (orchestration task)."""
+        with tempfile.TemporaryDirectory() as repo:
+            _init_git_repo(repo)
+            impl = (
+                "Implementation summary:\n"
+                f"{_ORCHESTRATION_SENTINEL}\n"
+                "Filed issues: #1, #2, #3\n"
+                "Opened PRs: #100, #101\n"
+            )
+            env = _scrubbed_env(
+                REPO_PATH=repo,
+                WORKTREE_SETUP_WORKTREE_PATH=repo,
+                IMPLEMENTATION=impl,
+            )
+            r = subprocess.run(
+                ["bash", "-c", self.step_cmd],
+                capture_output=True, text=True, env=env, cwd=repo,
+            )
+            self.assertEqual(
+                r.returncode, 0,
+                "Sentinel-only opt-out must exit 0.\n"
+                f"stdout: {r.stdout}\nstderr: {r.stderr}",
+            )
+
+    def test_allow_no_op_flag_opt_out_exits_zero_with_no_diff(self):
+        """When ALLOW_NO_OP=true and there are no edits, step-08c MUST
+        exit 0 even if the sentinel is absent."""
+        with tempfile.TemporaryDirectory() as repo:
+            _init_git_repo(repo)
+            env = _scrubbed_env(
+                REPO_PATH=repo,
+                WORKTREE_SETUP_WORKTREE_PATH=repo,
+                IMPLEMENTATION="Files modified: (none)\nOrchestration only.\n",
+                ALLOW_NO_OP="true",
+            )
+            r = subprocess.run(
+                ["bash", "-c", self.step_cmd],
+                capture_output=True, text=True, env=env, cwd=repo,
+            )
+            self.assertEqual(
+                r.returncode, 0,
+                "ALLOW_NO_OP=true opt-out must exit 0.\n"
+                f"stdout: {r.stdout}\nstderr: {r.stderr}",
+            )
+
+    def test_both_sentinel_and_flag_exits_zero(self):
+        """Both opt-out paths together must still exit 0 (idempotent)."""
+        with tempfile.TemporaryDirectory() as repo:
+            _init_git_repo(repo)
+            env = _scrubbed_env(
+                REPO_PATH=repo,
+                WORKTREE_SETUP_WORKTREE_PATH=repo,
+                IMPLEMENTATION=f"X\n{_ORCHESTRATION_SENTINEL}\nY\n",
+                ALLOW_NO_OP="true",
+            )
+            r = subprocess.run(
+                ["bash", "-c", self.step_cmd],
+                capture_output=True, text=True, env=env, cwd=repo,
+            )
+            self.assertEqual(
+                r.returncode, 0,
+                "Belt-and-suspenders opt-out must exit 0.\n"
+                f"stdout: {r.stdout}\nstderr: {r.stderr}",
+            )
+
+    def test_no_opt_out_no_diff_no_justification_fails_loud(self):
+        """Genuine hollow-success (no opt-out, no edits, no justification)
+        MUST still fail loud — the original hollow-success guard is intact."""
+        with tempfile.TemporaryDirectory() as repo:
+            _init_git_repo(repo)
+            env = _scrubbed_env(
+                REPO_PATH=repo,
+                WORKTREE_SETUP_WORKTREE_PATH=repo,
+                IMPLEMENTATION="Files modified: (none)\n",
+                # No ALLOW_NO_OP, no sentinel, no justification, no ISSUE_NUMBER.
+            )
+            r = subprocess.run(
+                ["bash", "-c", self.step_cmd],
+                capture_output=True, text=True, env=env, cwd=repo,
+            )
+            self.assertNotEqual(
+                r.returncode, 0,
+                "Genuine hollow success must still fail loud.\n"
+                f"stdout: {r.stdout}\nstderr: {r.stderr}",
+            )
+            self.assertIn("hollow-success", r.stderr.lower() + r.stdout.lower())
+
+    def test_allow_no_op_strict_boolean_rejects_yes(self):
+        """ALLOW_NO_OP=yes / 1 / on / True MUST NOT trigger opt-out.
+        Only the literal string 'true' (lowercase) is accepted (security
+        contract: avoid coercion surprises)."""
+        for val in ("yes", "1", "on", "True", "TRUE"):
+            with self.subTest(allow_no_op=val):
+                with tempfile.TemporaryDirectory() as repo:
+                    _init_git_repo(repo)
+                    env = _scrubbed_env(
+                        REPO_PATH=repo,
+                        WORKTREE_SETUP_WORKTREE_PATH=repo,
+                        IMPLEMENTATION="Files modified: (none)\n",
+                        ALLOW_NO_OP=val,
+                    )
+                    r = subprocess.run(
+                        ["bash", "-c", self.step_cmd],
+                        capture_output=True, text=True, env=env, cwd=repo,
+                    )
+                    self.assertNotEqual(
+                        r.returncode, 0,
+                        f"ALLOW_NO_OP={val!r} must NOT trigger opt-out "
+                        "(only literal 'true' accepted).\n"
+                        f"stdout: {r.stdout}\nstderr: {r.stderr}",
+                    )
+
+    def test_real_diff_passes_regardless_of_flag(self):
+        """When the worktree contains real edits, step-08c passes via the
+        existing git-diff path (no opt-out needed)."""
+        with tempfile.TemporaryDirectory() as repo:
+            _init_git_repo(repo)
+            Path(repo, "new_file.txt").write_text("real work\n")
+            env = _scrubbed_env(
+                REPO_PATH=repo,
+                WORKTREE_SETUP_WORKTREE_PATH=repo,
+                IMPLEMENTATION="Files modified: new_file.txt\n",
+            )
+            r = subprocess.run(
+                ["bash", "-c", self.step_cmd],
+                capture_output=True, text=True, env=env, cwd=repo,
+            )
+            self.assertEqual(
+                r.returncode, 0,
+                "Real edits must pass via existing diff path.\n"
+                f"stdout: {r.stdout}\nstderr: {r.stderr}",
+            )
+
+
+class TestFailLoudWorktreePath425(unittest.TestCase):
+    """Issue #425: step-08c MUST fail loud with a step-id-tagged diagnostic
+    when WORKTREE_SETUP_WORKTREE_PATH is genuinely missing AND no opt-out
+    is requested. The diagnostic must mention 'step-08c' and
+    'worktree_setup.worktree_path'.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.step_cmd = _extract_step_command(
+            _WORKFLOW_TDD_YAML, "step-08c-implementation-no-op-guard"
+        )
+
+    def test_missing_worktree_path_fails_loud_with_step_id(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _init_git_repo(repo)
+            env = _scrubbed_env(
+                REPO_PATH=repo,
+                IMPLEMENTATION="Files modified: foo.py\n",
+                # WORKTREE_SETUP_WORKTREE_PATH deliberately UNSET.
+                # No opt-out: must fail loud.
+            )
+            r = subprocess.run(
+                ["bash", "-c", self.step_cmd],
+                capture_output=True, text=True, env=env, cwd=repo,
+            )
+            self.assertNotEqual(
+                r.returncode, 0,
+                "Missing WORKTREE_SETUP_WORKTREE_PATH must fail loud.\n"
+                f"stdout: {r.stdout}\nstderr: {r.stderr}",
+            )
+            self.assertIn(
+                "step-08c requires worktree_setup.worktree_path",
+                r.stderr,
+                "Diagnostic must reference 'step-08c requires "
+                "worktree_setup.worktree_path' so reviewers can trace the "
+                "propagation gap to the composer boundary.\n"
+                f"stderr: {r.stderr}",
+            )
+
+    def test_missing_worktree_does_not_fail_when_orchestration_opt_out(self):
+        """If orchestration opt-out fires BEFORE the cd, missing worktree
+        path should not cause step-08c to fail. (Opt-out paths must not
+        depend on the worktree being set up.)"""
+        with tempfile.TemporaryDirectory() as repo:
+            env = _scrubbed_env(
+                REPO_PATH=repo,
+                IMPLEMENTATION=f"{_ORCHESTRATION_SENTINEL}\n",
+                ALLOW_NO_OP="true",
+                # WORKTREE_SETUP_WORKTREE_PATH deliberately UNSET.
+            )
+            r = subprocess.run(
+                ["bash", "-c", self.step_cmd],
+                capture_output=True, text=True, env=env, cwd=repo,
+            )
+            self.assertEqual(
+                r.returncode, 0,
+                "Orchestration opt-out must short-circuit before the cd "
+                "so missing worktree path is acceptable for orchestration "
+                "tasks.\nstdout: {r.stdout}\nstderr: {r.stderr}",
+            )
+
+
+class TestComposerPropagatesContext425(unittest.TestCase):
+    """Issue #425 root cause A: composers must declare and forward
+    `worktree_setup` and `allow_no_op` so the recipe-runner threads them
+    across nested-recipe boundaries.
+    """
+
+    def test_default_workflow_declares_worktree_setup_in_context(self):
+        text = _DEFAULT_WORKFLOW_YAML.read_text()
+        self.assertRegex(
+            text,
+            r"(?m)^\s*worktree_setup\s*:",
+            "default-workflow.yaml `context:` block must declare "
+            "`worktree_setup: \"\"` so the runner threads it from "
+            "smart-execute-routing into workflow-tdd.",
+        )
+
+    def test_default_workflow_declares_allow_no_op_in_context(self):
+        text = _DEFAULT_WORKFLOW_YAML.read_text()
+        self.assertRegex(
+            text,
+            r"(?m)^\s*allow_no_op\s*:",
+            "default-workflow.yaml `context:` block must declare "
+            "`allow_no_op: false` so orchestration tasks can flip it to true.",
+        )
+
+    def test_smart_execute_routing_forwards_worktree_setup(self):
+        if not _SMART_EXECUTE_ROUTING_YAML.exists():
+            self.skipTest(f"{_SMART_EXECUTE_ROUTING_YAML} not present in this branch.")
+        text = _SMART_EXECUTE_ROUTING_YAML.read_text()
+        self.assertIn(
+            "worktree_setup",
+            text,
+            "smart-execute-routing.yaml must reference `worktree_setup` "
+            "in its sub-recipe context to forward it to default-workflow.",
+        )
+
+    def test_smart_execute_routing_forwards_allow_no_op(self):
+        if not _SMART_EXECUTE_ROUTING_YAML.exists():
+            self.skipTest(f"{_SMART_EXECUTE_ROUTING_YAML} not present in this branch.")
+        text = _SMART_EXECUTE_ROUTING_YAML.read_text()
+        self.assertIn(
+            "allow_no_op",
+            text,
+            "smart-execute-routing.yaml must forward `allow_no_op` to "
+            "default-workflow context so the flag propagates end-to-end.",
+        )
+
+    def test_smart_classify_route_emits_allow_no_op(self):
+        if not _SMART_CLASSIFY_ROUTE_YAML.exists():
+            self.skipTest(f"{_SMART_CLASSIFY_ROUTE_YAML} not present in this branch.")
+        text = _SMART_CLASSIFY_ROUTE_YAML.read_text()
+        self.assertIn(
+            "allow_no_op",
+            text,
+            "smart-classify-route.yaml must emit `allow_no_op` (true for "
+            "audit/docs-only/orchestration/meta classifications, else false).",
+        )
+
+
+class TestSiblingRecipesFailLoud412(unittest.TestCase):
+    """Issue #412: the 4 sibling recipes that still use `${WORKTREE_*:-…}`
+    silent fallback must be converted to fail-loud `:?` form.
+
+    Targets:
+      - workflow-finalize.yaml (L56, L141)
+      - workflow-pr-review.yaml (L207, L303)
+      - workflow-refactor-review.yaml (L190 — triple-fallback chain)
+      - workflow-publish.yaml (audit pass; should already be clean post-#413)
+    """
+
+    SILENT_FALLBACK_RE = re.compile(r"\$\{WORKTREE_[A-Z_]*:-")
+
+    def _scan(self, path: Path) -> list[str]:
+        offenders = []
+        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+            # Allow informational echo lines that intentionally use :-(unset).
+            if "(unset)" in line:
+                continue
+            if self.SILENT_FALLBACK_RE.search(line):
+                offenders.append(f"  L{lineno}: {line.strip()}")
+        return offenders
+
+    def test_workflow_finalize_no_silent_fallback(self):
+        offenders = self._scan(_WORKFLOW_FINALIZE_YAML)
+        self.assertEqual(
+            offenders, [],
+            "workflow-finalize.yaml must use ${VAR:?diagnostic} fail-loud "
+            "form for WORKTREE_* paths (issue #412):\n" + "\n".join(offenders),
+        )
+
+    def test_workflow_pr_review_no_silent_fallback(self):
+        offenders = self._scan(_WORKFLOW_PR_REVIEW_YAML)
+        self.assertEqual(
+            offenders, [],
+            "workflow-pr-review.yaml must use ${VAR:?diagnostic} fail-loud "
+            "form for WORKTREE_* paths (issue #412):\n" + "\n".join(offenders),
+        )
+
+    def test_workflow_refactor_review_no_silent_fallback(self):
+        offenders = self._scan(_WORKFLOW_REFACTOR_REVIEW_YAML)
+        self.assertEqual(
+            offenders, [],
+            "workflow-refactor-review.yaml must use ${VAR:?diagnostic} "
+            "fail-loud form for WORKTREE_* paths (issue #412):\n"
+            + "\n".join(offenders),
+        )
+
+    def test_workflow_refactor_review_no_triple_fallback_chain(self):
+        text = _WORKFLOW_REFACTOR_REVIEW_YAML.read_text()
+        self.assertNotIn(
+            '2>/dev/null || cd "$REPO_PATH"',
+            text,
+            "workflow-refactor-review.yaml L190 must not use the triple-"
+            "fallback `cd \"${WORKTREE_*:-$REPO_PATH}\" 2>/dev/null || "
+            "cd \"$REPO_PATH\"` chain. Replace with single :? fail-loud.",
+        )
+
+    def test_workflow_publish_no_silent_fallback(self):
+        """Per design spec A3: publish should already be clean from #413.
+        This test guards against regression."""
+        offenders = self._scan(_WORKFLOW_PUBLISH_YAML)
+        self.assertEqual(
+            offenders, [],
+            "workflow-publish.yaml regression: silent fallback re-introduced.\n"
+            + "\n".join(offenders),
+        )
+
+    def test_finalize_uses_fail_loud_at_known_sites(self):
+        text = _WORKFLOW_FINALIZE_YAML.read_text()
+        count = text.count("${WORKTREE_SETUP_WORKTREE_PATH:?")
+        self.assertGreaterEqual(
+            count, 2,
+            "workflow-finalize.yaml must contain at least two "
+            "${WORKTREE_SETUP_WORKTREE_PATH:?...} sites (was L56 and L141).",
+        )
+
+    def test_pr_review_uses_fail_loud_at_known_sites(self):
+        text = _WORKFLOW_PR_REVIEW_YAML.read_text()
+        count = text.count("${WORKTREE_SETUP_WORKTREE_PATH:?")
+        self.assertGreaterEqual(
+            count, 2,
+            "workflow-pr-review.yaml must contain at least two "
+            "${WORKTREE_SETUP_WORKTREE_PATH:?...} sites (was L207 and L303).",
+        )
+
+    def test_refactor_review_uses_fail_loud(self):
+        text = _WORKFLOW_REFACTOR_REVIEW_YAML.read_text()
+        self.assertIn(
+            "${WORKTREE_SETUP_WORKTREE_PATH:?",
+            text,
+            "workflow-refactor-review.yaml must use fail-loud :? form "
+            "(was triple-fallback at L190).",
+        )
+
+    def test_diagnostics_reference_workflow_worktree(self):
+        """All :? diagnostics in the converted recipes should mention the
+        producing step (workflow-worktree / step-04) per Zero-BS contract."""
+        for path in (
+            _WORKFLOW_FINALIZE_YAML,
+            _WORKFLOW_PR_REVIEW_YAML,
+            _WORKFLOW_REFACTOR_REVIEW_YAML,
+        ):
+            text = path.read_text()
+            for m in re.finditer(
+                r"\$\{WORKTREE_SETUP_WORKTREE_PATH:\?([^}]+)\}", text
+            ):
+                diag = m.group(1)
+                self.assertIn(
+                    "worktree", diag.lower(),
+                    f"{path.name}: diagnostic must mention 'worktree'. "
+                    f"Got: {diag!r}",
+                )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
