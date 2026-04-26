@@ -40,6 +40,10 @@ context:
   requirements_debate: ""
   n_version_implementations: ""
   refined_implementation: ""
+  # Optional: when set, skip new-branch creation and reuse this branch.
+  existing_branch: ""
+  # Optional: when set, attach to this existing PR rather than opening a new one.
+  pr_number: ""
 
 steps:
   - id: "consensus-preflight"
