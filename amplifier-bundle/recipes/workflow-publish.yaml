@@ -16,6 +16,15 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
+# Required upstream outputs consumed by bash steps in this brick.
+# Documents the recipe-boundary contract; future compose-time validation
+# in amplihack-recipe-runner will hook here. See issue #414.
+inputs:
+  - name: worktree_setup.worktree_path
+    description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by bash steps that cd into the worktree (step-15, step-16)."
+  - name: repo_path
+    description: "Absolute path to the repository root. Provided by parent recipe context."
+
 context: {}
 
 steps:

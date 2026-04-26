@@ -16,6 +16,13 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
+# Required upstream outputs consumed by bash steps in this brick.
+# Documents the recipe-boundary contract; future compose-time validation
+# in amplihack-recipe-runner will hook here. See issue #414.
+inputs:
+  - name: worktree_setup.worktree_path
+    description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by the checkpoint bash step (step-11b-implement-feedback) that cd into the worktree."
+
 context: {}
 
 steps:
@@ -187,19 +194,20 @@ steps:
     type: "bash"
     max_env_value_bytes: 65536
     command: |
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" 2>/dev/null || cd "$REPO_PATH" && \
-      echo "=== Checkpoint: Staging Review Feedback ===" && \
-      git add -A && \
-      STAGED=$(git diff --cached --name-only) && \
-      if [ -n "$STAGED" ]; then \
+      set -euo pipefail
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-11b-implement-feedback requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
+      echo "=== Checkpoint: Staging Review Feedback ==="
+      git add -A
+      STAGED=$(git diff --cached --name-only)
+      if [ -n "$STAGED" ]; then
         git commit -m "wip: checkpoint after review feedback (steps 10-11)
 
       Automatic checkpoint to preserve review-addressed changes.
-      Saved before running pre-commit hooks and tests." && \
-        echo "Checkpoint commit created with $(wc -l <<< "$STAGED") file(s)" ; \
-      else \
-        echo "No changes to checkpoint" ; \
-      fi && \
+      Saved before running pre-commit hooks and tests."
+        echo "Checkpoint commit created with $(wc -l <<< "$STAGED") file(s)"
+      else
+        echo "No changes to checkpoint"
+      fi
       echo "=== Checkpoint Complete ==="
     output: "review_checkpoint"
 

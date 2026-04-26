@@ -16,6 +16,13 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
+# Required upstream outputs consumed by bash steps in this brick.
+# Documents the recipe-boundary contract; future compose-time validation
+# in amplihack-recipe-runner will hook here. See issue #414.
+inputs:
+  - name: worktree_setup.worktree_path
+    description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by bash steps in step-18c-push-feedback-changes and step-19c-zero-bs-verification that cd into the worktree."
+
 context: {}
 
 steps:
@@ -204,24 +211,26 @@ steps:
   - id: "step-18c-push-feedback-changes"
     type: "bash"
     command: |
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
-      echo "=== Pushing Review Feedback Changes ===" && \
-      git add -A && \
-      if [ -n "$(git diff --cached --name-only)" ]; then \
+      set -euo pipefail
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-18c-push-feedback-changes requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
+      echo "=== Pushing Review Feedback Changes ==="
+      git add -A
+      if [ -n "$(git diff --cached --name-only)" ]; then
         git commit -m "address review feedback
 
       - Implemented reviewer suggestions
       - Fixed identified issues
       - Updated per security review
-      - Addressed philosophy compliance items" ; \
-      else \
-        echo "WARNING: Nothing to commit - feedback changes already committed" ; \
-      fi && \
-      if git rev-list --count @{u}..HEAD 2>/dev/null | grep -qv '^0$'; then \
-        git pull --rebase 2>/dev/null && git push ; \
-      else \
-        echo "WARNING: Nothing to push - branch is up to date with remote" ; \
-      fi && \
+      - Addressed philosophy compliance items"
+      else
+        echo "WARNING: Nothing to commit - feedback changes already committed"
+      fi
+      if git rev-list --count @{u}..HEAD 2>/dev/null | grep -qv '^0$'; then
+        git pull --rebase 2>/dev/null
+        git push
+      else
+        echo "WARNING: Nothing to push - branch is up to date with remote"
+      fi
       echo "=== Changes Pushed ==="
     output: "feedback_push_result"
 
@@ -299,25 +308,26 @@ steps:
   - id: "step-19c-zero-bs-verification"
     type: "bash"
     command: |
-      echo "=== ZERO-BS VERIFICATION ===" && \
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
-      echo "" && \
-      echo "Scanning for Zero-BS violations..." && \
-      echo "" && \
-      echo "--- Checking for TODO/FIXME comments ---" && \
-      (grep -r -E "(TODO|FIXME)" --include="*.py" --include="*.ts" --include="*.js" . 2>/dev/null || echo "None found") && \
-      echo "" && \
-      echo "--- Checking for stub indicators ---" && \
-      (grep -r -E "(NotImplementedError|raise NotImplemented|pass  # stub)" --include="*.py" . 2>/dev/null || echo "None found") && \
-      echo "" && \
-      echo "--- Checking for Forbidden Patterns ---" && \
-      echo "  Shell: || true, >/dev/null 2>&1, set +e" && \
-      (grep -rn "|| true\||| :\|>/dev/null 2>&1\|2>/dev/null\|&>/dev/null\|set +e" --include="*.sh" --include="*.bash" --include="Makefile" --include="Dockerfile" . 2>/dev/null || echo "  None found") && \
-      echo "  Python: bare except, except pass, return None in except" && \
-      (grep -rn "except:$\|except .*:.*pass$\|except.*:.*return None" --include="*.py" . 2>/dev/null || echo "  None found") && \
-      echo "  TypeScript/JS: empty catch, catch return undefined" && \
-      (grep -rn "catch.*{.*}$\|catch.*return undefined\|catch.*return \[\]" --include="*.ts" --include="*.js" . 2>/dev/null || echo "  None found") && \
-      echo "" && \
+      set -euo pipefail
+      echo "=== ZERO-BS VERIFICATION ==="
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-19c-zero-bs-verification requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
+      echo ""
+      echo "Scanning for Zero-BS violations..."
+      echo ""
+      echo "--- Checking for TODO/FIXME comments ---"
+      (grep -r -E "(TODO|FIXME)" --include="*.py" --include="*.ts" --include="*.js" . 2>/dev/null || echo "None found")
+      echo ""
+      echo "--- Checking for stub indicators ---"
+      (grep -r -E "(NotImplementedError|raise NotImplemented|pass  # stub)" --include="*.py" . 2>/dev/null || echo "None found")
+      echo ""
+      echo "--- Checking for Forbidden Patterns ---"
+      echo "  Shell: || true, >/dev/null 2>&1, set +e"
+      (grep -rn "|| true\||| :\|>/dev/null 2>&1\|2>/dev/null\|&>/dev/null\|set +e" --include="*.sh" --include="*.bash" --include="Makefile" --include="Dockerfile" . 2>/dev/null || echo "  None found")
+      echo "  Python: bare except, except pass, return None in except"
+      (grep -rn "except:$\|except .*:.*pass$\|except.*:.*return None" --include="*.py" . 2>/dev/null || echo "  None found")
+      echo "  TypeScript/JS: empty catch, catch return undefined"
+      (grep -rn "catch.*{.*}$\|catch.*return undefined\|catch.*return \[\]" --include="*.ts" --include="*.js" . 2>/dev/null || echo "  None found")
+      echo ""
       echo "=== Zero-BS Verification Complete ==="
     output: "zero_bs_check"
 
