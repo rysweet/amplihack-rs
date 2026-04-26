@@ -109,7 +109,7 @@ steps:
     condition: "goal_already_met != 'true'"
     command: |
       set -euo pipefail
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}"
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-15 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       echo "=== Step 15: Commit and Push ==="
       echo ""
       echo "--- Staging Changes ---"
@@ -177,7 +177,7 @@ steps:
     condition: "goal_already_met != 'true'"
     command: |
       set -euo pipefail
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}"
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-16 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       echo "=== Step 16: Creating Draft PR ===" >&2
 
       # FIX (#3324): Idempotency guard — detect pre-existing PRs before creating one
