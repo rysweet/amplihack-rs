@@ -49,10 +49,9 @@ fn recipes_dir() -> PathBuf {
 
 fn load(name: &str) -> Recipe {
     let path = recipes_dir().join(format!("{name}.yaml"));
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    serde_yaml::from_str(&text)
-        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
 /// The expected step inventory of `default-workflow`, in execution order, as
@@ -181,10 +180,7 @@ fn every_phase_subrecipe_loads_and_has_steps() {
     for name in PHASE_RECIPES {
         let r = load(name);
         assert_eq!(&r.name, name, "recipe.name must match filename");
-        assert!(
-            !r.steps.is_empty(),
-            "{name} must declare at least one step"
-        );
+        assert!(!r.steps.is_empty(), "{name} must declare at least one step");
     }
 }
 
@@ -232,7 +228,10 @@ fn no_duplicate_step_ids_across_subrecipes() {
 fn every_phase_subrecipe_under_400_lines() {
     const LIMIT: usize = 400;
     let mut violations: Vec<(String, usize)> = Vec::new();
-    for name in PHASE_RECIPES.iter().chain(std::iter::once(&"default-workflow")) {
+    for name in PHASE_RECIPES
+        .iter()
+        .chain(std::iter::once(&"default-workflow"))
+    {
         let path = recipes_dir().join(format!("{name}.yaml"));
         let lines = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
