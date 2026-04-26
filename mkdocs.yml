@@ -67,6 +67,7 @@ nav:
       - Blarify Quickstart: howto/blarify-quickstart.md
       - Troubleshoot Worktree: howto/troubleshoot-worktree.md
       - Integrate Agent Memory: howto/integrate-agent-memory.md
+      - Configure Hooks: howto/configure-hooks.md
   - Skills:
       - Migrate Session: skills/migrate.md
   - Reference:
@@ -97,6 +98,7 @@ nav:
       - uvx-help Command: reference/uvx-help-command.md
       - Memory Extended API: reference/memory-extended-api.md
       - Power Steering Compaction API: reference/power-steering-compaction-api.md
+      - Shell Command Hook: reference/shell-command-hook.md
   - Concepts:
       - Philosophy: concepts/philosophy.md
       - Patterns: concepts/patterns.md
@@ -125,6 +127,7 @@ nav:
       - Worktree Support: concepts/worktree-support.md
       - Agent Memory Architecture: concepts/agent-memory-architecture.md
       - Power Steering Compaction: concepts/power-steering-compaction.md
+      - Hooks Comparison: concepts/hooks-comparison.md
   - Code Atlas:
       - Overview: atlas/index.md
       - "Layer 1: Repo Surface": atlas/repo-surface/README.md
