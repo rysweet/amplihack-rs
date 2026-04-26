@@ -1,0 +1,190 @@
+name: simard-ooda-cycle
+version: 1.0.0
+description: |
+  Phase 3 of the recipes-first Simard rebuild (rysweet/Simard#1270).
+
+  Replaces `src/ooda_loop/mod.rs::run_ooda_cycle` with a declarative
+  pipeline of phase steps that round-trip OodaStateSnapshot JSON between
+  invocations of the `simard-ooda-step` helper bin.
+
+  - Observe is bridge-dependent: helper bin loads bridges from
+    `state_root` via `bridge_factory`. Provide `observation_json_path`
+    to skip live observation and replay a prior observation instead.
+  - Orient / Decide / Review / Curate are pure-data and always run
+    against the in-memory snapshot.
+  - Act dispatch is still TODO: the current cut requires the caller to
+    provide pre-computed outcomes via `outcomes_json_path`. Per-action
+    `type: recipe` dispatch (AdvanceGoal → simard-engineer-loop,
+    RunImprovement → simard-self-improve-cycle) is the next step.
+
+  Companion: simard-engineer-loop.yaml (Phase 2),
+             simard-self-improve-cycle.yaml (Phase 1).
+
+inputs:
+  state_json_path:
+    description: Path to OodaStateSnapshot JSON on disk
+    required: true
+  observation_json_path:
+    description: |
+      Path to Observation JSON. When omitted, the recipe runs the `observe`
+      step itself (using simard-ooda-step + bridge_factory). Provide a path
+      to skip live observation and replay a prior observation instead.
+    required: false
+    default: ""
+  outcomes_json_path:
+    description: Path to Vec<ActionOutcome> JSON from the act phase
+    required: false
+    default: ""
+  config_json_path:
+    description: Path to OodaConfig JSON; defaults to OodaConfig::default()
+    required: false
+    default: ""
+  helper_bin:
+    description: Path to the simard-ooda-step binary
+    required: false
+    default: "./target/debug/simard-ooda-step"
+  state_root:
+    description: Where to write the post-cycle snapshot + reports
+    required: true
+  act_elapsed_millis:
+    description: Wall-clock duration of the act phase in milliseconds
+    required: false
+    default: "0"
+
+steps:
+  # --- Observe: gather goal/env/gym/memory state from live bridges ---
+  #
+  # Bridge-dependent. Connects to the IPC memory server when the OODA
+  # daemon is running, otherwise opens NativeCognitiveMemory directly on
+  # state_root. Launches fresh Python knowledge/gym subprocesses.
+  #
+  # If `observation_json_path` is provided, we skip live observation and
+  # use the supplied file (useful for replay / parity tests).
+  - id: observe
+    type: bash
+    command: |
+      mkdir -p "{{state_root}}"
+      if [ -n "{{observation_json_path}}" ]; then
+        cp "{{observation_json_path}}" "{{state_root}}/observation.json"
+        cp "{{state_json_path}}" "{{state_root}}/post_observe_state.json"
+        echo "[ooda-cycle] observe: replayed observation from {{observation_json_path}}"
+      else
+        "{{helper_bin}}" observe \
+          --state-json "{{state_json_path}}" \
+          --state-root "{{state_root}}" \
+          > "{{state_root}}/observe_result.json"
+        jq '.observation' "{{state_root}}/observe_result.json" > "{{state_root}}/observation.json"
+        jq '.snapshot'    "{{state_root}}/observe_result.json" > "{{state_root}}/post_observe_state.json"
+        echo "[ooda-cycle] observe: live observation captured"
+      fi
+    on_error: fail
+    output: observation_path
+
+  # --- Orient: rank priorities from observation + goal failure counts ---
+  - id: orient
+    type: bash
+    command: |
+      "{{helper_bin}}" orient \
+        --state-json "{{state_root}}/post_observe_state.json" \
+        --observation-json "{{state_root}}/observation.json" \
+        > "{{state_root}}/priorities.json"
+      echo "[ooda-cycle] orient: emitted $(jq 'length' "{{state_root}}/priorities.json") priorities"
+    on_error: fail
+    output: priorities_path
+
+  # --- Decide: select planned actions from priorities ---
+  - id: decide
+    type: bash
+    command: |
+      DECIDE_ARGS=(--priorities-json "{{state_root}}/priorities.json")
+      if [ -n "{{config_json_path}}" ]; then
+        DECIDE_ARGS+=(--config-json "{{config_json_path}}")
+      fi
+      "{{helper_bin}}" decide "${DECIDE_ARGS[@]}" \
+        > "{{state_root}}/planned_actions.json"
+      echo "[ooda-cycle] decide: planned $(jq 'length' "{{state_root}}/planned_actions.json") actions"
+    on_error: fail
+    output: planned_actions_path
+
+  # --- Act: dispatch planned actions via live bridges ---
+  #
+  # When `outcomes_json_path` is provided, we replay caller-provided
+  # outcomes (escape hatch for parity tests). Otherwise the helper bin
+  # connects bridges via state_root and calls the existing
+  # `ooda_actions::dispatch_actions`. Per-action `type: recipe` dispatch
+  # (AdvanceGoal → simard-engineer-loop, etc.) remains a future
+  # refinement — `dispatch_actions` already orchestrates this internally.
+  - id: act
+    type: bash
+    command: |
+      ACT_START=$(date +%s%3N)
+      if [ -n "{{outcomes_json_path}}" ]; then
+        cp "{{outcomes_json_path}}" "{{state_root}}/outcomes.json"
+        cp "{{state_root}}/post_observe_state.json" "{{state_root}}/post_act_state.json"
+        echo "[ooda-cycle] act: replayed $(jq 'length' "{{state_root}}/outcomes.json") outcome(s)"
+      else
+        "{{helper_bin}}" act \
+          --state-json "{{state_root}}/post_observe_state.json" \
+          --actions-json "{{state_root}}/planned_actions.json" \
+          --state-root "{{state_root}}" \
+          > "{{state_root}}/act_result.json"
+        jq '.outcomes' "{{state_root}}/act_result.json" > "{{state_root}}/outcomes.json"
+        jq '.snapshot' "{{state_root}}/act_result.json" > "{{state_root}}/post_act_state.json"
+        echo "[ooda-cycle] act: $(jq 'length' "{{state_root}}/outcomes.json") outcome(s) from live dispatch"
+      fi
+      ACT_END=$(date +%s%3N)
+      echo $((ACT_END - ACT_START)) > "{{state_root}}/act_elapsed_millis.txt"
+    on_error: fail
+
+  # --- Review: synthesise improvement directives from outcomes ---
+  - id: review
+    type: bash
+    command: |
+      ACT_MS=$(cat "{{state_root}}/act_elapsed_millis.txt" 2>/dev/null || echo 0)
+      "{{helper_bin}}" review \
+        --outcomes-json "{{state_root}}/outcomes.json" \
+        --act-elapsed-millis "$ACT_MS" \
+        > "{{state_root}}/review_directives.json"
+      echo "[ooda-cycle] review: $(jq 'length' "{{state_root}}/review_directives.json") improvement directive(s)"
+    on_error: fail
+    output: review_directives_path
+
+  # --- Curate: archive completed goals + promote backlog into freed slots ---
+  - id: curate
+    type: bash
+    command: |
+      "{{helper_bin}}" curate \
+        --state-json "{{state_root}}/post_act_state.json" \
+        > "{{state_root}}/curate_result.json"
+      jq '.snapshot' "{{state_root}}/curate_result.json" > "{{state_root}}/post_state_snapshot.json"
+      echo "[ooda-cycle] curate: archived $(jq '.archived_goal_ids | length' "{{state_root}}/curate_result.json") goal(s)"
+    on_error: fail
+    output: post_state_snapshot_path
+
+  # --- Emit final cycle report ---
+  - id: emit-final
+    type: bash
+    command: |
+      jq -n \
+        --slurpfile priorities "{{state_root}}/priorities.json" \
+        --slurpfile planned_actions "{{state_root}}/planned_actions.json" \
+        --slurpfile outcomes "{{state_root}}/outcomes.json" \
+        --slurpfile review_directives "{{state_root}}/review_directives.json" \
+        --slurpfile post_state "{{state_root}}/post_state_snapshot.json" \
+        '{
+          priorities: $priorities[0],
+          planned_actions: $planned_actions[0],
+          outcomes: $outcomes[0],
+          review_directives: $review_directives[0],
+          post_state: $post_state[0]
+        }' > "{{state_root}}/cycle_report.json"
+      echo "[ooda-cycle] complete: cycle_report.json written to {{state_root}}/"
+    on_error: fail
+
+outputs:
+  cycle_report_path:
+    description: Path to the consolidated CycleReport-equivalent JSON
+    value: "{{state_root}}/cycle_report.json"
+  post_state_snapshot_path:
+    description: Path to the post-cycle OodaStateSnapshot JSON
+    value: "{{state_root}}/post_state_snapshot.json"
