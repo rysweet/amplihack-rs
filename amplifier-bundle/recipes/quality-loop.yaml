@@ -205,7 +205,7 @@ steps:
         | jq '
           def n(l): (l // []) | map(.name);
           def score(i):
-            (n(i.labels)) as $L | (i.comments // 0) as $c
+            (n(i.labels)) as $L | ((i.comments // []) | length) as $c
             | (if any($L[]; . == "priority:high" or . == "P0" or . == "critical") then 100 else 0 end)
             + (if any($L[]; . == "priority:medium" or . == "P1") then 50 else 0 end)
             + (if any($L[]; . == "bug") then 30 else 0 end)
@@ -213,7 +213,7 @@ steps:
             + (if any($L[]; . == "good first issue" or . == "easy") then 20 else 0 end)
             + (if any($L[]; . == "epic" or . == "large") then -30 else 0 end)
             + ($c * 2);
-          { ranked: [ .[] | { number, title, labels: n(.labels), comments: (.comments // 0), score: score(.) } ] | sort_by(-.score) }'
+          { ranked: [ .[] | { number, title, labels: n(.labels), comments: ((.comments // []) | length), score: score(.) } ] | sort_by(-.score) }'
     output: "issue_survey"
   - id: "select-next-task"
     type: "bash"
