@@ -16,6 +16,15 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
+# Required upstream outputs consumed by bash steps in this brick.
+# Documents the recipe-boundary contract; future compose-time validation
+# in amplihack-recipe-runner will hook here. See issue #414.
+inputs:
+  - name: worktree_setup.worktree_path
+    description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by bash steps in step-20b-push-cleanup and step-21-pr-ready that cd into the worktree."
+  - name: repo_path
+    description: "Absolute path to the repository root. Required by step-22b-final-status that runs the final status report against the parent repo."
+
 context: {}
 
 steps:
@@ -53,10 +62,15 @@ steps:
   - id: "step-20b-push-cleanup"
     type: "bash"
     command: |
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
-      echo "=== Pushing Cleanup Changes ===" && \
-      git add -A && \
-      git diff --cached --quiet || (git commit -m "final cleanup pass" && git pull --rebase 2>/dev/null && git push) && \
+      set -euo pipefail
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-20b-push-cleanup requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
+      echo "=== Pushing Cleanup Changes ==="
+      git add -A
+      if ! git diff --cached --quiet; then
+        git commit -m "final cleanup pass"
+        git pull --rebase 2>/dev/null
+        git push
+      fi
       echo "=== Cleanup Complete ==="
     output: "cleanup_push_result"
 
@@ -138,15 +152,16 @@ steps:
   - id: "step-21-pr-ready"
     type: "bash"
     command: |
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}" && \
-      echo "=== Step 20: Converting PR to Ready ===" && \
-      echo "" && \
-      echo "--- Verifying All Steps Complete ---" && \
-      echo "" && \
-      echo "--- Converting PR to Ready ---" && \
-      gh pr ready && \
-      echo "" && \
-      echo "--- Adding Ready Comment ---" && \
+      set -euo pipefail
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-21-pr-ready requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
+      echo "=== Step 20: Converting PR to Ready ==="
+      echo ""
+      echo "--- Verifying All Steps Complete ---"
+      echo ""
+      echo "--- Converting PR to Ready ---"
+      gh pr ready
+      echo ""
+      echo "--- Adding Ready Comment ---"
       gh pr comment --body "## Ready for Final Review
 
       All workflow steps completed:
@@ -159,8 +174,8 @@ steps:
       - [x] Final cleanup complete
       - [x] Quality audit passed
 
-      Ready for merge approval." && \
-      echo "" && \
+      Ready for merge approval."
+      echo ""
       echo "=== PR Marked Ready ==="
     output: "pr_ready_result"
 
@@ -198,20 +213,21 @@ steps:
   - id: "step-22b-final-status"
     type: "bash"
     command: |
-      cd "$REPO_PATH" && \
-      echo "=== WORKFLOW COMPLETE ===" && \
-      echo "" && \
-      echo "PR Status:" && \
-      gh pr view --json state,mergeable,reviews,statusCheckRollup && \
-      echo "" && \
+      set -euo pipefail
+      cd "${REPO_PATH:?step-22b-final-status requires repo_path; ensure parent recipe propagated repo_path context}"
+      echo "=== WORKFLOW COMPLETE ==="
+      echo ""
+      echo "PR Status:"
+      gh pr view --json state,mergeable,reviews,statusCheckRollup
+      echo ""
       # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
-      TASK_DESC="$TASK_DESCRIPTION" && \
-      ISSUE_NUMBER="$ISSUE_NUMBER" && \
-      PR_URL="$PR_URL" && \
-      printf '=== Task: %s ===\n' "$TASK_DESC" && \
-      printf '=== Issue: #%s ===\n' "$ISSUE_NUMBER" && \
-      printf '=== PR: %s ===\n' "$PR_URL" && \
-      echo "" && \
+      TASK_DESC="$TASK_DESCRIPTION"
+      ISSUE_NUMBER="$ISSUE_NUMBER"
+      PR_URL="$PR_URL"
+      printf '=== Task: %s ===\n' "$TASK_DESC"
+      printf '=== Issue: #%s ===\n' "$ISSUE_NUMBER"
+      printf '=== PR: %s ===\n' "$PR_URL"
+      echo ""
       echo "All 23 workflow steps completed successfully."
     output: "final_status"
 

@@ -16,6 +16,15 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
+# Required upstream outputs consumed by bash steps in this brick.
+# Documents the recipe-boundary contract; future compose-time validation
+# in amplihack-recipe-runner will hook here. See issue #414.
+inputs:
+  - name: worktree_setup.worktree_path
+    description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by bash steps that cd into the worktree (step-15, step-16)."
+  - name: repo_path
+    description: "Absolute path to the repository root. Provided by parent recipe context."
+
 context: {}
 
 steps:
@@ -109,7 +118,7 @@ steps:
     condition: "goal_already_met != 'true'"
     command: |
       set -euo pipefail
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}"
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-15 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       echo "=== Step 15: Commit and Push ==="
       echo ""
       echo "--- Staging Changes ---"
@@ -177,7 +186,7 @@ steps:
     condition: "goal_already_met != 'true'"
     command: |
       set -euo pipefail
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:-$REPO_PATH}"
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-16 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       echo "=== Step 16: Creating Draft PR ===" >&2
 
       # FIX (#3324): Idempotency guard — detect pre-existing PRs before creating one
