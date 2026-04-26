@@ -65,6 +65,7 @@ nav:
       - Generate Agent from Goal: howto/generate-agent-from-goal.md
       - Fix cxx-build CI Failure: howto/fix-cxx-build-ci-failure.md
       - Resolve LadybugDB Linker Errors: howto/resolve-kuzu-linker-errors.md
+      - Power Steering Worktree Troubleshooting: howto/power-steering-worktree-troubleshooting.md
       - Prompt → Distributed Hive: howto/prompt-to-distributed-hive.md
       - Use Agent Bundle Generator: howto/use-agent-bundle-generator.md
       - Blarify Quickstart: howto/blarify-quickstart.md
@@ -113,6 +114,7 @@ nav:
       - Memory Extended API: reference/memory-extended-api.md
       - Plugin Directory Structure Fix: reference/plugin-directory-structure-fix.md
       - Power Steering Compaction API: reference/power-steering-compaction-api.md
+      - Profile Management: reference/profile-management.md
       - Shell Command Hook: reference/shell-command-hook.md
       - Security Recommendations: reference/security-recommendations.md
       - "Security Audit: Copilot CLI Flags": reference/security-audit-copilot-cli-flags.md
@@ -153,6 +155,7 @@ nav:
       - Agent Bundle Generator: concepts/agent-bundle-generator.md
       - Blarify Integration: concepts/blarify-integration.md
       - Worktree Support: concepts/worktree-support.md
+      - Workspace Pattern: concepts/workspace-pattern.md
       - Agent Memory Architecture: concepts/agent-memory-architecture.md
       - Agent Type Memory Sharing: concepts/agent-type-memory-sharing.md
       - Power Steering Compaction: concepts/power-steering-compaction.md
