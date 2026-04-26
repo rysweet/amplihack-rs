@@ -380,9 +380,14 @@ steps:
     condition: |
       'Development' in task_type and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') or force_single_workstream == 'true')
     recipe: "default-workflow"
-    # No explicit context needed: task_description and repo_path flow through
-    # from the parent smart-orchestrator context automatically via context merging
-    # in _execute_sub_recipe().
+    # Pass through context including existing_branch/pr_number so the nested
+    # workflow can reuse an existing branch/PR instead of creating a new one
+    # (fixes #396).
+    context:
+      task_description: "{{task_description}}"
+      repo_path: "{{repo_path}}"
+      existing_branch: "{{existing_branch}}"
+      pr_number: "{{pr_number}}"
     output: "round_1_result"
 
   - id: "execute-single-round-1-investigation"
@@ -487,8 +492,14 @@ steps:
     condition: |
       'Development' in task_type and 'BLOCKED' in recursion_guard and workstream_count != 1 and workstream_count != '1' and workstream_count != ''
     recipe: "default-workflow"
-    # No explicit context needed: task_description and repo_path flow through
-    # from the parent smart-orchestrator context automatically.
+    # Pass through context including existing_branch/pr_number so the nested
+    # workflow can reuse an existing branch/PR instead of creating a new one
+    # (fixes #396).
+    context:
+      task_description: "{{task_description}}"
+      repo_path: "{{repo_path}}"
+      existing_branch: "{{existing_branch}}"
+      pr_number: "{{pr_number}}"
     output: "round_1_result"
 
   - id: "execute-single-fallback-blocked-investigation"
@@ -617,6 +628,14 @@ steps:
     condition: |
       adaptive_recipe == 'default-workflow'
     recipe: "default-workflow"
+    # Pass through context including existing_branch/pr_number so the nested
+    # workflow can reuse an existing branch/PR instead of creating a new one
+    # (fixes #396).
+    context:
+      task_description: "{{task_description}}"
+      repo_path: "{{repo_path}}"
+      existing_branch: "{{existing_branch}}"
+      pr_number: "{{pr_number}}"
     output: "round_1_result"
 
   - id: "adaptive-execute-investigation"
