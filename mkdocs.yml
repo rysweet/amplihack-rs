@@ -72,6 +72,8 @@ nav:
       - Create Your Own Tools: howto/create-your-own-tools.md
       - Recipe CLI Examples: howto/recipe-cli-examples.md
       - Recipe Discovery Troubleshooting: howto/recipe-discovery-troubleshooting.md
+      - Token Sanitization: howto/token-sanitization.md
+      - Security Testing: howto/security-testing.md
   - Skills:
       - Migrate Session: skills/migrate.md
   - Reference:
@@ -110,6 +112,7 @@ nav:
       - JSON Logging: reference/json-logging.md
       - Benchmarking: reference/benchmarking.md
       - Recipe Quick Reference: reference/recipe-quick-reference.md
+      - Security API Reference: reference/security-api.md
       - Code Review Practices: reference/code-review.md
       - Prerequisites: reference/prerequisites.md
   - Concepts:
