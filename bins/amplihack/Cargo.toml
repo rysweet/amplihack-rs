@@ -39,6 +39,10 @@ name = "investigation_workflow_decomposition"
 path = "../../tests/integration/investigation_workflow_decomposition_test.rs"
 
 [[test]]
+name = "smart_orchestrator_decomposition"
+path = "../../tests/integration/smart_orchestrator_decomposition_test.rs"
+
+[[test]]
 name = "cli_launch"
 path = "../../tests/integration/cli_launch_test.rs"
 

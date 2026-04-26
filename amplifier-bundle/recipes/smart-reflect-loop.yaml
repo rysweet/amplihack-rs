@@ -1,0 +1,157 @@
+name: "smart-reflect-loop"
+description: "Phase 3: 3-round goal-seeking reflection (round1/2/3 + reflect-final)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["smart-orchestrator", "reflect", "goal-seeking"]
+
+# smart-reflect-loop: extracted from smart-orchestrator.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — every routing branch, recursion
+# guard, fallback path, adaptive-recovery step, reflection round, and
+# outside-in validation gate. Context (task_type, workstream_count,
+# recursion_guard, round_N_result, etc.) flows in from the parent
+# smart-orchestrator context via _execute_sub_recipe()'s automatic merging
+# and propagates back so subsequent phase recipes can consume it.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 80
+
+context: {}
+
+steps:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Phase 3: Goal-seeking reflection loop (up to 3 rounds)
+  # Pattern from auto-workflow.yaml: CONTINUE/COMPLETE on each round.
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: "reflect-round-1"
+    type: "agent"
+    timeout_seconds: 300
+    condition: |
+      'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result
+    agent: "amplihack:core:reviewer"
+    prompt: |
+      Evaluate goal achievement after round 1.
+
+      **Goal + Success Criteria**: {{decomposition_json}}
+      **Round 1 Result**: {{round_1_result}}
+
+      Was each success criterion met?
+
+      ## Hollow Success Detection
+
+      A hollow success is when execution completes structurally but agents
+      clearly could not perform the work. Only flag HOLLOW when ALL of these
+      are true:
+      1. Agent explicitly states it cannot access the codebase, repository,
+         or files (e.g. "no codebase exists", "I could not access the code",
+         "cannot find the repository")
+      2. No concrete code changes, findings, or artifacts are described
+      3. The round result contains no file paths, diff output, test results,
+         or specific code references
+
+      Do NOT flag HOLLOW when:
+      - The agent completed the work but results are partial or imperfect
+      - Some success criteria are met but others are not (use PARTIAL instead)
+      - The agent produced real output with specific findings, even if brief
+      - The task was investigative and the agent reported concrete conclusions
+
+      If the result is a hollow success, use GOAL_STATUS: HOLLOW and explain
+      what specific outputs are missing. When in doubt between HOLLOW and
+      PARTIAL, choose PARTIAL — it triggers a follow-up round rather than
+      flagging a false infrastructure failure.
+
+      ## Adaptive Strategy Context
+
+      If an infrastructure error was detected and adaptive strategy was used:
+      **Adaptive recipe**: {{adaptive_recipe}}
+      **Error details**: {{infra_error_details}}
+
+      Factor this into your evaluation — if the task ran via adaptive strategy
+      due to a routing failure, note this in your assessment.
+
+      End with EXACTLY one of:
+      - `GOAL_STATUS: ACHIEVED` -- all criteria met with verifiable evidence
+      - `GOAL_STATUS: PARTIAL -- [what's missing]` -- needs another round
+      - `GOAL_STATUS: NOT_ACHIEVED -- [reason]` -- needs another round
+      - `GOAL_STATUS: HOLLOW -- [what was empty]` -- agents ran but produced no real work
+    output: "reflection_1"
+
+  - id: "execute-round-2"
+    type: "agent"
+    timeout_seconds: 600
+    condition: |
+      reflection_1 and ('PARTIAL' in reflection_1 or 'NOT_ACHIEVED' in reflection_1 or 'HOLLOW' in reflection_1)
+    agent: "amplihack:core:builder"
+    prompt: |
+      Round 1 was incomplete. Continue from where it left off.
+
+      **Original Goal**: {{decomposition_json}}
+      **Round 1 Result**: {{round_1_result}}
+      **What's Missing**: {{reflection_1}}
+
+      Address only what's missing. Do not redo completed work.
+      Create PRs for new changes. Report PR URLs.
+      End with "STATUS: COMPLETE" or "STATUS: CONTINUE".
+    output: "round_2_result"
+
+  - id: "reflect-round-2"
+    type: "agent"
+    timeout_seconds: 300
+    condition: |
+      round_2_result and ('PARTIAL' in reflection_1 or 'NOT_ACHIEVED' in reflection_1)
+    agent: "amplihack:core:reviewer"
+    prompt: |
+      Evaluate goal achievement after round 2.
+
+      **Goal**: {{decomposition_json}}
+      **Round 1**: {{round_1_result}}
+      **Round 2**: {{round_2_result}}
+
+      End with:
+      - `GOAL_STATUS: ACHIEVED`
+      - `GOAL_STATUS: PARTIAL -- [gaps]`
+      - `GOAL_STATUS: NOT_ACHIEVED -- [reason]`
+    output: "reflection_2"
+
+  - id: "execute-round-3"
+    type: "agent"
+    timeout_seconds: 600
+    condition: |
+      reflection_2 and ('PARTIAL' in reflection_2 or 'NOT_ACHIEVED' in reflection_2)
+    agent: "amplihack:core:builder"
+    prompt: |
+      Final round. Complete as much remaining work as possible.
+
+      **Original Goal**: {{decomposition_json}}
+      **Round 2 Result**: {{round_2_result}}
+      **Round 2 Gaps**: {{reflection_2}}
+
+      Prioritize the most critical missing items. This is the last round.
+      Report what was and was not completed.
+      End with "STATUS: COMPLETE" or "STATUS: PARTIAL".
+    output: "round_3_result"
+
+  - id: "reflect-final"
+    type: "agent"
+    timeout_seconds: 300
+    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result"
+    agent: "amplihack:core:reviewer"
+    prompt: |
+      Final assessment after all execution rounds.
+
+      **Goal**: {{decomposition_json}}
+
+      **Results**:
+      - Round 1: {{round_1_result}}
+      - Round 2 (if any): {{round_2_result}}
+      - Round 3 (if any): {{round_3_result}}
+
+      Note: empty strings above mean that round was not needed.
+
+      Was the overall goal achieved? Summarize what was done.
+      End with `GOAL_STATUS: ACHIEVED`, `GOAL_STATUS: PARTIAL -- [gaps]`,
+      or `GOAL_STATUS: NOT_ACHIEVED -- [reason]`.
+    output: "reflection_final"
+

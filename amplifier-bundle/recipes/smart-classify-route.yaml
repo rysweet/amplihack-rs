@@ -1,0 +1,254 @@
+name: "smart-classify-route"
+description: "Phase 0+1: pre-flight + classify-and-decompose + parse + activate + setup-session"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["smart-orchestrator", "classify", "decompose"]
+
+# smart-classify-route: extracted from smart-orchestrator.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — every routing branch, recursion
+# guard, fallback path, adaptive-recovery step, reflection round, and
+# outside-in validation gate. Context (task_type, workstream_count,
+# recursion_guard, round_N_result, etc.) flows in from the parent
+# smart-orchestrator context via _execute_sub_recipe()'s automatic merging
+# and propagates back so subsequent phase recipes can consume it.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 80
+
+context: {}
+
+steps:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Phase 0: Pre-flight Validation
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: "preflight-validation"
+    type: "bash"
+    command: |
+      ERRORS=""
+      REPO="$REPO_PATH"
+      TASK="$TASK_DESCRIPTION"
+      if [ -z "$TASK" ]; then
+        ERRORS="${ERRORS}\n  ✗ task_description is empty"
+      fi
+      if [ ! -d "$REPO" ]; then
+        ERRORS="${ERRORS}\n  ✗ repo_path '$REPO' does not exist"
+      elif ! git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+        ERRORS="${ERRORS}\n  ✗ repo_path '$REPO' is not a git repository"
+      fi
+      HELPER_PATH="$(amplihack resolve-bundle-asset helper-path 2>/dev/null || true)"
+      if [ -z "$HELPER_PATH" ] || [ ! -f "$HELPER_PATH" ]; then
+        ERRORS="${ERRORS}\n  ✗ Cannot find orch_helper.py — set AMPLIHACK_HOME to a valid amplihack root"
+      fi
+      if ! command -v recipe-runner-rs >/dev/null 2>&1 && [ ! -f "$HOME/.cargo/bin/recipe-runner-rs" ]; then
+        ERRORS="${ERRORS}\n  ✗ recipe-runner-rs not found (run: cargo install --git https://github.com/rysweet/amplihack-recipe-runner)"
+      fi
+      if [ -n "$ERRORS" ]; then
+        echo "=== SMART-ORCHESTRATOR PRE-FLIGHT FAILED ===" >&2
+        printf "%b\n" "$ERRORS" >&2
+        echo "Restart: run_recipe_by_name('smart-orchestrator', user_context={'task_description': '...', 'repo_path': '...'}, progress=True)" >&2
+        exit 1
+      fi
+      echo "=== Pre-flight passed ==="
+    output: "preflight_status"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Phase 1: Classify & Decompose
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: "classify-and-decompose"
+    type: "agent"
+    timeout_seconds: 300
+    agent: "amplihack:core:architect"
+    prompt: |
+      === [RECIPE PROGRESS] Step: classify-and-decompose ===
+
+      You are an intelligent task orchestrator. Analyze this request and produce a
+      structured orchestration plan.
+
+      **IMPORTANT**: You are ONLY classifying and decomposing. Do NOT implement,
+      build, code, or make any changes. Do NOT create files, edit code, or run
+      commands. Do NOT invoke any skills, workflows, or tools. Do NOT call
+      dev-orchestrator or any other orchestrator. Return ONLY the JSON object below.
+
+      **REQUEST**: {{task_description}}
+
+      Output:
+      1. task_type: Q&A | Operations | Investigation | Development
+      2. goal: clear 1-sentence goal
+      3. success_criteria: numbered list of verifiable criteria
+      4. workstreams: array of independent parallel units
+         - 1 workstream for cohesive/sequential tasks
+         - 2-5 for CLEARLY INDEPENDENT components
+           e.g. "build webui + api" -> 2 workstreams
+                "investigate X then implement Y" -> 2 workstreams
+         - recipe: "default-workflow" (dev) | "investigation-workflow" (research)
+
+      **Classification rules — read carefully (#269)**:
+      - **Operations** is ONLY for one-shot read-only or trivial mutating
+        commands the user could type themselves: "git status", "ls", "delete
+        old logs", "show disk usage", "run cargo test". Operations NEVER
+        writes new functions, NEVER opens PRs, NEVER writes tests, NEVER
+        modifies source files in `src/`, `crates/`, `bins/`, etc.
+      - **Development** is the correct type whenever the task asks you to:
+        "Add", "Extend", "Implement", "Create", "Build", "Refactor", or "Port"
+        ANY code; OR write/add tests; OR open a PR; OR modify files in
+        `src/` / `crates/` / `bins/`. Multi-requirement tasks with numbered
+        items `(1)`, `(2)`, `(3)` are almost always Development.
+      - When in doubt between Operations and Development, choose Development.
+
+      **Decomposition override**: {{force_single_workstream}} — if "true", use exactly 1 workstream regardless of task structure.
+
+      **Output exactly this JSON**:
+      ```json
+      {
+        "task_type": "Development",
+        "goal": "One sentence goal",
+        "success_criteria": ["Criterion 1", "Criterion 2"],
+        "workstreams": [
+          {"name": "slug", "description": "full task", "recipe": "default-workflow"}
+        ]
+      }
+      ```
+    output: "decomposition_json"
+
+  # parse-decomposition: extract task_type from architect JSON output.
+  # Outputs ONLY the canonical task_type string (e.g. "Development").
+  # Uses native Rust `amplihack orch helper` (#270).
+  - id: "parse-decomposition"
+    type: "bash"
+    command: |
+      _DECOMP_TMPFILE=$(mktemp)
+      trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
+      # FIX (heredoc-bulletproof): use env var — no heredoc needed.
+      printf '%s' "$DECOMPOSITION_JSON" > "$_DECOMP_TMPFILE"
+      RAW_OBJ=$(amplihack orch helper extract-json < "$_DECOMP_TMPFILE")
+      if [ "$RAW_OBJ" = "{}" ]; then
+        cat <<'WARN' >&2
+
+      ╔══════════════════════════════════════════════════════════════════╗
+      ║  ERROR: decomposition JSON parse failed                         ║
+      ║  The architect agent returned non-JSON prose instead of the     ║
+      ║  expected structured plan.                                      ║
+      ║                                                                 ║
+      ║  Action: defaulting to task_type=Development so execution can   ║
+      ║  continue. The adaptive strategy step will evaluate whether     ║
+      ║  direct recipe invocation should be attempted.                  ║
+      ║                                                                 ║
+      WARN
+      fi
+      # Extract the task_type field from the JSON object via a one-liner
+      # Rust call: pipe extracted JSON into a small inline tool. We use
+      # `amplihack orch helper normalise-type` directly on the raw value.
+      RAW_TYPE=$(printf '%s' "$RAW_OBJ" | amplihack orch helper extract-field --field task_type --default Development)
+      CANONICAL_TYPE=$(printf '%s' "$RAW_TYPE" | amplihack orch helper normalise-type)
+      # Deterministic safety net (#269): if the LLM said Operations but the
+      # task description has strong development signals (file paths, "Add"+
+      # path, PR mention, tests, multi-requirement), promote to Development.
+      _TASK_TMPFILE=$(mktemp)
+      # FIX (heredoc-bulletproof): use env var — no heredoc needed.
+      printf '%s' "$TASK_DESCRIPTION" > "$_TASK_TMPFILE"
+      FINAL_TYPE=$(amplihack orch helper reclassify-task-type --current "$CANONICAL_TYPE" < "$_TASK_TMPFILE")
+      rm -f "$_TASK_TMPFILE"
+      if [ "$FINAL_TYPE" != "$CANONICAL_TYPE" ]; then
+        echo "[dev-orchestrator] Reclassified $CANONICAL_TYPE → $FINAL_TYPE based on task description signals (#269)" >&2
+      fi
+      echo "$FINAL_TYPE"
+    output: "task_type"
+
+  # activate-workflow: compute workstream_count, set workflow semaphore, announce.
+  # Uses native Rust `amplihack orch helper count-workstreams` (#270). The
+  # only Python that remains is the `dev_intent_router` hook integration —
+  # tracked separately as a follow-up port.
+  - id: "activate-workflow"
+    type: "bash"
+    command: |
+      _DECOMP_TMPFILE=$(mktemp)
+      trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
+      # FIX (heredoc-bulletproof): use env var — no heredoc needed.
+      printf '%s' "$DECOMPOSITION_JSON" > "$_DECOMP_TMPFILE"
+      TASK_TYPE="$TASK_TYPE"
+      FORCE_SINGLE="$FORCE_SINGLE_WORKSTREAM"
+      HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir 2>/dev/null || true)"
+
+      RAW_COUNT=$(amplihack orch helper count-workstreams < "$_DECOMP_TMPFILE")
+      case "$(printf '%s' "$FORCE_SINGLE" | tr '[:upper:]' '[:lower:]')" in
+        true|1) COUNT=1 ;;
+        *)      COUNT="$RAW_COUNT" ;;
+      esac
+
+      # Set workflow-active semaphore so the hook skips injection during execution.
+      # Pure-bash: write JSON matching the Rust hook's expected schema in
+      # is_workflow_active (amplihack-hooks/src/session_start/context_loaders.rs).
+      # CLAUDE_PROJECT_DIR is honored when set; otherwise pwd. PID = parent
+      # process (recipe runner), not this ephemeral bash step.
+      _PROJ_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+      _SEMA_DIR="$_PROJ_DIR/.claude/runtime/locks"
+      mkdir -p "$_SEMA_DIR"
+      jq -n \
+        --arg task_type "$TASK_TYPE" \
+        --argjson workstreams "$COUNT" \
+        --argjson pid "$PPID" \
+        --argjson started_at "$(date +%s)" \
+        '{active: true, task_type: $task_type, workstreams: $workstreams, started_at: $started_at, pid: $pid}' \
+        > "$_SEMA_DIR/.workflow_active" 2>/dev/null || true
+
+      if [ "$COUNT" != "$RAW_COUNT" ]; then
+        echo "[dev-orchestrator] force_single_workstream=true — overriding $RAW_COUNT workstreams to 1" >&2
+      fi
+      echo "[dev-orchestrator] Classified as: $TASK_TYPE | Workstreams: $COUNT — starting execution..." >&2
+
+      # Output workstream count without trailing newline (fix #3570).
+      printf '%s' "$COUNT"
+    output: "workstream_count"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Materialize user_context overrides into step outputs so they are
+  # available in condition evaluation (fix #3075, #3130).
+  # The Rust runner's --set flag updates template variables ({{...}}) but
+  # the condition evaluator only sees step outputs and initial context.
+  # This step bridges the gap by echoing the context value to stdout.
+  # NOTE: Use "$ENV_VAR" — safe against word-splitting and injection.
+  # ─────────────────────────────────────────────────────────────────────────
+  - id: "materialize-force-single-workstream"
+    type: "bash"
+    command: |
+      printf '%s' "$FORCE_SINGLE_WORKSTREAM"
+    output: "force_single_workstream"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Setup: register this session in the session tree (atomic check+register)
+  # Runs for Development and Investigation tasks before any workstream spawning.
+  # session_info output format: JSON {"session_id":..,"tree_id":..,"depth":..,"status":..}
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: "setup-session"
+    type: "bash"
+    condition: "'Development' in task_type or 'Investigation' in task_type or task_type == ''"
+    command: |
+      # #283: replace python3 uuid with /proc/sys/kernel/random/uuid (POSIX)
+      SESSION_ID=$(tr -d '-' < /proc/sys/kernel/random/uuid | head -c 8)
+
+      # #248: native Rust subcommand for session tree registration
+      if OUTPUT=$(amplihack session-tree register "$SESSION_ID" 2>&1); then
+        # Output: "TREE_ID=abc123 DEPTH=0"
+        TREE_ID=$(echo "$OUTPUT" | grep -oE 'TREE_ID=[A-Za-z0-9_-]+' | head -1 | cut -d= -f2)
+        DEPTH_STR=$(echo "$OUTPUT" | grep -oE 'DEPTH=[0-9]+' | head -1 | cut -d= -f2)
+        DEPTH_VAL=${DEPTH_STR:-0}
+        # Validate extracted values
+        if ! echo "$TREE_ID" | grep -qE '^[A-Za-z0-9_-]+$'; then
+          # #283: replace python3 json with printf (inputs are fixed literals)
+          printf '{"session_id":"error","tree_id":"error","depth":0,"status":"registration_failed","error":"invalid tree_id extracted"}\n'
+          exit 0
+        fi
+        # #283: DEPTH_VAL is already validated as numeric above; SESSION_ID
+        # and TREE_ID are both constrained to [A-Za-z0-9_-], safe for JSON
+        printf '{"session_id":"%s","tree_id":"%s","depth":%d,"status":"ok"}\n' "$SESSION_ID" "$TREE_ID" "$DEPTH_VAL"
+      else
+        # Registration failed (capacity exceeded or depth limit) — encode structured error
+        echo "NOTE: Session registration failed — proceeding without recursion tracking." >&2
+        printf '{"session_id":"none","tree_id":"none","depth":0,"status":"registration_failed"}\n'
+      fi
+    output: "session_info"
+

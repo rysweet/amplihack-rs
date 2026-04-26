@@ -1,0 +1,186 @@
+name: "smart-validate-summarize"
+description: "Phase 4+5+6: outside-in validation + summarize + complete-session"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["smart-orchestrator", "validate", "summarize"]
+
+# smart-validate-summarize: extracted from smart-orchestrator.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — every routing branch, recursion
+# guard, fallback path, adaptive-recovery step, reflection round, and
+# outside-in validation gate. Context (task_type, workstream_count,
+# recursion_guard, round_N_result, etc.) flows in from the parent
+# smart-orchestrator context via _execute_sub_recipe()'s automatic merging
+# and propagates back so subsequent phase recipes can consume it.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 80
+
+context: {}
+
+steps:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Phase 4: Outside-In Testing Validation
+  # Mandatory for ALL Development tasks — single and multi-workstream alike.
+  #
+  # FIX (#2925): The previous condition required PR URLs in round_1_result.
+  # For parallel/multitask workstreams, round_1_result is the orchestrator
+  # report which never contains PR URLs, so this step was always SKIPPED.
+  # Fixed by removing the PR-URL requirement: validation now runs for any
+  # Development task that produced results, letting the reviewer agent
+  # determine if PRs exist and whether outside-in testing was performed.
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: "validate-outside-in-testing"
+    type: "agent"
+    timeout_seconds: 300
+    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and 'Development' in task_type and round_1_result"
+    agent: "amplihack:core:reviewer"
+    prompt: |
+      Outside-in testing validation check.
+
+      **Task**: {{task_description}}
+
+      **Execution results**:
+      - Round 1: {{round_1_result}}
+      - Round 2 (if any): {{round_2_result}}
+      - Round 3 (if any): {{round_3_result}}
+
+      ## Important: Multi-Workstream Execution
+
+      If Round 1 looks like an orchestrator report (contains "PARALLEL WORKSTREAM
+      REPORT" or lists multiple workstreams with log paths), this was a parallel
+      multitask execution. In that case, PR URLs will NOT appear directly in the
+      round results — they are in each workstream's individual log file.
+
+      For parallel workstreams: inspect the round results for evidence that each
+      workstream completed, and check whether the log references mention outside-in
+      testing being performed (look for "Step 13", "qa-team", "outside-in-testing", or
+      "local testing" references in the results).
+
+      ## Validation Steps
+
+      1. Determine execution mode:
+         - **Single workstream**: PR URL appears directly in round results
+         - **Parallel workstreams**: Round 1 is an orchestrator report; PR URLs
+           are in individual workstream logs
+
+      2. For each workstream, determine whether outside-in testing was performed:
+         - Look for "Step 13: Local Testing Results" evidence
+         - Look for `qa-team` or `outside-in-testing` skill invocation
+         - Look for at least 2 test scenario results (PASS/FAIL)
+
+      3. Report your findings in this format:
+
+         ```
+         OUTSIDE-IN TESTING VALIDATION REPORT
+         =====================================
+         Execution mode: single / parallel
+         PR(s) found: <list PR URLs or "see workstream logs">
+
+         For each workstream:
+           - Workstream: <name or PR URL>
+           - qa-team / outside-in-testing skill invoked: YES / NO / UNKNOWN
+           - Step 13 results documented: YES / NO / UNKNOWN
+           - Test scenarios executed: <count or UNKNOWN>
+           - VERDICT: PASS / FAIL / CANNOT_VERIFY
+         ```
+
+      4. If ALL workstreams have PASS or CANNOT_VERIFY verdict, end with:
+         `OUTSIDE_IN_VALIDATION: PASSED`
+
+      5. If ANY workstream has FAIL verdict (evidence shows testing was skipped),
+         end with:
+         `OUTSIDE_IN_VALIDATION: FAILED -- <describe which workstreams are missing outside-in testing>`
+
+         When FAILED, state clearly what outside-in testing is missing and the
+         command the developer should run to complete it.
+
+      6. If no Development work was done (e.g., task was purely informational
+         and produced no code changes or PRs), end with:
+         `OUTSIDE_IN_VALIDATION: N/A -- no code changes produced`
+    output: "outside_in_validation"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Phase 5: Summary
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: "summarize"
+    type: "agent"
+    timeout_seconds: 300
+    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result"
+    agent: "amplihack:core:architect"
+    prompt: |
+      Produce a concise execution summary.
+
+      **Task**: {{task_description}}
+      **Final Reflection**: {{reflection_final}}
+      **Outside-In Testing Validation**: {{outside_in_validation}}
+      **Round 1**: {{round_1_result}}
+      **Round 2 (if any)**: {{round_2_result}}
+      **Round 3 (if any)**: {{round_3_result}}
+
+      Note: empty strings above mean that round was not needed.
+
+      **Adaptive strategy used**: {{adaptive_recipe}}
+      **Infrastructure error details**: {{infra_error_details}}
+
+      Provide:
+      1. What was accomplished (2-3 sentences)
+      2. PR links (if any)
+      3. Outside-in testing status (PASSED / FAILED / N/A — not applicable when no PR was created)
+      4. Goal status (ACHIEVED / PARTIAL / NOT_ACHIEVED / HOLLOW)
+      5. Remaining work if PARTIAL or if outside-in testing FAILED
+      6. If adaptive strategy was used, note what failed and what strategy was applied
+    output: "summary"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Teardown: mark this session complete in the session tree
+  # Runs unconditionally so the slot is freed even on partial/failed runs.
+  # Combines session completion + workflow semaphore clearing in one Python call.
+  # ─────────────────────────────────────────────────────────────────────────
+
+  - id: "complete-session"
+    type: "bash"
+    command: |
+      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
+      SESSION_JSON="$SESSION_INFO"
+      HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir 2>/dev/null || true)"
+      # #283: parse session fields via jq instead of inline Python.
+      SESSION_ID=$(printf '%s' "$SESSION_JSON" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+      TREE_ID=$(printf '%s' "$SESSION_JSON" | jq -r '.tree_id // ""' 2>/dev/null || echo "")
+      STATUS=$(printf '%s' "$SESSION_JSON" | jq -r '.status // ""' 2>/dev/null || echo "")
+      # Clear workflow-active semaphore so the hook resumes injection.
+      # Pure-bash deletion; matches Rust hook expectations.
+      _PROJ_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+      rm -f "$_PROJ_DIR/.claude/runtime/locks/.workflow_active" 2>/dev/null || true
+      SESSION_ID=${SESSION_ID:-}
+      TREE_ID=${TREE_ID:-}
+      STATUS=${STATUS:-}
+
+      # #248: native Rust subcommand for session tree completion
+      if [ -n "$SESSION_ID" ] && [ "$STATUS" = "ok" ]; then
+        AMPLIHACK_TREE_ID="$TREE_ID" amplihack session-tree complete "$SESSION_ID"
+        echo "Session $SESSION_ID completed in tree $TREE_ID"
+      else
+        echo "No session to complete (status: ${STATUS:-empty})"
+      fi
+    output: "session_complete_status"
+
+output:
+  format: "markdown"
+  template: |
+    # Dev Orchestrator -- Execution Complete
+
+    **Task**: {{task_description}}
+    **Type**: {{task_type}}
+    **Workstreams**: {{workstream_count}}
+    **Adaptive strategy**: {{adaptive_recipe}}
+
+    ## Summary
+
+    {{summary}}
+
+    ---
+    *amplihack dev-orchestrator v1.5.0 (smart-orchestrator)*
