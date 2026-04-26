@@ -1031,13 +1031,47 @@ steps:
         # Soft-warn rather than hard-fail to remain backward-compatible with
         # agents that ignore the schema. The git-diff guard below is the hard gate.
       fi
-      # Check git diff in the worktree as the source of truth.
-      : "${WORKTREE_SETUP_WORKTREE_PATH:?WORKTREE_SETUP_WORKTREE_PATH is required (set by step-04-setup-worktree). If this step ran without it, step-04 was skipped — fix the upstream gap rather than substituting a default (philosophy: no silent fallbacks).}"
-      cd "$WORKTREE_SETUP_WORKTREE_PATH"
-      if ! git diff --quiet || ! git diff --cached --quiet || \
-         [ -n "$(git ls-files --others --exclude-standard)" ]; then
-        echo "step-08 produced file changes — guard passed."
+      # Check git state in the WORKTREE as the source of truth.
+      #
+      # Issue #379: step-08 (the implementer) commits inside the feature
+      # worktree at $WORKTREE_SETUP_WORKTREE_PATH. After it commits, the
+      # working tree is clean — so a working-tree-only check falsely aborts
+      # even though worktree HEAD has advanced and CI on the pushed branch
+      # is green (repro: PR #378). Inspect committed changes too, scoped via
+      # `git -C "$WORKTREE_PATH"` rather than the orchestrator's CWD.
+      WORKTREE_PATH="${WORKTREE_SETUP_WORKTREE_PATH:-}"
+      if [ -z "$WORKTREE_PATH" ]; then
+        echo "[step-08c][warn] WORKTREE_SETUP_WORKTREE_PATH is unset; falling" >&2
+        echo "[step-08c][warn] back to orchestrator CWD ($PWD). step-04 should" >&2
+        echo "[step-08c][warn] normally populate worktree_path. See #379." >&2
+        WORKTREE_PATH="."
+      fi
+      # 1) Uncommitted work in the worktree.
+      if ! git -C "$WORKTREE_PATH" diff --quiet || \
+         ! git -C "$WORKTREE_PATH" diff --cached --quiet || \
+         [ -n "$(git -C "$WORKTREE_PATH" ls-files --others --exclude-standard)" ]; then
+        echo "step-08 produced uncommitted file changes in $WORKTREE_PATH — guard passed."
         exit 0
+      fi
+      # 2) Committed work in the worktree (issue #379). Resolve a base ref
+      #    so we count only commits introduced on this branch. Prefer
+      #    origin/main..HEAD; fall back to HEAD~1..HEAD only if needed.
+      BASE_REF=""
+      if git -C "$WORKTREE_PATH" rev-parse --verify --quiet origin/main >/dev/null; then
+        BASE_REF=$(git -C "$WORKTREE_PATH" merge-base HEAD origin/main)
+      elif git -C "$WORKTREE_PATH" rev-parse --verify --quiet HEAD~1 >/dev/null; then
+        BASE_REF="HEAD~1"
+      fi
+      if [ -n "$BASE_REF" ]; then
+        NEW_COMMITS=$(git -C "$WORKTREE_PATH" log --oneline "${BASE_REF}..HEAD" | wc -l | tr -d ' ')
+        if [ "$NEW_COMMITS" -gt 0 ]; then
+          DIFF_STAT=$(git -C "$WORKTREE_PATH" diff --stat "${BASE_REF}..HEAD")
+          if [ -n "$DIFF_STAT" ]; then
+            echo "step-08 produced ${NEW_COMMITS} commit(s) in worktree $WORKTREE_PATH (vs ${BASE_REF}) — guard passed."
+            printf '%s\n' "$DIFF_STAT"
+            exit 0
+          fi
+        fi
       fi
       if [ -n "$JUSTIFICATION" ]; then
         echo "step-08 produced no file changes but declared a no-op justification:" >&2
@@ -1095,8 +1129,8 @@ steps:
       echo "condition, almost certainly caused by prompt-misalignment — see" >&2
       echo "https://github.com/rysweet/amplihack-rs/issues/251." >&2
       echo "" >&2
-      echo "Working directory: $PWD" >&2
-      git --no-pager status >&2
+      echo "Worktree path: $WORKTREE_PATH (orchestrator CWD: $PWD)" >&2
+      git -C "$WORKTREE_PATH" --no-pager status >&2
       exit 1
     output: "implementation_noop_guard"
 
