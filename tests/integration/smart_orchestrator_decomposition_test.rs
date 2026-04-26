@@ -27,6 +27,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "parse-decomposition",
     "activate-workflow",
     "materialize-force-single-workstream",
+    "materialize-allow-no-op",
     "setup-session",
     "handle-qa",
     "handle-ops-agent",
