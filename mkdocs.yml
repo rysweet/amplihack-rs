@@ -84,8 +84,10 @@ nav:
       - install Command: reference/install-command.md
       - Install Manifest: reference/install-manifest.md
       - Hook Specifications: reference/hook-specifications.md
+      - Azure Integration: reference/azure-integration.md
       - Binary Resolution: reference/binary-resolution.md
       - completions Command: reference/completions-command.md
+      - Copilot CLI: reference/copilot-cli.md
       - Environment Variables: reference/environment-variables.md
       - Launch Flag Injection: reference/launch-flag-injection.md
       - Signal Handling: reference/signal-handling.md
@@ -112,6 +114,7 @@ nav:
       - Security Recommendations: reference/security-recommendations.md
       - "Security Audit: Copilot CLI Flags": reference/security-audit-copilot-cli-flags.md
       - Eval Retrieval Methods: reference/eval-retrieval-reference.md
+      - Fleet Copilot: reference/fleet-copilot.md
       - Doc Graph Quick Reference: reference/doc-graph-quick-reference.md
       - JSON Logging: reference/json-logging.md
       - Benchmarking: reference/benchmarking.md
