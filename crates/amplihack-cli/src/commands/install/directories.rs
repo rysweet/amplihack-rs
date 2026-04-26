@@ -11,46 +11,99 @@ pub(super) fn ensure_dirs(claude_dir: &Path) -> Result<()> {
         .with_context(|| format!("failed to create {}", claude_dir.display()))
 }
 
-pub(super) fn find_source_claude_dir(repo_root: &Path) -> Result<PathBuf> {
+/// Symlink-aware "is this a real directory?" probe used by `find_source_root`.
+/// Refuses symlinked roots so a malicious local repo cannot make install copy
+/// from an arbitrary readable directory (defense-in-depth, mirrors
+/// `copy_amplifier_bundle`).
+fn is_real_dir(p: &Path) -> bool {
+    match fs::symlink_metadata(p) {
+        Ok(md) => md.is_dir() && !md.file_type().is_symlink(),
+        Err(_) => false,
+    }
+}
+
+/// Probe the supplied repo root for a usable framework-asset source layout.
+/// Resolution order (per design):
+///   1. `<root>/amplifier-bundle/`  → [`SourceLayout::Bundle`]
+///   2. `<root>/.claude/`           → [`SourceLayout::LegacyClaude`]
+///   3. `<root>/../.claude/`        → [`SourceLayout::LegacyClaude`]
+///
+/// Symlinked roots are rejected at this layer (TOCTOU-defended again per-entry
+/// inside `copy_dir_recursive`). On no match, bails with a diagnostic naming
+/// every probed path so the user can fix the layout.
+pub(super) fn find_source_root(repo_root: &Path) -> Result<(PathBuf, SourceLayout)> {
+    let bundle = repo_root.join("amplifier-bundle");
+    if is_real_dir(&bundle) {
+        return Ok((bundle, SourceLayout::Bundle));
+    }
+    if bundle.exists() {
+        // Exists but not a real dir (symlink, file). Fail loud.
+        anyhow::bail!(
+            "amplifier-bundle at {} is not a real directory (symlinks are rejected for safety)",
+            bundle.display()
+        );
+    }
     let direct = repo_root.join(".claude");
-    if direct.exists() {
-        return Ok(direct);
+    if is_real_dir(&direct) {
+        return Ok((direct, SourceLayout::LegacyClaude));
     }
     let parent = repo_root.join("..").join(".claude");
-    if parent.exists() {
-        return Ok(parent);
+    if is_real_dir(&parent) {
+        return Ok((parent, SourceLayout::LegacyClaude));
     }
     anyhow::bail!(
-        ".claude not found at {} or {}",
+        "no framework asset source found — searched: {}, {}, {}. \
+         A valid amplihack-rs checkout must contain an `amplifier-bundle/` directory; \
+         legacy installs may use `.claude/` instead.",
+        bundle.display(),
         direct.display(),
         parent.display()
     )
 }
 
-pub(super) fn copytree_manifest(source_claude: &Path, claude_dir: &Path) -> Result<Vec<String>> {
+/// Copy framework asset directories from `source_root` into `claude_dir` using
+/// the supplied [`SourceLayout`]'s mapping table. Returns the destination-relative
+/// directory names that were successfully copied (suitable for diff against
+/// [`essential_destinations`]).
+pub(super) fn copytree_manifest(
+    source_root: &Path,
+    layout: SourceLayout,
+    claude_dir: &Path,
+) -> Result<Vec<String>> {
     let mut copied = Vec::new();
-    for dir in ESSENTIAL_DIRS {
-        let source_dir = source_claude.join(dir);
+    for (src_rel, dst_rel) in dir_mapping(layout) {
+        // Defense in depth — the compile-time drift test forbids `..` in
+        // mapping entries, but runtime check here keeps the invariant true
+        // even if a future refactor goes around the table.
+        for comp in Path::new(dst_rel).components() {
+            if matches!(comp, std::path::Component::ParentDir) {
+                anyhow::bail!(
+                    "internal error: dst_rel `{dst_rel}` contains `..` — refusing to copy"
+                );
+            }
+        }
+
+        let source_dir = source_root.join(src_rel);
         if !source_dir.exists() {
-            println!("  ⚠️  Warning: {dir} not found in source, skipping");
+            println!("  ⚠️  Warning: {src_rel} not found in source, skipping");
             continue;
         }
 
-        let target_dir = claude_dir.join(dir);
+        let target_dir = claude_dir.join(dst_rel);
         if let Some(parent) = target_dir.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
 
         copy_dir_recursive(&source_dir, &target_dir)?;
-        if dir.starts_with("tools/") {
+        if dst_rel.starts_with("tools/") {
             let files_updated = set_hook_permissions(&target_dir)?;
             if files_updated > 0 {
                 println!("  🔐 Set execute permissions on {files_updated} hook files");
             }
         }
-        println!("  ✅ Copied {dir}");
-        copied.push((*dir).to_string());
+        println!("  ✅ Copied {src_rel} -> {dst_rel}");
+        copied.push((*dst_rel).to_string());
     }
 
     let removed_legacy_hooks = prune_legacy_amplihack_hook_assets(claude_dir)?;
@@ -60,7 +113,7 @@ pub(super) fn copytree_manifest(source_claude: &Path, claude_dir: &Path) -> Resu
         );
     }
 
-    let settings_src = source_claude.join("settings.json");
+    let settings_src = source_root.join("settings.json");
     let settings_dst = claude_dir.join("settings.json");
     if settings_src.exists() && !settings_dst.exists() {
         fs::copy(&settings_src, &settings_dst).with_context(|| {
@@ -73,8 +126,8 @@ pub(super) fn copytree_manifest(source_claude: &Path, claude_dir: &Path) -> Resu
         println!("  ✅ Copied settings.json");
     }
 
-    for file in ESSENTIAL_FILES {
-        let source_file = source_claude.join(file);
+    for file in essential_files(layout) {
+        let source_file = source_root.join(file);
         if !source_file.exists() {
             println!("  ⚠️  Warning: {file} not found in source, skipping");
             continue;
@@ -95,9 +148,13 @@ pub(super) fn copytree_manifest(source_claude: &Path, claude_dir: &Path) -> Resu
         println!("  ✅ Copied {file}");
     }
 
-    let source_claude_md = source_claude
+    // CLAUDE.md lives at the repo root for both layouts; that's the parent
+    // of `source_root` in the bundle case (source_root = <repo>/amplifier-bundle)
+    // and in the legacy case (source_root = <repo>/.claude). The `..` legacy
+    // probe is also a parent — same parent invariant.
+    let source_claude_md = source_root
         .parent()
-        .context("source .claude dir missing parent")?
+        .context("source root missing parent for CLAUDE.md lookup")?
         .join("CLAUDE.md");
     if source_claude_md.exists() {
         let target_claude_md = claude_dir

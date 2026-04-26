@@ -3,6 +3,12 @@ use std::fs;
 use std::path::Path;
 
 /// Builds a minimal fake amplihack repository under `root`.
+///
+/// Hybrid fixture: contains both a populated `.claude/` (legacy layout) and
+/// a fully-populated `amplifier-bundle/` (bundle layout). Issue #416 made
+/// the bundle layout take precedence, so install will use bundle assets
+/// — but the `.claude/` content is preserved for tests that need to verify
+/// legacy-layout pruning, statusline, etc.
 pub(super) fn create_source_repo(root: &Path) {
     for dir in ESSENTIAL_DIRS {
         fs::create_dir_all(root.join(".claude").join(dir)).unwrap();
@@ -17,11 +23,25 @@ pub(super) fn create_source_repo(root: &Path) {
     fs::write(root.join(".claude/AMPLIHACK.md"), "framework\n").unwrap();
     fs::write(root.join("CLAUDE.md"), "root\n").unwrap();
 
-    // Issue #243: source repos must ship `amplifier-bundle/` so the install
-    // can stage recipes + orch_helper.py for dev-orchestrator.
+    // Issue #243 + #416: the source MUST also ship `amplifier-bundle/` with
+    // every bundle essential dir populated. After #416 install probes the
+    // bundle FIRST and uses BUNDLE_DIR_MAPPING; an under-populated bundle
+    // would cause every test asserting "all essentials staged" to fail.
     let bundle = root.join("amplifier-bundle");
-    fs::create_dir_all(bundle.join("recipes")).unwrap();
-    fs::create_dir_all(bundle.join("tools")).unwrap();
+    for dir in [
+        "agents",
+        "skills",
+        "context",
+        "tools/amplihack",
+        "tools/xpia",
+        "recipes",
+        "behaviors",
+        "modules",
+    ] {
+        fs::create_dir_all(bundle.join(dir)).unwrap();
+        fs::write(bundle.join(dir).join("marker.txt"), "x\n").unwrap();
+    }
+    fs::write(bundle.join("tools/statusline.sh"), "echo hi\n").unwrap();
     for recipe in [
         "smart-orchestrator.yaml",
         "default-workflow.yaml",
@@ -61,6 +81,49 @@ pub(super) fn create_minimal_staged_assets(root: &Path) {
         .unwrap();
     }
     fs::write(bundle.join("tools/orch_helper.py"), "# stub\n").unwrap();
+}
+
+/// Build a bundle-only source repo (no top-level `.claude/`), as shipped by
+/// amplihack-rs. The repo root contains only `amplifier-bundle/<subdirs>`,
+/// `CLAUDE.md`, and the required recipes/orch_helper. This mirrors the
+/// reproduction scenario for issue #416 (`git clone amplihack-rs`).
+pub(super) fn create_bundle_only_source_repo(root: &Path) {
+    let bundle = root.join("amplifier-bundle");
+    for dir in [
+        "agents",
+        "skills",
+        "context",
+        "tools/amplihack",
+        "tools/xpia",
+        "recipes",
+        "behaviors",
+        "modules",
+    ] {
+        fs::create_dir_all(bundle.join(dir)).unwrap();
+        // Populate each dir with at least one file so copy_dir_recursive
+        // produces observable output.
+        fs::write(bundle.join(dir).join("marker.txt"), "x\n").unwrap();
+    }
+    fs::write(bundle.join("tools/statusline.sh"), "echo hi\n").unwrap();
+    for recipe in [
+        "smart-orchestrator.yaml",
+        "default-workflow.yaml",
+        "investigation-workflow.yaml",
+    ] {
+        fs::write(
+            bundle.join("recipes").join(recipe),
+            "name: test-recipe\nsteps: []\n",
+        )
+        .unwrap();
+    }
+    fs::write(bundle.join("tools/orch_helper.py"), "# stub\n").unwrap();
+    fs::write(root.join("CLAUDE.md"), "root\n").unwrap();
+    // Crucially: NO `.claude/` directory anywhere — that's the bug condition
+    // for issue #416.
+    assert!(
+        !root.join(".claude").exists(),
+        "bundle-only fixture must not contain a top-level .claude/"
+    );
 }
 
 /// Creates an executable stub at `dir/name` (755 perms on Unix).

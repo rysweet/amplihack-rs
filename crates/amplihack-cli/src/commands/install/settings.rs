@@ -301,13 +301,16 @@ fn format_optional_matcher(matcher: Option<&str>) -> String {
 
 pub(super) fn missing_framework_paths(claude_dir: &Path) -> Result<Vec<String>> {
     let mut missing = Vec::new();
-    for dir in ESSENTIAL_DIRS {
+    // Layout discovery: read .layout marker; default to LegacyClaude for
+    // backward compat with pre-fix installs that lack a marker.
+    let layout = super::read_layout_marker(claude_dir)?.unwrap_or(SourceLayout::LegacyClaude);
+    for dir in essential_destinations(layout) {
         let path = claude_dir.join(dir);
         if !path.exists() {
             missing.push(format!("{dir} (expected at {})", path.display()));
         }
     }
-    for file in ESSENTIAL_FILES {
+    for file in essential_files(layout) {
         let path = claude_dir.join(file);
         if !path.exists() {
             missing.push(format!("{file} (expected at {})", path.display()));

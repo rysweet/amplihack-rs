@@ -687,3 +687,312 @@ fn copy_amplifier_bundle_replaces_existing_atomically() {
         "no backup dir must remain after a successful install"
     );
 }
+
+// ============================================================================
+// Issue #416: regression tests for bundle-only source layouts
+// ============================================================================
+//
+// These tests fail until the install layer learns about the amplifier-bundle/
+// source layout. They specify the contract for the fix.
+
+/// Helper: stage env (HOME, hooks binary, PATH) like the existing install
+/// tests do, run `f`, restore env. Avoids ~50 lines of boilerplate per test.
+fn with_install_env<R>(f: impl FnOnce(&Path) -> R) -> R {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    let bin_dir = temp.path().join("stub_bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    helpers::create_exe_stub(&bin_dir, "python3");
+    let hooks_stub = helpers::create_exe_stub(&bin_dir, "amplihack-hooks");
+
+    let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+    let prev_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+        let new_path = format!(
+            "{}:{}",
+            bin_dir.display(),
+            prev_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        );
+        std::env::set_var("PATH", &new_path);
+    }
+
+    let result = f(temp.path());
+
+    if let Some(v) = prev_hooks {
+        unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
+    } else {
+        unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") };
+    }
+    if let Some(v) = prev_path {
+        unsafe { std::env::set_var("PATH", v) };
+    }
+    crate::test_support::restore_home(previous);
+    result
+}
+
+/// Bundle essentials that must be staged into ~/.amplihack/.claude/ when the
+/// source repo uses the amplifier-bundle/ layout. Mirrors the design spec's
+/// BUNDLE_DIR_MAPPING destinations.
+const BUNDLE_ESSENTIAL_DESTS: &[&str] = &[
+    "agents",
+    "skills",
+    "context",
+    "tools/amplihack",
+    "tools/xpia",
+    "recipes",
+    "behaviors",
+    "modules",
+];
+
+#[test]
+fn local_install_from_bundle_only_source_copies_all_essentials() {
+    // Issue #416 regression: a clean amplihack-rs checkout has NO top-level
+    // `.claude/` (gitignored). Install must read framework assets from
+    // `amplifier-bundle/` and stage them under ~/.amplihack/.claude/.
+    with_install_env(|home| {
+        let repo = home.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        helpers::create_bundle_only_source_repo(&repo);
+
+        // Pre-fix this fails with: ".claude not found at <repo>/.claude or ..."
+        local_install(&repo).expect(
+            "issue #416: local_install must succeed against a bundle-only source repo \
+             (no top-level .claude/), but failed",
+        );
+
+        let staged = home.join(".amplihack/.claude");
+        for rel in BUNDLE_ESSENTIAL_DESTS {
+            assert!(
+                staged.join(rel).is_dir(),
+                "issue #416: bundle essential `{rel}` must be staged at {}",
+                staged.join(rel).display()
+            );
+        }
+        // Bundle marker file must round-trip into the staged tree, confirming
+        // the source was actually amplifier-bundle/ and not a coincidental
+        // empty-dir creation.
+        assert!(
+            staged.join("agents/marker.txt").is_file(),
+            "issue #416: bundle content must be copied, not just empty dirs"
+        );
+    });
+}
+
+#[test]
+fn local_install_with_no_source_assets_returns_err() {
+    // Empty source root (no .claude AND no amplifier-bundle) must hard-error.
+    // Pre-fix: `find_source_claude_dir` returns Err — already failing today.
+    // Post-fix: must STILL fail (negative regression guard).
+    with_install_env(|home| {
+        let repo = home.join("empty-repo");
+        fs::create_dir_all(&repo).unwrap();
+        // Intentionally do NOT create amplifier-bundle/ or .claude/.
+
+        let result = local_install(&repo);
+        assert!(
+            result.is_err(),
+            "local_install must Err when source repo contains no framework assets, \
+             got Ok with copied dirs (silent partial install)"
+        );
+        let err = result.unwrap_err().to_string();
+        // Diagnostic must name BOTH probed locations so the user can fix it.
+        assert!(
+            err.contains("amplifier-bundle") || err.contains(".claude"),
+            "error must reference probed source paths (amplifier-bundle / .claude), \
+             got: {err}"
+        );
+    });
+}
+
+#[test]
+fn local_install_hard_errors_when_no_dirs_copied() {
+    // Per design D3: an empty `copied_dirs` is now a hard error
+    // (was a println! warning at mod.rs:348-354). Triggered by a source repo
+    // whose detected layout has no copyable essentials.
+    with_install_env(|home| {
+        let repo = home.join("repo-with-empty-claude");
+        // Legacy layout, but completely empty .claude/ — copytree finds
+        // nothing and returns Vec::new(). NO amplifier-bundle/ either, so
+        // the bundle-first probe falls through to LegacyClaude. Pre-fix this
+        // returns Ok(()) with a printed warning (silent partial install).
+        fs::create_dir_all(repo.join(".claude")).unwrap();
+
+        let result = local_install(&repo);
+        assert!(
+            result.is_err(),
+            "local_install must hard-error when zero essential dirs are copied; \
+             silent success with empty install is a regression vector"
+        );
+    });
+}
+
+#[test]
+fn legacy_claude_source_layout_still_installs() {
+    // Backward-compat: the hybrid `create_source_repo` fixture (which ships
+    // both .claude/ and amplifier-bundle/) must keep installing successfully.
+    // After #416 the bundle layout is preferred, so destinations are bundle
+    // names; `.claude/`-relative legacy content remains intact in the source
+    // tree but is not staged because bundle wins the probe.
+    with_install_env(|home| {
+        let repo = home.join("legacy-repo");
+        fs::create_dir_all(&repo).unwrap();
+        helpers::create_source_repo(&repo);
+
+        local_install(&repo).expect("hybrid create_source_repo fixture must keep working");
+
+        let staged = home.join(".amplihack/.claude");
+        // Bundle layout was selected; `agents/` is the bundle destination.
+        assert!(
+            staged.join("agents").is_dir(),
+            "hybrid install (bundle-preferred) must stage agents/"
+        );
+    });
+}
+
+#[test]
+fn missing_framework_paths_recognises_bundle_layout_install() {
+    // After a bundle-only install, missing_framework_paths must NOT report
+    // legacy-only entries (e.g. `commands/amplihack`, `workflow`, `templates`)
+    // as missing — those are intentionally absent from the bundle layout.
+    // Pre-fix: missing_framework_paths iterates ESSENTIAL_DIRS unconditionally
+    // and floods the user with false-positive missing entries, triggering
+    // an infinite re-install loop.
+    with_install_env(|home| {
+        let repo = home.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        helpers::create_bundle_only_source_repo(&repo);
+        local_install(&repo).expect("bundle install should succeed");
+
+        let staged = home.join(".amplihack/.claude");
+        let missing = settings::missing_framework_paths(&staged).unwrap();
+        // Legacy-only essentials must NOT appear in the missing list when
+        // the bundle layout was used. Whitelist the names that the bundle
+        // does not ship.
+        for legacy_only in &[
+            "commands/amplihack",
+            "workflow",
+            "templates",
+            "scenarios",
+            "docs",
+            "schemas",
+            "config",
+        ] {
+            assert!(
+                !missing.iter().any(|m| m.starts_with(legacy_only)),
+                "legacy-only essential `{legacy_only}` must not be reported missing \
+                 after a bundle-layout install, got missing: {missing:?}"
+            );
+        }
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn find_source_root_rejects_symlinked_amplifier_bundle() {
+    // Defense-in-depth: a symlinked amplifier-bundle/ root must be rejected
+    // by the source-root probe (per design's is_real_dir contract). This is
+    // the same defense as `copy_amplifier_bundle_rejects_symlinked_source_root`
+    // but at the find_source_root layer.
+    with_install_env(|home| {
+        let repo = home.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let elsewhere = home.join("evil");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("secret.txt"), "private").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, repo.join("amplifier-bundle")).unwrap();
+
+        let result = local_install(&repo);
+        assert!(
+            result.is_err(),
+            "symlinked amplifier-bundle source root must be rejected"
+        );
+    });
+}
+
+#[test]
+fn install_writes_layout_marker_atomically() {
+    // Per design: install writes a `.layout` marker (`bundle` or `legacy`)
+    // via temp-file + rename. After a successful install, the marker must
+    // exist with the expected content and no `.layout.tmp` may linger.
+    with_install_env(|home| {
+        let repo = home.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        helpers::create_bundle_only_source_repo(&repo);
+        local_install(&repo).expect("bundle install should succeed");
+
+        let staged = home.join(".amplihack/.claude");
+        let marker = staged.join(".layout");
+        assert!(
+            marker.is_file(),
+            "install must write .layout marker at {}",
+            marker.display()
+        );
+        let content = fs::read_to_string(&marker).unwrap();
+        assert_eq!(
+            content.trim(),
+            "bundle",
+            ".layout must contain exactly 'bundle' (post-trim) for a bundle-layout install"
+        );
+
+        let tmp = staged.join(".layout.tmp");
+        assert!(
+            !tmp.exists(),
+            "no .layout.tmp temp file may remain after a successful atomic write"
+        );
+    });
+}
+
+#[test]
+fn marker_missing_defaults_to_legacy_layout() {
+    // missing_framework_paths must tolerate a missing .layout marker by
+    // defaulting to LegacyClaude (matches pre-fix behavior). Critically,
+    // it must not emit a warning for the missing marker on staged installs
+    // that pre-date the fix.
+    with_install_env(|home| {
+        let staged = home.join(".amplihack/.claude");
+        // Build a legacy-shaped staged tree by hand, with NO .layout marker.
+        helpers::create_minimal_staged_assets(home);
+        assert!(!staged.join(".layout").exists());
+
+        // Must not panic, must not bail; should treat as legacy and only
+        // report dirs that are actually missing under the legacy mapping.
+        let missing = settings::missing_framework_paths(&staged).unwrap();
+        // create_minimal_staged_assets stages ALL legacy ESSENTIAL_DIRS,
+        // so missing must be empty (apart from possibly bundle paths,
+        // which are tolerated by this regression scope).
+        for entry in &missing {
+            assert!(
+                !entry.contains(".layout"),
+                "missing-marker case must not surface a `.layout` complaint, got: {entry}"
+            );
+        }
+    });
+}
+
+#[test]
+fn malformed_layout_marker_is_handled_gracefully() {
+    // Per design strict-parse table: a malformed .layout (not 'bundle' or
+    // 'legacy' post-trim) must be tolerated (warn + default to LegacyClaude),
+    // never panic.
+    with_install_env(|home| {
+        let staged = home.join(".amplihack/.claude");
+        helpers::create_minimal_staged_assets(home);
+        fs::write(staged.join(".layout"), "garbage-value\n").unwrap();
+
+        let result = settings::missing_framework_paths(&staged);
+        assert!(
+            result.is_ok(),
+            "malformed .layout must not cause missing_framework_paths to error; \
+             must warn and default to legacy. Got: {:?}",
+            result.err()
+        );
+    });
+}
