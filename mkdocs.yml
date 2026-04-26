@@ -62,6 +62,11 @@ nav:
       - Generate Agent from Goal: howto/generate-agent-from-goal.md
       - Fix cxx-build CI Failure: howto/fix-cxx-build-ci-failure.md
       - Resolve LadybugDB Linker Errors: howto/resolve-kuzu-linker-errors.md
+      - Prompt → Distributed Hive: howto/prompt-to-distributed-hive.md
+      - Use Agent Bundle Generator: howto/use-agent-bundle-generator.md
+      - Blarify Quickstart: howto/blarify-quickstart.md
+      - Troubleshoot Worktree: howto/troubleshoot-worktree.md
+      - Integrate Agent Memory: howto/integrate-agent-memory.md
   - Skills:
       - Migrate Session: skills/migrate.md
   - Reference:
@@ -91,6 +96,7 @@ nav:
       - agent-generator API: reference/agent-generator-api.md
       - uvx-help Command: reference/uvx-help-command.md
       - Memory Extended API: reference/memory-extended-api.md
+      - Power Steering Compaction API: reference/power-steering-compaction-api.md
   - Concepts:
       - Philosophy: concepts/philosophy.md
       - Patterns: concepts/patterns.md
@@ -113,6 +119,12 @@ nav:
       - Evaluation Framework: concepts/eval-framework.md
       - Hive Orchestration: concepts/hive-orchestration.md
       - Goal Agent Generator: concepts/agent-generator.md
+      - Hive Mind (Distributed): concepts/hive-mind-distributed.md
+      - Agent Bundle Generator: concepts/agent-bundle-generator.md
+      - Blarify Integration: concepts/blarify-integration.md
+      - Worktree Support: concepts/worktree-support.md
+      - Agent Memory Architecture: concepts/agent-memory-architecture.md
+      - Power Steering Compaction: concepts/power-steering-compaction.md
   - Code Atlas:
       - Overview: atlas/index.md
       - "Layer 1: Repo Surface": atlas/repo-surface/README.md
