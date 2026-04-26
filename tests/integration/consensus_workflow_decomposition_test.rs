@@ -41,10 +41,9 @@ fn recipes_dir() -> PathBuf {
 
 fn load(name: &str) -> Recipe {
     let path = recipes_dir().join(format!("{name}.yaml"));
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    serde_yaml::from_str(&text)
-        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
 const PHASE_RECIPES: &[&str] = &[
@@ -237,13 +236,28 @@ fn seven_mandatory_consensus_gates_present() {
         .collect();
     // (gate label, representative step ID that proves the gate exists)
     let gates: &[(&str, &str)] = &[
-        ("Gate 1: Requirements debate (3 rounds)", "step1-debate-round3-consensus"),
-        ("Gate 2: Design consensus (3 rounds)",    "step4-design-round3-consensus"),
-        ("Gate 3: N-version implementation vote",  "step5-nversion-vote"),
-        ("Gate 4: Refactoring expert panel",       "step6-panel-consensus"),
-        ("Gate 5: PR-review expert panel",         "step11-pr-review-consensus"),
-        ("Gate 6: Philosophy compliance panel",    "step13-philosophy-guardian"),
-        ("Gate 7: Final quality panel",            "step15-final-consensus"),
+        (
+            "Gate 1: Requirements debate (3 rounds)",
+            "step1-debate-round3-consensus",
+        ),
+        (
+            "Gate 2: Design consensus (3 rounds)",
+            "step4-design-round3-consensus",
+        ),
+        (
+            "Gate 3: N-version implementation vote",
+            "step5-nversion-vote",
+        ),
+        ("Gate 4: Refactoring expert panel", "step6-panel-consensus"),
+        (
+            "Gate 5: PR-review expert panel",
+            "step11-pr-review-consensus",
+        ),
+        (
+            "Gate 6: Philosophy compliance panel",
+            "step13-philosophy-guardian",
+        ),
+        ("Gate 7: Final quality panel", "step15-final-consensus"),
     ];
     for (label, step) in gates {
         assert!(
