@@ -1,0 +1,233 @@
+name: "consensus-pr-review"
+description: "Phase 8: 5-reviewer expert-panel PR review + consensus (step 11)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["consensus", "pr", "review", "panel"]
+
+# consensus-pr-review: extracted from consensus-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — every debate round, every panel
+# perspective, every consensus gate. The user's design constraint: the LLM
+# converges on correct behaviour through many recursive review layers, so
+# no layer may be silently dropped. Context flows in from the parent
+# consensus-workflow context via _execute_sub_recipe()'s automatic merging;
+# outputs propagate back to the parent for subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 100
+
+context: {}
+
+steps:
+  - id: "step11-pr-review-reviewer"
+    agent: "amplihack:reviewer"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      EXPERT PANEL PR REVIEW - Reviewer Agent
+
+      **Implementation:** {{refactored_implementation}}
+      **Requirements:** {{final_requirements}}
+      **Design:** {{design_consensus}}
+
+      Comprehensive code review:
+      - Philosophy compliance
+      - Requirements validation
+      - Code quality
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "reviewer",
+        "review_items": [
+          {"severity": "critical/high/medium/low", "issue": "...", "location": "...", "fix": "..."}
+        ],
+        "philosophy_compliant": true/false,
+        "requirements_met": true/false,
+        "zero_bs_verified": true/false,
+        "approved": true/false
+      }
+      ```
+    output: "pr_review_reviewer"
+    parse_json: true
+
+  - id: "step11-pr-review-security"
+    agent: "amplihack:security"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      EXPERT PANEL PR REVIEW - Security Agent
+
+      **Implementation:** {{refactored_implementation}}
+      **Requirements:** {{final_requirements}}
+      **Security Design:** {{design_security}}
+
+      Security vulnerability assessment:
+      - OWASP Top 10
+      - Authentication/authorization
+      - Data validation
+      - Information leakage
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "security",
+        "vulnerabilities": [
+          {"severity": "critical/high/medium/low", "type": "...", "location": "...", "fix": "..."}
+        ],
+        "threat_model_validated": true/false,
+        "secure_by_default": true/false,
+        "approved": true/false
+      }
+      ```
+    output: "pr_review_security"
+    parse_json: true
+
+  - id: "step11-pr-review-optimizer"
+    agent: "amplihack:optimizer"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      EXPERT PANEL PR REVIEW - Optimizer Agent
+
+      **Implementation:** {{refactored_implementation}}
+      **Requirements:** {{final_requirements}}
+
+      Performance analysis:
+      - Bottleneck identification
+      - Resource efficiency
+      - Scalability assessment
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "optimizer",
+        "performance_issues": [
+          {"severity": "high/medium/low", "issue": "...", "location": "...", "recommendation": "..."}
+        ],
+        "scalability_concerns": ["concerns"],
+        "approved": true/false
+      }
+      ```
+    output: "pr_review_optimizer"
+    parse_json: true
+
+  - id: "step11-pr-review-patterns"
+    agent: "amplihack:patterns"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      EXPERT PANEL PR REVIEW - Patterns Agent
+
+      **Implementation:** {{refactored_implementation}}
+      **Design:** {{design_consensus}}
+
+      Pattern compliance verification:
+      - Design patterns correctly used
+      - Best practices followed
+      - Anti-patterns avoided
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "patterns",
+        "pattern_violations": [
+          {"pattern": "...", "violation": "...", "fix": "..."}
+        ],
+        "best_practices_score": 1-10,
+        "approved": true/false
+      }
+      ```
+    output: "pr_review_patterns"
+    parse_json: true
+
+  - id: "step11-pr-review-tester"
+    agent: "amplihack:tester"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      EXPERT PANEL PR REVIEW - Tester Agent
+
+      **Implementation:** {{refactored_implementation}}
+      **Tests:** {{tdd_tests}}
+      **Requirements:** {{final_requirements}}
+
+      Test coverage analysis:
+      - Coverage adequacy
+      - Test quality
+      - Edge case coverage
+
+      Return as JSON:
+      ```json
+      {
+        "perspective": "tester",
+        "coverage_issues": [
+          {"requirement": "...", "coverage": "adequate/insufficient", "recommendation": "..."}
+        ],
+        "test_quality_score": 1-10,
+        "edge_cases_covered": true/false,
+        "approved": true/false
+      }
+      ```
+    output: "pr_review_tester"
+    parse_json: true
+
+  - id: "step11-pr-review-consensus"
+    agent: "amplihack:architect"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      EXPERT PANEL CONSENSUS - PR Review Approval
+
+      **Panel Reviews:**
+      - Reviewer: {{pr_review_reviewer}}
+      - Security: {{pr_review_security}}
+      - Optimizer: {{pr_review_optimizer}}
+      - Patterns: {{pr_review_patterns}}
+      - Tester: {{pr_review_tester}}
+
+      Consolidate findings and reach consensus:
+      1. Prioritize issues (critical vs nice-to-have)
+      2. Panel must agree on what's mandatory vs optional
+      3. Document consensus decision
+
+      Return as JSON:
+      ```json
+      {
+        "unanimous_approval": true/false,
+        "required_changes": [
+          {"issue": "...", "severity": "critical", "agreed_by": ["all"]}
+        ],
+        "optional_improvements": [
+          {"suggestion": "...", "noted_by": ["agents"]}
+        ],
+        "consensus_mechanisms_validated": true/false,
+        "panel_signoff": {
+          "reviewer": true/false,
+          "security": true/false,
+          "optimizer": true/false,
+          "patterns": true/false,
+          "tester": true/false
+        },
+        "final_verdict": "approved/needs_work/rejected"
+      }
+      ```
+    output: "pr_review_consensus"
+    parse_json: true
+
+  # ============================================================================
+  # STEP 12: IMPLEMENT REVIEW FEEDBACK
+  # ============================================================================
+
+  - id: "step12-implement-feedback"
+    condition: "pr_review_consensus.final_verdict == 'needs_work'"
+    agent: "amplihack:builder"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      Implement required changes from PR review:
+
+      **Current Implementation:** {{refactored_implementation}}
+      **Required Changes:** {{pr_review_consensus.required_changes}}
+      **Optional Improvements:** {{pr_review_consensus.optional_improvements}}
+
+      Address ALL required changes (panel consensus).
+      Consider optional improvements (evaluate cost/benefit).
+
+      Provide updated implementation and summary of changes.
+    output: "refined_implementation"
+

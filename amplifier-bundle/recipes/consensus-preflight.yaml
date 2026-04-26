@@ -1,0 +1,115 @@
+name: "consensus-preflight"
+description: "Phase 1a: preflight + requirements/codebase analysis (steps 0, 1-analysis)"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["consensus", "preflight", "requirements"]
+
+# consensus-preflight: extracted from consensus-workflow.yaml as a composable phase brick.
+#
+# Preserves every original step verbatim — every debate round, every panel
+# perspective, every consensus gate. The user's design constraint: the LLM
+# converges on correct behaviour through many recursive review layers, so
+# no layer may be silently dropped. Context flows in from the parent
+# consensus-workflow context via _execute_sub_recipe()'s automatic merging;
+# outputs propagate back to the parent for subsequent phase recipes.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 100
+
+context: {}
+
+steps:
+  - id: "step0-preflight"
+    type: "bash"
+    command: |
+      ERRORS=""
+      REPO="$REPO_PATH"
+      if [ ! -d "$REPO" ]; then
+        ERRORS="${ERRORS}\n  ✗ repo_path '$REPO' does not exist"
+      elif ! git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+        ERRORS="${ERRORS}\n  ✗ repo_path '$REPO' is not a git repository"
+      fi
+      if [ -z "$TASK_DESCRIPTION" ]; then
+        ERRORS="${ERRORS}\n  ✗ task_description is empty"
+      fi
+      if [ -n "$ERRORS" ]; then
+        echo "=== CONSENSUS-WORKFLOW PRE-FLIGHT FAILED ===" >&2
+        printf "%b\n" "$ERRORS" >&2
+        echo "Restart: run_recipe_by_name('consensus-workflow', user_context={...}, progress=True)" >&2
+        exit 1
+      fi
+      echo "=== Pre-flight passed ==="
+    output: "preflight_status"
+
+  # ============================================================================
+  # STEP 1: REWRITE AND CLARIFY REQUIREMENTS WITH CONSENSUS
+  # CONSENSUS TRIGGER: If requirements are ambiguous, complex, or involve multiple stakeholders
+  # ============================================================================
+
+  - id: "step1-requirements-analysis"
+    agent: "amplihack:prompt-writer"
+    prompt: |
+      Clarify and structure the task requirements:
+
+      **Task:** {{task_description}}
+      **Requirements:** {{requirements}}
+      **Criticality:** {{criticality}}
+
+      First, identify:
+      1. EXPLICIT user requirements that CANNOT be optimized away
+      2. Any AMBIGUITIES that need resolution
+      3. IMPLICIT requirements from context
+
+      Return structured analysis as JSON:
+      ```json
+      {
+        "task_summary": "one-line summary",
+        "explicit_requirements": ["requirements that MUST be preserved"],
+        "implicit_requirements": ["derived requirements"],
+        "ambiguities_detected": [
+          {"issue": "the ambiguity", "severity": "high/medium/low"}
+        ],
+        "constraints": ["technical and business constraints"],
+        "success_criteria": ["measurable success criteria"],
+        "is_ambiguous": true/false,
+        "requires_debate": true/false,
+        "rationale": "why debate is/isn't needed"
+      }
+      ```
+    output: "initial_requirements"
+    parse_json: true
+
+  - id: "step1-codebase-analysis"
+    agent: "amplihack:architect"
+    prompt: |
+      Analyze the existing codebase context for this task:
+
+      **Task:** {{task_description}}
+      **Requirements:** {{initial_requirements}}
+
+      Examine the codebase to understand:
+      1. Existing patterns and conventions
+      2. Related modules and dependencies
+      3. Integration points
+      4. Potential conflicts or impacts
+
+      Return as JSON:
+      ```json
+      {
+        "relevant_modules": ["modules that will be affected"],
+        "existing_patterns": ["patterns to follow"],
+        "dependencies": ["dependencies involved"],
+        "integration_points": ["where this integrates"],
+        "potential_conflicts": ["possible issues"],
+        "codebase_context": "summary of relevant codebase state"
+      }
+      ```
+    output: "codebase_analysis"
+    parse_json: true
+
+  # ---------------------------------------------------------------------------
+  # CONSENSUS GATE 1: Multi-Agent Debate for Ambiguous Requirements
+  # IF AMBIGUOUS → Deploy 3-5 specialized agents for structured debate
+  # ---------------------------------------------------------------------------
+
