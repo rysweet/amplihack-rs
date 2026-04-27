@@ -41,6 +41,20 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Tutorials:
+      - Amplihack Tutorial: tutorials/amplihack-tutorial.md
+      - Goal-Seeking Agent Generator: tutorials/GOAL_SEEKING_AGENT_TUTORIAL.md
+      - Code Atlas Getting Started: tutorials/code-atlas-getting-started.md
+      - Copilot Parity Control Plane: tutorials/copilot-parity-control-plane.md
+      - Dev Orchestrator Getting Started: tutorials/dev-orchestrator-tutorial.md
+      - Your First Docs Site: tutorials/first-docs-site.md
+      - Hive Mind Getting Started: tutorials/hive-mind-getting-started.md
+      - Hive Mind Tutorial: tutorials/hive-mind-tutorial.md
+      - LearningAgent Refactor Walkthrough: tutorials/learning-agent-refactor-tutorial.md
+      - Memory-Enabled Agents Getting Started: tutorials/memory-enabled-agents-getting-started.md
+      - Platform Bridge Quickstart: tutorials/platform-bridge-quickstart.md
+      - Resumable Workstream Timeouts: tutorials/resumable-workstream-timeouts.md
+      - Session-Start Workflow Classification: tutorials/session-start-workflow-classification.md
   - How-To Guides:
       - First-Time Install: howto/first-install.md
       - Install from Local Repo: howto/local-install.md
@@ -234,17 +248,3 @@ nav:
       - "Layer 6: Data Flow": atlas/data-flow/README.md
       - "Layer 7: Service Components": atlas/service-components/README.md
       - "Layer 8: User Journeys": atlas/user-journeys/README.md
-  - Tutorials:
-      - amplihack Tutorial: tutorials/amplihack-tutorial.md
-      - Goal-Seeking Agent Tutorial: tutorials/GOAL_SEEKING_AGENT_TUTORIAL.md
-      - Code Atlas Getting Started: tutorials/code-atlas-getting-started.md
-      - Copilot Parity Control Plane: tutorials/copilot-parity-control-plane.md
-      - Dev Orchestrator Tutorial: tutorials/dev-orchestrator-tutorial.md
-      - First Docs Site: tutorials/first-docs-site.md
-      - Hive Mind Getting Started: tutorials/hive-mind-getting-started.md
-      - Hive Mind Tutorial: tutorials/hive-mind-tutorial.md
-      - Learning Agent Refactor: tutorials/learning-agent-refactor-tutorial.md
-      - Memory-Enabled Agents: tutorials/memory-enabled-agents-getting-started.md
-      - Platform Bridge Quickstart: tutorials/platform-bridge-quickstart.md
-      - Resumable Workstream Timeouts: tutorials/resumable-workstream-timeouts.md
-      - Session Start Workflow: tutorials/session-start-workflow-classification.md
