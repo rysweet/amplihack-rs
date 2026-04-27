@@ -79,6 +79,29 @@ nav:
       - Goal-Seeking Agent Tutorial: howto/goal-seeking-agent-tutorial.md
       - Token Sanitization: howto/token-sanitization.md
       - Security Testing: howto/security-testing.md
+  - Document-Driven Development:
+      - Overview: document_driven_development/README.md
+      - DDD in Depth: document_driven_development/overview.md
+      - Core Concepts:
+          - Index: document_driven_development/core_concepts/README.md
+          - Context Poisoning: document_driven_development/core_concepts/context_poisoning.md
+          - File Crawling: document_driven_development/core_concepts/file_crawling.md
+          - Retcon Writing: document_driven_development/core_concepts/retcon_writing.md
+      - Phases:
+          - Index: document_driven_development/phases/README.md
+          - "Phase 0: Planning & Alignment": document_driven_development/phases/00_planning_and_alignment.md
+          - "Phase 1: Documentation Retcon": document_driven_development/phases/01_documentation_retcon.md
+          - "Phase 2: Approval Gate": document_driven_development/phases/02_approval_gate.md
+          - "Phase 3: Implementation Planning": document_driven_development/phases/03_implementation_planning.md
+          - "Phase 4: Code Implementation": document_driven_development/phases/04_code_implementation.md
+          - "Phase 5: Testing & Verification": document_driven_development/phases/05_testing_and_verification.md
+          - "Phase 6: Cleanup & Push": document_driven_development/phases/06_cleanup_and_push.md
+      - Reference:
+          - Index: document_driven_development/reference/README.md
+          - Checklists: document_driven_development/reference/checklists.md
+          - Common Pitfalls: document_driven_development/reference/common_pitfalls.md
+          - FAQ: document_driven_development/reference/faq.md
+          - Tips for Success: document_driven_development/reference/tips_for_success.md
   - Skills:
       - Migrate Session: skills/migrate.md
   - Reference:
