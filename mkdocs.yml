@@ -78,6 +78,7 @@ nav:
       - Recipe Discovery Troubleshooting: howto/recipe-discovery-troubleshooting.md
       - Goal-Seeking Agent Tutorial: howto/goal-seeking-agent-tutorial.md
       - Token Sanitization: howto/token-sanitization.md
+      - Power Steering Merge Preferences: howto/power-steering-merge-preferences.md
       - Security Testing: howto/security-testing.md
   - Document-Driven Development:
       - Overview: document_driven_development/README.md
@@ -102,6 +103,18 @@ nav:
           - Common Pitfalls: document_driven_development/reference/common_pitfalls.md
           - FAQ: document_driven_development/reference/faq.md
           - Tips for Success: document_driven_development/reference/tips_for_success.md
+  - Features:
+      - Overview: features/README.md
+      - Power Steering:
+          - Overview: features/power-steering/README.md
+          - Architecture Refactor: features/power-steering/architecture-refactor.md
+          - Configuration: features/power-steering/configuration.md
+          - Customization Guide: features/power-steering/customization-guide.md
+          - "Changelog v0.9.1": features/power-steering/changelog-v0.9.1.md
+          - "Migration v0.9.1": features/power-steering/migration-v0.9.1.md
+          - Migration Worktree Support: features/power-steering/migration-worktree-support.md
+          - Troubleshooting: features/power-steering/troubleshooting.md
+          - Worktree Support: features/power-steering/worktree-support.md
   - Skills:
       - Migrate Session: skills/migrate.md
   - Reference:
@@ -137,6 +150,10 @@ nav:
       - Memory Extended API: reference/memory-extended-api.md
       - Plugin Directory Structure Fix: reference/plugin-directory-structure-fix.md
       - Power Steering Compaction API: reference/power-steering-compaction-api.md
+      - Power Steering Checker API: reference/power-steering-checker-api.md
+      - Power Steering Checker Configuration: reference/power-steering-checker-configuration.md
+      - Power Steering File Locking: reference/power-steering-file-locking.md
+      - Power Steering Merge Preferences: reference/power-steering-merge-preferences.md
       - Profile Management: reference/profile-management.md
       - Shell Command Hook: reference/shell-command-hook.md
       - Security Recommendations: reference/security-recommendations.md
