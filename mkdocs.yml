@@ -140,6 +140,15 @@ nav:
           - Migration Worktree Support: features/power-steering/migration-worktree-support.md
           - Troubleshooting: features/power-steering/troubleshooting.md
           - Worktree Support: features/power-steering/worktree-support.md
+  - "Hive Mind & Fleet":
+      - "Design Spec: Memory & Retrieval": hive_mind/CURRENT_DESIGN_SPEC.md
+      - Eval Stack Components: hive_mind/EVAL_COMPONENTS.md
+      - Eval Operator Guide: hive_mind/EVAL_OPERATOR_GUIDE.md
+      - Messaging Transport Investigation: hive_mind/MESSAGING_TRANSPORT_INVESTIGATION.md
+      - Module Creation Guide: hive_mind/MODULE_CREATION_GUIDE.md
+      - Validation Results: hive_mind/current-validation-results.md
+      - Fleet Advanced Proposal: fleet-orchestration/ADVANCED_PROPOSAL.md
+      - Fleet Orchestration Tutorial: fleet-orchestration/TUTORIAL.md
   - Skills:
       - Migrate Session: skills/migrate.md
   - Reference:
