@@ -476,7 +476,7 @@ def _merge_fact_lists(local_results, hive_dicts, limit):
 No relevance re-ranking after merge. Local facts are always ranked above hive facts
 regardless of relevance. Final list is truncated to `limit`.
 
-### 4.7 search_local — Recursive Storm Prevention
+### 4.7 search_local -- Recursive Storm Prevention
 
 **File:** `cognitive_adapter.py`
 
