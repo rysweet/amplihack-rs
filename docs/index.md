@@ -109,6 +109,11 @@ amplihack install --local /path/to/amplihack-clone
 amplihack uninstall
 ```
 
+### Contributing
+
+- [File Organization](./contributing/file-organization.md) — Where files go in the repository
+- [Documentation Parity Audit](./contributing/documentation-parity-audit.md) — How upstream docs were audited and ported, and how to maintain parity
+
 ## Related
 
 - [README](https://github.com/rysweet/amplihack-rs/blob/main/README.md) — Architecture overview and design principles
