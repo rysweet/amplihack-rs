@@ -1,6 +1,6 @@
 # Power-Steering Checker — API Reference
 
-> [Home](../index.md) > [Reference](./power-steering-checker-api.md) > Power-Steering Checker API
+> [Home](../index.md) > Reference > Power-Steering Checker API
 
 Complete API reference for the `power_steering_checker` package.
 
@@ -22,7 +22,7 @@ Complete API reference for the `power_steering_checker` package.
 - 191 tests passing (121 existing + 48 parser + 22 Copilot e2e)
 - Full backward compatibility via re-exporting `__init__.py`
 
-See the architecture refactor guide for module details.
+See power_steering_checker package README for module details.
 
 ---
 
