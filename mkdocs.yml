@@ -271,3 +271,20 @@ nav:
       - Testing Strategy Summary: memory/TESTING_STRATEGY_SUMMARY.md
       - Zero-BS Audit: memory/ZERO_BS_AUDIT.md
       - Evaluation Summary: memory/evaluation-summary.md
+  - Goal Agent Generator:
+      - Implementation Summary: goal_agent_generator/IMPLEMENTATION_SUMMARY.md
+  - Meta-Delegation:
+      - Concepts: meta-delegation/concepts.md
+      - How-To: meta-delegation/howto.md
+      - Reference: meta-delegation/reference.md
+      - Troubleshooting: meta-delegation/troubleshooting.md
+      - Tutorial: meta-delegation/tutorial.md
+  - Examples:
+      - Goal Agent Generator:
+          - Example Goal Prompt: examples/goal_agent_generator/example_goal_prompt.md
+          - AKS SRE Example: examples/goal_agent_generator/aks_sre_example/goal_prompt.md
+          - API Doc Generator: examples/goal_agent_generator/api_documentation_generator/goal_prompt.md
+          - Dependency Auditor: examples/goal_agent_generator/dependency_auditor/goal_prompt.md
+          - GitHub PR Manager: examples/goal_agent_generator/github_pr_manager/goal_prompt.md
+          - Security Scanner: examples/goal_agent_generator/security_scanner/goal_prompt.md
+          - Test Coverage Analyzer: examples/goal_agent_generator/test_coverage_analyzer/goal_prompt.md
