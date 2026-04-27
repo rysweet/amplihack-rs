@@ -313,6 +313,16 @@ nav:
       - Formal Specifications as Prompt Language: guides/formal-specifications-as-prompt-language.md
   - Commands:
       - Command Selection Guide: commands/COMMAND_SELECTION_GUIDE.md
+  - Troubleshooting:
+      - Auto Mode Permission Error: troubleshooting/AUTO_MODE_PERMISSION_ERROR.md
+      - Copilot Installation False Negative: troubleshooting/copilot-installation-false-negative.md
+      - Copytree Same-File Crash: troubleshooting/copytree-same-file-crash.md
+      - Memory Consent Issues: troubleshooting/memory-consent-issues.md
+      - Memory-Enabled Agents: troubleshooting/memory-enabled-agents.md
+      - Platform Bridge: troubleshooting/platform-bridge.md
+      - Startup Conflict Prompt: troubleshooting/startup-conflict-prompt.md
+      - Stop Hook Exit Hang: troubleshooting/stop-hook-exit-hang.md
+      - Trace Logging: troubleshooting/trace-logging.md
   - Code Atlas:
       - Overview: atlas/index.md
       - "Layer 1: Repo Surface": atlas/repo-surface/README.md
