@@ -408,7 +408,7 @@ We'll respond within 48 hours and coordinate a fix.
 
 ## See Also
 
-- [Platform Bridge Overview](../platform-bridge/README.md) - Feature documentation
+- [Platform Bridge API](../reference/platform-bridge-api.md) - Feature documentation
 - [API Reference](../reference/platform-bridge-api.md) - Complete API
 - [GitHub CLI Security](https://cli.github.com/manual/gh_auth_login) - gh authentication
 - [Azure CLI Security](https://learn.microsoft.com/cli/azure/authenticate-azure-cli) - az authentication
