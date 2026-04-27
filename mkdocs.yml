@@ -248,6 +248,18 @@ nav:
       - External Knowledge Integration: concepts/external-knowledge-integration.md
       - Native Binary Trace Logging: concepts/native-binary-trace-logging.md
       - Goal-Seeking Agents: concepts/goal-seeking-agents.md
+      - Copilot Parity Control Plane: concepts/copilot-parity-control-plane.md
+      - Framework Injection Architecture: concepts/framework-injection-architecture.md
+      - Learning Agent Module Architecture: concepts/learning-agent-module-architecture.md
+      - Memory-Enabled Agents Architecture: concepts/memory-enabled-agents-architecture.md
+      - Rust Runner Execution Architecture: concepts/rust-runner-execution-architecture.md
+      - Settings Manager vs Permanent Changes: concepts/settings-manager-vs-permanent-changes.md
+      - Unified Distributed Cognitive Memory: concepts/unified-distributed-cognitive-memory.md
+      - Unified Staging Architecture: concepts/unified-staging-architecture.md
+  - Contributing:
+      - File Organization: contributing/file-organization.md
+  - Guides:
+      - Formal Specifications as Prompt Language: guides/formal-specifications-as-prompt-language.md
   - Code Atlas:
       - Overview: atlas/index.md
       - "Layer 1: Repo Surface": atlas/repo-surface/README.md
