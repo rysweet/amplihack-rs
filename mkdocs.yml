@@ -95,6 +95,30 @@ nav:
       - Power Steering Merge Preferences: howto/power-steering-merge-preferences.md
       - Security Testing: howto/security-testing.md
       - GitHub Pages Deployment: howto/github-pages-deployment.md
+      - Agent Learning Eval Harness: howto/agent-learning-eval-harness.md
+      - Configure Copilot Parity Control Plane: howto/configure-copilot-parity-control-plane.md
+      - Configure Issue Classifier Workflow: howto/configure-issue-classifier-workflow.md
+      - Configure Memory Consent: howto/configure-memory-consent.md
+      - Configure Resumable Workstream Timeouts: howto/configure-resumable-workstream-timeouts.md
+      - Configure Workflow Publish/Import Validation: howto/configure-workflow-publish-import-validation.md
+      - Design Custom Learning Metrics: howto/design-custom-learning-metrics.md
+      - Enable Blarify: howto/enable-blarify.md
+      - Integrate Memory into Agents: howto/integrate-memory-into-agents.md
+      - Maintain Learning Agent Modules: howto/maintain-learning-agent-modules.md
+      - Platform Bridge Workflows: howto/platform-bridge-workflows.md
+      - Recipe CLI Commands: howto/recipe-cli-commands.md
+      - Run Quality Audit: howto/run-quality-audit.md
+      - Run Supply Chain Audit: howto/run-supply-chain-audit.md
+      - Settings Hook Configuration: howto/settings-hook-configuration.md
+      - Trace Logging: howto/trace-logging.md
+      - Troubleshoot Hooks: howto/troubleshoot-hooks.md
+      - Use Code Atlas: howto/use-code-atlas.md
+      - Use Crusty Old Engineer: howto/use-crusty-old-engineer.md
+      - Use Non-Claude Agent: howto/use-non-claude-agent.md
+      - Use Gherkin Expert: howto/use_gherkin_expert.md
+      - Validate Agent Learning: howto/validate-agent-learning.md
+      - Verify Claude Staging: howto/verify-claude-staging.md
+      - Verify Framework Injection: howto/verify-framework-injection.md
   - Document-Driven Development:
       - Overview: document_driven_development/README.md
       - DDD in Depth: document_driven_development/overview.md
@@ -260,6 +284,8 @@ nav:
       - File Organization: contributing/file-organization.md
   - Guides:
       - Formal Specifications as Prompt Language: guides/formal-specifications-as-prompt-language.md
+  - Commands:
+      - Command Selection Guide: commands/COMMAND_SELECTION_GUIDE.md
   - Code Atlas:
       - Overview: atlas/index.md
       - "Layer 1: Repo Surface": atlas/repo-surface/README.md
