@@ -321,6 +321,7 @@ nav:
       - Unified Staging Architecture: concepts/unified-staging-architecture.md
   - Contributing:
       - File Organization: contributing/file-organization.md
+      - Documentation Parity Audit: contributing/documentation-parity-audit.md
   - Guides:
       - Formal Specifications as Prompt Language: guides/formal-specifications-as-prompt-language.md
   - Commands:
