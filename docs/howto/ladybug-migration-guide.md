@@ -75,11 +75,23 @@ neither package is installed, the import raises `ImportError`.
 
 ### 4. Verify
 
+**amplihack-rs** (Rust):
+
 ```bash
-# Quick smoke test
+# Run the Rust graph store tests
+cargo test --package amplihack-memory -- ladybug
+
+# Or run the full test suite
+cargo test
+```
+
+**Upstream Python** (reference only):
+
+```bash
+# Quick smoke test (upstream Python)
 python3 -c "from amplihack.memory.ladybug_store import KuzuGraphStore; print('OK')"
 
-# Run graph store tests
+# Run graph store tests (upstream Python)
 pytest tests/test_graph_store.py -q
 ```
 

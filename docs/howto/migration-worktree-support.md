@@ -55,24 +55,12 @@ cargo install amplihack
 
 ### Step 3: Verify Installation
 
-!!! note "Upstream Python verification"
-    The verification script below uses the upstream Python `amplihack` API.
-    In amplihack-rs the worktree utilities are built into the Rust binary
-    and do not require a separate Python import.
-
 ```bash
-# Check git_utils module exists (upstream Python API)
-python3 << 'EOF'
-try:
-    from amplihack.tools.amplihack.git_utils import (
-        is_worktree,
-        get_common_git_dir,
-        find_disabled_file
-    )
-    print("git_utils module installed")
-except ImportError as e:
-    print(f"git_utils not found: {e}")
-EOF
+# Verify amplihack-rs is installed and working
+amplihack --version
+
+# Run the built-in diagnostic
+amplihack doctor
 ```
 
 ### Step 4: Migrate State (Automatic)
