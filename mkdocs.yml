@@ -229,6 +229,33 @@ nav:
       - Goal Agent Example Prompt: reference/goal-agent-example-prompt.md
       - Code Review Practices: reference/code-review.md
       - Prerequisites: reference/prerequisites.md
+      - Launcher Model Configuration: reference/LAUNCHER_MODEL_CONFIGURATION.md
+      - Status Line: reference/STATUSLINE.md
+      - amplifier Command: reference/amplifier-command.md
+      - Append Handler: reference/append-handler.md
+      - CLI Reference: reference/cli.md
+      - Code Atlas Reference: reference/code-atlas-reference.md
+      - Copilot Installation Implementation: reference/copilot-installation-implementation.md
+      - Copilot Parity Control Plane: reference/copilot-parity-control-plane.md
+      - GitHub Pages API: reference/github-pages-api.md
+      - Goal-Seeking Agents Quick Reference: reference/goal-seeking-agents-quick-reference.md
+      - Hook Persistence Implementation: reference/hook-persistence-implementation.md
+      - Learning Agent Module Reference: reference/learning-agent-module-reference.md
+      - Memory CLI Reference: reference/memory-cli-reference.md
+      - Memory-Enabled Agents API: reference/memory-enabled-agents-api.md
+      - Platform Bridge API: reference/platform-bridge-api.md
+      - Prerequisite Checking: reference/prerequisite-checking.md
+      - Quality Audit Cycle Recipe: reference/quality-audit-cycle-recipe.md
+      - Recipe CLI Reference: reference/recipe-cli-reference.md
+      - Recipe Result: reference/recipe-result.md
+      - Resumable Workstream Timeouts: reference/resumable-workstream-timeouts.md
+      - Rust Runner Execution: reference/rust-runner-execution.md
+      - Staging API: reference/staging-api.md
+      - Token Sanitizer: reference/token-sanitizer.md
+      - Trace Logging API: reference/trace-logging-api.md
+      - User Prompt Submit Hook API: reference/user-prompt-submit-hook-api.md
+      - Workflow Issue Extraction: reference/workflow-issue-extraction.md
+      - Workflow Publish/Import Validation: reference/workflow-publish-import-validation.md
   - Concepts:
       - Philosophy: concepts/philosophy.md
       - Patterns: concepts/patterns.md
