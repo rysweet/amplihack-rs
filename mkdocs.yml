@@ -325,6 +325,20 @@ nav:
       - Formal Specifications as Prompt Language: guides/formal-specifications-as-prompt-language.md
   - Commands:
       - Command Selection Guide: commands/COMMAND_SELECTION_GUIDE.md
+  - CS Validator:
+      - Integration: cs-validator/INTEGRATION.md
+  - Implementation:
+      - Recipe Runner Integration Summary: implementation/recipe-runner-integration-summary.md
+  - Investigations:
+      - "Issue 2898: Status Classifiers": investigations/2898-status-classifiers.md
+      - "Issue 3045-3076: Heredoc Shell Injection": investigations/3045-3076-task-description-heredoc-shell-injection.md
+      - "Step 03: Idempotency Guards Analysis": investigations/step-03-idempotency-guards-analysis.md
+      - "Step 03: External Service Integration": investigations/step03-external-service-integration-assessment.md
+  - MCP Evaluation:
+      - User Guide: mcp_evaluation/USER_GUIDE.md
+  - Remote Sessions:
+      - CLI Reference: remote-sessions/CLI_REFERENCE.md
+      - Tutorial: remote-sessions/TUTORIAL.md
   - Troubleshooting:
       - Auto Mode Permission Error: troubleshooting/AUTO_MODE_PERMISSION_ERROR.md
       - Copilot Installation False Negative: troubleshooting/copilot-installation-false-negative.md

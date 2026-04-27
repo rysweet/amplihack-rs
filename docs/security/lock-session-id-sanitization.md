@@ -1,6 +1,6 @@
 # Lock Tool Session ID Sanitization
 
-> [Home](../index.md) > [Security](./README.md) > Lock Session ID Sanitization
+> [Home](../index.md) > Security > Lock Session ID Sanitization
 
 Security hardening for the lock tool and stop hook: session identifiers are
 sanitized before they are used as filesystem path components or written into
@@ -191,11 +191,11 @@ pytest tests/test_lock_unlock.py \
 
 ## Related
 
-- [Power Steering File Locking](./power-steering-file-locking.md) — lock
+- [Power Steering File Locking](../reference/power-steering-file-locking.md) — lock
   acquisition, timeout, and fail-open behaviour
-- [Security Recommendations](../SECURITY_RECOMMENDATIONS.md) — input validation
+- [Security Recommendations](../reference/security-recommendations.md) — input validation
   patterns used across the codebase
-- [Token Sanitization Guide](./TOKEN_SANITIZATION_GUIDE.md) — analogous
+- [Token Sanitization](../reference/token-sanitizer.md) — analogous
   sanitization for API tokens in log output
 - Issues [#3960](https://github.com/rysweet/amplihack/issues/3960) and
   [#3983](https://github.com/rysweet/amplihack/issues/3983) — originating bug

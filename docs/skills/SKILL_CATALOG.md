@@ -107,25 +107,25 @@ These skills are thin coordination layers that automatically trigger amplihack's
 
 | Skill                         | Auto-Triggers                                              | Invokes                        | Location                                                                                            |
 | ----------------------------- | ---------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------- |
-| **Architecting Solutions**    | Design questions, "how should I", architecture discussions | Architect agent                | [development/architecting-solutions/](../../.claude/skills/development/architecting-solutions/)     |
-| **Reviewing Code**            | "review this", before PR, quality checks                   | Reviewer agent                 | [quality/reviewing-code/](../../.claude/skills/quality/reviewing-code/)                             |
-| **Testing Code**              | New features, "add tests", test gaps                       | Tester agent                   | [quality/testing-code/](../../.claude/skills/quality/testing-code/)                                 |
-| **Researching Topics**        | "how does X work", unfamiliar terms                        | Web search + knowledge builder | [research/researching-topics/](../../.claude/skills/research/researching-topics/)                   |
-| **Analyzing Problems Deeply** | Complex problems, "I'm not sure", ambiguity                | Ultrathink workflow            | [meta-cognitive/analyzing-deeply/](../../.claude/skills/meta-cognitive/analyzing-deeply/)           |
-| **Setting Up Projects**       | New projects, missing configs, pre-commit setup            | Builder agent + templates      | [development/setting-up-projects/](../../.claude/skills/development/setting-up-projects/)           |
-| **Creating Pull Requests**    | "create PR", ready to merge                                | Smart PR generation            | [collaboration/creating-pull-requests/](../../.claude/skills/collaboration/creating-pull-requests/) |
+| **Architecting Solutions**    | Design questions, "how should I", architecture discussions | Architect agent                | `development/architecting-solutions/`     |
+| **Reviewing Code**            | "review this", before PR, quality checks                   | Reviewer agent                 | `quality/reviewing-code/`                             |
+| **Testing Code**              | New features, "add tests", test gaps                       | Tester agent                   | `quality/testing-code/`                                 |
+| **Researching Topics**        | "how does X work", unfamiliar terms                        | Web search + knowledge builder | `research/researching-topics/`                   |
+| **Analyzing Problems Deeply** | Complex problems, "I'm not sure", ambiguity                | Ultrathink workflow            | `meta-cognitive/analyzing-deeply/`           |
+| **Setting Up Projects**       | New projects, missing configs, pre-commit setup            | Builder agent + templates      | `development/setting-up-projects/`           |
+| **Creating Pull Requests**    | "create PR", ready to merge                                | Smart PR generation            | `collaboration/creating-pull-requests/` |
 
 ## Research & Documentation
 
 ### Research Reports
 
-- **[Complete Research Report](../../.claude/runtime/logs/20251108_skills_research/RESEARCH.md)** (357 lines)
+- **[Complete Research Report](#)** (357 lines)
   - Comprehensive analysis of Claude Code Skills ecosystem
   - Comparison with MCP (Model Context Protocol)
   - 23+ documented skills from Anthropic and community
   - Key insights from Simon Willison and other experts
 
-- **[Evaluation Matrix & Ideas](../../.claude/runtime/logs/20251108_skills_research/EVALUATION_MATRIX_AND_IDEAS.md)** (842 lines)
+- **[Evaluation Matrix & Ideas](#)** (842 lines)
   - 6-criteria evaluation framework aligned with amplihack philosophy
   - 20 brainstormed skill ideas with priority scores
   - Implementation phases and effort estimates
@@ -283,7 +283,7 @@ To create a new capability skill:
 5. **Test**: Validate with real usage
 6. **Review**: Ensure philosophy compliance
 
-See [Evaluation Matrix](../../.claude/runtime/logs/20251108_skills_research/EVALUATION_MATRIX_AND_IDEAS.md) for guidance on prioritization.
+See [Evaluation Matrix](#) for guidance on prioritization.
 
 ### For Agent-Wrapper Skills
 
@@ -297,10 +297,10 @@ To create an agent-wrapper skill:
 
 ## Related Documentation
 
-- [CLAUDE.md](../../CLAUDE.md) - Project overview and agent system
-- [PHILOSOPHY.md](../../.claude/context/PHILOSOPHY.md) - Ruthless simplicity principles
-- [PATTERNS.md](../../.claude/context/PATTERNS.md) - Reusable solution patterns
-- [Agent Catalog](../../.claude/agents/CATALOG.md) - Specialized agents
+- [CLAUDE.md](#) - Project overview and agent system
+- [PHILOSOPHY.md](../concepts/philosophy.md) - Ruthless simplicity principles
+- [PATTERNS.md](../concepts/patterns.md) - Reusable solution patterns
+- [Agent Catalog](#) - Specialized agents
 
 ## Contributing
 
