@@ -2,12 +2,30 @@
 
 # Git Utilities API Reference
 
-!!! note "Upstream Python API Reference"
+!!! warning "Not Directly Callable in amplihack-rs"
     This document describes the upstream Python `amplihack.tools.amplihack.git_utils`
-    module. amplihack-rs implements equivalent functionality in Rust (see
-    `crates/amplihack-cli/src/git/`). The function signatures, behaviors, and
-    patterns documented here serve as the reference specification for the Rust
-    implementation.
+    module. **Python imports shown below do not work in amplihack-rs.** The Rust
+    implementation lives in `crates/amplihack-cli/src/git/` and is accessed via
+    the `amplihack doctor` CLI command or the Rust API directly.
+
+## Rust Equivalents
+
+amplihack-rs provides equivalent functionality through native Rust functions:
+
+```rust
+// crates/amplihack-cli/src/git/worktree.rs
+pub fn is_worktree(cwd: Option<&Path>) -> Result<bool>;
+pub fn get_common_git_dir(cwd: Option<&Path>) -> Result<PathBuf>;
+pub fn find_disabled_file(cwd: Option<&Path>) -> Result<Option<PathBuf>>;
+```
+
+Access via CLI:
+
+```bash
+amplihack doctor          # Reports worktree status, state dir, .disabled files
+```
+
+## Upstream Python API (Reference Specification)
 
 Technical documentation for `amplihack.tools.amplihack.git_utils` module providing git worktree detection and shared directory utilities.
 
@@ -17,9 +35,12 @@ The `git_utils` module provides utilities for detecting git worktrees and findin
 
 ## Installation
 
-The module is included in amplihack core:
+!!! note "Upstream Python imports — not available in amplihack-rs"
+
+The module is included in upstream amplihack core:
 
 ```python
+# Upstream Python signature — Rust equivalent: git::is_worktree()
 from amplihack.tools.amplihack.git_utils import (
     is_worktree,
     get_common_git_dir,
@@ -32,6 +53,7 @@ from amplihack.tools.amplihack.git_utils import (
 ### is_worktree
 
 ```python
+# Upstream Python signature — Rust equivalent: git::is_worktree()
 def is_worktree(cwd: Optional[str] = None) -> bool
 ```
 
@@ -79,6 +101,7 @@ is_worktree("/root/restricted")  # Returns False
 ### get_common_git_dir
 
 ```python
+# Upstream Python signature — Rust equivalent: git::get_common_git_dir()
 def get_common_git_dir(cwd: Optional[str] = None) -> str
 ```
 
@@ -141,6 +164,7 @@ except subprocess.CalledProcessError:
 ### find_disabled_file
 
 ```python
+# Upstream Python signature — Rust equivalent: git::find_disabled_file()
 def find_disabled_file(cwd: Optional[str] = None) -> Optional[str]
 ```
 

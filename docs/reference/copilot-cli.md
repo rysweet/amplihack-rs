@@ -439,10 +439,10 @@ gh copilot suggest --context .github/commands/analyze.md \
 
 Each hook is a **bash wrapper** that calls a **Python implementation**:
 
-!!! note "Upstream Python Implementation"
-    The hook examples below show the upstream Python implementation pattern.
-    amplihack-rs uses Rust-native hooks where applicable. See
-    [hook specifications](hook-specifications.md) and
+!!! note "Upstream Python hook pattern"
+    The bash+Python hook implementation below describes the **upstream Python
+    amplihack** pattern. amplihack-rs uses Rust-native hooks where applicable.
+    See [hook specifications](hook-specifications.md) and
     [configure hooks](../howto/configure-hooks.md) for the Rust approach.
 
 **Bash Wrapper** (`.github/hooks/pre-commit`):
@@ -1034,6 +1034,11 @@ amplihack install
 ```
 
 ## Testing
+
+!!! note "Upstream Python test commands"
+    The `pytest` commands in the Copilot CLI Transcript Support section above
+    reference the upstream Python test suite. For amplihack-rs, use `cargo test`
+    to run the Rust test suite.
 
 ### Running Tests
 
