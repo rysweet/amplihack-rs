@@ -176,6 +176,18 @@ nav:
       - Fleet Orchestration Tutorial: fleet-orchestration/TUTORIAL.md
   - Skills:
       - Migrate Session: skills/migrate.md
+      - Skill Builder Examples: skills/SKILL_BUILDER_EXAMPLES.md
+      - Skill Catalog: skills/SKILL_CATALOG.md
+  - Testing:
+      - Auto Mode UI Test Suite: testing/AUTO_MODE_UI_TEST_SUITE.md
+      - Test Fixes Needed: testing/TEST_FIXES_NEEDED.md
+      - Test Implementation Summary: testing/TEST_IMPLEMENTATION_SUMMARY.md
+      - Test Plan: testing/TEST_PLAN.md
+      - Test Specification Stop Hook: testing/TEST_SPECIFICATION_STOP_HOOK.md
+      - Session Management Test Coverage: testing/session_management_test_coverage.md
+  - Security:
+      - Lock Session ID Sanitization: security/lock-session-id-sanitization.md
+      - Platform Bridge Security: security/platform-bridge-security.md
   - Reference:
       - install Command: reference/install-command.md
       - Install Manifest: reference/install-manifest.md
