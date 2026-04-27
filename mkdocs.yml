@@ -94,6 +94,7 @@ nav:
       - Token Sanitization: howto/token-sanitization.md
       - Power Steering Merge Preferences: howto/power-steering-merge-preferences.md
       - Security Testing: howto/security-testing.md
+      - GitHub Pages Deployment: howto/github-pages-deployment.md
   - Document-Driven Development:
       - Overview: document_driven_development/README.md
       - DDD in Depth: document_driven_development/overview.md
