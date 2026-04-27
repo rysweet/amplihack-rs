@@ -717,13 +717,30 @@ mod mkdocs_navigation {
     }
 
     /// All four new entries must be in the Reference section.
+    ///
+    /// Markers are anchored to the top-level mkdocs nav indent (column 0,
+    /// `"\n  - "`) because Wave 7 doc PRs (#469-#474) introduced nested DDD
+    /// subsections literally named `Reference:` and `Concepts:` at deeper
+    /// indent levels. Bare-substring `find()` resolved to those nested
+    /// matches first, inverting the slice. See issue #420.
     #[test]
     fn new_entries_in_reference_section() {
         let config = read_doc("mkdocs.yml");
+        let ref_marker = "\n  - Reference:";
+        let concepts_marker = "\n  - Concepts:";
+        assert_eq!(
+            config.matches(ref_marker).count(),
+            1,
+            "mkdocs.yml must have exactly one top-level '  - Reference:' nav entry; \
+             adding a second would silently mis-slice this test"
+        );
         let reference_start = config
-            .find("Reference:")
-            .expect("mkdocs.yml must have Reference: section");
-        let concepts_start = config.find("Concepts:").unwrap_or(config.len());
+            .find(ref_marker)
+            .expect("mkdocs.yml must have top-level '  - Reference:' nav entry");
+        let concepts_relative = config[reference_start..]
+            .find(concepts_marker)
+            .unwrap_or(config.len() - reference_start);
+        let concepts_start = reference_start + concepts_relative;
         let reference_section = &config[reference_start..concepts_start];
 
         for doc_file in &[
