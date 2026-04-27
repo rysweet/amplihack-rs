@@ -1,6 +1,6 @@
 # Power-Steering Checker — Configuration Reference
 
-> [Home](../index.md) > [Reference](../index.md) > Power-Steering Checker Configuration
+> [Home](../index.md) > Reference > Power-Steering Checker Configuration
 
 All runtime constants in the `power_steering_checker` package can be overridden with environment variables. This reference documents every variable, its default, the module that owns it, and the behavior when set to an invalid value.
 

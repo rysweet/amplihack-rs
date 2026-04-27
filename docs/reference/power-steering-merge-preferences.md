@@ -1,6 +1,6 @@
 # Power-Steering Merge Preference Awareness - Technical Reference
 
-> [Home](../index.md) > [Reference](../index.md) > Power-Steering Merge Preferences
+> [Home](../index.md) > Reference > Power-Steering Merge Preferences
 
 Technical documentation for the Power-Steering merge preference awareness feature.
 
@@ -595,7 +595,7 @@ cat .claude/context/USER_PREFERENCES.md | grep -i "never.*merge.*without.*permis
 - [How-To: Configure Merge Preferences](../howto/power-steering-merge-preferences.md) - User guide
 - [Power-Steering Overview](../features/power-steering/README.md) - Feature overview
 - [Power-Steering Configuration](../features/power-steering/configuration.md) - General configuration
-- [USER_PREFERENCES.md Reference](../reference/profile-management.md) - Complete preferences documentation
+- [USER_PREFERENCES.md Reference](./profile-management.md) - Complete preferences documentation
 
 ---
 

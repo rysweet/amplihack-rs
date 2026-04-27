@@ -105,6 +105,17 @@ nav:
           - Tips for Success: document_driven_development/reference/tips_for_success.md
   - Features:
       - Overview: features/README.md
+      - Branch Name Generation: features/branch-name-generation.md
+      - Claude MD Preservation: features/claude-md-preservation.md
+      - Copilot Installation Reporting: features/copilot-installation-reporting.md
+      - LSP Auto-Configuration: features/lsp-auto-configuration.md
+      - Main Branch Protection: features/main-branch-protection.md
+      - Memory Consent Prompt: features/memory-consent-prompt.md
+      - Memory-Enabled Agents: features/memory-enabled-agents.md
+      - Resumable Workstream Timeouts: features/resumable-workstream-timeouts.md
+      - Smart Memory Management: features/smart-memory-management.md
+      - Trace Logging: features/trace-logging.md
+      - Workflow Publish/Import Validation: features/workflow-publish-import-validation.md
       - Power Steering:
           - Overview: features/power-steering/README.md
           - Architecture Refactor: features/power-steering/architecture-refactor.md
@@ -223,3 +234,17 @@ nav:
       - "Layer 6: Data Flow": atlas/data-flow/README.md
       - "Layer 7: Service Components": atlas/service-components/README.md
       - "Layer 8: User Journeys": atlas/user-journeys/README.md
+  - Tutorials:
+      - amplihack Tutorial: tutorials/amplihack-tutorial.md
+      - Goal-Seeking Agent Tutorial: tutorials/GOAL_SEEKING_AGENT_TUTORIAL.md
+      - Code Atlas Getting Started: tutorials/code-atlas-getting-started.md
+      - Copilot Parity Control Plane: tutorials/copilot-parity-control-plane.md
+      - Dev Orchestrator Tutorial: tutorials/dev-orchestrator-tutorial.md
+      - First Docs Site: tutorials/first-docs-site.md
+      - Hive Mind Getting Started: tutorials/hive-mind-getting-started.md
+      - Hive Mind Tutorial: tutorials/hive-mind-tutorial.md
+      - Learning Agent Refactor: tutorials/learning-agent-refactor-tutorial.md
+      - Memory-Enabled Agents: tutorials/memory-enabled-agents-getting-started.md
+      - Platform Bridge Quickstart: tutorials/platform-bridge-quickstart.md
+      - Resumable Workstream Timeouts: tutorials/resumable-workstream-timeouts.md
+      - Session Start Workflow: tutorials/session-start-workflow-classification.md

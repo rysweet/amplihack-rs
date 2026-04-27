@@ -1,6 +1,6 @@
 # How to Configure Power-Steering PR Merge Preferences
 
-> [Home](../index.md) > [How-To Guides](./first-install.md) > Power-Steering Merge Preferences
+> [Home](../index.md) > How-To Guides > Power-Steering Merge Preferences
 
 This guide explains how to configure Power-Steering to respect your PR merge approval preferences.
 
@@ -270,4 +270,4 @@ After configuring merge preferences:
 
 ---
 
-**Need help?** Check [Power-Steering Troubleshooting](../features/power-steering/troubleshooting.md) or [Discoveries](../concepts/patterns.md) for common issues.
+**Need help?** Check [Power-Steering Troubleshooting](../features/power-steering/troubleshooting.md) or Discoveries for common issues.

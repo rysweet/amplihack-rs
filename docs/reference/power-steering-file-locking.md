@@ -247,7 +247,7 @@ Process A                    Process B
 - Issue #2155: Power steering infinite loop
 - [Power Steering State Management](../features/power-steering/README.md)
 - Stop Hook Implementation
-- Test Coverage (in test suite)
+- Test Coverage
 
 ## Metadata
 
