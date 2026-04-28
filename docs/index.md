@@ -118,6 +118,7 @@ amplihack uninstall
 
 - [File Organization](./contributing/file-organization.md) — Where files go in the repository
 - [Documentation Parity Audit](./contributing/documentation-parity-audit.md) — How upstream docs were audited and ported, and how to maintain parity
+- [Discoveries](./discoveries.md) — Rolling log of non-obvious problems, solutions, and patterns found during development
 
 ## Related
 
