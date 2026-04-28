@@ -182,3 +182,11 @@ path = "../../tests/integration/sdk_comparison_optional_python_test.rs"
 [[test]]
 name = "self_improvement_loop_skip"
 path = "../../tests/integration/self_improvement_loop_skip_test.rs"
+
+# Issue #435: docs/discoveries.md rolling log.
+# Verifies the file exists, follows the prescribed format (title, archive
+# policy, entry format guide, category tags, dated seed entry, ToC), and
+# is linked from docs/index.md under Contributing.
+[[test]]
+name = "discoveries_doc"
+path = "../../tests/integration/discoveries_doc_test.rs"
