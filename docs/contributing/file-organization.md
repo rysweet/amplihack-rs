@@ -42,17 +42,17 @@ docs/
 └── concepts/          # Understanding-oriented docs
 ```
 
-**See the [Eight Rules of Good Documentation](#) for complete guidelines.**
+**Follow the Diataxis framework when choosing which subdirectory to use.**
 
 ### Archive (archive/)
 
-Legacy files that be superseded but may be needed for reference:
+Legacy files that have been superseded but may be needed for reference:
 
 ```
 archive/
 └── legacy/
     ├── setup.py       # Superseded by pyproject.toml
-    └── README.md      # Explains why files be archived
+    └── README.md      # Explains why files are archived
 ```
 
 ## File Movement Examples
@@ -111,13 +111,13 @@ New File?
 
 ### Cleanup Agent Gap
 
-**Known Gap (Issue #1913):** The cleanup agent focuses on code quality (dead code, complexity) but doesn't enforce documentation organization. This was discovered during root cleanup and be documented for future consideration - no immediate action needed.
+**Known Gap (Issue #1913):** The cleanup agent focuses on code quality (dead code, complexity) but doesn't enforce documentation organization. This was discovered during root cleanup and has been documented for future consideration - no immediate action needed.
 
 **Future Enhancement Opportunity**: If root organization becomes a recurring issue, consider extending cleanup agent to suggest documentation moves. Not implemented yet - trust in emergence.
 
 ### Link Checkers
 
-When movin' files:
+When moving files:
 
 - Update all internal links
 - Run link validation before committing
@@ -125,10 +125,8 @@ When movin' files:
 
 ## References
 
-- [Eight Rules of Good Documentation](#)
-- [Documentation Guidelines](#)
-- [Legacy Files Archive](#)
+- [Documentation Parity Audit](documentation-parity-audit.md) — Upstream parity tracking and porting process
 
 ---
 
-**Last Updated:** 2026-01-12
+**Last Updated:** 2026-04-28

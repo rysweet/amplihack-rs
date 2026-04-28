@@ -18,6 +18,7 @@ pub(super) fn execute_recipe_via_rust(
     dry_run: bool,
     verbose: bool,
     working_dir: &Path,
+    step_timeout: Option<u64>,
 ) -> Result<RecipeRunResult> {
     let binary = super::binary::find_recipe_runner_binary()?;
     let mut command = Command::new(binary);
@@ -43,14 +44,23 @@ pub(super) fn execute_recipe_via_rust(
     // The temp file is kept alive until command.output() completes.
     let _context_file = pass_context(&mut command, context)?;
 
-    EnvBuilder::new()
+    let env_builder = EnvBuilder::new()
         .with_agent_binary(active_agent_binary())
         .with_session_tree_context()
         .with_amplihack_home()
         .with_asset_resolver()
         .with_python_sanitization()
-        .with_project_graph_db(working_dir)?
-        .apply_to_command(&mut command);
+        .with_project_graph_db(working_dir)?;
+
+    // Issue #439: propagate --step-timeout as AMPLIHACK_STEP_TIMEOUT env var.
+    // When Some(n), the child process sees AMPLIHACK_STEP_TIMEOUT=n (0 = disable).
+    // When None, the env var is not injected (parent-inherited values flow through).
+    let env_builder = match step_timeout {
+        Some(seconds) => env_builder.set("AMPLIHACK_STEP_TIMEOUT", seconds.to_string()),
+        None => env_builder,
+    };
+
+    env_builder.apply_to_command(&mut command);
 
     if verbose {
         spawn_with_streaming_stderr(command)

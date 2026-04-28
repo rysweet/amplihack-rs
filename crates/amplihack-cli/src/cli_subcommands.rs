@@ -121,6 +121,9 @@ pub enum RecipeCommands {
         /// Working directory for execution
         #[arg(short = 'w', long = "working-dir")]
         working_dir: Option<String>,
+        /// Override step timeout in seconds (0 = disable all step timeouts)
+        #[arg(long = "step-timeout")]
+        step_timeout: Option<u64>,
     },
     /// List available recipes
     List {

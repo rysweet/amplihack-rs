@@ -154,6 +154,35 @@ amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml
 
 ---
 
+## Control step timeouts
+
+Recipe YAML files define `timeout_seconds` on individual steps. When those
+defaults are too aggressive for your workload, override them at run time with
+`--step-timeout`:
+
+```sh
+# Override every step timeout to 10 minutes
+amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
+  -c task_description="Large codebase migration" \
+  --step-timeout 600
+```
+
+To disable step timeouts entirely (let every step run until it finishes):
+
+```sh
+amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
+  -c task_description="Complex architecture redesign" \
+  --step-timeout 0
+```
+
+Omit `--step-timeout` to use the YAML-defined `timeout_seconds` values as-is.
+
+The flag sets `AMPLIHACK_STEP_TIMEOUT` in the child process environment.
+See [AMPLIHACK_STEP_TIMEOUT](../reference/environment-variables.md#amplihack_step_timeout)
+for details.
+
+---
+
 ## Get machine-readable output
 
 Use `--format json` to process results with `jq` or in CI:

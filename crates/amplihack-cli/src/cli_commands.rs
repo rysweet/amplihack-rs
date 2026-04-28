@@ -336,6 +336,12 @@ pub enum Commands {
         command: MultitaskCommands,
     },
 
+    /// Pull request utilities (watch-and-merge).
+    Pr {
+        #[command(subcommand)]
+        command: crate::commands::pr::PrCommands,
+    },
+
     /// Smart-orchestrator helper utilities (extract-json, normalise-type).
     ///
     /// Replaces `python3 -m ... orch_helper` calls in

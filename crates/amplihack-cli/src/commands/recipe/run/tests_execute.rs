@@ -43,7 +43,7 @@ steps:
     let context = BTreeMap::new();
 
     let result =
-        execute::execute_recipe_via_rust(recipe_path, &context, true, false, Path::new("."));
+        execute::execute_recipe_via_rust(recipe_path, &context, true, false, Path::new("."), None);
 
     assert!(
         result.is_ok(),
@@ -120,7 +120,7 @@ fn test_execute_recipe_via_rust_propagates_asset_resolver_env() {
     }
 
     let result =
-        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path())
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path(), None)
             .expect("recipe run must succeed");
 
     match prev_runner {
@@ -208,7 +208,7 @@ fn test_execute_recipe_via_rust_propagates_agent_binary_env() {
     }
 
     let result =
-        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path())
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path(), None)
             .expect("recipe run must succeed");
 
     match prev_runner {
@@ -254,7 +254,7 @@ fn test_execute_recipe_via_rust_reports_nonzero_exit_with_stderr() {
     unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
 
     let result =
-        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path());
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path(), None);
 
     match prev_runner {
         Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
@@ -294,7 +294,7 @@ fn test_execute_recipe_via_rust_reports_signal_kill_clearly() {
     unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
 
     let result =
-        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path());
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path(), None);
 
     match prev_runner {
         Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
@@ -414,7 +414,8 @@ fi
     let mut context = BTreeMap::new();
     context.insert("task_description".to_string(), "x".repeat(256 * 1024));
 
-    let result = execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path());
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path(), None);
 
     match prev_runner {
         Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
@@ -433,6 +434,221 @@ fi
         run_result.context.get("got_file"),
         Some(&serde_json::json!("true")),
         "large context must be passed via --context-file, not --set args"
+    );
+}
+
+// -------------------------------------------------------------------------
+// step_timeout env var propagation — TDD tests for issue #439
+// -------------------------------------------------------------------------
+
+/// When step_timeout=Some(600), AMPLIHACK_STEP_TIMEOUT must be set to "600"
+/// in the child process environment.
+#[test]
+#[cfg(unix)]
+fn test_step_timeout_propagated_as_env_var() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+    // Stub captures the AMPLIHACK_STEP_TIMEOUT env var and returns it in context.
+    std::fs::write(
+        &runner,
+        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
+    )
+    .expect("failed to write runner stub");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+            .expect("failed to chmod runner");
+    }
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: timeout-probe\nsteps: []\n").expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    let prev_timeout = std::env::var_os("AMPLIHACK_STEP_TIMEOUT");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+        // Ensure no inherited value interferes
+        std::env::remove_var("AMPLIHACK_STEP_TIMEOUT");
+    }
+
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        true,  // dry_run
+        false, // verbose
+        temp.path(),
+        Some(600), // step_timeout = 600 seconds
+    )
+    .expect("recipe run must succeed");
+
+    // Restore env
+    match prev_runner {
+        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+    match prev_home {
+        Some(v) => unsafe { std::env::set_var("AMPLIHACK_HOME", v) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+    }
+    match prev_timeout {
+        Some(v) => unsafe { std::env::set_var("AMPLIHACK_STEP_TIMEOUT", v) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_STEP_TIMEOUT") },
+    }
+
+    assert_eq!(
+        result.context.get("step_timeout"),
+        Some(&serde_json::json!("600")),
+        "step_timeout=Some(600) must set AMPLIHACK_STEP_TIMEOUT=600 in child env"
+    );
+}
+
+/// When step_timeout=Some(0), AMPLIHACK_STEP_TIMEOUT must be set to "0"
+/// (meaning: disable all step timeouts).
+#[test]
+#[cfg(unix)]
+fn test_step_timeout_zero_disables_timeouts() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+    std::fs::write(
+        &runner,
+        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
+    )
+    .expect("failed to write runner stub");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+            .expect("failed to chmod runner");
+    }
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: timeout-probe\nsteps: []\n").expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    let prev_timeout = std::env::var_os("AMPLIHACK_STEP_TIMEOUT");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+        std::env::remove_var("AMPLIHACK_STEP_TIMEOUT");
+    }
+
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        true,
+        false,
+        temp.path(),
+        Some(0), // step_timeout = 0 means disable timeouts
+    )
+    .expect("recipe run must succeed");
+
+    match prev_runner {
+        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+    match prev_home {
+        Some(v) => unsafe { std::env::set_var("AMPLIHACK_HOME", v) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+    }
+    match prev_timeout {
+        Some(v) => unsafe { std::env::set_var("AMPLIHACK_STEP_TIMEOUT", v) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_STEP_TIMEOUT") },
+    }
+
+    assert_eq!(
+        result.context.get("step_timeout"),
+        Some(&serde_json::json!("0")),
+        "step_timeout=Some(0) must set AMPLIHACK_STEP_TIMEOUT=0 in child env (disable timeouts)"
+    );
+}
+
+/// When step_timeout=None, AMPLIHACK_STEP_TIMEOUT must NOT be injected
+/// by execute_recipe_via_rust (so parent-inherited or unset values flow
+/// through naturally).
+#[test]
+#[cfg(unix)]
+fn test_step_timeout_none_does_not_set_env_var() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+    // Stub captures env var; if unset, shell expands $VAR to empty string.
+    std::fs::write(
+        &runner,
+        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
+    )
+    .expect("failed to write runner stub");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+            .expect("failed to chmod runner");
+    }
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: timeout-probe\nsteps: []\n").expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    let prev_timeout = std::env::var_os("AMPLIHACK_STEP_TIMEOUT");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+        // Ensure no inherited value
+        std::env::remove_var("AMPLIHACK_STEP_TIMEOUT");
+    }
+
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        true,
+        false,
+        temp.path(),
+        None, // step_timeout = None means no override
+    )
+    .expect("recipe run must succeed");
+
+    match prev_runner {
+        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+    match prev_home {
+        Some(v) => unsafe { std::env::set_var("AMPLIHACK_HOME", v) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+    }
+    match prev_timeout {
+        Some(v) => unsafe { std::env::set_var("AMPLIHACK_STEP_TIMEOUT", v) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_STEP_TIMEOUT") },
+    }
+
+    // When no parent env var is set AND step_timeout=None, the child sees empty string.
+    assert_eq!(
+        result.context.get("step_timeout"),
+        Some(&serde_json::json!("")),
+        "step_timeout=None must NOT inject AMPLIHACK_STEP_TIMEOUT into child env"
     );
 }
 
@@ -608,6 +824,7 @@ fn test_execute_recipe_via_rust_verbose_passes_progress_flag_to_child() {
         false, // dry_run
         true,  // verbose
         temp.path(),
+        None, // step_timeout
     );
 
     match prev_runner {
@@ -657,6 +874,7 @@ fn test_execute_recipe_via_rust_non_verbose_does_not_pass_progress() {
         false, // dry_run
         false, // verbose
         temp.path(),
+        None, // step_timeout
     );
 
     match prev_runner {
@@ -718,6 +936,7 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
         false, // dry_run
         true,  // verbose
         temp.path(),
+        None, // step_timeout
     );
     let elapsed = start.elapsed();
 

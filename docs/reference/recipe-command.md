@@ -194,7 +194,7 @@ Execute a recipe by delegating to the `recipe-runner-rs` binary.
 
 ```
 amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
-  [--format <FORMAT>] [--working-dir <DIR>]
+  [--format <FORMAT>] [--working-dir <DIR>] [--step-timeout <SECONDS>]
 ```
 
 | Flag | Default | Description |
@@ -205,8 +205,9 @@ amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
 | `--verbose` | false | Print recipe name and dry-run status to stderr |
 | `--format <FORMAT>` | `table` | Output format for results: `table`, `json`, or `yaml` |
 | `--working-dir <DIR>` | `.` | Working directory for step execution |
+| `--step-timeout <SECONDS>` | (none) | Override per-step `timeout_seconds` for all steps. `0` disables all step timeouts. Omit to use YAML-defined timeouts as-is |
 
-Before spawning `recipe-runner-rs`, the Rust CLI injects `AMPLIHACK_HOME` and, when available, `AMPLIHACK_ASSET_RESOLVER` into the child environment. That gives recipes a stable native way to resolve `amplifier-bundle/...` assets without assuming the Python package layout.
+Before spawning `recipe-runner-rs`, the Rust CLI always injects `AMPLIHACK_HOME` and, when available, `AMPLIHACK_ASSET_RESOLVER` into the child environment. That gives recipes a stable native way to resolve `amplifier-bundle/...` assets without assuming the Python package layout. Additionally, when `--step-timeout` is provided, the CLI sets [`AMPLIHACK_STEP_TIMEOUT`](./environment-variables.md#amplihack_step_timeout) in the child environment so `recipe-runner-rs` can read and apply the override.
 
 ```sh
 # Dry run — inspect the plan before executing
@@ -218,6 +219,16 @@ amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
 amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
   -c task_description="Fix the failing pagination tests" \
   -c repo_path=/home/user/src/myproject
+
+# Override all step timeouts to 10 minutes
+amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
+  -c task_description="Large refactoring task" \
+  --step-timeout 600
+
+# Disable all step timeouts (let steps run indefinitely)
+amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
+  -c task_description="Complex migration requiring extended agent time" \
+  --step-timeout 0
 
 # Output results as JSON
 amplihack recipe run ~/.amplihack/.claude/recipes/verification.yaml \

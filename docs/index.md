@@ -26,7 +26,9 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Run Fleet Scout and Advance on Azure VMs](./howto/run-fleet-scout-and-advance.md) — Discover sessions across VMs, reason about them with the LLM backend, and execute recommended actions
 - [Migrate Memory to the SQLite Backend](./howto/migrate-memory-backend.md) — Export hierarchical memory to portable JSON, switch to SQLite, and verify the migration
 - [Agent Memory Quickstart](./howto/agent-memory-quickstart.md) — Inspect the memory graph, generate a memory-enabled agent with `amplihack new --enable-memory`, and use `memory tree`/`export`/`import`/`clean`
+- [Watch CI and Auto-Merge a Pull Request](./howto/watch-and-merge-pr.md) — Poll CI checks on a PR and merge automatically when all checks pass
 - [Troubleshoot Recipe Execution Failures](./howto/troubleshoot-recipe-execution.md) — Diagnose shell step hangs, agent context issues, missing prerequisites, and workflow misclassification
+- [Skip Pre-Agent Validation on Large Codebases](./howto/skip-pre-agent-validation.md) — Prevent slow `npm test` / `npm run build` from blocking agent work in smart-orchestrator and default-workflow
 - [Diagnose Problems with amplihack doctor](./howto/diagnose-with-doctor.md) — Run system health checks and fix failing prerequisites
 - [Create a Custom Agent](./howto/create-custom-agent.md) — Build a domain agent with memory integration and evaluation
 - [Run Agent Evaluations](./howto/run-agent-evaluations.md) — Evaluate agent performance across progressive difficulty levels
@@ -47,7 +49,9 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Recipe Executor Environment](./reference/recipe-executor-environment.md) — Environment variables, prerequisite checks, and context propagation for recipe steps
 - [step-03-create-issue: Idempotency Guards](./reference/recipe-step-03-idempotency.md) — Reference and title-search guards that deduplicate issue creation in `default-workflow.yaml`
 - [step-04-setup-worktree: Re-Prune After Orphan Cleanup](./reference/recipe-step-04-worktree-reattach-prune.md) — `git worktree prune` semantics for the three-state idempotency guard
+- [worktree_setup Context Propagation](./reference/worktree-setup-propagation.md) — How `worktree_setup` flows through the composable default-workflow recipe chain to sub-recipes
 - [Workflow Classifier](./reference/workflow-classifier.md) — Keyword tables, classification algorithm, and constructive-verb disambiguation
+- [skip_pre_agent_validation](./reference/skip-pre-agent-validation.md) — Recipe context variable controlling pre-agent project validation in workflow-prep step-01
 - [Issue Deduplication](./reference/issue-dedup.md) — Idempotency guards, dedup decision tree, and proposed fingerprint algorithm for avoiding duplicate GitHub issues
 - [Launch Flag Matrix](./reference/flag-matrix.md) — Per-tool capability matrix for `--dangerously-skip-permissions`, `--model`, `--allow-all`, and proposed type-safe refactoring
 - [Parity Test Scenarios](./reference/parity-test-scenarios.md) — Every parity tier file, its test cases, and expected Python↔Rust divergence
@@ -56,6 +60,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [amplihack fleet](./reference/fleet-command.md) — Full CLI reference for the fleet dashboard: key bindings, refresh architecture, persistent state schema, and security properties
 - [Memory Backend](./reference/memory-backend.md) — `BackendChoice` values, env vars, flat and hierarchical schema, transfer formats, and security properties
 - [amplihack doctor](./reference/doctor-command.md) — Full CLI reference for the `doctor` subcommand
+- [amplihack pr watch-and-merge](./reference/pr-watch-and-merge-command.md) — Full CLI reference for watching CI checks and auto-merging pull requests
 - [Agent Configuration](./reference/agent-configuration.md) — Complete configuration reference for agents, memory, eval, and hive
 - [amplihack-agent-core API](./reference/agent-core-api.md) — Agent lifecycle, session management, and OODA loop
 - [amplihack-domain-agents API](./reference/domain-agents-api.md) — Teaching, code review, and meeting synthesizer agents

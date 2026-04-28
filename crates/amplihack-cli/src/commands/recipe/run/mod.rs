@@ -14,6 +14,7 @@ pub fn run_recipe(
     verbose: bool,
     format: &str,
     working_dir: Option<&str>,
+    step_timeout: Option<u64>,
 ) -> Result<()> {
     let format = OutputFormat::parse(format)?;
     let (context, errors) = parse_context_args(context_args);
@@ -49,6 +50,7 @@ pub fn run_recipe(
         dry_run,
         verbose,
         &abs_working_dir,
+        step_timeout,
     ) {
         Ok(result) => result,
         Err(error) => {

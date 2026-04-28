@@ -8,8 +8,10 @@ Use this guide when a recipe step fails unexpectedly — a shell step hangs, an 
 - [Agent step completes but changes nothing](#agent-step-completes-but-changes-nothing)
 - [Shell step fails with "python3 not found"](#shell-step-fails-with-python3-not-found)
 - [Workflow classification routes to the wrong type](#workflow-classification-routes-to-the-wrong-type)
+- [Agent step killed by step timeout](#agent-step-killed-by-step-timeout)
 - [Update completes but assets are stale](#update-completes-but-assets-are-stale)
 - [Install fails after switching to the Rust repository](#install-fails-after-switching-to-the-rust-repository)
+- [Step-08c fails with WORKTREE_SETUP_WORKTREE_PATH not set](#step-08c-fails-with-worktree_setup_worktree_path-not-set)
 
 ---
 
@@ -150,6 +152,32 @@ amplihack classify "disk cleanup on staging servers"
 
 ---
 
+## Agent step killed by step timeout
+
+**Symptom:** An agent step (architecture design, large refactoring, complex analysis) fails with a timeout error partway through. The step's `timeout_seconds` in the recipe YAML expired before the agent completed its work.
+
+**Cause:** The recipe YAML defines conservative `timeout_seconds` values (typically 300s or 600s) that are insufficient for complex tasks requiring extended agent reasoning.
+
+**Fix:** Override step timeouts at run time with `--step-timeout`:
+
+```sh
+# Override all step timeouts to 10 minutes
+amplihack recipe run recipe.yaml \
+  -c task_description="Complex task" \
+  --step-timeout 600
+
+# Disable step timeouts entirely
+amplihack recipe run recipe.yaml \
+  -c task_description="Very long task" \
+  --step-timeout 0
+```
+
+This sets `AMPLIHACK_STEP_TIMEOUT` in the child process environment. See [Control step timeouts](./run-a-recipe.md#control-step-timeouts) for details.
+
+**Note:** `--step-timeout` overrides per-step `timeout_seconds` only. It does not affect recipe-level timeouts or the `max_runtime` budget in multitask workstreams.
+
+---
+
 ## Update completes but assets are stale
 
 **Symptom:** After running `amplihack update`, the binary version is correct but skills, hooks, or bundled assets show old behavior. Running `amplihack install` manually fixes it.
@@ -221,6 +249,47 @@ amplihack install --local /tmp/amplihack-local
 
 ---
 
+## Step-08c fails with WORKTREE_SETUP_WORKTREE_PATH not set
+
+**Symptom:** During an orchestrator-driven workflow (fixing an issue, implementing a feature), the recipe fails at step-08c with:
+
+```
+WORKTREE_SETUP_WORKTREE_PATH: step-08c requires worktree_setup.worktree_path
+from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and
+propagated outputs
+```
+
+This blocks the entire issue-fixing loop. Any task routed through `smart-orchestrator` → `default-workflow` → `workflow-tdd` fails at the no-op guard.
+
+**Cause:** A sub-recipe in the default-workflow chain has `context: {}` instead of declaring `worktree_setup` in its context block. The recipe runner only forwards context variables that the child recipe explicitly declares. Without the declaration, `worktree_setup` is silently dropped at the recipe boundary, and step-08c cannot read `WORKTREE_SETUP_WORKTREE_PATH`.
+
+**Fix:** Every post-worktree sub-recipe (`workflow-tdd`, `workflow-refactor-review`, `workflow-precommit-test`, `workflow-publish`, `workflow-pr-review`, `workflow-finalize`) declares `worktree_setup: ""` and `allow_no_op: false` in its `context:` block. This ensures the recipe runner threads the value from `default-workflow` through to the step that needs it.
+
+**Verify the fix:**
+
+```sh
+# Run the propagation regression tests
+python -m pytest amplifier-bundle/tools/test_default_workflow_fixes.py::TestWorktreeSetupPropagation479 -v
+
+# All four tests should pass:
+#   test_post_worktree_sub_recipes_declare_worktree_setup
+#   test_post_worktree_sub_recipes_declare_allow_no_op
+#   test_default_workflow_declares_worktree_setup
+#   test_smart_execute_routing_forwards_worktree_setup
+```
+
+**If you are writing a new sub-recipe** that runs after `workflow-worktree` (step 04), add these keys to your recipe's `context:` block:
+
+```yaml
+context:
+  worktree_setup: ""
+  allow_no_op: false
+```
+
+See [worktree_setup Context Propagation](../reference/worktree-setup-propagation.md) for the complete propagation chain and design rationale.
+
+---
+
 ## Related
 
 - [Run a Recipe End-to-End](./run-a-recipe.md) — Normal recipe execution workflow
@@ -228,3 +297,4 @@ amplihack install --local /tmp/amplihack-local
 - [Install amplihack for the First Time](./first-install.md) — Bootstrap from scratch
 - [Environment Variables](../reference/environment-variables.md) — All variables read or injected by amplihack
 - [Recipe Execution Flow](../concepts/recipe-execution-flow.md) — Architecture of the step execution pipeline
+- [worktree_setup Context Propagation](../reference/worktree-setup-propagation.md) — Full reference for the worktree_setup propagation chain

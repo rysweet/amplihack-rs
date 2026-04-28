@@ -17,6 +17,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_VERSION](#amplihack_version)
   - [NODE_OPTIONS](#node_options)
 - [Variables injected by recipe executor](#variables-injected-by-recipe-executor)
+  - [AMPLIHACK_STEP_TIMEOUT](#amplihack_step_timeout)
   - [NONINTERACTIVE](#noninteractive)
   - [DEBIAN_FRONTEND](#debian_frontend)
   - [CI (recipe context)](#ci-recipe-context)
@@ -280,6 +281,36 @@ When startup does not supply an explicit value, `EnvBuilder` still falls back to
 ## Variables injected by recipe executor
 
 These variables are set by the recipe executor (`amplihack recipe run`) in every shell step's child process. They are always set — there is no opt-out. See [Recipe Executor Environment](./recipe-executor-environment.md) for full details.
+
+---
+
+### AMPLIHACK_STEP_TIMEOUT
+
+**Type:** string (unsigned integer as text)
+**Values:** `"0"` (disable timeouts) | `"600"` (override to 600 seconds) | any non-negative integer
+**Set by:** `amplihack recipe run --step-timeout <SECONDS>`
+
+Overrides the `timeout_seconds` value defined in individual recipe steps. When set, every step in the recipe uses this value instead of its YAML-defined timeout. A value of `"0"` disables step timeouts entirely, allowing steps to run indefinitely.
+
+This variable is only present in the child environment when the user passes `--step-timeout` to `amplihack recipe run`. When omitted, YAML-defined `timeout_seconds` values apply as-is.
+
+```sh
+# Override all step timeouts to 10 minutes
+amplihack recipe run recipe.yaml --step-timeout 600
+# Child process sees: AMPLIHACK_STEP_TIMEOUT=600
+
+# Disable all step timeouts
+amplihack recipe run recipe.yaml --step-timeout 0
+# Child process sees: AMPLIHACK_STEP_TIMEOUT=0
+
+# No override — YAML timeouts apply
+amplihack recipe run recipe.yaml
+# AMPLIHACK_STEP_TIMEOUT is NOT set in child environment
+```
+
+**Why it exists:** Long-running agent steps (architecture design, large refactoring) can exceed the conservative `timeout_seconds` defaults in recipe YAML files. Rather than requiring users to edit YAML files, this flag provides a runtime override. The env var approach is forward-compatible — `recipe-runner-rs` can adopt it independently without CLI changes.
+
+**Security note:** The value is always a `u64` rendered as a string. No shell metacharacters are possible. The CLI rejects non-numeric input at parse time via clap's type enforcement.
 
 ---
 
