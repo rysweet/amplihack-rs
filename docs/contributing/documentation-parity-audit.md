@@ -4,7 +4,7 @@ How the amplihack-rs documentation site reached parity with upstream amplihack, 
 
 ## Status
 
-**Complete.** All 777 upstream documentation files have been audited and dispositioned. See [issue #420](https://github.com/rysweet/amplihack-rs/issues/420) for the full matrix.
+**Complete** (closed 2026-04-27). All 788 upstream documentation files have been audited and dispositioned (199 ported, 94 already existed, 495 omitted). Zero NEW-PR rows remain — every file has a final disposition. See [issue #420](https://github.com/rysweet/amplihack-rs/issues/420) for the full matrix.
 
 ## Disposition Codes
 
@@ -22,7 +22,7 @@ Every upstream file received one of these codes:
 
 ## Wave History
 
-The audit ran across eight waves:
+The audit ran across eight logical waves (each encompassing one or more execution passes):
 
 | Wave | Scope | PRs |
 |---|---|---|
@@ -32,6 +32,8 @@ The audit ran across eight waves:
 | 6 | DDD, Power Steering, Tutorials, Hive Mind, Fleet, Memory, Standalone Features | #460, #461, #462, #464, #466, #468 |
 | 7 | CS Validator, Implementation, Investigations, MCP Evaluation, Remote Sessions, Security, Skills, Testing, Troubleshooting | #469–#474 |
 | 8 | Final disposition cleanup (reclassified 38 rows; 0 NEW-PR remaining) | — |
+| 309 | Verification pass — confirmed 0 NEW-PR rows remain; no-op (all criteria met trivially) | — |
+| 317 | Verification pass — re-confirmed 0 NEW-PR rows; issue #420 closed; all 6 acceptance criteria met | — |
 
 ## Porting a New Upstream Page
 
@@ -45,6 +47,14 @@ When upstream adds documentation that amplihack-rs should carry:
 6. **Open a PR.** Restrict the diff to `docs/**/*.md` and `mkdocs.yml` unless fixing infrastructure bugs.
 
 ## Maintaining Parity
+
+### Next Steps (Priority Order)
+
+Future documentation work should follow this order:
+
+1. **Fresh upstream audit** — Compare current upstream `docs/` against the audit matrix to catch files added after Wave 8. This is self-contained and can start immediately.
+2. **Documentation quality improvements** — Refine existing ported pages (clarity, Rust-specific examples, cross-linking).
+3. **Resolve gating issues** — Port documentation for #433, #434, #435 once the underlying features ship. These are blocked by external implementation dependencies.
 
 ### Periodic Checks
 
@@ -69,7 +79,24 @@ These categories are intentionally omitted and should not be ported:
 
 ### Gated Items
 
-Some upstream features are not yet implemented in amplihack-rs. These are tracked with `OMIT-not-impl` and linked to follow-up issues (e.g., #433, #434, #435). When a feature ships, port its documentation and update the disposition.
+Some upstream features are not yet implemented in amplihack-rs. These are tracked with `OMIT-not-impl` and linked to follow-up issues. When a feature ships, port its documentation and update the disposition.
+
+**Implementation-gated** (feature must ship first):
+
+| Issue | Description |
+|---|---|
+| [#433](https://github.com/rysweet/amplihack-rs/issues/433) | Implement interactive installation wizard |
+| [#434](https://github.com/rysweet/amplihack-rs/issues/434) | Decide disposition of upstream gherkin v2 experiment findings |
+| [#435](https://github.com/rysweet/amplihack-rs/issues/435) | Decide disposition of upstream DISCOVERIES log |
+
+**Documentation follow-ups** (filed during audit):
+
+| Issue | Description |
+|---|---|
+| [#421](https://github.com/rysweet/amplihack-rs/issues/421) | Feature gap: Workflow Execution Guardrails not implemented in amplihack-rs |
+| [#422](https://github.com/rysweet/amplihack-rs/issues/422) | Feature gap: Dual-Provider workflow not implemented in amplihack-rs |
+| [#475](https://github.com/rysweet/amplihack-rs/issues/475) | Document cs-validator integration once Rust port lands |
+| [#476](https://github.com/rysweet/amplihack-rs/issues/476) | Document MCP evaluation user guide once Rust port lands |
 
 ## MkDocs Build Verification
 

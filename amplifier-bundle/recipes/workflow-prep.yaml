@@ -99,7 +99,20 @@ steps:
       echo "--- Current Branch ---" && \
       git branch --show-current && \
       echo "" && \
-      echo "=== Workspace Prepared ==="
+      echo "=== Workspace Prepared ===" && \
+      echo "" && \
+      # ── Pre-agent validation guard (issue #453) ──────────────────────
+      # Do NOT add project validation commands (npm test, npm run build,
+      # cargo test, etc.) outside this conditional. Validation only runs
+      # when explicitly opted in via SKIP_PRE_AGENT_VALIDATION="false".
+      # Default is "true" (skip) to avoid blocking on large codebases.
+      if [ "$SKIP_PRE_AGENT_VALIDATION" = "false" ]; then
+        echo "--- Pre-agent Validation (opted in) ---"
+        echo "Add project-specific validation commands here per repository."
+        echo "--- Pre-agent Validation Complete ---"
+      else
+        echo "--- Pre-agent Validation: SKIPPED (SKIP_PRE_AGENT_VALIDATION=$SKIP_PRE_AGENT_VALIDATION) ---"
+      fi
     output: "workspace_status"
 
   # ==========================================================================

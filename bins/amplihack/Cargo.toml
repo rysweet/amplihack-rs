@@ -131,6 +131,14 @@ path = "../../tests/integration/cli_golden_tests.rs"
 # (consensus-workflow.yaml) skip branch creation when an existing branch is supplied,
 # resolve pr_number via `gh`, validate inputs against shell/path injection, and
 # preserve byte-identical legacy behaviour when both vars are empty.
+# Issue #453: skip_pre_agent_validation context variable TDD tests.
+# Verifies the context variable is declared in smart-orchestrator.yaml and
+# default-workflow.yaml with string "true" default, forwarded through
+# smart-execute-routing.yaml, and guarded in workflow-prep.yaml step-01.
+[[test]]
+name = "skip_pre_agent_validation_context"
+path = "../../tests/integration/skip_pre_agent_validation_context_test.rs"
+
 [[test]]
 name = "existing_branch_context"
 path = "../../tests/integration/existing_branch_context_test.rs"

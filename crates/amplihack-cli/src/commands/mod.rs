@@ -14,6 +14,7 @@ pub mod multitask;
 pub mod new_agent;
 pub mod orch;
 pub mod plugin;
+pub mod pr;
 pub mod query_code;
 pub mod recipe;
 pub mod rustyclawd;
@@ -316,6 +317,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         }
         Commands::Multitask { command } => dispatch_multitask(command),
         Commands::Orch { command } => orch::dispatch(command),
+        Commands::Pr { command } => pr::run(command),
         Commands::SessionTree { command } => session_tree::run(command),
     }
 }
@@ -368,6 +370,7 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
             verbose,
             format,
             working_dir,
+            step_timeout,
         } => recipe::run_recipe(
             &recipe_path,
             &context,
@@ -375,6 +378,7 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
             verbose,
             &format,
             working_dir.as_deref(),
+            step_timeout,
         ),
         RecipeCommands::List {
             recipe_dir,
