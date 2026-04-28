@@ -79,6 +79,8 @@ context:
   # flips it to true when classification permits no working-tree edits.
   worktree_setup: ""
   allow_no_op: false
+  # Skip pre-agent project validation (npm test, build) — default true to avoid blocking on large codebases (see #453)
+  skip_pre_agent_validation: "true"
   design_spec: ""
   documentation: ""
   test_spec: ""

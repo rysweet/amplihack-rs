@@ -128,6 +128,7 @@ steps:
     context:
       worktree_setup: "{{worktree_setup}}"
       allow_no_op: "{{allow_no_op}}"
+      skip_pre_agent_validation: "{{skip_pre_agent_validation}}"
     # No explicit context needed: task_description and repo_path flow through
     # from the parent smart-orchestrator context automatically via context merging
     # in _execute_sub_recipe().
@@ -240,6 +241,7 @@ steps:
     context:
       worktree_setup: "{{worktree_setup}}"
       allow_no_op: "{{allow_no_op}}"
+      skip_pre_agent_validation: "{{skip_pre_agent_validation}}"
     # No explicit context needed: task_description and repo_path flow through
     # from the parent smart-orchestrator context automatically.
     output: "round_1_result"
@@ -376,6 +378,7 @@ steps:
     context:
       worktree_setup: "{{worktree_setup}}"
       allow_no_op: "{{allow_no_op}}"
+      skip_pre_agent_validation: "{{skip_pre_agent_validation}}"
     output: "round_1_result"
 
   - id: "adaptive-execute-investigation"
@@ -385,12 +388,9 @@ steps:
     recipe: "investigation-workflow"
     output: "round_1_result"
 
-  # Cleanup temp workstreams file (best-effort fallback).
-  # Primary cleanup happens inside launch-parallel-round-1 before context
-  # bloat.  This step uses a glob instead of {{workstreams_file}} so it
-  # carries no template variables — reducing the env-var payload the Rust
-  # runner passes to bash.  The command is unconditionally successful so a
-  # cleanup failure never aborts the recipe (fix: cleanup-helper-arg-overflow).
+  # Cleanup temp workstreams file (best-effort fallback, fix: cleanup-helper-arg-overflow).
+  # Uses glob instead of {{workstreams_file}} to avoid template-var env payload.
+  # Primary cleanup is inside launch-parallel-round-1; this is a safety net.
   - id: "cleanup-helper"
     fatal: false
     type: "bash"

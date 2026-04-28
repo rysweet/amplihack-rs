@@ -23,7 +23,9 @@ inputs:
   - name: worktree_setup.worktree_path
     description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by the checkpoint bash step (step-11b-implement-feedback) that cd into the worktree."
 
-context: {}
+context:
+  worktree_setup: ""
+  allow_no_op: false
 
 steps:
   - id: "step-09-refactor"

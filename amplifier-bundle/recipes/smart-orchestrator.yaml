@@ -46,6 +46,8 @@ context:
   adaptive_recipe: "" # set by detect-execution-gap when routing fails
   infra_error_details: "" # diagnostic info for infrastructure failures
   ops_modified_files: "" # set by ops-file-change-check when Operations modifies files
+  # Skip pre-agent project validation (npm test, build) — default true to avoid blocking on large codebases (see #453)
+  skip_pre_agent_validation: "true"
 
 context_validation:
   task_description: "nonempty"
