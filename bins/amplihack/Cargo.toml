@@ -190,3 +190,10 @@ path = "../../tests/integration/self_improvement_loop_skip_test.rs"
 [[test]]
 name = "discoveries_doc"
 path = "../../tests/integration/discoveries_doc_test.rs"
+
+# Issue #434: Gherkin v2 experiment disposition investigation.
+# Verifies investigation doc structure, index.md linkage, and regression guards
+# ensuring gherkin-expert skill/agent/allowlist entry remain present.
+[[test]]
+name = "gherkin_investigation_doc"
+path = "../../tests/integration/gherkin_investigation_doc_test.rs"

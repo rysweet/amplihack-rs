@@ -98,6 +98,14 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Memory Tree](./concepts/memory-tree.md) — Mental model and CLI surface for the `amplihack memory tree` command
 - [Five-Type Memory (Superseded)](./concepts/five-type-memory.md) — Redirect from the legacy 5-type memory guide to current memory documentation
 
+### Investigations
+
+- [Unifying Dual Status Classifiers (#2898)](./investigations/2898-status-classifiers.md) — Whether merging two keyword classifiers into one module is warranted (conclusion: do not merge)
+- [Shell Injection in Task Description Heredoc (#3045, #3076)](./investigations/3045-3076-task-description-heredoc-shell-injection.md) — Heredoc expansion risk in recipe shell steps
+- [Step-03 Idempotency Guards](./investigations/step-03-idempotency-guards-analysis.md) — Analysis of deduplication guards in recipe step-03
+- [Step-03 External Service Integration](./investigations/step03-external-service-integration-assessment.md) — Assessment of external service dependencies in step-03
+- [Gherkin v2 Experiment Disposition (#434)](./investigations/434-gherkin-v2-experiment-disposition.md) — Why the upstream experiment doc needs no port: the gherkin-expert skill already ships in the bundle
+
 ## Quick Start
 
 ```sh
