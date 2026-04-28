@@ -1,9 +1,9 @@
-//! Tests for issue #449: step-02b-analyze-codebase needs a 1800s timeout.
+//! Tests for issue #449 → #439: step-02b-analyze-codebase timeout_seconds REMOVED.
 //!
-//! These tests are intentionally written before the fix lands (TDD).
-//! They assert that `amplifier-bundle/recipes/workflow-prep.yaml` declares
-//! `timeout_seconds: 1800` on the `step-02b-analyze-codebase` step, placed
-//! directly under `agent:`, and that the recipe still parses cleanly.
+//! Originally (issue #449) these tests asserted that `timeout_seconds: 1800`
+//! was present on step-02b. Issue #439 removes all hard agent-step timeouts
+//! from default-workflow recipes. These tests are now inverted to assert
+//! that `timeout_seconds` is **absent** from step-02b.
 
 use std::path::PathBuf;
 
@@ -43,21 +43,14 @@ fn workflow_prep_yaml_parses() {
 }
 
 #[test]
-fn step_02b_has_timeout_seconds_1800() {
+fn step_02b_has_no_timeout_seconds() {
     let recipe = load_workflow_prep();
     let step = find_step(&recipe, "step-02b-analyze-codebase");
 
-    let timeout = step
-        .get("timeout_seconds")
-        .unwrap_or_else(|| panic!("step-02b-analyze-codebase is missing `timeout_seconds`"));
-
-    let n = timeout
-        .as_u64()
-        .unwrap_or_else(|| panic!("timeout_seconds must be an integer, got {timeout:?}"));
-
-    assert_eq!(
-        n, 1800,
-        "issue #449: step-02b-analyze-codebase timeout_seconds must be 1800 (30 min), got {n}"
+    assert!(
+        step.get("timeout_seconds").is_none(),
+        "issue #439: step-02b-analyze-codebase must NOT have `timeout_seconds` \
+         (hard agent-step timeouts removed)"
     );
 }
 
@@ -78,46 +71,20 @@ fn step_02b_preserves_required_fields() {
 }
 
 #[test]
-fn timeout_seconds_appears_directly_under_agent_field() {
-    // Convention check: in the raw YAML text, `timeout_seconds:` for this step
-    // must appear on the line immediately following the `agent:` line, matching
-    // sibling recipes (smart-classify-route.yaml, smart-reflect-loop.yaml).
-    let text = std::fs::read_to_string(workflow_prep_path()).expect("read workflow-prep.yaml");
-
-    let lines: Vec<&str> = text.lines().collect();
-    let id_idx = lines
-        .iter()
-        .position(|l| l.contains(r#"id: "step-02b-analyze-codebase""#))
-        .expect("step-02b id line");
-
-    // Find the `agent:` line within the next few lines after the id.
-    let agent_idx = (id_idx + 1..(id_idx + 6).min(lines.len()))
-        .find(|&i| lines[i].trim_start().starts_with("agent:"))
-        .expect("agent: line within step-02b");
-
-    let next = lines
-        .get(agent_idx + 1)
-        .expect("line after agent: must exist")
-        .trim_start();
-
-    assert!(
-        next.starts_with("timeout_seconds:"),
-        "expected `timeout_seconds:` directly under `agent:`, found: {next:?}"
-    );
-}
-
-#[test]
-fn no_other_step_timeouts_changed_in_workflow_prep() {
-    // Guardrail: only step-02b should carry timeout_seconds in workflow-prep.yaml
-    // as part of issue #449. If future work intentionally adds more, update this test.
+fn no_step_timeouts_in_workflow_prep() {
+    // Issue #439: NO agent steps in workflow-prep.yaml should carry timeout_seconds.
     let recipe = load_workflow_prep();
     let steps = recipe
         .get("steps")
         .and_then(Value::as_sequence)
         .expect("steps sequence");
 
-    let with_timeout: Vec<String> = steps
+    let agent_steps_with_timeout: Vec<String> = steps
         .iter()
+        .filter(|s| {
+            // Only check agent steps (type: "agent" or has "agent:" field)
+            s.get("agent").is_some()
+        })
         .filter(|s| s.get("timeout_seconds").is_some())
         .map(|s| {
             s.get("id")
@@ -127,9 +94,9 @@ fn no_other_step_timeouts_changed_in_workflow_prep() {
         })
         .collect();
 
-    assert_eq!(
-        with_timeout,
-        vec!["step-02b-analyze-codebase".to_string()],
-        "issue #449 scope: only step-02b-analyze-codebase should declare timeout_seconds in workflow-prep.yaml"
+    assert!(
+        agent_steps_with_timeout.is_empty(),
+        "issue #439: no agent steps in workflow-prep.yaml should have timeout_seconds, \
+         but found it on: {agent_steps_with_timeout:?}"
     );
 }

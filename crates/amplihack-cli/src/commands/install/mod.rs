@@ -5,6 +5,7 @@ mod clone;
 mod directories;
 mod filesystem;
 mod hooks;
+pub(crate) mod interactive;
 mod manifest;
 pub(crate) mod paths;
 mod settings;
@@ -28,7 +29,11 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn run_install(local: Option<PathBuf>) -> Result<()> {
+pub fn run_install(local: Option<PathBuf>, interactive: bool) -> Result<()> {
+    // Run the interactive wizard if --interactive was passed.
+    // The wizard produces an optional config; if None, we proceed with defaults.
+    let wizard_config = interactive::maybe_run_wizard(interactive)?;
+
     if let Some(local_path) = local {
         // Validate and canonicalize the --local path
         let canonical = local_path.canonicalize().with_context(|| {
@@ -40,7 +45,7 @@ pub fn run_install(local: Option<PathBuf>) -> Result<()> {
         if !canonical.is_dir() {
             bail!("--local path is not a directory: {}", canonical.display());
         }
-        return local_install(&canonical);
+        return local_install(&canonical, wizard_config.as_ref());
     }
 
     // Issue #254: prefer bundled framework assets from the amplihack-rs source
@@ -52,13 +57,13 @@ pub fn run_install(local: Option<PathBuf>) -> Result<()> {
             "📦 Using bundled framework assets from {}",
             bundled_root.display()
         );
-        return local_install(&bundled_root);
+        return local_install(&bundled_root, wizard_config.as_ref());
     }
 
     println!("⚠️  Bundled framework source not found, falling back to network download...");
     let temp_dir = tempfile::tempdir().context("failed to create temp dir for install")?;
     let extracted_root = download_and_extract_framework_repo(temp_dir.path())?;
-    local_install(&extracted_root)?;
+    local_install(&extracted_root, wizard_config.as_ref())?;
 
     // Network-fallback hard-error: every entry in the active layout's
     // destination set must have been staged. Read the .layout marker the
@@ -165,7 +170,7 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
     // framework updates are delivered via amplihack-rs binary updates instead.
     if presence_bootstrap_needed {
         println!("🔧 Bootstrapping amplihack framework assets...");
-        run_install(None)?;
+        run_install(None, false)?;
     }
 
     // Verify hooks are registered in settings.json — even after a fresh install.
@@ -402,7 +407,10 @@ fn remove_hook_registrations(settings_path: &Path) -> Result<()> {
     .with_context(|| format!("failed to write {}", settings_path.display()))
 }
 
-fn local_install(repo_root: &Path) -> Result<()> {
+fn local_install(
+    repo_root: &Path,
+    wizard_config: Option<&interactive::InteractiveConfig>,
+) -> Result<()> {
     let claude_dir = staging_claude_dir()?;
     let timestamp = unix_timestamp();
 
@@ -522,7 +530,7 @@ fn local_install(repo_root: &Path) -> Result<()> {
         .filter(|dir| !pre_dirs.contains(dir))
         .collect::<Vec<_>>();
 
-    let manifest = InstallManifest {
+    let mut manifest = InstallManifest {
         files,
         dirs: new_dirs,
         binaries: deployed_binaries
@@ -530,7 +538,19 @@ fn local_install(repo_root: &Path) -> Result<()> {
             .map(|p| p.to_string_lossy().into_owned())
             .collect(),
         hook_registrations: registered_events,
+        ..InstallManifest::default()
     };
+
+    // Apply interactive wizard configuration to the manifest if the wizard ran.
+    if let Some(config) = wizard_config {
+        interactive::apply_config(config, &mut manifest);
+        println!();
+        println!("🧙 Interactive configuration applied:");
+        println!("   • Default tool: {}", config.default_tool.display_name());
+        println!("   • Hook scope: {}", config.hook_scope.display_name());
+        println!("   • Update checks: {}", config.update_check.display_name());
+    }
+
     write_manifest(&manifest_path, &manifest)?;
     println!("   Manifest written to {}", manifest_path.display());
 

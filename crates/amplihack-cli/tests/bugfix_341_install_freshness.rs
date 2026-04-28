@@ -176,7 +176,7 @@ fn install_stages_amplifier_bundle_from_local_checkout_not_stale_source() {
     std::env::set_current_dir(checkout.path()).expect("chdir into checkout");
 
     // ----- Act: install from the (CWD) checkout
-    let install_result = run_install(None);
+    let install_result = run_install(None, false);
 
     // ----- Capture assertions before restoring env so a panic on restore
     //       doesn't mask the real failure.

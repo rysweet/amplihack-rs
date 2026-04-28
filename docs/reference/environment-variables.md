@@ -292,23 +292,24 @@ These variables are set by the recipe executor (`amplihack recipe run`) in every
 
 Overrides the `timeout_seconds` value defined in individual recipe steps. When set, every step in the recipe uses this value instead of its YAML-defined timeout. A value of `"0"` disables step timeouts entirely, allowing steps to run indefinitely.
 
-This variable is only present in the child environment when the user passes `--step-timeout` to `amplihack recipe run`. When omitted, YAML-defined `timeout_seconds` values apply as-is.
+This variable is only present in the child environment when the user passes `--step-timeout` or `--no-step-timeouts` to `amplihack recipe run`. When neither flag is provided, YAML-defined `timeout_seconds` values apply as-is (though the default-workflow agent steps no longer define `timeout_seconds`).
 
 ```sh
 # Override all step timeouts to 10 minutes
 amplihack recipe run recipe.yaml --step-timeout 600
 # Child process sees: AMPLIHACK_STEP_TIMEOUT=600
 
-# Disable all step timeouts
+# Disable all step timeouts (two equivalent forms)
 amplihack recipe run recipe.yaml --step-timeout 0
+amplihack recipe run recipe.yaml --no-step-timeouts
 # Child process sees: AMPLIHACK_STEP_TIMEOUT=0
 
-# No override — YAML timeouts apply
+# No override — YAML timeouts apply (agent steps have none by default)
 amplihack recipe run recipe.yaml
 # AMPLIHACK_STEP_TIMEOUT is NOT set in child environment
 ```
 
-**Why it exists:** Long-running agent steps (architecture design, large refactoring) can exceed the conservative `timeout_seconds` defaults in recipe YAML files. Rather than requiring users to edit YAML files, this flag provides a runtime override. The env var approach is forward-compatible — `recipe-runner-rs` can adopt it independently without CLI changes.
+**Why it exists:** The default-workflow recipes no longer define `timeout_seconds` on agent steps, so agent steps run to completion without artificial time limits. This variable provides an opt-in escape hatch for CI environments that need wall-clock budgets. The env var approach is forward-compatible — `recipe-runner-rs` can adopt it independently without CLI changes.
 
 **Security note:** The value is always a `u64` rendered as a string. No shell metacharacters are possible. The CLI rejects non-numeric input at parse time via clap's type enforcement.
 

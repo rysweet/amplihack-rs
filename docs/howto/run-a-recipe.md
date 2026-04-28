@@ -156,26 +156,38 @@ amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml
 
 ## Control step timeouts
 
-Recipe YAML files define `timeout_seconds` on individual steps. When those
-defaults are too aggressive for your workload, override them at run time with
-`--step-timeout`:
+The default-workflow recipes no longer define `timeout_seconds` on agent steps.
+Agent steps (architecture design, code review, implementation) run until
+completion without artificial time limits. Only bash steps that wrap GNU
+coreutils `timeout` retain explicit timeouts — those protect against
+non-interactive shell commands hanging indefinitely, which is a different
+failure mode from agent reasoning.
+
+If you need to re-impose step timeouts (for example, in a CI pipeline with a
+hard wall-clock budget), use `--step-timeout` or `--no-step-timeouts`:
 
 ```sh
 # Override every step timeout to 10 minutes
 amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
   -c task_description="Large codebase migration" \
   --step-timeout 600
-```
 
-To disable step timeouts entirely (let every step run until it finishes):
-
-```sh
+# Explicitly disable all step timeouts (equivalent to the new default for agent steps)
 amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
   -c task_description="Complex architecture redesign" \
-  --step-timeout 0
+  --no-step-timeouts
 ```
 
-Omit `--step-timeout` to use the YAML-defined `timeout_seconds` values as-is.
+`--no-step-timeouts` is shorthand for `--step-timeout 0`. Both set
+`AMPLIHACK_STEP_TIMEOUT=0` in the child process environment, telling
+`recipe-runner-rs` to ignore any remaining `timeout_seconds` values in YAML.
+
+`--step-timeout` and `--no-step-timeouts` cannot be combined in the same
+invocation. The CLI will reject the command with an error if both are provided.
+
+Omit both flags to use the YAML-defined `timeout_seconds` values as-is. Since
+agent steps in the default-workflow no longer define `timeout_seconds`, this
+means agent steps run without a timeout by default.
 
 The flag sets `AMPLIHACK_STEP_TIMEOUT` in the child process environment.
 See [AMPLIHACK_STEP_TIMEOUT](../reference/environment-variables.md#amplihack_step_timeout)

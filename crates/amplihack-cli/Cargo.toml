@@ -15,6 +15,7 @@ amplihack-state = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 clap_complete = "4"
+dialoguer = "0.11"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 flate2 = "1"
 libc = { workspace = true }

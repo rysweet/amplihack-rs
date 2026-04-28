@@ -338,6 +338,7 @@ fn run_uninstall_handles_duplicate_dirs_in_manifest() {
         ],
         binaries: vec![],
         hook_registrations: vec![],
+        ..InstallManifest::default()
     };
     manifest::write_manifest(
         &staging.join("install/amplihack-manifest.json"),

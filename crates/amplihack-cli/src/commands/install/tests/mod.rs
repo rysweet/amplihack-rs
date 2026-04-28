@@ -9,3 +9,5 @@ mod same_path_tests;
 mod settings_tests;
 mod uninstall_tests;
 mod wrapper_tests;
+
+mod interactive_tests;

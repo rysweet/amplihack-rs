@@ -63,7 +63,6 @@ Use when:
 ```yaml
 - id: "design-solution"
   type: "agent"
-  timeout_seconds: 300
   prompt: |
     Design an implementation for the following requirement.
 
@@ -121,11 +120,16 @@ prompt: |
 output: "task_type"
 ```
 
-### 4. Set appropriate timeouts
+### 4. Timeout strategy
 
-Agent steps that spawn full Claude sessions can exceed the default timeout.
-The `smart-orchestrator.yaml` sets `default_step_timeout: 300` (5 minutes)
-for this reason.
+Agent steps in the default-workflow recipes run without `timeout_seconds`.
+Agent reasoning is inherently variable-duration — architecture design may take
+30 seconds or 30 minutes depending on complexity. Hard timeouts cause premature
+kills that waste all prior work.
+
+For CI environments with wall-clock budgets, use `--step-timeout <SECONDS>` or
+`--no-step-timeouts` at invocation time rather than embedding timeouts in YAML.
+See [Control step timeouts](../howto/run-a-recipe.md#control-step-timeouts).
 
 ## Anti-patterns
 
@@ -135,7 +139,7 @@ for this reason.
 | Agent step for `git checkout` | Wastes tokens on deterministic work | Use a bash step |
 | Agent prompt without context vars | Agent has no information to work with | Interpolate `{{variables}}` |
 | Nested recipe without forwarding context | Sub-recipe runs with empty context | Pass required context explicitly |
-| No timeout on agent step | Hangs indefinitely on slow sessions | Set `timeout_seconds` |
+| Hard `timeout_seconds` on agent step | Premature kill wastes all prior agent work | Omit `timeout_seconds`; use `--step-timeout` at invocation time if a wall-clock budget is required |
 
 ## Example recipe sequence
 
