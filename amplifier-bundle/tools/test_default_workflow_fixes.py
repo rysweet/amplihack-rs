@@ -1987,6 +1987,7 @@ _WORKFLOW_FINALIZE_YAML = _RECIPES_DIR / "workflow-finalize.yaml"
 _WORKFLOW_PR_REVIEW_YAML = _RECIPES_DIR / "workflow-pr-review.yaml"
 _WORKFLOW_REFACTOR_REVIEW_YAML = _RECIPES_DIR / "workflow-refactor-review.yaml"
 _WORKFLOW_PUBLISH_YAML = _RECIPES_DIR / "workflow-publish.yaml"
+_WORKFLOW_PRECOMMIT_TEST_YAML = _RECIPES_DIR / "workflow-precommit-test.yaml"
 
 # Canonical opt-out sentinel — exact bytes (em-dash U+2014).
 _ORCHESTRATION_SENTINEL = "No files modified \u2014 orchestration task"
@@ -2416,6 +2417,212 @@ class TestSiblingRecipesFailLoud412(unittest.TestCase):
                     "worktree", diag.lower(),
                     f"{path.name}: diagnostic must mention 'worktree'. "
                     f"Got: {diag!r}",
+                )
+
+
+# ===========================================================================
+# Issue #479: worktree_setup propagation through ALL post-worktree sub-recipes
+#
+# PR #426 added worktree_setup + allow_no_op to default-workflow.yaml context
+# and to smart-execute-routing call sites, but the 6 post-worktree sub-recipes
+# still have `context: {}` — they never declare the keys, so the recipe-runner
+# cannot thread the values into their steps.
+#
+# These tests assert that every post-worktree sub-recipe declares both keys
+# in its context block, and that the upstream call sites continue to forward
+# them correctly (regression guard on the #425 fix).
+# ===========================================================================
+
+# Post-worktree sub-recipes: these execute AFTER workflow-worktree produces
+# the worktree_setup output object, so they must declare it in their context
+# to receive it via recipe-runner's automatic context-merging.
+_POST_WORKTREE_RECIPES = {
+    "workflow-tdd": _WORKFLOW_TDD_YAML,
+    "workflow-refactor-review": _WORKFLOW_REFACTOR_REVIEW_YAML,
+    "workflow-precommit-test": _WORKFLOW_PRECOMMIT_TEST_YAML,
+    "workflow-publish": _WORKFLOW_PUBLISH_YAML,
+    "workflow-pr-review": _WORKFLOW_PR_REVIEW_YAML,
+    "workflow-finalize": _WORKFLOW_FINALIZE_YAML,
+}
+
+
+class TestWorktreeSetupPropagation479(unittest.TestCase):
+    """Issue #479: worktree_setup propagation is incomplete — nested
+    workflow-tdd recipe (and 5 siblings) cannot read
+    WORKTREE_SETUP_WORKTREE_PATH at step-08c because the sub-recipes
+    never declare `worktree_setup` in their context block.
+
+    Fix: add `worktree_setup: ""` and `allow_no_op: false` to the
+    context section of every post-worktree sub-recipe.
+    """
+
+    # ------------------------------------------------------------------
+    # Test 1: Every post-worktree sub-recipe declares worktree_setup
+    # ------------------------------------------------------------------
+
+    def test_all_post_worktree_recipes_declare_worktree_setup(self):
+        """Each post-worktree sub-recipe must have `worktree_setup:` in its
+        YAML context block so the recipe-runner threads the value from
+        default-workflow into the sub-recipe's step environment."""
+        missing = []
+        for name, path in _POST_WORKTREE_RECIPES.items():
+            if not path.exists():
+                self.skipTest(f"{path} not present in this branch.")
+            text = path.read_text()
+            if not re.search(r"(?m)^\s*worktree_setup\s*:", text):
+                missing.append(name)
+        self.assertEqual(
+            missing, [],
+            f"These post-worktree sub-recipes are missing "
+            f"`worktree_setup` in their context block (issue #479): "
+            f"{', '.join(missing)}",
+        )
+
+    # ------------------------------------------------------------------
+    # Test 2: Every post-worktree sub-recipe declares allow_no_op
+    # ------------------------------------------------------------------
+
+    def test_all_post_worktree_recipes_declare_allow_no_op(self):
+        """Each post-worktree sub-recipe must have `allow_no_op:` in its
+        YAML context block so the orchestration opt-out flag propagates
+        to step-08c's no-op guard."""
+        missing = []
+        for name, path in _POST_WORKTREE_RECIPES.items():
+            if not path.exists():
+                self.skipTest(f"{path} not present in this branch.")
+            text = path.read_text()
+            if not re.search(r"(?m)^\s*allow_no_op\s*:", text):
+                missing.append(name)
+        self.assertEqual(
+            missing, [],
+            f"These post-worktree sub-recipes are missing "
+            f"`allow_no_op` in their context block (issue #479): "
+            f"{', '.join(missing)}",
+        )
+
+    # ------------------------------------------------------------------
+    # Test 3: default-workflow.yaml regression guard (from #425)
+    # ------------------------------------------------------------------
+
+    def test_default_workflow_still_declares_worktree_setup(self):
+        """Regression guard: default-workflow.yaml must continue to declare
+        `worktree_setup` in its context block (fix from #425)."""
+        text = _DEFAULT_WORKFLOW_YAML.read_text()
+        self.assertRegex(
+            text,
+            r"(?m)^\s*worktree_setup\s*:",
+            "default-workflow.yaml `context:` block must declare "
+            "`worktree_setup` — regression from #425.",
+        )
+
+    def test_default_workflow_still_declares_allow_no_op(self):
+        """Regression guard: default-workflow.yaml must continue to declare
+        `allow_no_op` in its context block (fix from #425)."""
+        text = _DEFAULT_WORKFLOW_YAML.read_text()
+        self.assertRegex(
+            text,
+            r"(?m)^\s*allow_no_op\s*:",
+            "default-workflow.yaml `context:` block must declare "
+            "`allow_no_op` — regression from #425.",
+        )
+
+    # ------------------------------------------------------------------
+    # Test 4: smart-execute-routing call-site forwarding (regression guard)
+    # ------------------------------------------------------------------
+
+    def test_smart_execute_routing_all_dev_callsites_forward_worktree_setup(self):
+        """All 3 default-workflow call sites in smart-execute-routing.yaml
+        must include `worktree_setup` in their context blocks. This guards
+        against the upstream boundary dropping the value."""
+        if not _SMART_EXECUTE_ROUTING_YAML.exists():
+            self.skipTest(
+                f"{_SMART_EXECUTE_ROUTING_YAML} not present in this branch."
+            )
+        text = _SMART_EXECUTE_ROUTING_YAML.read_text()
+        # Count how many times worktree_setup appears in context blocks
+        # There should be at least 3 (one per default-workflow call site:
+        # execute-single-round-1-development, blocked-fallback, adaptive-execute)
+        occurrences = len(re.findall(r"worktree_setup", text))
+        self.assertGreaterEqual(
+            occurrences, 3,
+            "smart-execute-routing.yaml must reference `worktree_setup` "
+            "at least 3 times (once per default-workflow call site). "
+            f"Found {occurrences}.",
+        )
+
+    def test_smart_execute_routing_all_dev_callsites_forward_allow_no_op(self):
+        """All 3 default-workflow call sites in smart-execute-routing.yaml
+        must include `allow_no_op` in their context blocks."""
+        if not _SMART_EXECUTE_ROUTING_YAML.exists():
+            self.skipTest(
+                f"{_SMART_EXECUTE_ROUTING_YAML} not present in this branch."
+            )
+        text = _SMART_EXECUTE_ROUTING_YAML.read_text()
+        occurrences = len(re.findall(r"allow_no_op", text))
+        self.assertGreaterEqual(
+            occurrences, 3,
+            "smart-execute-routing.yaml must reference `allow_no_op` "
+            "at least 3 times (once per default-workflow call site). "
+            f"Found {occurrences}.",
+        )
+
+    # ------------------------------------------------------------------
+    # Test 5: context block is not empty — structural YAML check
+    # ------------------------------------------------------------------
+
+    def test_no_post_worktree_recipe_has_empty_context(self):
+        """No post-worktree sub-recipe should have `context: {}`
+        (the empty-context pattern that caused #479). After the fix,
+        every recipe's context block must contain at least worktree_setup."""
+        empty_context = []
+        for name, path in _POST_WORKTREE_RECIPES.items():
+            if not path.exists():
+                continue
+            text = path.read_text()
+            # Match "context: {}" with optional whitespace
+            if re.search(r"(?m)^context:\s*\{\s*\}\s*$", text):
+                empty_context.append(name)
+        self.assertEqual(
+            empty_context, [],
+            f"These post-worktree sub-recipes still have `context: {{}}` "
+            f"(issue #479 root cause): {', '.join(empty_context)}",
+        )
+
+    # ------------------------------------------------------------------
+    # Test 6: YAML-parseable context blocks (structural integrity)
+    # ------------------------------------------------------------------
+
+    def test_post_worktree_recipes_have_valid_yaml_context(self):
+        """Each post-worktree sub-recipe's context block must be valid YAML
+        and contain the expected keys with correct default types."""
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML not installed — cannot validate YAML structure.")
+
+        for name, path in _POST_WORKTREE_RECIPES.items():
+            if not path.exists():
+                continue
+            with self.subTest(recipe=name):
+                data = yaml.safe_load(path.read_text())
+                ctx = data.get("context", {})
+                self.assertIn(
+                    "worktree_setup", ctx,
+                    f"{name}: parsed context missing 'worktree_setup' key.",
+                )
+                self.assertIn(
+                    "allow_no_op", ctx,
+                    f"{name}: parsed context missing 'allow_no_op' key.",
+                )
+                # worktree_setup default should be empty string
+                self.assertEqual(
+                    ctx["worktree_setup"], "",
+                    f"{name}: worktree_setup default must be empty string.",
+                )
+                # allow_no_op default should be False (boolean)
+                self.assertIs(
+                    ctx["allow_no_op"], False,
+                    f"{name}: allow_no_op default must be boolean false.",
                 )
 
 

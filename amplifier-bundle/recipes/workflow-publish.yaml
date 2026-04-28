@@ -25,7 +25,9 @@ inputs:
   - name: repo_path
     description: "Absolute path to the repository root. Provided by parent recipe context."
 
-context: {}
+context:
+  worktree_setup: ""
+  allow_no_op: false
 
 steps:
   - id: "step-14-bump-version"

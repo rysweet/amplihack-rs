@@ -16,7 +16,9 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
-context: {}
+context:
+  worktree_setup: ""
+  allow_no_op: false
 
 steps:
   - id: "step-07-write-tests"
