@@ -14,11 +14,21 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use tempfile::TempDir;
 
 use amplihack_utils::agent_binary::{
     self, ALLOWED_BINARIES, DEFAULT_BINARY, ResolveError, resolve,
 };
+
+/// Serialize tests that mutate `AMPLIHACK_AGENT_BINARY`. `cargo test` runs
+/// integration tests in parallel by default, which races env mutation across
+/// the entire test binary. CI uses the default thread count, so the lock is
+/// required for portability.
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 fn write_launcher_context(repo: &Path, launcher: &str) {
     let runtime = repo.join(".claude").join("runtime");
@@ -56,6 +66,7 @@ fn try_set_env(value: &str) -> bool {
 
 #[test]
 fn default_is_copilot_when_nothing_set() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     let result = resolve(tmp.path()).unwrap();
@@ -65,6 +76,7 @@ fn default_is_copilot_when_nothing_set() {
 
 #[test]
 fn env_var_takes_precedence_over_file() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let tmp = TempDir::new().unwrap();
     write_launcher_context(tmp.path(), "claude");
     set_env("copilot");
@@ -75,6 +87,7 @@ fn env_var_takes_precedence_over_file() {
 
 #[test]
 fn launcher_context_used_when_env_unset() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     write_launcher_context(tmp.path(), "claude");
@@ -84,6 +97,7 @@ fn launcher_context_used_when_env_unset() {
 
 #[test]
 fn allowlist_contains_exactly_four_binaries() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let mut sorted: Vec<&str> = ALLOWED_BINARIES.to_vec();
     sorted.sort_unstable();
     assert_eq!(sorted, vec!["amplifier", "claude", "codex", "copilot"]);
@@ -91,6 +105,7 @@ fn allowlist_contains_exactly_four_binaries() {
 
 #[test]
 fn env_value_outside_allowlist_is_rejected() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     set_env("malicious");
@@ -102,6 +117,7 @@ fn env_value_outside_allowlist_is_rejected() {
 
 #[test]
 fn env_value_with_path_separator_is_rejected() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     for bad in &["/bin/sh", "..\\evil", "claude/../sh", "cla\0ude"] {
@@ -118,6 +134,7 @@ fn env_value_with_path_separator_is_rejected() {
 
 #[test]
 fn env_value_is_trimmed_and_lowercased() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     set_env("  CLAUDE  ");
@@ -128,6 +145,7 @@ fn env_value_is_trimmed_and_lowercased() {
 
 #[test]
 fn launcher_context_outside_allowlist_falls_back_to_default() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     write_launcher_context(tmp.path(), "rm-rf-slash");
@@ -137,6 +155,7 @@ fn launcher_context_outside_allowlist_falls_back_to_default() {
 
 #[test]
 fn oversized_launcher_context_is_rejected() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     let runtime = tmp.path().join(".claude").join("runtime");
@@ -151,6 +170,7 @@ fn oversized_launcher_context_is_rejected() {
 
 #[test]
 fn malformed_launcher_context_falls_back_to_default() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     let runtime = tmp.path().join(".claude").join("runtime");
@@ -162,6 +182,7 @@ fn malformed_launcher_context_falls_back_to_default() {
 
 #[test]
 fn walk_up_finds_context_in_ancestor() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     write_launcher_context(tmp.path(), "claude");
@@ -173,6 +194,7 @@ fn walk_up_finds_context_in_ancestor() {
 
 #[test]
 fn walk_up_stops_at_git_boundary() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     // Outer repo with launcher_context = claude.
@@ -189,6 +211,7 @@ fn walk_up_stops_at_git_boundary() {
 
 #[test]
 fn resolve_function_signature_returns_result() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     // Compile-time contract: resolve(&Path) -> Result<String, ResolveError>.
     clear_env();
     let tmp = TempDir::new().unwrap();
@@ -197,6 +220,7 @@ fn resolve_function_signature_returns_result() {
 
 #[test]
 fn validate_binary_name_helper_exposed() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     assert!(agent_binary::validate_binary_name("claude").is_some());
     assert!(agent_binary::validate_binary_name("COPILOT").is_some());
     assert!(agent_binary::validate_binary_name("evil/bin").is_none());

