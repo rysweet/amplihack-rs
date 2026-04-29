@@ -995,6 +995,7 @@ exit 1
             .env("PATH", path)
             .env("AZLIN_PATH", &azlin)
             .env("HOME", temp_dir.path())
+            .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .stdin(Stdio::from(stdin_file))
             .stdout(Stdio::from(stdout_file))
             .stderr(Stdio::from(stderr_file));
