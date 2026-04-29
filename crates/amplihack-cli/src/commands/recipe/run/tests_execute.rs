@@ -1,7 +1,7 @@
 use super::*;
 use std::collections::BTreeMap;
 use std::io::Write as IoWrite;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
 // -------------------------------------------------------------------------
@@ -42,8 +42,15 @@ steps:
     let recipe_path = tmp.path();
     let context = BTreeMap::new();
 
-    let result =
-        execute::execute_recipe_via_rust(recipe_path, &context, true, false, Path::new("."), None);
+    let result = execute::execute_recipe_via_rust(
+        recipe_path,
+        &context,
+        true,
+        false,
+        Path::new("."),
+        &[],
+        None,
+    );
 
     assert!(
         result.is_ok(),
@@ -119,9 +126,16 @@ fn test_execute_recipe_via_rust_propagates_asset_resolver_env() {
         std::env::remove_var("AMPLIHACK_ASSET_RESOLVER");
     }
 
-    let result =
-        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path(), None)
-            .expect("recipe run must succeed");
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        true,
+        false,
+        temp.path(),
+        &[],
+        None,
+    )
+    .expect("recipe run must succeed");
 
     match prev_runner {
         Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
@@ -207,9 +221,16 @@ fn test_execute_recipe_via_rust_propagates_agent_binary_env() {
         std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot");
     }
 
-    let result =
-        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path(), None)
-            .expect("recipe run must succeed");
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        true,
+        false,
+        temp.path(),
+        &[],
+        None,
+    )
+    .expect("recipe run must succeed");
 
     match prev_runner {
         Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
@@ -253,8 +274,15 @@ fn test_execute_recipe_via_rust_reports_nonzero_exit_with_stderr() {
     let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
 
-    let result =
-        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path(), None);
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        true,
+        false,
+        temp.path(),
+        &[],
+        None,
+    );
 
     match prev_runner {
         Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
@@ -293,8 +321,15 @@ fn test_execute_recipe_via_rust_reports_signal_kill_clearly() {
     let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
 
-    let result =
-        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, temp.path(), None);
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        true,
+        false,
+        temp.path(),
+        &[],
+        None,
+    );
 
     match prev_runner {
         Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
@@ -415,7 +450,7 @@ fi
     context.insert("task_description".to_string(), "x".repeat(256 * 1024));
 
     let result =
-        execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path(), None);
+        execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path(), &[], None);
 
     match prev_runner {
         Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
@@ -487,6 +522,7 @@ fn test_step_timeout_propagated_as_env_var() {
         true,  // dry_run
         false, // verbose
         temp.path(),
+        &[],
         Some(600), // step_timeout = 600 seconds
     )
     .expect("recipe run must succeed");
@@ -556,6 +592,7 @@ fn test_step_timeout_zero_disables_timeouts() {
         true,
         false,
         temp.path(),
+        &[],
         Some(0), // step_timeout = 0 means disable timeouts
     )
     .expect("recipe run must succeed");
@@ -627,6 +664,7 @@ fn test_step_timeout_none_does_not_set_env_var() {
         true,
         false,
         temp.path(),
+        &[],
         None, // step_timeout = None means no override
     )
     .expect("recipe run must succeed");
@@ -824,6 +862,7 @@ fn test_execute_recipe_via_rust_verbose_passes_progress_flag_to_child() {
         false, // dry_run
         true,  // verbose
         temp.path(),
+        &[],
         None, // step_timeout
     );
 
@@ -874,6 +913,7 @@ fn test_execute_recipe_via_rust_non_verbose_does_not_pass_progress() {
         false, // dry_run
         false, // verbose
         temp.path(),
+        &[],
         None, // step_timeout
     );
 
@@ -936,6 +976,7 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
         false, // dry_run
         true,  // verbose
         temp.path(),
+        &[],
         None, // step_timeout
     );
     let elapsed = start.elapsed();
@@ -950,5 +991,379 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
         elapsed < std::time::Duration::from_secs(5),
         "non-UTF-8 stderr caused suspiciously slow run ({elapsed:?}) — \
          pump likely died and child blocked on full stderr pipe"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Issue #494 — sub-recipe discovery: pass -R search dirs to recipe-runner-rs
+// -------------------------------------------------------------------------
+
+/// Helper: build a recipe-runner-rs stub that logs every argv entry
+/// (one per line) to `arg_log` and exits 0 with empty stdout.
+#[cfg(unix)]
+fn write_argv_logging_stub(runner: &Path, arg_log: &Path) {
+    std::fs::write(
+        runner,
+        format!(
+            "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
+            log = arg_log.display()
+        ),
+    )
+    .expect("failed to write runner stub");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(runner, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to chmod runner");
+}
+
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_emits_dash_r_per_search_dir() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let arg_log = temp.path().join("args.log");
+    write_argv_logging_stub(&runner, &arg_log);
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
+
+    let dir_a = temp.path().join("recipes-a");
+    let dir_b = temp.path().join("recipes-b");
+    let dir_c = temp.path().join("recipes-c");
+    let search_dirs: Vec<PathBuf> = vec![dir_a.clone(), dir_b.clone(), dir_c.clone()];
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        true,
+        false,
+        temp.path(),
+        &search_dirs,
+        None,
+    );
+
+    match prev_runner {
+        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+
+    result.expect("execute_recipe_via_rust must succeed with search_dirs");
+
+    let logged = std::fs::read_to_string(&arg_log).expect("argv log must exist");
+    let argv: Vec<&str> = logged.lines().collect();
+    let r_pairs: Vec<(usize, &str)> = argv
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| {
+            if *a == "-R" && i + 1 < argv.len() {
+                Some((i, argv[i + 1]))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        r_pairs.len(),
+        3,
+        "expected one -R per search dir, got {} in argv:\n{logged}",
+        r_pairs.len()
+    );
+    assert_eq!(r_pairs[0].1, dir_a.to_string_lossy());
+    assert_eq!(r_pairs[1].1, dir_b.to_string_lossy());
+    assert_eq!(r_pairs[2].1, dir_c.to_string_lossy());
+}
+
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_no_search_dirs_emits_no_dash_r() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let arg_log = temp.path().join("args.log");
+    write_argv_logging_stub(&runner, &arg_log);
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        true,
+        false,
+        temp.path(),
+        &[],
+        None,
+    );
+
+    match prev_runner {
+        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+
+    result.expect("empty search_dirs must still succeed");
+
+    let logged = std::fs::read_to_string(&arg_log).expect("argv log must exist");
+    assert!(
+        !logged.lines().any(|l| l == "-R"),
+        "empty search_dirs slice must NOT emit any -R flag.\nargv was:\n{logged}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_skips_empty_path_strings() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let arg_log = temp.path().join("args.log");
+    write_argv_logging_stub(&runner, &arg_log);
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
+
+    let valid = temp.path().join("recipes");
+    let search_dirs: Vec<PathBuf> = vec![PathBuf::new(), valid.clone(), PathBuf::new()];
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        true,
+        false,
+        temp.path(),
+        &search_dirs,
+        None,
+    );
+
+    match prev_runner {
+        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+
+    result.expect("partially-empty search_dirs must still succeed");
+
+    let logged = std::fs::read_to_string(&arg_log).expect("argv log must exist");
+    let argv: Vec<&str> = logged.lines().collect();
+    let r_values: Vec<&str> = argv
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| {
+            if *a == "-R" {
+                argv.get(i + 1).copied()
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        r_values.len(),
+        1,
+        "exactly one -R expected (empty PathBufs skipped), got {}:\n{logged}",
+        r_values.len()
+    );
+    assert_eq!(r_values[0], valid.to_string_lossy());
+    assert!(
+        !argv.windows(2).any(|w| w[0] == "-R" && w[1].is_empty()),
+        "empty PathBuf must never expand to `-R \"\"`.\nargv was:\n{logged}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_dash_r_position_in_argv() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let arg_log = temp.path().join("args.log");
+    write_argv_logging_stub(&runner, &arg_log);
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
+
+    let mut context = BTreeMap::new();
+    context.insert("k".to_string(), "v".to_string());
+
+    let dir_a = temp.path().join("recipes-a");
+    let search_dirs: Vec<PathBuf> = vec![dir_a];
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &context,
+        true,
+        false,
+        temp.path(),
+        &search_dirs,
+        None,
+    );
+
+    match prev_runner {
+        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+
+    result.expect("execution must succeed");
+
+    let logged = std::fs::read_to_string(&arg_log).expect("argv log must exist");
+    let argv: Vec<&str> = logged.lines().collect();
+    let pos = |needle: &str| argv.iter().position(|a| *a == needle);
+
+    let pos_c = pos("-C").expect("-C must appear in argv");
+    let pos_r = pos("-R").expect("-R must appear in argv");
+    let pos_dry = pos("--dry-run").expect("--dry-run must appear in argv");
+    let pos_set = pos("--set").expect("--set must appear in argv");
+
+    assert!(pos_c < pos_r, "-R must appear AFTER -C\nargv:\n{logged}");
+    assert!(
+        pos_r < pos_dry,
+        "-R must appear BEFORE --dry-run\nargv:\n{logged}"
+    );
+    assert!(
+        pos_r < pos_set,
+        "-R must appear BEFORE --set\nargv:\n{logged}"
+    );
+}
+
+// -------------------------------------------------------------------------
+// build_search_dirs — pure helper unit tests
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_build_search_dirs_recipe_parent_first() {
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let recipe = temp.path().join("co-located").join("recipe.yaml");
+    std::fs::create_dir_all(recipe.parent().unwrap()).unwrap();
+    std::fs::write(&recipe, "name: x\nsteps: []\n").unwrap();
+
+    let dirs = super::build_search_dirs(&recipe, temp.path())
+        .expect("build_search_dirs must not error on valid inputs");
+
+    assert!(!dirs.is_empty(), "must return at least the recipe parent");
+    assert_eq!(
+        dirs[0],
+        recipe.parent().unwrap().to_path_buf(),
+        "recipe parent must be FIRST entry; got dirs={dirs:?}"
+    );
+}
+
+#[test]
+fn test_build_search_dirs_dedups_paths() {
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let recipes_dir = temp.path().join("amplifier-bundle").join("recipes");
+    std::fs::create_dir_all(&recipes_dir).unwrap();
+    let recipe = recipes_dir.join("dup.yaml");
+    std::fs::write(&recipe, "name: dup\nsteps: []\n").unwrap();
+
+    let dirs =
+        super::build_search_dirs(&recipe, temp.path()).expect("build_search_dirs must not error");
+
+    let occurrences = dirs.iter().filter(|p| *p == &recipes_dir).count();
+    assert_eq!(
+        occurrences, 1,
+        "recipe-parent must appear EXACTLY once after dedup; got dirs={dirs:?}"
+    );
+}
+
+#[test]
+fn test_build_search_dirs_handles_no_parent_gracefully() {
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let recipe = PathBuf::from("/");
+
+    let result = super::build_search_dirs(&recipe, temp.path());
+    assert!(
+        result.is_ok(),
+        "build_search_dirs must handle root-as-recipe gracefully: {result:?}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let arg_log = temp.path().join("args.log");
+    std::fs::write(
+        &runner,
+        format!(
+            "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\n\
+             echo '{{\"recipe_name\":\"probe\",\"success\":true,\"step_results\":[],\"context\":{{}}}}'\n\
+             exit 0\n",
+            log = arg_log.display()
+        ),
+    )
+    .expect("failed to write runner stub");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to chmod runner");
+
+    let recipe_dir = temp.path().join("co-located");
+    std::fs::create_dir_all(&recipe_dir).unwrap();
+    let recipe = recipe_dir.join("probe.yaml");
+    std::fs::write(
+        &recipe,
+        "name: probe\nsteps:\n  - id: noop\n    name: noop\n    type: bash\n    command: \"true\"\n",
+    )
+    .expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
+
+    let result = super::run_recipe(
+        recipe.to_str().unwrap(),
+        &[],
+        true,
+        false,
+        "json",
+        Some(temp.path().to_str().unwrap()),
+        None,
+    );
+
+    match prev_runner {
+        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+
+    result.expect("run_recipe must succeed");
+
+    let logged = std::fs::read_to_string(&arg_log).expect("argv log must exist");
+    let argv: Vec<&str> = logged.lines().collect();
+    let r_values: Vec<&str> = argv
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| {
+            if *a == "-R" {
+                argv.get(i + 1).copied()
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert!(
+        r_values.iter().any(|v| *v == recipe_dir.to_string_lossy()),
+        "run_recipe must forward recipe-parent dir as -R; got r_values={r_values:?}\nargv:\n{logged}"
     );
 }
