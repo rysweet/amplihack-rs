@@ -12,6 +12,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 ### How-To Guides
 
 - [Install amplihack for the First Time](./howto/first-install.md) — Bootstrap from scratch, including optional legacy-Python checks, binary deployment, and hook registration
+- [Install with the Interactive Wizard](./howto/interactive-install.md) — Choose default tool, hook scope, and update-check preference through guided prompts
 - [Install from a Local Repository](./howto/local-install.md) — Install without network access using a local checkout
 - [Uninstall amplihack](./howto/uninstall.md) — Cleanly remove all installed files, binaries, and hook registrations
 - [Resolve LadybugDB Linker Errors](./howto/resolve-kuzu-linker-errors.md) — Diagnose and fix `undefined reference` errors caused by `cxx`/`cxx-build` version mismatch
@@ -114,6 +115,9 @@ cargo build --release
 
 # Install amplihack (first time)
 ~/.cargo/bin/amplihack install
+
+# Install with guided setup wizard
+amplihack install --interactive
 
 # Install from a local clone (no network)
 amplihack install --local /path/to/amplihack-clone

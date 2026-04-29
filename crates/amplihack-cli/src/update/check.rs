@@ -47,7 +47,7 @@ pub fn run_update(skip_install: bool) -> Result<()> {
     // The new binary may depend on updated assets in amplifier-bundle.
     // Users can opt out with --skip-install (alias --no-install).
     super::post_install::run_post_update_install(skip_install, || {
-        crate::commands::install::run_install(None)
+        crate::commands::install::run_install(None, false)
     })?;
     Ok(())
 }

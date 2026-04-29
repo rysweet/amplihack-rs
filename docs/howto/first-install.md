@@ -41,6 +41,14 @@ This produces two binaries:
 ./target/release/amplihack install
 ```
 
+For guided setup (choose default tool, hook scope, update-check frequency):
+
+```sh
+./target/release/amplihack install --interactive
+```
+
+See [Interactive Install](./interactive-install.md) for a walkthrough of the wizard prompts.
+
 ### Alternative: bootstrap through npx
 
 If you want npm to provision the Rust CLI first, use the wrapper package:
@@ -151,6 +159,7 @@ Install is idempotent. Re-running updates hook registrations in place without du
 
 ## See Also
 
+- [Interactive Install](./interactive-install.md) — guided wizard for tool, scope, and update preferences
 - [Install from a Local Repository](./local-install.md) — offline install without git clone
 - [Uninstall amplihack](./uninstall.md) — clean removal
 - [amplihack install reference](../reference/install-command.md) — all flags and options

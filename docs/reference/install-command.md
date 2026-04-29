@@ -3,7 +3,7 @@
 ## Synopsis
 
 ```
-amplihack install [--local <PATH>]
+amplihack install [--interactive] [--local <PATH>]
 amplihack uninstall
 ```
 
@@ -31,7 +31,10 @@ fall back to a source build.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--interactive` | `bool` | `false` | Launch a guided setup wizard that prompts for default tool, hook scope, and update-check preference. Requires a TTY; falls back to defaults with a warning if stdin is not a terminal. See [Interactive Install](../howto/interactive-install.md). |
 | `--local <PATH>` | `PathBuf` | absent | Install from a specific local directory instead of using the bundled source. The path must exist, be a directory, and contain a `.claude` subdirectory (at `<PATH>/.claude` or `<PATH>/../.claude`). Without `--local`, the installer uses bundled framework assets from the amplihack-rs source tree. |
+
+The `--interactive` and `--local` flags compose: `--interactive` controls configuration preferences while `--local` controls the framework source path.
 
 ### Exit Codes
 
@@ -46,16 +49,20 @@ fall back to a source build.
 ### Install Phases
 
 ```
-amplihack install
+amplihack install [--interactive]
 │
+├── 0. maybe_run_wizard()         — if --interactive, prompt for tool/scope/update prefs (skipped otherwise)
 ├── 1. Bundled source, --local path, OR GitHub fallback — obtain framework source
 ├── 2. deploy_binaries()          — copy amplihack + amplihack-hooks (+ asset resolver when present) to ~/.local/bin
 ├── 3. copy framework assets      — stage .claude/ tree to ~/.amplihack/.claude/
 ├── 4. create_runtime_dirs()      — create runtime/ subdirs with 0o755 permissions
 ├── 5. ensure_settings_json()     — backup settings.json, register hooks, set permissions
 ├── 6. verify_framework_assets()  — confirm required staged framework assets exist
-└── 7. write_manifest()           — write amplihack-manifest.json for uninstall
+├── 7. apply_config()             — if wizard ran, write preferences to manifest and settings
+└── 8. write_manifest()           — write amplihack-manifest.json for uninstall
 ```
+
+Phase 0 runs only when `--interactive` is passed **and** stdin is a TTY. If `--interactive` is set but no TTY is available, the wizard is skipped with a warning to stderr. Phase 7 applies wizard results (default tool, update-check preference) to the manifest and writes hooks to the selected settings.json scope.
 
 ### Environment Variables
 
@@ -142,9 +149,9 @@ amplihack uninstall
 
 The functions below are in `crates/amplihack-cli/src/commands/install.rs`.
 
-### `run_install(local: Option<PathBuf>) -> Result<()>`
+### `run_install(local: Option<PathBuf>, interactive: bool) -> Result<()>`
 
-Entry point called by the command dispatcher. Canonicalizes and validates `--local` path when provided. Without `--local`, resolves the bundled framework root from the amplihack-rs source tree (compile-time path, `AMPLIHACK_HOME`, executable walk-up, `~/.amplihack`). Falls back to network download only when no local source is found.
+Entry point called by the command dispatcher. When `interactive` is true and stdin is a TTY, runs the interactive wizard before proceeding. Canonicalizes and validates `--local` path when provided. Without `--local`, resolves the bundled framework root from the amplihack-rs source tree (compile-time path, `AMPLIHACK_HOME`, executable walk-up, `~/.amplihack`). Falls back to network download only when no local source is found.
 
 ### `run_uninstall() -> Result<()>`
 
@@ -192,8 +199,17 @@ The active amplihack install path registers hook **binary subcommands** such as 
 
 Removes hook array entries whose command string contains `amplihack-hooks` or `tools/amplihack/`. Preserves all other entries.
 
+### `maybe_run_wizard(interactive: bool) -> Result<Option<InteractiveConfig>>`
+
+Checks whether the wizard should run (`interactive == true` and stdin is a TTY). If so, presents three `dialoguer::Select` prompts and returns an `InteractiveConfig`. If `interactive` is true but no TTY is available, prints a warning to stderr and returns `None`. If `interactive` is false, returns `None` immediately. Located in `crates/amplihack-cli/src/commands/install/interactive.rs`.
+
+### `apply_config(config: &InteractiveConfig, manifest: &mut InstallManifest, settings_path: &Path) -> Result<()>`
+
+Writes wizard results to the install manifest (`default_tool`, `update_check_preference` fields) and, for repo-local hook scope, to the repo-local `settings.json`. Located in `crates/amplihack-cli/src/commands/install/interactive.rs`.
+
 ## See Also
 
+- [Interactive Install](../howto/interactive-install.md) — guided setup wizard walkthrough
 - [Hook Specifications](./hook-specifications.md) — the 7 hooks registered by amplihack install
 - [Install Manifest](./install-manifest.md) — manifest schema
 - [Binary Resolution](./binary-resolution.md) — find_hooks_binary lookup detail

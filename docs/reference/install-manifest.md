@@ -15,11 +15,13 @@ The install manifest is a JSON file written by `amplihack install` that records 
   "files": ["string"],
   "dirs": ["string"],
   "binaries": ["string"],
-  "hook_registrations": ["string"]
+  "hook_registrations": ["string"],
+  "default_tool": "string | null",
+  "update_check_preference": "string | null"
 }
 ```
 
-All four fields are required in new manifests. All four have `#[serde(default)]` so old manifests without `binaries` or `hook_registrations` are read without error (those fields default to empty arrays).
+The first four fields are required in new manifests. All fields have `#[serde(default)]` so old manifests without newer fields are read without error (arrays default to empty, options default to `null`).
 
 ### `files` — `Vec<String>`
 
@@ -84,7 +86,29 @@ Deduplicated list of Claude Code event names for which amplihack registered hook
 ]
 ```
 
+### `default_tool` — `Option<String>`
+
+The default tool launched by a bare `amplihack` invocation. Set by `amplihack install --interactive` when the user selects a tool in the wizard. Valid values: `"claude"`, `"copilot"`, `"codex"`. When absent or `null`, the launcher defaults to `"claude"`.
+
+```json
+"default_tool": "copilot"
+```
+
+This field is only written when `--interactive` is used. Non-interactive installs omit it (deserialized as `null`).
+
+### `update_check_preference` — `Option<String>`
+
+Controls how frequently the pre-launch update check runs. Set by `amplihack install --interactive`. Valid values: `"auto-weekly"`, `"auto-daily"`, `"manual"`, `"disabled"`. When absent or `null`, the update-check system uses its default interval (`"auto-weekly"`).
+
+```json
+"update_check_preference": "auto-daily"
+```
+
+This field is only written when `--interactive` is used. Non-interactive installs omit it. See [Manage Tool Update Notifications](../howto/manage-tool-update-checks.md) for how this preference affects runtime behavior.
+
 ## Full Example
+
+Non-interactive install (no wizard fields):
 
 ```json
 {
@@ -121,6 +145,19 @@ Deduplicated list of Claude Code event names for which amplihack registered hook
 }
 ```
 
+Interactive install (wizard fields present):
+
+```json
+{
+  "files": ["..."],
+  "dirs": ["..."],
+  "binaries": ["..."],
+  "hook_registrations": ["..."],
+  "default_tool": "copilot",
+  "update_check_preference": "auto-daily"
+}
+```
+
 ## Backup Metadata
 
 In addition to the manifest, the installer writes a backup metadata file when it backs up an existing `settings.json`:
@@ -143,7 +180,7 @@ These metadata files are informational. They are not read by uninstall and are n
 
 ## Backward Compatibility
 
-The manifest format is backward compatible. Old manifests with only `files` and `dirs` are read successfully — `binaries` and `hook_registrations` default to empty arrays. Uninstall skips phases 3 and 4 if the corresponding fields are empty.
+The manifest format is backward compatible. Old manifests with only `files` and `dirs` are read successfully — `binaries` and `hook_registrations` default to empty arrays, `default_tool` and `update_check_preference` default to `null`. Uninstall skips phases 3 and 4 if the corresponding fields are empty. The `default_tool` and `update_check_preference` fields are purely additive and have no effect on uninstall.
 
 ## See Also
 

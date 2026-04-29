@@ -154,27 +154,45 @@ amplihack classify "disk cleanup on staging servers"
 
 ## Agent step killed by step timeout
 
-**Symptom:** An agent step (architecture design, large refactoring, complex analysis) fails with a timeout error partway through. The step's `timeout_seconds` in the recipe YAML expired before the agent completed its work.
+**Symptom:** An agent step (architecture design, large refactoring, complex analysis) fails with a timeout error partway through.
 
-**Cause:** The recipe YAML defines conservative `timeout_seconds` values (typically 300s or 600s) that are insufficient for complex tasks requiring extended agent reasoning.
+**Cause (pre-fix):** Older recipe YAML files defined conservative `timeout_seconds` values (typically 300s or 600s) on agent steps. These were insufficient for complex tasks requiring extended agent reasoning.
 
-**Fix:** Override step timeouts at run time with `--step-timeout`:
+**Current state:** The default-workflow recipes (`workflow-prep.yaml`, `smart-classify-route.yaml`, `smart-execute-routing.yaml`, `smart-validate-summarize.yaml`, `smart-reflect-loop.yaml`) no longer define `timeout_seconds` on agent steps. Agent steps run until completion. If you still see this error, it means either:
 
-```sh
-# Override all step timeouts to 10 minutes
-amplihack recipe run recipe.yaml \
-  -c task_description="Complex task" \
-  --step-timeout 600
+1. A **custom recipe** still defines `timeout_seconds` on agent steps — remove the field from those steps.
+2. An external `--step-timeout` override was applied — check your invocation flags.
 
-# Disable step timeouts entirely
-amplihack recipe run recipe.yaml \
-  -c task_description="Very long task" \
-  --step-timeout 0
+**Fix for custom recipes:** Remove `timeout_seconds` from agent steps in your YAML:
+
+```yaml
+# Before (agent step with timeout — causes premature kills)
+- id: step-02b
+  type: agent
+  agent: claude
+  prompt: "Design the architecture..."
+  timeout_seconds: 300  # ← Remove this line
+
+# After (agent step runs to completion)
+- id: step-02b
+  type: agent
+  agent: claude
+  prompt: "Design the architecture..."
 ```
 
-This sets `AMPLIHACK_STEP_TIMEOUT` in the child process environment. See [Control step timeouts](./run-a-recipe.md#control-step-timeouts) for details.
+**Fix for CI environments with wall-clock budgets:** Use `--no-step-timeouts` to explicitly disable timeouts, or `--step-timeout <SECONDS>` to set a generous override:
 
-**Note:** `--step-timeout` overrides per-step `timeout_seconds` only. It does not affect recipe-level timeouts or the `max_runtime` budget in multitask workstreams.
+```sh
+# Disable all step timeouts
+amplihack recipe run recipe.yaml --no-step-timeouts
+
+# Set a generous 30-minute override for all steps
+amplihack recipe run recipe.yaml --step-timeout 1800
+```
+
+See [Control step timeouts](./run-a-recipe.md#control-step-timeouts) for details.
+
+**Note:** `--step-timeout` and `--no-step-timeouts` override per-step `timeout_seconds` only. They do not affect recipe-level timeouts or the `max_runtime` budget in multitask workstreams. Bash steps that use GNU coreutils `timeout` in their commands are unaffected — those timeouts are enforced by the shell, not the recipe runner.
 
 ---
 

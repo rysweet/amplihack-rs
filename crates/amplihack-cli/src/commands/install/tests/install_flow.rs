@@ -34,7 +34,7 @@ fn local_install_stages_amplifier_bundle_for_dev_orchestrator() {
     }
 
     create_source_repo(temp.path());
-    local_install(temp.path()).unwrap();
+    local_install(temp.path(), None).unwrap();
 
     if let Some(v) = prev_hooks {
         unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
@@ -146,7 +146,7 @@ fn local_install_writes_manifest() {
     }
 
     create_source_repo(temp.path());
-    local_install(temp.path()).unwrap();
+    local_install(temp.path(), None).unwrap();
 
     if let Some(v) = prev_hooks {
         unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
@@ -208,6 +208,7 @@ fn uninstall_removes_manifest_tracked_files() {
         dirs: vec![String::from("agents/amplihack")],
         binaries: vec![],
         hook_registrations: vec![],
+        ..InstallManifest::default()
     };
     manifest::write_manifest(
         &temp
@@ -245,6 +246,7 @@ fn install_manifest_has_all_four_fields() {
         dirs: vec![String::from("dir")],
         binaries: vec![String::from("/home/user/.local/bin/amplihack-hooks")],
         hook_registrations: vec![String::from("SessionStart"), String::from("Stop")],
+        ..InstallManifest::default()
     };
     assert_eq!(manifest.files.len(), 1);
     assert_eq!(manifest.dirs.len(), 1);
@@ -259,6 +261,7 @@ fn install_manifest_serialises_new_fields() {
         dirs: vec![],
         binaries: vec![String::from("/home/user/.local/bin/amplihack-hooks")],
         hook_registrations: vec![String::from("SessionStart")],
+        ..InstallManifest::default()
     };
     let json = serde_json::to_string(&manifest).unwrap();
     assert!(
@@ -382,7 +385,7 @@ fn local_install_writes_manifest_with_all_four_fields() {
     }
 
     create_source_repo(temp.path());
-    local_install(temp.path()).unwrap();
+    local_install(temp.path(), None).unwrap();
 
     if let Some(v) = prev_hooks {
         unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
@@ -458,7 +461,7 @@ fn run_install_with_local_path_skips_git_clone() {
     fs::create_dir_all(&local_repo).unwrap();
     create_source_repo(&local_repo);
 
-    let result = run_install(Some(local_repo));
+    let result = run_install(Some(local_repo), false);
 
     if let Some(v) = prev_hooks {
         unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
@@ -483,7 +486,7 @@ fn run_install_with_local_path_skips_git_clone() {
 #[test]
 fn run_install_with_nonexistent_local_path_returns_err() {
     let nonexistent = std::path::PathBuf::from("/nonexistent/amplihack-repo/does-not-exist");
-    let result = run_install(Some(nonexistent));
+    let result = run_install(Some(nonexistent), false);
     assert!(
         result.is_err(),
         "run_install must return Err for a non-existent --local path"
@@ -763,7 +766,7 @@ fn local_install_from_bundle_only_source_copies_all_essentials() {
         helpers::create_bundle_only_source_repo(&repo);
 
         // Pre-fix this fails with: ".claude not found at <repo>/.claude or ..."
-        local_install(&repo).expect(
+        local_install(&repo, None).expect(
             "issue #416: local_install must succeed against a bundle-only source repo \
              (no top-level .claude/), but failed",
         );
@@ -796,7 +799,7 @@ fn local_install_with_no_source_assets_returns_err() {
         fs::create_dir_all(&repo).unwrap();
         // Intentionally do NOT create amplifier-bundle/ or .claude/.
 
-        let result = local_install(&repo);
+        let result = local_install(&repo, None);
         assert!(
             result.is_err(),
             "local_install must Err when source repo contains no framework assets, \
@@ -825,7 +828,7 @@ fn local_install_hard_errors_when_no_dirs_copied() {
         // returns Ok(()) with a printed warning (silent partial install).
         fs::create_dir_all(repo.join(".claude")).unwrap();
 
-        let result = local_install(&repo);
+        let result = local_install(&repo, None);
         assert!(
             result.is_err(),
             "local_install must hard-error when zero essential dirs are copied; \
@@ -846,7 +849,7 @@ fn legacy_claude_source_layout_still_installs() {
         fs::create_dir_all(&repo).unwrap();
         helpers::create_source_repo(&repo);
 
-        local_install(&repo).expect("hybrid create_source_repo fixture must keep working");
+        local_install(&repo, None).expect("hybrid create_source_repo fixture must keep working");
 
         let staged = home.join(".amplihack/.claude");
         // Bundle layout was selected; `agents/` is the bundle destination.
@@ -869,7 +872,7 @@ fn missing_framework_paths_recognises_bundle_layout_install() {
         let repo = home.join("repo");
         fs::create_dir_all(&repo).unwrap();
         helpers::create_bundle_only_source_repo(&repo);
-        local_install(&repo).expect("bundle install should succeed");
+        local_install(&repo, None).expect("bundle install should succeed");
 
         let staged = home.join(".amplihack/.claude");
         let missing = settings::missing_framework_paths(&staged).unwrap();
@@ -909,7 +912,7 @@ fn find_source_root_rejects_symlinked_amplifier_bundle() {
         fs::write(elsewhere.join("secret.txt"), "private").unwrap();
         std::os::unix::fs::symlink(&elsewhere, repo.join("amplifier-bundle")).unwrap();
 
-        let result = local_install(&repo);
+        let result = local_install(&repo, None);
         assert!(
             result.is_err(),
             "symlinked amplifier-bundle source root must be rejected"
@@ -926,7 +929,7 @@ fn install_writes_layout_marker_atomically() {
         let repo = home.join("repo");
         fs::create_dir_all(&repo).unwrap();
         helpers::create_bundle_only_source_repo(&repo);
-        local_install(&repo).expect("bundle install should succeed");
+        local_install(&repo, None).expect("bundle install should succeed");
 
         let staged = home.join(".amplihack/.claude");
         let marker = staged.join(".layout");

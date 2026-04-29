@@ -16,6 +16,10 @@ pub enum Commands {
         /// Install from a local directory instead of cloning from git
         #[arg(long)]
         local: Option<PathBuf>,
+        /// Run the interactive configuration wizard to choose default tool,
+        /// hook scope, and update-check preference
+        #[arg(long)]
+        interactive: bool,
     },
     /// Remove amplihack agents and tools
     Uninstall,

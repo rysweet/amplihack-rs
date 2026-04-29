@@ -332,6 +332,12 @@ pub(super) struct InstallManifest {
     pub binaries: Vec<String>,
     #[serde(default)]
     pub hook_registrations: Vec<String>,
+    /// Default launch tool selected during interactive install (e.g. "claude", "copilot", "codex").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_tool: Option<String>,
+    /// Update-check preference selected during interactive install (e.g. "auto-weekly", "disabled").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_check_preference: Option<String>,
 }
 
 #[cfg(test)]
