@@ -27,7 +27,7 @@ pub fn maybe_print_update_notice_from_args(args: &[OsString]) -> StartupUpdateOu
     }
 }
 
-pub fn run_update() -> Result<()> {
+pub fn run_update(skip_install: bool) -> Result<()> {
     println!("amplihack update (current: v{CURRENT_VERSION})");
 
     let release = super::network::fetch_latest_release()?;
@@ -43,14 +43,12 @@ pub fn run_update() -> Result<()> {
     super::install::download_and_replace(&release)?;
     write_cache(&cache_path()?, &release.version)?;
 
-    // Re-stage framework assets after binary swap (fix #249).
+    // Re-stage framework assets after binary swap (fix #249, #487).
     // The new binary may depend on updated assets in amplifier-bundle.
-    if let Err(err) = crate::commands::install::ensure_framework_installed() {
-        eprintln!(
-            "⚠️  Binary updated but framework asset refresh failed: {err:#}\n   \
-             Run `amplihack install` to refresh assets manually."
-        );
-    }
+    // Users can opt out with --skip-install (alias --no-install).
+    super::post_install::run_post_update_install(skip_install, || {
+        crate::commands::install::run_install(None)
+    })?;
     Ok(())
 }
 
@@ -89,7 +87,7 @@ fn maybe_prompt_for_startup_update(latest: &str) -> Result<StartupUpdateOutcome>
         return Ok(StartupUpdateOutcome::Continue);
     }
 
-    run_update()?;
+    run_update(false)?;
     println!("✅ Update complete. Re-run amplihack to continue with the new version.");
     Ok(StartupUpdateOutcome::ExitSuccess)
 }
