@@ -141,54 +141,86 @@ fn repo_git_url_points_to_amplihack_rs() {
 }
 
 // ============================================================================
-// Bug #249: run_update() calls ensure_framework_installed()
+// Bug #249 / #487: run_update() calls run_install() after binary swap
 // ============================================================================
 
 #[test]
 fn update_check_source_includes_framework_restage() {
-    // Contract: run_update() must call ensure_framework_installed() after
-    // the binary swap. We verify this at the source level since we can't
-    // easily mock the network calls in an integration test.
+    // Contract (#487): run_update() must call the post-update install helper
+    // after the binary swap so framework assets are refreshed automatically.
+    // We verify this at the source level since we can't easily mock the
+    // network calls in an integration test.
     let check_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/update/check.rs"));
     assert!(
-        check_src.contains("ensure_framework_installed"),
-        "run_update() must call ensure_framework_installed() after binary swap"
+        check_src.contains("run_post_update_install"),
+        "run_update() must call run_post_update_install() after binary swap"
     );
-    // Verify it's in the run_update function, not just imported
+    // Verify it's in the run_update function, not just imported.
     let run_update_start = check_src
-        .find("fn run_update()")
+        .find("fn run_update(")
         .expect("run_update must exist");
     let run_update_body = &check_src[run_update_start..];
-    // Find the end of the function (next `fn ` at the same indentation level)
     let next_fn = run_update_body[1..]
         .find("\nfn ")
         .unwrap_or(run_update_body.len());
     let run_update_body = &run_update_body[..next_fn];
     assert!(
-        run_update_body.contains("ensure_framework_installed"),
-        "ensure_framework_installed() must be called inside run_update(), not elsewhere"
+        run_update_body.contains("run_post_update_install"),
+        "run_post_update_install() must be called inside run_update(), not elsewhere"
+    );
+    // The closure passed to the helper must invoke the full install code path.
+    assert!(
+        run_update_body.contains("crate::commands::install::run_install"),
+        "the post-update install closure must call commands::install::run_install"
     );
 }
 
 #[test]
-fn update_check_handles_framework_restage_failure_gracefully() {
-    // Contract: If ensure_framework_installed() fails after binary swap,
-    // run_update() must print a warning but NOT return an error.
+fn update_check_propagates_framework_restage_failure() {
+    // Contract (#487): post-update install errors propagate via `?` (zero-BS).
+    // Silent fallbacks were removed in favor of loud, propagated failures.
     let check_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/update/check.rs"));
-    // The call should be in an `if let Err(err) = ...` block
+    let run_update_start = check_src
+        .find("fn run_update(")
+        .expect("run_update must exist");
+    let run_update_body = &check_src[run_update_start..];
+    let next_fn = run_update_body[1..]
+        .find("\nfn ")
+        .unwrap_or(run_update_body.len());
+    let run_update_body = &run_update_body[..next_fn];
+    // The helper call must end with `?` to propagate errors.
     assert!(
-        check_src
+        run_update_body.contains("run_post_update_install(skip_install"),
+        "run_post_update_install must receive the skip_install flag"
+    );
+    assert!(
+        run_update_body.contains("})?;"),
+        "post-update install errors must propagate via `?`, not be swallowed"
+    );
+    // Sanity: the legacy silent-fallback pattern must be gone.
+    assert!(
+        !run_update_body
             .contains("if let Err(err) = crate::commands::install::ensure_framework_installed()"),
-        "ensure_framework_installed errors must be handled gracefully"
+        "legacy silent-fallback pattern must be removed (zero-BS rule)"
     );
-    // Should print a warning, not bail
+}
+
+#[test]
+fn update_subcommand_supports_skip_install_flag() {
+    // Contract (#487): the Update subcommand exposes --skip-install (alias --no-install)
+    // so users can opt out of the automatic post-update install step.
+    let cli_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli_commands.rs"));
     assert!(
-        check_src.contains("framework asset refresh failed"),
-        "failure message must mention 'framework asset refresh failed'"
+        cli_src.contains("skip_install"),
+        "Update variant must expose a skip_install field"
     );
     assert!(
-        check_src.contains("amplihack install"),
-        "failure message must suggest 'amplihack install' as manual recovery"
+        cli_src.contains("long = \"skip-install\""),
+        "Update variant must expose --skip-install"
+    );
+    assert!(
+        cli_src.contains("alias = \"no-install\""),
+        "Update variant must expose --no-install as an alias"
     );
 }
 

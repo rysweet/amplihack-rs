@@ -54,7 +54,7 @@ The version string comes from the `__version__` attribute in `amplihack/__init__
 | `version`    | Show amplihack version.                                                                     |
 | `install`    | Install amplihack agents and tools to `~/.claude`.                                          |
 | `uninstall`  | Remove amplihack agents and tools from `~/.claude`.                                         |
-| `update`     | Update amplihack, delegating to the Rust CLI when one is installed.                         |
+| `update`     | Self-update the amplihack binary, then automatically run `install` to refresh framework assets. Pass `--skip-install` (alias `--no-install`) for a binary-only update. |
 | `claude`     | Launch Claude Code. Preferred explicit launcher in user-facing docs.                        |
 | `launch`     | Compatibility alias for `claude`; `amplihack` with no subcommand also launches Claude Code. |
 | `RustyClawd` | Launch RustyClawd (Rust implementation).                                                    |
@@ -74,6 +74,72 @@ See the documentation for each subcommand:
 - [Recipe CLI Reference](./recipe-cli-reference.md)
 - [Memory CLI Reference](./memory-cli-reference.md)
 - [Plugin CLI Reference](#)
+
+### `update`
+
+Self-updates the `amplihack` binary by downloading the latest release from
+GitHub (with SHA-256 verification), atomically replacing the running executable,
+and then **automatically running `amplihack install`** to refresh the framework
+assets staged under `~/.amplihack/.claude` so the on-disk agents, hooks, and
+prompts match the newly installed binary.
+
+**Synopsis**
+
+```
+amplihack update [--skip-install | --no-install]
+```
+
+**Flags**
+
+| Flag             | Description                                                                                                                       |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `--skip-install` | Skip the automatic post-update `install` step (binary-only update — legacy behavior). Alias: `--no-install`.                      |
+
+**Behavior**
+
+1. Check GitHub for a newer release. If none, exit with a "already at latest"
+   message.
+2. Download the platform-specific archive and verify its SHA-256, then
+   atomically replace the running binary.
+3. **Unless `--skip-install` was passed**, invoke the same code path as
+   `amplihack install` (in-process — no subprocess) to re-stage framework
+   assets to `~/.amplihack/.claude`. This is non-interactive.
+
+If step 2 fails, the install step does **not** run and the original binary
+remains in place. If step 3 fails, the new binary is already installed; you
+can re-run `amplihack install` manually to retry the asset refresh.
+
+**Examples**
+
+```bash
+# Default: update binary and refresh framework assets in one step
+amplihack update
+
+# Binary-only update (preserve old framework assets on disk)
+amplihack update --skip-install
+
+# Equivalent alias
+amplihack update --no-install
+
+# Manually refresh framework assets (e.g. after a --skip-install update,
+# or to recover from a failed post-update install step)
+amplihack install
+```
+
+**Why install runs automatically**
+
+A binary-only update can leave the on-disk agents, hooks, prompts, and recipes
+out of sync with the new binary, producing confusing behavior (missing skills,
+stale prompts, hook signature mismatches). Running `install` immediately after
+a successful update keeps the binary and the staged framework consistent.
+
+**Startup-prompt updates**
+
+When `amplihack` prompts you to update at startup ("Update now? [y/N]") and you
+accept, the same flow runs: binary swap followed by automatic `install`. There
+is no way to pass `--skip-install` through the startup prompt — answer `N` and
+run `amplihack update --skip-install` manually if you want the legacy behavior
+in that situation.
 
 ---
 

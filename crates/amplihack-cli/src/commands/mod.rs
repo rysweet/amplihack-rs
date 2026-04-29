@@ -260,7 +260,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             println!("amplihack-rs {}", crate::VERSION);
             Ok(())
         }
-        Commands::Update => crate::update::run_update(),
+        Commands::Update { skip_install } => crate::update::run_update(skip_install),
         Commands::Fleet { args } => fleet::run_fleet(args),
         Commands::New {
             file,
