@@ -15,6 +15,10 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 - [Worktree Support](power-steering/worktree-support.md)
 - [Troubleshooting](power-steering/troubleshooting.md)
 
+## Self-Heal
+
+- [Auto-Restage Framework Assets on Version Change](self-heal-asset-restage.md) — startup-time version-stamp check that re-runs `amplihack install` automatically when the binary version no longer matches `~/.amplihack/.installed-version`.
+
 ## Additional Features
 
 Additional feature documentation will be added as features are ported from upstream.

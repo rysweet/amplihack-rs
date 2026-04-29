@@ -72,6 +72,17 @@ These variables are read during install. All are optional; the installer works w
 |----------|--------|
 | `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` | Override the path used for `amplihack-hooks`. Useful in tests and CI. If set but the path does not exist, resolution falls through to Step 2. See [Binary Resolution](./binary-resolution.md). |
 | `AMPLIHACK_HOME` | Override `~/.amplihack` staging root (default: `$HOME/.amplihack`). |
+| `AMPLIHACK_SKIP_AUTO_INSTALL` | When set to any non-empty value, suppresses the startup-time [self-heal check](../features/self-heal-asset-restage.md) that would otherwise re-run install when `~/.amplihack/.installed-version` is missing or stale. Has no effect on an explicit `amplihack install` invocation. |
+
+### Version stamp
+
+Every successful install writes the binary version into
+`~/.amplihack/.installed-version` (single-line plain text, no trailing
+newline, atomic tmp+rename). This stamp is read on every subsequent launch
+by the [self-heal check](../features/self-heal-asset-restage.md): if the
+stamp is missing or differs from `crate::VERSION`, install is run
+automatically before the requested command dispatches. Manual installs and
+the self-heal path therefore converge on the same source of truth.
 
 ### Output
 

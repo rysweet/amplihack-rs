@@ -29,6 +29,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_BLARIFY_MODE](#amplihack_blarify_mode)
   - [AMPLIHACK_NO_UPDATE_CHECK](#amplihack_no_update_check)
   - [AMPLIHACK_PARITY_TEST](#amplihack_parity_test)
+  - [AMPLIHACK_SKIP_AUTO_INSTALL](#amplihack_skip_auto_install)
   - [UV_TOOL_BIN_DIR](#uv_tool_bin_dir)
 
 ---
@@ -565,6 +566,54 @@ expected="local"
 **Isolation contract:** `AMPLIHACK_PARITY_TEST=1` suppresses exactly one
 behaviour: the update check. It does not propagate into the child tool process,
 does not affect bootstrap logic, and does not change exit codes or stdout output.
+
+---
+
+### AMPLIHACK_SKIP_AUTO_INSTALL
+
+**Type:** flag
+**Values:** any non-empty value (suppresses self-heal) — absence or empty string means the check runs
+**Used by:** `self_heal::ensure_assets_match_binary_version` (via `env_bypass_set`)
+
+Suppresses the startup-time **self-heal check** that runs before every
+`amplihack` command dispatch. With the bypass active, `amplihack` does **not**
+compare `crate::VERSION` to `~/.amplihack/.installed-version` and does **not**
+auto-run install when the stamp is missing or stale. Explicit `amplihack install`
+invocations are unaffected.
+
+**When to set it:**
+
+- **CI pipelines** that pre-stage assets in a setup phase and then run many
+  `amplihack` commands without wanting the binary to mutate `~/.amplihack`
+  mid-run.
+- **Unit/integration tests** that stub out the framework asset tree and need
+  to guarantee the binary will not overwrite it on first launch.
+- **Sandboxed parity test harnesses** that already manage the
+  `~/.amplihack` layout deterministically.
+
+```sh
+# CI: stage once, then run many commands without per-launch self-heal
+amplihack install
+export AMPLIHACK_SKIP_AUTO_INSTALL=1
+amplihack claude --print 'run tests'
+amplihack copilot --print 'run tests'
+```
+
+**Truthiness:** any non-empty value triggers the bypass (`1`, `true`,
+`yes`, `please-skip`, etc.). An empty string (`AMPLIHACK_SKIP_AUTO_INSTALL=""`)
+is treated as **unset** and the check still runs.
+
+**What it does not do:**
+
+- Does not affect the existing `update::post_install` hook fired by
+  `amplihack update`.
+- Does not propagate into child tool processes (`claude`, `copilot`, etc.) —
+  inherited only because it is a normal env var, not because `amplihack`
+  re-exports it.
+- Does not change exit codes, stdout output, or any other behaviour besides
+  the self-heal decision.
+
+See: [Self-Heal: Auto-Restage Framework Assets](../features/self-heal-asset-restage.md).
 
 ---
 
