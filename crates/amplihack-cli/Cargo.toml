@@ -12,6 +12,7 @@ doctest = false
 amplihack-hive = { path = "../amplihack-hive" }
 amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
+amplihack-utils = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 clap_complete = "4"

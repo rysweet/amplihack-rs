@@ -4,8 +4,9 @@
 //! including AMPLIHACK_* vars and PATH augmentation. Uses set-based
 //! PATH deduplication instead of error-prone substring matching.
 
+pub mod agent_binary_resolver;
 mod builder;
-mod helpers;
+pub mod helpers;
 
 pub use builder::EnvBuilder;
 pub use helpers::active_agent_binary;

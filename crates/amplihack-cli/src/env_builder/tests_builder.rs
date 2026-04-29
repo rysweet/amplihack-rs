@@ -435,104 +435,82 @@ fn lock_agent_env() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|p| p.into_inner())
 }
 
-/// Issue #441: explicit AMPLIHACK_AGENT_BINARY override beats any runtime
-/// signal — including when copilot/claude/codex env vars are also present.
+/// Issue #489: explicit AMPLIHACK_AGENT_BINARY override (allowlisted value)
+/// beats any other signal.
 #[test]
 fn override_wins_over_runtime_signals() {
     let _guard = lock_agent_env();
     let _snap = EnvSnapshot::scrub_all();
 
-    unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", "custom") };
+    unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
     unsafe { env::set_var("COPILOT_AGENT_SESSION_ID", "abc123") };
-    unsafe { env::set_var("CLAUDECODE", "1") };
-    unsafe { env::set_var("CODEX_HOME", "/x") };
 
-    assert_eq!(active_agent_binary(), "custom");
+    assert_eq!(active_agent_binary(), "claude");
 }
 
-/// Issue #441: COPILOT_AGENT_SESSION_ID alone -> "copilot".
+/// Issue #489: AMPLIHACK_AGENT_BINARY="copilot" returns "copilot".
 #[test]
 fn detects_copilot_via_session_id() {
     let _guard = lock_agent_env();
     let _snap = EnvSnapshot::scrub_all();
 
-    unsafe { env::set_var("COPILOT_AGENT_SESSION_ID", "session-xyz") };
+    unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", "copilot") };
 
     assert_eq!(active_agent_binary(), "copilot");
 }
 
-/// Issue #441: CLAUDECODE set OR any CLAUDE_CODE_* prefix set -> "claude".
+/// Issue #489: AMPLIHACK_AGENT_BINARY="claude" selects claude.
 #[test]
 fn detects_claude_via_claudecode_or_prefix() {
-    // Sub-case 1: CLAUDECODE exact match
-    {
-        let _guard = lock_agent_env();
-        let _snap = EnvSnapshot::scrub_all();
-        unsafe { env::set_var("CLAUDECODE", "1") };
-        assert_eq!(
-            active_agent_binary(),
-            "claude",
-            "CLAUDECODE should select claude"
-        );
-    }
-    // Sub-case 2: CLAUDE_CODE_* prefix match
-    {
-        let _guard = lock_agent_env();
-        let _snap = EnvSnapshot::scrub_all();
-        unsafe { env::set_var("CLAUDE_CODE_SESSION", "x") };
-        assert_eq!(
-            active_agent_binary(),
-            "claude",
-            "CLAUDE_CODE_* prefix should select claude"
-        );
-    }
+    let _guard = lock_agent_env();
+    let _snap = EnvSnapshot::scrub_all();
+    unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    assert_eq!(active_agent_binary(), "claude");
 }
 
-/// Issue #441: CODEX_HOME set OR any CODEX_* prefix set -> "codex".
+/// Issue #489: AMPLIHACK_AGENT_BINARY="codex" selects codex.
 #[test]
 fn detects_codex_via_home_or_prefix() {
-    // Sub-case 1: CODEX_HOME exact match
-    {
-        let _guard = lock_agent_env();
-        let _snap = EnvSnapshot::scrub_all();
-        unsafe { env::set_var("CODEX_HOME", "/opt/codex") };
-        assert_eq!(
-            active_agent_binary(),
-            "codex",
-            "CODEX_HOME should select codex"
-        );
-    }
-    // Sub-case 2: CODEX_* prefix match (not CODEX_HOME)
-    {
-        let _guard = lock_agent_env();
-        let _snap = EnvSnapshot::scrub_all();
-        unsafe { env::set_var("CODEX_SESSION_ID", "x") };
-        assert_eq!(
-            active_agent_binary(),
-            "codex",
-            "CODEX_* prefix should select codex"
-        );
-    }
+    let _guard = lock_agent_env();
+    let _snap = EnvSnapshot::scrub_all();
+    unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", "codex") };
+    assert_eq!(active_agent_binary(), "codex");
 }
 
-/// Issue #441: when no detection vars are set, fall back to "claude" with warn.
+/// Issue #489: when no override and no launcher_context.json, default is
+/// "copilot" (was "claude").
 #[test]
 fn fallback_when_nothing_set() {
     let _guard = lock_agent_env();
     let _snap = EnvSnapshot::scrub_all();
 
-    assert_eq!(active_agent_binary(), "claude");
+    let tmp = tempfile::tempdir().unwrap();
+    let prev = env::current_dir().ok();
+    env::set_current_dir(tmp.path()).unwrap();
+
+    assert_eq!(active_agent_binary(), "copilot");
+
+    if let Some(p) = prev {
+        let _ = env::set_current_dir(p);
+    }
 }
 
-/// Issue #441: empty/whitespace-only override is treated as "not set" and
-/// detection logic proceeds (here: copilot via session id).
+/// Issue #489: empty/whitespace-only override is rejected by the resolver and
+/// the default ("copilot") is used.
 #[test]
 fn empty_override_falls_through_to_detection() {
     let _guard = lock_agent_env();
     let _snap = EnvSnapshot::scrub_all();
 
     unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", "   ") };
-    unsafe { env::set_var("COPILOT_AGENT_SESSION_ID", "session") };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let prev = env::current_dir().ok();
+    env::set_current_dir(tmp.path()).unwrap();
 
     assert_eq!(active_agent_binary(), "copilot");
+
+    if let Some(p) = prev {
+        let _ = env::set_current_dir(p);
+    }
 }

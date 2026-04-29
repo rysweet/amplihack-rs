@@ -54,31 +54,63 @@ class AgentQueryError(RuntimeError):
     """Raised when PM Architect cannot query any supported agent SDK."""
 
 
+def _read_launcher_from_context_file(start: Path) -> str | None:
+    """Walk up from ``start`` for ``.claude/runtime/launcher_context.json``.
+
+    Returns the validated ``launcher`` value, or ``None`` when missing or
+    invalid.
+    """
+    import json
+
+    allowed = {"amplifier", "claude", "codex", "copilot"}
+    cur: Path | None = start.resolve() if start.exists() else None
+    hops = 0
+    while cur is not None and hops < 32:
+        candidate = cur / ".claude" / "runtime" / "launcher_context.json"
+        if candidate.is_file():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+            value = data.get("launcher") if isinstance(data, dict) else None
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in allowed:
+                    return normalized
+            return None
+        if cur.parent == cur:
+            return None
+        cur = cur.parent
+        hops += 1
+    return None
+
+
 def detect_runtime() -> str:
     """Detect which agent runtime is active.
 
+    Resolution precedence:
+      1. ``AMPLIHACK_AGENT_BINARY`` env var (allowlisted: amplifier/claude/codex/copilot)
+      2. ``.claude/runtime/launcher_context.json`` (walked up from cwd)
+      3. Default: ``"copilot"``
+
     Returns:
-        "copilot", "claude", or "unknown"
+        "copilot", "claude", "codex", "amplifier", or "unknown"
     """
-    # 1. Explicit env var (set by amplihack CLI launcher)
+    allowed = {"amplifier", "claude", "codex", "copilot"}
+
+    # 1. Explicit env var (allowlist-validated).
     agent_binary = os.environ.get("AMPLIHACK_AGENT_BINARY", "").strip().lower()
-    if agent_binary in ("copilot", "claude"):
+    if agent_binary in allowed:
         return agent_binary
 
-    # 2. LauncherDetector (reads runtime context file)
-    try:
-        from amplihack.context.adaptive.detector import LauncherDetector
+    # 2. Persisted launcher context (canonical state — survives subprocess
+    #    boundaries without env passthrough).
+    from_file = _read_launcher_from_context_file(Path.cwd())
+    if from_file is not None:
+        return from_file
 
-        return LauncherDetector(Path.cwd()).detect()
-    except Exception:
-        pass
-
-    # 3. Fallback: infer from available SDKs
-    if _COPILOT_SDK_OK and not _CLAUDE_SDK_OK:
-        return "copilot"
-    if _CLAUDE_SDK_OK:
-        return "claude"
-    return "unknown"
+    # 3. Default to copilot when no signal is present (issue #489).
+    return "copilot"
 
 
 async def query_agent(prompt: str, project_root: Path) -> str:
