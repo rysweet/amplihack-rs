@@ -26,6 +26,12 @@ jobs:
           fi
       - name: Recipes — no bare python invocations (issue #248)
         run: scripts/check-recipes-no-python.sh
+      - name: Recipes — PR always opens after successful push (issue #495)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-pr-always-opens.sh
+      - name: Recipes — static guard validation scope (issue #495)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-static-guard-validation-scope.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

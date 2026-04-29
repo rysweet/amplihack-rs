@@ -121,12 +121,24 @@ steps:
     command: |
       set -euo pipefail
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-15 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
-      echo "=== Step 15: Commit and Push ==="
-      echo ""
-      echo "--- Staging Changes ---"
+      echo "=== Step 15: Commit and Push ===" >&2
+      # FIX (#495): commit_result MUST be emitted on every exit path so step-16
+      # (PR creation) can be gated on the actual push outcome. Trap installed
+      # AFTER var init, BEFORE any failing command — reordering produces invalid JSON.
+      if ! command -v jq >/dev/null 2>&1; then
+        echo "ERROR: jq is required by step-15 (commit_result emission)." >&2
+        exit 2
+      fi
+      pushed="false"; sha=""; branch=""; reason="aborted"
+      _emit_commit_result() {
+        jq -nc --arg pushed "$pushed" --arg sha "$sha" --arg branch "$branch" --arg reason "$reason" \
+          '{pushed:$pushed,sha:$sha,branch:$branch,reason:$reason}'
+      }
+      trap _emit_commit_result EXIT
+      branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+      echo "--- Staging Changes ---" >&2
       git add -A
-      echo ""
-      echo "--- Creating Commit ---"
+      echo "--- Creating Commit ---" >&2
       # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
       TASK_DESC="$TASK_DESCRIPTION"
       ISSUE_NUMBER="$ISSUE_NUMBER"
@@ -145,39 +157,53 @@ steps:
         fi
         if [ "$ALT_WORKTREE_COMMITS" -gt 0 ]; then
           echo "INFO: Nothing staged in ${WORKTREE_SETUP_WORKTREE_PATH:-(unset)}, but the" >&2
-          echo "current branch '$CURRENT_BRANCH' is $ALT_WORKTREE_COMMITS commit(s) ahead of" >&2
-          echo "its upstream. The agent likely committed via an alternate worktree on" >&2
-          echo "the same branch; treating as success." >&2
+          echo "current branch '$CURRENT_BRANCH' is $ALT_WORKTREE_COMMITS commit(s) ahead of upstream." >&2
           git --no-pager log --oneline -"$ALT_WORKTREE_COMMITS" >&2
         else
-          echo "ERROR: Nothing staged to commit. The implementation step may have written files" >&2
-          echo "outside the worktree (${WORKTREE_SETUP_WORKTREE_PATH:-(unset)}), or no code changes were produced." >&2
-          echo "This is a hollow-success condition — the workflow completed structurally but" >&2
-          echo "produced no git artifacts. Check that agents created files in the worktree," >&2
-          echo "not in AMPLIHACK_HOME or other locations." >&2
+          echo "ERROR: Nothing staged to commit. Implementation may have written files outside the worktree." >&2
           git --no-pager status >&2
+          reason="nothing-to-commit"
           exit 1
         fi
       fi
-      echo ""
-      echo "--- Pushing to Remote ---"
+      echo "--- Pushing to Remote ---" >&2
       # REL-002: Detect missing upstream tracking branch before rev-list
       if ! git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
         echo "WARNING: No upstream tracking branch configured — skipping push" >&2
+        reason="no-upstream"
         exit 0
       fi
       COMMITS_AHEAD=$(git rev-list --count @{u}..HEAD)
       if [ "$COMMITS_AHEAD" -ne 0 ]; then
-        # REL-001: No stderr suppression on rebase — surface conflict diagnostics
-        # Split into separate statements so set -e catches rebase failures
+        # REL-001: surface rebase conflict diagnostics, no stderr suppression
         git pull --rebase
-        git push
+        # FIX (#495): capture push stderr, redact tokens before reason emission.
+        push_stderr_file=$(mktemp -t step15-push-XXXXXX)
+        # shellcheck disable=SC2064
+        trap "rm -f \"$push_stderr_file\"; _emit_commit_result" EXIT
+        if git push 2>"$push_stderr_file"; then
+          # Mutate `pushed` ONLY after successful push — step-16's gate contract.
+          pushed="true"
+          raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+          if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then
+            sha="$raw_sha"
+          fi
+          reason="pushed"
+        else
+          push_rc=$?
+          sanitized=$(sed -E 's#https://[^@[:space:]]+@#https://REDACTED@#g' "$push_stderr_file" | tr '\n' ' ' | head -c 500)
+          reason="push-failed: ${sanitized}"
+          echo "ERROR: git push failed (exit $push_rc)" >&2
+          cat "$push_stderr_file" >&2
+          exit "$push_rc"
+        fi
       else
-        echo "WARNING: Nothing to push - branch is up to date with remote"
+        echo "WARNING: Nothing to push - branch is up to date with remote" >&2
+        reason="nothing-to-push"
       fi
-      echo ""
-      echo "=== Commit and Push Complete ==="
+      echo "=== Commit and Push Complete ===" >&2
     output: "commit_result"
+    parse_json: true
 
   # ==========================================================================
   # STEP 16: OPEN PULL REQUEST AS DRAFT
@@ -185,7 +211,7 @@ steps:
   # ==========================================================================
   - id: "step-16-create-draft-pr"
     type: "bash"
-    condition: "goal_already_met != 'true'"
+    condition: "goal_already_met != 'true' && commit_result.pushed == 'true'"
     command: |
       set -euo pipefail
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-16 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
