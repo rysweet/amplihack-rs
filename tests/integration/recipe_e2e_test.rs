@@ -47,6 +47,7 @@ fn amplihack_bin() -> PathBuf {
 
 /// Assert that a Command exits with the expected success/failure status.
 fn assert_exit(cmd: &mut Command, expect_success: bool, context: &str) {
+    cmd.env("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
     let status = cmd
         .status()
         .unwrap_or_else(|e| panic!("Failed to run command ({context}): {e}"));
@@ -65,6 +66,7 @@ fn assert_exit(cmd: &mut Command, expect_success: bool, context: &str) {
 
 /// Run a command and return (stdout, stderr, exit_code).
 fn run_output(cmd: &mut Command, context: &str) -> (String, String, bool) {
+    cmd.env("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
     let output = cmd
         .output()
         .unwrap_or_else(|e| panic!("Failed to run command ({context}): {e}"));

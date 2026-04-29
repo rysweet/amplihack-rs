@@ -466,6 +466,7 @@ fn tc_sec_08_fleet_scout_rejects_session_target_with_dollar_sign() {
     let malicious_target = "vm-01:session$(whoami)";
 
     let output = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["fleet", "scout", "--session-target", malicious_target])
         // Redirect stdout/stderr so the test captures them.
         .stdout(Stdio::piped())
@@ -509,6 +510,7 @@ fn tc_sec_09_fleet_scout_rejects_vm_name_with_path_traversal() {
     let malicious_vm = "../../../etc/passwd";
 
     let output = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args([
             "fleet",
             "scout",
@@ -544,6 +546,7 @@ fn tc_sec_10_fleet_watch_rejects_session_with_pipe() {
     let malicious_session = "legit-vm:sess|cat /etc/passwd";
 
     let output = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["fleet", "watch", "--session-target", malicious_session])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -572,6 +575,7 @@ fn tc_sec_11_fleet_adopt_rejects_vm_name_with_semicolon() {
     let malicious_vm = "vm-01;rm -rf /";
 
     let output = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["fleet", "adopt", malicious_vm])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -600,6 +604,7 @@ fn tc_sec_12_fleet_auth_rejects_vm_name_with_backtick() {
     let malicious_vm = "vm`id`";
 
     let output = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["fleet", "auth", malicious_vm])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -641,6 +646,7 @@ fn tc_sec_13_fleet_scout_rejects_save_path_with_null_byte() {
     let malicious_path = "/tmp/ok\x00evil";
 
     let result = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args([
             "fleet",
             "scout",
@@ -707,6 +713,7 @@ fn tc_sec_14_fleet_scout_rejects_all_shell_metacharacters_in_session_name() {
         let target = format!("vm-01:{session_with_metachar}");
 
         let output = Command::new(&bin)
+            .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .args(["fleet", "scout", "--session-target", &target])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -978,6 +985,7 @@ fn tc_sec_21_fleet_status_error_does_not_expose_home_path() {
 
     // Point AZLIN_PATH to a non-existent file to trigger an error.
     let output = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["fleet", "status"])
         .env(
             "AZLIN_PATH",
