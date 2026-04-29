@@ -156,38 +156,43 @@ amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml
 
 ## Control step timeouts
 
-The default-workflow recipes no longer define `timeout_seconds` on agent steps.
-Agent steps (architecture design, code review, implementation) run until
-completion without artificial time limits. Only bash steps that wrap GNU
-coreutils `timeout` retain explicit timeouts — those protect against
-non-interactive shell commands hanging indefinitely, which is a different
-failure mode from agent reasoning.
+Bundled recipes under `amplifier-bundle/recipes/` **do not** set per-step
+timeouts on agent steps. Agent reasoning is highly variable and aborting
+mid-thought corrupts orchestrator state, so agent steps run to completion
+by default ([issue #439](https://github.com/rysweet/amplihack-rs/issues/439)).
+A small number of bash steps that call external network services (e.g.,
+`gh api`, `git fetch`) carry a generous `timeout_seconds: 1800` to guard
+against stuck sockets — those are deliberate availability fences, not work
+bounds.
 
-If you need to re-impose step timeouts (for example, in a CI pipeline with a
-hard wall-clock budget), use `--step-timeout` or `--no-step-timeouts`:
+If you need a hard ceiling across an entire run (for example, a CI job),
+apply one with `--step-timeout`:
 
 ```sh
-# Override every step timeout to 10 minutes
+# Apply a 30-minute ceiling to every step in the recipe
 amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
   -c task_description="Large codebase migration" \
-  --step-timeout 600
-
-# Explicitly disable all step timeouts (equivalent to the new default for agent steps)
-amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
-  -c task_description="Complex architecture redesign" \
-  --no-step-timeouts
+  --step-timeout 1800
 ```
 
-`--no-step-timeouts` is shorthand for `--step-timeout 0`. Both set
-`AMPLIHACK_STEP_TIMEOUT=0` in the child process environment, telling
-`recipe-runner-rs` to ignore any remaining `timeout_seconds` values in YAML.
+To explicitly disable step timeouts for every step (this is already the
+default for agent steps; the flag also clears the 1800s availability floor
+on network-bash steps):
 
-`--step-timeout` and `--no-step-timeouts` cannot be combined in the same
-invocation. The CLI will reject the command with an error if both are provided.
+```sh
+amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
+  -c task_description="Complex architecture redesign" \
+  --step-timeout 0
+```
 
-Omit both flags to use the YAML-defined `timeout_seconds` values as-is. Since
-agent steps in the default-workflow no longer define `timeout_seconds`, this
-means agent steps run without a timeout by default.
+> **Note:** `--step-timeout 0` removes the 1800s availability floor on
+> network-bash steps as well. A stuck `gh api` or `git fetch` can then hang
+> the run indefinitely. Only use it interactively where you can Ctrl-C a
+> stuck run; never in CI.
+
+Omit `--step-timeout` to use the recipe as authored — agent steps run
+without a per-step timeout, and only the network-bash steps that carry
+`timeout_seconds: 1800` will time out (and only on a stuck connection).
 
 The flag sets `AMPLIHACK_STEP_TIMEOUT` in the child process environment.
 See [AMPLIHACK_STEP_TIMEOUT](../reference/environment-variables.md#amplihack_step_timeout)

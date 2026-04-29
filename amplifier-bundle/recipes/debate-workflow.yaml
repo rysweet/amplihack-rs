@@ -160,7 +160,6 @@ steps:
       ```
     output: "framing_draft"
     parse_json: true
-    timeout: 120
 
   - id: "refine-decision-prompt"
     agent: "amplihack:prompt-writer"
@@ -198,7 +197,6 @@ steps:
       - Scoped appropriately given constraints
     output: "framing"
     parse_json: true
-    timeout: 90
 
   # ==========================================================================
   # STEP 2: INITIALIZE PERSPECTIVES (Parallel Subprocess Execution)
@@ -253,7 +251,6 @@ steps:
       ```
     output: "security_perspective"
     parse_json: true
-    timeout: 120
 
   # PERSPECTIVE 2: PERFORMANCE
   - id: "perspective-performance"
@@ -307,7 +304,6 @@ steps:
       ```
     output: "perf_perspective"
     parse_json: true
-    timeout: 120
 
   # PERSPECTIVE 3: SIMPLICITY
   - id: "perspective-simplicity"
@@ -360,7 +356,6 @@ steps:
       ```
     output: "simplicity_perspective"
     parse_json: true
-    timeout: 120
 
   # PERSPECTIVE 4: MAINTAINABILITY
   - id: "perspective-maintainability"
@@ -416,7 +411,6 @@ steps:
       ```
     output: "maintain_perspective"
     parse_json: true
-    timeout: 120
 
   # PERSPECTIVE 5: USER EXPERIENCE
   - id: "perspective-ux"
@@ -471,7 +465,6 @@ steps:
       ```
     output: "ux_perspective"
     parse_json: true
-    timeout: 120
 
   # PERSPECTIVE 6: SCALABILITY
   - id: "perspective-scalability"
@@ -528,7 +521,6 @@ steps:
       ```
     output: "scalability_perspective"
     parse_json: true
-    timeout: 120
 
   # PERSPECTIVE 7: COST
   - id: "perspective-cost"
@@ -587,7 +579,6 @@ steps:
       ```
     output: "cost_perspective"
     parse_json: true
-    timeout: 120
 
   # ==========================================================================
   # STEP 3: DEBATE ROUND 1 - INITIAL POSITIONS
@@ -654,7 +645,6 @@ steps:
       ```
     output: "round1_synthesis"
     parse_json: true
-    timeout: 120
 
   # ==========================================================================
   # STEP 4: DEBATE ROUND 2 - CHALLENGE AND RESPOND
@@ -718,7 +708,6 @@ steps:
       ```
     output: "round2_challenges"
     parse_json: true
-    timeout: 180
 
   # ==========================================================================
   # STEP 5: DEBATE ROUND 3 - FIND COMMON GROUND
@@ -794,7 +783,6 @@ steps:
       ```
     output: "round3_common_ground"
     parse_json: true
-    timeout: 180
 
   # ==========================================================================
   # STEP 6: FACILITATOR SYNTHESIS
@@ -876,7 +864,6 @@ steps:
       }
       ```
     output: "synthesis"
-    timeout: 180
 
   # ==========================================================================
   # STEP 7: DECISION DOCUMENTATION
@@ -987,7 +974,6 @@ steps:
       }
       ```
     output: "decision_record"
-    timeout: 180
 
   - id: "save-decision-record"
     type: "bash"
@@ -1016,7 +1002,6 @@ steps:
       echo "To add to DISCOVERIES.md, run:"
       echo "  echo '- [$DATE] Decision: {{framing.title}}' >> .claude/context/DISCOVERIES.md"
     output: "save_result"
-    timeout: 60
 
   # ==========================================================================
   # STEP 8: IMPLEMENTATION
@@ -1083,7 +1068,6 @@ steps:
       }
       ```
     output: "implementation_result"
-    timeout: 300
 
   # ==========================================================================
   # FINAL OUTPUT

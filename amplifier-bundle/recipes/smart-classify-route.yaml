@@ -59,7 +59,6 @@ steps:
 
   - id: "classify-and-decompose"
     type: "agent"
-    timeout_seconds: 300
     agent: "amplihack:core:architect"
     prompt: |
       === [RECIPE PROGRESS] Step: classify-and-decompose ===

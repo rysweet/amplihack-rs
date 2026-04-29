@@ -154,45 +154,33 @@ amplihack classify "disk cleanup on staging servers"
 
 ## Agent step killed by step timeout
 
-**Symptom:** An agent step (architecture design, large refactoring, complex analysis) fails with a timeout error partway through.
+**Symptom:** An agent step (architecture design, large refactoring, complex analysis) appears to fail mid-thought with a timeout error.
 
-**Cause (pre-fix):** Older recipe YAML files defined conservative `timeout_seconds` values (typically 300s or 600s) on agent steps. These were insufficient for complex tasks requiring extended agent reasoning.
+**Cause:** A user-supplied `--step-timeout` override (or `AMPLIHACK_STEP_TIMEOUT` in the environment) is forcing a per-step ceiling on agent steps. The bundled recipes under `amplifier-bundle/recipes/` no longer set per-step timeouts on agent steps — agent reasoning is highly variable and aborting mid-thought corrupts orchestrator state ([issue #439](https://github.com/rysweet/amplihack-rs/issues/439)). If you are seeing a timeout on an agent step, something outside the recipe is imposing it.
 
-**Current state:** The default-workflow recipes (`workflow-prep.yaml`, `smart-classify-route.yaml`, `smart-execute-routing.yaml`, `smart-validate-summarize.yaml`, `smart-reflect-loop.yaml`) no longer define `timeout_seconds` on agent steps. Agent steps run until completion. If you still see this error, it means either:
-
-1. A **custom recipe** still defines `timeout_seconds` on agent steps — remove the field from those steps.
-2. An external `--step-timeout` override was applied — check your invocation flags.
-
-**Fix for custom recipes:** Remove `timeout_seconds` from agent steps in your YAML:
-
-```yaml
-# Before (agent step with timeout — causes premature kills)
-- id: step-02b
-  type: agent
-  agent: claude
-  prompt: "Design the architecture..."
-  timeout_seconds: 300  # ← Remove this line
-
-# After (agent step runs to completion)
-- id: step-02b
-  type: agent
-  agent: claude
-  prompt: "Design the architecture..."
-```
-
-**Fix for CI environments with wall-clock budgets:** Use `--no-step-timeouts` to explicitly disable timeouts, or `--step-timeout <SECONDS>` to set a generous override:
+**Fix:** Remove or relax the override.
 
 ```sh
-# Disable all step timeouts
-amplihack recipe run recipe.yaml --no-step-timeouts
+# Drop the --step-timeout flag entirely (recommended for agent-heavy work)
+amplihack recipe run recipe.yaml \
+  -c task_description="Complex task"
 
-# Set a generous 30-minute override for all steps
-amplihack recipe run recipe.yaml --step-timeout 1800
+# Or explicitly disable timeouts for the run
+amplihack recipe run recipe.yaml \
+  -c task_description="Very long task" \
+  --step-timeout 0
+
+# Or raise the ceiling to a generous floor (e.g., for a CI guard rail)
+amplihack recipe run recipe.yaml \
+  -c task_description="CI run" \
+  --step-timeout 1800
 ```
 
-See [Control step timeouts](./run-a-recipe.md#control-step-timeouts) for details.
+If `AMPLIHACK_STEP_TIMEOUT` is set in your shell or CI environment, unset it (`unset AMPLIHACK_STEP_TIMEOUT`) or override it on the command line with `--step-timeout 0`.
 
-**Note:** `--step-timeout` and `--no-step-timeouts` override per-step `timeout_seconds` only. They do not affect recipe-level timeouts or the `max_runtime` budget in multitask workstreams. Bash steps that use GNU coreutils `timeout` in their commands are unaffected — those timeouts are enforced by the shell, not the recipe runner.
+**Note:** A handful of bash steps in bundled recipes still carry `timeout_seconds: 1800`. Those are the network-I/O steps (`gh api`, `git fetch`, `curl`) where a stuck socket could hang indefinitely. The 1800-second floor is an availability guardrail, not a work bound — if one of those fires, the underlying network call has hung and the right fix is to investigate the network failure, not to extend the timeout.
+
+**Note:** `--step-timeout` overrides per-step `timeout_seconds` only. It does not affect recipe-level `default_step_timeout` (e.g., `quality-loop.yaml`) or the `max_runtime` budget in multitask workstreams.
 
 ---
 

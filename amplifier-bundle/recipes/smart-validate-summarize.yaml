@@ -34,7 +34,6 @@ steps:
 
   - id: "validate-outside-in-testing"
     type: "agent"
-    timeout_seconds: 300
     condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and 'Development' in task_type and round_1_result"
     agent: "amplihack:core:reviewer"
     prompt: |
@@ -108,7 +107,6 @@ steps:
 
   - id: "summarize"
     type: "agent"
-    timeout_seconds: 300
     condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result"
     agent: "amplihack:core:architect"
     prompt: |

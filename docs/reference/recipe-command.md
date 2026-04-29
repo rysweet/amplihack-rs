@@ -195,7 +195,6 @@ Execute a recipe by delegating to the `recipe-runner-rs` binary.
 ```
 amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
   [--format <FORMAT>] [--working-dir <DIR>] [--step-timeout <SECONDS>]
-  [--no-step-timeouts]
 ```
 
 | Flag | Default | Description |
@@ -206,12 +205,21 @@ amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
 | `--verbose` | false | Print recipe name and dry-run status to stderr |
 | `--format <FORMAT>` | `table` | Output format for results: `table`, `json`, or `yaml` |
 | `--working-dir <DIR>` | `.` | Working directory for step execution |
-| `--step-timeout <SECONDS>` | (none) | Override per-step `timeout_seconds` for all steps. `0` disables all step timeouts. Omit to use YAML-defined timeouts as-is. Cannot be combined with `--no-step-timeouts` |
-| `--no-step-timeouts` | false | Disable all step timeouts. Equivalent to `--step-timeout 0`. Cannot be combined with `--step-timeout` |
+| `--step-timeout <SECONDS>` | (none) | Apply a global per-step timeout ceiling to **every** step in the recipe. Useful for CI guard rails. `0` disables all step timeouts. When omitted, agent steps run without a per-step timeout and bash steps use the YAML-defined `timeout_seconds` only when present |
 
-When both `--step-timeout` and `--no-step-timeouts` are provided, `--no-step-timeouts` takes precedence (timeouts are disabled).
+Before spawning `recipe-runner-rs`, the Rust CLI always injects `AMPLIHACK_HOME` and, when available, `AMPLIHACK_ASSET_RESOLVER` into the child environment. That gives recipes a stable native way to resolve `amplifier-bundle/...` assets without assuming the Python package layout. Additionally, when `--step-timeout` is provided, the CLI sets [`AMPLIHACK_STEP_TIMEOUT`](./environment-variables.md#amplihack_step_timeout) in the child environment so `recipe-runner-rs` can read and apply the override.
 
-Before spawning `recipe-runner-rs`, the Rust CLI always injects `AMPLIHACK_HOME` and, when available, `AMPLIHACK_ASSET_RESOLVER` into the child environment. That gives recipes a stable native way to resolve `amplifier-bundle/...` assets without assuming the Python package layout. Additionally, when `--step-timeout` is provided or `--no-step-timeouts` is set, the CLI sets [`AMPLIHACK_STEP_TIMEOUT`](./environment-variables.md#amplihack_step_timeout) in the child environment so `recipe-runner-rs` can read and apply the override.
+> **No per-step timeouts on agent steps by default.** As of the resolution
+> of [issue #439](https://github.com/rysweet/amplihack-rs/issues/439), the
+> bundled recipes under `amplifier-bundle/recipes/*.yaml` no longer set
+> `timeout:` / `timeout_seconds:` on agent steps. Models routinely think
+> longer than any reasonable per-step timeout, and aborting them
+> mid-thought corrupts orchestrator state. Agent steps now run to
+> completion. To impose a hard ceiling (e.g., for CI), pass
+> `--step-timeout <SECONDS>`. Bash steps may still carry a
+> `timeout_seconds` value, but only when they call external network
+> services (`gh api`, `curl`, `git fetch`, etc.) where a stuck socket
+> could hang indefinitely; in that case the floor is **1800s**.
 
 ```sh
 # Dry run — inspect the plan before executing
@@ -224,20 +232,15 @@ amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
   -c task_description="Fix the failing pagination tests" \
   -c repo_path=/home/user/src/myproject
 
-# Override all step timeouts to 10 minutes
+# Override every step with a 30-minute ceiling (CI guard rail)
 amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
   -c task_description="Large refactoring task" \
-  --step-timeout 600
+  --step-timeout 1800
 
-# Disable all step timeouts (let steps run indefinitely)
+# Disable all step timeouts (default behavior for agent steps; explicit here)
 amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
   -c task_description="Complex migration requiring extended agent time" \
   --step-timeout 0
-
-# Same effect using the convenience flag
-amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
-  -c task_description="Complex migration requiring extended agent time" \
-  --no-step-timeouts
 
 # Output results as JSON
 amplihack recipe run ~/.amplihack/.claude/recipes/verification.yaml \
@@ -326,7 +329,7 @@ A recipe is a YAML file. The top-level document must be a mapping.
 | `condition`   | string  | no       | Expression; step is skipped when false |
 | `output`      | string  | no       | Variable name to store step output |
 | `parse_json`  | bool    | no       | Parse step output as JSON |
-| `timeout`     | integer | no       | Step timeout in seconds |
+| `timeout`     | integer | no       | Step timeout in seconds. **Discouraged on `agent` steps** — agent reasoning is variable and per-step timeouts cause spurious mid-thought aborts (see [issue #439](https://github.com/rysweet/amplihack-rs/issues/439)). Permitted on `bash` steps that perform external network I/O (`gh`, `curl`, `git fetch`); use a generous floor of **1800s** to guard against stuck sockets, not to bound work. Omit otherwise. |
 | `working_dir` | string  | no       | Working directory override for this step |
 | `recipe`      | string  | no       | Sub-recipe path (for `recipe` steps) |
 | `context`     | map     | no       | Context overrides for a sub-recipe step |
@@ -446,7 +449,7 @@ Recipe execution can fail at multiple levels. For diagnosis:
 | Failure | Symptom | See |
 |---|---|---|
 | Runner binary missing | `recipe-runner-rs: command not found` | [Recipe search path](#recipe-search-path) and [Binary Resolution](./binary-resolution.md) |
-| Step timeout | Step killed after `timeout_seconds` | [Recipe Executor Environment](./recipe-executor-environment.md) |
+| Step timeout | Bash step killed after `timeout_seconds` (network-I/O steps only; agent steps no longer carry per-step timeouts) | [Recipe Executor Environment](./recipe-executor-environment.md) |
 | Routing gap (no step runs) | Empty result after execution phase | [Smart-Orchestrator Recovery](../concepts/smart-orchestrator-recovery.md) |
 | Duplicate issues filed | Repeated `gh issue create` on retries | [Issue Deduplication](./issue-dedup.md) |
 | Condition parse error | `condition` field uses unsupported expression | [Agentic Step Patterns](../concepts/agentic-step-patterns.md) |

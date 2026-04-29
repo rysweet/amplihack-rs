@@ -27,7 +27,6 @@ steps:
 
   - id: "reflect-round-1"
     type: "agent"
-    timeout_seconds: 300
     condition: |
       'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result
     agent: "amplihack:core:reviewer"
@@ -80,7 +79,6 @@ steps:
 
   - id: "execute-round-2"
     type: "agent"
-    timeout_seconds: 600
     condition: |
       reflection_1 and ('PARTIAL' in reflection_1 or 'NOT_ACHIEVED' in reflection_1 or 'HOLLOW' in reflection_1)
     agent: "amplihack:core:builder"
@@ -98,7 +96,6 @@ steps:
 
   - id: "reflect-round-2"
     type: "agent"
-    timeout_seconds: 300
     condition: |
       round_2_result and ('PARTIAL' in reflection_1 or 'NOT_ACHIEVED' in reflection_1)
     agent: "amplihack:core:reviewer"
@@ -117,7 +114,6 @@ steps:
 
   - id: "execute-round-3"
     type: "agent"
-    timeout_seconds: 600
     condition: |
       reflection_2 and ('PARTIAL' in reflection_2 or 'NOT_ACHIEVED' in reflection_2)
     agent: "amplihack:core:builder"
@@ -135,7 +131,6 @@ steps:
 
   - id: "reflect-final"
     type: "agent"
-    timeout_seconds: 300
     condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result"
     agent: "amplihack:core:reviewer"
     prompt: |
@@ -154,4 +149,3 @@ steps:
       End with `GOAL_STATUS: ACHIEVED`, `GOAL_STATUS: PARTIAL -- [gaps]`,
       or `GOAL_STATUS: NOT_ACHIEVED -- [reason]`.
     output: "reflection_final"
-
