@@ -1,3 +1,5 @@
+> **Legacy notice:** This document describes the Python `amplihack` implementation and does not apply to `amplihack-rs`.
+
 # Workflow Publish Import Validation Reference
 
 > [Home](../index.md) > Reference > Workflow Publish Import Validation

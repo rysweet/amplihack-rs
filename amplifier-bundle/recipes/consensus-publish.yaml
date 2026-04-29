@@ -129,14 +129,29 @@ steps:
       PR_TITLE=$(printf '%s' "$_TASK_DESC" | tr '\n\r' ' ' | cut -c1-200)
       PR_CREATED=false
       if git remote get-url origin >/dev/null 2>&1; then
+        # FIX (#495): capture gh stderr so we can emit a workflow-command
+        # warning when the push succeeded earlier but PR creation now fails.
+        # Without this, branches get stranded silently. `::` is replaced with
+        # `:_:` to defend against workflow-command injection in stderr.
+        _pr_stderr_file=$(mktemp -t consensus-pr-XXXXXX)
         if gh pr create \
           --title "$PR_TITLE" \
           --body "$PR_BODY" \
-          --label "consensus-validated" 2>/dev/null; then
+          --label "consensus-validated" 2>"$_pr_stderr_file"; then
           PR_CREATED=true
         else
-          echo "PR creation failed" >&2
+          _pr_rc=$?
+          echo "PR creation failed (exit $_pr_rc)" >&2
+          cat "$_pr_stderr_file" >&2
+          # If the prior step9 push succeeded, this is a stranded-branch case
+          # — emit a GitHub Actions workflow-command warning so it's visible
+          # in CI logs. Sanitize `::` to prevent workflow-command injection.
+          if [ "${COMMIT_RESULT_PUSHED:-false}" = "true" ] || [ "${COMMIT_RESULT_PUSHED:-false}" = "True" ]; then
+            _safe_msg=$(sed -E 's/::/:_:/g' "$_pr_stderr_file" | tr '\n' ' ' | head -c 400)
+            echo "::warning title=consensus-publish stranded push::push succeeded (commit_result.pushed=true) but gh pr create failed: ${_safe_msg}" >&2
+          fi
         fi
+        rm -f "$_pr_stderr_file"
       else
         echo "Skipping PR creation — no remote configured" >&2
       fi
@@ -154,4 +169,3 @@ steps:
   # CONSENSUS GATE 5: Expert Panel for PR Review (MANDATORY)
   # Deploy: reviewer, security, optimizer, patterns, tester agents
   # ---------------------------------------------------------------------------
-

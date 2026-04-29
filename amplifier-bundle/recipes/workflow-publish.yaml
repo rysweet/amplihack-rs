@@ -121,12 +121,44 @@ steps:
     command: |
       set -euo pipefail
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-15 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
-      echo "=== Step 15: Commit and Push ==="
-      echo ""
-      echo "--- Staging Changes ---"
+      echo "=== Step 15: Commit and Push ===" >&2
+      echo "" >&2
+
+      # FIX (#495): commit_result MUST be emitted on every exit path so step-16
+      # (PR creation) can be gated on the actual push outcome. The trap-on-EXIT
+      # contract guarantees a strict-shape JSON object with `pushed` as a string
+      # ("true"|"false") regardless of where the script exits. See RETCON_DOCS
+      # §4 for the failure-mode table.
+      #
+      # CONTRACT: This trap MUST be installed AFTER variable initialization but
+      # BEFORE any command that can fail. Reordering produces invalid JSON on
+      # early failures. The static guard does not catch trap-ordering bugs.
+      if ! command -v jq >/dev/null 2>&1; then
+        echo "ERROR: jq is required by step-15 (commit_result emission). Install jq in CI image." >&2
+        exit 2
+      fi
+      pushed="false"
+      sha=""
+      branch=""
+      reason="aborted"
+      _emit_commit_result() {
+        # Use jq -nc --arg for ALL string fields — never printf/heredoc concat
+        # (avoids JSON injection if reason/branch contain quotes or newlines).
+        jq -nc \
+          --arg pushed "$pushed" \
+          --arg sha    "$sha" \
+          --arg branch "$branch" \
+          --arg reason "$reason" \
+          '{pushed:$pushed,sha:$sha,branch:$branch,reason:$reason}'
+      }
+      trap _emit_commit_result EXIT
+
+      branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+
+      echo "--- Staging Changes ---" >&2
       git add -A
-      echo ""
-      echo "--- Creating Commit ---"
+      echo "" >&2
+      echo "--- Creating Commit ---" >&2
       # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
       TASK_DESC="$TASK_DESCRIPTION"
       ISSUE_NUMBER="$ISSUE_NUMBER"
@@ -156,14 +188,16 @@ steps:
           echo "produced no git artifacts. Check that agents created files in the worktree," >&2
           echo "not in AMPLIHACK_HOME or other locations." >&2
           git --no-pager status >&2
+          reason="nothing-to-commit"
           exit 1
         fi
       fi
-      echo ""
-      echo "--- Pushing to Remote ---"
+      echo "" >&2
+      echo "--- Pushing to Remote ---" >&2
       # REL-002: Detect missing upstream tracking branch before rev-list
       if ! git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
         echo "WARNING: No upstream tracking branch configured — skipping push" >&2
+        reason="no-upstream"
         exit 0
       fi
       COMMITS_AHEAD=$(git rev-list --count @{u}..HEAD)
@@ -171,13 +205,40 @@ steps:
         # REL-001: No stderr suppression on rebase — surface conflict diagnostics
         # Split into separate statements so set -e catches rebase failures
         git pull --rebase
-        git push
+        # FIX (#495): capture push stderr, redact tokens before assigning to
+        # `reason` (which is JSON-emitted via jq --arg). Token redaction defends
+        # against accidental credential leak via authenticated remote URLs.
+        push_stderr_file=$(mktemp -t step15-push-XXXXXX)
+        # shellcheck disable=SC2064
+        trap "rm -f \"$push_stderr_file\"; _emit_commit_result" EXIT
+        if git push 2>"$push_stderr_file"; then
+          # Only mutate `pushed` AFTER successful push — this is the contract
+          # that step-16's gate depends on.
+          pushed="true"
+          raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+          if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then
+            sha="$raw_sha"
+          else
+            sha=""
+          fi
+          reason="pushed"
+        else
+          push_rc=$?
+          # Sanitize: strip credentials from authenticated remote URLs.
+          sanitized=$(sed -E 's#https://[^@[:space:]]+@#https://REDACTED@#g' "$push_stderr_file" | tr '\n' ' ' | head -c 500)
+          reason="push-failed: ${sanitized}"
+          echo "ERROR: git push failed (exit $push_rc)" >&2
+          cat "$push_stderr_file" >&2
+          exit "$push_rc"
+        fi
       else
-        echo "WARNING: Nothing to push - branch is up to date with remote"
+        echo "WARNING: Nothing to push - branch is up to date with remote" >&2
+        reason="nothing-to-push"
       fi
-      echo ""
-      echo "=== Commit and Push Complete ==="
+      echo "" >&2
+      echo "=== Commit and Push Complete ===" >&2
     output: "commit_result"
+    parse_json: true
 
   # ==========================================================================
   # STEP 16: OPEN PULL REQUEST AS DRAFT
@@ -185,7 +246,7 @@ steps:
   # ==========================================================================
   - id: "step-16-create-draft-pr"
     type: "bash"
-    condition: "goal_already_met != 'true'"
+    condition: "goal_already_met != 'true' && commit_result.pushed == 'true'"
     command: |
       set -euo pipefail
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-16 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
