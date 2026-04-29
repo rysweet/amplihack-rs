@@ -230,14 +230,17 @@ mod tests {
     }
 
     #[test]
-    fn cascade_with_no_recipe_runner_falls_to_tier3() {
+    fn cascade_with_no_recipe_runner_falls_to_skill_or_markdown() {
         let c = ExecutionTierCascade::new(Some(vec![1, 2, 3]));
         let ctx = serde_json::json!({});
         let r = c.execute(WorkflowType::Default, &ctx);
-        // Without recipe-runner-rs on PATH, tier 1 is unavailable
+        // Without recipe-runner-rs on PATH, tier 1 is unavailable. Skill
+        // execution is now structurally always available (issue #489 — the
+        // resolver guarantees a valid agent binary), so the cascade lands on
+        // tier 2; if the cascade is invoked without tier 2 present it falls
+        // through to tier 3.
         if !c.is_recipe_runner_available() {
-            assert_eq!(r.tier, 3);
-            assert!(r.fallback_count > 0 || r.tier == 3);
+            assert!(r.tier == 2 || r.tier == 3, "unexpected tier {}", r.tier);
         }
     }
 
