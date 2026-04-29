@@ -14,7 +14,7 @@ pub(super) fn resolve_path_from(base_dir: &Path, path: impl AsRef<Path>) -> Resu
     Ok(base_dir.join(path))
 }
 
-pub(super) fn push_unique_path(paths: &mut Vec<PathBuf>, candidate: PathBuf) {
+pub(crate) fn push_unique_path(paths: &mut Vec<PathBuf>, candidate: PathBuf) {
     if !paths.iter().any(|existing| existing == &candidate) {
         paths.push(candidate);
     }

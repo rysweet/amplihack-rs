@@ -18,6 +18,7 @@ pub(super) fn execute_recipe_via_rust(
     dry_run: bool,
     verbose: bool,
     working_dir: &Path,
+    search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
 ) -> Result<RecipeRunResult> {
     let binary = super::binary::find_recipe_runner_binary()?;
@@ -28,6 +29,17 @@ pub(super) fn execute_recipe_via_rust(
         .arg("json")
         .arg("-C")
         .arg(working_dir);
+
+    // Issue #494: forward sub-recipe search dirs as -R flags so
+    // recipe-runner-rs can resolve sub-recipes the same way amplihack
+    // resolves top-level recipes. One -R per non-empty entry, in order.
+    for dir in search_dirs {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        command.arg("-R").arg(dir);
+        tracing::debug!(dir = %dir.display(), "forwarding -R to recipe-runner-rs");
+    }
 
     if dry_run {
         command.arg("--dry-run");

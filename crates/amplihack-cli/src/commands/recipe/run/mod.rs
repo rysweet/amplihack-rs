@@ -7,6 +7,30 @@ mod format;
 use execute::execute_recipe_via_rust;
 use format::format_recipe_run_result;
 
+/// Build the ordered, deduplicated list of sub-recipe search dirs to forward
+/// to recipe-runner-rs as `-R` flags (issue #494).
+///
+/// Order:
+///   1. The recipe's own parent directory (so co-located sub-recipes win).
+///   2. Canonical `recipe_search_dirs(None, working_dir)` output (anchored,
+///      env, and home-based dirs; same list amplihack uses to resolve
+///      top-level recipes).
+///
+/// Duplicates are removed using `push_unique_path` (path equality only — no
+/// canonicalisation here; upstream is responsible for resolving symlinks).
+fn build_search_dirs(recipe_path: &Path, working_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = recipe_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        push_unique_path(&mut dirs, parent.to_path_buf());
+    }
+    for dir in recipe_search_dirs(None, working_dir)? {
+        push_unique_path(&mut dirs, dir);
+    }
+    Ok(dirs)
+}
+
 pub fn run_recipe(
     recipe_path: &str,
     context_args: &[String],
@@ -44,12 +68,14 @@ pub fn run_recipe(
             )?;
         }
     }
+    let search_dirs = build_search_dirs(&validated_path, &abs_working_dir)?;
     let result = match execute_recipe_via_rust(
         &validated_path,
         &merged_context,
         dry_run,
         verbose,
         &abs_working_dir,
+        &search_dirs,
         step_timeout,
     ) {
         Ok(result) => result,
