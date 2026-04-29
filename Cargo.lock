@@ -238,7 +238,7 @@ dependencies = [
  "sha2",
  "shell-words",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
