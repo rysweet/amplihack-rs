@@ -603,6 +603,17 @@ amplihack copilot --print 'run tests'
 `yes`, `please-skip`, etc.). An empty string (`AMPLIHACK_SKIP_AUTO_INSTALL=""`)
 is treated as **unset** and the check still runs.
 
+**Diagnostic on skip-with-mismatch:** when the bypass is active *and* the
+stamp does not match `crate::VERSION`, `amplihack` emits one line on stderr
+before dispatch:
+
+```
+amplihack: self-heal skipped (AMPLIHACK_SKIP_AUTO_INSTALL set); stamp=<old> current=<new>
+```
+
+This makes the "stale assets, intentionally" state visible in CI logs.
+Matching versions produce no output.
+
 **What it does not do:**
 
 - Does not affect the existing `update::post_install` hook fired by
