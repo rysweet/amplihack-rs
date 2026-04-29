@@ -10,6 +10,7 @@ mod manifest;
 pub(crate) mod paths;
 mod settings;
 mod types;
+pub(crate) mod version_stamp;
 
 #[cfg(test)]
 mod tests;
@@ -592,6 +593,9 @@ fn local_install(
     }
     println!("============================================================");
     println!();
+
+    version_stamp::write_installed_version(crate::VERSION)
+        .context("writing installed-version stamp")?;
 
     Ok(())
 }

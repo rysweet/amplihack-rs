@@ -21,6 +21,7 @@ fn amplihack_bin() -> PathBuf {
 
 /// Assert that a Command produces the expected exit status.
 fn assert_exit(cmd: &mut Command, expect_success: bool) {
+    cmd.env("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
     let status = cmd
         .status()
         .unwrap_or_else(|e| panic!("Failed to run command: {}", e));

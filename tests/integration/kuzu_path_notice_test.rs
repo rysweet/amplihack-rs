@@ -64,6 +64,7 @@ fn index_code_surfaces_legacy_kuzu_path_notice() {
     write_sample_blarify_json(&input);
 
     let output = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args([
             "index-code",
             input.to_str().unwrap(),
@@ -100,6 +101,7 @@ fn query_code_json_keeps_stdout_clean_when_using_legacy_kuzu_path_flag() {
     write_sample_blarify_json(&input);
 
     let index = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args([
             "index-code",
             input.to_str().unwrap(),
@@ -116,6 +118,7 @@ fn query_code_json_keeps_stdout_clean_when_using_legacy_kuzu_path_flag() {
     );
 
     let output = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .current_dir(dir.path())
         .args([
             "query-code",

@@ -21,6 +21,7 @@ fn run_cmd(args: &[&str]) -> (String, String, bool) {
     }
     let output = Command::new(&bin)
         .args(args)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .output()
         .expect("failed to run binary");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();

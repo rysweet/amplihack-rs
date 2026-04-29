@@ -66,6 +66,7 @@ fn require_binary() -> PathBuf {
 fn launch_help_documents_skip_update_check_flag() {
     let bin = require_binary();
     let output = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["launch", "--help"])
         .output()
         .expect("failed to run amplihack launch --help");
@@ -126,6 +127,7 @@ fn launch_with_skip_update_check_exits_zero_with_stub_tool() {
     );
 
     let status = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["launch", "--skip-update-check"])
         .env("PATH", &new_path)
         .env("AMPLIHACK_NONINTERACTIVE", "1")
@@ -178,6 +180,7 @@ fn launch_without_skip_update_check_is_not_an_error() {
     );
 
     let output = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .arg("launch")
         .env("PATH", &new_path)
         .env("AMPLIHACK_NONINTERACTIVE", "1")
@@ -232,6 +235,7 @@ fn launch_with_skip_update_check_completes_without_npm_subprocess_overhead() {
 
     let start = std::time::Instant::now();
     let _status = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["launch", "--skip-update-check"])
         .env("PATH", &isolated_path)
         .env("AMPLIHACK_NONINTERACTIVE", "1")
@@ -259,6 +263,7 @@ fn launch_with_skip_update_check_completes_without_npm_subprocess_overhead() {
 fn amplihack_launch_help_shows_skip_update_check() {
     let bin = require_binary();
     let output = Command::new(&bin)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["launch", "--help"])
         .output()
         .expect("failed to run amplihack launch --help");
