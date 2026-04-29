@@ -26,7 +26,6 @@ steps:
 
   - id: "handle-qa"
     type: "agent"
-    timeout_seconds: 300
     condition: "'Q&A' in task_type"
     agent: "amplihack:core:analyzer"
     prompt: |
@@ -47,7 +46,6 @@ steps:
 
   - id: "handle-ops-agent"
     type: "agent"
-    timeout_seconds: 300
     condition: "'Operations' in task_type"
     agent: "amplihack:core:builder"
     prompt: |

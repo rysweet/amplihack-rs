@@ -363,7 +363,6 @@ steps:
           verify_tertiary_guarantee: "..."
       ```
     output: "cascade_design"
-    timeout: 120
 
   # ════════════════════════════════════════════════════════════════════════════
   # TERTIARY VERIFICATION GATE (Mandatory)
@@ -442,7 +441,6 @@ steps:
         verification_proof: "How we know this will never fail"
       ```
     output: "tertiary_verification"
-    timeout: 90
 
   # ════════════════════════════════════════════════════════════════════════════
   # STEP 2: ATTEMPT PRIMARY APPROACH (Original Step 2)
@@ -507,7 +505,6 @@ steps:
         fallback_reason: "Why we need to fall back to SECONDARY"
       ```
     output: "primary_result"
-    timeout: 180
 
   # ════════════════════════════════════════════════════════════════════════════
   # STEP 3: ATTEMPT SECONDARY APPROACH (Original Step 3)
@@ -579,7 +576,6 @@ steps:
         fallback_reason: "Why we need TERTIARY"
       ```
     output: "secondary_result"
-    timeout: 90
 
   # ════════════════════════════════════════════════════════════════════════════
   # STEP 4: ATTEMPT TERTIARY APPROACH (Original Step 4)
@@ -654,7 +650,6 @@ steps:
 
       **Execute the TERTIARY guaranteed completion now. YOU MUST SUCCEED.**
     output: "tertiary_result"
-    timeout: 60
 
   # ════════════════════════════════════════════════════════════════════════════
   # STEP 5: REPORT DEGRADATION (Original Step 5)
@@ -771,7 +766,6 @@ steps:
         total_execution_time_ms: N
       ```
     output: "degradation_report"
-    timeout: 60
 
   # ════════════════════════════════════════════════════════════════════════════
   # STEP 6: LOG CASCADE METRICS (Original Step 6)
@@ -852,7 +846,6 @@ steps:
         metrics_entry: {full JSON entry that was logged}
       ```
     output: "metrics_result"
-    timeout: 60
 
   # ════════════════════════════════════════════════════════════════════════════
   # STEP 7: CONTINUOUS OPTIMIZATION (Original Step 7)
@@ -953,7 +946,6 @@ steps:
           - "Immediate action 2"
       ```
     output: "optimization_recommendations"
-    timeout: 90
 
   # ════════════════════════════════════════════════════════════════════════════
   # INTEGRATION TESTING VERIFICATION
@@ -1102,7 +1094,6 @@ steps:
           - ...
       ```
     output: "testing_verification"
-    timeout: 60
 
   # ════════════════════════════════════════════════════════════════════════════
   # FINAL OUTPUT ASSEMBLY
@@ -1195,7 +1186,6 @@ steps:
       ═══════════════════════════════════════════════════════════════════
       ```
     output: "final_output"
-    timeout: 60
 
 # ════════════════════════════════════════════════════════════════════════════════
 # WORKFLOW EXECUTION SUMMARY

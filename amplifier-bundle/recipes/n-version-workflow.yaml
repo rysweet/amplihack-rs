@@ -243,7 +243,6 @@ steps:
       }
       EOF
     output: "isolation_setup"
-    timeout: 60
 
   # ==========================================================================
   # STEP 3: VERSION 1 - CONSERVATIVE APPROACH
@@ -1307,7 +1306,6 @@ steps:
       echo "Analysis document generated at: $ANALYSIS_FILE"
       cat "$ANALYSIS_FILE"
     output: "analysis_document"
-    timeout: 60
 
   # ==========================================================================
   # STEP 23: FINAL OUTPUT AND WORKFLOW INTEGRATION
