@@ -42,6 +42,7 @@ pub mod nesting;
 pub mod resolve_bundle_asset;
 pub mod runtime_assets;
 pub mod rust_trial;
+pub mod self_heal;
 pub mod session_tracker;
 pub mod settings_manager;
 pub mod signals;

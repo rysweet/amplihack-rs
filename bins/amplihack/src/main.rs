@@ -22,6 +22,12 @@ fn main() {
     ) {
         return;
     }
+
+    if let Err(e) = amplihack_cli::self_heal::ensure_assets_match_binary_version(&args) {
+        eprintln!("amplihack: self-heal failed: {e:#}");
+        std::process::exit(1);
+    }
+
     let cli = Cli::parse_from(args);
 
     if let Err(e) = commands::dispatch(cli.command) {
