@@ -10,7 +10,7 @@ and hive deployments in amplihack-rs.
 | Variable                    | Type     | Default             | Description                            |
 |-----------------------------|----------|---------------------|----------------------------------------|
 | `AMPLIHACK_AGENT_MODEL`     | `String` | `claude-sonnet-4-5` | Default LLM model for agents           |
-| `AMPLIHACK_AGENT_BINARY`    | `String` | auto-detected       | Path to the AI tool binary             |
+| `AMPLIHACK_AGENT_BINARY`    | `String` | `copilot`           | Active AI binary; precedence: env var → `<repo>/.claude/runtime/launcher_context.json` → `copilot`. Allowlist: `claude` \| `copilot` \| `codex` \| `amplifier`. See [Active Agent Binary](./active-agent-binary.md). |
 | `AMPLIHACK_MEMORY_BACKEND`  | `String` | `cognitive`         | Memory backend: `cognitive`, `hierarchical`, `memory` |
 | `AMPLIHACK_MEMORY_TOPOLOGY` | `String` | `single`            | Memory topology: `single`, `distributed` |
 | `AMPLIHACK_MEMORY_STORAGE_PATH` | `String` | `~/.amplihack/memory.db` | Memory storage path          |
@@ -201,8 +201,22 @@ Configuration is resolved in this order (highest to lowest priority):
 4. **User config** — `~/.amplihack/config.toml`
 5. **Compiled defaults** — hardcoded in the crate
 
+## Agent Binary Resolution
+
+The active agent binary (`claude` | `copilot` | `codex` | `amplifier`) follows its **own** three-step precedence, distinct from the general config precedence above:
+
+1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI / testing / back-compat)
+2. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (canonical persisted state, written by every `amplihack <tool>` launch)
+3. Built-in default: **`copilot`**
+
+This precedence is implemented once in `amplihack_utils::agent_binary::resolve(&cwd)` and consumed by every Rust read site. Python helpers in `amplifier-bundle/skills/` follow the same rules. The persisted file lets the value survive `tmux` and detached subprocess boundaries that strip env vars.
+
+See [Active Agent Binary](./active-agent-binary.md) for the full algorithm, allowlist, and security notes, and [Agent Binary Routing](../concepts/agent-binary-routing.md) for the architectural rationale.
+
 ## Related
 
 - [Environment Variables](./environment-variables.md) — Full env var reference
+- [Active Agent Binary](./active-agent-binary.md) — Resolver API, allowlist, hook resolution
+- [Agent Binary Routing](../concepts/agent-binary-routing.md) — Architecture and propagation model
 - [Memory Backend](./memory-backend.md) — Backend selection details
 - [Hive Orchestration](../concepts/hive-orchestration.md) — Hive architecture

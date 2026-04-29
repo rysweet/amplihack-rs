@@ -70,12 +70,13 @@ impl ExecutionTierCascade {
     /// Check if skill-based workflow execution is available.
     ///
     /// Tier 2 uses the agent binary's skill system to execute workflow
-    /// steps through LLM-driven skill invocations. Available when an
-    /// agent binary is configured via AMPLIHACK_AGENT_BINARY.
+    /// steps through LLM-driven skill invocations. Always available now that
+    /// the agent binary resolver guarantees a valid built-in default — but
+    /// callers may opt out by leaving the resolver to fall back to the
+    /// configured launcher and cwd.
     pub fn is_skill_execution_available(&self) -> bool {
-        std::env::var("AMPLIHACK_AGENT_BINARY")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        amplihack_utils::agent_binary::resolve(&cwd).is_ok()
     }
 
     /// Execute a workflow through the cascade.
@@ -229,14 +230,17 @@ mod tests {
     }
 
     #[test]
-    fn cascade_with_no_recipe_runner_falls_to_tier3() {
+    fn cascade_with_no_recipe_runner_falls_to_skill_or_markdown() {
         let c = ExecutionTierCascade::new(Some(vec![1, 2, 3]));
         let ctx = serde_json::json!({});
         let r = c.execute(WorkflowType::Default, &ctx);
-        // Without recipe-runner-rs on PATH, tier 1 is unavailable
+        // Without recipe-runner-rs on PATH, tier 1 is unavailable. Skill
+        // execution is now structurally always available (issue #489 — the
+        // resolver guarantees a valid agent binary), so the cascade lands on
+        // tier 2; if the cascade is invoked without tier 2 present it falls
+        // through to tier 3.
         if !c.is_recipe_runner_available() {
-            assert_eq!(r.tier, 3);
-            assert!(r.fallback_count > 0 || r.tier == 3);
+            assert!(r.tier == 2 || r.tier == 3, "unexpected tier {}", r.tier);
         }
     }
 
@@ -277,12 +281,13 @@ mod tests {
     }
 
     #[test]
-    fn skill_execution_unavailable_without_env() {
-        // Without AMPLIHACK_AGENT_BINARY, tier 2 should not be available
+    fn skill_execution_always_available_via_resolver_default() {
+        // The resolver returns a built-in default ("copilot") even when no
+        // env var or launcher_context is present, so tier 2 is always
+        // structurally available — its execution may still no-op if the
+        // configured binary is missing on PATH.
         let c = ExecutionTierCascade::default();
-        if std::env::var("AMPLIHACK_AGENT_BINARY").is_err() {
-            assert!(!c.is_skill_execution_available());
-        }
+        assert!(c.is_skill_execution_available());
     }
 
     #[test]

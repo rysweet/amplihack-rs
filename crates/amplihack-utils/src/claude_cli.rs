@@ -105,11 +105,14 @@ fn home_dir() -> Option<PathBuf> {
 ///
 /// Search order:
 /// 1. `AMPLIHACK_CLAUDE_BINARY_PATH` env var (explicit override).
-/// 2. `AMPLIHACK_AGENT_BINARY` env var (runtime launcher override).
-/// 3. System `PATH` (via `which`/`where.exe`).
-/// 4. Fallback: `~/.npm-global/bin/claude`.
+/// 2. System `PATH` (via `which`/`where.exe`).
+/// 3. Fallback: `~/.npm-global/bin/claude`.
 ///
 /// Returns `None` if the binary is not found in any location.
+///
+/// Note: the agent-binary identifier (claude/copilot/codex/amplifier) is
+/// resolved separately via [`crate::agent_binary::resolve`]; that value is a
+/// short name, not a filesystem path, and is not consulted here.
 ///
 /// # Examples
 ///
@@ -121,7 +124,7 @@ fn home_dir() -> Option<PathBuf> {
 /// }
 /// ```
 pub fn get_claude_cli_path() -> Option<PathBuf> {
-    // 1. Explicit override
+    // 1. Explicit override (full path to the claude binary).
     if let Ok(p) = env::var("AMPLIHACK_CLAUDE_BINARY_PATH") {
         let path = PathBuf::from(&p);
         if path.is_file() {
@@ -129,20 +132,12 @@ pub fn get_claude_cli_path() -> Option<PathBuf> {
         }
     }
 
-    // 2. Runtime launcher override
-    if let Ok(p) = env::var("AMPLIHACK_AGENT_BINARY") {
-        let path = PathBuf::from(&p);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-
-    // 3. System PATH search
+    // 2. System PATH search
     if let Some(p) = which_claude() {
         return Some(p);
     }
 
-    // 4. Fallback: ~/.npm-global/bin/claude
+    // 3. Fallback: ~/.npm-global/bin/claude
     if let Some(bin_dir) = npm_global_bin() {
         let candidate = bin_dir.join("claude");
         if candidate.is_file() {

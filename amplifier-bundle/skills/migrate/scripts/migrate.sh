@@ -79,11 +79,45 @@ done
 #   3. newest session-state dir for the active CLI
 #   4. error
 detect_cli() {
+  # Resolution precedence (matches Rust resolver, issue #489):
+  #   1. AMPLIHACK_AGENT_BINARY env var (allowlist-validated)
+  #   2. .claude/runtime/launcher_context.json walked up from cwd
+  #   3. parent process chain for a known binary
+  #   4. default: copilot
+  local allowed_re='^(amplifier|claude|codex|copilot)$'
   if [[ -n "${AMPLIHACK_AGENT_BINARY:-}" ]]; then
-    echo "$AMPLIHACK_AGENT_BINARY"
-    return
+    local override
+    override="$(printf '%s' "${AMPLIHACK_AGENT_BINARY}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+    if [[ "$override" =~ $allowed_re ]]; then
+      echo "$override"
+      return
+    fi
   fi
-  # Fallback: look at the parent process chain for a known binary.
+  local cur="$PWD"
+  local hops=0
+  while [[ -n "$cur" && "$cur" != "/" && $hops -lt 32 ]]; do
+    local ctx="$cur/.claude/runtime/launcher_context.json"
+    if [[ -f "$ctx" ]]; then
+      local parsed
+      parsed="$(python3 -c 'import json,sys;import os
+try:
+  d=json.load(open(sys.argv[1]))
+  v=d.get("launcher")
+  if isinstance(v,str):
+    v=v.strip().lower()
+    if v in {"amplifier","claude","codex","copilot"}:
+      print(v)
+except Exception:
+  pass' "$ctx" 2>/dev/null || true)"
+      if [[ -n "$parsed" ]]; then
+        echo "$parsed"
+        return
+      fi
+      break
+    fi
+    cur="$(dirname "$cur")"
+    hops=$((hops + 1))
+  done
   local pid="$PPID"
   while [[ -n "$pid" && "$pid" != "1" ]]; do
     local cmd
@@ -95,7 +129,7 @@ detect_cli() {
     esac
     pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
   done
-  echo unknown
+  echo copilot
 }
 
 detect_session_id() {

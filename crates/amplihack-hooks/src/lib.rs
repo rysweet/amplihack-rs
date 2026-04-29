@@ -31,6 +31,8 @@ pub mod workflow_classification;
 /// Fingerprint-based GitHub issue deduplication (R1).
 pub mod issue_dedup;
 
+/// Per-binary hook resolution: hard-error when active binary lacks required hook.
+pub mod binary_hook_resolver;
 /// Copilot stop handler utilities (continuation, lock cleanup, decision log).
 pub mod copilot_stop_handler;
 /// Hook file installation verification.
