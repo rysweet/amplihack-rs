@@ -124,10 +124,13 @@ pub fn build_trial_env(trial_home: &Path) -> HashMap<String, String> {
         }
     }
 
-    // Forward AMPLIHACK_AGENT_BINARY if set
-    if let Ok(val) = std::env::var("AMPLIHACK_AGENT_BINARY") {
-        env.insert("AMPLIHACK_AGENT_BINARY".to_string(), val);
-    }
+    // Forward the resolved agent binary so subprocesses see it explicitly,
+    // even when their cwd lacks a launcher_context.json. Resolver returns the
+    // canonical (allowlisted, lowercased) name; falls back to "copilot".
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let resolved = amplihack_utils::agent_binary::resolve(&cwd)
+        .unwrap_or_else(|_| amplihack_utils::agent_binary::DEFAULT_BINARY.to_string());
+    env.insert("AMPLIHACK_AGENT_BINARY".to_string(), resolved);
 
     env
 }

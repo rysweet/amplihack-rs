@@ -42,30 +42,50 @@ These variables are injected into every child process launched by `amplihack`. T
 ### AMPLIHACK_AGENT_BINARY
 
 **Type:** string
-**Values:** `claude` | `copilot` | `codex` | `amplifier`
-**Set by:** `EnvBuilder::with_agent_binary()`
+**Allowed values:** `claude` | `copilot` | `codex` | `amplifier` (case-insensitive, exact match after trim)
+**Default:** `copilot`
+**Set by:** `EnvBuilder::with_agent_binary()` (as a back-compat read-through cache)
+**Read by:** `amplihack_utils::agent_binary::resolve()` (precedence step 1)
 
-Identifies which CLI binary was used to start the current session. Downstream consumers — the recipe runner, hooks, and sub-agents — read this variable to know which tool to invoke when they need to spawn a new AI session.
+Identifies which CLI binary the current session should use when spawning new AI sessions. As of the agent-binary-resolver refactor, this variable is **no longer the source of truth** — it is one of three precedence sources consulted by the shared resolver:
+
+1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat)
+2. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (canonical persisted state)
+3. Built-in default: **`copilot`**
+
+The launcher continues to write this variable to subprocess environments so that external consumers (notably `rysweet/amplihack-recipe-runner`) that have not yet migrated to the file-based resolver continue to work. New code inside `amplihack-rs` should call `amplihack_utils::agent_binary::resolve(&cwd)` instead of reading the env var directly.
+
+#### Validation
+
+Values are normalized (trim, lowercase) and matched against the allowlist `{claude, copilot, codex, amplifier}`. Values that contain `/`, `\`, `..`, null bytes, whitespace, control characters, or exceed 32 bytes are **rejected**. On rejection the resolver emits a structured `tracing::warn!` and falls through to the next precedence source.
 
 ```sh
-# Start a Claude session
-amplihack claude
-
-# Inside Claude Code hooks, the recipe runner sees:
-echo $AMPLIHACK_AGENT_BINARY
-# claude
-
-# Start a Copilot session
+# Start a Copilot session (the new default)
 amplihack copilot
 
-# Inside hooks:
+# Inside hooks, recipe steps, sub-agents:
 echo $AMPLIHACK_AGENT_BINARY
 # copilot
+
+# Explicit override (CI, testing, manual selection)
+AMPLIHACK_AGENT_BINARY=claude amplihack recipe run smart-orchestrator -c task_description="..."
+
+# Invalid values are rejected and the resolver falls through
+AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack copilot
+# warn: rejected AMPLIHACK_AGENT_BINARY (failed allowlist); falling back to launcher_context.json
 ```
 
-**Why it exists:** The recipe runner is agent-agnostic; it must call back into whatever tool launched it. Without this variable, the runner would have to guess the binary name or require manual configuration. See [Agent Binary Routing](../concepts/agent-binary-routing.md) for the full rationale.
+#### Why the precedence order
 
-**Python parity:** Corresponds to `AMPLIHACK_AGENT_BINARY` set by the Python launcher in `amplihack/cli/launch.py`.
+- **Env var first** preserves the established escape hatch for CI/testing and lets external recipe-runner builds keep working unchanged.
+- **`launcher_context.json` second** ensures that once a user runs `amplihack copilot` in a repo, every subsequent subprocess — even ones launched many hops away through `tmux`, sub-recipes, or detached hooks — picks up `copilot` without depending on env passthrough.
+- **`copilot` default last** matches the project's current preferred runtime and removes the prior implicit `claude` assumption.
+
+**Why it exists:** Recipe runner, hooks, and sub-agents are agent-agnostic and must call back into whatever tool the user actually launched. See [Active Agent Binary](./active-agent-binary.md) for the full algorithm and [Agent Binary Routing](../concepts/agent-binary-routing.md) for the architectural rationale.
+
+**Python parity:** Python skill scripts (`amplifier-bundle/skills/pm-architect/scripts/agent_query.py`, `delegate_response.py`) implement the **same** three-step precedence and **same** allowlist; `agent_query.py::detect_runtime()` is the canonical Python entry point and is reused by `delegate_response.py`. The shell helper at `amplifier-bundle/skills/migrate/scripts/migrate.sh` re-implements the same algorithm with a `case` statement allowlist. The active binary is therefore consistent across Rust, Python, and shell code paths.
+
+**Existing `claude` users:** repos that already have `.claude/runtime/launcher_context.json` with `"launcher": "claude"` continue to resolve to `claude` automatically — the file (precedence step 2) wins over the new `copilot` default. No migration action is required.
 
 ---
 
@@ -292,23 +312,24 @@ These variables are set by the recipe executor (`amplihack recipe run`) in every
 
 Overrides the `timeout_seconds` value defined in individual recipe steps. When set, every step in the recipe uses this value instead of its YAML-defined timeout. A value of `"0"` disables step timeouts entirely, allowing steps to run indefinitely.
 
-This variable is only present in the child environment when the user passes `--step-timeout` to `amplihack recipe run`. When omitted, YAML-defined `timeout_seconds` values apply as-is.
+This variable is only present in the child environment when the user passes `--step-timeout` or `--no-step-timeouts` to `amplihack recipe run`. When neither flag is provided, YAML-defined `timeout_seconds` values apply as-is (though the default-workflow agent steps no longer define `timeout_seconds`).
 
 ```sh
 # Override all step timeouts to 10 minutes
 amplihack recipe run recipe.yaml --step-timeout 600
 # Child process sees: AMPLIHACK_STEP_TIMEOUT=600
 
-# Disable all step timeouts
+# Disable all step timeouts (two equivalent forms)
 amplihack recipe run recipe.yaml --step-timeout 0
+amplihack recipe run recipe.yaml --no-step-timeouts
 # Child process sees: AMPLIHACK_STEP_TIMEOUT=0
 
-# No override — YAML timeouts apply
+# No override — YAML timeouts apply (agent steps have none by default)
 amplihack recipe run recipe.yaml
 # AMPLIHACK_STEP_TIMEOUT is NOT set in child environment
 ```
 
-**Why it exists:** Long-running agent steps (architecture design, large refactoring) can exceed the conservative `timeout_seconds` defaults in recipe YAML files. Rather than requiring users to edit YAML files, this flag provides a runtime override. The env var approach is forward-compatible — `recipe-runner-rs` can adopt it independently without CLI changes.
+**Why it exists:** The default-workflow recipes no longer define `timeout_seconds` on agent steps, so agent steps run to completion without artificial time limits. This variable provides an opt-in escape hatch for CI environments that need wall-clock budgets. The env var approach is forward-compatible — `recipe-runner-rs` can adopt it independently without CLI changes.
 
 **Security note:** The value is always a `u64` rendered as a string. No shell metacharacters are possible. The CLI rejects non-numeric input at parse time via clap's type enforcement.
 

@@ -102,8 +102,8 @@ pub fn topic_slug(topic: &str) -> String {
 pub struct KnowledgeBuilderConfig {
     /// The topic to research.
     pub topic: String,
-    /// Agent command (e.g. `"claude"`). Falls back to `AMPLIHACK_AGENT_BINARY`
-    /// environment variable, then to `"claude"`.
+    /// Agent command (e.g. `"copilot"`). Resolved from
+    /// [`crate::agent_binary::resolve`] when not explicitly supplied.
     pub agent_cmd: String,
     /// Root directory under which topic-specific output is placed.
     pub output_base: PathBuf,
@@ -112,16 +112,20 @@ pub struct KnowledgeBuilderConfig {
 impl KnowledgeBuilderConfig {
     /// Create a config with sensible defaults.
     ///
-    /// `topic` is trimmed; `agent_cmd` is read from the environment if `None`.
+    /// `topic` is trimmed; `agent_cmd` is resolved via
+    /// [`crate::agent_binary::resolve`] when not explicitly supplied — env
+    /// override → `launcher_context.json` → `"copilot"` default.
     pub fn new(
         topic: impl Into<String>,
         agent_cmd: Option<String>,
         output_base: Option<PathBuf>,
     ) -> Self {
         let topic = topic.into().trim().to_string();
-        let agent_cmd = agent_cmd
-            .or_else(|| std::env::var("AMPLIHACK_AGENT_BINARY").ok())
-            .unwrap_or_else(|| "claude".into());
+        let agent_cmd = agent_cmd.unwrap_or_else(|| {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            crate::agent_binary::resolve(&cwd)
+                .unwrap_or_else(|_| crate::agent_binary::DEFAULT_BINARY.to_string())
+        });
         let output_base = output_base.unwrap_or_else(|| {
             std::env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from("."))

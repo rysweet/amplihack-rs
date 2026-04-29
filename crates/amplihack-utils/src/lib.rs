@@ -24,6 +24,8 @@
 //! - [`bundle_generator`] — Agent bundle generation, packaging, and distribution
 //! - [`docker_manager`] — Docker container management for isolated execution
 
+/// Single source of truth for resolving the active agent binary identifier.
+pub mod agent_binary;
 pub mod bundle_generator;
 pub mod claude_cli;
 pub mod claude_md;

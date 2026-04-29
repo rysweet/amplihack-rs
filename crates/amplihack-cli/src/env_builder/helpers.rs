@@ -2,60 +2,26 @@ use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
 
-const CLAUDE_PREFIX: &str = "CLAUDE_CODE_";
-const CODEX_PREFIX: &str = "CODEX_";
-
-fn env_nonempty(key: &str) -> bool {
-    matches!(env::var(key), Ok(v) if !v.trim().is_empty())
-}
-
-fn any_prefix_nonempty(prefix: &str) -> bool {
-    for (k, v) in env::vars_os() {
-        let Some(k) = k.to_str() else { continue };
-        if k.starts_with(prefix)
-            && let Some(v) = v.to_str()
-            && !v.trim().is_empty()
-        {
-            return true;
+/// Resolves which agent binary identifier the current process is operating
+/// under. Delegates to [`amplihack_utils::agent_binary::resolve`], which
+/// applies the precedence:
+///
+/// 1. `AMPLIHACK_AGENT_BINARY` env var (explicit override).
+/// 2. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json`.
+/// 3. Built-in default `"copilot"`.
+///
+/// Always returns an allowlisted name (`claude`, `copilot`, `codex`, or
+/// `amplifier`). Unknown / dangerous overrides silently fall through to the
+/// next layer — they never reach `Command::new`.
+pub fn active_agent_binary() -> String {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    match amplihack_utils::agent_binary::resolve(&cwd) {
+        Ok(name) => name,
+        Err(err) => {
+            tracing::warn!(error = %err, "agent binary resolver failed; using built-in default");
+            amplihack_utils::agent_binary::DEFAULT_BINARY.to_string()
         }
     }
-    false
-}
-
-/// Resolves which agent binary identifier the current process is operating under.
-///
-/// Detection priority:
-/// 1. `AMPLIHACK_AGENT_BINARY` (non-empty after trim) — explicit override.
-/// 2. `COPILOT_AGENT_SESSION_ID` (non-empty) → `"copilot"`.
-/// 3. `CLAUDECODE` or any `CLAUDE_CODE_*` env var (non-empty) → `"claude"`.
-/// 4. `CODEX_HOME` or any `CODEX_*` env var (non-empty) → `"codex"`.
-/// 5. Fallback → emit a warning and return `"claude"`.
-///
-/// The override value is **untrusted user input** — callers must allowlist or
-/// otherwise validate it before using it as a `Command::new` target.
-pub fn active_agent_binary() -> String {
-    if let Ok(value) = env::var("AMPLIHACK_AGENT_BINARY")
-        && !value.trim().is_empty()
-    {
-        return value;
-    }
-
-    if env_nonempty("COPILOT_AGENT_SESSION_ID") {
-        return "copilot".to_string();
-    }
-
-    if env_nonempty("CLAUDECODE") || any_prefix_nonempty(CLAUDE_PREFIX) {
-        return "claude".to_string();
-    }
-
-    if env_nonempty("CODEX_HOME") || any_prefix_nonempty(CODEX_PREFIX) {
-        return "codex".to_string();
-    }
-
-    tracing::warn!(
-        "AMPLIHACK_AGENT_BINARY not set; defaulting to 'claude'. This usually means a subprocess was launched outside the amplihack CLI dispatcher."
-    );
-    "claude".to_string()
 }
 
 pub(super) fn find_asset_resolver_binary() -> Option<PathBuf> {

@@ -117,15 +117,28 @@ pub fn completion(prompt: &str) -> Result<String, LlmClientError> {
 }
 
 /// Resolve the binary name for a given launcher type.
+///
+/// Delegates the AMPLIHACK_AGENT_BINARY → launcher_context.json → "copilot"
+/// precedence to [`amplihack_utils::agent_binary::resolve`]. The launcher
+/// argument only matters when the resolver returns the built-in default and
+/// the caller already knows which session marker it observed.
 fn resolve_binary(launcher: &LauncherType) -> String {
-    // Prefer the explicit env var if set.
-    if let Ok(bin) = env::var("AMPLIHACK_AGENT_BINARY") {
-        return bin;
+    let cwd = env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    if let Ok(name) = crate::agent_binary::resolve(&cwd) {
+        // The resolver may return the default ("copilot") even when we
+        // detected a Claude session marker — in that case, prefer the marker.
+        if matches!(launcher, LauncherType::ClaudeCode)
+            && name == crate::agent_binary::DEFAULT_BINARY
+            && env::var("AMPLIHACK_AGENT_BINARY").is_err()
+        {
+            return "claude".to_string();
+        }
+        return name;
     }
     match launcher {
         LauncherType::ClaudeCode => "claude".to_string(),
         LauncherType::CopilotCli => "copilot".to_string(),
-        LauncherType::Unknown => "claude".to_string(),
+        LauncherType::Unknown => crate::agent_binary::DEFAULT_BINARY.to_string(),
     }
 }
 

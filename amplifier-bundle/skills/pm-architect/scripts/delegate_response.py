@@ -100,15 +100,14 @@ def run_auto_mode_delegation(
         Tuple of (success: bool, output: str)
     """
     try:
-        # Run amplihack auto mode with the active agent binary
-        agent_binary = os.environ.get("AMPLIHACK_AGENT_BINARY")
-        if not agent_binary:
-            import logging
+        # Run amplihack auto mode with the active agent binary, resolved using
+        # the same precedence as the Rust resolver (env -> launcher_context.json
+        # -> "copilot"). Defaults to "copilot" per issue #489.
+        from agent_query import detect_runtime  # type: ignore[import-not-found]
 
-            logging.getLogger(__name__).warning(
-                "AMPLIHACK_AGENT_BINARY not set, defaulting to 'claude'"
-            )
-            agent_binary = "claude"
+        agent_binary = detect_runtime()
+        if agent_binary not in {"amplifier", "claude", "codex", "copilot"}:
+            agent_binary = "copilot"
         cmd = [
             "amplihack",
             agent_binary,

@@ -1,105 +1,200 @@
 # Agent Binary Routing
 
-`amplihack` supports four AI backends — `claude`, `copilot`, `codex`, and `amplifier` — each launched via the same `amplihack <tool>` pattern. This document explains how downstream components (recipe runner, hooks, sub-agents) know which backend is active, and why this matters.
+`amplihack` supports four AI backends — `claude`, `copilot`, `codex`, and `amplifier` — each launched via the same `amplihack <tool>` pattern. This document explains how downstream components (recipe runner, hooks, sub-agents, Python skills) know which backend is active, why this matters, and how the system survives `tmux`/subprocess boundaries without depending on env-var passthrough.
 
 ## Contents
 
 - [The problem](#the-problem)
-- [The solution: AMPLIHACK_AGENT_BINARY](#the-solution-amplihack_agent_binary)
-- [How it propagates](#how-it-propagates)
+- [The solution: a config-driven resolver](#the-solution-a-config-driven-resolver)
+- [Resolution algorithm](#resolution-algorithm)
+- [How it propagates across processes](#how-it-propagates-across-processes)
+- [Default: copilot](#default-copilot)
 - [Consumers](#consumers)
   - [Recipe runner](#recipe-runner)
   - [Hooks](#hooks)
   - [Sub-agents](#sub-agents)
-- [Supported values](#supported-values)
+  - [Python skills](#python-skills)
+- [Hook resolution & missing-hook errors](#hook-resolution--missing-hook-errors)
+- [Security](#security)
 - [Related](#related)
 
 ## The problem
 
-The recipe runner is a shell-level orchestrator that executes multi-step workflows by spawning new AI sessions. It does not know — and should not hardcode — which AI tool the user started with. If a user invokes `amplihack copilot` and triggers a recipe that spawns a follow-up session, that session must also use `copilot`, not `claude`.
+The recipe runner, hooks, and various Python skill helpers must spawn new AI sessions on behalf of the user. They cannot hardcode the binary — if a user invokes `amplihack copilot` and triggers a recipe that spawns a follow-up session, that session must use `copilot`, not `claude`.
 
-Before `AMPLIHACK_AGENT_BINARY` was propagated, components were forced to:
+Earlier iterations of `amplihack-rs` solved this by writing `AMPLIHACK_AGENT_BINARY` into the subprocess environment. This worked for direct child processes but degraded badly through:
 
-- Hardcode `claude` (breaking Copilot and Codex users)
-- Require an explicit configuration setting (error-prone and redundant)
-- Inspect `$0` or try to detect the active binary at runtime (fragile)
+- `tmux new-session -d` (which strips most env vars)
+- detached background processes (`setsid`, daemonized hooks)
+- sub-recipes that re-exec a fresh `amplihack` binary
+- Python `subprocess.run` calls that inherit a partially stripped env
 
-## The solution: AMPLIHACK_AGENT_BINARY
+The result: a session started as `copilot` could end up running `claude` for late-arriving hooks or sub-recipes, and `SessionEnd` hooks would fail-silent looking for a `claude`-shaped file that did not exist.
 
-When `amplihack` launches any tool, it writes the tool name into the child process environment as `AMPLIHACK_AGENT_BINARY`. Every subprocess — the AI tool itself, hooks, recipe steps — inherits this variable and can use it to spawn the correct binary without any additional configuration.
+## The solution: a config-driven resolver
 
-```sh
-# User invokes:
-amplihack claude
+A single shared resolver (`amplihack_utils::agent_binary::resolve`) is now the only sanctioned way to determine the active binary. It consults three sources in order, falling through on missing or invalid input:
 
-# Child process environment contains:
-AMPLIHACK_AGENT_BINARY=claude
+1. `AMPLIHACK_AGENT_BINARY` environment variable (explicit override)
+2. `<repo>/.claude/runtime/launcher_context.json` `launcher` field
+3. Built-in default `"copilot"`
 
-# User invokes:
-amplihack copilot
+The persisted file is the **canonical** state — once `amplihack copilot` runs in a repo, every descendant process can rediscover `copilot` by reading that file, regardless of what env vars survived the journey.
 
-# Child process environment contains:
-AMPLIHACK_AGENT_BINARY=copilot
+## Resolution algorithm
+
+```mermaid
+flowchart TD
+    A[Caller invokes resolve&#40;cwd&#41;] --> B{AMPLIHACK_AGENT_BINARY set?}
+    B -- yes --> V1[Validate against allowlist]
+    V1 -- ok --> R1[Return env value]
+    V1 -- reject --> W1[warn! and fall through]
+    B -- no --> W1
+    W1 --> C[Walk up cwd looking for<br/>.claude/runtime/launcher_context.json]
+    C -- found, fresh, ≤64 KiB --> P[Parse launcher field]
+    P --> V2[Validate against allowlist]
+    V2 -- ok --> R2[Return file value]
+    V2 -- reject --> W2[warn! and fall through]
+    C -- not found / stale / too big --> W2
+    W2 --> D[Return built-in default 'copilot']
 ```
 
-The value is always one of the four known tool names. It is set unconditionally on every launch — there is no fallback or default value that could mask a misconfiguration.
+Walk-up rules:
 
-## How it propagates
+- Stop at the first `.claude/runtime/launcher_context.json` found
+- Stop at the first `.git` boundary (do not cross into a parent repo)
+- Cap at 32 ancestors
 
-The Rust CLI sets `AMPLIHACK_AGENT_BINARY` inside `EnvBuilder::with_agent_binary()`, called as part of the env build chain in `launch.rs`:
+The **anchor** for symlink-escape checks is the directory containing the discovered `launcher_context.json`. The discovered file is canonicalized; if the canonical path does not start with the canonical anchor, the file is rejected.
 
-```rust
-let env = EnvBuilder::new()
-    .with_amplihack_session_id()
-    .with_amplihack_vars()
-    .with_agent_binary(tool)         // sets AMPLIHACK_AGENT_BINARY
-    .with_amplihack_home()
-    .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1")
-    .build();
+If walk-up exhausts all 32 ancestors (or hits a `.git` boundary) without finding a `launcher_context.json`, the resolver returns the built-in default with no anchor check — there is nothing to escape from.
+
+## How it propagates across processes
+
+The launcher writes the resolved value into **two** places at start time:
+
+1. `<repo>/.claude/runtime/launcher_context.json` — durable, survives all subprocess boundaries
+2. `AMPLIHACK_AGENT_BINARY` in the subprocess `Command` env — read-through cache for back-compat with external consumers (notably `rysweet/amplihack-recipe-runner`) that have not migrated
+
+Inside `amplihack-rs`, every read site calls `resolve(&cwd)` rather than reading the env var directly. This means the env var is no longer load-bearing — a stripped or missing variable always recovers the correct value from the file.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant L as amplihack launcher
+    participant F as launcher_context.json
+    participant T as tmux session
+    participant R as recipe runner
+    participant H as SessionEnd hook
+
+    U->>L: amplihack copilot
+    L->>F: write {"launcher":"copilot",...}
+    L->>T: spawn (env may be stripped)
+    Note over T: tmux/setsid strips most<br/>env vars including<br/>AMPLIHACK_AGENT_BINARY
+    T->>R: amplihack recipe run smart-orchestrator
+    R->>F: resolve(cwd) → read file → "copilot"
+    R->>H: invoke SessionEnd
+    H->>F: resolve(cwd) → "copilot"
+    H->>H: load .claude/hooks/copilot/session_end.py
 ```
 
-`tool` is the string passed to `run_launch()` by the CLI dispatcher — it is always the exact name of the subcommand the user invoked.
+## Default: copilot
+
+The implicit default changed from `"claude"` to `"copilot"`. This affects only sessions where:
+
+- `AMPLIHACK_AGENT_BINARY` is unset, AND
+- No `launcher_context.json` is found within the walk-up window, AND
+- Nothing else in the precedence chain produced a valid value
+
+For typical use the default never matters — `amplihack <tool>` writes the file. The default only governs cold-start cases like running `amplihack recipe run` from a directory that has never hosted a launch.
+
+To make `claude` the default for a repo, run `amplihack claude` once. To force `claude` for a single command, prefix with `AMPLIHACK_AGENT_BINARY=claude`.
 
 ## Consumers
 
 ### Recipe runner
 
-The recipe runner reads `AMPLIHACK_AGENT_BINARY` to decide which binary to call when launching a new AI session as part of a workflow step.
-
-```sh
-# Inside a recipe step script:
-${AMPLIHACK_AGENT_BINARY} --print "${PROMPT}" --model "${MODEL}"
-# Equivalent to: claude --print "..." or copilot --print "..." depending on which tool was used
-```
+`recipe-runner-rs` reads the env-var cache today; PR follow-up will switch it to call `resolve(&cwd)` directly. Both paths produce the same value because the launcher writes the env var from the resolver.
 
 ### Hooks
 
-Claude Code hooks run as subprocesses of the AI tool. They inherit the full environment, including `AMPLIHACK_AGENT_BINARY`. A hook that needs to spawn a continuation session uses this variable:
-
-```sh
-# In a PostToolUse hook
-if [ "$AMPLIHACK_AGENT_BINARY" = "claude" ]; then
-  # Claude-specific post-processing
-  claude --print "Review the output of the tool call"
-fi
-```
+`amplihack-hooks::binary_hook_resolver` calls `resolve(&cwd)`, then locates the per-binary hook file at `<amplihack-home>/.claude/hooks/<binary>/<event>.py`. See [Hook resolution & missing-hook errors](#hook-resolution--missing-hook-errors) below.
 
 ### Sub-agents
 
-Agents spawned by the recipe runner or by hooks inherit `AMPLIHACK_AGENT_BINARY` automatically because it is part of the process environment. No explicit passing is required.
+`amplihack-utils::llm_client::resolve_binary`, `claude_cli::get_claude_cli_path`, `knowledge_builder`, and `workflows::cascade` all call into the shared resolver. There is exactly one read implementation in Rust.
 
-## Supported values
+### Python skills
 
-| Value | Tool | Installed by |
-|-------|------|-------------|
-| `claude` | Anthropic Claude Code | npm: `@anthropic-ai/claude-code` |
-| `copilot` | GitHub Copilot CLI | npm: `@github/copilot` |
-| `codex` | OpenAI Codex CLI | npm: `@openai/codex-cli` |
-| `amplifier` | Microsoft Amplifier | uv: `git+https://github.com/microsoft/amplifier` |
+`amplifier-bundle/skills/pm-architect/scripts/agent_query.py` defines `detect_runtime()`, which implements the **same** three-step precedence and **same** allowlist as the Rust resolver. `delegate_response.py` imports it instead of re-implementing the precedence:
 
-No other values are valid. The Rust implementation uses a `debug_assert!` in `with_agent_binary()` that panics on unexpected values in debug and test builds, making misuse visible early in development.
+```python
+from agent_query import detect_runtime
+```
+
+A single canonical Python entry point (rather than copy-pasted inline functions) prevents the Rust ↔ Python implementations from drifting apart over time.
+
+For shell-only entry points (`amplifier-bundle/skills/migrate/scripts/migrate.sh`), the same algorithm is implemented with a `case` statement allowlist that refuses to invoke an un-allowlisted name as a binary.
+
+## Hook resolution & missing-hook errors
+
+Hooks are organized per-binary:
+
+```
+<amplihack-home>/.claude/hooks/
+├── claude/
+│   ├── pre_tool_use.py
+│   ├── post_tool_use.py
+│   └── session_end.py
+├── copilot/
+│   ├── pre_tool_use.py
+│   ├── post_tool_use.py
+│   └── session_end.py
+├── codex/
+│   └── ...
+└── amplifier/
+    └── ...
+```
+
+When an event fires, `binary_hook_resolver::resolve_hook(event)`:
+
+1. Resolves the active binary via the shared resolver
+2. Validates it against the allowlist
+3. Constructs `<amplihack-home>/.claude/hooks/<binary>/<event>.py`
+4. Canonicalizes the result and asserts it lives inside `amplihack-home`
+5. Returns the path if it exists, or `HookError::MissingHookForBinary` if not
+
+**Critical: there is no fallback.** If `copilot` is the active binary and `copilot/session_end.py` is missing, the resolver returns:
+
+```text
+No SessionEnd hook registered for active agent binary 'copilot'.
+Expected at: /home/alice/.amplihack/.claude/hooks/copilot/session_end.py
+To fix: install the hook at the expected path, switch binaries by re-launching
+with one of: 'amplihack claude' / 'amplihack copilot' / 'amplihack codex' /
+'amplihack amplifier', or set AMPLIHACK_AGENT_BINARY explicitly.
+```
+
+The user must take an explicit action — install the hook, switch binaries, or set the override. The system never silently runs `claude/session_end.py` in place of the missing `copilot/session_end.py`, and stub `session_end.py` files created solely to suppress the error are an architectural smell that the resolver is designed to reject. (See [PHILOSOPHY.md — Forbidden Patterns / Silent Fallbacks].)
+
+## Security
+
+The resolver and hook paths are derived from values that may originate in user-controlled environment variables or files. To prevent injection and path-traversal:
+
+| Concern               | Mitigation                                                                                          |
+| --------------------- | --------------------------------------------------------------------------------------------------- |
+| Path traversal        | Allowlist binary names *before* substituting into a path; canonicalize then `starts_with` the root  |
+| Symlink escape        | Reject canonicalized paths that escape the discovered repo or `amplihack-home`                      |
+| Oversized config      | Cap `launcher_context.json` reads at 64 KiB                                                         |
+| JSON depth bombs      | Parse with `serde_json::from_str` into a typed struct; reject depth > 8 (current schema is depth 2; the cap is defense-in-depth against future additions) |
+| Env injection         | Trim, lowercase, length ≤ 32; reject `/`, `\`, `..`, null, whitespace, control chars                |
+| Shell-quoted values   | The resolved value is never passed through `sh -c`; only used as `Command::new(binary)` or path key |
+| Stale state           | Files older than 24h are treated as unset                                                           |
+| Diagnostic leakage    | Error messages use `Path::display()` and structured tracing fields; rejected values are never inlined into format strings |
 
 ## Related
 
-- [Environment Variables](../reference/environment-variables.md#amplihack_agent_binary) — Full reference for `AMPLIHACK_AGENT_BINARY`
-- [Bootstrap Parity](./bootstrap-parity.md) — Full Python/Rust parity contract for the launcher environment
+- [Active Agent Binary](../reference/active-agent-binary.md) — Resolver API and full algorithm
+- [Environment Variables](../reference/environment-variables.md#amplihack_agent_binary) — Env var reference
+- [Agent Configuration](../reference/agent-configuration.md) — Where this fits into broader config precedence
+- [Hooks Reference](../reference/hooks.md) — Per-binary hook layout and event list
+- [Bootstrap Parity](./bootstrap-parity.md) — How the Rust CLI matches the Python launcher's environment contract
