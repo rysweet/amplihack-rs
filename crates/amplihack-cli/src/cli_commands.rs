@@ -234,8 +234,14 @@ pub enum Commands {
     },
     /// Show version information
     Version,
-    /// Download and install the latest released binary
-    Update,
+    /// Self-update the amplihack binary, then run `install` to refresh framework assets.
+    ///
+    /// Use --skip-install (alias --no-install) for a binary-only update (legacy behavior).
+    Update {
+        /// Skip the automatic `install` step after a successful update.
+        #[arg(long = "skip-install", alias = "no-install")]
+        skip_install: bool,
+    },
 
     /// Fleet orchestration (native Rust runtime)
     Fleet {

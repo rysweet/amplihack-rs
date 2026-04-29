@@ -22,6 +22,7 @@ control that behavior.
 - [Disable the check permanently](#disable-the-check-permanently)
 - [Suppress in CI and pipelines](#suppress-in-ci-and-pipelines)
 - [Suppress in parity tests and automation](#suppress-in-parity-tests-and-automation)
+- [What happens during `amplihack update`](#what-happens-during-amplihack-update)
 - [What the check does](#what-the-check-does)
   - [When the check runs](#when-the-check-runs)
   - [Command allowlist](#command-allowlist)
@@ -145,6 +146,70 @@ prompts.
 > **Isolation:** `AMPLIHACK_PARITY_TEST` is intentionally separate from
 > `AMPLIHACK_NONINTERACTIVE` so that tests can verify interactive-mode behaviour
 > without triggering the update check.
+
+---
+
+## What happens during `amplihack update`
+
+This section is about the **separate** `amplihack update` subcommand (binary
+self-update), not the npm pre-launch notice covered above. It is included here
+because users who manage update notices commonly also want to know what the
+self-update does.
+
+When you run `amplihack update`, the following happens in order:
+
+1. **Binary self-update.** `amplihack` checks GitHub for a newer release,
+   downloads the platform archive, verifies its SHA-256, and atomically
+   replaces the running executable.
+2. **Automatic framework install.** As soon as the binary swap succeeds,
+   `amplihack` runs the same logic as `amplihack install` (in-process — no
+   subprocess) to re-stage framework assets (agents, hooks, prompts, recipes)
+   under `~/.amplihack/.claude`. This step is non-interactive and uses the
+   default install location.
+3. **Done.** Both the binary and the on-disk framework now match.
+
+If the binary swap fails, the install step does **not** run and the original
+binary stays in place.
+
+### Opt out of the automatic install
+
+Pass `--skip-install` (or its alias `--no-install`) to perform a binary-only
+update — the legacy behavior:
+
+```sh
+amplihack update --skip-install
+# or
+amplihack update --no-install
+```
+
+You may want this when:
+
+- You have hand-edited files under `~/.amplihack/.claude` and want to merge
+  them manually.
+- You are testing a new binary against an older framework layout.
+- You manage framework assets out-of-band (e.g. via configuration management).
+
+After a `--skip-install` update, you can refresh assets later with:
+
+```sh
+amplihack install
+```
+
+### Startup-prompt updates
+
+When `amplihack` prompts you to update at startup and you answer `y`, the
+**full** flow runs (binary swap **and** install). There is no way to pass
+`--skip-install` through the startup prompt. To get the legacy binary-only
+behavior, answer `N` to the prompt and then run
+`amplihack update --skip-install` manually.
+
+### Failure handling
+
+| Phase                | Outcome                                                                                                          |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Binary download/swap fails | Original binary preserved; install step is skipped; error printed to stderr; exit non-zero.                |
+| Binary swap succeeds, install fails | New binary installed; framework assets may be in an inconsistent state relative to the new binary; error printed to stderr; exit non-zero. Re-run `amplihack install` to retry. |
+| `--skip-install` passed | Binary updated; install step is skipped intentionally; a "skipping post-update install" notice is logged at info level. |
 
 ---
 
