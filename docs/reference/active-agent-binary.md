@@ -106,7 +106,7 @@ Staleness window: 24 hours (older files fall through as if unset)
 }
 ```
 
-The resolver only reads the `launcher` field. Other fields are owned by `LauncherContext` and documented in [Launcher Context](./launcher-context.md).
+The resolver only reads the `launcher` field. Other fields are owned by `LauncherContext`.
 
 ## Hook Resolution
 
@@ -218,4 +218,4 @@ AMPLIHACK_AGENT_BINARY=codex amplihack recipe run smart-orchestrator \
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — Architectural overview and rationale
 - [Environment Variables](./environment-variables.md#amplihack_agent_binary) — Full env var reference
 - [Agent Configuration](./agent-configuration.md#agent-binary-resolution) — Where the default fits into config precedence
-- [Hooks Reference](./hooks.md) — Per-binary hook layout and supported events
+- [Hook Specifications](./hook-specifications.md) — Per-binary hook layout and supported events

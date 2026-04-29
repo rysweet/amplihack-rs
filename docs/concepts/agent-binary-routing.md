@@ -196,5 +196,5 @@ The resolver and hook paths are derived from values that may originate in user-c
 - [Active Agent Binary](../reference/active-agent-binary.md) — Resolver API and full algorithm
 - [Environment Variables](../reference/environment-variables.md#amplihack_agent_binary) — Env var reference
 - [Agent Configuration](../reference/agent-configuration.md) — Where this fits into broader config precedence
-- [Hooks Reference](../reference/hooks.md) — Per-binary hook layout and event list
+- [Hook Specifications](../reference/hook-specifications.md) — Per-binary hook layout and event list
 - [Bootstrap Parity](./bootstrap-parity.md) — How the Rust CLI matches the Python launcher's environment contract
