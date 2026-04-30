@@ -186,4 +186,148 @@ mod tests {
         let path = installed_version_path().expect("path");
         assert_eq!(path, tmp.path().join(".amplihack").join(STAMP_FILE));
     }
+
+    // ----- TDD tests for issue #502 hardening -----
+    //
+    // These tests pin the contract for the security/concurrency
+    // requirements that PR #500 deferred. They fail until the
+    // implementation is added to this module.
+
+    /// R1: writing the stamp must REFUSE to follow / overwrite a symlink
+    /// at the stamp path. The symlink is left in place; the write
+    /// returns Err. Caller (self_heal) is expected to surface the
+    /// error and abort — never silently delete or follow.
+    #[test]
+    #[cfg(unix)]
+    fn write_refuses_symlink_at_stamp_path() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _g = HomeGuard::set(tmp.path());
+        let amp = tmp.path().join(".amplihack");
+        fs::create_dir_all(&amp).unwrap();
+
+        let target = tmp.path().join("attacker-target");
+        fs::write(&target, b"sensitive").unwrap();
+        let stamp = amp.join(STAMP_FILE);
+        std::os::unix::fs::symlink(&target, &stamp).unwrap();
+
+        let err = write_installed_version("0.9.0").expect_err("must refuse symlink");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("symlink"),
+            "error must mention symlink; got: {msg}"
+        );
+
+        // Symlink and target must be untouched.
+        let meta = fs::symlink_metadata(&stamp).unwrap();
+        assert!(
+            meta.file_type().is_symlink(),
+            "symlink must not be deleted or replaced"
+        );
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            b"sensitive",
+            "symlink target must not be overwritten"
+        );
+    }
+
+    /// R2: the stamp file must be persisted with mode 0o600 on Unix.
+    /// Default umask could leave it world-readable; an explicit chmod
+    /// is required and any failure to set permissions must propagate
+    /// (Zero-BS — no silent let _ = ).
+    #[test]
+    #[cfg(unix)]
+    fn stamp_mode_is_0o600() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().expect("tempdir");
+        let _g = HomeGuard::set(tmp.path());
+
+        write_installed_version("0.8.111").expect("write");
+        let mode = fs::metadata(installed_version_path().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "stamp must be owner-only (0o600), got {mode:o}"
+        );
+    }
+
+    /// R3+R4: malformed stamp contents (failing the semver regex) must
+    /// be treated as "no prior install" — read returns Ok(None) and a
+    /// one-line stderr warning is emitted. Test with a deliberately
+    /// invalid value.
+    #[test]
+    fn read_rejects_malformed_semver() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _g = HomeGuard::set(tmp.path());
+
+        let path = installed_version_path().unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"not-a-version").unwrap();
+
+        let read = read_installed_version().expect("read should not Err on malformed");
+        assert_eq!(
+            read, None,
+            "malformed semver must be reported as no-prior-install"
+        );
+    }
+
+    /// R3: shell-injection style content must also be rejected (control
+    /// chars, newlines, path separators).
+    #[test]
+    fn read_rejects_shell_injection_content() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _g = HomeGuard::set(tmp.path());
+
+        let path = installed_version_path().unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"0.8.111;rm -rf /").unwrap();
+
+        let read = read_installed_version().expect("read");
+        assert_eq!(read, None, "injected content must be rejected");
+    }
+
+    /// R3: build-metadata (`+...`) is intentionally NOT accepted per
+    /// the docs decision. Only `^\d+\.\d+\.\d+(-[\w.]+)?$`.
+    #[test]
+    fn read_rejects_build_metadata() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _g = HomeGuard::set(tmp.path());
+
+        let path = installed_version_path().unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"0.8.111+build.1").unwrap();
+
+        assert_eq!(read_installed_version().expect("read"), None);
+    }
+
+    /// R3: prerelease tags MUST be accepted (e.g. `0.9.0-rc1`).
+    #[test]
+    fn read_accepts_prerelease_semver() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _g = HomeGuard::set(tmp.path());
+
+        let path = installed_version_path().unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"0.9.0-rc1").unwrap();
+
+        assert_eq!(
+            read_installed_version().expect("read").as_deref(),
+            Some("0.9.0-rc1")
+        );
+    }
+
+    /// R3: well-formed plain semver still works (regression guard).
+    #[test]
+    fn read_accepts_plain_semver_after_validation_added() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _g = HomeGuard::set(tmp.path());
+
+        write_installed_version("1.2.3").expect("write");
+        assert_eq!(
+            read_installed_version().expect("read").as_deref(),
+            Some("1.2.3")
+        );
+    }
 }

@@ -448,4 +448,215 @@ mod tests {
         );
         assert!(buf.is_empty(), "no notice when install fails");
     }
+
+    // ----- TDD tests for issue #502 hardening -----
+    //
+    // These tests pin the contract for behaviour deferred from PR #500.
+    // They fail until the matching implementation lands in self_heal.
+
+    /// R6: bypass with a stamp/binary mismatch must emit a single-line
+    /// stderr diagnostic via the injected `notice` writer. Format must
+    /// include both `stamp=<v>` and `current=<V>` so CI logs make the
+    /// skew obvious. Plain (non-`{:?}`) formatting is safe because both
+    /// values pass the semver regex first.
+    #[test]
+    fn bypass_with_mismatch_emits_diagnostic() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), Some("1"));
+        version_stamp::write_installed_version("0.0.1").unwrap();
+
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "launch"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+
+        assert_eq!(calls.get(), 0, "bypass must skip installer");
+        let line = String::from_utf8(buf).unwrap();
+        assert!(
+            line.contains("AMPLIHACK_SKIP_AUTO_INSTALL"),
+            "diagnostic must mention the env var; got: {line}"
+        );
+        assert!(
+            line.contains("stamp=0.0.1"),
+            "diagnostic must include stamp value; got: {line}"
+        );
+        assert!(
+            line.contains(&format!("current={}", crate::VERSION)),
+            "diagnostic must include current version; got: {line}"
+        );
+        // Single line.
+        assert_eq!(
+            line.trim_end_matches('\n').lines().count(),
+            1,
+            "diagnostic must be a single line; got: {line:?}"
+        );
+    }
+
+    /// R6: bypass without a stamp mismatch must NOT emit the diagnostic
+    /// (no skew = nothing interesting to report).
+    #[test]
+    fn bypass_with_match_emits_no_diagnostic() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), Some("1"));
+        version_stamp::write_installed_version(crate::VERSION).unwrap();
+
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "launch"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+
+        assert_eq!(calls.get(), 0);
+        assert!(
+            buf.is_empty(),
+            "no diagnostic when bypass and no skew; got: {:?}",
+            String::from_utf8_lossy(&buf)
+        );
+    }
+
+    /// R7: with `HOME` unset, `ensure_assets_match_binary_version`
+    /// must return `Ok(())` (graceful skip) rather than propagating
+    /// the home_dir() error. This is the documented carve-out — the
+    /// only intentionally silent path. Implemented by probing
+    /// `std::env::var_os("HOME").is_none()` BEFORE calling
+    /// `paths::home_dir()`.
+    #[test]
+    fn missing_home_skips_gracefully() {
+        // Acquire the env lock and unset HOME for the duration.
+        let lock = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prior_home = std::env::var_os("HOME");
+        let prior_skip = std::env::var_os(SKIP_ENV);
+        // SAFETY: serialized via env_lock.
+        unsafe {
+            std::env::remove_var("HOME");
+            std::env::remove_var(SKIP_ENV);
+        }
+
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        let result = ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "launch"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        );
+
+        // Restore env BEFORE asserting so a panic doesn't poison other tests.
+        // SAFETY: serialized via env_lock held in `lock`.
+        unsafe {
+            match prior_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match prior_skip {
+                Some(v) => std::env::set_var(SKIP_ENV, v),
+                None => std::env::remove_var(SKIP_ENV),
+            }
+        }
+        drop(lock);
+
+        result.expect("HOME-unset must be a graceful skip, not an error");
+        assert_eq!(calls.get(), 0, "installer must not run when HOME unset");
+        assert!(buf.is_empty(), "no notice when HOME unset");
+    }
+
+    /// R5: concurrent installs must serialize via the advisory file
+    /// lock on `~/.amplihack/.install.lock`. Two threads that both
+    /// trigger a re-stage must NOT execute the installer body
+    /// concurrently — their critical sections must not temporally
+    /// overlap.
+    #[test]
+    fn concurrent_installs_serialize() {
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+
+        let tmp = TempDir::new().unwrap();
+        // Hold the env_lock for the whole test so the two threads share
+        // a stable HOME. EnvGuard takes the same lock; we set HOME
+        // manually to avoid double-locking.
+        let env_lock = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prior_home = std::env::var_os("HOME");
+        let prior_skip = std::env::var_os(SKIP_ENV);
+        // SAFETY: serialized via env_lock above.
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::remove_var(SKIP_ENV);
+        }
+
+        // Capture (start, end) of each installer critical section.
+        let timings: Arc<Mutex<Vec<(Instant, Instant)>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let spawn = || {
+            let timings = Arc::clone(&timings);
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                ensure_assets_match_binary_version_with(
+                    &args(&["amplihack", "launch"]),
+                    &mut buf,
+                    move || {
+                        let start = Instant::now();
+                        std::thread::sleep(Duration::from_millis(50));
+                        let end = Instant::now();
+                        timings.lock().unwrap().push((start, end));
+                        version_stamp::write_installed_version(crate::VERSION)?;
+                        Ok(())
+                    },
+                )
+            })
+        };
+
+        let h1 = spawn();
+        let h2 = spawn();
+        let r1 = h1.join().unwrap();
+        let r2 = h2.join().unwrap();
+
+        // Restore env.
+        // SAFETY: serialized via env_lock held above.
+        unsafe {
+            match prior_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match prior_skip {
+                Some(v) => std::env::set_var(SKIP_ENV, v),
+                None => std::env::remove_var(SKIP_ENV),
+            }
+        }
+        drop(env_lock);
+
+        r1.expect("thread 1 ok");
+        r2.expect("thread 2 ok");
+
+        let runs = timings.lock().unwrap();
+        // Either:
+        //  - both threads ran the installer and their critical sections
+        //    are disjoint (lock serialized them), OR
+        //  - the second thread, after taking the lock, re-read the stamp
+        //    and saw a match, so only one installer call happened.
+        // Both outcomes prove the lock is doing its job.
+        match runs.len() {
+            1 => { /* second waiter saw the match after first finished; ok */ }
+            2 => {
+                let (a_start, a_end) = runs[0];
+                let (b_start, b_end) = runs[1];
+                let overlap = a_start < b_end && b_start < a_end;
+                assert!(
+                    !overlap,
+                    "installer critical sections must not overlap: \
+                     a=[{a_start:?},{a_end:?}] b=[{b_start:?},{b_end:?}]"
+                );
+            }
+            n => panic!("unexpected installer run count: {n}"),
+        }
+    }
 }
