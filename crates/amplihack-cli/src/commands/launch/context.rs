@@ -23,6 +23,15 @@ pub(super) fn persist_launcher_context(
 
     let mut environment = BTreeMap::new();
     environment.insert("AMPLIHACK_LAUNCHER".to_string(), "copilot".to_string());
+    // Issue #506: nested re-launches (recipe-runner sub-recipes, agent
+    // tasks) read AMPLIHACK_AGENT_BINARY from the persisted launcher
+    // context to choose the active agent binary. Without this entry the
+    // child process inherits no preference, falls back to claude, and
+    // exits 1 with claude-not-found. The value is hardcoded here because
+    // this branch is gated by `tool == "copilot"` above — reading from
+    // std::env would be wrong (the parent may not have it set even when
+    // we explicitly know we are launching copilot).
+    environment.insert("AMPLIHACK_AGENT_BINARY".to_string(), "copilot".to_string());
     write_launcher_context(
         project_root,
         LauncherKind::Copilot,

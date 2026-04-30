@@ -260,6 +260,75 @@ fn persist_launcher_context_writes_copilot_context_file() {
     );
 }
 
+/// Issue #506 regression: when launching with `--tool copilot`, the
+/// persisted `launcher_context.json` must include
+/// `AMPLIHACK_AGENT_BINARY=copilot` in its environment map so nested
+/// re-launches (recipe runner sub-recipes, agent tasks) inherit the
+/// correct active binary instead of silently falling back to claude.
+///
+/// Per Decision 2 in the requirements doc the value is hardcoded —
+/// `persist_launcher_context` only runs when `tool == "copilot"`, so
+/// reading from `std::env::var` would be wrong (the env var may be
+/// missing on the parent process even though we know we are launching
+/// copilot). The test is intentionally tight: it asserts the exact key
+/// and value, so any future "lost in translation" change at this
+/// chokepoint surfaces immediately.
+///
+/// TDD note: this test is expected to FAIL until the implementation
+/// adds the explicit `environment.insert("AMPLIHACK_AGENT_BINARY", …)`
+/// line in `persist_launcher_context`.
+#[test]
+fn persist_launcher_context_writes_agent_binary_for_copilot() {
+    let dir = tempfile::tempdir().unwrap();
+
+    persist_launcher_context("copilot", Some(dir.path()), &[]).unwrap();
+
+    let context = read_launcher_context(dir.path()).unwrap();
+    assert_eq!(context.launcher, LauncherKind::Copilot);
+    assert_eq!(
+        context
+            .environment
+            .get("AMPLIHACK_AGENT_BINARY")
+            .map(String::as_str),
+        Some("copilot"),
+        "issue #506: persisted launcher context must propagate \
+         AMPLIHACK_AGENT_BINARY=copilot so nested launches stay on the \
+         copilot binary; got environment={:?}",
+        context.environment
+    );
+    // Defense-in-depth: AMPLIHACK_LAUNCHER must remain alongside the new
+    // AMPLIHACK_AGENT_BINARY entry — they are independent contracts and
+    // the fix must add, not replace.
+    assert_eq!(
+        context
+            .environment
+            .get("AMPLIHACK_LAUNCHER")
+            .map(String::as_str),
+        Some("copilot"),
+        "AMPLIHACK_LAUNCHER must still be present after #506 fix"
+    );
+}
+
+/// Issue #506 scope guard: the fix must NOT start persisting a launcher
+/// context for non-copilot tools. The early-return at context.rs:14-16
+/// is load-bearing — sub-launches under claude/codex/amplifier rely on
+/// the absence of a stale context file. Asserting "no file written"
+/// keeps the scope of #506 tight.
+#[test]
+fn persist_launcher_context_writes_nothing_for_non_copilot_tools() {
+    let dir = tempfile::tempdir().unwrap();
+
+    persist_launcher_context("claude", Some(dir.path()), &[]).unwrap();
+    persist_launcher_context("codex", Some(dir.path()), &[]).unwrap();
+    persist_launcher_context("amplifier", Some(dir.path()), &[]).unwrap();
+
+    assert!(
+        read_launcher_context(dir.path()).is_none(),
+        "issue #506 fix must remain copilot-only — no context file may \
+         be written for claude/codex/amplifier launches"
+    );
+}
+
 #[test]
 fn build_command_skips_dangerous_flag_for_copilot() {
     let _home_guard = home_env_lock()
