@@ -24,9 +24,12 @@
 //! and a non-zero exit.
 
 use std::ffi::OsString;
+use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use fs4::fs_std::FileExt;
 
 use crate::commands::install::version_stamp;
 
@@ -53,6 +56,11 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
 /// install check.
 const SKIP_FLAGS: &[&str] = &["--help", "-h", "--version", "-V"];
 
+/// Filename of the inter-process advisory lock guarding the installer
+/// critical section (issue #502 R5). Sits next to the install stamp under
+/// `~/.amplihack/`.
+const INSTALL_LOCK_FILE: &str = ".install.lock";
+
 /// Public entrypoint, called from `bins/amplihack/src/main.rs` immediately
 /// after the update-notice check and before `commands::dispatch`.
 ///
@@ -60,9 +68,61 @@ const SKIP_FLAGS: &[&str] = &["--help", "-h", "--version", "-V"];
 /// Returns `Err` if the install fails — callers are expected to surface
 /// the error and abort.
 pub fn ensure_assets_match_binary_version(args: &[OsString]) -> Result<()> {
+    // Issue #502 R7: narrow HOME-unset carve-out. Probe `HOME` directly
+    // (not via `paths::home_dir()`) so we can distinguish "no home" from
+    // any other path-helper error and skip gracefully without swallowing
+    // unrelated failures. This is the ONLY intentionally silent path in
+    // this module.
+    if std::env::var_os("HOME")
+        .map(|v| v.is_empty())
+        .unwrap_or(true)
+    {
+        tracing::debug!("self_heal: HOME unset; skipping (graceful carve-out)");
+        return Ok(());
+    }
+
     ensure_assets_match_binary_version_with(args, &mut std::io::stderr(), || {
         crate::commands::install::run_install(None, false)
     })
+}
+
+/// Resolve the path to the install advisory lock file. Mirrors
+/// `version_stamp::installed_version_path` so both files live side-by-side.
+fn install_lock_path() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .context("HOME is not set")?;
+    Ok(home.join(".amplihack").join(INSTALL_LOCK_FILE))
+}
+
+/// Run `body` while holding an exclusive advisory `flock` on the install
+/// lock file (issue #502 R5). The lock serialises concurrent
+/// `ensure_assets_match_binary_version` callers within a host so two
+/// processes never run the installer body at the same time.
+///
+/// The lock file is created with default permissions if missing — its
+/// contents are never inspected, only its inode is used as the lock token,
+/// so it does not need 0o600 like the stamp.
+fn with_install_lock<T, F: FnOnce() -> Result<T>>(body: F) -> Result<T> {
+    let lock_path = install_lock_path()?;
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("failed to open install lock {}", lock_path.display()))?;
+    FileExt::lock_exclusive(&lock_file)
+        .with_context(|| format!("failed to acquire install lock {}", lock_path.display()))?;
+    let result = body();
+    // Best-effort unlock; the kernel will release on drop regardless.
+    let _ = FileExt::unlock(&lock_file);
+    result
 }
 
 /// Decision-logic core, factored out for testability.
@@ -80,17 +140,44 @@ where
     W: Write,
     F: FnOnce() -> Result<()>,
 {
-    if env_bypass_set() {
-        tracing::debug!("self_heal: skipped via {SKIP_ENV}");
-        return Ok(());
-    }
     if args_should_skip(args) {
         tracing::debug!("self_heal: skipped (subcommand or flag in skip list)");
         return Ok(());
     }
 
+    // Issue #502 R7: if `HOME` is unset (or empty), skip gracefully. The
+    // public entrypoint already performs this check; we re-check here so
+    // unit tests that drive the `_with` variant directly receive the same
+    // behaviour. This is the only intentionally silent path in the module.
+    if std::env::var_os("HOME")
+        .map(|v| v.is_empty())
+        .unwrap_or(true)
+    {
+        tracing::debug!("self_heal: HOME unset; skipping (graceful carve-out)");
+        return Ok(());
+    }
+
     let stamp = version_stamp::read_installed_version().context("reading install version stamp")?;
     let expected = crate::VERSION;
+
+    // Issue #502 R6: when bypass is set AND there is a real skew, emit a
+    // single-line stderr diagnostic so CI logs surface the drift. Both
+    // values are constant or regex-validated semver, so plain formatting
+    // is safe (no control-char injection surface).
+    if env_bypass_set() {
+        let stamp_match = stamp.as_deref() == Some(expected);
+        if !stamp_match {
+            let stamp_str = stamp.as_deref().unwrap_or("<missing>");
+            writeln!(
+                notice,
+                "amplihack: AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage \
+                 (stamp={stamp_str} current={expected})"
+            )
+            .context("emitting bypass diagnostic")?;
+        }
+        tracing::debug!("self_heal: skipped via {SKIP_ENV}");
+        return Ok(());
+    }
 
     if stamp.as_deref() == Some(expected) {
         tracing::debug!("self_heal: stamp matches binary version {expected}");
@@ -108,15 +195,32 @@ where
         }
     }
 
-    install_fn().context("running install during startup self-heal")?;
-    version_stamp::write_installed_version(expected)
-        .context("writing install version stamp after self-heal")?;
-    writeln!(
-        notice,
-        "amplihack: framework assets re-staged for v{expected}"
-    )
-    .context("emitting self-heal notice")?;
-    Ok(())
+    // Issue #502 R5: serialise installer + stamp write across processes
+    // via an advisory `flock` on `~/.amplihack/.install.lock`. The second
+    // waiter re-reads the stamp inside the critical section; if the first
+    // winner already wrote the up-to-date stamp, the waiter exits without
+    // re-running the installer.
+    with_install_lock(|| {
+        // Re-check after acquiring the lock — the previous holder may
+        // have already brought the stamp current.
+        let stamp_now = version_stamp::read_installed_version()
+            .context("re-reading install stamp under lock")?;
+        if stamp_now.as_deref() == Some(expected) {
+            tracing::debug!(
+                "self_heal: stamp brought current by concurrent installer; nothing to do"
+            );
+            return Ok(());
+        }
+        install_fn().context("running install during startup self-heal")?;
+        version_stamp::write_installed_version(expected)
+            .context("writing install version stamp after self-heal")?;
+        writeln!(
+            notice,
+            "amplihack: framework assets re-staged for v{expected}"
+        )
+        .context("emitting self-heal notice")?;
+        Ok(())
+    })
 }
 
 /// True when `AMPLIHACK_SKIP_AUTO_INSTALL` is set to any non-empty value.
@@ -324,7 +428,14 @@ mod tests {
         .expect("ok");
 
         assert_eq!(calls.get(), 0, "installer must not run when bypass set");
-        assert!(buf.is_empty());
+        // Issue #502 R6: bypass-with-mismatch emits a single-line diagnostic.
+        let line = String::from_utf8(buf).unwrap();
+        assert!(
+            line.contains("AMPLIHACK_SKIP_AUTO_INSTALL")
+                && line.contains("stamp=0.0.0")
+                && line.contains(&format!("current={}", crate::VERSION)),
+            "expected bypass diagnostic; got: {line}"
+        );
         // Stamp should be unchanged.
         assert_eq!(
             version_stamp::read_installed_version().unwrap().as_deref(),

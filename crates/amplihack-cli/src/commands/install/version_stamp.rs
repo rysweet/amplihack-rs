@@ -10,10 +10,12 @@
 //! newline. Writes are atomic via a sibling tempfile + `rename` (the same
 //! pattern used by `write_layout_marker` in this crate).
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use regex::Regex;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use super::paths::home_dir;
 
@@ -22,6 +24,17 @@ const STAMP_FILE: &str = ".installed-version";
 
 /// Sibling tempfile used for atomic writes.
 const STAMP_TMP: &str = ".installed-version.tmp";
+
+/// Permitted stamp content per issue #502 R3: `MAJOR.MINOR.PATCH` with an
+/// optional `-PRERELEASE` tag. Build metadata (`+...`) is intentionally
+/// rejected — the stamp must round-trip `crate::VERSION`, which never
+/// carries build metadata.
+const SEMVER_PATTERN: &str = r"^\d+\.\d+\.\d+(-[\w.]+)?$";
+
+fn semver_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(SEMVER_PATTERN).expect("hard-coded SEMVER_PATTERN must compile"))
+}
 
 /// Resolve the absolute path of the install version stamp file.
 ///
@@ -37,6 +50,14 @@ pub(crate) fn installed_version_path() -> Result<PathBuf> {
 /// Creates `~/.amplihack/` (with parents) if missing. Writes to a sibling
 /// `.installed-version.tmp` first and then renames into place, so a crashed
 /// or interrupted write never produces a torn read.
+///
+/// Issue #502 R1/R2 hardening:
+/// - Refuses to follow / overwrite a symlink at the final stamp path
+///   (uses `symlink_metadata`, not `metadata`, so the check is not fooled
+///   by `lstat`-vs-`stat` semantics).
+/// - On Unix, the stamp file is `chmod 0o600` after write. Failure to set
+///   permissions propagates as `Err` (Zero-BS — we do not silently leave a
+///   world-readable file behind).
 pub(crate) fn write_installed_version(version: &str) -> Result<()> {
     let final_path = installed_version_path()?;
     let parent = final_path.parent().with_context(|| {
@@ -46,6 +67,24 @@ pub(crate) fn write_installed_version(version: &str) -> Result<()> {
         )
     })?;
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+
+    // R1: refuse to overwrite a symlink at the stamp path. We do this
+    // BEFORE writing the tempfile so an attacker symlink cannot redirect
+    // a subsequent rename. `fs::rename` on Unix replaces atomically and
+    // would clobber the symlink target if we proceeded.
+    match fs::symlink_metadata(&final_path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            bail!(
+                "refusing to overwrite symlink at stamp path: {:?} \
+                 (delete it manually after verifying it is not malicious)",
+                final_path
+            );
+        }
+        Ok(_) | Err(_) => {
+            // Regular file (will be replaced by rename) or NotFound — both fine.
+        }
+    }
+
     let tmp_path = parent.join(STAMP_TMP);
     fs::write(&tmp_path, version.as_bytes())
         .with_context(|| format!("failed to write {}", tmp_path.display()))?;
@@ -56,21 +95,52 @@ pub(crate) fn write_installed_version(version: &str) -> Result<()> {
             final_path.display()
         )
     })?;
+
+    // R2: post-write chmod 0o600 on Unix. Failure propagates loudly.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(&final_path, perms).with_context(|| {
+            format!(
+                "failed to set 0o600 permissions on {}",
+                final_path.display()
+            )
+        })?;
+    }
+
     Ok(())
 }
 
-/// Read the stamp file, returning `Ok(None)` when it does not exist.
+/// Read the stamp file, returning `Ok(None)` when it does not exist OR when
+/// its contents fail the strict semver validation (issue #502 R3/R4).
 ///
-/// Trims surrounding whitespace from the contents (defensive — manual edits
-/// or pre-existing CRLF endings should not cause false mismatches). Returns
-/// `Err` for any IO error other than `NotFound` so corruption fails loud.
+/// On malformed contents we emit a one-line stderr warning and return
+/// `Ok(None)`. Treating malformed-as-missing forces a re-stage on next
+/// startup, which is the desired self-heal behaviour. Returns `Err` for any
+/// IO error other than `NotFound` so corruption fails loud.
 pub(crate) fn read_installed_version() -> Result<Option<String>> {
     let path = installed_version_path()?;
-    match fs::read_to_string(&path) {
-        Ok(contents) => Ok(Some(contents.trim().to_string())),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
+    let raw = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    let trimmed = raw.trim();
+    if !semver_regex().is_match(trimmed) {
+        // R4: one-line warning so operators see the rejection in CI logs.
+        // Use `{:?}` so embedded newlines / control chars cannot forge a
+        // second log line or inject terminal escapes.
+        eprintln!(
+            "amplihack: ignoring malformed install stamp at {} (contents={:?}); will re-stage",
+            path.display(),
+            trimmed
+        );
+        return Ok(None);
     }
+    Ok(Some(trimmed.to_string()))
 }
 
 #[cfg(test)]
