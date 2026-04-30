@@ -160,6 +160,7 @@ steps:
       # Fail-loud (Zero-BS, issue #410): require worktree path from step-04 instead
       # of silently falling back to $PWD (which is the parent repo and produces
       # false-positive no-op failures when the worktree contains real work).
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-08c requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       if ! git diff --quiet || ! git diff --cached --quiet || \
          [ -n "$(git ls-files --others --exclude-standard)" ]; then
@@ -256,6 +257,7 @@ steps:
     # (implementation, test_spec, design_spec) produce large outputs.
     max_env_value_bytes: 65536
     command: |
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}" && \
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?checkpoint-after-implementation requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}" && \
       echo "=== Checkpoint: Staging Implementation ===" && \
       git add -A && \

@@ -65,6 +65,7 @@ steps:
     type: "bash"
     command: |
       set -euo pipefail
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-20b-push-cleanup requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
       echo "=== Pushing Cleanup Changes ==="
       git add -A
@@ -155,6 +156,7 @@ steps:
     type: "bash"
     command: |
       set -euo pipefail
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-21-pr-ready requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
       echo "=== Step 20: Converting PR to Ready ==="
       echo ""

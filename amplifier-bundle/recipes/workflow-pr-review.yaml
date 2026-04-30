@@ -214,6 +214,7 @@ steps:
     type: "bash"
     command: |
       set -euo pipefail
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-18c-push-feedback-changes requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
       echo "=== Pushing Review Feedback Changes ==="
       git add -A
@@ -312,6 +313,7 @@ steps:
     command: |
       set -euo pipefail
       echo "=== ZERO-BS VERIFICATION ==="
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-19c-zero-bs-verification requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
       echo ""
       echo "Scanning for Zero-BS violations..."
