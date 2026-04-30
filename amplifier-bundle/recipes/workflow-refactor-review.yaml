@@ -197,6 +197,7 @@ steps:
     max_env_value_bytes: 65536
     command: |
       set -euo pipefail
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-11b-implement-feedback requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
       echo "=== Checkpoint: Staging Review Feedback ==="
       git add -A

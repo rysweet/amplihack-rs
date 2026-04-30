@@ -2626,5 +2626,265 @@ class TestWorktreeSetupPropagation479(unittest.TestCase):
                 )
 
 
+# ===========================================================================
+# Issue #498: WORKTREE_SETUP_WORKTREE_PATH alias bootstrap
+# ===========================================================================
+#
+# The recipe-runner emits sub-recipe outputs as nested-scalar env vars of the
+# form `RECIPE_VAR_worktree_setup__worktree_path` but does NOT also emit the
+# legacy uppercase alias `WORKTREE_SETUP_WORKTREE_PATH` that the bash steps
+# guard on with `${WORKTREE_SETUP_WORKTREE_PATH:?...}`. As a result, every
+# downstream step that depends on the worktree path aborts loudly even though
+# the value IS available under the nested name.
+#
+# Fix (YAML-layer bootstrap, runner-side fix tracked separately):
+# Insert this line directly above each existing fail-loud `cd` guard:
+#
+#     : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+#
+# Semantics:
+#   * `:=` assigns the inner expansion to WORKTREE_SETUP_WORKTREE_PATH ONLY
+#     when WORKTREE_SETUP_WORKTREE_PATH is unset or empty (idempotent;
+#     forward-compatible if the runner later emits the alias natively).
+#   * `:-` on the inner expansion is REQUIRED because steps run under
+#     `set -u`; without it, an unset RECIPE_VAR_* would trip
+#     `unbound variable` before the outer `:?` guard could fire its
+#     diagnostic.
+#   * The existing `${...:?diagnostic}` guard on the next line is preserved
+#     verbatim — Zero-BS fail-loud behavior is unchanged when BOTH names are
+#     unset.
+#
+# These tests are RED until the YAML is patched. They become GREEN after the
+# bootstrap line is added directly above each cd guard.
+
+_ISSUE_498_YAMLS: tuple[Path, ...] = (
+    _RECIPES_DIR / "workflow-tdd.yaml",
+    _RECIPES_DIR / "workflow-publish.yaml",
+    _RECIPES_DIR / "workflow-pr-review.yaml",
+    _RECIPES_DIR / "workflow-finalize.yaml",
+    _RECIPES_DIR / "workflow-refactor-review.yaml",
+)
+
+# Exact bootstrap line, modulo leading indentation (which must match the
+# guard line indentation in the YAML literal block scalar).
+_ISSUE_498_BOOTSTRAP = (
+    ': "${WORKTREE_SETUP_WORKTREE_PATH'
+    ':=${RECIPE_VAR_worktree_setup__worktree_path:-}}"'
+)
+
+# Guard prefix we look for (the diagnostic message text varies per step;
+# we only match the variable+colon-question prefix to enumerate by `cd`
+# occurrence rather than by step name — naming may drift but the guard
+# pattern is invariant).
+_ISSUE_498_GUARD_PREFIX = 'cd "${WORKTREE_SETUP_WORKTREE_PATH:?'
+
+
+def _find_issue_498_guard_lines(yaml_path: Path) -> list[tuple[int, str, str]]:
+    """Return [(lineno, guard_line, line_above), ...] for every fail-loud
+    `cd "${WORKTREE_SETUP_WORKTREE_PATH:?...}"` guard in the file.
+    Line numbers are 1-based. Includes the line immediately above each
+    guard so the bootstrap-presence check can inspect it."""
+    text = yaml_path.read_text()
+    lines = text.splitlines()
+    out: list[tuple[int, str, str]] = []
+    for idx, line in enumerate(lines):
+        if _ISSUE_498_GUARD_PREFIX in line:
+            above = lines[idx - 1] if idx > 0 else ""
+            out.append((idx + 1, line, above))
+    return out
+
+
+class TestWorktreeSetupAliasBootstrap498(unittest.TestCase):
+    """
+    Regression tests for issue #498.
+
+    Symptom: Downstream workflow steps abort with the diagnostic
+        "worktree path missing — refusing to operate outside checkpoint
+         worktree (step-XX requires worktree_setup.worktree_path ...)"
+    even though step-04 (workflow-worktree) ran successfully and the
+    value IS available in the environment as
+    `RECIPE_VAR_worktree_setup__worktree_path`.
+
+    Root cause: the recipe-runner's nested-scalar emission for sub-recipe
+    outputs does not also emit the legacy uppercase alias name that the
+    consumer steps guard on. (Runner-side native fix is tracked in a
+    follow-up against rysweet/amplihack-recipe-runner.)
+
+    Fix: each consumer step bootstraps the alias from the nested var
+    immediately above its existing fail-loud guard.
+
+    These tests assert:
+      A) Bootstrap line is present immediately above EVERY fail-loud
+         `cd "${WORKTREE_SETUP_WORKTREE_PATH:?...}"` guard across all
+         five affected recipe files.
+      B) When only `RECIPE_VAR_worktree_setup__worktree_path` is set
+         (alias unset, mimicking what the runner currently emits), the
+         bootstrap binds the alias and the cd succeeds.
+      C) When BOTH variables are unset, the existing fail-loud `:?`
+         guard still aborts with a diagnostic — the bootstrap is
+         additive, not a silent fallback (Zero-BS preserved).
+    """
+
+    def test_bootstrap_present_before_each_guard(self):
+        """Static gate: every fail-loud `cd` guard must have the alias
+        bootstrap on the line immediately above it, with matching
+        indentation and the exact `:=${RECIPE_VAR_worktree_setup__worktree_path:-}` form."""
+        offenders: list[str] = []
+        total_guards = 0
+        for yaml_path in _ISSUE_498_YAMLS:
+            self.assertTrue(
+                yaml_path.exists(),
+                f"Recipe file missing: {yaml_path}",
+            )
+            guards = _find_issue_498_guard_lines(yaml_path)
+            self.assertGreater(
+                len(guards), 0,
+                f"Expected at least one `cd \"${{WORKTREE_SETUP_WORKTREE_PATH:?...}}\"` "
+                f"guard in {yaml_path.name}; found none. Did the file move or rename?",
+            )
+            for lineno, guard_line, above in guards:
+                total_guards += 1
+                # Bootstrap must be present (substring match — indentation may
+                # differ but the literal text after stripping must be exact).
+                if _ISSUE_498_BOOTSTRAP not in above:
+                    offenders.append(
+                        f"  {yaml_path.name}:L{lineno}\n"
+                        f"    guard: {guard_line.rstrip()}\n"
+                        f"    above: {above.rstrip()!r}\n"
+                        f"    expected the line above to contain:\n"
+                        f"      {_ISSUE_498_BOOTSTRAP}"
+                    )
+                    continue
+                # Indentation of the bootstrap must match the guard line
+                # so it sits cleanly inside the same YAML literal block.
+                guard_indent = len(guard_line) - len(guard_line.lstrip())
+                above_indent = len(above) - len(above.lstrip())
+                if above_indent != guard_indent:
+                    offenders.append(
+                        f"  {yaml_path.name}:L{lineno}\n"
+                        f"    bootstrap indentation ({above_indent}) does not "
+                        f"match guard indentation ({guard_indent}).\n"
+                        f"    above: {above!r}\n"
+                        f"    guard: {guard_line!r}"
+                    )
+        self.assertEqual(
+            offenders, [],
+            f"Issue #498: alias-bootstrap line missing or misaligned above "
+            f"{len(offenders)}/{total_guards} fail-loud cd guard(s).\n"
+            f"Insert this line directly above each guard, with matching "
+            f"indentation:\n"
+            f"  {_ISSUE_498_BOOTSTRAP}\n"
+            f"Offenders:\n" + "\n".join(offenders),
+        )
+
+    def test_bootstrap_binds_alias_from_recipe_var(self):
+        """End-to-end (positive): when only the nested
+        `RECIPE_VAR_worktree_setup__worktree_path` is set (alias unset,
+        mimicking current runner behavior), the bootstrap+guard pair must
+        bind the alias and `cd` into the worktree without aborting."""
+        # Use the workflow-tdd step-08c guard as the canonical case.
+        guards = _find_issue_498_guard_lines(_RECIPES_DIR / "workflow-tdd.yaml")
+        self.assertGreater(len(guards), 0, "No guards found in workflow-tdd.yaml")
+        _, guard_line, above = guards[0]
+        # The snippet under test is the bootstrap immediately followed by
+        # the guard. Strip any surrounding indentation so bash can parse
+        # the literal block as a standalone script.
+        snippet = textwrap.dedent(
+            "\n".join([above.lstrip(), guard_line.lstrip()])
+        )
+
+        tmp = tempfile.mkdtemp()
+        try:
+            # Deterministic env: explicit, no inheritance from os.environ
+            # except PATH (needed to locate /bin/bash, /usr/bin/printf, etc.).
+            # Never merge os.environ — prevents host-secret leakage and
+            # ensures the test is reproducible across machines.
+            env = {
+                "PATH": os.environ["PATH"],
+                "RECIPE_VAR_worktree_setup__worktree_path": tmp,
+                # WORKTREE_SETUP_WORKTREE_PATH deliberately UNSET — the
+                # bootstrap must populate it from the nested var.
+            }
+            # Run under `set -eu` to exercise the strict-mode constraint
+            # the workflow steps actually run under.
+            wrapped = "set -eu\n" + snippet + "\n" + 'printf "%s" "$PWD"\n'
+            result = subprocess.run(
+                ["bash", "-c", wrapped],
+                capture_output=True, text=True, env=env, cwd=tmp,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"Issue #498: bootstrap+guard snippet must succeed when only "
+                f"RECIPE_VAR_worktree_setup__worktree_path is set "
+                f"(alias unset). Got rc={result.returncode}\n"
+                f"snippet={snippet!r}\n"
+                f"stdout={result.stdout!r}\n"
+                f"stderr={result.stderr!r}",
+            )
+            # Resolve symlinks because mkdtemp on macOS returns /var paths
+            # that resolve to /private/var; on Linux it's a no-op.
+            self.assertEqual(
+                Path(result.stdout).resolve(), Path(tmp).resolve(),
+                f"Bootstrap should have cd'd into the worktree path "
+                f"{tmp!r}, but ended up in {result.stdout!r}",
+            )
+            self.assertNotIn(
+                "unbound variable", result.stderr,
+                "Bootstrap must use `:-` on the inner expansion so `set -u` "
+                "does not abort before the outer `:?` guard can fire.\n"
+                f"stderr={result.stderr}",
+            )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_fail_loud_when_both_unset(self):
+        """End-to-end (negative): when BOTH WORKTREE_SETUP_WORKTREE_PATH
+        and RECIPE_VAR_worktree_setup__worktree_path are unset, the
+        existing fail-loud `:?` guard must still abort with its
+        diagnostic. The bootstrap is additive — Zero-BS preserved, no
+        silent fallback introduced."""
+        guards = _find_issue_498_guard_lines(_RECIPES_DIR / "workflow-tdd.yaml")
+        self.assertGreater(len(guards), 0, "No guards found in workflow-tdd.yaml")
+        _, guard_line, above = guards[0]
+        snippet = textwrap.dedent(
+            "\n".join([above.lstrip(), guard_line.lstrip()])
+        )
+
+        # Deterministic env: PATH only, both worktree vars deliberately
+        # absent. No os.environ merge.
+        env = {"PATH": os.environ["PATH"]}
+        wrapped = "set -eu\n" + snippet + "\n"
+        result = subprocess.run(
+            ["bash", "-c", wrapped],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertNotEqual(
+            result.returncode, 0,
+            "Issue #498: when BOTH WORKTREE_SETUP_WORKTREE_PATH and "
+            "RECIPE_VAR_worktree_setup__worktree_path are unset, the "
+            "fail-loud `:?` guard MUST abort. Got rc=0 — bootstrap "
+            "introduced a silent fallback (Zero-BS violation).\n"
+            f"stdout={result.stdout!r}\n"
+            f"stderr={result.stderr!r}",
+        )
+        # Diagnostic from the `:?` guard must mention worktree_setup so
+        # the operator can trace back to the upstream cause.
+        self.assertIn(
+            "worktree_setup", result.stderr,
+            "Failure diagnostic must mention `worktree_setup` so the "
+            "operator can trace to the upstream sub-recipe.\n"
+            f"stderr={result.stderr}",
+        )
+        # Bootstrap must not leak `unbound variable` from `set -u`
+        # tripping on the inner expansion before the outer `:?` fires.
+        self.assertNotIn(
+            "unbound variable", result.stderr,
+            "Bootstrap must use `:-` on the inner expansion to suppress "
+            "set -u abortion; the OUTER `:?` should be the one that "
+            "fires the diagnostic.\n"
+            f"stderr={result.stderr}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
