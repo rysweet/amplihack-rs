@@ -127,9 +127,6 @@ steps:
       worktree_setup: "{{worktree_setup}}"
       allow_no_op: "{{allow_no_op}}"
       skip_pre_agent_validation: "{{skip_pre_agent_validation}}"
-    # No explicit context needed: task_description and repo_path flow through
-    # from the parent smart-orchestrator context automatically via context merging
-    # in _execute_sub_recipe().
     output: "round_1_result"
 
   - id: "execute-single-round-1-investigation"
@@ -138,11 +135,8 @@ steps:
     condition: |
       'Investigation' in task_type and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') or force_single_workstream == 'true')
     recipe: "investigation-workflow"
-    # Issue #507: investigation-workflow's downstream prompts read
-    # `investigation_question`, but parent context only carries
-    # `task_description`. Forward it explicitly here so the nested recipe
-    # receives a non-empty question. Also re-forward `task_description`
-    # so context_validation steps that still read it keep working.
+    # Issue #507: forward investigation_question — investigation-workflow's
+    # downstream prompts read it, but parent context only carries task_description.
     context:
       investigation_question: "{{task_description}}"
       task_description: "{{task_description}}"
@@ -245,8 +239,6 @@ steps:
       worktree_setup: "{{worktree_setup}}"
       allow_no_op: "{{allow_no_op}}"
       skip_pre_agent_validation: "{{skip_pre_agent_validation}}"
-    # No explicit context needed: task_description and repo_path flow through
-    # from the parent smart-orchestrator context automatically.
     output: "round_1_result"
 
   - id: "execute-single-fallback-blocked-investigation"
@@ -256,8 +248,6 @@ steps:
     condition: |
       'Investigation' in task_type and 'BLOCKED' in recursion_guard and workstream_count != 1 and workstream_count != '1' and workstream_count != ''
     recipe: "investigation-workflow"
-    # Issue #507: forward investigation_question explicitly (see
-    # execute-single-round-1-investigation for rationale).
     context:
       investigation_question: "{{task_description}}"
       task_description: "{{task_description}}"
@@ -392,8 +382,6 @@ steps:
     condition: |
       adaptive_recipe == 'investigation-workflow'
     recipe: "investigation-workflow"
-    # Issue #507: forward investigation_question explicitly so adaptive
-    # recovery does not regress to an empty question.
     context:
       investigation_question: "{{task_description}}"
       task_description: "{{task_description}}"
