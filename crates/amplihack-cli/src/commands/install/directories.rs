@@ -106,12 +106,14 @@ pub(super) fn copytree_manifest(
         copied.push((*dst_rel).to_string());
     }
 
-    let removed_legacy_hooks = prune_legacy_amplihack_hook_assets(claude_dir)?;
-    if removed_legacy_hooks > 0 {
-        println!(
-            "  🧹 Removed {removed_legacy_hooks} legacy Python hook asset(s) from staged amplihack tools"
-        );
-    }
+    // Issue #505: amplifier-bundle/tools/amplihack/hooks/ now intentionally
+    // ships Python shim scripts that delegate to the native amplihack-hooks
+    // binary. They satisfy consumers (recipe-runner, settings.json templates)
+    // that invoke hooks by absolute path. Pruning them post-copy would
+    // immediately undo the staging we just performed, so the pre-#505
+    // `prune_legacy_amplihack_hook_assets` call has been removed. Leftover
+    // pre-#505 Python hooks from earlier installs are harmless: they get
+    // overwritten by the fresh shims via copy_dir_recursive above.
 
     let settings_src = source_root.join("settings.json");
     let settings_dst = claude_dir.join("settings.json");
@@ -172,35 +174,6 @@ pub(super) fn copytree_manifest(
     }
 
     Ok(copied)
-}
-
-pub(super) fn prune_legacy_amplihack_hook_assets(claude_dir: &Path) -> Result<usize> {
-    let hooks_dir = claude_dir.join("tools").join("amplihack").join("hooks");
-    if !hooks_dir.exists() {
-        return Ok(0);
-    }
-
-    let mut removed = 0;
-    for entry in fs::read_dir(&hooks_dir)
-        .with_context(|| format!("failed to read {}", hooks_dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if !entry.file_type()?.is_file()
-            || path.extension().and_then(|ext| ext.to_str()) != Some("py")
-        {
-            continue;
-        }
-        fs::remove_file(&path).with_context(|| format!("failed to remove {}", path.display()))?;
-        removed += 1;
-    }
-
-    if removed > 0 && fs::read_dir(&hooks_dir)?.next().is_none() {
-        fs::remove_dir(&hooks_dir)
-            .with_context(|| format!("failed to remove {}", hooks_dir.display()))?;
-    }
-
-    Ok(removed)
 }
 
 /// Stage the `amplifier-bundle/` tree from the source repo into
