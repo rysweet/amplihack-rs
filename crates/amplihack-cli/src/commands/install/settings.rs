@@ -274,7 +274,7 @@ fn describe_expected_native_hook(entry: &CanonicalHookContractEntry) -> String {
         entry.native_subcmd.unwrap_or_default(),
         format_optional_timeout(entry.timeout),
         format_optional_matcher(entry.matcher),
-        entry.hook_file
+        entry.hook_file.unwrap_or("<native-only>")
     )
 }
 

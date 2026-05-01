@@ -170,7 +170,12 @@ pub(super) struct HookSpec {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct CanonicalHookContractEntry {
     pub event: &'static str,
-    pub hook_file: &'static str,
+    /// Legacy on-disk filename of the Python shim that historically backed
+    /// this hook entry. `None` for events whose `.py` shim was deleted in
+    /// favor of a native `amplihack-hooks` subcommand (issue #522). Kept
+    /// only as descriptive metadata for drift diagnostics — the install
+    /// pipeline does not consult this field to locate or stage hook files.
+    pub hook_file: Option<&'static str>,
     pub native_subcmd: Option<&'static str>,
     pub timeout: Option<u64>,
     pub matcher: Option<&'static str>,
@@ -189,49 +194,53 @@ pub(super) struct ObservedNativeHookContractEntry {
 pub(super) const CANONICAL_AMPLIHACK_HOOK_CONTRACT: &[CanonicalHookContractEntry] = &[
     CanonicalHookContractEntry {
         event: "SessionStart",
-        hook_file: "session_start.py",
+        hook_file: Some("session_start.py"),
         native_subcmd: Some("session-start"),
         timeout: Some(10),
         matcher: None,
     },
     CanonicalHookContractEntry {
         event: "Stop",
-        hook_file: "stop.py",
+        // `stop.py` shim deleted in issue #522 — native `amplihack-hooks stop`
+        // is the only implementation.
+        hook_file: None,
         native_subcmd: Some("stop"),
         timeout: Some(120),
         matcher: None,
     },
     CanonicalHookContractEntry {
         event: "PreToolUse",
-        hook_file: "pre_tool_use.py",
+        hook_file: Some("pre_tool_use.py"),
         native_subcmd: Some("pre-tool-use"),
         timeout: None,
         matcher: Some("*"),
     },
     CanonicalHookContractEntry {
         event: "PostToolUse",
-        hook_file: "post_tool_use.py",
+        // `post_tool_use.py` shim deleted in issue #522.
+        hook_file: None,
         native_subcmd: Some("post-tool-use"),
         timeout: None,
         matcher: Some("*"),
     },
     CanonicalHookContractEntry {
         event: "UserPromptSubmit",
-        hook_file: "workflow_classification_reminder.py",
+        hook_file: Some("workflow_classification_reminder.py"),
         native_subcmd: Some("workflow-classification-reminder"),
         timeout: Some(5),
         matcher: None,
     },
     CanonicalHookContractEntry {
         event: "UserPromptSubmit",
-        hook_file: "user_prompt_submit.py",
+        // `user_prompt_submit.py` shim deleted in issue #522.
+        hook_file: None,
         native_subcmd: Some("user-prompt-submit"),
         timeout: Some(10),
         matcher: None,
     },
     CanonicalHookContractEntry {
         event: "PreCompact",
-        hook_file: "pre_compact.py",
+        hook_file: Some("pre_compact.py"),
         native_subcmd: Some("pre-compact"),
         timeout: Some(30),
         matcher: None,

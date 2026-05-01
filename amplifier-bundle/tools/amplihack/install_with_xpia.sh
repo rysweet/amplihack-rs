@@ -207,7 +207,10 @@ main() {
     MISSING_HOOKS=0
 
     # Check amplihack hooks
-    for hook in "session_start.py" "stop.py" "post_tool_use.py" "pre_compact.py"; do
+    # Issue #522: stop.py and post_tool_use.py shims have been deleted in
+    # favor of native amplihack-hooks subcommands; only out-of-scope shims
+    # remain to be verified here.
+    for hook in "session_start.py" "pre_compact.py"; do
         if [ -f "$HOME/.claude/tools/amplihack/hooks/$hook" ]; then
             print_success "Amplihack $hook found"
         else

@@ -278,9 +278,11 @@ fn install_manifest_deserializes_without_new_fields() {
 #[test]
 fn install_manifest_round_trips_with_new_fields() {
     // New fields serialize and deserialize correctly.
-    let mut manifest = InstallManifest::default();
-    manifest.default_tool = Some("copilot".to_string());
-    manifest.update_check_preference = Some("auto-daily".to_string());
+    let manifest = InstallManifest {
+        default_tool: Some("copilot".to_string()),
+        update_check_preference: Some("auto-daily".to_string()),
+        ..InstallManifest::default()
+    };
 
     let json = serde_json::to_string(&manifest).unwrap();
     let deserialized: InstallManifest = serde_json::from_str(&json).unwrap();
@@ -326,9 +328,11 @@ fn apply_config_overwrites_existing_manifest_fields() {
         hook_scope: interactive::HookScope::Global,
         update_check: interactive::UpdateCheckPreference::AutoDaily,
     };
-    let mut manifest = InstallManifest::default();
-    manifest.default_tool = Some("copilot".to_string());
-    manifest.update_check_preference = Some("disabled".to_string());
+    let mut manifest = InstallManifest {
+        default_tool: Some("copilot".to_string()),
+        update_check_preference: Some("disabled".to_string()),
+        ..InstallManifest::default()
+    };
 
     interactive::apply_config(&config, &mut manifest);
     assert_eq!(
