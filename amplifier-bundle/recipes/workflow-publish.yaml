@@ -32,6 +32,7 @@ context:
 steps:
   - id: "step-14-bump-version"
     agent: "amplihack:architect"
+    working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
     prompt: |
       # Step 14: Bump Version in pyproject.toml (MANDATORY - DO NOT SKIP)
@@ -301,6 +302,7 @@ steps:
   # ==========================================================================
   - id: "step-16b-outside-in-fix-loop"
     agent: "amplihack:builder"
+    working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
     prompt: |
       # Step 16b: Outside-In Testing and Fix Loop (MANDATORY)

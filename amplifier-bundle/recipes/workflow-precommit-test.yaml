@@ -23,6 +23,7 @@ context:
 steps:
   - id: "step-12-run-precommit"
     agent: "amplihack:pre-commit-diagnostic"
+    working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
     prompt: |
       # Step 12: Run Tests and Pre-commit Hooks
@@ -61,6 +62,7 @@ steps:
   # ==========================================================================
   - id: "step-13-local-testing"
     agent: "amplihack:builder"
+    working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
     prompt: |
       # Step 13: Mandatory Outside-In Testing (CANNOT BE SKIPPED)

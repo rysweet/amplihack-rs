@@ -21,6 +21,7 @@ context: {}
 steps:
   - id: "step-05-architecture"
     agent: "amplihack:architect"
+    working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       # Step 5: Research and Design - Architecture
 
@@ -44,6 +45,7 @@ steps:
 
   - id: "step-05b-api-design"
     agent: "amplihack:api-designer"
+    working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       # Step 5b: API Design (if applicable)
 
@@ -61,6 +63,7 @@ steps:
 
   - id: "step-05c-database-design"
     agent: "amplihack:database"
+    working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       # Step 5c: Database Design (if applicable)
 
@@ -78,6 +81,7 @@ steps:
 
   - id: "step-05d-security-review"
     agent: "amplihack:security"
+    working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       # Step 5d: Security Requirements Review
 
@@ -97,6 +101,7 @@ steps:
 
   - id: "step-05e-design-consolidation"
     agent: "amplihack:architect"
+    working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       # Step 5e: Design Consolidation
 
@@ -126,6 +131,7 @@ steps:
   # ==========================================================================
   - id: "step-06-documentation"
     agent: "amplihack:documentation-writer"
+    working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       # Step 6: Retcon Documentation Writing
 
@@ -147,6 +153,7 @@ steps:
 
   - id: "step-06b-documentation-review"
     agent: "amplihack:architect"
+    working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       # Step 6b: Documentation Review
 
@@ -163,6 +170,7 @@ steps:
 
   - id: "step-06c-documentation-refinement"
     agent: "amplihack:documentation-writer"
+    working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
       # Step 6c: Documentation Refinement
 
