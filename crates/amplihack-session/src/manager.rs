@@ -141,11 +141,13 @@ impl SessionManager {
         };
 
         if !force && path.exists() {
-            // Hash short-circuit: skip write if serialized payload matches existing.
-            let new_json = serde_json::to_string(&payload).map_err(|e| SessionError::Json {
-                path: path.clone(),
-                source: e,
-            })?;
+            // Skip rewrite if serialized payload byte-identical to existing file.
+            // Use to_string_pretty to match safe_write_json's on-disk format.
+            let new_json =
+                serde_json::to_string_pretty(&payload).map_err(|e| SessionError::Json {
+                    path: path.clone(),
+                    source: e,
+                })?;
             if let Ok(existing) = fs::read_to_string(&path) {
                 if existing == new_json {
                     return Ok(true);

@@ -188,21 +188,24 @@ pub fn get_file_checksum(path: impl AsRef<Path>, algorithm: ChecksumAlgorithm) -
 }
 
 fn hash_file<D: Digest>(p: &Path) -> Result<String> {
-    let mut f = fs::File::open(p).map_err(|e| SessionError::io(p, e))?;
+    let f = fs::File::open(p).map_err(|e| SessionError::io(p, e))?;
+    let mut reader = std::io::BufReader::with_capacity(64 * 1024, f);
     let mut hasher = D::new();
-    let mut buf = [0u8; 8192];
+    let mut buf = [0u8; 64 * 1024];
     loop {
-        let n = f.read(&mut buf).map_err(|e| SessionError::io(p, e))?;
+        let n = reader.read(&mut buf).map_err(|e| SessionError::io(p, e))?;
         if n == 0 {
             break;
         }
         hasher.update(&buf[..n]);
     }
-    Ok(hasher.finalize().iter().fold(String::new(), |mut s, b| {
-        use std::fmt::Write;
+    let digest = hasher.finalize();
+    let mut s = String::with_capacity(digest.len() * 2);
+    use std::fmt::Write;
+    for b in digest.iter() {
         let _ = write!(s, "{b:02x}");
-        s
-    }))
+    }
+    Ok(s)
 }
 
 /// Copy a file, optionally verifying both files have identical SHA-256.

@@ -256,7 +256,8 @@ impl ToolkitLogger {
             .open(&path)
             .map_err(|e| SessionError::io(&path, e))?;
         writeln!(f, "{line}").map_err(|e| SessionError::io(&path, e))?;
-        f.sync_all().map_err(|e| SessionError::io(&path, e))?;
+        // Note: no per-line fsync — log durability relies on OS flush. Per-line
+        // sync_all() would make logging 100-1000x slower for high-volume callers.
         Ok(())
     }
 
@@ -364,7 +365,7 @@ impl ToolkitLogger {
         if let Some(n) = limit {
             if all.len() > n {
                 let skip = all.len() - n;
-                all = all.into_iter().skip(skip).collect();
+                all.drain(0..skip);
             }
         }
         Ok(all)
