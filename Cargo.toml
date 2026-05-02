@@ -24,6 +24,7 @@ members = [
     "crates/amplihack-multilspy",
     "crates/amplihack-remote",
     "crates/amplihack-orchestration",
+    "crates/amplihack-session",
     "bins/amplihack",
     "bins/amplihack-asset-resolver",
     "bins/amplihack-hooks",
