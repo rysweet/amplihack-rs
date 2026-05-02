@@ -366,59 +366,55 @@ Unified session lifecycle management for Claude Code workflows.
 
 ### Session Toolkit
 
-**File**: `amplihack/session/session_toolkit.py`
+**Crate**: `amplihack-session` (`crates/amplihack-session/`)
+
+> **Note (rysweet/amplihack-rs#532):** the bundled `amplihack/session/`
+> Python tree was removed in deyhonification wave 3b. Session management
+> is now provided by the native Rust `amplihack-session` crate.
 
 **Purpose**: Single interface for all session management capabilities
 
 **Usage**:
 
-```python
-from amplihack.session.session_toolkit import SessionToolkit
+```rust
+use amplihack_session::{quick_session, SessionConfig, SessionToolkit};
+use std::path::PathBuf;
 
-# Create toolkit
-toolkit = SessionToolkit(
-    runtime_dir=Path(".claude/runtime"),
-    auto_save=True,
-    log_level="INFO"
-)
+// Create toolkit
+let mut toolkit = SessionToolkit::new(
+    PathBuf::from(".claude/runtime"),
+    true,        // auto_save
+    "INFO",
+)?;
 
-# Context manager usage
-with toolkit.session("analysis_task") as session:
-    # Get logger
-    logger = toolkit.get_logger()
-    logger.info("Starting analysis")
+// RAII helper (mirrors the Python `with toolkit.session(...)` block).
+quick_session("analysis_task", |toolkit, sid| {
+    let session = toolkit.manager_mut().get_session(sid).unwrap();
+    let _ = session.execute_command("analyze code", None, serde_json::json!({}))?;
+    Ok::<_, amplihack_session::SessionError>(())
+})?;
 
-    # Execute commands
-    result = session.execute_command("analyze code")
+// List sessions
+let active = toolkit.list_sessions(true);
 
-    # Session is automatically saved on exit
+// Resume session
+toolkit.resume_session("existing-id")?;
 
-# List sessions
-sessions = toolkit.list_sessions(active_only=True)
-
-# Resume session
-with toolkit.session("session_id", resume=True) as session:
-    # Continue previous work
-    pass
-
-# Get statistics
-stats = toolkit.get_toolkit_stats()
-print(f"Total sessions: {stats['total_sessions']}")
-
-# Cleanup old data
-cleanup_results = toolkit.cleanup_old_data(
-    session_age_days=30,
-    log_age_days=7,
-    temp_age_hours=24
-)
+// Statistics & cleanup
+let stats = toolkit.get_toolkit_stats();
+let cleaned = toolkit.cleanup_old_data(30, 7, 24)?;
 ```
 
-**Components**:
+**Modules** (under `crates/amplihack-session/src/`):
 
-- `claude_session.py` - Core session implementation
-- `session_manager.py` - Multi-session coordination
-- `toolkit_logger.py` - Structured logging
-- `file_utils.py` - Safe file operations
+- `session.rs` - `ClaudeSession` + `CommandExecutor` trait (replaces the
+  Python heartbeat thread with explicit `check_health()`).
+- `manager.rs` - `SessionManager`: persist / resume / archive / cleanup
+  (auto-save thread replaced with explicit `save_all_active()`).
+- `logger.rs` - `ToolkitLogger`: structured JSON-line writer with
+  size+date rotation and `OperationContext` RAII timing.
+- `file_utils.rs` + `batch.rs` - `safe_read_json` / `safe_write_json`,
+  checksums, and `BatchFileOperations`.
 
 ## Reflection System
 
@@ -546,18 +542,16 @@ print(f"Issue URL: {result['url']}")
 
 ### 2. Session Management
 
-```python
-from amplihack.session.session_toolkit import SessionToolkit
+```rust
+use amplihack_session::{quick_session, SessionToolkit};
 
-toolkit = SessionToolkit()
+let mut toolkit = SessionToolkit::new(".claude/runtime", true, "INFO")?;
 
-with toolkit.session("my_task") as session:
-    logger = toolkit.get_logger()
-    logger.info("Task started")
-
-    # Your work here
-
-    toolkit.save_session()
+quick_session("my_task", |toolkit, sid| {
+    toolkit.logger().info("Task started", None)?;
+    // ...your work here...
+    Ok::<_, amplihack_session::SessionError>(())
+})?;
 ```
 
 ### 3. Memory Storage
@@ -590,14 +584,19 @@ results = run_parallel(processes, max_workers=3)
 ### Complete Workflow Example
 
 ```python
+# NOTE: session management has been ported to the Rust `amplihack-session`
+# crate (rysweet/amplihack-rs#532). The example below shows how the
+# remaining Python-side helpers compose with the Rust toolkit via shell
+# invocation. For a pure-Rust example see
+# `crates/amplihack-session/examples/advanced_scenarios.rs`.
 from pathlib import Path
-from amplihack.session.session_toolkit import SessionToolkit
 from amplihack.memory.interface import AgentMemory
 from amplihack.orchestration.claude_process import ClaudeProcess
 from amplihack.orchestration.execution import run_parallel
 
-# Initialize components
-toolkit = SessionToolkit()
+# Session lifecycle is now driven by the Rust `amplihack-session` crate;
+# the Python placeholder below is illustrative only.
+toolkit = None  # Use the Rust SessionToolkit, see crates/amplihack-session
 
 with toolkit.session("comprehensive_analysis") as session:
     logger = toolkit.get_logger("main")

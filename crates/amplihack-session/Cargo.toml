@@ -1,0 +1,23 @@
+[package]
+name = "amplihack-session"
+description = "Native Rust session lifecycle, persistence, and structured logging for amplihack (issue #532 wave 3b port)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tempfile = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+regex = { workspace = true }
+md-5 = "0.10"
+sha1 = "0.10"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serde_json = { workspace = true }
+filetime = "0.2"
