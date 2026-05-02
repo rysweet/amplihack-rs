@@ -83,27 +83,22 @@ pub(super) fn copytree_manifest(
             }
         }
 
-        let source_dir = source_root.join(src_rel);
-        if !source_dir.exists() {
-            println!("  ⚠️  Warning: {src_rel} not found in source, skipping");
-            continue;
-        }
+        let source_dir = required_source_dir(source_root, src_rel)?;
 
-        let target_dir = claude_dir.join(dst_rel);
-        if let Some(parent) = target_dir.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-
-        copy_dir_recursive(&source_dir, &target_dir)?;
-        if dst_rel.starts_with("tools/") {
-            let files_updated = set_hook_permissions(&target_dir)?;
-            if files_updated > 0 {
-                println!("  🔐 Set execute permissions on {files_updated} hook files");
-            }
-        }
-        println!("  ✅ Copied {src_rel} -> {dst_rel}");
+        copy_mapped_dir(&source_dir, src_rel, claude_dir, dst_rel)?;
         copied.push((*dst_rel).to_string());
+    }
+
+    if layout == SourceLayout::Bundle {
+        for (src_rel, dst_rel) in SOURCE_CONDITIONAL_BUNDLE_DIR_MAPPING {
+            let source_dir = source_root.join(src_rel);
+            if !source_dir.exists() {
+                continue;
+            }
+            let source_dir = required_source_dir(source_root, src_rel)?;
+            copy_mapped_dir(&source_dir, src_rel, claude_dir, dst_rel)?;
+            copied.push((*dst_rel).to_string());
+        }
     }
 
     // Issue #505: amplifier-bundle/tools/amplihack/hooks/ now intentionally
@@ -131,8 +126,18 @@ pub(super) fn copytree_manifest(
     for file in essential_files(layout) {
         let source_file = source_root.join(file);
         if !source_file.exists() {
-            println!("  ⚠️  Warning: {file} not found in source, skipping");
-            continue;
+            anyhow::bail!(
+                "required framework source file is missing: {} (expected at {})",
+                file,
+                source_file.display()
+            );
+        }
+        if !source_file.is_file() {
+            anyhow::bail!(
+                "required framework source path is not a file: {} (at {})",
+                file,
+                source_file.display()
+            );
         }
         let target_file = claude_dir.join(file);
         if let Some(parent) = target_file.parent() {
@@ -202,6 +207,61 @@ pub(super) fn copytree_manifest(
     );
 
     Ok(copied)
+}
+
+fn required_source_dir(source_root: &Path, src_rel: &str) -> Result<PathBuf> {
+    let source_dir = source_root.join(src_rel);
+    let metadata = fs::symlink_metadata(&source_dir).with_context(|| {
+        format!(
+            "required framework source directory is missing: {} (expected at {})",
+            src_rel,
+            source_dir.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "required framework source directory is a symlink: {} (at {})",
+            src_rel,
+            source_dir.display()
+        );
+    }
+    if !metadata.is_dir() {
+        anyhow::bail!(
+            "required framework source path is not a directory: {} (at {})",
+            src_rel,
+            source_dir.display()
+        );
+    }
+    Ok(source_dir)
+}
+
+fn copy_mapped_dir(
+    source_dir: &Path,
+    src_rel: &str,
+    claude_dir: &Path,
+    dst_rel: &str,
+) -> Result<()> {
+    let target_dir = claude_dir.join(dst_rel);
+    if let Some(parent) = target_dir.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    copy_dir_recursive(source_dir, &target_dir).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            source_dir.display(),
+            target_dir.display()
+        )
+    })?;
+    if dst_rel.starts_with("tools/") {
+        let files_updated = set_hook_permissions(&target_dir)?;
+        if files_updated > 0 {
+            println!("  🔐 Set execute permissions on {files_updated} hook files");
+        }
+    }
+    println!("  ✅ Copied {src_rel} -> {dst_rel}");
+    Ok(())
 }
 
 /// Stage the `amplifier-bundle/` tree from the source repo into

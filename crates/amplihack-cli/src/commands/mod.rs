@@ -32,7 +32,11 @@ use anyhow::Result;
 /// Dispatch a parsed CLI command to the appropriate handler.
 pub fn dispatch(command: Commands) -> Result<()> {
     match command {
-        Commands::Install { local, interactive } => install::run_install(local, interactive),
+        Commands::Install {
+            local,
+            interactive,
+            verbose: _,
+        } => install::run_install(local, interactive),
         Commands::Uninstall => install::run_uninstall(),
         Commands::Launch {
             resume,

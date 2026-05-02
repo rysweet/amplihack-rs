@@ -46,6 +46,7 @@ fs4 = { version = "0.13", features = ["sync"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+assert_cmd = "2"
 tempfile = { workspace = true }
 anyhow = { workspace = true }
 

@@ -69,6 +69,12 @@ pub(super) const BUNDLE_DIR_MAPPING: &[(&str, &str)] = &[
     ("modules", "modules"),
 ];
 
+/// Bundle-layout categories that are required when present in the source
+/// bundle. The current bundle does not ship these top-level directories, but
+/// future bundles must not silently drop them if they appear.
+pub(super) const SOURCE_CONDITIONAL_BUNDLE_DIR_MAPPING: &[(&str, &str)] =
+    &[("commands", "commands"), ("hooks", "hooks")];
+
 /// Returns the source→destination mapping table for the given layout.
 pub(super) fn dir_mapping(layout: SourceLayout) -> &'static [(&'static str, &'static str)] {
     match layout {

@@ -3,7 +3,7 @@
 use super::hooks::{ensure_array, ensure_object, update_hook_paths};
 use super::paths::{global_settings_path, xpia_hooks_dir};
 use super::types::*;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
 use std::fs;
@@ -102,15 +102,20 @@ pub(super) fn ensure_settings_json(
     Ok((true, registered_events))
 }
 
-pub(super) fn verify_framework_assets(claude_dir: &Path) -> Result<bool> {
+pub(super) fn verify_framework_assets(claude_dir: &Path) -> Result<()> {
     let missing = missing_framework_paths(claude_dir)?;
     if missing.is_empty() {
         println!("  ✅ Required framework assets found");
     } else {
         println!("  ❌ Missing required framework assets:");
-        for path in missing {
+        for path in &missing {
             println!("     • {path}");
         }
+        bail!(
+            "required framework assets are missing from {}: {}",
+            claude_dir.display(),
+            missing.join(", ")
+        );
     }
 
     let xpia_dir = xpia_hooks_dir()?;
@@ -127,7 +132,7 @@ pub(super) fn verify_framework_assets(claude_dir: &Path) -> Result<bool> {
         }
     }
 
-    Ok(missing_framework_paths(claude_dir)?.is_empty())
+    Ok(())
 }
 
 pub(super) fn read_settings_json(settings_path: &Path) -> Result<Value> {
