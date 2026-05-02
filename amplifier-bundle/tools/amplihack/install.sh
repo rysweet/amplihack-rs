@@ -42,71 +42,62 @@ fi
 
 # Update hook paths in settings.json with comprehensive path handling
 if [ -f "$HOME/.claude/settings.json" ]; then
-  echo "Updating hook paths in settings.json for global installation..."
+  echo "Updating hook commands in settings.json for global installation..."
 
-  # Check current path format and report status
+  # Issue #522: the .py shims at tools/amplihack/hooks/{stop,post_tool_use}.py
+  # have been deleted. Any prior settings.json that referenced them — under
+  # any path format (relative, tilde, absolute) — must be rewritten to invoke
+  # the native `amplihack-hooks` binary instead. session_start.py is out of
+  # scope for #522 and continues to be rewritten to its absolute path.
+  HOOKS_BIN="amplihack-hooks"
+
   if grep -q '"\.claude/tools/amplihack/hooks/' "$HOME/.claude/settings.json"; then
-    echo "  → Found relative paths, converting to absolute paths..."
-    PATH_FORMAT="relative"
+    echo "  → Found relative paths, converting hook commands..."
   elif grep -q '"~/.claude/tools/amplihack/hooks/' "$HOME/.claude/settings.json"; then
-    echo "  → Found tilde paths, converting to absolute paths..."
-    PATH_FORMAT="tilde"
+    echo "  → Found tilde paths, converting hook commands..."
   elif grep -q "\"$HOME/.claude/tools/amplihack/hooks/" "$HOME/.claude/settings.json"; then
-    echo "  → Paths already absolute, checking consistency..."
-    PATH_FORMAT="absolute"
+    echo "  → Found absolute paths, converting hook commands..."
   else
-    echo "  → No amplihack hook paths found, this may be a new installation"
-    PATH_FORMAT="unknown"
+    echo "  → No amplihack hook paths found, this may already be a native install"
   fi
 
-  # Comprehensive sed replacement handling all path formats
+  # Rewrite stop.py and post_tool_use.py references to native subcommands
+  # (issue #522). Keep session_start.py as an absolute path (out of scope).
   sed -i.tmp \
     -e 's|"\.claude/tools/amplihack/hooks/session_start\.py"|"'"$HOME"'/.claude/tools/amplihack/hooks/session_start.py"|g' \
     -e 's|"~/.claude/tools/amplihack/hooks/session_start\.py"|"'"$HOME"'/.claude/tools/amplihack/hooks/session_start.py"|g' \
-    -e 's|"'"$HOME"'/.claude/tools/amplihack/hooks/session_start\.py"|"'"$HOME"'/.claude/tools/amplihack/hooks/session_start.py"|g' \
-    -e 's|"\.claude/tools/amplihack/hooks/stop\.py"|"'"$HOME"'/.claude/tools/amplihack/hooks/stop.py"|g' \
-    -e 's|"~/.claude/tools/amplihack/hooks/stop\.py"|"'"$HOME"'/.claude/tools/amplihack/hooks/stop.py"|g' \
-    -e 's|"'"$HOME"'/.claude/tools/amplihack/hooks/stop\.py"|"'"$HOME"'/.claude/tools/amplihack/hooks/stop.py"|g' \
-    -e 's|"\.claude/tools/amplihack/hooks/post_tool_use\.py"|"'"$HOME"'/.claude/tools/amplihack/hooks/post_tool_use.py"|g' \
-    -e 's|"~/.claude/tools/amplihack/hooks/post_tool_use\.py"|"'"$HOME"'/.claude/tools/amplihack/hooks/post_tool_use.py"|g' \
-    -e 's|"'"$HOME"'/.claude/tools/amplihack/hooks/post_tool_use\.py"|"'"$HOME"'/.claude/tools/amplihack/hooks/post_tool_use.py"|g' \
+    -e 's|"[^"]*tools/amplihack/hooks/stop\.py"|"'"$HOOKS_BIN"' stop"|g' \
+    -e 's|"[^"]*tools/amplihack/hooks/post_tool_use\.py"|"'"$HOOKS_BIN"' post-tool-use"|g' \
+    -e 's|"[^"]*tools/amplihack/hooks/user_prompt_submit\.py"|"'"$HOOKS_BIN"' user-prompt-submit"|g' \
+    -e 's|"[^"]*tools/amplihack/hooks/session_end\.py"|"'"$HOOKS_BIN"' session-end"|g' \
+    -e 's|"[^"]*tools/amplihack/hooks/session_stop\.py"|"'"$HOOKS_BIN"' session-stop"|g' \
+    -e 's|"[^"]*tools/amplihack/hooks/precommit_prefs\.py"|"'"$HOOKS_BIN"' precommit-prefs"|g' \
     "$HOME/.claude/settings.json"
 
   if [ $? -eq 0 ]; then
-    # Verify the changes were applied correctly
-    UPDATED_PATHS=$(grep -c "\"$HOME/.claude/tools/amplihack/hooks/" "$HOME/.claude/settings.json")
+    rm -f "$HOME/.claude/settings.json.tmp"
+    NATIVE_REFS=$(grep -c "amplihack-hooks " "$HOME/.claude/settings.json" 2>/dev/null || echo 0)
+    echo "  ✅ Hook commands updated; $NATIVE_REFS native amplihack-hooks invocations registered"
 
-    if [ "$UPDATED_PATHS" -eq 3 ]; then
-      rm "$HOME/.claude/settings.json.tmp"
-      echo "  ✅ Hook paths updated successfully (found $UPDATED_PATHS hook entries)"
-      echo "  → Session start, stop, and post-tool-use hooks configured"
-    elif [ "$UPDATED_PATHS" -gt 0 ]; then
-      rm "$HOME/.claude/settings.json.tmp"
-      echo "  ⚠️  Partial update: $UPDATED_PATHS of 3 hook paths updated"
-      echo "  → Some hook paths may already be correct or have different names"
-    else
-      echo "  ⚠️  Warning: No hook paths were updated"
-      echo "  → This might indicate the settings.json format has changed"
-      echo "  → Hooks may still work if paths are already correct"
-      rm "$HOME/.claude/settings.json.tmp"
-    fi
-
-    # Verify hook files exist
+    # Verify the only remaining hook file we still ship is session_start.py
+    # (out of scope for #522). The other hook commands now invoke the
+    # native binary, which the install pipeline stages via amplihack-hooks
+    # (see amplihack-cli install flow).
     echo "Verifying hook files exist..."
     MISSING_HOOKS=0
-    for hook in "session_start.py" "stop.py" "post_tool_use.py"; do
+    for hook in "session_start.py"; do
       if [ -f "$HOME/.claude/tools/amplihack/hooks/$hook" ]; then
         echo "  ✅ $hook found"
       else
-        echo "  ❌ $hook missing"
+        echo "  ⚠️  $hook missing (out-of-scope; install pipeline normally provides it)"
         MISSING_HOOKS=$((MISSING_HOOKS + 1))
       fi
     done
 
     if [ $MISSING_HOOKS -eq 0 ]; then
-      echo "  ✅ All hook files verified"
+      echo "  ✅ All in-scope hook files verified"
     else
-      echo "  ⚠️  Warning: $MISSING_HOOKS hook files missing"
+      echo "  ⚠️  Warning: $MISSING_HOOKS expected hook files missing"
     fi
 
     # StatusLine Configuration Management
@@ -209,7 +200,7 @@ else
         "hooks": [
           {
             "type": "command",
-            "command": "HOME_PLACEHOLDER/.claude/tools/amplihack/hooks/stop.py",
+            "command": "amplihack-hooks stop",
             "timeout": 30000
           }
         ]
@@ -221,7 +212,7 @@ else
         "hooks": [
           {
             "type": "command",
-            "command": "HOME_PLACEHOLDER/.claude/tools/amplihack/hooks/post_tool_use.py"
+            "command": "amplihack-hooks post-tool-use"
           }
         ]
       }

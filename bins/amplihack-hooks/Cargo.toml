@@ -24,3 +24,7 @@ serde_json = { workspace = true }
 [[test]]
 name = "hook_dispatch"
 path = "../../tests/integration/hook_dispatch_test.rs"
+
+[[test]]
+name = "hook_aliases"
+path = "../../tests/integration/hook_aliases_test.rs"

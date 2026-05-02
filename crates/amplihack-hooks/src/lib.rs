@@ -15,6 +15,8 @@ pub mod post_tool_use;
 pub mod pre_compact;
 /// Pre-tool-use hook: decides whether to allow or deny a tool invocation.
 pub mod pre_tool_use;
+/// Pre-commit-prefs hook: no-op stdin drain (replaces precommit_prefs.py).
+pub mod precommit_prefs;
 /// Hook protocol traits and failure policies.
 pub mod protocol;
 /// Session start hook: initializes session state and injects context.
