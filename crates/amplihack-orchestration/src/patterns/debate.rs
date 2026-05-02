@@ -285,14 +285,11 @@ fn build_transcript(all_rounds: &[RoundData], perspective_names: &[String]) -> S
                 && r.is_success()
             {
                 transcript.push_str(&format!("\n## {} PERSPECTIVE:\n", name.to_uppercase()));
-                let body = if r.output.len() > 3000 {
-                    let mut s = r.output[..3000].to_string();
-                    s.push_str("\n...(truncated)");
-                    s
-                } else {
-                    r.output.clone()
-                };
-                transcript.push_str(&body);
+                let truncated = crate::text_utils::truncate_at_char_boundary(&r.output, 3000);
+                transcript.push_str(truncated);
+                if truncated.len() < r.output.len() {
+                    transcript.push_str("\n...(truncated)");
+                }
             }
         }
     }

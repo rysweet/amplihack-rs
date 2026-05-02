@@ -181,8 +181,10 @@ pub async fn run_n_version(
     }
 
     let rationale = if let Some(idx) = lower.find("## rationale") {
-        let end = (idx + 1000).min(comparison_result.output.len());
-        comparison_result.output[idx..end].to_string()
+        // `idx` is a valid byte boundary (from `find`), but `idx + 1000`
+        // may land mid-codepoint — use UTF-8-safe truncation.
+        crate::text_utils::truncate_at_char_boundary(&comparison_result.output[idx..], 1000)
+            .to_string()
     } else {
         "See comparison output for full rationale".to_string()
     };
@@ -265,18 +267,14 @@ fn build_comparison_prompt(
          IMPLEMENTATIONS GENERATED:\n{summary}\nFULL OUTPUTS:\n",
     );
 
+    let bar = "=".repeat(80);
     for (i, r) in versions.iter().enumerate() {
         let p = profiles[i % profiles.len()];
-        let bar = "=".repeat(80);
-        let truncated = if r.output.len() > 5000 {
+        let body = crate::text_utils::truncate_at_char_boundary(&r.output, 5000);
+        let truncated = if body.len() < r.output.len() {
             "...(truncated)"
         } else {
             ""
-        };
-        let body = if r.output.len() > 5000 {
-            &r.output[..5000]
-        } else {
-            r.output.as_str()
         };
         prompt.push_str(&format!(
             "\n\n{bar}\nVERSION {} ({}) - Exit Code: {}\n{bar}\n\n{}{}\n",
