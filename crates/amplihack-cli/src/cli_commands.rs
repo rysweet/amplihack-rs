@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use super::{
     BuilderCommands, MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands,
-    QueryCodeCommands, RecipeCommands, ReflectCommands,
+    QueryCodeCommands, RecipeCommands, ReflectCommands, RemoteCommands,
 };
 
 #[derive(Subcommand, Debug)]
@@ -201,6 +201,11 @@ pub enum Commands {
     Builder {
         #[command(subcommand)]
         command: BuilderCommands,
+    },
+    /// Remote execution and detached session management
+    Remote {
+        #[command(subcommand)]
+        command: RemoteCommands,
     },
     /// Import blarify code-graph JSON into the native code-graph store
     IndexCode {

@@ -8,6 +8,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 
 - [Hive Mind — Getting Started](./tutorials/hive-mind-getting-started.md) — Fastest path from a clean checkout to a real distributed hive eval using `amplihack hive`
 - [Hive Mind — Tutorial](./tutorials/hive-mind-tutorial.md) — Federated hive mind walkthrough: in-memory, federation, LearningAgent integration, distributed agents, Azure deployment, eval
+- [Run Remote Sessions](./remote-sessions/TUTORIAL.md) — Start, monitor, script, and clean up remote Azure VM sessions
 
 ### How-To Guides
 
@@ -63,6 +64,8 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 - [Memory Backend](./reference/memory-backend.md) — `BackendChoice` values, env vars, flat and hierarchical schema, transfer formats, and security properties
 - [amplihack doctor](./reference/doctor-command.md) — Full CLI reference for the `doctor` subcommand
 - [amplihack pr watch-and-merge](./reference/pr-watch-and-merge-command.md) — Full CLI reference for watching CI checks and auto-merging pull requests
+- [amplihack remote](./remote-sessions/CLI_REFERENCE.md) — Full CLI reference for one-shot remote execution and detached session management
+- [amplihack-remote API](./reference/amplihack-remote-api.md) — Rust crate API for remote execution, VM pooling, session state, and output capture
 - [Agent Configuration](./reference/agent-configuration.md) — Complete configuration reference for agents, memory, eval, and hive
 - [amplihack-agent-core API](./reference/agent-core-api.md) — Agent lifecycle, session management, and OODA loop
 - [amplihack-domain-agents API](./reference/domain-agents-api.md) — Teaching, code review, and meeting synthesizer agents

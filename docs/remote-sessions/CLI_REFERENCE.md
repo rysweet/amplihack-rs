@@ -1,435 +1,520 @@
 # Remote Sessions CLI Reference
 
-Complete command reference for `amplihack remote` session management.
+`amplihack remote` runs amplihack work on Azure VMs through the native Rust
+`amplihack-remote` crate. It supports one-shot remote execution and detached
+tmux-backed sessions that can continue after the local terminal disconnects.
 
-## Command Overview
+This command is implemented by the Rust CLI. The historical Python remote tool
+is not installed or required.
 
+## Contents
+
+- [Command overview](#command-overview)
+- [amplihack remote exec](#amplihack-remote-exec)
+- [amplihack remote list](#amplihack-remote-list)
+- [amplihack remote start](#amplihack-remote-start)
+- [amplihack remote output](#amplihack-remote-output)
+- [amplihack remote kill](#amplihack-remote-kill)
+- [amplihack remote status](#amplihack-remote-status)
+- [Configuration](#configuration)
+- [State file](#state-file)
+- [Exit codes](#exit-codes)
+- [Troubleshooting](#troubleshooting)
+
+## Command overview
+
+```bash
+amplihack remote <subcommand> [options] [arguments]
 ```
-amplihack remote <command> [options] [arguments]
 
-Commands:
-  list       List all sessions
-  start      Start one or more detached sessions
-  output     View session output
-  kill       Terminate a session
-  status     Show pool status
-  prime      Pre-warm VMs (future enhancement)
+| Subcommand | Purpose |
+| ---------- | ------- |
+| `exec` | Run one amplihack command synchronously on a remote VM and integrate results locally |
+| `list` | List tracked detached sessions |
+| `start` | Start one or more detached remote sessions |
+| `output` | Capture output from a detached tmux session |
+| `kill` | Terminate a detached session and release pool capacity |
+| `status` | Show VM pool and session counts |
+
+No other `remote` subcommands are part of the supported interface.
+
+## `amplihack remote exec`
+
+Run one amplihack command on a remote Azure VM, wait for it to finish, retrieve
+logs and git state, integrate results into the local repository, and clean up the
+VM unless cleanup is disabled or the VM is preserved for debugging.
+
+```bash
+amplihack remote exec <COMMAND> <PROMPT> [OPTIONS] [-- <AZLIN_ARGS>...]
 ```
 
-## Commands
+### Arguments
 
-### amplihack remote list
+| Argument | Values | Description |
+| -------- | ------ | ----------- |
+| `COMMAND` | `auto`, `ultrathink`, `analyze`, `fix` | Amplihack command mode to run remotely |
+| `PROMPT` | non-empty string | Task prompt passed to the remote amplihack command |
+| `AZLIN_ARGS` | any azlin arguments | Extra arguments forwarded to azlin after `--` |
 
-List all tracked sessions.
+### Options
+
+| Option | Default | Description |
+| ------ | ------- | ----------- |
+| `--max-turns <N>` | `10` | Maximum agent turns. Must be from `1` through `50`. |
+| `--vm-size <SKU>` | `Standard_D2s_v3` | Azure VM SKU for synchronous execution. |
+| `--vm-name <NAME>` | none | Reuse a specific VM. |
+| `--keep-vm` | `false` | Keep the VM after execution. |
+| `--no-reuse` | `false` | Always provision a fresh VM. |
+| `--timeout <MINUTES>` | `120` | Maximum remote execution time. Must be from `5` through `480`. |
+| `--region <REGION>` | azlin default | Azure region for provisioning. |
+| `--port <PORT>` | none | Reuse an existing local bastion tunnel port. |
+
+### Behavior
+
+`ANTHROPIC_API_KEY` must be present in the local environment. The key is copied
+into the remote command environment so the agent process can run on the VM. The
+CLI validates this before packaging the repository or provisioning a VM.
+
+`exec` runs the seven-step synchronous workflow:
+
+1. Validate that the current directory is a git repository and credentials are present.
+2. Package repository context and scan for secrets.
+3. Provision or reuse a VM through azlin.
+4. Transfer the context archive to the VM.
+5. Run `amplihack claude --<COMMAND> --max-turns <N> -- -p "<PROMPT>"` remotely.
+6. Retrieve logs and git state, then integrate results locally.
+7. Clean up the VM unless `--keep-vm` is set.
+
+If the remote command exits non-zero without timing out, the VM is preserved for
+debugging even when `--keep-vm` was not passed. Timed-out executions follow the
+normal cleanup rule.
+
+### Examples
+
+```bash
+# Run the standard workflow remotely.
+amplihack remote exec auto "implement user authentication"
+
+# Give a complex task more turns.
+amplihack remote exec ultrathink "analyze issue #536 and submit a PR" --max-turns 30
+
+# Preserve a named VM for inspection after the run.
+amplihack remote exec fix "repair the failing install smoke test" \
+  --vm-name amplihack-azureuser-debug \
+  --keep-vm
+
+# Forward azlin-specific arguments after --.
+amplihack remote exec analyze "inspect quota usage" -- --subscription "Engineering"
+```
+
+## `amplihack remote list`
+
+List detached remote sessions tracked in the local remote state file.
 
 ```bash
 amplihack remote list [OPTIONS]
 ```
 
-**Options:**
+### Options
 
-| Option      | Type   | Default | Description                                               |
-| ----------- | ------ | ------- | --------------------------------------------------------- |
-| `--status`  | Choice | all     | Filter by status: running, completed, failed, killed, all |
-| `--json`    | Flag   | False   | Output as JSON                                            |
-| `--verbose` | Flag   | False   | Show full prompts and details                             |
+| Option | Default | Description |
+| ------ | ------- | ----------- |
+| `--status <STATUS>` | all statuses | Filter by `pending`, `running`, `completed`, `failed`, or `killed`. |
+| `--json` | `false` | Print sessions as formatted JSON. |
 
-**Examples:**
+### Human output
+
+```text
+SESSION                        VM                               STATUS     AGE      PROMPT
+------------------------------------------------------------------------------------------------------------------------
+sess-20260502-203014-4f2a      amplihack-azureuser-20260502     running    12m      implement remote CLI parser
+sess-20260502-195500-9b17      amplihack-azureuser-20260502     completed  1h       update API documentation
+
+Total: 2 session(s)
+```
+
+If no sessions match, the command prints:
+
+```text
+No remote sessions found.
+```
+
+### JSON output
+
+`--json` prints an array of session objects:
+
+```json
+[
+  {
+    "session_id": "sess-20260502-203014-4f2a",
+    "vm_name": "amplihack-azureuser-20260502",
+    "workspace": "/workspace/sess-20260502-203014-4f2a",
+    "tmux_session": "sess-20260502-203014-4f2a",
+    "prompt": "implement remote CLI parser",
+    "command": "auto",
+    "max_turns": 10,
+    "status": "running",
+    "memory_mb": 32768,
+    "created_at": "2026-05-02T20:30:14Z",
+    "started_at": "2026-05-02T20:31:02Z",
+    "completed_at": null,
+    "exit_code": null
+  }
+]
+```
+
+## `amplihack remote start`
+
+Start one or more prompts as detached tmux sessions on pooled Azure VMs.
 
 ```bash
-# List all sessions
-amplihack remote list
-
-# List only running sessions
-amplihack remote list --status running
-
-# JSON output for scripting
-amplihack remote list --json
-
-# Verbose output with full prompts
-amplihack remote list --verbose
+amplihack remote start [OPTIONS] <PROMPT>...
 ```
 
-**Output Format:**
+### Arguments
 
-```
-SESSION                    VM                              STATUS    AGE     PROMPT
-sess-20251125-143022-abc   amplihack-user-20251125-1430    running   5m      implement user auth...
-sess-20251125-143025-def   amplihack-user-20251125-1430    running   3m      add pagination to...
-sess-20251125-140000-xyz   amplihack-user-20251125-1400    completed 2h      write unit tests...
-```
+| Argument | Description |
+| -------- | ----------- |
+| `PROMPT` | One or more non-empty task prompts. Quote prompts that contain spaces. |
 
----
+### Options
 
-### amplihack remote start
+| Option | Default | Description |
+| ------ | ------- | ----------- |
+| `--command <MODE>` | `auto` | Command mode: `auto`, `ultrathink`, `analyze`, or `fix`. |
+| `--max-turns <N>` | `10` | Maximum turns for each detached session. |
+| `--size <TIER>` | `l` | Pool VM tier: `s`, `m`, `l`, or `xl`. |
+| `--region <REGION>` | `AZURE_REGION`, then `eastus` | Azure region for pool allocation. |
+| `--port <PORT>` | none | Reuse an existing local bastion tunnel port. |
 
-Start one or more tasks as detached tmux sessions.
+### VM tiers
+
+Each detached session receives a 32 GB Node heap by setting
+`NODE_OPTIONS=--max-old-space-size=32768` inside the tmux session.
+
+| Tier | Azure VM SKU | Session capacity | Intended use |
+| ---- | ------------ | ---------------- | ------------ |
+| `s` | `Standard_D8s_v3` | 1 | One isolated task |
+| `m` | `Standard_E8s_v5` | 2 | Two normal tasks |
+| `l` | `Standard_E16s_v5` | 4 | Default parallel work |
+| `xl` | `Standard_E32s_v5` | 8 | Large batches of independent tasks |
+
+### Behavior
+
+For each prompt, `start` packages the current repository, allocates a VM with
+available capacity or provisions a new VM, transfers context, launches a tmux
+session, marks the session `running`, and prints the session ID.
+
+`ANTHROPIC_API_KEY` must be present in the local environment. The key is injected
+into the remote tmux command environment for the detached agent process. The CLI
+validates this before packaging the repository or allocating VM capacity.
+
+### Examples
 
 ```bash
-amplihack remote start [OPTIONS] PROMPTS...
+# Start one detached session.
+amplihack remote start "implement the remote list command"
+
+# Start three sessions on the default L-size pool.
+amplihack remote start \
+  "add parser tests for remote exec" \
+  "write remote API docs" \
+  "remove stale Python remote files"
+
+# Run a deeper analysis in a specific region.
+amplihack remote start \
+  --command ultrathink \
+  --max-turns 30 \
+  --size xl \
+  --region eastus \
+  "audit issue #536 for missing parity"
 ```
 
-**Arguments:**
+## `amplihack remote output`
 
-| Argument  | Required | Description                               |
-| --------- | -------- | ----------------------------------------- |
-| `PROMPTS` | Yes      | One or more task prompts (quoted strings) |
-
-**Options:**
-
-| Option        | Type    | Default | Description                                                                       |
-| ------------- | ------- | ------- | --------------------------------------------------------------------------------- |
-| `--size`      | Choice  | l       | VM size: s, m, l, xl (controls max concurrent sessions)                           |
-| `--region`    | String  | None    | Azure region (uses default if not specified)                                      |
-| `--max-turns` | Integer | 10      | Maximum conversation turns for Claude Code (higher = more complex tasks)          |
-| `--command`   | Choice  | auto    | Amplihack command mode: auto (standard), ultrathink (deep analysis), analyze, fix |
-
-**Examples:**
+Capture output from a detached session's tmux pane.
 
 ```bash
-# Single task
-amplihack remote start "implement user authentication"
-
-# Multiple tasks
-amplihack remote start "task one" "task two" "task three"
-
-# With custom options
-amplihack remote start --size l --max-turns 20 "complex refactoring"
-
-# Use ultrathink mode (deep multi-agent analysis)
-amplihack remote start --command ultrathink "analyze architecture"
-
-# Long-running task with higher turn limit
-amplihack remote start --max-turns 30 "comprehensive refactoring"
-
-# Specify region (useful for quota management)
-amplihack remote start --region eastus "my task"
+amplihack remote output <SESSION_ID> [OPTIONS]
 ```
 
-**Output:**
+### Arguments
 
-```
-Starting 2 session(s)...
+| Argument | Description |
+| -------- | ----------- |
+| `SESSION_ID` | Session ID from `amplihack remote start` or `amplihack remote list`. |
 
-[1/2] sess-20251125-143022-abc
-  VM: amplihack-user-20251125-143000 (reused)
-  Prompt: implement user authentication
-  Status: running
+### Options
 
-[2/2] sess-20251125-143025-def
-  VM: amplihack-user-20251125-143000 (reused)
-  Prompt: add pagination to API
-  Status: running
+| Option | Default | Description |
+| ------ | ------- | ----------- |
+| `--lines <N>` | `100` | Number of lines to capture from the tmux pane. |
+| `--follow` | `false` | Refresh output every 5 seconds until interrupted. |
 
-Sessions started. Use 'amplihack remote list' to monitor.
-```
+### Output
 
----
-
-### amplihack remote output
-
-View output from a session via tmux capture-pane.
-
-```bash
-amplihack remote output [OPTIONS] SESSION_ID
-```
-
-**Arguments:**
-
-| Argument     | Required | Description           |
-| ------------ | -------- | --------------------- |
-| `SESSION_ID` | Yes      | Session ID to observe |
-
-**Options:**
-
-| Option           | Type    | Default | Description                                                     |
-| ---------------- | ------- | ------- | --------------------------------------------------------------- |
-| `--lines`, `-n`  | Integer | 100     | Number of lines to capture from tmux pane                       |
-| `--follow`, `-f` | Flag    | False   | Follow output in real-time (polls every 5s, like `tail -f`)     |
-| `--raw`          | Flag    | False   | Output without formatting (useful for piping to files or tools) |
-
-**Examples:**
-
-```bash
-# Get last 100 lines
-amplihack remote output sess-20251125-143022-abc
-
-# Get last 500 lines
-amplihack remote output sess-20251125-143022-abc --lines 500
-
-# Follow output (Ctrl+C to stop)
-amplihack remote output sess-20251125-143022-abc --follow
-
-# Raw output for piping
-amplihack remote output sess-20251125-143022-abc --raw > output.log
-```
-
-**Output:**
-
-```
-=== Session: sess-20251125-143022-abc ===
-VM: amplihack-user-20251125-143000
+```text
+=== Session: sess-20260502-203014-4f2a ===
 Status: running
-Captured: 2025-11-25 14:35:22 (100 lines)
-
-Step 5: Research and Design - Analyzing codebase...
-  [architect] Examining authentication patterns
-  [architect] Found 3 existing auth modules
-  ...
+VM: amplihack-azureuser-20260502
+Prompt: implement remote CLI parser
+================================================================================
+Step 5: Implement the Solution
+  Updating crates/amplihack-cli/src/cli_subcommands.rs
+  Adding parser coverage for remote start
 ```
 
----
+If `--follow` is set, the command clears the terminal before each refresh and
+prints:
 
-### amplihack remote kill
+```text
+[Following output... Press Ctrl+C to stop]
+```
 
-Terminate a running session.
+If the session ID is unknown, the command exits with code `3` and suggests
+running `amplihack remote list`.
+
+## `amplihack remote kill`
+
+Terminate a detached session and release its VM pool slot.
 
 ```bash
-amplihack remote kill [OPTIONS] SESSION_ID
+amplihack remote kill <SESSION_ID> [OPTIONS]
 ```
 
-**Arguments:**
+### Options
 
-| Argument     | Required | Description             |
-| ------------ | -------- | ----------------------- |
-| `SESSION_ID` | Yes      | Session ID to terminate |
+| Option | Default | Description |
+| ------ | ------- | ----------- |
+| `--force` | `false` | Mark the session killed and release capacity even if the remote tmux kill command fails. |
 
-**Options:**
+### Behavior
 
-| Option    | Type | Default | Description                             |
-| --------- | ---- | ------- | --------------------------------------- |
-| `--force` | Flag | False   | Force kill (SIGKILL instead of SIGTERM) |
+`kill` runs `tmux kill-session -t <SESSION_ID>` through
+`azlin connect <VM_NAME>`, marks the session `killed`, records its completion
+time, and releases the session from the VM pool.
 
-**Examples:**
+Without `--force`, a failed remote tmux kill stops the command and leaves state
+unchanged. With `--force`, the command prints a warning and continues updating
+local state.
+
+### Examples
 
 ```bash
-# Graceful termination
-amplihack remote kill sess-20251125-143022-abc
+# Gracefully terminate a session.
+amplihack remote kill sess-20260502-203014-4f2a
 
-# Force termination
-amplihack remote kill sess-20251125-143022-abc --force
+# Release local state even if the VM is unreachable.
+amplihack remote kill sess-20260502-203014-4f2a --force
 ```
 
-**Output:**
+## `amplihack remote status`
 
-```
-Killing session: sess-20251125-143022-abc
-  Sending SIGTERM...
-  Session terminated.
-Status updated: killed
-```
-
----
-
-### amplihack remote status
-
-Show pool status and VM utilization.
+Show VM pool utilization and detached session counts.
 
 ```bash
 amplihack remote status [OPTIONS]
 ```
 
-**Options:**
+### Options
 
-| Option   | Type | Default | Description    |
-| -------- | ---- | ------- | -------------- |
-| `--json` | Flag | False   | Output as JSON |
+| Option | Default | Description |
+| ------ | ------- | ----------- |
+| `--json` | `false` | Print status as formatted JSON. |
 
-**Examples:**
+### Human output
 
-```bash
-# Show status
-amplihack remote status
-
-# JSON output
-amplihack remote status --json
-```
-
-**Output:**
-
-```
+```text
 === Remote Session Pool Status ===
 
-VMs: 2 total
-  amplihack-user-20251125-143000 (l, eastus)
+VMs: 1 total
+  amplihack-azureuser-20260502 (Standard_E16s_v5, eastus)
     Sessions: 2/4 (50% capacity)
-    Memory: 32GB/128GB used
-    Age: 35m
+      - sess-20260502-203014-4f2a (running)
+      - sess-20260502-203500-8a1c (running)
 
-  amplihack-user-20251125-140000 (l, westus3)
-    Sessions: 1/4 (25% capacity)
-    Memory: 16GB/128GB used
-    Age: 2h
-
-Sessions: 3 total
-  Running: 3
+Sessions: 2 total
+  Running: 2
   Completed: 0
   Failed: 0
-
-Total Capacity: 5/8 slots available
+  Killed: 0
+  Pending: 0
 ```
 
----
+### JSON output
 
-### amplihack remote prime (Future Enhancement)
-
-Pre-warm VMs to reduce cold start latency.
-
-```bash
-amplihack remote prime [OPTIONS]
+```json
+{
+  "pool": {
+    "total_vms": 1,
+    "total_capacity": 4,
+    "active_sessions": 2,
+    "available_capacity": 2,
+    "vms": [
+      {
+        "name": "amplihack-azureuser-20260502",
+        "size": "Standard_E16s_v5",
+        "region": "eastus",
+        "capacity": 4,
+        "active_sessions": 2,
+        "available_capacity": 2
+      }
+    ]
+  },
+  "sessions": {
+    "running": 2,
+    "completed": 0,
+    "failed": 0,
+    "killed": 0,
+    "pending": 0
+  },
+  "total_sessions": 2
+}
 ```
 
-**Options:**
+## Configuration
 
-| Option      | Type    | Default | Description            |
-| ----------- | ------- | ------- | ---------------------- |
-| `--count`   | Integer | 1       | Number of VMs to prime |
-| `--vm-size` | Choice  | l       | VM size: s, m, l, xl   |
-| `--region`  | String  | None    | Azure region           |
+### Required tools
 
-**Examples:**
+| Tool | Purpose |
+| ---- | ------- |
+| `azlin` | Provision, connect to, and destroy Azure VMs |
+| `az` | Azure authentication used by azlin |
+| `tmux` | Detached session host on each remote VM |
+| `amplihack` | Local and remote CLI binary |
 
-```bash
-# Prime 3 L-size VMs
-amplihack remote prime --count 3 --vm-size l
+### Environment variables
 
-# Prime in specific region
-amplihack remote prime --count 2 --region eastus
+| Variable | Required | Default | Description |
+| -------- | -------- | ------- | ----------- |
+| `ANTHROPIC_API_KEY` | yes, for `exec` and `start` | none | API key injected into remote agent processes. |
+| `AZURE_REGION` | no | `eastus` for `start`; azlin default for `exec` | Default Azure region when `--region` is not supplied. |
+| `AMPLIHACK_REMOTE_STATE` | no | `~/.amplihack/remote-state.json` | Path to the remote state file. |
+| `NODE_OPTIONS` | no | set remotely to `--max-old-space-size=32768` for detached sessions | Node heap size for remote agent processes. |
+
+### Secret scanning
+
+Remote execution packages the current repository before transfer. Secret scanning
+runs before packaging and aborts if potential secrets are found. Remove the
+secrets from the repository or ignore files before retrying.
+
+## State file
+
+By default, remote state is stored at:
+
+```text
+~/.amplihack/remote-state.json
 ```
 
-**Note:** This command is planned for a future enhancement. Currently, VMs are provisioned on-demand with intelligent pooling and reuse.
-
----
-
-## Environment Variables
-
-| Variable                  | Description                                   | Default                          |
-| ------------------------- | --------------------------------------------- | -------------------------------- |
-| `ANTHROPIC_API_KEY`       | API key for Claude (required)                 | None                             |
-| `AMPLIHACK_REMOTE_STATE`  | State file location                           | `~/.amplihack/remote-state.json` |
-| `AZURE_REGION`            | Default Azure region for VM provisioning      | eastus                           |
-| `AMPLIHACK_AZURE_REGIONS` | Comma-separated fallback regions (for future) | westus3,eastus,centralus         |
-
-## Exit Codes
-
-| Code | Meaning              |
-| ---- | -------------------- |
-| 0    | Success              |
-| 1    | General error        |
-| 2    | Invalid arguments    |
-| 3    | Session not found    |
-| 4    | VM not reachable     |
-| 5    | Azure quota exceeded |
-| 130  | Interrupted (Ctrl+C) |
-
-## State File Format
-
-Location: `~/.amplihack/remote-state.json`
+The state file tracks both sessions and pooled VMs:
 
 ```json
 {
   "sessions": {
-    "sess-20251125-143022-abc": {
-      "session_id": "sess-20251125-143022-abc",
-      "vm_name": "amplihack-user-20251125-143000",
-      "workspace": "/workspace/sess-20251125-143022-abc",
-      "tmux_session": "sess-20251125-143022-abc",
-      "prompt": "implement user authentication",
+    "sess-20260502-203014-4f2a": {
+      "session_id": "sess-20260502-203014-4f2a",
+      "vm_name": "amplihack-azureuser-20260502",
+      "workspace": "/workspace/sess-20260502-203014-4f2a",
+      "tmux_session": "sess-20260502-203014-4f2a",
+      "prompt": "implement remote CLI parser",
       "command": "auto",
       "max_turns": 10,
       "status": "running",
-      "memory_mb": 16384,
-      "created_at": "2025-11-25T14:30:22Z",
-      "started_at": "2025-11-25T14:30:45Z",
+      "memory_mb": 32768,
+      "created_at": "2026-05-02T20:30:14Z",
+      "started_at": "2026-05-02T20:31:02Z",
       "completed_at": null,
       "exit_code": null
     }
   },
   "vm_pool": {
-    "amplihack-user-20251125-143000": {
-      "size": "Standard_D4s_v3",
+    "amplihack-azureuser-20260502": {
+      "vm": {
+        "name": "amplihack-azureuser-20260502",
+        "size": "Standard_E16s_v5",
+        "region": "eastus"
+      },
       "capacity": 4,
-      "active_sessions": ["sess-20251125-143022-abc", "sess-20251125-143025-def"],
-      "region": "westus3",
-      "created_at": "2025-11-25T14:30:00Z"
+      "active_sessions": ["sess-20260502-203014-4f2a"],
+      "region": "eastus"
     }
   }
 }
 ```
 
-**Note:** VM pool tracking with capacity management is available.
+Detached session state includes `memory_mb`. Sessions launched by `remote start`
+record `32768`, matching the 32 GB Node heap set with
+`NODE_OPTIONS=--max-old-space-size=32768`.
 
-## Memory Management
+State writes use an advisory lock so concurrent `remote` commands do not corrupt
+the JSON file.
 
-| VM Size | Azure VM SKU     | Total RAM | Max Sessions | Per Session |
-| ------- | ---------------- | --------- | ------------ | ----------- |
-| s       | Standard_D8s_v3  | 32GB      | 1            | 32GB        |
-| m       | Standard_E8s_v5  | 64GB      | 2            | 32GB        |
-| l       | Standard_E16s_v5 | 128GB     | 4            | 32GB        |
-| xl      | Standard_E32s_v5 | 256GB     | 8            | 32GB        |
+## Exit codes
 
-Memory allocation is set via `NODE_OPTIONS="--max-old-space-size=32768"` in each tmux session (32GB per session).
+| Code | Meaning |
+| ---- | ------- |
+| `0` | Success |
+| `1` | Runtime error, validation error, provisioning error, transfer error, execution error, or integration error |
+| `2` | CLI parse error from Clap |
+| `3` | Session ID not found for `output` or `kill` |
+| `130` | Interrupted by Ctrl+C |
 
-## tmux Session Structure
-
-Each session creates a tmux session named after the session ID:
-
-```bash
-# List tmux sessions on VM (for debugging)
-azlin connect amplihack-user-xxx "tmux ls"
-
-# Attach to session (for debugging)
-azlin connect amplihack-user-xxx "tmux attach -t sess-20251125-143022-abc"
-
-# Capture pane content manually
-azlin connect amplihack-user-xxx "tmux capture-pane -t sess-20251125-143022-abc -p"
-```
+For `exec`, a completed remote process that exits non-zero returns the remote
+process exit code.
 
 ## Troubleshooting
 
-### Session stuck in "pending"
+### `ANTHROPIC_API_KEY` is missing
 
-**Symptom**: Session shows `pending` status for >5 minutes.
-
-**Cause**: VM provisioning may have failed or context transfer stalled.
-
-**Solution**:
+`exec` and `start` require the API key before packaging repositories or
+provisioning VMs:
 
 ```bash
-amplihack remote kill sess-xxx
-amplihack remote start "same prompt"
+export ANTHROPIC_API_KEY="sk-ant-..."
+amplihack remote exec auto "write tests for the remote API"
+amplihack remote start "write tests for the remote API"
 ```
 
-### "Session not found on VM"
+### Session is stuck in `pending`
 
-**Symptom**: `output` command fails with session not found.
+Check output first:
 
-**Cause**: tmux session crashed or was killed externally.
+```bash
+amplihack remote output sess-20260502-203014-4f2a --lines 200
+```
 
-**Solution**: Check session status; if completed/failed, retrieve results manually.
+If the session never starts and the VM is reachable, terminate it and restart
+with the same prompt:
 
-### Azure quota exceeded
+```bash
+amplihack remote kill sess-20260502-203014-4f2a --force
+amplihack remote start "write tests for the remote API"
+```
 
-**Symptom**: Start fails with quota error.
+### VM is unreachable
 
-**Cause**: Subscription has reached VM quota for the region.
-
-**Solution**: Use `--region` to try a different region, or clean up unused VMs:
+Confirm the VM exists and azlin can connect:
 
 ```bash
 azlin list
-azlin kill amplihack-user-xxx
+azlin connect amplihack-azureuser-20260502 "tmux ls"
 ```
 
-### State file corruption
-
-**Symptom**: Commands fail with JSON parse errors.
-
-**Cause**: State file was corrupted (partial write, disk issue).
-
-**Solution**: Delete and recreate state:
+If the VM was deleted outside amplihack, use `--force` to release the local
+session and pool state:
 
 ```bash
-rm ~/.amplihack/remote-state.json
-# Sessions on VMs will continue but won't be tracked locally
+amplihack remote kill sess-20260502-203014-4f2a --force
 ```
+
+### State file is invalid JSON
+
+Move the state file aside and rebuild state from active sessions manually:
+
+```bash
+mv ~/.amplihack/remote-state.json ~/.amplihack/remote-state.json.bak
+amplihack remote status
+```
+
+Detached sessions already running on VMs continue running, but untracked sessions
+will not appear in `amplihack remote list` until recreated in state.

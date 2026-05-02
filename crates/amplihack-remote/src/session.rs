@@ -4,8 +4,10 @@
 //! transitions, output capture, and persistent JSON state.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -23,6 +25,33 @@ pub enum SessionStatus {
     Completed,
     Failed,
     Killed,
+}
+
+impl fmt::Display for SessionStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Killed => "killed",
+        })
+    }
+}
+
+impl FromStr for SessionStatus {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "pending" => Ok(Self::Pending),
+            "running" => Ok(Self::Running),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "killed" => Ok(Self::Killed),
+            _ => Err(format!("invalid session status: {raw}")),
+        }
+    }
 }
 
 /// A remote Claude Code session.
@@ -51,7 +80,7 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub const DEFAULT_MEMORY_MB: u32 = 16384;
+    pub const DEFAULT_MEMORY_MB: u32 = 32768;
     pub const DEFAULT_COMMAND: &'static str = "auto";
     pub const DEFAULT_MAX_TURNS: u32 = 10;
 
@@ -137,6 +166,25 @@ impl SessionManager {
         session.status = SessionStatus::Running;
         session.started_at = Some(Utc::now());
 
+        let result = session.clone();
+        self.save_state().map_err(|e| format!("save failed: {e}"))?;
+        Ok(result)
+    }
+
+    /// Update the VM assigned during pool allocation.
+    pub fn update_session_vm(
+        &mut self,
+        session_id: &str,
+        vm_name: &str,
+    ) -> Result<Session, String> {
+        let session = self
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| format!("Session {session_id} not found"))?;
+        if vm_name.trim().is_empty() {
+            return Err("vm_name cannot be empty".into());
+        }
+        session.vm_name = vm_name.to_string();
         let result = session.clone();
         self.save_state().map_err(|e| format!("save failed: {e}"))?;
         Ok(result)
