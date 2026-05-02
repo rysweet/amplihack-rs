@@ -113,7 +113,7 @@ impl ExportOnCompactIntegration {
                 out.push(rec);
             }
         }
-        out.sort_by(|a, b| a.exported_at.cmp(&b.exported_at));
+        out.sort_by_key(|a| a.exported_at);
         Ok(out)
     }
 
