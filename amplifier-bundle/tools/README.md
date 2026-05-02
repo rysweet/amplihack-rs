@@ -249,147 +249,35 @@ codex_path = builder.export_for_codex(messages, metadata)
 
 ## Orchestration
 
-Multi-process orchestration for parallel, sequential, and fault-tolerant execution.
+Multi-process orchestration for parallel, sequential, and fault-tolerant
+execution.
 
-### Claude Process
+> **Native Rust port (Wave 2 deyhonification, Epic #511).** The Python modules
+> previously located at `amplihack/orchestration/` have been ported to the
+> Rust crate `crates/amplihack-orchestration` and the original `.py` files
+> deleted. Use the Rust API directly from the workspace; no shell-callable
+> CLI is exposed (the orchestration crate is a library used by other Rust
+> components).
 
-**File**: `amplihack/orchestration/claude_process.py`
+**Crate**: [`amplihack-orchestration`](../../crates/amplihack-orchestration/)
 
-**Purpose**: Execute single Claude Code process with full lifecycle management
+**Migration map** (Python → Rust):
 
-**Usage**:
+| Python path | Rust path |
+|---|---|
+| `orchestration.claude_process` | `amplihack_orchestration::claude_process` |
+| `orchestration.execution` | `amplihack_orchestration::execution` |
+| `orchestration.session` | `amplihack_orchestration::session` |
+| `orchestration.patterns.n_version` | `amplihack_orchestration::patterns::n_version` |
+| `orchestration.patterns.debate` | `amplihack_orchestration::patterns::debate` |
+| `orchestration.patterns.cascade` | `amplihack_orchestration::patterns::cascade` |
+| `orchestration.patterns.expert_panel` | `amplihack_orchestration::patterns::expert_panel` |
 
-```python
-from amplihack.orchestration.claude_process import ClaudeProcess
-
-# Create process
-process = ClaudeProcess(
-    prompt="Analyze the codebase",
-    process_id="analysis_1",
-    cwd="/path/to/project",
-    log_dir="/path/to/logs"
-)
-
-# Run process
-result = process.run()
-
-print(f"Exit code: {result.exit_code}")
-print(f"Duration: {result.duration}s")
-print(f"Output: {result.output}")
-```
-
-### Execution Patterns
-
-**File**: `amplihack/orchestration/execution.py`
-
-**Available Patterns**:
-
-#### 1. Parallel Execution
-
-```python
-from amplihack.orchestration.execution import run_parallel
-
-processes = [
-    ClaudeProcess("task1", "p1", cwd, log_dir),
-    ClaudeProcess("task2", "p2", cwd, log_dir),
-    ClaudeProcess("task3", "p3", cwd, log_dir),
-]
-
-results = run_parallel(processes, max_workers=2)
-successful = [r for r in results if r.exit_code == 0]
-```
-
-#### 2. Sequential Execution
-
-```python
-from amplihack.orchestration.execution import run_sequential
-
-processes = [...]
-results = run_sequential(
-    processes,
-    pass_output=True,        # Pass output to next process
-    stop_on_failure=False    # Continue even on failure
-)
-```
-
-#### 3. Fallback Execution
-
-```python
-from amplihack.orchestration.execution import run_with_fallback
-
-# Try optimal approach, fall back to alternatives
-processes = [
-    ClaudeProcess("task", "optimal", cwd, log_dir),
-    ClaudeProcess("task", "pragmatic", cwd, log_dir),
-    ClaudeProcess("task", "minimal", cwd, log_dir),
-]
-
-result = run_with_fallback(processes, timeout=300)
-```
-
-#### 4. Batched Execution
-
-```python
-from amplihack.orchestration.execution import run_batched
-
-processes = [...]  # 10 processes
-results = run_batched(
-    processes,
-    batch_size=3,           # Run 3 at a time
-    pass_output=True        # Pass batch results forward
-)
-```
-
-### Fault Tolerance Patterns
-
-**Directory**: `amplihack/orchestration/patterns/`
-
-#### N-Version Programming (`n_version.py`)
-
-Generate N independent solutions and select the best through comparison.
-
-**Usage**:
-
-```python
-from amplihack.orchestration.patterns.n_version import run_n_version
-
-result = run_n_version(
-    prompt="Implement JWT token validation",
-    n=3,
-    selection_strategy="consensus"
-)
-```
-
-#### Multi-Agent Debate (`debate.py`)
-
-Structured debate with multiple perspectives to converge on best decision.
-
-**Usage**:
-
-```python
-from amplihack.orchestration.patterns.debate import run_debate
-
-result = run_debate(
-    question="Should we use PostgreSQL or Redis?",
-    perspectives=["security", "performance", "simplicity"],
-    rounds=3
-)
-```
-
-#### Fallback Cascade (`cascade.py`)
-
-Graceful degradation: optimal → pragmatic → minimal.
-
-**Usage**:
-
-```python
-from amplihack.orchestration.patterns.cascade import run_cascade
-
-result = run_cascade(
-    task="Generate API documentation",
-    strategies=["full_analysis", "quick_scan", "minimal_docs"]
-)
-```
+The Rust API mirrors the Python public surface (`ProcessRunner`, `ClaudeProcess`,
+`run_parallel`, `run_sequential`, `run_with_fallback`, `run_batched`,
+`OrchestratorSession`, `run_n_version`, `run_debate`, `run_cascade`,
+`create_custom_cascade`, `run_expert_panel`). See the crate's `tests/` for
+behavioral examples covering all four patterns.
 
 ## Memory System
 
