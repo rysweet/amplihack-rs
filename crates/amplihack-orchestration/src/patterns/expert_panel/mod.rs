@@ -166,7 +166,8 @@ pub async fn run_expert_panel(
 
     let start = Instant::now();
     let results = run_parallel(processes, None).await;
-    let duration = start.elapsed();
+    let panel_duration = start.elapsed();
+    session.log_info(&format!("Panel review completed in {:?}", panel_duration));
 
     let mut reviews = Vec::new();
     for (result, (expert, expert_id)) in results.into_iter().zip(metadata.into_iter()) {
@@ -196,8 +197,6 @@ pub async fn run_expert_panel(
             result.duration,
         ));
     }
-    let _ = duration;
-
     let decision = match aggregation_method {
         AggregationMethod::SimpleMajority => aggregate_simple_majority(&reviews, quorum),
         AggregationMethod::Weighted => aggregate_weighted(&reviews, quorum),

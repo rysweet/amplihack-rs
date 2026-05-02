@@ -171,6 +171,9 @@ impl ProcessRunner for TokioProcessRunner {
         command.stdin(std::process::Stdio::null());
         command.stdout(std::process::Stdio::piped());
         command.stderr(std::process::Stdio::piped());
+        // Ensure the child is terminated if we drop it before wait completes
+        // (e.g., on timeout). Mirrors Python's terminate()/kill() behavior.
+        command.kill_on_drop(true);
         if let Some(dir) = &opts.working_dir {
             command.current_dir(dir);
         }
