@@ -75,10 +75,7 @@ fn precommit_prefs_subcommand_is_recognized() {
     // exist on the dispatcher. Before the port this exits non-zero with
     // "unknown subcommand" on stderr.
     let (_stdout, stderr, success) = invoke("precommit-prefs", "");
-    assert!(
-        success,
-        "precommit-prefs must exit 0; got stderr: {stderr}"
-    );
+    assert!(success, "precommit-prefs must exit 0; got stderr: {stderr}");
     assert!(
         !stderr.contains("unknown subcommand"),
         "precommit-prefs must be a registered subcommand; stderr: {stderr}"
@@ -141,7 +138,11 @@ fn session_end_alias_dispatches_to_stop_handler() {
         "session-end must be a recognized alias; stderr: {stderr}"
     );
     // Output must be valid JSON — same contract as direct `stop` invocation.
-    let stdout_json = if stdout.trim().is_empty() { "{}" } else { stdout.as_str() };
+    let stdout_json = if stdout.trim().is_empty() {
+        "{}"
+    } else {
+        stdout.as_str()
+    };
     let _: serde_json::Value = serde_json::from_str(stdout_json)
         .unwrap_or_else(|e| panic!("session-end stdout must be valid JSON: {e}; got: {stdout}"));
 }
@@ -151,15 +152,16 @@ fn session_stop_alias_dispatches_to_stop_handler() {
     // Replaces session_stop.py. Same alias-to-stop semantics as session-end.
     let payload = "{}";
     let (stdout, stderr, success) = invoke("session-stop", payload);
-    assert!(
-        success,
-        "session-stop alias must exit 0; stderr: {stderr}"
-    );
+    assert!(success, "session-stop alias must exit 0; stderr: {stderr}");
     assert!(
         !stderr.contains("unknown subcommand"),
         "session-stop must be a recognized alias; stderr: {stderr}"
     );
-    let stdout_json = if stdout.trim().is_empty() { "{}" } else { stdout.as_str() };
+    let stdout_json = if stdout.trim().is_empty() {
+        "{}"
+    } else {
+        stdout.as_str()
+    };
     let _: serde_json::Value = serde_json::from_str(stdout_json)
         .unwrap_or_else(|e| panic!("session-stop stdout must be valid JSON: {e}; got: {stdout}"));
 }
@@ -177,8 +179,16 @@ fn session_aliases_match_direct_stop_behavior() {
     // Both should produce valid JSON. We don't assert byte-for-byte equality
     // because StopHook may include nondeterministic fields (timestamps,
     // session ids), but the top-level keys must match.
-    let stop_json_src = if stop_out.trim().is_empty() { "{}" } else { stop_out.as_str() };
-    let alias_json_src = if alias_out.trim().is_empty() { "{}" } else { alias_out.as_str() };
+    let stop_json_src = if stop_out.trim().is_empty() {
+        "{}"
+    } else {
+        stop_out.as_str()
+    };
+    let alias_json_src = if alias_out.trim().is_empty() {
+        "{}"
+    } else {
+        alias_out.as_str()
+    };
     let stop_json: serde_json::Value =
         serde_json::from_str(stop_json_src).expect("stop stdout must be JSON");
     let alias_json: serde_json::Value =

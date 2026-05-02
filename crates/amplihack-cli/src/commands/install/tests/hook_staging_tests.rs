@@ -38,8 +38,7 @@ const DELETED_HOOK_SCRIPTS: &[&str] = &[
 /// correspond to the deleted shims plus any aliases (session-end is a
 /// clap alias for stop per design spec A3, so settings.json may wire
 /// SessionEnd to either `stop` or `session-end`).
-const REQUIRED_NATIVE_SUBCMDS: &[&str] =
-    &["stop", "post-tool-use", "user-prompt-submit"];
+const REQUIRED_NATIVE_SUBCMDS: &[&str] = &["stop", "post-tool-use", "user-prompt-submit"];
 
 fn workspace_amplifier_bundle() -> PathBuf {
     // CARGO_MANIFEST_DIR points at crates/amplihack-cli; walk up two levels
