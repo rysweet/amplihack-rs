@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use std::collections::{BTreeSet, VecDeque};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// Atomically deploy a binary from `src` to `dst` using rename-then-replace.
@@ -25,6 +26,28 @@ pub(super) fn deploy_binary(src: &Path, dst: &Path) -> Result<()> {
         && s == d
     {
         return Ok(());
+    }
+
+    // Deleted-source short-circuit (issue #524).
+    //
+    // When `amplihack update` swaps the on-disk binary, the still-running
+    // process's argv[0] points at a now-unlinked inode (Linux marks it
+    // "(deleted)" in /proc/self/exe). The auto-launched install step then
+    // re-invokes deploy_binary with that deleted path as `src` and the
+    // freshly-installed binary as `dst`. fs::copy would fail with ENOENT.
+    //
+    // If `src` is gone but `dst` is already a regular file, the deployment
+    // outcome is already satisfied — treat as a no-op. Match ErrorKind::NotFound
+    // exactly (not Err(_)) so PermissionDenied or other I/O errors still
+    // propagate, and require dst.is_file() (not exists()) to reject directories,
+    // FIFOs, and sockets as valid deployed targets.
+    if let Err(e) = src.metadata()
+        && e.kind() == io::ErrorKind::NotFound
+    {
+        if dst.is_file() {
+            return Ok(());
+        }
+        return Err(e).with_context(|| format!("source binary not found: {}", src.display()));
     }
 
     let dst_dir = dst

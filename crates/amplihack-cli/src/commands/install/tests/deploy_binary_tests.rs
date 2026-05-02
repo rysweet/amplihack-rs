@@ -3,6 +3,7 @@
 
 use super::super::filesystem::deploy_binary;
 use std::fs;
+use std::io;
 use tempfile::TempDir;
 
 #[test]
@@ -74,5 +75,47 @@ fn deploy_binary_cleans_up_temp_on_success() {
     assert!(
         leftovers.is_empty(),
         "no temp files should remain: {leftovers:?}"
+    );
+}
+
+#[test]
+fn deleted_source_with_existing_dst_is_noop() {
+    // Issue #524: after `amplihack update` swaps the binary, the running
+    // process's argv[0] points at a deleted inode. The auto-launched install
+    // step then re-invokes deploy_binary with src == argv[0] (now ENOENT) and
+    // dst == the freshly-written binary. This must succeed as a no-op since
+    // the destination is already the correct, up-to-date binary.
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("src-deleted");
+    let dst = tmp.path().join("dst-current");
+    fs::write(&src, b"old/deleted bytes").unwrap();
+    fs::write(&dst, b"freshly-installed bytes").unwrap();
+    fs::remove_file(&src).unwrap();
+
+    deploy_binary(&src, &dst).expect("deleted-source-with-dst should be Ok");
+    assert_eq!(
+        fs::read(&dst).unwrap(),
+        b"freshly-installed bytes",
+        "dst must remain untouched"
+    );
+}
+
+#[test]
+fn missing_source_and_missing_dst_returns_error() {
+    // Guard rail for the #524 fix: if both src and dst are absent there is
+    // nothing to deploy and no already-installed binary; propagate the
+    // original ENOENT instead of silently masking a real failure.
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("nonexistent-src");
+    let dst = tmp.path().join("nonexistent-dst");
+
+    let err = deploy_binary(&src, &dst).expect_err("missing-both should error");
+    let io_err = err
+        .downcast_ref::<io::Error>()
+        .expect("root cause should be io::Error");
+    assert_eq!(
+        io_err.kind(),
+        io::ErrorKind::NotFound,
+        "should propagate NotFound, got: {err:?}"
     );
 }
