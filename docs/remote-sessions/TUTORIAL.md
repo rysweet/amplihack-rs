@@ -1,667 +1,315 @@
 # Remote Sessions Tutorial
 
-This tutorial walks through common remote session workflows with real examples and expected outputs.
+This tutorial shows how to use `amplihack remote` to run work on Azure VMs,
+monitor detached sessions, and collect results from long-running agent tasks.
+
+For complete command details, see the [Remote Sessions CLI Reference](./CLI_REFERENCE.md).
+For the Rust library API, see the [amplihack-remote API reference](../reference/amplihack-remote-api.md).
 
 ## Prerequisites
 
-Before starting this tutorial, ensure you have:
+Before starting:
 
-1. **azlin installed and configured**
-
-   ```bash
-   # Install via uvx from GitHub (not available on PyPI)
-   cargo install amplihack-rs --python 3.11 azlin --help
-
-   # Or create persistent wrapper script
-   cat > /usr/local/bin/azlin << 'EOF'
-   #!/bin/bash
-   exec cargo install amplihack-rs --python 3.11 azlin "$@"
-   EOF
-   chmod +x /usr/local/bin/azlin
-
-   # Configure Azure authentication
-   azlin auth setup
-   ```
-
-2. **Azure CLI authenticated**
+1. Authenticate Azure.
 
    ```bash
    az login
-   # Select your subscription
-   az account set --subscription "Your Subscription Name"
+   az account set --subscription "Engineering"
    ```
 
-3. **ANTHROPIC_API_KEY set**
+2. Confirm azlin can reach Azure.
+
+   ```bash
+   azlin list
+   ```
+
+3. Export the API key used by remote agent processes.
 
    ```bash
    export ANTHROPIC_API_KEY="sk-ant-..."
    ```
 
-4. **amplihack installed**
+4. Work from a git repository.
 
    ```bash
-   cargo install amplihack-rs
+   git status --short
    ```
 
-## Tutorial 1: Start and Monitor a Single Session
+## Tutorial 1: Run a one-shot remote command
 
-**Goal**: Start a remote task, monitor its progress, and view the final result.
+Use `exec` when you want one remote run to finish before the command returns.
 
-### Step 1: Start the Session
+### Step 1: Start the remote run
 
 ```bash
-amplihack remote start "create a simple hello world Python script"
+amplihack remote exec auto "add parser tests for amplihack remote start"
 ```
 
-**Expected Output**:
+Expected progress:
 
-```
-Starting 1 session(s)...
-
-[1/1] sess-20251202-083022-a1b
-  VM: amplihack-azureuser-20251202-083000 (provisioning new VM)
-  Prompt: create a simple hello world Python script
-  Status: pending
-
-Provisioning VM... (this may take 4-7 minutes)
-VM ready: amplihack-azureuser-20251202-083000
-Session started on VM.
-
-Sessions started. Use 'amplihack remote list' to monitor.
+```text
+[1/7] Validating environment...
+[2/7] Packaging context...
+[3/7] Provisioning VM...
+[4/7] Transferring context...
+[5/7] Executing remote command...
+[6/7] Retrieving results...
+[7/7] Cleaning up...
 ```
 
-### Step 2: List Active Sessions
+### Step 2: Give complex work more turns
+
+```bash
+amplihack remote exec ultrathink \
+  "analyze issue #536 and verify all Python remote behavior is covered" \
+  --max-turns 30 \
+  --timeout 240
+```
+
+`--max-turns` must be between `1` and `50`. `--timeout` must be between `5` and
+`480` minutes.
+
+### Step 3: Preserve the VM for debugging
+
+```bash
+amplihack remote exec fix \
+  "debug the failing remote install smoke test" \
+  --keep-vm \
+  --vm-name amplihack-azureuser-debug
+```
+
+Use `--keep-vm` when you need to inspect logs or tmux state manually after the
+run. Remote non-timeout failures also preserve the VM automatically.
+
+## Tutorial 2: Start and monitor a detached session
+
+Use `start` when work should continue after your terminal exits.
+
+### Step 1: Start a detached session
+
+```bash
+amplihack remote start "implement remote list JSON output"
+```
+
+Expected output:
+
+```text
+Starting 1 remote session(s)...
+   Command: auto
+   VM Size: L (4 concurrent sessions)
+   Region: eastus
+
+[1/1] Starting session: implement remote list JSON output...
+  -> Packaging context...
+  -> Allocating VM...
+  -> Transferring context...
+  -> Launching tmux session...
+  Session started: sess-20260502-203014-4f2a
+
+Successfully started 1 session(s):
+  - sess-20260502-203014-4f2a
+
+Use 'amplihack remote output <session-id>' to view progress
+```
+
+### Step 2: List sessions
 
 ```bash
 amplihack remote list
 ```
 
-**Expected Output**:
+Expected output:
 
-```
-SESSION                    VM                              STATUS    AGE     PROMPT
-sess-20251202-083022-a1b   amplihack-azureuser-20251202... running   2m      create a simple hello...
+```text
+SESSION                        VM                               STATUS     AGE      PROMPT
+------------------------------------------------------------------------------------------------------------------------
+sess-20260502-203014-4f2a      amplihack-azureuser-20260502     running    2m       implement remote list JSON output
+
+Total: 1 session(s)
 ```
 
-### Step 3: View Session Output
+### Step 3: Capture output
 
 ```bash
-amplihack remote output sess-20251202-083022-a1b
+amplihack remote output sess-20260502-203014-4f2a --lines 200
 ```
 
-**Expected Output**:
+Expected output:
 
-```
-=== Session: sess-20251202-083022-a1b ===
-VM: amplihack-azureuser-20251202-083000
+```text
+=== Session: sess-20260502-203014-4f2a ===
 Status: running
-Captured: 2025-12-02 08:32:45 (100 lines)
-
-Step 1: Rewrite and Clarify Requirements
-  [prompt-writer] Analyzing task: "create a simple hello world Python script"
-  [prompt-writer] Task classification: simple implementation
-  [prompt-writer] Success criteria: Python script that prints "Hello, World!"
-
-Step 2: Create GitHub Issue
-  Creating issue: "Create Hello World Python script"
-  Issue created: #123
-
-Step 3: Setup Worktree and Branch
-  Creating branch: feat/issue-123-hello-world
-  Branch created and pushed.
-
+VM: amplihack-azureuser-20260502
+Prompt: implement remote list JSON output
+================================================================================
 Step 4: Research and Design
-  [architect] This is a simple script, no complex design needed
-  [architect] Will create hello.py with single print statement
-
-Step 5: Implement the Solution
-  [builder] Creating hello.py...
-  [builder] Implementation complete.
-
-...
+  Inspecting crates/amplihack-remote/src/session.rs
 ```
 
-### Step 4: Follow Output in Real-Time
+### Step 4: Follow output
 
 ```bash
-amplihack remote output sess-20251202-083022-a1b --follow
+amplihack remote output sess-20260502-203014-4f2a --follow
 ```
 
-**Expected Behavior**:
+The command refreshes every 5 seconds. Press Ctrl+C to stop following; the remote
+session keeps running.
 
-- Output refreshes every 5 seconds
-- New lines appear as work progresses
-- Press Ctrl+C to stop following
+## Tutorial 3: Run multiple sessions in parallel
 
-### Step 5: Check When Session Completes
-
-```bash
-amplihack remote list
-```
-
-**Expected Output** (after completion):
-
-```
-SESSION                    VM                              STATUS     AGE     PROMPT
-sess-20251202-083022-a1b   amplihack-azureuser-20251202... completed  15m     create a simple hello...
-```
-
-### Step 6: View Final Output
-
-```bash
-amplihack remote output sess-20251202-083022-a1b --lines 500
-```
-
-**Expected Output** (final lines):
-
-```
-Step 21: Ensure PR is Mergeable
-  [reviewer] All checks passing
-  [reviewer] PR is mergeable
-
-Task completed successfully.
-PR #45 ready for merge: https://github.com/user/repo/pull/45
-```
-
-## Tutorial 2: Run Multiple Sessions in Parallel
-
-**Goal**: Start multiple tasks simultaneously and monitor them.
-
-### Step 1: Start Multiple Sessions
+The VM pool reuses VMs while capacity is available.
 
 ```bash
 amplihack remote start \
-  "implement user authentication" \
-  "add pagination to API" \
-  "write unit tests for database layer"
+  "wire remote exec in amplihack-cli" \
+  "write remote parser tests" \
+  "document amplihack-remote public API"
 ```
 
-**Expected Output**:
+With the default `--size l`, all three sessions can share one
+`Standard_E16s_v5` VM because the L tier has four session slots.
 
-```
-Starting 3 session(s)...
-
-[1/3] sess-20251202-084522-x1y
-  VM: amplihack-azureuser-20251202-084500 (provisioning new VM)
-  Prompt: implement user authentication
-  Status: pending
-
-[2/3] sess-20251202-084525-x2y
-  VM: amplihack-azureuser-20251202-084500 (reused)
-  Prompt: add pagination to API
-  Status: pending
-
-[3/3] sess-20251202-084528-x3y
-  VM: amplihack-azureuser-20251202-084500 (reused)
-  Prompt: write unit tests for database layer
-  Status: pending
-
-VM provisioning in progress...
-All sessions started on VM: amplihack-azureuser-20251202-084500
-
-Sessions started. Use 'amplihack remote list' to monitor.
-```
-
-**Key Observation**: All 3 sessions share the same VM because they fit within the L-size capacity (4 sessions max).
-
-### Step 2: Monitor All Sessions
-
-```bash
-amplihack remote list
-```
-
-**Expected Output**:
-
-```
-SESSION                    VM                              STATUS    AGE     PROMPT
-sess-20251202-084522-x1y   amplihack-azureuser-20251202... running   5m      implement user auth...
-sess-20251202-084525-x2y   amplihack-azureuser-20251202... running   5m      add pagination to...
-sess-20251202-084528-x3y   amplihack-azureuser-20251202... running   5m      write unit tests for...
-```
-
-### Step 3: Check Pool Status
+Check utilization:
 
 ```bash
 amplihack remote status
 ```
 
-**Expected Output**:
+Expected output:
 
-```
+```text
 === Remote Session Pool Status ===
 
 VMs: 1 total
-  amplihack-azureuser-20251202-084500 (l, westus3)
+  amplihack-azureuser-20260502 (Standard_E16s_v5, eastus)
     Sessions: 3/4 (75% capacity)
-    Memory: 48GB/128GB used
-    Age: 10m
+      - sess-20260502-203014-4f2a (running)
+      - sess-20260502-203122-1ab9 (running)
+      - sess-20260502-203135-d094 (running)
 
 Sessions: 3 total
   Running: 3
   Completed: 0
   Failed: 0
-
-Total Capacity: 1/4 slots available
+  Killed: 0
+  Pending: 0
 ```
 
-### Step 4: View Specific Session Output
+If every VM in the requested region is full, `start` provisions another VM.
+
+## Tutorial 4: Use JSON for automation
+
+Use `--json` with `list` and `status` when scripting.
+
+### Step 1: Find running sessions
 
 ```bash
-amplihack remote output sess-20251202-084522-x1y
+amplihack remote list --json \
+  | jq -r '.[] | select(.status == "running") | .session_id'
 ```
 
-**Expected Output**: Session-specific output for the user authentication task.
+Example output:
 
-### Step 5: Monitor Until Completion
+```text
+sess-20260502-203014-4f2a
+sess-20260502-203122-1ab9
+```
+
+### Step 2: Watch until all sessions finish
 
 ```bash
-# Watch sessions complete over time
-watch -n 10 'amplihack remote list'
-```
-
-**Expected Behavior**: List refreshes every 10 seconds, showing sessions transitioning from `running` to `completed`.
-
-## Tutorial 3: Handle Session Failures
-
-**Goal**: Learn how to identify and handle failed sessions.
-
-### Step 1: Start a Session That May Fail
-
-```bash
-amplihack remote start "implement feature X with intentionally vague requirements"
-```
-
-### Step 2: Monitor Session
-
-```bash
-amplihack remote list --status running
-```
-
-### Step 3: Check Output for Errors
-
-```bash
-amplihack remote output sess-xxx --lines 200
-```
-
-**Expected Output** (if session encounters issues):
-
-```
-Error: Ambiguous requirements detected
-  [ambiguity] Requirement "feature X" lacks specificity
-  [ambiguity] Cannot proceed without clarification
-
-Session paused, awaiting user input.
-```
-
-### Step 4: Kill the Session
-
-If the session is stuck or needs to be restarted:
-
-```bash
-amplihack remote kill sess-xxx
-```
-
-**Expected Output**:
-
-```
-Killing session: sess-xxx
-  Sending SIGTERM...
-  Session terminated.
-Status updated: killed
-```
-
-### Step 5: Restart with Clearer Requirements
-
-```bash
-amplihack remote start "implement user profile page with avatar upload and bio editing"
-```
-
-## Tutorial 4: Pool Capacity Management
-
-**Goal**: Understand VM capacity limits and how sessions distribute across VMs.
-
-### Step 1: Fill a VM to Capacity
-
-```bash
-# Start 4 sessions (fills one L-size VM)
-amplihack remote start \
-  "task 1" \
-  "task 2" \
-  "task 3" \
-  "task 4"
-```
-
-**Expected Output**:
-
-```
-Starting 4 session(s)...
-All 4 sessions allocated to amplihack-azureuser-xxx (4/4 capacity)
-```
-
-### Step 2: Check Pool Status
-
-```bash
-amplihack remote status
-```
-
-**Expected Output**:
-
-```
-=== Remote Session Pool Status ===
-
-VMs: 1 total
-  amplihack-azureuser-20251202-090000 (l, westus3)
-    Sessions: 4/4 (100% capacity)
-    Memory: 64GB/128GB used
-    Age: 5m
-
-Sessions: 4 total
-  Running: 4
-  Completed: 0
-  Failed: 0
-
-Total Capacity: 0/4 slots available (FULL)
-```
-
-### Step 3: Start a Fifth Session
-
-```bash
-amplihack remote start "task 5"
-```
-
-**Expected Output**:
-
-```
-Starting 1 session(s)...
-
-No capacity available on existing VMs.
-Provisioning new VM... (this may take 4-7 minutes)
-
-[1/1] sess-20251202-090822-z5z
-  VM: amplihack-azureuser-20251202-090800 (provisioning new VM)
-  Status: pending
-```
-
-**Key Observation**: When all VMs are at capacity, a new VM is provisioned automatically.
-
-### Step 4: View Pool with Multiple VMs
-
-```bash
-amplihack remote status
-```
-
-**Expected Output**:
-
-```
-=== Remote Session Pool Status ===
-
-VMs: 2 total
-  amplihack-azureuser-20251202-090000 (l, westus3)
-    Sessions: 4/4 (100% capacity)
-    Memory: 64GB/128GB used
-    Age: 15m
-
-  amplihack-azureuser-20251202-090800 (l, westus3)
-    Sessions: 1/4 (25% capacity)
-    Memory: 16GB/128GB used
-    Age: 2m
-
-Sessions: 5 total
-  Running: 5
-  Completed: 0
-  Failed: 0
-
-Total Capacity: 3/8 slots available
-```
-
-## Tutorial 5: Long-Running Overnight Tasks
-
-**Goal**: Start a task at end of day and review results next morning.
-
-### Step 1: Evening - Start Long-Running Task
-
-```bash
-amplihack remote start --vm-size l --max-turns 50 \
-  "comprehensive refactoring of authentication system with full test coverage"
-```
-
-**Expected Output**:
-
-```
-Starting 1 session(s)...
-
-[1/1] sess-20251202-170022-eve
-  VM: amplihack-azureuser-20251202-170000 (provisioning new VM)
-  Prompt: comprehensive refactoring of...
-  Status: pending
-
-Session started. Will run overnight.
-```
-
-### Step 2: Evening - Verify Session Running
-
-```bash
-amplihack remote list
-```
-
-**Expected Output**:
-
-```
-SESSION                    VM                              STATUS    AGE     PROMPT
-sess-20251202-170022-eve   amplihack-azureuser-20251202... running   2m      comprehensive refacto...
-```
-
-### Step 3: Evening - Close Laptop
-
-You can now:
-
-- Close your laptop
-- Shut down your terminal
-- Disconnect from network
-- Go home
-
-The session continues running on the remote VM.
-
-### Step 4: Next Morning - Check Session Status
-
-```bash
-amplihack remote list
-```
-
-**Expected Output**:
-
-```
-SESSION                    VM                              STATUS     AGE     PROMPT
-sess-20251202-170022-eve   amplihack-azureuser-20251202... completed  14h     comprehensive refacto...
-```
-
-### Step 5: Next Morning - Review Results
-
-```bash
-amplihack remote output sess-20251202-170022-eve --lines 1000 > overnight-results.txt
-```
-
-**Expected Output**: Full session output saved to `overnight-results.txt` for review.
-
-### Step 6: Next Morning - Check PR
-
-```bash
-# Extract PR URL from output
-grep "PR #" overnight-results.txt
-```
-
-**Expected Output**:
-
-```
-PR #789 ready for merge: https://github.com/user/repo/pull/789
-```
-
-## Tutorial 6: Using JSON Output for Scripting
-
-**Goal**: Parse session data programmatically.
-
-### Step 1: List Sessions as JSON
-
-```bash
-amplihack remote list --json
-```
-
-**Expected Output**:
-
-```json
-{
-  "sessions": [
-    {
-      "session_id": "sess-20251202-083022-a1b",
-      "vm_name": "amplihack-azureuser-20251202-083000",
-      "status": "running",
-      "prompt": "create a simple hello world Python script",
-      "created_at": "2025-12-02T08:30:22Z",
-      "age_minutes": 45
-    }
-  ]
-}
-```
-
-### Step 2: Get Pool Status as JSON
-
-```bash
-amplihack remote status --json
-```
-
-**Expected Output**:
-
-```json
-{
-  "total_vms": 1,
-  "total_capacity": 4,
-  "active_sessions": 2,
-  "available_capacity": 2,
-  "vms": [
-    {
-      "name": "amplihack-azureuser-20251202-083000",
-      "size": "Standard_D4s_v3",
-      "region": "westus3",
-      "capacity": 4,
-      "active_sessions": 2,
-      "available_capacity": 2
-    }
-  ]
-}
-```
-
-### Step 3: Script to Monitor Sessions
-
-```bash
-#!/bin/bash
-# monitor-sessions.sh
+#!/usr/bin/env bash
+set -euo pipefail
 
 while true; do
-    RUNNING=$(amplihack remote list --json | jq '.sessions | map(select(.status == "running")) | length')
-    echo "$(date): $RUNNING sessions running"
+  running=$(
+    amplihack remote list --json \
+      | jq '[.[] | select(.status == "running" or .status == "pending")] | length'
+  )
 
-    if [ "$RUNNING" -eq 0 ]; then
-        echo "All sessions completed!"
-        break
-    fi
+  echo "$(date -Is): $running active session(s)"
 
-    sleep 60
+  if [ "$running" -eq 0 ]; then
+    break
+  fi
+
+  sleep 60
 done
 ```
 
-## Common Issues and Solutions
-
-### Issue 1: "Azure quota exceeded"
-
-**Symptom**:
-
-```
-Error: Azure quota exceeded in region westus3
-Hint: Try a different region with --region eastus
-```
-
-**Solution**:
+### Step 3: Save final output
 
 ```bash
-# Try different region
-amplihack remote start --region eastus "your task"
-
-# Or check current quota
-az vm list-usage --location westus3 -o table
+for session in $(amplihack remote list --json | jq -r '.[].session_id'); do
+  amplihack remote output "$session" --lines 1000 > "$session.log"
+done
 ```
 
-### Issue 2: Session stuck in "pending"
+## Tutorial 5: Stop a stuck session
 
-**Symptom**: Session shows "pending" for >10 minutes.
-
-**Solution**:
+### Step 1: Inspect the session
 
 ```bash
-# Kill and restart
-amplihack remote kill sess-xxx
-amplihack remote start "same task"
+amplihack remote output sess-20260502-203014-4f2a --lines 200
 ```
 
-### Issue 3: Cannot see session output
-
-**Symptom**:
-
-```
-Error: Session sess-xxx not found on VM
-```
-
-**Solution**:
+### Step 2: Try a normal kill
 
 ```bash
-# Check session status first
-amplihack remote list
-
-# If completed, session may have been cleaned up
-# Review final output before it completes
+amplihack remote kill sess-20260502-203014-4f2a
 ```
 
-## Best Practices
+Expected output:
 
-### 1. Use Descriptive Prompts
+```text
+Killing session: sess-20260502-203014-4f2a
+  Tmux session terminated on amplihack-azureuser-20260502
+  Session marked as KILLED
+  VM capacity released
 
-**Bad**:
+Session 'sess-20260502-203014-4f2a' has been terminated.
+```
+
+### Step 3: Force local cleanup if the VM is gone
+
+If the VM was deleted or cannot be reached, release local state explicitly:
 
 ```bash
-amplihack remote start "fix bug"
+amplihack remote kill sess-20260502-203014-4f2a --force
 ```
 
-**Good**:
+`--force` continues after a remote tmux kill failure, marks the session killed,
+and releases the VM pool slot.
+
+## Tutorial 6: Choose the right command
+
+| Situation | Command |
+| --------- | ------- |
+| You want a blocking run that retrieves and integrates results before returning | `amplihack remote exec` |
+| You want work to continue after disconnecting | `amplihack remote start` |
+| You need a quick status table | `amplihack remote list` |
+| You need logs from a specific session | `amplihack remote output` |
+| You need to stop a runaway session | `amplihack remote kill` |
+| You need pool capacity and counts | `amplihack remote status` |
+
+## Cleanup after long-running work
+
+Review output before killing completed sessions:
 
 ```bash
-amplihack remote start "fix authentication token expiration bug in /api/auth/refresh endpoint"
+amplihack remote list --status completed
+amplihack remote output sess-20260502-203014-4f2a --lines 1000
 ```
 
-### 2. Monitor Long-Running Tasks
+Then release tracked sessions you no longer need:
 
 ```bash
-# Set up periodic checks
-watch -n 300 'amplihack remote output sess-xxx --lines 50'
+amplihack remote kill sess-20260502-203014-4f2a --force
 ```
 
-### 3. Clean Up Completed Sessions
+If you need to inspect a VM manually:
 
 ```bash
-# After reviewing results, kill old sessions
-amplihack remote list --status completed | grep sess- | cut -d' ' -f1 | xargs -n1 amplihack remote kill
+azlin connect amplihack-azureuser-20260502 "tmux ls"
+azlin connect amplihack-azureuser-20260502 "tmux capture-pane -t sess-20260502-203014-4f2a -p -S -200"
 ```
-
-### 4. Use Appropriate VM Sizes
-
-- **s** (32GB): Quick tests, single simple task
-- **m** (64GB): Standard development work, 2 concurrent tasks
-- **l** (128GB): Complex tasks, 4 parallel sessions (recommended)
-- **xl** (256GB): Heavy workloads, 8+ parallel sessions
-
-**Cost optimization**: L-size provides best cost per session ($0.25/hr per session). Only use XL for truly parallel workloads.
-
-## Next Steps
-
-- Review [CLI Reference](CLI_REFERENCE.md) for complete command documentation
-- Read [User Guide](#) for architecture details
-- Check [Developer Guide](../../.claude/tools/amplihack/remote/#) for implementation details
-- Report issues at [GitHub Issues](https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding/issues)

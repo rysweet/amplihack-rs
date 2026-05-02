@@ -130,9 +130,26 @@ impl Executor {
         prompt: &str,
         max_turns: u32,
     ) -> Result<ExecutionResult, RemoteError> {
-        let encoded_prompt = b64_encode(prompt.as_bytes());
         let api_key = std::env::var("ANTHROPIC_API_KEY")
             .map_err(|_| RemoteError::execution("ANTHROPIC_API_KEY not found in environment"))?;
+        self.execute_remote_with_api_key(command, prompt, max_turns, &api_key)
+            .await
+    }
+
+    /// Execute amplihack command on the remote VM with an explicit API key.
+    pub async fn execute_remote_with_api_key(
+        &self,
+        command: &str,
+        prompt: &str,
+        max_turns: u32,
+        api_key: &str,
+    ) -> Result<ExecutionResult, RemoteError> {
+        if api_key.trim().is_empty() {
+            return Err(RemoteError::execution(
+                "ANTHROPIC_API_KEY not found in environment",
+            ));
+        }
+        let encoded_prompt = b64_encode(prompt.as_bytes());
         let encoded_key = b64_encode(api_key.as_bytes());
 
         info!(command, "executing remote command");
@@ -203,6 +220,59 @@ amplihack claude --{command} --max-turns {turns} -- -p "$PROMPT"
                     timed_out: true,
                 })
             }
+        }
+    }
+
+    /// Launch an amplihack command inside a detached tmux session on the VM.
+    pub async fn execute_remote_tmux(
+        &self,
+        session_id: &str,
+        command: &str,
+        prompt: &str,
+        max_turns: u32,
+        api_key: &str,
+    ) -> Result<(), RemoteError> {
+        if api_key.trim().is_empty() {
+            return Err(RemoteError::execution(
+                "ANTHROPIC_API_KEY not found in environment",
+            ));
+        }
+
+        let encoded_prompt = b64_encode(prompt.as_bytes());
+        let encoded_key = b64_encode(api_key.as_bytes());
+        let script = format!(
+            r#"
+set -e
+export ANTHROPIC_API_KEY=$(echo '{key}' | base64 -d)
+PROMPT=$(echo '{prompt}' | base64 -d)
+tmux new-session -d -s {session} "cd ~/workspace && amplihack claude --{command} --max-turns {turns} -- -p \"$PROMPT\""
+"#,
+            key = encoded_key,
+            prompt = encoded_prompt,
+            session = shell_escape(session_id),
+            command = command,
+            turns = max_turns,
+        );
+
+        let mut cmd = Command::new("azlin");
+        cmd.arg("connect");
+        self.append_port_args(&mut cmd);
+        cmd.args([&self.vm.name, &script]);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        let output = tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output())
+            .await
+            .map_err(|_| RemoteError::execution("tmux launch timed out"))?
+            .map_err(|e| RemoteError::execution(format!("tmux launch failed: {e}")))?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(RemoteError::execution(format!(
+                "tmux launch failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )))
         }
     }
 
@@ -352,6 +422,13 @@ fn b64_encode(data: &[u8]) -> String {
         }
     }
     result
+}
+
+fn shell_escape(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        .collect()
 }
 
 #[cfg(test)]

@@ -39,6 +39,8 @@ pub mod launcher;
 pub mod launcher_context;
 pub mod memory_config;
 pub mod nesting;
+#[cfg(test)]
+mod remote_cli_tests;
 pub mod resolve_bundle_asset;
 pub mod runtime_assets;
 pub mod rust_trial;
@@ -79,7 +81,7 @@ pub const VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
 pub use cli_commands::Commands;
 pub use cli_subcommands::{
     BuilderCommands, MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands,
-    QueryCodeCommands, RecipeCommands, ReflectCommands,
+    QueryCodeCommands, RecipeCommands, ReflectCommands, RemoteCommands,
 };
 
 fn graph_db_backend_value_parser() -> PossibleValuesParser {

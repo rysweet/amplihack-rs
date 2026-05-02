@@ -37,6 +37,14 @@ impl ErrorContext {
 /// All remote-execution errors.
 #[derive(Debug, thiserror::Error)]
 pub enum RemoteError {
+    /// Error before any remote side effects are allowed.
+    #[error("Validation error: {0}")]
+    Validation(String),
+
+    /// Requested detached session does not exist.
+    #[error("Session '{session_id}' not found")]
+    SessionNotFound { session_id: String },
+
     /// Error during context packaging (secret detection, archive creation).
     #[error("Packaging error: {message}{context}")]
     PackagingError {
@@ -82,6 +90,16 @@ pub enum RemoteError {
 
 /// Convenience constructors for each variant.
 impl RemoteError {
+    pub fn validation(msg: impl Into<String>) -> Self {
+        Self::Validation(msg.into())
+    }
+
+    pub fn session_not_found(session_id: impl Into<String>) -> Self {
+        Self::SessionNotFound {
+            session_id: session_id.into(),
+        }
+    }
+
     pub fn packaging(msg: impl Into<String>) -> Self {
         Self::PackagingError {
             message: msg.into(),
@@ -195,6 +213,8 @@ mod tests {
 
     #[test]
     fn all_variants_are_constructible() {
+        let _v = RemoteError::validation("v");
+        let _s = RemoteError::session_not_found("sess-1");
         let _p = RemoteError::packaging("p");
         let _pr = RemoteError::provisioning("pr");
         let _t = RemoteError::transfer("t");

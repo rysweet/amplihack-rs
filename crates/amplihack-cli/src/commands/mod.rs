@@ -19,13 +19,14 @@ pub mod pr;
 pub mod query_code;
 pub mod recipe;
 pub mod reflect;
+pub mod remote;
 pub mod rustyclawd;
 pub mod session_tree;
 pub mod uvx_help;
 
 use crate::{
     BuilderCommands, Commands, MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands,
-    RecipeCommands, ReflectCommands,
+    RecipeCommands, ReflectCommands, RemoteCommands,
 };
 use anyhow::Result;
 
@@ -230,6 +231,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         }
         Commands::Plugin { command } => dispatch_plugin(command),
         Commands::Memory { command } => dispatch_memory(command),
+        Commands::Remote { command } => dispatch_remote(command),
         Commands::IndexCode {
             input,
             db_path,
@@ -370,6 +372,10 @@ fn dispatch_builder(command: BuilderCommands) -> Result<()> {
             format,
         } => builder::run_export_on_compact(&input, &root_dir, &format),
     }
+}
+
+fn dispatch_remote(command: RemoteCommands) -> Result<()> {
+    remote::run(command)
 }
 
 fn dispatch_plugin(command: PluginCommands) -> Result<()> {

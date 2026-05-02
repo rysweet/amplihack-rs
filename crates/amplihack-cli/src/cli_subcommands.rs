@@ -269,6 +269,100 @@ pub enum BuilderCommands {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum RemoteCommands {
+    /// Execute an amplihack command synchronously on a remote Azure VM.
+    Exec {
+        /// Amplihack command mode to run remotely.
+        #[arg(value_parser = ["auto", "ultrathink", "analyze", "fix"])]
+        command: String,
+        /// Task prompt for the remote command.
+        prompt: String,
+        /// Maximum turns for auto mode.
+        #[arg(long = "max-turns", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=50))]
+        max_turns: u32,
+        /// Azure VM size.
+        #[arg(long = "vm-size", default_value = "Standard_D2s_v3")]
+        vm_size: String,
+        /// Specific VM to reuse.
+        #[arg(long = "vm-name")]
+        vm_name: Option<String>,
+        /// Do not clean up the VM after execution.
+        #[arg(long = "keep-vm")]
+        keep_vm: bool,
+        /// Always provision a fresh VM.
+        #[arg(long = "no-reuse")]
+        no_reuse: bool,
+        /// Maximum execution time in minutes.
+        #[arg(long = "timeout", default_value_t = 120, value_parser = clap::value_parser!(u64).range(5..=480))]
+        timeout: u64,
+        /// Azure region.
+        #[arg(long = "region")]
+        region: Option<String>,
+        /// Reuse an existing bastion tunnel on this local port.
+        #[arg(long = "port")]
+        port: Option<u16>,
+        /// Extra arguments forwarded to azlin after `--`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        azlin_args: Vec<String>,
+    },
+    /// List detached remote sessions.
+    List {
+        /// Filter by session status.
+        #[arg(long = "status", value_parser = ["pending", "running", "completed", "failed", "killed"])]
+        status: Option<String>,
+        /// Output in JSON format.
+        #[arg(long = "json")]
+        json: bool,
+    },
+    /// Start one or more detached remote sessions. Requires ANTHROPIC_API_KEY.
+    Start {
+        /// Prompts to start.
+        #[arg(required = true)]
+        prompts: Vec<String>,
+        /// Claude command mode.
+        #[arg(long = "command", default_value = "auto", value_parser = ["auto", "ultrathink", "analyze", "fix"])]
+        command: String,
+        /// Maximum turns.
+        #[arg(long = "max-turns", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=50))]
+        max_turns: u32,
+        /// VM size tier (s=1, m=2, l=4, xl=8 sessions).
+        #[arg(long = "size", default_value = "l", value_parser = ["s", "m", "l", "xl"])]
+        size: String,
+        /// Azure region.
+        #[arg(long = "region", default_value = "eastus")]
+        region: String,
+        /// Reuse an existing bastion tunnel on this local port.
+        #[arg(long = "port")]
+        port: Option<u16>,
+    },
+    /// Show output from a detached remote session.
+    Output {
+        /// Session ID.
+        session_id: String,
+        /// Lines to capture from tmux.
+        #[arg(long = "lines", default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..))]
+        lines: u32,
+        /// Repeatedly refresh output.
+        #[arg(long = "follow")]
+        follow: bool,
+    },
+    /// Terminate a running detached session.
+    Kill {
+        /// Session ID.
+        session_id: String,
+        /// Continue state cleanup even if tmux kill fails.
+        #[arg(long = "force")]
+        force: bool,
+    },
+    /// Show remote VM pool and session status.
+    Status {
+        /// Output in JSON format.
+        #[arg(long = "json")]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum RecipeCommands {
     /// Run a recipe
     Run {

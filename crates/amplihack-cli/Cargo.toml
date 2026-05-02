@@ -16,6 +16,7 @@ amplihack-utils = { workspace = true }
 amplihack-memory = { workspace = true }
 amplihack-reflection = { workspace = true }
 amplihack-builders = { workspace = true }
+amplihack-remote = { path = "../amplihack-remote" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 clap_complete = "4"
@@ -32,6 +33,7 @@ time = { version = "0.3", default-features = false, features = ["std"] }
 tar = "0.4"
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time"] }
 tracing = { workspace = true }
 sha2 = { workspace = true }
 toml = "0.8"

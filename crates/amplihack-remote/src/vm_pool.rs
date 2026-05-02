@@ -4,7 +4,9 @@
 //! efficient VM reuse across multiple sessions.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -40,6 +42,31 @@ impl VMSize {
             Self::M => "Standard_E8s_v5",
             Self::L => "Standard_E16s_v5",
             Self::XL => "Standard_E32s_v5",
+        }
+    }
+}
+
+impl fmt::Display for VMSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::S => "s",
+            Self::M => "m",
+            Self::L => "l",
+            Self::XL => "xl",
+        })
+    }
+}
+
+impl FromStr for VMSize {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "s" | "S" => Ok(Self::S),
+            "m" | "M" => Ok(Self::M),
+            "l" | "L" => Ok(Self::L),
+            "xl" | "XL" => Ok(Self::XL),
+            _ => Err(format!("invalid VM size tier: {raw}")),
         }
     }
 }

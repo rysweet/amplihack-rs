@@ -18,7 +18,9 @@
 //! - [`error`] — Error types
 
 pub mod auth;
+pub(crate) mod azlin_parse;
 pub mod cli;
+pub mod commands;
 pub mod error;
 pub mod executor;
 pub mod integrator;
@@ -29,7 +31,14 @@ pub mod state_lock;
 pub mod vm_pool;
 
 pub use auth::{AzureAuthenticator, AzureCredentials, get_azure_auth};
-pub use cli::{WorkflowResult, execute_remote_workflow};
+pub use cli::{
+    WorkflowOptions, WorkflowResult, execute_remote_workflow, execute_remote_workflow_with_api_key,
+};
+pub use commands::{
+    CommandMode, ExecOptions, KillOptions, ListOptions, OutputOptions, OutputResult, RemoteStatus,
+    SessionCounts, StartOptions, StartSummary, StatusOptions, capture_output, exec, kill_session,
+    list_sessions, start_sessions, status,
+};
 pub use error::{ErrorContext, RemoteError};
 pub use executor::{ExecutionResult, Executor};
 pub use integrator::{BranchInfo, IntegrationSummary, Integrator};
