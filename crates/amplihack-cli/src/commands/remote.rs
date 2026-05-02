@@ -176,11 +176,9 @@ pub fn run(command: RemoteCommands) -> Result<()> {
                 println!("  (No VMs in pool)");
             } else {
                 for entry in remote_status.vms {
-                    let capacity_pct = if entry.capacity > 0 {
-                        entry.active_sessions.len() * 100 / entry.capacity
-                    } else {
-                        0
-                    };
+                    let capacity_pct = (entry.active_sessions.len() * 100)
+                        .checked_div(entry.capacity)
+                        .unwrap_or(0);
                     println!("  {} ({}, {})", entry.vm.name, entry.vm.size, entry.region);
                     println!(
                         "    Sessions: {}/{} ({}% capacity)",
