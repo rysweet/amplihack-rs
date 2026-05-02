@@ -54,6 +54,7 @@ Like a brick model, our software is built from small, clear modules. Each module
 - **Do not compromise**: Always choose quality over speed of implementation
 - **No faked APIs or mock implementations**: Implement real functionality from the start, do not create fake data or mock services (except in tests)
 - **No swallowed exceptions**: Handle errors transparently and ensure they are visible during development
+- **Install completeness**: `amplihack install` MUST guarantee that every component the user-facing CLI advertises is actually present and functional after install completes. This includes: every framework asset the post-install verifier checks (e.g. `CLAUDE.md`, hooks, settings), every helper binary that recipes/skills/hooks invoke (e.g. `recipe-runner-rs`), and every PATH-resident command users will type. If install cannot place a component, install must fail loudly with a precise error — never finish "successfully" while the verifier prints `❌`. When adding a new component (binary, asset, hook), update both the install staging code AND the verifier in the same change so they cannot drift.
 
 ### 4. Library vs Custom Code
 
