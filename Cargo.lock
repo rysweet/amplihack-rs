@@ -25,7 +25,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "amplihack"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "amplihack-cli",
  "amplihack-hooks",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "amplihack-memory",
  "async-trait",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-eval"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "serde",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-generator"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "serde",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-asset-resolver-bin"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "amplihack-cli",
  "tracing",
@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-blarify"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-cli"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "amplihack-hive",
  "amplihack-state",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-context"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-delegation"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "globset",
@@ -179,7 +179,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-domain-agents"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "amplihack-agent-core",
  "amplihack-memory",
@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-fleet"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hive"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "amplihack-agent-core",
  "amplihack-memory",
@@ -223,7 +223,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "amplihack-cli",
  "amplihack-security",
@@ -244,7 +244,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks-bin"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "amplihack-hooks",
  "amplihack-state",
@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-launcher"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-memory"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "md-5",
@@ -291,7 +291,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-multilspy"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -305,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-orchestration"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "once_cell",
@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-recovery"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -332,7 +332,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-remote"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-safety"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -358,7 +358,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-security"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "once_cell",
  "regex",
@@ -371,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-state"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "amplihack-types",
  "libc",
@@ -384,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-types"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-utils"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "chrono",
  "libc",
@@ -410,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-workflows"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "amplihack-utils",
  "chrono",
@@ -578,9 +578,9 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cc"
-version = "1.2.60"
+version = "1.2.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43c5703da9466b66a946814e1adf53ea2c90f10063b86290cc9eb67ce3478a20"
+checksum = "d16d90359e986641506914ba71350897565610e87ce0ad9e6f28569db3dd5c6d"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -630,9 +630,9 @@ dependencies = [
 
 [[package]]
 name = "clap_complete"
-version = "4.6.2"
+version = "4.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ff7a1dccbdd8b078c2bdebff47e404615151534d5043da397ec50286816f9cb"
+checksum = "660c0520455b1013b9bcb0393d5f643d7e4454fb69c915b8d6d2aa0e9a45acc3"
 dependencies = [
  "clap",
 ]
@@ -957,6 +957,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures-core"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
+
+[[package]]
+name = "futures-task"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
+
+[[package]]
+name = "futures-util"
+version = "0.3.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
+dependencies = [
+ "futures-core",
+ "futures-task",
+ "pin-project-lite",
+ "slab",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1181,9 +1205,9 @@ dependencies = [
 
 [[package]]
 name = "idna_adapter"
-version = "1.2.1"
+version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3acae9609540aa318d1bc588455225fb2085b9ed0c4f6bd0d9d5bcd86f1a0344"
+checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
@@ -1233,10 +1257,12 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "js-sys"
-version = "0.3.95"
+version = "0.3.97"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2964e92d1d9dc3364cae4d718d93f227e3abb088e747d92e0395bfdedf1c12ca"
+checksum = "a1840c94c045fbcf8ba2812c95db44499f7c64910a912551aaaa541decebcacf"
 dependencies = [
+ "cfg-if",
+ "futures-util",
  "once_cell",
  "wasm-bindgen",
 ]
@@ -1249,9 +1275,9 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lbug"
-version = "0.15.3"
+version = "0.15.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c983bfdf95753e2359889e3c0534580f7689302f55271bba293e72b24ba9924b"
+checksum = "7ff191ec195fb257dd7ca2adb76afd9a4b9a9f60fa27f1d87e5a958849fe9e6f"
 dependencies = [
  "cmake",
  "cxx",
@@ -1270,9 +1296,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.185"
+version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52ff2c0fe9bc6cb6b14a0592c2ff4fa9ceb83eea9db979b0487cd054946a2b8f"
+checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libredox"
@@ -1769,9 +1795,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.38"
+version = "0.23.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69f9466fb2c14ea04357e91413efb882e2a6d4a406e625449bc0a5d360d53a21"
+checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
 dependencies = [
  "log",
  "once_cell",
@@ -1784,9 +1810,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-pki-types"
-version = "1.14.0"
+version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be040f8b0a225e40375822a563fa9524378b9d63112f53e19ffff34df5d33fdd"
+checksum = "30a7197ae7eb376e574fe940d068c30fe0462554a3ddbe4eca7838e049c937a9"
 dependencies = [
  "zeroize",
 ]
@@ -1980,6 +2006,12 @@ name = "simd-adler32"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
+
+[[package]]
+name = "slab"
+version = "0.4.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smallvec"
@@ -2468,9 +2500,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.118"
+version = "0.2.120"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bf938a0bacb0469e83c1e148908bd7d5a6010354cf4fb73279b7447422e3a89"
+checksum = "df52b6d9b87e0c74c9edfa1eb2d9bf85e5d63515474513aa50fa181b3c4f5db1"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -2481,9 +2513,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.118"
+version = "0.2.120"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eeff24f84126c0ec2db7a449f0c2ec963c6a49efe0698c4242929da037ca28ed"
+checksum = "78b1041f495fb322e64aca85f5756b2172e35cd459376e67f2a6c9dffcedb103"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -2491,9 +2523,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.118"
+version = "0.2.120"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d08065faf983b2b80a79fd87d8254c409281cf7de75fc4b773019824196c904"
+checksum = "9dcd0ff20416988a18ac686d4d4d0f6aae9ebf08a389ff5d29012b05af2a1b41"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -2504,9 +2536,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.118"
+version = "0.2.120"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fd04d9e306f1907bd13c6361b5c6bfc7b3b3c095ed3f8a9246390f8dbdee129"
+checksum = "49757b3c82ebf16c57d69365a142940b384176c24df52a087fb748e2085359ea"
 dependencies = [
  "unicode-ident",
 ]
