@@ -64,14 +64,12 @@ steps:
     type: "bash"
     condition: "'Operations' in task_type"
     command: |
-      cd "$REPO_PATH" 2>/dev/null || true
+      if [ ! -d "$REPO_PATH" ]; then echo "[skip] repo_path '$REPO_PATH' does not exist; skipping operations git telemetry" >&2; echo ""; exit 0; fi
+      cd "$REPO_PATH"
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "[skip] not a git repo; skipping operations git telemetry" >&2; echo ""; exit 0; fi
       CHANGED=$(git diff --name-only 2>/dev/null | head -1)
       UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null | head -1)
-      if [ -n "$CHANGED" ] || [ -n "$UNTRACKED" ]; then
-        echo "true"
-      else
-        echo ""
-      fi
+      if [ -n "$CHANGED" ] || [ -n "$UNTRACKED" ]; then echo "true"; else echo ""; fi
     output: "ops_modified_files"
 
   # ─────────────────────────────────────────────────────────────────────────

@@ -34,8 +34,6 @@ steps:
       fi
       if [ ! -d "$REPO" ]; then
         ERRORS="${ERRORS}\n  ✗ repo_path '$REPO' does not exist"
-      elif ! git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
-        ERRORS="${ERRORS}\n  ✗ repo_path '$REPO' is not a git repository"
       fi
       HELPER_PATH="$(amplihack resolve-bundle-asset helper-path 2>/dev/null || true)"
       if [ -z "$HELPER_PATH" ] || [ ! -f "$HELPER_PATH" ]; then

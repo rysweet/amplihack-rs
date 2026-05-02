@@ -8,6 +8,7 @@ Use this guide when a recipe step fails unexpectedly — a shell step hangs, an 
 - [Agent step completes but changes nothing](#agent-step-completes-but-changes-nothing)
 - [Shell step fails with "python3 not found"](#shell-step-fails-with-python3-not-found)
 - [Workflow classification routes to the wrong type](#workflow-classification-routes-to-the-wrong-type)
+- [Workflow step requires a Git repository](#workflow-step-requires-a-git-repository)
 - [Agent step killed by step timeout](#agent-step-killed-by-step-timeout)
 - [Update completes but assets are stale](#update-completes-but-assets-are-stale)
 - [Install fails after switching to the Rust repository](#install-fails-after-switching-to-the-rust-repository)
@@ -149,6 +150,57 @@ amplihack classify "Add an agentic disk-cleanup loop. Extend src/cmd_cleanup.rs 
 amplihack classify "disk cleanup on staging servers"
 # Expected: workflow=Ops
 ```
+
+---
+
+## Workflow step requires a Git repository
+
+**Symptom:** `amplihack recipe run` starts successfully from a scratch or
+temporary directory, then a development, publish, worktree, TDD, or PR step
+fails before executing its Git command:
+
+```text
+ERROR: step <workflow>/<step> requires a git repo at /tmp/demo; either `git init` or rerun from a checkout
+```
+
+**Cause:** Recipe routing and investigation flows are Git-optional, but the
+selected step needs repository state to create a branch, compute tracked-file
+changes, create a worktree, commit, push, or open a pull request. The recipe
+checks this precondition before running `git` so failures are actionable instead
+of surfacing as a raw Git `exit 128`.
+
+**Fix:** Run the Git-dependent workflow from a checkout:
+
+```sh
+cd /home/user/src/myproject
+amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
+  -c task_description="Fix the pagination bug" \
+  -c repo_path=.
+```
+
+Or initialize the directory when a new repository is appropriate:
+
+```sh
+git init
+amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
+  -c task_description="Create the initial project structure" \
+  -c repo_path=.
+```
+
+If your task is analysis-only, use an investigation or Q&A recipe instead; those
+workflows do not require Git, and history-specific analysis is skipped or marked
+unavailable outside a repository:
+
+```sh
+amplihack recipe run ~/.amplihack/.claude/recipes/investigation-workflow.yaml \
+  -c task_description="Explain the error message" \
+  -c repo_path=.
+```
+
+**Note:** Optional Git telemetry is different from required Git work. When a
+telemetry-only check runs outside a repository, it prints a visible skip message
+such as `[skip] not a git repo at /tmp/demo; skipping operations file-change git
+telemetry` and continues.
 
 ---
 

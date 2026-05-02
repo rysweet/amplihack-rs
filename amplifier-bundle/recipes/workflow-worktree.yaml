@@ -29,6 +29,10 @@ steps:
         exit 1
       fi
       cd "$REPO_PATH"
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: step-04-setup-worktree requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
+        exit 1
+      fi
 
       echo "=== Step 4: Creating Worktree and Branch ===" >&2
       echo "" >&2

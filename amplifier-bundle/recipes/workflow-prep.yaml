@@ -90,6 +90,10 @@ steps:
       echo "" && \
       echo "Current directory: $(pwd)" && \
       echo "" && \
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
+        echo "ERROR: step-01-prepare-workspace requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2; \
+        exit 1; \
+      fi && \
       echo "--- Git Status ---" && \
       git status && \
       echo "" && \

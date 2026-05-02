@@ -24,6 +24,10 @@ steps:
     type: "bash"
     command: |
       echo "Committing changes..."
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: step9-commit requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
+        exit 1
+      fi
 
       # Stage all changes
       git add -A
@@ -78,6 +82,10 @@ steps:
     type: "bash"
     command: |
       echo "Creating pull request..."
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: step10-create-pr requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
+        exit 1
+      fi
 
       # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
       _TASK_DESC="$TASK_DESCRIPTION"

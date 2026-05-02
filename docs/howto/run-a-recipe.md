@@ -126,6 +126,51 @@ Steps:
 
 ---
 
+## Run from a non-git directory
+
+Routing, Q&A, and investigation recipes can run from any existing directory.
+This is useful for scratch analysis, CI smoke checks, containers, and temporary
+workspaces where no checkout exists yet.
+
+```sh
+tmpdir=$(mktemp -d)
+cd "$tmpdir"
+
+amplihack recipe run ~/.amplihack/.claude/recipes/investigation-workflow.yaml \
+  -c task_description="Compare the available deployment approaches" \
+  -c repo_path=.
+```
+
+`smart-orchestrator` can also be dry-run outside Git to inspect routing:
+
+```sh
+tmpdir=$(mktemp -d)
+cd "$tmpdir"
+
+amplihack recipe run ~/.amplihack/.claude/recipes/smart-orchestrator.yaml \
+  -c task_description="hello" \
+  -c repo_path=. \
+  --dry-run
+```
+
+Dry-run inspects routing only; it does not execute downstream Git-required
+steps.
+
+If routing selects a development, publish, PR, worktree, or TDD workflow, the
+Git-dependent step checks for repository state before running `git`. Outside a
+checkout it fails with a clear precondition error:
+
+```text
+ERROR: step <workflow>/<step> requires a git repo at /tmp/demo; either `git init` or rerun from a checkout
+```
+
+Initialize the directory with `git init` or rerun the recipe from an existing
+checkout when you need branch, worktree, commit, diff, or pull-request behavior.
+Optional Git telemetry prints an explicit `[skip] not a git repo ...` note and
+continues.
+
+---
+
 ## Supply context variables
 
 Context variables fill template slots in the recipe. Supply them with `-c`:

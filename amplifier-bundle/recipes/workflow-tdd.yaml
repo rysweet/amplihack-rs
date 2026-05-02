@@ -164,6 +164,10 @@ steps:
       # false-positive no-op failures when the worktree contains real work).
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-08c requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: step-08c-implementation-no-op-guard requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
+        exit 1
+      fi
       if ! git diff --quiet || ! git diff --cached --quiet || \
          [ -n "$(git ls-files --others --exclude-standard)" ]; then
         echo "step-08 produced file changes — guard passed."
@@ -262,6 +266,10 @@ steps:
     command: |
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}" && \
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?checkpoint-after-implementation requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}" && \
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
+        echo "ERROR: checkpoint-after-implementation requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2; \
+        exit 1; \
+      fi && \
       echo "=== Checkpoint: Staging Implementation ===" && \
       git add -A && \
       STAGED=$(git diff --cached --name-only) && \

@@ -24,10 +24,14 @@ steps:
     type: "bash"
     command: |
       echo "Checking CI status..."
-      if git remote get-url origin >/dev/null 2>&1; then
-        gh pr checks 2>/dev/null || echo "CI check pending"
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        if git remote get-url origin >/dev/null 2>&1; then
+          gh pr checks 2>/dev/null || echo "CI check pending"
+        else
+          echo "[skip] not a git repo remote; skipping CI check" >&2
+        fi
       else
-        echo "Skipping CI check — no remote configured" >&2
+        echo "[skip] not a git repo; skipping CI check" >&2
       fi
       echo '{"ci_checked": true}'
     output: "ci_status"

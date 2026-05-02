@@ -206,6 +206,10 @@ steps:
       set -euo pipefail
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-11b-implement-feedback requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: checkpoint-after-review-feedback requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
+        exit 1
+      fi
       echo "=== Checkpoint: Staging Review Feedback ==="
       git add -A
       STAGED=$(git diff --cached --name-only)
