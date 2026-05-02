@@ -170,7 +170,7 @@ pub async fn run_expert_panel(
     session.log_info(&format!("Panel review completed in {:?}", panel_duration));
 
     let mut reviews = Vec::new();
-    for (result, (expert, expert_id)) in results.into_iter().zip(metadata.into_iter()) {
+    for (result, (expert, expert_id)) in results.into_iter().zip(metadata) {
         if !result.is_success() {
             session.log_warn(&format!(
                 "Expert {} failed: {}",
