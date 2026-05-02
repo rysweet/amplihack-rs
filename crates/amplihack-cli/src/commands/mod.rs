@@ -2,6 +2,7 @@
 
 pub mod append;
 pub mod auto_mode;
+pub mod builder;
 pub mod completions;
 pub mod doctor;
 pub mod fleet;
@@ -17,12 +18,14 @@ pub mod plugin;
 pub mod pr;
 pub mod query_code;
 pub mod recipe;
+pub mod reflect;
 pub mod rustyclawd;
 pub mod session_tree;
 pub mod uvx_help;
 
 use crate::{
-    Commands, MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands, RecipeCommands,
+    BuilderCommands, Commands, MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands,
+    RecipeCommands, ReflectCommands,
 };
 use anyhow::Result;
 
@@ -319,6 +322,53 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Orch { command } => orch::dispatch(command),
         Commands::Pr { command } => pr::run(command),
         Commands::SessionTree { command } => session_tree::run(command),
+        Commands::Reflect { command } => dispatch_reflect(command),
+        Commands::Builder { command } => dispatch_builder(command),
+    }
+}
+
+fn dispatch_reflect(command: ReflectCommands) -> Result<()> {
+    match command {
+        ReflectCommands::Analyze {
+            session,
+            messages,
+            error,
+            runtime_dir,
+            format,
+        } => reflect::run_analyze(&session, &messages, error.as_deref(), runtime_dir, &format),
+        ReflectCommands::State {
+            session,
+            runtime_dir,
+            format,
+        } => reflect::run_state(&session, runtime_dir, &format),
+        ReflectCommands::Clear {
+            session,
+            runtime_dir,
+            format,
+        } => reflect::run_clear(&session, runtime_dir, &format),
+    }
+}
+
+fn dispatch_builder(command: BuilderCommands) -> Result<()> {
+    match command {
+        BuilderCommands::Claude {
+            session,
+            messages,
+            working_dir,
+            out,
+            format,
+        } => builder::run_claude(&session, &messages, working_dir, out, &format),
+        BuilderCommands::Codex {
+            input_dir,
+            focus,
+            out,
+            format,
+        } => builder::run_codex(&input_dir, focus.as_deref(), out, &format),
+        BuilderCommands::ExportOnCompact {
+            input,
+            root_dir,
+            format,
+        } => builder::run_export_on_compact(&input, &root_dir, &format),
     }
 }
 
@@ -358,6 +408,43 @@ fn dispatch_memory(command: MemoryCommands) -> Result<()> {
             no_dry_run,
             confirm,
         } => memory::run_clean(&pattern, &backend, !no_dry_run, confirm),
+        MemoryCommands::Get {
+            agent,
+            session,
+            key,
+            db_path,
+            format,
+        } => memory::agent_kv::run_get(&agent, session, &key, db_path, &format),
+        MemoryCommands::Store {
+            agent,
+            session,
+            key,
+            value,
+            db_path,
+            memory_type,
+            format,
+        } => memory::agent_kv::run_store(
+            &agent,
+            session,
+            &key,
+            &value,
+            db_path,
+            &memory_type,
+            &format,
+        ),
+        MemoryCommands::List {
+            agent,
+            session,
+            db_path,
+            format,
+        } => memory::agent_kv::run_list(&agent, session, db_path, &format),
+        MemoryCommands::Delete {
+            agent,
+            session,
+            key,
+            db_path,
+            format,
+        } => memory::agent_kv::run_delete(&agent, session, &key, db_path, &format),
     }
 }
 

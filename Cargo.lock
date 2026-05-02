@@ -112,10 +112,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "amplihack-builders"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "amplihack-cli"
 version = "0.9.0"
 dependencies = [
+ "amplihack-builders",
  "amplihack-hive",
+ "amplihack-memory",
+ "amplihack-reflection",
  "amplihack-state",
  "amplihack-types",
  "amplihack-utils",
@@ -275,6 +291,7 @@ name = "amplihack-memory"
 version = "0.9.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "md-5",
  "proptest",
  "pyo3",
@@ -327,6 +344,21 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "amplihack-reflection"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
  "tracing",
 ]
 

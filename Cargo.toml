@@ -9,6 +9,8 @@ members = [
     "crates/amplihack-cli",
     "crates/amplihack-fleet",
     "crates/amplihack-memory",
+    "crates/amplihack-reflection",
+    "crates/amplihack-builders",
     "crates/amplihack-launcher",
     "crates/amplihack-safety",
     "crates/amplihack-context",
@@ -68,6 +70,8 @@ amplihack-hooks = { path = "crates/amplihack-hooks" }
 amplihack-cli = { path = "crates/amplihack-cli" }
 amplihack-fleet = { path = "crates/amplihack-fleet" }
 amplihack-memory = { path = "crates/amplihack-memory" }
+amplihack-reflection = { path = "crates/amplihack-reflection" }
+amplihack-builders = { path = "crates/amplihack-builders" }
 amplihack-launcher = { path = "crates/amplihack-launcher" }
 amplihack-safety = { path = "crates/amplihack-safety" }
 amplihack-utils = { path = "crates/amplihack-utils" }

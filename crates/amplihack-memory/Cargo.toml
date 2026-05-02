@@ -10,6 +10,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 regex = "1"
 uuid = { version = "1", features = ["v4"] }
+chrono = { workspace = true }
 md-5 = "0.10"
 sha1 = "0.10"
 sha2 = "0.10"

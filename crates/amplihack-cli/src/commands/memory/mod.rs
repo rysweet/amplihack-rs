@@ -1,5 +1,6 @@
 //! Native memory commands (`tree`, `export`, `import`, `clean`).
 
+pub mod agent_kv;
 pub mod backend;
 pub mod clean;
 pub mod code_graph;
