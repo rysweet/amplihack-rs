@@ -5,8 +5,8 @@ use clap_complete::Shell;
 use std::path::PathBuf;
 
 use super::{
-    MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands, QueryCodeCommands,
-    RecipeCommands,
+    BuilderCommands, MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands,
+    QueryCodeCommands, RecipeCommands, ReflectCommands,
 };
 
 #[derive(Subcommand, Debug)]
@@ -188,6 +188,16 @@ pub enum Commands {
     Memory {
         #[command(subcommand)]
         command: MemoryCommands,
+    },
+    /// Reflection workflow commands
+    Reflect {
+        #[command(subcommand)]
+        command: ReflectCommands,
+    },
+    /// Transcript / codex builders
+    Builder {
+        #[command(subcommand)]
+        command: BuilderCommands,
     },
     /// Import blarify code-graph JSON into the native code-graph store
     IndexCode {

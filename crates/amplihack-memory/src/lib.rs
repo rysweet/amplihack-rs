@@ -3,12 +3,14 @@
 //! Provides memory coordination, distributed sharding, bloom filter dedup,
 //! and session discovery — matching the Python amplihack memory subsystem.
 
+pub mod agent_memory;
 pub mod auto_backend;
 /// Lazy memory library availability check.
 pub mod auto_install;
 pub mod backend;
 pub mod bloom;
 pub mod config;
+pub mod context_preservation;
 pub mod coordinator;
 pub mod database;
 pub(crate) mod database_helpers;

@@ -98,6 +98,174 @@ pub enum MemoryCommands {
         #[arg(long)]
         confirm: bool,
     },
+    /// Get a value from agent memory
+    Get {
+        /// Agent name
+        #[arg(long)]
+        agent: String,
+        /// Session ID (auto-generated if omitted)
+        #[arg(long)]
+        session: Option<String>,
+        /// Memory key
+        key: String,
+        /// SQLite db path
+        #[arg(long = "db-path")]
+        db_path: Option<std::path::PathBuf>,
+        /// Output format
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
+    /// Store a value in agent memory
+    Store {
+        /// Agent name
+        #[arg(long)]
+        agent: String,
+        /// Session ID (auto-generated if omitted)
+        #[arg(long)]
+        session: Option<String>,
+        /// Memory key
+        key: String,
+        /// Memory value (string)
+        value: String,
+        /// SQLite db path
+        #[arg(long = "db-path")]
+        db_path: Option<std::path::PathBuf>,
+        /// Storage type
+        #[arg(long = "type", default_value = "markdown",
+              value_parser = ["markdown", "json", "yaml", "text"])]
+        memory_type: String,
+        /// Output format
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
+    /// List keys in the current session
+    List {
+        /// Agent name
+        #[arg(long)]
+        agent: String,
+        /// Session ID (auto-generated if omitted)
+        #[arg(long)]
+        session: Option<String>,
+        /// SQLite db path
+        #[arg(long = "db-path")]
+        db_path: Option<std::path::PathBuf>,
+        /// Output format
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
+    /// Delete a value from agent memory
+    Delete {
+        /// Agent name
+        #[arg(long)]
+        agent: String,
+        /// Session ID (auto-generated if omitted)
+        #[arg(long)]
+        session: Option<String>,
+        /// Memory key to delete
+        key: String,
+        /// SQLite db path
+        #[arg(long = "db-path")]
+        db_path: Option<std::path::PathBuf>,
+        /// Output format
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReflectCommands {
+    /// Analyze recent assistant responses for patterns
+    Analyze {
+        /// Session ID
+        #[arg(long)]
+        session: String,
+        /// Path to a JSON array of {role, content} message objects
+        #[arg(long)]
+        messages: std::path::PathBuf,
+        /// Optional error content to feed the contextual analyzer
+        #[arg(long)]
+        error: Option<String>,
+        /// Runtime directory for state/lock files
+        #[arg(long = "runtime-dir")]
+        runtime_dir: Option<std::path::PathBuf>,
+        /// Output format
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
+    /// Show current reflection state for a session
+    State {
+        /// Session ID
+        #[arg(long)]
+        session: String,
+        /// Runtime directory for state files
+        #[arg(long = "runtime-dir")]
+        runtime_dir: Option<std::path::PathBuf>,
+        /// Output format
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
+    /// Clear reflection state for a session (resets to Idle)
+    Clear {
+        /// Session ID
+        #[arg(long)]
+        session: String,
+        /// Runtime directory for state files
+        #[arg(long = "runtime-dir")]
+        runtime_dir: Option<std::path::PathBuf>,
+        /// Output format
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BuilderCommands {
+    /// Build a Claude session transcript from a messages.json file
+    Claude {
+        /// Session ID
+        #[arg(long)]
+        session: String,
+        /// Path to messages.json
+        #[arg(long)]
+        messages: std::path::PathBuf,
+        /// Working directory used for relative output paths
+        #[arg(long = "working-dir")]
+        working_dir: Option<std::path::PathBuf>,
+        /// Optional output file (markdown). Otherwise prints to stdout.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Output format for `--out` is always markdown; this flag controls
+        /// the metadata response printed to stdout.
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
+    /// Build a Codex aggregate codex from a directory of session JSON files
+    Codex {
+        /// Directory containing session JSON files
+        #[arg(long)]
+        input_dir: std::path::PathBuf,
+        /// Optional focus area; switches to focused-codex mode
+        #[arg(long)]
+        focus: Option<String>,
+        /// Optional output file (markdown). Otherwise prints to stdout.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Output format
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
+    /// Run the export-on-compact integration over a JSON payload file
+    ExportOnCompact {
+        /// Path to a JSON file describing the compact event
+        #[arg(long)]
+        input: std::path::PathBuf,
+        /// Root directory under which exports are stored
+        #[arg(long = "root-dir")]
+        root_dir: std::path::PathBuf,
+        /// Output format
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
