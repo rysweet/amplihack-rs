@@ -53,7 +53,7 @@ steps:
       done
       gh auth status >/dev/null || { echo "preflight: gh CLI is not authenticated" >&2; exit 1; }
       REPO="{{repo_path}}"
-      git -C "$REPO" rev-parse --git-dir >/dev/null || { echo "preflight: '$REPO' is not a git repository" >&2; exit 1; }
+      git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null || { echo "ERROR: preflight requires a git repo at $REPO; either \`git init\` or rerun from a checkout" >&2; exit 1; }
       if [ -n "$(git -C "$REPO" status --porcelain)" ]; then
         echo "preflight: working tree at '$REPO' is not clean" >&2; git -C "$REPO" status --short >&2; exit 1
       fi
@@ -65,6 +65,10 @@ steps:
       set -euo pipefail
       IFS=$'\n\t'
       REPO="{{repo_path}}"
+      if ! git -C "$REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: refresh-checkout requires a git repo at $REPO; either \`git init\` or rerun from a checkout" >&2
+        exit 1
+      fi
       git -C "$REPO" fetch --prune origin
       git -C "$REPO" checkout main
       git -C "$REPO" pull --ff-only origin main

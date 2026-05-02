@@ -123,6 +123,10 @@ steps:
       set -euo pipefail
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-15 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: step-15-commit-push requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
+        exit 1
+      fi
       echo "=== Step 15: Commit and Push ===" >&2
       # FIX (#495): commit_result MUST be emitted on every exit path so step-16
       # (PR creation) can be gated on the actual push outcome. Trap installed
@@ -218,6 +222,10 @@ steps:
       set -euo pipefail
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-16 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: step-16-create-draft-pr requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
+        exit 1
+      fi
       echo "=== Step 16: Creating Draft PR ===" >&2
 
       # FIX (#3324): Idempotency guard — detect pre-existing PRs before creating one

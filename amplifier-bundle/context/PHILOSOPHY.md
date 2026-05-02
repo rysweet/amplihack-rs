@@ -56,6 +56,8 @@ Like a brick model, our software is built from small, clear modules. Each module
 - **No swallowed exceptions**: Handle errors transparently and ensure they are visible during development
 - **Install completeness**: `amplihack install` MUST guarantee that every component the user-facing CLI advertises is actually present and functional after install completes. This includes: every framework asset the post-install verifier checks (e.g. `CLAUDE.md`, hooks, settings), every helper binary that recipes/skills/hooks invoke (e.g. `recipe-runner-rs`), and every PATH-resident command users will type. If install cannot place a component, install must fail loudly with a precise error — never finish "successfully" while the verifier prints `❌`. When adding a new component (binary, asset, hook), update both the install staging code AND the verifier in the same change so they cannot drift.
 
+Recipes are deterministic orchestration of agentic steps, not implicit shells that assume the host environment is already perfect. Any host-tool call (`git`, `gh`, `cargo`, package managers, cloud CLIs) must declare or check its preconditions at the step boundary and surface clear errors when those preconditions are required. Optional host-tool work, such as telemetry or decorative status reporting, must skip visibly with an explicit note instead of silently degrading; strict workflow work, such as branch, worktree, commit, or PR creation, must fail loudly with an actionable message.
+
 ### 4. Library vs Custom Code
 
 Choosing between custom code and external libraries is a judgment call that evolves with requirements:

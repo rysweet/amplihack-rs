@@ -197,3 +197,7 @@ path = "../../tests/integration/discoveries_doc_test.rs"
 [[test]]
 name = "gherkin_investigation_doc"
 path = "../../tests/integration/gherkin_investigation_doc_test.rs"
+
+[[test]]
+name = "issue_537_git_optional_recipes"
+path = "tests/issue_537_git_optional_recipes.rs"

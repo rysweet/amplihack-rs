@@ -21,6 +21,7 @@ inspects, validates, and runs YAML recipe files.
   - [Supplying context](#supplying-context)
   - [Context inference](#context-inference)
   - [Context environment variables](#context-environment-variables)
+- [Git context behavior](#git-context-behavior)
 - [Recipe search path](#recipe-search-path)
 - [Recipe runner binary](#recipe-runner-binary)
 - [Exit codes](#exit-codes)
@@ -246,6 +247,13 @@ amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
 amplihack recipe run ~/.amplihack/.claude/recipes/verification.yaml \
   -c task_description="Bump the version number" \
   --format json
+
+# Run an investigation from any directory, including a non-git temp directory
+tmpdir=$(mktemp -d)
+cd "$tmpdir"
+amplihack recipe run ~/.amplihack/.claude/recipes/investigation-workflow.yaml \
+  -c task_description="Explain the deployment options" \
+  -c repo_path=.
 ```
 
 **Example output (table, dry run):**
@@ -387,6 +395,61 @@ Recipe defaults in the `context:` block are the lowest-priority source.
 | `AMPLIHACK_CONTEXT_<KEY>` | Any context variable named `<key>` |
 | `AMPLIHACK_TASK_DESCRIPTION` | `task_description` |
 | `AMPLIHACK_REPO_PATH` | `repo_path` |
+
+---
+
+## Git context behavior
+
+`amplihack recipe run` does not require the current working directory to be a
+Git repository unless the selected recipe or step needs Git semantics. Recipes
+validate universal inputs first, such as `task_description` and whether
+`repo_path` exists, then each host-tool step checks its own prerequisites.
+This keeps routing, Q&A, and investigation recipes usable from existing scratch
+directories, containers, and temporary folders.
+
+The bundled recipes follow these Git-context rules:
+
+| Recipe or step type | Git requirement | Behavior outside a Git repository |
+|---------------------|-----------------|-----------------------------------|
+| `smart-orchestrator` routing and dry-runs | Optional | Runs classification and routing. Dry-runs stop there and do not execute downstream Git-required steps; normal runs let selected Git-only steps report their own precondition. |
+| `investigation-workflow` and Q&A workflows | Not required | Do not require Git. History-specific analysis is skipped or marked unavailable when no repository is present. |
+| Development, publish, PR, worktree, and TDD workflow steps | Required when they create branches, commits, worktrees, PRs, or inspect tracked changes | Fail before the Git operation with a structured, actionable precondition error. |
+| Telemetry and status-only Git checks | Optional | Print a visible `[skip] not a git repo ...` note and continue. |
+
+Strict Git-required steps fail with an error shaped like:
+
+```text
+ERROR: step <workflow>/<step> requires a git repo at /work/app; either `git init` or rerun from a checkout
+```
+
+That error means the recipe is valid, but the selected workflow needs repository
+state. To resolve it, either initialize the directory:
+
+```sh
+git init
+amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
+  -c task_description="Implement the feature" \
+  -c repo_path=.
+```
+
+or rerun from an existing checkout:
+
+```sh
+cd /home/user/src/myproject
+amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
+  -c task_description="Implement the feature" \
+  -c repo_path=.
+```
+
+Optional Git telemetry never hides failures with `|| true`. When no repository
+is present, it emits a visible skip note instead:
+
+```text
+[skip] not a git repo at /tmp/amplihack-demo; skipping operations file-change git telemetry
+```
+
+This distinction is intentional: optional observations may be skipped, but
+required host-tool work must fail before doing partial or misleading work.
 
 ---
 

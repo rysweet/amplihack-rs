@@ -25,6 +25,10 @@ steps:
     type: "bash"
     command: |
       echo "Pushing review updates..."
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: step12-push-updates requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
+        exit 1
+      fi
       git add -A
       git commit -m "Address PR review feedback" 2>/dev/null || true
       if git remote get-url origin >/dev/null 2>&1; then
@@ -173,4 +177,3 @@ steps:
   # ============================================================================
   # STEP 14: ENSURE PR IS MERGEABLE
   # ============================================================================
-

@@ -51,7 +51,6 @@ context:
 
 context_validation:
   task_description: "nonempty"
-  repo_path: "git_repo"
 
 steps:
   - id: "smart-classify-route"
