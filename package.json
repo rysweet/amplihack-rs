@@ -15,6 +15,7 @@
     "amplihack": "./npm/bin/amplihack.js"
   },
   "files": [
+    "amplifier-bundle/",
     "Cargo.toml",
     "Cargo.lock",
     "bins/",

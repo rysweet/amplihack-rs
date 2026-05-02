@@ -39,6 +39,7 @@ amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Py
 ### Reference
 
 - [amplihack install](./reference/install-command.md) — Full CLI reference for the `install` and `uninstall` commands
+- [Install Completeness Verification](./reference/install-completeness.md) — How `amplihack install` fails loudly instead of accepting partial framework staging
 - [Install Manifest](./reference/install-manifest.md) — Schema and semantics of the uninstall manifest written at install time
 - [Hook Specifications](./reference/hook-specifications.md) — Canonical table of all 7 Claude Code hooks registered by amplihack
 - [Binary Resolution](./reference/binary-resolution.md) — How `amplihack` locates the `amplihack-hooks` binary at install time

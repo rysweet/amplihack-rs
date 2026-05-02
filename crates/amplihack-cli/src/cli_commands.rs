@@ -20,6 +20,9 @@ pub enum Commands {
         /// hook scope, and update-check preference
         #[arg(long)]
         interactive: bool,
+        /// Accepted for diagnostic scripts; install already prints phase-level detail
+        #[arg(long)]
+        verbose: bool,
     },
     /// Remove amplihack agents and tools
     Uninstall,

@@ -70,5 +70,6 @@ amplihack resolve-bundle-asset amplifier-bundle/tools/session_tree.py
 
 ## Related
 
+- [Install Completeness Verification](./install-completeness.md) — What must be staged and verified during install
 - [Install Manifest](./install-manifest.md) — What gets installed to `~/.amplihack/.claude`
 - [recipe Command](./recipe-command.md) — Recipes that use `resolve-bundle-asset` in shell steps

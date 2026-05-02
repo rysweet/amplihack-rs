@@ -11,6 +11,8 @@ pub(crate) mod paths;
 mod recipe_runner;
 mod settings;
 mod types;
+mod uninstall;
+mod verification;
 pub(crate) mod version_stamp;
 
 #[cfg(test)]
@@ -20,14 +22,16 @@ use binary::{deploy_binaries, find_hooks_binary};
 use clone::{download_and_extract_framework_repo, find_bundled_framework_root};
 use directories::*;
 use filesystem::{all_rel_dirs, get_all_files_and_dirs};
-use hooks::ensure_object;
-use manifest::{manifest_path, read_manifest, write_manifest};
+use manifest::{manifest_path, write_manifest};
 use paths::*;
 use settings::*;
 use types::*;
+#[cfg(test)]
+pub(crate) use uninstall::remove_hook_registrations;
+pub use uninstall::run_uninstall;
+use verification::verify_install_completeness;
 
 use anyhow::{Context, Result, bail};
-use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -245,170 +249,6 @@ fn hooks_registered_in_settings(settings_path: &Path) -> Result<bool> {
     Ok(has_hooks)
 }
 
-pub fn run_uninstall() -> Result<()> {
-    let claude_dir = staging_claude_dir()?;
-    let manifest_path = manifest_path()?;
-    let manifest = read_manifest(&manifest_path)?;
-
-    let mut removed_any = false;
-    let mut removed_files = 0usize;
-
-    // Phase 1: remove files tracked in manifest
-    for file in &manifest.files {
-        let target = claude_dir.join(file);
-        if target.is_file() {
-            match fs::remove_file(&target) {
-                Ok(()) => {
-                    removed_any = true;
-                    removed_files += 1;
-                }
-                Err(error) => {
-                    println!("  ⚠️  Could not remove file {file}: {error}");
-                }
-            }
-        }
-    }
-
-    // Phase 2: remove dirs tracked in manifest (deepest-first to avoid removing a parent
-    // before its children, which would cause remove_dir_all to fail on the children).
-    let mut dirs_sorted = manifest.dirs.clone();
-    dirs_sorted.sort_unstable(); // NOTE: dedup() only removes adjacent duplicates — sort must precede it
-    dirs_sorted.dedup();
-    for dir in dirs_sorted.iter().rev() {
-        let target = claude_dir.join(dir);
-        if target.is_dir() && fs::remove_dir_all(&target).is_ok() {
-            removed_any = true;
-        }
-    }
-
-    let mut removed_dirs = 0usize;
-    for dir in ["agents/amplihack", "commands/amplihack", "tools/amplihack"] {
-        let target = claude_dir.join(dir);
-        if target.exists() {
-            match fs::remove_dir_all(&target) {
-                Ok(()) => {
-                    removed_any = true;
-                    removed_dirs += 1;
-                }
-                Err(error) => {
-                    println!("  ⚠️  Could not remove {}: {}", target.display(), error);
-                }
-            }
-        }
-    }
-
-    // Issue #243: amplifier-bundle is staged at ~/.amplihack/amplifier-bundle/
-    // (sibling of the .claude staging dir). Remove it on uninstall so a stale
-    // bundle does not remain after the framework is removed.
-    if let Ok(bundle) = staging_amplifier_bundle_dir()
-        && bundle.exists()
-    {
-        match fs::remove_dir_all(&bundle) {
-            Ok(()) => {
-                removed_any = true;
-                removed_dirs += 1;
-                println!("  🗑️  Removed amplifier-bundle at {}", bundle.display());
-            }
-            Err(error) => {
-                println!(
-                    "  ⚠️  Could not remove amplifier-bundle at {}: {}",
-                    bundle.display(),
-                    error
-                );
-            }
-        }
-    }
-
-    // Phase 3: remove binaries listed in manifest
-    for binary_path in &manifest.binaries {
-        let p = PathBuf::from(binary_path);
-        if p.is_file() {
-            match fs::remove_file(&p) {
-                Ok(()) => {
-                    removed_any = true;
-                    println!("  🗑️  Removed binary {}", p.display());
-                }
-                Err(error) => {
-                    println!("  ⚠️  Could not remove binary {}: {error}", p.display());
-                }
-            }
-        }
-    }
-
-    // Phase 4: remove hook registrations from ~/.claude/settings.json
-    let global_settings = global_settings_path()?;
-    if global_settings.exists() && !manifest.hook_registrations.is_empty() {
-        if let Err(e) = remove_hook_registrations(&global_settings) {
-            println!("  ⚠️  Could not clean hook registrations: {e}");
-        } else {
-            println!("  ✅ Hook registrations removed from settings.json");
-        }
-    }
-
-    let _ = fs::remove_file(&manifest_path);
-
-    if removed_any {
-        println!("✅ Uninstalled amplihack from {}", claude_dir.display());
-        if removed_files > 0 {
-            println!("   • Removed {removed_files} files");
-        }
-        if removed_dirs > 0 {
-            println!("   • Removed {removed_dirs} amplihack directories");
-        }
-    } else {
-        println!("Nothing to uninstall.");
-    }
-
-    Ok(())
-}
-
-/// Remove amplihack hook registrations from settings.json.
-/// Removes wrappers whose command contains `amplihack-hooks` or `tools/amplihack/`.
-/// Preserves XPIA and all other non-amplihack entries.
-fn remove_hook_registrations(settings_path: &Path) -> Result<()> {
-    let mut settings = read_settings_json(settings_path)?;
-    let root = ensure_object(&mut settings);
-    if let Some(hooks_val) = root.get_mut("hooks")
-        && let Some(hooks_map) = hooks_val.as_object_mut()
-    {
-        for (_event, wrappers_val) in hooks_map.iter_mut() {
-            if let Some(wrappers) = wrappers_val.as_array_mut() {
-                wrappers.retain(|wrapper| {
-                    // Keep wrapper if none of its hooks reference amplihack
-                    let hooks = wrapper.get("hooks").and_then(Value::as_array);
-                    let Some(hooks) = hooks else {
-                        return true;
-                    };
-                    let is_amplihack = hooks.iter().any(|hook| {
-                        hook.get("command")
-                            .and_then(Value::as_str)
-                            .map(|cmd| {
-                                cmd.contains("amplihack-hooks") || cmd.contains("tools/amplihack/")
-                            })
-                            .unwrap_or(false)
-                    });
-                    !is_amplihack
-                });
-            }
-        }
-        // Phase 2: prune event-type keys where every amplihack wrapper was removed,
-        // leaving no empty arrays in settings.json (fixes issue #38).
-        // Non-array values (unlikely but possible) are kept via the unwrap_or(true) guard.
-        hooks_map.retain(|_event, wrappers_val| {
-            wrappers_val
-                .as_array()
-                .map(|a| !a.is_empty())
-                .unwrap_or(true)
-        });
-    }
-
-    fs::write(
-        settings_path,
-        serde_json::to_string_pretty(&settings)? + "\n",
-    )
-    .with_context(|| format!("failed to write {}", settings_path.display()))
-}
-
 fn local_install(
     repo_root: &Path,
     wizard_config: Option<&interactive::InteractiveConfig>,
@@ -497,7 +337,8 @@ fn local_install(
 
     println!();
     println!("🔍 Verifying staged framework assets:");
-    let hooks_ok = verify_framework_assets(&claude_dir)?;
+    verify_framework_assets(&claude_dir)?;
+    verify_install_completeness(&source_root, layout, &claude_dir)?;
 
     println!();
     println!("🦀 Ensuring Rust recipe runner:");
@@ -507,7 +348,7 @@ fn local_install(
     println!("📝 Generating uninstall manifest:");
     let manifest_path = manifest_path()?;
     let mut tracked_roots = Vec::new();
-    for dir in essential_destinations(layout) {
+    for dir in &copied_dirs {
         let full = claude_dir.join(dir);
         if full.exists() {
             tracked_roots.push(full);
@@ -551,7 +392,7 @@ fn local_install(
 
     println!();
     println!("============================================================");
-    if settings_ok && hooks_ok && !copied_dirs.is_empty() {
+    if settings_ok && !copied_dirs.is_empty() {
         println!("✅ Amplihack installation completed successfully!");
         println!();
         println!("📍 Installed to: {}", claude_dir.display());
@@ -575,9 +416,6 @@ fn local_install(
         println!("⚠️  Installation completed with warnings");
         if !settings_ok {
             println!("   • Settings.json configuration had issues");
-        }
-        if !hooks_ok {
-            println!("   • Some staged framework assets are missing");
         }
         if copied_dirs.is_empty() {
             println!("   • No directories were copied");

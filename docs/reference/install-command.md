@@ -3,7 +3,7 @@
 ## Synopsis
 
 ```
-amplihack install [--interactive] [--local <PATH>]
+amplihack install [--interactive] [--local <PATH>] [--verbose]
 amplihack uninstall
 ```
 
@@ -22,6 +22,8 @@ npx --yes --package=git+https://github.com/rysweet/amplihack-rs.git -- amplihack
 The wrapper only changes how the native binaries are obtained. Once it hands off
 to the Rust CLI, the install phases below are unchanged.
 
+See [Install Completeness Verification](./install-completeness.md) for the hard-fail contract that prevents partial framework staging from being reported as a successful install.
+
 Published release archives currently cover Linux and macOS on `x64`/`arm64`.
 On Windows, or any other platform without a published release target, the npm
 wrapper needs the packaged Rust workspace plus a local Rust toolchain so it can
@@ -33,6 +35,7 @@ fall back to a source build.
 |------|------|---------|-------------|
 | `--interactive` | `bool` | `false` | Launch a guided setup wizard that prompts for default tool, hook scope, and update-check preference. Requires a TTY; falls back to defaults with a warning if stdin is not a terminal. See [Interactive Install](../howto/interactive-install.md). |
 | `--local <PATH>` | `PathBuf` | absent | Install from a specific local directory instead of using the bundled source. The path must exist, be a directory, and contain a `.claude` subdirectory (at `<PATH>/.claude` or `<PATH>/../.claude`). Without `--local`, the installer uses bundled framework assets from the amplihack-rs source tree. |
+| `--verbose` | `bool` | `false` | Accepted for diagnostic scripts. The install command already emits phase-level diagnostics by default. |
 
 The `--interactive` and `--local` flags compose: `--interactive` controls configuration preferences while `--local` controls the framework source path.
 
@@ -54,7 +57,7 @@ amplihack install [--interactive]
 ├── 0. maybe_run_wizard()         — if --interactive, prompt for tool/scope/update prefs (skipped otherwise)
 ├── 1. Bundled source, --local path, OR GitHub fallback — obtain framework source
 ├── 2. deploy_binaries()          — copy amplihack + amplihack-hooks (+ asset resolver when present) to ~/.local/bin
-├── 3. copy framework assets      — stage .claude/ tree to ~/.amplihack/.claude/
+├── 3. copy framework assets      — stage mapped framework assets to ~/.amplihack/.claude/
 ├── 4. create_runtime_dirs()      — create runtime/ subdirs with 0o755 permissions
 ├── 5. ensure_settings_json()     — backup settings.json, register hooks, set permissions
 ├── 6. verify_framework_assets()  — confirm required staged framework assets exist
