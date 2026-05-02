@@ -188,7 +188,7 @@ fn ensure_recipe_runner_up_to_date_inner() -> Result<()> {
     Ok(())
 }
 
-fn recipe_runner_binary_present() -> bool {
+pub(crate) fn recipe_runner_binary_present() -> bool {
     // Mirrors `commands::recipe::run::binary::find_recipe_runner_binary`
     // without pulling that private helper into this module.
     if let Ok(path) = std::env::var("RECIPE_RUNNER_RS_PATH")
@@ -219,7 +219,7 @@ fn recipe_runner_binary_present() -> bool {
     false
 }
 
-fn install_recipe_runner_from_git() -> Result<()> {
+pub(crate) fn install_recipe_runner_from_git() -> Result<()> {
     let cargo = which_binary("cargo").context(
         "cargo is required to install recipe-runner-rs. Install Rust: https://rustup.rs/",
     )?;

@@ -8,6 +8,7 @@ mod hooks;
 pub(crate) mod interactive;
 mod manifest;
 pub(crate) mod paths;
+mod recipe_runner;
 mod settings;
 mod types;
 pub(crate) mod version_stamp;
@@ -500,14 +501,7 @@ fn local_install(
 
     println!();
     println!("🦀 Ensuring Rust recipe runner:");
-    if paths::find_binary("recipe-runner-rs").is_some() {
-        println!("   ✅ recipe-runner-rs is available");
-    } else {
-        println!("   ❌ recipe-runner-rs not installed (recipe execution will fail without it)");
-        println!(
-            "   Install: cargo install --git https://github.com/rysweet/amplihack-recipe-runner"
-        );
-    }
+    recipe_runner::ensure_recipe_runner()?;
 
     println!();
     println!("📝 Generating uninstall manifest:");
