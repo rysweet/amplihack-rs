@@ -117,7 +117,12 @@ impl OrchestratorSession {
     }
 
     pub fn log(&self, msg: &str, level: &str) {
-        let line = format!("[{}] [{}] {}\n", current_hms(), level, msg);
+        let line = format!(
+            "[{}] [{}] {}\n",
+            crate::time_utils::current_hms(),
+            level,
+            msg
+        );
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -234,17 +239,6 @@ impl OrchestratorSessionBuilder {
     }
 }
 
-fn current_hms() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let h = (secs / 3600) % 24;
-    let m = (secs / 60) % 60;
-    let s = secs % 60;
-    format!("{:02}:{:02}:{:02}", h, m, s)
-}
-
 fn humantime_now() -> String {
     // Lightweight, locale-free YYYY-MM-DD HH:MM:SS rendering of UTC now.
     let secs = SystemTime::now()
@@ -293,6 +287,6 @@ mod inline_tests {
 
     #[test]
     fn current_hms_is_8_chars() {
-        assert_eq!(current_hms().len(), 8);
+        assert_eq!(crate::time_utils::current_hms().len(), 8);
     }
 }

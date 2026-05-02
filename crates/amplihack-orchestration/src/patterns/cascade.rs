@@ -144,6 +144,21 @@ pub struct CustomLevel {
     pub model: Option<String>,
 }
 
+/// Internal step descriptor used by the unified executor — abstracts over
+/// both the predefined three-level cascade and arbitrary custom levels.
+struct CascadeStep {
+    name: String,
+    pid: String,
+    prompt: String,
+    timeout: Duration,
+    model: Option<String>,
+    /// `CascadeLevel` to attach to the result when this step succeeds.
+    level_enum: CascadeLevel,
+    /// Degradation string to record when this step succeeds. `None` for the
+    /// first (non-degraded) step.
+    degradation_msg: Option<String>,
+}
+
 /// Execute the cascading fallback pattern with predefined strategies.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_cascade(
@@ -205,31 +220,11 @@ pub async fn run_cascade(
         ),
     ];
 
-    let mut attempts = Vec::new();
-    for (i, (name, t_secs, constraint, level_enum)) in levels.iter().enumerate() {
-        let model = models.as_ref().and_then(|m| m.get(i)).cloned();
-        let prompt = build_cascade_prompt(&task_prompt, name, constraint, *name == "tertiary");
-        let pid = format!("cascade_{name}");
-        let mut process = session
-            .create_process(
-                &prompt,
-                Some(&pid),
-                model.as_deref(),
-                Some(Duration::from_secs(*t_secs)),
-            )
-            .expect("create_process");
-        let _ = &mut process; // keep mutable borrow scope clean
-        session.log_info(&format!(
-            "Attempting {} level (timeout: {t_secs}s)",
-            name.to_uppercase()
-        ));
-        let result = process.run().await;
-        let succeeded = result.is_success();
-        attempts.push(result.clone());
-
-        if succeeded {
-            session.log_info(&format!("{} level succeeded!", name.to_uppercase()));
-            let degradation = match *name {
+    let steps: Vec<CascadeStep> = levels
+        .iter()
+        .enumerate()
+        .map(|(i, (name, t_secs, constraint, level_enum))| {
+            let degradation_msg = match *name {
                 "secondary" => Some(format!(
                     "Degraded from primary to secondary: {}",
                     template.secondary
@@ -240,44 +235,19 @@ pub async fn run_cascade(
                 )),
                 _ => None,
             };
-            if let Some(d) = &degradation
-                && notification_level != "silent"
-            {
-                session.log_warn(&format!("Degradation: {d}"));
+            CascadeStep {
+                name: (*name).to_string(),
+                pid: format!("cascade_{name}"),
+                prompt: build_cascade_prompt(&task_prompt, name, constraint, *name == "tertiary"),
+                timeout: Duration::from_secs(*t_secs),
+                model: models.as_ref().and_then(|m| m.get(i)).cloned(),
+                level_enum: *level_enum,
+                degradation_msg,
             }
-            return Ok(CascadeResult {
-                result: Some(result),
-                cascade_level: *level_enum,
-                level_name: name.to_string(),
-                degradation,
-                attempts,
-                session_id: session.session_id().to_string(),
-                success: true,
-            });
-        }
+        })
+        .collect();
 
-        if result.exit_code == -1 {
-            session.log_warn(&format!("{} level timed out", name.to_uppercase()));
-        } else {
-            session.log_warn(&format!(
-                "{} level failed with exit code {}",
-                name.to_uppercase(),
-                result.exit_code
-            ));
-        }
-    }
-
-    session.log_error("All cascade levels failed");
-    let last = attempts.last().cloned();
-    Ok(CascadeResult {
-        result: last,
-        cascade_level: CascadeLevel::Failed,
-        level_name: "failed".to_string(),
-        degradation: Some("All cascade levels failed".to_string()),
-        attempts,
-        session_id: session.session_id().to_string(),
-        success: false,
-    })
+    Ok(execute_cascade_steps(&mut session, steps, &notification_level).await)
 }
 
 /// Execute a cascade with arbitrary user-defined levels.
@@ -302,30 +272,11 @@ pub async fn create_custom_cascade(
     ));
 
     let total = levels.len();
-    let mut attempts = Vec::new();
-
-    for (i, level) in levels.iter().enumerate() {
-        session.log_info(&format!(
-            "Attempting {} level (timeout: {:?})",
-            level.name.to_uppercase(),
-            level.timeout
-        ));
-        let prompt = build_custom_cascade_prompt(&task_prompt, level, i + 1, total);
-        let pid = format!("cascade_{}", level.name);
-        let process = session
-            .create_process(
-                &prompt,
-                Some(&pid),
-                level.model.as_deref(),
-                Some(level.timeout),
-            )
-            .expect("create_process");
-        let result = process.run().await;
-        let succeeded = result.is_success();
-        attempts.push(result.clone());
-        if succeeded {
-            session.log_info(&format!("{} level succeeded!", level.name.to_uppercase()));
-            let degradation = if i > 0 {
+    let steps: Vec<CascadeStep> = levels
+        .iter()
+        .enumerate()
+        .map(|(i, level)| {
+            let degradation_msg = if i > 0 {
                 Some(format!(
                     "Degraded to level {} ({}): {}",
                     i + 1,
@@ -335,27 +286,73 @@ pub async fn create_custom_cascade(
             } else {
                 None
             };
-            if let Some(d) = &degradation
+            CascadeStep {
+                name: level.name.clone(),
+                pid: format!("cascade_{}", level.name),
+                prompt: build_custom_cascade_prompt(&task_prompt, level, i + 1, total),
+                timeout: level.timeout,
+                model: level.model.clone(),
+                level_enum: CascadeLevel::Custom,
+                degradation_msg,
+            }
+        })
+        .collect();
+
+    Ok(execute_cascade_steps(&mut session, steps, &notification_level).await)
+}
+
+/// Drive a sequence of cascade steps: stop at first success, collect all
+/// attempts, surface degradation. Shared by both `run_cascade` and
+/// `create_custom_cascade`.
+async fn execute_cascade_steps(
+    session: &mut OrchestratorSession,
+    steps: Vec<CascadeStep>,
+    notification_level: &str,
+) -> CascadeResult {
+    let mut attempts = Vec::new();
+
+    for step in steps {
+        let process = session
+            .create_process(
+                &step.prompt,
+                Some(&step.pid),
+                step.model.as_deref(),
+                Some(step.timeout),
+            )
+            .expect("create_process");
+        session.log_info(&format!(
+            "Attempting {} level (timeout: {:?})",
+            step.name.to_uppercase(),
+            step.timeout
+        ));
+        let result = process.run().await;
+        let succeeded = result.is_success();
+        attempts.push(result.clone());
+
+        if succeeded {
+            session.log_info(&format!("{} level succeeded!", step.name.to_uppercase()));
+            if let Some(d) = &step.degradation_msg
                 && notification_level != "silent"
             {
                 session.log_warn(&format!("Degradation: {d}"));
             }
-            return Ok(CascadeResult {
+            return CascadeResult {
                 result: Some(result),
-                cascade_level: CascadeLevel::Custom,
-                level_name: level.name.clone(),
-                degradation,
+                cascade_level: step.level_enum,
+                level_name: step.name,
+                degradation: step.degradation_msg,
                 attempts,
                 session_id: session.session_id().to_string(),
                 success: true,
-            });
+            };
         }
+
         if result.exit_code == -1 {
-            session.log_warn(&format!("{} timed out", level.name.to_uppercase()));
+            session.log_warn(&format!("{} level timed out", step.name.to_uppercase()));
         } else {
             session.log_warn(&format!(
-                "{} failed with exit code {}",
-                level.name.to_uppercase(),
+                "{} level failed with exit code {}",
+                step.name.to_uppercase(),
                 result.exit_code
             ));
         }
@@ -363,7 +360,7 @@ pub async fn create_custom_cascade(
 
     session.log_error("All cascade levels failed");
     let last = attempts.last().cloned();
-    Ok(CascadeResult {
+    CascadeResult {
         result: last,
         cascade_level: CascadeLevel::Failed,
         level_name: "failed".to_string(),
@@ -371,7 +368,7 @@ pub async fn create_custom_cascade(
         attempts,
         session_id: session.session_id().to_string(),
         success: false,
-    })
+    }
 }
 
 fn build_cascade_prompt(task: &str, level: &str, constraint: &str, is_final: bool) -> String {

@@ -404,7 +404,7 @@ impl ClaudeProcess {
         let _ = std::fs::create_dir_all(&self.log_dir);
         let line = format!(
             "[{}] [{}] [{}] {}\n",
-            current_hms(),
+            crate::time_utils::current_hms(),
             level,
             self.process_id,
             msg
@@ -444,16 +444,4 @@ impl ClaudeProcess {
         );
         result
     }
-}
-
-fn current_hms() -> String {
-    use std::time::SystemTime;
-    let secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let h = (secs / 3600) % 24;
-    let m = (secs / 60) % 60;
-    let s = secs % 60;
-    format!("{:02}:{:02}:{:02}", h, m, s)
 }

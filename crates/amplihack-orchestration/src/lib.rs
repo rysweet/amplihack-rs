@@ -9,5 +9,6 @@ pub mod claude_process_builder;
 pub mod execution;
 pub mod patterns;
 pub mod session;
+mod time_utils;
 
 pub use claude_process_builder::ClaudeProcessBuilder;
