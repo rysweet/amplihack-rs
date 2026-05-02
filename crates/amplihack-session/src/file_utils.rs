@@ -1,14 +1,9 @@
 //! Defensive file I/O utilities ported from `file_utils.py`.
 
 use crate::config::{Result, SessionError};
-#[allow(unused_imports)]
-use md5::Digest as _;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-#[allow(unused_imports)]
-use sha1::Digest as _;
-#[allow(unused_imports)]
-use sha2::Digest as _;
+use sha2::digest::Digest;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -91,21 +86,25 @@ pub fn safe_write_file(
         fs::copy(p, &backup_path).map_err(|e| SessionError::io(&backup_path, e))?;
     }
 
+    let write_to = |dest: &Path| -> std::io::Result<()> {
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(dest)?;
+        f.write_all(content.as_bytes())?;
+        f.flush()?;
+        f.sync_all()?;
+        Ok(())
+    };
+
     if atomic {
         let parent = p.parent().unwrap_or_else(|| Path::new("."));
         let fname = p.file_name().and_then(|s| s.to_str()).unwrap_or("file");
         let tmp_name = format!(".{fname}.{}.tmp", std::process::id());
         let tmp = parent.join(&tmp_name);
         retry("safe_write_file_atomic", || {
-            let mut f = fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&tmp)?;
-            f.write_all(content.as_bytes())?;
-            f.flush()?;
-            f.sync_all()?;
-            drop(f);
+            write_to(&tmp)?;
             fs::rename(&tmp, p)?;
             Ok(())
         })
@@ -114,17 +113,7 @@ pub fn safe_write_file(
             e
         })?;
     } else {
-        retry("safe_write_file_direct", || {
-            let mut f = fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(p)?;
-            f.write_all(content.as_bytes())?;
-            f.flush()?;
-            f.sync_all()?;
-            Ok(())
-        })?;
+        retry("safe_write_file_direct", || write_to(p))?;
     }
 
     if verify {
@@ -191,43 +180,29 @@ pub fn safe_write_json<T: Serialize>(path: impl AsRef<Path>, data: &T) -> Result
 /// Compute a hex checksum of a file's contents.
 pub fn get_file_checksum(path: impl AsRef<Path>, algorithm: ChecksumAlgorithm) -> Result<String> {
     let p = path.as_ref();
-    let mut f = fs::File::open(p).map_err(|e| SessionError::io(p, e))?;
-    let mut buf = [0u8; 8192];
     match algorithm {
-        ChecksumAlgorithm::Md5 => {
-            let mut hasher = md5::Md5::new();
-            loop {
-                let n = f.read(&mut buf).map_err(|e| SessionError::io(p, e))?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buf[..n]);
-            }
-            Ok(format!("{:x}", hasher.finalize()))
-        }
-        ChecksumAlgorithm::Sha1 => {
-            let mut hasher = sha1::Sha1::new();
-            loop {
-                let n = f.read(&mut buf).map_err(|e| SessionError::io(p, e))?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buf[..n]);
-            }
-            Ok(format!("{:x}", hasher.finalize()))
-        }
-        ChecksumAlgorithm::Sha256 => {
-            let mut hasher = sha2::Sha256::new();
-            loop {
-                let n = f.read(&mut buf).map_err(|e| SessionError::io(p, e))?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buf[..n]);
-            }
-            Ok(format!("{:x}", hasher.finalize()))
-        }
+        ChecksumAlgorithm::Md5 => hash_file::<md5::Md5>(p),
+        ChecksumAlgorithm::Sha1 => hash_file::<sha1::Sha1>(p),
+        ChecksumAlgorithm::Sha256 => hash_file::<sha2::Sha256>(p),
     }
+}
+
+fn hash_file<D: Digest>(p: &Path) -> Result<String> {
+    let mut f = fs::File::open(p).map_err(|e| SessionError::io(p, e))?;
+    let mut hasher = D::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| SessionError::io(p, e))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().iter().fold(String::new(), |mut s, b| {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+        s
+    }))
 }
 
 /// Copy a file, optionally verifying both files have identical SHA-256.

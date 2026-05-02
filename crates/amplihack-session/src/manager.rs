@@ -186,6 +186,34 @@ impl SessionManager {
         Ok(self.active_sessions.get_mut(session_id))
     }
 
+    /// Yield (session_id, path, metadata) for every persisted session JSON in
+    /// `runtime_dir`, skipping `registry.json`. Used by listing & cleanup.
+    fn iter_session_files(&self) -> Result<Vec<(String, PathBuf, fs::Metadata)>> {
+        if !self.runtime_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for entry in fs::read_dir(&self.runtime_dir)
+            .map_err(|e| SessionError::io(&self.runtime_dir, e))?
+            .flatten()
+        {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let stem = match path.file_stem().and_then(|s| s.to_str()) {
+                Some(s) if s != "registry" => s.to_owned(),
+                _ => continue,
+            };
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            out.push((stem, path, meta));
+        }
+        Ok(out)
+    }
+
     /// List sessions (active + on-disk) sorted by created_at desc.
     pub fn list_sessions(
         &self,
@@ -213,26 +241,11 @@ impl SessionManager {
             out.push(info);
         }
 
-        if !active_only && self.runtime_dir.exists() {
-            for entry in fs::read_dir(&self.runtime_dir)
-                .map_err(|e| SessionError::io(&self.runtime_dir, e))?
-                .flatten()
-            {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("json") {
+        if !active_only {
+            for (stem, path, meta) in self.iter_session_files()? {
+                if self.active_sessions.contains_key(&stem) {
                     continue;
                 }
-                let stem = match path.file_stem().and_then(|s| s.to_str()) {
-                    Some(s) => s,
-                    None => continue,
-                };
-                if stem == "registry" || self.active_sessions.contains_key(stem) {
-                    continue;
-                }
-                let meta = match entry.metadata() {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
                 let mut info = json!({
                     "session_id": stem,
                     "status": "saved",
@@ -240,15 +253,13 @@ impl SessionManager {
                     "file_size": meta.len(),
                 });
                 if include_metadata {
-                    if let Ok(persisted) = safe_read_json::<Option<PersistedSession>>(&path, None) {
-                        if let Some(p) = persisted {
-                            if let serde_json::Value::Object(ref mut o) = info {
-                                o.insert("name".into(), json!(p.metadata.name));
-                                o.insert(
-                                    "created_at".into(),
-                                    json!(p.metadata.created_at.to_rfc3339()),
-                                );
-                            }
+                    if let Ok(Some(p)) = safe_read_json::<Option<PersistedSession>>(&path, None) {
+                        if let serde_json::Value::Object(ref mut o) = info {
+                            o.insert("name".into(), json!(p.metadata.name));
+                            o.insert(
+                                "created_at".into(),
+                                json!(p.metadata.created_at.to_rfc3339()),
+                            );
                         }
                     }
                 }
@@ -280,33 +291,12 @@ impl SessionManager {
         let cutoff = std::time::SystemTime::now()
             .checked_sub(std::time::Duration::from_secs(max_age_days as u64 * 86400))
             .ok_or_else(|| SessionError::Corruption("cutoff time underflow".into()))?;
-        let mut to_archive: Vec<String> = Vec::new();
-        if !self.runtime_dir.exists() {
-            return Ok(0);
-        }
-        for entry in fs::read_dir(&self.runtime_dir)
-            .map_err(|e| SessionError::io(&self.runtime_dir, e))?
-            .flatten()
-        {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            let stem = match path.file_stem().and_then(|s| s.to_str()) {
-                Some(s) => s,
-                None => continue,
-            };
-            if stem == "registry" {
-                continue;
-            }
-            if let Ok(meta) = entry.metadata() {
-                if let Ok(mt) = meta.modified() {
-                    if mt < cutoff {
-                        to_archive.push(stem.to_string());
-                    }
-                }
-            }
-        }
+        let to_archive: Vec<String> = self
+            .iter_session_files()?
+            .into_iter()
+            .filter(|(_, _, meta)| meta.modified().map(|mt| mt < cutoff).unwrap_or(false))
+            .map(|(stem, _, _)| stem)
+            .collect();
         let mut count = 0u64;
         for id in to_archive {
             if self.archive_session(&id)? {
