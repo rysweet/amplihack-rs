@@ -150,28 +150,56 @@ pub(super) fn copytree_manifest(
         println!("  ✅ Copied {file}");
     }
 
-    // CLAUDE.md lives at the repo root for both layouts; that's the parent
-    // of `source_root` in the bundle case (source_root = <repo>/amplifier-bundle)
-    // and in the legacy case (source_root = <repo>/.claude). The `..` legacy
-    // probe is also a parent — same parent invariant.
-    let source_claude_md = source_root
+    // CLAUDE.md staging — issue #527.
+    //
+    // Pre-fix: only `source_root.parent()/CLAUDE.md` was probed and a
+    // missing source was silently skipped. With the bundle layout, the
+    // canonical CLAUDE.md ships at `<repo>/amplifier-bundle/CLAUDE.md`
+    // (i.e., inside `source_root`), not at the repo root, so installs from
+    // a bundle-only checkout left `$AMPLIHACK_HOME/CLAUDE.md` absent and
+    // the verifier reported ❌. Per the install-completeness invariant in
+    // amplifier-bundle/context/PHILOSOPHY.md, we must (a) probe the bundle
+    // path first, (b) fall back to the legacy repo-root path, and (c) bail
+    // loudly when neither exists.
+    let parent_dir = source_root
         .parent()
-        .context("source root missing parent for CLAUDE.md lookup")?
+        .context("source root missing parent for CLAUDE.md lookup")?;
+    let bundle_candidate = source_root.join("CLAUDE.md");
+    let legacy_candidate = parent_dir.join("CLAUDE.md");
+    let chosen_source = if bundle_candidate.exists() {
+        bundle_candidate.clone()
+    } else if legacy_candidate.exists() {
+        legacy_candidate.clone()
+    } else {
+        anyhow::bail!(
+            "CLAUDE.md not found in source repo. Searched: {} and {}. \
+             A valid amplihack-rs checkout must ship CLAUDE.md inside \
+             `amplifier-bundle/CLAUDE.md` (preferred, bundle layout) or at \
+             the repo root (legacy layout). Without CLAUDE.md the install \
+             verifier will report `$AMPLIHACK_HOME/CLAUDE.md` missing.",
+            bundle_candidate.display(),
+            legacy_candidate.display()
+        );
+    };
+    let target_claude_md = claude_dir
+        .parent()
+        .context("target .claude dir missing parent")?
         .join("CLAUDE.md");
-    if source_claude_md.exists() {
-        let target_claude_md = claude_dir
-            .parent()
-            .context("target .claude dir missing parent")?
-            .join("CLAUDE.md");
-        fs::copy(&source_claude_md, &target_claude_md).with_context(|| {
-            format!(
-                "failed to copy {} to {}",
-                source_claude_md.display(),
-                target_claude_md.display()
-            )
-        })?;
-        println!("  ✅ Installed amplihack CLAUDE.md");
+    if let Some(parent) = target_claude_md.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
     }
+    fs::copy(&chosen_source, &target_claude_md).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            chosen_source.display(),
+            target_claude_md.display()
+        )
+    })?;
+    println!(
+        "  ✅ Installed amplihack CLAUDE.md (from {})",
+        chosen_source.display()
+    );
 
     Ok(copied)
 }
