@@ -7,6 +7,12 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ## [Unreleased] — Recipe Execution Hardening
 
+### Added
+
+- **Copilot `--remote` by default** — `amplihack copilot` now injects
+  `--remote` automatically, offloading compute to GitHub's cloud. Disable
+  with `AMPLIHACK_COPILOT_NO_REMOTE=1` or by passing `--no-remote` explicitly.
+
 ### Fixed
 
 - **executor.rs: shell steps hang in non-interactive environments (#277)** —

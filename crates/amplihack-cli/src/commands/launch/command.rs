@@ -77,6 +77,14 @@ pub(super) fn build_command_for_dir(
         cmd.arg("--allow-all");
     }
 
+    // Inject --remote for Copilot by default. Remote mode offloads compute to
+    // GitHub's cloud, which is the preferred mode for amplihack orchestration.
+    // Skip injection if the user already passed --remote, or if
+    // AMPLIHACK_COPILOT_NO_REMOTE=1.
+    if binary.name == "copilot" && should_inject_copilot_remote(extra_args) {
+        cmd.arg("--remote");
+    }
+
     cmd.args(extra_args);
     cmd
 }
@@ -95,6 +103,18 @@ pub(crate) fn should_inject_copilot_allow_all(extra_args: &[String]) -> bool {
             || a == "--allow-all-urls"
     });
     !already_present
+}
+
+/// Decide whether `amplihack` should inject `--remote` into a Copilot
+/// invocation. Returns false if the user already passed `--remote` or
+/// `--no-remote`, or if `AMPLIHACK_COPILOT_NO_REMOTE=1` is set.
+pub(crate) fn should_inject_copilot_remote(extra_args: &[String]) -> bool {
+    if std::env::var("AMPLIHACK_COPILOT_NO_REMOTE").as_deref() == Ok("1") {
+        return false;
+    }
+    !extra_args
+        .iter()
+        .any(|a| a == "--remote" || a == "--no-remote")
 }
 
 fn inject_uvx_plugin_args(
