@@ -274,8 +274,8 @@ agents:
 
         **Lock Mode** - Keep working without stopping:
         ```bash
-        python .claude/tools/amplihack/lock_tool.py lock --message "Focus on tests"
-        python .claude/tools/amplihack/lock_tool.py unlock
+        amplihack lock --message "Focus on tests"
+        amplihack unlock
         ```
 
         **Auto-Workflow** - Structured autonomous execution:

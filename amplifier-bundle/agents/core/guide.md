@@ -92,10 +92,10 @@ Explain lock mode and auto-workflow:
 
 ```bash
 # Enable
-python .claude/tools/amplihack/lock_tool.py lock --message "Focus on tests"
+amplihack lock --message "Focus on tests"
 
 # Disable
-python .claude/tools/amplihack/lock_tool.py unlock
+amplihack unlock
 ```
 
 **Auto-Workflow** - Autonomous execution:
@@ -189,10 +189,10 @@ The workflow ensures you don't skip important steps like testing and review.
 
 ```bash
 # Enable - agent will keep working
-python .claude/tools/amplihack/lock_tool.py lock --message "Complete all tests"
+amplihack lock --message "Complete all tests"
 
 # Disable when done
-python .claude/tools/amplihack/lock_tool.py unlock
+amplihack unlock
 ```
 
 **Option 2: Auto-Workflow** (structured autonomy)
