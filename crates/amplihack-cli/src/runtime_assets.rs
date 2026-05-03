@@ -1,8 +1,6 @@
 //! Runtime asset resolution for amplihack recipe-runner shell commands.
 //!
-//! Ports Python `amplihack/runtime_assets.py`: resolves bundled assets
-//! (helper scripts, hooks directories) across multiple candidate root
-//! directories.
+//! Resolves bundled assets across multiple candidate root directories.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,11 +13,6 @@ use tracing::{debug, info, warn};
 /// Each asset name maps to one or more candidate relative paths tried in order.
 pub fn asset_relative_paths() -> HashMap<&'static str, Vec<&'static str>> {
     let mut m = HashMap::new();
-    m.insert("helper-path", vec!["amplifier-bundle/tools/orch_helper.py"]);
-    m.insert(
-        "session-tree-path",
-        vec!["amplifier-bundle/tools/session_tree.py"],
-    );
     // NOTE (rysweet/amplihack-rs#285): the "hooks-dir" named asset was removed.
     // Its only consumers were two `HOOKS_DIR=$(...) || true` lines in
     // smart-orchestrator.yaml that never read the variable. Both the asset
@@ -165,9 +158,9 @@ mod tests {
     #[test]
     fn asset_relative_paths_has_known_keys() {
         let paths = asset_relative_paths();
-        assert!(paths.contains_key("helper-path"));
-        assert!(paths.contains_key("session-tree-path"));
         assert!(paths.contains_key("multitask-orchestrator"));
+        assert!(!paths.contains_key("helper-path"));
+        assert!(!paths.contains_key("session-tree-path"));
     }
 
     #[test]
@@ -213,7 +206,7 @@ mod tests {
     #[test]
     fn resolve_asset_missing_file_fails() {
         let roots = vec![PathBuf::from("/unlikely/to/exist/path")];
-        let result = resolve_asset_path("helper-path", &roots);
+        let result = resolve_asset_path("multitask-orchestrator", &roots);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("not found"));

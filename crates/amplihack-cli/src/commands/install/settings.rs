@@ -330,15 +330,13 @@ pub(super) fn missing_framework_paths(claude_dir: &Path) -> Result<Vec<String>> 
     }
 
     // Issue #243: amplifier-bundle MUST be staged on every startup. Without
-    // these recipe yamls and `tools/orch_helper.py`, the dev-orchestrator
-    // skill's required execution path (`amplihack recipe run smart-orchestrator`)
-    // is unreachable.
+    // these recipe yamls, the dev-orchestrator skill's required execution path
+    // (`amplihack recipe run smart-orchestrator`) is unreachable.
     let bundle_dir = staging_root.join("amplifier-bundle");
     let required_bundle_paths: &[&str] = &[
         "recipes/smart-orchestrator.yaml",
         "recipes/default-workflow.yaml",
         "recipes/investigation-workflow.yaml",
-        "tools/orch_helper.py",
     ];
     for rel in required_bundle_paths {
         let path = bundle_dir.join(rel);

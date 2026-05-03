@@ -16,7 +16,7 @@ ships the `amplifier-bundle/` tree containing:
   composed by recipes and the dev-orchestrator skill.
 - `context/` — philosophy, patterns, and trust-model documents that set the
   contract for how generated code, tests, and PRs are evaluated.
-- `tools/` — helper scripts (e.g. `orch_helper.py`) referenced by recipes.
+- `tools/` — bundled shell/helper assets referenced by recipes.
 
 ## Where to start
 

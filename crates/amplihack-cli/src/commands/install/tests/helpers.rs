@@ -53,7 +53,6 @@ pub(super) fn create_source_repo(root: &Path) {
         )
         .unwrap();
     }
-    fs::write(bundle.join("tools/orch_helper.py"), "# stub\n").unwrap();
 }
 
 pub(super) fn create_minimal_staged_assets(root: &Path) {
@@ -80,12 +79,11 @@ pub(super) fn create_minimal_staged_assets(root: &Path) {
         )
         .unwrap();
     }
-    fs::write(bundle.join("tools/orch_helper.py"), "# stub\n").unwrap();
 }
 
 /// Build a bundle-only source repo (no top-level `.claude/`), as shipped by
 /// amplihack-rs. The repo root contains only `amplifier-bundle/<subdirs>`,
-/// `CLAUDE.md`, and the required recipes/orch_helper. This mirrors the
+/// `CLAUDE.md`, and the required recipes. This mirrors the
 /// reproduction scenario for issue #416 (`git clone amplihack-rs`).
 pub(super) fn create_bundle_only_source_repo(root: &Path) {
     let bundle = root.join("amplifier-bundle");
@@ -116,7 +114,6 @@ pub(super) fn create_bundle_only_source_repo(root: &Path) {
         )
         .unwrap();
     }
-    fs::write(bundle.join("tools/orch_helper.py"), "# stub\n").unwrap();
     fs::write(root.join("CLAUDE.md"), "root\n").unwrap();
     // Crucially: NO `.claude/` directory anywhere — that's the bug condition
     // for issue #416.

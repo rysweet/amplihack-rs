@@ -347,14 +347,14 @@ pub enum Commands {
     /// Run system health checks
     Doctor,
 
-    /// Resolve a named bundle asset (helper-path, session-tree-path,
-    /// multitask-orchestrator) or a relative path under amplifier-bundle/.
+    /// Resolve a named bundle asset (multitask-orchestrator) or a relative path
+    /// under amplifier-bundle/.
     /// Prints the resolved absolute path on success, exits 1 if not found,
     /// exits 2 on invalid input.
     /// Replaces `python3 -m amplihack.runtime_assets` in recipe shell steps.
     #[command(name = "resolve-bundle-asset")]
     ResolveBundleAsset {
-        /// Asset name (e.g. helper-path) or relative path starting with `amplifier-bundle/`
+        /// Asset name (e.g. multitask-orchestrator) or relative path starting with `amplifier-bundle/`
         asset: String,
     },
 
