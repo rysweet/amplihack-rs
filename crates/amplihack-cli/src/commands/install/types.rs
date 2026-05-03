@@ -63,7 +63,6 @@ pub(super) const BUNDLE_DIR_MAPPING: &[(&str, &str)] = &[
     ("skills", "skills"),
     ("context", "context"),
     ("tools/amplihack", "tools/amplihack"),
-    ("tools/xpia", "tools/xpia"),
     ("recipes", "recipes"),
     ("behaviors", "behaviors"),
     ("modules", "modules"),
@@ -71,9 +70,16 @@ pub(super) const BUNDLE_DIR_MAPPING: &[(&str, &str)] = &[
 
 /// Bundle-layout categories that are required when present in the source
 /// bundle. The current bundle does not ship these top-level directories, but
-/// future bundles must not silently drop them if they appear.
-pub(super) const SOURCE_CONDITIONAL_BUNDLE_DIR_MAPPING: &[(&str, &str)] =
-    &[("commands", "commands"), ("hooks", "hooks")];
+/// future bundles must not silently drop them if they appear. `tools/xpia`
+/// is conditional after Issue #547: the bundled Python hooks were removed,
+/// but legacy installs may still have them in destination so the install
+/// code's xpia upgrade-detection logic in `settings.rs` and `hooks.rs`
+/// remains intact.
+pub(super) const SOURCE_CONDITIONAL_BUNDLE_DIR_MAPPING: &[(&str, &str)] = &[
+    ("commands", "commands"),
+    ("hooks", "hooks"),
+    ("tools/xpia", "tools/xpia"),
+];
 
 /// Returns the source→destination mapping table for the given layout.
 pub(super) fn dir_mapping(layout: SourceLayout) -> &'static [(&'static str, &'static str)] {
@@ -97,7 +103,6 @@ pub(super) fn essential_destinations(layout: SourceLayout) -> &'static [&'static
             "skills",
             "context",
             "tools/amplihack",
-            "tools/xpia",
             "recipes",
             "behaviors",
             "modules",
