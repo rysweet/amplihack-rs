@@ -82,10 +82,10 @@ Hooks enhance every session automatically:
 
 ```bash
 # Enable
-python .claude/tools/amplihack/lock_tool.py lock --message "Focus on tests"
+amplihack lock --message "Focus on tests"
 
 # Disable
-python .claude/tools/amplihack/lock_tool.py unlock
+amplihack unlock
 ```
 
 **Auto-Workflow** - Structured autonomous execution:
@@ -202,9 +202,9 @@ What feature would you like to build?
 **Option 1: Lock Mode** (manual control)
 
 ```bash
-python .claude/tools/amplihack/lock_tool.py lock --message "Complete all tests"
+amplihack lock --message "Complete all tests"
 # Work continues until you run:
-python .claude/tools/amplihack/lock_tool.py unlock
+amplihack unlock
 ```
 
 **Option 2: Auto-Workflow** (structured autonomy)

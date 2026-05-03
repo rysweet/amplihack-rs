@@ -9,6 +9,7 @@ pub mod fleet;
 pub mod hive_haymaker;
 pub mod install;
 pub mod launch;
+pub mod lock;
 pub mod memory;
 pub mod mode;
 pub mod multitask;
@@ -265,6 +266,9 @@ pub fn dispatch(command: Commands) -> Result<()> {
         ),
         Commands::Recipe { command } => dispatch_recipe(command),
         Commands::Mode { command } => dispatch_mode(command),
+        Commands::Lock { message } => lock::run_lock(message.as_deref()),
+        Commands::Unlock => lock::run_unlock(),
+        Commands::LockStatus => lock::run_check(),
         Commands::Version => {
             println!("amplihack-rs {}", crate::VERSION);
             Ok(())

@@ -254,6 +254,16 @@ pub enum Commands {
         #[command(subcommand)]
         command: ModeCommands,
     },
+    /// Enable continuous work mode (creates project lock file)
+    Lock {
+        /// Optional custom instruction to persist alongside the lock
+        #[arg(short = 'm', long = "message")]
+        message: Option<String>,
+    },
+    /// Disable continuous work mode (removes project lock file)
+    Unlock,
+    /// Show whether continuous work mode is active
+    LockStatus,
     /// Show version information
     Version,
     /// Self-update the amplihack binary, then run `install` to refresh framework assets.
