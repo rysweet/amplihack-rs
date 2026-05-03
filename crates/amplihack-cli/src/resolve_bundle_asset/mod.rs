@@ -414,7 +414,10 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        make_named_asset_file(temp.path(), "amplifier-bundle/skills/multitask/orchestrator.py");
+        make_named_asset_file(
+            temp.path(),
+            "amplifier-bundle/skills/multitask/orchestrator.py",
+        );
 
         let prev_amplihack = env::var_os("AMPLIHACK_HOME");
         unsafe { env::set_var("AMPLIHACK_HOME", temp.path()) };
