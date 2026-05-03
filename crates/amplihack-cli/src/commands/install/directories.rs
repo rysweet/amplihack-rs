@@ -270,8 +270,7 @@ fn copy_mapped_dir(
 /// The dev-orchestrator skill's mandatory execution path
 /// (`amplihack recipe run smart-orchestrator`) is unreachable without these
 /// recipes (`smart-orchestrator.yaml`, `default-workflow.yaml`,
-/// `investigation-workflow.yaml`) and the `tools/orch_helper.py` referenced
-/// by the parse-decomposition step. See issue #243.
+/// `investigation-workflow.yaml`). See issue #243.
 ///
 /// The bundle is copied to `~/.amplihack/amplifier-bundle/` so the recipe
 /// runner's `AMPLIHACK_HOME/amplifier-bundle/recipes` lookup (and the
@@ -281,8 +280,8 @@ fn copy_mapped_dir(
 /// Returns `Ok(true)` if the bundle was staged. Returns an error if the
 /// source repo lacks an `amplifier-bundle/` directory, since
 /// [`super::settings::missing_framework_paths`] treats the bundle's recipes
-/// and `tools/orch_helper.py` as required framework assets — a missing
-/// source bundle would cause every subsequent launcher boot to attempt
+/// as required framework assets — a missing source bundle would cause every
+/// subsequent launcher boot to attempt
 /// (and fail) a re-install in a tight loop.
 ///
 /// The copy is performed via a temp-dir + atomic-rename pattern so a failed

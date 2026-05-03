@@ -10,7 +10,7 @@ fn main() {
     if args.len() != 2 {
         eprintln!("Usage: amplihack-asset-resolver <asset>");
         eprintln!("  <asset> is either:");
-        eprintln!("    - a named asset: helper-path | session-tree-path | multitask-orchestrator");
+        eprintln!("    - a named asset: multitask-orchestrator");
         eprintln!("    - a relative path starting with 'amplifier-bundle/'");
         std::process::exit(2);
     }

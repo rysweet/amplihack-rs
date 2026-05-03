@@ -9,15 +9,10 @@ use search::{named_asset_search_bases, search_bases};
 
 const SAFE_PATH_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-./";
 
-/// Named asset mappings matching Python's runtime_assets._ASSET_RELATIVE_PATHS.
+/// Named asset mappings for runtime bundle assets.
 ///
 /// Each entry is `(name, &[relative_paths])` where relative_paths are tried in order.
 const NAMED_ASSETS: &[(&str, &[&str])] = &[
-    ("helper-path", &["amplifier-bundle/tools/orch_helper.py"]),
-    (
-        "session-tree-path",
-        &["amplifier-bundle/tools/session_tree.py"],
-    ),
     // NOTE (rysweet/amplihack-rs#285): the "hooks-dir" named asset was removed.
     // Its only consumers in smart-orchestrator.yaml assigned the result with
     // `|| true` and never read it; the bundled amplifier-bundle/tools/amplihack/
@@ -132,7 +127,7 @@ pub fn resolve_named_asset(name: &str) -> Result<PathBuf> {
 }
 
 pub fn run_cli(arg: &str) -> i32 {
-    // Dispatch named assets (e.g. "helper-path", "session-tree-path", "hooks-dir")
+    // Dispatch named assets (e.g. "multitask-orchestrator")
     if NAMED_ASSETS.iter().any(|(name, _)| *name == arg) {
         return match resolve_named_asset(arg) {
             Ok(path) => {
@@ -179,7 +174,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_missing_prefix() {
-        let err = validate_relative_path("tools/orch_helper.py").unwrap_err();
+        let err = validate_relative_path("tools/statusline.sh").unwrap_err();
         assert!(
             err.to_string()
                 .contains("must start with 'amplifier-bundle/'")
@@ -188,7 +183,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_normal_bundle_path() {
-        validate_relative_path("amplifier-bundle/tools/orch_helper.py").unwrap();
+        validate_relative_path("amplifier-bundle/tools/statusline.sh").unwrap();
     }
 
     #[test]
@@ -210,7 +205,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        let asset = temp.path().join("amplifier-bundle/tools/orch_helper.py");
+        let asset = temp.path().join("amplifier-bundle/tools/statusline.sh");
         std::fs::create_dir_all(asset.parent().unwrap()).unwrap();
         std::fs::write(&asset, "ok").unwrap();
 
@@ -218,7 +213,7 @@ mod tests {
         let prev_amplihack = env::var_os("AMPLIHACK_HOME");
         unsafe { env::set_var("AMPLIHACK_HOME", temp.path()) };
 
-        let resolved = resolve_asset("amplifier-bundle/tools/orch_helper.py").unwrap();
+        let resolved = resolve_asset("amplifier-bundle/tools/statusline.sh").unwrap();
 
         match prev_amplihack {
             Some(value) => unsafe { env::set_var("AMPLIHACK_HOME", value) },
@@ -227,8 +222,8 @@ mod tests {
         crate::test_support::restore_home(prev_home);
 
         assert!(
-            resolved.ends_with("amplifier-bundle/tools/orch_helper.py"),
-            "expected orch_helper.py path, got {:?}",
+            resolved.ends_with("amplifier-bundle/tools/statusline.sh"),
+            "expected statusline.sh path, got {:?}",
             resolved
         );
     }
@@ -245,64 +240,6 @@ mod tests {
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::write(&target, b"ok").unwrap();
         target
-    }
-
-    #[test]
-    fn resolve_named_asset_helper_path_uses_amplihack_home() {
-        let _home_guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let temp = tempfile::tempdir().unwrap();
-        make_named_asset_file(temp.path(), "amplifier-bundle/tools/orch_helper.py");
-
-        let prev_home = crate::test_support::set_home(temp.path());
-        let prev = env::var_os("AMPLIHACK_HOME");
-        unsafe { env::set_var("AMPLIHACK_HOME", temp.path()) };
-
-        let result = resolve_named_asset("helper-path");
-
-        match prev {
-            Some(v) => unsafe { env::set_var("AMPLIHACK_HOME", v) },
-            None => unsafe { env::remove_var("AMPLIHACK_HOME") },
-        }
-        crate::test_support::restore_home(prev_home);
-
-        // Accept match at AMPLIHACK_HOME or any fallback (cwd/workspace root
-        // may also contain the file after the bundle mirror).
-        let resolved = result.unwrap();
-        assert!(
-            resolved.ends_with("amplifier-bundle/tools/orch_helper.py"),
-            "expected orch_helper.py path, got {:?}",
-            resolved
-        );
-    }
-
-    #[test]
-    fn resolve_named_asset_session_tree_path_uses_amplihack_home() {
-        let _home_guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let temp = tempfile::tempdir().unwrap();
-        make_named_asset_file(temp.path(), "amplifier-bundle/tools/session_tree.py");
-
-        let prev_home = crate::test_support::set_home(temp.path());
-        let prev = env::var_os("AMPLIHACK_HOME");
-        unsafe { env::set_var("AMPLIHACK_HOME", temp.path()) };
-
-        let result = resolve_named_asset("session-tree-path");
-
-        match prev {
-            Some(v) => unsafe { env::set_var("AMPLIHACK_HOME", v) },
-            None => unsafe { env::remove_var("AMPLIHACK_HOME") },
-        }
-        crate::test_support::restore_home(prev_home);
-
-        let resolved = result.unwrap();
-        assert!(
-            resolved.ends_with("amplifier-bundle/tools/session_tree.py"),
-            "expected session_tree.py path, got {:?}",
-            resolved
-        );
     }
 
     #[test]
@@ -369,13 +306,16 @@ mod tests {
             .unwrap_or_else(|p| p.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let dot_amplihack = temp.path().join(".amplihack");
-        make_named_asset_file(&dot_amplihack, "amplifier-bundle/tools/orch_helper.py");
+        make_named_asset_file(
+            &dot_amplihack,
+            "amplifier-bundle/skills/multitask/orchestrator.py",
+        );
 
         let prev_home = crate::test_support::set_home(temp.path());
         let prev_amplihack = env::var_os("AMPLIHACK_HOME");
         unsafe { env::remove_var("AMPLIHACK_HOME") };
 
-        let result = resolve_named_asset("helper-path");
+        let result = resolve_named_asset("multitask-orchestrator");
 
         crate::test_support::restore_home(prev_home);
         match prev_amplihack {
@@ -385,8 +325,8 @@ mod tests {
 
         let resolved = result.unwrap();
         assert!(
-            resolved.ends_with("amplifier-bundle/tools/orch_helper.py"),
-            "expected orch_helper.py path, got {:?}",
+            resolved.ends_with("amplifier-bundle/skills/multitask/orchestrator.py"),
+            "expected multitask orchestrator.py path, got {:?}",
             resolved
         );
     }
@@ -396,7 +336,9 @@ mod tests {
         let err = resolve_named_asset("nonexistent-asset").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("Unknown asset name"));
-        assert!(msg.contains("helper-path"));
+        assert!(msg.contains("multitask-orchestrator"));
+        assert!(!msg.contains("helper-path"));
+        assert!(!msg.contains("session-tree-path"));
         // Regression for rysweet/amplihack-rs#285: hooks-dir must no longer
         // appear in the diagnostic — it is no longer a valid asset name.
         assert!(
@@ -440,8 +382,8 @@ mod tests {
         // the real bundle), we craft an asset lookup that truly cannot
         // succeed: we temporarily point AMPLIHACK_HOME to an empty dir
         // and verify at least that the search-base logic functions.
-        // If orch_helper.py exists in the workspace root, the compile-time
-        // fallback will find it (exit 0); otherwise exit 1.
+        // If multitask-orchestrator exists in the workspace root, the
+        // compile-time fallback will find it (exit 0); otherwise exit 1.
         let _home_guard = crate::test_support::home_env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -450,7 +392,7 @@ mod tests {
         let prev_amplihack = env::var_os("AMPLIHACK_HOME");
         unsafe { env::set_var("AMPLIHACK_HOME", temp.path()) };
 
-        let code = run_cli("helper-path");
+        let code = run_cli("multitask-orchestrator");
 
         crate::test_support::restore_home(prev_home);
         match prev_amplihack {
@@ -472,12 +414,12 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        make_named_asset_file(temp.path(), "amplifier-bundle/tools/orch_helper.py");
+        make_named_asset_file(temp.path(), "amplifier-bundle/skills/multitask/orchestrator.py");
 
         let prev_amplihack = env::var_os("AMPLIHACK_HOME");
         unsafe { env::set_var("AMPLIHACK_HOME", temp.path()) };
 
-        let code = run_cli("helper-path");
+        let code = run_cli("multitask-orchestrator");
 
         match prev_amplihack {
             Some(v) => unsafe { env::set_var("AMPLIHACK_HOME", v) },
@@ -498,10 +440,14 @@ mod cli_dispatch_tests {
 
     #[test]
     fn parses_named_asset_argument() {
-        let cli =
-            Cli::try_parse_from(["amplihack", "resolve-bundle-asset", "helper-path"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "resolve-bundle-asset",
+            "multitask-orchestrator",
+        ])
+        .unwrap();
         match cli.command {
-            Commands::ResolveBundleAsset { asset } => assert_eq!(asset, "helper-path"),
+            Commands::ResolveBundleAsset { asset } => assert_eq!(asset, "multitask-orchestrator"),
             other => panic!("expected ResolveBundleAsset, got {other:?}"),
         }
     }
@@ -511,12 +457,12 @@ mod cli_dispatch_tests {
         let cli = Cli::try_parse_from([
             "amplihack",
             "resolve-bundle-asset",
-            "amplifier-bundle/tools/orch_helper.py",
+            "amplifier-bundle/tools/statusline.sh",
         ])
         .unwrap();
         match cli.command {
             Commands::ResolveBundleAsset { asset } => {
-                assert_eq!(asset, "amplifier-bundle/tools/orch_helper.py")
+                assert_eq!(asset, "amplifier-bundle/tools/statusline.sh")
             }
             other => panic!("expected ResolveBundleAsset, got {other:?}"),
         }

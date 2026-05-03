@@ -18,14 +18,12 @@ steps, providing the same path-resolution logic without a Python dependency.
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `<ASSET>` | yes | A named asset key (e.g. `helper-path`, `session-tree-path`, `multitask-orchestrator`) or a relative path starting with `amplifier-bundle/`. |
+| `<ASSET>` | yes | A named asset key (e.g. `multitask-orchestrator`) or a relative path starting with `amplifier-bundle/`. |
 
 ### Named Assets
 
 | Name | Resolves to |
 |------|-------------|
-| `helper-path` | `amplifier-bundle/tools/orch_helper.py` |
-| `session-tree-path` | `amplifier-bundle/tools/session_tree.py` |
 | `multitask-orchestrator` | `.claude/skills/multitask/orchestrator.py` or `amplifier-bundle/skills/multitask/orchestrator.py` |
 
 For named assets with multiple candidates, paths are tried in order; the first
@@ -45,12 +43,12 @@ must:
 
 ```sh
 # Resolve a named asset
-amplihack resolve-bundle-asset helper-path
-# Output: /home/user/.amplihack/.claude/amplifier-bundle/tools/orch_helper.py
+amplihack resolve-bundle-asset multitask-orchestrator
+# Output: /home/user/.amplihack/amplifier-bundle/skills/multitask/orchestrator.py
 
 # Resolve a relative path under amplifier-bundle/
-amplihack resolve-bundle-asset amplifier-bundle/tools/session_tree.py
-# Output: /home/user/.amplihack/.claude/amplifier-bundle/tools/session_tree.py
+amplihack resolve-bundle-asset amplifier-bundle/tools/statusline.sh
+# Output: /home/user/.amplihack/amplifier-bundle/tools/statusline.sh
 ```
 
 ## Exit Codes

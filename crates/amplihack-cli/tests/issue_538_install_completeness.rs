@@ -102,7 +102,6 @@ fn create_bundle_missing_skills(root: &Path) {
         "#!/bin/sh\necho status\n",
     )
     .expect("write statusline");
-    fs::write(bundle.join("tools/orch_helper.py"), "# helper\n").expect("write orch helper");
     for recipe in [
         "smart-orchestrator.yaml",
         "default-workflow.yaml",

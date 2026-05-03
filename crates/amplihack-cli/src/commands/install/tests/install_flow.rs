@@ -6,7 +6,7 @@ use std::fs;
 fn local_install_stages_amplifier_bundle_for_dev_orchestrator() {
     // Issue #243: the dev-orchestrator skill's required execution path
     // (`amplihack recipe run smart-orchestrator`) is unreachable unless
-    // amplihack install stages the amplifier-bundle (recipes + orch_helper.py)
+    // amplihack install stages the amplifier-bundle recipes
     // to ~/.amplihack/amplifier-bundle/.
     let _guard = crate::test_support::home_env_lock()
         .lock()
@@ -61,11 +61,6 @@ fn local_install_stages_amplifier_bundle_for_dev_orchestrator() {
             "{recipe} must be staged so dev-orchestrator can execute it"
         );
     }
-    assert!(
-        bundle.join("tools/orch_helper.py").is_file(),
-        "tools/orch_helper.py must be staged so parse-decomposition can run"
-    );
-
     // The presence check used by ensure_framework_installed must now treat
     // a missing bundle as a reason to re-install on next launch.
     let staging_claude = temp.path().join(".amplihack/.claude");
