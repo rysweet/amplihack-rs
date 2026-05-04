@@ -1,8 +1,3 @@
-agents:
-  - name: amplihack-cli
-    type: cli
-    command: amplihack
-
 scenario:
   name: "Code Graph Query — No-Python Live Path (Issue #77 AC6/AC8/AC9)"
   description: |
@@ -22,6 +17,10 @@ scenario:
       5. Verifies each command exits 0 and produces the expected output.
   type: cli
   tags: [regression, code-graph, no-python, ac6, ac7, ac8, ac9, issue-77]
+  agents:
+    - name: amplihack-cli
+      type: cli
+      command: amplihack
 
   prerequisites:
     - "amplihack release binary exists at ./target/release/amplihack"
