@@ -27,18 +27,18 @@ python --version   # Should be 3.8+
 git --version      # Any recent version
 ```
 
-## Step 1: Install Dependencies (2 minutes)
+## Step 1: Build with the docs container (2 minutes)
 
-Install MkDocs and the Material theme:
+Use the MkDocs Material container:
 
 ```bash
-pip install mkdocs mkdocs-material
+docker run --rm -v "$PWD:/docs" squidfunk/mkdocs-material build --strict
 ```
 
-Verify the installation:
+Verify the generated site:
 
 ```bash
-mkdocs --version
+ls site
 # Output: mkdocs, version 1.5.0 or later
 ```
 
@@ -539,11 +539,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: "3.11"
-      - run: pip install mkdocs mkdocs-material
-      - run: python deploy_docs.py
+      - run: docker run --rm -v "$PWD:/docs" squidfunk/mkdocs-material build --strict
 ```
 
 ### Add More Content
@@ -592,11 +588,8 @@ git remote set-url origin https://github.com/user/repo.git
 **Solution**:
 
 ```bash
-# Install MkDocs
-pip install mkdocs mkdocs-material
-
-# Verify installation
-mkdocs --version
+# Verify Docker is available
+docker --version
 ```
 
 ### Validation Failing

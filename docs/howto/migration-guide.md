@@ -106,7 +106,7 @@ Check for custom files in `~/.amplihack/.claude/` (agents, commands, skills you 
 2. **Install Plugin**
 
 ```bash
-amplihack plugin install https://github.com/rysweet/amplihack
+amplihack plugin install https://github.com/rysweet/amplihack-rs
 ```
 
 Output:
@@ -404,7 +404,7 @@ amplihack plugin verify amplihack
 
 ```bash
 # Reinstall plugin
-amplihack plugin install https://github.com/rysweet/amplihack
+amplihack plugin install https://github.com/rysweet/amplihack-rs
 
 # Verify
 amplihack plugin verify amplihack
@@ -529,7 +529,7 @@ A: Yes, run `amplihack mode migrate-to-local` in any project.
 
 **Q: How do I update the plugin?**
 
-A: Reinstall: `amplihack plugin install --force https://github.com/rysweet/amplihack`
+A: Reinstall: `amplihack plugin install --force https://github.com/rysweet/amplihack-rs`
 
 **Q: Does migration affect git history?**
 

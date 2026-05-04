@@ -40,55 +40,45 @@ The PPTX skill uses these scripts via symlink (`pptx/ooxml → ../common/ooxml`)
 
 ## Common OOXML Scripts
 
-### unpack.py
+### unpack.sh
 
 Unpacks an Office file into a directory with formatted XML.
 
-**Usage**: `python ooxml/scripts/unpack.py <office_file> <output_directory>`
+**Usage**: `bash ooxml/scripts/unpack.sh <office_file> <output_directory>`
 
 **What it does**: Extracts ZIP archive, pretty-prints XML, suggests RSID for tracked changes
 
-### pack.py
+### pack.sh
 
 Packs a directory back into an Office file with validation.
 
-**Usage**: `python ooxml/scripts/pack.py <input_directory> <office_file> [--force]`
+**Usage**: `bash ooxml/scripts/pack.sh <input_directory> <office_file> [--force]`
 
 **What it does**: Removes whitespace, creates ZIP, validates with LibreOffice (optional)
 
-## PPTX-Specific Scripts (in pptx/scripts/)
+## PPTX-Specific Workflows
 
-### thumbnail.py
+The only bundled PPTX helper is `pptx/scripts/html2pptx.js`. Other legacy
+Python PPTX helpers are not shipped; use manual OOXML inspection/editing,
+LibreOffice/PowerPoint export, or the HTML-to-PPTX workflow instead.
 
-Generate visual thumbnail grids for quick presentation analysis.
+### Manual thumbnail export workflow
 
-**Usage**: `python scripts/thumbnail.py presentation.pptx [output_prefix] [--cols N]`
+Generate visual thumbnails with LibreOffice/PowerPoint export when available,
+or inspect slide XML/media directly when export tools are unavailable.
 
-**Features**: Creates grids (3-6 columns), multiple grids for large decks, 0-indexed slides
+### Manual slide reordering workflow
 
-### rearrange.py
+Rearrange slides by editing `ppt/presentation.xml` and related relationship
+files after unpacking with `unpack.sh`, then repack with `pack.sh`.
 
-Rearrange, duplicate, and delete slides in templates.
+### Manual text inventory workflow
 
-**Usage**: `python scripts/rearrange.py template.pptx output.pptx 0,5,5,10`
+Extract text by inspecting `ppt/slides/slide*.xml`, notes XML, and layout XML.
 
-**Features**: Duplicate slides by repeating indices, delete unused slides automatically
+### Manual text replacement workflow
 
-### inventory.py
-
-Extract complete text inventory with formatting details.
-
-**Usage**: `python scripts/inventory.py presentation.pptx inventory.json`
-
-**Features**: Shape positions, paragraph formatting, bullets, fonts, colors
-
-### replace.py
-
-Replace placeholder text while preserving formatting.
-
-**Usage**: `python scripts/replace.py working.pptx replacement.json output.pptx`
-
-**Features**: Validates shapes exist, preserves formatting, detects overflow, auto-clears unreferenced shapes
+Replace text in slide XML while preserving surrounding formatting runs.
 
 ### html2pptx.js
 

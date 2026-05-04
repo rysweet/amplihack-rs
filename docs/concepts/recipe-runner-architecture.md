@@ -1,7 +1,7 @@
 # Recipe Runner Architecture
 
-Why the recipe runner is an external binary, how amplihack-rs locates and
-invokes it, and what the consolidation plan means for the codebase.
+Why the recipe runner is an external binary, how amplihack locates and invokes
+it, and how recipe execution stays predictable.
 
 ## Contents
 
@@ -9,9 +9,8 @@ invokes it, and what the consolidation plan means for the codebase.
 - [Binary resolution](#binary-resolution)
 - [Invocation contract](#invocation-contract)
 - [Data flow](#data-flow)
-- [What amplihack-rs does NOT do](#what-amplihack-rs-does-not-do)
-- [The Python runner: why it still exists](#the-python-runner-why-it-still-exists)
-- [Consolidation direction](#consolidation-direction)
+- [What amplihack does NOT do](#what-amplihack-does-not-do)
+- [Operational contract](#operational-contract)
 
 ---
 
@@ -30,7 +29,7 @@ exists because:
 
 ## Binary resolution
 
-amplihack-rs resolves the runner binary at launch time using `freshness.rs`:
+amplihack resolves the runner binary at launch time using `freshness.rs`:
 
 ```
 $PATH lookup for `recipe-runner-rs`
@@ -51,7 +50,7 @@ Source: `crates/amplihack-cli/src/freshness.rs`, lines 108–176.
 
 ## Invocation contract
 
-amplihack-rs invokes the runner as a subprocess:
+amplihack invokes the runner as a subprocess:
 
 ```
 amplihack recipe run <recipe-name> \
@@ -84,7 +83,7 @@ The runner:
 Context variables flow forward: each step's `output` key becomes available
 to subsequent steps via `{{variable_name}}` interpolation.
 
-## What amplihack-rs does NOT do
+## What amplihack does NOT do
 
 - **Does not parse recipes** — YAML parsing is the runner's responsibility.
 - **Does not execute steps** — Step dispatch (bash/agent/recipe) is handled
@@ -94,33 +93,17 @@ to subsequent steps via `{{variable_name}}` interpolation.
 - **Does not embed the runner** — There is no compiled-in recipe execution
   engine.
 
-amplihack-rs is responsible for: binary resolution, freshness checks,
-argument forwarding, and exit code propagation.
+amplihack is responsible for: binary resolution, freshness checks, argument
+forwarding, and exit code propagation.
 
-## The Python runner: why it still exists
+## Operational contract
 
-A Python-based recipe runner (`amplifier-bundle/tools/recipe_runner.py`)
-predates the Rust implementation. Both runners coexist because:
+The goal is a single native recipe runner. Consolidation requires:
 
-- **Legacy recipes** may depend on Python-specific behavior not yet ported.
-- **The `amplifier-bundle`** still ships Python utilities that some recipes
-  reference.
-- **Migration is incomplete** — Not all step types have Rust equivalents.
-
-The Rust runner is the default for new recipes. The Python runner is a
-fallback, not a parallel production system.
-
-## Consolidation direction
-
-The goal is a single Rust recipe runner. Consolidation requires:
-
-1. **Porting remaining step types** from Python to Rust
-2. **Removing Python-specific recipe shims** in `amplifier-bundle/tools/`
-3. **Validating all recipes** against the Rust runner exclusively
-4. **Deleting the Python runner** once no recipe depends on it
-
-See [amplihack Retirement Direction](./amplihack-retirement-direction.md)
-for the broader Python winddown timeline.
+1. **Keeping all recipe step types covered** by native execution
+2. **Avoiding language-specific recipe shims** in `amplifier-bundle/tools/`
+3. **Validating all recipes** against the native runner
+4. **Failing loudly** when a recipe depends on an unavailable helper
 
 ## Related
 

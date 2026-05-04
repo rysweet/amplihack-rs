@@ -30,8 +30,8 @@ pub enum OrchCommands {
     },
     /// Run parallel workstreams from a JSON config file (WS_FILE).
     ///
-    /// Native port of the `python3 -u multitask/orchestrator.py $WS_FILE`
-    /// invocation in `smart-orchestrator.yaml`. Delegates to the existing
+    /// Native workstream orchestration entrypoint for `smart-orchestrator.yaml`.
+    /// Delegates to the existing
     /// `multitask run` implementation with default flags (recipe mode,
     /// `default-workflow` recipe, no runtime override, no dry-run).
     Run {
@@ -528,10 +528,8 @@ pub fn dispatch(command: OrchCommands) -> Result<()> {
     }
 }
 
-/// Native equivalent of `python3 -u multitask/orchestrator.py <WS_FILE>`.
-///
 /// Delegates to [`multitask::run_multitask`] with the same defaults the YAML
-/// recipe used to invoke the Python orchestrator with (recipe mode,
+/// recipe expects (recipe mode,
 /// `default-workflow` recipe, no runtime override, no timeout policy
 /// override, not a dry-run).
 pub fn run_orch_run(ws_file: PathBuf) -> Result<()> {

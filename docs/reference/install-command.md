@@ -207,7 +207,7 @@ Validates that a hook command string does not contain shell metacharacters (`|&;
 
 Iterates `specs` and calls `validate_hook_command_string()` on each command string before upserting its hook wrapper into `settings["hooks"][event]`. Uses `wrapper_matches()` for idempotency. Preserves order — `workflow-classification-reminder` always precedes `user-prompt-submit` in the `UserPromptSubmit` array.
 
-The active amplihack install path registers hook **binary subcommands** such as `"amplihack-hooks post-tool-use"`. Legacy Python hook files may still be staged for compatibility, but they are no longer treated as required runtime hook registrations.
+The active amplihack install path registers hook **binary subcommands** such as `"amplihack-hooks post-tool-use"`. Historical hook files may still appear in older installations, but they are no longer treated as required runtime hook registrations.
 
 ### `remove_hook_registrations(settings) -> Result<()>`
 

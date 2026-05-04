@@ -219,166 +219,34 @@ Works with:
 - pre-commit-diagnostic (local validation)
 ```
 
-### Example 4: Scenario Tool Skill
+### Example 4: Shell-Native Review Skill
 
-**User Request**: "Create a production tool for code review automation"
+**User Request**: "Create a code review skill with security and quality checks"
 
 **Command**:
 
 ```bash
-/amplihack:skill-builder code-reviewer scenario "Automated code review with security and quality checks"
+/amplihack:skill-builder code-reviewer skill "Automated code review with security and quality checks"
 ```
 
 **Expected Output**:
 
-`.claude/scenarios/code-reviewer/code_reviewer.py`:
-
-```python
-#!/usr/bin/env python3
-"""Automated code review with security and quality checks."""
-
-import argparse
-import sys
-from pathlib import Path
-from dataclasses import dataclass
-from typing import List
-
-
-@dataclass
-class ReviewResult:
-    """Results from reviewing a single file."""
-
-    file_path: Path
-    issues: List[str]
-    security_concerns: List[str]
-    quality_score: float
-
-
-def review_file(file_path: Path) -> ReviewResult:
-    """Review a single file for security and quality issues."""
-    issues = []
-    security_concerns = []
-
-    content = file_path.read_text()
-
-    # Security checks
-    if "eval(" in content:
-        security_concerns.append("Code injection risk: eval() detected")
-    if "exec(" in content:
-        security_concerns.append("Code execution risk: exec() detected")
-
-    # Quality checks
-    lines = content.split("\n")
-    if len(lines) > 500:
-        issues.append(f"File too large: {len(lines)} lines (recommend < 500)")
-
-    # Calculate quality score
-    quality_score = 100.0
-    quality_score -= len(issues) * 5
-    quality_score -= len(security_concerns) * 10
-
-    return ReviewResult(
-        file_path=file_path,
-        issues=issues,
-        security_concerns=security_concerns,
-        quality_score=max(0.0, quality_score),
-    )
-
-
-def main():
-    """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description="Automated code review with security and quality checks"
-    )
-    parser.add_argument("target", help="File or directory to review")
-    parser.add_argument(
-        "--format", choices=["text", "json"], default="text", help="Output format"
-    )
-    args = parser.parse_args()
-
-    target = Path(args.target)
-    if not target.exists():
-        print(f"Error: {target} not found", file=sys.stderr)
-        sys.exit(1)
-
-    # Collect files to review
-    files = [target] if target.is_file() else list(target.rglob("*.py"))
-
-    # Review each file
-    results = [review_file(f) for f in files]
-
-    # Display results
-    for result in results:
-        print(f"\n{result.file_path}")
-        print(f"Quality Score: {result.quality_score:.1f}/100")
-        if result.security_concerns:
-            print("Security Concerns:")
-            for concern in result.security_concerns:
-                print(f"  - {concern}")
-        if result.issues:
-            print("Issues:")
-            for issue in result.issues:
-                print(f"  - {issue}")
-
-
-if __name__ == "__main__":
-    main()
-```
-
-`.claude/scenarios/code-reviewer/README.md`:
+`.claude/skills/code-reviewer/SKILL.md`:
 
 ````markdown
 # Code Reviewer
 
-Automated code review with security and quality checks.
-
-## Features
-
-- Security vulnerability detection (eval, exec, SQL injection patterns)
-- Code quality metrics (file size, complexity, style)
-- Multiple output formats (text, JSON)
-- Recursive directory scanning
-
-## Installation
-
-```bash
-# From amplihack repository root
-pip install -e .
-```
-````
+Automated code review using shell-native checks and agent judgment.
 
 ## Usage
 
 ```bash
-# Review single file
-python .claude/scenarios/code-reviewer/code_reviewer.py file.py
-
-# Review directory
-python .claude/scenarios/code-reviewer/code_reviewer.py ./src/
-
-# JSON output
-python .claude/scenarios/code-reviewer/code_reviewer.py ./src/ --format json
+rg -n 'eval|exec|subprocess|password|secret' ./src/
+find ./src -type f -size +500k -print
 ```
 
-## Output
-
-```
-./src/module.py
-Quality Score: 95.0/100
-Issues:
-  - Function too complex: calculate_metrics (20 branches)
-```
-
-## Integration
-
-Add to Makefile:
-
-```makefile
-review-code:
-	python .claude/scenarios/code-reviewer/code_reviewer.py $(TARGET)
-```
-
-```
+Use the results as input to a focused review; do not depend on an omitted helper script.
+````
 
 ---
 
@@ -408,7 +276,7 @@ skill-builder: _activates automatically_
 ├── examples.md # Sample analyses
 └── scripts/
 ├── calculate.py # Ratio calculations
-└── validate.py # Input validation
+└── manual validation workflow # Input validation
 
 ````
 
@@ -435,7 +303,7 @@ Calculates key financial ratios and interprets them against industry benchmarks.
 ## What I Do
 
 1. Accept financial data (income statement, balance sheet)
-2. Calculate ratios using scripts/calculate.py
+2. Calculate ratios directly in the example implementation.
 3. Compare against industry benchmarks
 4. Interpret results with context
 5. Generate formatted analysis report

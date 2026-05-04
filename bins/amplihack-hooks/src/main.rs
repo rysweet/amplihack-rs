@@ -51,10 +51,9 @@ fn main() {
         }
         "pre-tool-use" => run_hook(PreToolUseHook),
         "post-tool-use" => run_hook(PostToolUseHook),
-        // `session-end` and `session-stop` are aliases for `stop` — the legacy
-        // Python shims (session_end.py, session_stop.py) both delegated to
-        // the native `stop` subcommand. Dispatching to the same StopHook
-        // instance keeps behavior identical (issue #522, design A3).
+        // `session-end` and `session-stop` are aliases for `stop`. Dispatching
+        // to the same StopHook instance keeps behavior identical for hosts that
+        // still use either event name.
         "stop" | "session-end" | "session-stop" => run_hook(StopHook),
         "session-start" => run_hook(SessionStartHook),
         // SessionStop event handler (distinct from the alias above) — kept
@@ -63,9 +62,9 @@ fn main() {
         "workflow-classification-reminder" => run_hook(WorkflowClassificationReminderHook),
         "user-prompt" | "user-prompt-submit" => run_hook(UserPromptSubmitHook),
         "pre-compact" => run_hook(PreCompactHook),
-        // No-op pre-commit hook (replaces precommit_prefs.py shim, issue #522).
-        // Drains stdin and exits 0 — see precommit_prefs::run docs for the
-        // security contract (no logging, no echoing payload).
+        // No-op pre-commit hook. Drains stdin and exits 0 — see
+        // precommit_prefs::run docs for the security contract (no logging, no
+        // echoing payload).
         "precommit-prefs" => {
             let mut stdin = std::io::stdin().lock();
             if let Err(e) = precommit_prefs::run(&mut stdin) {

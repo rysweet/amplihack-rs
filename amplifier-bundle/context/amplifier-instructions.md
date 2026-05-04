@@ -39,7 +39,7 @@ amplifier run --bundle amplihack
 
 ```yaml
 includes:
-  - bundle: git+https://github.com/rysweet/amplihack@main#amplifier-bundle
+  - bundle: git+https://github.com/rysweet/amplihack-rs@main#amplifier-bundle
 ```
 
 ## What's Referenced

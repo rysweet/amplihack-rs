@@ -11,8 +11,8 @@ Two independent experiments measured how prompt language affects code generation
 
 | Experiment                                                                                 | Formalism | English Baseline | Spec-Only | Improvement | Key Insight                                   |
 | ------------------------------------------------------------------------------------------ | --------- | ---------------- | --------- | ----------- | --------------------------------------------- |
-| [#3497](https://github.com/rysweet/amplihack/issues/3497) — Distributed Retrieval Contract | TLA+      | 0.57             | **0.86**  | **+51%**    | Hybrid TLA++English _degrades_ to 0.50        |
-| [#3969](https://github.com/rysweet/amplihack/issues/3969) — Recipe Step Executor           | Gherkin   | 0.713            | **0.898** | **+26%**    | Hybrid Gherkin+English adds noise (widest CI) |
+| [#3497](https://github.com/rysweet/amplihack-rs/issues/3497) — Distributed Retrieval Contract | TLA+      | 0.57             | **0.86**  | **+51%**    | Hybrid TLA++English _degrades_ to 0.50        |
+| [#3969](https://github.com/rysweet/amplihack-rs/issues/3969) — Recipe Step Executor           | Gherkin   | 0.713            | **0.898** | **+26%**    | Hybrid Gherkin+English adds noise (widest CI) |
 
 **Both experiments converge on the same conclusion**: spec-only prompts outperform hybrid spec+English prompts. Natural language dilutes rather than amplifies the formal signal.
 
@@ -53,7 +53,7 @@ flowchart TD
 
 ## Experiment 1: TLA+ for Concurrent Systems
 
-**Issue**: [#3497](https://github.com/rysweet/amplihack/issues/3497)
+**Issue**: [#3497](https://github.com/rysweet/amplihack-rs/issues/3497)
 **Task**: Generate a Distributed Retrieval Contract — a request-local protocol preserving question end-to-end, dispatching retrieval across agents, merging results deterministically, and surfacing shard failures explicitly.
 
 ### Methodology
@@ -101,7 +101,7 @@ When both a formal spec and English description are present, the model must reco
 
 ## Experiment 2: Gherkin for Behavioral Requirements
 
-**Issue**: [#3969](https://github.com/rysweet/amplihack/issues/3969)
+**Issue**: [#3969](https://github.com/rysweet/amplihack-rs/issues/3969)
 **Task**: Generate a Python `RecipeStepExecutor` class with 6 interacting behavioral features: conditional execution, step dependencies, retry with exponential backoff, timeout handling, output capture, and sub-recipe delegation.
 
 ### Methodology

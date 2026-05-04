@@ -17,17 +17,11 @@ const NAMED_ASSETS: &[(&str, &[&str])] = &[
     // Its only consumers in smart-orchestrator.yaml assigned the result with
     // `|| true` and never read it; the bundled amplifier-bundle/tools/amplihack/
     // hooks/ directory has been deleted along with this entry.
-    // FIX (rysweet/amplihack-rs#283/#248): expose the multitask-orchestrator
-    // script under a stable named-asset key so smart-orchestrator's
-    // launch-parallel-round-1 step can resolve it via the Rust CLI instead of
-    // the legacy `python3 -m amplihack.runtime_assets multitask-orchestrator`
-    // shim. The candidate paths mirror those in `runtime_assets::asset_relative_paths`.
+    // Native compatibility wrapper for legacy callers that still resolve the
+    // multitask orchestrator by logical asset name.
     (
         "multitask-orchestrator",
-        &[
-            ".claude/skills/multitask/orchestrator.py",
-            "amplifier-bundle/skills/multitask/orchestrator.py",
-        ],
+        &["amplifier-bundle/bin/multitask-orchestrator.sh"],
     ),
 ];
 
@@ -250,7 +244,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         make_named_asset_file(
             temp.path(),
-            "amplifier-bundle/skills/multitask/orchestrator.py",
+            "amplifier-bundle/bin/multitask-orchestrator.sh",
         );
 
         let prev_home = crate::test_support::set_home(temp.path());
@@ -267,8 +261,8 @@ mod tests {
 
         let resolved = result.unwrap();
         assert!(
-            resolved.ends_with("amplifier-bundle/skills/multitask/orchestrator.py"),
-            "expected multitask orchestrator.py path, got {:?}",
+            resolved.ends_with("amplifier-bundle/bin/multitask-orchestrator.sh"),
+            "expected multitask orchestrator.sh path, got {:?}",
             resolved
         );
     }
@@ -279,7 +273,10 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        make_named_asset_file(temp.path(), ".claude/skills/multitask/orchestrator.py");
+        make_named_asset_file(
+            temp.path(),
+            "amplifier-bundle/bin/multitask-orchestrator.sh",
+        );
 
         let prev_home = crate::test_support::set_home(temp.path());
         let prev = env::var_os("AMPLIHACK_HOME");
@@ -308,7 +305,7 @@ mod tests {
         let dot_amplihack = temp.path().join(".amplihack");
         make_named_asset_file(
             &dot_amplihack,
-            "amplifier-bundle/skills/multitask/orchestrator.py",
+            "amplifier-bundle/bin/multitask-orchestrator.sh",
         );
 
         let prev_home = crate::test_support::set_home(temp.path());
@@ -325,8 +322,8 @@ mod tests {
 
         let resolved = result.unwrap();
         assert!(
-            resolved.ends_with("amplifier-bundle/skills/multitask/orchestrator.py"),
-            "expected multitask orchestrator.py path, got {:?}",
+            resolved.ends_with("amplifier-bundle/bin/multitask-orchestrator.sh"),
+            "expected multitask orchestrator.sh path, got {:?}",
             resolved
         );
     }
@@ -416,7 +413,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         make_named_asset_file(
             temp.path(),
-            "amplifier-bundle/skills/multitask/orchestrator.py",
+            "amplifier-bundle/bin/multitask-orchestrator.sh",
         );
 
         let prev_amplihack = env::var_os("AMPLIHACK_HOME");
@@ -436,8 +433,8 @@ mod tests {
 #[cfg(test)]
 mod cli_dispatch_tests {
     //! Verify the `amplihack resolve-bundle-asset <asset>` clap subcommand
-    //! parses correctly and that recipes don't regress to the old
-    //! `python3 -m amplihack.runtime_assets ...` invocation.
+    //! parses correctly and that recipes don't regress to the old legacy
+    //! runtime-asset invocation.
     use crate::{Cli, Commands};
     use clap::Parser;
 
@@ -481,10 +478,10 @@ mod cli_dispatch_tests {
     }
 
     #[test]
-    fn recipes_do_not_invoke_python_runtime_assets() {
+    fn recipes_do_not_invoke_legacy_runtime_assets() {
         // Regression guard for the bug where smart-orchestrator preflight
-        // failed because `python3 -m amplihack.runtime_assets` is not
-        // available on machines that only have the Rust binary installed.
+        // depended on the legacy runtime-asset resolver instead of the Rust
+        // binary installed on the machine.
         // Recipes must use `amplihack resolve-bundle-asset` instead.
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let recipes_dir = manifest
@@ -508,7 +505,7 @@ mod cli_dispatch_tests {
                 continue;
             }
             let body = std::fs::read_to_string(&path).unwrap();
-            if body.contains("python3 -m amplihack.runtime_assets") {
+            if body.contains(concat!("amplihack", ".runtime_assets")) {
                 offenders.push(path.display().to_string());
             }
         }

@@ -107,10 +107,10 @@ The nested compatibility layer preserves these explicit flags. It does not repla
 
 ## Variations
 
-### Force the legacy Python amplihack hook engine
+### Verify the native hook engine
 
 ```bash
-export AMPLIHACK_HOOK_ENGINE=python
+amplihack doctor
 amplihack copilot
 ```
 

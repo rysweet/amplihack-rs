@@ -75,13 +75,13 @@ Create .pm/ structure, invoke roadmap-strategist for roadmap generation.
 
 ### Pattern 5: Top 5 Priorities (`/top5`)
 
-Run `scripts/generate_top5.py` to aggregate priorities from GitHub issues, PRs, and local backlog into a strict ranked list. Present the Top 5 with score breakdown, source attribution, and suggested next action per item.
+Run `direct Top 5 prioritization workflow` to aggregate priorities from GitHub issues, PRs, and local backlog into a strict ranked list. Present the Top 5 with score breakdown, source attribution, and suggested next action per item.
 
 Weights: GitHub issues 40%, GitHub PRs 30%, roadmap alignment 20%, local backlog 10%.
 
 ### Pattern 6: Daily Standup
 
-Run `scripts/generate_daily_status.py` to produce a cross-project status report. Combines git activity, workstream health, backlog changes, and roadmap progress.
+Run `direct daily status synthesis workflow` to produce a cross-project status report. Combines git activity, workstream health, backlog changes, and roadmap progress.
 
 ## Philosophy Alignment
 
@@ -92,10 +92,10 @@ Run `scripts/generate_daily_status.py` to produce a cross-project status report.
 ## Scripts
 
 Orchestrator owns these scripts:
-- `scripts/manage_state.py` — Basic .pm/ state operations (init, add, update, list)
-- `scripts/generate_top5.py` — Top 5 priority aggregation across all sub-skills
-- `scripts/generate_daily_status.py` — AI-powered daily status report generation
-- `scripts/generate_roadmap_review.py` — Roadmap analysis and review
+- `direct .pm/ state editing workflow` — Basic .pm/ state operations (init, add, update, list)
+- `direct Top 5 prioritization workflow` — Top 5 priority aggregation across all sub-skills
+- `direct daily status synthesis workflow` — AI-powered daily status report generation
+- `direct roadmap review workflow` — Roadmap analysis and review
 
 Sub-skills own their specialized scripts.
 

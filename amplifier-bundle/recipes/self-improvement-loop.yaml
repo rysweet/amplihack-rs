@@ -32,9 +32,6 @@ tags: ["eval", "self-improvement", "learning-agent", "iterative", "quality"]
 #     "improvement_threshold": 2.0,
 #     "regression_tolerance": 5.0
 #   }'
-#
-# CLI equivalent:
-#   python -m amplihack.eval.self_improve.runner --sdk mini --iterations 5
 
 recursion:
   max_depth: 4
@@ -89,49 +86,9 @@ steps:
       echo "Output: {{output_dir}}/baseline"
       echo ""
 
-      # Probe for python + amplihack.eval.progressive_test_suite (refs #248).
-      # Mirrors the graceful-skip pattern from sdk-comparison.yaml (PR #347):
-      # if neither python3 nor python provides the optional module, emit a
-      # `[skip]` warning to stderr, a synthetic JSON payload to stdout, and
-      # exit 0 so the recipe stays runnable in pure-Rust environments.
-      PY=""
-      for cand in python3 python; do
-        if command -v "$cand" >/dev/null 2>&1; then
-          if PYTHONPATH=src "$cand" -c 'import amplihack.eval.progressive_test_suite' >/dev/null 2>&1; then
-            PY="$cand"
-            break
-          fi
-        fi
-      done
-
-      if [ -z "$PY" ]; then
-        echo "[skip] amplihack.eval.progressive_test_suite not available; skipping run-baseline-eval" >&2
-        echo '{"skipped":true,"reason":"amplihack.eval.progressive_test_suite not installed; step skipped"}'
-        exit 0
-      fi
-
-      LEVELS_ARGS=""
-      for level in {{levels}}; do
-        LEVELS_ARGS="$LEVELS_ARGS $level"
-      done
-
-      PYTHONPATH=src "$PY" -m amplihack.eval.progressive_test_suite \
-        --output-dir "{{output_dir}}/baseline" \
-        --agent-name "{{agent_name}}_baseline_$(date +%s)" \
-        --sdk "{{sdk}}" \
-        --levels $LEVELS_ARGS \
-        2>&1
-
-      echo ""
-      echo "=== Baseline Eval Complete ==="
-      echo ""
-
-      # Output the summary
-      if [ -f "{{output_dir}}/baseline/summary.json" ]; then
-        cat "{{output_dir}}/baseline/summary.json"
-      else
-        echo '{"error": "summary.json not found"}'
-      fi
+      echo "[skip] native progressive eval runner not available; skipping run-baseline-eval" >&2
+      echo '{"skipped":true,"reason":"native progressive eval runner not available; step skipped"}'
+      exit 0
     output: "baseline_scores"
     parse_json: true
 
@@ -151,36 +108,9 @@ steps:
 
       ## Your Task
 
-      Analyze the baseline eval results using the error_analyzer module.
-
-      Run the following Python code to classify failures:
-
-      ```python
-      import json
-      from pathlib import Path
-
-      # Load per-level score files
-      output_dir = Path("{{output_dir}}/baseline")
-      level_results = []
-      for level_dir in sorted(output_dir.iterdir()):
-          scores_file = level_dir / "scores.json"
-          if scores_file.exists():
-              with open(scores_file) as f:
-                  data = json.load(f)
-                  level_results.append({
-                      "level_id": level_dir.name,
-                      "details": data.get("details", [])
-                  })
-
-      # Run error analyzer
-      from amplihack.eval.self_improve.error_analyzer import analyze_eval_results
-      analyses = analyze_eval_results(level_results, score_threshold={{score_threshold}})
-
-      # Output structured results
-      for a in analyses:
-          print(f"  {a.affected_level} | {a.failure_mode} | {a.affected_component} | score={a.score:.0%}")
-          print(f"    Focus: {a.suggested_focus}")
-      ```
+      Analyze the baseline eval results. If the baseline step was skipped
+      because a native eval runner is unavailable, return an empty analysis with
+      a clear skipped reason.
 
       Provide the failure classification results with:
       - Which levels are underperforming
@@ -332,45 +262,9 @@ steps:
         exit 0
       fi
 
-      # Probe for python + amplihack.eval.progressive_test_suite (refs #248).
-      # Same graceful-skip pattern as run-baseline-eval / PR #347.
-      PY=""
-      for cand in python3 python; do
-        if command -v "$cand" >/dev/null 2>&1; then
-          if PYTHONPATH=src "$cand" -c 'import amplihack.eval.progressive_test_suite' >/dev/null 2>&1; then
-            PY="$cand"
-            break
-          fi
-        fi
-      done
-
-      if [ -z "$PY" ]; then
-        echo "[skip] amplihack.eval.progressive_test_suite not available; skipping re-eval-affected" >&2
-        echo '{"skipped":true,"reason":"amplihack.eval.progressive_test_suite not installed; step skipped"}'
-        exit 0
-      fi
-
-      LEVELS_ARGS=""
-      for level in {{levels}}; do
-        LEVELS_ARGS="$LEVELS_ARGS $level"
-      done
-
-      PYTHONPATH=src "$PY" -m amplihack.eval.progressive_test_suite \
-        --output-dir "{{output_dir}}/re_eval" \
-        --agent-name "{{agent_name}}_reeval_$(date +%s)" \
-        --sdk "{{sdk}}" \
-        --levels $LEVELS_ARGS \
-        2>&1
-
-      echo ""
-      echo "=== Re-Eval Complete ==="
-      echo ""
-
-      if [ -f "{{output_dir}}/re_eval/summary.json" ]; then
-        cat "{{output_dir}}/re_eval/summary.json"
-      else
-        echo '{"error": "re_eval summary.json not found"}'
-      fi
+      echo "[skip] native progressive eval runner not available; skipping re-eval-affected" >&2
+      echo '{"skipped":true,"reason":"native progressive eval runner not available; step skipped"}'
+      exit 0
     output: "post_scores"
     parse_json: true
 

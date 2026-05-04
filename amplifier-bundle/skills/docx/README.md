@@ -29,7 +29,7 @@ The DOCX skill follows amplihack's brick philosophy:
 ## Quick Start
 
 1. Install dependencies (see [DEPENDENCIES.md](DEPENDENCIES.md))
-2. Verify installation: `python ../common/verification/verify_skill.py docx`
+2. Verify installation: `bash ../../scripts/check-skills-no-missing-helpers.sh`
 3. Use the skill in Claude Code conversations
 
 Example conversation:
@@ -80,9 +80,9 @@ The redlining workflow is the **recommended default** for editing any document, 
 
 1. Convert to markdown: `pandoc --track-changes=all document.docx -o current.md`
 2. Identify and group changes into batches (3-10 changes per batch)
-3. Unpack document: `python ooxml/scripts/unpack.py document.docx unpacked/`
+3. Unpack document: `bash ooxml/scripts/unpack.sh document.docx unpacked/`
 4. Implement changes in batches using Python scripts
-5. Pack document: `python ooxml/scripts/pack.py unpacked/ reviewed.docx`
+5. Pack document: `bash ooxml/scripts/pack.sh unpacked/ reviewed.docx`
 6. Verify: `pandoc --track-changes=all reviewed.docx -o verification.md`
 
 **Key Principle**: Minimal, precise edits - only mark text that actually changes, preserve original formatting for unchanged text.
@@ -102,7 +102,7 @@ For complex operations (comments, advanced formatting, metadata):
 
 ```bash
 # Unpack document
-python ooxml/scripts/unpack.py document.docx unpacked/
+bash ooxml/scripts/unpack.sh document.docx unpacked/
 
 # Read XML files
 cat unpacked/word/document.xml  # Main document content
@@ -110,7 +110,7 @@ cat unpacked/word/comments.xml  # Comments
 ls unpacked/word/media/         # Embedded images
 
 # Pack when done
-python ooxml/scripts/pack.py unpacked/ output.docx
+bash ooxml/scripts/pack.sh unpacked/ output.docx
 ```
 
 ## Dependencies
@@ -186,7 +186,7 @@ This integration follows amplihack's core principles:
 
 **ImportError for defusedxml:**
 
-1. Run verification script: `python ../common/verification/verify_skill.py docx`
+1. Run verification script: `bash ../../scripts/check-skills-no-missing-helpers.sh`
 2. Install missing dependencies: `pip install defusedxml`
 3. Re-run tests to confirm
 
@@ -198,7 +198,7 @@ This integration follows amplihack's core principles:
 **Pack script fails validation:**
 
 1. Check LibreOffice installed: `soffice --version`
-2. Use `--force` flag to skip validation: `python ooxml/scripts/pack.py unpacked/ output.docx --force`
+2. Use `--force` flag to skip validation: `bash ooxml/scripts/pack.sh unpacked/ output.docx --force`
 3. Manually verify document opens in Word
 
 **Tracked changes not appearing:**
@@ -228,7 +228,7 @@ This skill is sourced from Anthropic's official skills repository. For issues:
 - [SKILL.md](SKILL.md) - Official skill documentation
 - [DEPENDENCIES.md](DEPENDENCIES.md) - Complete dependency list
 - [examples/example_usage.md](examples/example_usage.md) - Usage examples
-- [tests/test_docx_skill.py](tests/test_docx_skill.py) - Verification tests
+- tests/test_docx_skill.py - Verification tests
 - [../common/ooxml/README.md](../common/ooxml/README.md) - OOXML scripts documentation
 - [Anthropic Skills Repository](https://github.com/anthropics/skills/tree/main/document-skills/docx)
 

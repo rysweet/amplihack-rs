@@ -126,17 +126,17 @@ the full CI configuration guide.
 
 ## Suppress in parity tests and automation
 
-Test harnesses that compare the Rust and Python CLIs must suppress the update
-check to avoid spurious stderr mismatches. Set `AMPLIHACK_PARITY_TEST=1`:
+Automation that compares `amplihack` output against a baseline should suppress
+the update check to avoid spurious stderr mismatches. Set
+`AMPLIHACK_PARITY_TEST=1`:
 
 ```sh
 AMPLIHACK_PARITY_TEST=1 amplihack claude --print 'Run tests'
 ```
 
-The parity test harness (`tests/parity/parity_audit_cycle.py`) sets this
-variable automatically in every sandbox it creates. You do not need to set it
-manually when running the harness; it is documented here so that custom
-automation scripts know how to replicate the same suppression.
+The retired parity harness used this variable automatically in every sandbox it
+created. It remains documented so custom automation scripts can replicate the
+same suppression.
 
 `AMPLIHACK_PARITY_TEST=1` suppresses **only** the update check. It does not
 enable non-interactive mode or change any other launch behaviour. Use

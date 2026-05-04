@@ -563,12 +563,11 @@ should be suppressed.
 **Used by:** `update::should_skip_update_check()`
 
 Suppresses the pre-launch npm update check without enabling full
-non-interactive mode. Set by the parity test harness in every sandbox it
-creates so that update-banner stderr output does not produce spurious
-Python↔Rust divergences.
+non-interactive mode. This is useful for automation that compares command
+output against a known baseline, where update-banner stderr output would create
+spurious differences.
 
 ```sh
-# Set automatically by the parity harness — shown here for documentation only
 AMPLIHACK_PARITY_TEST=1 amplihack claude --print 'run tests'
 ```
 

@@ -25,8 +25,14 @@ steps:
     command: |
       echo "Running tests and pre-commit hooks..."
 
-      # Run tests
-      python -m pytest tests/ -v 2>/dev/null || echo "Tests need verification"
+      # Run the native test command for the repository type.
+      if [ -f Cargo.toml ]; then
+        cargo test --workspace --locked 2>/dev/null || echo "Tests need verification"
+      elif [ -f package.json ]; then
+        npm test 2>/dev/null || echo "Tests need verification"
+      else
+        echo "No native test command detected"
+      fi
 
       # Run pre-commit
       pre-commit run --all-files 2>/dev/null || echo "Pre-commit checks need attention"
@@ -104,4 +110,3 @@ steps:
   # ============================================================================
   # STEP 9: COMMIT AND PUSH
   # ============================================================================
-

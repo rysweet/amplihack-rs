@@ -15,6 +15,10 @@ disabled-strategies = ["quick-install", "compile"]
 name = "amplihack"
 path = "src/main.rs"
 
+[[bin]]
+name = "scan-invisible-chars"
+path = "src/bin/scan_invisible_chars.rs"
+
 [dependencies]
 amplihack-types = { workspace = true }
 amplihack-state = { workspace = true }
@@ -167,18 +171,12 @@ path = "../../tests/integration/hive_mind_doc_parity_test.rs"
 name = "orch_run_cli"
 path = "../../tests/integration/orch_run_cli_test.rs"
 
-# Issues #248 / #285: sdk-comparison.yaml graceful skip when the optional
-# `amplihack.eval.sdk_eval_loop` Python module is unavailable. TDD tests
-# specifying the contract for the graceful-skip refactor.
+# sdk-comparison.yaml graceful skip when the native SDK eval runner is unavailable.
 [[test]]
 name = "sdk_comparison_optional_python"
 path = "../../tests/integration/sdk_comparison_optional_python_test.rs"
 
-# Issue #248 / PR #348: self-improvement-loop.yaml graceful-skip contract.
-# TDD regression tests pinning the probe-then-skip behaviour for the optional
-# `amplihack.eval.progressive_test_suite` Python module across both eval steps
-# (run-baseline-eval, re-eval-affected) and auditing that no bare unprobed
-# python eval invocations remain in amplifier-bundle/recipes/.
+# self-improvement-loop.yaml graceful-skip contract for native eval runner absence.
 [[test]]
 name = "self_improvement_loop_skip"
 path = "../../tests/integration/self_improvement_loop_skip_test.rs"

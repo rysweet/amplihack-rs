@@ -1,18 +1,13 @@
-<!-- Ported from upstream amplihack. Rust-specific adaptations applied where applicable. -->
-
 # Kuzu Test Configuration
 
-!!! note "Upstream Python Testing Patterns"
-    This document describes test isolation patterns used in the upstream Python
-    amplihack project for the `kuzu` graph database dependency. It is preserved
-    here for reference. In amplihack-rs, LadybugDB (the Rust-native graph layer)
-    replaces the Python kuzu bindings — see
+!!! note "Graph database testing patterns"
+    This document describes test isolation patterns for graph database
+    dependencies. For the current native code graph, see
     [LadybugDB Code Graph](../concepts/kuzu-code-graph.md) and
-    [Resolve LadybugDB Linker Errors](../howto/resolve-kuzu-linker-errors.md)
-    for Rust-specific guidance.
+    [Resolve LadybugDB Linker Errors](../howto/resolve-kuzu-linker-errors.md).
 
-The upstream `amplihack` test suite includes tests that import `kuzu` — a C++
-graph database with a Python binding. In environments where `kuzu` is not
+Some graph-database test suites depend on optional native libraries. In
+environments where those libraries are not
 installed (e.g., CI without cmake, containers), these tests skip gracefully
 rather than hang or error.
 

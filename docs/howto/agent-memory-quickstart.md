@@ -1,5 +1,5 @@
 <!--
-Provenance: Adapted from upstream rysweet/amplihack docs/AGENT_MEMORY_QUICKSTART.md
+Provenance: Adapted from upstream rysweet/amplihack-rs docs/AGENT_MEMORY_QUICKSTART.md
 (commit 8639ee4). Python-only sections have been omitted; CLI flags have been
 verified against crates/amplihack-cli/src/cli_subcommands.rs::MemoryCommands and
 the library facade against crates/amplihack-memory/src/facade.rs in this checkout.

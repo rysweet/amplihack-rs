@@ -1,4 +1,4 @@
-//! Native parallel workstream orchestrator (port of `multitask/orchestrator.py`).
+//! Native parallel workstream orchestrator.
 //!
 //! Executes multiple independent development workstreams in parallel, each in
 //! its own subprocess with isolated working directories. Supports recipe-based

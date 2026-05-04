@@ -1,6 +1,6 @@
 # Memory Tree
 
-> Ported from upstream `rysweet/amplihack:docs/memory/MEMORY_TREE_VISUALIZATION.md`.
+> Ported from legacy upstream `docs/memory/MEMORY_TREE_VISUALIZATION.md`.
 > Concepts preserved verbatim; CLI invocations are unchanged because
 > `amplihack memory tree` is a CLI surface shared between the Python and Rust
 > implementations.

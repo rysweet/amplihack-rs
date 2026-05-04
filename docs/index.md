@@ -1,142 +1,802 @@
-# amplihack-rs Documentation
+# amplihack
 
-amplihack-rs is the Rust implementation of the amplihack CLI. It replaces the Python-based installer with a native binary that bootstraps the complete amplihack environment in a single command.
+**Agentic coding framework for Claude Code, Microsoft Amplifier, GitHub Copilot CLI, and Codex that uses specialized AI agents to accelerate software development through intelligent automation and collaborative problem-solving.**
 
-## Contents
+## What is amplihack?
 
-### Tutorials
+amplihack is a development framework for popular coding agent systems (Claude Code, Microsoft Amplifier, GitHub Copilot CLI, and Codex) that leverages multiple specialized AI agents working together to handle complex software development tasks. It combines ruthless simplicity with powerful capabilities to make AI-assisted development more effective and maintainable.
 
-- [Hive Mind — Getting Started](./tutorials/hive-mind-getting-started.md) — Fastest path from a clean checkout to a real distributed hive eval using `amplihack hive`
-- [Hive Mind — Tutorial](./tutorials/hive-mind-tutorial.md) — Federated hive mind walkthrough: in-memory, federation, LearningAgent integration, distributed agents, Azure deployment, eval
-- [Run Remote Sessions](./remote-sessions/TUTORIAL.md) — Start, monitor, script, and clean up remote Azure VM sessions
+## Quick Navigation
+
+**New to amplihack?** Start here:
+
+- [Get Started](#-get-started) - Installation and first steps
+- [Core Concepts](#-core-concepts) - Philosophy and principles
+- [Amplihack Tutorial](tutorials/amplihack-tutorial.md) - Comprehensive 60-90 minute tutorial
+
+**Looking for something specific?**
+
+- [Code Atlas](atlas/index.md) - Architecture diagrams, dependency maps, and bug hunt results
+- [Commands & Operations](#%EF%B8%8F-commands--operations) - Execute complex tasks
+- [Workflows](#-workflows) - Structured development processes
+- [Agents & Tools](#-agents--tools) - Specialized AI capabilities
+- [Troubleshooting](#-troubleshooting--discoveries) - Fix common issues
+
+---
+
+## 🚀 Get Started
+
+Everything you need to install and configure amplihack.
+
+### Prerequisites
+
+- Rust 1.88+ / cargo
+- Node.js 18+ / npm
+- git
+- cmake and a C/C++ toolchain for LadybugDB
+
+### Choose Your Tool
+
+amplihack works with multiple agentic coding tools. Choose the one that fits your workflow:
+
+```sh
+# Install, then launch with Claude Code (default)
+npx --yes --package=git+https://github.com/rysweet/amplihack-rs.git -- amplihack install
+amplihack claude
+
+# Or launch with Microsoft Amplifier
+amplihack amplifier
+
+# Or launch with GitHub Copilot CLI
+amplihack copilot
+```
+
+**Tool Compatibility Matrix:**
+
+| Feature             | Claude Code | Amplifier | Copilot CLI | Codex      |
+| ------------------- | ----------- | --------- | ----------- | ---------- |
+| Plugin Architecture | ✅ Yes      | ❌ No     | ❌ No       | ❌ No      |
+| Per-Project Staging | ✅ Yes      | ✅ Yes    | ✅ Yes      | ✅ Yes     |
+| All Agents (42)     | ✅ Yes      | ✅ Yes    | ✅ Yes      | ⚠️ Limited |
+| All Skills (120)    | ✅ Yes      | ✅ Yes    | ✅ Yes      | ⚠️ Limited |
+| All Commands (31)   | ✅ Yes      | ✅ Yes    | ✅ Yes      | ⚠️ Limited |
+| Workflows           | ✅ All      | ✅ All    | ✅ All      | ⚠️ Limited |
+| Auto Mode           | ✅ Yes      | ✅ Yes    | ✅ Yes      | ⚠️ Limited |
+
+**New to amplihack?** After launching, try the interactive tutorial:
+
+```
+Task(subagent_type='guide', prompt='I am new to amplihack. Teach me the basics.')
+```
+
+The guide agent will walk you through workflows, prompting strategies, and hands-on exercises (60-90 minutes).
+
+### Plugin Architecture ⭐ NEW
+
+Centralized plugin system that works across all your projects:
+
+- [Plugin Installation Guide](plugin/INSTALLATION.md) - Install amplihack as a global plugin (Claude Code only)
+- [Plugin Architecture Overview](plugin/ARCHITECTURE.md) - How the plugin system works
+- [Migration Guide](plugin/MIGRATION.md) - Migrate from per-project to plugin mode
+- [CLI Reference](plugin/CLI_REFERENCE.md) - Complete command-line reference
+
+**Note**: Plugin architecture is **Claude Code only**. Microsoft Amplifier, GitHub Copilot CLI, and Codex use per-project `~/.amplihack/.claude/` staging instead.
+
+### Installation
+
+- [Prerequisites](PREREQUISITES.md) - System requirements and dependencies
+- [Interactive Installation](INTERACTIVE_INSTALLATION.md) - Step-by-step setup wizard
+- [Quick Start](README.md) - Basic usage and first commands
+
+### Configuration
+
+#### Tool-Specific Setup
+
+**Claude Code (Default)**
+
+- Requires: `$ANTHROPIC_API_KEY` environment variable for Anthropic models
+- Plugin mode: Install globally with [Plugin Installation Guide](plugin/INSTALLATION.md)
+- Per-project mode: Copy `~/.amplihack/.claude/` directory to your project
+- Azure OpenAI: Configure via environment variables
+
+**Microsoft Amplifier**
+
+```sh
+amplihack amplifier
+```
+
+Amplifier walks you through model configuration on first startup. Supports all Amplifier-compatible models including Claude, GPT-4, and local models.
+
+**GitHub Copilot CLI**
+
+```sh
+amplihack copilot
+```
+
+- Uses GitHub Copilot models (switch with `/model` command)
+- Adaptive hooks enable preference injection and context loading
+- All 42 bundled agents available via `--agent <name>` flag
+- See [GitHub Copilot CLI](COPILOT_CLI.md) for complete guide
+- See [How to Use amplihack with a Non-Claude Agent](howto/use-non-claude-agent.md) for `AMPLIHACK_AGENT_BINARY` propagation and nested Copilot compatibility details
+- Follow the [Copilot parity control-plane tutorial](tutorials/copilot-parity-control-plane.md) for step-by-step setup and validation
+- Use [How to Configure the Copilot Parity Control Plane](howto/configure-copilot-parity-control-plane.md) to pin the runner, pick the hook engine, and verify XPIA behavior
+- Read [Understanding the Copilot Parity Control Plane](concepts/copilot-parity-control-plane.md) for the architecture and trade-offs
+- Use the [Copilot Parity Control Plane Reference](reference/copilot-parity-control-plane.md) for precedence, hook contracts, and environment variables
+
+**Codex**
+
+- Limited support via per-project `~/.amplihack/.claude/` staging
+- Most features work but may require adaptation
+- Tested primarily with Claude models
+
+#### General Configuration
+
+- [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
+- [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
+- [Memory Configuration Consent](features/memory-consent-prompt.md) - Intelligent memory settings with timeout protection
+- [Verify .claude/ Staging](howto/verify-claude-staging.md) - Check that framework files are properly staged
+- [Verify Framework Injection](howto/verify-framework-injection.md) - Check that AMPLIHACK.md injection is working
+- [Enable Blarify Code Indexing](howto/enable-blarify.md) - Opt-in code graph indexing with env var, non-interactive mode, and staleness detection
+
+### Deployment
+
+- [Release Installation](howto/first-install.md) - Install from published binaries or source
+- [Install Manifest](reference/install-manifest.md) - Understand installed files and uninstall state
+- [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
+
+---
+
+## 💡 Core Concepts
+
+Understand the philosophy and architecture behind amplihack.
+
+### Philosophy & Principles
+
+- [Development Philosophy](PHILOSOPHY.md) - Ruthless simplicity and modular design
+- [This Is The Way](THIS_IS_THE_WAY.md) - Best practices and patterns
+- [Workspace Pattern](WORKSPACE_PATTERN.md) - Organize your development environment
+- [Trust & Anti-Sycophancy](claude/context/TRUST.md) - Honest agent behavior
+
+### Architecture
+
+- [Project Overview](claude/context/PROJECT.md) - System architecture
+- [Development Patterns](claude/context/PATTERNS.md) - Proven implementation patterns
+- [Unified Staging Architecture](concepts/unified-staging-architecture.md) - How .claude/ staging works across all commands
+- [Framework Injection Architecture](concepts/framework-injection-architecture.md) - How AMPLIHACK.md injection works
+- [Unified Distributed Cognitive Memory](concepts/unified-distributed-cognitive-memory.md) - Planned architecture for deterministic cluster-wide memory retrieval
+- [Goal-Seeking Agents](GOAL_SEEKING_AGENTS.md) - Overview of generated agents and the shared LearningAgent engine
+- [LearningAgent Module Architecture](concepts/learning-agent-module-architecture.md) - How the refactored LearningAgent is split into focused modules
+- [LearningAgent Refactor Tutorial](tutorials/learning-agent-refactor-tutorial.md) - Walk through learning, retrieval, and temporal answering in the split module design
+- [Maintain the Refactored LearningAgent](howto/maintain-learning-agent-modules.md) - Contributor workflow for changing ingestion, retrieval, temporal logic, and synthesis
+- [LearningAgent Module Reference](reference/learning-agent-module-reference.md) - Public API, configuration knobs, ownership map, and validation commands
+- [How to Use Blarify Code Graph](howto/blarify-code-graph.md) - Enable, query, and configure
+- [Enable Blarify Code Indexing](howto/enable-blarify.md) - `AMPLIHACK_ENABLE_BLARIFY`, non-interactive skip, staleness detection
+- [Blarify Architecture](blarify_architecture.md) - Understanding the Blarify integration
+- [Documentation Knowledge Graph](documentation_knowledge_graph.md) - How docs connect
+
+### Key Features
+
+- [Modular Design](#-modular-design-philosophy) - Self-contained modules (bricks & studs)
+- [Zero-BS Implementation](#-zero-bs-implementation) - No stubs or placeholders
+- [Specialized AI Agents](#-specialized-ai-agents) - Purpose-built for each task
+- [Structured Workflows](#-structured-workflows) - Proven methodologies
+
+---
+
+## 📋 Workflows
+
+Proven methodologies for consistent, high-quality results.
+
+### Automatic Workflow Classification ⭐ NEW
+
+**Mandatory at Session Start** (Issue #2353) - amplihack now automatically classifies your request and executes the appropriate workflow when you start a session:
+
+- **4-Way Classification**: Q&A, Operations, Investigation, or Development
+- **Recipe Runner Execution**: Code-enforced workflow steps with fail-fast behavior
+- **Graceful Fallback**: Recipe Runner → Workflow Skills → Markdown
+- **Explicit Command Bypass**: Commands like `/fix`, `/analyze` skip auto-classification
+
+**Quick Reference**:
+| Your Request | Classified As | Workflow | Steps |
+|--------------|---------------|----------|-------|
+| "What is..." | Q&A | Direct answer | 3 |
+| "Clean up..." | Operations | Direct execution | 1 |
+| "How does X work?" | Investigation | Deep exploration | 6 |
+| "Add feature X" | Development | Full workflow | 23 |
+
+**Implementation**: `src/amplihack/workflows/` - classifier, execution_tier_cascade, session_start modules
+
+### Core Workflows
+
+- [Default Workflow](claude/workflow/DEFAULT_WORKFLOW.md) - Standard multi-step development process
+- [Investigation Workflow](claude/workflow/INVESTIGATION_WORKFLOW.md) - Deep codebase analysis and understanding
+- [Document-Driven Development (DDD)](document_driven_development/README.md) - Documentation-first approach for large features
+
+### DDD Deep Dive
+
+Document-Driven Development is a systematic methodology where documentation comes first and acts as the specification.
+
+- **Core Concepts**
+  - [Overview](document_driven_development/README.md) - What is DDD and when to use it
+  - [Core Concepts](document_driven_development/core_concepts/README.md) - File crawling, context poisoning, retcon writing
+  - [File Crawling](document_driven_development/core_concepts/file_crawling.md) - Systematic file processing
+  - [Context Poisoning](document_driven_development/core_concepts/context_poisoning.md) - Preventing inconsistencies
+  - [Retcon Writing](document_driven_development/core_concepts/retcon_writing.md) - Present-tense documentation
+
+- **Implementation Phases**
+  - [Phase 0: Planning](document_driven_development/phases/00_planning_and_alignment.md) - Define scope and objectives
+  - [Phase 1: Documentation](document_driven_development/phases/01_documentation_retcon.md) - Write the spec
+  - [Phase 2: Approval](document_driven_development/phases/02_approval_gate.md) - Review and validate
+  - [Phase 3: Code Planning](document_driven_development/phases/03_implementation_planning.md) - Implementation strategy
+  - [Phase 4: Implementation](document_driven_development/phases/04_code_implementation.md) - Build it
+  - [Phase 5: Testing](document_driven_development/phases/05_testing_and_verification.md) - Verify behavior
+  - [Phase 6: Cleanup](document_driven_development/phases/06_cleanup_and_push.md) - Final touches
+
+- **Reference**
+  - [Reference Materials](document_driven_development/reference/README.md) - Practical resources
+  - [Checklists](document_driven_development/reference/checklists.md) - Phase verification
+  - [Tips for Success](document_driven_development/reference/tips_for_success.md) - Best practices
+  - [Common Pitfalls](document_driven_development/reference/common_pitfalls.md) - What to avoid
+  - [FAQ](document_driven_development/reference/faq.md) - Common questions
+
+### Recipe Runner
+
+Code-enforced workflow execution engine with declarative YAML recipes.
+
+- [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
+- [UltraThink Recipe Runner Integration](recipes/RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution
+- [Recipe CLI Commands How-To](howto/recipe-cli-commands.md) - Task-oriented guide for using recipe commands
+- [Workflow Publish Import Validation](features/workflow-publish-import-validation.md) - Scoped publish import validation before commit/push
+- [How to Configure Workflow Publish Import Validation](howto/configure-workflow-publish-import-validation.md) - Review the manifest, root-boundary, and scoped-validator behavior
+- [Tutorial: Workflow Publish Import Validation](tutorials/workflow-publish-import-validation.md) - Walk through the scoped publish-validation flow
+- [Workflow Publish Import Validation Reference](reference/workflow-publish-import-validation.md) - Manifest format, root-resolution rules, and `--files-from` semantics
+- [Workflow Execution Guardrails](features/workflow-execution-guardrails.md) - Canonical execution roots, exact GitHub identity checks, and observer-only stall detection
+- [How to Configure Workflow Execution Guardrails](howto/configure-workflow-execution-guardrails.md) - Supply `expected_gh_account`, inspect `execution_root`, and troubleshoot failures
+- [Tutorial: Workflow Execution Guardrails](tutorials/workflow-execution-guardrails.md) - End-to-end walkthrough of the guarded workflow contract
+- [Workflow Execution Guardrails Reference](reference/workflow-execution-guardrails.md) - Input fields, output schema, signals, and failure semantics
+- [Workflow Issue Extraction Reference](reference/workflow-issue-extraction.md) - Three-tier issue-number resolution (direct URL → PR closing-refs → `#N` verify) in step 03b
+- [Run a Quality Audit](howto/run-quality-audit.md) - Invoke quality-audit-cycle recipe, target subdirectories, filter categories
+- [CLI Reference](reference/cli.md) - Top-level `amplihack` command, `--version` flag, global environment variables
+- [Recipe CLI Reference](reference/recipe-cli-reference.md) - Complete command-line documentation
+- [Quality Audit Cycle Recipe](reference/quality-audit-cycle-recipe.md) - Context variables, step reference, bash step safety patterns
+- [Token Sanitizer](reference/token-sanitizer.md) - Pattern ordering, audit labels, and custom patterns for secret redaction
+- [RecipeResult](reference/recipe-result.md) - `RecipeResult` and `StepResult` dataclasses, `str()` format, JSON serialisation
+- [AppendHandler](reference/append-handler.md) - `AppendResult` class, timestamp filename format, atomic file writes
+- [Rust Runner Execution Reference](reference/rust-runner-execution.md) - `execute_rust_command`, `read_progress_file`, `emit_step_transition`, progress file schema, security model
+- [Rust Runner Execution Architecture](concepts/rust-runner-execution-architecture.md) - Thread-based I/O streaming, atomic writes, JSONL events, workstream integration
+
+**Quick Start**:
+
+```bash
+# List available recipes
+amplihack recipe list
+
+# Execute a workflow recipe
+amplihack recipe run default-workflow \
+  --context '{"task_description": "Add user authentication", "repo_path": "."}'
+
+# Validate recipe YAML
+amplihack recipe validate my-workflow.yaml
+
+# Show recipe details
+amplihack recipe show default-workflow
+```
+
+### Advanced Workflows
+
+- [N-Version Programming](claude/workflow/N_VERSION_WORKFLOW.md) - Multiple solutions for critical code
+- [Multi-Agent Debate](claude/workflow/DEBATE_WORKFLOW.md) - Structured decision-making
+- [Cascade Workflow](claude/workflow/CASCADE_WORKFLOW.md) - Graceful degradation patterns
+
+### GitHub Actions Workflows
+
+- [Configure Issue Classifier](howto/configure-issue-classifier-workflow.md) - Permissions, timeout, label extension, lock file recompilation, and troubleshooting
+
+---
+
+## 🤖 Agents & Tools
+
+Specialized AI agents and tools for every development task.
+
+### Core Agents
+
+<!-- - [Agents Overview](claude/agents/amplihack/README.md) - Complete agent catalog (see individual agent docs below) -->
+
+- [Architect](claude/agents/amplihack/core/architect.md) - System design and specifications
+- [Builder](claude/agents/amplihack/core/builder.md) - Code implementation from specs
+- [Reviewer](claude/agents/amplihack/core/reviewer.md) - Quality assurance and compliance
+- [Tester](claude/agents/amplihack/core/tester.md) - Test generation and validation
+
+### Specialized Agents
+
+- [API Designer](claude/agents/amplihack/core/api-designer.md) - Contract definitions
+- [Security Agent](claude/agents/amplihack/specialized/security.md) - Vulnerability assessment
+- [Database Agent](claude/agents/amplihack/specialized/database.md) - Schema and query optimization
+- [Integration Agent](claude/agents/amplihack/specialized/integration.md) - External service connections
+- [Cleanup Agent](claude/agents/amplihack/specialized/cleanup.md) - Code simplification
+
+### Goal-Seeking Agents
+
+**Autonomous agents that learn, remember, teach, and apply knowledge across four SDK backends.**
+
+**📚 Tutorials (Learning-Oriented)**
+
+- **[Goal-Seeking Agent Tutorial](tutorials/GOAL_SEEKING_AGENT_TUTORIAL.md)** - Interactive 10-lesson tutorial covering agent generation, SDK selection, multi-agent architecture, evaluations (L1-L12), and self-improvement loops
+
+**📖 How-To Guides (Problem-Oriented)**
+
+- [Goal Agent Generator Guide](GOAL_AGENT_GENERATOR_GUIDE.md) - Create custom goal-seeking agents with `amplihack new`
+- [SDK Adapters Guide](SDK_ADAPTERS_GUIDE.md) - Choose and configure Copilot, Claude, Microsoft, or Mini SDK backends
+
+**📋 Reference (Information-Oriented)**
+
+- **[Quick Reference Card](reference/goal-seeking-agents-quick-reference.md)** - Fast lookup: commands, SDK selection, eval levels, common patterns
+- [Eval System Architecture](EVAL_SYSTEM_ARCHITECTURE.md) - Progressive test suite (L1-L12), grading pipeline, domain agents, long-horizon memory eval, self-improvement runner
+- [Goal Agent Generator Design](agent-bundle-generator-design.md) - Architecture and design patterns
+- [Goal Agent Requirements](agent-bundle-generator-requirements.md) - Technical specifications
+- [Implementation Summary](goal_agent_generator/IMPLEMENTATION_SUMMARY.md) - Current implementation status
+
+**💡 Explanation (Understanding-Oriented)**
+
+- **[Comprehensive Guide](GOAL_SEEKING_AGENTS.md)** - Complete system overview: capabilities, architecture, memory systems, evaluation framework, and self-improvement
+- [Goal Agent Generator Presentation](GOAL_AGENT_GENERATOR_PRESENTATION.md) - High-level concept introduction
+
+**Key Features**:
+
+- **SDK-Agnostic**: Write once, run on Copilot, Claude, Microsoft Agent Framework, or lightweight mini-framework
+- **7 Learning Tools**: learn, search, explain, verify, find gaps, store, summary
+- **Progressive Eval (L1-L12)**: From simple recall to far transfer across domains
+- **3-Run Median Eval**: `--runs 3` for stable benchmarks (reduces LLM stochasticity)
+- **Multi-Vote Grading**: `--grader-votes 3` for noise reduction on ambiguous answers
+- **Teaching Evaluation**: Multi-turn teacher-student knowledge transfer (Chi 1994, Vygotsky ZPD)
+- **Self-Improvement Loop**: EVAL -> ANALYZE -> RESEARCH -> IMPROVE -> RE-EVAL -> DECIDE with automated error analysis
+- **5 Domain Agents**: Code Review, Meeting Synthesizer, Data Analysis, Document Creator, Project Planning
+- **Long-Horizon Memory Eval**: 1000-turn dialogue stress test
+- **Multi-SDK Comparison**: 4-way eval comparison via `sdk_eval_loop.py`
+- **Current Score**: 97.5% overall median (L1-L7, 3-run median, mini SDK)
+
+### Memory-Enabled Agents ⭐ NEW
+
+**Learning agents that improve through experience and persist knowledge across sessions.**
+
+- [Feature Overview](features/memory-enabled-agents.md) - What are memory-enabled agents and when to use them
+- [Getting Started Tutorial](tutorials/memory-enabled-agents-getting-started.md) - Create and run your first learning agent (30 minutes)
+- [API Reference](reference/memory-enabled-agents-api.md) - Complete technical documentation for amplihack-memory-lib
+- [Architecture Deep-Dive](concepts/memory-enabled-agents-architecture.md) - System design and technical details
+- [How-To: Integrate Memory](howto/integrate-memory-into-agents.md) - Add memory to existing agents
+- [How-To: Design Learning Metrics](howto/design-custom-learning-metrics.md) - Track domain-specific improvements
+- [How-To: Validate Learning](howto/validate-agent-learning.md) - Test learning behavior with gadugi-agentic-test
+
+**Key Features**:
+
+- **Native memory API**: use the bundled memory commands and libraries from the installed `amplihack` CLI
+- **Persistent Memory**: SQLite-based storage (no external database required)
+- **Pattern Recognition**: Automatically recognize recurring situations after 3 occurrences
+- **Learning Metrics**: Track runtime improvement, pattern recognition rate, confidence growth
+- **Four Experience Types**: SUCCESS, FAILURE, PATTERN, INSIGHT
+- **Validated Learning**: Test-driven validation ensures agents actually learn
+
+**Demonstration Agents**:
+
+1. **Documentation Analyzer** - Learns documentation quality patterns (MS Learn integration)
+2. **Code Pattern Recognizer** - Identifies reusable code patterns and abstractions
+3. **Bug Predictor** - Predicts likely bug locations based on learned characteristics
+4. **Performance Optimizer** - Learns performance anti-patterns and optimization techniques
+
+### Meta-Agentic Task Delegation ⭐ NEW
+
+**Run AI agents in isolated subprocess environments with automatic validation and evidence collection.**
+
+- [Meta-Delegation Overview](meta-delegation/README.md) - What is meta-delegation and when to use it
+- [Tutorial](meta-delegation/tutorial.md) - Learn meta-delegation step-by-step (30 minutes)
+- [How-To Guide](meta-delegation/howto.md) - Common tasks and recipes
+- [API Reference](meta-delegation/reference.md) - Complete technical documentation
+- [Concepts](meta-delegation/concepts.md) - Architecture and design principles
+- [Troubleshooting](meta-delegation/troubleshooting.md) - Fix common issues
+
+**Key Feature**: Delegate complex tasks to specialized personas (guide, QA engineer, architect, junior developer) running in isolated environments. The system monitors execution, collects evidence, validates success criteria, and provides detailed reports.
+
+### Workflow Agents
+
+- [Ambiguity Handler](claude/agents/amplihack/specialized/ambiguity.md) - Clarify unclear requirements
+- [Optimizer](claude/agents/amplihack/core/optimizer.md) - Performance improvements
+- [Pattern Recognition](claude/agents/amplihack/specialized/patterns.md) - Identify reusable solutions
+
+### Claude Code Skills
+
+Modular, on-demand capabilities that extend amplihack:
+
+- [Skills Catalog](skills/SKILL_CATALOG.md) - Complete skills catalog
+<!-- - [Documentation Writing](claude/skills/documentation-writing/README.md) - Eight Rules compliance (Coming soon) -->
+- [Mermaid Diagrams](claude/skills/mermaid-diagram-generator/SKILL.md) - Visual documentation
+- [Test Gap Analyzer](claude/skills/test-gap-analyzer/SKILL.md) - Find untested code
+- [Code Smell Detector](claude/skills/code-smell-detector/SKILL.md) - Identify anti-patterns
+
+### Scenario Tools
+
+Production-ready executable tools following the Progressive Maturity Model:
+
+- [Scenario Tools Overview](claude/scenarios/README.md) - Progressive maturity model
+- [Create Your Own Tools](CREATE_YOUR_OWN_TOOLS.md) - Build custom tools
+- [Agent Bundle Generator](agent-bundle-generator-guide.md) - Package agents for distribution
+
+#### Available Tools
+
+- **[Platform Bridge](platform-bridge/README.md)** - Multi-platform support for GitHub and Azure DevOps
+  - Automatic platform detection from git remotes
+  - Unified API for both GitHub and Azure DevOps
+  - Zero configuration required
+  - Used by DEFAULT_WORKFLOW for cross-platform compatibility
+
+---
+
+## ⚡️ Commands & Operations
+
+Execute complex tasks with simple slash commands.
+
+### Command Reference
+
+- [Command Selection Guide](commands/COMMAND_SELECTION_GUIDE.md) - Choose the right command for your task
+- [Amplifier Command](reference/amplifier-command.md) - Launch Amplifier with amplihack bundle
+
+### Core Commands
+
+- `/ultrathink` - Main orchestration command (reads workflow, orchestrates agents)
+- `/analyze` - Comprehensive code review for philosophy compliance
+- `/improve` - Capture learnings and self-improvement
+- `/fix` - Intelligent fix workflow for common error patterns
+
+### Document-Driven Development Commands
+
+- `/ddd:0-help` - Get help and understand DDD
+- `/ddd:prime` - Prime context with DDD overview
+- `/ddd:1-plan` - Phase 0: Planning & Alignment
+- `/ddd:2-docs` - Phase 1: Documentation Retcon
+- `/ddd:3-code-plan` - Phase 3: Implementation Planning
+- `/ddd:4-code` - Phase 4: Code Implementation
+- `/ddd:5-finish` - Phase 5: Testing & Phase 6: Cleanup
+- `/ddd:status` - Check current phase and progress
+
+### Advanced Commands
+
+- `/amplihack:n-version <task>` - Generate N independent solutions for critical code
+- `/amplihack:debate <question>` - Multi-agent structured debate for decisions
+- `/amplihack:cascade <task>` - Fallback cascade for resilient operations
+- `/amplihack:customize` - Manage user preferences and settings
+
+### Auto Mode
+
+- [Auto Mode Guide](AUTO_MODE.md) - Autonomous multi-turn execution
+- [Auto Mode Safety](AUTOMODE_SAFETY.md) - Safety guardrails and best practices
+
+---
+
+## 🧠 Memory & Knowledge
+
+Persistent memory systems and knowledge management.
+
+### 5-Type Memory System ⭐ NEW
+
+Psychological memory model with episodic, semantic, procedural, prospective, and working memory:
+
+- [5-Type Memory Guide](memory/5-TYPE-MEMORY-GUIDE.md) - Complete user guide
+- [Developer Reference](memory/5-TYPE-MEMORY-DEVELOPER.md) - Architecture and API
+- [Quick Reference](memory/5-TYPE-MEMORY-QUICKREF.md) - One-page cheat sheet
+- [Kùzu Memory Schema](memory/KUZU_MEMORY_SCHEMA.md) - Graph database design for 5 memory types
+- [Kùzu Code Schema](memory/KUZU_CODE_SCHEMA.md) - Code graph schema for memory-code linking
+- [Terminal Visualization](memory/MEMORY_TREE_VISUALIZATION.md) - View graph in terminal
+- [Memory System Overview](memory/README.md) - Complete memory documentation
+
+### Memory Systems
+
+- [Agent Memory Integration](AGENT_MEMORY_INTEGRATION.md) - How agents share and persist knowledge
+- [Agent Memory Quickstart](AGENT_MEMORY_QUICKSTART.md) - Get started with memory
+- [Agent Type Memory Sharing](agent_type_memory_sharing_patterns.md) - Patterns for memory collaboration
+
+### Kuzu Memory System
+
+Embedded graph-based memory using Kuzu (NO Neo4j required):
+
+- [Documentation Graph](doc_graph_quick_reference.md) - Navigate documentation connections
+- [Code Context Injection](memory/CODE_CONTEXT_INJECTION.md) - Link code to memories
+
+### Code Graph
+
+Query your codebase structure via the Kuzu graph database:
+
+- **[How to Use Blarify Code Graph](howto/blarify-code-graph.md)** - Enable, query, and configure
+
+```bash
+amplihack query-code stats
+amplihack query-code search <name>
+amplihack query-code functions --file <path>
+```
+
+**Current References**:
+
+- [Documentation Knowledge Graph](documentation_knowledge_graph.md) - Documentation graph architecture and workflows
+- [Blarify Code Graph Integration](blarify_integration.md) - Kuzu-backed code graph indexing and retrieval
+
+### Memory Testing
+
+- [Memory System Guide](memory/README.md) - Overview of the current Kuzu-backed memory stack
+- [Testing Strategy](memory/TESTING_STRATEGY.md) - Validation approach for memory behavior
+- [Effectiveness Test Design](memory/EFFECTIVENESS_TEST_DESIGN.md) - How we measure success
+
+### External Knowledge
+
+- [External Knowledge Integration](external_knowledge_integration.md) - Import external data sources
+
+### Distributed Hive Mind ⭐ NEW
+
+Multi-agent distributed memory system enabling agents to share knowledge across a gossip-based graph network.
+
+- [Overview](distributed_hive_mind.md) - Architecture overview and design goals
+- [Architecture](hive_mind/ARCHITECTURE.md) - Technical architecture: DHT shards, CRDT gossip, event bus
+- [Design](hive_mind/DESIGN.md) - Design decisions, data model, and trade-offs
+- [Getting Started](hive_mind/GETTING_STARTED.md) - Deploy a local hive mind in minutes
+- [Tutorial](hive_mind/TUTORIAL.md) - Step-by-step guide to building distributed agents
+- [Evaluation](hive_mind/EVAL.md) - Benchmarks, eval scenarios, and performance results
+- [Presentation](hive_mind_presentation.md) - High-level slides and demo walkthrough
+- [Prompt-to-Hive Tutorial](tutorial_prompt_to_distributed_hive.md) - End-to-end walkthrough from prompt to deployed hive
+
+**Key Features**:
+
+- **DHT-based sharding**: Consistent-hash ring distributes facts across agent shards
+- **CRDT gossip**: Bloom-filter gossip protocol for eventual consistency without conflicts
+- **Azure Service Bus transport**: Cross-process event bus for production deployments
+- **NetworkGraphStore**: Pluggable transport layer wrapping any local GraphStore
+- **Kuzu-backed shards**: Each shard uses Kuzu embedded graph for POSIX-safe persistent storage
+
+---
+
+### Blarify Code Indexing
+
+Complete code indexing and analysis with multi-language support:
+
+- **[How to Use Blarify Code Graph](howto/blarify-code-graph.md)** - Enable, query, and configure code graph indexing
+- [Blarify Integration](blarify_integration.md) - Technical integration details
+- [Blarify Quickstart](blarify_quickstart.md) - Get started in 5 minutes
+
+---
+
+## 🔧 Features & Integrations
+
+Specific features and third-party integrations.
+
+### Native Binary Trace Logging ⭐ NEW
+
+Optional request/response logging using Anthropic's native Claude binary:
+
+- **[Native Binary Trace Logging Overview](NATIVE_BINARY_TRACE_LOGGING.md)** - Complete feature documentation hub
+- [Trace Logging Feature Guide](features/trace-logging.md) - What it is and when to use it
+- [How-To: Trace Logging](howto/trace-logging.md) - Practical recipes
+- [API Reference: Trace Logging](reference/trace-logging-api.md) - Technical details
+- [Troubleshooting: Trace Logging](troubleshooting/trace-logging.md) - Fix common issues
+
+**Key Features**: Zero overhead when disabled (<0.1ms), automatic security sanitization, session-scoped JSONL logs, no NPM dependencies.
+
+### Power Steering
+
+Intelligent guidance system that prevents common mistakes:
+
+- [Power Steering Overview](features/power-steering/README.md) - What is Power Steering
+- [Configuration Guide](features/power-steering/configuration.md) - Complete configuration reference
+- [Customization Guide](features/power-steering/customization-guide.md) - Customize considerations
+- [Troubleshooting](features/power-steering/troubleshooting.md) - Fix common issues
+- [Migration Guide v0.9.1](features/power-steering/migration-v0.9.1.md) - Upgrade guide
+- [Changelog v0.9.1](features/power-steering/changelog-v0.9.1.md) - Infinite loop fix release notes
+
+**Compaction Handling** ⭐ NEW
+
+Robust handling of conversation compaction in long sessions:
+
+- [Compaction Overview](power_steering_compaction_overview.md) - What is compaction and how power-steering handles it
+- [Compaction API Reference](power_steering_compaction_api.md) - Developer documentation for CompactionValidator and CompactionContext
+- [How to Customize Power Steering](../.claude/tools/amplihack/HOW_TO_CUSTOMIZE_POWER_STEERING.md#compaction-handling) - Configuration and troubleshooting
+
+### Other Features
+
+- [Smart Memory Management](features/smart-memory-management.md) - Automatic Node.js memory optimization for Claude Code
+- [Claude.md Preservation](features/claude-md-preservation.md) - Preserve custom instructions
+  <!-- Neo4j removed - now using Kuzu embedded database (no session cleanup needed) -->
+  <!-- - [Shutdown Detection](concepts/shutdown-detection.md) - Graceful exit handling (see stop-hook-exit-hang in Troubleshooting) -->
+
+### Third-Party Integrations
+
+- [MCP Evaluation](mcp_evaluation/README.md) - Model Context Protocol evaluation
+
+---
+
+## ⚙️ Configuration & Deployment
+
+Advanced configuration, deployment patterns, and environment management.
+
+### Configuration
+
+- [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
+- [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
+- [Shell Command Hook](SHELL_COMMAND_HOOK.md) - Custom shell integrations
+
+### Deployment
+
+- [First-Time Install](howto/first-install.md) - Install from source, npm bootstrap, or release binaries
+- [Install Manifest](reference/install-manifest.md) - Understand installed files and uninstall state
+- [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
+
+### Build System
+
+- [Install Manifest](reference/install-manifest.md) - Installed-file manifest and uninstall state
+
+### Remote Sessions
+
+- [Remote Sessions Overview](remote-sessions/index.md) - Execute on remote machines
+- [Remote Sessions User Guide](remote-sessions/index.md) - Set up and operate remote sessions
+- [Remote Sessions Tutorial](remote-sessions/TUTORIAL.md) - Walk through an end-to-end remote workflow
+
+---
+
+## 🧪 Testing & Quality
+
+Testing strategies, quality assurance, and validation patterns.
+
+### Testing
+
+- [Benchmarking](BENCHMARKING.md) - Performance measurement and comparison
+- [Test Gap Analyzer](claude/skills/test-gap-analyzer/SKILL.md) - Find untested code
+- [CS Validator](cs-validator/README.md) - Code style validation
+- [Testing Plan](testing/TEST_PLAN.md) - Testing strategy and execution checklist
+
+### Code Review
+
+- [Code Review Guide](CODE_REVIEW.md) - Review process and standards
+- [Memory Code Review](memory/CODE_REVIEW_PR_1077.md) - Example: Memory system review
+
+---
+
+## 🔒 Security
+
+Security guidelines, context preservation, and best practices.
+
+### Security Documentation
+
+- [Security Recommendations](SECURITY_RECOMMENDATIONS.md) - Essential security practices
+- [Security Context Preservation](SECURITY_CONTEXT_PRESERVATION.md) - Maintain security through sessions
+- [Security Guides](security/README.md) - Comprehensive security documentation
+
+### Safe Operations
+
+- [Auto Mode Safety](AUTOMODE_SAFETY.md) - Autonomous operation guardrails
+
+---
+
+## 🛠️ Troubleshooting & Discoveries
+
+Fix common issues and learn from past solutions.
+
+### Troubleshooting
+
+- [Discoveries](DISCOVERIES.md) - Known issues and solutions (CHECK HERE FIRST!)
+- [Troubleshooting Guides](troubleshooting/README.md) - Common problems and fixes
+- [Memory Consent Issues](troubleshooting/memory-consent-issues.md) - Fix prompt, timeout, and detection problems
+- [Memory-Enabled Agents Issues](troubleshooting/memory-enabled-agents.md) - Fix memory persistence, pattern recognition, and learning problems
+- [Platform Bridge Troubleshooting](troubleshooting/platform-bridge.md) - Fix platform detection and CLI issues
+- [Stop Hook Exit Hang](troubleshooting/stop-hook-exit-hang.md) - Fix 10-13s hang on exit (resolved v0.9.1)
+
+### Documentation Guides
+
+- [Documentation Guidelines](DOCUMENTATION_GUIDELINES.md) - Writing effective docs
+- [Documentation Knowledge Graph](documentation_knowledge_graph.md) - Graph-based doc navigation and indexing
+- [How to Generate GitHub Pages](howto/github-pages-generation.md) - Publish your docs
 
 ### How-To Guides
 
-- [Install amplihack for the First Time](./howto/first-install.md) — Bootstrap from scratch, including optional legacy-Python checks, binary deployment, and hook registration
-- [Install with the Interactive Wizard](./howto/interactive-install.md) — Choose default tool, hook scope, and update-check preference through guided prompts
-- [Install from a Local Repository](./howto/local-install.md) — Install without network access using a local checkout
-- [Uninstall amplihack](./howto/uninstall.md) — Cleanly remove all installed files, binaries, and hook registrations
-- [Resolve LadybugDB Linker Errors](./howto/resolve-kuzu-linker-errors.md) — Diagnose and fix `undefined reference` errors caused by `cxx`/`cxx-build` version mismatch
-- [Fix the cxx-build Pin CI Failure](./howto/fix-cxx-build-ci-failure.md) — Restore the `Cargo.lock` pin when the `Verify cxx-build pin` CI step fails
-- [Enable Shell Completions](./howto/enable-shell-completions.md) — Install tab-completion for bash, zsh, fish, and PowerShell
-- [Run amplihack in Non-interactive Mode](./howto/run-in-noninteractive-mode.md) — Use amplihack in CI pipelines, Docker containers, and piped scripts without interactive prompts
-- [Manage Tool Update Notifications](./howto/manage-tool-update-checks.md) — Control or disable the pre-launch npm update check for `claude`, `copilot`, and `codex`
-- [Run a Recipe End-to-End](./howto/run-a-recipe.md) — Find, inspect, dry-run, and execute YAML recipes through the Rust CLI
-- [Index a Project with the Native SCIP Pipeline](./howto/index-a-project.md) — Build the LadybugDB code-graph from source using native SCIP indexers
-- [Validate No-Python Compliance](./howto/validate-no-python.md) — Run the AC9 probe to confirm the binary operates without a Python interpreter
-- [Use the Fleet Dashboard](./howto/use-fleet-dashboard.md) — Open the cockpit, start and adopt sessions, search sessions, run the reasoner from the TUI, and exit cleanly
-- [Run Fleet Scout and Advance on Azure VMs](./howto/run-fleet-scout-and-advance.md) — Discover sessions across VMs, reason about them with the LLM backend, and execute recommended actions
-- [Migrate Memory to the SQLite Backend](./howto/migrate-memory-backend.md) — Export hierarchical memory to portable JSON, switch to SQLite, and verify the migration
-- [Agent Memory Quickstart](./howto/agent-memory-quickstart.md) — Inspect the memory graph, generate a memory-enabled agent with `amplihack new --enable-memory`, and use `memory tree`/`export`/`import`/`clean`
-- [Watch CI and Auto-Merge a Pull Request](./howto/watch-and-merge-pr.md) — Poll CI checks on a PR and merge automatically when all checks pass
-- [Troubleshoot Recipe Execution Failures](./howto/troubleshoot-recipe-execution.md) — Diagnose shell step hangs, agent context issues, missing prerequisites, and workflow misclassification
-- [Skip Pre-Agent Validation on Large Codebases](./howto/skip-pre-agent-validation.md) — Prevent slow `npm test` / `npm run build` from blocking agent work in smart-orchestrator and default-workflow
-- [Diagnose Problems with amplihack doctor](./howto/diagnose-with-doctor.md) — Run system health checks and fix failing prerequisites
-- [Create a Custom Agent](./howto/create-custom-agent.md) — Build a domain agent with memory integration and evaluation
-- [Run Agent Evaluations](./howto/run-agent-evaluations.md) — Evaluate agent performance across progressive difficulty levels
-- [Deploy a Hive Swarm](./howto/deploy-hive-swarm.md) — Deploy multi-agent hive on Azure Container Apps
-- [Generate an Agent from a Goal](./howto/generate-agent-from-goal.md) — Create specialized agents from natural-language descriptions
+- [Exception Handling](howto/exception-handling.md) - Implement proper error handling in amplihack code
+- [Configure Memory Consent](howto/configure-memory-consent.md) - Customize prompt behavior, timeouts, and CI/CD integration
+- [Configure Power-Steering Merge Preferences](howto/power-steering-merge-preferences.md) - Set up merge approval workflow
+- [Platform Bridge Quick Start](tutorials/platform-bridge-quickstart.md) - Learn the basics in 10 minutes
+- [Platform Bridge Workflows](howto/platform-bridge-workflows.md) - Common workflows for GitHub and Azure DevOps
+- [Crusty Old Engineer](howto/use-crusty-old-engineer.md) - Skeptical engineering advisor for architecture and tooling decisions
 
-### Reference
+---
 
-- [amplihack install](./reference/install-command.md) — Full CLI reference for the `install` and `uninstall` commands
-- [Install Completeness Verification](./reference/install-completeness.md) — How `amplihack install` fails loudly instead of accepting partial framework staging
-- [Install Manifest](./reference/install-manifest.md) — Schema and semantics of the uninstall manifest written at install time
-- [Hook Specifications](./reference/hook-specifications.md) — Canonical table of all 7 Claude Code hooks registered by amplihack
-- [Binary Resolution](./reference/binary-resolution.md) — How `amplihack` locates the `amplihack-hooks` binary at install time
-- [amplihack completions](./reference/completions-command.md) — Full CLI reference for the `completions` subcommand
-- [Environment Variables](./reference/environment-variables.md) — All environment variables read or injected by `amplihack` during a launch
-- [Launch Flag Injection](./reference/launch-flag-injection.md) — How `amplihack` builds the subprocess command line: `--dangerously-skip-permissions`, `--model`, and extra args passthrough
-- [Signal Handling and Exit Codes](./reference/signal-handling.md) — SIGINT, SIGTERM, SIGHUP behavior and exit code contract (Python parity)
-- [amplihack recipe](./reference/recipe-command.md) — Full CLI reference for `recipe list`, `recipe show`, `recipe validate`, and `recipe run`
-- [Recipe Executor Environment](./reference/recipe-executor-environment.md) — Environment variables, prerequisite checks, and context propagation for recipe steps
-- [step-03-create-issue: Idempotency Guards](./reference/recipe-step-03-idempotency.md) — Reference and title-search guards that deduplicate issue creation in `default-workflow.yaml`
-- [step-04-setup-worktree: Re-Prune After Orphan Cleanup](./reference/recipe-step-04-worktree-reattach-prune.md) — `git worktree prune` semantics for the three-state idempotency guard
-- [worktree_setup Context Propagation](./reference/worktree-setup-propagation.md) — How `worktree_setup` flows through the composable default-workflow recipe chain to sub-recipes
-- [Workflow Classifier](./reference/workflow-classifier.md) — Keyword tables, classification algorithm, and constructive-verb disambiguation
-- [skip_pre_agent_validation](./reference/skip-pre-agent-validation.md) — Recipe context variable controlling pre-agent project validation in workflow-prep step-01
-- [Issue Deduplication](./reference/issue-dedup.md) — Idempotency guards, dedup decision tree, and proposed fingerprint algorithm for avoiding duplicate GitHub issues
-- [Launch Flag Matrix](./reference/flag-matrix.md) — Per-tool capability matrix for `--dangerously-skip-permissions`, `--model`, `--allow-all`, and proposed type-safe refactoring
-- [Parity Test Scenarios](./reference/parity-test-scenarios.md) — Every parity tier file, its test cases, and expected Python↔Rust divergence
-- [amplihack index-code and index-scip](./reference/memory-index-command.md) — Full CLI reference for code-graph ingestion commands
-- [amplihack query-code](./reference/query-code-command.md) — Full CLI reference for querying the native LadybugDB code-graph
-- [amplihack fleet](./reference/fleet-command.md) — Full CLI reference for the fleet dashboard: key bindings, refresh architecture, persistent state schema, and security properties
-- [Memory Backend](./reference/memory-backend.md) — `BackendChoice` values, env vars, flat and hierarchical schema, transfer formats, and security properties
-- [amplihack doctor](./reference/doctor-command.md) — Full CLI reference for the `doctor` subcommand
-- [amplihack pr watch-and-merge](./reference/pr-watch-and-merge-command.md) — Full CLI reference for watching CI checks and auto-merging pull requests
-- [amplihack remote](./remote-sessions/CLI_REFERENCE.md) — Full CLI reference for one-shot remote execution and detached session management
-- [amplihack-remote API](./reference/amplihack-remote-api.md) — Rust crate API for remote execution, VM pooling, session state, and output capture
-- [Agent Configuration](./reference/agent-configuration.md) — Complete configuration reference for agents, memory, eval, and hive
-- [amplihack-agent-core API](./reference/agent-core-api.md) — Agent lifecycle, session management, and OODA loop
-- [amplihack-domain-agents API](./reference/domain-agents-api.md) — Teaching, code review, and meeting synthesizer agents
-- [amplihack-agent-eval API](./reference/agent-eval-api.md) — Progressive evaluation framework and graders
-- [amplihack-hive API](./reference/hive-api.md) — Multi-agent orchestration and workload management
-- [amplihack-agent-generator API](./reference/agent-generator-api.md) — Goal-to-agent pipeline
-- [amplihack-memory Extended API](./reference/memory-extended-api.md) — Memory facade, manager, LadybugDB store, and evaluation
-- [LadybugDB Reference](./reference/ladybug-reference.md) — `lbug` crate API surface: schema, node/edge CRUD, querying, import/export, concurrency, and security
+## 🔬 Research & Advanced Topics
 
-### Concepts
+Cutting-edge research, experimental features, and deep technical dives.
 
-- [Bootstrap Parity](./concepts/bootstrap-parity.md) — Why the Rust CLI replicates the Python installer's first-install flow and what that means for users
-- [Idempotent Installation](./concepts/idempotent-installation.md) — How repeated installs are safe and how existing hook registrations are updated in place
-- [The cxx/cxx-build Version Contract](./concepts/cxx-version-contract.md) — Why `cxx` and `cxx-build` must share the same minor version and how a mismatch produces linker errors
-- [Agent Binary Routing](./concepts/agent-binary-routing.md) — How `AMPLIHACK_AGENT_BINARY` lets the recipe runner and hooks call back into the correct AI tool
-- [LadybugDB Code Graph](./concepts/kuzu-code-graph.md) — Architecture of the native code-graph store: schema, SCIP pipeline, blarify consumption, and security model
-- [Memory Backend Architecture](./concepts/memory-backend-architecture.md) — Backend-neutral trait seams, auto-detection order, SQLite vs. graph-db storage layout, and the transfer layer
-- [Fleet Dashboard Architecture](./concepts/fleet-dashboard-architecture.md) — Thread model, state design, persistence layer, terminal safety, and security rationale for `amplihack fleet`
-- [Fleet Admiral Reasoning Engine](./concepts/fleet-admiral-reasoning.md) — How the LLM-backed reasoner works: what it sees, the five actions, confidence scoring, failure modes, and design rationale
-- [Fleet State Machine](./concepts/fleet-state-machine.md) — Fleet lifecycle states and transitions managed by `amplihack fleet`
-- [Signal Handling Lifecycle](./concepts/signal-handling-lifecycle.md) — OS signal handling across the CLI, fleet manager, and child processes
-- [Recipe Execution Flow](./concepts/recipe-execution-flow.md) — How recipes are loaded, validated, and executed step-by-step
-- [Memory Backend Migration](./concepts/memory-backend-migration.md) — Migrating agent memory between SQLite and LadybugDB backends
-- [Agent Lifecycle](./concepts/agent-lifecycle.md) — Agent state machine, session management, OODA loop, and subprocess isolation
-- [Domain Agents](./concepts/domain-agents.md) — Specialized goal-seeking agents: teaching, code review, meeting synthesis
-- [Evaluation Framework](./concepts/eval-framework.md) — Progressive L1–L12 evaluation, graders, and self-improvement
-- [Hive Orchestration](./concepts/hive-orchestration.md) — Multi-agent swarm deployment, events, and workload management
-- [Hive Mind Design](./concepts/hive-mind-design.md) — Layered architecture (storage / transport / discovery / query) and module reference for the unified hive mind
-- [Hive Mind Eval](./concepts/hive-mind-eval.md) — How the distributed hive evaluation harness fits together (local wrappers, Azure runs, question sets)
-- [Goal Agent Generator](./concepts/agent-generator.md) — Four-stage pipeline: analyze → plan → synthesize → assemble
-- [Recipe Runner Architecture](./concepts/recipe-runner-architecture.md) — Why the runner is an external binary, resolution logic, invocation contract, and Python coexistence
-- [Agentic Step Patterns](./concepts/agentic-step-patterns.md) — Decision rules for bash vs agent vs recipe step types, prompt writing guide, and anti-patterns
-- [Smart-Orchestrator Recovery](./concepts/smart-orchestrator-recovery.md) — Failure taxonomy, four-stage recovery pipeline, hollow-success detection, and goal status values
-- [amplihack Retirement Direction](./concepts/amplihack-retirement-direction.md) — Python-to-Rust migration status, compatibility guarantees, and milestone tracking
-- [Memory Tree](./concepts/memory-tree.md) — Mental model and CLI surface for the `amplihack memory tree` command
-- [Five-Type Memory (Superseded)](./concepts/five-type-memory.md) — Redirect from the legacy 5-type memory guide to current memory documentation
+### Research Projects
 
-### Investigations
+- [Blarify Code Graph Integration](blarify_integration.md) - Code graph indexing with Kuzu-backed memory
+- [Documentation Knowledge Graph](documentation_knowledge_graph.md) - Graph-based documentation retrieval
+- [External Knowledge Integration](external_knowledge_integration.md) - Import external data sources into memory workflows
 
-- [Unifying Dual Status Classifiers (#2898)](./investigations/2898-status-classifiers.md) — Whether merging two keyword classifiers into one module is warranted (conclusion: do not merge)
-- [Shell Injection in Task Description Heredoc (#3045, #3076)](./investigations/3045-3076-task-description-heredoc-shell-injection.md) — Heredoc expansion risk in recipe shell steps
-- [Step-03 Idempotency Guards](./investigations/step-03-idempotency-guards-analysis.md) — Analysis of deduplication guards in recipe step-03
-- [Step-03 External Service Integration](./investigations/step03-external-service-integration-assessment.md) — Assessment of external service dependencies in step-03
-- [Gherkin v2 Experiment Disposition (#434)](./investigations/434-gherkin-v2-experiment-disposition.md) — Why the upstream experiment doc needs no port: the gherkin-expert skill already ships in the bundle
+### Advanced Topics
 
-## Quick Start
+- [Agent Type Memory Sharing Patterns](agent_type_memory_sharing_patterns.md) - Advanced memory patterns
+- [Documentation Knowledge Graph](documentation_knowledge_graph.md) - Graph-based doc navigation
+- [Workspace Pattern](WORKSPACE_PATTERN.md) - Advanced workspace organization
 
-```sh
-# Build from source
-cargo build --release
+---
 
-# Install amplihack (first time)
-~/.cargo/bin/amplihack install
+## 📚 Reference & Resources
 
-# Install with guided setup wizard
-amplihack install --interactive
+Quick references, guides, and additional resources.
 
-# Install from a local clone (no network)
-amplihack install --local /path/to/amplihack-clone
+### Quick References
 
-# Remove everything amplihack installed
-amplihack uninstall
-```
+- [Exception Handling Reference](reference/exception-handling.md) - Complete exception hierarchy and patterns
+- [Command Selection Guide](commands/COMMAND_SELECTION_GUIDE.md) - Choose the right command
+- [Platform Bridge API Reference](reference/platform-bridge-api.md) - Complete API documentation
+- [Power Steering File Locking](reference/power-steering-file-locking.md) - Prevents counter race conditions
+- [UserPromptSubmit Hook API Reference](reference/user-prompt-submit-hook-api.md) - Framework injection API
+- [Doc Graph Quick Reference](doc_graph_quick_reference.md) - Navigate documentation
+
+### Developing amplihack
+
+- [Developing amplihack](DEVELOPING_AMPLIHACK.md) - Contribute to the framework
+- [Create Your Own Tools](CREATE_YOUR_OWN_TOOLS.md) - Build custom tools
+- [Workflow to Skills Migration](WORKFLOW_TO_SKILLS_MIGRATION.md) - Migration guide
 
 ### Contributing
 
-- [File Organization](./contributing/file-organization.md) — Where files go in the repository
-- [Documentation Parity Audit](./contributing/documentation-parity-audit.md) — How upstream docs were audited and ported, and how to maintain parity
-- [Discoveries](./discoveries.md) — Rolling log of non-obvious problems, solutions, and patterns found during development
+- [File Organization](contributing/file-organization.md) - Where different file types belong in the repository
 
-## Related
+### GitHub & Community
 
-- [README](https://github.com/rysweet/amplihack-rs/blob/main/README.md) — Architecture overview and design principles
-- [CONTRIBUTING_RUST.md](https://github.com/rysweet/amplihack-rs/blob/main/CONTRIBUTING_RUST.md) — Developer setup, build targets, test harness
+- [GitHub Repository](https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding) - Source code
+- [Issue Tracker](https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding/issues) - Report bugs or request features
+- [GitHub Pages](https://rysweet.github.io/amplihack-rs/) - Online documentation
+
+---
+
+## Philosophy in Action
+
+amplihack follows three core principles:
+
+1. **Ruthless Simplicity**: Start with the simplest solution that works. Add complexity only when justified.
+
+2. **Modular Design**: Build self-contained modules (bricks) with clear public contracts (studs) that others can connect to.
+
+3. **Zero-BS Implementation**: No stubs, no placeholders, no dead code. Every function must work or not exist.
+
+---
+
+## Example Workflow
+
+```bash
+# Start with a feature request
+/ultrathink "Add user authentication to the API"
+
+# UltraThink will:
+# 1. Read the default workflow
+# 2. Orchestrate multiple agents (architect, security, api-designer, database, builder, tester)
+# 3. Follow all workflow steps systematically
+# 4. Ensure quality and philosophy compliance
+# 5. Generate tests and documentation
+```
+
+---
+
+## Use Cases
+
+amplihack excels at:
+
+- **Feature Development**: Orchestrate multiple agents to design, implement, test, and document new features
+- **Code Review**: Comprehensive analysis for philosophy compliance and best practices
+- **Refactoring**: Systematic cleanup and improvement of existing code
+- **Investigation**: Deep understanding of complex codebases and architectures
+- **Integration**: Connect external services with proper error handling and testing
+- **Security**: Vulnerability assessment and secure implementation patterns
+
+---
+
+## Need Help?
+
+- **Start here**: [Prerequisites](PREREQUISITES.md) → [Interactive Installation](INTERACTIVE_INSTALLATION.md) → [Quick Start](README.md)
+- **Common issues**: Check [Discoveries](DISCOVERIES.md) first
+- **Questions**: See [DDD FAQ](document_driven_development/reference/faq.md)
+- **Report issues**: [GitHub Issues](https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding/issues)
+
+---
+
+**Ready to get started?** Head to [Prerequisites](PREREQUISITES.md) to set up amplihack in your development environment.

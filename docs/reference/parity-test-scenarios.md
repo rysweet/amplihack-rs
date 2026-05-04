@@ -1,15 +1,15 @@
 # Parity Test Scenarios — Reference
 
-The parity test harness (`tests/parity/validate_cli_parity.py`) compares the
-Python and Rust `amplihack` CLIs by running identical scenarios against both
-implementations and diffing their outputs.
+The parity scenario files are retained as historical migration fixtures. The
+Python-based parity harness has been retired; native Rust tests and
+`scripts/probe-no-python.sh` now guard the shipped implementation.
 
 This document describes every scenario tier file, the test cases each contains,
 and what behaviour each tier validates.
 
 ## Contents
 
-- [Running parity tests](#running-parity-tests)
+- [Running parity checks](#running-parity-checks)
 - [Scenario file format](#scenario-file-format)
   - [Case fields](#case-fields)
   - [Comparison targets](#comparison-targets)
@@ -32,27 +32,17 @@ and what behaviour each tier validates.
 
 ---
 
-## Running parity tests
+## Running parity checks
 
 ```sh
-# Run all cases in a single tier
-python tests/parity/validate_cli_parity.py \
-  --scenario tests/parity/scenarios/tier8-env-vars.yaml
+# Run native tests that cover migrated behavior
+cargo test --workspace --locked
 
-# Run a specific case by name
-python tests/parity/validate_cli_parity.py \
-  --scenario tests/parity/scenarios/tier8-env-vars.yaml \
-  --case env-var-agent-binary-is-claude
+# Verify the CLI works without Python on PATH
+scripts/probe-no-python.sh
 
-# Keep sandbox directories for post-mortem inspection
-python tests/parity/validate_cli_parity.py \
-  --scenario tests/parity/scenarios/tier8-env-vars.yaml \
-  --keep-sandboxes
-
-# Side-by-side tmux panes (requires tmux)
-python tests/parity/validate_cli_parity.py \
-  --scenario tests/parity/scenarios/tier1.yaml \
-  --observable
+# Verify no Python implementation/package assets are tracked
+scripts/check-no-python-assets.sh
 ```
 
 ---
@@ -267,23 +257,18 @@ alongside the `env-var-agent-binary-is-claude` case definition.
 Both cases set `AMPLIHACK_NONINTERACTIVE=1` in the `env:` block to prevent
 bootstrap prompts from interfering with the captured output.
 
-**Example run:**
+**Current verification:**
 
 ```sh
-python tests/parity/validate_cli_parity.py \
-  --scenario tests/parity/scenarios/tier8-env-vars.yaml
-
-# Expected output (Rust passes, Python may show divergence):
-# PASS [rust] env-var-agent-binary-is-claude
-# PASS [rust] env-var-amplihack-home-contains-amplihack
-# DIVERGE [python] env-var-agent-binary-is-claude  (AMPLIHACK_AGENT_BINARY not set)
+cargo test -p amplihack --test cli_launch --locked
+scripts/probe-no-python.sh
 ```
 
 ---
 
 ## Related
 
-- [validate_cli_parity.py](https://github.com/rysweet/amplihack-rs/blob/main/tests/parity/validate_cli_parity.py) — Harness source
+- [No-Python Validation](../howto/validate-no-python.md) — Runtime and repository checks
 - [Environment Variables](./environment-variables.md) — Reference for all variables injected during launch
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — Why `AMPLIHACK_AGENT_BINARY` exists
 - [Bootstrap Parity](../concepts/bootstrap-parity.md) — Design principles behind Python↔Rust parity

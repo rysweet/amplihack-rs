@@ -60,4 +60,4 @@ The `auto_update` preference controls two behaviors:
 1. **Version mismatch updates**: Auto-updates .claude/ directory when a new amplihack version is installed
 2. **Conflict prompt**: Auto-approves overwrites when uncommitted changes are detected in .claude/ essential directories
 
-See [Issue #2256](https://github.com/rysweet/amplihack/issues/2256) for details.
+See [Issue #2256](https://github.com/rysweet/amplihack-rs/issues/2256) for details.

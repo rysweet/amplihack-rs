@@ -77,7 +77,7 @@ A user may ask you to create, edit, or analyze the contents of an .xlsx file. Yo
 
 ## Important Requirements
 
-**LibreOffice Required for Formula Recalculation**: You can assume LibreOffice is installed for recalculating formula values using the `recalc.py` script. The script automatically configures LibreOffice on first run
+**LibreOffice Required for Formula Recalculation**: If you create or modify formulas, use LibreOffice in headless mode to open, recalculate, and save the workbook before returning it.
 
 ## Reading and analyzing data
 
@@ -144,14 +144,14 @@ This applies to ALL calculations - totals, percentages, ratios, differences, etc
 2. **Create/Load**: Create new workbook or load existing file
 3. **Modify**: Add/edit data, formulas, and formatting
 4. **Save**: Write to file
-5. **Recalculate formulas (MANDATORY IF USING FORMULAS)**: Use the recalc.py script
+5. **Recalculate formulas (MANDATORY IF USING FORMULAS)**: Use LibreOffice headless mode to open and save the workbook.
    ```bash
-   python recalc.py output.xlsx
+   libreoffice --headless --convert-to xlsx --outdir . output.xlsx
    ```
 6. **Verify and fix any errors**:
-   - The script returns JSON with error details
-   - If `status` is `errors_found`, check `error_summary` for specific error types and locations
-   - Fix the identified errors and recalculate again
+   - Reopen the workbook and inspect formula/error cells.
+   - Fix invalid references, divide-by-zero errors, missing inputs, and other formula errors.
+   - Recalculate again after each fix.
    - Common errors to fix:
      - `#REF!`: Invalid cell references
      - `#DIV/0!`: Division by zero
@@ -216,16 +216,16 @@ wb.save('modified.xlsx')
 
 ## Recalculating formulas
 
-Excel files created or modified by openpyxl contain formulas as strings but not calculated values. Use the provided `recalc.py` script to recalculate formulas:
+Excel files created or modified by openpyxl contain formulas as strings but not calculated values. Use LibreOffice headless mode to recalculate formulas:
 
 ```bash
-python recalc.py <excel_file> [timeout_seconds]
+libreoffice --headless --convert-to xlsx --outdir . <excel_file>
 ```
 
 Example:
 
 ```bash
-python recalc.py output.xlsx 30
+libreoffice --headless --convert-to xlsx --outdir . output.xlsx
 ```
 
 The script:
@@ -261,9 +261,11 @@ Quick checks to ensure formulas work correctly:
 - [ ] **Verify dependencies**: Check all cells referenced in formulas exist
 - [ ] **Test edge cases**: Include zero, negative, and very large values
 
-### Interpreting recalc.py Output
+### Interpreting recalculation results
 
-The script returns JSON with error details:
+LibreOffice does not return structured formula diagnostics. Reopen the workbook
+with `data_only=True` or inspect known formula cells to confirm values were
+calculated and no Excel error values remain.
 
 ```json
 {
@@ -293,7 +295,7 @@ The script returns JSON with error details:
 - Use `data_only=True` to read calculated values: `load_workbook('file.xlsx', data_only=True)`
 - **Warning**: If opened with `data_only=True` and saved, formulas are replaced with values and permanently lost
 - For large files: Use `read_only=True` for reading or `write_only=True` for writing
-- Formulas are preserved but not evaluated - use recalc.py to update values
+- Formulas are preserved but not evaluated - use LibreOffice headless recalculation workflow to update values
 
 ### Working with pandas
 

@@ -172,7 +172,7 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
     let presence_bootstrap_needed =
         !staging_dir.exists() || !missing_framework_paths(&staging_dir)?.is_empty();
     // Issue #254: framework assets are now bundled in the amplihack-rs source
-    // tree.  The upstream freshness check against rysweet/amplihack is removed;
+    // tree.  The legacy upstream freshness check is removed;
     // framework updates are delivered via amplihack-rs binary updates instead.
     if presence_bootstrap_needed {
         println!("🔧 Bootstrapping amplihack framework assets...");

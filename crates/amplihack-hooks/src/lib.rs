@@ -15,7 +15,7 @@ pub mod post_tool_use;
 pub mod pre_compact;
 /// Pre-tool-use hook: decides whether to allow or deny a tool invocation.
 pub mod pre_tool_use;
-/// Pre-commit-prefs hook: no-op stdin drain (replaces precommit_prefs.py).
+/// Pre-commit-prefs hook: no-op stdin drain.
 pub mod precommit_prefs;
 /// Hook protocol traits and failure policies.
 pub mod protocol;
@@ -33,8 +33,6 @@ pub mod workflow_classification;
 /// Fingerprint-based GitHub issue deduplication (R1).
 pub mod issue_dedup;
 
-/// Per-binary hook resolution: hard-error when active binary lacks required hook.
-pub mod binary_hook_resolver;
 /// Copilot stop handler utilities (continuation, lock cleanup, decision log).
 pub mod copilot_stop_handler;
 /// Hook file installation verification.

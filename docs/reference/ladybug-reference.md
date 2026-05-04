@@ -1,6 +1,6 @@
 # LadybugDB Reference
 
-> Ported from upstream `rysweet/amplihack:docs/memory/LADYBUG_GRAPH_STORE.md`.
+> Ported from legacy upstream `docs/memory/LADYBUG_GRAPH_STORE.md`.
 > Concepts and Cypher patterns preserved; install/import snippets and call
 > sites adapted for the Rust `lbug` crate (the LadybugDB binding, formerly
 > Kuzu) used by amplihack-rs in

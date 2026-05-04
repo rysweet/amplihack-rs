@@ -44,7 +44,7 @@ steps:
       3. **Run all checks:**
          ```bash
          pre-commit run --all-files
-         pytest
+         cargo test --workspace --locked
          ```
 
       4. **Fix any issues:**

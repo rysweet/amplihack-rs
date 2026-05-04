@@ -52,10 +52,8 @@ When this skill is invoked, follow these steps:
 
 For each task × model:
 
-```bash
-cd tests/benchmarks/benchmark_suite_v3
-python run_benchmarks.py --model {opus|sonnet} --tasks 1,2,3,4
-```
+Run each benchmark task manually for the target model using the task
+definitions. The legacy benchmark runner is not shipped in `amplihack-rs`.
 
 ### Phase 3: Analyze Results
 
@@ -97,7 +95,7 @@ Artifacts: https://github.com/.../releases/tag/benchmark-suite-v3-artifacts
 - **Reference Report**: `tests/benchmarks/benchmark_suite_v3/BENCHMARK_REPORT_V3.md`
 - **Task Definitions**: `tests/benchmarks/benchmark_suite_v3/BENCHMARK_TASKS.md`
 - **Cleanup Guide**: `tests/benchmarks/benchmark_suite_v3/CLEANUP_PROCESS.md`
-- **Runner Script**: `tests/benchmarks/benchmark_suite_v3/run_benchmarks.py`
+- **Runner Script**: `tests/benchmarks/benchmark_suite_v3/manual benchmark execution workflow`
 
 ---
 

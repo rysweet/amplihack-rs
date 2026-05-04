@@ -36,7 +36,6 @@ cargo test
 | `crates/`            | Rust crate workspace                         |
 | `crates/amplihack-cli/` | Main CLI binary                           |
 | `amplifier-bundle/`  | Framework assets (agents, recipes, commands)  |
-| `bridge/`            | Node.js bridge for Claude Code integration   |
 | `docs/`              | Documentation (mkdocs site)                  |
 | `tests/`             | Integration and end-to-end tests             |
 
@@ -80,8 +79,7 @@ cargo test
 ### 5. Build Documentation (Optional)
 
 ```bash
-pip install mkdocs-material  # one-time setup
-mkdocs build --strict
+docker run --rm -v "$PWD:/docs" squidfunk/mkdocs-material build --strict
 ```
 
 ### 6. Commit and Push

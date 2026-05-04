@@ -222,7 +222,7 @@ amplihack/AMPLIHACK.md
 
 ```bash
 # Install from GitHub via UVX
-uvx --from git+https://github.com/rysweet/amplihack amplihack --help
+uvx --from git+https://github.com/rysweet/amplihack-rs amplihack --help
 
 # Check plugin discovery
 amplihack claude  # Launch Claude Code with amplihack plugin
@@ -293,7 +293,7 @@ ls -la .claude/ .claude-plugin/ .github/ amplifier-bundle/
 All directories should exist. If missing, clone repository correctly:
 
 ```bash
-git clone --recurse-submodules https://github.com/rysweet/amplihack
+git clone --recurse-submodules https://github.com/rysweet/amplihack-rs
 ```
 
 ### Build Fails: "symlink points to invalid target"

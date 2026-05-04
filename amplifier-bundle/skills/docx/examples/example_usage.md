@@ -282,7 +282,7 @@ Batch 3: Payment terms
 **Step 3: Unpack document**
 
 ```bash
-python ooxml/scripts/unpack.py contract.docx unpacked/
+bash ooxml/scripts/unpack.sh contract.docx unpacked/
 # Note the suggested RSID: 00AB12CD
 ```
 
@@ -367,7 +367,7 @@ print("Batch 1 complete: Timeline changes")
 **Step 5: Verify Batch 1**
 
 ```bash
-python ooxml/scripts/pack.py unpacked/ contract_batch1.docx
+bash ooxml/scripts/pack.sh unpacked/ contract_batch1.docx
 pandoc --track-changes=all contract_batch1.docx -o verify1.md
 grep "60 days" verify1.md  # Should find changes
 ```
@@ -379,7 +379,7 @@ grep "60 days" verify1.md  # Should find changes
 **Step 7: Final pack and verification**
 
 ```bash
-python ooxml/scripts/pack.py unpacked/ contract_reviewed.docx
+bash ooxml/scripts/pack.sh unpacked/ contract_reviewed.docx
 pandoc --track-changes=all contract_reviewed.docx -o final_verification.md
 
 # Verify all changes
@@ -412,7 +412,7 @@ A reviewed document has comments that need to be extracted and analyzed.
 
 ```bash
 # Unpack document
-python ooxml/scripts/unpack.py reviewed_document.docx unpacked/
+bash ooxml/scripts/unpack.sh reviewed_document.docx unpacked/
 
 # Read comments
 cat unpacked/word/comments.xml
@@ -788,7 +788,7 @@ for i, client in enumerate(clients, 1):
     output_file = f"contract_{client['client'].replace(' ', '_')}.docx"
     import subprocess
     subprocess.run([
-        "python", "ooxml/scripts/pack.py",
+        "bash", "ooxml/scripts/pack.sh",
         str(work_dir), output_file
     ])
 
@@ -819,7 +819,7 @@ def safe_unpack_and_modify(docx_file, output_dir):
         # Unpack
         import subprocess
         result = subprocess.run(
-            ["python", "ooxml/scripts/unpack.py", docx_file, output_dir],
+            ["bash", "ooxml/scripts/unpack.sh", docx_file, output_dir],
             capture_output=True,
             text=True,
             check=True
@@ -849,10 +849,10 @@ def safe_unpack_and_modify(docx_file, output_dir):
 grep -n "expected_text" unpacked/word/document.xml
 
 # Pack with validation
-python ooxml/scripts/pack.py unpacked/ output.docx
+bash ooxml/scripts/pack.sh unpacked/ output.docx
 
 # If validation fails, use --force and manually check
-python ooxml/scripts/pack.py unpacked/ output.docx --force
+bash ooxml/scripts/pack.sh unpacked/ output.docx --force
 
 # Then verify document opens correctly
 soffice output.docx  # Manual verification

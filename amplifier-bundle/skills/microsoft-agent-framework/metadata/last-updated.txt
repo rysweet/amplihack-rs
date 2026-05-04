@@ -25,4 +25,4 @@ Content Accuracy: HIGH
 - Decision framework aligned with use cases
 
 Freshness Check:
-Run `python scripts/check-freshness.py` to verify this skill is up-to-date.
+Run `python GitHub release/documentation freshness check` to verify this skill is up-to-date.

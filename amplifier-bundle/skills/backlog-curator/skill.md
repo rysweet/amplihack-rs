@@ -103,7 +103,7 @@ Would you like me to analyze recommendations?
 
 When user asks "What should I work on?":
 
-1. Run `scripts/analyze_backlog.py --project-root <root> --max-recommendations 3`
+1. Run `direct backlog scoring workflow --project-root <root> --max-recommendations 3`
 2. Parse JSON output
 3. Present top 3 with clear rationale
 4. Explain scoring breakdown
@@ -114,7 +114,7 @@ When user asks "What should I work on?":
 ```
 User: What should I work on next?
 
-Curator: [Calls scripts/analyze_backlog.py]
+Curator: [Calls direct backlog scoring workflow]
 
 Top Recommendations:
 
@@ -348,7 +348,7 @@ BL-003 is now your top recommendation.
 
 ## Resources
 
-- **scripts/analyze_backlog.py**: Multi-criteria scoring engine (320 lines)
+- **direct backlog scoring workflow**: Multi-criteria scoring engine (320 lines)
 - **REFERENCE.md**: Detailed scoring algorithms and formulas
 - **EXAMPLES.md**: Complete usage scenarios
 

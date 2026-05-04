@@ -95,12 +95,9 @@ dynamic-debugger/
 │   ├── lldb.json         # C/C++/Rust debugger config
 │   └── future/           # Planned language configs
 ├── scripts/
-│   ├── detect_language.py       # Auto language detection
-│   ├── generate_dap_config.py   # Config generation
-│   ├── monitor_session.py       # Resource monitoring
 │   ├── start_dap_mcp.sh         # Server lifecycle
 │   └── cleanup_debug.sh         # Cleanup
-└── tests/                # Comprehensive test suite
+└── tests/                # Shell smoke tests and validation notes
 ```
 
 ## Features
@@ -116,19 +113,12 @@ dynamic-debugger/
 ```bash
 cd .claude/skills/dynamic-debugger/tests
 
-# Run unit + integration tests
-pytest
-
-# Run E2E integration test
-python3 test_mcp_integration.py
-
-# Run MCP protocol test
-python3 test_mcp_client.py
+# Run the shipped E2E integration test
+bash test_e2e.sh
 ```
 
 **Test Coverage:**
 
-- 55 unit/integration tests
 - E2E server lifecycle validation
 - MCP protocol testing
 

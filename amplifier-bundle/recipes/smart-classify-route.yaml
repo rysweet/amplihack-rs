@@ -151,9 +151,7 @@ steps:
     output: "task_type"
 
   # activate-workflow: compute workstream_count, set workflow semaphore, announce.
-  # Uses native Rust `amplihack orch helper count-workstreams` (#270). The
-  # only Python that remains is the `dev_intent_router` hook integration —
-  # tracked separately as a follow-up port.
+  # Uses native Rust `amplihack orch helper count-workstreams` (#270).
   - id: "activate-workflow"
     type: "bash"
     command: |

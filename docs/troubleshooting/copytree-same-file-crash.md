@@ -82,7 +82,7 @@ The Rust guard appears in:
 
 ## Related
 
-- [Issue #4296](https://github.com/rysweet/amplihack/issues/4296) — Original bug report
-- [PR #4297](https://github.com/rysweet/amplihack/pull/4297) — Python fix
+- [Issue #4296](https://github.com/rysweet/amplihack-rs/issues/4296) — Original bug report
+- [PR #4297](https://github.com/rysweet/amplihack-rs/pull/4297) — Python fix
 - [PR #201](https://github.com/rysweet/amplihack-rs/pull/201) — Rust fix
 - [Interactive Installation](../howto/first-install.md) — Installation system overview

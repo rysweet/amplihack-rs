@@ -220,7 +220,6 @@ fn is_test_command(command: &str) -> bool {
         "cargo test",
         "pytest",
         "uv run pytest",
-        "python -m pytest",
         "npm test",
         "pnpm test",
         "yarn test",

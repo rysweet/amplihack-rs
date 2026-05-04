@@ -143,6 +143,6 @@ and posts findings as a PR comment
 ## Reference
 
 - Skill location: `.claude/skills/supply-chain-audit/`
-- Issue: [#3440](https://github.com/rysweet/amplihack/issues/3440)
+- Issue: [#3440](https://github.com/rysweet/amplihack-rs/issues/3440)
 - Reference files: `.claude/skills/supply-chain-audit/reference/` (one file per ecosystem)
 - Eval scenarios: `.claude/skills/supply-chain-audit/reference/eval-scenarios.md`

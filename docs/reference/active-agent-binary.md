@@ -108,26 +108,23 @@ Staleness window: 24 hours (older files fall through as if unset)
 
 The resolver only reads the `launcher` field. Other fields are owned by `LauncherContext`.
 
-## Hook Resolution
+## Hook Registration
 
-Hooks live under `<amplihack-home>/.claude/hooks/<binary>/`. When a hook event fires, `amplihack-hooks::binary_hook_resolver` resolves the **active binary** via the algorithm above, then constructs the expected hook path:
-
-```
-<amplihack-home>/.claude/hooks/<binary>/<event>.py
-```
+Hooks are native `amplihack-hooks <subcommand>` commands registered in settings.
+They do not resolve per-binary script files.
 
 ### Hook Event Variants
 
 `HookEvent` is an enum with eight variants. Each variant maps to a fixed on-disk filename:
 
-| `HookEvent` variant | On-disk filename          | Fires when                                                                  |
+| `HookEvent` variant | Native command            | Fires when                                                                  |
 | ------------------- | ------------------------- | --------------------------------------------------------------------------- |
-| `SessionStart`      | `session_start.py`        | A new agent session is initialized                                          |
-| `SessionEnd`        | `session_end.py`          | A session terminates (normal exit, crash, or user interrupt)                |
-| `UserPromptSubmit`  | `user_prompt_submit.py`   | The user submits a prompt to the agent                                      |
-| `PreToolUse`        | `pre_tool_use.py`         | Before any tool call is executed                                            |
-| `PostToolUse`       | `post_tool_use.py`        | After any tool call completes (success or failure)                          |
-| `Stop`              | `stop.py`                 | The top-level agent stops emitting work                                     |
+| `SessionStart`      | `amplihack-hooks session-start` | A new agent session is initialized                                   |
+| `SessionEnd`        | `amplihack-hooks session-stop`  | A session terminates (normal exit, crash, or user interrupt)          |
+| `UserPromptSubmit`  | `amplihack-hooks user-prompt-submit` | The user submits a prompt to the agent                              |
+| `PreToolUse`        | `amplihack-hooks pre-tool-use` | Before any tool call is executed                                      |
+| `PostToolUse`       | `amplihack-hooks post-tool-use` | After any tool call completes (success or failure)                   |
+| `Stop`              | `amplihack-hooks stop` | The top-level agent stops emitting work                                      |
 | `SubagentStop`      | `subagent_stop.py`        | A subagent (`task` tool / explore / general-purpose) finishes               |
 | `PreCompact`        | `pre_compact.py`          | Before context compaction runs                                              |
 

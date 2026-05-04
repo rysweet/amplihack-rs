@@ -32,7 +32,7 @@ The PDF skill follows amplihack's brick philosophy:
 ## Quick Start
 
 1. Install dependencies (see [DEPENDENCIES.md](DEPENDENCIES.md))
-2. Verify installation: `python ../common/verification/verify_skill.py pdf`
+2. Verify installation: `bash ../../scripts/check-skills-no-missing-helpers.sh`
 3. Use the skill in Claude Code conversations
 
 Example conversation:
@@ -120,7 +120,7 @@ This integration follows amplihack's core principles:
 
 **ImportError for dependencies:**
 
-1. Run verification script: `python ../common/verification/verify_skill.py pdf`
+1. Run verification script: `bash ../../scripts/check-skills-no-missing-helpers.sh`
 2. Install missing dependencies from DEPENDENCIES.md
 3. Re-run tests to confirm
 
@@ -149,7 +149,7 @@ This skill is sourced from Anthropic's official skills repository. For issues:
 - [SKILL.md](SKILL.md) - Official skill documentation
 - [DEPENDENCIES.md](DEPENDENCIES.md) - Complete dependency list
 - [examples/example_usage.md](examples/example_usage.md) - Usage examples
-- [tests/test_pdf_skill.py](tests/test_pdf_skill.py) - Verification tests
+- tests/test_pdf_skill.py - Verification tests
 - [Anthropic Skills Repository](https://github.com/anthropics/skills/tree/main/document-skills/pdf)
 
 ## License

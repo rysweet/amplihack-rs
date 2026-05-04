@@ -27,7 +27,7 @@ PM Architect: [pm-architect skill activates]
 
 Good morning! Let me check all your projects...
 
-[Calls scripts/coordinate.py for each .pm/ directory]
+[Calls direct .pm/workstreams analysis for each .pm/ directory]
 
 Project Status Overview:
 
@@ -63,7 +63,7 @@ PM Architect: [Switches context to mobile-app project]
 
 Analyzing mobile-app CI failure...
 
-[Calls scripts/analyze_ci.py or delegates to ci-diagnostic-workflow agent]
+[Inspects CI status directly or delegates to ci-diagnostic-workflow agent]
 
 CI failure detected:
 - Test suite failing: 12/45 tests
@@ -136,7 +136,7 @@ Total backlog: 13 items (4 HIGH, 8 MEDIUM, 1 LOW)
 
 Now let me analyze and recommend what to work on next...
 
-[Calls scripts/analyze_backlog.py]
+[Calls direct backlog scoring workflow]
 
 Top 3 Recommendations:
 
@@ -172,7 +172,7 @@ Should I create a delegation package and start a workstream?
 
 User: Yes, start BL-009
 
-PM Architect: [Calls scripts/create_delegation.py BL-009]
+PM Architect: [Calls direct delegation package assembly BL-009]
 
 Creating comprehensive delegation package for BL-009...
 
@@ -245,7 +245,7 @@ When you approve a backlog item (or I auto-select in autonomous mode),
 I analyze it to prepare a comprehensive delegation package.
 
 **Step 2: Delegation Package Creation**
-[Calls scripts/create_delegation.py]
+[Calls direct delegation package assembly]
 
 I create a rich package containing:
 
@@ -510,7 +510,7 @@ ws-003 (api-gateway authentication) finished successfully:
 
 **Starting Phase 2**:
 
-[Calls scripts/create_delegation.py BL-021 with pattern reuse]
+[Calls direct delegation package assembly BL-021 with pattern reuse]
 
 ✓ Created ws-006: mobile-app login flow
 Agent: builder
@@ -576,7 +576,7 @@ I'll periodically (every 30 minutes) execute a decision cycle:
 Let me run one cycle in dry-run to show you what I would do, then
 you can approve autonomous operation.
 
-[Calls scripts/autopilot.py --dry-run]
+[Performs a dry-run autopilot analysis directly from the roadmap and backlog state]
 
 **Dry-Run Autopilot Cycle Results**:
 
@@ -703,7 +703,7 @@ PM Architect: [pm-architect skill activates]
 
 Let me analyze both items before starting...
 
-[Calls scripts/coordinate.py to check dependencies]
+[Calls direct .pm/workstreams analysis to check dependencies]
 
 ⚠ **DEPENDENCY CONFLICT DETECTED**
 

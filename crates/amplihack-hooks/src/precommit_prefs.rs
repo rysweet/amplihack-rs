@@ -1,7 +1,6 @@
 //! Pre-commit-prefs hook: drains stdin and exits successfully (no-op).
 //!
-//! Replaces the legacy `precommit_prefs.py` shim (issue #522). Some
-//! `settings.json` templates and external git pre-commit wrappers wire
+//! Some `settings.json` templates and external git pre-commit wrappers wire
 //! a "snapshot user preferences before commit" hook at this lifecycle
 //! moment. The amplihack-hooks native binary does not currently expose
 //! a dedicated subcommand for that work, so this handler drains stdin

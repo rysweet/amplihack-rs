@@ -102,7 +102,7 @@ Delegation packages are JSON documents containing:
 When PM Architect or user requests delegation:
 
 1. Identify backlog item ID
-2. Run `scripts/create_delegation.py <BACKLOG_ID> --project-root <root> --agent <agent>`
+2. Run `direct delegation package assembly <BACKLOG_ID> --project-root <root> --agent <agent>`
 3. Parse JSON output
 4. Enrich with additional context if needed
 5. Return package for agent invocation
@@ -112,7 +112,7 @@ When PM Architect or user requests delegation:
 ```
 PM: Start work on BL-001
 
-Delegator: [Calls scripts/create_delegation.py BL-001 --agent builder]
+Delegator: [Calls direct delegation package assembly BL-001 --agent builder]
 
 Created delegation package for BL-001:
 
@@ -497,7 +497,7 @@ This work is HIGH priority because it directly supports goal #1.
 
 ## Resources
 
-- **scripts/create_delegation.py**: Package creation engine (333 lines)
+- **direct delegation package assembly**: Package creation engine (333 lines)
 - **REFERENCE.md**: Detailed algorithms and templates
 - **EXAMPLES.md**: Complete delegation scenarios
 

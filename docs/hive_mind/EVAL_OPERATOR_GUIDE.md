@@ -19,7 +19,7 @@ This is a how-to guide. It focuses on which repo to run from, which environment 
 Clone the two repos next to each other so the wrappers can reference sibling source trees.
 
 ```bash
-git clone https://github.com/rysweet/amplihack.git
+git clone https://github.com/rysweet/amplihack-rs.git
 git clone https://github.com/rysweet/amplihack-agent-eval.git
 ```
 

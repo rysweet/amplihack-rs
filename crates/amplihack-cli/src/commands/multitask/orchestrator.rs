@@ -1,6 +1,6 @@
 //! Core orchestrator logic for parallel workstream execution.
 //!
-//! Port of `multitask/orchestrator.py` — manages workstream lifecycle,
+//! Manages native multitask workstream lifecycle,
 //! subprocess spawning, output tailing, timeout enforcement, state persistence,
 //! and reporting.
 

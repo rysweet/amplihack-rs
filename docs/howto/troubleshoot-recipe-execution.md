@@ -267,12 +267,12 @@ ls ~/.amplihack/.claude/
 
 **Symptom:** Installation via `amplihack install` fails because the downloaded archive or cloned repository has a different directory structure than expected. The installer cannot find a `.claude/` directory at the repository root.
 
-**Cause:** The Python repository used `.claude/` as its framework root marker. The Rust repository uses `amplifier-bundle/`. The root-detection function needed to accept both layouts.
+**Cause:** Framework archives may use either `.claude/` or `amplifier-bundle/` as their root marker. The root-detection function needs to accept both layouts.
 
 **Fix:** `find_framework_repo_root()` now accepts either `.claude/` or `amplifier-bundle/` as a valid repository root marker. This handles:
 
-- Legacy Python repository archives (contain `.claude/`)
-- Current Rust repository archives (contain `amplifier-bundle/`)
+- Archives that contain `.claude/`
+- Archives that contain `amplifier-bundle/`
 - Mixed layouts where both directories exist
 
 **Verify:**
