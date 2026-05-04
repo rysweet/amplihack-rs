@@ -200,3 +200,12 @@ path = "../../tests/integration/gherkin_investigation_doc_test.rs"
 [[test]]
 name = "issue_537_git_optional_recipes"
 path = "tests/issue_537_git_optional_recipes.rs"
+
+# PR #554: Regression tests for the two CI fixes:
+#   1. bins/amplihack/Cargo.toml must declare default-run = "amplihack" so that
+#      cargo run --package amplihack resolves the amplihack binary unambiguously.
+#   2. tests/outside-in/scenario2-code-graph-no-python.yaml must have a top-level
+#      agents: section so gadugi-test validate passes.
+[[test]]
+name = "pr_554_ci_fixes"
+path = "../../tests/integration/pr_554_ci_fixes_test.rs"
