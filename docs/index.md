@@ -742,6 +742,10 @@ Quick references, guides, and additional resources.
 - [File Organization](contributing/file-organization.md) - Where different file types belong in the repository
 - [Discoveries](discoveries.md) - Patterns and insights discovered during development
 
+### Investigations
+
+- [#434 gherkin-expert disposition](investigations/434-gherkin-v2-experiment-disposition.md) - Investigation confirming the gherkin-expert skill already ships in amplihack
+
 ### GitHub & Community
 
 - [GitHub Repository](https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding) - Source code
