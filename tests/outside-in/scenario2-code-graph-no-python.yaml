@@ -1,3 +1,8 @@
+agents:
+  - name: amplihack-cli
+    type: cli
+    command: amplihack
+
 scenario:
   name: "Code Graph Query — No-Python Live Path (Issue #77 AC6/AC8/AC9)"
   description: |
