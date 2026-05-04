@@ -740,6 +740,7 @@ Quick references, guides, and additional resources.
 ### Contributing
 
 - [File Organization](contributing/file-organization.md) - Where different file types belong in the repository
+- [Discoveries](discoveries.md) - Patterns and insights discovered during development
 
 ### GitHub & Community
 
