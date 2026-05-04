@@ -192,8 +192,12 @@ nav:
       - CLI Reference: reference/cli.md
       - install Command: reference/install-command.md
       - recipe Command: reference/recipe-command.md
+      - RustyClawd Command: reference/rustyclawd-command.md
+      - uvx-help Command: reference/uvx-help-command.md
+      - resolve-bundle-asset Command: reference/resolve-bundle-asset-command.md
       - fleet Command: reference/fleet-command.md
       - memory index Command: reference/memory-index-command.md
       - query-code Command: reference/query-code-command.md
+      - multitask Command: reference/multitask-command.md
       - doctor Command: reference/doctor-command.md
       - Rust Runner Execution: reference/rust-runner-execution.md
