@@ -447,6 +447,27 @@ command line.
 
 ---
 
+### AMPLIHACK_COPILOT_NO_REMOTE
+
+**Type:** flag
+**Values:** `1` suppresses `--remote` injection; absence or any other value keeps the default
+**Used by:** `should_inject_copilot_remote()` in `commands/launch/command.rs`
+
+When `amplihack copilot` launches the Copilot CLI, it injects `--remote` by
+default to offload compute to GitHub's cloud. Set this variable to `1` to
+suppress the injection and run Copilot locally.
+
+```sh
+# Disable remote mode
+AMPLIHACK_COPILOT_NO_REMOTE=1 amplihack copilot
+# Copilot starts without --remote
+```
+
+Users can also pass `--no-remote` directly as an extra arg; the launcher
+detects this and skips injection automatically.
+
+---
+
 ### AMPLIHACK_ENABLE_BLARIFY
 
 **Type:** flag

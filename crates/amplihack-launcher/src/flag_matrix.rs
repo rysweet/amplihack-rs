@@ -55,6 +55,8 @@ pub struct FlagSet {
     pub supports_print: bool,
     /// Supports `--allow-all-tools` (Copilot-specific).
     pub supports_allow_all_tools: bool,
+    /// Supports `--remote` (Copilot-specific — offload to GitHub cloud).
+    pub supports_remote: bool,
     /// The env var name set to identify the agent binary in nested sessions.
     pub agent_binary_env: &'static str,
 }
@@ -75,6 +77,7 @@ pub fn flags_for(binary: AgentBinary) -> FlagSet {
             supports_resume: true,
             supports_print: true,
             supports_allow_all_tools: false,
+            supports_remote: false,
             agent_binary_env: "AMPLIHACK_AGENT_BINARY",
         },
         AgentBinary::Copilot => FlagSet {
@@ -86,6 +89,7 @@ pub fn flags_for(binary: AgentBinary) -> FlagSet {
             supports_resume: false,
             supports_print: false,
             supports_allow_all_tools: true,
+            supports_remote: true,
             agent_binary_env: "AMPLIHACK_AGENT_BINARY",
         },
         AgentBinary::Codex => FlagSet {
@@ -97,6 +101,7 @@ pub fn flags_for(binary: AgentBinary) -> FlagSet {
             supports_resume: false,
             supports_print: false,
             supports_allow_all_tools: false,
+            supports_remote: false,
             agent_binary_env: "AMPLIHACK_AGENT_BINARY",
         },
     }
@@ -152,6 +157,24 @@ mod tests {
     }
 
     #[test]
+    fn copilot_supports_remote() {
+        let flags = flags_for(AgentBinary::Copilot);
+        assert!(flags.supports_remote);
+    }
+
+    #[test]
+    fn claude_does_not_support_remote() {
+        let flags = flags_for(AgentBinary::Claude);
+        assert!(!flags.supports_remote);
+    }
+
+    #[test]
+    fn codex_does_not_support_remote() {
+        let flags = flags_for(AgentBinary::Codex);
+        assert!(!flags.supports_remote);
+    }
+
+    #[test]
     fn copilot_does_not_support_append_prompt() {
         let flags = flags_for(AgentBinary::Copilot);
         assert!(!flags.supports_append_prompt);
@@ -173,6 +196,7 @@ mod tests {
         assert!(!flags.supports_resume);
         assert!(!flags.supports_print);
         assert!(!flags.supports_allow_all_tools);
+        assert!(!flags.supports_remote);
     }
 
     // -----------------------------------------------------------------------

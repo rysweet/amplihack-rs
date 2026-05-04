@@ -62,6 +62,7 @@ Current behavior, derived from `command.rs`:
 | `--dangerously-skip-permissions` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `--model` (auto-inject) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `--allow-all` (auto-inject) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| `--remote` (auto-inject) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | `--resume` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `--continue` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `--plugin-dir` (UVX only) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -74,6 +75,7 @@ Current behavior, derived from `command.rs`:
 |---|---|
 | `AMPLIHACK_DEFAULT_MODEL` | Override the default model (default: `opus[1m]`) |
 | `AMPLIHACK_COPILOT_NO_ALLOW_ALL` | Set to `1` to suppress `--allow-all` injection for Copilot |
+| `AMPLIHACK_COPILOT_NO_REMOTE` | Set to `1` to suppress `--remote` injection for Copilot |
 
 ## Flag injection rules
 
@@ -87,6 +89,10 @@ Current behavior, derived from `command.rs`:
 
 3. **`--allow-all`**: Injected only for `copilot` unless suppressed by env
    var or the user already provided any `--allow-all*` flag.
+
+4. **`--remote`**: Injected only for `copilot` unless suppressed by
+   `AMPLIHACK_COPILOT_NO_REMOTE=1` or the user already passed `--remote`
+   or `--no-remote`.
 
 4. **UVX plugin args**: `--plugin-dir` and `--add-dir` are injected only
    for `claude` when running in a UVX deployment.
@@ -146,8 +152,9 @@ its full flag capabilities.
 |---|---|---|
 | Claude default | `claude`, no extra args | `--model opus[1m]` |
 | Claude skip-perms | `claude`, `--skip-permissions` | `--dangerously-skip-permissions --model opus[1m]` |
-| Copilot default | `copilot`, no extra args | `--allow-all` |
-| Copilot suppressed | `copilot`, `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` | (no flags) |
+| Copilot default | `copilot`, no extra args | `--allow-all --remote` |
+| Copilot suppressed | `copilot`, `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` + `AMPLIHACK_COPILOT_NO_REMOTE=1` | (no flags) |
+| Copilot no-remote | `copilot`, `--no-remote` | `--allow-all` (no `--remote` injected) |
 | Codex default | `codex`, no extra args | (no flags) |
 | User model override | `claude`, `--model sonnet` | `--model sonnet` (no duplicate) |
 

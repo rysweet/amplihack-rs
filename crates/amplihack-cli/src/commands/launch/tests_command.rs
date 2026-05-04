@@ -420,3 +420,122 @@ fn claude_does_not_get_allow_all_injected() {
         );
     });
 }
+
+#[test]
+fn copilot_gets_remote_injected_by_default() {
+    with_uvx_detection_disabled(|| {
+        unsafe {
+            std::env::remove_var("AMPLIHACK_COPILOT_NO_REMOTE");
+        }
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.iter().any(|a| a == "--remote"),
+            "copilot launch must include --remote by default; got {args:?}"
+        );
+    });
+}
+
+#[test]
+fn copilot_skips_remote_when_user_already_passed_it() {
+    with_uvx_detection_disabled(|| {
+        unsafe {
+            std::env::remove_var("AMPLIHACK_COPILOT_NO_REMOTE");
+        }
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        let extra = vec!["--remote".to_string()];
+        let cmd = build_command(&binary, false, false, false, &extra);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        let remote_count = args.iter().filter(|a| a.as_str() == "--remote").count();
+        assert_eq!(
+            remote_count, 1,
+            "should not duplicate --remote when user already supplied it; got {args:?}"
+        );
+    });
+}
+
+#[test]
+fn copilot_skips_remote_when_env_opt_out() {
+    with_uvx_detection_disabled(|| {
+        unsafe {
+            std::env::set_var("AMPLIHACK_COPILOT_NO_REMOTE", "1");
+        }
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        unsafe {
+            std::env::remove_var("AMPLIHACK_COPILOT_NO_REMOTE");
+        }
+        assert!(
+            !args.iter().any(|a| a == "--remote"),
+            "opt-out must suppress --remote; got {args:?}"
+        );
+    });
+}
+
+#[test]
+fn claude_does_not_get_remote_injected() {
+    with_uvx_detection_disabled(|| {
+        let binary = BinaryInfo {
+            name: "claude".to_string(),
+            path: PathBuf::from("/usr/bin/claude"),
+            version: None,
+        };
+        let cmd = build_command(&binary, false, false, false, &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().any(|a| a == "--remote"),
+            "non-copilot tools must not get --remote; got {args:?}"
+        );
+    });
+}
+
+#[test]
+fn copilot_skips_remote_when_user_passes_no_remote() {
+    with_uvx_detection_disabled(|| {
+        unsafe {
+            std::env::remove_var("AMPLIHACK_COPILOT_NO_REMOTE");
+        }
+        let binary = BinaryInfo {
+            name: "copilot".to_string(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        // User explicitly opted out via --no-remote; we must NOT inject --remote.
+        let extra = vec!["--no-remote".to_string()];
+        let cmd = build_command(&binary, false, false, false, &extra);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().any(|a| a == "--remote"),
+            "must not inject --remote when user passed --no-remote; got {args:?}"
+        );
+    });
+}
