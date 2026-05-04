@@ -252,7 +252,7 @@ codex_path = builder.export_for_codex(messages, metadata)
 Multi-process orchestration for parallel, sequential, and fault-tolerant
 execution.
 
-> **Native Rust port (Wave 2 deyhonification, Epic #511).** The Python modules
+> **Native Rust port (Wave 2 de-Pythonification, Epic #511).** The Python modules
 > previously located at `amplihack/orchestration/` have been ported to the
 > Rust crate `crates/amplihack-orchestration` and the original `.py` files
 > deleted. Use the Rust API directly from the workspace; no shell-callable
@@ -369,7 +369,7 @@ Unified session lifecycle management for Claude Code workflows.
 **Crate**: `amplihack-session` (`crates/amplihack-session/`)
 
 > **Note (rysweet/amplihack-rs#532):** the bundled `amplihack/session/`
-> Python tree was removed in deyhonification wave 3b. Session management
+> Python tree was removed in de-Pythonification wave 3b. Session management
 > is now provided by the native Rust `amplihack-session` crate.
 
 **Purpose**: Single interface for all session management capabilities
