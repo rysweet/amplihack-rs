@@ -539,6 +539,10 @@ Multi-agent distributed memory system enabling agents to share knowledge across 
 - [Evaluation](hive_mind/EVAL.md) - Benchmarks, eval scenarios, and performance results
 - [Presentation](hive_mind_presentation.md) - High-level slides and demo walkthrough
 - [Prompt-to-Hive Tutorial](tutorial_prompt_to_distributed_hive.md) - End-to-end walkthrough from prompt to deployed hive
+- [Hive Mind Getting Started](tutorials/hive-mind-getting-started.md) - Diataxis tutorial for the Rust hive runtime
+- [Hive Mind Tutorial](tutorials/hive-mind-tutorial.md) - Build and operate hive-mind workflows step by step
+- [Hive Mind Design](concepts/hive-mind-design.md) - Design concepts for the Rust hive implementation
+- [Hive Mind Evaluation](concepts/hive-mind-eval.md) - Evaluation model and criteria for hive-mind behavior
 
 **Key Features**:
 
