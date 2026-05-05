@@ -285,9 +285,20 @@ mod tests {
 
     #[test]
     fn load_code_graph_context_missing_db_returns_none() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let saved = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
+
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
-        assert!(load_code_graph_context(&dirs).unwrap().is_none());
+        let result = load_code_graph_context(&dirs);
+
+        if let Some(val) = saved {
+            unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", val) };
+        }
+        assert!(result.unwrap().is_none());
     }
 
     #[test]

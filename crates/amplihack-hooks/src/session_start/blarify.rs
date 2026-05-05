@@ -230,6 +230,9 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let saved_graph_db = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
+        unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
+
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         let src_dir = dir.path().join("src");
@@ -267,6 +270,9 @@ mod tests {
         unsafe {
             std::env::remove_var("AMPLIHACK_AMPLIHACK_BINARY_PATH");
             std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
+        }
+        if let Some(val) = saved_graph_db {
+            unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", val) };
         }
 
         assert!(result.indexing_active);
