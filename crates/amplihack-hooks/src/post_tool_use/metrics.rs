@@ -67,7 +67,7 @@ pub(super) fn save_tool_metric(
         .create(true)
         .append(true)
         .open(metrics_file)?;
-    writeln!(file, "{}", json)?;
+    writeln!(file, "{json}")?;
 
     Ok(())
 }

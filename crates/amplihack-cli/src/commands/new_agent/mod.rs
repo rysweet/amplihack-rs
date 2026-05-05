@@ -138,7 +138,7 @@ pub fn run_new(
 
     println!("  Bundle name: {}", bundle.name);
     println!("  Bundle ID: {}", bundle.id);
-    println!("  SDK: {}", sdk);
+    println!("  SDK: {sdk}");
     if enable_memory {
         println!("  Memory: Enabled");
     }

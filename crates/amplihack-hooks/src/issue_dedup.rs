@@ -142,14 +142,12 @@ pub fn file_or_dedup(
 
     match &action {
         DedupAction::CreateNew => {
-            let body_with_marker = format!(
-                "{error_body}\n\n<!-- amplihack-fingerprint:{} -->",
-                fingerprint
-            );
+            let body_with_marker =
+                format!("{error_body}\n\n<!-- amplihack-fingerprint:{fingerprint} -->");
             client.create_issue(repo, error_title, &body_with_marker, &["auto-filed"])?;
         }
         DedupAction::AppendComment { issue_number } => {
-            let comment = format!("**Duplicate occurrence** ({})\n\n{}", today, error_body);
+            let comment = format!("**Duplicate occurrence** ({today})\n\n{error_body}");
             client.add_comment(repo, *issue_number, &comment)?;
         }
         DedupAction::CreateDailyRollup {

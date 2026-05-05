@@ -175,8 +175,7 @@ fn test_subprocess_safe_without_parent_still_applies_memory_config() {
     assert!(
         node_opts.contains("--max-old-space-size="),
         "subprocess-safe launch must still inject smart NODE_OPTIONS when parent is unset; \
-         got: {:?}",
-        node_opts
+         got: {node_opts:?}"
     );
 }
 
@@ -210,8 +209,7 @@ fn test_normal_launch_applies_smart_node_options() {
     assert!(
         node_options.contains("--max-old-space-size"),
         "normal launch must apply smart NODE_OPTIONS via prepare_memory_config(); \
-         got: {:?}",
-        node_options
+         got: {node_options:?}"
     );
 }
 

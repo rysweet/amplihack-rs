@@ -76,10 +76,7 @@ impl FleetAdmiral {
                 Ok(_) => consecutive_failures = 0,
                 Err(error) => {
                     consecutive_failures += 1;
-                    eprintln!(
-                        "Admiral cycle error ({}/5): {}",
-                        consecutive_failures, error
-                    );
+                    eprintln!("Admiral cycle error ({consecutive_failures}/5): {error}");
                     if consecutive_failures >= 5 {
                         eprintln!("CIRCUIT BREAKER: 5 consecutive failures. Stopping admiral.");
                         break;

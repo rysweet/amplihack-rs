@@ -41,7 +41,7 @@ pub fn otel_env_overrides(
     if !attributes.is_empty() {
         let attr_str: String = attributes
             .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
+            .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>()
             .join(",");
         env.insert("OTEL_RESOURCE_ATTRIBUTES".to_string(), attr_str);

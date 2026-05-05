@@ -581,8 +581,7 @@ fn assert_raw_db_merge_rejected(choice: BackendChoice) -> anyhow::Result<()> {
     );
     assert!(
         result.is_err(),
-        "import_hierarchical_raw_db with merge=true must return Err for {:?} backend",
-        choice
+        "import_hierarchical_raw_db with merge=true must return Err for {choice:?} backend"
     );
     Ok(())
 }

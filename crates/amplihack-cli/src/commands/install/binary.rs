@@ -19,10 +19,7 @@ pub(super) fn find_hooks_binary() -> Result<PathBuf> {
         if p.exists() {
             return Ok(p);
         }
-        bail!(
-            "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH is set to {:?} but that path does not exist",
-            p
-        );
+        bail!("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH is set to {p:?} but that path does not exist");
     }
 
     // Step 2: sibling of current exe

@@ -25,7 +25,7 @@ pub fn get_installed_version(pkg: &str) -> Option<String> {
 /// JSON structure: `{"dependencies": {"@pkg/name": {"version": "1.2.3"}}}`
 /// Uses simple string search to avoid a JSON parsing dependency.
 pub(super) fn parse_version_from_npm_list_json(output: &str, pkg: &str) -> Option<String> {
-    let search_key = format!("\"{}\"", pkg);
+    let search_key = format!("\"{pkg}\"");
     let pkg_pos = output.find(&search_key)?;
     let after_pkg = &output[pkg_pos..];
     let version_pos = after_pkg.find("\"version\"")?;

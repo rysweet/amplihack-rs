@@ -75,9 +75,8 @@ pub(crate) fn write_installed_version(version: &str) -> Result<()> {
     match fs::symlink_metadata(&final_path) {
         Ok(meta) if meta.file_type().is_symlink() => {
             bail!(
-                "refusing to overwrite symlink at stamp path: {:?} \
-                 (delete it manually after verifying it is not malicious)",
-                final_path
+                "refusing to overwrite symlink at stamp path: {final_path:?} \
+                 (delete it manually after verifying it is not malicious)"
             );
         }
         Ok(_) | Err(_) => {

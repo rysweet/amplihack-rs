@@ -30,7 +30,7 @@ fn make_config() -> ProgressiveConfig {
 fn make_test_case(level: TestLevel) -> TestCase {
     let q = TestQuestion::new(
         format!("q-{}", level.id()),
-        format!("Question for {}", level),
+        format!("Question for {level}"),
         level,
     )
     .unwrap();

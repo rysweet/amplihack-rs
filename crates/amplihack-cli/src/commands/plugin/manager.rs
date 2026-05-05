@@ -137,7 +137,7 @@ impl PluginManager {
                 success: false,
                 plugin_name: plugin_name.clone(),
                 installed_path: target_path.clone(),
-                message: format!("Plugin copied but registration failed: {}", plugin_name),
+                message: format!("Plugin copied but registration failed: {plugin_name}"),
             });
         }
 
@@ -205,8 +205,7 @@ impl PluginManager {
             && !super::helpers::is_valid_semver(version)
         {
             errors.push(format!(
-                "Invalid version format: {} (expected semver like 1.0.0)",
-                version
+                "Invalid version format: {version} (expected semver like 1.0.0)"
             ));
         }
 
@@ -214,8 +213,7 @@ impl PluginManager {
             && !is_valid_plugin_name(name)
         {
             errors.push(format!(
-                "Invalid name format: {} (must be lowercase letters, numbers, hyphens only)",
-                name
+                "Invalid name format: {name} (must be lowercase letters, numbers, hyphens only)"
             ));
         }
 

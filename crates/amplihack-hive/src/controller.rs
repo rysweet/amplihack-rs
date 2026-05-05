@@ -157,7 +157,7 @@ impl HiveController {
         for name in &to_remove {
             self.orchestrators.remove(name);
             self.bus.unsubscribe(name)?;
-            actions.push(format!("remove {}", name));
+            actions.push(format!("remove {name}"));
         }
         self.desired = Some(manifest.clone());
         self.current.running_agents = manifest.agents.clone();

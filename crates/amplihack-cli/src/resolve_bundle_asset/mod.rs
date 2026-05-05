@@ -217,8 +217,7 @@ mod tests {
 
         assert!(
             resolved.ends_with("amplifier-bundle/tools/statusline.sh"),
-            "expected statusline.sh path, got {:?}",
-            resolved
+            "expected statusline.sh path, got {resolved:?}"
         );
     }
 
@@ -262,8 +261,7 @@ mod tests {
         let resolved = result.unwrap();
         assert!(
             resolved.ends_with("amplifier-bundle/bin/multitask-orchestrator.sh"),
-            "expected multitask orchestrator.sh path, got {:?}",
-            resolved
+            "expected multitask orchestrator.sh path, got {resolved:?}"
         );
     }
 
@@ -323,8 +321,7 @@ mod tests {
         let resolved = result.unwrap();
         assert!(
             resolved.ends_with("amplifier-bundle/bin/multitask-orchestrator.sh"),
-            "expected multitask orchestrator.sh path, got {:?}",
-            resolved
+            "expected multitask orchestrator.sh path, got {resolved:?}"
         );
     }
 

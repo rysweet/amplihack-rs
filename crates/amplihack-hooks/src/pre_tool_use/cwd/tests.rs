@@ -159,8 +159,7 @@ fn tilde_slash_resolves_to_home_subpath() {
     let expected = Path::new(&home).join("Documents");
     assert!(
         resolved == expected.canonicalize().unwrap_or_else(|_| expected.clone()),
-        "~/Documents should resolve under $HOME, got: {:?}",
-        resolved
+        "~/Documents should resolve under $HOME, got: {resolved:?}"
     );
 }
 
@@ -171,8 +170,7 @@ fn tilde_other_user_not_expanded() {
         let home = std::env::var("HOME").unwrap();
         assert!(
             !r.starts_with(&home) || r.starts_with(std::env::current_dir().unwrap()),
-            "~other_user should not expand to $HOME, got: {:?}",
-            r
+            "~other_user should not expand to $HOME, got: {r:?}"
         );
     }
 }

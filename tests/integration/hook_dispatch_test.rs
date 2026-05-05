@@ -33,7 +33,7 @@ fn run_hook(subcommand: &str, input_json: &str) -> (String, String, bool) {
     if !bin.exists() {
         return (
             "{}".to_string(),
-            format!("binary not found at {:?}", bin),
+            format!("binary not found at {bin:?}"),
             true,
         );
     }
@@ -61,17 +61,13 @@ fn assert_hook_ok(subcommand: &str, input: &str) {
     let (stdout, stderr, success) = run_hook(subcommand, input);
     assert!(
         success,
-        "Hook '{}' must exit 0 (fail-open). stderr: {}",
-        subcommand, stderr
+        "Hook '{subcommand}' must exit 0 (fail-open). stderr: {stderr}"
     );
     // stdout must be valid JSON.
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
     assert!(
         parsed.is_ok(),
-        "Hook '{}' stdout must be valid JSON. Got: '{}' stderr: {}",
-        subcommand,
-        stdout,
-        stderr
+        "Hook '{subcommand}' stdout must be valid JSON. Got: '{stdout}' stderr: {stderr}"
     );
     let value = parsed.unwrap();
     // Every non-empty hook response must use a known protocol key:
@@ -84,8 +80,7 @@ fn assert_hook_ok(subcommand: &str, input: &str) {
     });
     assert!(
         has_protocol_key,
-        "Hook '{}' JSON must contain a protocol key (hookSpecificOutput, decision, or reason) or be empty. Got: {}",
-        subcommand, value
+        "Hook '{subcommand}' JSON must contain a protocol key (hookSpecificOutput, decision, or reason) or be empty. Got: {value}"
     );
 }
 
@@ -227,15 +222,12 @@ fn empty_json_input_is_handled_gracefully() {
         let (stdout, stderr, success) = run_hook(hook, "{}");
         assert!(
             success,
-            "Hook '{}' must handle {{}} input gracefully. stderr: {}",
-            hook, stderr
+            "Hook '{hook}' must handle {{}} input gracefully. stderr: {stderr}"
         );
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
         assert!(
             parsed.is_ok(),
-            "Hook '{}' must emit valid JSON on {{}} input. Got: '{}'",
-            hook,
-            stdout
+            "Hook '{hook}' must emit valid JSON on {{}} input. Got: '{stdout}'"
         );
     }
 }

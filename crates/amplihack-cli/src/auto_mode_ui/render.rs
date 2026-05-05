@@ -67,7 +67,7 @@ pub fn render_auto_mode_frame(
     } else {
         let start = snapshot.logs.len().saturating_sub(MAX_LOG_LINES);
         for log in &snapshot.logs[start..] {
-            lines.push(format!("  {}", log));
+            lines.push(format!("  {log}"));
         }
     }
 
@@ -76,7 +76,7 @@ pub fn render_auto_mode_frame(
     lines.push("  x = exit UI (auto mode continues)".to_string());
     lines.push("  h = toggle help".to_string());
     if queued_inputs > 0 {
-        lines.push(format!("  queued instructions: {}", queued_inputs));
+        lines.push(format!("  queued instructions: {queued_inputs}"));
     }
     if showing_help {
         lines.push(String::new());

@@ -66,7 +66,7 @@ impl ExperimentManifest {
         })?;
         let mut manifest: Self =
             serde_json::from_str(&content).map_err(|e| EvalError::ConfigError {
-                message: format!("failed to parse manifest: {}", e),
+                message: format!("failed to parse manifest: {e}"),
             })?;
         // Default experiment_home to the manifest's parent directory.
         if manifest.experiment_home.as_os_str().is_empty()
@@ -80,7 +80,7 @@ impl ExperimentManifest {
     /// Write the manifest to a JSON file.
     pub fn to_file(&self, path: &Path) -> Result<(), EvalError> {
         let content = serde_json::to_string_pretty(self).map_err(|e| EvalError::ConfigError {
-            message: format!("failed to serialize manifest: {}", e),
+            message: format!("failed to serialize manifest: {e}"),
         })?;
         std::fs::write(path, &content).map_err(|e| EvalError::IoError {
             path: Some(path.to_path_buf()),
@@ -187,7 +187,7 @@ impl ExperimentResults {
     /// Write results to a JSON file.
     pub fn to_file(&self, path: &Path) -> Result<(), EvalError> {
         let content = serde_json::to_string_pretty(self).map_err(|e| EvalError::ConfigError {
-            message: format!("failed to serialize results: {}", e),
+            message: format!("failed to serialize results: {e}"),
         })?;
         std::fs::write(path, &content).map_err(|e| EvalError::IoError {
             path: Some(path.to_path_buf()),
@@ -324,7 +324,7 @@ pub fn heuristic_evaluate(artifact: &str, prompt: &str, spec: Option<&str>) -> E
         .filter(|kw| artifact_lower.contains(*kw))
         .count();
     if code_hits > 0 {
-        signals.push(format!("code_patterns:{}", code_hits));
+        signals.push(format!("code_patterns:{code_hits}"));
         score += 0.15 * (code_hits as f64 / code_keywords.len() as f64);
     }
 
@@ -337,7 +337,7 @@ pub fn heuristic_evaluate(artifact: &str, prompt: &str, spec: Option<&str>) -> E
     if !prompt_words.is_empty() {
         let ratio = overlap as f64 / prompt_words.len() as f64;
         if ratio > 0.1 {
-            signals.push(format!("prompt_overlap:{:.2}", ratio));
+            signals.push(format!("prompt_overlap:{ratio:.2}"));
             score += 0.25 * ratio.min(1.0);
         }
     }
@@ -354,7 +354,7 @@ pub fn heuristic_evaluate(artifact: &str, prompt: &str, spec: Option<&str>) -> E
             .count();
         if !spec_keywords.is_empty() {
             let ratio = spec_overlap as f64 / spec_keywords.len() as f64;
-            signals.push(format!("spec_overlap:{:.2}", ratio));
+            signals.push(format!("spec_overlap:{ratio:.2}"));
             score += 0.3 * ratio.min(1.0);
         }
     } else {
@@ -373,7 +373,7 @@ pub fn heuristic_evaluate(artifact: &str, prompt: &str, spec: Option<&str>) -> E
     // Signal: reasonable length
     let char_count = artifact.len();
     if char_count > 100 {
-        signals.push(format!("length:{}", char_count));
+        signals.push(format!("length:{char_count}"));
         score += 0.1;
     }
 
@@ -386,7 +386,7 @@ pub fn heuristic_evaluate(artifact: &str, prompt: &str, spec: Option<&str>) -> E
 
 /// Build a cell ID from matrix entry components.
 pub fn build_cell_id(model: &str, refinement_id: &str, repetition: usize) -> String {
-    format!("{}__{}__{}", model, refinement_id, repetition)
+    format!("{model}__{refinement_id}__{repetition}")
 }
 
 /// Compute per-model aggregated scores from a map of cell_id → EvaluationResult.

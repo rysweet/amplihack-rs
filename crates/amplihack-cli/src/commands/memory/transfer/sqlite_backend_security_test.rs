@@ -94,8 +94,7 @@ fn validate_agent_name_accepts_valid_name() {
     let result = validate_agent_name("my-agent");
     assert!(
         result.is_ok(),
-        "validate_agent_name('my-agent') must return Ok, got Err: {:?}",
-        result
+        "validate_agent_name('my-agent') must return Ok, got Err: {result:?}"
     );
 }
 
@@ -105,8 +104,7 @@ fn validate_agent_name_accepts_alphanumeric_with_hyphens() {
     let result = validate_agent_name("agent-123");
     assert!(
         result.is_ok(),
-        "validate_agent_name('agent-123') must return Ok, got Err: {:?}",
-        result
+        "validate_agent_name('agent-123') must return Ok, got Err: {result:?}"
     );
 }
 
@@ -140,16 +138,13 @@ fn resolve_hierarchical_sqlite_path_uses_storage_override() {
 
     assert!(
         result.is_ok(),
-        "resolve with storage override must succeed, got Err: {:?}",
-        result
+        "resolve with storage override must succeed, got Err: {result:?}"
     );
     let resolved = result.unwrap();
     // The resolved path must be rooted under the override, not HOME.
     assert!(
         resolved.starts_with(&override_dir),
-        "resolved path {:?} must be under override dir {:?}",
-        resolved,
-        override_dir
+        "resolved path {resolved:?} must be under override dir {override_dir:?}"
     );
 }
 
@@ -163,16 +158,13 @@ fn resolve_hierarchical_sqlite_path_defaults_to_home() {
     let result = resolve_hierarchical_sqlite_path("my-agent", None);
     assert!(
         result.is_ok(),
-        "resolve_hierarchical_sqlite_path(None) must succeed, got Err: {:?}",
-        result
+        "resolve_hierarchical_sqlite_path(None) must succeed, got Err: {result:?}"
     );
     let resolved = result.unwrap();
     let expected_prefix = dir.path().join(".amplihack").join("hierarchical_memory");
     assert!(
         resolved.starts_with(&expected_prefix),
-        "resolved path {:?} must be under ~/.amplihack/hierarchical_memory/, expected prefix {:?}",
-        resolved,
-        expected_prefix
+        "resolved path {resolved:?} must be under ~/.amplihack/hierarchical_memory/, expected prefix {expected_prefix:?}"
     );
 }
 
@@ -222,8 +214,7 @@ fn enforce_permissions_accepts_regular_file() {
     let result = enforce_hierarchical_db_permissions(&db_path);
     assert!(
         result.is_ok(),
-        "enforce_hierarchical_db_permissions must succeed for a regular file, got: {:?}",
-        result
+        "enforce_hierarchical_db_permissions must succeed for a regular file, got: {result:?}"
     );
 }
 
@@ -239,8 +230,7 @@ fn enforce_permissions_accepts_nonexistent_path() {
     let result = enforce_hierarchical_db_permissions(&db_path);
     assert!(
         result.is_ok(),
-        "enforce_hierarchical_db_permissions must succeed for non-existent path, got: {:?}",
-        result
+        "enforce_hierarchical_db_permissions must succeed for non-existent path, got: {result:?}"
     );
 }
 

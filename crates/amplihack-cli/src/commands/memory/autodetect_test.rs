@@ -141,8 +141,7 @@ fn autodetect_rejects_symlinks_in_probe() -> anyhow::Result<()> {
     let result = resolve_backend_with_autodetect();
     assert!(
         result.is_err(),
-        "autodetect must return Err when a symlink is found in the probe path, got: {:?}",
-        result
+        "autodetect must return Err when a symlink is found in the probe path, got: {result:?}"
     );
     Ok(())
 }
@@ -195,8 +194,7 @@ fn autodetect_errors_on_unrecognized_backend_value() -> anyhow::Result<()> {
     assert!(
         result.is_err(),
         "resolve_backend_with_autodetect must return Err for unrecognized \
-         AMPLIHACK_MEMORY_BACKEND value 'sqllite', got: {:?}",
-        result
+         AMPLIHACK_MEMORY_BACKEND value 'sqllite', got: {result:?}"
     );
     let err_msg = format!("{}", result.unwrap_err());
     assert!(

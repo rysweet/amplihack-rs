@@ -166,8 +166,8 @@ fn print_blarify_prompt_banner(
     println!("Code Indexing with Blarify");
     println!("{}", "=".repeat(60));
     println!("Project: {}", project_path.display());
-    println!("Status: {}", status_reason);
-    println!("Files to index: {}", estimated_files);
+    println!("Status: {status_reason}");
+    println!("Files to index: {estimated_files}");
     println!(
         "Estimated time: {}",
         format_duration_seconds(estimate.total_seconds)
@@ -334,7 +334,7 @@ pub(super) fn consent_cache_path(project_path: &Path) -> Result<PathBuf> {
         let mut hasher = Sha256::new();
         hasher.update(resolved.to_string_lossy().as_bytes());
         let digest = hasher.finalize();
-        format!("{:x}", digest)[..16].to_string()
+        format!("{digest:x}")[..16].to_string()
     };
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)

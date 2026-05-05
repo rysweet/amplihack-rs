@@ -84,7 +84,7 @@ pub fn resolve_asset_path(asset_name: &str, search_roots: &[PathBuf]) -> Result<
     let asset_map = asset_relative_paths();
     let rel_paths = asset_map
         .get(asset_name)
-        .with_context(|| format!("unknown asset name: {}", asset_name))?;
+        .with_context(|| format!("unknown asset name: {asset_name}"))?;
 
     for root in search_roots {
         for rel in rel_paths {
@@ -133,7 +133,7 @@ pub fn main(argv: &[String]) -> i32 {
         }
         Err(e) => {
             warn!(error = %e, "asset resolution failed");
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             1
         }
     }

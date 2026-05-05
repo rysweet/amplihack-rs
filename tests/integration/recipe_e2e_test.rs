@@ -265,8 +265,7 @@ fn recipe_validate_exits_zero_for_default_workflow() {
     if !recipe_path.exists() {
         // Soft skip: recipe not installed in this environment
         println!(
-            "SKIP: default-workflow.yaml not found at {:?} — skipping validate test",
-            recipe_path
+            "SKIP: default-workflow.yaml not found at {recipe_path:?} — skipping validate test"
         );
         return;
     }
@@ -375,7 +374,7 @@ fn recipe_run_dry_run_default_workflow_exits_zero() {
         std::path::Path::new(&home).join(".amplihack/.claude/recipes/default-workflow.yaml");
 
     if !recipe_path.exists() {
-        println!("SKIP: default-workflow.yaml not found at {:?}", recipe_path);
+        println!("SKIP: default-workflow.yaml not found at {recipe_path:?}");
         // Still run a temp recipe to gate the recipe-runner-rs binary
     }
 

@@ -65,7 +65,7 @@ pub(crate) fn save_compaction_metadata(
         .create(true)
         .append(true)
         .open(metadata_file)?;
-    writeln!(file, "{}", json)?;
+    writeln!(file, "{json}")?;
 
     Ok(metadata)
 }

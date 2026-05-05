@@ -76,7 +76,7 @@ fn main() {
         }
         other => {
             eprintln!(
-                "amplihack-hooks: unknown subcommand '{}'\n\n\
+                "amplihack-hooks: unknown subcommand '{other}'\n\n\
                 Usage: amplihack-hooks <hook-name>\n\n\
                 Available hooks:\n  \
                 pre-tool-use\n  \
@@ -89,8 +89,7 @@ fn main() {
                 workflow-classification-reminder\n  \
                 user-prompt\n  \
                 pre-compact\n  \
-                precommit-prefs",
-                other
+                precommit-prefs"
             );
             std::process::exit(1);
         }

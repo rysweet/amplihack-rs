@@ -33,8 +33,7 @@ impl ProgressiveSuite {
         let cases = self.cases_for_level(level);
         if cases.is_empty() {
             return Err(EvalError::level_not_found(format!(
-                "No test cases for {}",
-                level
+                "No test cases for {level}"
             )));
         }
 

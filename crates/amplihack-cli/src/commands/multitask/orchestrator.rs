@@ -144,10 +144,7 @@ impl ParallelOrchestrator {
                 ws.work_dir.display()
             );
         } else {
-            println!(
-                "[{}] Cloning default branch '{}' from remote...",
-                issue, default_branch
-            );
+            println!("[{issue}] Cloning default branch '{default_branch}' from remote...");
             let status = Command::new("git")
                 .args([
                     "clone",
@@ -162,7 +159,7 @@ impl ParallelOrchestrator {
                 .with_context(|| format!("[{issue}] Failed to spawn git clone"))?;
 
             if !status.success() {
-                bail!("[{issue}] git clone failed with exit code {}", status);
+                bail!("[{issue}] git clone failed with exit code {status}");
             }
         }
 

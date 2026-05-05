@@ -8,7 +8,7 @@ fn long_help_for(path: &[&str]) -> String {
     for name in path {
         current = current
             .find_subcommand_mut(name)
-            .unwrap_or_else(|| panic!("expected `{}` subcommand in `{path:?}`", name));
+            .unwrap_or_else(|| panic!("expected `{name}` subcommand in `{path:?}`"));
     }
 
     let mut help = Vec::new();

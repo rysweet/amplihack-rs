@@ -213,7 +213,7 @@ impl OrchestratorSessionBuilder {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let session_id = format!("{}_{}", pattern_name, timestamp);
+        let session_id = format!("{pattern_name}_{timestamp}");
         let base_log_dir = self
             .base_log_dir
             .unwrap_or_else(|| working_dir.join(".claude").join("runtime").join("logs"));
@@ -249,7 +249,7 @@ fn humantime_now() -> String {
     let h = (secs / 3600) % 24;
     let mi = (secs / 60) % 60;
     let se = secs % 60;
-    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, mo, d, h, mi, se)
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{se:02}")
 }
 
 /// Convert "days since 1970-01-01" → (year, month, day) in the proleptic

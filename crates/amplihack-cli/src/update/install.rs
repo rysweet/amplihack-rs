@@ -20,8 +20,7 @@ pub(super) fn verify_sha256(archive_bytes: &[u8], checksum_url: &str) -> Result<
 
     if expected_hex.len() != 64 || !expected_hex.chars().all(|c| c.is_ascii_hexdigit()) {
         bail!(
-            "checksum file does not contain a valid SHA-256 hex digest (got {:?}): {checksum_url}",
-            expected_hex
+            "checksum file does not contain a valid SHA-256 hex digest (got {expected_hex:?}): {checksum_url}"
         );
     }
 
@@ -295,7 +294,7 @@ pub(super) fn find_binary(root: &Path, binary_name: &str) -> Result<PathBuf> {
     }
 
     search(root, binary_name, 0)
-        .ok_or_else(|| anyhow!("binary '{}' not found in downloaded archive", binary_name))
+        .ok_or_else(|| anyhow!("binary '{binary_name}' not found in downloaded archive"))
 }
 
 fn install_binary_atomic(source: &Path, destination: &Path) -> Result<()> {

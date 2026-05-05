@@ -107,7 +107,7 @@ fn generate_rejects_invalid_marketplace_name() {
 fn merge_deep_dicts() {
     let base = json!({ "a": { "x": 1 } });
     let overlay = json!({ "a": { "y": 2 } });
-    let merged = make_gen().merge_settings(&base, &overlay);
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
     assert_eq!(merged, json!({ "a": { "x": 1, "y": 2 } }));
 }
 
@@ -115,7 +115,7 @@ fn merge_deep_dicts() {
 fn merge_overlay_takes_precedence() {
     let base = json!({ "key": "old" });
     let overlay = json!({ "key": "new" });
-    let merged = make_gen().merge_settings(&base, &overlay);
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
     assert_eq!(merged["key"], json!("new"));
 }
 
@@ -123,7 +123,7 @@ fn merge_overlay_takes_precedence() {
 fn merge_concatenates_arrays() {
     let base = json!({ "items": [1, 2] });
     let overlay = json!({ "items": [3, 4] });
-    let merged = make_gen().merge_settings(&base, &overlay);
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
     assert_eq!(merged["items"], json!([1, 2, 3, 4]));
 }
 

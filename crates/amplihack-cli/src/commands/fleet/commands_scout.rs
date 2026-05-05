@@ -79,10 +79,7 @@ pub(super) fn run_scout(
         let session_key = format!("{}/{}", session.vm_name, session.session_name);
         let session_status = session.status.as_str().to_string();
         if incremental && previous_statuses.get(&session_key) == Some(&session_status) {
-            println!(
-                "  Skipping (unchanged): {} [{}]",
-                session_key, session_status
-            );
+            println!("  Skipping (unchanged): {session_key} [{session_status}]");
             if let Some(previous) = previous_decisions.iter().find(|decision| {
                 decision.vm == session.vm_name && decision.session == session.session_name
             }) {

@@ -435,11 +435,10 @@ fn tc_sec_07_every_persist_call_site_has_permission_annotation() {
     assert!(
         violations.is_empty(),
         "SECURITY GAP: the following `persist()` call sites in fleet.rs have no \
-         permission annotation within the preceding 5 lines: {:?}.\n\
+         permission annotation within the preceding 5 lines: {violations:?}.\n\
          For each site, either:\n\
          a) add `file.set_permissions(Permissions::from_mode(0o600))` before persist(), OR\n\
-         b) add a `// SEC-PERM: tempfile guarantees 0o600` comment if relying on crate default.",
-        violations
+         b) add a `// SEC-PERM: tempfile guarantees 0o600` comment if relying on crate default."
     );
 }
 
@@ -826,10 +825,9 @@ fn tc_sec_18_azlin_commands_use_args_array_not_shell_string() {
 
     assert!(
         violations.is_empty(),
-        "SECURITY CONCERN: azlin Command::new() calls at lines {:?} appear to use \
+        "SECURITY CONCERN: azlin Command::new() calls at lines {violations:?} appear to use \
          `.arg(format!(...))` which may interpolate user data into a single argument. \
-         Prefer `.args([\"subcommand\", user_value])` where each token is a separate arg.",
-        violations
+         Prefer `.args([\"subcommand\", user_value])` where each token is a separate arg."
     );
 }
 

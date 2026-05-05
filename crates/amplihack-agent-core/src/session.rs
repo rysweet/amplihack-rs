@@ -101,7 +101,7 @@ impl SessionManager {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("SystemTime before UNIX_EPOCH")
             .as_nanos();
-        let session_id = format!("sess-{:x}-{}", now_nanos, count);
+        let session_id = format!("sess-{now_nanos:x}-{count}");
         let session = AgentSession::new(&session_id, agent_id);
         self.sessions.insert(session_id, session.clone());
         Ok(session)

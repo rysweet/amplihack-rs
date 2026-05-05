@@ -247,10 +247,7 @@ fn display_memory_config(config: &MemoryConfig) -> String {
                 limit,
                 path.display()
             ),
-            None => format!(
-                "ℹ NODE_OPTIONS=--max-old-space-size={} (saved preference)",
-                limit
-            ),
+            None => format!("ℹ NODE_OPTIONS=--max-old-space-size={limit} (saved preference)"),
         };
     }
 

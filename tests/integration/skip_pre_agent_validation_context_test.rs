@@ -390,9 +390,8 @@ fn smart_orchestrator_skip_var_is_string_not_boolean() {
     assert!(
         val.is_string(),
         "skip_pre_agent_validation must be a YAML string (quoted \"true\"), not a boolean. \
-         Got type: {:?}, value: {val:?}. \
-         Use \"true\" (quoted) to match the force_single_workstream pattern.",
-        val
+         Got type: {val:?}, value: {val:?}. \
+         Use \"true\" (quoted) to match the force_single_workstream pattern."
     );
 }
 
@@ -409,8 +408,7 @@ fn default_workflow_skip_var_is_string_not_boolean() {
     assert!(
         val.is_string(),
         "skip_pre_agent_validation must be a YAML string (quoted \"true\"), not a boolean. \
-         Got type: {:?}, value: {val:?}",
-        val
+         Got type: {val:?}, value: {val:?}"
     );
 }
 

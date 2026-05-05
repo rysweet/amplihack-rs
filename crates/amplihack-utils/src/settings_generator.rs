@@ -184,7 +184,7 @@ impl SettingsGenerator {
 
         // Merge with user settings if provided.
         if let Some(user) = user_settings {
-            result = self.merge_settings(&result, user);
+            result = Self::merge_settings(&result, user);
         }
 
         Ok(result)
@@ -195,13 +195,13 @@ impl SettingsGenerator {
     /// - Dict + Dict → recursive merge
     /// - Array + Array → concatenate
     /// - Otherwise overlay takes precedence
-    pub fn merge_settings(&self, base: &Value, overlay: &Value) -> Value {
+    pub fn merge_settings(base: &Value, overlay: &Value) -> Value {
         match (base, overlay) {
             (Value::Object(b), Value::Object(o)) => {
                 let mut merged = b.clone();
                 for (key, oval) in o {
                     let new_val = if let Some(bval) = merged.get(key) {
-                        self.merge_settings(bval, oval)
+                        Self::merge_settings(bval, oval)
                     } else {
                         oval.clone()
                     };

@@ -122,7 +122,7 @@ pub fn extract_preferences(content: &str) -> Vec<(String, String)> {
 pub fn build_preference_context(prefs: &[(String, String)]) -> String {
     let mut parts = vec!["## User Preferences".to_string()];
     for (key, value) in prefs {
-        parts.push(format!("- **{}**: {}", key, value));
+        parts.push(format!("- **{key}**: {value}"));
     }
     parts.join("\n")
 }

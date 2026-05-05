@@ -117,7 +117,7 @@ fn generate_questions(facts: &[Fact], num_questions: usize) -> Vec<LongHorizonQu
                 dimension_weights: HashMap::new(),
             };
             LongHorizonQuestion {
-                question_id: format!("lh-q{}", i),
+                question_id: format!("lh-q{i}"),
                 text: format!("What do you know about: {}?", fact.statement),
                 category: fact.category.clone(),
                 expected_answer: fact.statement.clone(),

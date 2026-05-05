@@ -159,7 +159,7 @@ fn workload_status_non_terminal_states() {
 #[test]
 fn workload_status_display() {
     let status = WorkloadStatus::Running;
-    let debug = format!("{:?}", status);
+    let debug = format!("{status:?}");
     assert_eq!(debug, "Running");
 }
 

@@ -326,9 +326,7 @@ mod tests {
             let forwarded = forwarded_env_vars([(key, value.as_str())]);
             assert!(
                 forwarded.contains_key(key),
-                "token with prefix '{}' for key '{}' should be forwarded",
-                value,
-                key
+                "token with prefix '{value}' for key '{key}' should be forwarded"
             );
         }
     }

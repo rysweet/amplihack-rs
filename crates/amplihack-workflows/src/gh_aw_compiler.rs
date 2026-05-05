@@ -287,11 +287,7 @@ mod tests {
     fn valid_workflow() {
         let content = "---\nname: Test\non:\n  push:\n    branches: [main]\n---\n\n# Body";
         let diags = compile_workflow(content, "test.md");
-        assert!(
-            diags.is_empty(),
-            "Expected no diagnostics, got: {:?}",
-            diags
-        );
+        assert!(diags.is_empty(), "Expected no diagnostics, got: {diags:?}");
     }
 
     #[test]

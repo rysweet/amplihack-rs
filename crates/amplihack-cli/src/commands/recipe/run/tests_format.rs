@@ -177,8 +177,7 @@ fn test_find_recipe_runner_binary_ignores_nonexistent_env_path() {
         Ok(path) => {
             assert!(
                 path.is_file(),
-                "Resolved binary must be a real file. Got: {:?}",
-                path
+                "Resolved binary must be a real file. Got: {path:?}"
             );
             assert_ne!(
                 path,

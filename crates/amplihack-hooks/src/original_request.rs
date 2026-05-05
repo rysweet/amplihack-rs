@@ -42,7 +42,7 @@ pub(crate) fn format_original_request_context(request: &OriginalRequest) -> Stri
     if !request.requirements.is_empty() {
         parts.push("**Requirements**:".to_string());
         for requirement in &request.requirements {
-            parts.push(format!("• {}", requirement));
+            parts.push(format!("• {requirement}"));
         }
         parts.push(String::new());
     }
@@ -50,7 +50,7 @@ pub(crate) fn format_original_request_context(request: &OriginalRequest) -> Stri
     if !request.constraints.is_empty() {
         parts.push("**Constraints**:".to_string());
         for constraint in &request.constraints {
-            parts.push(format!("• {}", constraint));
+            parts.push(format!("• {constraint}"));
         }
         parts.push(String::new());
     }
@@ -58,7 +58,7 @@ pub(crate) fn format_original_request_context(request: &OriginalRequest) -> Stri
     if !request.success_criteria.is_empty() {
         parts.push("**Success Criteria**:".to_string());
         for criterion in &request.success_criteria {
-            parts.push(format!("• {}", criterion));
+            parts.push(format!("• {criterion}"));
         }
         parts.push(String::new());
     }

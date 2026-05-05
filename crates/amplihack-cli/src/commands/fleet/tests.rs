@@ -1788,8 +1788,7 @@ exit 1
     }
 
     panic!(
-        "expected 3 snapshots but got {} after 3 attempts (subprocess spawn likely failed under load)",
-        last_snapshot_count
+        "expected 3 snapshots but got {last_snapshot_count} after 3 attempts (subprocess spawn likely failed under load)"
     );
 }
 
@@ -4276,8 +4275,7 @@ fn fleet_admiral_start_agent_updates_task_state_and_log() {
     }
 
     panic!(
-        "expected 'Agent started: fleet-queued-task on vm-1' but got '{}' after 3 attempts",
-        last_outcome
+        "expected 'Agent started: fleet-queued-task on vm-1' but got '{last_outcome}' after 3 attempts"
     );
 }
 

@@ -131,8 +131,7 @@ fn ci_pin_step_asserts_version_1_0_138() {
          \n\
          The step should contain: if [ \"$version\" != \"1.0.138\" ]\n\
          \n\
-         Found in ci.yml:\n{}",
-        content
+         Found in ci.yml:\n{content}"
     );
 }
 
@@ -157,8 +156,7 @@ fn ci_pin_step_includes_remediation_command() {
          \n\
          This ensures engineers can fix a broken pin without reading documentation.\n\
          \n\
-         Found in ci.yml:\n{}",
-        content
+         Found in ci.yml:\n{content}"
     );
 }
 
@@ -278,8 +276,7 @@ fn ci_pin_step_is_in_check_job() {
          The `check` job gates all other jobs via `needs: check`.\n\
          A broken pin will block the entire pipeline, not just the test job.\n\
          \n\
-         check: job content:\n{}",
-        check_job_content
+         check: job content:\n{check_job_content}"
     );
 }
 

@@ -155,16 +155,14 @@ fn skip_path_uses_exit_zero() {
         let window = &yaml[abs..window_end];
         assert!(
             window.contains("exit 0"),
-            "skip-payload at offset {} must be followed by `exit 0`",
-            abs
+            "skip-payload at offset {abs} must be followed by `exit 0`"
         );
         found += 1;
         search_from = abs + payload.len();
     }
     assert_eq!(
         found, 2,
-        "expected exactly two skip-path occurrences (one per eval step); found {}",
-        found
+        "expected exactly two skip-path occurrences (one per eval step); found {found}"
     );
 }
 
@@ -252,17 +250,14 @@ echo '{"skipped":true,"reason":"native progressive eval runner not available; st
     );
     assert!(
         stderr.contains("[skip] native progressive eval runner not available"),
-        "stderr must contain [skip] warning; got: {}",
-        stderr
+        "stderr must contain [skip] warning; got: {stderr}"
     );
     assert!(
         stdout.contains(r#""skipped":true"#),
-        "stdout must contain skipped sentinel JSON; got: {}",
-        stdout
+        "stdout must contain skipped sentinel JSON; got: {stdout}"
     );
     assert!(
         stdout.contains(r#""reason":"native progressive eval runner not available; step skipped""#),
-        "stdout must contain reason field; got: {}",
-        stdout
+        "stdout must contain reason field; got: {stdout}"
     );
 }

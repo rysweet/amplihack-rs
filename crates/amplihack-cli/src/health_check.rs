@@ -147,7 +147,7 @@ fn _check_dependency(name: &str, args: &[&str]) -> CheckDetail {
             CheckDetail {
                 name: name.into(),
                 passed: false,
-                message: format!("{name} exited with {}", status),
+                message: format!("{name} exited with {status}"),
             }
         }
         Err(e) => {

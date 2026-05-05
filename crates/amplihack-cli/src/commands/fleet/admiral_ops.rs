@@ -57,7 +57,7 @@ impl FleetAdmiral {
         if output.status.success() {
             self.task_queue
                 .mark_task_running(&task.id, vm_name, session_name)?;
-            return Ok(format!("Agent started: {} on {}", session_name, vm_name));
+            return Ok(format!("Agent started: {session_name} on {vm_name}"));
         }
 
         Ok(format!(

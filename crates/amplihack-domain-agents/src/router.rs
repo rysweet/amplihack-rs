@@ -52,7 +52,7 @@ impl IntentRouter {
     }
 
     pub fn route_with_context(&self, input: &str, context: &str) -> Result<RoutingDecision> {
-        let combined = format!("{} {}", input, context).to_lowercase();
+        let combined = format!("{input} {context}").to_lowercase();
         let mut decision = Self::classify(&combined)?;
         if !context.is_empty() && decision.confidence < 1.0 {
             decision.confidence = (decision.confidence + 0.05).min(1.0);
