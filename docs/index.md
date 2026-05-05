@@ -680,7 +680,7 @@ Fix common issues and learn from past solutions.
 
 ### Troubleshooting
 
-- [Discoveries](discoveries.md) - Known issues and solutions (CHECK HERE FIRST!)
+- [Discoveries](https://rysweet.github.io/amplihack-rs/discoveries/) - Known issues and solutions (CHECK HERE FIRST!)
 - [Troubleshooting Guides](troubleshooting/README.md) - Common problems and fixes
 - [Memory Consent Issues](troubleshooting/memory-consent-issues.md) - Fix prompt, timeout, and detection problems
 - [Memory-Enabled Agents Issues](troubleshooting/memory-enabled-agents.md) - Fix memory persistence, pattern recognition, and learning problems
