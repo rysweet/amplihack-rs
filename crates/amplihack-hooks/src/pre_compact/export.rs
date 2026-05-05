@@ -83,3 +83,68 @@ fn now_epoch_secs() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn error_response_format() {
+        let err = anyhow::anyhow!("disk full");
+        let resp = error_response("writing log", &err);
+        let output = &resp["hookSpecificOutput"];
+        assert_eq!(output["hookEventName"], "PreCompact");
+        assert_eq!(output["status"], "error");
+        assert!(output["message"].as_str().unwrap().contains("writing log"));
+        assert!(output["error"].as_str().unwrap().contains("disk full"));
+    }
+
+    #[test]
+    fn generate_session_id_format() {
+        let id = generate_session_id();
+        assert!(id.starts_with("session-"));
+        let secs_str = &id["session-".len()..];
+        let secs: u64 = secs_str.parse().expect("suffix should be numeric");
+        assert!(secs > 1_700_000_000, "timestamp should be recent");
+    }
+
+    #[test]
+    fn export_transcript_missing_file() {
+        let result = export_transcript(Path::new("/nonexistent/transcript.jsonl"), "test-session");
+        // Should return Ok(None) when file doesn't exist
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn export_transcript_with_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("transcript.jsonl");
+        fs::write(&src, r#"{"role":"user","content":"hello"}"#).unwrap();
+
+        let result = export_transcript(&src, "export-test");
+        let exported = result.unwrap().unwrap();
+        assert!(exported.exists());
+        assert!(exported.to_string_lossy().contains("transcript_pre_compact.jsonl"));
+    }
+
+    #[test]
+    fn save_compaction_metadata_basic() {
+        let extra = json!({"trigger": "auto"});
+        let result = save_compaction_metadata("meta-test", None, &extra, true);
+        let metadata = result.unwrap();
+        assert_eq!(metadata["session_id"], "meta-test");
+        assert_eq!(metadata["original_request_preserved"], true);
+        assert_eq!(metadata["compaction_trigger"], "auto");
+        assert!(metadata["timestamp"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn save_compaction_metadata_no_trigger() {
+        let extra = json!({});
+        let result = save_compaction_metadata("no-trigger", None, &extra, false);
+        let metadata = result.unwrap();
+        assert_eq!(metadata["original_request_preserved"], false);
+        assert!(metadata.get("compaction_trigger").is_none());
+    }
+}
