@@ -7,6 +7,7 @@
 //!   Not unit-tested (requires real TTY). Covered by manual/integration tests.
 
 use super::types::InstallManifest;
+#[cfg(test)]
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -72,7 +73,7 @@ impl HookScope {
     ///
     /// Currently exercised by tests; will be consumed by hook-wiring
     /// integration when repo-local scope writes land.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn settings_path_for(self, repo_root: &Path) -> PathBuf {
         match self {
             Self::Global => {
@@ -171,7 +172,7 @@ fn atty_check() -> bool {
 ///
 /// Currently exercised by tests; will be consumed by hook-wiring
 /// integration when repo-local scope writes land.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn resolve_hook_scope(scope: HookScope, cwd: &Path) -> HookScope {
     match scope {
         HookScope::Global => HookScope::Global,
@@ -283,7 +284,7 @@ fn run_wizard() -> anyhow::Result<InteractiveConfig> {
 // ---------------------------------------------------------------------------
 
 /// Resolve the user's home directory.
-#[allow(dead_code)]
+#[cfg(test)]
 fn dirs_home() -> Option<PathBuf> {
     // Reuse the existing home_dir helper from the install paths module.
     super::paths::home_dir().ok()

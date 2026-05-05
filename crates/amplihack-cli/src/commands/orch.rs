@@ -14,7 +14,7 @@
 //! Exposed via the `amplihack orch helper` CLI subcommand so recipes no longer
 //! need to shell into `python3`. See issue #270.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::Subcommand;
 use std::io::Read;
 use std::path::PathBuf;
@@ -545,13 +545,6 @@ pub fn is_known_type(label: &str) -> bool {
         label,
         "Q&A" | "Operations" | "Investigation" | "Development"
     )
-}
-
-// Compile-time guarantee that `bail!` import isn't dead; used in tests below
-// when input categories are validated.
-#[allow(dead_code)]
-fn _bail_used_in_tests() -> Result<()> {
-    bail!("placeholder");
 }
 
 #[cfg(test)]
