@@ -293,3 +293,227 @@ fn topo_sort(
 
     ordered_keys
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use amplihack_memory::Fact;
+    use serde_json::json;
+
+    fn make_fact(
+        context: &str,
+        outcome: &str,
+        timestamp: &str,
+        experience_id: &str,
+        temporal_index: i64,
+    ) -> Fact {
+        let mut f = Fact::new(context, outcome);
+        f.timestamp = timestamp.to_string();
+        f.experience_id = experience_id.to_string();
+        f.metadata
+            .insert("temporal_index".to_string(), json!(temporal_index));
+        f
+    }
+
+    // ---- transition_chain_from_facts ----
+
+    #[test]
+    fn empty_facts_produce_empty_chain() {
+        let chain = transition_chain_from_facts("user", "status", &[]);
+        assert!(chain.is_empty());
+    }
+
+    #[test]
+    fn no_matching_facts_produce_empty_chain() {
+        let facts = vec![make_fact(
+            "project alpha",
+            "completed",
+            "2025-01-01",
+            "e1",
+            0,
+        )];
+        let chain = transition_chain_from_facts("user", "status", &facts);
+        assert!(chain.is_empty());
+    }
+
+    #[test]
+    fn single_matching_fact_produces_one_entry() {
+        let facts = vec![make_fact(
+            "user status update",
+            "active",
+            "2025-01-01",
+            "e1",
+            0,
+        )];
+        let chain = transition_chain_from_facts("user", "status", &facts);
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0].value, "active");
+        assert_eq!(chain[0].experience_id, "e1");
+    }
+
+    #[test]
+    fn chain_sorted_by_timestamp() {
+        let facts = vec![
+            make_fact("user status", "offline", "2025-01-03", "e2", 0),
+            make_fact("user status", "online", "2025-01-01", "e1", 0),
+            make_fact("user status", "away", "2025-01-02", "e3", 0),
+        ];
+        let chain = transition_chain_from_facts("user", "status", &facts);
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0].value, "online");
+        assert_eq!(chain[1].value, "away");
+        assert_eq!(chain[2].value, "offline");
+    }
+
+    #[test]
+    fn chain_sorted_by_temporal_index_within_same_timestamp() {
+        let facts = vec![
+            make_fact("user status", "second", "2025-01-01", "e2", 2),
+            make_fact("user status", "first", "2025-01-01", "e1", 1),
+        ];
+        let chain = transition_chain_from_facts("user", "status", &facts);
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].value, "first");
+        assert_eq!(chain[1].value, "second");
+    }
+
+    #[test]
+    fn deduplicates_identical_entries() {
+        let facts = vec![
+            make_fact("user status", "active", "2025-01-01", "e1", 0),
+            make_fact("user status", "active", "2025-01-01", "e1", 0),
+        ];
+        let chain = transition_chain_from_facts("user", "status", &facts);
+        assert_eq!(chain.len(), 1);
+    }
+
+    #[test]
+    fn superseded_flag_read_from_metadata() {
+        let mut fact = make_fact("user status", "old-value", "2025-01-01", "e1", 0);
+        fact.metadata.insert("superseded".to_string(), json!(true));
+        let chain = transition_chain_from_facts("user", "status", &[fact]);
+        assert_eq!(chain.len(), 1);
+        assert!(chain[0].superseded);
+    }
+
+    #[test]
+    fn empty_experience_id_generates_synthetic() {
+        let facts = vec![make_fact("user status", "active", "2025-01-01", "", 0)];
+        let chain = transition_chain_from_facts("user", "status", &facts);
+        assert_eq!(chain.len(), 1);
+        assert!(chain[0].experience_id.starts_with("fact-"));
+    }
+
+    #[test]
+    fn case_insensitive_entity_field_matching() {
+        let facts = vec![make_fact(
+            "USER Status Change",
+            "active",
+            "2025-01-01",
+            "e1",
+            0,
+        )];
+        let chain = transition_chain_from_facts("user", "status", &facts);
+        assert_eq!(chain.len(), 1);
+    }
+
+    // ---- collapse_change_count_transitions ----
+
+    #[test]
+    fn collapse_empty_returns_empty() {
+        let result = collapse_change_count_transitions(&[], "status");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn collapse_preserves_unique_values() {
+        let transitions = vec![
+            Transition {
+                value: "alpha".to_string(),
+                timestamp: "2025-01-01".to_string(),
+                temporal_index: 0,
+                experience_id: "e1".to_string(),
+                sequence_position: 0,
+                superseded: false,
+                metadata: HashMap::new(),
+            },
+            Transition {
+                value: "beta".to_string(),
+                timestamp: "2025-01-02".to_string(),
+                temporal_index: 0,
+                experience_id: "e2".to_string(),
+                sequence_position: 0,
+                superseded: false,
+                metadata: HashMap::new(),
+            },
+        ];
+        // extract_temporal_state_values won't find sub-values for "status" in
+        // plain words, so collapse returns the original vec.
+        let result = collapse_change_count_transitions(&transitions, "status");
+        assert_eq!(result.len(), 2);
+    }
+
+    // ---- collapse_temporal_lookup_transitions ----
+
+    #[test]
+    fn temporal_lookup_empty_returns_empty() {
+        let result = collapse_temporal_lookup_transitions(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn temporal_lookup_deduplicates_same_value() {
+        let t = Transition {
+            value: "active".to_string(),
+            timestamp: "2025-01-01".to_string(),
+            temporal_index: 0,
+            experience_id: "e1".to_string(),
+            sequence_position: 0,
+            superseded: false,
+            metadata: HashMap::new(),
+        };
+        let transitions = vec![t.clone(), t];
+        let result = collapse_temporal_lookup_transitions(&transitions);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].value, "active");
+    }
+
+    #[test]
+    fn temporal_lookup_preserves_order_of_distinct_values() {
+        let make = |val: &str, seq: usize, eid: &str| Transition {
+            value: val.to_string(),
+            timestamp: "2025-01-01".to_string(),
+            temporal_index: 0,
+            experience_id: eid.to_string(),
+            sequence_position: seq,
+            superseded: false,
+            metadata: HashMap::new(),
+        };
+        let transitions = vec![
+            make("first", 0, "e1"),
+            make("second", 1, "e1"),
+            make("third", 2, "e1"),
+        ];
+        let result = collapse_temporal_lookup_transitions(&transitions);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].value, "first");
+        assert_eq!(result[1].value, "second");
+        assert_eq!(result[2].value, "third");
+    }
+
+    #[test]
+    fn temporal_lookup_skips_empty_values() {
+        let t = Transition {
+            value: "  ".to_string(),
+            timestamp: "2025-01-01".to_string(),
+            temporal_index: 0,
+            experience_id: "e1".to_string(),
+            sequence_position: 0,
+            superseded: false,
+            metadata: HashMap::new(),
+        };
+        let result = collapse_temporal_lookup_transitions(&[t]);
+        // Whitespace-only values are skipped, so fallback to original
+        assert_eq!(result.len(), 1);
+    }
+}
