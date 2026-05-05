@@ -115,7 +115,12 @@ pub struct SessionMetrics {
 /// Sanitize injected content: truncate and remove prompt injection patterns.
 pub fn sanitize_injected_content(content: &str) -> String {
     let truncated = if content.len() > MAX_INJECTED_CONTENT_SIZE {
-        &content[..MAX_INJECTED_CONTENT_SIZE]
+        // Truncate at a char boundary to avoid panicking on multi-byte UTF-8.
+        let mut end = MAX_INJECTED_CONTENT_SIZE;
+        while end > 0 && !content.is_char_boundary(end) {
+            end -= 1;
+        }
+        &content[..end]
     } else {
         content
     };
