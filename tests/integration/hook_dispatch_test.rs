@@ -275,6 +275,7 @@ fn session_start_dispatches_background_blarify_indexing() {
         .current_dir(&project_root)
         .env("AMPLIHACK_AMPLIHACK_BINARY_PATH", &stub)
         .env("AMPLIHACK_BLARIFY_MODE", "background")
+        .env_remove("AMPLIHACK_GRAPH_DB_PATH")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
