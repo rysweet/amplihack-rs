@@ -141,8 +141,6 @@ Never use `Box<dyn Error>` or `unwrap()` in library crates.
 |--------|-------|--------|
 | `edition` | `2024` | Rust 2024 edition formatting |
 | `max_width` | `100` | Line length cap |
-| `imports_granularity` | `Crate` | Group imports by crate |
-| `group_imports` | `StdExternalCrate` | Std / external / local ordering |
 
 Run `cargo fmt --all` to apply; `cargo fmt --all --check` to verify.
 
