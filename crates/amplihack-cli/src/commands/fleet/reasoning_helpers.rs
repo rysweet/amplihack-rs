@@ -360,3 +360,188 @@ pub(super) fn infer_agent_status(tmux_text: &str) -> AgentStatus {
     }
     AgentStatus::Unknown
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // infer_agent_status
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn status_running_indicator() {
+        let text = "some output\n(running) \u{23f5}\u{23f5}\nmore stuff";
+        assert_eq!(infer_agent_status(text).as_str(), "running");
+    }
+
+    #[test]
+    fn status_thinking_dot_prefix() {
+        let text = "processing\n\u{00b7} thinking about it";
+        assert_eq!(infer_agent_status(text).as_str(), "thinking");
+    }
+
+    #[test]
+    fn status_thinking_bullet() {
+        // The bullet must be the last non-empty line (reverse scan breaks on first)
+        let text = "some output\n\u{25cf} SomeTask";
+        assert_eq!(infer_agent_status(text).as_str(), "thinking");
+    }
+
+    #[test]
+    fn status_thinking_bash_tool() {
+        // Bash tool invocations are detected as thinking (tool in progress)
+        let text = "some output\n\u{25cf} Bash(echo hello)";
+        assert_eq!(infer_agent_status(text).as_str(), "thinking");
+    }
+
+    #[test]
+    fn status_idle_prompt_empty() {
+        let text = "\u{273b} done\n\u{276f} ";
+        assert_eq!(infer_agent_status(text).as_str(), "idle");
+    }
+
+    #[test]
+    fn status_thinking_prompt_with_text() {
+        let text = "\u{273b} done\n\u{276f} typing something";
+        assert_eq!(infer_agent_status(text).as_str(), "thinking");
+    }
+
+    #[test]
+    fn status_shell_dollar_prompt() {
+        let text = "user@host:~$ ";
+        assert_eq!(infer_agent_status(text).as_str(), "shell");
+    }
+
+    #[test]
+    fn status_waiting_input_yn() {
+        let text = "Continue? [y/n]";
+        assert_eq!(infer_agent_status(text).as_str(), "waiting_input");
+    }
+
+    #[test]
+    fn status_waiting_input_question() {
+        let text = "What should I do?";
+        assert_eq!(infer_agent_status(text).as_str(), "waiting_input");
+    }
+
+    #[test]
+    fn status_error() {
+        let text = "error: compilation failed";
+        assert_eq!(infer_agent_status(text).as_str(), "error");
+    }
+
+    #[test]
+    fn status_error_traceback() {
+        let text = "Traceback (most recent call last):\n  File...";
+        assert_eq!(infer_agent_status(text).as_str(), "error");
+    }
+
+    #[test]
+    fn status_completed_goal_achieved() {
+        let text = "GOAL_STATUS: ACHIEVED\nAll done";
+        assert_eq!(infer_agent_status(text).as_str(), "completed");
+    }
+
+    #[test]
+    fn status_completed_workflow() {
+        let text = "Workflow Complete";
+        assert_eq!(infer_agent_status(text).as_str(), "completed");
+    }
+
+    #[test]
+    fn status_completed_pr_created() {
+        let text = "gh pr create --title 'feat'\nPR #42 created successfully";
+        assert_eq!(infer_agent_status(text).as_str(), "completed");
+    }
+
+    #[test]
+    fn status_unknown_minimal_output() {
+        let text = "hi";
+        assert_eq!(infer_agent_status(text).as_str(), "unknown");
+    }
+
+    #[test]
+    fn status_running_substantial_output() {
+        let text = "x".repeat(MIN_SUBSTANTIAL_OUTPUT_LEN + 10);
+        assert_eq!(infer_agent_status(&text).as_str(), "running");
+    }
+
+    #[test]
+    fn status_no_session() {
+        // This is tested via parse_context_output, not infer directly
+        let text = "NO_SESSION";
+        // NO_SESSION is handled by parse_context_output, not infer
+        // infer just sees text
+        let status = infer_agent_status(text);
+        assert!(matches!(
+            status,
+            AgentStatus::Unknown | AgentStatus::Running
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_context_output — CWD / GIT / HEALTH sections
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_cwd_section() {
+        let output = "===TMUX===\nNO_SESSION\n===CWD===\n/home/user/project\n===END===";
+        let mut ctx =
+            SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        parse_context_output(output, &mut ctx).unwrap();
+        assert_eq!(ctx.working_directory, "/home/user/project");
+        assert_eq!(ctx.agent_status.as_str(), "no_session");
+    }
+
+    #[test]
+    fn parse_git_section() {
+        let output = "===TMUX===\nNO_SESSION\n===GIT===\nBRANCH:main\nREMOTE:https://github.com/org/repo\nMODIFIED:file1.rs,file2.rs,\n===END===";
+        let mut ctx =
+            SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        parse_context_output(output, &mut ctx).unwrap();
+        assert_eq!(ctx.git_branch, "main");
+        assert_eq!(ctx.files_modified, vec!["file1.rs", "file2.rs"]);
+    }
+
+    #[test]
+    fn parse_health_section() {
+        let output = "===TMUX===\nNO_SESSION\n===HEALTH===\nmem=42% disk=10% load=1.5\n===END===";
+        let mut ctx =
+            SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        parse_context_output(output, &mut ctx).unwrap();
+        assert!(ctx.health_summary.contains("mem=42%"));
+    }
+
+    #[test]
+    fn parse_pr_url_from_git() {
+        let output =
+            "===TMUX===\nNO_SESSION\n===GIT===\nPR_URL:https://github.com/org/repo/pull/5\n===END===";
+        let mut ctx =
+            SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        parse_context_output(output, &mut ctx).unwrap();
+        assert_eq!(ctx.pr_url, "https://github.com/org/repo/pull/5");
+    }
+
+    #[test]
+    fn parse_objectives_section() {
+        let output =
+            "===TMUX===\nNO_SESSION\n===OBJECTIVES===\n42\tBuild feature X\topen\n===END===";
+        let mut ctx =
+            SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        parse_context_output(output, &mut ctx).unwrap();
+        assert_eq!(ctx.project_objectives.len(), 1);
+        assert_eq!(ctx.project_objectives[0].number, 42);
+        assert_eq!(ctx.project_objectives[0].title, "Build feature X");
+    }
+
+    #[test]
+    fn parse_transcript_with_early_and_recent() {
+        let output = "===TMUX===\nNO_SESSION\n===TRANSCRIPT===\nTRANSCRIPT_LINES:5\n---EARLY---\nfirst message\n---RECENT---\nlast message\n===END===";
+        let mut ctx =
+            SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        parse_context_output(output, &mut ctx).unwrap();
+        assert!(ctx.transcript_summary.contains("first message"));
+        assert!(ctx.transcript_summary.contains("last message"));
+    }
+}
