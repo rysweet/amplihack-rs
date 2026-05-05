@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 fn test_parse_context_args_valid_single_pair() {
     let args = vec!["task_description=hello world".to_string()];
     let (ctx, errs) = parse_context_args(&args);
-    assert!(errs.is_empty(), "No errors expected. Got: {:?}", errs);
+    assert!(errs.is_empty(), "No errors expected. Got: {errs:?}");
     assert_eq!(
         ctx.get("task_description").map(String::as_str),
         Some("hello world")
@@ -26,7 +26,7 @@ fn test_parse_context_args_multiple_pairs() {
         "repo_path=/tmp".to_string(),
     ];
     let (ctx, errs) = parse_context_args(&args);
-    assert!(errs.is_empty(), "No errors expected. Got: {:?}", errs);
+    assert!(errs.is_empty(), "No errors expected. Got: {errs:?}");
     assert_eq!(ctx.len(), 3);
     assert_eq!(ctx.get("foo").map(String::as_str), Some("bar"));
     assert_eq!(ctx.get("baz").map(String::as_str), Some("qux"));
@@ -46,7 +46,7 @@ fn test_parse_context_args_empty_input() {
 fn test_parse_context_args_invalid_no_equals_sign() {
     let args = vec!["no-equals-sign".to_string()];
     let (ctx, errs) = parse_context_args(&args);
-    assert_eq!(errs.len(), 1, "Exactly one error expected. Got: {:?}", errs);
+    assert_eq!(errs.len(), 1, "Exactly one error expected. Got: {errs:?}");
     assert!(
         errs[0].contains("key=value"),
         "Error message must mention 'key=value' format. Got: {}",
@@ -61,7 +61,7 @@ fn test_parse_context_args_invalid_no_equals_sign() {
 fn test_parse_context_args_value_contains_equals() {
     let args = vec!["url=https://example.com?a=1&b=2".to_string()];
     let (ctx, errs) = parse_context_args(&args);
-    assert!(errs.is_empty(), "No errors expected. Got: {:?}", errs);
+    assert!(errs.is_empty(), "No errors expected. Got: {errs:?}");
     assert_eq!(
         ctx.get("url").map(String::as_str),
         Some("https://example.com?a=1&b=2"),
@@ -79,8 +79,7 @@ fn test_resolve_binary_path_returns_none_for_nonexistent_path() {
     let result = binary::resolve_binary_path("/definitely/does/not/exist/binary");
     assert!(
         result.is_none(),
-        "Non-existent path must resolve to None. Got: {:?}",
-        result
+        "Non-existent path must resolve to None. Got: {result:?}"
     );
 }
 
@@ -90,8 +89,7 @@ fn test_resolve_binary_path_returns_none_for_unknown_binary_name() {
     let result = binary::resolve_binary_path("this-binary-cannot-possibly-exist-amplihack-test");
     assert!(
         result.is_none(),
-        "Unknown binary name must resolve to None. Got: {:?}",
-        result
+        "Unknown binary name must resolve to None. Got: {result:?}"
     );
 }
 
@@ -108,8 +106,7 @@ fn test_resolve_binary_path_finds_known_binary_in_path() {
     let resolved = result.unwrap();
     assert!(
         resolved.is_file(),
-        "Resolved path must point to an existing file. Got: {:?}",
-        resolved
+        "Resolved path must point to an existing file. Got: {resolved:?}"
     );
 }
 
@@ -134,14 +131,12 @@ fn test_resolve_binary_path_expands_tilde_to_home_dir() {
     let result = binary::resolve_binary_path(&tilde_path);
     assert!(
         result.is_some(),
-        "Tilde path '{}' must expand to HOME and resolve. Got: None",
-        tilde_path
+        "Tilde path '{tilde_path}' must expand to HOME and resolve. Got: None"
     );
     let resolved = result.unwrap();
     assert!(
         resolved.starts_with(&home),
-        "Resolved path must start with HOME ({home}). Got: {:?}",
-        resolved
+        "Resolved path must start with HOME ({home}). Got: {resolved:?}"
     );
 }
 
@@ -170,8 +165,7 @@ fn test_infer_missing_context_user_values_override_recipe_defaults() {
     );
     assert!(
         inferred.is_empty(),
-        "No inference should occur when user provides the value. Got: {:?}",
-        inferred
+        "No inference should occur when user provides the value. Got: {inferred:?}"
     );
 }
 
@@ -199,8 +193,7 @@ fn test_infer_missing_context_infers_task_description_from_env() {
     );
     assert!(
         inferred.iter().any(|s| s.contains("task_description")),
-        "Inferred list must mention task_description. Got: {:?}",
-        inferred
+        "Inferred list must mention task_description. Got: {inferred:?}"
     );
 }
 

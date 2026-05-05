@@ -211,7 +211,7 @@ impl ProcessRunner for TokioProcessRunner {
                 Ok(v) => v,
                 Err(_) => {
                     return ProcessResult::err(
-                        format!("Timed out after {:?}", t),
+                        format!("Timed out after {t:?}"),
                         opts.process_id,
                         start.elapsed(),
                     );

@@ -78,10 +78,10 @@ Workflow:
    - Slide 50: Quote layout
    - Slide 54: Closing slide
 
-4. Rearrange slides: python scripts/rearrange.py template.pptx working.pptx 0,34,34,45,45,45,50,34,34,54
+4. Rearrange slides: Edit ppt/presentation.xml and relationships manually, then repack
 5. Extract text inventory
 6. Generate replacement text preserving formatting
-7. Apply replacements with replace.py
+7. Apply replacements with manual text replacement workflow
 
 [Executes template workflow with appropriate content]
 ```
@@ -93,9 +93,9 @@ Workflow:
 **Claude**:
 
 ```
-Using rearrange.py to duplicate and reorder:
+Using manual slide reordering workflow to duplicate and reorder:
 
-python scripts/rearrange.py template.pptx output.pptx 5,6,7,8,5,6,7,8,5,6,7,8
+Edit ppt/presentation.xml and relationships manually, then repack
 
 This creates 12 slides by repeating the 5-8 pattern three times.
 
@@ -114,11 +114,11 @@ This creates 12 slides by repeating the 5-8 pattern three times.
 
 ```
 Using OOXML workflow:
-1. Unpack: python ooxml/scripts/unpack.py presentation.pptx workspace/
+1. Unpack: bash ooxml/scripts/unpack.sh presentation.pptx workspace/
 2. Edit notesSlides/notesSlide2.xml, notesSlide3.xml, notesSlide5.xml
 3. Add <a:t> elements with speaker note content
-4. Validate: python ooxml/scripts/validate.py workspace/ --original presentation.pptx
-5. Pack: python ooxml/scripts/pack.py workspace/ presentation-with-notes.pptx
+4. Validate: Open the file with LibreOffice or PowerPoint and fix any reported errors
+5. Pack: bash ooxml/scripts/pack.sh workspace/ presentation-with-notes.pptx
 
 [Performs XML editing with proper OOXML structure]
 ```
@@ -278,7 +278,7 @@ Complete workflow:
 
 Step 1: Extract and analyze
   python -m markitdown corporate-template.pptx > template-content.md
-  python scripts/thumbnail.py corporate-template.pptx
+  Use LibreOffice or PowerPoint export to create thumbnails, or inspect slide XML/media manually
 
 Step 2: Create inventory
   [Analyzes 73 slides, identifies:
@@ -289,10 +289,10 @@ Step 2: Create inventory
    - Slide 68: Next steps]
 
 Step 3: Rearrange
-  python scripts/rearrange.py corporate-template.pptx working.pptx 0,12,25,25,40,68
+  Edit ppt/presentation.xml and relationships manually, then repack
 
 Step 4: Extract inventory
-  python scripts/inventory.py working.pptx inventory.json
+  Inspect ppt/slides/slide*.xml, notes, and layouts manually
 
 Step 5: Generate replacement text
   [Creates replacement-text.json with:
@@ -303,7 +303,7 @@ Step 5: Generate replacement text
    - Theme colors]
 
 Step 6: Apply replacements
-  python scripts/replace.py working.pptx replacement-text.json final.pptx
+  Edit slide XML text runs manually while preserving formatting
 
 [Produces final presentation with consistent branding]
 ```
@@ -318,7 +318,7 @@ Step 6: Apply replacements
 Slide 15 has 3 image placeholder shapes.
 
 Approach:
-1. Use rearrange.py to duplicate slide 15
+1. Use manual slide reordering workflow to duplicate slide 15
 2. Extract inventory showing OBJECT placeholder types
 3. In replacement JSON:
    - Keep image placeholder shapes empty (no paragraphs field)
@@ -340,7 +340,7 @@ For images, post-process with python-pptx or manual insertion.
 **Claude**:
 
 ```bash
-python scripts/thumbnail.py presentation.pptx review --cols 5
+Use LibreOffice or PowerPoint export to create thumbnails, or inspect slide XML/media manually
 ```
 
 Output:
@@ -424,10 +424,10 @@ Result: slide-1.jpg, slide-2.jpg, slide-3.jpg, etc.
 Multi-template workflow:
 
 1. Extract slide 0 from template-A:
-   python scripts/rearrange.py template-A.pptx title.pptx 0
+   Edit ppt/presentation.xml and relationships manually, then repack
 
 2. Extract slides 5,6,7 from template-B:
-   python scripts/rearrange.py template-B.pptx content.pptx 5,6,7
+   Edit ppt/presentation.xml and relationships manually, then repack
 
 3. Manually combine using OOXML or python-pptx:
    - Unpack both presentations
@@ -447,9 +447,9 @@ Multi-template workflow:
 ```bash
 for file in *.pptx; do
   echo "Processing $file"
-  python scripts/inventory.py "$file" "inventory-${file}.json"
+  Inspect ppt/slides/slide*.xml, notes, and layouts manually
   # Create custom replacement JSON for each
-  python scripts/replace.py "$file" "replacement-${file}.json" "updated-${file}"
+  Edit slide XML text runs manually while preserving formatting
 done
 ```
 
@@ -516,7 +516,7 @@ Result:
 
 1. **Immediate Validation**: Validate after every OOXML edit
 2. **Visual Inspection**: Always review thumbnails after generation
-3. **Check Overflow**: Watch for text overflow warnings from replace.py
+3. **Check Overflow**: Watch for text overflow warnings from manual text replacement workflow
 4. **Test on Device**: Preview on actual presentation device if possible
 
 ---
@@ -566,7 +566,7 @@ Layouts: Charts in right column, insights in left
 
 **Solution**: Check shape names exactly match inventory.json. Shapes are "shape-0", "shape-1", etc.
 
-### Issue: Overflow Warnings from replace.py
+### Issue: Overflow Warnings from manual text replacement workflow
 
 **Solution**: Shorten text, reduce font size, or choose shape with larger dimensions
 

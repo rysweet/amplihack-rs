@@ -116,10 +116,8 @@ fn run_with_timeout_kills() {
 #[test]
 fn run_empty_args() {
     let mgr = ProcessManager::new();
-    let result = mgr
-        .run_command(&[], None, None, None)
-        .expect("should return empty result");
-    assert!(!result.success());
+    let result = mgr.run_command(&[], None, None, None);
+    assert!(result.is_err(), "empty args should return an error");
 }
 
 #[test]
@@ -193,4 +191,23 @@ fn command_result_serde_roundtrip() {
     assert_eq!(restored.exit_code, original.exit_code);
     assert_eq!(restored.stdout, original.stdout);
     assert_eq!(restored.timed_out, original.timed_out);
+}
+
+// -- Spawn error context ---------------------------------------------------
+
+#[test]
+fn spawn_error_includes_command_name() {
+    let mgr = ProcessManager::new();
+    let result = mgr.run_command(
+        &["/nonexistent/binary/that/does/not/exist", "arg1"],
+        None,
+        None,
+        None,
+    );
+    let err = result.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("/nonexistent/binary/that/does/not/exist"),
+        "spawn error should include the command, got: {msg}"
+    );
 }

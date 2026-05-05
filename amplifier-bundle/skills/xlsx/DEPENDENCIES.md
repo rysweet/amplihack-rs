@@ -48,7 +48,7 @@ pip install openpyxl
 
 ### LibreOffice (Version 6.0+)
 
-**Purpose**: Formula recalculation engine for the recalc.py script
+**Purpose**: Formula recalculation engine for the LibreOffice headless recalculation workflow script
 
 **Why Required**: Excel formulas inserted by openpyxl are stored as strings. LibreOffice's calculation engine evaluates these formulas and saves the computed values back to the file.
 
@@ -108,7 +108,7 @@ choco install libreoffice
 brew install coreutils
 ```
 
-**Note**: The recalc.py script works without gtimeout on macOS, but timeout protection will be disabled.
+**Note**: The LibreOffice headless recalculation workflow script works without gtimeout on macOS, but timeout protection will be disabled.
 
 ## Dependency Installation
 
@@ -142,7 +142,7 @@ If you only need data analysis without formula recalculation:
 pip install pandas openpyxl
 ```
 
-This provides full functionality except formula recalculation via recalc.py.
+This provides full functionality except formula recalculation via LibreOffice headless recalculation workflow.
 
 ## Dependency Verification
 
@@ -185,7 +185,7 @@ Use the provided verification script:
 
 ```bash
 cd .claude/skills
-python common/verification/verify_skill.py xlsx
+bash scripts/check-skills-no-missing-helpers.sh
 ```
 
 Expected output if all dependencies installed:
@@ -261,29 +261,29 @@ pip install pandas openpyxl
 
 ### LibreOffice Macro Not Configured
 
-**Symptom**: recalc.py returns error about macro not configured
+**Symptom**: LibreOffice headless recalculation workflow returns error about macro not configured
 
-**Solution**: Run recalc.py once with any file. The script automatically sets up the required macro:
+**Solution**: Run the LibreOffice headless recalculation workflow once with any file and verify the workbook opens cleanly:
 
 ```bash
 # Create a test file
 python -c "from openpyxl import Workbook; wb = Workbook(); wb.save('test.xlsx')"
 
-# Run recalc.py - this will set up the macro
-python .claude/skills/xlsx/scripts/recalc.py test.xlsx
+# Run LibreOffice headless recalculation workflow
+libreoffice --headless --convert-to xlsx --outdir . test.xlsx
 
 # Clean up
 rm test.xlsx
 ```
 
-### Permission Denied on recalc.py
+### Permission Denied on LibreOffice headless recalculation workflow
 
-**Symptom**: `Permission denied: recalc.py`
+**Symptom**: `Permission denied: LibreOffice headless recalculation workflow`
 
 **Solution**:
 
 ```bash
-chmod +x .claude/skills/xlsx/scripts/recalc.py
+chmod +x .claude/skills/xlsx/scripts/LibreOffice headless recalculation workflow
 ```
 
 ## Platform-Specific Notes
@@ -302,7 +302,7 @@ chmod +x .claude/skills/xlsx/scripts/recalc.py
 
 ### Windows
 
-- recalc.py has limited timeout support on Windows
+- LibreOffice headless recalculation workflow has limited timeout support on Windows
 - Formula recalculation still works without timeout
 - Consider WSL for full Unix-like experience
 
@@ -374,13 +374,13 @@ For automated testing in CI environments:
 
 ## Security Considerations
 
-**LibreOffice Macro Security**: The recalc.py script creates a StarBasic macro for formula recalculation. This macro only calls `calculateAll()` and `store()` - no network access, no file system operations beyond the target file.
+**LibreOffice Macro Security**: The LibreOffice headless recalculation workflow script creates a StarBasic macro for formula recalculation. This macro only calls `calculateAll()` and `store()` - no network access, no file system operations beyond the target file.
 
-**Untrusted Excel Files**: When opening Excel files from untrusted sources, be aware that openpyxl does not execute VBA macros, but malicious formulas could still be present. Use the recalc.py script to verify zero formula errors.
+**Untrusted Excel Files**: When opening Excel files from untrusted sources, be aware that openpyxl does not execute VBA macros, but malicious formulas could still be present. Use the LibreOffice headless recalculation workflow script to verify zero formula errors.
 
 ## Support and Resources
 
 - **pandas documentation**: https://pandas.pydata.org/docs/
 - **openpyxl documentation**: https://openpyxl.readthedocs.io/
 - **LibreOffice documentation**: https://documentation.libreoffice.org/
-- **Verification script**: `~/.amplihack/.claude/skills/common/verification/verify_skill.py`
+- **Verification script**: `~/.amplihack/.claude/skills/scripts/check-skills-no-missing-helpers.sh`

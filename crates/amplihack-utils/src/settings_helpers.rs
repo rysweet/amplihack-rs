@@ -85,3 +85,111 @@ pub fn is_valid_semver(version: &str) -> bool {
     });
     SEMVER_RE.is_match(version)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- is_valid_url ---
+
+    #[test]
+    fn valid_url_https() {
+        assert!(is_valid_url("https://example.com"));
+    }
+
+    #[test]
+    fn valid_url_http() {
+        assert!(is_valid_url("http://localhost:8080"));
+    }
+
+    #[test]
+    fn invalid_url_no_scheme() {
+        assert!(!is_valid_url("ftp://example.com"));
+        assert!(!is_valid_url("example.com"));
+    }
+
+    // --- is_valid_github_url ---
+
+    #[test]
+    fn valid_github_url() {
+        assert!(is_valid_github_url("https://github.com/user/repo"));
+    }
+
+    #[test]
+    fn invalid_github_url_too_few_segments() {
+        // "https://github.com" has only 2 slashes after scheme — rejected
+        assert!(!is_valid_github_url("https://github.com"));
+    }
+
+    #[test]
+    fn invalid_github_url_wrong_host() {
+        assert!(!is_valid_github_url("https://gitlab.com/user/repo"));
+    }
+
+    // --- is_valid_semver ---
+
+    #[test]
+    fn valid_semver_basic() {
+        assert!(is_valid_semver("1.0.0"));
+        assert!(is_valid_semver("0.12.3"));
+    }
+
+    #[test]
+    fn valid_semver_prerelease() {
+        assert!(is_valid_semver("1.0.0-beta.1"));
+        assert!(is_valid_semver("2.0.0-rc.1+build.42"));
+    }
+
+    #[test]
+    fn invalid_semver() {
+        assert!(!is_valid_semver("1.0"));
+        assert!(!is_valid_semver("v1.0.0"));
+        assert!(!is_valid_semver("abc"));
+    }
+
+    // --- check_circular_reference ---
+
+    #[test]
+    fn no_circular_ref_in_flat_object() {
+        let val = serde_json::json!({"a": 1, "b": "hello"});
+        let mut seen = HashSet::new();
+        assert!(check_circular_reference(&val, &mut seen).is_ok());
+    }
+
+    #[test]
+    fn no_circular_ref_in_nested_object() {
+        let val = serde_json::json!({"a": {"b": [1, 2, {"c": 3}]}});
+        let mut seen = HashSet::new();
+        assert!(check_circular_reference(&val, &mut seen).is_ok());
+    }
+
+    // --- resolve_paths_in_map ---
+
+    #[test]
+    fn resolve_preserves_absolute_path() {
+        let mut map = Map::new();
+        map.insert("cwd".to_string(), Value::String("/abs/path".to_string()));
+        let resolved = resolve_paths_in_map(&map);
+        assert_eq!(resolved["cwd"], "/abs/path");
+    }
+
+    #[test]
+    fn resolve_makes_relative_absolute() {
+        let mut map = Map::new();
+        map.insert("path".to_string(), Value::String("rel/dir".to_string()));
+        let resolved = resolve_paths_in_map(&map);
+        let resolved_path = resolved["path"].as_str().unwrap();
+        assert!(
+            std::path::Path::new(resolved_path).is_absolute(),
+            "expected absolute path, got: {resolved_path}"
+        );
+    }
+
+    #[test]
+    fn resolve_ignores_non_path_keys() {
+        let mut map = Map::new();
+        map.insert("name".to_string(), Value::String("rel/value".to_string()));
+        let resolved = resolve_paths_in_map(&map);
+        assert_eq!(resolved["name"], "rel/value");
+    }
+}

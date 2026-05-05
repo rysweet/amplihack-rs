@@ -30,7 +30,11 @@ jobs:
       - name: Fetch PR head
         run: git fetch origin pull/${{ github.event.pull_request.number }}/head:pr-head
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: Scan diff for invisible characters
         run: |
           git diff ${{ github.event.pull_request.base.sha }}...pr-head \
-            | python3 scripts/scan_invisible_chars.py
+            | cargo run --locked -p amplihack --bin scan-invisible-chars --quiet

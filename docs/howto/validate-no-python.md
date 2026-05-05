@@ -1,8 +1,9 @@
 # How to Validate No-Python Compliance
 
-Confirm that the `amplihack` binary operates correctly in an environment where
-no Python interpreter is on `PATH`. This is the acceptance test for AC9 in
-issue #77.
+Confirm that the `amplihack` repository ships no Python implementation assets
+and that the `amplihack` binary operates correctly in an environment where no
+Python interpreter is on `PATH`. This is the acceptance test for AC9 in issue
+#77 and the final migration guard.
 
 ## Before you start
 
@@ -20,6 +21,9 @@ You need:
 
 # Build release binary instead
 ./scripts/probe-no-python.sh --release
+
+# Verify no tracked Python source or package metadata exists
+./scripts/check-no-python-assets.sh
 ```
 
 Expected output when all tests pass:
@@ -48,7 +52,8 @@ Expected output when all tests pass:
 PASS: All smoke tests passed with no Python interpreter on PATH (AC9).
 ```
 
-Exit code 0 means the binary is Python-free on all tested paths.
+Exit code 0 from both scripts means the binary is Python-free on all tested
+paths and the repository has no tracked Python source/package assets.
 
 ## What the probe tests
 
@@ -129,6 +134,13 @@ before it. If you want to validate the release binary, pass `--release`:
 ```yaml
 - name: Validate no-Python compliance (release)
   run: ./scripts/probe-no-python.sh --release
+```
+
+The repository asset guard is lightweight and should run early in CI:
+
+```yaml
+- name: Validate no tracked Python assets
+  run: ./scripts/check-no-python-assets.sh
 ```
 
 ## Related

@@ -243,7 +243,7 @@ path does not invoke Python to generate blarify JSON.
 - `scripts/probe-no-python.sh`: 10/10 smoke tests pass
 - `cargo fmt --check`: clean
 - `cargo clippy -- -D warnings`: zero warnings
-- `parity_audit_cycle.py --validate-only`: 124/124 (100.0%)
+- retired parity audit harness validation: 124/124 (100.0%)
 - Version bumped 0.5.0 → 0.6.0 (MINOR: parity closure + action choices feature)
 
 ---
@@ -267,7 +267,7 @@ path does not invoke Python to generate blarify JSON.
 - `scripts/probe-no-python.sh`: 10/10 smoke tests pass
 - `cargo fmt --check`: clean
 - `cargo clippy -- -D warnings`: zero warnings
-- `parity_audit_cycle.py --validate-only`: 124/124 (100.0%)
+- retired parity audit harness validation: 124/124 (100.0%)
 
 ---
 
@@ -344,7 +344,27 @@ reading the existing data — reporting 0 nodes and edges rather than the expect
 
 ### Verification
 
-- `parity_audit_cycle.py`: **123/123 (100.0%)**
+- retired parity audit harness: **123/123 (100.0%)**
 - `cargo test -p amplihack-cli --lib`: **761 passed; 0 failed**
 
 *Last updated: memory-export-json parity fix — 123/123 (100.0%)*
+
+---
+
+## COMPLETED (continuation session — final Python asset removal)
+
+- [x] Removed remaining tracked Python source files:
+  - legacy bridge shims under `bridge/`
+  - Python parity harness scripts under `tests/parity/`
+  - CI invisible-character scanner under `scripts/`
+- [x] Removed remaining Python package metadata from shipped assets:
+  - `amplifier-bundle/modules/*/pyproject.toml`
+  - bundled skill `requirements-test.txt` files
+- [x] Replaced the CI invisible-character scanner with the Rust
+  `scan-invisible-chars` binary.
+- [x] Added `scripts/check-no-python-assets.sh` and wired it into CI to prevent
+  tracked Python source/package assets from returning.
+- [x] Updated user-facing docs to point at native Rust tests and no-Python
+  guards instead of the retired Python parity harness.
+
+The repository no longer tracks Python source files or Python package metadata.

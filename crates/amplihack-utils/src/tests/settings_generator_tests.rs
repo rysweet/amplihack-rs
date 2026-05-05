@@ -107,7 +107,7 @@ fn generate_rejects_invalid_marketplace_name() {
 fn merge_deep_dicts() {
     let base = json!({ "a": { "x": 1 } });
     let overlay = json!({ "a": { "y": 2 } });
-    let merged = make_gen().merge_settings(&base, &overlay);
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
     assert_eq!(merged, json!({ "a": { "x": 1, "y": 2 } }));
 }
 
@@ -115,7 +115,7 @@ fn merge_deep_dicts() {
 fn merge_overlay_takes_precedence() {
     let base = json!({ "key": "old" });
     let overlay = json!({ "key": "new" });
-    let merged = make_gen().merge_settings(&base, &overlay);
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
     assert_eq!(merged["key"], json!("new"));
 }
 
@@ -123,7 +123,7 @@ fn merge_overlay_takes_precedence() {
 fn merge_concatenates_arrays() {
     let base = json!({ "items": [1, 2] });
     let overlay = json!({ "items": [3, 4] });
-    let merged = make_gen().merge_settings(&base, &overlay);
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
     assert_eq!(merged["items"], json!([1, 2, 3, 4]));
 }
 
@@ -181,4 +181,88 @@ fn semver_invalid() {
 fn no_circular_ref_in_normal_data() {
     let data = json!({ "a": { "b": [1, 2, { "c": 3 }] } });
     assert!(check_circular_reference(&data, &mut HashSet::new()).is_ok());
+}
+
+// ── merge_settings as associated function (TDD: these fail until impl) ──
+//
+// The design requires `merge_settings` to be an associated function (no
+// `&self`), callable without constructing a `SettingsGenerator` instance.
+// The tests below use `SettingsGenerator::merge_settings(base, overlay)`
+// syntax.  They will fail to compile until `&self` is removed from the
+// method signature in settings_generator.rs.
+
+#[test]
+fn merge_assoc_deep_dicts() {
+    let base = json!({ "a": { "x": 1 } });
+    let overlay = json!({ "a": { "y": 2 } });
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
+    assert_eq!(merged, json!({ "a": { "x": 1, "y": 2 } }));
+}
+
+#[test]
+fn merge_assoc_overlay_takes_precedence() {
+    let base = json!({ "key": "old" });
+    let overlay = json!({ "key": "new" });
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
+    assert_eq!(merged["key"], json!("new"));
+}
+
+#[test]
+fn merge_assoc_concatenates_arrays() {
+    let base = json!({ "items": [1, 2] });
+    let overlay = json!({ "items": [3, 4] });
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
+    assert_eq!(merged["items"], json!([1, 2, 3, 4]));
+}
+
+#[test]
+fn merge_assoc_empty_base() {
+    let base = json!({});
+    let overlay = json!({ "key": "value" });
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
+    assert_eq!(merged, json!({ "key": "value" }));
+}
+
+#[test]
+fn merge_assoc_empty_overlay() {
+    let base = json!({ "key": "value" });
+    let overlay = json!({});
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
+    assert_eq!(merged, json!({ "key": "value" }));
+}
+
+#[test]
+fn merge_assoc_non_object_overlay_replaces_base() {
+    // When overlay is not an object, it replaces the base entirely.
+    let base = json!({ "key": "old" });
+    let overlay = json!("scalar");
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
+    assert_eq!(merged, json!("scalar"));
+}
+
+#[test]
+fn merge_assoc_non_object_base_replaced_by_object_overlay() {
+    let base = json!("scalar");
+    let overlay = json!({ "key": "value" });
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
+    assert_eq!(merged, json!({ "key": "value" }));
+}
+
+#[test]
+fn merge_assoc_three_level_deep_merge() {
+    let base = json!({ "a": { "b": { "x": 1, "y": 2 } } });
+    let overlay = json!({ "a": { "b": { "y": 99, "z": 3 } } });
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
+    assert_eq!(merged, json!({ "a": { "b": { "x": 1, "y": 99, "z": 3 } } }));
+}
+
+#[test]
+fn merge_assoc_array_extended_with_more_types() {
+    let base = json!({ "tags": ["alpha", "beta"] });
+    let overlay = json!({ "tags": ["gamma"] });
+    let merged = SettingsGenerator::merge_settings(&base, &overlay);
+    let tags = merged["tags"].as_array().unwrap();
+    assert_eq!(tags.len(), 3);
+    assert!(tags.contains(&json!("alpha")));
+    assert!(tags.contains(&json!("gamma")));
 }

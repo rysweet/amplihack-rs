@@ -368,7 +368,7 @@ If state file is missing or corrupt:
   hooks:
     - id: workflow-validation
       name: Validate workflow completion
-      entry: python .claude/tools/amplihack/validate_workflow.py
+      entry: amplihack workflow validate
       language: system
       pass_filenames: false
 ```
@@ -378,23 +378,12 @@ If state file is missing or corrupt:
 ```yaml
 # .github/workflows/ci.yml (future)
 - name: Validate Workflow Compliance
-  run: |
-    python -c "
-    from pathlib import Path
-    import yaml
-    state = yaml.safe_load(Path('.claude/runtime/workflow_state.yaml').read_text())
-    mandatory = state.get('mandatory_steps', [0, 10, 16, 17])
-    for step in mandatory:
-        if state['steps'].get(step, {}).get('status') != 'completed':
-            print(f'FAIL: Mandatory step {step} not completed')
-            exit(1)
-    print('PASS: All mandatory workflow steps completed')
-    "
+  run: amplihack workflow validate
 ```
 
 ## Related Components
 
 - **DEFAULT_WORKFLOW.md**: Canonical workflow definition with Step 0 guidance
 - **templates/workflow_state.yaml.template**: Template for structured state tracking
-- **power_steering_checker.py**: Session-end enforcement (transcript-based)
+- **amplihack-hooks stop**: Session-end enforcement (transcript-based)
 - **considerations.yaml**: `dev_workflow_complete` consideration definition

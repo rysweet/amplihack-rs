@@ -2,7 +2,7 @@
 # Outside-in behavioral tests verifying each fix from user perspective.
 # These test the BEHAVIOR, not the implementation.
 #
-# Refs: rysweet/amplihack#3060, #3061, #3062, #3063, #3065
+# Refs: legacy upstream #3060, #3061, #3062, #3063, #3065
 
 cases:
   # ==========================================================================

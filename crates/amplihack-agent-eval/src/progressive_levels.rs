@@ -31,7 +31,7 @@ pub struct LevelScenario {
 }
 
 impl LevelScenario {
-    /// Convert questions to [`TestCase`] values usable by [`ProgressiveSuite`].
+    /// Convert questions to [`TestCase`] values usable by `ProgressiveSuite`.
     pub fn to_test_cases(&self) -> Vec<TestCase> {
         self.questions
             .iter()

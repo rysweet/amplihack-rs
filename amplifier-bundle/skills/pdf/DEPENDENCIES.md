@@ -167,7 +167,7 @@ Use the verification script to check all dependencies:
 
 ```bash
 cd .claude/skills
-python common/verification/verify_skill.py pdf
+bash scripts/check-skills-no-missing-helpers.sh
 ```
 
 Expected output:

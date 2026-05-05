@@ -136,7 +136,7 @@ pub(super) fn essential_files(layout: SourceLayout) -> &'static [&'static str] {
 /// Legacy alias preserved to minimise churn in tests / external readers
 /// that still iterate `ESSENTIAL_DIRS`. Equal to the destination column of
 /// `LEGACY_DIR_MAPPING`. New code should use [`essential_destinations`].
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) const ESSENTIAL_DIRS: &[&str] = &[
     "agents/amplihack",
     "commands/amplihack",
@@ -151,8 +151,6 @@ pub(super) const ESSENTIAL_DIRS: &[&str] = &[
     "schemas",
     "config",
 ];
-#[allow(dead_code)]
-pub(super) const ESSENTIAL_FILES: &[&str] = &["tools/statusline.sh", "AMPLIHACK.md"];
 pub(super) const RUNTIME_DIRS: &[&str] = &[
     "runtime",
     "runtime/logs",

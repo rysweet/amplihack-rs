@@ -161,8 +161,7 @@ pub(crate) fn http_get(url: &str) -> Result<Vec<u8>> {
 
     if body.len() == limit {
         bail!(
-            "HTTP response from {url} exceeded the size limit of {} bytes; aborting to prevent OOM",
-            limit
+            "HTTP response from {url} exceeded the size limit of {limit} bytes; aborting to prevent OOM"
         );
     }
 

@@ -29,7 +29,7 @@ impl AuthPropagator {
                         vm_name: vm_name.to_string(),
                         success: false,
                         files_copied: Vec::new(),
-                        error: Some(format!("Unknown service: {}", service)),
+                        error: Some(format!("Unknown service: {service}")),
                         duration_seconds: 0.0,
                     };
                 }
@@ -86,7 +86,7 @@ impl AuthPropagator {
                 vm_name: vm_name.to_string(),
                 success: false,
                 files_copied,
-                error: Some(format!("Unknown service: {}", service)),
+                error: Some(format!("Unknown service: {service}")),
                 duration_seconds: 0.0,
             };
         };

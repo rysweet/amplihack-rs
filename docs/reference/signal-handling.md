@@ -135,19 +135,15 @@ Two parity scenarios verify SIGINT exit code behavior. Both use a stub
 | `tier5-gap-tests.yaml`    | `gap-launch-sigint-exit-code` | 5    |
 | `tier7-launcher-parity.yaml` | `gap-sigint-exit-code`     | 7    |
 
-Run them individually to verify behavior:
+Run the native integration tests to verify behavior:
 
 ```sh
-# Single scenario
-python tests/parity/validate_cli_parity.py \
-  --scenario tests/parity/scenarios/tier5-gap-tests.yaml \
-  --case gap-launch-sigint-exit-code
-
-# Full audit (124 cases + 13 shadow)
-python3 tests/parity/parity_audit_cycle.py --timeout 120
+cargo test -p amplihack --test cli_launch --locked
+cargo test -p amplihack --test no_python_probe --locked
 ```
 
-Expected result: both Python and Rust report exit code 0 for the SIGINT case.
+Expected result: the Rust launcher preserves the documented SIGINT behavior and
+does not require Python for the tested paths.
 
 ---
 

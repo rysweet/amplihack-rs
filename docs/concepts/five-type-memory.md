@@ -1,6 +1,6 @@
 # Five-Type Memory (Superseded)
 
-> Ported from upstream `rysweet/amplihack:docs/memory/5-TYPE-MEMORY-GUIDE.md`.
+> Ported from legacy upstream `docs/memory/5-TYPE-MEMORY-GUIDE.md`.
 > The upstream page exists only as a redirect to current memory docs; the
 > redirect is preserved here for amplihack-rs users who follow links from
 > older READMEs or external references.

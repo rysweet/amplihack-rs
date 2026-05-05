@@ -72,7 +72,7 @@ pub fn package_bundle(bundle_path: &Path, format: &str, output: &Path) -> Result
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(output, format!("stub-package-{}\n", format))?;
+    std::fs::write(output, format!("stub-package-{format}\n"))?;
 
     Ok(output.to_path_buf())
 }
@@ -134,7 +134,7 @@ pub fn run_pipeline(prompt: &str, output: &Path, format: &str, distribute: bool)
     let bundle_dir = output.join("bundle");
     let bundle_path = generate_bundle(prompt, &bundle_dir, true, false)?;
 
-    let package_file = output.join(format!("agent-bundle.{}", format));
+    let package_file = output.join(format!("agent-bundle.{format}"));
     let package_path = package_bundle(&bundle_path, format, &package_file)?;
 
     if distribute {

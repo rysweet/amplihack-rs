@@ -20,7 +20,7 @@ The Claude Agent SDK skill has been successfully built according to the architec
 - `patterns.md` (production patterns)
 - `drift-detection.md` (update mechanism)
 - `.metadata/versions.json` (version tracking)
-- `scripts/check_drift.py` (drift detection script)
+- `scripts/manual drift check` (drift detection script)
 - `README.md` (documentation)
 
 ### Directory Structure
@@ -36,7 +36,7 @@ The Claude Agent SDK skill has been successfully built according to the architec
 ├── .metadata/
 │   └── versions.json
 └── scripts/
-    └── check_drift.py (executable)
+    └── manual drift check (executable)
 ```
 
 ✓ Structure matches specification exactly
@@ -180,7 +180,7 @@ The Claude Agent SDK skill has been successfully built according to the architec
 
 ### Detection Script
 
-✓ `check_drift.py` implemented with all features:
+✓ `manual drift check` implemented with all features:
 
 - Content fetching from URLs
 - SHA-256 hash generation
@@ -197,7 +197,7 @@ The Claude Agent SDK skill has been successfully built according to the architec
 ### Testing
 
 ```bash
-$ python3 scripts/check_drift.py --help
+$ python3 scripts/manual drift check --help
 ✓ Script runs successfully
 ✓ Help text displays correctly
 ✓ All options documented
@@ -214,7 +214,7 @@ $ python3 scripts/check_drift.py --help
 - examples.md: 20 code blocks - valid
 - patterns.md: 18 code blocks - valid
 - drift-detection.md: 8 code blocks - valid
-- check_drift.py: complete script - valid
+- manual drift check: complete script - valid
 
 ✓ No syntax errors detected
 ✓ Imports valid and standard library preferred
@@ -328,7 +328,7 @@ token_budget: 4500                        ✓ Integer valid
 ### Issue 1: Content Hash Placeholders
 
 **Status**: Expected behavior
-**Resolution**: Run `python scripts/check_drift.py --update` after deployment to generate real hashes
+**Resolution**: Run `Compare the tracked source URLs and metadata manually` after deployment to generate real hashes
 
 ### Issue 2: Token Count Approximation
 
@@ -337,7 +337,7 @@ token_budget: 4500                        ✓ Integer valid
 
 ### Issue 3: External Dependencies
 
-**Status**: check_drift.py requires `requests` library
+**Status**: manual drift check requires `requests` library
 **Resolution**: Standard library, documented in script error message if not installed
 
 ## Recommendations
@@ -348,7 +348,7 @@ token_budget: 4500                        ✓ Integer valid
 2. Run drift detection to generate initial hashes:
    ```bash
    cd .claude/skills/claude-agent-sdk
-   python scripts/check_drift.py --update
+   Compare the tracked source URLs and metadata manually
    ```
 3. Test skill activation with sample queries containing keywords
 4. Validate Claude can successfully reference supporting files

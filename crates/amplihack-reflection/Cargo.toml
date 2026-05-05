@@ -2,6 +2,7 @@
 name = "amplihack-reflection"
 version.workspace = true
 edition.workspace = true
+description = "Reflection state machine, semantic dedup, and security sanitization"
 license.workspace = true
 repository.workspace = true
 

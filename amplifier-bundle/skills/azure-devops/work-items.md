@@ -1,221 +1,106 @@
 # Work Item Management Guide
 
-Complete guide to creating and managing work items with Azure DevOps CLI tools.
+Create and manage Azure DevOps work items with the official Azure CLI extension.
 
 ## Work Item Types
 
-Standard types in most projects:
-
-- **Epic** - Large body of work (months)
-- **Feature** - Shippable functionality (weeks)
-- **User Story** - User-facing feature (days)
-- **Task** - Technical work (hours/days)
-- **Bug** - Defect or issue
-
-Check available types in your project:
+List project-specific work item types:
 
 ```bash
-python .claude/scenarios/az-devops-tools/list_types.py
+az boards work-item type list --output table
+```
+
+Show fields for a type:
+
+```bash
+az boards work-item type show --name "User Story"
 ```
 
 ## Creating Work Items
 
-### Basic Creation
+Basic creation:
 
 ```bash
-python .claude/scenarios/az-devops-tools/create_work_item.py \
+az boards work-item create \
   --type "User Story" \
   --title "Implement user login"
 ```
 
-### With Description (Markdown Auto-Converted)
+With an HTML description and fields:
 
 ```bash
-python .claude/scenarios/az-devops-tools/create_work_item.py \
-  --type "User Story" \
-  --title "User authentication" \
-  --description "# Story
-
-As a user, I want to log in with my credentials.
-
-## Acceptance Criteria
-- User can enter email/password
-- System validates credentials
-- Invalid login shows error message"
-```
-
-### With All Options
-
-```bash
-python .claude/scenarios/az-devops-tools/create_work_item.py \
+az boards work-item create \
   --type Bug \
   --title "Login button not responding" \
-  --description "Button click does nothing" \
+  --description "<p>Button click does nothing.</p>" \
   --assigned-to user@example.com \
   --area "MyProject\\Frontend" \
   --iteration "MyProject\\Sprint 1" \
-  --tags "ui,critical,login" \
-  --fields "Microsoft.VSTS.Common.Priority=1" \
-  --fields "Microsoft.VSTS.Common.Severity=1-Critical"
-```
-
-### With Parent Link
-
-```bash
-# Creates Task and links to Story #1234
-python .claude/scenarios/az-devops-tools/create_work_item.py \
-  --type Task \
-  --title "Write unit tests" \
-  --parent 1234
+  --fields "Microsoft.VSTS.Common.Priority=1" "Microsoft.VSTS.Common.Severity=1-Critical"
 ```
 
 ## Linking Work Items
 
-Create parent-child relationships:
+Link a child to a parent:
 
 ```bash
-# Link Task #5678 to Story #1234
-python .claude/scenarios/az-devops-tools/link_parent.py \
-  --child 5678 \
-  --parent 1234
+az boards work-item relation add \
+  --id 5678 \
+  --relation-type Parent \
+  --target-id 1234
 ```
-
-Valid relationships:
-
-- Task → User Story, Bug, Feature, Epic
-- Bug → Feature, Epic
-- User Story → Feature, Epic
-- Feature → Epic
 
 ## Updating Work Items
 
-Update state, assignments, or other fields:
+```bash
+az boards work-item update --id 12345 --state "Active"
+az boards work-item update --id 12345 --assigned-to user@domain.com
+az boards work-item update --id 12345 --discussion "Fixed issue"
+```
+
+Update arbitrary fields:
 
 ```bash
-# Update state
-python .claude/scenarios/az-devops-tools/update_work_item.py --id 12345 --state "Active"
-
-# Reassign work item
-python .claude/scenarios/az-devops-tools/update_work_item.py --id 12345 --assign-to "user@domain.com"
-
-# Update multiple fields with comment
-python .claude/scenarios/az-devops-tools/update_work_item.py --id 12345 --state "Resolved" --comment "Fixed issue"
+az boards work-item update \
+  --id 12345 \
+  --fields "System.Tags=ui;critical" "Microsoft.VSTS.Common.Priority=1"
 ```
 
 ## Querying Work Items
 
-List and filter work items:
+Use WIQL for reliable filtering:
 
 ```bash
-# List my active work items
-python .claude/scenarios/az-devops-tools/list_work_items.py --state Active --assigned-to @me
-
-# List all bugs
-python .claude/scenarios/az-devops-tools/list_work_items.py --type Bug
-
-# Use predefined query
-python .claude/scenarios/az-devops-tools/list_work_items.py --query mine
+az boards query \
+  --wiql "SELECT [System.Id], [System.Title], [System.State] FROM workitems WHERE [System.AssignedTo] = @Me ORDER BY [System.ChangedDate] DESC" \
+  --output table
 ```
 
-## Common Workflows
-
-### Create Epic with Features
+JSON for automation:
 
 ```bash
-# Create Epic
-epic_output=$(python .claude/scenarios/az-devops-tools/create_work_item.py \
-  --type Epic \
-  --title "Authentication System")
-epic_id=$(echo "$epic_output" | grep "ID:" | awk '{print $2}')
+az boards query \
+  --wiql "SELECT [System.Id], [System.Title] FROM workitems WHERE [System.WorkItemType] = 'Bug'" \
+  --output json
+```
 
-# Create Features under Epic
+## Common Workflow
+
+Create an epic and feature children:
+
+```bash
+epic_id=$(az boards work-item create --type Epic --title "Authentication System" --query id -o tsv)
+
 for feature in "OAuth Integration" "Session Management" "RBAC"; do
-  python .claude/scenarios/az-devops-tools/create_work_item.py \
-    --type Feature \
-    --title "$feature" \
-    --parent "$epic_id"
+  az boards work-item create --type Feature --title "$feature"
 done
 ```
 
-### Create Story with Tasks
+Then link created child IDs with `az boards work-item relation add`.
 
-```bash
-# Create Story
-story_output=$(python .claude/scenarios/az-devops-tools/create_work_item.py \
-  --type "User Story" \
-  --title "Implement login UI")
-story_id=$(echo "$story_output" | grep "ID:" | awk '{print $2}')
+## Tips
 
-# Create Tasks
-for task in "Design mockup" "Implement form" "Add validation" "Write tests"; do
-  python .claude/scenarios/az-devops-tools/create_work_item.py \
-    --type Task \
-    --title "$task" \
-    --parent "$story_id"
-done
-```
-
-## Field Reference
-
-### Common System Fields
-
-- `System.Title` - Work item title (required)
-- `System.Description` - HTML description
-- `System.State` - Current state (New, Active, Closed, etc.)
-- `System.AssignedTo` - Assigned user (email or display name)
-- `System.AreaPath` - Area path (format: Project\\Team\\Area)
-- `System.IterationPath` - Sprint/iteration
-- `System.Tags` - Comma-separated tags
-
-### Microsoft VSTS Fields
-
-- `Microsoft.VSTS.Common.Priority` - 1 (highest) to 4 (lowest)
-- `Microsoft.VSTS.Common.Severity` - 1-Critical, 2-High, 3-Medium, 4-Low
-- `Microsoft.VSTS.Common.StackRank` - Backlog ordering
-
-### Discover All Fields
-
-```bash
-# Show fields for specific type
-python .claude/scenarios/az-devops-tools/list_types.py --type "User Story"
-
-# Show all fields including system
-python .claude/scenarios/az-devops-tools/list_types.py --type Bug --all-fields
-```
-
-## Tips and Best Practices
-
-1. **Use markdown descriptions** - Auto-converted to HTML for better formatting
-2. **Set area path** - Helps with team organization and queries
-3. **Link work items early** - Easier to track relationships
-4. **Use tags** - Improves searchability
-5. **Validate types first** - Use list_types before creating
-
-## Troubleshooting
-
-### "Invalid work item type"
-
-Check available types:
-
-```bash
-python .claude/scenarios/az-devops-tools/list_types.py
-```
-
-### "Work item type with spaces"
-
-Use quotes:
-
-```bash
---type "User Story"  # Correct
---type User Story    # Wrong
-```
-
-### "Parent link failed"
-
-Verify both IDs exist and relationship is valid.
-
-## See Also
-
-- [@queries.md] - WIQL query patterns
-- [@html-formatting.md] - Rich text formatting
-- [MS Learn: Work Items](https://learn.microsoft.com/en-us/azure/devops/boards/work-items/)
+1. Use HTML for descriptions and comments.
+2. Query type fields before setting custom fields.
+3. Prefer `--query id -o tsv` when scripts need the created work item ID.
+4. Validate parent and child IDs before linking.

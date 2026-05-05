@@ -440,7 +440,7 @@ For detailed information, see:
 
 ## Maintenance
 
-Check framework freshness: `python @scripts/check-freshness.py`
+Check framework freshness: `python @GitHub release/documentation freshness check`
 
 Current version tracking: `@metadata/version-tracking.json`
 

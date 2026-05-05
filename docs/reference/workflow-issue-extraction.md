@@ -53,7 +53,7 @@ When `task_description` contains a URL whose path component is
 any network call.
 
 ```
-Input:  "Fix the crash described in https://github.com/rysweet/amplihack/issues/3960"
+Input:  "Fix the crash described in https://github.com/rysweet/amplihack-rs/issues/3960"
 Match:  issues/3960
 Output: issue_number=3960
 ```
@@ -80,7 +80,7 @@ The first closing issue reference is used. If the PR closes no issues,
 extraction falls through to Tier 3.
 
 ```
-Input:  "Continue work on https://github.com/rysweet/amplihack/pull/4143"
+Input:  "Continue work on https://github.com/rysweet/amplihack-rs/pull/4143"
 gh call: closingIssuesReferences → [3960, 3983]
 Output: issue_number=3960   (first reference)
 ```
@@ -107,7 +107,7 @@ wrong repo) are skipped.
 
 ```
 Input:  "Resume work on #3983 and #3960"
-gh verify 3983 → url: "https://github.com/rysweet/amplihack/issues/3983"
+gh verify 3983 → url: "https://github.com/rysweet/amplihack-rs/issues/3983"
   → contains /issues/ → issue_number=3983
 ```
 
@@ -184,7 +184,7 @@ authenticated `gh` CLI configured in the user's shell.
 # Recipe context snippet
 task_description: |
   Fix path-traversal bug.
-  See https://github.com/rysweet/amplihack/issues/3960
+  See https://github.com/rysweet/amplihack-rs/issues/3960
 ```
 
 ```
@@ -197,7 +197,7 @@ issue_number: 3960
 ### Resolving from a PR URL
 
 ```yaml
-task_description: "Resume https://github.com/rysweet/amplihack/pull/4143"
+task_description: "Resume https://github.com/rysweet/amplihack-rs/pull/4143"
 ```
 
 ```
@@ -274,9 +274,9 @@ and that `gh issue view <N>` returns a URL containing `/issues/`.
 - [Default Workflow](../concepts/default-workflow.md) — full step list
 - [Lock Session ID Sanitization](security-recommendations.md)
   — the security fix delivered alongside this extraction improvement (PR #4143)
-- Issues [#3960](https://github.com/rysweet/amplihack/issues/3960) and
-  [#3983](https://github.com/rysweet/amplihack/issues/3983) — originating work
-- PR [#4143](https://github.com/rysweet/amplihack/pull/4143) — implementation
+- Issues [#3960](https://github.com/rysweet/amplihack-rs/issues/3960) and
+  [#3983](https://github.com/rysweet/amplihack-rs/issues/3983) — originating work
+- PR [#4143](https://github.com/rysweet/amplihack-rs/pull/4143) — implementation
 
 ---
 

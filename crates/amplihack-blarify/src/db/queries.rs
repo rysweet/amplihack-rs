@@ -244,10 +244,13 @@ mod tests {
 
     #[test]
     fn query_constants_not_empty() {
-        assert!(!CODEBASE_SKELETON_QUERY.is_empty());
-        assert!(!NODE_DETAILS_QUERY.is_empty());
-        assert!(!NODE_RELATIONSHIPS_QUERY.is_empty());
-        assert!(!GREP_CODE_QUERY.is_empty());
+        #[allow(clippy::const_is_empty)]
+        {
+            assert!(!CODEBASE_SKELETON_QUERY.is_empty());
+            assert!(!NODE_DETAILS_QUERY.is_empty());
+            assert!(!NODE_RELATIONSHIPS_QUERY.is_empty());
+            assert!(!GREP_CODE_QUERY.is_empty());
+        }
     }
 
     #[test]

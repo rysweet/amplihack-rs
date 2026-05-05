@@ -103,8 +103,7 @@ git --version      # Should show 2.0+
 
 | Tool           | Purpose                          | Install                    |
 | -------------- | -------------------------------- | -------------------------- |
-| `mkdocs`       | Build documentation site         | `pip install mkdocs-material` |
-| `pre-commit`   | Git pre-commit hooks             | `pip install pre-commit`   |
+| `docker`       | Build documentation site         | `docker run --rm -v "$PWD:/docs" squidfunk/mkdocs-material build --strict` |
 | `gh`           | GitHub CLI for PR management     | `brew install gh` / `apt install gh` |
 | `cargo-audit`  | Security vulnerability scanning  | `cargo install cargo-audit` |
 

@@ -112,7 +112,7 @@ pub enum RefreshMsg {
     CaptureUpdate {
         /// Sanitized session identifier.
         session_id: String,
-        /// OSC-stripped terminal output (≤ [`CAPTURE_CACHE_ENTRY_MAX_BYTES`]).
+        /// OSC-stripped terminal output (≤ `CAPTURE_CACHE_ENTRY_MAX_BYTES`).
         output: String,
     },
 }

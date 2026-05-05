@@ -436,3 +436,144 @@ fn collect_new_facts(results: &[Fact], seen: &mut HashSet<String>, new_facts: &m
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_fact_with_source(ctx: &str, outcome: &str, source: &str) -> Fact {
+        let mut f = Fact::new(ctx, outcome);
+        f.metadata.insert(
+            "source_label".into(),
+            serde_json::Value::String(source.into()),
+        );
+        f
+    }
+
+    fn make_fact_with_id(ctx: &str, outcome: &str, id: &str) -> Fact {
+        let mut f = Fact::new(ctx, outcome);
+        f.experience_id = id.to_string();
+        f
+    }
+
+    // -----------------------------------------------------------------------
+    // filter_facts_by_source_reference
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn filter_no_source_pattern_returns_empty() {
+        let facts = vec![make_fact_with_source("ctx", "out", "news daily")];
+        let result = filter_facts_by_source_reference("general question here", &facts);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn filter_from_the_pattern() {
+        let facts = vec![
+            make_fact_with_source("ctx", "out1", "news daily"),
+            make_fact_with_source("ctx", "out2", "tech report"),
+            make_fact_with_source("ctx", "out3", "other"),
+        ];
+        let result = filter_facts_by_source_reference(
+            "What was mentioned from the news daily report?",
+            &facts,
+        );
+        assert!(!result.is_empty());
+        assert!(result.iter().any(|f| f.outcome == "out1"));
+    }
+
+    #[test]
+    fn filter_mentioned_in_pattern() {
+        let facts = vec![
+            make_fact_with_source("ctx", "out1", "quarterly review"),
+            make_fact_with_source("ctx", "out2", "unrelated"),
+        ];
+        let result = filter_facts_by_source_reference(
+            "What was mentioned in the quarterly review article?",
+            &facts,
+        );
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].outcome, "out1");
+    }
+
+    #[test]
+    fn filter_no_matching_source() {
+        let facts = vec![make_fact_with_source("ctx", "out", "other source")];
+        let result =
+            filter_facts_by_source_reference("What was from the nonexistent article?", &facts);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn filter_case_insensitive() {
+        let facts = vec![make_fact_with_source("ctx", "out", "Tech Report")];
+        let result = filter_facts_by_source_reference("What was from the tech report?", &facts);
+        // "tech" extracted from pattern, matches "Tech Report" case-insensitively
+        assert!(!result.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // collect_new_facts
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn collect_new_facts_adds_unseen() {
+        let results = vec![
+            make_fact_with_id("ctx", "out1", "id-1"),
+            make_fact_with_id("ctx", "out2", "id-2"),
+        ];
+        let mut seen = HashSet::new();
+        let mut new_facts = Vec::new();
+        collect_new_facts(&results, &mut seen, &mut new_facts);
+        assert_eq!(new_facts.len(), 2);
+        assert!(seen.contains("id-1"));
+        assert!(seen.contains("id-2"));
+    }
+
+    #[test]
+    fn collect_new_facts_skips_duplicates() {
+        let results = vec![
+            make_fact_with_id("ctx", "out1", "id-1"),
+            make_fact_with_id("ctx", "out2", "id-1"), // same ID
+        ];
+        let mut seen = HashSet::new();
+        let mut new_facts = Vec::new();
+        collect_new_facts(&results, &mut seen, &mut new_facts);
+        assert_eq!(new_facts.len(), 1);
+    }
+
+    #[test]
+    fn collect_new_facts_skips_empty_ids() {
+        let results = vec![Fact::new("ctx", "out")]; // empty experience_id
+        let mut seen = HashSet::new();
+        let mut new_facts = Vec::new();
+        collect_new_facts(&results, &mut seen, &mut new_facts);
+        assert!(new_facts.is_empty());
+    }
+
+    #[test]
+    fn collect_new_facts_skips_already_seen() {
+        let results = vec![make_fact_with_id("ctx", "out", "id-1")];
+        let mut seen: HashSet<String> = ["id-1".into()].into_iter().collect();
+        let mut new_facts = Vec::new();
+        collect_new_facts(&results, &mut seen, &mut new_facts);
+        assert!(new_facts.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // agg_fact helper
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn agg_fact_structure() {
+        let f = agg_fact("test context", "test outcome");
+        assert_eq!(f.context, "test context");
+        assert_eq!(f.outcome, "test outcome");
+        assert_eq!(f.confidence, 1.0);
+        assert!(f.tags.contains(&"meta_memory".to_string()));
+        assert_eq!(
+            f.metadata.get("aggregation"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
+}

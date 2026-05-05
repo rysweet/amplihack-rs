@@ -120,8 +120,7 @@ Check **Settings → Environments → github-pages** and confirm:
 Run the same command locally to reproduce:
 
 ```bash
-pip install mkdocs mkdocs-material
-mkdocs build --strict
+docker run --rm -v "$PWD:/docs" squidfunk/mkdocs-material build --strict
 ```
 
 Common causes:

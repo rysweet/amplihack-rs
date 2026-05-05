@@ -77,7 +77,7 @@ Create .pm/ structure, invoke roadmap-strategist for roadmap generation.
 
 ## Scripts
 
-Orchestrator owns `scripts/manage_state.py` for basic operations.
+Orchestrator owns `direct .pm/ state editing workflow` for basic operations.
 Sub-skills own their specialized scripts.
 
 ## Success Criteria

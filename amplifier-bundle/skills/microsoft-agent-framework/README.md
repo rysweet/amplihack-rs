@@ -90,7 +90,7 @@ This skill uses a tiered approach to balance comprehensive knowledge with token 
 │   ├── sources.json           # URL mappings and priorities
 │   └── last-updated.txt       # Human-readable update info
 └── scripts/
-    └── check-freshness.py      # Documentation freshness checker
+    └── freshness check      # Documentation freshness checker
 ```
 
 ## Usage Examples
@@ -172,7 +172,7 @@ The skill tracks framework versions and documentation freshness:
 
 ```bash
 # Check if documentation needs updating
-python scripts/check-freshness.py
+python GitHub release/documentation freshness check
 ```
 
 **Current Versions**:
@@ -337,7 +337,7 @@ This skill follows amplihack philosophy:
 
 To update this skill:
 
-1. **Check Freshness**: Run `python scripts/check-freshness.py`
+1. **Check Freshness**: Run `python GitHub release/documentation freshness check`
 2. **Review Sources**: Check all 10 source URLs for updates
 3. **Update Content**: Maintain token budgets for each tier
 4. **Update Metadata**: Increment version, update dates

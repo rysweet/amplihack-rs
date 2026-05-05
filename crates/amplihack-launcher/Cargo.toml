@@ -2,6 +2,7 @@
 name = "amplihack-launcher"
 version.workspace = true
 edition.workspace = true
+description = "Extended launcher support for all agent types (Codex, Amplifier, Copilot)"
 
 [dependencies]
 anyhow = { workspace = true }

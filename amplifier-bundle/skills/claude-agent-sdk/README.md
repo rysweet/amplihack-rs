@@ -37,7 +37,7 @@ claude-agent-sdk/
 ├── .metadata/
 │   └── versions.json           # Version tracking and content hashes
 └── scripts/
-    └── check_drift.py          # Drift detection script
+    └── manual drift check          # Drift detection script
 ```
 
 **Total Token Budget**: ~14,150 tokens (within Claude's context limits)
@@ -128,22 +128,12 @@ The skill includes automated drift detection:
 
 - Content hashing (SHA-256) of all source URLs
 - Version tracking in `.metadata/versions.json`
-- Automated checking via `scripts/check_drift.py`
+- Automated checking via `scripts/manual drift check`
 
 ### Running Drift Detection
 
-```bash
-cd .claude/skills/claude-agent-sdk
-
-# Check for drift
-python scripts/check_drift.py
-
-# Check and update metadata
-python scripts/check_drift.py --update
-
-# JSON output for automation
-python scripts/check_drift.py --json
-```
+Compare the tracked source URLs and metadata manually, then update the skill
+content and metadata together when upstream SDK documentation changes.
 
 ### Recommended Schedule
 
@@ -233,7 +223,7 @@ The skill ships with placeholder content hashes. Generate real hashes:
 
 ```bash
 cd .claude/skills/claude-agent-sdk
-python scripts/check_drift.py --update
+Compare the tracked source URLs and metadata manually
 ```
 
 This updates `.metadata/versions.json` with actual SHA-256 hashes from source URLs.
@@ -280,7 +270,7 @@ jobs:
       - name: Check for drift
         run: |
           cd .claude/skills/claude-agent-sdk
-          python scripts/check_drift.py
+          Compare the tracked source URLs and metadata manually
 ```
 
 ### Troubleshooting
@@ -288,7 +278,7 @@ jobs:
 **Issue**: "requests module not found"
 **Solution**: `pip install requests` or install via requirements.txt
 
-**Issue**: "Permission denied" when running check_drift.py
+**Issue**: "Permission denied" when running manual drift check
 **Solution**: Script should be executable (chmod +x). Already set to 755.
 
 **Issue**: Skill doesn't auto-activate
@@ -300,12 +290,12 @@ jobs:
 
 When drift is detected:
 
-1. **Verify Drift**: Run `check_drift.py` to identify changed sources
+1. **Verify Drift**: Run `manual drift check` to identify changed sources
 2. **Fetch Content**: Get updated documentation
 3. **Analyze Changes**: Assess impact (minor, major, breaking)
 4. **Update Files**: Modify affected skill files
 5. **Validate**: Run self-validation checks
-6. **Update Metadata**: Run `check_drift.py --update`, increment version
+6. **Update Metadata**: Run `manual drift check --update`, increment version
 
 ### Version Numbering
 

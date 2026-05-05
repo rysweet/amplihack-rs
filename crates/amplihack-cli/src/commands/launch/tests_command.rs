@@ -53,8 +53,7 @@ fn test_build_command_injects_dangerously_skip_permissions() {
     assert!(
         args.contains(&std::ffi::OsStr::new("--dangerously-skip-permissions")),
         "Expected '--dangerously-skip-permissions' in args when skip_permissions=true, \
-         got: {:?}",
-        args
+         got: {args:?}"
     );
 }
 
@@ -89,8 +88,7 @@ fn test_build_command_injects_default_model() {
         .collect();
     assert!(
         args.contains(&"--model".to_string()),
-        "Expected '--model' to be injected when no --model in extra_args, got: {:?}",
-        args
+        "Expected '--model' to be injected when no --model in extra_args, got: {args:?}"
     );
     // Verify the default model value follows --model
     let model_pos = args.iter().position(|a| a == "--model").unwrap();
@@ -144,8 +142,7 @@ fn test_build_command_no_model_injection_when_user_supplies_model() {
     assert_eq!(
         model_count, 1,
         "Expected exactly one '--model' in args when user supplies --model, \
-         but found {} occurrences. Args: {:?}",
-        model_count, args
+         but found {model_count} occurrences. Args: {args:?}"
     );
     // And verify the user's model value is preserved
     let model_pos = args.iter().position(|a| a == "--model").unwrap();
@@ -168,8 +165,7 @@ fn test_build_command_no_dangerously_skip_when_false() {
     assert!(
         !args.contains(&std::ffi::OsStr::new("--dangerously-skip-permissions")),
         "Expected '--dangerously-skip-permissions' to NOT be present when \
-         skip_permissions=false, got: {:?}",
-        args
+         skip_permissions=false, got: {args:?}"
     );
 }
 
@@ -194,8 +190,7 @@ fn test_dispatch_defaults_skip_permissions_true() {
         args.contains(&std::ffi::OsStr::new("--dangerously-skip-permissions")),
         "Commands::Launch dispatch must pass skip_permissions=true, which means \
          '--dangerously-skip-permissions' must appear in the built command args. \
-         Got: {:?}",
-        args
+         Got: {args:?}"
     );
 }
 

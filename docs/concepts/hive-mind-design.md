@@ -1,7 +1,7 @@
 # Hive Mind — Design
 
-**Upstream Master Issue**: [rysweet/amplihack#2710](https://github.com/rysweet/amplihack/issues/2710)
-**Upstream PR**: [rysweet/amplihack#2717](https://github.com/rysweet/amplihack/pull/2717)
+**Upstream Master Issue**: [rysweet/amplihack-rs#2710](https://github.com/rysweet/amplihack-rs/issues/2710)
+**Upstream PR**: [rysweet/amplihack-rs#2717](https://github.com/rysweet/amplihack-rs/pull/2717)
 **Rust port crate**: [`amplihack-hive`](../reference/hive-api.md)
 
 ## Problem Statement

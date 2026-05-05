@@ -198,7 +198,7 @@ pub fn run_gh_with_retry(runner: &dyn GhRunner, args: &[&str]) -> Result<GhOutpu
     }
     Err(last_err
         .unwrap()
-        .context(format!("gh command failed after {} retries", MAX_RETRIES)))
+        .context(format!("gh command failed after {MAX_RETRIES} retries")))
 }
 
 /// Build the `gh pr merge` argument list from the provided args.

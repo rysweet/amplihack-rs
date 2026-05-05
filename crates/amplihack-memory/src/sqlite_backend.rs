@@ -169,12 +169,11 @@ impl SqliteBackend {
         let tags_str: String = row.get(9)?;
         let memory_type_str: String = row.get(3)?;
         let memory_type =
-            match serde_json::from_str::<MemoryType>(&format!("\"{}\"", memory_type_str)) {
+            match serde_json::from_str::<MemoryType>(&format!("\"{memory_type_str}\"")) {
                 Ok(mt) => mt,
                 Err(_) => {
                     eprintln!(
-                        "WARNING: unknown memory_type '{}', defaulting to Semantic",
-                        memory_type_str
+                        "WARNING: unknown memory_type '{memory_type_str}', defaulting to Semantic"
                     );
                     MemoryType::Semantic
                 }

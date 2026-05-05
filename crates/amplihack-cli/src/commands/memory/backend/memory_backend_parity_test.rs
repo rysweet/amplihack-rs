@@ -154,16 +154,14 @@ fn assert_runtime_round_trip(choice: BackendChoice) -> anyhow::Result<()> {
     let memories = backend2.load_prompt_context_memories("sess-rt")?;
     assert!(
         !memories.is_empty(),
-        "[{:?}] expected at least one memory after store",
-        choice
+        "[{choice:?}] expected at least one memory after store"
     );
     let found = memories
         .iter()
         .any(|m| m.content.contains("parity test content"));
     assert!(
         found,
-        "[{:?}] stored content not found in load_prompt_context_memories",
-        choice
+        "[{choice:?}] stored content not found in load_prompt_context_memories"
     );
     Ok(())
 }
@@ -204,9 +202,7 @@ fn assert_duplicate_returns_none(choice: BackendChoice) -> anyhow::Result<()> {
     let second = backend.store_session_learning(&record2)?;
     assert!(
         second.is_none(),
-        "[{:?}] expected None for duplicate store, got {:?}",
-        choice,
-        second
+        "[{choice:?}] expected None for duplicate store, got {second:?}"
     );
     assert!(!id1.is_empty());
     Ok(())
@@ -261,8 +257,7 @@ fn assert_session_id_filter(choice: BackendChoice) -> anyhow::Result<()> {
     );
     assert_eq!(
         rows_a[0].0.session_id, "sess-A",
-        "[{:?}] session_id mismatch",
-        choice
+        "[{choice:?}] session_id mismatch"
     );
 
     let rows_all = tree.load_session_rows(None, None)?;
@@ -487,15 +482,12 @@ fn assert_collect_agent_counts(choice: BackendChoice) -> anyhow::Result<()> {
     let cnt_entry = counts.iter().find(|(id, _)| id == "cnt-agent");
     assert!(
         cnt_entry.is_some(),
-        "[{:?}] cnt-agent not found in agent counts",
-        choice
+        "[{choice:?}] cnt-agent not found in agent counts"
     );
     let (_, count) = cnt_entry.unwrap();
     assert!(
         *count >= 1,
-        "[{:?}] expected count >= 1 for cnt-agent, got {}",
-        choice,
-        count
+        "[{choice:?}] expected count >= 1 for cnt-agent, got {count}"
     );
     Ok(())
 }
@@ -548,31 +540,27 @@ fn assert_list_and_delete_session(choice: BackendChoice) -> anyhow::Result<()> {
     let had_session = sessions_before.iter().any(|s| s.session_id == "sess-del");
     assert!(
         had_session,
-        "[{:?}] expected sess-del in list before delete",
-        choice
+        "[{choice:?}] expected sess-del in list before delete"
     );
 
     let deleted = fresh_delete(choice, "sess-del")?;
     assert!(
         deleted,
-        "[{:?}] delete_session should return true for existing session",
-        choice
+        "[{choice:?}] delete_session should return true for existing session"
     );
 
     let sessions_after = fresh_list(choice)?;
     let still_present = sessions_after.iter().any(|s| s.session_id == "sess-del");
     assert!(
         !still_present,
-        "[{:?}] sess-del should not appear after deletion",
-        choice
+        "[{choice:?}] sess-del should not appear after deletion"
     );
 
     // Deleting again should return false.
     let deleted_again = fresh_delete(choice, "sess-del")?;
     assert!(
         !deleted_again,
-        "[{:?}] second delete should return false",
-        choice
+        "[{choice:?}] second delete should return false"
     );
     Ok(())
 }
@@ -643,8 +631,7 @@ fn sqlite_expired_records_not_returned() -> anyhow::Result<()> {
     if let Some((_, count)) = exp_count {
         assert_eq!(
             *count, 1,
-            "SQLite agent count should be 1 (only valid), got {}",
-            count
+            "SQLite agent count should be 1 (only valid), got {count}"
         );
     }
     Ok(())
@@ -733,8 +720,7 @@ fn graph_db_expired_records_not_returned() -> anyhow::Result<()> {
     if let Some((_, count)) = exp_agent_count {
         assert_eq!(
             *count, 1,
-            "graph-db agent count should be 1 (only valid ep), got {}",
-            count
+            "graph-db agent count should be 1 (only valid ep), got {count}"
         );
     }
     Ok(())

@@ -92,10 +92,7 @@ fn run_clean_with_backend(
         }
     }
 
-    print!(
-        "\nCleanup complete: {} deleted, {} errors\n",
-        deleted_count, error_count
-    );
+    print!("\nCleanup complete: {deleted_count} deleted, {error_count} errors\n");
     if error_count > 0 {
         return Err(exit_error(1));
     }

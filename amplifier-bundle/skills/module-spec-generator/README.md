@@ -194,7 +194,7 @@ Use the verification script to check dependencies:
 
 ```bash
 cd .claude/skills
-python common/verification/verify_skill.py pdf
+bash scripts/check-skills-no-missing-helpers.sh
 ```
 
 ### 4. Use in Claude Code

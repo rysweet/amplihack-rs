@@ -1,22 +1,15 @@
 //! Integration tests: graceful-skip contract for `self-improvement-loop.yaml`.
 //!
-//! Issue #248 / PR #348. The recipe `amplifier-bundle/recipes/self-improvement-loop.yaml`
-//! invokes the optional `amplihack.eval.progressive_test_suite` Python module from two
-//! steps: `run-baseline-eval` (~L97) and `re-eval-affected` (~L319). PR #347 introduced
-//! a probe-then-skip idiom in `sdk-comparison.yaml`; PR #348 mirrored it here so the
-//! recipe stays runnable on Rust-only installs without Python or the eval module.
+//! The recipe `amplifier-bundle/recipes/self-improvement-loop.yaml` keeps the
+//! eval steps runnable on installs where the native progressive eval runner is
+//! unavailable by emitting explicit skipped JSON.
 //!
 //! These TDD tests codify the contract:
 //!
 //!   1. The recipe YAML parses cleanly and embedded bash bodies are syntactically valid.
-//!   2. Both eval steps contain a probe loop that tries `python3` then `python` and
-//!      verifies `import amplihack.eval.progressive_test_suite` before invoking the
-//!      module for real.
-//!   3. When neither candidate satisfies the probe, the step writes a `[skip] ...`
-//!      warning to stderr, a `{"skipped":true,"reason":"..."}` payload to stdout, and
-//!      exits 0.
-//!   4. No bare, unprobed `PYTHONPATH=src python -m amplihack.eval...` invocations
-//!      remain in `amplifier-bundle/recipes/`.
+//!   2. Both eval steps write a `[skip] ...` warning to stderr and a
+//!      `{"skipped":true,"reason":"..."}` payload to stdout.
+//!   3. No interpreter-backed eval invocations remain in `amplifier-bundle/recipes/`.
 //!
 //! The tests are deliberately pure-Rust string analysis + a small bash-driven
 //! skip-path simulation; they do not require a real Python interpreter or the
@@ -113,31 +106,22 @@ fn strip_mustache(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Probe-then-skip presence
+// 2. Native skip presence
 // ---------------------------------------------------------------------------
 
 #[test]
-fn run_baseline_eval_has_probe_and_skip() {
+fn run_baseline_eval_has_native_skip() {
     let yaml = read_recipe();
-    // The probe: try python3 then python, check `import amplihack.eval.progressive_test_suite`.
-    let probe_signature = "import amplihack.eval.progressive_test_suite";
-    assert!(
-        yaml.matches(probe_signature).count() >= 2,
-        "expected the import probe to appear in BOTH run-baseline-eval and re-eval-affected (>=2 occurrences); got {}",
-        yaml.matches(probe_signature).count()
-    );
-
-    // Skip warning to stderr for run-baseline-eval.
     assert!(
         yaml.contains(
-            "[skip] amplihack.eval.progressive_test_suite not available; skipping run-baseline-eval"
+            "[skip] native progressive eval runner not available; skipping run-baseline-eval"
         ),
         "run-baseline-eval must emit a [skip] stderr warning"
     );
 
     // Synthetic JSON payload to stdout.
     assert!(
-        yaml.contains(r#"{"skipped":true,"reason":"amplihack.eval.progressive_test_suite not installed; step skipped"}"#),
+        yaml.contains(r#"{"skipped":true,"reason":"native progressive eval runner not available; step skipped"}"#),
         "run-baseline-eval must emit the synthetic skipped JSON payload"
     );
 }
@@ -147,17 +131,9 @@ fn re_eval_affected_has_probe_and_skip() {
     let yaml = read_recipe();
     assert!(
         yaml.contains(
-            "[skip] amplihack.eval.progressive_test_suite not available; skipping re-eval-affected"
+            "[skip] native progressive eval runner not available; skipping re-eval-affected"
         ),
         "re-eval-affected must emit a [skip] stderr warning"
-    );
-    // Both steps share the same JSON payload string — verified above; here we
-    // additionally check the per-step probe loop is wired with `for cand in python3 python`.
-    let occurrences = yaml.matches("for cand in python3 python").count();
-    assert!(
-        occurrences >= 2,
-        "expected probe loop in both eval steps; found {} occurrence(s)",
-        occurrences
     );
 }
 
@@ -168,7 +144,8 @@ fn skip_path_uses_exit_zero() {
     let yaml = read_recipe();
     // Find the two skip blocks and assert each ends with `exit 0` shortly after
     // the JSON payload line.
-    let payload = r#"{"skipped":true,"reason":"amplihack.eval.progressive_test_suite not installed; step skipped"}"#;
+    let payload =
+        r#"{"skipped":true,"reason":"native progressive eval runner not available; step skipped"}"#;
     let mut search_from = 0usize;
     let mut found = 0usize;
     while let Some(idx) = yaml[search_from..].find(payload) {
@@ -178,27 +155,23 @@ fn skip_path_uses_exit_zero() {
         let window = &yaml[abs..window_end];
         assert!(
             window.contains("exit 0"),
-            "skip-payload at offset {} must be followed by `exit 0`",
-            abs
+            "skip-payload at offset {abs} must be followed by `exit 0`"
         );
         found += 1;
         search_from = abs + payload.len();
     }
     assert_eq!(
         found, 2,
-        "expected exactly two skip-path occurrences (one per eval step); found {}",
-        found
+        "expected exactly two skip-path occurrences (one per eval step); found {found}"
     );
 }
 
 // ---------------------------------------------------------------------------
-// 3. Audit: no bare, unprobed `python -m amplihack.eval...` calls anywhere in
-//    amplifier-bundle/recipes/. A "bare" call is one preceded by an unguarded
-//    `PYTHONPATH=src python` literal — i.e., not inside a probe.
+// 3. Audit: no interpreter-backed eval calls anywhere in amplifier-bundle/recipes/.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn no_bare_python_eval_invocations_in_recipes() {
+fn no_interpreter_eval_invocations_in_recipes() {
     let recipes_dir = repo_root().join("amplifier-bundle/recipes");
     let mut offenders: Vec<String> = Vec::new();
 
@@ -209,24 +182,17 @@ fn no_bare_python_eval_invocations_in_recipes() {
         }
         let content = std::fs::read_to_string(&path).unwrap();
         for (lineno, line) in content.lines().enumerate() {
-            // We accept `python` references that are:
-            //   - inside an `import amplihack.eval...` probe (line contains `import amplihack.eval`)
-            //   - the probe loop header `for cand in python3 python`
-            //   - the indirect invocation through the resolved `$PY` variable
-            //   - pytest invocations
-            //   - comments / markdown / template placeholders
-            // We REJECT a literal `PYTHONPATH=src python -m amplihack.eval`
-            // (note: the resolved-variable form is `"$PY" -m amplihack.eval`,
-            // which is allowed because $PY is only set after the probe).
             let trimmed = line.trim_start();
             if trimmed.starts_with('#') {
                 continue;
             }
-            let is_bare_python_eval = line.contains("PYTHONPATH=src python -m amplihack.eval")
-                || line.contains("PYTHONPATH=src python3 -m amplihack.eval");
-            if is_bare_python_eval {
+            let is_interpreter_eval = line.contains("python -m amplihack.eval")
+                || line.contains("python3 -m amplihack.eval")
+                || line.contains("\"$PY\" -m amplihack.eval")
+                || line.contains("import amplihack.eval");
+            if is_interpreter_eval {
                 offenders.push(format!(
-                    "{}:{}: bare unprobed python eval invocation: {}",
+                    "{}:{}: interpreter eval invocation: {}",
                     path.display(),
                     lineno + 1,
                     line.trim()
@@ -237,54 +203,28 @@ fn no_bare_python_eval_invocations_in_recipes() {
 
     assert!(
         offenders.is_empty(),
-        "found bare unprobed python eval invocations:\n{}",
+        "found interpreter eval invocations:\n{}",
         offenders.join("\n")
     );
 }
 
 // ---------------------------------------------------------------------------
-// 4. Behavioural simulation: extract the probe block and run it under a
-//    PATH that has no python at all, asserting exit 0, [skip] on stderr,
-//    and the JSON sentinel on stdout.
+// 4. Behavioural simulation: run the native skip contract, asserting exit 0,
+//    [skip] on stderr, and the JSON sentinel on stdout.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn skip_path_simulation_emits_sentinel_and_exits_zero() {
-    // Use the literal probe shape from the recipe. We don't need to extract it
-    // verbatim — we test the contract using the same idiom.
     let script = r#"
 set -eu
-PY=""
-for cand in python3 python; do
-  if command -v "$cand" >/dev/null 2>&1; then
-    if PYTHONPATH=src "$cand" -c 'import amplihack.eval.progressive_test_suite' >/dev/null 2>&1; then
-      PY="$cand"
-      break
-    fi
-  fi
-done
-if [ -z "$PY" ]; then
-  echo "[skip] amplihack.eval.progressive_test_suite not available; skipping run-baseline-eval" >&2
-  echo '{"skipped":true,"reason":"amplihack.eval.progressive_test_suite not installed; step skipped"}'
-  exit 0
-fi
-echo "should-not-reach"
-exit 1
+echo "[skip] native progressive eval runner not available; skipping run-baseline-eval" >&2
+echo '{"skipped":true,"reason":"native progressive eval runner not available; step skipped"}'
 "#;
 
     let tmp = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(tmp.path(), script).unwrap();
 
-    // Build a PATH that contains coreutils but no python/python3. We point at
-    // a tempdir holding only symlinks to `bash`, `command`, `echo`, `[`, etc.
-    // Simpler: invoke bash explicitly with a PATH stripped of any python.
-    // We synthesize an empty bin dir and prepend it; bash builtins (`command`,
-    // `echo`, `[`) work without external python.
     let isolated = tempfile::tempdir().unwrap();
-    // Build a PATH that contains *only* an empty tempdir so neither `python`
-    // nor `python3` can be resolved. We invoke bash by absolute path so the
-    // child process can spawn even with an empty PATH; bash builtins
-    // (`command`, `echo`, `[`) handle the rest.
     let path = isolated.path().to_string_lossy().into_owned();
     let bash = if std::path::Path::new("/bin/bash").exists() {
         "/bin/bash"
@@ -294,7 +234,7 @@ exit 1
 
     let out = Command::new(bash)
         .arg(tmp.path())
-        .env("PATH", &path) // only our empty dir → no python anywhere
+        .env("PATH", &path)
         .output()
         .expect("bash run");
 
@@ -309,20 +249,15 @@ exit 1
         stderr
     );
     assert!(
-        stderr.contains("[skip] amplihack.eval.progressive_test_suite not available"),
-        "stderr must contain [skip] warning; got: {}",
-        stderr
+        stderr.contains("[skip] native progressive eval runner not available"),
+        "stderr must contain [skip] warning; got: {stderr}"
     );
     assert!(
         stdout.contains(r#""skipped":true"#),
-        "stdout must contain skipped sentinel JSON; got: {}",
-        stdout
+        "stdout must contain skipped sentinel JSON; got: {stdout}"
     );
     assert!(
-        stdout.contains(
-            r#""reason":"amplihack.eval.progressive_test_suite not installed; step skipped""#
-        ),
-        "stdout must contain reason field; got: {}",
-        stdout
+        stdout.contains(r#""reason":"native progressive eval runner not available; step skipped""#),
+        "stdout must contain reason field; got: {stdout}"
     );
 }

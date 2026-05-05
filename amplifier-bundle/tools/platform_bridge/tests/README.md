@@ -213,45 +213,13 @@ def test_pr_title_injection_prevented(self, mock_run, malicious_pr_title):
 
 ## Running Tests
 
-### Run all tests
+The legacy platform-bridge test implementation has been retired with the final
+Python winddown. Use the native workspace checks for amplihack-rs:
 
 ```bash
-pytest .claude/tools/platform_bridge/tests/
-```
-
-### Run specific test file
-
-```bash
-pytest .claude/tools/platform_bridge/tests/test_detector.py
-pytest .claude/tools/platform_bridge/tests/test_github_bridge.py
-pytest .claude/tools/platform_bridge/tests/test_azdo_bridge.py
-pytest .claude/tools/platform_bridge/tests/test_cli.py
-pytest .claude/tools/platform_bridge/tests/test_security.py
-```
-
-### Run specific test class
-
-```bash
-pytest .claude/tools/platform_bridge/tests/test_detector.py::TestGitHubURLDetection
-pytest .claude/tools/platform_bridge/tests/test_security.py::TestCommandInjectionPrevention
-```
-
-### Run specific test
-
-```bash
-pytest .claude/tools/platform_bridge/tests/test_detector.py::TestGitHubURLDetection::test_detect_github_https_url
-```
-
-### Run with coverage
-
-```bash
-pytest --cov=.claude/tools/platform_bridge --cov-report=html .claude/tools/platform_bridge/tests/
-```
-
-### Run with verbose output
-
-```bash
-pytest -v .claude/tools/platform_bridge/tests/
+cargo test --workspace --locked
+scripts/check-no-python-assets.sh
+scripts/probe-no-python.sh
 ```
 
 ## Test Philosophy

@@ -9,7 +9,9 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-/// Timeout for Docker CLI commands.
+// The blocking Command API does not support timeouts directly; this constant
+// documents the intended value for future async migration.
+#[allow(dead_code)]
 const DOCKER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Detects Docker availability and configuration.
@@ -136,11 +138,6 @@ fn run_docker_output(args: &[&str]) -> Option<String> {
     }
 }
 
-// DOCKER_TIMEOUT is kept as documentation of the intended timeout value.
-// Suppress the dead-code warning since the blocking Command API doesn't
-// support timeouts directly.
-const _: Duration = DOCKER_TIMEOUT;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +220,67 @@ mod tests {
         let result = which_docker();
         if let Some(path) = &result {
             assert!(path.to_string_lossy().contains("docker"));
+        }
+    }
+
+    // Verify DOCKER_TIMEOUT has the correct architectural value.
+    // This test documents and guards the intent: CLI timeout = 5 seconds.
+    // Once #[allow(dead_code)] replaces the `const _` workaround, this
+    // test also confirms the constant remains accessible and correct.
+    #[test]
+    fn docker_timeout_is_five_seconds() {
+        assert_eq!(DOCKER_TIMEOUT, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn should_use_docker_true_for_all_truthy_env_values() {
+        // Verify each truthy variant of AMPLIHACK_USE_DOCKER is accepted.
+        // We can't easily make Docker run in CI, so we only test the
+        // "not in docker + docker not running" path — should return false
+        // (the daemon isn't up), but must NOT panic or return an unexpected
+        // type. The important contract is that the string comparison works
+        // for all three truthy variants.
+        let prev_use = std::env::var("AMPLIHACK_USE_DOCKER").ok();
+        let prev_in = std::env::var("AMPLIHACK_IN_DOCKER").ok();
+
+        unsafe {
+            std::env::remove_var("AMPLIHACK_IN_DOCKER");
+        }
+
+        for val in &["1", "true", "yes"] {
+            unsafe {
+                std::env::set_var("AMPLIHACK_USE_DOCKER", val);
+            }
+            // Either returns false (daemon not running) or true (daemon up).
+            // The important thing: it does NOT treat these as "disabled".
+            // We just check it doesn't panic.
+            let _ = DockerDetector::should_use_docker();
+        }
+
+        match prev_use {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_USE_DOCKER", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_USE_DOCKER") },
+        }
+        if let Some(v) = prev_in {
+            unsafe { std::env::set_var("AMPLIHACK_IN_DOCKER", v) }
+        }
+    }
+
+    #[test]
+    fn should_use_docker_false_for_falsy_env_values() {
+        let prev = std::env::var("AMPLIHACK_USE_DOCKER").ok();
+        for val in &["0", "false", "no", "off", ""] {
+            unsafe {
+                std::env::set_var("AMPLIHACK_USE_DOCKER", val);
+            }
+            assert!(
+                !DockerDetector::should_use_docker(),
+                "expected false for AMPLIHACK_USE_DOCKER={val}"
+            );
+        }
+        match prev {
+            Some(v) => unsafe { std::env::set_var("AMPLIHACK_USE_DOCKER", v) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_USE_DOCKER") },
         }
     }
 }

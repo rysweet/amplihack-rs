@@ -2,6 +2,7 @@
 name = "amplihack-remote"
 version.workspace = true
 edition.workspace = true
+description = "Azure VM remote-execution pipeline for distributed amplihack commands"
 
 [dependencies]
 anyhow.workspace = true

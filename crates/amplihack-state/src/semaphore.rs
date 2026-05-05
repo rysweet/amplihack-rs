@@ -25,6 +25,7 @@ pub struct AtomicFlag {
 }
 
 impl AtomicFlag {
+    #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }

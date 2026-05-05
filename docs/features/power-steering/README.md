@@ -613,7 +613,7 @@ A: No. Power-Steering is enforced at the system level. This is by design to prev
 ## Support
 
 - **Issues**: Check [Troubleshooting](troubleshooting.md) first
-- **Bugs**: Report on [GitHub Issues](https://github.com/rysweet/amplihack/issues) with `power-steering` label
+- **Bugs**: Report on [GitHub Issues](https://github.com/rysweet/amplihack-rs/issues) with `power-steering` label
 - **Improvements**: Suggest new considerations or enhancements
 - **Questions**: Ask in discussions or open an issue
 

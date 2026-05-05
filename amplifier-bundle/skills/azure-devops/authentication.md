@@ -83,34 +83,20 @@ az devops configure --list
 
 ## Step 5: Verify Access
 
-Use the auth_check tool:
+Use native Azure CLI checks:
 
 ```bash
-python .claude/scenarios/az-devops-tools/auth_check.py
+az account show --output table
+az extension show --name azure-devops --output table
+az devops configure --list
+az boards work-item type list --output table
 ```
 
-Expected output:
-
-```
-✓ Azure CLI installed
-✓ Logged in
-✓ DevOps extension installed
-✓ Organization configured
-✓ Project configured
-✓ Organization accessible
-✓ Project accessible
-```
-
-## Auto-Fix Common Issues
+If the extension is missing, install it:
 
 ```bash
-python .claude/scenarios/az-devops-tools/auth_check.py --auto-fix
+az extension add --name azure-devops
 ```
-
-This attempts to:
-
-- Install DevOps extension if missing
-- Guide you through missing configuration
 
 ## Configuration Priority
 

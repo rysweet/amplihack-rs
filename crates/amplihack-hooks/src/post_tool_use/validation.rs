@@ -138,3 +138,122 @@ pub(super) fn mark_blarify_stale_if_needed(tool_name: &str, tool_input: &Value) 
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // is_code_file
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn code_file_rust() {
+        assert!(is_code_file("src/main.rs"));
+    }
+
+    #[test]
+    fn code_file_typescript() {
+        assert!(is_code_file("app/component.tsx"));
+    }
+
+    #[test]
+    fn code_file_case_insensitive() {
+        assert!(is_code_file("Main.RS"));
+    }
+
+    #[test]
+    fn non_code_file() {
+        assert!(!is_code_file("README.md"));
+        assert!(!is_code_file("data.json"));
+        assert!(!is_code_file("config.yaml"));
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_tool_result
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_none_result() {
+        assert!(validate_tool_result("Edit", None).is_none());
+    }
+
+    #[test]
+    fn validate_error_field() {
+        let result = json!({"error": "file not found"});
+        let warning = validate_tool_result("Edit", Some(&result));
+        assert!(warning.is_some());
+        assert!(warning.unwrap().contains("file not found"));
+    }
+
+    #[test]
+    fn validate_success_false() {
+        let result = json!({"success": false, "message": "permission denied"});
+        let warning = validate_tool_result("Write", Some(&result));
+        assert!(warning.is_some());
+        assert!(warning.unwrap().contains("permission denied"));
+    }
+
+    #[test]
+    fn validate_success_true() {
+        let result = json!({"success": true});
+        assert!(validate_tool_result("Edit", Some(&result)).is_none());
+    }
+
+    #[test]
+    fn validate_unknown_tool() {
+        let result = json!({"error": "oops"});
+        assert!(validate_tool_result("Bash", Some(&result)).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_written_paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_write_path() {
+        let input = json!({"path": "src/main.rs"});
+        let paths = extract_written_paths("Write", &input);
+        assert_eq!(paths, vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn extract_create_path() {
+        let input = json!({"path": "new_file.py"});
+        let paths = extract_written_paths("create", &input);
+        assert_eq!(paths, vec!["new_file.py"]);
+    }
+
+    #[test]
+    fn extract_edit_file_path() {
+        let input = json!({"file_path": "src/lib.rs"});
+        let paths = extract_written_paths("Edit", &input);
+        assert_eq!(paths, vec!["src/lib.rs"]);
+    }
+
+    #[test]
+    fn extract_edit_fallback_path() {
+        let input = json!({"path": "src/lib.rs"});
+        let paths = extract_written_paths("edit", &input);
+        assert_eq!(paths, vec!["src/lib.rs"]);
+    }
+
+    #[test]
+    fn extract_multiedit_paths() {
+        let input = json!({
+            "edits": [
+                {"file_path": "a.rs"},
+                {"file_path": "b.rs"}
+            ]
+        });
+        let paths = extract_written_paths("MultiEdit", &input);
+        assert_eq!(paths, vec!["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn extract_unknown_tool_empty() {
+        let input = json!({"path": "file.rs"});
+        assert!(extract_written_paths("Bash", &input).is_empty());
+    }
+}

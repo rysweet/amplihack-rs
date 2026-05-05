@@ -234,14 +234,9 @@
 ### Quick start
 
 ```bash
-# Run all tests
-pytest .claude/tools/platform_bridge/tests/
-
-# Run with coverage
-pytest --cov=.claude/tools/platform_bridge .claude/tools/platform_bridge/tests/
-
-# Run security tests only
-pytest .claude/tools/platform_bridge/tests/test_security.py -v
+cargo test --workspace --locked
+scripts/check-no-python-assets.sh
+scripts/probe-no-python.sh
 ```
 
 ### Expected behavior (TDD)

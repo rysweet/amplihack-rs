@@ -19,7 +19,7 @@ Before running test commands, detect the repository type and use the appropriate
 
 | Indicator | Repo Type | Test Command | Parity Harness |
 |---|---|---|---|
-| `Cargo.toml` at root | **Rust CLI** | `cargo test` | `tests/parity/validate_cli_parity.py` with `tests/parity/scenarios/*.yaml` |
+| `Cargo.toml` at root | **Rust CLI** | `cargo test` | Native Rust tests with `tests/parity/scenarios/*.yaml` fixtures |
 | `package.json` at root | **Node/Electron** | `gadugi-test run <scenario>.yaml` | gadugi-agentic-test framework |
 | `setup.py` / `pyproject.toml` | **Python** | `pytest` or `gadugi-test run` | gadugi-agentic-test framework |
 
@@ -154,35 +154,26 @@ QA Team is the renamed primary skill for what used to be `outside-in-testing`. U
 
 ### Command pattern to reuse
 
-If the repo already has a parity harness, extend it instead of inventing a second one. A good baseline is:
+For Rust CLI repos, extend native integration tests instead of reintroducing a
+scripted parity harness. A good baseline is:
 
 ```bash
-python tests/parity/validate_cli_parity.py \
-  --scenario tests/parity/scenarios/feature.yaml \
-  --python-repo /path/to/legacy-repo \
-  --rust-binary /path/to/new-binary \
-  --observable
+cargo test -p amplihack --test cli_launch --locked
+cargo test -p amplihack --test no_python_probe --locked
 ```
 
-For remote parity:
+For repository no-Python validation:
 
 ```bash
-python tests/parity/validate_cli_parity.py \
-  --ssh-target azlin \
-  --scenario tests/parity/scenarios/feature.yaml \
-  --python-repo /remote/path/to/legacy-repo \
-  --rust-binary /remote/path/to/new-binary
+scripts/check-no-python-assets.sh
+scripts/probe-no-python.sh
 ```
 
-For rollout shadow logging:
+For rollout shadow logging, prefer the product's native JSON/logging modes and
+compare artifacts with shell or Rust test helpers:
 
 ```bash
-python tests/parity/validate_cli_parity.py \
-  --scenario tests/parity/scenarios/feature.yaml \
-  --python-repo /path/to/legacy-repo \
-  --rust-binary /path/to/new-binary \
-  --shadow-mode \
-  --shadow-log /tmp/feature-shadow.jsonl
+cargo test --workspace --locked
 ```
 
 ## Quick Start [LEVEL 1]
@@ -196,7 +187,7 @@ python tests/parity/validate_cli_parity.py \
 xcode-select --install
 
 # Ubuntu/Debian
-sudo apt-get install -y build-essential python3
+sudo apt-get install -y build-essential
 
 # Windows: Install Visual Studio Build Tools with "Desktop development with C++"
 ```
@@ -1468,8 +1459,8 @@ See `examples/` directory for full example code with inline documentation.
 This skill embeds knowledge of gadugi-agentic-test version 0.1.0. To check if a newer version exists:
 
 ```bash
-# Run the freshness check script
-python scripts/check-freshness.py
+# Check the latest published framework version
+gh release view --repo rysweet/gadugi-agentic-test --json tagName,publishedAt
 
 # Output if outdated:
 # WARNING: Embedded framework version is 0.1.0
@@ -2109,8 +2100,8 @@ Located in `.claude/scenarios/ab-comparison/`:
 
 | File                       | Purpose                                                        |
 | -------------------------- | -------------------------------------------------------------- |
-| `ab_comparison_harness.py` | Run two CLIs side-by-side in isolated sandboxes                |
-| `ab_audit_cycle.py`        | Self-improving loop: identify → categorize → fix → re-validate |
+| `ab-comparison-harness`    | Run two CLIs side-by-side in isolated sandboxes                |
+| `ab-audit-cycle`           | Self-improving loop: identify → categorize → fix → re-validate |
 | `SCENARIO_FORMAT.md`       | YAML scenario format specification                             |
 | `example_scenario.yaml`    | Example scenario for a calculator CLI                          |
 
@@ -2118,19 +2109,19 @@ Located in `.claude/scenarios/ab-comparison/`:
 
 ```bash
 # Compare any two CLI implementations
-python .claude/scenarios/ab-comparison/ab_comparison_harness.py \
-    --a "python -m myapp.cli" \
+ab-comparison-harness \
+    --a "myapp-stable" \
     --b "./target/debug/myapp" \
     --scenario tests/scenarios/*.yaml
 
 # A/B with feature flag
-python .claude/scenarios/ab-comparison/ab_comparison_harness.py \
+ab-comparison-harness \
     --a "myapp --feature-flag=off" \
     --b "myapp --feature-flag=on" \
     --scenario tests/scenarios/regression.yaml
 
 # Shadow mode: log divergences without failing (for production rollout)
-python .claude/scenarios/ab-comparison/ab_comparison_harness.py \
+ab-comparison-harness \
     --a "myapp-stable" \
     --b "myapp-canary" \
     --scenario tests/scenarios/*.yaml \
@@ -2138,14 +2129,14 @@ python .claude/scenarios/ab-comparison/ab_comparison_harness.py \
     --shadow-log /tmp/canary-divergences.jsonl
 
 # Self-improving audit cycle (iterate until convergence)
-python .claude/scenarios/ab-comparison/ab_audit_cycle.py \
-    --a "python -m myapp.cli" \
+ab-audit-cycle \
+    --a "myapp-stable" \
     --b "./target/debug/myapp" \
     --scenarios-dir tests/scenarios/
 
 # Legacy flags (--legacy/--candidate) also work
-python .claude/scenarios/ab-comparison/ab_comparison_harness.py \
-    --legacy "python -m myapp.cli" \
+ab-comparison-harness \
+    --legacy "myapp-stable" \
     --candidate "./target/debug/myapp" \
     --scenario tests/scenarios/*.yaml
 ```

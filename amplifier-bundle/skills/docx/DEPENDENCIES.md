@@ -368,7 +368,7 @@ brew install libreoffice  # macOS
 sudo apt-get install libreoffice  # Ubuntu
 
 # Or skip validation (not recommended)
-python ooxml/scripts/pack.py unpacked/ output.docx --force
+bash ooxml/scripts/pack.sh unpacked/ output.docx --force
 ```
 
 ### docx package not found (npm)
@@ -528,7 +528,7 @@ If LibreOffice is installed in a non-standard location:
 # Set custom soffice path
 export SOFFICE_PATH="/custom/path/to/soffice"
 
-# Or edit pack.py to use custom path
+# Or edit pack.sh to use custom path
 ```
 
 ### Specific Package Versions

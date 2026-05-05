@@ -26,6 +26,7 @@ where
     T: FromStr + Clone,
     T::Err: fmt::Display,
 {
+    #[must_use]
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
@@ -35,6 +36,7 @@ where
     }
 
     /// Set a default value if the env var is not set.
+    #[must_use]
     pub fn default(mut self, value: T) -> Self {
         self.default = Some(value);
         self
@@ -43,7 +45,7 @@ where
     /// Get the value. Uses default if env var not set.
     ///
     /// If the env var is missing (with no default) or unparseable, logs a
-    /// warning and returns `T::default()`.  Prefer [`get_or_err`] when the
+    /// warning and returns `T::default()`.  Prefer [`Self::get_or_err`] when the
     /// caller can propagate errors.
     pub fn get(&self) -> T
     where

@@ -54,9 +54,8 @@ pub(crate) fn parse_backend_choice_env_value(value: &str) -> Result<BackendChoic
         "graph-db" | "kuzu" => Ok(BackendChoice::GraphDb),
         other => {
             let msg = format!(
-                "Unrecognized AMPLIHACK_MEMORY_BACKEND value {:?}. \
+                "Unrecognized AMPLIHACK_MEMORY_BACKEND value {other:?}. \
                  Valid values: sqlite, graph-db. Legacy compatibility value: kuzu",
-                other,
             );
             tracing::warn!("{msg}");
             Err(anyhow::anyhow!(msg))

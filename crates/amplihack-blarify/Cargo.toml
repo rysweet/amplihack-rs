@@ -2,6 +2,7 @@
 name = "amplihack-blarify"
 version.workspace = true
 edition.workspace = true
+description = "Code-graph analysis engine for navigable entity-relationship graphs"
 
 [dependencies]
 anyhow.workspace = true

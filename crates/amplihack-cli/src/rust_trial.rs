@@ -215,7 +215,7 @@ pub fn run_rust_trial(rust_args: &[String], trial_home: &Path) -> i32 {
     let binary = match find_rust_cli_binary(trial_home) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             return 1;
         }
     };
@@ -292,8 +292,7 @@ mod tests {
         let s = home.display().to_string();
         assert!(
             s.contains("amplihack-rust-trial") || s.contains("AMPLIHACK_RUST_TRIAL_HOME"),
-            "unexpected trial home: {}",
-            s
+            "unexpected trial home: {s}"
         );
     }
 

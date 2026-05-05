@@ -192,8 +192,7 @@ pub(super) fn run_tui_edit_input(ui_state: &mut FleetTuiUiState) -> Result<()> {
     }
     ui_state.editor_active = true;
     ui_state.status_message = Some(format!(
-        "Editing input for {}/{}. Enter adds lines, Ctrl-S saves, Esc cancels.",
-        vm_name, session_name
+        "Editing input for {vm_name}/{session_name}. Enter adds lines, Ctrl-S saves, Esc cancels."
     ));
     Ok(())
 }

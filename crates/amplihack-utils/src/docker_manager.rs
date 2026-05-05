@@ -283,7 +283,16 @@ mod tests {
 
     #[test]
     fn should_use_docker_false_by_default() {
-        // In test env without AMPLIHACK_USE_DOCKER, should return false.
+        // Save and clear the env var to prevent parallel test pollution.
+        let prev = std::env::var("AMPLIHACK_USE_DOCKER").ok();
+        unsafe {
+            std::env::remove_var("AMPLIHACK_USE_DOCKER");
+        }
         assert!(!DockerManager::should_use_docker());
+        if let Some(v) = prev {
+            unsafe {
+                std::env::set_var("AMPLIHACK_USE_DOCKER", v);
+            }
+        }
     }
 }

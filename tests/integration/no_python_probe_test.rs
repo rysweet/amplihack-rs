@@ -860,8 +860,7 @@ EOF
       ;;
   esac
 fi
- "#,
-                vm2_delay = vm2_delay
+ "#
             )
         } else {
             String::new()

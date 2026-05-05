@@ -30,7 +30,7 @@ The PPTX skill follows amplihack's brick philosophy:
 ## Quick Start
 
 1. Install dependencies (see [DEPENDENCIES.md](DEPENDENCIES.md))
-2. Verify installation: `python ../common/verification/verify_skill.py pptx`
+2. Verify installation: `bash ../../scripts/check-skills-no-missing-helpers.sh`
 3. Use the skill in Claude Code conversations
 
 Example conversation:
@@ -45,7 +45,7 @@ Claude: [Uses PPTX skill to create presentation with custom color palette and la
 - **SKILL.md**: Official skill definition from Anthropic (copied verbatim)
 - **README.md**: This file - amplihack-specific integration notes
 - **DEPENDENCIES.md**: Complete dependency documentation with installation instructions
-- **scripts/**: PPTX-specific scripts (thumbnail.py, rearrange.py, inventory.py, replace.py, html2pptx.js)
+- **scripts/**: PPTX-specific scripts (manual thumbnail export workflow, manual slide reordering workflow, manual text inventory workflow, manual text replacement workflow, html2pptx.js)
 - **ooxml/**: Symlink to ../common/ooxml for shared OOXML manipulation scripts
 - **examples/**: Practical usage examples
 - **tests/**: Verification tests that skip gracefully if dependencies missing
@@ -176,8 +176,8 @@ This integration follows amplihack's core principles:
 The PPTX skill shares OOXML manipulation scripts with the DOCX skill:
 
 - **Location**: `../common/ooxml/` (symlinked as `./ooxml/`)
-- **Shared scripts**: unpack.py, pack.py, validate.py
-- **PPTX-specific scripts**: thumbnail.py, rearrange.py, inventory.py, replace.py (in ./scripts/)
+- **Shared scripts**: unpack.sh, pack.sh, manual validation workflow
+- **PPTX-specific scripts**: manual thumbnail export workflow, manual slide reordering workflow, manual text inventory workflow, manual text replacement workflow (in ./scripts/)
 - **Single source of truth**: OOXML operations centralized to avoid duplication
 
 See [../common/ooxml/README.md](../common/ooxml/README.md) for OOXML infrastructure details.
@@ -192,7 +192,7 @@ See [../common/ooxml/README.md](../common/ooxml/README.md) for OOXML infrastruct
 
 **ImportError for dependencies:**
 
-1. Run verification script: `python ../common/verification/verify_skill.py pptx`
+1. Run verification script: `bash ../../scripts/check-skills-no-missing-helpers.sh`
 2. Install missing dependencies from DEPENDENCIES.md
 3. Re-run tests to confirm
 
@@ -234,7 +234,7 @@ This skill is sourced from Anthropic's official skills repository. For issues:
 - [SKILL.md](SKILL.md) - Official skill documentation
 - [DEPENDENCIES.md](DEPENDENCIES.md) - Complete dependency list
 - [examples/example_usage.md](examples/example_usage.md) - Usage examples
-- [tests/test_pptx_skill.py](tests/test_pptx_skill.py) - Verification tests
+- tests/test_pptx_skill.py - Verification tests
 - [../common/ooxml/README.md](../common/ooxml/README.md) - OOXML infrastructure
 - [Anthropic Skills Repository](https://github.com/anthropics/skills/tree/main/document-skills/pptx)
 

@@ -1,5 +1,5 @@
-//! Integration tests: `sdk-comparison.yaml` graceful skip when
-//! `amplihack.eval.sdk_eval_loop` Python module is unavailable.
+//! Integration tests: `sdk-comparison.yaml` graceful skip when the native SDK
+//! eval runner is unavailable.
 //!
 //! Refs: #248, #285
 //!
@@ -10,15 +10,10 @@
 //! # Contract
 //!
 //! 1. `sdk-comparison.yaml` parses as valid YAML.
-//! 2. The header (above `name:`) contains a trade-off comment block referring
-//!    to issues #248 and #285 and explaining the graceful-skip choice.
-//! 3. Each of the four eval steps (`eval-mini`, `eval-claude`, `eval-copilot`,
-//!    `eval-microsoft`) contains a probe that:
-//!      - tries `python3` then falls back to `python`,
-//!      - imports `amplihack.eval.sdk_eval_loop`,
-//!      - on failure: writes a `[skip]` warning to **stderr**, prints a
-//!        single fallback JSON object `{"sdk":"<name>","error":"..."}` to
-//!        **stdout**, and exits 0.
+//! 2. Each of the four eval steps (`eval-mini`, `eval-claude`, `eval-copilot`,
+//!    `eval-microsoft`) writes a `[skip]` warning to **stderr** and prints a
+//!    single fallback JSON object `{"sdk":"<name>","skipped":true,...}` to
+//!    **stdout**.
 //! 4. Each modified `command:` block passes `bash -n` syntax check.
 //! 5. End-to-end behaviour: with no Python on PATH, executing the extracted
 //!    command body produces exactly one JSON object on stdout with the
@@ -60,10 +55,10 @@ fn tc01_recipe_parses_as_yaml() {
 }
 
 // ---------------------------------------------------------------------------
-// TC-02: Trade-off comment block is present in the header.
+// TC-02: Native skip comment block is present in the header.
 // ---------------------------------------------------------------------------
 #[test]
-fn tc02_tradeoff_header_comment_present() {
+fn tc02_native_skip_header_comment_present() {
     let text = read_recipe();
     let header: String = text
         .lines()
@@ -71,42 +66,26 @@ fn tc02_tradeoff_header_comment_present() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(
-        header.contains("#248") && header.contains("#285"),
-        "header must reference both issues #248 and #285. Header was:\n{header}"
-    );
     let lc = header.to_lowercase();
     assert!(
-        lc.contains("graceful") || lc.contains("optional") || lc.contains("skip"),
-        "header must explain the graceful-skip / optional trade-off"
-    );
-    assert!(
-        lc.contains("amplihack.eval.sdk_eval_loop") || lc.contains("sdk_eval_loop"),
-        "header must name the optional python module"
+        lc.contains("native") && lc.contains("skip"),
+        "header must explain the native graceful-skip contract"
     );
 }
 
 // ---------------------------------------------------------------------------
-// TC-03: Each eval step contains a probe and skip block.
+// TC-03: Each eval step contains a native skip block.
 // ---------------------------------------------------------------------------
 #[test]
-fn tc03_each_eval_step_has_probe_and_skip() {
+fn tc03_each_eval_step_has_native_skip() {
     let text = read_recipe();
     for sdk in SDKS {
         let block = extract_step_command(&text, &format!("eval-{sdk}"))
             .unwrap_or_else(|| panic!("step `eval-{sdk}` must exist with a `command:` body"));
 
         assert!(
-            block.contains("python3") && block.contains("python"),
-            "eval-{sdk}: probe must try both python3 and python. Got:\n{block}"
-        );
-        assert!(
-            block.contains("amplihack.eval.sdk_eval_loop"),
-            "eval-{sdk}: probe must import amplihack.eval.sdk_eval_loop"
-        );
-        assert!(
             block.contains("[skip]"),
-            "eval-{sdk}: must emit a `[skip]` warning when module is unavailable"
+            "eval-{sdk}: must emit a `[skip]` warning when native runner is unavailable"
         );
         assert!(
             block.contains(">&2"),
@@ -118,13 +97,8 @@ fn tc03_each_eval_step_has_probe_and_skip() {
             "eval-{sdk}: skip path must emit fallback JSON with sdk={sdk}"
         );
         assert!(
-            block.contains("exit 0"),
-            "eval-{sdk}: skip path must exit 0 (graceful skip, not error)"
-        );
-        // Use if/then/else for set -e safety, not && / ||
-        assert!(
-            block.contains("if ") && block.contains("then") && block.contains("fi"),
-            "eval-{sdk}: probe must use if/then/else (set -e safe), not && / ||"
+            block.contains("\"skipped\":true") || block.contains("\"skipped\": true"),
+            "eval-{sdk}: fallback JSON must mark skipped=true"
         );
     }
 }
@@ -170,11 +144,11 @@ fn tc04_each_eval_command_passes_bash_n() {
 }
 
 // ---------------------------------------------------------------------------
-// TC-05: With no python on PATH, the extracted command emits the skip JSON
-// to stdout, an `[skip]` warning to stderr, and exits 0.
+// TC-05: The extracted command emits the skip JSON to stdout, an `[skip]`
+// warning to stderr, and exits 0.
 // ---------------------------------------------------------------------------
 #[test]
-fn tc05_skip_behaviour_no_python_on_path() {
+fn tc05_skip_behaviour_native_runner_unavailable() {
     let text = read_recipe();
     for sdk in SDKS {
         let block = extract_step_command(&text, &format!("eval-{sdk}"))
@@ -185,17 +159,6 @@ fn tc05_skip_behaviour_no_python_on_path() {
             .replace("{{loops_per_sdk}}", "1")
             .replace("{{output_dir}}", "/tmp/eval_test_out_skip");
 
-        // Build a PATH that excludes any directory containing python/python3.
-        let original = std::env::var("PATH").unwrap_or_default();
-        let clean: Vec<&str> = original
-            .split(':')
-            .filter(|d| {
-                !std::path::Path::new(d).join("python").exists()
-                    && !std::path::Path::new(d).join("python3").exists()
-            })
-            .collect();
-        let clean_path = clean.join(":");
-
         // Resolve absolute path to bash since env_clear() drops PATH.
         let bash_path = ["/bin/bash", "/usr/bin/bash"]
             .iter()
@@ -205,7 +168,7 @@ fn tc05_skip_behaviour_no_python_on_path() {
 
         let mut child = Command::new(bash_path)
             .env_clear()
-            .env("PATH", &clean_path)
+            .env("PATH", "")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -250,6 +213,11 @@ fn tc05_skip_behaviour_no_python_on_path() {
         assert!(
             parsed.get("error").is_some(),
             "eval-{sdk}: fallback JSON must include `error` field"
+        );
+        assert_eq!(
+            parsed.get("skipped").and_then(|v| v.as_bool()),
+            Some(true),
+            "eval-{sdk}: fallback JSON must include skipped=true"
         );
     }
 }

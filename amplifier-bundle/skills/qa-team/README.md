@@ -85,21 +85,15 @@ Use QA Team when you need more than a single implementation test:
 Example local parity command:
 
 ```bash
-python tests/parity/validate_cli_parity.py \
-  --scenario tests/parity/scenarios/feature.yaml \
-  --python-repo /path/to/legacy-repo \
-  --rust-binary /path/to/new-binary
+cargo test -p amplihack --test cli_launch --locked
+cargo test -p amplihack --test no_python_probe --locked
 ```
 
 Example shadow-mode command:
 
 ```bash
-python tests/parity/validate_cli_parity.py \
-  --scenario tests/parity/scenarios/feature.yaml \
-  --python-repo /path/to/legacy-repo \
-  --rust-binary /path/to/new-binary \
-  --shadow-mode \
-  --shadow-log /tmp/feature-shadow.jsonl
+cargo test --workspace --locked
+scripts/check-no-python-assets.sh
 ```
 
 ## Quick Start
@@ -621,10 +615,11 @@ This skill embeds gadugi-agentic-test version **0.1.0**.
 To check for newer versions:
 
 ```bash
-python scripts/check-freshness.py
+gh release view --repo rysweet/gadugi-agentic-test --json tagName,publishedAt
 ```
 
-The script compares the embedded version against the latest GitHub release and notifies you of new features.
+Compare the embedded version against the latest GitHub release to decide
+whether the bundled skill needs a refresh.
 
 ## Related Skills
 
@@ -747,7 +742,7 @@ steps:
     agent: "student-cli"
     action: "execute_command"
     params:
-      command: 'mkdir -p /tmp/test-student && uvx --from git+https://github.com/rysweet/amplihack amplihack claude -- -p "Task(subagent_type=''guide'', prompt=''I am new. What is amplihack?'')" 2>&1 | head -100'
+      command: 'mkdir -p /tmp/test-student && uvx --from git+https://github.com/rysweet/amplihack-rs amplihack claude -- -p "Task(subagent_type=''guide'', prompt=''I am new. What is amplihack?'')" 2>&1 | head -100'
     expect:
       exit_code: 0
       stdout_contains:

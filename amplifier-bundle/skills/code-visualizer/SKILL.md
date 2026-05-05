@@ -58,18 +58,12 @@ add new ones.
 amplifier-bundle/skills/code-visualizer/
 ├── SKILL.md
 ├── README.md
-└── scripts/
-    ├── __init__.py
-    ├── graph.py              # Normalized data contract (Node, Edge, Graph)
-    ├── python_analyzer.py    # normalize(paths) -> Graph
-    ├── ts_analyzer.py        # normalize(paths) -> Graph
-    ├── rust_analyzer.py      # normalize(paths) -> Graph
-    ├── go_analyzer.py        # normalize(paths) -> Graph
-    ├── dispatcher.py         # detect languages, route, return dict[lang, Graph]
-    ├── mermaid_renderer.py   # render(graph) / render_combined(graphs)
-    ├── staleness.py          # is_stale(target, diagram, languages)
-    └── visualizer.py         # CLI entry point
+└── SKILL.md
 ```
+
+The legacy helper executable is not shipped in `amplihack-rs`. Perform the
+workflow directly with repository search tools: inventory source files, extract
+imports/usages, build the module graph, and write Mermaid diagrams.
 
 ### Data Contract (`graph.py`)
 
@@ -166,22 +160,15 @@ Returns `True` if any source file with a matching language extension has an
 mtime newer than `diagram_path`. Generalizes the previous Python-only
 behavior.
 
-## CLI
+## Workflow
 
-The skill ships a single executable: `scripts/visualizer.py`.
+No bundled CLI helper is required. Use the available code-search tools to:
 
-```
-python visualizer.py <path> [--output DIR] [--basename NAME]
-                            [--check-staleness] [--combined]
-```
-
-| Flag                | Default        | Purpose                                                               |
-| ------------------- | -------------- | --------------------------------------------------------------------- |
-| `<path>`            | _required_     | Directory to analyze. Must exist and be a directory.                  |
-| `--output DIR`      | `./diagrams`   | Output directory for `.mmd` files.                                    |
-| `--basename NAME`   | `architecture` | Filename stem. Validated against `^[A-Za-z0-9._-]+$`.                 |
-| `--check-staleness` | off            | Print staleness report for existing diagrams; exit non-zero if stale. |
-| `--combined`        | off            | Also write `<basename>-combined.mmd` containing all languages.        |
+1. Find source files by language.
+2. Extract import/use/include edges.
+3. Normalize nodes and edges into a graph.
+4. Render Mermaid diagrams under `docs/diagrams/` or the requested output path.
+5. For freshness checks, compare source mtimes or git diffs against diagram files.
 
 ### Output Files
 
@@ -199,10 +186,8 @@ Files are only written for languages that were actually detected.
 
 ### Generate diagrams for a polyglot repo
 
-```bash
-python amplifier-bundle/skills/code-visualizer/scripts/visualizer.py . \
-    --output docs/diagrams --combined
-```
+Inventory source files, extract import edges, then write a combined Mermaid
+diagram to `docs/diagrams/architecture-combined.mmd`.
 
 Output (for this repo, which contains Python and JS):
 
@@ -214,20 +199,15 @@ docs/diagrams/architecture-combined.mmd
 
 ### Check freshness in CI
 
-```bash
-python amplifier-bundle/skills/code-visualizer/scripts/visualizer.py src/ \
-    --output docs/diagrams --check-staleness
-# exits 1 if any per-language diagram is older than its source set
-```
+Compare changed source files against diagram files in `docs/diagrams/`; report
+any diagram that was not updated with the code change.
 
 ### Generate for a single language
 
 Provide a path that only contains files of one language; the dispatcher will
 detect a single language and emit a single `.mmd`:
 
-```bash
-python visualizer.py src/auth/      # Python-only -> architecture-python.mmd
-```
+Generate a single-language diagram when the target path contains one language.
 
 ## Auto-Detection Rules
 
@@ -290,23 +270,18 @@ flowchart TD
 The skill follows the brick philosophy: a new language is a new self-contained
 module. There is **no base class to subclass**.
 
-1. Create `scripts/<lang>_analyzer.py` with the entry point:
+1. Document the new language's file extensions and import syntax:
 
    ```python
-   from collections.abc import Iterable
-   from pathlib import Path
-   from graph import Edge, Graph, Node  # sibling import; works under `python visualizer.py`
-
-   def normalize(paths: Iterable[Path]) -> Graph:
-       nodes: list[Node] = []
-       edges: list[Edge] = []
+   from module_a import service
+   import module_b
        for p in paths:
            # parse file, append nodes/edges
            ...
        return Graph(language="<lang>", nodes=tuple(nodes), edges=tuple(edges))
    ```
 
-2. Register the language in `scripts/dispatcher.py`:
+2. Register the language in `the language-dispatch section`:
 
    ```python
    LANGUAGES = {

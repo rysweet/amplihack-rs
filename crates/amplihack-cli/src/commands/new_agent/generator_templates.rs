@@ -183,7 +183,7 @@ pub(super) fn generate_examples(agent_name: &str) -> String {
     format!(
         "```python\n\
          # Example 1: Basic usage\n\
-         result = {name}.process(\"input data\")\n\
+         result = {agent_name}.process(\"input data\")\n\
          print(result.status)  # \"success\"\n\n\
          # Example 2: With options\n\
          options = {{\n\
@@ -191,15 +191,14 @@ pub(super) fn generate_examples(agent_name: &str) -> String {
          \x20   \"format\": \"json\",\n\
          \x20   \"verbose\": False\n\
          }}\n\
-         result = {name}.process(\"input data\", options)\n\n\
+         result = {agent_name}.process(\"input data\", options)\n\n\
          # Example 3: Batch processing\n\
          inputs = [\"data1\", \"data2\", \"data3\"]\n\
-         results = {name}.process_batch(inputs)\n\
+         results = {agent_name}.process_batch(inputs)\n\
          for result in results:\n\
          \x20   if result.success:\n\
          \x20       print(f\"Processed: {{result.data}}\")\n\
-         ```",
-        name = agent_name
+         ```"
     )
 }
 

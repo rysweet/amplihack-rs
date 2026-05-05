@@ -1,6 +1,6 @@
 //! Lazy memory library availability check.
 //!
-//! Provides [`ensure_memory_lib_installed`] which caches whether the
+//! Provides `ensure_memory_lib_installed()` which caches whether the
 //! memory backend (SQLite / LadybugDB) is available at runtime.
 
 use std::sync::OnceLock;

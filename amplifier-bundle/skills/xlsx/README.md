@@ -77,18 +77,11 @@ wb.save('model.xlsx')
 ### Recalculate Formulas
 
 ```bash
-python .claude/skills/xlsx/scripts/recalc.py model.xlsx
+libreoffice --headless --convert-to xlsx --outdir . model.xlsx
 ```
 
-Returns JSON with error details:
-
-```json
-{
-  "status": "success",
-  "total_errors": 0,
-  "total_formulas": 15
-}
-```
+Reopen the workbook after this step and inspect known formula cells for Excel
+error values.
 
 ## Examples
 
@@ -102,20 +95,15 @@ See [examples/example_usage.md](examples/example_usage.md) for comprehensive exa
 
 ## Testing
 
-Run the test suite to verify the skill works correctly:
-
-```bash
-cd .claude/skills/xlsx
-pytest tests/ -v
-```
-
-Tests will skip gracefully if dependencies are not installed.
+No bundled Python test suite is shipped in `amplihack-rs`. Verify generated
+workbooks by opening them with LibreOffice/Excel and checking formulas, charts,
+and formatting.
 
 ## Known Issues and Limitations
 
 ### LibreOffice Required for Formula Recalculation
 
-The recalc.py script requires LibreOffice to calculate formula values. Without LibreOffice:
+LibreOffice is required to calculate formula values in headless workflows. Without LibreOffice:
 
 - Formulas will be inserted correctly
 - Formula values will not be calculated
@@ -127,7 +115,7 @@ Very large Excel files (>100MB) may take longer to recalculate. Consider:
 
 - Using write-only mode for large exports
 - Breaking large models into multiple workbooks
-- Using the timeout parameter: `python recalc.py file.xlsx 60`
+- Using the timeout parameter: `libreoffice --headless --convert-to xlsx --outdir . file.xlsx`
 
 ### Platform-Specific Notes
 
@@ -135,11 +123,11 @@ Very large Excel files (>100MB) may take longer to recalculate. Consider:
 
 **Linux**: LibreOffice is typically pre-installed. Use package manager if not available.
 
-**Windows**: The recalc.py script has limited timeout support on Windows. Formula recalculation still works.
+**Windows**: The LibreOffice headless recalculation workflow script has limited timeout support on Windows. Formula recalculation still works.
 
 ## Zero-Error Requirement
 
-All Excel files created with this skill MUST have zero formula errors. The recalc.py script verifies:
+All Excel files created with this skill MUST have zero formula errors. The LibreOffice headless recalculation workflow script verifies:
 
 - **#REF!** - Invalid cell references
 - **#DIV/0!** - Division by zero
@@ -186,10 +174,10 @@ sheet['C5'] = 'Source: Company 10-K, FY2024, Page 45, Revenue Note'
 
 ### Verify Before Delivery
 
-Always run recalc.py before considering the Excel file complete:
+Always run LibreOffice headless recalculation workflow before considering the Excel file complete:
 
 ```bash
-python recalc.py output.xlsx
+libreoffice --headless --convert-to xlsx --outdir . output.xlsx
 # Check status is "success"
 # If errors found, fix and recalculate
 ```
@@ -200,11 +188,11 @@ This skill demonstrates amplihack's core principles:
 
 **Ruthless Simplicity**: Uses standard libraries (pandas, openpyxl) without unnecessary abstractions.
 
-**Modular Design**: Self-contained skill with clear boundaries. The recalc.py script is a focused, single-purpose tool.
+**Modular Design**: Self-contained skill with clear boundaries. The LibreOffice headless recalculation workflow script is a focused, single-purpose tool.
 
 **Zero-BS Implementation**: No placeholders or stubs. Every feature works completely or doesn't exist.
 
-**Regeneratable**: Can be rebuilt from SKILL.md + recalc.py + this README.
+**Regeneratable**: Can be rebuilt from SKILL.md + LibreOffice headless recalculation workflow + this README.
 
 ## Support
 

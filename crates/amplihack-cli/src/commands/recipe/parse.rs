@@ -85,7 +85,7 @@ pub(crate) fn parse_recipe_text(text: &str) -> Result<RecipeDoc> {
         if let Some(step_type) = &step.step_type {
             match step_type.to_ascii_lowercase().as_str() {
                 "bash" | "agent" | "recipe" => {}
-                other => anyhow::bail!("'{}' is not a valid StepType", other),
+                other => anyhow::bail!("'{other}' is not a valid StepType"),
             }
         }
     }

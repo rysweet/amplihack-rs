@@ -30,7 +30,7 @@ pub(crate) fn build_memory_id(record: &SessionLearningRecord, timestamp: &str) -
     hasher.update(b"\0");
     hasher.update(timestamp.as_bytes());
     let digest = hasher.finalize();
-    format!("mem-{:x}", digest)
+    format!("mem-{digest:x}")
 }
 
 fn heuristic_importance(content: &str) -> i64 {

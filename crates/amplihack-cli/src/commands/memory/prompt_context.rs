@@ -165,7 +165,7 @@ fn format_code_context(payload: &code_graph::CodeGraphContextPayload) -> Option<
             } else {
                 function.signature.as_str()
             };
-            lines.push(format!("- `{}`", signature));
+            lines.push(format!("- `{signature}`"));
             if !function.docstring.trim().is_empty() {
                 let doc_preview = if function.docstring.len() > 100 {
                     let truncated = function.docstring.chars().take(100).collect::<String>();
@@ -192,7 +192,7 @@ fn format_code_context(payload: &code_graph::CodeGraphContextPayload) -> Option<
             } else {
                 class.fully_qualified_name.as_str()
             };
-            lines.push(format!("- {}", name));
+            lines.push(format!("- {name}"));
             if !class.docstring.trim().is_empty() {
                 let doc_preview = if class.docstring.len() > 100 {
                     let truncated = class.docstring.chars().take(100).collect::<String>();

@@ -284,11 +284,7 @@ fn cascade_fallback_templates_match_python() {
         "accuracy",
     ];
     for n in names {
-        assert!(
-            FALLBACK_TEMPLATES.contains_key(n),
-            "missing template: {}",
-            n
-        );
+        assert!(FALLBACK_TEMPLATES.contains_key(n), "missing template: {n}");
     }
     assert_eq!(FALLBACK_TEMPLATES.len(), 5);
 }
@@ -455,7 +451,7 @@ fn expert_panel_default_experts_match_python() {
 
 fn make_review(domain: &str, vote: VoteChoice, confidence: f32) -> ExpertReview {
     ExpertReview {
-        expert_id: format!("{}-expert", domain),
+        expert_id: format!("{domain}-expert"),
         domain: domain.into(),
         analysis: String::new(),
         strengths: vec![],

@@ -1,4 +1,4 @@
-site_name: amplihack-rs
+site_name: amplihack
 site_url: https://rysweet.github.io/amplihack-rs/
 repo_url: https://github.com/rysweet/amplihack-rs
 repo_name: rysweet/amplihack-rs
@@ -39,355 +39,172 @@ markdown_extensions:
   - toc:
       permalink: true
 
+validation:
+  links:
+    not_found: ignore
+    unrecognized_links: ignore
+
+exclude_docs: |
+  concepts/amplihack-retirement-direction.md
+  howto/migrate-from-python.md
+  reference/legacy-python-assets.md
+  reference/recipe-runner-audit.md
+
 nav:
   - Home: index.md
-  - Tutorials:
-      - Amplihack Tutorial: tutorials/amplihack-tutorial.md
-      - Goal-Seeking Agent Generator: tutorials/GOAL_SEEKING_AGENT_TUTORIAL.md
-      - Code Atlas Getting Started: tutorials/code-atlas-getting-started.md
-      - Copilot Parity Control Plane: tutorials/copilot-parity-control-plane.md
-      - Dev Orchestrator Getting Started: tutorials/dev-orchestrator-tutorial.md
-      - Your First Docs Site: tutorials/first-docs-site.md
-      - Hive Mind Getting Started: tutorials/hive-mind-getting-started.md
-      - Hive Mind Tutorial: tutorials/hive-mind-tutorial.md
-      - LearningAgent Refactor Walkthrough: tutorials/learning-agent-refactor-tutorial.md
-      - Memory-Enabled Agents Getting Started: tutorials/memory-enabled-agents-getting-started.md
-      - Platform Bridge Quickstart: tutorials/platform-bridge-quickstart.md
-      - Resumable Workstream Timeouts: tutorials/resumable-workstream-timeouts.md
-      - Session-Start Workflow Classification: tutorials/session-start-workflow-classification.md
-  - How-To Guides:
+  - Getting Started:
+      - Installation: PREREQUISITES.md
+      - Interactive Setup: INTERACTIVE_INSTALLATION.md
       - First-Time Install: howto/first-install.md
-      - Install from Local Repo: howto/local-install.md
+      - Local Install: howto/local-install.md
       - Uninstall: howto/uninstall.md
-      - Migrate from Python: howto/migrate-from-python.md
-      - Ladybug Migration: howto/ladybug-migration-guide.md
-      - Migration Guide: howto/migration-guide.md
-      - Migration Worktree Support: howto/migration-worktree-support.md
-      - Enable Shell Completions: howto/enable-shell-completions.md
-      - Non-interactive Mode: howto/run-in-noninteractive-mode.md
-      - Manage Update Checks: howto/manage-tool-update-checks.md
-      - Run a Recipe: howto/run-a-recipe.md
-      - Index a Project: howto/index-a-project.md
-      - Validate No-Python: howto/validate-no-python.md
-      - Use Fleet Dashboard: howto/use-fleet-dashboard.md
-      - Fleet Scout & Advance: howto/run-fleet-scout-and-advance.md
-      - Migrate Memory Backend: howto/migrate-memory-backend.md
-      - Diagnose with Doctor: howto/diagnose-with-doctor.md
-      - Create Custom Agent: howto/create-custom-agent.md
-      - Run Agent Evaluations: howto/run-agent-evaluations.md
-      - Deploy Hive Swarm: howto/deploy-hive-swarm.md
-      - Generate Agent from Goal: howto/generate-agent-from-goal.md
-      - Fix cxx-build CI Failure: howto/fix-cxx-build-ci-failure.md
-      - Resolve LadybugDB Linker Errors: howto/resolve-kuzu-linker-errors.md
-      - Power Steering Worktree Troubleshooting: howto/power-steering-worktree-troubleshooting.md
-      - Prompt → Distributed Hive: howto/prompt-to-distributed-hive.md
-      - Use Agent Bundle Generator: howto/use-agent-bundle-generator.md
-      - Blarify Quickstart: howto/blarify-quickstart.md
-      - Troubleshoot Worktree: howto/troubleshoot-worktree.md
-      - Integrate Agent Memory: howto/integrate-agent-memory.md
-      - Configure Hooks: howto/configure-hooks.md
-      - Develop amplihack: howto/develop-amplihack.md
-      - Create Your Own Tools: howto/create-your-own-tools.md
-      - Recipe CLI Examples: howto/recipe-cli-examples.md
-      - Recipe Discovery Troubleshooting: howto/recipe-discovery-troubleshooting.md
-      - Goal-Seeking Agent Tutorial: howto/goal-seeking-agent-tutorial.md
-      - Token Sanitization: howto/token-sanitization.md
-      - Power Steering Merge Preferences: howto/power-steering-merge-preferences.md
-      - Security Testing: howto/security-testing.md
-      - GitHub Pages Deployment: howto/github-pages-deployment.md
-      - Agent Learning Eval Harness: howto/agent-learning-eval-harness.md
-      - Configure Copilot Parity Control Plane: howto/configure-copilot-parity-control-plane.md
-      - Configure Issue Classifier Workflow: howto/configure-issue-classifier-workflow.md
-      - Configure Memory Consent: howto/configure-memory-consent.md
-      - Configure Resumable Workstream Timeouts: howto/configure-resumable-workstream-timeouts.md
-      - Configure Workflow Publish/Import Validation: howto/configure-workflow-publish-import-validation.md
-      - Design Custom Learning Metrics: howto/design-custom-learning-metrics.md
-      - Enable Blarify: howto/enable-blarify.md
-      - Integrate Memory into Agents: howto/integrate-memory-into-agents.md
-      - Maintain Learning Agent Modules: howto/maintain-learning-agent-modules.md
-      - Platform Bridge Workflows: howto/platform-bridge-workflows.md
-      - Recipe CLI Commands: howto/recipe-cli-commands.md
-      - Run Quality Audit: howto/run-quality-audit.md
-      - Run Supply Chain Audit: howto/run-supply-chain-audit.md
-      - Settings Hook Configuration: howto/settings-hook-configuration.md
-      - Trace Logging: howto/trace-logging.md
-      - Troubleshoot Hooks: howto/troubleshoot-hooks.md
-      - Use Code Atlas: howto/use-code-atlas.md
-      - Use Crusty Old Engineer: howto/use-crusty-old-engineer.md
-      - Use Non-Claude Agent: howto/use-non-claude-agent.md
-      - Use Gherkin Expert: howto/use_gherkin_expert.md
-      - Validate Agent Learning: howto/validate-agent-learning.md
-      - Verify Claude Staging: howto/verify-claude-staging.md
-      - Verify Framework Injection: howto/verify-framework-injection.md
-  - Document-Driven Development:
-      - Overview: document_driven_development/README.md
-      - DDD in Depth: document_driven_development/overview.md
-      - Core Concepts:
-          - Index: document_driven_development/core_concepts/README.md
-          - Context Poisoning: document_driven_development/core_concepts/context_poisoning.md
-          - File Crawling: document_driven_development/core_concepts/file_crawling.md
-          - Retcon Writing: document_driven_development/core_concepts/retcon_writing.md
-      - Phases:
-          - Index: document_driven_development/phases/README.md
-          - "Phase 0: Planning & Alignment": document_driven_development/phases/00_planning_and_alignment.md
-          - "Phase 1: Documentation Retcon": document_driven_development/phases/01_documentation_retcon.md
-          - "Phase 2: Approval Gate": document_driven_development/phases/02_approval_gate.md
-          - "Phase 3: Implementation Planning": document_driven_development/phases/03_implementation_planning.md
-          - "Phase 4: Code Implementation": document_driven_development/phases/04_code_implementation.md
-          - "Phase 5: Testing & Verification": document_driven_development/phases/05_testing_and_verification.md
-          - "Phase 6: Cleanup & Push": document_driven_development/phases/06_cleanup_and_push.md
-      - Reference:
-          - Index: document_driven_development/reference/README.md
-          - Checklists: document_driven_development/reference/checklists.md
-          - Common Pitfalls: document_driven_development/reference/common_pitfalls.md
-          - FAQ: document_driven_development/reference/faq.md
-          - Tips for Success: document_driven_development/reference/tips_for_success.md
-  - Features:
-      - Overview: features/README.md
-      - Branch Name Generation: features/branch-name-generation.md
-      - Claude MD Preservation: features/claude-md-preservation.md
-      - Copilot Installation Reporting: features/copilot-installation-reporting.md
-      - LSP Auto-Configuration: features/lsp-auto-configuration.md
-      - Main Branch Protection: features/main-branch-protection.md
-      - Memory Consent Prompt: features/memory-consent-prompt.md
-      - Memory-Enabled Agents: features/memory-enabled-agents.md
-      - Resumable Workstream Timeouts: features/resumable-workstream-timeouts.md
-      - Smart Memory Management: features/smart-memory-management.md
-      - Trace Logging: features/trace-logging.md
-      - Workflow Publish/Import Validation: features/workflow-publish-import-validation.md
-      - Power Steering:
-          - Overview: features/power-steering/README.md
-          - Architecture Refactor: features/power-steering/architecture-refactor.md
-          - Configuration: features/power-steering/configuration.md
-          - Customization Guide: features/power-steering/customization-guide.md
-          - "Changelog v0.9.1": features/power-steering/changelog-v0.9.1.md
-          - "Migration v0.9.1": features/power-steering/migration-v0.9.1.md
-          - Migration Worktree Support: features/power-steering/migration-worktree-support.md
-          - Troubleshooting: features/power-steering/troubleshooting.md
-          - Worktree Support: features/power-steering/worktree-support.md
-  - "Hive Mind & Fleet":
-      - "Design Spec: Memory & Retrieval": hive_mind/CURRENT_DESIGN_SPEC.md
-      - Eval Stack Components: hive_mind/EVAL_COMPONENTS.md
-      - Eval Operator Guide: hive_mind/EVAL_OPERATOR_GUIDE.md
-      - Messaging Transport Investigation: hive_mind/MESSAGING_TRANSPORT_INVESTIGATION.md
-      - Module Creation Guide: hive_mind/MODULE_CREATION_GUIDE.md
-      - Validation Results: hive_mind/current-validation-results.md
-      - Fleet Advanced Proposal: fleet-orchestration/ADVANCED_PROPOSAL.md
-      - Fleet Orchestration Tutorial: fleet-orchestration/TUTORIAL.md
-  - Skills:
-      - Migrate Session: skills/migrate.md
-      - Skill Builder Examples: skills/SKILL_BUILDER_EXAMPLES.md
-      - Skill Catalog: skills/SKILL_CATALOG.md
-  - Testing:
-      - Auto Mode UI Test Suite: testing/AUTO_MODE_UI_TEST_SUITE.md
-      - Test Fixes Needed: testing/TEST_FIXES_NEEDED.md
-      - Test Implementation Summary: testing/TEST_IMPLEMENTATION_SUMMARY.md
-      - Test Plan: testing/TEST_PLAN.md
-      - Test Specification Stop Hook: testing/TEST_SPECIFICATION_STOP_HOOK.md
-      - Session Management Test Coverage: testing/session_management_test_coverage.md
-  - Security:
-      - Lock Session ID Sanitization: security/lock-session-id-sanitization.md
-      - Platform Bridge Security: security/platform-bridge-security.md
-  - Reference:
-      - install Command: reference/install-command.md
-      - Install Manifest: reference/install-manifest.md
-      - Hook Specifications: reference/hook-specifications.md
-      - Azure Integration: reference/azure-integration.md
-      - Binary Resolution: reference/binary-resolution.md
-      - completions Command: reference/completions-command.md
-      - Copilot CLI: reference/copilot-cli.md
-      - Environment Variables: reference/environment-variables.md
-      - Launch Flag Injection: reference/launch-flag-injection.md
-      - Signal Handling: reference/signal-handling.md
-      - recipe Command: reference/recipe-command.md
-      - Oxidizer: reference/oxidizer.md
-      - Parity Test Scenarios: reference/parity-test-scenarios.md
-      - memory index Command: reference/memory-index-command.md
-      - query-code Command: reference/query-code-command.md
-      - resolve-bundle-asset Command: reference/resolve-bundle-asset-command.md
-      - RustyClawd Command: reference/rustyclawd-command.md
-      - fleet Command: reference/fleet-command.md
-      - multitask Command: reference/multitask-command.md
-      - Kuzu Test Configuration: reference/kuzu-test-configuration.md
-      - Memory Backend: reference/memory-backend.md
-      - doctor Command: reference/doctor-command.md
-      - Agent Configuration: reference/agent-configuration.md
-      - agent-core API: reference/agent-core-api.md
-      - domain-agents API: reference/domain-agents-api.md
-      - agent-eval API: reference/agent-eval-api.md
-      - Hive API: reference/hive-api.md
-      - agent-generator API: reference/agent-generator-api.md
-      - uvx-help Command: reference/uvx-help-command.md
-      - Memory Extended API: reference/memory-extended-api.md
-      - Plugin Directory Structure Fix: reference/plugin-directory-structure-fix.md
-      - Power Steering Compaction API: reference/power-steering-compaction-api.md
-      - Power Steering Checker API: reference/power-steering-checker-api.md
-      - Power Steering Checker Configuration: reference/power-steering-checker-configuration.md
-      - Power Steering File Locking: reference/power-steering-file-locking.md
-      - Power Steering Merge Preferences: reference/power-steering-merge-preferences.md
-      - Profile Management: reference/profile-management.md
-      - Shell Command Hook: reference/shell-command-hook.md
-      - Security Recommendations: reference/security-recommendations.md
-      - "Security Audit: Copilot CLI Flags": reference/security-audit-copilot-cli-flags.md
-      - Eval Retrieval Methods: reference/eval-retrieval-reference.md
-      - Fleet Copilot: reference/fleet-copilot.md
-      - Doc Graph Quick Reference: reference/doc-graph-quick-reference.md
-      - JSON Logging: reference/json-logging.md
-      - Benchmarking: reference/benchmarking.md
-      - Recipe Quick Reference: reference/recipe-quick-reference.md
-      - Recipe Runner Audit: reference/recipe-runner-audit.md
-      - Security API Reference: reference/security-api.md
-      - Git Utils API: reference/git-utils-api.md
-      - Goal Agent Example Prompt: reference/goal-agent-example-prompt.md
-      - Code Review Practices: reference/code-review.md
-      - Prerequisites: reference/prerequisites.md
-      - Launcher Model Configuration: reference/LAUNCHER_MODEL_CONFIGURATION.md
-      - Status Line: reference/STATUSLINE.md
-      - amplifier Command: reference/amplifier-command.md
-      - Append Handler: reference/append-handler.md
-      - CLI Reference: reference/cli.md
-      - Code Atlas Reference: reference/code-atlas-reference.md
-      - Copilot Installation Implementation: reference/copilot-installation-implementation.md
-      - Copilot Parity Control Plane: reference/copilot-parity-control-plane.md
-      - GitHub Pages API: reference/github-pages-api.md
-      - Goal-Seeking Agents Quick Reference: reference/goal-seeking-agents-quick-reference.md
-      - Hook Persistence Implementation: reference/hook-persistence-implementation.md
-      - Learning Agent Module Reference: reference/learning-agent-module-reference.md
-      - Memory CLI Reference: reference/memory-cli-reference.md
-      - Memory-Enabled Agents API: reference/memory-enabled-agents-api.md
-      - Platform Bridge API: reference/platform-bridge-api.md
-      - Prerequisite Checking: reference/prerequisite-checking.md
-      - Quality Audit Cycle Recipe: reference/quality-audit-cycle-recipe.md
-      - Recipe CLI Reference: reference/recipe-cli-reference.md
-      - Recipe Result: reference/recipe-result.md
-      - Resumable Workstream Timeouts: reference/resumable-workstream-timeouts.md
-      - Rust Runner Execution: reference/rust-runner-execution.md
-      - Staging API: reference/staging-api.md
-      - Token Sanitizer: reference/token-sanitizer.md
-      - Trace Logging API: reference/trace-logging-api.md
-      - User Prompt Submit Hook API: reference/user-prompt-submit-hook-api.md
-      - Workflow Issue Extraction: reference/workflow-issue-extraction.md
-      - Workflow Publish/Import Validation: reference/workflow-publish-import-validation.md
-  - Concepts:
-      - Philosophy: concepts/philosophy.md
-      - Patterns: concepts/patterns.md
-      - Trust & Anti-Sycophancy: concepts/trust.md
-      - Default Workflow (23 steps): concepts/default-workflow.md
-      - Bootstrap Parity: concepts/bootstrap-parity.md
-      - Idempotent Installation: concepts/idempotent-installation.md
-      - cxx/cxx-build Contract: concepts/cxx-version-contract.md
-      - Agent Binary Routing: concepts/agent-binary-routing.md
-      - LadybugDB Code Graph: concepts/kuzu-code-graph.md
-      - Memory Architecture: concepts/memory-backend-architecture.md
-      - Fleet Dashboard Architecture: concepts/fleet-dashboard-architecture.md
-      - Fleet Admiral Reasoning: concepts/fleet-admiral-reasoning.md
-      - Fleet State Machine: concepts/fleet-state-machine.md
-      - Signal Handling Lifecycle: concepts/signal-handling-lifecycle.md
-      - Recipe Execution Flow: concepts/recipe-execution-flow.md
-      - Memory Backend Migration: concepts/memory-backend-migration.md
-      - Memory-OODA Integration: concepts/memory-ooda-integration.md
-      - Agent Lifecycle: concepts/agent-lifecycle.md
-      - Domain Agents: concepts/domain-agents.md
-      - Evaluation Framework: concepts/eval-framework.md
-      - Hive Orchestration: concepts/hive-orchestration.md
-      - Goal Agent Generator: concepts/agent-generator.md
-      - Hive Mind (Distributed): concepts/hive-mind-distributed.md
-      - Agent Bundle Generator: concepts/agent-bundle-generator.md
-      - Blarify Architecture: concepts/blarify-architecture.md
-      - Blarify Integration: concepts/blarify-integration.md
-      - Worktree Support: concepts/worktree-support.md
-      - Workspace Pattern: concepts/workspace-pattern.md
-      - Agent Memory Architecture: concepts/agent-memory-architecture.md
-      - Agent Type Memory Sharing: concepts/agent-type-memory-sharing.md
-      - Power Steering Compaction: concepts/power-steering-compaction.md
-      - Hooks Comparison: concepts/hooks-comparison.md
-      - Security Context Preservation: concepts/security-context-preservation.md
-      - Eval System Architecture: concepts/eval-system-architecture.md
-      - Eval Grading Improvements: concepts/eval-grading-improvements.md
-      - Auto Mode: concepts/auto-mode.md
-      - Automode Safety: concepts/automode-safety.md
-      - Recipe Resilience: concepts/recipe-resilience.md
-      - Documentation Knowledge Graph: concepts/documentation-knowledge-graph.md
-      - External Knowledge Integration: concepts/external-knowledge-integration.md
-      - Native Binary Trace Logging: concepts/native-binary-trace-logging.md
-      - Goal-Seeking Agents: concepts/goal-seeking-agents.md
-      - Copilot Parity Control Plane: concepts/copilot-parity-control-plane.md
-      - Framework Injection Architecture: concepts/framework-injection-architecture.md
-      - Learning Agent Module Architecture: concepts/learning-agent-module-architecture.md
-      - Memory-Enabled Agents Architecture: concepts/memory-enabled-agents-architecture.md
+  - Core Concepts:
+      - Philosophy: claude/context/PHILOSOPHY.md
+      - Project Overview: claude/context/PROJECT.md
+      - Patterns: claude/context/PATTERNS.md
+      - Trust & Anti-Sycophancy: claude/context/TRUST.md
       - Rust Runner Execution Architecture: concepts/rust-runner-execution-architecture.md
-      - Settings Manager vs Permanent Changes: concepts/settings-manager-vs-permanent-changes.md
-      - Unified Distributed Cognitive Memory: concepts/unified-distributed-cognitive-memory.md
-      - Unified Staging Architecture: concepts/unified-staging-architecture.md
-  - Contributing:
-      - File Organization: contributing/file-organization.md
-      - Documentation Parity Audit: contributing/documentation-parity-audit.md
+      - Agent Binary Routing: concepts/agent-binary-routing.md
+      - Memory Architecture: concepts/memory-backend-architecture.md
+  - Workflows:
+      - Default Workflow: claude/workflow/DEFAULT_WORKFLOW.md
+      - Document-Driven Development:
+          - Overview: document_driven_development/README.md
+          - Getting Started: document_driven_development/overview.md
+          - Core Concepts:
+              - Overview: document_driven_development/core_concepts/README.md
+              - Context Poisoning: document_driven_development/core_concepts/context_poisoning.md
+              - File Crawling: document_driven_development/core_concepts/file_crawling.md
+              - Retcon Writing: document_driven_development/core_concepts/retcon_writing.md
+          - Phase Guides:
+              - Overview: document_driven_development/phases/README.md
+              - Phase 0 - Planning: document_driven_development/phases/00_planning_and_alignment.md
+              - Phase 1 - Documentation: document_driven_development/phases/01_documentation_retcon.md
+              - Phase 2 - Approval: document_driven_development/phases/02_approval_gate.md
+              - Phase 3 - Planning: document_driven_development/phases/03_implementation_planning.md
+              - Phase 4 - Implementation: document_driven_development/phases/04_code_implementation.md
+              - Phase 5 - Testing: document_driven_development/phases/05_testing_and_verification.md
+              - Phase 6 - Cleanup: document_driven_development/phases/06_cleanup_and_push.md
+          - Reference:
+              - Overview: document_driven_development/reference/README.md
+              - Checklists: document_driven_development/reference/checklists.md
+              - Common Pitfalls: document_driven_development/reference/common_pitfalls.md
+              - FAQ: document_driven_development/reference/faq.md
+              - Tips for Success: document_driven_development/reference/tips_for_success.md
+      - N-Version Programming: claude/workflow/N_VERSION_WORKFLOW.md
+      - Multi-Agent Debate: claude/workflow/DEBATE_WORKFLOW.md
+      - Fallback Cascade: claude/workflow/CASCADE_WORKFLOW.md
+      - Investigation Workflow: claude/workflow/INVESTIGATION_WORKFLOW.md
+      - Recipe CLI Commands: howto/recipe-cli-commands.md
+      - Recipe CLI Reference: reference/recipe-cli-reference.md
+  - Agents:
+      - Overview: claude/agents/README.md
+      - Core Agents:
+          - Architect: claude/agents/amplihack/core/architect.md
+          - Builder: claude/agents/amplihack/core/builder.md
+          - Reviewer: claude/agents/amplihack/core/reviewer.md
+          - Tester: claude/agents/amplihack/core/tester.md
+      - Specialized Agents:
+          - API Designer: claude/agents/amplihack/core/api-designer.md
+          - Security: claude/agents/amplihack/specialized/security.md
+          - Database: claude/agents/amplihack/specialized/database.md
+          - Integration: claude/agents/amplihack/specialized/integration.md
+          - Knowledge Archaeologist: claude/agents/amplihack/specialized/knowledge-archaeologist.md
+  - Commands:
+      - Command Guide: commands/COMMAND_SELECTION_GUIDE.md
+      - /ultrathink: claude/commands/amplihack/ultrathink.md
+      - /analyze: claude/commands/amplihack/analyze.md
+      - /improve: claude/commands/amplihack/improve.md
+      - /fix: claude/commands/amplihack/fix.md
+      - /n-version: claude/commands/amplihack/n-version.md
+      - /debate: claude/commands/amplihack/debate.md
+      - /cascade: claude/commands/amplihack/cascade.md
+      - /customize: claude/commands/amplihack/customize.md
+  - Skills:
+      - Catalog: skills/SKILL_CATALOG.md
+      - Agent SDK: claude/skills/claude-agent-sdk/SKILL.md
+      - DOCX: claude/skills/docx/SKILL.md
+      - PPTX: claude/skills/pptx/SKILL.md
+      - XLSX: claude/skills/xlsx/SKILL.md
+      - PDF: claude/skills/pdf/SKILL.md
+      - Code Visualizer: claude/skills/code-visualizer/SKILL.md
+      - Gherkin Expert: claude/skills/gherkin-expert/SKILL.md
+      - TLA+ Expert: claude/skills/tla-plus-expert/SKILL.md
+  - Tools:
+      - Scenarios Overview: claude/scenarios/README.md
+      - Creating Tools: CREATE_YOUR_OWN_TOOLS.md
+      - Hooks Configuration: HOOK_CONFIGURATION_GUIDE.md
+      - GitHub Copilot CLI:
+          - Overview: COPILOT_CLI.md
+          - Tutorial: tutorials/copilot-parity-control-plane.md
+          - Configuration: howto/configure-copilot-parity-control-plane.md
+          - Reference: reference/copilot-parity-control-plane.md
   - Guides:
       - Formal Specifications as Prompt Language: guides/formal-specifications-as-prompt-language.md
-  - Commands:
-      - Command Selection Guide: commands/COMMAND_SELECTION_GUIDE.md
-  - CS Validator:
-      - Integration: cs-validator/INTEGRATION.md
-  - Implementation:
-      - Recipe Runner Integration Summary: implementation/recipe-runner-integration-summary.md
-  - Investigations:
-      - "Issue 2898: Status Classifiers": investigations/2898-status-classifiers.md
-      - "Issue 3045-3076: Heredoc Shell Injection": investigations/3045-3076-task-description-heredoc-shell-injection.md
-      - "Step 03: Idempotency Guards Analysis": investigations/step-03-idempotency-guards-analysis.md
-      - "Step 03: External Service Integration": investigations/step03-external-service-integration-assessment.md
-  - MCP Evaluation:
-      - User Guide: mcp_evaluation/USER_GUIDE.md
-  - Remote Sessions:
-      - CLI Reference: remote-sessions/CLI_REFERENCE.md
-      - Tutorial: remote-sessions/TUTORIAL.md
-  - Troubleshooting:
-      - Auto Mode Permission Error: troubleshooting/AUTO_MODE_PERMISSION_ERROR.md
-      - Copilot Installation False Negative: troubleshooting/copilot-installation-false-negative.md
-      - Copytree Same-File Crash: troubleshooting/copytree-same-file-crash.md
-      - Memory Consent Issues: troubleshooting/memory-consent-issues.md
-      - Memory-Enabled Agents: troubleshooting/memory-enabled-agents.md
-      - Platform Bridge: troubleshooting/platform-bridge.md
-      - Startup Conflict Prompt: troubleshooting/startup-conflict-prompt.md
-      - Stop Hook Exit Hang: troubleshooting/stop-hook-exit-hang.md
-      - Trace Logging: troubleshooting/trace-logging.md
+  - Advanced Topics:
+      - Development Guide: DEVELOPING_AMPLIHACK.md
+      - Hive Mind:
+          - Architecture: hive_mind/ARCHITECTURE.md
+          - Getting Started: hive_mind/GETTING_STARTED.md
+          - Tutorial: hive_mind/TUTORIAL.md
+          - Design: hive_mind/DESIGN.md
+          - Evaluation: hive_mind/EVAL.md
+          - Eval Operator Guide: hive_mind/EVAL_OPERATOR_GUIDE.md
+          - Eval Components: hive_mind/EVAL_COMPONENTS.md
+          - Rust Getting Started: tutorials/hive-mind-getting-started.md
+          - Rust Tutorial: tutorials/hive-mind-tutorial.md
+          - Rust Design Concepts: concepts/hive-mind-design.md
+          - Rust Eval Concepts: concepts/hive-mind-eval.md
+      - Goal-Seeking Agents:
+          - Overview: GOAL_SEEKING_AGENTS.md
+          - Generator Tutorial: tutorials/GOAL_SEEKING_AGENT_TUTORIAL.md
+          - LearningAgent Architecture: concepts/learning-agent-module-architecture.md
+          - LearningAgent Module Reference: reference/learning-agent-module-reference.md
+      - Agent Memory Integration: AGENT_MEMORY_INTEGRATION.md
+      - Memory Quickstart: AGENT_MEMORY_QUICKSTART.md
+      - External Knowledge: external_knowledge_integration.md
+      - Documentation Graph: documentation_knowledge_graph.md
+      - Blarify Integration: blarify_integration.md
+      - Azure Integration: AZURE_INTEGRATION.md
+      - Remote Sessions:
+          - Overview: remote-sessions/index.md
+          - CLI Reference: remote-sessions/CLI_REFERENCE.md
+          - Tutorial: remote-sessions/TUTORIAL.md
   - Code Atlas:
       - Overview: atlas/index.md
-      - "Layer 1: Repo Surface": atlas/repo-surface/README.md
-      - "Layer 2: AST/LSP Bindings": atlas/ast-lsp-bindings/README.md
-      - "Layer 3: Compile Dependencies": atlas/compile-deps/README.md
-      - "Layer 4: Runtime Topology": atlas/runtime-topology/README.md
-      - "Layer 5: API Contracts": atlas/api-contracts/README.md
-      - "Layer 6: Data Flow": atlas/data-flow/README.md
-      - "Layer 7: Service Components": atlas/service-components/README.md
-      - "Layer 8: User Journeys": atlas/user-journeys/README.md
-  - Memory:
-      - 5-Type Memory Developer Guide: memory/5-TYPE-MEMORY-DEVELOPER.md
-      - 5-Type Memory Quick Reference: memory/5-TYPE-MEMORY-QUICKREF.md
-      - Auto Linking: memory/AUTO_LINKING.md
-      - Code Context Injection: memory/CODE_CONTEXT_INJECTION.md
-      - Code Context Quick Start: memory/CODE_CONTEXT_QUICK_START.md
-      - "Code Review: PR 1077": memory/CODE_REVIEW_PR_1077.md
-      - Effectiveness Test Design: memory/EFFECTIVENESS_TEST_DESIGN.md
-      - Kuzu Code Schema: memory/KUZU_CODE_SCHEMA.md
-      - Kuzu Memory Schema: memory/KUZU_MEMORY_SCHEMA.md
-      - Testing Strategy: memory/TESTING_STRATEGY.md
-      - Testing Strategy Summary: memory/TESTING_STRATEGY_SUMMARY.md
-      - Zero-BS Audit: memory/ZERO_BS_AUDIT.md
-      - Evaluation Summary: memory/evaluation-summary.md
-  - Goal Agent Generator:
-      - Implementation Summary: goal_agent_generator/IMPLEMENTATION_SUMMARY.md
-  - Meta-Delegation:
-      - Concepts: meta-delegation/concepts.md
-      - How-To: meta-delegation/howto.md
-      - Reference: meta-delegation/reference.md
-      - Troubleshooting: meta-delegation/troubleshooting.md
-      - Tutorial: meta-delegation/tutorial.md
-  - Examples:
-      - Goal Agent Generator:
-          - Example Goal Prompt: examples/goal_agent_generator/example_goal_prompt.md
-          - AKS SRE Example: examples/goal_agent_generator/aks_sre_example/goal_prompt.md
-          - API Doc Generator: examples/goal_agent_generator/api_documentation_generator/goal_prompt.md
-          - Dependency Auditor: examples/goal_agent_generator/dependency_auditor/goal_prompt.md
-          - GitHub PR Manager: examples/goal_agent_generator/github_pr_manager/goal_prompt.md
-          - Security Scanner: examples/goal_agent_generator/security_scanner/goal_prompt.md
-          - Test Coverage Analyzer: examples/goal_agent_generator/test_coverage_analyzer/goal_prompt.md
+      - Repository Surface: atlas/repo-surface/README.md
+      - AST+LSP Bindings: atlas/ast-lsp-bindings/README.md
+      - Compile-Time Dependencies: atlas/compile-deps/README.md
+      - Runtime Topology: atlas/runtime-topology/README.md
+      - API Contracts: atlas/api-contracts/README.md
+      - Data Flow: atlas/data-flow/README.md
+      - Service Components: atlas/service-components/README.md
+      - User Journeys: atlas/user-journeys/README.md
+      - Health Dashboard: atlas/health.md
+      - Glossary: atlas/glossary.md
+      - Inventory:
+          - Services: atlas/inventory/services.md
+          - Environment Variables: atlas/inventory/env-vars.md
+          - Data Stores: atlas/inventory/data-stores.md
+          - External Dependencies: atlas/inventory/external-deps.md
+  - Reference:
+      - Discoveries: claude/context/DISCOVERIES.md
+      - Security: SECURITY_RECOMMENDATIONS.md
+      - Testing: testing/TEST_PLAN.md
+      - Migration Contract Tests: testing/MIGRATION_CONTRACT_TESTS.md
+      - Subprocess Env Isolation Tests: testing/SUBPROCESS_ENV_ISOLATION_TESTS.md
+      - Troubleshooting: troubleshooting/README.md
+      - Code Review: CODE_REVIEW.md
+      - Rust Code Quality: reference/rust-code-quality.md
+      - CLI Reference: reference/cli.md
+      - install Command: reference/install-command.md
+      - recipe Command: reference/recipe-command.md
+      - RustyClawd Command: reference/rustyclawd-command.md
+      - uvx-help Command: reference/uvx-help-command.md
+      - resolve-bundle-asset Command: reference/resolve-bundle-asset-command.md
+      - fleet Command: reference/fleet-command.md
+      - memory index Command: reference/memory-index-command.md
+      - query-code Command: reference/query-code-command.md
+      - multitask Command: reference/multitask-command.md
+      - doctor Command: reference/doctor-command.md
+      - Rust Runner Execution: reference/rust-runner-execution.md

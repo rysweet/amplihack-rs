@@ -118,61 +118,24 @@ To make `claude` the default for a repo, run `amplihack claude` once. To force `
 
 ### Hooks
 
-`amplihack-hooks::binary_hook_resolver` calls `resolve(&cwd)`, then locates the per-binary hook file at `<amplihack-home>/.claude/hooks/<binary>/<event>.py`. See [Hook resolution & missing-hook errors](#hook-resolution--missing-hook-errors) below.
+Hooks are native `amplihack-hooks <subcommand>` commands registered in
+settings. They do not resolve per-binary script files.
 
 ### Sub-agents
 
 `amplihack-utils::llm_client::resolve_binary`, `claude_cli::get_claude_cli_path`, `knowledge_builder`, and `workflows::cascade` all call into the shared resolver. There is exactly one read implementation in Rust.
 
-### Python skills
+## Hook registration
 
-`amplifier-bundle/skills/pm-architect/scripts/agent_query.py` defines `detect_runtime()`, which implements the **same** three-step precedence and **same** allowlist as the Rust resolver. `delegate_response.py` imports it instead of re-implementing the precedence:
+Installed settings register native hook commands such as:
 
-```python
-from agent_query import detect_runtime
+```json
+{"type": "command", "command": "amplihack-hooks session-start"}
 ```
 
-A single canonical Python entry point (rather than copy-pasted inline functions) prevents the Rust ↔ Python implementations from drifting apart over time.
-
-For shell-only entry points (`amplifier-bundle/skills/migrate/scripts/migrate.sh`), the same algorithm is implemented with a `case` statement allowlist that refuses to invoke an un-allowlisted name as a binary.
-
-## Hook resolution & missing-hook errors
-
-Hooks are organized per-binary:
-
-```
-<amplihack-home>/.claude/hooks/
-├── claude/
-│   ├── pre_tool_use.py
-│   ├── post_tool_use.py
-│   └── session_end.py
-├── copilot/
-│   ├── pre_tool_use.py
-│   ├── post_tool_use.py
-│   └── session_end.py
-├── codex/
-│   └── ...
-└── amplifier/
-    └── ...
-```
-
-When an event fires, `binary_hook_resolver::resolve_hook(event)`:
-
-1. Resolves the active binary via the shared resolver
-2. Validates it against the allowlist
-3. Constructs `<amplihack-home>/.claude/hooks/<binary>/<event>.py`
-4. Canonicalizes the result and asserts it lives inside `amplihack-home`
-5. Returns the path if it exists, or `HookError::MissingHookForBinary` if not
-
-**Critical: there is no fallback.** If `copilot` is the active binary and `copilot/session_end.py` is missing, the resolver returns:
-
-```text
-No SessionEnd hook registered for active agent binary 'copilot'.
-Expected at: /home/alice/.amplihack/.claude/hooks/copilot/session_end.py
-To fix: install the hook at the expected path, switch binaries by re-launching
-with one of: 'amplihack claude' / 'amplihack copilot' / 'amplihack codex' /
-'amplihack amplifier', or set AMPLIHACK_AGENT_BINARY explicitly.
-```
+`amplihack-hooks` dispatches the subcommand to the native Rust implementation
+for each hook event. Missing or stale settings are detected by the install
+verifier and hook verification code, not by resolving script files.
 
 The user must take an explicit action — install the hook, switch binaries, or set the override. The system never silently runs `claude/session_end.py` in place of the missing `copilot/session_end.py`, and stub `session_end.py` files created solely to suppress the error are an architectural smell that the resolver is designed to reject. (See [PHILOSOPHY.md — Forbidden Patterns / Silent Fallbacks].)
 

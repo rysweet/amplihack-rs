@@ -16,7 +16,7 @@ use std::io::{self, BufRead};
 
 /// Blocking input source for the OODA loop.
 ///
-/// Implementations return the next input string on each call to [`next`],
+/// Implementations return the next input string on each call to [`InputSource::next`],
 /// or `None` when the source is exhausted.
 pub trait InputSource: Send {
     /// Return the next input or `None` when exhausted.

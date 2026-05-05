@@ -1,6 +1,7 @@
-# Pre-commit Workflow Tool
+# Pre-commit Workflow
 
-A Python tool for managing pre-commit hook failures efficiently.
+Use the repository's native format, lint, and test commands to manage
+pre-commit failures.
 
 ## Features
 
@@ -11,50 +12,18 @@ A Python tool for managing pre-commit hook failures efficiently.
 
 ## Usage
 
-### Command Line Interface
+### Command Line
 
 ```bash
-# Analyze current pre-commit failures
-python .claude/tools/precommit_workflow.py analyze
-
-# Auto-fix formatting issues (tries common tools)
-python .claude/tools/precommit_workflow.py auto-fix
-
-# Auto-fix with specific tools
-python .claude/tools/precommit_workflow.py auto-fix --tools prettier,ruff
-
-# Verify pre-commit environment setup
-python .claude/tools/precommit_workflow.py verify-env
-
-# Verify all pre-commit checks pass
-python .claude/tools/precommit_workflow.py verify-success
-```
-
-### Python API
-
-```python
-from claude.tools.precommit_workflow import PreCommitWorkflow
-
-workflow = PreCommitWorkflow()
-
-# Analyze failures
-analysis = workflow.analyze_failures()
-print(f"Failed hooks: {analysis['failed_hooks']}")
-print(f"Auto-fixable: {analysis['fixable']}")
-
-# Auto-fix issues
-success = workflow.auto_fix(tools=["ruff", "prettier"])
-
-# Verify environment
-checks = workflow.verify_environment()
-
-# Verify all checks pass
-all_pass = workflow.verify_success()
+cargo fmt --check
+cargo clippy -- -D warnings
+cargo test --workspace --locked
+scripts/check-no-python-assets.sh
+scripts/check-recipes-no-python.sh
 ```
 
 ## Supported Auto-fix Tools
 
-- **Python**: ruff, black, isort, autopep8
 - **JavaScript/TypeScript**: prettier, eslint
 - **Rust**: rustfmt
 

@@ -7,11 +7,8 @@ a single-file change.
 
 ## Quick Start
 
-```bash
-# Generate one mermaid diagram per detected language, plus a combined view
-python amplifier-bundle/skills/code-visualizer/scripts/visualizer.py . \
-    --output docs/diagrams --combined
-```
+Use repository search tools to inventory source files, extract import edges, and
+write Mermaid diagrams directly.
 
 Or just describe what you want:
 
@@ -62,42 +59,17 @@ FRESH: docs/diagrams/architecture-typescript.mmd
 
 ## How It Works
 
-1. **Dispatch**: Detect languages by file extension, skipping `IGNORE_DIRS`
-   (`.git`, `node_modules`, `.venv`, `dist`, `build`, `target`, …) and
-   symlinks.
-2. **Analyze**: Per-language analyzers (`python_analyzer`, `ts_analyzer`,
-   `rust_analyzer`, `go_analyzer`) each expose a single `normalize(paths) ->
-Graph` entry point.
+1. **Dispatch**: Detect languages by file extension, skipping generated
+   directories such as `.git`, `node_modules`, `dist`, `build`, and `target`.
+2. **Analyze**: Extract imports/usages for each detected language.
 3. **Render**: A language-blind renderer turns each `Graph` into mermaid.
 4. **Monitor**: A generalized staleness detector compares max-mtime across
    matching extensions.
 
 ## Architecture
 
-```
-code-visualizer
-├── scripts/
-│   ├── graph.py              # Node / Edge / Graph dataclasses (data contract)
-│   ├── dispatcher.py         # Language detection + routing
-│   ├── python_analyzer.py    # ast-based
-│   ├── ts_analyzer.py        # regex-based (.ts/.tsx/.js/.jsx/.mjs/.cjs)
-│   ├── rust_analyzer.py      # regex-based
-│   ├── go_analyzer.py        # regex-based
-│   ├── mermaid_renderer.py   # language-blind
-│   ├── staleness.py
-│   └── visualizer.py         # CLI
-└── tests/
-```
-
-Each analyzer is a self-contained brick. **No shared inheritance.** The only
-coupling is the `Graph` data contract.
-
-## CLI
-
-```
-python visualizer.py <path> [--output DIR] [--basename NAME]
-                            [--check-staleness] [--combined]
-```
+The legacy helper implementation is not shipped in `amplihack-rs`; the skill is
+implemented by the agent following the workflow in `SKILL.md`.
 
 Outputs:
 
@@ -111,14 +83,8 @@ Files are only written for languages actually detected.
 
 ## Adding a New Language
 
-1. Create `scripts/<lang>_analyzer.py` exposing
-   `normalize(paths) -> Graph`.
-2. Register the extension(s) and module name in `dispatcher.LANGUAGES`.
-3. Add `tests/test_<lang>_analyzer.py`.
-
-That's the entire change. The renderer, staleness detector, and CLI consume
-the language-blind `Graph` and need no modification. See **Extending** in
-`SKILL.md` for the full recipe.
+Document the file extensions, import syntax, and rendering rules for the new
+language in `SKILL.md`, then validate on a small fixture repository.
 
 ## Limitations
 

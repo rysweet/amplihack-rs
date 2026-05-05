@@ -234,7 +234,7 @@ pub(crate) fn install_recipe_runner_from_git() -> Result<()> {
     let status = run_with_timeout(cmd, CARGO_INSTALL_TIMEOUT)
         .context("failed to run cargo install for recipe-runner-rs")?;
     if !status.success() {
-        bail!("cargo install exited with status {}", status);
+        bail!("cargo install exited with status {status}");
     }
     Ok(())
 }
@@ -258,7 +258,7 @@ pub fn current_framework_remote_sha() -> Option<String> {
 }
 
 /// Always returns `false`.  Framework freshness is now tied to the
-/// amplihack-rs binary version, not upstream rysweet/amplihack commits.
+/// amplihack-rs binary version, not legacy upstream commits.
 pub fn framework_needs_refresh() -> bool {
     false
 }

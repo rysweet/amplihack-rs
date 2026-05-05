@@ -16,7 +16,7 @@ The Agent SDK skill maintains accuracy by detecting when source documentation ch
 
 - Content hashing (SHA-256) of source URLs
 - Version tracking in `.metadata/versions.json`
-- Automated checking via `scripts/check_drift.py`
+- Automated checking via `scripts/manual drift check`
 - Manual update workflow when drift detected
 
 ### Update Frequency
@@ -71,9 +71,9 @@ def generate_content_hash(url: str) -> str:
 
 ## Detection Implementation
 
-### check_drift.py Script
+### manual drift check Script
 
-Location: `~/.amplihack/.claude/skills/claude-agent-sdk/scripts/check_drift.py`
+Location: `~/.amplihack/.claude/skills/claude-agent-sdk/scripts/manual drift check`
 
 **Core Functionality:**
 
@@ -274,25 +274,25 @@ if __name__ == "__main__":
 **Check for drift:**
 
 ```bash
-python scripts/check_drift.py
+Compare the tracked source URLs and metadata manually
 ```
 
 **Check and update metadata:**
 
 ```bash
-python scripts/check_drift.py --update
+Compare the tracked source URLs and metadata manually
 ```
 
 **JSON output for automation:**
 
 ```bash
-python scripts/check_drift.py --json
+Compare the tracked source URLs and metadata manually
 ```
 
 **Custom metadata location:**
 
 ```bash
-python scripts/check_drift.py --metadata /path/to/versions.json
+Compare the tracked source URLs and metadata manually/path/to/versions.json
 ```
 
 ## Update Workflow
@@ -305,7 +305,7 @@ When drift is detected, follow this systematic workflow:
 
 ```bash
 cd .claude/skills/claude-agent-sdk
-python scripts/check_drift.py
+Compare the tracked source URLs and metadata manually
 ```
 
 Review which sources have changed and assess impact.
@@ -356,7 +356,7 @@ python -m doctest examples.md
 
 ```bash
 # Update metadata with new hashes
-python scripts/check_drift.py --update
+Compare the tracked source URLs and metadata manually
 
 # Update version number in SKILL.md frontmatter
 # Increment patch for minor changes (1.0.0 -> 1.0.1)

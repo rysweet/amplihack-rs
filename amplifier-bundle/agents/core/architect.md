@@ -151,9 +151,12 @@ I recommend establishing baseline quality automation before proceeding.
 
 ## Installation
 
+Use the repository's native checks directly:
+
 ```bash
-pip install pre-commit
-pre-commit install
+cargo fmt --check
+cargo clippy -- -D warnings
+cargo test --workspace --locked
 ````
 
 ## Reference Configuration

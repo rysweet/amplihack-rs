@@ -93,7 +93,7 @@ last_activity: "2025-11-21T11:45:00Z"
 
 When user asks for status:
 
-1. Run `scripts/coordinate.py --project-root <root>`
+1. Run `direct .pm/workstreams analysis --project-root <root>`
 2. Parse JSON output
 3. Present summary with analysis
 4. Highlight issues and recommendations
@@ -103,7 +103,7 @@ When user asks for status:
 ```
 User: What's the status?
 
-Coordinator: [Calls scripts/coordinate.py]
+Coordinator: [Calls direct .pm/workstreams analysis]
 
 Workstream Status:
 
@@ -458,7 +458,7 @@ Options:
 
 ## Resources
 
-- **scripts/coordinate.py**: Coordination engine (197 lines)
+- **direct .pm/workstreams analysis**: Coordination engine (197 lines)
 - **REFERENCE.md**: Detailed algorithms
 - **EXAMPLES.md**: Complete coordination scenarios
 

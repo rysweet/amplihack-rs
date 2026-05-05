@@ -100,9 +100,7 @@ fn all_thresholds_are_valid() {
         let t = level.passing_threshold();
         assert!(
             (0.0..=1.0).contains(&t),
-            "{} has invalid threshold {}",
-            level,
-            t
+            "{level} has invalid threshold {t}"
         );
     }
 }
@@ -127,7 +125,7 @@ fn serde_roundtrip_all_levels() {
     for level in TestLevel::all() {
         let json = serde_json::to_string(level).unwrap();
         let deser: TestLevel = serde_json::from_str(&json).unwrap();
-        assert_eq!(*level, deser, "roundtrip failed for {}", level);
+        assert_eq!(*level, deser, "roundtrip failed for {level}");
     }
 }
 
@@ -194,8 +192,7 @@ fn all_levels_have_nonempty_descriptions() {
     for level in TestLevel::all() {
         assert!(
             !level.description().is_empty(),
-            "{} has empty description",
-            level
+            "{level} has empty description"
         );
     }
 }

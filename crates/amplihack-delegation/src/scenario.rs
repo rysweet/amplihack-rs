@@ -22,7 +22,7 @@ impl ScenarioGenerator {
     /// Domain keywords in `goal` and `criteria` determine which optional
     /// categories (security, performance) are included.
     pub fn generate_scenarios(&self, goal: &str, success_criteria: &str) -> Vec<TestScenario> {
-        let combined = format!("{} {}", goal, success_criteria).to_lowercase();
+        let combined = format!("{goal} {success_criteria}").to_lowercase();
 
         let is_api = Self::is_api(&combined);
         let is_auth = Self::is_auth(&combined);

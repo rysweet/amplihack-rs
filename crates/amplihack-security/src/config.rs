@@ -161,9 +161,10 @@ fn load_domains_from_file(path: &str, set: &mut HashSet<String>) {
 }
 
 fn env_bool(key: &str, default: bool) -> bool {
-    env::var(key)
-        .map(|v| v.to_lowercase() != "false")
-        .unwrap_or(default)
+    match env::var(key) {
+        Ok(v) => matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"),
+        Err(_) => default,
+    }
 }
 
 fn env_str(key: &str, default: &str) -> String {

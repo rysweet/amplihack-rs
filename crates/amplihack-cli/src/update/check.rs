@@ -211,7 +211,6 @@ pub(super) fn should_skip_update_check(args: &[OsString]) -> bool {
 
 fn print_update_notice(latest: &str) {
     eprintln!(
-        "\x1b[33mA newer version of amplihack is available (v{}). Run 'amplihack update' to upgrade.\x1b[0m",
-        latest
+        "\x1b[33mA newer version of amplihack is available (v{latest}). Run 'amplihack update' to upgrade.\x1b[0m"
     );
 }

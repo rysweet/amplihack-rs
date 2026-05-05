@@ -105,7 +105,7 @@ pub(crate) fn format_validation_result(
                     lines.push(String::new());
                     lines.push("Errors:".to_string());
                     for error in errors {
-                        lines.push(format!("  • {}", error));
+                        lines.push(format!("  • {error}"));
                     }
                 }
             }
@@ -206,10 +206,10 @@ pub(crate) fn format_recipe_details(
                         infer_step_type(step)
                     ));
                     if let Some(command) = &step.command {
-                        lines.push(format!("     Command: {}", command));
+                        lines.push(format!("     Command: {command}"));
                     }
                     if let Some(agent) = &step.agent {
-                        lines.push(format!("     Agent: {}", agent));
+                        lines.push(format!("     Agent: {agent}"));
                     }
                     if let Some(prompt) = &step.prompt {
                         let prompt = if prompt.len() > 100 {
@@ -217,7 +217,7 @@ pub(crate) fn format_recipe_details(
                         } else {
                             prompt.clone()
                         };
-                        lines.push(format!("     Prompt: {}", prompt));
+                        lines.push(format!("     Prompt: {prompt}"));
                     }
                 }
             }

@@ -48,7 +48,7 @@ pub enum SessionTreeCommands {
         tree_id: Option<String>,
     },
     /// Check whether a new child session can be spawned. Exit 0 + stdout
-    /// "ALLOWED" if allowed, exit 2 + stdout "BLOCKED:<reason>" if not.
+    /// "ALLOWED" if allowed, exit 2 + stdout "BLOCKED:\<reason\>" if not.
     Check,
 }
 

@@ -60,14 +60,12 @@ fn amplihack_cli_references_cxx_build_as_build_dependency() {
     assert!(
         content.contains("[build-dependencies]"),
         "crates/amplihack-cli/Cargo.toml must contain a [build-dependencies] section.\n\
-         Actual content:\n{}",
-        content
+         Actual content:\n{content}"
     );
     assert!(
         content.contains("cxx-build"),
         "crates/amplihack-cli/Cargo.toml [build-dependencies] must reference cxx-build.\n\
-         Actual content:\n{}",
-        content
+         Actual content:\n{content}"
     );
 }
 
@@ -91,7 +89,6 @@ fn amplihack_cli_build_rs_exists_and_is_noop() {
     assert!(
         content.contains("fn main()"),
         "crates/amplihack-cli/build.rs must contain `fn main()`.\n\
-         Actual content:\n{}",
-        content
+         Actual content:\n{content}"
     );
 }

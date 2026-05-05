@@ -2,6 +2,7 @@
 name = "amplihack-safety"
 version.workspace = true
 edition.workspace = true
+description = "Git conflict detection and safe copy strategies for auto mode"
 license.workspace = true
 
 [dependencies]

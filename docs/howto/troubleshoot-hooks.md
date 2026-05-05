@@ -197,7 +197,7 @@ If hooks still aren't working after trying these solutions:
 
 2. **Check existing issues:**
 
-   [amplihack/issues](https://github.com/rysweet/amplihack/issues?q=is%3Aissue+hook)
+   [amplihack/issues](https://github.com/rysweet/amplihack-rs/issues?q=is%3Aissue+hook)
 
 3. **File a new issue:**
 

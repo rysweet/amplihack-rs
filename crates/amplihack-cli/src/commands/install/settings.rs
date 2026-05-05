@@ -350,3 +350,149 @@ pub(super) fn missing_framework_paths(claude_dir: &Path) -> Result<Vec<String>> 
 
     Ok(missing)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // read_settings_json
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn read_valid_json_object() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(tmp.path(), r#"{"key": "value"}"#).unwrap();
+        let result = read_settings_json(tmp.path()).unwrap();
+        assert_eq!(result["key"], "value");
+    }
+
+    #[test]
+    fn read_invalid_json_returns_empty_object() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(tmp.path(), "not json at all").unwrap();
+        let result = read_settings_json(tmp.path()).unwrap();
+        assert!(result.is_object());
+        assert!(result.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn read_json_array_returns_empty_object() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(tmp.path(), "[1, 2, 3]").unwrap();
+        let result = read_settings_json(tmp.path()).unwrap();
+        assert!(result.is_object());
+        assert!(result.as_object().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // ensure_permissions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ensure_permissions_creates_defaults() {
+        let mut settings = json!({});
+        ensure_permissions(&mut settings);
+        let perms = &settings["permissions"];
+        assert!(perms["allow"].is_array());
+        assert!(perms["deny"].is_array());
+        assert_eq!(perms["defaultMode"], "bypassPermissions");
+    }
+
+    #[test]
+    fn ensure_permissions_preserves_existing() {
+        let mut settings = json!({
+            "permissions": {
+                "allow": ["CustomTool"],
+                "deny": ["DangerTool"],
+                "defaultMode": "askFirst"
+            }
+        });
+        ensure_permissions(&mut settings);
+        // Existing values should be preserved
+        assert_eq!(settings["permissions"]["allow"], json!(["CustomTool"]));
+        assert_eq!(settings["permissions"]["defaultMode"], "askFirst");
+    }
+
+    #[test]
+    fn ensure_permissions_adds_missing_directories() {
+        let mut settings = json!({"permissions": {}});
+        ensure_permissions(&mut settings);
+        let dirs = settings["permissions"]["additionalDirectories"]
+            .as_array()
+            .unwrap();
+        let strs: Vec<&str> = dirs.iter().filter_map(Value::as_str).collect();
+        assert!(strs.contains(&".claude"));
+        assert!(strs.contains(&"Specs"));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_native_hook_subcommand
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_subcmd_from_amplihack_hooks() {
+        let cmd = "/path/to/amplihack-hooks user-prompt-submit";
+        assert_eq!(
+            extract_native_hook_subcommand(cmd),
+            Some("user-prompt-submit")
+        );
+    }
+
+    #[test]
+    fn extract_subcmd_not_amplihack_hooks() {
+        let cmd = "some-other-binary run";
+        assert_eq!(extract_native_hook_subcommand(cmd), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // format helpers
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_optional_timeout_some() {
+        assert_eq!(format_optional_timeout(Some(30)), "30");
+    }
+
+    #[test]
+    fn format_optional_timeout_none() {
+        assert_eq!(format_optional_timeout(None), "none");
+    }
+
+    #[test]
+    fn format_optional_matcher_some() {
+        assert_eq!(format_optional_matcher(Some("*.rs")), "*.rs");
+    }
+
+    #[test]
+    fn format_optional_matcher_none() {
+        assert_eq!(format_optional_matcher(None), "none");
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_amplihack_native_hook_contract
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_empty_settings_reports_missing() {
+        let settings = json!({});
+        let drift = validate_amplihack_native_hook_contract(&settings);
+        // With no hooks configured, all expected hooks should be missing
+        assert!(!drift.is_empty());
+        assert!(drift.iter().any(|d| d.contains("missing")));
+    }
+
+    // -----------------------------------------------------------------------
+    // missing_framework_paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn missing_framework_paths_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude_dir = tmp.path().join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        let missing = missing_framework_paths(&claude_dir).unwrap();
+        // Should report missing assets
+        assert!(!missing.is_empty());
+    }
+}

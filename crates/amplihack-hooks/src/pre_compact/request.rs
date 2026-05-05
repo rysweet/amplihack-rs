@@ -118,3 +118,164 @@ fn extract_text(value: &Value) -> Option<String> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // extract_text
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_text_string() {
+        let v = json!("hello world");
+        assert_eq!(extract_text(&v), Some("hello world".into()));
+    }
+
+    #[test]
+    fn extract_text_array_of_strings() {
+        let v = json!(["line 1", "line 2"]);
+        assert_eq!(extract_text(&v), Some("line 1\nline 2".into()));
+    }
+
+    #[test]
+    fn extract_text_array_with_objects() {
+        let v = json!([{"text": "part 1"}, {"value": "part 2"}]);
+        assert_eq!(extract_text(&v), Some("part 1\npart 2".into()));
+    }
+
+    #[test]
+    fn extract_text_object_with_text_key() {
+        let v = json!({"text": "inner"});
+        assert_eq!(extract_text(&v), Some("inner".into()));
+    }
+
+    #[test]
+    fn extract_text_object_with_content_key() {
+        let v = json!({"content": "nested"});
+        assert_eq!(extract_text(&v), Some("nested".into()));
+    }
+
+    #[test]
+    fn extract_text_null() {
+        assert_eq!(extract_text(&Value::Null), None);
+    }
+
+    #[test]
+    fn extract_text_empty_array() {
+        assert_eq!(extract_text(&json!([])), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_user_prompt_from_entry
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn entry_with_role_user() {
+        let entry = json!({"role": "user", "content": "Build a feature"});
+        assert_eq!(
+            extract_user_prompt_from_entry(&entry),
+            Some("Build a feature".into())
+        );
+    }
+
+    #[test]
+    fn entry_with_nested_message() {
+        let entry = json!({
+            "message": {"role": "user", "content": "Fix the bug"}
+        });
+        assert_eq!(
+            extract_user_prompt_from_entry(&entry),
+            Some("Fix the bug".into())
+        );
+    }
+
+    #[test]
+    fn entry_type_user_message() {
+        let entry = json!({
+            "type": "user.message",
+            "data": {"content": "Analyze this"}
+        });
+        assert_eq!(
+            extract_user_prompt_from_entry(&entry),
+            Some("Analyze this".into())
+        );
+    }
+
+    #[test]
+    fn entry_type_user() {
+        let entry = json!({"type": "user", "content": "Hello"});
+        assert_eq!(extract_user_prompt_from_entry(&entry), Some("Hello".into()));
+    }
+
+    #[test]
+    fn entry_assistant_returns_none() {
+        let entry = json!({"role": "assistant", "content": "Response"});
+        assert_eq!(extract_user_prompt_from_entry(&entry), None);
+    }
+
+    #[test]
+    fn entry_event_message_user() {
+        let entry = json!({
+            "event": "message",
+            "role": "user",
+            "content": "Event prompt"
+        });
+        assert_eq!(
+            extract_user_prompt_from_entry(&entry),
+            Some("Event prompt".into())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_original_request_prompt
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn prompt_from_conversation() {
+        let extra = json!({
+            "conversation": [
+                {"role": "user", "content": "First message"}
+            ]
+        });
+        assert_eq!(
+            extract_original_request_prompt(&extra),
+            Some("First message".into())
+        );
+    }
+
+    #[test]
+    fn prompt_from_messages() {
+        let extra = json!({
+            "messages": [
+                {"role": "user", "content": "From messages"}
+            ]
+        });
+        assert_eq!(
+            extract_original_request_prompt(&extra),
+            Some("From messages".into())
+        );
+    }
+
+    #[test]
+    fn prompt_empty_extra() {
+        let extra = json!({});
+        assert_eq!(extract_original_request_prompt(&extra), None);
+    }
+
+    #[test]
+    fn prompt_skips_empty_user_content() {
+        let extra = json!({
+            "conversation": [
+                {"role": "user", "content": ""},
+                {"role": "user", "content": "Real prompt"}
+            ]
+        });
+        assert_eq!(
+            extract_original_request_prompt(&extra),
+            Some("Real prompt".into())
+        );
+    }
+}

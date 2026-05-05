@@ -197,10 +197,10 @@ pytest tests/test_lock_unlock.py \
   patterns used across the codebase
 - [Token Sanitization](../reference/token-sanitizer.md) — analogous
   sanitization for API tokens in log output
-- Issues [#3960](https://github.com/rysweet/amplihack/issues/3960) and
-  [#3983](https://github.com/rysweet/amplihack/issues/3983) — originating bug
+- Issues [#3960](https://github.com/rysweet/amplihack-rs/issues/3960) and
+  [#3983](https://github.com/rysweet/amplihack-rs/issues/3983) — originating bug
   reports
-- PR [#4143](https://github.com/rysweet/amplihack/pull/4143) — implementation
+- PR [#4143](https://github.com/rysweet/amplihack-rs/pull/4143) — implementation
 
 ---
 

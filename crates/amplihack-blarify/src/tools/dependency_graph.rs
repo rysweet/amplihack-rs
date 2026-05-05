@@ -68,11 +68,7 @@ pub fn resolve_reference_id(
         }
     }
 
-    bail!(
-        "Could not resolve symbol '{}' in file '{}'",
-        symbol_name,
-        file_path
-    )
+    bail!("Could not resolve symbol '{symbol_name}' in file '{file_path}'")
 }
 
 /// Generate a Mermaid dependency graph for a node.

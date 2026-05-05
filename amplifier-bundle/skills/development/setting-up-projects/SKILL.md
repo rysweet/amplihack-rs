@@ -149,8 +149,9 @@ Pre-commit runs checks automatically before each commit.
 #### Installation
 
 ```bash
-pip install pre-commit
-pre-commit install
+cargo fmt --check
+cargo clippy -- -D warnings
+cargo test --workspace --locked
 ```
 
 #### Configuration (.pre-commit-config.yaml)

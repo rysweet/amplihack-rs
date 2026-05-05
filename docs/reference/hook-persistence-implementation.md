@@ -254,7 +254,7 @@ The fix is fully backward compatible:
 - **Implementation:** `src/amplihack/launcher/core.py`
 - **Hook Creation:** `src/amplihack/config/settings.py`
 - **Tests:** `tests/test_launcher_core.py`
-- **Issue:** GitHub Issue [#2335](https://github.com/rysweet/amplihack/issues/2335)
+- **Issue:** GitHub Issue [#2335](https://github.com/rysweet/amplihack-rs/issues/2335)
 
 ## Future Considerations
 

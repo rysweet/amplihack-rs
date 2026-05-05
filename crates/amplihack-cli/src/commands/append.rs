@@ -138,9 +138,7 @@ fn check_rate_limit(append_dir: &Path) -> Result<()> {
         .count();
     if recent_count >= MAX_APPENDS_PER_MINUTE {
         return Err(anyhow!(
-            "Rate limit exceeded: {} appends in last minute (max {}). Please wait before appending more instructions.",
-            recent_count,
-            MAX_APPENDS_PER_MINUTE
+            "Rate limit exceeded: {recent_count} appends in last minute (max {MAX_APPENDS_PER_MINUTE}). Please wait before appending more instructions."
         ));
     }
     Ok(())

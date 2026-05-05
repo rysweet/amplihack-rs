@@ -36,7 +36,7 @@ Relative paths (from `~/.amplihack/.claude/`) of every file staged by the instal
 ]
 ```
 
-Fresh native installs do not stage `tools/amplihack/hooks/*.py`. Hook execution is registered via `amplihack-hooks <subcommand>` and tracked separately in the `hook_registrations` field. Older manifests from pre-port installs may still contain legacy Python hook paths; uninstall continues to tolerate those historical entries.
+Fresh installs register hook execution via `amplihack-hooks <subcommand>` and track those registrations separately in the `hook_registrations` field. Older manifests may still contain historical hook-file paths; uninstall continues to tolerate those entries.
 
 During uninstall, each path is resolved as `~/.amplihack/.claude/<relative>`. Paths that resolve outside this base directory are rejected.
 

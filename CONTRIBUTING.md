@@ -5,7 +5,6 @@
 | Tool | Version | Purpose |
 |------|---------|---------|
 | Rust | 1.85+ | Core development (edition 2024) |
-| pre-commit | latest | Git hooks for formatting, linting, testing |
 
 ## Setup
 
@@ -14,19 +13,16 @@ git clone https://github.com/rysweet/amplihack-rs.git
 cd amplihack-rs
 cargo build
 cargo test --workspace --skip fleet_probe --skip kuzu --skip fleet::fleet_local --skip memory::kuzu
-pip install pre-commit
-pre-commit install
 ```
 
-## Pre-commit hooks
+## Pre-commit checks
 
-Each commit automatically runs:
+Before opening a PR, run:
 
 - **`cargo fmt --all`** — formatting check
 - **`cargo clippy -- -D warnings`** — lint with zero warnings
-- Standard hooks: trailing-whitespace, end-of-file-fixer, check-yaml, check-toml, check-merge-conflict
-
-On `pre-push`, the full workspace test suite runs (skipping heavy integration tests).
+- **`scripts/check-no-python-assets.sh`** — prevent Python implementation assets from returning
+- **`scripts/check-recipes-no-python.sh`** — prevent bare Python calls in shipped recipes
 
 ## Testing
 

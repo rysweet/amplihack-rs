@@ -17,6 +17,15 @@ pub enum ProcessError {
     #[error("process I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Failed to spawn a command.
+    #[error("failed to spawn command '{command}': {source}")]
+    Spawn {
+        /// The command that failed to start.
+        command: String,
+        /// The underlying error.
+        source: std::io::Error,
+    },
+
     /// The supplied path escapes the allowed root directory.
     #[error("path {path} escapes root {root}")]
     PathEscape {
@@ -34,6 +43,10 @@ pub enum ProcessError {
         /// The underlying error.
         source: std::io::Error,
     },
+
+    /// No command was provided (empty args slice).
+    #[error("no command provided")]
+    EmptyCommand,
 }
 
 /// The result of running an external command.
@@ -101,12 +114,7 @@ impl ProcessManager {
         env: Option<&HashMap<String, String>>,
     ) -> Result<CommandResult, ProcessError> {
         if args.is_empty() {
-            return Ok(CommandResult {
-                exit_code: None,
-                stdout: String::new(),
-                stderr: "no command provided".into(),
-                timed_out: false,
-            });
+            return Err(ProcessError::EmptyCommand);
         }
 
         let mut cmd = std::process::Command::new(args[0]);
@@ -124,7 +132,10 @@ impl ProcessManager {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let mut child = cmd.spawn()?;
+        let mut child = cmd.spawn().map_err(|e| ProcessError::Spawn {
+            command: args.join(" "),
+            source: e,
+        })?;
 
         if let Some(dur) = timeout {
             // Poll-based timeout: check in small intervals.

@@ -156,8 +156,7 @@ fn load_user_preferences_context(dirs: &ProjectDirs) -> Option<String> {
             continue;
         };
         return Some(format!(
-            "## User Preferences (MANDATORY - MUST FOLLOW)\n\nThe following preferences are REQUIRED and CANNOT be ignored:\n\n{}\n\n**IMPORTANT**: When analyzing this session, consider whether Claude followed these user preferences. Do NOT criticize behavior that aligns with configured preferences.",
-            content
+            "## User Preferences (MANDATORY - MUST FOLLOW)\n\nThe following preferences are REQUIRED and CANNOT be ignored:\n\n{content}\n\n**IMPORTANT**: When analyzing this session, consider whether Claude followed these user preferences. Do NOT criticize behavior that aligns with configured preferences."
         ));
     }
     None
@@ -177,19 +176,16 @@ fn get_repository_context(project_root: &Path) -> String {
 
             if current_normalized == amplihack_normalized {
                 format!(
-                    "\n## Repository Context\n\n**Current Repository**: {}\n**Context**: Working on Amplihack itself\n\n**IMPORTANT**: Since we're working on the Amplihack framework itself, ALL issues identified in this session are Amplihack framework issues and should be filed against the Amplihack repository.\n",
-                    current_repo
+                    "\n## Repository Context\n\n**Current Repository**: {current_repo}\n**Context**: Working on Amplihack itself\n\n**IMPORTANT**: Since we're working on the Amplihack framework itself, ALL issues identified in this session are Amplihack framework issues and should be filed against the Amplihack repository.\n"
                 )
             } else {
                 format!(
-                    "\n## Repository Context\n\n**Current Repository**: {}\n**Amplihack Repository**: {}\n**Context**: Working on a user project (not Amplihack itself)\n",
-                    current_repo, AMPLIHACK_REPO_URI
+                    "\n## Repository Context\n\n**Current Repository**: {current_repo}\n**Amplihack Repository**: {AMPLIHACK_REPO_URI}\n**Context**: Working on a user project (not Amplihack itself)\n"
                 )
             }
         }
         _ => format!(
-            "\n## Repository Context\n\n**Amplihack Repository**: {}\n**Context**: Repository detection unavailable\n",
-            AMPLIHACK_REPO_URI
+            "\n## Repository Context\n\n**Amplihack Repository**: {AMPLIHACK_REPO_URI}\n**Context**: Repository detection unavailable\n"
         ),
     }
 }
@@ -224,7 +220,7 @@ pub(crate) fn run_claude_reflection(project_root: &Path, prompt: &str) -> Result
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("failed to launch reflection binary '{}'", binary))?;
+        .with_context(|| format!("failed to launch reflection binary '{binary}'"))?;
 
     if let Some(stdin) = child.stdin.as_mut() {
         stdin

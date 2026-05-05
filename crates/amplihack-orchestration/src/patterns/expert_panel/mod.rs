@@ -167,7 +167,7 @@ pub async fn run_expert_panel(
     let start = Instant::now();
     let results = run_parallel(processes, None).await;
     let panel_duration = start.elapsed();
-    session.log_info(&format!("Panel review completed in {:?}", panel_duration));
+    session.log_info(&format!("Panel review completed in {panel_duration:?}"));
 
     let mut reviews = Vec::new();
     for (result, (expert, expert_id)) in results.into_iter().zip(metadata) {

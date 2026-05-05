@@ -294,7 +294,7 @@ pub struct SubAgentConfig {
 impl SubAgentConfig {
     pub fn new(role: impl Into<String>) -> Self {
         let role = role.into();
-        let filename = format!("{}.yaml", role);
+        let filename = format!("{role}.yaml");
         Self {
             role,
             config: HashMap::new(),

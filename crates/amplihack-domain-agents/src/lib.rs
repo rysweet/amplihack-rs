@@ -1,3 +1,5 @@
+//! Domain-specific agents for code review, synthesis, security, teaching, and skill management.
+
 pub mod base;
 pub mod code_review;
 pub mod code_synthesis;

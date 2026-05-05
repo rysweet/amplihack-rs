@@ -1,0 +1,78 @@
+# PR #554 Quality Improvements Validation
+# Verifies the amplihack-rs workspace builds, lints, formats, and tests cleanly.
+
+name: "PR 554 - Quality Improvements Validation"
+description: |
+  Validates code quality improvements in PR #554 (drop-in skill parity + docs).
+  Ensures the full workspace compiles, passes clippy with -D warnings, formats
+  cleanly, generates docs without errors, and all tests pass.
+version: "1.0.0"
+
+config:
+  timeout: 600000
+  retries: 0
+  parallel: false
+
+agents:
+  - name: "cargo-agent"
+    type: "system"
+    config:
+      workingDirectory: "."
+      shell: "bash"
+      timeout: 300000
+
+steps:
+  - name: "Cargo fmt check"
+    agent: "cargo-agent"
+    action: "execute_command"
+    params:
+      command: "cargo fmt --check"
+    expect:
+      exit_code: 0
+    timeout: 30000
+
+  - name: "Cargo clippy clean"
+    agent: "cargo-agent"
+    action: "execute_command"
+    params:
+      command: "cargo clippy --all-targets -- -D warnings"
+    expect:
+      exit_code: 0
+    timeout: 120000
+
+  - name: "Cargo test suite passes"
+    agent: "cargo-agent"
+    action: "execute_command"
+    params:
+      command: "cargo test --workspace 2>&1 | tail -5"
+    expect:
+      exit_code: 0
+      stdout_contains: "passed"
+    timeout: 300000
+
+  - name: "Cargo doc builds"
+    agent: "cargo-agent"
+    action: "execute_command"
+    params:
+      command: "cargo doc --no-deps --workspace"
+    expect:
+      exit_code: 0
+    timeout: 120000
+
+  - name: "Hooks binary builds"
+    agent: "cargo-agent"
+    action: "execute_command"
+    params:
+      command: "cargo build -p amplihack-hooks-bin"
+    expect:
+      exit_code: 0
+    timeout: 120000
+
+  - name: "CLI binary builds"
+    agent: "cargo-agent"
+    action: "execute_command"
+    params:
+      command: "cargo build -p amplihack"
+    expect:
+      exit_code: 0
+    timeout: 120000

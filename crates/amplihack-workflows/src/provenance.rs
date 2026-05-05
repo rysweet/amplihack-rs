@@ -29,7 +29,7 @@ pub struct ProvenanceEntry {
 impl ProvenanceEntry {
     /// Build a provenance entry for a classification or routing decision.
     ///
-    /// `prompt_preview` is automatically truncated to [`PROMPT_PREVIEW_MAX_CHARS`].
+    /// `prompt_preview` is automatically truncated to `PROMPT_PREVIEW_MAX_CHARS`.
     pub fn new(
         event: impl Into<String>,
         decision: impl Into<String>,

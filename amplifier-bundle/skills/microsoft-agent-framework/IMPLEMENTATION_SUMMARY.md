@@ -146,7 +146,7 @@ This document summarizes the complete implementation of the Microsoft Agent Fram
 21. **metadata/last-updated.txt**
     - Human-readable update information
 
-22. **scripts/check-freshness.py**
+22. **GitHub release/documentation freshness check**
     - Documentation age verification
     - Source URL accessibility checking
     - Framework version validation
@@ -309,7 +309,7 @@ Clear criteria for when to use:
 ### Freshness Check Script
 
 ```bash
-python scripts/check-freshness.py
+python GitHub release/documentation freshness check
 ```
 
 **Results**:

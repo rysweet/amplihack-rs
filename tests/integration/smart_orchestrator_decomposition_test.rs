@@ -88,7 +88,7 @@ fn recipes_dir() -> PathBuf {
     let mut dir = crate_dir.clone();
     while !dir.join("amplifier-bundle").exists() {
         if !dir.pop() {
-            panic!("could not find amplifier-bundle from {:?}", crate_dir);
+            panic!("could not find amplifier-bundle from {crate_dir:?}");
         }
     }
     dir.join("amplifier-bundle/recipes")

@@ -72,17 +72,13 @@ pub(super) fn ensure_recipe_runner() -> Result<Outcome> {
         // install-completeness. Surface a clear remediation.
         bail!(
             "recipe-runner-rs not found on PATH and AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL=1 \
-             disabled the cargo install fallback. {}",
-            REMEDIATION
+             disabled the cargo install fallback. {REMEDIATION}"
         );
     }
 
     println!("   ⏬ recipe-runner-rs missing — installing from git (cargo install --locked)");
     if let Err(err) = install_recipe_runner_from_git() {
-        bail!(
-            "failed to install recipe-runner-rs via cargo: {err:#}. {}",
-            REMEDIATION
-        );
+        bail!("failed to install recipe-runner-rs via cargo: {err:#}. {REMEDIATION}");
     }
 
     if recipe_runner_binary_present() {
@@ -94,8 +90,7 @@ pub(super) fn ensure_recipe_runner() -> Result<Outcome> {
         bail!(
             "cargo install for recipe-runner-rs reported success but the binary is still not \
              on PATH. Add ~/.cargo/bin to PATH and re-run `amplihack install`, or set \
-             RECIPE_RUNNER_RS_PATH explicitly. {}",
-            REMEDIATION
+             RECIPE_RUNNER_RS_PATH explicitly. {REMEDIATION}"
         );
     }
 }

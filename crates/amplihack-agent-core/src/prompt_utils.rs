@@ -23,20 +23,20 @@ pub fn build_system_prompt(role: &str, context: &str, constraints: &[String]) ->
     let mut parts = Vec::with_capacity(3);
 
     if !role.is_empty() {
-        parts.push(format!("You are {}.", role));
+        parts.push(format!("You are {role}."));
     }
 
     if !context.is_empty() {
-        parts.push(format!("\n## Context\n{}", context));
+        parts.push(format!("\n## Context\n{context}"));
     }
 
     if !constraints.is_empty() {
         let constraint_list: String = constraints
             .iter()
-            .map(|c| format!("- {}", c))
+            .map(|c| format!("- {c}"))
             .collect::<Vec<_>>()
             .join("\n");
-        parts.push(format!("\n## Constraints\n{}", constraint_list));
+        parts.push(format!("\n## Constraints\n{constraint_list}"));
     }
 
     parts.join("\n")
@@ -171,7 +171,7 @@ mod tests {
         let messages: Vec<Message> = (0..100)
             .map(|i| Message {
                 role: "user".to_string(),
-                content: format!("Message number {} with some padding text here", i),
+                content: format!("Message number {i} with some padding text here"),
             })
             .collect();
         let formatted = format_conversation_context(&messages, 50);

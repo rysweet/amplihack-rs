@@ -24,11 +24,11 @@ fn assert_exit(cmd: &mut Command, expect_success: bool) {
     cmd.env("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
     let status = cmd
         .status()
-        .unwrap_or_else(|e| panic!("Failed to run command: {}", e));
+        .unwrap_or_else(|e| panic!("Failed to run command: {e}"));
     if expect_success {
-        assert!(status.success(), "Expected success, got: {}", status);
+        assert!(status.success(), "Expected success, got: {status}");
     } else {
-        assert!(!status.success(), "Expected failure, got: {}", status);
+        assert!(!status.success(), "Expected failure, got: {status}");
     }
 }
 
@@ -128,10 +128,9 @@ fn version_output_contains_amplihack() {
         .expect("failed to run binary");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{}{}", stdout, stderr);
+    let combined = format!("{stdout}{stderr}");
     assert!(
         combined.to_lowercase().contains("amplihack"),
-        "Expected 'amplihack' in version output, got: {}",
-        combined
+        "Expected 'amplihack' in version output, got: {combined}"
     );
 }

@@ -638,4 +638,4 @@ cat .claude/context/USER_PREFERENCES.md | grep -i "never.*merge.*without.*permis
 
 ---
 
-**Questions?** Open an issue on [GitHub](https://github.com/rysweet/amplihack/issues) with the `power-steering` label.
+**Questions?** Open an issue on [GitHub](https://github.com/rysweet/amplihack-rs/issues) with the `power-steering` label.

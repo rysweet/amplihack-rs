@@ -192,6 +192,17 @@ fn is_newer_detects_version_bumps() {
 
 #[test]
 fn should_skip_update_check_for_update_related_args() {
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let prev_ni = std::env::var_os("AMPLIHACK_NONINTERACTIVE");
+    let prev_pt = std::env::var_os("AMPLIHACK_PARITY_TEST");
+    let prev_nuc = std::env::var_os(NO_UPDATE_CHECK_ENV);
+    unsafe {
+        std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
+        std::env::remove_var("AMPLIHACK_PARITY_TEST");
+        std::env::remove_var(NO_UPDATE_CHECK_ENV);
+    }
     assert!(should_skip_update_check(&[
         OsString::from("amplihack"),
         OsString::from("update")
@@ -212,6 +223,20 @@ fn should_skip_update_check_for_update_related_args() {
         OsString::from("amplihack"),
         OsString::from("copilot")
     ]));
+    unsafe {
+        match prev_ni {
+            Some(v) => std::env::set_var("AMPLIHACK_NONINTERACTIVE", v),
+            None => std::env::remove_var("AMPLIHACK_NONINTERACTIVE"),
+        }
+        match prev_pt {
+            Some(v) => std::env::set_var("AMPLIHACK_PARITY_TEST", v),
+            None => std::env::remove_var("AMPLIHACK_PARITY_TEST"),
+        }
+        match prev_nuc {
+            Some(v) => std::env::set_var(NO_UPDATE_CHECK_ENV, v),
+            None => std::env::remove_var(NO_UPDATE_CHECK_ENV),
+        }
+    }
 }
 
 #[test]
@@ -226,11 +251,36 @@ fn should_skip_update_check_for_non_launch_subcommands() {
 
 #[test]
 fn should_not_skip_update_check_for_launch_subcommands() {
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let prev_ni = std::env::var_os("AMPLIHACK_NONINTERACTIVE");
+    let prev_pt = std::env::var_os("AMPLIHACK_PARITY_TEST");
+    let prev_nuc = std::env::var_os(NO_UPDATE_CHECK_ENV);
+    unsafe {
+        std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
+        std::env::remove_var("AMPLIHACK_PARITY_TEST");
+        std::env::remove_var(NO_UPDATE_CHECK_ENV);
+    }
     for subcmd in &["launch", "claude", "copilot", "codex", "amplifier"] {
         assert!(
             !should_skip_update_check(&[OsString::from("amplihack"), OsString::from(*subcmd),]),
             "expected update check to NOT be skipped for launch subcommand '{subcmd}'"
         );
+    }
+    unsafe {
+        match prev_ni {
+            Some(v) => std::env::set_var("AMPLIHACK_NONINTERACTIVE", v),
+            None => std::env::remove_var("AMPLIHACK_NONINTERACTIVE"),
+        }
+        match prev_pt {
+            Some(v) => std::env::set_var("AMPLIHACK_PARITY_TEST", v),
+            None => std::env::remove_var("AMPLIHACK_PARITY_TEST"),
+        }
+        match prev_nuc {
+            Some(v) => std::env::set_var(NO_UPDATE_CHECK_ENV, v),
+            None => std::env::remove_var(NO_UPDATE_CHECK_ENV),
+        }
     }
 }
 

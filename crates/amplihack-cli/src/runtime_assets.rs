@@ -18,15 +18,11 @@ pub fn asset_relative_paths() -> HashMap<&'static str, Vec<&'static str>> {
     // smart-orchestrator.yaml that never read the variable. Both the asset
     // entry and those shell lines were deleted as part of the first slice of
     // the umbrella issue eliminating the bundled-Python tools/amplihack/ tree.
-    // FIX (rysweet/amplihack-rs#283/#248): expose the multitask-orchestrator
-    // script so smart-orchestrator.yaml can drop its remaining
-    // `python3 -m amplihack.runtime_assets multitask-orchestrator` shim.
+    // Native compatibility wrapper for legacy callers that still resolve the
+    // multitask orchestrator by logical asset name.
     m.insert(
         "multitask-orchestrator",
-        vec![
-            ".claude/skills/multitask/orchestrator.py",
-            "amplifier-bundle/skills/multitask/orchestrator.py",
-        ],
+        vec!["amplifier-bundle/bin/multitask-orchestrator.sh"],
     );
     m
 }
@@ -88,7 +84,7 @@ pub fn resolve_asset_path(asset_name: &str, search_roots: &[PathBuf]) -> Result<
     let asset_map = asset_relative_paths();
     let rel_paths = asset_map
         .get(asset_name)
-        .with_context(|| format!("unknown asset name: {}", asset_name))?;
+        .with_context(|| format!("unknown asset name: {asset_name}"))?;
 
     for root in search_roots {
         for rel in rel_paths {
@@ -137,7 +133,7 @@ pub fn main(argv: &[String]) -> i32 {
         }
         Err(e) => {
             warn!(error = %e, "asset resolution failed");
-            eprintln!("error: {}", e);
+            eprintln!("error: {e}");
             1
         }
     }
@@ -164,12 +160,11 @@ mod tests {
     }
 
     #[test]
-    fn multitask_orchestrator_has_two_candidates() {
+    fn multitask_orchestrator_uses_native_wrapper() {
         let paths = asset_relative_paths();
         let orch = &paths["multitask-orchestrator"];
-        assert_eq!(orch.len(), 2);
-        assert!(orch[0].contains(".claude/skills/multitask"));
-        assert!(orch[1].contains("amplifier-bundle/skills/multitask"));
+        assert_eq!(orch.len(), 1);
+        assert!(orch[0].contains("amplifier-bundle/bin"));
     }
 
     /// Regression guard for rysweet/amplihack-rs#285: the "hooks-dir" named

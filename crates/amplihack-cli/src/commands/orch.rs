@@ -14,7 +14,7 @@
 //! Exposed via the `amplihack orch helper` CLI subcommand so recipes no longer
 //! need to shell into `python3`. See issue #270.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::Subcommand;
 use std::io::Read;
 use std::path::PathBuf;
@@ -30,8 +30,8 @@ pub enum OrchCommands {
     },
     /// Run parallel workstreams from a JSON config file (WS_FILE).
     ///
-    /// Native port of the `python3 -u multitask/orchestrator.py $WS_FILE`
-    /// invocation in `smart-orchestrator.yaml`. Delegates to the existing
+    /// Native workstream orchestration entrypoint for `smart-orchestrator.yaml`.
+    /// Delegates to the existing
     /// `multitask run` implementation with default flags (recipe mode,
     /// `default-workflow` recipe, no runtime override, no dry-run).
     Run {
@@ -528,10 +528,8 @@ pub fn dispatch(command: OrchCommands) -> Result<()> {
     }
 }
 
-/// Native equivalent of `python3 -u multitask/orchestrator.py <WS_FILE>`.
-///
 /// Delegates to [`multitask::run_multitask`] with the same defaults the YAML
-/// recipe used to invoke the Python orchestrator with (recipe mode,
+/// recipe expects (recipe mode,
 /// `default-workflow` recipe, no runtime override, no timeout policy
 /// override, not a dry-run).
 pub fn run_orch_run(ws_file: PathBuf) -> Result<()> {
@@ -547,13 +545,6 @@ pub fn is_known_type(label: &str) -> bool {
         label,
         "Q&A" | "Operations" | "Investigation" | "Development"
     )
-}
-
-// Compile-time guarantee that `bail!` import isn't dead; used in tests below
-// when input categories are validated.
-#[allow(dead_code)]
-fn _bail_used_in_tests() -> Result<()> {
-    bail!("placeholder");
 }
 
 #[cfg(test)]

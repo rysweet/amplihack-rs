@@ -107,7 +107,7 @@ pub async fn run_debate(
     let mut session = session.runner(runner).build().expect("session build");
 
     session.log_info("Starting Multi-Agent Debate");
-    session.log_info(&format!("Decision: {}", decision_question));
+    session.log_info(&format!("Decision: {decision_question}"));
     session.log_info(&format!("Perspectives: {}", perspective_names.join(", ")));
     session.log_info(&format!("Rounds: {rounds}"));
 
@@ -200,7 +200,7 @@ pub async fn run_debate(
 
     let confidence = parse_confidence(&synth, &all_rounds, perspective_names.len(), rounds);
     let success = synth.is_success();
-    session.log_info(&format!("Debate complete. Confidence: {:?}", confidence));
+    session.log_info(&format!("Debate complete. Confidence: {confidence:?}"));
 
     DebateResult {
         rounds: all_rounds,
@@ -266,10 +266,7 @@ fn build_previous_context(
         if let Some(hist) = history.get(name)
             && let Some(last) = hist.last()
         {
-            parts.push(format!(
-                "## {} Perspective (Previous Round):\n{}",
-                name, last
-            ));
+            parts.push(format!("## {name} Perspective (Previous Round):\n{last}"));
         }
     }
     parts.join("\n\n")

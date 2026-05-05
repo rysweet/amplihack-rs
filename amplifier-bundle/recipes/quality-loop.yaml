@@ -48,7 +48,7 @@ steps:
       [[ "${COPILOT_SESSION_ID}" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "preflight: COPILOT_SESSION_ID has invalid characters" >&2; exit 1; }
       : "${TMPDIR:=/tmp}"
       case "{{admin_merge}}" in true|false) ;; *) echo "preflight: admin_merge must be 'true' or 'false'" >&2; exit 1 ;; esac
-      for tool in gh git jq python3; do
+      for tool in gh git jq; do
         command -v "$tool" >/dev/null || { echo "preflight: required tool '$tool' not in PATH" >&2; exit 1; }
       done
       gh auth status >/dev/null || { echo "preflight: gh CLI is not authenticated" >&2; exit 1; }

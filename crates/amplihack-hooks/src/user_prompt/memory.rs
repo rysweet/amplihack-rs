@@ -114,3 +114,66 @@ fn find_amplihack_md(dirs: &ProjectDirs) -> Option<PathBuf> {
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_single_agent_with_memories() {
+        let agents = vec!["builder".to_string()];
+        let memories = vec![PromptContextMemory {
+            content: "Always use cargo test".to_string(),
+            code_context: None,
+        }];
+        let result = format_agent_memory_context(&agents, &memories);
+        assert!(result.contains("## Memory for builder Agent"));
+        assert!(result.contains("Always use cargo test"));
+        assert!(result.contains("relevance: 0.00"));
+    }
+
+    #[test]
+    fn format_multiple_agents() {
+        let agents = vec!["builder".to_string(), "reviewer".to_string()];
+        let memories = vec![PromptContextMemory {
+            content: "Test fact".to_string(),
+            code_context: None,
+        }];
+        let result = format_agent_memory_context(&agents, &memories);
+        assert!(result.contains("builder Agent"));
+        assert!(result.contains("reviewer Agent"));
+    }
+
+    #[test]
+    fn format_with_code_context() {
+        let agents = vec!["builder".to_string()];
+        let memories = vec![PromptContextMemory {
+            content: "Important fact".to_string(),
+            code_context: Some("fn main() {}".to_string()),
+        }];
+        let result = format_agent_memory_context(&agents, &memories);
+        assert!(result.contains("fn main() {}"));
+    }
+
+    #[test]
+    fn format_empty_code_context_skipped() {
+        let agents = vec!["builder".to_string()];
+        let memories = vec![PromptContextMemory {
+            content: "Fact".to_string(),
+            code_context: Some("  ".to_string()),
+        }];
+        let result = format_agent_memory_context(&agents, &memories);
+        // Whitespace-only code_context should be skipped
+        assert!(!result.contains("  \n"));
+    }
+
+    #[test]
+    fn format_empty_memories() {
+        let agents = vec!["builder".to_string()];
+        let memories: Vec<PromptContextMemory> = vec![];
+        let result = format_agent_memory_context(&agents, &memories);
+        assert!(result.contains("builder Agent"));
+        // No memory lines beyond the header
+        assert!(!result.contains("relevance"));
+    }
+}
