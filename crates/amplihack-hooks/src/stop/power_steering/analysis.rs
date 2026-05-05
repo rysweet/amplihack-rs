@@ -292,3 +292,351 @@ pub(super) fn last_assistant_message(messages: &[TranscriptMessage]) -> Option<&
 pub(super) fn normalize_tool_name(name: &str) -> String {
     name.trim().to_ascii_lowercase().replace('-', "_")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(role: &str, text: &str) -> TranscriptMessage {
+        TranscriptMessage {
+            role: role.to_string(),
+            text: text.to_string(),
+            tool_uses: Vec::new(),
+            tool_results: Vec::new(),
+        }
+    }
+
+    fn msg_with_tools(
+        role: &str,
+        text: &str,
+        tool_uses: Vec<ToolUse>,
+        tool_results: Vec<ToolResult>,
+    ) -> TranscriptMessage {
+        TranscriptMessage {
+            role: role.to_string(),
+            text: text.to_string(),
+            tool_uses,
+            tool_results,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // normalize_tool_name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn normalize_strips_and_lowercases() {
+        assert_eq!(normalize_tool_name("  Edit  "), "edit");
+    }
+
+    #[test]
+    fn normalize_replaces_hyphens() {
+        assert_eq!(normalize_tool_name("multi-edit"), "multi_edit");
+    }
+
+    #[test]
+    fn normalize_combined() {
+        assert_eq!(normalize_tool_name(" Apply-Patch "), "apply_patch");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_qa_session
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn qa_session_with_questions_and_no_tools() {
+        let msgs = vec![
+            msg("user", "What is Rust?"),
+            msg("assistant", "Rust is a language."),
+        ];
+        assert!(is_qa_session(&msgs));
+    }
+
+    #[test]
+    fn qa_session_false_when_tools_used() {
+        let msgs = vec![msg_with_tools(
+            "assistant",
+            "Looking...",
+            vec![ToolUse {
+                id: None,
+                name: "bash".to_string(),
+                input: Value::Null,
+            }],
+            Vec::new(),
+        )];
+        assert!(!is_qa_session(&msgs));
+    }
+
+    #[test]
+    fn qa_session_false_when_no_user_messages() {
+        let msgs = vec![msg("assistant", "Hello")];
+        assert!(!is_qa_session(&msgs));
+    }
+
+    #[test]
+    fn qa_session_false_when_few_questions() {
+        let msgs = vec![
+            msg("user", "Do this."),
+            msg("user", "And this."),
+            msg("user", "What about this?"),
+        ];
+        // Only 1/3 have '?' — need > 50%
+        assert!(!is_qa_session(&msgs));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_todo_items
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_todo_from_todos_key() {
+        let input = serde_json::json!({
+            "todos": [
+                {"content": "Write tests", "status": "pending"},
+                {"content": "Fix bug", "status": "done"}
+            ]
+        });
+        let items = extract_todo_items(&input);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].label, "Write tests");
+        assert_eq!(items[0].status, "pending");
+        assert_eq!(items[1].status, "done");
+    }
+
+    #[test]
+    fn extract_todo_from_items_key() {
+        let input = serde_json::json!({
+            "items": [{"title": "Task A"}]
+        });
+        let items = extract_todo_items(&input);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "Task A");
+        assert_eq!(items[0].status, "pending"); // default
+    }
+
+    #[test]
+    fn extract_todo_empty_on_no_key() {
+        let input = serde_json::json!({"other": "data"});
+        assert!(extract_todo_items(&input).is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // transcript_has_code_changes
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn code_changes_with_edit_tool() {
+        let msgs = vec![msg_with_tools(
+            "assistant",
+            "",
+            vec![ToolUse {
+                id: None,
+                name: "Edit".to_string(),
+                input: serde_json::json!({"path": "src/main.rs"}),
+            }],
+            Vec::new(),
+        )];
+        assert!(transcript_has_code_changes(&msgs));
+    }
+
+    #[test]
+    fn code_changes_false_for_non_code_path() {
+        let msgs = vec![msg_with_tools(
+            "assistant",
+            "",
+            vec![ToolUse {
+                id: None,
+                name: "Edit".to_string(),
+                input: serde_json::json!({"path": "README.md"}),
+            }],
+            Vec::new(),
+        )];
+        assert!(!transcript_has_code_changes(&msgs));
+    }
+
+    #[test]
+    fn code_changes_false_without_tools() {
+        let msgs = vec![msg("assistant", "No tools here")];
+        assert!(!transcript_has_code_changes(&msgs));
+    }
+
+    // -----------------------------------------------------------------------
+    // has_successful_local_test
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn successful_test_with_matching_result() {
+        let msgs = vec![
+            msg_with_tools(
+                "assistant",
+                "",
+                vec![ToolUse {
+                    id: Some("t1".into()),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"command": "cargo test"}),
+                }],
+                Vec::new(),
+            ),
+            msg_with_tools(
+                "user",
+                "",
+                Vec::new(),
+                vec![ToolResult {
+                    tool_use_id: Some("t1".into()),
+                    is_error: false,
+                }],
+            ),
+        ];
+        assert!(has_successful_local_test(&msgs));
+    }
+
+    #[test]
+    fn failed_test_returns_false() {
+        let msgs = vec![
+            msg_with_tools(
+                "assistant",
+                "",
+                vec![ToolUse {
+                    id: Some("t1".into()),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"command": "cargo test"}),
+                }],
+                Vec::new(),
+            ),
+            msg_with_tools(
+                "user",
+                "",
+                Vec::new(),
+                vec![ToolResult {
+                    tool_use_id: Some("t1".into()),
+                    is_error: true,
+                }],
+            ),
+        ];
+        assert!(!has_successful_local_test(&msgs));
+    }
+
+    #[test]
+    fn no_test_command_returns_false() {
+        let msgs = vec![msg_with_tools(
+            "assistant",
+            "",
+            vec![ToolUse {
+                id: None,
+                name: "bash".to_string(),
+                input: serde_json::json!({"command": "ls -la"}),
+            }],
+            Vec::new(),
+        )];
+        assert!(!has_successful_local_test(&msgs));
+    }
+
+    // -----------------------------------------------------------------------
+    // first_user_message / last_assistant_message
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn first_user_message_found() {
+        let msgs = vec![
+            msg("assistant", "Hi"),
+            msg("user", "Hello there"),
+            msg("user", "Another one"),
+        ];
+        assert_eq!(first_user_message(&msgs), Some("Hello there"));
+    }
+
+    #[test]
+    fn first_user_message_skips_empty() {
+        let msgs = vec![msg("user", ""), msg("user", "Real message")];
+        assert_eq!(first_user_message(&msgs), Some("Real message"));
+    }
+
+    #[test]
+    fn first_user_message_none_when_absent() {
+        let msgs = vec![msg("assistant", "Only assistant")];
+        assert_eq!(first_user_message(&msgs), None);
+    }
+
+    #[test]
+    fn last_assistant_found() {
+        let msgs = vec![
+            msg("assistant", "First"),
+            msg("user", "Question"),
+            msg("assistant", "Last answer"),
+        ];
+        assert_eq!(last_assistant_message(&msgs), Some("Last answer"));
+    }
+
+    #[test]
+    fn last_assistant_none() {
+        let msgs = vec![msg("user", "Only user")];
+        assert_eq!(last_assistant_message(&msgs), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // is_code_path (private, tested via transcript_has_code_changes)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn code_changes_with_various_extensions() {
+        for ext in &[".py", ".ts", ".tsx", ".js", ".go", ".java", ".cpp"] {
+            let msgs = vec![msg_with_tools(
+                "assistant",
+                "",
+                vec![ToolUse {
+                    id: None,
+                    name: "write".to_string(),
+                    input: serde_json::json!({"path": format!("src/file{ext}")}),
+                }],
+                Vec::new(),
+            )];
+            assert!(
+                transcript_has_code_changes(&msgs),
+                "Expected code change for {ext}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_transcript_message
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_simple_role_content() {
+        let entry = serde_json::json!({
+            "role": "user",
+            "content": "Hello world"
+        });
+        let msg = parse_transcript_message(&entry).unwrap();
+        assert_eq!(msg.role, "user");
+        assert_eq!(msg.text, "Hello world");
+    }
+
+    #[test]
+    fn parse_array_content_with_tools() {
+        let entry = serde_json::json!({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Thinking..."},
+                {"type": "tool_use", "name": "bash", "id": "t1", "input": {"command": "ls"}}
+            ]
+        });
+        let msg = parse_transcript_message(&entry).unwrap();
+        assert_eq!(msg.text, "Thinking...");
+        assert_eq!(msg.tool_uses.len(), 1);
+        assert_eq!(msg.tool_uses[0].name, "bash");
+    }
+
+    #[test]
+    fn parse_nested_message_format() {
+        let entry = serde_json::json!({
+            "message": {
+                "role": "assistant",
+                "content": "Nested content"
+            }
+        });
+        let msg = parse_transcript_message(&entry).unwrap();
+        assert_eq!(msg.role, "assistant");
+        assert_eq!(msg.text, "Nested content");
+    }
+}

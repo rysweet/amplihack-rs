@@ -440,7 +440,6 @@ fn collect_new_facts(results: &[Fact], seen: &mut HashSet<String>, new_facts: &m
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn make_fact_with_source(ctx: &str, outcome: &str, source: &str) -> Fact {
         let mut f = Fact::new(ctx, outcome);
