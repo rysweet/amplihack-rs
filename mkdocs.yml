@@ -292,6 +292,8 @@ nav:
       - Hive Orchestration: concepts/hive-orchestration.md
       - Goal Agent Generator: concepts/agent-generator.md
       - Hive Mind (Distributed): concepts/hive-mind-distributed.md
+      - Hive Mind Design: concepts/hive-mind-design.md
+      - Hive Mind Evaluation: concepts/hive-mind-eval.md
       - Agent Bundle Generator: concepts/agent-bundle-generator.md
       - Blarify Architecture: concepts/blarify-architecture.md
       - Blarify Integration: concepts/blarify-integration.md
