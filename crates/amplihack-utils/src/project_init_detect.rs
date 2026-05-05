@@ -174,3 +174,109 @@ pub(crate) fn extract_description(preview: &str) -> String {
         lines.join("\n")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project_init::ProjectAnalysis;
+
+    #[test]
+    fn detect_languages_finds_rust() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+        let langs = detect_languages(dir.path());
+        assert_eq!(langs, vec!["Rust"]);
+    }
+
+    #[test]
+    fn detect_languages_checks_subdirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("app.py"), "pass").unwrap();
+        let langs = detect_languages(dir.path());
+        assert_eq!(langs, vec!["Python"]);
+    }
+
+    #[test]
+    fn detect_languages_skips_hidden_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let hidden = dir.path().join(".cache");
+        std::fs::create_dir(&hidden).unwrap();
+        std::fs::write(hidden.join("script.py"), "pass").unwrap();
+        let langs = detect_languages(dir.path());
+        assert!(langs.is_empty());
+    }
+
+    #[test]
+    fn detect_languages_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let langs = detect_languages(dir.path());
+        assert!(langs.is_empty());
+    }
+
+    #[test]
+    fn read_preview_returns_none_for_missing_file() {
+        assert!(read_preview(Path::new("/nonexistent/file.md")).is_none());
+    }
+
+    #[test]
+    fn read_preview_returns_none_for_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.md");
+        std::fs::write(&path, "").unwrap();
+        assert!(read_preview(&path).is_none());
+    }
+
+    #[test]
+    fn read_preview_truncates_long_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long.md");
+        let content = "x".repeat(1000);
+        std::fs::write(&path, &content).unwrap();
+        let preview = read_preview(&path).unwrap();
+        assert!(preview.len() <= PREVIEW_LIMIT);
+    }
+
+    #[test]
+    fn extract_description_skips_title() {
+        let readme = "# My Project\n\nA useful tool for things.";
+        let desc = extract_description(readme);
+        assert_eq!(desc, "A useful tool for things.");
+    }
+
+    #[test]
+    fn extract_description_stops_at_heading() {
+        let readme = "# Title\n\nFirst paragraph.\n\n## Details\n\nMore stuff.";
+        let desc = extract_description(readme);
+        assert_eq!(desc, "First paragraph.");
+    }
+
+    #[test]
+    fn extract_description_returns_placeholder_for_empty() {
+        assert!(extract_description("# Title Only").contains("<!--"));
+    }
+
+    #[test]
+    fn generate_from_template_includes_languages() {
+        let analysis = ProjectAnalysis {
+            name: "test-project".to_owned(),
+            languages: vec!["Rust".to_owned(), "Python".to_owned()],
+            ..Default::default()
+        };
+        let output = generate_from_template(&analysis);
+        assert!(output.contains("# test-project"));
+        assert!(output.contains("- Rust"));
+        assert!(output.contains("- Python"));
+    }
+
+    #[test]
+    fn generate_from_template_empty_languages() {
+        let analysis = ProjectAnalysis {
+            name: "bare".to_owned(),
+            ..Default::default()
+        };
+        let output = generate_from_template(&analysis);
+        assert!(output.contains("<!-- List your tech stack here -->"));
+    }
+}
