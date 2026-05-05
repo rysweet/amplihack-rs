@@ -98,12 +98,14 @@ fn python_remote_tree_is_deleted_after_native_port() {
 
 ### `remote_rust_modules_stay_under_500_lines`
 
-**Constraint**: Every `.rs` source file under `crates/amplihack-remote/src/`
+**Constraint**: Every `.rs` source file directly under `crates/amplihack-remote/src/`
 must stay at or below 500 lines.
 
 Issue #536 requires module size ≤ 500 lines as a readability and testability
-gate.  This test walks the source tree and fails if any file exceeds the limit,
-reporting the offending paths and their line counts.
+gate.  This test performs a **shallow** `read_dir` of `src/` (not recursive)
+and fails if any top-level `.rs` file exceeds the limit, reporting the
+offending paths and their line counts.  Sub-directories within `src/` are not
+checked by this test.
 
 ---
 
@@ -120,6 +122,16 @@ assert_eq!(
     SessionManager::DEFAULT_MEMORY_MB,
     32_768,
     "remote start must persist memory_mb=32768 to match NODE_OPTIONS=--max-old-space-size=32768"
+);
+
+// Also verifies the default propagates when creating a session without an explicit override
+let mut manager = SessionManager::new(Some(state_file)).expect("session manager should load");
+let session = manager
+    .create_session("vm-a", "implement issue #536", Some("auto"), Some(10), None)
+    .expect("valid session should be created");
+assert_eq!(
+    session.memory_mb, 32_768,
+    "sessions created without an override should persist the 32GB heap contract"
 );
 ```
 
