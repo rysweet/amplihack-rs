@@ -17,6 +17,15 @@ pub enum ProcessError {
     #[error("process I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Failed to spawn a command.
+    #[error("failed to spawn command '{command}': {source}")]
+    Spawn {
+        /// The command that failed to start.
+        command: String,
+        /// The underlying error.
+        source: std::io::Error,
+    },
+
     /// The supplied path escapes the allowed root directory.
     #[error("path {path} escapes root {root}")]
     PathEscape {
@@ -124,7 +133,10 @@ impl ProcessManager {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let mut child = cmd.spawn()?;
+        let mut child = cmd.spawn().map_err(|e| ProcessError::Spawn {
+            command: args.join(" "),
+            source: e,
+        })?;
 
         if let Some(dur) = timeout {
             // Poll-based timeout: check in small intervals.

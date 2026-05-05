@@ -21,8 +21,11 @@ pub enum AtomicJsonError {
         path: PathBuf,
         source: serde_json::Error,
     },
-    #[error("JSON serialize error: {0}")]
-    Serialize(#[from] serde_json::Error),
+    #[error("JSON serialize error on {path}: {source}")]
+    Serialize {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
     #[error("Lock error: {0}")]
     Lock(#[from] crate::file_lock::FileLockError),
     #[error("Temp file persist error: {0}")]
@@ -98,7 +101,12 @@ impl AtomicJsonFile {
             path: dir.to_path_buf(),
             source: e,
         })?;
-        serde_json::to_writer_pretty(temp.as_file(), value)?;
+        serde_json::to_writer_pretty(temp.as_file(), value).map_err(|e| {
+            AtomicJsonError::Serialize {
+                path: self.path.clone(),
+                source: e,
+            }
+        })?;
         temp.as_file().flush().map_err(|e| AtomicJsonError::Io {
             path: self.path.clone(),
             source: e,
@@ -149,7 +157,12 @@ impl AtomicJsonFile {
             path: dir.to_path_buf(),
             source: e,
         })?;
-        serde_json::to_writer_pretty(temp.as_file(), &data)?;
+        serde_json::to_writer_pretty(temp.as_file(), &data).map_err(|e| {
+            AtomicJsonError::Serialize {
+                path: self.path.clone(),
+                source: e,
+            }
+        })?;
         temp.as_file().flush().map_err(|e| AtomicJsonError::Io {
             path: self.path.clone(),
             source: e,
