@@ -373,3 +373,96 @@ impl Default for EnvBuilder {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_builder_is_empty() {
+        let env = EnvBuilder::new().build();
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn set_adds_variable() {
+        let env = EnvBuilder::new().set("KEY", "value").build();
+        assert_eq!(env.get("KEY").unwrap(), "value");
+    }
+
+    #[test]
+    fn set_overwrites_previous() {
+        let env = EnvBuilder::new()
+            .set("KEY", "old")
+            .set("KEY", "new")
+            .build();
+        assert_eq!(env.get("KEY").unwrap(), "new");
+    }
+
+    #[test]
+    fn unset_removes_variable() {
+        let env = EnvBuilder::new()
+            .set("KEY", "value")
+            .unset("KEY")
+            .build();
+        assert!(!env.contains_key("KEY"));
+    }
+
+    #[test]
+    fn set_if_true_adds() {
+        let env = EnvBuilder::new().set_if(true, "KEY", "value").build();
+        assert_eq!(env.get("KEY").unwrap(), "value");
+    }
+
+    #[test]
+    fn set_if_false_skips() {
+        let env = EnvBuilder::new().set_if(false, "KEY", "value").build();
+        assert!(!env.contains_key("KEY"));
+    }
+
+    #[test]
+    fn prepend_path_adds_to_path() {
+        let env = EnvBuilder::new()
+            .prepend_path("/custom/bin")
+            .build();
+        let path = env.get("PATH").unwrap();
+        assert!(path.starts_with("/custom/bin"));
+    }
+
+    #[test]
+    fn multiple_prepend_path() {
+        let env = EnvBuilder::new()
+            .prepend_path("/first")
+            .prepend_path("/second")
+            .build();
+        let path = env.get("PATH").unwrap();
+        assert!(path.contains("/first"));
+        assert!(path.contains("/second"));
+    }
+
+    #[test]
+    fn with_agent_binary_sets_var() {
+        let env = EnvBuilder::new().with_agent_binary("copilot").build();
+        assert_eq!(env.get("AMPLIHACK_AGENT_BINARY").unwrap(), "copilot");
+    }
+
+    #[test]
+    fn default_matches_new() {
+        let from_new = EnvBuilder::new().build();
+        let from_default = EnvBuilder::default().build();
+        assert_eq!(from_new, from_default);
+    }
+
+    #[test]
+    fn chaining_works() {
+        let env = EnvBuilder::new()
+            .set("A", "1")
+            .set("B", "2")
+            .unset("A")
+            .set("C", "3")
+            .build();
+        assert!(!env.contains_key("A"));
+        assert_eq!(env.get("B").unwrap(), "2");
+        assert_eq!(env.get("C").unwrap(), "3");
+    }
+}
