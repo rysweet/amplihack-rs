@@ -33,7 +33,7 @@ pub struct BinaryInfo {
 
 /// Manages detection and configuration of native Claude binaries.
 ///
-/// Results are cached after first detection; call [`invalidate_cache`] to
+/// Results are cached after first detection; call `invalidate_cache()` to
 /// force re-detection.
 pub struct ClaudeBinaryManager {
     cached: Option<Option<BinaryInfo>>,

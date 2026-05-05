@@ -15,7 +15,7 @@
 //! # Security
 //!
 //! * SEC-WS2-01: External stderr is truncated to [`MAX_ERROR_LEN`] chars.
-//! * SEC-WS2-02: All externally-sourced strings pass through [`strip_ansi`].
+//! * SEC-WS2-02: All externally-sourced strings pass through `strip_ansi`.
 //! * SEC-WS2-03: All `Command::new()` calls use compile-time literal arguments.
 //! * SEC-WS2-04: `settings.json` content is never printed.
 

@@ -81,7 +81,7 @@ pub fn resolve_asset(relative_path: &str) -> Result<PathBuf> {
 
 /// Resolve a named runtime asset using the Python-compatible priority chain.
 ///
-/// Named assets are logical aliases defined in [`NAMED_ASSETS`].
+/// Named assets are logical aliases defined in `NAMED_ASSETS`.
 /// Each name expands to one or more candidate relative paths that are tried
 /// in order against each search base.
 ///
