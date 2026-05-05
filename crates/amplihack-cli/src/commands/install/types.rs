@@ -151,8 +151,6 @@ pub(super) const ESSENTIAL_DIRS: &[&str] = &[
     "schemas",
     "config",
 ];
-#[cfg(test)]
-pub(super) const ESSENTIAL_FILES: &[&str] = &["tools/statusline.sh", "AMPLIHACK.md"];
 pub(super) const RUNTIME_DIRS: &[&str] = &[
     "runtime",
     "runtime/logs",
