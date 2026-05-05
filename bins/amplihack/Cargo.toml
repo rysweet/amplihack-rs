@@ -198,6 +198,14 @@ path = "../../tests/integration/discoveries_doc_test.rs"
 name = "gherkin_investigation_doc"
 path = "../../tests/integration/gherkin_investigation_doc_test.rs"
 
+# Issue #561 / PR #554: docs landing and navigation audit cleanup.
+# Verifies no uppercase DISCOVERIES.md links, no sdk_eval_loop.py refs in
+# docs/index.md, and that mkdocs.yml nav includes the Diataxis hive-mind
+# concepts entries already linked from docs/index.md.
+[[test]]
+name = "pr554_doc_nav_cleanup"
+path = "../../tests/integration/pr554_doc_nav_cleanup_test.rs"
+
 [[test]]
 name = "issue_537_git_optional_recipes"
 path = "tests/issue_537_git_optional_recipes.rs"
