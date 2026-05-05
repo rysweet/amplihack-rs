@@ -138,7 +138,6 @@ fn run_docker_output(args: &[&str]) -> Option<String> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
