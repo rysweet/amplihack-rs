@@ -72,6 +72,7 @@ impl<'de> serde::Deserialize<'de> for CounterData {
 }
 
 impl AtomicCounter {
+    #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             file: AtomicJsonFile::new(path),

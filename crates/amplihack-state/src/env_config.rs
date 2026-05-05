@@ -26,6 +26,7 @@ where
     T: FromStr + Clone,
     T::Err: fmt::Display,
 {
+    #[must_use]
     pub fn new(name: &'static str) -> Self {
         Self {
             name,
@@ -35,6 +36,7 @@ where
     }
 
     /// Set a default value if the env var is not set.
+    #[must_use]
     pub fn default(mut self, value: T) -> Self {
         self.default = Some(value);
         self

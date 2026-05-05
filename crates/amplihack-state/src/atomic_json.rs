@@ -46,6 +46,7 @@ impl AtomicJsonFile {
     /// Create a new `AtomicJsonFile` for the given path.
     ///
     /// The lock file is `{path}.lock`.
+    #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         let lock_path = path.with_extension("json.lock");
@@ -57,6 +58,7 @@ impl AtomicJsonFile {
     }
 
     /// Set the lock timeout (default: 5 seconds).
+    #[must_use]
     pub fn with_lock_timeout(mut self, timeout: Duration) -> Self {
         self.lock_timeout = timeout;
         self
