@@ -192,7 +192,9 @@ fn is_newer_detects_version_bumps() {
 
 #[test]
 fn should_skip_update_check_for_update_related_args() {
-    let _lock = crate::test_support::env_lock().lock().unwrap();
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let prev_ni = std::env::var_os("AMPLIHACK_NONINTERACTIVE");
     let prev_pt = std::env::var_os("AMPLIHACK_PARITY_TEST");
     let prev_nuc = std::env::var_os(NO_UPDATE_CHECK_ENV);
@@ -249,7 +251,9 @@ fn should_skip_update_check_for_non_launch_subcommands() {
 
 #[test]
 fn should_not_skip_update_check_for_launch_subcommands() {
-    let _lock = crate::test_support::env_lock().lock().unwrap();
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let prev_ni = std::env::var_os("AMPLIHACK_NONINTERACTIVE");
     let prev_pt = std::env::var_os("AMPLIHACK_PARITY_TEST");
     let prev_nuc = std::env::var_os(NO_UPDATE_CHECK_ENV);
