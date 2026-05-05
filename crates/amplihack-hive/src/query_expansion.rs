@@ -248,6 +248,9 @@ mod tests {
 
     #[test]
     fn expansion_model_constant() {
-        assert!(!EXPANSION_MODEL.is_empty());
+        #[allow(clippy::const_is_empty)]
+        {
+            assert!(!EXPANSION_MODEL.is_empty());
+        }
     }
 }

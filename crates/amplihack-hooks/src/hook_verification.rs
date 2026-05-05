@@ -206,7 +206,10 @@ mod tests {
 
     #[test]
     fn required_hooks_not_empty() {
-        assert!(!REQUIRED_HOOKS.is_empty());
+        #[allow(clippy::const_is_empty)]
+        {
+            assert!(!REQUIRED_HOOKS.is_empty());
+        }
     }
 
     #[test]

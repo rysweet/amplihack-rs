@@ -287,6 +287,9 @@ mod tests {
         assert!(!e.is_complete && e.gaps.is_empty());
         let t = TemporalCodeResult::default();
         assert!(t.code.is_empty() && t.result.is_none() && t.state_count == 0);
-        assert!(!ENUMERATION_KEYWORDS.is_empty() && ENUMERATION_KEYWORDS.contains(&"list all"));
+        #[allow(clippy::const_is_empty)]
+        {
+            assert!(!ENUMERATION_KEYWORDS.is_empty() && ENUMERATION_KEYWORDS.contains(&"list all"));
+        }
     }
 }

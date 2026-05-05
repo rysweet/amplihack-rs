@@ -79,10 +79,13 @@ fn init_hierarchical_sqlite_schema_creates_indexes() {
 /// it is defined and exported.
 #[test]
 fn sqlite_hierarchical_schema_constant_is_non_empty() {
-    assert!(
-        !SQLITE_HIERARCHICAL_SCHEMA.is_empty(),
-        "SQLITE_HIERARCHICAL_SCHEMA must not be empty"
-    );
+    #[allow(clippy::const_is_empty)]
+    {
+        assert!(
+            !SQLITE_HIERARCHICAL_SCHEMA.is_empty(),
+            "SQLITE_HIERARCHICAL_SCHEMA must not be empty"
+        );
+    }
 }
 
 /// The `SQLITE_HIERARCHICAL_INDEXES` constant must contain at least 14 entries.
