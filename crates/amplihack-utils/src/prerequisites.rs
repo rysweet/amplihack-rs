@@ -255,7 +255,7 @@ pub fn check_tool(name: &str) -> ToolCheckResult {
 
 /// Check all required and optional prerequisites.
 ///
-/// Returns one [`ToolCheckResult`] per tool in [`REQUIRED_TOOLS`].
+/// Returns one [`ToolCheckResult`] per tool in `REQUIRED_TOOLS`.
 ///
 /// # Examples
 ///

@@ -16,7 +16,7 @@ use tracing::{debug, info};
 
 use crate::trace_logger::TraceLogger;
 
-/// Default trace-file subpath (re-exported from [`trace_logger`]).
+/// Default trace-file subpath (re-exported from [`crate::trace_logger`]).
 pub const DEFAULT_TRACE_SUBPATH: &str = crate::trace_logger::DEFAULT_TRACE_SUBPATH;
 
 // ---------------------------------------------------------------------------

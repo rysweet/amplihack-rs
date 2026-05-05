@@ -1,6 +1,6 @@
 //! Host-specific hook strategies.
 //!
-//! Each supported launcher implements [`HookStrategy`] to customise
+//! Each supported launcher implements `HookStrategy` to customise
 //! context injection and power-steering dispatch.
 
 pub mod base;

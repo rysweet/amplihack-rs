@@ -4,7 +4,7 @@
 //!
 //! ## Modules
 //!
-//! - [`slugify`] — URL-safe slug generation with Unicode normalization
+//! - [`slugify`](mod@slugify) — URL-safe slug generation with Unicode normalization
 //! - [`defensive`] — LLM response parsing, file I/O retry, prompt isolation
 //! - [`process`] — Cross-platform process management with timeout support
 //! - [`project_init`] — Project initialization and `PROJECT.md` management

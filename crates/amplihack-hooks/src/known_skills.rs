@@ -1,7 +1,7 @@
 //! Known amplihack skill names.
 //!
 //! Provides a compile-time set of all built-in skill names and a fast
-//! membership check via [`is_amplihack_skill`].
+//! membership check via `is_amplihack_skill()`.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
