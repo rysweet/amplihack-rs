@@ -2,6 +2,7 @@
 name = "amplihack-multilspy"
 version.workspace = true
 edition.workspace = true
+description = "Language-agnostic LSP client wrapping multiple language servers"
 
 [dependencies]
 anyhow.workspace = true

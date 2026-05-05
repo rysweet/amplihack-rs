@@ -2,6 +2,7 @@
 name = "amplihack-fleet"
 version.workspace = true
 edition.workspace = true
+description = "Remote fleet infrastructure for distributed agent orchestration"
 
 [dependencies]
 anyhow = { workspace = true }

@@ -2,6 +2,7 @@
 name = "amplihack-builders"
 version.workspace = true
 edition.workspace = true
+description = "Transcript builders for Claude/Codex sessions with export-on-compact"
 license.workspace = true
 repository.workspace = true
 

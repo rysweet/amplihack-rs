@@ -2,6 +2,7 @@
 name = "amplihack-memory"
 version.workspace = true
 edition.workspace = true
+description = "Five-type cognitive memory system with distributed sharding"
 
 [dependencies]
 anyhow = { workspace = true }
