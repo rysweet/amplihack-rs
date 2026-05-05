@@ -147,3 +147,75 @@ pub(crate) fn home_dir() -> PathBuf {
             .unwrap_or_else(|| PathBuf::from("C:\\"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_plugin_name_basic() {
+        assert_eq!(
+            extract_plugin_name_from_url("https://github.com/user/my-plugin.git"),
+            "my-plugin"
+        );
+    }
+
+    #[test]
+    fn extract_plugin_name_no_git_suffix() {
+        assert_eq!(
+            extract_plugin_name_from_url("https://github.com/user/cool-tool"),
+            "cool-tool"
+        );
+    }
+
+    #[test]
+    fn extract_plugin_name_trailing_slash() {
+        assert_eq!(
+            extract_plugin_name_from_url("https://github.com/user/plugin.git/"),
+            "plugin"
+        );
+    }
+
+    #[test]
+    fn validate_path_safety_allows_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("sub").join("file.txt");
+        assert!(validate_path_safety(&child, dir.path()));
+    }
+
+    #[test]
+    fn validate_path_safety_rejects_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let escaped = dir.path().join("..").join("..").join("etc").join("passwd");
+        assert!(!validate_path_safety(&escaped, dir.path()));
+    }
+
+    #[test]
+    fn copy_dir_recursive_copies_files() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        std::fs::write(src.path().join("a.txt"), "hello").unwrap();
+        let sub = src.path().join("nested");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("b.txt"), "world").unwrap();
+
+        let dst_path = dst.path().join("output");
+        copy_dir_recursive(src.path(), &dst_path).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dst_path.join("a.txt")).unwrap(),
+            "hello"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst_path.join("nested").join("b.txt")).unwrap(),
+            "world"
+        );
+    }
+
+    #[test]
+    fn home_dir_returns_something() {
+        let h = home_dir();
+        assert!(!h.as_os_str().is_empty());
+    }
+}
