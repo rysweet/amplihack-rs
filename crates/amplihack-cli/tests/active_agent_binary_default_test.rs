@@ -31,7 +31,10 @@ fn run_probe(test_name: &str, env_override: Option<&str>) -> String {
         .lines()
         .find(|l| {
             let t = l.trim();
-            !t.is_empty() && !t.starts_with("running") && !t.starts_with("test ") && !t.starts_with("test result")
+            !t.is_empty()
+                && !t.starts_with("running")
+                && !t.starts_with("test ")
+                && !t.starts_with("test result")
         })
         .unwrap_or("")
         .trim()
