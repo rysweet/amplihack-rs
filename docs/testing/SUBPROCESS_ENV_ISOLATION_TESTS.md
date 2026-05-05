@@ -81,17 +81,20 @@ fn run_probe(test_name: &str, env_override: Option<&str>) -> String {
 
 #[test]
 fn probe_default_no_env() {
-    println!("{}", active_agent_binary());
+    let v = amplihack_cli::env_builder::helpers::active_agent_binary();
+    println!("{v}");
 }
 
 #[test]
 fn probe_claude_override() {
-    println!("{}", active_agent_binary());
+    let v = amplihack_cli::env_builder::helpers::active_agent_binary();
+    println!("{v}");
 }
 
 #[test]
 fn probe_invalid_override() {
-    println!("{}", active_agent_binary());
+    let v = amplihack_cli::env_builder::helpers::active_agent_binary();
+    println!("{v}");
 }
 
 // Contract tests ────────────────────────────────────────────────────────────
@@ -181,7 +184,10 @@ an unintended value from a simultaneously-running parallel test.
 ## Anti-patterns (do not use)
 
 ```rust
-// ❌ WRONG — races under --test-threads > 1
+// ❌ WRONG — set_var/remove_var are globally unsound in multi-threaded processes
+// (Rust 2024 edition deprecated them as undefined behaviour); a Mutex only
+// prevents races within a single process and cannot protect against parallel
+// test threads that haven't acquired the same lock.
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 #[test]
