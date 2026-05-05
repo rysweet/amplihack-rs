@@ -195,6 +195,7 @@ nav:
       - Subprocess Env Isolation Tests: testing/SUBPROCESS_ENV_ISOLATION_TESTS.md
       - Troubleshooting: troubleshooting/README.md
       - Code Review: CODE_REVIEW.md
+      - Rust Code Quality: reference/rust-code-quality.md
       - CLI Reference: reference/cli.md
       - install Command: reference/install-command.md
       - recipe Command: reference/recipe-command.md
