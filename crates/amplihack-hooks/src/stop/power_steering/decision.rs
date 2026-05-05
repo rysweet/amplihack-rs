@@ -199,7 +199,6 @@ pub(super) fn build_continuation_prompt(blockers: &[String]) -> String {
 mod tests {
     use super::*;
     use super::super::{ToolResult, ToolUse, TranscriptMessage};
-    use serde_json::Value;
 
     fn msg(role: &str, text: &str) -> TranscriptMessage {
         TranscriptMessage {

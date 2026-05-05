@@ -126,3 +126,145 @@ pub fn build_preference_context(prefs: &[(String, String)]) -> String {
     }
     parts.join("\n")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // extract_preferences — table format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_table_format() {
+        let content = "\
+| Setting | Value |
+| --- | --- |
+| Verbosity | balanced |
+| Style | concise |
+";
+        let prefs = extract_preferences(content);
+        assert_eq!(prefs.len(), 2);
+        assert_eq!(prefs[0], ("Verbosity".into(), "balanced".into()));
+        assert_eq!(prefs[1], ("Style".into(), "concise".into()));
+    }
+
+    #[test]
+    fn extract_table_skips_header_and_separator() {
+        let content = "\
+| Setting | Value |
+| --- | --- |
+| Theme | dark |
+";
+        let prefs = extract_preferences(content);
+        assert_eq!(prefs.len(), 1);
+        assert_eq!(prefs[0].0, "Theme");
+    }
+
+    #[test]
+    fn extract_table_empty_value_skipped() {
+        let content = "| Key |  |\n";
+        let prefs = extract_preferences(content);
+        assert!(prefs.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_preferences — header format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_header_format() {
+        let content = "\
+### Verbosity
+balanced
+
+### Style
+concise and direct
+";
+        let prefs = extract_preferences(content);
+        assert_eq!(prefs.len(), 2);
+        assert_eq!(prefs[0], ("Verbosity".into(), "balanced".into()));
+        assert_eq!(prefs[1], ("Style".into(), "concise and direct".into()));
+    }
+
+    #[test]
+    fn extract_header_stops_at_next_header() {
+        let content = "\
+### Key1
+value1
+### Key2
+value2
+## Section
+ignored
+";
+        let prefs = extract_preferences(content);
+        assert_eq!(prefs.len(), 2);
+    }
+
+    #[test]
+    fn extract_empty_content() {
+        assert!(extract_preferences("").is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // build_preference_context
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_context_formats_correctly() {
+        let prefs = vec![
+            ("Verbosity".into(), "balanced".into()),
+            ("Style".into(), "concise".into()),
+        ];
+        let ctx = build_preference_context(&prefs);
+        assert!(ctx.starts_with("## User Preferences"));
+        assert!(ctx.contains("- **Verbosity**: balanced"));
+        assert!(ctx.contains("- **Style**: concise"));
+    }
+
+    #[test]
+    fn build_context_empty_prefs() {
+        let ctx = build_preference_context(&[]);
+        assert_eq!(ctx, "## User Preferences");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_dev_invocation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dev_invocation_exact() {
+        assert!(is_dev_invocation("/dev"));
+    }
+
+    #[test]
+    fn dev_invocation_with_args() {
+        assert!(is_dev_invocation("/dev build the feature"));
+    }
+
+    #[test]
+    fn dev_invocation_with_newline() {
+        assert!(is_dev_invocation("/dev\nsome task"));
+    }
+
+    #[test]
+    fn dev_invocation_embedded() {
+        assert!(is_dev_invocation("first line\n/dev build it"));
+    }
+
+    #[test]
+    fn dev_invocation_orchestrator() {
+        assert!(is_dev_invocation("use dev-orchestrator"));
+    }
+
+    #[test]
+    fn dev_invocation_amplihack() {
+        assert!(is_dev_invocation("/amplihack:dev task"));
+    }
+
+    #[test]
+    fn not_dev_invocation() {
+        assert!(!is_dev_invocation("develop something"));
+        assert!(!is_dev_invocation("hello world"));
+    }
+}
