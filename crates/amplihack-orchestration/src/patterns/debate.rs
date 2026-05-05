@@ -266,7 +266,7 @@ fn build_previous_context(
         if let Some(hist) = history.get(name)
             && let Some(last) = hist.last()
         {
-            parts.push(format!("## {name} Perspective (Previous Round):\n{last}",));
+            parts.push(format!("## {name} Perspective (Previous Round):\n{last}"));
         }
     }
     parts.join("\n\n")

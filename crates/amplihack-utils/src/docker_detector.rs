@@ -9,8 +9,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-/// Timeout for Docker CLI commands.
-/// Kept for documentation; the blocking `Command` API does not support timeouts directly.
+// The blocking Command API does not support timeouts directly; this constant
+// documents the intended value for future async migration.
 #[allow(dead_code)]
 const DOCKER_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -138,8 +138,6 @@ fn run_docker_output(args: &[&str]) -> Option<String> {
     }
 }
 
-// Suppress the dead-code warning since the blocking Command API doesn't
-// support timeouts directly.
 
 #[cfg(test)]
 mod tests {
