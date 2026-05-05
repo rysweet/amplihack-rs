@@ -116,10 +116,8 @@ fn run_with_timeout_kills() {
 #[test]
 fn run_empty_args() {
     let mgr = ProcessManager::new();
-    let result = mgr
-        .run_command(&[], None, None, None)
-        .expect("should return empty result");
-    assert!(!result.success());
+    let result = mgr.run_command(&[], None, None, None);
+    assert!(result.is_err(), "empty args should return an error");
 }
 
 #[test]

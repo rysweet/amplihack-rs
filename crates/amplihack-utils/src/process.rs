@@ -43,6 +43,10 @@ pub enum ProcessError {
         /// The underlying error.
         source: std::io::Error,
     },
+
+    /// No command was provided (empty args slice).
+    #[error("no command provided")]
+    EmptyCommand,
 }
 
 /// The result of running an external command.
@@ -110,12 +114,7 @@ impl ProcessManager {
         env: Option<&HashMap<String, String>>,
     ) -> Result<CommandResult, ProcessError> {
         if args.is_empty() {
-            return Ok(CommandResult {
-                exit_code: None,
-                stdout: String::new(),
-                stderr: "no command provided".into(),
-                timed_out: false,
-            });
+            return Err(ProcessError::EmptyCommand);
         }
 
         let mut cmd = std::process::Command::new(args[0]);
