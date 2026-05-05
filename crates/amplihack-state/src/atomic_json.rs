@@ -240,4 +240,34 @@ mod tests {
         assert_eq!(result.count, 15);
         assert_eq!(result.name, "original");
     }
+
+    #[test]
+    fn read_or_default_returns_default_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = AtomicJsonFile::new(dir.path().join("default.json"));
+        let result: TestData = file.read_or_default().unwrap();
+        assert_eq!(result, TestData::default());
+    }
+
+    #[test]
+    fn parse_error_includes_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.json");
+        std::fs::write(&path, "not valid json").unwrap();
+        let file = AtomicJsonFile::new(path.clone());
+        let err = file.read::<TestData>().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bad.json"),
+            "parse error should include file path, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn path_accessor_returns_configured_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let expected = dir.path().join("accessor.json");
+        let file = AtomicJsonFile::new(expected.clone());
+        assert_eq!(file.path(), expected);
+    }
 }
