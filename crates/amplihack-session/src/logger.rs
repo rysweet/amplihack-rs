@@ -444,3 +444,326 @@ impl Drop for OperationContext<'_> {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // --- LogLevel ---
+
+    #[test]
+    fn log_level_rank_ordering() {
+        assert!(LogLevel::Debug.rank() < LogLevel::Info.rank());
+        assert!(LogLevel::Info.rank() < LogLevel::Warning.rank());
+        assert!(LogLevel::Warning.rank() < LogLevel::Error.rank());
+        assert!(LogLevel::Error.rank() < LogLevel::Critical.rank());
+    }
+
+    #[test]
+    fn log_level_parse_known() {
+        assert_eq!(LogLevel::parse("DEBUG"), LogLevel::Debug);
+        assert_eq!(LogLevel::parse("debug"), LogLevel::Debug);
+        assert_eq!(LogLevel::parse("WARNING"), LogLevel::Warning);
+        assert_eq!(LogLevel::parse("WARN"), LogLevel::Warning);
+        assert_eq!(LogLevel::parse("ERROR"), LogLevel::Error);
+        assert_eq!(LogLevel::parse("CRITICAL"), LogLevel::Critical);
+        assert_eq!(LogLevel::parse("FATAL"), LogLevel::Critical);
+        assert_eq!(LogLevel::parse("INFO"), LogLevel::Info);
+    }
+
+    #[test]
+    fn log_level_parse_unknown_defaults_to_info() {
+        assert_eq!(LogLevel::parse("TRACE"), LogLevel::Info);
+        assert_eq!(LogLevel::parse("bogus"), LogLevel::Info);
+        assert_eq!(LogLevel::parse(""), LogLevel::Info);
+    }
+
+    #[test]
+    fn log_level_serde_roundtrip() {
+        let json = serde_json::to_string(&LogLevel::Warning).unwrap();
+        assert_eq!(json, "\"WARNING\"");
+        let parsed: LogLevel = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, LogLevel::Warning);
+    }
+
+    // --- LogEntry ---
+
+    #[test]
+    fn log_entry_serde_roundtrip() {
+        let entry = LogEntry {
+            timestamp: chrono::Utc::now(),
+            level: LogLevel::Info,
+            message: "test message".into(),
+            session_id: Some("sess-1".into()),
+            component: Some("test".into()),
+            operation: None,
+            duration_secs: Some(1.5),
+            metadata: json!({"key": "value"}),
+            error: None,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: LogEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.message, "test message");
+        assert_eq!(parsed.level, LogLevel::Info);
+        assert_eq!(parsed.session_id, Some("sess-1".into()));
+        assert_eq!(parsed.duration_secs, Some(1.5));
+    }
+
+    // --- ToolkitLoggerBuilder ---
+
+    #[test]
+    fn builder_defaults() {
+        let b = ToolkitLoggerBuilder::new();
+        assert_eq!(b.level, LogLevel::Info);
+        assert!(b.enable_console);
+        assert!(b.enable_file);
+        assert_eq!(b.max_size, 10 * 1024 * 1024);
+        assert_eq!(b.max_files, 5);
+        assert!(!b.rotate_daily);
+    }
+
+    #[test]
+    fn builder_chaining() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = ToolkitLoggerBuilder::new()
+            .session_id("s1")
+            .component("comp")
+            .log_dir(dir.path())
+            .level(LogLevel::Debug)
+            .enable_console(false)
+            .enable_file(true)
+            .max_size(1024)
+            .max_files(3)
+            .rotate_daily(true)
+            .build()
+            .unwrap();
+
+        assert_eq!(logger.session_id, Some("s1".into()));
+        assert_eq!(logger.component, Some("comp".into()));
+        assert_eq!(logger.level, LogLevel::Debug);
+        assert_eq!(logger.max_size, 1024);
+        assert_eq!(logger.max_files, 3);
+    }
+
+    // --- ToolkitLogger ---
+
+    fn test_logger(dir: &Path) -> ToolkitLogger {
+        ToolkitLoggerBuilder::new()
+            .session_id("test")
+            .log_dir(dir)
+            .level(LogLevel::Debug)
+            .enable_console(false)
+            .enable_file(true)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn current_log_file_uses_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = test_logger(dir.path());
+        assert_eq!(logger.current_log_file(), dir.path().join("test.log"));
+    }
+
+    #[test]
+    fn current_log_file_no_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = ToolkitLoggerBuilder::new()
+            .log_dir(dir.path())
+            .enable_console(false)
+            .build()
+            .unwrap();
+        assert_eq!(logger.current_log_file(), dir.path().join("toolkit.log"));
+    }
+
+    #[test]
+    fn log_writes_to_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = test_logger(dir.path());
+        logger.info("hello world", None).unwrap();
+
+        let content = fs::read_to_string(logger.current_log_file()).unwrap();
+        assert!(content.contains("hello world"));
+        let entry: LogEntry = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(entry.level, LogLevel::Info);
+    }
+
+    #[test]
+    fn log_respects_level_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = ToolkitLoggerBuilder::new()
+            .session_id("test")
+            .log_dir(dir.path())
+            .level(LogLevel::Warning)
+            .enable_console(false)
+            .build()
+            .unwrap();
+
+        logger.debug("should be filtered", None).unwrap();
+        logger.info("also filtered", None).unwrap();
+        logger.warning("should appear", None).unwrap();
+
+        let content = fs::read_to_string(logger.current_log_file()).unwrap();
+        assert!(!content.contains("should be filtered"));
+        assert!(!content.contains("also filtered"));
+        assert!(content.contains("should appear"));
+    }
+
+    #[test]
+    fn log_success_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = test_logger(dir.path());
+        logger.success("deployment", Some(2.5)).unwrap();
+
+        let content = fs::read_to_string(logger.current_log_file()).unwrap();
+        assert!(content.contains("✓ deployment"));
+    }
+
+    #[test]
+    fn log_error_with_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = test_logger(dir.path());
+        logger.error("boom", Some(json!({"code": 500}))).unwrap();
+
+        let content = fs::read_to_string(logger.current_log_file()).unwrap();
+        let entry: LogEntry = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(entry.level, LogLevel::Error);
+        assert_eq!(entry.metadata["code"], 500);
+    }
+
+    #[test]
+    fn rotation_on_max_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = ToolkitLoggerBuilder::new()
+            .session_id("rot")
+            .log_dir(dir.path())
+            .level(LogLevel::Debug)
+            .enable_console(false)
+            .max_size(100)
+            .max_files(3)
+            .build()
+            .unwrap();
+
+        // Write enough to trigger rotation
+        for i in 0..10 {
+            logger.info(format!("message-{i}"), None).unwrap();
+        }
+
+        let files: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().map(|e| e == "log").unwrap_or(false))
+            .collect();
+        // Should have rotated files (more than 1 log file)
+        assert!(
+            files.len() > 1,
+            "expected rotation, got {} files",
+            files.len()
+        );
+    }
+
+    #[test]
+    fn get_session_logs_reads_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = test_logger(dir.path());
+        logger.info("first", None).unwrap();
+        logger.warning("second", None).unwrap();
+        logger.error("third", None).unwrap();
+
+        let logs = logger.get_session_logs(None).unwrap();
+        assert_eq!(logs.len(), 3);
+        assert_eq!(logs[0].message, "first");
+        assert_eq!(logs[2].message, "third");
+    }
+
+    #[test]
+    fn get_session_logs_with_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = test_logger(dir.path());
+        for i in 0..5 {
+            logger.info(format!("msg-{i}"), None).unwrap();
+        }
+
+        let logs = logger.get_session_logs(Some(2)).unwrap();
+        assert_eq!(logs.len(), 2);
+        // Limit keeps the LAST N entries
+        assert!(logs[0].message.contains("msg-3"));
+        assert!(logs[1].message.contains("msg-4"));
+    }
+
+    #[test]
+    fn get_session_logs_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = test_logger(dir.path());
+        let logs = logger.get_session_logs(None).unwrap();
+        assert!(logs.is_empty());
+    }
+
+    #[test]
+    fn child_logger_inherits_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = ToolkitLoggerBuilder::new()
+            .session_id("parent-sess")
+            .component("parent")
+            .log_dir(dir.path())
+            .level(LogLevel::Warning)
+            .enable_console(false)
+            .max_size(2048)
+            .max_files(7)
+            .build()
+            .unwrap();
+
+        let child = parent.create_child_logger("child").unwrap();
+        assert_eq!(child.session_id, Some("parent-sess".into()));
+        assert_eq!(child.component, Some("parent.child".into()));
+        assert_eq!(child.level, LogLevel::Warning);
+        assert_eq!(child.max_size, 2048);
+        assert_eq!(child.max_files, 7);
+    }
+
+    #[test]
+    fn child_logger_no_parent_component() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = ToolkitLoggerBuilder::new()
+            .session_id("s")
+            .log_dir(dir.path())
+            .enable_console(false)
+            .build()
+            .unwrap();
+
+        let child = parent.create_child_logger("sub").unwrap();
+        assert_eq!(child.component, Some("sub".into()));
+    }
+
+    // --- OperationContext ---
+
+    #[test]
+    fn operation_context_logs_start_and_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = test_logger(dir.path());
+        {
+            let _op = logger.operation("deploy");
+            // op dropped here
+        }
+        let logs = logger.get_session_logs(None).unwrap();
+        assert!(logs.len() >= 2);
+        assert!(logs[0].message.contains("Started operation: deploy"));
+        assert!(logs[1].message.contains("Completed operation: deploy"));
+    }
+
+    #[test]
+    fn operation_context_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = test_logger(dir.path());
+        {
+            let mut op = logger.operation("risky");
+            op.fail("disk full");
+        }
+        let logs = logger.get_session_logs(None).unwrap();
+        let last = logs.last().unwrap();
+        assert_eq!(last.level, LogLevel::Error);
+        assert!(last.message.contains("Failed operation: risky"));
+        assert!(last.message.contains("disk full"));
+    }
+}

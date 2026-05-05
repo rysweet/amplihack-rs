@@ -138,3 +138,72 @@ pub(super) fn warn_uncommitted_work() {
         if total == 1 { "" } else { "s" }
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_lines ---
+
+    #[test]
+    fn parse_lines_basic() {
+        let output = "file1.rs\nfile2.rs\nfile3.rs\n";
+        let result = parse_lines(output);
+        assert_eq!(result, vec!["file1.rs", "file2.rs", "file3.rs"]);
+    }
+
+    #[test]
+    fn parse_lines_filters_empty() {
+        let output = "a\n\n\nb\n";
+        assert_eq!(parse_lines(output), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn parse_lines_empty_input() {
+        assert!(parse_lines("").is_empty());
+        assert!(parse_lines("\n\n").is_empty());
+    }
+
+    #[test]
+    fn parse_lines_no_trailing_newline() {
+        assert_eq!(parse_lines("only-one"), vec!["only-one"]);
+    }
+
+    // --- GitStatus formatting ---
+
+    #[test]
+    fn git_status_struct_fields() {
+        let status = GitStatus {
+            staged: vec!["a.rs".into()],
+            unstaged: vec!["b.rs".into(), "c.rs".into()],
+            untracked: vec![],
+        };
+        assert_eq!(status.staged.len(), 1);
+        assert_eq!(status.unstaged.len(), 2);
+        assert!(status.untracked.is_empty());
+    }
+
+    // --- GIT_TIMEOUT constant ---
+
+    #[test]
+    fn git_timeout_is_5_seconds() {
+        assert_eq!(GIT_TIMEOUT, Duration::from_secs(5));
+    }
+
+    // --- run_git_with_timeout ---
+
+    #[test]
+    fn run_git_version_succeeds() {
+        // git --version should always work in CI
+        let result = run_git_with_timeout(&["--version"]);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("git version"));
+    }
+
+    #[test]
+    fn run_git_bad_command_returns_none() {
+        // A git command that fails with non-zero exit
+        let result = run_git_with_timeout(&["log", "--not-a-real-flag"]);
+        assert!(result.is_none());
+    }
+}

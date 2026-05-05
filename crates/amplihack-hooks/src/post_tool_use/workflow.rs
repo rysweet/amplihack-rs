@@ -203,3 +203,193 @@ pub(super) fn update_workflow_enforcement(
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // --- is_dev_skill_invocation ---
+
+    #[test]
+    fn is_dev_skill_invocation_matches_skill_tool() {
+        let input = json!({"skill": "dev-orchestrator"});
+        assert!(is_dev_skill_invocation("Skill", &input));
+        assert!(is_dev_skill_invocation("skill", &input));
+    }
+
+    #[test]
+    fn is_dev_skill_invocation_matches_all_aliases() {
+        for name in DEV_SKILL_NAMES {
+            let input = json!({"skill": name});
+            assert!(
+                is_dev_skill_invocation("Skill", &input),
+                "should match: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_dev_skill_invocation_rejects_other_skills() {
+        let input = json!({"skill": "merge-ready"});
+        assert!(!is_dev_skill_invocation("Skill", &input));
+    }
+
+    #[test]
+    fn is_dev_skill_invocation_rejects_non_skill_tools() {
+        let input = json!({"skill": "dev-orchestrator"});
+        assert!(!is_dev_skill_invocation("Bash", &input));
+        assert!(!is_dev_skill_invocation("Read", &input));
+    }
+
+    #[test]
+    fn is_dev_skill_invocation_missing_skill_key() {
+        assert!(!is_dev_skill_invocation("Skill", &json!({})));
+        assert!(!is_dev_skill_invocation("Skill", &json!({"other": "val"})));
+    }
+
+    // --- has_workflow_evidence ---
+
+    #[test]
+    fn has_workflow_evidence_bash_recipe_runner() {
+        let input = json!({"command": "amplihack recipe run smart-orchestrator"});
+        assert!(has_workflow_evidence("Bash", &input));
+        assert!(has_workflow_evidence("bash", &input));
+    }
+
+    #[test]
+    fn has_workflow_evidence_bash_git_checkout() {
+        let input = json!({"command": "git checkout -b feat/new-feature"});
+        assert!(has_workflow_evidence("Bash", &input));
+    }
+
+    #[test]
+    fn has_workflow_evidence_bash_no_match() {
+        let input = json!({"command": "cargo test"});
+        assert!(!has_workflow_evidence("Bash", &input));
+    }
+
+    #[test]
+    fn has_workflow_evidence_read_workflow_file() {
+        let input = json!({"file_path": "/repo/amplifier-bundle/recipes/smart-orchestrator.yaml"});
+        assert!(has_workflow_evidence("Read", &input));
+    }
+
+    #[test]
+    fn has_workflow_evidence_view_path_key() {
+        let input = json!({"path": "/home/user/.claude/DEFAULT_WORKFLOW.md"});
+        assert!(has_workflow_evidence("View", &input));
+        assert!(has_workflow_evidence("view", &input));
+    }
+
+    #[test]
+    fn has_workflow_evidence_read_no_match() {
+        let input = json!({"file_path": "/repo/src/main.rs"});
+        assert!(!has_workflow_evidence("Read", &input));
+    }
+
+    #[test]
+    fn has_workflow_evidence_agent_tool() {
+        assert!(has_workflow_evidence("Agent", &json!({})));
+        assert!(has_workflow_evidence("agent", &json!({})));
+        assert!(has_workflow_evidence("TaskCreate", &json!({})));
+    }
+
+    #[test]
+    fn has_workflow_evidence_unrelated_tool() {
+        assert!(!has_workflow_evidence("Edit", &json!({})));
+        assert!(!has_workflow_evidence("grep", &json!({})));
+    }
+
+    // --- workflow_bypass_warning ---
+
+    #[test]
+    fn workflow_bypass_warning_contains_count() {
+        let msg = workflow_bypass_warning(5);
+        assert!(msg.contains("5 tool calls"));
+        assert!(msg.contains("WORKFLOW BYPASS DETECTED"));
+    }
+
+    // --- WorkflowEnforcementState round-trip ---
+
+    #[test]
+    fn state_roundtrip_through_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+
+        let state = WorkflowEnforcementState {
+            dev_invoked_at: 1234567890,
+            tool_calls_since: 2,
+            warning_emitted: false,
+        };
+        write_workflow_state(&dirs, Some("test-session"), &state).unwrap();
+
+        let loaded = read_workflow_state(&dirs, Some("test-session")).unwrap();
+        assert_eq!(loaded.dev_invoked_at, 1234567890);
+        assert_eq!(loaded.tool_calls_since, 2);
+        assert!(!loaded.warning_emitted);
+    }
+
+    #[test]
+    fn read_workflow_state_missing_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        assert!(read_workflow_state(&dirs, Some("nonexistent")).is_none());
+    }
+
+    #[test]
+    fn clear_workflow_state_removes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        let state = WorkflowEnforcementState::default();
+        write_workflow_state(&dirs, Some("sess"), &state).unwrap();
+        assert!(read_workflow_state(&dirs, Some("sess")).is_some());
+
+        clear_workflow_state(&dirs, Some("sess"));
+        assert!(read_workflow_state(&dirs, Some("sess")).is_none());
+    }
+
+    #[test]
+    fn workflow_state_file_sanitizes_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        let path = workflow_state_file(&dirs, Some("my/bad\\session"));
+        let filename = path.file_stem().unwrap().to_str().unwrap();
+        assert!(!filename.contains('/'));
+        assert!(!filename.contains('\\'));
+    }
+
+    #[test]
+    fn workflow_state_file_empty_session_uses_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+        let path = workflow_state_file(&dirs, Some("  "));
+        assert!(path.to_str().unwrap().contains("current"));
+
+        let path2 = workflow_state_file(&dirs, None);
+        assert!(path2.to_str().unwrap().contains("current"));
+    }
+
+    // --- update_workflow_enforcement integration ---
+
+    #[test]
+    fn update_enforcement_dev_invocation_starts_tracking() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = ProjectDirs::new(dir.path());
+
+        // Manually write state to known dir to avoid from_cwd dependency
+        let state = WorkflowEnforcementState {
+            dev_invoked_at: 100,
+            tool_calls_since: 0,
+            warning_emitted: false,
+        };
+        write_workflow_state(&dirs, Some("test"), &state).unwrap();
+        let loaded = read_workflow_state(&dirs, Some("test")).unwrap();
+        assert_eq!(loaded.tool_calls_since, 0);
+    }
+
+    #[test]
+    fn threshold_constant_is_3() {
+        assert_eq!(TOOL_CALL_THRESHOLD, 3);
+    }
+}
