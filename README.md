@@ -319,7 +319,7 @@ Full reference:
   — Persistent memory across sessions
 - **[Investigation Workflow](#workflows)** — Deep knowledge excavation with
   auto-documentation
-- **[Discoveries](https://rysweet.github.io/amplihack-rs/DISCOVERIES/)** —
+- **[Discoveries](https://rysweet.github.io/amplihack-rs/discoveries/)** —
   Documented problems and solutions
 - **[Knowledge Builder](/amplihack:knowledge-builder)** — Build knowledge base
   from codebase
@@ -546,7 +546,7 @@ Custom workflows:
   simplicity, modular design, zero-BS implementation
 - **[Patterns](~/.amplihack/.claude/context/PATTERNS.md)** - Proven solutions
   for recurring challenges
-- **[Discoveries](https://rysweet.github.io/amplihack-rs/DISCOVERIES/)** -
+- **[Discoveries](https://rysweet.github.io/amplihack-rs/discoveries/)** -
   Problems, solutions, and learnings
 
 ### Security
