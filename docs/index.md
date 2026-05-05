@@ -352,7 +352,7 @@ Specialized AI agents and tools for every development task.
 - **Self-Improvement Loop**: EVAL -> ANALYZE -> RESEARCH -> IMPROVE -> RE-EVAL -> DECIDE with automated error analysis
 - **5 Domain Agents**: Code Review, Meeting Synthesizer, Data Analysis, Document Creator, Project Planning
 - **Long-Horizon Memory Eval**: 1000-turn dialogue stress test
-- **Multi-SDK Comparison**: 4-way eval comparison via `sdk_eval_loop.py`
+- **Multi-SDK Comparison**: 4-way eval comparison across Copilot, Claude, Microsoft Agent Framework, and mini SDK
 - **Current Score**: 97.5% overall median (L1-L7, 3-run median, mini SDK)
 
 ### Memory-Enabled Agents ⭐ NEW
@@ -680,7 +680,7 @@ Fix common issues and learn from past solutions.
 
 ### Troubleshooting
 
-- [Discoveries](DISCOVERIES.md) - Known issues and solutions (CHECK HERE FIRST!)
+- [Discoveries](discoveries.md) - Known issues and solutions (CHECK HERE FIRST!)
 - [Troubleshooting Guides](troubleshooting/README.md) - Common problems and fixes
 - [Memory Consent Issues](troubleshooting/memory-consent-issues.md) - Fix prompt, timeout, and detection problems
 - [Memory-Enabled Agents Issues](troubleshooting/memory-enabled-agents.md) - Fix memory persistence, pattern recognition, and learning problems
@@ -802,7 +802,7 @@ amplihack excels at:
 ## Need Help?
 
 - **Start here**: [Prerequisites](PREREQUISITES.md) → [Interactive Installation](INTERACTIVE_INSTALLATION.md) → [Quick Start](README.md)
-- **Common issues**: Check [Discoveries](DISCOVERIES.md) first
+- **Common issues**: Check [Discoveries](discoveries.md) first
 - **Questions**: See [DDD FAQ](document_driven_development/reference/faq.md)
 - **Report issues**: [GitHub Issues](https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding/issues)
 
