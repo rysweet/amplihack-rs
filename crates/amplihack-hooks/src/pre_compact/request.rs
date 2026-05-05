@@ -207,10 +207,7 @@ mod tests {
     #[test]
     fn entry_type_user() {
         let entry = json!({"type": "user", "content": "Hello"});
-        assert_eq!(
-            extract_user_prompt_from_entry(&entry),
-            Some("Hello".into())
-        );
+        assert_eq!(extract_user_prompt_from_entry(&entry), Some("Hello".into()));
     }
 
     #[test]

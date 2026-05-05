@@ -474,8 +474,10 @@ mod tests {
             make_fact_with_source("ctx", "out2", "tech report"),
             make_fact_with_source("ctx", "out3", "other"),
         ];
-        let result =
-            filter_facts_by_source_reference("What was mentioned from the news daily report?", &facts);
+        let result = filter_facts_by_source_reference(
+            "What was mentioned from the news daily report?",
+            &facts,
+        );
         assert!(!result.is_empty());
         assert!(result.iter().any(|f| f.outcome == "out1"));
     }
@@ -497,20 +499,15 @@ mod tests {
     #[test]
     fn filter_no_matching_source() {
         let facts = vec![make_fact_with_source("ctx", "out", "other source")];
-        let result = filter_facts_by_source_reference(
-            "What was from the nonexistent article?",
-            &facts,
-        );
+        let result =
+            filter_facts_by_source_reference("What was from the nonexistent article?", &facts);
         assert!(result.is_empty());
     }
 
     #[test]
     fn filter_case_insensitive() {
         let facts = vec![make_fact_with_source("ctx", "out", "Tech Report")];
-        let result = filter_facts_by_source_reference(
-            "What was from the tech report?",
-            &facts,
-        );
+        let result = filter_facts_by_source_reference("What was from the tech report?", &facts);
         // "tech" extracted from pattern, matches "Tech Report" case-insensitively
         assert!(!result.is_empty());
     }

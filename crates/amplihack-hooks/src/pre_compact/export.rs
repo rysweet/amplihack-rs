@@ -125,7 +125,11 @@ mod tests {
         let result = export_transcript(&src, "export-test");
         let exported = result.unwrap().unwrap();
         assert!(exported.exists());
-        assert!(exported.to_string_lossy().contains("transcript_pre_compact.jsonl"));
+        assert!(
+            exported
+                .to_string_lossy()
+                .contains("transcript_pre_compact.jsonl")
+        );
     }
 
     #[test]

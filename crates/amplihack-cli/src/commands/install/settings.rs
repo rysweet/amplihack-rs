@@ -433,7 +433,10 @@ mod tests {
     #[test]
     fn extract_subcmd_from_amplihack_hooks() {
         let cmd = "/path/to/amplihack-hooks user-prompt-submit";
-        assert_eq!(extract_native_hook_subcommand(cmd), Some("user-prompt-submit"));
+        assert_eq!(
+            extract_native_hook_subcommand(cmd),
+            Some("user-prompt-submit")
+        );
     }
 
     #[test]

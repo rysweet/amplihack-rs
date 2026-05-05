@@ -197,8 +197,8 @@ pub(super) fn build_continuation_prompt(blockers: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{ToolResult, ToolUse, TranscriptMessage};
+    use super::*;
 
     fn msg(role: &str, text: &str) -> TranscriptMessage {
         TranscriptMessage {
@@ -250,7 +250,10 @@ mod tests {
     fn remaining_work_detected() {
         let msgs = vec![
             msg("user", "Fix the bug"),
-            msg("assistant", "I fixed part of it. Next steps are to handle edge cases."),
+            msg(
+                "assistant",
+                "I fixed part of it. Next steps are to handle edge cases.",
+            ),
         ];
         assert!(final_response_has_remaining_work(&msgs));
     }

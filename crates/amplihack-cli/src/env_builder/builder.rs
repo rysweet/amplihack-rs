@@ -401,10 +401,7 @@ mod tests {
 
     #[test]
     fn unset_removes_variable() {
-        let env = EnvBuilder::new()
-            .set("KEY", "value")
-            .unset("KEY")
-            .build();
+        let env = EnvBuilder::new().set("KEY", "value").unset("KEY").build();
         assert!(!env.contains_key("KEY"));
     }
 
@@ -422,9 +419,7 @@ mod tests {
 
     #[test]
     fn prepend_path_adds_to_path() {
-        let env = EnvBuilder::new()
-            .prepend_path("/custom/bin")
-            .build();
+        let env = EnvBuilder::new().prepend_path("/custom/bin").build();
         let path = env.get("PATH").unwrap();
         assert!(path.starts_with("/custom/bin"));
     }

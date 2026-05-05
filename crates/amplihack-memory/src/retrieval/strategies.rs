@@ -420,8 +420,7 @@ mod tests {
             self.facts
                 .iter()
                 .filter(|f| {
-                    f.context.to_lowercase().contains(&q)
-                        || f.outcome.to_lowercase().contains(&q)
+                    f.context.to_lowercase().contains(&q) || f.outcome.to_lowercase().contains(&q)
                 })
                 .take(limit)
                 .cloned()
@@ -557,9 +556,7 @@ mod tests {
     #[test]
     fn tiered_preserves_exact_id_matches() {
         let mut facts: Vec<Fact> = (0..10)
-            .map(|i| {
-                make_fact_with_timestamp("general", &format!("fact {i}"), "2024-01-01", i)
-            })
+            .map(|i| make_fact_with_timestamp("general", &format!("fact {i}"), "2024-01-01", i))
             .collect();
         facts.push(make_fact("incident", "INC-2024-001 was critical"));
         let result = tiered_retrieval("What about INC-2024-001?", &facts);
@@ -573,10 +570,8 @@ mod tests {
     #[test]
     fn simple_retrieval_small_snapshot_exhaustive() {
         let mem = MockMemory::new(vec![]);
-        let snapshot: Vec<Fact> =
-            (0..5).map(|i| make_fact("ctx", &format!("f{i}"))).collect();
-        let (result, exhaustive) =
-            simple_retrieval(&mem, "question", false, Some(&snapshot));
+        let snapshot: Vec<Fact> = (0..5).map(|i| make_fact("ctx", &format!("f{i}"))).collect();
+        let (result, exhaustive) = simple_retrieval(&mem, "question", false, Some(&snapshot));
         assert!(exhaustive);
         assert_eq!(result.len(), 5);
     }
@@ -587,8 +582,7 @@ mod tests {
         let snapshot: Vec<Fact> = (0..2000)
             .map(|i| make_fact("ctx", &format!("f{i}")))
             .collect();
-        let (result, exhaustive) =
-            simple_retrieval(&mem, "question", true, Some(&snapshot));
+        let (result, exhaustive) = simple_retrieval(&mem, "question", true, Some(&snapshot));
         assert!(exhaustive);
         assert_eq!(result.len(), 2000);
     }
@@ -599,8 +593,7 @@ mod tests {
         let snapshot: Vec<Fact> = (0..2000)
             .map(|i| make_fact("ctx", &format!("f{i}")))
             .collect();
-        let (result, exhaustive) =
-            simple_retrieval(&mem, "question", false, Some(&snapshot));
+        let (result, exhaustive) = simple_retrieval(&mem, "question", false, Some(&snapshot));
         assert!(!exhaustive);
         assert!(result.len() < 2000);
     }
@@ -689,8 +682,7 @@ mod tests {
             make_fact("deployment", "kubernetes cluster"),
         ];
         let mem = MockMemory::new(facts).with_hierarchical();
-        let result =
-            concept_retrieval(&mem, "How does authentication work?", false);
+        let result = concept_retrieval(&mem, "How does authentication work?", false);
         assert!(!result.is_empty());
     }
 
@@ -709,10 +701,8 @@ mod tests {
             make_fact("auth", "login system"),
         ];
         let mem = MockMemory::new(facts).with_hierarchical();
-        let result =
-            concept_retrieval(&mem, "authentication login", false);
-        let keys: HashSet<String> =
-            result.iter().map(|f| f.dedup_key()).collect();
+        let result = concept_retrieval(&mem, "authentication login", false);
+        let keys: HashSet<String> = result.iter().map(|f| f.dedup_key()).collect();
         assert_eq!(keys.len(), result.len());
     }
 
@@ -754,8 +744,7 @@ mod tests {
 
     #[test]
     fn entity_id_regex_multiple() {
-        let ids =
-            extract_entity_ids("INC-2024-001 SEC-2023-42 BUG-9999-99999");
+        let ids = extract_entity_ids("INC-2024-001 SEC-2023-42 BUG-9999-99999");
         // All three match: 2-5 uppercase prefix, 4-digit year, 2-5 digit suffix
         assert_eq!(ids.len(), 3);
         assert!(ids.contains(&"INC-2024-001".to_string()));

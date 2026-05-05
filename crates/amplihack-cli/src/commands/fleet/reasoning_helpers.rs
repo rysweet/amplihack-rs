@@ -487,8 +487,7 @@ mod tests {
     #[test]
     fn parse_cwd_section() {
         let output = "===TMUX===\nNO_SESSION\n===CWD===\n/home/user/project\n===END===";
-        let mut ctx =
-            SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        let mut ctx = SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
         parse_context_output(output, &mut ctx).unwrap();
         assert_eq!(ctx.working_directory, "/home/user/project");
         assert_eq!(ctx.agent_status.as_str(), "no_session");
@@ -497,8 +496,7 @@ mod tests {
     #[test]
     fn parse_git_section() {
         let output = "===TMUX===\nNO_SESSION\n===GIT===\nBRANCH:main\nREMOTE:https://github.com/org/repo\nMODIFIED:file1.rs,file2.rs,\n===END===";
-        let mut ctx =
-            SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        let mut ctx = SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
         parse_context_output(output, &mut ctx).unwrap();
         assert_eq!(ctx.git_branch, "main");
         assert_eq!(ctx.files_modified, vec!["file1.rs", "file2.rs"]);
@@ -507,18 +505,15 @@ mod tests {
     #[test]
     fn parse_health_section() {
         let output = "===TMUX===\nNO_SESSION\n===HEALTH===\nmem=42% disk=10% load=1.5\n===END===";
-        let mut ctx =
-            SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        let mut ctx = SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
         parse_context_output(output, &mut ctx).unwrap();
         assert!(ctx.health_summary.contains("mem=42%"));
     }
 
     #[test]
     fn parse_pr_url_from_git() {
-        let output =
-            "===TMUX===\nNO_SESSION\n===GIT===\nPR_URL:https://github.com/org/repo/pull/5\n===END===";
-        let mut ctx =
-            SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        let output = "===TMUX===\nNO_SESSION\n===GIT===\nPR_URL:https://github.com/org/repo/pull/5\n===END===";
+        let mut ctx = SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
         parse_context_output(output, &mut ctx).unwrap();
         assert_eq!(ctx.pr_url, "https://github.com/org/repo/pull/5");
     }
@@ -527,8 +522,7 @@ mod tests {
     fn parse_objectives_section() {
         let output =
             "===TMUX===\nNO_SESSION\n===OBJECTIVES===\n42\tBuild feature X\topen\n===END===";
-        let mut ctx =
-            SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        let mut ctx = SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
         parse_context_output(output, &mut ctx).unwrap();
         assert_eq!(ctx.project_objectives.len(), 1);
         assert_eq!(ctx.project_objectives[0].number, 42);
@@ -538,8 +532,7 @@ mod tests {
     #[test]
     fn parse_transcript_with_early_and_recent() {
         let output = "===TMUX===\nNO_SESSION\n===TRANSCRIPT===\nTRANSCRIPT_LINES:5\n---EARLY---\nfirst message\n---RECENT---\nlast message\n===END===";
-        let mut ctx =
-            SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
+        let mut ctx = SessionContext::new("vm1", "sess1", "task", "prio").unwrap();
         parse_context_output(output, &mut ctx).unwrap();
         assert!(ctx.transcript_summary.contains("first message"));
         assert!(ctx.transcript_summary.contains("last message"));
