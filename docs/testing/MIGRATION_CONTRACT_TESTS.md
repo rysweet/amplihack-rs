@@ -125,6 +125,10 @@ assert_eq!(
 );
 
 // Also verifies the default propagates when creating a session without an explicit override
+let state_file = tempfile::tempdir()
+    .expect("temp dir should be created")
+    .path()
+    .join("remote-state.json");
 let mut manager = SessionManager::new(Some(state_file)).expect("session manager should load");
 let session = manager
     .create_session("vm-a", "implement issue #536", Some("auto"), Some(10), None)
@@ -145,6 +149,17 @@ values documented in the architecture spec.
 This test locks the mapping between the four VM tiers (`S`, `M`, `L`, `XL`),
 their session-capacity multipliers, and the underlying Azure VM sizes.
 Changing a SKU string requires updating both the code and this test.
+
+```rust
+assert_eq!(VMSize::S.capacity(), 1);
+assert_eq!(VMSize::S.azure_size(), "Standard_D8s_v3");
+assert_eq!(VMSize::M.capacity(), 2);
+assert_eq!(VMSize::M.azure_size(), "Standard_E8s_v5");
+assert_eq!(VMSize::L.capacity(), 4);
+assert_eq!(VMSize::L.azure_size(), "Standard_E16s_v5");
+assert_eq!(VMSize::XL.capacity(), 8);
+assert_eq!(VMSize::XL.azure_size(), "Standard_E32s_v5");
+```
 
 ---
 
