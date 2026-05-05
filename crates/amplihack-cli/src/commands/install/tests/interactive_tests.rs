@@ -172,6 +172,11 @@ fn interactive_config_builder_overrides_defaults() {
 
 #[test]
 fn validate_tty_returns_false_in_non_tty_environment() {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        // Skip: this test is only meaningful in non-TTY environments (e.g. CI).
+        return;
+    }
     // In test environments stdin is never a real TTY, so this should return false.
     let is_tty = interactive::validate_tty();
     assert!(
@@ -193,6 +198,11 @@ fn maybe_run_wizard_returns_default_config_when_non_interactive() {
 
 #[test]
 fn maybe_run_wizard_falls_back_to_defaults_in_non_tty() {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        // Skip: this test exercises the non-TTY fallback path only.
+        return;
+    }
     // Even when interactive=true, if stdin is not a TTY we fall back gracefully.
     // In the test runner, stdin is NOT a TTY, so this tests the fallback path.
     let result = interactive::maybe_run_wizard(true);

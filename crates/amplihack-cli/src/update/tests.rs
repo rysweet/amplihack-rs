@@ -192,6 +192,11 @@ fn is_newer_detects_version_bumps() {
 
 #[test]
 fn should_skip_update_check_for_update_related_args() {
+    unsafe {
+        std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
+        std::env::remove_var("AMPLIHACK_PARITY_TEST");
+        std::env::remove_var(NO_UPDATE_CHECK_ENV);
+    }
     assert!(should_skip_update_check(&[
         OsString::from("amplihack"),
         OsString::from("update")
@@ -226,6 +231,11 @@ fn should_skip_update_check_for_non_launch_subcommands() {
 
 #[test]
 fn should_not_skip_update_check_for_launch_subcommands() {
+    unsafe {
+        std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
+        std::env::remove_var("AMPLIHACK_PARITY_TEST");
+        std::env::remove_var(NO_UPDATE_CHECK_ENV);
+    }
     for subcmd in &["launch", "claude", "copilot", "codex", "amplifier"] {
         assert!(
             !should_skip_update_check(&[OsString::from("amplihack"), OsString::from(*subcmd),]),
