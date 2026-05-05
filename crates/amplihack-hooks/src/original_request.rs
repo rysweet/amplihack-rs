@@ -183,3 +183,99 @@ fn format_markdown_section(title: &str, items: &[String]) -> String {
     }
     section
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn substantial_prompt_long_text() {
+        assert!(is_substantial_prompt(
+            "This is a prompt that has more than twenty characters"
+        ));
+    }
+
+    #[test]
+    fn substantial_prompt_with_keyword() {
+        assert!(is_substantial_prompt("fix this"));
+    }
+
+    #[test]
+    fn non_substantial_prompt() {
+        assert!(!is_substantial_prompt("hi"));
+    }
+
+    #[test]
+    fn build_request_extracts_target() {
+        let req = build_original_request("sess-1", "Implement JWT auth for the API.");
+        assert_eq!(req.session_id, "sess-1");
+        assert_eq!(req.target, "Implement JWT auth for the API");
+    }
+
+    #[test]
+    fn build_request_extracts_constraints() {
+        let req = build_original_request(
+            "s1",
+            "Build the feature. Do not modify the database schema.",
+        );
+        assert!(
+            req.constraints.iter().any(|c| c.contains("Do not modify")),
+            "should extract constraint: {:?}",
+            req.constraints
+        );
+    }
+
+    #[test]
+    fn build_request_extracts_requirements() {
+        let req = build_original_request(
+            "s1",
+            "Create a test suite. Ensure all endpoints are covered.",
+        );
+        assert!(
+            req.success_criteria
+                .iter()
+                .any(|c| c.contains("Ensure all")),
+            "should extract success criterion: {:?}",
+            req.success_criteria
+        );
+    }
+
+    #[test]
+    fn extract_matching_deduplicates() {
+        let sentences = vec!["do not break it", "do not break it"];
+        let result = extract_matching_sentences(&sentences, &["do not"]);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn format_context_includes_sections() {
+        let req = OriginalRequest {
+            session_id: "s1".to_string(),
+            timestamp: 0,
+            raw_prompt: "test".to_string(),
+            target: "Build auth".to_string(),
+            requirements: vec!["all endpoints".to_string()],
+            constraints: vec!["do not modify db".to_string()],
+            success_criteria: vec!["ensure tests pass".to_string()],
+        };
+        let output = format_original_request_context(&req);
+        assert!(output.contains("Build auth"));
+        assert!(output.contains("all endpoints"));
+        assert!(output.contains("do not modify db"));
+        assert!(output.contains("ensure tests pass"));
+    }
+
+    #[test]
+    fn format_markdown_section_empty() {
+        assert!(format_markdown_section("Title", &[]).is_empty());
+    }
+
+    #[test]
+    fn format_markdown_section_with_items() {
+        let items = vec!["first".to_string(), "second".to_string()];
+        let output = format_markdown_section("Requirements", &items);
+        assert!(output.contains("## Requirements"));
+        assert!(output.contains("1. first"));
+        assert!(output.contains("2. second"));
+    }
+}
