@@ -17,3 +17,4 @@ tempfile.workspace = true
 tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "macros", "fs", "time"] }
 
 [dev-dependencies]
+tempfile = { workspace = true }

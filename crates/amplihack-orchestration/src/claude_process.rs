@@ -334,6 +334,290 @@ impl ProcessRunner for MockProcessRunner {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── build_command ──────────────────────────────────────────────
+
+    #[test]
+    fn build_command_no_delegate_defaults_to_claude() {
+        let cmd = build_command(None, "do stuff", None);
+        assert_eq!(cmd[0], "claude");
+        assert!(cmd.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(cmd.contains(&"-p".to_string()));
+        assert!(cmd.contains(&"do stuff".to_string()));
+    }
+
+    #[test]
+    fn build_command_with_known_delegate() {
+        let cmd = build_command(Some("amplihack copilot"), "hello", None);
+        assert_eq!(cmd[0], "amplihack");
+        assert_eq!(cmd[1], "copilot");
+        assert!(cmd.contains(&"hello".to_string()));
+    }
+
+    #[test]
+    fn build_command_with_unknown_delegate_falls_back() {
+        let cmd = build_command(Some("unknown-agent"), "test", None);
+        assert_eq!(cmd[0], "claude");
+    }
+
+    #[test]
+    fn build_command_with_model() {
+        let cmd = build_command(None, "prompt", Some("opus-4"));
+        assert!(cmd.contains(&"--model".to_string()));
+        assert!(cmd.contains(&"opus-4".to_string()));
+    }
+
+    #[test]
+    fn build_command_without_model() {
+        let cmd = build_command(None, "prompt", None);
+        assert!(!cmd.contains(&"--model".to_string()));
+    }
+
+    #[test]
+    fn build_command_amplihack_claude_delegate() {
+        let cmd = build_command(Some("amplihack claude"), "x", None);
+        assert_eq!(cmd[0], "claude");
+    }
+
+    #[test]
+    fn build_command_amplihack_amplifier_delegate() {
+        let cmd = build_command(Some("amplihack amplifier"), "x", None);
+        assert_eq!(cmd[0], "amplihack");
+        assert_eq!(cmd[1], "amplifier");
+    }
+
+    // ── DELEGATE_COMMANDS ──────────────────────────────────────────
+
+    #[test]
+    fn delegate_commands_has_three_entries() {
+        assert_eq!(DELEGATE_COMMANDS.len(), 3);
+        assert!(DELEGATE_COMMANDS.contains_key("amplihack claude"));
+        assert!(DELEGATE_COMMANDS.contains_key("amplihack copilot"));
+        assert!(DELEGATE_COMMANDS.contains_key("amplihack amplifier"));
+    }
+
+    // ── ProcessResult ──────────────────────────────────────────────
+
+    #[test]
+    fn process_result_ok_is_success() {
+        let r = ProcessResult::ok("output".into(), "pid-1".into(), Duration::from_secs(1));
+        assert!(r.is_success());
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.output, "output");
+        assert!(r.stderr.is_empty());
+    }
+
+    #[test]
+    fn process_result_err_is_not_success() {
+        let r = ProcessResult::err("boom".into(), "pid-2".into(), Duration::from_secs(2));
+        assert!(!r.is_success());
+        assert_eq!(r.exit_code, -1);
+        assert_eq!(r.stderr, "boom");
+        assert!(r.output.is_empty());
+    }
+
+    #[test]
+    fn process_result_custom_exit_code() {
+        let r = ProcessResult {
+            exit_code: 42,
+            output: String::new(),
+            stderr: String::new(),
+            duration: Duration::ZERO,
+            process_id: "x".into(),
+        };
+        assert!(!r.is_success());
+    }
+
+    // ── RunOptions ─────────────────────────────────────────────────
+
+    #[test]
+    fn run_options_new_defaults() {
+        let opts = RunOptions::new("prompt".into(), "id".into());
+        assert_eq!(opts.prompt, "prompt");
+        assert_eq!(opts.process_id, "id");
+        assert!(opts.timeout.is_none());
+        assert!(opts.model.is_none());
+        assert!(opts.working_dir.is_none());
+    }
+
+    // ── MockProcessRunner ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn mock_runner_exact_match() {
+        let mock = MockProcessRunner::new();
+        mock.expect(
+            "hello",
+            ProcessResult::ok("world".into(), "1".into(), Duration::ZERO),
+        );
+        let r = mock.run(RunOptions::new("hello".into(), "1".into())).await;
+        assert!(r.is_success());
+        assert_eq!(r.output, "world");
+    }
+
+    #[tokio::test]
+    async fn mock_runner_substring_match() {
+        let mock = MockProcessRunner::new();
+        mock.expect_substring(
+            "needle",
+            ProcessResult::ok("found".into(), "2".into(), Duration::ZERO),
+        );
+        let r = mock
+            .run(RunOptions::new("hayneedlestack".into(), "2".into()))
+            .await;
+        assert!(r.is_success());
+        assert_eq!(r.output, "found");
+    }
+
+    #[tokio::test]
+    async fn mock_runner_any_match() {
+        let mock = MockProcessRunner::new();
+        mock.expect_any(ProcessResult::ok("any".into(), "3".into(), Duration::ZERO));
+        let r = mock
+            .run(RunOptions::new("anything".into(), "3".into()))
+            .await;
+        assert!(r.is_success());
+        assert_eq!(r.output, "any");
+    }
+
+    #[tokio::test]
+    async fn mock_runner_no_match_returns_error() {
+        let mock = MockProcessRunner::new();
+        let r = mock
+            .run(RunOptions::new("nomatch".into(), "4".into()))
+            .await;
+        assert!(!r.is_success());
+        assert!(r.stderr.contains("no expectation matched"));
+    }
+
+    #[tokio::test]
+    async fn mock_runner_later_expectation_wins() {
+        let mock = MockProcessRunner::new();
+        mock.expect_any(ProcessResult::ok(
+            "early".into(),
+            "5".into(),
+            Duration::ZERO,
+        ));
+        mock.expect(
+            "specific",
+            ProcessResult::ok("late".into(), "5".into(), Duration::ZERO),
+        );
+        let r = mock
+            .run(RunOptions::new("specific".into(), "5".into()))
+            .await;
+        assert_eq!(r.output, "late");
+    }
+
+    #[tokio::test]
+    async fn mock_runner_records_calls() {
+        let mock = MockProcessRunner::new();
+        mock.expect_any(ProcessResult::ok(
+            String::new(),
+            String::new(),
+            Duration::ZERO,
+        ));
+        mock.run(RunOptions::new("a".into(), "1".into())).await;
+        mock.run(RunOptions::new("b".into(), "2".into())).await;
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].prompt, "a");
+        assert_eq!(calls[1].prompt, "b");
+    }
+
+    // ── BuildError ─────────────────────────────────────────────────
+
+    #[test]
+    fn build_error_display() {
+        let e = BuildError::MissingField("prompt");
+        assert!(e.to_string().contains("prompt"));
+    }
+
+    // ── ClaudeProcess ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn claude_process_run_delegates_to_runner() {
+        let mock = Arc::new(MockProcessRunner::new());
+        mock.expect_any(ProcessResult::ok(
+            "done".into(),
+            "cp-1".into(),
+            Duration::from_millis(50),
+        ));
+        let tmp = tempfile::tempdir().unwrap();
+        let cp = ClaudeProcess::__from_builder_parts(
+            "test prompt".into(),
+            "cp-1".into(),
+            tmp.path().to_path_buf(),
+            tmp.path().join("logs"),
+            None,
+            None,
+            mock.clone(),
+        );
+        assert_eq!(cp.process_id(), "cp-1");
+        assert_eq!(cp.prompt(), "test prompt");
+        let result = cp.run().await;
+        assert!(result.is_success());
+        assert_eq!(mock.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn claude_process_log_creates_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockProcessRunner::new());
+        let cp = ClaudeProcess::__from_builder_parts(
+            "p".into(),
+            "log-test".into(),
+            tmp.path().to_path_buf(),
+            tmp.path().join("logs"),
+            None,
+            None,
+            mock,
+        );
+        cp.log("test message", "DEBUG");
+        let log_path = tmp.path().join("logs").join("log-test.log");
+        assert!(log_path.exists());
+        let content = std::fs::read_to_string(log_path).unwrap();
+        assert!(content.contains("test message"));
+        assert!(content.contains("DEBUG"));
+    }
+
+    #[test]
+    fn claude_process_set_prompt() {
+        let mock = Arc::new(MockProcessRunner::new());
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cp = ClaudeProcess::__from_builder_parts(
+            "old".into(),
+            "x".into(),
+            tmp.path().to_path_buf(),
+            tmp.path().join("logs"),
+            None,
+            None,
+            mock,
+        );
+        cp.set_prompt("new".into());
+        assert_eq!(cp.prompt(), "new");
+    }
+
+    #[test]
+    fn claude_process_set_timeout() {
+        let mock = Arc::new(MockProcessRunner::new());
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cp = ClaudeProcess::__from_builder_parts(
+            "p".into(),
+            "x".into(),
+            tmp.path().to_path_buf(),
+            tmp.path().join("logs"),
+            None,
+            None,
+            mock,
+        );
+        cp.set_timeout(Some(Duration::from_secs(60)));
+        // No public getter for timeout, but set shouldn't panic
+        cp.set_timeout(None);
+    }
+}
+
 /// Builder error for `ClaudeProcess`.
 #[derive(Debug, Error)]
 pub enum BuildError {
