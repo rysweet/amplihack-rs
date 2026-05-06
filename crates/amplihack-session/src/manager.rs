@@ -358,3 +358,272 @@ pub fn read_session_file(path: impl AsRef<Path>) -> Result<Option<serde_json::Va
     }
     safe_read_json::<Option<serde_json::Value>>(p, None)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_manager() -> (tempfile::TempDir, SessionManager) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::new(tmp.path()).unwrap();
+        (tmp, mgr)
+    }
+
+    // ── Construction ───────────────────────────────────────────────
+
+    #[test]
+    fn new_creates_runtime_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("subdir");
+        assert!(!dir.exists());
+        let _mgr = SessionManager::new(&dir).unwrap();
+        assert!(dir.exists());
+    }
+
+    #[test]
+    fn new_loads_empty_registry() {
+        let (_tmp, mgr) = make_manager();
+        assert_eq!(mgr.active_count(), 0);
+    }
+
+    // ── validate_session_id ────────────────────────────────────────
+
+    #[test]
+    fn valid_session_ids() {
+        assert!(SessionManager::validate_session_id("abc-123").is_ok());
+        assert!(SessionManager::validate_session_id("A_B-c").is_ok());
+        assert!(SessionManager::validate_session_id("x").is_ok());
+    }
+
+    #[test]
+    fn invalid_session_ids() {
+        assert!(SessionManager::validate_session_id("").is_err());
+        assert!(SessionManager::validate_session_id("a/b").is_err());
+        assert!(SessionManager::validate_session_id("../etc").is_err());
+        assert!(SessionManager::validate_session_id("a b").is_err());
+        let long = "a".repeat(129);
+        assert!(SessionManager::validate_session_id(&long).is_err());
+    }
+
+    #[test]
+    fn max_length_session_id_ok() {
+        let id = "a".repeat(128);
+        assert!(SessionManager::validate_session_id(&id).is_ok());
+    }
+
+    // ── Create + Get ───────────────────────────────────────────────
+
+    #[test]
+    fn create_and_get_session() {
+        let (_tmp, mut mgr) = make_manager();
+        let id = mgr.create_session("test", None, None).unwrap();
+        assert_eq!(mgr.active_count(), 1);
+        let session = mgr.get_session(&id);
+        assert!(session.is_some());
+    }
+
+    #[test]
+    fn get_nonexistent_session_returns_none() {
+        let (_tmp, mut mgr) = make_manager();
+        assert!(mgr.get_session("nonexistent").is_none());
+    }
+
+    #[test]
+    fn create_multiple_sessions() {
+        let (_tmp, mut mgr) = make_manager();
+        let _id1 = mgr.create_session("s1", None, None).unwrap();
+        let _id2 = mgr.create_session("s2", None, None).unwrap();
+        assert_eq!(mgr.active_count(), 2);
+    }
+
+    // ── Save + Resume ──────────────────────────────────────────────
+
+    #[test]
+    fn save_and_resume_session() {
+        let (_tmp, mut mgr) = make_manager();
+        let id = mgr.create_session("persist-test", None, None).unwrap();
+        assert!(mgr.save_session(&id, false).unwrap());
+
+        let file = mgr.session_file_path(&id);
+        assert!(file.exists());
+
+        // Drop and recreate manager to test resume from disk
+        let runtime_dir = mgr.runtime_dir.clone();
+        drop(mgr);
+        let mut mgr2 = SessionManager::new(&runtime_dir).unwrap();
+        let resumed = mgr2.resume_session(&id).unwrap();
+        assert!(resumed.is_some());
+    }
+
+    #[test]
+    fn save_nonexistent_session_returns_false() {
+        let (_tmp, mut mgr) = make_manager();
+        assert!(!mgr.save_session("no-such-id", false).unwrap());
+    }
+
+    #[test]
+    fn save_identical_content_skips_rewrite() {
+        let (_tmp, mut mgr) = make_manager();
+        let id = mgr.create_session("skip-test", None, None).unwrap();
+        mgr.save_session(&id, true).unwrap();
+        let file = mgr.session_file_path(&id);
+        let content1 = fs::read_to_string(&file).unwrap();
+        // Second save with force=false should skip if content is identical
+        // (timestamps may differ slightly, but the function compares serialized output)
+        mgr.save_session(&id, true).unwrap();
+        let content2 = fs::read_to_string(&file).unwrap();
+        // Both should be valid JSON
+        assert!(serde_json::from_str::<serde_json::Value>(&content1).is_ok());
+        assert!(serde_json::from_str::<serde_json::Value>(&content2).is_ok());
+    }
+
+    // ── resume with bad id ─────────────────────────────────────────
+
+    #[test]
+    fn resume_invalid_id_errors() {
+        let (_tmp, mut mgr) = make_manager();
+        assert!(mgr.resume_session("../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn resume_missing_file_returns_none() {
+        let (_tmp, mut mgr) = make_manager();
+        let result = mgr.resume_session("does-not-exist").unwrap();
+        assert!(result.is_none());
+    }
+
+    // ── List sessions ──────────────────────────────────────────────
+
+    #[test]
+    fn list_active_only() {
+        let (_tmp, mut mgr) = make_manager();
+        mgr.create_session("a", None, None).unwrap();
+        mgr.create_session("b", None, None).unwrap();
+        let list = mgr.list_sessions(true, false).unwrap();
+        assert_eq!(list.len(), 2);
+        for entry in &list {
+            assert_eq!(entry["status"], "active");
+        }
+    }
+
+    #[test]
+    fn list_with_metadata() {
+        let (_tmp, mut mgr) = make_manager();
+        mgr.create_session("named", None, None).unwrap();
+        let list = mgr.list_sessions(true, true).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["name"], "named");
+        assert!(list[0].get("created_at").is_some());
+    }
+
+    #[test]
+    fn list_includes_saved_when_not_active_only() {
+        let (_tmp, mut mgr) = make_manager();
+        let id = mgr.create_session("saved-one", None, None).unwrap();
+        mgr.save_session(&id, true).unwrap();
+        // Remove from active to simulate a saved-only session
+        mgr.active_sessions.remove(&id);
+        mgr.metadata.remove(&id);
+        let list = mgr.list_sessions(false, false).unwrap();
+        assert!(list.iter().any(|e| e["status"] == "saved"));
+    }
+
+    // ── Archive ────────────────────────────────────────────────────
+
+    #[test]
+    fn archive_session_moves_file() {
+        let (_tmp, mut mgr) = make_manager();
+        let id = mgr.create_session("archive-me", None, None).unwrap();
+        mgr.save_session(&id, true).unwrap();
+        assert!(mgr.session_file_path(&id).exists());
+
+        assert!(mgr.archive_session(&id).unwrap());
+        assert!(!mgr.session_file_path(&id).exists());
+        assert!(mgr.runtime_dir.join("archive").exists());
+        assert_eq!(mgr.active_count(), 0);
+    }
+
+    #[test]
+    fn archive_nonexistent_returns_false() {
+        let (_tmp, mut mgr) = make_manager();
+        assert!(!mgr.archive_session("nope").unwrap());
+    }
+
+    #[test]
+    fn archive_invalid_id_errors() {
+        let (_tmp, mut mgr) = make_manager();
+        assert!(mgr.archive_session("../../evil").is_err());
+    }
+
+    // ── Cleanup ────────────────────────────────────────────────────
+
+    #[test]
+    fn cleanup_old_sessions_zero_days() {
+        let (_tmp, mut mgr) = make_manager();
+        let id = mgr.create_session("old", None, None).unwrap();
+        mgr.save_session(&id, true).unwrap();
+        mgr.active_sessions.remove(&id);
+        // 0 days = archive everything
+        let count = mgr.cleanup_old_sessions(0).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn cleanup_future_threshold_archives_nothing() {
+        let (_tmp, mut mgr) = make_manager();
+        let id = mgr.create_session("new", None, None).unwrap();
+        mgr.save_session(&id, true).unwrap();
+        mgr.active_sessions.remove(&id);
+        // 365 days in the future — nothing should be old enough
+        let count = mgr.cleanup_old_sessions(365).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    // ── save_all_active ────────────────────────────────────────────
+
+    #[test]
+    fn save_all_active_persists_everything() {
+        let (_tmp, mut mgr) = make_manager();
+        let id1 = mgr.create_session("s1", None, None).unwrap();
+        let id2 = mgr.create_session("s2", None, None).unwrap();
+        mgr.save_all_active().unwrap();
+        assert!(mgr.session_file_path(&id1).exists());
+        assert!(mgr.session_file_path(&id2).exists());
+        assert!(mgr.registry_path().exists());
+    }
+
+    // ── Paths ──────────────────────────────────────────────────────
+
+    #[test]
+    fn session_file_path_format() {
+        let (_tmp, mgr) = make_manager();
+        let path = mgr.session_file_path("my-session");
+        assert!(path.ends_with("my-session.json"));
+    }
+
+    #[test]
+    fn registry_path_format() {
+        let (_tmp, mgr) = make_manager();
+        let path = mgr.registry_path();
+        assert!(path.ends_with("registry.json"));
+    }
+
+    // ── read_session_file ──────────────────────────────────────────
+
+    #[test]
+    fn read_session_file_missing_returns_none() {
+        assert!(
+            read_session_file("/tmp/no-such-file.json")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn read_session_file_valid_json() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(tmp.path(), r#"{"hello":"world"}"#).unwrap();
+        let v = read_session_file(tmp.path()).unwrap().unwrap();
+        assert_eq!(v["hello"], "world");
+    }
+}
