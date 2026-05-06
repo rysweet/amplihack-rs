@@ -371,3 +371,297 @@ fn clean_broken_symlinks_inner(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs as unix_fs;
+
+    // ── is_excluded_dir ────────────────────────────────────────────
+
+    #[test]
+    fn excluded_dirs() {
+        assert!(is_excluded_dir(std::ffi::OsStr::new("__pycache__")));
+        assert!(is_excluded_dir(std::ffi::OsStr::new(".pytest_cache")));
+        assert!(is_excluded_dir(std::ffi::OsStr::new("node_modules")));
+    }
+
+    #[test]
+    fn non_excluded_dirs() {
+        assert!(!is_excluded_dir(std::ffi::OsStr::new("src")));
+        assert!(!is_excluded_dir(std::ffi::OsStr::new("pycache")));
+        assert!(!is_excluded_dir(std::ffi::OsStr::new("")));
+    }
+
+    // ── is_excluded_file ───────────────────────────────────────────
+
+    #[test]
+    fn excluded_files() {
+        assert!(is_excluded_file(std::ffi::OsStr::new("module.pyc")));
+        assert!(is_excluded_file(std::ffi::OsStr::new("module.pyo")));
+    }
+
+    #[test]
+    fn non_excluded_files() {
+        assert!(!is_excluded_file(std::ffi::OsStr::new("module.py")));
+        assert!(!is_excluded_file(std::ffi::OsStr::new("module.rs")));
+        assert!(!is_excluded_file(std::ffi::OsStr::new("")));
+    }
+
+    // ── copy_dir_recursive ─────────────────────────────────────────
+
+    #[test]
+    fn copy_dir_basic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("a.txt"), "hello").unwrap();
+        fs::write(src.join("sub/b.txt"), "world").unwrap();
+
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        assert!(dst.join("a.txt").exists());
+        assert!(dst.join("sub/b.txt").exists());
+        assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "hello");
+        assert_eq!(fs::read_to_string(dst.join("sub/b.txt")).unwrap(), "world");
+    }
+
+    #[test]
+    fn copy_dir_excludes_pycache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        fs::create_dir_all(src.join("__pycache__")).unwrap();
+        fs::write(src.join("__pycache__/cache.pyc"), "data").unwrap();
+        fs::write(src.join("keep.py"), "code").unwrap();
+
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        assert!(!dst.join("__pycache__").exists());
+        assert!(dst.join("keep.py").exists());
+    }
+
+    #[test]
+    fn copy_dir_excludes_pyc_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("module.pyc"), "compiled").unwrap();
+        fs::write(src.join("module.pyo"), "optimized").unwrap();
+        fs::write(src.join("module.py"), "source").unwrap();
+
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        assert!(!dst.join("module.pyc").exists());
+        assert!(!dst.join("module.pyo").exists());
+        assert!(dst.join("module.py").exists());
+    }
+
+    #[test]
+    fn copy_dir_skips_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("real.txt"), "real").unwrap();
+        unix_fs::symlink(src.join("real.txt"), src.join("link.txt")).unwrap();
+
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        assert!(dst.join("real.txt").exists());
+        assert!(!dst.join("link.txt").exists());
+    }
+
+    #[test]
+    fn copy_dir_same_path_no_op() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("same");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("f.txt"), "data").unwrap();
+
+        // Copying to itself should succeed (no-op)
+        copy_dir_recursive(&dir, &dir).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("f.txt")).unwrap(), "data");
+    }
+
+    // ── walk_dirs / walk_all ───────────────────────────────────────
+
+    #[test]
+    fn walk_dirs_finds_subdirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("a/b/c")).unwrap();
+        fs::write(tmp.path().join("a/file.txt"), "x").unwrap();
+
+        let dirs = walk_dirs(tmp.path()).unwrap();
+        // Should include root, a, b, c
+        assert!(dirs.len() >= 4);
+        assert!(dirs.contains(&tmp.path().to_path_buf()));
+        assert!(dirs.contains(&tmp.path().join("a")));
+        assert!(dirs.contains(&tmp.path().join("a/b")));
+        assert!(dirs.contains(&tmp.path().join("a/b/c")));
+    }
+
+    #[test]
+    fn walk_all_finds_files_and_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("d")).unwrap();
+        fs::write(tmp.path().join("f.txt"), "x").unwrap();
+        fs::write(tmp.path().join("d/g.txt"), "y").unwrap();
+
+        let all = walk_all(tmp.path()).unwrap();
+        assert!(all.contains(&tmp.path().join("f.txt")));
+        assert!(all.contains(&tmp.path().join("d/g.txt")));
+        assert!(all.contains(&tmp.path().join("d")));
+    }
+
+    #[test]
+    fn walk_skips_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("real")).unwrap();
+        fs::write(tmp.path().join("real/f.txt"), "x").unwrap();
+        unix_fs::symlink(tmp.path().join("real"), tmp.path().join("link")).unwrap();
+
+        let all = walk_all(tmp.path()).unwrap();
+        // The symlink "link" should not appear in results
+        assert!(!all.contains(&tmp.path().join("link")));
+    }
+
+    // ── all_rel_dirs ───────────────────────────────────────────────
+
+    #[test]
+    fn all_rel_dirs_lists_relative_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("a/b")).unwrap();
+        fs::create_dir_all(tmp.path().join("c")).unwrap();
+
+        let dirs = all_rel_dirs(tmp.path()).unwrap();
+        assert!(dirs.contains("."));
+        assert!(dirs.contains("a"));
+        assert!(dirs.contains("a/b"));
+        assert!(dirs.contains("c"));
+    }
+
+    #[test]
+    fn all_rel_dirs_nonexistent_returns_empty() {
+        let dirs = all_rel_dirs(Path::new("/tmp/nonexistent-dir-test-xyz")).unwrap();
+        assert!(dirs.is_empty());
+    }
+
+    // ── get_all_files_and_dirs ─────────────────────────────────────
+
+    #[test]
+    fn get_all_files_and_dirs_basic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("f.txt"), "x").unwrap();
+        fs::write(root.join("sub/g.txt"), "y").unwrap();
+
+        let (files, dirs) = get_all_files_and_dirs(root, &[root.to_path_buf()]).unwrap();
+        assert!(files.iter().any(|f| f.contains("f.txt")));
+        assert!(files.iter().any(|f| f.contains("g.txt")));
+        assert!(dirs.iter().any(|d| d.contains("sub")));
+    }
+
+    // ── deploy_binary ──────────────────────────────────────────────
+
+    #[test]
+    fn deploy_binary_basic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("bin");
+        let dst = tmp.path().join("out/bin");
+        fs::write(&src, "#!/bin/sh\necho hi").unwrap();
+
+        deploy_binary(&src, &dst).unwrap();
+
+        assert!(dst.exists());
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "#!/bin/sh\necho hi");
+    }
+
+    #[test]
+    fn deploy_binary_same_file_no_op() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("bin");
+        fs::write(&bin, "data").unwrap();
+
+        deploy_binary(&bin, &bin).unwrap();
+        assert_eq!(fs::read_to_string(&bin).unwrap(), "data");
+    }
+
+    #[test]
+    fn deploy_binary_missing_source_with_dst_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("gone");
+        let dst = tmp.path().join("exists");
+        fs::write(&dst, "already here").unwrap();
+
+        // Missing src + existing dst = no-op (deleted-source short-circuit)
+        deploy_binary(&src, &dst).unwrap();
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "already here");
+    }
+
+    #[test]
+    fn deploy_binary_missing_source_no_dst_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("gone");
+        let dst = tmp.path().join("also_gone");
+
+        assert!(deploy_binary(&src, &dst).is_err());
+    }
+
+    // ── clean_broken_symlinks ──────────────────────────────────────
+
+    #[test]
+    fn clean_broken_symlinks_removes_broken() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create a broken symlink
+        unix_fs::symlink("/tmp/nonexistent-target-xyz", tmp.path().join("broken")).unwrap();
+        // Create a valid symlink
+        let real = tmp.path().join("real.txt");
+        fs::write(&real, "x").unwrap();
+        unix_fs::symlink(&real, tmp.path().join("valid")).unwrap();
+
+        let removed = clean_broken_symlinks(tmp.path(), false).unwrap();
+        assert_eq!(removed, 1);
+        assert!(!tmp.path().join("broken").exists());
+        // Valid symlink should remain (as a symlink)
+        assert!(tmp.path().join("valid").symlink_metadata().is_ok());
+    }
+
+    #[test]
+    fn clean_broken_symlinks_recursive() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("sub")).unwrap();
+        unix_fs::symlink("/tmp/nonexistent-xyz", tmp.path().join("sub/broken")).unwrap();
+
+        let removed_shallow = clean_broken_symlinks(tmp.path(), false).unwrap();
+        assert_eq!(removed_shallow, 0); // not recursive, shouldn't find it
+
+        let removed_deep = clean_broken_symlinks(tmp.path(), true).unwrap();
+        assert_eq!(removed_deep, 1);
+    }
+
+    #[test]
+    fn clean_broken_symlinks_nonexistent_dir() {
+        let removed = clean_broken_symlinks(Path::new("/tmp/no-such-dir-xyz"), false).unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    // ── set_script_permissions ──────────────────────────────────────
+
+    #[test]
+    fn set_script_permissions_adds_execute() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("hook.py");
+        fs::write(&script, "#!/usr/bin/env python3").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o644)).unwrap();
+
+        set_script_permissions(&script).unwrap();
+
+        let mode = fs::metadata(&script).unwrap().permissions().mode();
+        assert!(mode & 0o110 != 0); // group+user execute
+    }
+}
