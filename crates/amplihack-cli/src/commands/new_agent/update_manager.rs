@@ -382,3 +382,250 @@ pub fn compute_checksum(path: &Path) -> Result<String, BundleError> {
     hasher.update(&data);
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- compute_checksum ---
+
+    #[test]
+    fn compute_checksum_deterministic() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        fs::write(&file, "hello world").unwrap();
+
+        let cs1 = compute_checksum(&file).unwrap();
+        let cs2 = compute_checksum(&file).unwrap();
+        assert_eq!(cs1, cs2);
+        assert!(cs1.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn compute_checksum_different_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = dir.path().join("a.txt");
+        let f2 = dir.path().join("b.txt");
+        fs::write(&f1, "hello").unwrap();
+        fs::write(&f2, "world").unwrap();
+
+        assert_ne!(
+            compute_checksum(&f1).unwrap(),
+            compute_checksum(&f2).unwrap()
+        );
+    }
+
+    #[test]
+    fn compute_checksum_missing_file() {
+        let result = compute_checksum(Path::new("/nonexistent/file.txt"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn compute_checksum_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("empty.txt");
+        fs::write(&file, "").unwrap();
+
+        let cs = compute_checksum(&file).unwrap();
+        assert!(cs.starts_with("sha256:"));
+        assert!(cs.len() > 10);
+    }
+
+    // --- BundleManifest ---
+
+    #[test]
+    fn manifest_serde_roundtrip() {
+        let mut checksums = HashMap::new();
+        checksums.insert("src/main.rs".to_string(), "sha256:abc123".to_string());
+
+        let manifest = BundleManifest {
+            framework: FrameworkInfo {
+                version: "1.0.0".into(),
+                updated_at: "2026-01-01".into(),
+            },
+            file_checksums: checksums,
+        };
+        let json = serde_json::to_string(&manifest).unwrap();
+        let parsed: BundleManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.framework.version, "1.0.0");
+        assert_eq!(parsed.file_checksums.len(), 1);
+    }
+
+    #[test]
+    fn manifest_defaults_on_missing_fields() {
+        let parsed: BundleManifest = serde_json::from_str("{}").unwrap();
+        assert!(parsed.framework.version.is_empty());
+        assert!(parsed.file_checksums.is_empty());
+    }
+
+    // --- read_manifest ---
+
+    #[test]
+    fn read_manifest_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = serde_json::json!({
+            "framework": {"version": "abc123", "updated_at": "2026-01-01"},
+            "file_checksums": {"a.txt": "sha256:deadbeef"}
+        });
+        fs::write(dir.path().join("manifest.json"), manifest.to_string()).unwrap();
+
+        let m = read_manifest(dir.path()).unwrap();
+        assert_eq!(m.framework.version, "abc123");
+        assert_eq!(m.file_checksums.len(), 1);
+    }
+
+    #[test]
+    fn read_manifest_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(read_manifest(dir.path()).is_err());
+    }
+
+    #[test]
+    fn read_manifest_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("manifest.json"), "not json").unwrap();
+        assert!(read_manifest(dir.path()).is_err());
+    }
+
+    // --- UpdateResult ---
+
+    #[test]
+    fn update_result_ok() {
+        let r = UpdateResult::ok();
+        assert!(r.success);
+        assert!(r.updated_files.is_empty());
+        assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn update_result_failed() {
+        let r = UpdateResult::failed("oops");
+        assert!(!r.success);
+        assert_eq!(r.error, Some("oops".into()));
+    }
+
+    // --- UpdateManager ---
+
+    #[test]
+    fn update_manager_no_repo() {
+        let mgr = UpdateManager::new(None);
+        assert!(mgr.framework_repo.is_none());
+    }
+
+    #[test]
+    fn check_for_updates_no_manifest() {
+        let mgr = UpdateManager::new(None);
+        let dir = tempfile::tempdir().unwrap();
+        assert!(mgr.check_for_updates(dir.path()).is_err());
+    }
+
+    #[test]
+    fn check_for_updates_empty_version() {
+        let mgr = UpdateManager::new(None);
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("manifest.json"),
+            r#"{"framework":{"version":""}}"#,
+        )
+        .unwrap();
+        let err = mgr.check_for_updates(dir.path()).unwrap_err();
+        assert!(err.message.contains("version"));
+    }
+
+    // --- detect_customizations ---
+
+    #[test]
+    fn detect_customizations_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        fs::write(&file, "key = value").unwrap();
+        let cs = compute_checksum(&file).unwrap();
+
+        let manifest = serde_json::json!({
+            "framework": {"version": "v1"},
+            "file_checksums": {"config.toml": cs}
+        });
+        fs::write(dir.path().join("manifest.json"), manifest.to_string()).unwrap();
+
+        let mgr = UpdateManager::new(None);
+        let result = mgr.detect_customizations(dir.path()).unwrap();
+        assert_eq!(result.get("config.toml"), Some(&false));
+    }
+
+    #[test]
+    fn detect_customizations_modified() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        fs::write(&file, "original").unwrap();
+
+        let manifest = serde_json::json!({
+            "framework": {"version": "v1"},
+            "file_checksums": {"config.toml": "sha256:wrong"}
+        });
+        fs::write(dir.path().join("manifest.json"), manifest.to_string()).unwrap();
+
+        let mgr = UpdateManager::new(None);
+        let result = mgr.detect_customizations(dir.path()).unwrap();
+        assert_eq!(result.get("config.toml"), Some(&true));
+    }
+
+    #[test]
+    fn detect_customizations_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = serde_json::json!({
+            "framework": {"version": "v1"},
+            "file_checksums": {"gone.txt": "sha256:whatever"}
+        });
+        fs::write(dir.path().join("manifest.json"), manifest.to_string()).unwrap();
+
+        let mgr = UpdateManager::new(None);
+        let result = mgr.detect_customizations(dir.path()).unwrap();
+        assert_eq!(result.get("gone.txt"), Some(&true));
+    }
+
+    // --- update_bundle edge cases ---
+
+    #[test]
+    fn update_bundle_no_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = UpdateManager::new(None);
+        let result = mgr.update_bundle(dir.path(), false, false);
+        assert!(!result.success);
+    }
+
+    #[test]
+    fn update_bundle_no_framework_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = serde_json::json!({"framework": {"version": "v1"}});
+        fs::write(dir.path().join("manifest.json"), manifest.to_string()).unwrap();
+
+        let mgr = UpdateManager::new(None);
+        let result = mgr.update_bundle(dir.path(), false, false);
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("not set"));
+    }
+
+    // --- create_backup ---
+
+    #[test]
+    fn create_backup_creates_timestamped_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("my-bundle");
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(bundle.join("file.txt"), "content").unwrap();
+
+        let mgr = UpdateManager::new(None);
+        let backup_path = mgr.create_backup(&bundle).unwrap();
+        assert!(backup_path.exists());
+        assert!(backup_path.join("file.txt").exists());
+        assert!(
+            backup_path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("backup")
+        );
+    }
+}
