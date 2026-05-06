@@ -18,6 +18,13 @@ use crate::vm_pool::{PoolStatus, VMPoolEntry, VMPoolManager, VMSize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Remote execution command mode.
+///
+/// Determines how the remote agent processes the prompt:
+/// - `Auto`: let the agent classify the task
+/// - `Ultrathink`: force deep reasoning mode
+/// - `Analyze`: investigation-only (no code changes)
+/// - `Fix`: targeted bugfix mode
 pub enum CommandMode {
     Auto,
     Ultrathink,
@@ -50,6 +57,7 @@ impl FromStr for CommandMode {
     }
 }
 
+/// Options for a single remote execution (`amplihack remote exec`).
 #[derive(Debug, Clone)]
 pub struct ExecOptions {
     pub repo_path: PathBuf,
@@ -62,6 +70,7 @@ pub struct ExecOptions {
     pub api_key: String,
 }
 
+/// Options for starting multiple parallel remote sessions.
 #[derive(Debug, Clone)]
 pub struct StartOptions {
     pub repo_path: PathBuf,
@@ -75,12 +84,14 @@ pub struct StartOptions {
     pub state_file: Option<PathBuf>,
 }
 
+/// Options for listing remote sessions.
 #[derive(Debug, Clone)]
 pub struct ListOptions {
     pub status: Option<SessionStatus>,
     pub state_file: Option<PathBuf>,
 }
 
+/// Options for capturing output from a remote session.
 #[derive(Debug, Clone)]
 pub struct OutputOptions {
     pub session_id: String,
@@ -88,6 +99,7 @@ pub struct OutputOptions {
     pub state_file: Option<PathBuf>,
 }
 
+/// Options for killing a remote session.
 #[derive(Debug, Clone)]
 pub struct KillOptions {
     pub session_id: String,
@@ -95,22 +107,26 @@ pub struct KillOptions {
     pub state_file: Option<PathBuf>,
 }
 
+/// Options for querying overall remote status (pool + sessions).
 #[derive(Debug, Clone)]
 pub struct StatusOptions {
     pub state_file: Option<PathBuf>,
 }
 
+/// Summary returned after starting remote sessions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartSummary {
     pub session_ids: Vec<String>,
 }
 
+/// Captured output from a remote session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputResult {
     pub session: Session,
     pub output: String,
 }
 
+/// Counts of sessions by status for the remote pool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionCounts {
     pub running: usize,
@@ -120,6 +136,7 @@ pub struct SessionCounts {
     pub pending: usize,
 }
 
+/// Full remote infrastructure status (VM pool + session counts).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteStatus {
     pub pool: PoolStatus,
