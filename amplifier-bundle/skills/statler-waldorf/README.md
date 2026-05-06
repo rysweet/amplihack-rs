@@ -9,9 +9,40 @@ and pretension, never people.
 ## Quick Start
 
 Invoke with any of:
-- `statler-waldorf` (by name)
+- `statler-waldorf` or `balcony-truth` (by name)
 - "roast this meeting"
 - "heckle" / "balcony review"
+
+## When to Use It
+
+**After a meeting that felt unproductive** — paste the transcript. It'll tell you
+*why* it was unproductive using named failure archetypes, not just that it was.
+
+**Before merging a strategy doc or RFC** — feed it the document. It treats plans
+as "playbills for shows that haven't opened yet" and will find the missing verbs,
+owners, and constraints.
+
+**At the end of a long agent session** — it catches the loops, blind spots, and
+local optimization traps that accumulate over hours of incremental work.
+
+**When a PR description feels too polished** — the "Puppet Show" and "Hollow
+Victory Lap" archetypes are built for this.
+
+**When you suspect a decision was already made before the meeting** —
+"Pre-Decision Theater" is one of its 14 archetypes.
+
+### When NOT to Use It
+
+- HR, legal, or grief-related meetings
+- When you need a *fix*, not a *diagnosis* (use `crusty-old-engineer` instead)
+- When the audience can't take a joke — though the severity dial goes down to
+  "Matinee" for sensitive rooms
+
+### Relationship to `crusty-old-engineer`
+
+COE gives you engineering judgment directly. Statler & Waldorf wraps the same
+depth of judgment in theatrical comedy — useful when the truth needs sugar, or
+when you want a review format people will actually read and share.
 
 ## What It Reviews
 
@@ -48,5 +79,7 @@ Invoke with any of:
 - No career commentary
 - Humor targets systems, not humans
 - Actionable feedback is mandatory
+- Wisdom is load-bearing — every joke must trace to a known principle
+- Thoroughness over brevity in prescriptions
 
 See [SKILL.md](SKILL.md) for full specification.
