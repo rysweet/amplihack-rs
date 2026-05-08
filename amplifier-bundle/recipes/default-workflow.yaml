@@ -24,6 +24,14 @@ tags: ["development", "feature", "bugfix", "refactoring", "standard", "full-work
 #
 # Context flows automatically between sub-recipes via recipe-runner's
 # `_execute_sub_recipe()` context-merging.
+#
+# NO-TIMEOUT POLICY: Neither this recipe nor any of its nine sub-recipes
+# declare a per-step `timeout:` YAML field. Agent steps run to natural
+# completion; the only shell `timeout` calls that appear are inside bash
+# step scripts guarding external network commands (gh, curl, git remote
+# operations) and are therefore not mid-thought abort gates.
+# This policy is enforced by CI (see crates/amplihack-cli/tests/).
+# Invoke with: amplihack recipe run default-workflow --step-timeout 0
 
 recursion:
   max_depth: 6

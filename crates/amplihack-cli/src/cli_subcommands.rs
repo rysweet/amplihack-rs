@@ -383,7 +383,11 @@ pub enum RecipeCommands {
         /// Working directory for execution
         #[arg(short = 'w', long = "working-dir")]
         working_dir: Option<String>,
-        /// Override step timeout in seconds (0 = disable all step timeouts)
+        /// Per-step timeout hint in seconds propagated as AMPLIHACK_STEP_TIMEOUT
+        /// to the recipe runner subprocess. 0 signals "no timeout" to any
+        /// subprocess that honours the env var. Note: recipe-runner-rs enforces
+        /// only per-step YAML `timeout:` fields; default-workflow and all its
+        /// sub-recipes intentionally have none, so agent steps never time out.
         #[arg(long = "step-timeout")]
         step_timeout: Option<u64>,
     },
