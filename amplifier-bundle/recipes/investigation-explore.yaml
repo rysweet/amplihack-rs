@@ -313,4 +313,3 @@ steps:
       ```
     output: "consolidated_findings"
     parse_json: true
-

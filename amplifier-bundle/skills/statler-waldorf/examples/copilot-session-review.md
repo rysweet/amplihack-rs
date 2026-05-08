@@ -1,14 +1,14 @@
 # Example: Copilot CLI Session Review
 
-**Input type:** Agent session (Copilot CLI multi-checkpoint development session)  
-**Severity dial:** Matinee (default)  
+**Input type:** Agent session (Copilot CLI multi-checkpoint development session)
+**Severity dial:** Matinee (default)
 **Context:** A 7-checkpoint session focused on iterative code quality improvements to a Rust workspace. The session wrote ~100+ unit tests across 4 PRs, merged them all with clean CI, but followed an identical pattern each round without strategic variation.
 
 ---
 
 ## 🎭 TONIGHT'S PROGRAMME
 
-**"The Infinite Testing Montage"**  
+**"The Infinite Testing Montage"**
 *A Session in Seven Checkpoints, performed by One Agent and Its Increasingly Patient Human*
 
 ---

@@ -204,7 +204,7 @@ fn build_suppressed_workflow_rules() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::env_lock;
+    use crate::test_support::{EnvVarGuard, env_lock};
     use amplihack_cli::commands::memory::code_graph::import_blarify_json;
     use amplihack_cli::memory::resolve_code_graph_db_path_for_project;
     use std::fs;
@@ -250,6 +250,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
         let project = tempfile::tempdir().unwrap();
         let framework = tempfile::tempdir().unwrap();
         fs::create_dir_all(framework.path().join(".claude/workflow")).unwrap();

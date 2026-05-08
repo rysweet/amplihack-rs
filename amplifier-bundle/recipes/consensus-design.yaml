@@ -335,4 +335,3 @@ steps:
       ```
     output: "design_consensus"
     parse_json: true
-
