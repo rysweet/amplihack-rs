@@ -4,21 +4,10 @@ version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "review", "pr"]
 
-# workflow-pr-review: extracted from default-workflow.yaml as a composable phase brick.
-#
-# Preserves every original step verbatim — the layered review steps the LLM
-# converges through must remain intact. Context flows in from the parent
-# workflow via recipe-runner's automatic context-merging in
-# `_execute_sub_recipe()`; outputs declared by these steps propagate back to
-# the parent and are visible to subsequent phase recipes.
-
 recursion:
   max_depth: 6
   max_total_steps: 80
 
-# Required upstream outputs consumed by bash steps in this brick.
-# Documents the recipe-boundary contract; future compose-time validation
-# in amplihack-recipe-runner will hook here. See issue #414.
 inputs:
   - name: worktree_setup.worktree_path
     description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by bash steps in step-18c-push-feedback-changes and step-19c-zero-bs-verification that cd into the worktree."
@@ -30,10 +19,6 @@ context:
 steps:
   - id: "step-17a-compliance-verification"
     type: "bash"
-    # FIX (#2925): Previously this step only echoed instructions without
-    # checking anything — it was a no-op that never enforced step-13 completion.
-    # Now it reads local_testing_gate (step-13 output) and FAILS hard if the
-    # gate is empty, blocking the review phase until testing is done.
     command: |
       echo "=== Step 17a: Step 13 Compliance Verification ===" && \
       echo "" && \
@@ -167,10 +152,6 @@ steps:
       echo "=== GATE PASSED - Proceed to Step 18 ==="
     output: "step_17_gate_status"
 
-  # ==========================================================================
-  # STEP 18: IMPLEMENT REVIEW FEEDBACK (MANDATORY - DO NOT SKIP)
-  # Granular sub-steps to ensure thorough feedback implementation.
-  # ==========================================================================
   - id: "step-18a-analyze-feedback"
     agent: "amplihack:architect"
     prompt: |
@@ -232,7 +213,7 @@ steps:
         commit_with_pre_commit_guard() {
           local pre_commit_hook
           pre_commit_hook="$(git rev-parse --git-path hooks/pre-commit)"
-          if [ -f "$pre_commit_hook" ] && [ ! -f .pre-commit-config.yaml ]; then
+          if [ -x "$pre_commit_hook" ] && [ ! -f .pre-commit-config.yaml ]; then
             PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit "$@"
           else
             git commit "$@"
@@ -261,31 +242,31 @@ steps:
         echo "No staged changes from review feedback"
       fi
       push_output_file=$(mktemp -t step18c-review-feedback-push-XXXXXX)
+      git_remote_with_retry() {
+        local rc attempt max_attempts=3
+        : >"$push_output_file"
+        for attempt in 1 2 3; do
+          "$@" >>"$push_output_file" 2>&1 && return 0
+          rc=$?
+          [ "$attempt" -lt "$max_attempts" ] || return "$rc"
+          echo "WARNING: $* failed (exit $rc); retrying ($attempt/$max_attempts)" >>"$push_output_file"
+        done
+      }
+      push_rc=0
       if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
-        git pull --rebase
-        if git push >"$push_output_file" 2>&1; then
-          cat "$push_output_file"
-          rm -f "$push_output_file"
-        else
-          push_rc=$?
-          echo "ERROR: git push failed during step-18c-push-feedback-changes (exit $push_rc)" >&2
-          cat "$push_output_file" >&2
-          rm -f "$push_output_file"
-          git --no-pager status --short >&2
-          exit "$push_rc"
-        fi
+        git_remote_with_retry git pull --rebase && git_remote_with_retry git push || push_rc=$?
       else
-        if git push -u origin "$current_branch" >"$push_output_file" 2>&1; then
-          cat "$push_output_file"
-          rm -f "$push_output_file"
-        else
-          push_rc=$?
-          echo "ERROR: git push failed during step-18c-push-feedback-changes (exit $push_rc)" >&2
-          cat "$push_output_file" >&2
-          rm -f "$push_output_file"
-          git --no-pager status --short >&2
-          exit "$push_rc"
-        fi
+        git_remote_with_retry git push -u origin "$current_branch" || push_rc=$?
+      fi
+      if [ "$push_rc" -eq 0 ]; then
+        cat "$push_output_file"
+        rm -f "$push_output_file"
+      else
+        echo "ERROR: git push failed during step-18c-push-feedback-changes (exit $push_rc); git pull --rebase may also have failed" >&2
+        cat "$push_output_file" >&2
+        rm -f "$push_output_file"
+        git --no-pager status --short >&2
+        exit "$push_rc"
       fi
       echo "=== Changes Pushed ==="
     output: "feedback_push_result"
@@ -321,10 +302,6 @@ steps:
       echo "=== GATE PASSED - Proceed to Step 19 ==="
     output: "step_18_gate_status"
 
-  # ==========================================================================
-  # STEP 19: PHILOSOPHY COMPLIANCE CHECK
-  # Granular sub-steps with verification gate to prevent completion bias.
-  # ==========================================================================
   - id: "step-19a-philosophy-check"
     agent: "amplihack:reviewer"
     prompt: |
@@ -391,8 +368,6 @@ steps:
   - id: "step-19d-verification-gate"
     type: "bash"
     command: |
-      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
-      # ARG_MAX guard: truncated to 1 KB summaries below (#3366 / b1f87112b).
       PHIL_CHECK="$PHILOSOPHY_CHECK"
       PAT_CHECK="$PATTERNS_CHECK"
       PHIL_SUMMARY=$(printf '%.1024s' "$PHIL_CHECK")
@@ -416,7 +391,3 @@ steps:
       echo ""
       echo "=== GATE PASSED - Proceed to Step 20 ==="
     output: "step_19_gate_status"
-
-  # ==========================================================================
-  # STEP 20: FINAL CLEANUP AND VERIFICATION
-  # ==========================================================================
