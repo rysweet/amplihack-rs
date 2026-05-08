@@ -251,3 +251,80 @@ fn quality_loop_keeps_recipe_level_default_step_timeout() {
         path.display()
     );
 }
+
+/// (6) The full default-workflow chain (top-level recipe + all 9 sub-recipes)
+/// must have zero YAML `timeout:` fields at any level (step root, `agent.*`,
+/// or `bash.*`).  Agent steps intentionally run to natural completion; the
+/// only `timeout` appearances allowed are shell-command uses *inside* bash
+/// script text (e.g. `timeout 60 gh pr list …`), which this test does not
+/// inspect.
+///
+/// This enforces the NO-TIMEOUT POLICY documented at the top of
+/// `amplifier-bundle/recipes/default-workflow.yaml`.
+#[test]
+fn default_workflow_chain_has_no_yaml_timeout_fields() {
+    const CHAIN: &[&str] = &[
+        "default-workflow",
+        "workflow-prep",
+        "workflow-worktree",
+        "workflow-design",
+        "workflow-tdd",
+        "workflow-refactor-review",
+        "workflow-precommit-test",
+        "workflow-publish",
+        "workflow-pr-review",
+        "workflow-finalize",
+    ];
+
+    let dir = recipes_dir();
+    let mut violations: Vec<String> = Vec::new();
+
+    for name in CHAIN {
+        let path = dir.join(format!("{name}.yaml"));
+        if !path.exists() {
+            // Sub-recipe not present in this checkout — skip rather than fail
+            // so the test can run in a partial checkout environment.
+            continue;
+        }
+        let recipe = load_yaml(&path);
+        let Some(steps) = recipe.get("steps").and_then(Value::as_sequence) else {
+            continue;
+        };
+        for (idx, step) in steps.iter().enumerate() {
+            let id = step
+                .get("id")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("<step #{idx}>"));
+
+            for field in ["timeout", "timeout_seconds"] {
+                if step.get(field).is_some() {
+                    violations.push(format!(
+                        "{name}.yaml: step `{id}` has YAML `{field}:` at step root"
+                    ));
+                }
+                if step.get("agent").and_then(|a| a.get(field)).is_some() {
+                    violations.push(format!(
+                        "{name}.yaml: step `{id}` has YAML `agent.{field}:`"
+                    ));
+                }
+                if let Some(bash) = step.get("bash") {
+                    if bash.get(field).is_some() {
+                        violations
+                            .push(format!("{name}.yaml: step `{id}` has YAML `bash.{field}:`"));
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "default-workflow NO-TIMEOUT POLICY violation — no YAML timeout fields \
+         permitted in the default-workflow recipe chain:\n  {}\n\n\
+         Agent steps must run to natural completion. If you need to guard a \
+         network bash command, use the shell `timeout` command inside the \
+         script text, not a YAML `timeout:` field.",
+        violations.join("\n  ")
+    );
+}
