@@ -30,8 +30,10 @@ tags: ["development", "feature", "bugfix", "refactoring", "standard", "full-work
 # completion; the only shell `timeout` calls that appear are inside bash
 # step scripts guarding external network commands (gh, curl, git remote
 # operations) and are therefore not mid-thought abort gates.
-# This policy is enforced by CI (see crates/amplihack-cli/tests/).
-# Invoke with: amplihack recipe run default-workflow --step-timeout 0
+# This policy is enforced by CI (see crates/amplihack-cli/tests/). The
+# `--step-timeout 0` flag is optional runtime configuration for callers that
+# want to clear the runner's ambient timeout hint; it is not the policy
+# mechanism.
 
 recursion:
   max_depth: 6
