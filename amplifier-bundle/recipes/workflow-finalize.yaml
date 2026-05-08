@@ -80,8 +80,17 @@ steps:
       git add -A
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then
+        commit_with_pre_commit_guard() {
+          local pre_commit_hook
+          pre_commit_hook="$(git rev-parse --git-path hooks/pre-commit)"
+          if [ -f "$pre_commit_hook" ] && [ ! -f .pre-commit-config.yaml ]; then
+            PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit "$@"
+          else
+            git commit "$@"
+          fi
+        }
         commit_output_file=$(mktemp -t step20b-cleanup-commit-XXXXXX)
-        if git commit -m "final cleanup pass" >"$commit_output_file" 2>&1; then
+        if commit_with_pre_commit_guard -m "final cleanup pass" >"$commit_output_file" 2>&1; then
           cat "$commit_output_file"
           rm -f "$commit_output_file"
           echo "Cleanup commit created with $(wc -l <<< "$STAGED") file(s)"

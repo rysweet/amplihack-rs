@@ -214,8 +214,17 @@ steps:
       git add -A
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then
+        commit_with_pre_commit_guard() {
+          local pre_commit_hook
+          pre_commit_hook="$(git rev-parse --git-path hooks/pre-commit)"
+          if [ -f "$pre_commit_hook" ] && [ ! -f .pre-commit-config.yaml ]; then
+            PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit "$@"
+          else
+            git commit "$@"
+          fi
+        }
         commit_output_file=$(mktemp -t checkpoint-review-feedback-commit-XXXXXX)
-        if git commit -m "wip: checkpoint after review feedback (steps 10-11)
+        if commit_with_pre_commit_guard -m "wip: checkpoint after review feedback (steps 10-11)
 
       Automatic checkpoint to preserve review-addressed changes.
       Saved before running pre-commit hooks and tests." >"$commit_output_file" 2>&1; then

@@ -229,8 +229,17 @@ steps:
       git add -A
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then
+        commit_with_pre_commit_guard() {
+          local pre_commit_hook
+          pre_commit_hook="$(git rev-parse --git-path hooks/pre-commit)"
+          if [ -f "$pre_commit_hook" ] && [ ! -f .pre-commit-config.yaml ]; then
+            PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit "$@"
+          else
+            git commit "$@"
+          fi
+        }
         commit_output_file=$(mktemp -t step18c-review-feedback-commit-XXXXXX)
-        if git commit -m "address review feedback
+        if commit_with_pre_commit_guard -m "address review feedback
 
       - Implemented reviewer suggestions
       - Fixed identified issues

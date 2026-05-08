@@ -11,6 +11,10 @@
 #   3. workflow-publish keeps explicit gh error handling and treats design_spec /
 #      DESIGN_SPEC as optional under set -u while preserving bounded retries for
 #      transient gh failures.
+#   4. Default-workflow commit checkpoints resolve the active pre-commit hook
+#      with git rev-parse --git-path hooks/pre-commit and scope
+#      PRE_COMMIT_ALLOW_NO_CONFIG=1 only to commits where that hook exists and
+#      .pre-commit-config.yaml is absent.
 #
 # This test SHOULD FAIL before the issue #573 reliability fixes land. It MUST
 # PASS once workflow-worktree resolves local/remote origin/HEAD before
@@ -26,6 +30,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 WORKTREE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-worktree.yaml"
 PUBLISH_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-publish.yaml"
+TDD_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-tdd.yaml"
+REFACTOR_REVIEW_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-refactor-review.yaml"
+PR_REVIEW_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-pr-review.yaml"
+FINALIZE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-finalize.yaml"
 
 if [[ ! -f "${WORKTREE_RECIPE}" ]]; then
     echo "HARNESS-ERROR: ${WORKTREE_RECIPE} not found" >&2
@@ -35,6 +43,12 @@ if [[ ! -f "${PUBLISH_RECIPE}" ]]; then
     echo "HARNESS-ERROR: ${PUBLISH_RECIPE} not found" >&2
     exit 2
 fi
+for recipe in "${TDD_RECIPE}" "${REFACTOR_REVIEW_RECIPE}" "${PR_REVIEW_RECIPE}" "${FINALIZE_RECIPE}"; do
+    if [[ ! -f "${recipe}" ]]; then
+        echo "HARNESS-ERROR: ${recipe} not found" >&2
+        exit 2
+    fi
+done
 if ! command -v git >/dev/null 2>&1; then
     echo "HARNESS-ERROR: git is required" >&2
     exit 2
@@ -47,6 +61,10 @@ fi
 WORK="$(mktemp -d -t default-workflow-reliability-XXXXXX)"
 trap 'rm -rf "${WORK}"' EXIT
 STEP04="${WORK}/step-04-setup-worktree.sh"
+STEP_TDD_CHECKPOINT="${WORK}/checkpoint-after-implementation.sh"
+STEP_REFACTOR_REVIEW_CHECKPOINT="${WORK}/checkpoint-after-review-feedback.sh"
+STEP_PR_REVIEW_FEEDBACK="${WORK}/step-18c-push-feedback-changes.sh"
+STEP_FINALIZE_CLEANUP="${WORK}/step-20b-push-cleanup.sh"
 
 fail() {
     echo "FAIL: $*" >&2
@@ -94,6 +112,149 @@ configure_identity() {
     local repo="$1"
     git -C "${repo}" config user.email "test@example.invalid"
     git -C "${repo}" config user.name "Recipe Reliability Test"
+}
+
+assert_commit_guard_static() {
+    local label="$1"
+    local step_file="$2"
+    local allow_count
+
+    grep -qF 'git rev-parse --git-path hooks/pre-commit' "${step_file}" \
+        || fail "${label} does not resolve hooks/pre-commit with git rev-parse --git-path"
+    grep -qF '[ -f "$pre_commit_hook" ]' "${step_file}" \
+        || fail "${label} does not test the resolved pre-commit hook path"
+    grep -qF '[ ! -f .pre-commit-config.yaml ]' "${step_file}" \
+        || fail "${label} does not require .pre-commit-config.yaml to be absent"
+    grep -qF 'PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit' "${step_file}" \
+        || fail "${label} does not scope PRE_COMMIT_ALLOW_NO_CONFIG=1 inline to git commit"
+    if grep -qE '(^|[[:space:]])export[[:space:]]+PRE_COMMIT_ALLOW_NO_CONFIG' "${step_file}"; then
+        fail "${label} exports PRE_COMMIT_ALLOW_NO_CONFIG instead of scoping it to one commit"
+    fi
+
+    allow_count="$(grep -o 'PRE_COMMIT_ALLOW_NO_CONFIG=1' "${step_file}" | wc -l | tr -d ' ')"
+    [[ "${allow_count}" == "1" ]] \
+        || fail "${label} should contain exactly one PRE_COMMIT_ALLOW_NO_CONFIG=1 assignment, found ${allow_count}"
+}
+
+create_commit_guard_repo() {
+    local label="$1"
+    local repo="$2"
+    local origin="$3"
+
+    git init --bare -b main "${origin}" >/dev/null
+    git init -b main "${repo}" >/dev/null
+    configure_identity "${repo}"
+    printf 'base\n' > "${repo}/README.md"
+    git -C "${repo}" add README.md
+    git -C "${repo}" commit -m "seed ${label}" >/dev/null
+    git -C "${repo}" remote add origin "${origin}"
+    git -C "${repo}" push -u origin main >/dev/null 2>&1
+    git -C "${repo}" checkout -b "feat/issue-573-${label}" >/dev/null
+    git -C "${repo}" push -u origin "feat/issue-573-${label}" >/dev/null 2>&1
+}
+
+install_pre_commit_probe() {
+    local repo="$1"
+    local expected="$2"
+    local hook_path
+
+    hook_path="$(git -C "${repo}" rev-parse --git-path hooks/pre-commit)"
+    mkdir -p "$(dirname "${repo}/${hook_path}")"
+    cat > "${repo}/${hook_path}" <<'HOOK'
+#!/usr/bin/env bash
+set -euo pipefail
+actual="${PRE_COMMIT_ALLOW_NO_CONFIG-__UNSET__}"
+if [[ "${actual}" != "${EXPECTED_PRE_COMMIT_ALLOW_NO_CONFIG:?}" ]]; then
+    echo "expected PRE_COMMIT_ALLOW_NO_CONFIG=${EXPECTED_PRE_COMMIT_ALLOW_NO_CONFIG}, got ${actual}" >&2
+    exit 7
+fi
+HOOK
+    chmod +x "${repo}/${hook_path}"
+    EXPECTED_PRE_COMMIT_ALLOW_NO_CONFIG="${expected}" git -C "${repo}" rev-parse --verify HEAD >/dev/null
+}
+
+create_git_commit_probe() {
+    local bin_dir="$1"
+    local real_git="$2"
+
+    mkdir -p "${bin_dir}"
+    cat > "${bin_dir}/git" <<'SHIM'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "commit" ]]; then
+    printf '%s\n' "${PRE_COMMIT_ALLOW_NO_CONFIG-__UNSET__}" >> "${COMMIT_ENV_LOG:?}"
+fi
+exec "${REAL_GIT:?}" "$@"
+SHIM
+    chmod +x "${bin_dir}/git"
+    REAL_GIT="${real_git}" "${bin_dir}/git" --version >/dev/null
+}
+
+run_commit_guard_case() {
+    local label="$1"
+    local step_file="$2"
+    local hook_state="$3"
+    local config_state="$4"
+    local expected_env="$5"
+    local case_dir="${WORK}/commit-guard-${label}-${hook_state}-${config_state}"
+    local repo="${case_dir}/repo"
+    local origin="${case_dir}/origin.git"
+    local bin_dir="${case_dir}/bin"
+    local stdout_file="${case_dir}/stdout.log"
+    local stderr_file="${case_dir}/stderr.log"
+    local commit_env_log="${case_dir}/commit-env.log"
+    local real_git
+    local actual_env
+
+    mkdir -p "${case_dir}"
+    real_git="$(command -v git)"
+    create_commit_guard_repo "${label}-${hook_state}-${config_state}" "${repo}" "${origin}"
+    create_git_commit_probe "${bin_dir}" "${real_git}"
+
+    if [[ "${hook_state}" == "hook" ]]; then
+        install_pre_commit_probe "${repo}" "${expected_env}"
+    fi
+    if [[ "${config_state}" == "config" ]]; then
+        printf 'repos: []\n' > "${repo}/.pre-commit-config.yaml"
+    fi
+    printf 'change for %s %s %s\n' "${label}" "${hook_state}" "${config_state}" \
+        > "${repo}/change-${hook_state}-${config_state}.txt"
+    : > "${commit_env_log}"
+
+    (
+        export PATH="${bin_dir}:${PATH}"
+        export REAL_GIT="${real_git}"
+        export COMMIT_ENV_LOG="${commit_env_log}"
+        export WORKTREE_SETUP_WORKTREE_PATH="${repo}"
+        export RECIPE_VAR_worktree_setup__worktree_path="${repo}"
+        export EXPECTED_PRE_COMMIT_ALLOW_NO_CONFIG="${expected_env}"
+        unset PRE_COMMIT_ALLOW_NO_CONFIG
+        bash "${step_file}"
+    ) >"${stdout_file}" 2>"${stderr_file}" || {
+        echo "--- ${label} ${hook_state}/${config_state} stderr ---" >&2
+        cat "${stderr_file}" >&2
+        echo "--- ${label} ${hook_state}/${config_state} stdout ---" >&2
+        cat "${stdout_file}" >&2
+        fail "${label} failed for ${hook_state}/${config_state}; expected PRE_COMMIT_ALLOW_NO_CONFIG=${expected_env}"
+    }
+
+    if [[ "$(wc -l < "${commit_env_log}" | tr -d ' ')" != "1" ]]; then
+        echo "--- ${label} ${hook_state}/${config_state} commit env log ---" >&2
+        cat "${commit_env_log}" >&2
+        fail "${label} should run exactly one git commit for ${hook_state}/${config_state}"
+    fi
+    actual_env="$(cat "${commit_env_log}")"
+    [[ "${actual_env}" == "${expected_env}" ]] \
+        || fail "${label} recorded PRE_COMMIT_ALLOW_NO_CONFIG=${actual_env}, expected ${expected_env} for ${hook_state}/${config_state}"
+}
+
+assert_commit_guard_dynamic() {
+    local label="$1"
+    local step_file="$2"
+
+    run_commit_guard_case "${label}" "${step_file}" "hook" "no-config" "1"
+    run_commit_guard_case "${label}" "${step_file}" "no-hook" "no-config" "__UNSET__"
+    run_commit_guard_case "${label}" "${step_file}" "hook" "config" "__UNSET__"
 }
 
 create_origin_with_branches() {
@@ -352,5 +513,23 @@ if [[ "$(grep -c '^pr create' "${GH_LOG}")" -ne 3 ]]; then
     cat "${WORK}/step16.err" >&2
     fail "workflow-publish must retry transient gh pr create failures before succeeding"
 fi
+
+# Static and dynamic coverage: workflow commit paths must only set
+# PRE_COMMIT_ALLOW_NO_CONFIG=1 when a resolved pre-commit hook exists and the
+# repository has no .pre-commit-config.yaml.
+extract_step_command "${TDD_RECIPE}" "checkpoint-after-implementation" "${STEP_TDD_CHECKPOINT}"
+extract_step_command "${REFACTOR_REVIEW_RECIPE}" "checkpoint-after-review-feedback" "${STEP_REFACTOR_REVIEW_CHECKPOINT}"
+extract_step_command "${PR_REVIEW_RECIPE}" "step-18c-push-feedback-changes" "${STEP_PR_REVIEW_FEEDBACK}"
+extract_step_command "${FINALIZE_RECIPE}" "step-20b-push-cleanup" "${STEP_FINALIZE_CLEANUP}"
+
+assert_commit_guard_static "workflow-tdd checkpoint-after-implementation" "${STEP_TDD_CHECKPOINT}"
+assert_commit_guard_static "workflow-refactor-review checkpoint-after-review-feedback" "${STEP_REFACTOR_REVIEW_CHECKPOINT}"
+assert_commit_guard_static "workflow-pr-review step-18c review feedback commit" "${STEP_PR_REVIEW_FEEDBACK}"
+assert_commit_guard_static "workflow-finalize final cleanup commit" "${STEP_FINALIZE_CLEANUP}"
+
+assert_commit_guard_dynamic "workflow-tdd" "${STEP_TDD_CHECKPOINT}"
+assert_commit_guard_dynamic "workflow-refactor-review" "${STEP_REFACTOR_REVIEW_CHECKPOINT}"
+assert_commit_guard_dynamic "workflow-pr-review" "${STEP_PR_REVIEW_FEEDBACK}"
+assert_commit_guard_dynamic "workflow-finalize" "${STEP_FINALIZE_CLEANUP}"
 
 echo "PASS: default workflow reliability contracts are covered."
