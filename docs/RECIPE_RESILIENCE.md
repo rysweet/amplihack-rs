@@ -1,6 +1,6 @@
-# Recipe Resilience: Branch Sanitization & Sub-Recipe Recovery
+# Recipe Resilience: Branch Sanitization, Worktree Bases & Publish Safety
 
-This document describes two resilience improvements to the amplihack recipe runner:
+This document describes resilience improvements to amplihack recipe execution:
 
 1. **Branch Name Sanitization** (Issue #2952) — `default-workflow` step 4 now
    produces valid git branch names from any `task_description`, including
@@ -8,6 +8,9 @@ This document describes two resilience improvements to the amplihack recipe runn
 2. **Sub-Recipe Agentic Recovery** (Issue #2953) — when a sub-recipe step fails,
    the runner invokes an agent recovery step before raising a hard error, giving
    the workflow a chance to self-heal.
+3. **Default Workflow Reliability** — `workflow-worktree` resolves non-`main`
+   remote bases, and `workflow-publish` creates draft PRs without shell
+   `timeout` wrappers or required design-spec context.
 
 ---
 
@@ -87,6 +90,141 @@ This ensures step 4 never blocks the workflow due to a pathological
 The `task_description` value is always passed via a named environment variable
 (`$TASK_DESC`), never interpolated directly into the shell command string. This
 prevents shell injection from attacker-influenced task descriptions.
+
+---
+
+## Default Workflow Reliability
+
+### Problem
+
+Two default-workflow helper recipes used to encode assumptions that are not true
+for every repository or execution environment:
+
+- `workflow-worktree` treated `origin/main` as the only valid worktree base.
+  Repositories whose default branch is `master` or `develop` failed before
+  implementation work could start.
+- `workflow-publish` wrapped its `gh` publish and PR shell paths in inline
+  `timeout`/`gtimeout` commands. Those wrappers duplicated recipe-runner timeout
+  control and made command failure handling harder to reason about.
+- PR body generation assumed design-spec context was always present. Under
+  `set -u`, a missing `design_spec` or `DESIGN_SPEC` value could fail the shell
+  before `gh pr create` was invoked.
+
+### Worktree Base Selection
+
+`workflow-worktree` resolves the remote base ref in this order:
+
+1. `origin/HEAD`
+2. `origin/master`
+3. `origin/develop`
+
+`origin/HEAD` is resolved through Git and accepted only when its symbolic target
+verifies as a remote-tracking ref under `refs/remotes/origin/`. That target may
+be `origin/main`, `origin/master`, `origin/develop`, or another remote default
+branch configured by the repository. If `origin/HEAD` is missing or invalid, the
+workflow checks the explicit fallback refs in order.
+
+The first valid ref is used as `BASE_REF`. The corresponding branch name is used
+anywhere the workflow needs a human-readable base branch label. The workflow no
+longer requires `origin/main` to exist.
+
+| Repository state                               | Base selected     | Outcome                                  |
+| ---------------------------------------------- | ----------------- | ---------------------------------------- |
+| remote default is `main`                       | `origin/main`     | Existing `main` behavior is preserved.   |
+| remote default is `master`                     | `origin/master`   | Workflow runs without manual overrides.  |
+| other default via `origin/HEAD`                | `origin/<branch>` | Uses Git-verified remote default branch. |
+| no `origin/HEAD`, but `origin/master`          | `origin/master`   | Fallback supports older/local clones.    |
+| no `origin/HEAD`/`master`, has develop         | `origin/develop`  | Fallback supports develop-first repos.   |
+| none of the supported base sources exists      | none              | Step fails closed with a clear message.  |
+
+The selected base is used consistently for:
+
+- creating new workflow branches with `git worktree add ... -b ... "$BASE_REF"`
+- checking whether an existing branch was based on the expected remote branch
+- logs and diagnostics that explain which base was selected
+
+The workflow does not fall back to a local branch, an unqualified branch name, a
+missing remote bootstrap mode, or an attacker-controlled context value.
+
+### Publish and Pull-Request Execution
+
+`workflow-publish` runs its GitHub CLI publish and PR paths directly. It does
+not use shell-level timeout wrappers around `gh` commands:
+
+```bash
+# Correct shape
+gh pr create --draft --title "$PR_TITLE" --body "$PR_BODY" 2>&1
+
+# Not used by workflow-publish
+timeout 300 gh pr create ...
+gtimeout 300 gh pr create ...
+```
+
+Recipe-level timeout controls remain available through recipe metadata and the
+CLI:
+
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="Fix issue #1234" \
+  --step-timeout 1800
+```
+
+Removing the shell wrappers does not make `gh` failures silent. The publish
+recipe still captures command output, checks the command exit status, and fails
+the step with the captured output when `gh` returns non-zero.
+
+### Optional Design Specification Context
+
+PR creation accepts design-spec context as optional input. These inputs are
+recognized when present:
+
+| Input key      | Meaning                                      |
+| -------------- | -------------------------------------------- |
+| `design_spec`  | Lowercase recipe context value.              |
+| `DESIGN_SPEC`  | Uppercase environment/context value.         |
+
+If both values are present and non-empty, `design_spec` wins because explicit
+recipe context is more specific than the uppercase compatibility input. If
+neither value is present, or the selected value is empty, `workflow-publish`
+treats the design specification as empty optional content. Under `set -u`,
+missing design spec input is safe and must not produce an unbound-variable
+error.
+
+Example:
+
+```bash
+amplihack recipe run workflow-publish \
+  -c issue_number=573 \
+  -c task_description="Fix default-workflow recipe reliability" \
+  -c repo_path=.
+```
+
+The PR body is still generated, linked to the issue, and passed to
+`gh pr create`. The design-spec section is rendered only when meaningful content
+is available.
+
+### Configuration
+
+No new configuration is required for these reliability fixes.
+
+| Behavior                         | Configuration                                      |
+| -------------------------------- | -------------------------------------------------- |
+| Worktree base selection          | Automatic; Git-verified `origin/HEAD`, then `master`, then `develop`. |
+| Shell timeout removal            | Automatic; use recipe-runner timeout controls instead. |
+| Missing design specification     | Automatic; design spec is optional.                |
+
+### Validation Contract
+
+Regression coverage for this feature validates four failure modes:
+
+1. A repository without `origin/main` but with `origin/master` can create a
+   workflow worktree.
+2. A repository without `origin/main` or `origin/master` but with
+   `origin/develop` can create a workflow worktree.
+3. `workflow-publish` contains no shell `timeout` or `gtimeout` wrappers around
+   `gh pr create` or its other publish-path `gh` commands.
+4. PR creation succeeds under `set -u` when `design_spec` and `DESIGN_SPEC` are
+   both absent.
 
 ---
 

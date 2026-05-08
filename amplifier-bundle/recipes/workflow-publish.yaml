@@ -229,9 +229,9 @@ steps:
       echo "=== Step 16: Creating Draft PR ===" >&2
 
       # FIX (#3324): Idempotency guard — detect pre-existing PRs before creating one
-      # Prevents: "GraphQL: No commits between main and feat/issue-XXXX" error
+      # Prevents: "GraphQL: No commits between <base> and feat/issue-XXXX" error
       # Root cause: step-09-refactor may create PR on a different branch, leaving
-      # the worktree branch with 0 commits ahead of main.
+      # the worktree branch with 0 commits ahead of the remote base.
       CURRENT_BRANCH=$(git branch --show-current)
       ISSUE_NUM="$ISSUE_NUMBER"
 
@@ -242,17 +242,118 @@ steps:
           exit 1
       fi
 
+      if ! command -v gh >/dev/null 2>&1; then
+          echo "ERROR: step-16-create-draft-pr requires the GitHub CLI ('gh') on PATH." >&2
+          exit 127
+      fi
+
+      sanitize_gh_stderr() {
+          sed -E 's#https://[^@[:space:]]+@#https://REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
+      }
+
+      is_transient_gh_error() {
+          [ -s "$1" ] && grep -Eiq 'HTTP 5[0-9][0-9]|(^|[^0-9])(502|503|504)([^0-9]|$)|rate limit|timed out|timeout|temporar|connection reset|connection refused|TLS handshake|network|server error' "$1"
+      }
+
+      gh_pr_list_or_empty() {
+          local stderr_file
+          local output
+          local status
+          local attempt
+          local delay=1
+          local max_attempts=3
+
+          for attempt in 1 2 3; do
+              stderr_file=$(mktemp -t step16-gh-pr-list-XXXXXX)
+              if output=$(gh pr list "$@" 2>"$stderr_file"); then
+                  rm -f "$stderr_file"
+                  printf '%s\n' "$output"
+                  return 0
+              fi
+              status=$?
+
+              if [ "$attempt" -lt "$max_attempts" ] && is_transient_gh_error "$stderr_file"; then
+                  echo "WARNING: gh pr list failed transiently (exit ${status}); retrying (${attempt}/${max_attempts}): $(sanitize_gh_stderr "$stderr_file")" >&2
+                  rm -f "$stderr_file"
+                  sleep "$delay"
+                  delay=$((delay * 2))
+                  continue
+              fi
+
+              echo "WARNING: gh pr list failed (exit ${status}); continuing as if no existing PR was found." >&2
+              if [ -s "$stderr_file" ]; then
+                  echo "gh pr list stderr: $(sanitize_gh_stderr "$stderr_file")" >&2
+              fi
+              rm -f "$stderr_file"
+              printf '\n'
+              return 0
+          done
+      }
+
+      gh_pr_create_with_retry() {
+          local stderr_file
+          local output
+          local status
+          local attempt
+          local delay=1
+          local max_attempts=3
+
+          for attempt in 1 2 3; do
+              stderr_file=$(mktemp -t step16-gh-pr-create-XXXXXX)
+              if output=$(gh pr create --draft --title "$PR_TITLE" --body "$PR_BODY" 2>"$stderr_file"); then
+                  rm -f "$stderr_file"
+                  printf '%s\n' "$output"
+                  return 0
+              fi
+              status=$?
+
+              if [ "$attempt" -lt "$max_attempts" ] && is_transient_gh_error "$stderr_file"; then
+                  echo "WARNING: gh pr create failed transiently (exit ${status}); retrying (${attempt}/${max_attempts}): $(sanitize_gh_stderr "$stderr_file")" >&2
+                  rm -f "$stderr_file"
+                  sleep "$delay"
+                  delay=$((delay * 2))
+                  continue
+              fi
+
+              echo "ERROR: gh pr create failed (exit $status) — PR may already exist for this branch or GitHub API is unavailable" >&2
+              if [ -s "$stderr_file" ]; then
+                  echo "gh pr create stderr: $(sanitize_gh_stderr "$stderr_file")" >&2
+              fi
+              rm -f "$stderr_file"
+              return "$status"
+          done
+      }
+
+      resolve_pr_base_ref() {
+          local candidate
+          git remote set-head origin -a >/dev/null 2>&1 || true
+
+          candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+          if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
+              printf '%s\n' "$candidate"
+              return 0
+          fi
+
+          for candidate in origin/master origin/develop; do
+              if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
+                  printf '%s\n' "$candidate"
+                  return 0
+              fi
+          done
+
+          echo "ERROR: no supported remote base ref found. Expected origin/HEAD, origin/master, or origin/develop." >&2
+          return 1
+      }
+
       # Check 1: Is there already a PR on the exact current branch?
-      # timeout 60: prevents hanging indefinitely if GitHub API is unresponsive
-      # REL-003: 2>/dev/null || echo '' is intentional resilience — gh pr list stderr
-      # is noisy (auth warnings, API rate limits) and failure here should not block
+      # REL-003: gh pr list failures are handled explicitly but should not block
       # the workflow; an empty result simply means "no existing PR found".
-      EXISTING_PR=$(timeout 60 gh pr list --head "$CURRENT_BRANCH" --json url --jq '.[0].url // ""' 2>/dev/null || echo '')
+      EXISTING_PR=$(gh_pr_list_or_empty --head "$CURRENT_BRANCH" --json url --jq '.[0].url // ""')
 
       # Check 2: If not, look for a PR on any branch matching the issue number pattern
       # (handles case where step-09-refactor created PR on fix/issue-XXXX-* branch)
       if [ -z "$EXISTING_PR" ]; then
-          EXISTING_PR=$(timeout 60 gh pr list --json url,headRefName --jq "[.[] | select(.headRefName | test(\"issue-$ISSUE_NUM\"))] | .[0].url // \"\""  2>/dev/null || echo '')
+          EXISTING_PR=$(gh_pr_list_or_empty --json url,headRefName --jq "[.[] | select(.headRefName | test(\"issue-$ISSUE_NUM\"))] | .[0].url // \"\"")
       fi
 
       # If a PR exists: skip creation, output existing URL to stdout, exit SUCCESS
@@ -263,13 +364,14 @@ steps:
           exit 0
       fi
 
-      # Check 3: How many commits are ahead of origin/main?
-      # NOTE: base branch is confirmed as 'main' (error message says "between main and feat/...")
+      # Check 3: How many commits are ahead of the resolved remote base?
       # Use arithmetic -eq (not string ==) to handle whitespace-padded output on some platforms
-      COMMITS_AHEAD=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo "0")
+      BASE_REF="$(resolve_pr_base_ref)"
+      BASE_BRANCH="${BASE_REF#origin/}"
+      COMMITS_AHEAD=$(git rev-list --count "${BASE_REF}..HEAD" 2>/dev/null || echo "0")
 
       if [ "$COMMITS_AHEAD" -eq 0 ]; then
-          echo "ERROR: 0 commits ahead of main and no related PR found for issue-$ISSUE_NUM." >&2
+          echo "ERROR: 0 commits ahead of ${BASE_BRANCH} and no related PR found for issue-$ISSUE_NUM." >&2
           echo "This is a hollow-success condition: the workflow ran but produced no commits." >&2
           echo "Possible causes:" >&2
           echo "  1. step-15-commit-push failed silently (check commit_result output)" >&2
@@ -282,25 +384,13 @@ steps:
       # Normal path: 1+ commits ahead, no existing PR — create the PR
       # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
       TASK_DESC="$TASK_DESCRIPTION"
-      PR_DESIGN="$DESIGN_SPEC"
+      PR_DESIGN="${design_spec:-${DESIGN_SPEC:-${RECIPE_VAR_design_spec:-${RECIPE_VAR_DESIGN_SPEC:-}}}}"
       # Bash builtins replace the `tr | cut` pipeline — avoids 2 subprocess spawns
       PR_TITLE="${TASK_DESC//$'\n'/ }"
       PR_TITLE="${PR_TITLE//$'\r'/ }"
       PR_TITLE="${PR_TITLE:0:200}"
       PR_BODY=$(printf '## Summary\n%s\n\n## Issue\nCloses #%s\n\n## Changes\n%s\n\n## Testing\n- Unit tests added\n- Local testing completed\n- Pre-commit hooks pass\n\n## Checklist\n- [x] Tests pass\n- [x] Documentation updated\n- [x] No stubs or TODOs\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$TASK_DESC" "$ISSUE_NUM" "$PR_DESIGN")
-      # timeout 120: gh pr create contacts GitHub GraphQL API — cap wait to 2 minutes
-      # 2>/dev/null: suppress gh stderr to prevent output contract corruption of pr_url
-      timeout 120 gh pr create --draft \
-        --title "$PR_TITLE" \
-        --body "$PR_BODY" 2>/dev/null || {
-          STATUS=$?
-          if [ "$STATUS" -eq 124 ]; then
-              echo "ERROR: gh pr create timed out after 120s — GitHub API may be unavailable" >&2
-          else
-              echo "ERROR: gh pr create failed (exit $STATUS) — PR may already exist for this branch or GitHub API is unavailable" >&2
-          fi
-          exit "$STATUS"
-      }
+      gh_pr_create_with_retry
     output: "pr_url"
 
   # ==========================================================================
