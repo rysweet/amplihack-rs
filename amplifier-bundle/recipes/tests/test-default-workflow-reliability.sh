@@ -118,6 +118,7 @@ assert_commit_guard_static() {
     local label="$1"
     local step_file="$2"
     local allow_count
+    local guarded_commit_count
 
     grep -qF 'git rev-parse --git-path hooks/pre-commit' "${step_file}" \
         || fail "${label} does not resolve hooks/pre-commit with git rev-parse --git-path"
@@ -134,6 +135,13 @@ assert_commit_guard_static() {
     allow_count="$(grep -o 'PRE_COMMIT_ALLOW_NO_CONFIG=1' "${step_file}" | wc -l | tr -d ' ')"
     [[ "${allow_count}" == "1" ]] \
         || fail "${label} should contain exactly one PRE_COMMIT_ALLOW_NO_CONFIG=1 assignment, found ${allow_count}"
+
+    guarded_commit_count="$(grep -c 'commit_with_pre_commit_guard -m' "${step_file}" || true)"
+    [[ "${guarded_commit_count}" == "1" ]] \
+        || fail "${label} should invoke the guarded commit helper exactly once, found ${guarded_commit_count}"
+    if grep -nE '^[[:space:]]*(PRE_COMMIT_ALLOW_NO_CONFIG=1[[:space:]]+)?git[[:space:]]+commit[[:space:]]+-m' "${step_file}" >&2; then
+        fail "${label} still has a direct git commit -m path outside the guard helper"
+    fi
 }
 
 create_commit_guard_repo() {
