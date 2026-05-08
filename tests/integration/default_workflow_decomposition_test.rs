@@ -409,16 +409,17 @@ fn workflow_pr_review_scopes_pre_commit_allow_no_config_to_stale_hook_case() {
         "step-18c must inspect the repository-local pre-commit hook path"
     );
     assert!(
-        command.contains("[ -x \"$pre_commit_hook\" ]"),
-        "PRE_COMMIT_ALLOW_NO_CONFIG is allowed only for an executable stale pre-commit hook"
+        command.contains("[ -f \"$pre_commit_hook\" ]"),
+        "PRE_COMMIT_ALLOW_NO_CONFIG is allowed only for a stale pre-commit hook file"
     );
     assert!(
         command.contains("[ ! -f .pre-commit-config.yaml ]"),
         "PRE_COMMIT_ALLOW_NO_CONFIG is allowed only when .pre-commit-config.yaml is missing"
     );
     assert!(
-        command.contains("PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit \"${commit_args[@]}\"")
-            && command.contains("elif git commit \"${commit_args[@]}\""),
+        command.contains("PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit \"$@\"")
+            && command.contains("elif git commit \"$@\"")
+            && command.contains("commit_with_pre_commit_guard -m \"address review feedback\""),
         "PRE_COMMIT_ALLOW_NO_CONFIG must be scoped to the single git commit invocation"
     );
     assert!(

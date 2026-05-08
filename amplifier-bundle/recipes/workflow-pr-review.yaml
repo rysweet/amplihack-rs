@@ -211,15 +211,18 @@ steps:
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then
         commit_output_file=$(mktemp -t step18c-review-feedback-commit-XXXXXX)
-        commit_args=(-m "address review feedback" -m "Implemented reviewer suggestions; fixed identified issues; updated per security review; addressed philosophy compliance items")
-        pre_commit_hook="$(git rev-parse --git-path hooks/pre-commit)"
-        if [ -x "$pre_commit_hook" ] && [ ! -f .pre-commit-config.yaml ]; then
-          if PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit "${commit_args[@]}" >"$commit_output_file" 2>&1; then
-            commit_rc=0
+        commit_with_pre_commit_guard() {
+          local pre_commit_hook
+          pre_commit_hook="$(git rev-parse --git-path hooks/pre-commit)"
+          if [ -f "$pre_commit_hook" ] && [ ! -f .pre-commit-config.yaml ]; then
+            PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit "$@"
+          elif git commit "$@"; then
+            return 0
           else
-            commit_rc=$?
+            return "$?"
           fi
-        elif git commit "${commit_args[@]}" >"$commit_output_file" 2>&1; then
+        }
+        if commit_with_pre_commit_guard -m "address review feedback" -m "Implemented reviewer suggestions; fixed identified issues; updated per security review; addressed philosophy compliance items" >"$commit_output_file" 2>&1; then
           commit_rc=0
         else
           commit_rc=$?
@@ -347,6 +350,7 @@ steps:
       echo "=== ZERO-BS VERIFICATION ==="
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-19c-zero-bs-verification requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
+      if ! git rev-parse --is-inside-work-tree; then echo "ERROR: step-19c-zero-bs-verification requires a git repo; run git init or rerun from a checkout" >&2; exit 1; fi
       echo "Scanning for Zero-BS violations..."
       scan_or_none() {
         local label=$1 pattern=$2 rc tracked_rc untracked_rc=1 file tmp; shift 2

@@ -280,8 +280,10 @@ steps:
           pre_commit_hook="$(git rev-parse --git-path hooks/pre-commit)"
           if [ -f "$pre_commit_hook" ] && [ ! -f .pre-commit-config.yaml ]; then
             PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit "$@"
+          elif git commit "$@"; then
+            return 0
           else
-            git commit "$@"
+            return "$?"
           fi
         }
         commit_output_file=$(mktemp -t checkpoint-implementation-commit-XXXXXX)
