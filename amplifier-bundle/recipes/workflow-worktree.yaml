@@ -37,6 +37,18 @@ steps:
       echo "=== Step 4: Creating Worktree and Branch ===" >&2
       echo "" >&2
 
+      json_escape() {
+        local s="$1"
+        s=${s//\\/\\\\}
+        s=${s//\"/\\\"}
+        s=${s//$'\b'/\\b}
+        s=${s//$'\f'/\\f}
+        s=${s//$'\n'/\\n}
+        s=${s//$'\r'/\\r}
+        s=${s//$'\t'/\\t}
+        printf '%s' "$s"
+      }
+
       # ========================================================================
       # NEW (#342): Existing-branch / PR targeting path.
       # When EXISTING_BRANCH or PR_NUMBER is set, reuse an existing branch
@@ -142,15 +154,21 @@ steps:
         # Stdout reserved for the JSON contract; all human-readable lines go to stderr.
         # NOTE: printf (not heredoc) — heredoc terminator must be at column 0 after
         # YAML strips block indent, which conflicts with the indented if-block here.
-        printf '{"worktree_path": "%s", "branch_name": "%s", "created": %s}\n' \
-          "$WORKTREE_PATH" "$BRANCH_NAME" "$CREATED"
+        printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "", "base_branch": "", "created": %s}\n' \
+          "$(json_escape "$WORKTREE_PATH")" "$(json_escape "$BRANCH_NAME")" "$CREATED"
         exit 0
       fi
 
       resolve_base_ref() {
         local candidate
-        git remote set-head origin -a >/dev/null 2>&1 || true
 
+        candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+        if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+
+        git remote set-head origin -a >/dev/null 2>&1 || true
         candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
         if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
           printf '%s\n' "$candidate"
@@ -289,15 +307,12 @@ steps:
 
       # Output structured JSON for subsequent steps.
       # created=false signals that an existing worktree was reused (diagnostic for re-runs).
-      cat << EOF
-      {
-        "worktree_path": "${WORKTREE_PATH}",
-        "branch_name": "${BRANCH_NAME}",
-        "base_ref": "${BASE_REF}",
-        "base_branch": "${BASE_BRANCH}",
-        "created": ${CREATED}
-      }
-      EOF
+      printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "%s", "base_branch": "%s", "created": %s}\n' \
+        "$(json_escape "$WORKTREE_PATH")" \
+        "$(json_escape "$BRANCH_NAME")" \
+        "$(json_escape "$BASE_REF")" \
+        "$(json_escape "$BASE_BRANCH")" \
+        "$CREATED"
     output: "worktree_setup"
     parse_json: true
 

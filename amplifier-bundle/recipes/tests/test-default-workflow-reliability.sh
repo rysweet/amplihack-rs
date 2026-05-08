@@ -3,17 +3,19 @@
 #
 # Contracts under test:
 #   1. workflow-worktree chooses a usable remote base without assuming origin/main.
-#      It must prefer origin/HEAD and tolerate repositories whose supported
-#      remote base is origin/master or origin/develop.
+#      It must prefer origin/HEAD, refresh remote HEAD before master/develop
+#      fallback, and tolerate repositories whose supported remote base is
+#      origin/master or origin/develop.
 #   2. workflow-publish does not wrap GitHub CLI publish/PR calls in shell
 #      timeout/gtimeout commands.
 #   3. workflow-publish keeps explicit gh error handling and treats design_spec /
-#      DESIGN_SPEC as optional under set -u.
+#      DESIGN_SPEC as optional under set -u while preserving bounded retries for
+#      transient gh failures.
 #
 # This test SHOULD FAIL before the issue #573 reliability fixes land. It MUST
-# PASS once workflow-worktree resolves origin/HEAD -> origin/master ->
-# origin/develop and workflow-publish removes timeout wrappers while making
-# design spec optional.
+# PASS once workflow-worktree resolves local/remote origin/HEAD before
+# origin/master -> origin/develop fallback and workflow-publish removes timeout
+# wrappers while making design spec optional.
 #
 # Usage: bash amplifier-bundle/recipes/tests/test-default-workflow-reliability.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
@@ -37,9 +39,14 @@ if ! command -v git >/dev/null 2>&1; then
     echo "HARNESS-ERROR: git is required" >&2
     exit 2
 fi
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "HARNESS-ERROR: python3 is required" >&2
+    exit 2
+fi
 
 WORK="$(mktemp -d -t default-workflow-reliability-XXXXXX)"
 trap 'rm -rf "${WORK}"' EXIT
+STEP04="${WORK}/step-04-setup-worktree.sh"
 
 fail() {
     echo "FAIL: $*" >&2
@@ -139,7 +146,6 @@ run_worktree_case() {
     local remove_origin_head="$3"
     local add_master="${4:-no}"
     local case_dir="${WORK}/repo-${label}"
-    local step_script="${WORK}/step-04-setup-worktree.sh"
     local stdout_file="${WORK}/worktree-${label}.out"
     local stderr_file="${WORK}/worktree-${label}.err"
     local expected_sha
@@ -147,7 +153,6 @@ run_worktree_case() {
     local worktree_path
     local worktree_sha
 
-    extract_step_command "${WORKTREE_RECIPE}" "step-04-setup-worktree" "${step_script}"
     clone_case_repo "${expected_ref#origin/}" "${case_dir}" "${remove_origin_head}" "${add_master}"
 
     expected_sha="$(git -C "${case_dir}" rev-parse "${expected_ref}")"
@@ -158,7 +163,7 @@ run_worktree_case() {
         export ISSUE_NUMBER="573"
         export BRANCH_PREFIX="feat"
         unset EXISTING_BRANCH PR_NUMBER
-        bash "${step_script}"
+        bash "${STEP04}"
     ) >"${stdout_file}" 2>"${stderr_file}" || {
         echo "--- step-04 stderr (${label}) ---" >&2
         cat "${stderr_file}" >&2
@@ -179,10 +184,61 @@ run_worktree_case() {
     fi
 }
 
+run_worktree_json_escape_case() {
+    local label="json-escaped-existing-branch"
+    local case_dir="${WORK}/repo-${label}"
+    local stdout_file="${WORK}/worktree-${label}.out"
+    local stderr_file="${WORK}/worktree-${label}.err"
+    local branch_name='feat/issue-573-json-"quote'
+
+    git init -b main "${case_dir}" >/dev/null
+    configure_identity "${case_dir}"
+    printf 'base\n' > "${case_dir}/README.md"
+    git -C "${case_dir}" add README.md
+    git -C "${case_dir}" commit -m "base" >/dev/null
+    git -C "${case_dir}" branch "${branch_name}"
+
+    (
+        export REPO_PATH="${case_dir}"
+        export TASK_DESCRIPTION="reliability json escaping"
+        export ISSUE_NUMBER="573"
+        export BRANCH_PREFIX="feat"
+        export EXISTING_BRANCH="${branch_name}"
+        unset PR_NUMBER
+        bash "${STEP04}"
+    ) >"${stdout_file}" 2>"${stderr_file}" || {
+        echo "--- step-04 stderr (${label}) ---" >&2
+        cat "${stderr_file}" >&2
+        echo "--- step-04 stdout (${label}) ---" >&2
+        cat "${stdout_file}" >&2
+        fail "workflow-worktree failed for JSON escaping case"
+    }
+
+    python3 - "${stdout_file}" "${branch_name}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+required = {"worktree_path", "branch_name", "base_ref", "base_branch", "created"}
+missing = required.difference(data)
+if missing:
+    raise SystemExit(f"missing JSON keys: {sorted(missing)}")
+if data["branch_name"] != sys.argv[2]:
+    raise SystemExit(f"branch_name mismatch: {data['branch_name']!r}")
+if not isinstance(data["created"], bool):
+    raise SystemExit("created must be a JSON boolean")
+PY
+}
+
 # Integration coverage: non-main base branches and fallback behavior.
+extract_step_command "${WORKTREE_RECIPE}" "step-04-setup-worktree" "${STEP04}"
 run_worktree_case "origin-head-prefers-develop-over-master" "origin/develop" "no" "yes"
+run_worktree_case "remote-head-prefers-develop-over-master-without-local-origin-head" "origin/develop" "yes" "yes"
 run_worktree_case "fallback-master-without-origin-head" "origin/master" "yes" "no"
 run_worktree_case "fallback-develop-without-origin-head" "origin/develop" "yes" "no"
+run_worktree_json_escape_case
 
 # Static coverage: workflow-publish must not use shell timeout wrappers for gh PR paths.
 if grep -nE '(^|[^[:alnum:]_])(g?timeout)[[:space:]]+[0-9]+[[:space:]]+gh[[:space:]]+pr[[:space:]]+(list|create)' "${PUBLISH_RECIPE}" >&2; then
@@ -207,9 +263,11 @@ extract_step_command "${PUBLISH_RECIPE}" "step-16-create-draft-pr" "${STEP16}"
 PR_REPO="${WORK}/publish-repo"
 PR_ORIGIN="${WORK}/publish-origin.git"
 GH_LOG="${WORK}/gh.log"
+GH_LIST_ATTEMPTS="${WORK}/gh-list-attempts"
 GH_CREATE_ATTEMPTS="${WORK}/gh-create-attempts"
 mkdir -p "${WORK}/bin"
 : > "${GH_LOG}"
+: > "${GH_LIST_ATTEMPTS}"
 : > "${GH_CREATE_ATTEMPTS}"
 
 git init --bare -b main "${PR_ORIGIN}" >/dev/null
@@ -232,6 +290,13 @@ log="${GH_INVOCATIONS_LOG:?GH_INVOCATIONS_LOG must be set}"
 printf '%s\n' "$*" >> "${log}"
 case "${1:-}-${2:-}" in
     pr-list)
+        attempt_file="${GH_LIST_ATTEMPT_FILE:?GH_LIST_ATTEMPT_FILE must be set}"
+        attempt="$(wc -l < "${attempt_file}")"
+        printf 'attempt\n' >> "${attempt_file}"
+        if [[ "${attempt}" -lt 1 ]]; then
+            echo "HTTP 503 temporary GitHub API failure" >&2
+            exit 1
+        fi
         printf '\n'
         ;;
     pr-create)
@@ -251,6 +316,7 @@ chmod +x "${WORK}/bin/gh"
 (
     export PATH="${WORK}/bin:${PATH}"
     export GH_INVOCATIONS_LOG="${GH_LOG}"
+    export GH_LIST_ATTEMPT_FILE="${GH_LIST_ATTEMPTS}"
     export GH_CREATE_ATTEMPT_FILE="${GH_CREATE_ATTEMPTS}"
     export WORKTREE_SETUP_WORKTREE_PATH="${PR_REPO}"
     export TASK_DESCRIPTION="Fix default workflow reliability"
@@ -269,6 +335,14 @@ if ! grep -q '^pr create' "${GH_LOG}"; then
     echo "--- gh log ---" >&2
     cat "${GH_LOG}" >&2
     fail "workflow-publish did not invoke gh pr create when DESIGN_SPEC was missing"
+fi
+
+if [[ "$(grep -c '^pr list' "${GH_LOG}")" -lt 3 ]]; then
+    echo "--- gh log ---" >&2
+    cat "${GH_LOG}" >&2
+    echo "--- step-16 stderr ---" >&2
+    cat "${WORK}/step16.err" >&2
+    fail "workflow-publish must retry transient gh pr list failures before continuing"
 fi
 
 if [[ "$(grep -c '^pr create' "${GH_LOG}")" -ne 3 ]]; then

@@ -326,8 +326,14 @@ steps:
 
       resolve_pr_base_ref() {
           local candidate
-          git remote set-head origin -a >/dev/null 2>&1 || true
 
+          candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+          if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
+              printf '%s\n' "$candidate"
+              return 0
+          fi
+
+          git remote set-head origin -a >/dev/null 2>&1 || true
           candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
           if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
               printf '%s\n' "$candidate"
