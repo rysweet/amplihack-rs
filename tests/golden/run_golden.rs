@@ -10,8 +10,37 @@ use amplihack_hooks::{
 };
 use amplihack_types::HookInput;
 use serde_json::Value;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn unset(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        unsafe { std::env::remove_var(key) };
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => unsafe { std::env::set_var(self.key, value) },
+            None => unsafe { std::env::remove_var(self.key) },
+        }
+    }
+}
+
+fn golden_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 // ---------------------------------------------------------------------------
 // Semantic JSON comparator
@@ -145,6 +174,11 @@ fn discover_cases(hook_dir: &Path) -> Vec<(String, PathBuf, PathBuf)> {
 
 /// Run all golden tests for a specific hook type.
 fn run_golden_tests_for_hook(hook_type: &str) {
+    let _guard = golden_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
+
     let golden_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")

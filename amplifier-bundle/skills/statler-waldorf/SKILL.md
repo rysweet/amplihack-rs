@@ -221,7 +221,7 @@ THE PRINCIPLE: [named best practice or failure mode, with source]
 
 THE PRESCRIPTION:
 1. [First concrete step]
-2. [Second concrete step]  
+2. [Second concrete step]
 3. [How to verify it worked]
 
 THE PRECEDENT: [historical parallel, if one exists]

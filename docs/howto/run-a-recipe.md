@@ -243,6 +243,17 @@ The flag sets `AMPLIHACK_STEP_TIMEOUT` in the child process environment.
 See [AMPLIHACK_STEP_TIMEOUT](../reference/environment-variables.md#amplihack_step_timeout)
 for details.
 
+### Publish and PR commands are not shell-wrapped
+
+`workflow-publish` does not wrap its GitHub CLI publish or pull-request paths in
+shell `timeout` or `gtimeout`. If you need a hard ceiling for publish or PR
+creation, use `--step-timeout` at recipe-runner level instead of editing inline
+shell commands.
+
+The publish recipe still fails explicitly when `gh` fails. It captures command
+output, checks the exit status, and reports the captured error rather than
+continuing silently.
+
 ---
 
 ## Get machine-readable output

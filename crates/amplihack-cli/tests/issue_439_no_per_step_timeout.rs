@@ -62,6 +62,34 @@ fn load_yaml(path: &Path) -> Value {
     serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
+fn step_command(recipe_file: &str, step_id: &str) -> String {
+    let path = recipes_dir().join(recipe_file);
+    let recipe = load_yaml(&path);
+    let steps = recipe
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .unwrap_or_else(|| panic!("{}: expected steps sequence", path.display()));
+
+    let step = steps
+        .iter()
+        .find(|step| step.get("id").and_then(Value::as_str) == Some(step_id))
+        .unwrap_or_else(|| panic!("{}: missing step `{step_id}`", path.display()));
+
+    step.get("command")
+        .and_then(Value::as_str)
+        .or_else(|| step.get("bash").and_then(Value::as_str))
+        .or_else(|| {
+            step.get("bash")
+                .and_then(|bash| bash.get("command").and_then(Value::as_str))
+        })
+        .or_else(|| {
+            step.get("bash")
+                .and_then(|bash| bash.get("script").and_then(Value::as_str))
+        })
+        .unwrap_or_else(|| panic!("{}: step `{step_id}` has no shell command", path.display()))
+        .to_string()
+}
+
 /// Returns true if the given bash command string looks like it talks to an
 /// external network service that could legitimately hang indefinitely.
 fn is_network_bash(cmd: &str) -> bool {
@@ -325,6 +353,120 @@ fn default_workflow_chain_has_no_yaml_timeout_fields() {
          Agent steps must run to natural completion. If you need to guard a \
          network bash command, use the shell `timeout` command inside the \
          script text, not a YAML `timeout:` field.",
+        violations.join("\n  ")
+    );
+}
+
+const SAFE_COMMIT_STEPS: &[(&str, &str)] = &[
+    ("workflow-tdd.yaml", "checkpoint-after-implementation"),
+    (
+        "workflow-refactor-review.yaml",
+        "checkpoint-after-review-feedback",
+    ),
+    ("workflow-pr-review.yaml", "step-18c-push-feedback-changes"),
+    ("workflow-finalize.yaml", "step-20b-push-cleanup"),
+];
+
+const PUSHING_SAFE_COMMIT_STEPS: &[(&str, &str)] = &[
+    ("workflow-pr-review.yaml", "step-18c-push-feedback-changes"),
+    ("workflow-finalize.yaml", "step-20b-push-cleanup"),
+];
+
+/// Issue #573: all remaining direct commit paths in the default workflow must
+/// use explicit, visible pre-commit handling rather than a bare `git commit`.
+#[test]
+fn default_workflow_direct_commit_paths_use_safe_pre_commit_handling() {
+    let mut violations = Vec::new();
+
+    for (recipe, step_id) in SAFE_COMMIT_STEPS {
+        let cmd = step_command(recipe, step_id);
+
+        for required in [
+            "set -euo pipefail",
+            "git add -A",
+            "git diff --cached --name-only",
+            "commit_output_file=$(mktemp",
+            "if git commit",
+            "commit_rc=$?",
+            "ERROR: git commit failed",
+            "cat \"$commit_output_file\"",
+            "git --no-pager diff --cached --name-status",
+            "git --no-pager status --short",
+            "exit \"$commit_rc\"",
+            "No staged changes",
+        ] {
+            if !cmd.contains(required) {
+                violations.push(format!("{recipe}: step `{step_id}` missing `{required}`"));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "issue #573 violation — direct commit paths must surface hook/commit failures:\n  {}",
+        violations.join("\n  ")
+    );
+}
+
+/// Issue #573: safe commit handling must never bypass or hide Git hook
+/// failures, and must not introduce timeout/sleep behavior.
+#[test]
+fn default_workflow_safe_commit_paths_do_not_bypass_hooks_or_add_timeouts() {
+    let mut violations = Vec::new();
+
+    for (recipe, step_id) in SAFE_COMMIT_STEPS {
+        let cmd = step_command(recipe, step_id);
+        for forbidden in ["--no-verify", "|| true", "timeout ", "\ntimeout", "sleep "] {
+            if cmd.contains(forbidden) {
+                violations.push(format!(
+                    "{recipe}: step `{step_id}` contains forbidden `{forbidden}`"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "issue #573 violation — safe commit paths must preserve hooks and no-timeout policy:\n  {}",
+        violations.join("\n  ")
+    );
+}
+
+/// Issue #573: push-capable feedback/cleanup paths must publish the active
+/// branch/upstream instead of assuming `main` or requiring an existing upstream.
+#[test]
+fn default_workflow_feedback_and_cleanup_pushes_are_branch_aware() {
+    let mut violations = Vec::new();
+
+    for (recipe, step_id) in PUSHING_SAFE_COMMIT_STEPS {
+        let cmd = step_command(recipe, step_id);
+
+        for required in [
+            "current_branch=$(git branch --show-current)",
+            "git rev-parse --abbrev-ref '@{u}'",
+            "git push -u origin \"$current_branch\"",
+            "ERROR: current branch is empty",
+            "push_output_file=$(mktemp",
+            "ERROR: git push failed",
+            "exit \"$push_rc\"",
+        ] {
+            if !cmd.contains(required) {
+                violations.push(format!("{recipe}: step `{step_id}` missing `{required}`"));
+            }
+        }
+
+        for forbidden in ["origin/main", "main...HEAD", " main "] {
+            if cmd.contains(forbidden) {
+                violations.push(format!(
+                    "{recipe}: step `{step_id}` contains branch assumption `{forbidden}`"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "issue #573 violation — feedback/cleanup push paths must be active-branch aware:\n  {}",
         violations.join("\n  ")
     );
 }

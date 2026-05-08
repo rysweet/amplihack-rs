@@ -187,10 +187,22 @@ Agents that skip workflow steps (especially mandatory review steps 10, 16-17) cr
 
 - [ ] **Always use** worktree-manager agent for worktree operations
 - [ ] Create new git worktree in `./worktrees/{branch-name}` for isolated development
-- [ ] Create branch with format: `feat/issue-{number}-{brief-description}` always branch from an up to date main unless specifically instructed otherwise.
-- [ ] Command: `git worktree add ./worktrees/{branch-name} -b {branch-name}`
+- [ ] Create branch with format: `feat/issue-{number}-{brief-description}` from the resolved remote default base unless specifically instructed otherwise.
+- [ ] Resolve the worktree base in this order: Git-verified `origin/HEAD`, then `origin/master`, then `origin/develop`.
+- [ ] Repositories whose default branch is `master`, `develop`, or another Git-verified remote default must work without manual base-branch overrides.
+- [ ] Fail closed with a clear error if none of the supported remote base refs exists.
+- [ ] Command shape: `git worktree add ./worktrees/{branch-name} -b {branch-name} {resolved-base-ref}`
 - [ ] Push branch to remote with tracking: `git push -u origin {branch-name}`
 - [ ] Switch to new worktree directory: `cd ./worktrees/{branch-name}`
+
+`workflow-worktree` does not assume `origin/main`. It first asks Git for
+`origin/HEAD` and uses the target remote branch when Git verifies the target as
+a remote-tracking ref under `refs/remotes/origin/`. If `origin/HEAD` is not
+present in the local clone or does not resolve to a valid remote-tracking ref, it
+checks `origin/master`, then `origin/develop`. The selected base is used
+consistently for branch creation, base-branch checks, and worktree reattachment
+diagnostics. Repositories with no valid remote base source fail closed instead
+of falling back to local `HEAD`.
 
 ### Step 5: Research and Design
 
@@ -325,6 +337,21 @@ Test like a user would use the feature - outside-in - not just unit tests.
 ```bash
 gh pr create --draft --title "..." --body "..." 2>&1 | cat
 ```
+
+`workflow-publish` runs its GitHub CLI publish and pull-request paths directly.
+It does not wrap those `gh` commands in shell-level `timeout` or `gtimeout`
+calls. Time bounds, when required, belong to the recipe runner
+(`timeout_seconds` in the recipe or `amplihack recipe run --step-timeout`), not
+to inline shell wrappers.
+
+The publish and PR steps still handle `gh` failures explicitly: command output
+is captured, the non-zero exit status is checked, and the step fails with the
+captured error instead of continuing silently.
+
+The design specification is optional at PR creation time. Context may provide
+either `design_spec` or `DESIGN_SPEC`; if both are present, `design_spec` takes
+precedence. If both are missing or empty, `workflow-publish` treats the design
+spec as an empty optional section and does not fail under `set -u`.
 
 **Why Draft First:**
 

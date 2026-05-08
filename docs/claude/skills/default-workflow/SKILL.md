@@ -206,10 +206,17 @@ MUST apply the documented resilience patterns when encountering these steps.
 **Failure**: `gh label create` fails silently when labels cannot be created (permission denied, API timeout).
 **Resilience**: Label attachment is best-effort. If `gh issue create --label` fails, retry without `--label`. The issue itself is the critical artifact, not its labels.
 
-### Step 4 — Worktree Setup (no remote / no origin/main)
+### Step 4 — Worktree Setup (non-main default branch)
 
-**Failure**: `git fetch origin main` aborts when the repo has no remotes or `origin/main` does not exist.
-**Resilience**: Topology detection runs first. If no remote exists, use `HEAD` as base ref and skip push/upstream setup. The `bootstrap` flag in worktree output signals downstream steps to skip remote operations.
+**Failure**: Worktree setup aborts when a repository does not have `origin/main`,
+even though its remote default branch is `master` or `develop`.
+**Resilience**: Remote base detection runs before worktree creation. Prefer
+Git-verified `origin/HEAD`, then fall back to `origin/master`, then
+`origin/develop`. `origin/HEAD` may target `origin/main`, `origin/master`,
+`origin/develop`, or another remote default branch as long as Git verifies it as
+a remote-tracking ref under `refs/remotes/origin/`. If no supported remote base
+source exists, fail closed with a clear error; do not bootstrap from local
+`HEAD` or silently skip push/upstream setup.
 
 ### Step 4 — Initial Push (network transient)
 

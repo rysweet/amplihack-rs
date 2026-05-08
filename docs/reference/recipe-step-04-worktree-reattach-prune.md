@@ -13,14 +13,68 @@ to clear stale registrations before calling `git worktree add`.
 
 ## Quick Start
 
-No configuration required. The fix is transparent — `step-04-setup-worktree`
-handles stale worktree registrations automatically during any reattach path.
+No configuration required. `step-04-setup-worktree` resolves a supported remote
+base ref automatically and handles stale worktree registrations during any
+reattach path.
 
 ```bash
 # Run the default workflow — step-04 handles stale registrations transparently
 amplihack recipe run default-workflow -c task_description="Fix issue #1234" \
   -c repo_path="$(pwd)"
 ```
+
+The step works in repositories whose remote default branch is `main`, `master`,
+`develop`, or another Git-verified `origin/HEAD` target. It no longer treats
+`origin/main` as the only valid base.
+
+---
+
+## Remote Base Branch Resolution
+
+`workflow-worktree` resolves the base ref before creating or reattaching a
+workflow branch. Resolution is fixed and deterministic:
+
+1. `origin/HEAD`
+2. `origin/master`
+3. `origin/develop`
+
+`origin/HEAD` is preferred because it represents the remote's configured default
+branch. Its symbolic target is accepted only after Git verifies that it resolves
+to a remote-tracking ref under `refs/remotes/origin/`; the target may be
+`origin/main`, `origin/master`, `origin/develop`, or another remote default. The
+fallback refs support clones that do not have `origin/HEAD` populated locally and
+repositories that still use `master` or `develop` as the default branch.
+
+### Behavior by Repository Shape
+
+| Remote refs available                   | Selected base ref | Result                                      |
+| --------------------------------------- | ----------------- | ------------------------------------------- |
+| `origin/HEAD -> origin/main`            | `origin/main`     | Branches from the remote default branch.    |
+| `origin/HEAD -> origin/master`          | `origin/master`   | Works without a manual `main` override.     |
+| `origin/HEAD -> origin/release`         | `origin/release`  | Uses the Git-verified remote default.       |
+| `origin/master` only                    | `origin/master`   | Uses the first supported fallback.          |
+| `origin/develop` only                   | `origin/develop`  | Uses the second supported fallback.         |
+| none of the supported sources are valid | none              | Fails closed with an actionable error.      |
+
+### Command Shape
+
+For a new workflow branch, the worktree command uses the resolved base ref:
+
+```bash
+git worktree add "$WORKTREE_PATH" -b "$BRANCH_NAME" "$BASE_REF"
+```
+
+The resolved base is also used for branch currency and wrong-base diagnostics,
+so a `master`-based repository is not reported as wrong solely because it lacks
+`origin/main`.
+
+### Failure Semantics
+
+If `origin/HEAD`, `origin/master`, and `origin/develop` are all missing or
+unresolvable, the step stops before creating a worktree. The failure message
+names the checked refs and tells the operator to fetch or configure the remote
+default branch. The step does not silently fall back to a local branch,
+unqualified ref, or local `HEAD` bootstrap mode.
 
 If a prior worktree directory was removed without `git worktree remove`, the
 step logs:

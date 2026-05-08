@@ -5,7 +5,7 @@ use crate::agent_memory::{detect_agent_references, detect_slash_command_agent};
 use crate::post_tool_use::PostToolUseHook;
 use crate::protocol::Hook;
 use crate::session_start::is_workflow_active;
-use crate::test_support::env_lock;
+use crate::test_support::{EnvVarGuard, env_lock};
 use amplihack_cli::memory::PromptContextMemory;
 use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
@@ -109,6 +109,7 @@ fn returns_additional_context_without_mutating_prompt() {
     let _guard = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
     let original = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
@@ -159,6 +160,7 @@ fn extracts_prompt_from_extra_prompt_key() {
     let _guard = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
     let original = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
@@ -187,6 +189,7 @@ fn extracts_prompt_from_user_message_dict() {
     let _guard = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
     let original = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
@@ -217,6 +220,7 @@ fn dev_prompt_initializes_workflow_enforcement_state_and_warning_path() {
     let _guard = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
     let original = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
@@ -306,6 +310,7 @@ fn workflow_active_semaphore_skips_dev_detection() {
     let _guard = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
     let original = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();

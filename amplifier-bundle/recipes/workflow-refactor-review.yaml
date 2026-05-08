@@ -214,13 +214,36 @@ steps:
       git add -A
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then
-        git commit -m "wip: checkpoint after review feedback (steps 10-11)
+        commit_with_pre_commit_guard() {
+          local pre_commit_hook
+          pre_commit_hook="$(git rev-parse --git-path hooks/pre-commit)"
+          if [ -f "$pre_commit_hook" ] && [ ! -f .pre-commit-config.yaml ]; then
+            PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit "$@"
+          elif git commit "$@"; then
+            return 0
+          else
+            return "$?"
+          fi
+        }
+        commit_output_file=$(mktemp -t checkpoint-review-feedback-commit-XXXXXX)
+        if commit_with_pre_commit_guard -m "wip: checkpoint after review feedback (steps 10-11)
 
       Automatic checkpoint to preserve review-addressed changes.
-      Saved before running pre-commit hooks and tests."
-        echo "Checkpoint commit created with $(wc -l <<< "$STAGED") file(s)"
+      Saved before running pre-commit hooks and tests." >"$commit_output_file" 2>&1; then
+          cat "$commit_output_file"
+          rm -f "$commit_output_file"
+          echo "Checkpoint commit created with $(wc -l <<< "$STAGED") file(s)"
+        else
+          commit_rc=$?
+          echo "ERROR: git commit failed during checkpoint-after-review-feedback (exit $commit_rc)" >&2
+          cat "$commit_output_file" >&2
+          rm -f "$commit_output_file"
+          git --no-pager diff --cached --name-status >&2
+          git --no-pager status --short >&2
+          exit "$commit_rc"
+        fi
       else
-        echo "No changes to checkpoint"
+        echo "No staged changes to checkpoint"
       fi
       echo "=== Checkpoint Complete ==="
     output: "review_checkpoint"
