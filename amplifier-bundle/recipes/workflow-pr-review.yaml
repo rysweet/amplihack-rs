@@ -210,27 +210,25 @@ steps:
       git add -A
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then
-        commit_with_pre_commit_guard() {
-          local pre_commit_hook
-          pre_commit_hook="$(git rev-parse --git-path hooks/pre-commit)"
-          if [ -x "$pre_commit_hook" ] && [ ! -f .pre-commit-config.yaml ]; then
-            PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit "$@"
-          else
-            git commit "$@"
-          fi
-        }
         commit_output_file=$(mktemp -t step18c-review-feedback-commit-XXXXXX)
-        if commit_with_pre_commit_guard -m "address review feedback
-
-      - Implemented reviewer suggestions
-      - Fixed identified issues
-      - Updated per security review
-      - Addressed philosophy compliance items" >"$commit_output_file" 2>&1; then
+        commit_args=(-m "address review feedback" -m "Implemented reviewer suggestions; fixed identified issues; updated per security review; addressed philosophy compliance items")
+        pre_commit_hook="$(git rev-parse --git-path hooks/pre-commit)"
+        if [ -x "$pre_commit_hook" ] && [ ! -f .pre-commit-config.yaml ]; then
+          if PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit "${commit_args[@]}" >"$commit_output_file" 2>&1; then
+            commit_rc=0
+          else
+            commit_rc=$?
+          fi
+        elif git commit "${commit_args[@]}" >"$commit_output_file" 2>&1; then
+          commit_rc=0
+        else
+          commit_rc=$?
+        fi
+        if [ "$commit_rc" -eq 0 ]; then
           cat "$commit_output_file"
           rm -f "$commit_output_file"
           echo "Review feedback commit created with $(wc -l <<< "$STAGED") file(s)"
         else
-          commit_rc=$?
           echo "ERROR: git commit failed during step-18c-push-feedback-changes (exit $commit_rc)" >&2
           cat "$commit_output_file" >&2
           rm -f "$commit_output_file"
@@ -243,18 +241,22 @@ steps:
       fi
       push_output_file=$(mktemp -t step18c-review-feedback-push-XXXXXX)
       git_remote_with_retry() {
-        local rc attempt max_attempts=3
+        local rc attempt
         : >"$push_output_file"
         for attempt in 1 2 3; do
           "$@" >>"$push_output_file" 2>&1 && return 0
           rc=$?
-          [ "$attempt" -lt "$max_attempts" ] || return "$rc"
-          echo "WARNING: $* failed (exit $rc); retrying ($attempt/$max_attempts)" >>"$push_output_file"
+          [ "$attempt" -lt 3 ] || return "$rc"
+          echo "WARNING: $* failed (exit $rc); retrying ($attempt/3)" >>"$push_output_file"
         done
       }
       push_rc=0
       if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
-        git_remote_with_retry git pull --rebase && git_remote_with_retry git push || push_rc=$?
+        if git_remote_with_retry git pull --rebase; then
+          git_remote_with_retry git push || push_rc=$?
+        else
+          push_rc=$?
+        fi
       else
         git_remote_with_retry git push -u origin "$current_branch" || push_rc=$?
       fi
@@ -345,22 +347,35 @@ steps:
       echo "=== ZERO-BS VERIFICATION ==="
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-19c-zero-bs-verification requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
-      echo ""
       echo "Scanning for Zero-BS violations..."
-      echo ""
-      echo "--- Checking for TODO/FIXME comments ---"
-      (grep -r -E "(TODO|FIXME)" --include="*.py" --include="*.ts" --include="*.js" . 2>/dev/null || echo "None found")
-      echo ""
-      echo "--- Checking for stub indicators ---"
-      (grep -r -E "(NotImplementedError|raise NotImplemented|pass  # stub)" --include="*.py" . 2>/dev/null || echo "None found")
-      echo ""
+      scan_or_none() {
+        local label=$1 pattern=$2 rc tracked_rc untracked_rc=1 file tmp; shift 2
+        local files=()
+        echo "--- $label ---"
+        if git grep -n -E "$pattern" -- "$@"; then tracked_rc=0; else tracked_rc=$?; fi
+        if [ "$tracked_rc" -ne 0 ] && [ "$tracked_rc" -ne 1 ]; then
+          echo "ERROR: git grep failed during $label (exit $tracked_rc)" >&2; return "$tracked_rc"
+        fi
+        tmp=$(mktemp -t step19c-untracked-XXXXXX)
+        if git ls-files --others --exclude-standard -z -- "$@" >"$tmp"; then
+          mapfile -d '' -t files <"$tmp"; rm -f "$tmp"
+        else
+          rc=$?; rm -f "$tmp"; echo "ERROR: git ls-files failed during $label (exit $rc)" >&2; return "$rc"
+        fi
+        if [ "${#files[@]}" -gt 0 ]; then
+          if grep -n -E -H -- "$pattern" "${files[@]}"; then untracked_rc=0; else untracked_rc=$?; fi
+        fi
+        if [ "$untracked_rc" -ne 0 ] && [ "$untracked_rc" -ne 1 ]; then
+          echo "ERROR: grep failed during untracked $label (exit $untracked_rc)" >&2; return "$untracked_rc"
+        fi
+        [ "$tracked_rc" -eq 0 ] || [ "$untracked_rc" -eq 0 ] || echo "None found"
+      }
+      scan_or_none "Checking for TODO/FIXME comments" "(TODO|FIXME)" '*.py' '*.ts' '*.js' '*.rs' '*.sh' '*.bash' '*.md' '*.yaml' '*.yml' Makefile Dockerfile
+      scan_or_none "Checking for stub indicators" "(NotImplementedError|raise NotImplemented|pass  # stub)" '*.py'
       echo "--- Checking for Forbidden Patterns ---"
-      echo "  Shell: || true, >/dev/null 2>&1, set +e"
-      (grep -rn "|| true\||| :\|>/dev/null 2>&1\|2>/dev/null\|&>/dev/null\|set +e" --include="*.sh" --include="*.bash" --include="Makefile" --include="Dockerfile" . 2>/dev/null || echo "  None found")
-      echo "  Python: bare except, except pass, return None in except"
-      (grep -rn "except:$\|except .*:.*pass$\|except.*:.*return None" --include="*.py" . 2>/dev/null || echo "  None found")
-      echo "  TypeScript/JS: empty catch, catch return undefined"
-      (grep -rn "catch.*{.*}$\|catch.*return undefined\|catch.*return \[\]" --include="*.ts" --include="*.js" . 2>/dev/null || echo "  None found")
+      scan_or_none "Shell: || true, >/dev/null 2>&1, set +e" '\|\| true|\|\| :|>/dev/null 2>&1|2>/dev/null|&>/dev/null|set \+e' '*.sh' '*.bash' Makefile Dockerfile
+      scan_or_none "Python: bare except, except pass, return None in except" 'except:$|except .*:.*pass$|except.*:.*return None' '*.py'
+      scan_or_none "TypeScript/JS: empty catch, catch return undefined" 'catch.*\{.*\}$|catch.*return undefined|catch.*return \[\]' '*.ts' '*.js'
       echo ""
       echo "=== Zero-BS Verification Complete ==="
     output: "zero_bs_check"
@@ -372,22 +387,8 @@ steps:
       PAT_CHECK="$PATTERNS_CHECK"
       PHIL_SUMMARY=$(printf '%.1024s' "$PHIL_CHECK")
       PAT_SUMMARY=$(printf '%.1024s' "$PAT_CHECK")
-
-      echo "=== STEP 19 VERIFICATION GATE ==="
-      echo ""
-      echo "Before proceeding, verify ALL of the following:"
-      echo ""
-      echo "  ✓ Did I invoke the REVIEWER agent for philosophy check?"
-      echo "  ✓ Did I invoke the PATTERNS agent?"
-      echo "  ✓ Did I complete the zero-BS verification?"
-      echo "  ✓ Did I check for Forbidden Pattern violations?"
-      echo "  ✓ Are all findings documented?"
-      echo "  ✓ Any issues found have been addressed?"
-      echo ""
+      printf '%s\n' "=== STEP 19 VERIFICATION GATE ===" "" "Before proceeding, verify ALL of the following:" "" "  ✓ Did I invoke the REVIEWER agent for philosophy check?" "  ✓ Did I invoke the PATTERNS agent?" "  ✓ Did I complete the zero-BS verification?" "  ✓ Did I check for Forbidden Pattern violations?" "  ✓ Are all findings documented?" "  ✓ Any issues found have been addressed?" ""
       echo "Philosophy check (first 1KB): $PHIL_SUMMARY"
       echo "Patterns check (first 1KB): $PAT_SUMMARY"
-      echo ""
-      echo "If any verification fails, STOP and complete the missing step."
-      echo ""
-      echo "=== GATE PASSED - Proceed to Step 20 ==="
+      printf '%s\n' "" "If any verification fails, STOP and complete the missing step." "" "=== GATE PASSED - Proceed to Step 20 ==="
     output: "step_19_gate_status"

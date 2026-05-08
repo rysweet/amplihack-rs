@@ -391,7 +391,7 @@ fn workflow_pr_review_retries_remote_push_operations_without_silencing_failures(
         "step-18c must wrap pull/rebase and push with retry handling"
     );
     assert!(
-        command.contains("retrying ($attempt/$max_attempts)") && command.contains("return \"$rc\""),
+        command.contains("retrying ($attempt/3)") && command.contains("return \"$rc\""),
         "step-18c retry handling must be bounded and preserve the failing status"
     );
 }
@@ -417,8 +417,44 @@ fn workflow_pr_review_scopes_pre_commit_allow_no_config_to_stale_hook_case() {
         "PRE_COMMIT_ALLOW_NO_CONFIG is allowed only when .pre-commit-config.yaml is missing"
     );
     assert!(
-        command.contains("PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit \"$@\""),
+        command.contains("PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit \"${commit_args[@]}\"")
+            && command.contains("elif git commit \"${commit_args[@]}\""),
         "PRE_COMMIT_ALLOW_NO_CONFIG must be scoped to the single git commit invocation"
+    );
+    assert!(
+        command.contains("address review feedback")
+            && command.contains("Implemented reviewer suggestions")
+            && command.contains("fixed identified issues")
+            && command.contains("updated per security review")
+            && command.contains("addressed philosophy compliance items"),
+        "step-18c must preserve the review-feedback commit subject and body"
+    );
+}
+
+#[test]
+fn workflow_pr_review_zero_bs_scan_covers_tracked_and_untracked_without_recursive_walks() {
+    let command = step_command("workflow-pr-review", "step-19c-zero-bs-verification");
+    assert!(
+        command.contains("git grep -n -E") && command.contains("ERROR: git grep failed"),
+        "step-19c must use fail-loud git grep scans for repository verification"
+    );
+    assert!(
+        command.contains("git ls-files --others --exclude-standard -z")
+            && command.contains("mapfile -d '' -t files")
+            && command.contains("grep -n -E -H -- \"$pattern\" \"${files[@]}\"")
+            && command.contains("ERROR: grep failed during untracked"),
+        "step-19c must restore fail-loud untracked-file scanning"
+    );
+    assert!(
+        command.contains("'*.rs'")
+            && command.contains("'*.md'")
+            && command.contains("'*.yaml'")
+            && command.contains("'*.yml'"),
+        "step-19c TODO/FIXME scanning must include source, config, and docs globs"
+    );
+    assert!(
+        !command.contains("grep -r"),
+        "step-19c must avoid repeated recursive filesystem grep scans"
     );
 }
 
