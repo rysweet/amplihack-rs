@@ -244,6 +244,7 @@ steps:
           echo "ERROR: git commit failed during step-18c-push-feedback-changes (exit $commit_rc)" >&2
           cat "$commit_output_file" >&2
           rm -f "$commit_output_file"
+          git --no-pager diff --cached --name-status >&2
           git --no-pager status --short >&2
           exit "$commit_rc"
         fi

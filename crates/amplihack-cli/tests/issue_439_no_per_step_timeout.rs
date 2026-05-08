@@ -390,6 +390,7 @@ fn default_workflow_direct_commit_paths_use_safe_pre_commit_handling() {
             "commit_rc=$?",
             "ERROR: git commit failed",
             "cat \"$commit_output_file\"",
+            "git --no-pager diff --cached --name-status",
             "git --no-pager status --short",
             "exit \"$commit_rc\"",
             "No staged changes",
