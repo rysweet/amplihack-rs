@@ -72,11 +72,56 @@ steps:
         exit 1
       fi
       echo "=== Pushing Cleanup Changes ==="
+      current_branch=$(git branch --show-current)
+      if [ -z "$current_branch" ]; then
+        echo "ERROR: current branch is empty; cannot push cleanup changes from detached HEAD" >&2
+        exit 1
+      fi
       git add -A
-      if ! git diff --cached --quiet; then
-        git commit -m "final cleanup pass"
-        git pull --rebase 2>/dev/null
-        git push
+      STAGED=$(git diff --cached --name-only)
+      if [ -n "$STAGED" ]; then
+        commit_output_file=$(mktemp -t step20b-cleanup-commit-XXXXXX)
+        if git commit -m "final cleanup pass" >"$commit_output_file" 2>&1; then
+          cat "$commit_output_file"
+          rm -f "$commit_output_file"
+          echo "Cleanup commit created with $(wc -l <<< "$STAGED") file(s)"
+        else
+          commit_rc=$?
+          echo "ERROR: git commit failed during step-20b-push-cleanup (exit $commit_rc)" >&2
+          cat "$commit_output_file" >&2
+          rm -f "$commit_output_file"
+          git --no-pager status --short >&2
+          exit "$commit_rc"
+        fi
+      else
+        echo "No staged changes from cleanup"
+      fi
+      push_output_file=$(mktemp -t step20b-cleanup-push-XXXXXX)
+      if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+        git pull --rebase
+        if git push >"$push_output_file" 2>&1; then
+          cat "$push_output_file"
+          rm -f "$push_output_file"
+        else
+          push_rc=$?
+          echo "ERROR: git push failed during step-20b-push-cleanup (exit $push_rc)" >&2
+          cat "$push_output_file" >&2
+          rm -f "$push_output_file"
+          git --no-pager status --short >&2
+          exit "$push_rc"
+        fi
+      else
+        if git push -u origin "$current_branch" >"$push_output_file" 2>&1; then
+          cat "$push_output_file"
+          rm -f "$push_output_file"
+        else
+          push_rc=$?
+          echo "ERROR: git push failed during step-20b-push-cleanup (exit $push_rc)" >&2
+          cat "$push_output_file" >&2
+          rm -f "$push_output_file"
+          git --no-pager status --short >&2
+          exit "$push_rc"
+        fi
       fi
       echo "=== Cleanup Complete ==="
     output: "cleanup_push_result"

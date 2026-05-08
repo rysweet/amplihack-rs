@@ -264,24 +264,36 @@ steps:
     # (implementation, test_spec, design_spec) produce large outputs.
     max_env_value_bytes: 65536
     command: |
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}" && \
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:?checkpoint-after-implementation requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}" && \
-      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
-        echo "ERROR: checkpoint-after-implementation requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2; \
-        exit 1; \
-      fi && \
-      echo "=== Checkpoint: Staging Implementation ===" && \
-      git add -A && \
-      STAGED=$(git diff --cached --name-only) && \
-      if [ -n "$STAGED" ]; then \
-        git commit -m "wip: checkpoint after implementation (steps 7-8)
+      set -euo pipefail
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+      cd "${WORKTREE_SETUP_WORKTREE_PATH:?checkpoint-after-implementation requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: checkpoint-after-implementation requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
+        exit 1
+      fi
+      echo "=== Checkpoint: Staging Implementation ==="
+      git add -A
+      STAGED=$(git diff --cached --name-only)
+      if [ -n "$STAGED" ]; then
+        commit_output_file=$(mktemp -t checkpoint-implementation-commit-XXXXXX)
+        if git commit -m "wip: checkpoint after implementation (steps 7-8)
 
       Automatic checkpoint to preserve work in progress.
-      Tests and implementation saved before refactoring phase." && \
-        echo "Checkpoint commit created with $(wc -l <<< "$STAGED") file(s)" ; \
-      else \
-        echo "No changes to checkpoint" ; \
-      fi && \
+      Tests and implementation saved before refactoring phase." >"$commit_output_file" 2>&1; then
+          cat "$commit_output_file"
+          rm -f "$commit_output_file"
+          echo "Checkpoint commit created with $(wc -l <<< "$STAGED") file(s)"
+        else
+          commit_rc=$?
+          echo "ERROR: git commit failed during checkpoint-after-implementation (exit $commit_rc)" >&2
+          cat "$commit_output_file" >&2
+          rm -f "$commit_output_file"
+          git --no-pager status --short >&2
+          exit "$commit_rc"
+        fi
+      else
+        echo "No staged changes to checkpoint"
+      fi
       echo "=== Checkpoint Complete ==="
     output: "impl_checkpoint"
 
