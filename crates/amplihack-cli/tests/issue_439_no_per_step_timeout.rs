@@ -303,20 +303,15 @@ fn default_workflow_chain_has_no_yaml_timeout_fields() {
                         "{name}.yaml: step `{id}` has YAML `{field}:` at step root"
                     ));
                 }
-                if step
-                    .get("agent")
-                    .and_then(|a| a.get(field))
-                    .is_some()
-                {
+                if step.get("agent").and_then(|a| a.get(field)).is_some() {
                     violations.push(format!(
                         "{name}.yaml: step `{id}` has YAML `agent.{field}:`"
                     ));
                 }
                 if let Some(bash) = step.get("bash") {
                     if bash.get(field).is_some() {
-                        violations.push(format!(
-                            "{name}.yaml: step `{id}` has YAML `bash.{field}:`"
-                        ));
+                        violations
+                            .push(format!("{name}.yaml: step `{id}` has YAML `bash.{field}:`"));
                     }
                 }
             }
