@@ -29,7 +29,11 @@ use std::path::{Path, PathBuf};
 
 use crate::copilot_setup::jsonc as jsonc_utils;
 
-use super::paths::home_dir;
+use super::{
+    binary::{validate_binary_path, validate_hook_command_string},
+    hooks::shell_quote_path,
+    paths::home_dir,
+};
 
 /// Public entry: register amplihack as a local Copilot CLI plugin.
 ///
@@ -56,6 +60,7 @@ pub(super) fn register_copilot_plugin_in(
         // Copilot CLI not installed — nothing to do.
         return Ok(false);
     }
+    validate_copilot_hooks_bin(hooks_bin)?;
 
     let plugin_dir = copilot_home
         .join("installed-plugins")
@@ -110,42 +115,47 @@ fn write_plugin_manifest(plugin_dir: &Path, commands_staged: bool) -> Result<()>
 /// `PreCompact` has no Copilot CLI analog (Copilot's `/compact` command
 /// doesn't fire a hook event in the documented spec) so it's omitted.
 fn write_hooks_json(plugin_dir: &Path, hooks_bin: &Path) -> Result<()> {
-    // Quote the binary path so it survives spaces in the home directory.
-    let bin = hooks_bin.display().to_string();
+    let bin = validate_copilot_hooks_bin(hooks_bin)?;
+    let session_start = copilot_hook_command(&bin, "session-start")?;
+    let session_end = copilot_hook_command(&bin, "stop")?;
+    let workflow_classification = copilot_hook_command(&bin, "workflow-classification-reminder")?;
+    let user_prompt_submit = copilot_hook_command(&bin, "user-prompt-submit")?;
+    let pre_tool_use = copilot_hook_command(&bin, "pre-tool-use")?;
+    let post_tool_use = copilot_hook_command(&bin, "post-tool-use")?;
 
     let body = json!({
         "version": 1,
         "hooks": {
             "sessionStart": [{
                 "type": "command",
-                "bash": format!("{:?} session-start", bin),
+                "bash": session_start,
                 "timeoutSec": 10
             }],
             "sessionEnd": [{
                 "type": "command",
-                "bash": format!("{:?} stop", bin),
+                "bash": session_end,
                 "timeoutSec": 120
             }],
             "userPromptSubmitted": [
                 {
                     "type": "command",
-                    "bash": format!("{:?} workflow-classification-reminder", bin),
+                    "bash": workflow_classification,
                     "timeoutSec": 5
                 },
                 {
                     "type": "command",
-                    "bash": format!("{:?} user-prompt-submit", bin),
+                    "bash": user_prompt_submit,
                     "timeoutSec": 10
                 }
             ],
             "preToolUse": [{
                 "type": "command",
-                "bash": format!("{:?} pre-tool-use", bin),
+                "bash": pre_tool_use,
                 "timeoutSec": 30
             }],
             "postToolUse": [{
                 "type": "command",
-                "bash": format!("{:?} post-tool-use", bin),
+                "bash": post_tool_use,
                 "timeoutSec": 30
             }]
         }
@@ -159,6 +169,24 @@ fn write_hooks_json(plugin_dir: &Path, hooks_bin: &Path) -> Result<()> {
         path.display()
     );
     Ok(())
+}
+
+fn validate_copilot_hooks_bin(hooks_bin: &Path) -> Result<String> {
+    let bin = hooks_bin.display().to_string();
+    validate_binary_path(&bin).with_context(|| {
+        format!(
+            "unsafe Copilot CLI hooks binary path: {}",
+            hooks_bin.display()
+        )
+    })?;
+    Ok(bin)
+}
+
+fn copilot_hook_command(bin: &str, subcmd: &str) -> Result<String> {
+    let command = format!("{} {}", shell_quote_path(bin), subcmd);
+    validate_hook_command_string(&command)
+        .with_context(|| format!("unsafe Copilot CLI hook command for {subcmd}"))?;
+    Ok(command)
 }
 
 /// Stage slash-command markdown files into the plugin's `commands/` dir.
@@ -423,6 +451,37 @@ mod tests {
         assert!(
             raw.contains("amplihack-hooks"),
             "hooks.json should invoke the amplihack-hooks binary"
+        );
+    }
+
+    #[test]
+    fn rejects_shell_metacharacters_in_hooks_binary_path() {
+        let td = TempDir::new().unwrap();
+        let copilot_home = fake_copilot_home(&td);
+        let repo = fake_repo(&td, false);
+        let unsafe_dir = td.path().join("bad$HOME");
+        fs::create_dir_all(&unsafe_dir).unwrap();
+        let hooks_bin = unsafe_dir.join("amplihack-hooks");
+        fs::write(&hooks_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        let result = register_copilot_plugin_in(&copilot_home, &repo, &hooks_bin);
+
+        assert!(
+            result.is_err(),
+            "shell metacharacters in hooks binary paths must be rejected"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unsafe Copilot CLI hooks binary path")
+                || err.contains("unsafe character"),
+            "error should identify unsafe hook binary path, got: {err}"
+        );
+        assert!(
+            !copilot_home
+                .join("installed-plugins")
+                .join("amplihack@local")
+                .exists(),
+            "invalid hooks path must fail before staging a partial plugin"
         );
     }
 

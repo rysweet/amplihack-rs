@@ -14,7 +14,7 @@ use amplihack_cli::pr_recovery_readiness::{
     verify_pr_head,
 };
 
-const PR_579_HEAD: &str = "4041d4b650a245501d8e381b1dfed95a94b65fca";
+const PR_579_HEAD: &str = "8fb46865fb4412038b9313a62c02cc5aa0693132";
 
 #[test]
 fn head_verifier_accepts_only_exact_expected_local_and_pr_head_match() {

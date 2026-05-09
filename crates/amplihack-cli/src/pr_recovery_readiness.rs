@@ -185,10 +185,16 @@ pub struct AdditiveCopyAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct PlannedAdditiveCopyAction {
+    relative_path: PathBuf,
+    action: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdditiveCopyReadiness {
     pub workflow_ready: bool,
     pub actions: Vec<String>,
-    planned_actions: Vec<AdditiveCopyAction>,
+    planned_actions: Vec<PlannedAdditiveCopyAction>,
 }
 
 impl AdditiveCopyReadiness {
@@ -196,7 +202,7 @@ impl AdditiveCopyReadiness {
         self.planned_actions
             .iter()
             .find(|planned| planned.relative_path == Path::new(relative_path))
-            .map(|planned| planned.action.as_str())
+            .map(|planned| planned.action)
     }
 }
 
@@ -222,9 +228,9 @@ pub fn inspect_additive_copy_plan(plan: &AdditiveCopyPlan) -> Result<AdditiveCop
         };
 
         action_names.push(action.to_string());
-        planned_actions.push(AdditiveCopyAction {
+        planned_actions.push(PlannedAdditiveCopyAction {
             relative_path,
-            action: action.to_string(),
+            action,
         });
     }
 
@@ -390,9 +396,8 @@ pub fn render_no_op_report(input: NoOpReportInput) -> Result<NoOpReport> {
         bail!("no-op report blocked: builds are not green");
     }
 
-    let merge_state_clean = matches!(input.merge_state, MergeState::Clean);
     let mut merge_blockers = Vec::new();
-    if !merge_state_clean {
+    if !matches!(input.merge_state, MergeState::Clean) {
         merge_blockers.push("GitHub merge state is not clean");
     }
     if !ci_readiness.all_checks_merge_passing {
@@ -412,25 +417,28 @@ pub fn render_no_op_report(input: NoOpReportInput) -> Result<NoOpReport> {
         MergeState::Clean => "merge clean",
         MergeState::Unknown(_) => "merge state unknown",
     };
-    let final_status = if merge_blockers.is_empty() {
+    let merge_ready = merge_blockers.is_empty();
+    let final_status = if merge_ready {
         "MERGE_READY"
     } else {
         "NOT_MERGE_READY"
     };
-    let blocker_phrase = if merge_blockers.is_empty() {
+    let blocker_phrase = if merge_ready {
         "all merge-readiness gates are proven".to_string()
     } else {
         format!("blockers: {}", merge_blockers.join("; "))
     };
 
+    let head_sha = verified_head.head_sha;
+    let no_op_justification = format!(
+        "No-op justification: head {head_sha}; Lint/Format green; builds green; {test_phrase}; {merge_phrase}; hook/additive-copy readiness satisfied; no manual merge, merge bypass, or nested default-workflow performed; {blocker_phrase}. {final_status}"
+    );
+
     Ok(NoOpReport {
         workflow_ready: true,
-        merge_ready: merge_blockers.is_empty(),
-        head_sha: verified_head.head_sha.clone(),
-        no_op_justification: format!(
-            "No-op justification: head {head}; Lint/Format green; builds green; {test_phrase}; {merge_phrase}; hook/additive-copy readiness satisfied; no manual merge, merge bypass, or nested default-workflow performed; {blocker_phrase}. {final_status}",
-            head = verified_head.head_sha
-        ),
+        merge_ready,
+        head_sha,
+        no_op_justification,
         manual_merge_performed: false,
         merge_bypass_performed: false,
         nested_default_workflow_launched: false,
