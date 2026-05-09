@@ -247,13 +247,91 @@ fn copy_mapped_dir(
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
 
-    copy_dir_recursive(source_dir, &target_dir).with_context(|| {
-        format!(
-            "failed to copy {} to {}",
-            source_dir.display(),
-            target_dir.display()
-        )
-    })?;
+    // Issue #578: atomically replace the destination so files removed from
+    // the source bundle (e.g. legacy Python tools that no longer ship in
+    // the post-deyhonification bundle) don't linger forever in
+    // `~/.amplihack/.claude/`. Pre-fix `copy_dir_recursive` was purely
+    // additive — it never removed destination entries that were absent in
+    // the source — which left 300+ stale `.py` files in `tools/amplihack/`
+    // on hosts upgraded from amplihack 0.7.x even after a successful rust
+    // install. The temp-dir + rename pattern matches `copy_amplifier_bundle`
+    // and rolls back on failure so the previous staged tree is preserved.
+    //
+    // Same-path aliasing (source canonicalises to destination, e.g. when
+    // installing from the staged `~/.amplihack` itself) is handled inside
+    // `copy_dir_recursive` and would short-circuit the inner copy. To avoid
+    // dropping the only copy of the staged tree in that edge case, we
+    // canonicalise both ends first and skip the atomic-replace dance when
+    // they alias.
+    let same_path = match (source_dir.canonicalize(), target_dir.canonicalize()) {
+        (Ok(s), Ok(t)) => s == t,
+        _ => false,
+    };
+
+    if same_path {
+        // Source IS destination — nothing to copy, nothing to wipe.
+        // copy_dir_recursive will print the ↩️ skip line for transparency.
+        copy_dir_recursive(source_dir, &target_dir).with_context(|| {
+            format!(
+                "failed to copy {} to {}",
+                source_dir.display(),
+                target_dir.display()
+            )
+        })?;
+    } else {
+        let staging_temp = staging_temp_path(&target_dir);
+        if staging_temp.exists() {
+            fs::remove_dir_all(&staging_temp).with_context(|| {
+                format!(
+                    "failed to clean stale staging dir {}",
+                    staging_temp.display()
+                )
+            })?;
+        }
+        copy_dir_recursive(source_dir, &staging_temp).with_context(|| {
+            format!(
+                "failed to copy {} to staging dir {}",
+                source_dir.display(),
+                staging_temp.display()
+            )
+        })?;
+
+        if target_dir.exists() {
+            let backup = backup_path(&target_dir);
+            if backup.exists() {
+                let _ = fs::remove_dir_all(&backup);
+            }
+            fs::rename(&target_dir, &backup).with_context(|| {
+                format!(
+                    "failed to back up existing {} to {}",
+                    target_dir.display(),
+                    backup.display()
+                )
+            })?;
+            if let Err(err) = fs::rename(&staging_temp, &target_dir) {
+                // Roll back to preserve the previously staged tree.
+                let _ = fs::rename(&backup, &target_dir);
+                let _ = fs::remove_dir_all(&staging_temp);
+                return Err(err).with_context(|| {
+                    format!(
+                        "failed to swap new {} into {} (rolled back to previous tree)",
+                        src_rel,
+                        target_dir.display()
+                    )
+                });
+            }
+            let _ = fs::remove_dir_all(&backup);
+        } else {
+            fs::rename(&staging_temp, &target_dir).with_context(|| {
+                format!(
+                    "failed to move new {} into {}",
+                    src_rel,
+                    target_dir.display()
+                )
+            })?;
+        }
+    }
+
     if dst_rel.starts_with("tools/") {
         let files_updated = set_hook_permissions(&target_dir)?;
         if files_updated > 0 {
@@ -262,6 +340,28 @@ fn copy_mapped_dir(
     }
     println!("  ✅ Copied {src_rel} -> {dst_rel}");
     Ok(())
+}
+
+/// Staging path for the atomic-rename pattern in `copy_mapped_dir`.
+/// Sibling of the target so the rename stays on the same filesystem.
+fn staging_temp_path(target: &Path) -> PathBuf {
+    let mut name = target
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".staging");
+    target.with_file_name(name)
+}
+
+/// Backup path used during atomic replacement. Sibling of the target so
+/// the rename stays on the same filesystem.
+fn backup_path(target: &Path) -> PathBuf {
+    let mut name = target
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".old");
+    target.with_file_name(name)
 }
 
 /// Stage the `amplifier-bundle/` tree from the source repo into
