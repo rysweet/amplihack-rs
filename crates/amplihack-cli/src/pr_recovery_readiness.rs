@@ -345,29 +345,21 @@ pub fn render_no_op_report(input: NoOpReportInput) -> Result<NoOpReport> {
     }
 
     let verified_head = verify_pr_head(&input.head)?;
-    let lint_format_green = check_success(&input.checks, &["Lint & Format", "Lint/Format"]);
-    let builds_green = check_success(&input.checks, &["build", "Build"]);
-    let test_in_progress = check_in_progress(&input.checks, "Test");
+    let ci_readiness = CiReadinessSummary::from_checks(&input.checks);
 
-    if !lint_format_green {
+    if !ci_readiness.lint_format_green {
         bail!("no-op report blocked: Lint/Format is not green");
     }
-    if !builds_green {
+    if !ci_readiness.builds_green {
         bail!("no-op report blocked: builds are not green");
     }
 
-    let merge_ready = matches!(input.merge_state, MergeState::Clean)
-        && input.checks.iter().all(|check| {
-            check.status == CheckStatus::Completed
-                && matches!(
-                    check.conclusion,
-                    CheckConclusion::Success | CheckConclusion::Skipped | CheckConclusion::Neutral
-                )
-        });
+    let merge_ready =
+        matches!(input.merge_state, MergeState::Clean) && ci_readiness.all_checks_merge_passing;
 
-    let test_phrase = if test_in_progress {
+    let test_phrase = if ci_readiness.test_in_progress {
         "Test in progress"
-    } else if check_success(&input.checks, &["Test"]) {
+    } else if ci_readiness.test_green {
         "Test green"
     } else {
         "Test not green"
@@ -392,25 +384,51 @@ pub fn render_no_op_report(input: NoOpReportInput) -> Result<NoOpReport> {
     })
 }
 
-fn check_success(checks: &[CheckRollup], names: &[&str]) -> bool {
-    checks.iter().any(|check| {
-        names
-            .iter()
-            .any(|name| check.name.eq_ignore_ascii_case(name))
-            && check.status == CheckStatus::Completed
-            && matches!(
-                check.conclusion,
-                CheckConclusion::Success | CheckConclusion::Skipped | CheckConclusion::Neutral
-            )
-    })
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CiReadinessSummary {
+    lint_format_green: bool,
+    builds_green: bool,
+    test_in_progress: bool,
+    test_green: bool,
+    all_checks_merge_passing: bool,
 }
 
-fn check_in_progress(checks: &[CheckRollup], name: &str) -> bool {
-    checks.iter().any(|check| {
-        check.name.eq_ignore_ascii_case(name)
-            && matches!(
-                check.status,
-                CheckStatus::InProgress | CheckStatus::Queued | CheckStatus::Pending
-            )
-    })
+impl CiReadinessSummary {
+    fn from_checks(checks: &[CheckRollup]) -> Self {
+        let mut summary = Self {
+            lint_format_green: false,
+            builds_green: false,
+            test_in_progress: false,
+            test_green: false,
+            all_checks_merge_passing: true,
+        };
+
+        for check in checks {
+            let completed_and_passing = check.status == CheckStatus::Completed
+                && matches!(
+                    check.conclusion,
+                    CheckConclusion::Success | CheckConclusion::Skipped | CheckConclusion::Neutral
+                );
+
+            summary.all_checks_merge_passing &= completed_and_passing;
+
+            if check.name.eq_ignore_ascii_case("Lint & Format")
+                || check.name.eq_ignore_ascii_case("Lint/Format")
+            {
+                summary.lint_format_green |= completed_and_passing;
+            }
+            if check.name.eq_ignore_ascii_case("build") {
+                summary.builds_green |= completed_and_passing;
+            }
+            if check.name.eq_ignore_ascii_case("Test") {
+                summary.test_green |= completed_and_passing;
+                summary.test_in_progress |= matches!(
+                    check.status,
+                    CheckStatus::InProgress | CheckStatus::Queued | CheckStatus::Pending
+                );
+            }
+        }
+
+        summary
+    }
 }
