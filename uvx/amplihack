@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEFAULT_REPO_URL="https://github.com/rysweet/amplihack-rs.git"
+
+binary_name() {
+    if [[ "${OS:-}" == "Windows_NT" ]]; then
+        printf '%s.exe\n' "$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
+decode_file_url_path() {
+    local encoded="${1#file://}"
+    printf '%b\n' "${encoded//%/\\x}"
+}
+
+direct_url_json() {
+    local script_dir
+    script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+    find "${script_dir}/../lib" -path '*/site-packages/amplihack-*.dist-info/direct_url.json' -print -quit 2>/dev/null || true
+}
+
+json_string_field() {
+    local key="$1"
+    local file="$2"
+    sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "${file}" | head -n 1
+}
+
+source_from_direct_url() {
+    local file="$1"
+    local url ref commit requested
+    if [[ -z "${file}" || ! -f "${file}" ]]; then
+        printf '%s\n%s\n%s\n' "${DEFAULT_REPO_URL}" "" ""
+        return
+    fi
+
+    url="$(json_string_field url "${file}")"
+    if [[ -z "${url}" ]]; then
+        printf '%s\n%s\n%s\n' "${DEFAULT_REPO_URL}" "" ""
+        return
+    fi
+
+    commit="$(json_string_field commit_id "${file}")"
+    requested="$(json_string_field requested_revision "${file}")"
+    ref="${commit:-${requested}}"
+    if grep -q '"vcs"[[:space:]]*:[[:space:]]*"git"' "${file}"; then
+        printf '%s\n%s\n%s\n' "${url}" "${ref}" ""
+        return
+    fi
+
+    if [[ "${url}" == file://* ]]; then
+        printf '%s\n%s\n%s\n' "${url}" "" "$(decode_file_url_path "${url}")"
+        return
+    fi
+
+    printf '%s\n%s\n%s\n' "${url}" "" ""
+}
+
+cache_key_for() {
+    local ref="$1"
+    local local_path="$2"
+    local key="${ref:-${local_path:-latest}}"
+    printf '%s\n' "${key}" | tr -c 'A-Za-z0-9_.-' '_'
+}
+
+cargo_install_args() {
+    local package="$1"
+    local path_name="$2"
+    local install_root="$3"
+    local repo_url="$4"
+    local ref="$5"
+    local local_path="$6"
+
+    if [[ -n "${local_path}" ]]; then
+        printf '%s\0' cargo install --root "${install_root}" --locked --path "${local_path}/bins/${path_name}"
+    else
+        if [[ -n "${ref}" ]]; then
+            printf '%s\0' cargo install --root "${install_root}" --locked --git "${repo_url}" --rev "${ref}" "${package}"
+        else
+            printf '%s\0' cargo install --root "${install_root}" --locked --git "${repo_url}" "${package}"
+        fi
+    fi
+}
+
+require_cargo() {
+    if ! command -v cargo >/dev/null 2>&1; then
+        printf 'amplihack uvx wrapper failed: cargo is required to install amplihack from uvx\n' >&2
+        exit 1
+    fi
+}
+
+main() {
+    require_cargo
+
+    local repo_url ref local_path
+    local -a source
+    readarray -t source < <(source_from_direct_url "$(direct_url_json)")
+    repo_url="${source[0]:-${DEFAULT_REPO_URL}}"
+    ref="${source[1]:-}"
+    local_path="${source[2]:-}"
+
+    local install_root
+    if [[ -n "${AMPLIHACK_UVX_CACHE:-}" ]]; then
+        install_root="${AMPLIHACK_UVX_CACHE}"
+    else
+        install_root="${HOME}/.cache/amplihack/uvx-wrapper/$(cache_key_for "${ref}" "${local_path}")/$(uname -s)-$(uname -m)"
+    fi
+
+    local bin_dir main_binary hooks_binary
+    bin_dir="${install_root}/bin"
+    main_binary="${bin_dir}/$(binary_name amplihack)"
+    hooks_binary="${bin_dir}/$(binary_name amplihack-hooks)"
+    if [[ ! -x "${main_binary}" || ! -x "${hooks_binary}" ]]; then
+        mkdir -p "${install_root}"
+        export CARGO_TARGET_DIR="${install_root}/target"
+
+        local -a args
+        readarray -d '' -t args < <(cargo_install_args amplihack amplihack "${install_root}" "${repo_url}" "${ref}" "${local_path}")
+        "${args[@]}"
+        readarray -d '' -t args < <(cargo_install_args amplihack-hooks-bin amplihack-hooks "${install_root}" "${repo_url}" "${ref}" "${local_path}")
+        "${args[@]}"
+    fi
+
+    export PATH="${bin_dir}:${PATH}"
+    exec "${main_binary}" "$@"
+}
+
+main "$@"

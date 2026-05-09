@@ -112,7 +112,7 @@ amplihack copilot
 uvx --from git+https://github.com/rysweet/amplihack-rs.git amplihack --help
 ```
 
-`uvx` installs a small Python bootstrap that builds and caches the native Rust
+`uvx` installs a small shell bootstrap that builds and caches the native Rust
 `amplihack` and `amplihack-hooks` binaries for the exact Git revision requested.
 
 **Option 4: Pre-built binaries**
