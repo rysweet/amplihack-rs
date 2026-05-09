@@ -338,16 +338,14 @@ fn local_install(
 
     println!();
     println!("🐙 Configuring GitHub Copilot CLI plugin (if installed):");
-    match copilot_plugin::register_copilot_plugin(repo_root, &hooks_bin) {
-        Ok(true) => {
+    match copilot_plugin::register_copilot_plugin(repo_root, &hooks_bin)
+        .context("failed to register Copilot CLI plugin")?
+    {
+        true => {
             println!("  ✅ Copilot CLI plugin amplihack@local refreshed");
         }
-        Ok(false) => {
+        false => {
             println!("  ↩️  Copilot CLI not detected (~/.copilot missing) — skipping");
-        }
-        Err(err) => {
-            // Non-fatal: Claude Code wiring already succeeded; surface as warning.
-            println!("  ⚠️  Failed to register Copilot CLI plugin: {err:#}");
         }
     }
 

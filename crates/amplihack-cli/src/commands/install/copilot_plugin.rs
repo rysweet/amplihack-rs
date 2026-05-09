@@ -27,6 +27,8 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::copilot_setup::jsonc as jsonc_utils;
+
 use super::paths::home_dir;
 
 /// Public entry: register amplihack as a local Copilot CLI plugin.
@@ -195,8 +197,8 @@ fn stage_commands(repo_root: &Path, plugin_dir: &Path) -> Result<bool> {
         .with_context(|| format!("failed to create {}", staging.display()))?;
 
     let mut copied = 0_usize;
-    for entry in fs::read_dir(source)
-        .with_context(|| format!("failed to read {}", source.display()))?
+    for entry in
+        fs::read_dir(source).with_context(|| format!("failed to read {}", source.display()))?
     {
         let entry = entry?;
         if entry.file_type()?.is_file()
@@ -252,30 +254,25 @@ fn stage_commands(repo_root: &Path, plugin_dir: &Path) -> Result<bool> {
 
 /// Idempotently insert the amplihack@local entry into
 /// `~/.copilot/config.json` under `installedPlugins`. Preserves any existing
-/// JSONC `// ...` header lines that the Copilot CLI itself emits at the top
-/// of the file by writing the JSON body verbatim (no comments emitted by us;
-/// we don't strip pre-existing comments either — we just refuse to corrupt
-/// a config we can't strict-parse, and warn instead).
+/// leading JSONC header while tolerating inline and block comments in the JSON
+/// body. Parse failures are returned to the installer so Copilot hook readiness
+/// cannot silently degrade into a success-shaped install without the plugin.
 fn register_in_config(copilot_home: &Path, plugin_dir: &Path) -> Result<()> {
     let config_path = copilot_home.join("config.json");
-    let mut config: Value = if config_path.exists() {
+    let (mut config, prefix): (Value, String) = if config_path.exists() {
         let raw = fs::read_to_string(&config_path)
             .with_context(|| format!("failed to read {}", config_path.display()))?;
-        // Strip leading `//` line comments so json strict parser can read
-        // Copilot's JSONC-flavoured config.
-        let stripped = strip_jsonc_line_comments(&raw);
-        match serde_json::from_str(&stripped) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    "could not parse {} as JSON ({e}); skipping installedPlugins update",
-                    config_path.display()
-                );
-                return Ok(());
-            }
-        }
+        let prefix = jsonc_utils::leading_comment_prefix(&raw).to_string();
+        let stripped = jsonc_utils::strip_jsonc_comments(&raw);
+        let value = if stripped.trim().is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str(&stripped)
+                .with_context(|| format!("failed to parse {} as JSONC", config_path.display()))?
+        };
+        (value, prefix)
     } else {
-        json!({})
+        (json!({}), String::new())
     };
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -303,21 +300,13 @@ fn register_in_config(copilot_home: &Path, plugin_dir: &Path) -> Result<()> {
     arr.retain(|p| p.get("name").and_then(|n| n.as_str()) != Some("amplihack"));
     arr.push(entry);
 
-    let body = serde_json::to_string_pretty(&config)
-        .context("failed to serialize Copilot config.json")?;
-    atomic_write(&config_path, body.as_bytes())?;
+    let body =
+        serde_json::to_string_pretty(&config).context("failed to serialize Copilot config.json")?;
+    atomic_write(
+        &config_path,
+        jsonc_utils::apply_prefix(&prefix, body).as_bytes(),
+    )?;
     Ok(())
-}
-
-/// Strip lines whose first non-whitespace characters are `//` so we can
-/// parse Copilot CLI's JSONC-flavoured `config.json` with strict serde_json.
-/// Block comments (`/* ... */`) and trailing `// ...` after content are
-/// not handled — Copilot CLI itself only emits leading line comments.
-fn strip_jsonc_line_comments(raw: &str) -> String {
-    raw.lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// Atomically write `body` to `path` via temp-file + rename so concurrent
@@ -333,8 +322,7 @@ fn atomic_write(path: &Path, body: &[u8]) -> Result<()> {
         .unwrap_or_default();
     tmp_name.push(".tmp");
     let tmp = path.with_file_name(tmp_name);
-    fs::write(&tmp, body)
-        .with_context(|| format!("failed to write {}", tmp.display()))?;
+    fs::write(&tmp, body).with_context(|| format!("failed to write {}", tmp.display()))?;
     fs::rename(&tmp, path)
         .with_context(|| format!("failed to rename {} to {}", tmp.display(), path.display()))?;
     Ok(())
@@ -368,7 +356,11 @@ mod tests {
         let root = td.path().join("repo");
         fs::create_dir_all(&root).unwrap();
         if with_commands {
-            let cmd_dir = root.join("docs").join("claude").join("commands").join("amplihack");
+            let cmd_dir = root
+                .join("docs")
+                .join("claude")
+                .join("commands")
+                .join("amplihack");
             fs::create_dir_all(&cmd_dir).unwrap();
             fs::write(cmd_dir.join("dev.md"), "# /dev\n").unwrap();
             fs::write(cmd_dir.join("analyze.md"), "# /analyze\n").unwrap();
@@ -384,8 +376,7 @@ mod tests {
     }
 
     fn run_with_copilot_home(copilot_home: &Path, repo_root: &Path, hooks_bin: &Path) -> bool {
-        register_copilot_plugin_in(copilot_home, repo_root, hooks_bin)
-            .expect("registration failed")
+        register_copilot_plugin_in(copilot_home, repo_root, hooks_bin).expect("registration failed")
     }
 
     #[test]
@@ -450,7 +441,10 @@ mod tests {
             .join("plugin.json");
         let manifest: Value =
             serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
-        assert_eq!(manifest.get("name").and_then(|n| n.as_str()), Some("amplihack"));
+        assert_eq!(
+            manifest.get("name").and_then(|n| n.as_str()),
+            Some("amplihack")
+        );
         assert_eq!(
             manifest.get("hooks").and_then(|h| h.as_str()),
             Some("./hooks.json")
@@ -505,10 +499,9 @@ mod tests {
         run_with_copilot_home(&copilot_home, &repo, &hooks_bin);
         run_with_copilot_home(&copilot_home, &repo, &hooks_bin);
 
-        let cfg: Value = serde_json::from_str(
-            &fs::read_to_string(copilot_home.join("config.json")).unwrap(),
-        )
-        .unwrap();
+        let after = fs::read_to_string(copilot_home.join("config.json")).unwrap();
+        let json_start = after.find('{').expect("config must contain JSON body");
+        let cfg: Value = serde_json::from_str(&after[json_start..]).unwrap();
         let plugins = cfg
             .get("installedPlugins")
             .and_then(|p| p.as_array())
@@ -544,10 +537,9 @@ mod tests {
         fs::write(&hooks_bin, b"#!/bin/sh\nexit 0\n").unwrap();
         run_with_copilot_home(&copilot_home, &repo, &hooks_bin);
 
-        let cfg: Value = serde_json::from_str(
-            &fs::read_to_string(copilot_home.join("config.json")).unwrap(),
-        )
-        .unwrap();
+        let after = fs::read_to_string(copilot_home.join("config.json")).unwrap();
+        let json_start = after.find('{').expect("config must contain JSON body");
+        let cfg: Value = serde_json::from_str(&after[json_start..]).unwrap();
         assert_eq!(
             cfg.get("lastLoggedInUser")
                 .and_then(|u| u.get("login"))
@@ -559,14 +551,109 @@ mod tests {
             cfg.get("trustedFolders").is_some(),
             "trustedFolders must be preserved"
         );
-        let plugins = cfg.get("installedPlugins").and_then(|p| p.as_array()).unwrap();
+        let plugins = cfg
+            .get("installedPlugins")
+            .and_then(|p| p.as_array())
+            .unwrap();
         assert_eq!(plugins.len(), 1, "amplihack should be registered");
+    }
+
+    #[test]
+    fn preserves_leading_jsonc_comments_when_registering_plugin() {
+        let td = TempDir::new().unwrap();
+        let copilot_home = fake_copilot_home(&td);
+        let cfg_path = copilot_home.join("config.json");
+        let header = "// Copilot CLI managed file\n// Preserve this header\n";
+        fs::write(
+            &cfg_path,
+            format!("{header}{{\n  \"lastLoggedInUser\": {{\"login\": \"alice\"}}\n}}\n"),
+        )
+        .unwrap();
+
+        let repo = fake_repo(&td, false);
+        let hooks_bin = td.path().join("amplihack-hooks");
+        fs::write(&hooks_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        run_with_copilot_home(&copilot_home, &repo, &hooks_bin);
+
+        let after = fs::read_to_string(&cfg_path).unwrap();
+        assert!(
+            after.starts_with(header),
+            "Copilot config JSONC header comments must be preserved verbatim; got:\n{after}"
+        );
+        let json_start = after
+            .find('{')
+            .expect("config must still contain JSON body");
+        let cfg: Value = serde_json::from_str(&after[json_start..]).unwrap();
+        assert!(
+            cfg.get("installedPlugins")
+                .and_then(|p| p.as_array())
+                .is_some_and(|plugins| plugins
+                    .iter()
+                    .any(|p| p.get("name").and_then(|n| n.as_str()) == Some("amplihack"))),
+            "registration must still add amplihack installedPlugins entry"
+        );
+    }
+
+    #[test]
+    fn supports_inline_and_block_jsonc_comments_when_registering_plugin() {
+        let td = TempDir::new().unwrap();
+        let copilot_home = fake_copilot_home(&td);
+        let cfg_path = copilot_home.join("config.json");
+        fs::write(
+            &cfg_path,
+            r#"{
+  "lastLoggedInUser": {"login": "alice"}, // inline comment from Copilot/user tooling
+  /* existing user-managed block comment */
+  "trustedFolders": ["/tmp"]
+}
+"#,
+        )
+        .unwrap();
+
+        let repo = fake_repo(&td, false);
+        let hooks_bin = td.path().join("amplihack-hooks");
+        fs::write(&hooks_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        run_with_copilot_home(&copilot_home, &repo, &hooks_bin);
+
+        let after = fs::read_to_string(&cfg_path).unwrap();
+        assert!(
+            after.contains("\"installedPlugins\""),
+            "JSONC comments must not prevent amplihack plugin registration; got:\n{after}"
+        );
+        assert!(
+            after.contains("\"trustedFolders\""),
+            "registration must preserve unrelated config keys while rewriting JSONC; got:\n{after}"
+        );
+    }
+
+    #[test]
+    fn malformed_copilot_config_is_registration_error() {
+        let td = TempDir::new().unwrap();
+        let copilot_home = fake_copilot_home(&td);
+        let cfg_path = copilot_home.join("config.json");
+        fs::write(&cfg_path, "{ malformed json\n").unwrap();
+
+        let repo = fake_repo(&td, false);
+        let hooks_bin = td.path().join("amplihack-hooks");
+        fs::write(&hooks_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        let result = register_copilot_plugin_in(&copilot_home, &repo, &hooks_bin);
+
+        assert!(
+            result.is_err(),
+            "malformed Copilot config must be surfaced as an install-blocking error, not silently skipped"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("config.json") || err.contains("JSON"),
+            "registration error should identify the Copilot config parse failure, got: {err}"
+        );
     }
 
     #[test]
     fn strip_jsonc_handles_leading_line_comments() {
         let raw = "// header line\n  // indented\n{\"a\":1}\n";
-        let out = strip_jsonc_line_comments(raw);
+        let out = jsonc_utils::strip_jsonc_comments(raw);
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed.get("a").and_then(|v| v.as_i64()), Some(1));
     }
