@@ -210,6 +210,7 @@ Proven methodologies for consistent, high-quality results.
 
 - [Default Workflow](claude/workflow/DEFAULT_WORKFLOW.md) - Standard multi-step development process
 - [Investigation Workflow](claude/workflow/INVESTIGATION_WORKFLOW.md) - Deep codebase analysis and understanding
+- [PR Recovery Readiness](PR_RECOVERY_READINESS.md) - Entry point for existing-PR recovery docs and the canonical readiness contract
 - [Document-Driven Development (DDD)](document_driven_development/README.md) - Documentation-first approach for large features
 
 ### DDD Deep Dive

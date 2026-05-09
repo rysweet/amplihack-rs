@@ -289,7 +289,7 @@ workflow-owned changes:
 {
   "workflow_finalize": {
     "pr_number": 579,
-    "head_sha": "4041d4b650a245501d8e381b1dfed95a94b65fca",
+    "head_sha": "8fb46865fb4412038b9313a62c02cc5aa0693132",
     "final_status": "ready",
     "changes_required": false,
     "files_modified": [],
@@ -301,7 +301,7 @@ workflow-owned changes:
       "test": "in_progress",
       "merge_state": "blocked"
     },
-    "no_op_justification": "No workflow-owned hook or additive-copy readiness changes are required at head 4041d4b650a245501d8e381b1dfed95a94b65fca. Lint/Format and build checks are green; Test is still naturally in progress and branch protection keeps the merge state blocked, so the PR is workflow-ready but not merge-ready.",
+    "no_op_justification": "No workflow-owned hook or additive-copy readiness changes are required at head 8fb46865fb4412038b9313a62c02cc5aa0693132. Lint/Format and build checks are green; Test is still naturally in progress and branch protection keeps the merge state blocked, so the PR is workflow-ready but not merge-ready.",
     "manual_merge_performed": false,
     "merge_bypass_performed": false,
     "nested_default_workflow_launched": false

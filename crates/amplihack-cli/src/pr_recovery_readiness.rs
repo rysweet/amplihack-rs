@@ -4,7 +4,10 @@
 //! separating workflow readiness from merge readiness. They deliberately do not
 //! perform GitHub mutations or launch workflows.
 
-use std::path::{Component, Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Component, Path, PathBuf},
+};
 
 use anyhow::{Result, bail};
 
@@ -198,15 +201,20 @@ impl AdditiveCopyReadiness {
 }
 
 pub fn inspect_additive_copy_plan(plan: &AdditiveCopyPlan) -> Result<AdditiveCopyReadiness> {
-    if plan.destination_root.as_os_str().is_empty() {
-        bail!("additive copy destination root is empty");
-    }
+    validate_additive_destination_root(&plan.destination_root)?;
 
     let mut action_names = Vec::with_capacity(plan.entries.len());
     let mut planned_actions = Vec::with_capacity(plan.entries.len());
+    let mut seen_relative_paths = HashSet::with_capacity(plan.entries.len());
 
     for entry in &plan.entries {
-        validate_additive_relative_path(&entry.relative_path)?;
+        let relative_path = normalize_additive_relative_path(&entry.relative_path)?;
+        if !seen_relative_paths.insert(relative_path.clone()) {
+            bail!(
+                "duplicate path in additive copy plan: {}",
+                relative_path.display()
+            );
+        }
         let action = if entry.destination_exists {
             "skip-existing"
         } else {
@@ -215,7 +223,7 @@ pub fn inspect_additive_copy_plan(plan: &AdditiveCopyPlan) -> Result<AdditiveCop
 
         action_names.push(action.to_string());
         planned_actions.push(AdditiveCopyAction {
-            relative_path: entry.relative_path.clone(),
+            relative_path,
             action: action.to_string(),
         });
     }
@@ -227,7 +235,28 @@ pub fn inspect_additive_copy_plan(plan: &AdditiveCopyPlan) -> Result<AdditiveCop
     })
 }
 
-fn validate_additive_relative_path(path: &Path) -> Result<()> {
+fn validate_additive_destination_root(path: &Path) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        bail!("additive copy destination root is empty");
+    }
+    if !path.is_absolute() {
+        bail!(
+            "additive copy destination root must be absolute: {}",
+            path.display()
+        );
+    }
+    for component in path.components() {
+        if component == Component::ParentDir {
+            bail!(
+                "path traversal is not allowed in additive copy destination root: {}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn normalize_additive_relative_path(path: &Path) -> Result<PathBuf> {
     if path.is_absolute() {
         bail!(
             "absolute path is not allowed in additive copy plan: {}",
@@ -237,9 +266,11 @@ fn validate_additive_relative_path(path: &Path) -> Result<()> {
     if path.as_os_str().is_empty() {
         bail!("empty path is not allowed in additive copy plan");
     }
+
+    let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::Normal(_) => {}
+            Component::Normal(part) => normalized.push(part),
             Component::ParentDir => bail!(
                 "path traversal is not allowed in additive copy plan: {}",
                 path.display()
@@ -253,7 +284,12 @@ fn validate_additive_relative_path(path: &Path) -> Result<()> {
             }
         }
     }
-    Ok(())
+
+    if normalized.as_os_str().is_empty() {
+        bail!("empty path is not allowed in additive copy plan");
+    }
+
+    Ok(normalized)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,8 +390,15 @@ pub fn render_no_op_report(input: NoOpReportInput) -> Result<NoOpReport> {
         bail!("no-op report blocked: builds are not green");
     }
 
-    let merge_ready =
-        matches!(input.merge_state, MergeState::Clean) && ci_readiness.all_checks_merge_passing;
+    let merge_state_clean = matches!(input.merge_state, MergeState::Clean);
+    let mut merge_blockers = Vec::new();
+    if !merge_state_clean {
+        merge_blockers.push("GitHub merge state is not clean");
+    }
+    if !ci_readiness.all_checks_merge_passing {
+        merge_blockers.push("GitHub Actions are not all completed successfully");
+    }
+    merge_blockers.extend_from_slice(missing_independent_merge_gate_blockers());
 
     let test_phrase = if ci_readiness.test_in_progress {
         "Test in progress"
@@ -369,19 +412,39 @@ pub fn render_no_op_report(input: NoOpReportInput) -> Result<NoOpReport> {
         MergeState::Clean => "merge clean",
         MergeState::Unknown(_) => "merge state unknown",
     };
+    let final_status = if merge_blockers.is_empty() {
+        "MERGE_READY"
+    } else {
+        "NOT_MERGE_READY"
+    };
+    let blocker_phrase = if merge_blockers.is_empty() {
+        "all merge-readiness gates are proven".to_string()
+    } else {
+        format!("blockers: {}", merge_blockers.join("; "))
+    };
 
     Ok(NoOpReport {
         workflow_ready: true,
-        merge_ready,
+        merge_ready: merge_blockers.is_empty(),
         head_sha: verified_head.head_sha.clone(),
         no_op_justification: format!(
-            "No-op justification: head {head}; Lint/Format green; builds green; {test_phrase}; {merge_phrase}; hook/additive-copy readiness satisfied; no manual merge, merge bypass, or nested default-workflow performed.",
+            "No-op justification: head {head}; Lint/Format green; builds green; {test_phrase}; {merge_phrase}; hook/additive-copy readiness satisfied; no manual merge, merge bypass, or nested default-workflow performed; {blocker_phrase}. {final_status}",
             head = verified_head.head_sha
         ),
         manual_merge_performed: false,
         merge_bypass_performed: false,
         nested_default_workflow_launched: false,
     })
+}
+
+fn missing_independent_merge_gate_blockers() -> &'static [&'static str] {
+    &[
+        "runnable QA/scenario evidence is not represented in this no-op input",
+        "docs-impact assessment is not represented in this no-op input",
+        "three clean quality-audit SEEK/VALIDATE/FIX cycles are not represented in this no-op input",
+        "focused diff scope evidence is not represented in this no-op input",
+        "PR description evidence is not represented in this no-op input",
+    ]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,10 +468,7 @@ impl CiReadinessSummary {
 
         for check in checks {
             let completed_and_passing = check.status == CheckStatus::Completed
-                && matches!(
-                    check.conclusion,
-                    CheckConclusion::Success | CheckConclusion::Skipped | CheckConclusion::Neutral
-                );
+                && check.conclusion == CheckConclusion::Success;
 
             summary.all_checks_merge_passing &= completed_and_passing;
 

@@ -191,7 +191,20 @@ pytest .claude/tools/amplihack/hooks/tests/test_power_steering_copilot_cli.py
    gh extension install github/gh-copilot
    ```
 
-2. **Verify Integration**:
+2. **Install or refresh amplihack**:
+
+   ```bash
+   amplihack install
+   ```
+
+   When `~/.copilot/` exists, install registers a local Copilot CLI plugin at
+   `~/.copilot/installed-plugins/amplihack@local/`. The plugin declares
+   `hooks: "./hooks.json"` and registers the native `amplihack-hooks` binary
+   for Copilot lifecycle events. Registration is idempotent: re-running install
+   refreshes the `amplihack` plugin entry without duplicating it or removing
+   unrelated `~/.copilot/config.json` fields.
+
+3. **Verify Integration**:
 
    ```bash
    # Check agents are accessible
@@ -202,9 +215,12 @@ pytest .claude/tools/amplihack/hooks/tests/test_power_steering_copilot_cli.py
 
    # Verify MCP servers
    cat .github/mcp-servers.json
+
+   # Verify Copilot plugin hooks when Copilot CLI is installed
+   cat ~/.copilot/installed-plugins/amplihack@local/hooks.json
    ```
 
-3. **Test Basic Functionality**:
+4. **Test Basic Functionality**:
 
    ```bash
    # Use Copilot with amplihack context
@@ -468,6 +484,22 @@ if __name__ == "__main__":
 **Challenge**: Claude Code and GitHub Copilot CLI have different hook capabilities.
 
 **Solution**: amplihack uses an adaptive hook system that detects which platform is calling and applies appropriate strategies for context injection.
+
+For Copilot CLI, `amplihack install` also stages a local `amplihack@local`
+plugin under `~/.copilot/installed-plugins/` when `~/.copilot/` exists. The
+plugin `hooks.json` maps Copilot events to the native `amplihack-hooks`
+subcommands:
+
+| Copilot event | Native command |
+| --- | --- |
+| `sessionStart` | `amplihack-hooks session-start` |
+| `sessionEnd` | `amplihack-hooks stop` |
+| `userPromptSubmitted` | `amplihack-hooks workflow-classification-reminder` and `amplihack-hooks user-prompt-submit` |
+| `preToolUse` | `amplihack-hooks pre-tool-use` |
+| `postToolUse` | `amplihack-hooks post-tool-use` |
+
+`PreCompact` remains Claude Code-only because Copilot CLI has no documented
+equivalent lifecycle event.
 
 #### Platform Detection
 

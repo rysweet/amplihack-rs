@@ -53,7 +53,7 @@ When the recovery is tied to a known head, require the local checkout, PR head,
 and expected head to match before any readiness verdict:
 
 ```bash
-expected_head_sha=4041d4b650a245501d8e381b1dfed95a94b65fca
+expected_head_sha=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)
 local_head_sha=$(git rev-parse HEAD)
 pr_head_sha=$(
   gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid
@@ -81,7 +81,7 @@ amplihack recipe run default-workflow \
   -c "repo_path=${REPO_PATH}" \
   -c "pr_number=${PR_NUMBER}" \
   -c "existing_branch=${EXISTING_BRANCH}" \
-  -c "expected_head_sha=4041d4b650a245501d8e381b1dfed95a94b65fca" \
+  -c "expected_head_sha=${expected_head_sha}" \
   -c "task_description=Recover PR #579 after interrupted workflow; resolve Copilot hook readiness and additive-copy readiness only; do not manually merge" \
   -c "issue_requirements=#577: Copilot plugin and native hooks are staged, registered, idempotent, and verified. #578: mapped framework directories replace stale amplihack-owned trees safely, preserve rollback, and guard source/destination aliasing."
 ```
@@ -278,7 +278,7 @@ state:
 {
   "workflow_finalize": {
     "pr_number": 579,
-    "head_sha": "4041d4b650a245501d8e381b1dfed95a94b65fca",
+    "head_sha": "8fb46865fb4412038b9313a62c02cc5aa0693132",
     "final_status": "ready",
     "changes_required": false,
     "files_modified": [],
@@ -290,7 +290,7 @@ state:
       "test": "in_progress",
       "merge_state": "blocked"
     },
-    "no_op_justification": "No workflow-owned hook or additive-copy readiness changes are required at head 4041d4b650a245501d8e381b1dfed95a94b65fca. Lint/Format and build checks are green; Test is still naturally in progress and branch protection keeps the merge state blocked, so the PR is workflow-ready but not merge-ready.",
+    "no_op_justification": "No workflow-owned hook or additive-copy readiness changes are required at head 8fb46865fb4412038b9313a62c02cc5aa0693132. Lint/Format and build checks are green; Test is still naturally in progress and branch protection keeps the merge state blocked, so the PR is workflow-ready but not merge-ready.",
     "manual_merge_performed": false,
     "merge_bypass_performed": false,
     "nested_default_workflow_launched": false

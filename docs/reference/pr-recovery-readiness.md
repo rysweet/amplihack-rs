@@ -12,6 +12,7 @@ manual merge.
 - [Workflow Context Inputs](#workflow-context-inputs)
 - [Environment Inputs](#environment-inputs)
 - [Recovery Output Contract](#recovery-output-contract)
+- [Workflow and Merge Status Mapping](#workflow-and-merge-status-mapping)
 - [Copilot Plugin Contract](#copilot-plugin-contract)
 - [Native Hook Contract](#native-hook-contract)
 - [Additive-Copy Contract](#additive-copy-contract)
@@ -38,11 +39,13 @@ manual merge.
 Example using PR 579:
 
 ```bash
+EXPECTED_HEAD_SHA="$(gh pr view 579 --json headRefOid --jq .headRefOid)"
+
 amplihack recipe run default-workflow \
   -c "repo_path=/home/user/src/amplihack-rs" \
   -c "pr_number=579" \
   -c "existing_branch=fix/issues-577-578-copilot-hooks-and-additive-copy" \
-  -c "expected_head_sha=4041d4b650a245501d8e381b1dfed95a94b65fca" \
+  -c "expected_head_sha=${EXPECTED_HEAD_SHA}" \
   -c "task_description=Recover PR #579 after interrupted workflow; resolve Copilot hook readiness and additive-copy readiness only; do not manually merge" \
   -c "issue_requirements=#577: Copilot plugin and native hooks are staged, registered, idempotent, and verified. #578: mapped framework directories replace stale amplihack-owned trees safely, preserve rollback, and guard source/destination aliasing."
 ```
@@ -96,6 +99,44 @@ Rules:
   reason that the original branch is unusable.
 - The workflow does not publish to a branch that is not attached to `pr_number`.
 - `manual_merge_performed` is always `false` for workflow-owned recovery.
+
+The human-readable readiness report ends with exactly one merge-readiness line:
+
+```text
+MERGE_READY
+```
+
+or:
+
+```text
+NOT_MERGE_READY
+```
+
+`MERGE_READY` is allowed only when every merge-readiness gate passes for the
+current remote PR head: exact head verification, completed workflow-owned
+recovery, green required GitHub Actions, runnable QA or documented scenario
+non-applicability, docs impact, three clean quality-audit cycles, focused diff
+scope, adequate PR description evidence, and no prohibited path. Any missing,
+failing, stale, pending, or unproven gate reports `NOT_MERGE_READY` with
+blockers.
+
+## Workflow and Merge Status Mapping
+
+`workflow-finalize` states describe workflow-owned recovery. `MERGE_READY` and
+`NOT_MERGE_READY` describe whether the PR can be considered ready to merge at
+the inspected head. They are related, but they are not the same contract.
+
+| Workflow evidence | Readiness report | Meaning |
+| --- | --- | --- |
+| `final_status: "ready"` with hook/additive-copy readiness proven | `WORKFLOW_READY` | The requested recovery surfaces are proven and the PR may continue through normal GitHub protection. |
+| `final_status: "ready"` plus every merge-readiness gate green for the current head | `MERGE_READY` | Workflow recovery and all merge gates are satisfied. |
+| `final_status: "ready"` with pending tests, blocked merge state, missing QA, stale PR body evidence, or any other unproven merge gate | `NOT_MERGE_READY` | Recovery may be workflow-ready, but the PR is not merge-ready. |
+| `final_status: "blocked"` | `NOT_MERGE_READY` | A named workflow blocker remains. |
+| `final_status: "finalized"` | `MERGE_READY` or `NOT_MERGE_READY` based on gates | Finalization completed its permitted path; merge readiness still depends on the current head and gate evidence. |
+
+Do not convert `WORKFLOW_READY` into `MERGE_READY` by assertion. GitHub Actions,
+branch protection, QA/scenario evidence, PR-body evidence, and quality-audit
+evidence remain independent merge gates.
 
 ## Copilot Plugin Contract
 
@@ -457,7 +498,7 @@ no-op decision instead of relying on the absence of a diff:
 {
   "workflow_finalize": {
     "pr_number": 579,
-    "head_sha": "4041d4b650a245501d8e381b1dfed95a94b65fca",
+    "head_sha": "8fb46865fb4412038b9313a62c02cc5aa0693132",
     "final_status": "ready",
     "changes_required": false,
     "files_modified": [],
@@ -469,7 +510,7 @@ no-op decision instead of relying on the absence of a diff:
       "test": "in_progress",
       "merge_state": "blocked"
     },
-    "no_op_justification": "No workflow-owned hook or additive-copy readiness changes are required at head 4041d4b650a245501d8e381b1dfed95a94b65fca. Lint/Format and build checks are green; Test is still naturally in progress and branch protection keeps the merge state blocked, so the PR is workflow-ready but not merge-ready.",
+    "no_op_justification": "No workflow-owned hook or additive-copy readiness changes are required at head 8fb46865fb4412038b9313a62c02cc5aa0693132. Lint/Format and build checks are green; Test is still naturally in progress and branch protection keeps the merge state blocked, so the PR is workflow-ready but not merge-ready.",
     "manual_merge_performed": false,
     "merge_bypass_performed": false,
     "nested_default_workflow_launched": false
@@ -498,6 +539,12 @@ No-op finalization requires all of these fields:
 The no-op decision is workflow readiness only. It does not imply merge readiness
 while a required Test check is still in progress or branch protection reports a
 blocked merge state.
+
+No-op reporting fails closed when hook readiness, additive-copy readiness, exact
+head verification, lint/build checks, files-modified evidence, or prohibited
+path guards are missing or failing. Pending tests and non-merge-passing GitHub
+merge state do not invalidate an otherwise evidence-backed workflow no-op; they
+set merge readiness to false and therefore require `NOT_MERGE_READY`.
 
 | `final_status` | Meaning |
 | --- | --- |
