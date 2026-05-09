@@ -31,6 +31,7 @@ manual merge.
 | `repo_path` | path string | Yes | Repository root or worktree root for the target PR. |
 | `pr_number` | integer or numeric string | Yes | Existing pull request number to recover. |
 | `existing_branch` | string | Yes | Existing PR head branch that must be reused. |
+| `expected_head_sha` | full Git SHA | Required for exact-head no-op | PR head that must match the local checkout before the workflow can emit a no-op readiness decision. |
 | `issue_requirements` | string | Yes | Acceptance criteria for the readiness surfaces under recovery. |
 | `expected_gh_account` | string | Required for GitHub mutation | Exact GitHub login allowed to publish or finalize. |
 
@@ -41,12 +42,22 @@ amplihack recipe run default-workflow \
   -c "repo_path=/home/user/src/amplihack-rs" \
   -c "pr_number=579" \
   -c "existing_branch=fix/issues-577-578-copilot-hooks-and-additive-copy" \
+  -c "expected_head_sha=4041d4b650a245501d8e381b1dfed95a94b65fca" \
   -c "task_description=Recover PR #579 after interrupted workflow; resolve Copilot hook readiness and additive-copy readiness only; do not manually merge" \
   -c "issue_requirements=#577: Copilot plugin and native hooks are staged, registered, idempotent, and verified. #578: mapped framework directories replace stale amplihack-owned trees safely, preserve rollback, and guard source/destination aliasing."
 ```
 
 `pr_number` and `existing_branch` are identity fields. A mismatch is a blocker
 before publish or finalization.
+
+`expected_head_sha` is a no-op guard field. When it is supplied, the workflow
+must prove this equality before reporting readiness without file changes:
+
+```text
+local HEAD == PR headRefOid == expected_head_sha
+```
+
+A mismatch is `blocked`, not ambiguous.
 
 ## Environment Inputs
 
@@ -439,6 +450,55 @@ Rules:
 }
 ```
 
+When no workflow-owned changes are required, finalization records an explicit
+no-op decision instead of relying on the absence of a diff:
+
+```json
+{
+  "workflow_finalize": {
+    "pr_number": 579,
+    "head_sha": "4041d4b650a245501d8e381b1dfed95a94b65fca",
+    "final_status": "ready",
+    "changes_required": false,
+    "files_modified": [],
+    "hook_readiness": "ready",
+    "additive_copy_readiness": "ready",
+    "check_state": {
+      "lint_format": "green",
+      "builds": "green",
+      "test": "in_progress",
+      "merge_state": "blocked"
+    },
+    "no_op_justification": "No workflow-owned hook or additive-copy readiness changes are required at head 4041d4b650a245501d8e381b1dfed95a94b65fca. Lint/Format and build checks are green; Test is still naturally in progress and branch protection keeps the merge state blocked, so the PR is workflow-ready but not merge-ready.",
+    "manual_merge_performed": false,
+    "merge_bypass_performed": false,
+    "nested_default_workflow_launched": false
+  }
+}
+```
+
+No-op finalization requires all of these fields:
+
+| Field | Required value |
+| --- | --- |
+| `head_sha` | Exact inspected PR head. |
+| `changes_required` | `false`. |
+| `files_modified` | Empty array. |
+| `hook_readiness` | `ready`. |
+| `additive_copy_readiness` | `ready`. |
+| `check_state.lint_format` | `green`. |
+| `check_state.builds` | `green`. |
+| `check_state.test` | `in_progress` or a completed result reported by GitHub. |
+| `check_state.merge_state` | Actual mergeability state reported by GitHub. |
+| `no_op_justification` | Human-readable explanation tied to the exact head and check state. |
+| `manual_merge_performed` | `false`. |
+| `merge_bypass_performed` | `false`. |
+| `nested_default_workflow_launched` | `false`. |
+
+The no-op decision is workflow readiness only. It does not imply merge readiness
+while a required Test check is still in progress or branch protection reports a
+blocked merge state.
+
 | `final_status` | Meaning |
 | --- | --- |
 | `ready` | The PR is ready for normal workflow-managed completion. |
@@ -464,6 +524,10 @@ These conditions fail closed for workflow-owned PR recovery:
 - Same-path source/destination aliasing would cause destructive replacement.
 - A failed staged swap cannot restore the previous destination tree.
 - Install verification reports missing source-derived assets.
+- An exact-head no-op is requested but `local HEAD == PR headRefOid ==
+  expected_head_sha` is not true.
+- No-op finalization omits files modified, check state, or a justification tied
+  to the inspected head.
 - The install manifest is incomplete or contains unsafe path entries.
 - GitHub mutation is required but authentication or identity verification fails.
 - Publish or finalization is attempted outside the workflow-owned path.

@@ -28,11 +28,24 @@ The feature has four guarantees:
 | Readiness scope is bounded | Recovery validates only the requested readiness surfaces. A recovery task names the issues and acceptance criteria under review. |
 | Finalization is workflow-owned | `workflow-finalize` emits `ready`, `blocked`, or `finalized`. Operators do not manually merge around that decision. |
 
+Workflow-ready is not the same as merge-ready. A recovered PR can be
+workflow-ready when all in-scope recovery surfaces are proven, even while a
+long-running required check is still in progress and the GitHub merge state is
+blocked by branch protection. The workflow reports that state instead of
+bypassing it.
+
 PR 579 is the concrete recovery example used by the companion tutorial. Its
 recovery branch is:
 
 ```text
 fix/issues-577-578-copilot-hooks-and-additive-copy
+```
+
+For exact-head no-op recovery, the head gate fails closed unless all three
+values match:
+
+```text
+local HEAD == PR headRefOid == expected_head_sha
 ```
 
 and the recovered pull request remains `rysweet/amplihack-rs#579`.
@@ -49,6 +62,7 @@ amplihack recipe run default-workflow \
   -c "repo_path=/home/user/src/amplihack-rs" \
   -c "pr_number=<PR_NUMBER>" \
   -c "existing_branch=<EXISTING_PR_BRANCH>" \
+  -c "expected_head_sha=<EXPECTED_HEAD_SHA>" \
   -c "task_description=<bounded recovery task; do not manually merge>" \
   -c "issue_requirements=<issue acceptance criteria for the recovery scope>"
 ```
@@ -265,6 +279,38 @@ usable.
   }
 }
 ```
+
+For a recovery that only needs to prove readiness at an already-validated head,
+the workflow can emit an accepted no-op decision. The no-op is valid only when
+the exact PR head was checked and the requested surfaces have no remaining
+workflow-owned changes:
+
+```json
+{
+  "workflow_finalize": {
+    "pr_number": 579,
+    "head_sha": "4041d4b650a245501d8e381b1dfed95a94b65fca",
+    "final_status": "ready",
+    "changes_required": false,
+    "files_modified": [],
+    "hook_readiness": "ready",
+    "additive_copy_readiness": "ready",
+    "check_state": {
+      "lint_format": "green",
+      "builds": "green",
+      "test": "in_progress",
+      "merge_state": "blocked"
+    },
+    "no_op_justification": "No workflow-owned hook or additive-copy readiness changes are required at head 4041d4b650a245501d8e381b1dfed95a94b65fca. Lint/Format and build checks are green; Test is still naturally in progress and branch protection keeps the merge state blocked, so the PR is workflow-ready but not merge-ready.",
+    "manual_merge_performed": false,
+    "merge_bypass_performed": false,
+    "nested_default_workflow_launched": false
+  }
+}
+```
+
+The accepted no-op does not mark the PR as merged, does not override branch
+protection, and does not treat a pending Test check as a recovery defect.
 
 Valid final statuses are:
 

@@ -37,7 +37,7 @@ From the repository root, inspect the PR without mutating it:
 PR_NUMBER=579
 EXISTING_BRANCH=fix/issues-577-578-copilot-hooks-and-additive-copy
 
-gh pr view "$PR_NUMBER" --json number,headRefName,baseRefName,state,url
+gh pr view "$PR_NUMBER" --json number,headRefName,baseRefName,state,url,headRefOid
 ```
 
 For the PR 579 recovery example, the head branch is:
@@ -48,6 +48,27 @@ fix/issues-577-578-copilot-hooks-and-additive-copy
 
 If the PR points at a different branch, stop and recover through workflow
 context. Do not retarget, merge, close, or recreate the PR by hand.
+
+When the recovery is tied to a known head, require the local checkout, PR head,
+and expected head to match before any readiness verdict:
+
+```bash
+expected_head_sha=4041d4b650a245501d8e381b1dfed95a94b65fca
+local_head_sha=$(git rev-parse HEAD)
+pr_head_sha=$(
+  gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid
+)
+
+if [ "$local_head_sha" != "$expected_head_sha" ] ||
+   [ "$pr_head_sha" != "$expected_head_sha" ]; then
+  printf 'blocked: local HEAD (%s), PR head (%s), and expected_head_sha (%s) must match\n' \
+    "$local_head_sha" "$pr_head_sha" "$expected_head_sha" >&2
+  exit 1
+fi
+```
+
+A different head blocks the exact-head no-op path because the workflow cannot
+claim readiness for a commit it did not inspect.
 
 ## 3. Launch `default-workflow` with Recovery Context
 
@@ -60,6 +81,7 @@ amplihack recipe run default-workflow \
   -c "repo_path=${REPO_PATH}" \
   -c "pr_number=${PR_NUMBER}" \
   -c "existing_branch=${EXISTING_BRANCH}" \
+  -c "expected_head_sha=4041d4b650a245501d8e381b1dfed95a94b65fca" \
   -c "task_description=Recover PR #579 after interrupted workflow; resolve Copilot hook readiness and additive-copy readiness only; do not manually merge" \
   -c "issue_requirements=#577: Copilot plugin and native hooks are staged, registered, idempotent, and verified. #578: mapped framework directories replace stale amplihack-owned trees safely, preserve rollback, and guard source/destination aliasing."
 ```
@@ -246,6 +268,39 @@ The finalization step emits the recovery decision. This example shows PR 579:
   }
 }
 ```
+
+If hook readiness and additive-copy readiness are already satisfied at the
+checked head, the workflow emits an accepted no-op instead of inventing a
+change. The no-op names the exact head, files modified, and the observed check
+state:
+
+```json
+{
+  "workflow_finalize": {
+    "pr_number": 579,
+    "head_sha": "4041d4b650a245501d8e381b1dfed95a94b65fca",
+    "final_status": "ready",
+    "changes_required": false,
+    "files_modified": [],
+    "hook_readiness": "ready",
+    "additive_copy_readiness": "ready",
+    "check_state": {
+      "lint_format": "green",
+      "builds": "green",
+      "test": "in_progress",
+      "merge_state": "blocked"
+    },
+    "no_op_justification": "No workflow-owned hook or additive-copy readiness changes are required at head 4041d4b650a245501d8e381b1dfed95a94b65fca. Lint/Format and build checks are green; Test is still naturally in progress and branch protection keeps the merge state blocked, so the PR is workflow-ready but not merge-ready.",
+    "manual_merge_performed": false,
+    "merge_bypass_performed": false,
+    "nested_default_workflow_launched": false
+  }
+}
+```
+
+Do not convert that result into a manual merge. Pending Test and blocked merge
+state mean the PR remains under normal GitHub protection while being recovered
+from the workflow's point of view.
 
 Interpret the status exactly as emitted:
 

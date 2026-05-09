@@ -39,6 +39,7 @@ pub mod launcher;
 pub mod launcher_context;
 pub mod memory_config;
 pub mod nesting;
+pub mod pr_recovery_readiness;
 #[cfg(test)]
 mod remote_cli_tests;
 pub mod resolve_bundle_asset;
