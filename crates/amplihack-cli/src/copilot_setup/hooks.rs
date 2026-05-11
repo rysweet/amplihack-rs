@@ -31,6 +31,23 @@ pub(super) fn build_copilot_hooks_manifest(hooks_dir: &Path) -> serde_json::Valu
 }
 
 pub(super) fn stage_repo_hooks(repo_root: &Path) -> Result<usize> {
+    // Defensive guard (issue #536): never write `.github/hooks/` into the
+    // amplihack-rs workspace itself. The combination of `Cargo.toml` +
+    // `amplifier-bundle/` + `crates/amplihack-cli/` is the unambiguous
+    // workspace marker; user repos that happen to ship a Cargo.toml will not
+    // also have those two amplihack-specific paths. This protects against
+    // any test or subprocess that inadvertently calls into us with cwd
+    // pointing at the amplihack-rs checkout (the `github_hooks_scope_creep_is_absent`
+    // contract). Production users staging hooks into their own checkouts are
+    // unaffected.
+    if is_amplihack_workspace_root(repo_root) {
+        tracing::debug!(
+            ?repo_root,
+            "stage_repo_hooks: refusing to write into amplihack-rs workspace root"
+        );
+        return Ok(0);
+    }
+
     let hooks_dir = repo_root.join(".github").join("hooks");
     fs::create_dir_all(&hooks_dir)?;
 
@@ -60,6 +77,22 @@ pub(super) fn stage_repo_hooks(repo_root: &Path) -> Result<usize> {
     count += 1;
 
     Ok(count)
+}
+
+/// Detect the amplihack-rs workspace root.
+///
+/// Returns true only when **all three** marker paths exist: `Cargo.toml`,
+/// `amplifier-bundle/`, and `crates/amplihack-cli/`. User project repos that
+/// happen to ship a `Cargo.toml` will not also have those amplihack-specific
+/// directories, so this guard never blocks legitimate user staging.
+///
+/// Used by `stage_repo_hooks` to refuse writing into the amplihack-rs
+/// workspace itself, satisfying the `github_hooks_scope_creep_is_absent`
+/// contract (issue #536).
+fn is_amplihack_workspace_root(path: &Path) -> bool {
+    path.join("Cargo.toml").is_file()
+        && path.join("amplifier-bundle").is_dir()
+        && path.join("crates").join("amplihack-cli").is_dir()
 }
 
 /// Merge an amplihack hooks block into `~/.copilot/config.json` so that hooks

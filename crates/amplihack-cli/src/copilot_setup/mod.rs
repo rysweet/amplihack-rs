@@ -7,7 +7,7 @@ mod staging;
 
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 use hooks::{build_wrapper_script, error_wrapper_script, replace_or_append_section};
@@ -66,6 +66,24 @@ const COPILOT_HOOK_WRAPPERS: &[HookWrapperSpec] = &[
 ];
 
 pub fn ensure_copilot_home_staged() -> Result<()> {
+    // Resolve the repo root from the current working directory exactly once,
+    // up-front. This preserves the historical behaviour for the production
+    // launcher path (which calls this from the repo the user is launching
+    // amplihack against) while giving tests a side-door
+    // (`ensure_copilot_home_staged_in`) that does not depend on cwd.
+    let repo_root = std::env::current_dir().ok();
+    ensure_copilot_home_staged_in(repo_root.as_deref())
+}
+
+/// Stage Copilot home assets, optionally wiring the per-repo
+/// `.github/hooks/` block into `repo_root` when supplied.
+///
+/// When `repo_root` is `None` the per-repo hook staging is skipped entirely
+/// (user-level hooks are still wired into `~/.copilot/`). This is the
+/// preferred entry point from tests because it removes the implicit dependency
+/// on `current_dir()` — the leak vector behind the
+/// `github_hooks_scope_creep_is_absent` regression.
+pub(crate) fn ensure_copilot_home_staged_in(repo_root: Option<&Path>) -> Result<()> {
     let staged = staged_framework_dir()?;
     let copilot_home = copilot_home()?;
     fs::create_dir_all(&copilot_home)?;
@@ -95,15 +113,18 @@ pub fn ensure_copilot_home_staged() -> Result<()> {
 
     generate_copilot_instructions(&copilot_home)?;
 
-    if let Ok(cwd) = std::env::current_dir() {
-        match stage_repo_hooks(&cwd) {
+    if let Some(root) = repo_root {
+        match stage_repo_hooks(root) {
             Ok(count) => {
-                tracing::debug!("staged {count} copilot hook file(s) into {}", cwd.display());
+                tracing::debug!(
+                    "staged {count} copilot hook file(s) into {}",
+                    root.display()
+                );
             }
             Err(err) => {
                 eprintln!(
                     "⚠️  Failed to stage Copilot hooks into {}: {err}",
-                    cwd.display()
+                    root.display()
                 );
             }
         }
@@ -140,14 +161,13 @@ mod tests {
 
     #[test]
     fn ensure_copilot_home_stages_assets_and_plugin() {
-        let _home_guard = crate::test_support::home_env_lock()
+        let _env_guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        let previous_home = crate::test_support::set_home(temp.path());
+        let _home_guard = crate::test_support::HomeGuard::set(temp.path());
         let repo_root = temp.path().join("repo");
         fs::create_dir_all(&repo_root).unwrap();
-        let previous_cwd = crate::test_support::set_cwd(&repo_root).unwrap();
 
         let staged = temp.path().join(".amplihack/.claude");
         fs::create_dir_all(staged.join("agents/amplihack/core")).unwrap();
@@ -168,7 +188,7 @@ mod tests {
         )
         .unwrap();
 
-        ensure_copilot_home_staged().unwrap();
+        ensure_copilot_home_staged_in(Some(&repo_root)).unwrap();
 
         assert!(
             temp.path()
@@ -272,9 +292,6 @@ mod tests {
                 .exists()
         );
         assert!(copilot_config_raw.contains("\"name\": \"amplihack\""));
-
-        crate::test_support::restore_cwd(&previous_cwd).unwrap();
-        crate::test_support::restore_home(previous_home);
     }
 
     fn event_basename(event: &str) -> &'static str {
@@ -333,14 +350,13 @@ mod tests {
         // without choking on the comments and (b) preserve the comment block
         // when it writes the file back after registering the plugin and
         // wiring user-level hooks.
-        let _home_guard = crate::test_support::home_env_lock()
+        let _env_guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        let previous_home = crate::test_support::set_home(temp.path());
+        let _home_guard = crate::test_support::HomeGuard::set(temp.path());
         let repo_root = temp.path().join("repo");
         fs::create_dir_all(&repo_root).unwrap();
-        let previous_cwd = crate::test_support::set_cwd(&repo_root).unwrap();
 
         // Seed a JSONC config.json mirroring what real Copilot CLI writes.
         let copilot_dir = temp.path().join(".copilot");
@@ -350,7 +366,7 @@ mod tests {
                       {}\n";
         fs::write(copilot_dir.join("config.json"), seeded).unwrap();
 
-        // Minimal staged framework so ensure_copilot_home_staged() succeeds.
+        // Minimal staged framework so ensure_copilot_home_staged_in() succeeds.
         let staged = temp.path().join(".amplihack/.claude");
         fs::create_dir_all(staged.join("commands/amplihack")).unwrap();
         fs::write(staged.join("commands/amplihack/dev.md"), "command").unwrap();
@@ -360,7 +376,7 @@ mod tests {
         )
         .unwrap();
 
-        ensure_copilot_home_staged().unwrap();
+        ensure_copilot_home_staged_in(Some(&repo_root)).unwrap();
 
         let after = fs::read_to_string(copilot_dir.join("config.json")).unwrap();
         assert!(
@@ -383,9 +399,95 @@ mod tests {
             config["hooks"].is_object(),
             "user-level hooks were not merged: {config}"
         );
+    }
 
-        crate::test_support::restore_cwd(&previous_cwd).unwrap();
-        crate::test_support::restore_home(previous_home);
+    /// Regression for issue #536 / PR #591 CI failure: when callers pass
+    /// `None` for the per-repo destination, `ensure_copilot_home_staged_in`
+    /// must NOT touch the workspace cwd. This pins the contract that the
+    /// repo-hook destination is *only* what was passed in — never what
+    /// `current_dir()` happens to return at call time.
+    #[test]
+    fn ensure_copilot_home_staged_in_does_not_leak_hooks_to_cwd_when_repo_root_is_none() {
+        let _env_guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = crate::test_support::HomeGuard::set(temp.path());
+
+        // Simulate a workspace cwd separate from HOME.
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let _cwd_guard = crate::test_support::CwdGuard::set(&workspace).unwrap();
+
+        // Minimal staged framework so the call succeeds.
+        let staged = temp.path().join(".amplihack/.claude");
+        fs::create_dir_all(staged.join("commands/amplihack")).unwrap();
+        fs::write(staged.join("commands/amplihack/dev.md"), "command").unwrap();
+        fs::write(
+            staged.join("commands/amplihack/plugin.json"),
+            "{\"name\":\"amplihack\"}",
+        )
+        .unwrap();
+
+        ensure_copilot_home_staged_in(None).unwrap();
+
+        assert!(
+            !workspace.join(".github").exists(),
+            "ensure_copilot_home_staged_in(None) leaked .github/ into cwd: {}",
+            workspace.display()
+        );
+        // User-level hooks should still be wired into ~/.copilot/.
+        assert!(
+            temp.path()
+                .join(".copilot/.github/hooks/session-start")
+                .exists(),
+            "user-level hooks were not staged"
+        );
+    }
+
+    /// Regression for issue #536 / PR #591 CI failure: when callers pass an
+    /// explicit `repo_root`, hooks must go to *that* path and nowhere else —
+    /// even if the process cwd is some other directory. This guards against
+    /// a future regression that would re-introduce a `current_dir()` lookup
+    /// inside `ensure_copilot_home_staged_in`.
+    #[test]
+    fn ensure_copilot_home_staged_in_writes_hooks_to_explicit_root_only() {
+        let _env_guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = crate::test_support::HomeGuard::set(temp.path());
+
+        // cwd and the explicit repo target are deliberately distinct.
+        let cwd_dir = temp.path().join("cwd");
+        fs::create_dir_all(&cwd_dir).unwrap();
+        let _cwd_guard = crate::test_support::CwdGuard::set(&cwd_dir).unwrap();
+
+        let target_repo = temp.path().join("target_repo");
+        fs::create_dir_all(&target_repo).unwrap();
+
+        // Minimal staged framework so the call succeeds.
+        let staged = temp.path().join(".amplihack/.claude");
+        fs::create_dir_all(staged.join("commands/amplihack")).unwrap();
+        fs::write(staged.join("commands/amplihack/dev.md"), "command").unwrap();
+        fs::write(
+            staged.join("commands/amplihack/plugin.json"),
+            "{\"name\":\"amplihack\"}",
+        )
+        .unwrap();
+
+        ensure_copilot_home_staged_in(Some(&target_repo)).unwrap();
+
+        assert!(
+            target_repo.join(".github/hooks/session-start").exists(),
+            "expected hook at target_repo: {}",
+            target_repo.display()
+        );
+        assert!(
+            !cwd_dir.join(".github").exists(),
+            "explicit repo_root must not leak hooks to cwd: {}",
+            cwd_dir.display()
+        );
     }
 
     #[test]
@@ -394,5 +496,50 @@ mod tests {
         assert!(!script.contains("python3"));
         assert!(script.contains("sed -n"));
         assert!(script.contains("errors.log"));
+    }
+
+    /// Regression for issue #536 / PR #591 CI failure: even when callers do
+    /// pass an explicit `repo_root`, `stage_repo_hooks` must refuse to write
+    /// into the amplihack-rs workspace itself. Detected by the combination
+    /// of `Cargo.toml` + `amplifier-bundle/` + `crates/amplihack-cli/` —
+    /// markers no real user repo would ship together.
+    #[test]
+    fn ensure_copilot_home_staged_in_refuses_amplihack_workspace_repo_root() {
+        let _env_guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = crate::test_support::HomeGuard::set(temp.path());
+
+        // Synthesize a fake amplihack-rs workspace.
+        let fake_workspace = temp.path().join("fake_amplihack_rs");
+        fs::create_dir_all(fake_workspace.join("amplifier-bundle")).unwrap();
+        fs::create_dir_all(fake_workspace.join("crates/amplihack-cli")).unwrap();
+        fs::write(fake_workspace.join("Cargo.toml"), "[workspace]\n").unwrap();
+
+        // Minimal staged framework so the call succeeds.
+        let staged = temp.path().join(".amplihack/.claude");
+        fs::create_dir_all(staged.join("commands/amplihack")).unwrap();
+        fs::write(staged.join("commands/amplihack/dev.md"), "command").unwrap();
+        fs::write(
+            staged.join("commands/amplihack/plugin.json"),
+            "{\"name\":\"amplihack\"}",
+        )
+        .unwrap();
+
+        ensure_copilot_home_staged_in(Some(&fake_workspace)).unwrap();
+
+        assert!(
+            !fake_workspace.join(".github").exists(),
+            "stage_repo_hooks must refuse the amplihack-rs workspace root: {}",
+            fake_workspace.display()
+        );
+        // User-level hooks must still be wired into ~/.copilot/.
+        assert!(
+            temp.path()
+                .join(".copilot/.github/hooks/session-start")
+                .exists(),
+            "user-level hooks were not staged"
+        );
     }
 }
