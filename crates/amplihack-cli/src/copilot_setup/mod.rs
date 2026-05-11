@@ -497,4 +497,49 @@ mod tests {
         assert!(script.contains("sed -n"));
         assert!(script.contains("errors.log"));
     }
+
+    /// Regression for issue #536 / PR #591 CI failure: even when callers do
+    /// pass an explicit `repo_root`, `stage_repo_hooks` must refuse to write
+    /// into the amplihack-rs workspace itself. Detected by the combination
+    /// of `Cargo.toml` + `amplifier-bundle/` + `crates/amplihack-cli/` —
+    /// markers no real user repo would ship together.
+    #[test]
+    fn ensure_copilot_home_staged_in_refuses_amplihack_workspace_repo_root() {
+        let _env_guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = crate::test_support::HomeGuard::set(temp.path());
+
+        // Synthesize a fake amplihack-rs workspace.
+        let fake_workspace = temp.path().join("fake_amplihack_rs");
+        fs::create_dir_all(fake_workspace.join("amplifier-bundle")).unwrap();
+        fs::create_dir_all(fake_workspace.join("crates/amplihack-cli")).unwrap();
+        fs::write(fake_workspace.join("Cargo.toml"), "[workspace]\n").unwrap();
+
+        // Minimal staged framework so the call succeeds.
+        let staged = temp.path().join(".amplihack/.claude");
+        fs::create_dir_all(staged.join("commands/amplihack")).unwrap();
+        fs::write(staged.join("commands/amplihack/dev.md"), "command").unwrap();
+        fs::write(
+            staged.join("commands/amplihack/plugin.json"),
+            "{\"name\":\"amplihack\"}",
+        )
+        .unwrap();
+
+        ensure_copilot_home_staged_in(Some(&fake_workspace)).unwrap();
+
+        assert!(
+            !fake_workspace.join(".github").exists(),
+            "stage_repo_hooks must refuse the amplihack-rs workspace root: {}",
+            fake_workspace.display()
+        );
+        // User-level hooks must still be wired into ~/.copilot/.
+        assert!(
+            temp.path()
+                .join(".copilot/.github/hooks/session-start")
+                .exists(),
+            "user-level hooks were not staged"
+        );
+    }
 }
