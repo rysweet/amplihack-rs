@@ -147,16 +147,16 @@ fn tc_skill_01_all_bundled_skill_names_match_kebab_pattern() {
 
     for path in &skill_files {
         let content = fs::read_to_string(path).expect("read SKILL.md");
-        if let Some(name) = extract_frontmatter_name(&content) {
-            if !name_re.is_match(&name) {
-                violations.push(format!(
-                    "  {} → name: \"{}\" (must be lowercase letters, numbers, hyphens only)",
-                    path.strip_prefix(&workspace_root())
-                        .unwrap_or(path)
-                        .display(),
-                    name
-                ));
-            }
+        if let Some(name) = extract_frontmatter_name(&content)
+            && !name_re.is_match(&name)
+        {
+            violations.push(format!(
+                "  {} → name: \"{}\" (must be lowercase letters, numbers, hyphens only)",
+                path.strip_prefix(workspace_root())
+                    .unwrap_or(path)
+                    .display(),
+                name
+            ));
         }
     }
 
