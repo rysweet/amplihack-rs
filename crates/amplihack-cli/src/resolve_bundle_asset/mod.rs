@@ -139,6 +139,21 @@ pub fn run_cli(arg: &str) -> i32 {
         };
     }
 
+    // Guard: if the arg has no '/' it looks like a named-asset lookup, not a
+    // raw relative path. Return exit 1 (not found) instead of letting
+    // validate_relative_path reject it with exit 2 (invalid input). (#588)
+    if !arg.contains('/') {
+        let valid = NAMED_ASSETS
+            .iter()
+            .map(|(n, _)| *n)
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!(
+            "ERROR: Unknown asset name {arg:?}. Expected one of: {valid}"
+        );
+        return 1;
+    }
+
     // Fall through to raw amplifier-bundle/ path resolution
     match resolve_asset(arg) {
         Ok(path) => {
@@ -368,6 +383,67 @@ mod tests {
         );
     }
 
+    // ── TDD tests for #588: unregistered named assets must return exit 1 ────
+    //
+    // BUG: When run_cli receives an arg without '/' that isn't in NAMED_ASSETS
+    // (e.g. "helper-path", "hooks-dir"), it falls through to resolve_asset →
+    // validate_relative_path which rejects it with exit 2 (invalid input)
+    // because it doesn't start with "amplifier-bundle/".
+    //
+    // EXPECTED: exit 1 (not found) — these look like named-asset lookups,
+    // not raw relative paths, and should be treated as unknown assets.
+
+    /// Regression for #588: `run_cli("helper-path")` must return exit 1
+    /// (asset not found), NOT exit 2 (invalid input). The preflight step
+    /// in smart-orchestrator.yaml calls `amplihack resolve-bundle-asset
+    /// helper-path` and relies on exit 1 to distinguish "asset removed"
+    /// from "bad input".
+    #[test]
+    fn run_cli_unregistered_named_asset_helper_path_returns_exit_1() {
+        let code = run_cli("helper-path");
+        assert_eq!(
+            code, 1,
+            "run_cli(\"helper-path\") should return 1 (not found), got {code} \
+             — unregistered named assets must not fall through to validate_relative_path"
+        );
+    }
+
+    /// Regression for #588: `run_cli("hooks-dir")` must return exit 1
+    /// (not found) after removal in #285, not exit 2 (invalid input).
+    #[test]
+    fn run_cli_unregistered_named_asset_hooks_dir_returns_exit_1() {
+        let code = run_cli("hooks-dir");
+        assert_eq!(
+            code, 1,
+            "run_cli(\"hooks-dir\") should return 1 (not found), got {code} \
+             — unregistered named assets must not fall through to validate_relative_path"
+        );
+    }
+
+    /// Any single-token arg (no '/') that isn't a registered named asset
+    /// should return exit 1 (not found), not exit 2 (invalid input).
+    /// This covers future removals from NAMED_ASSETS without needing
+    /// per-name test cases.
+    #[test]
+    fn run_cli_arbitrary_unregistered_named_asset_returns_exit_1() {
+        let code = run_cli("nonexistent-asset-name");
+        assert_eq!(
+            code, 1,
+            "run_cli(\"nonexistent-asset-name\") should return 1 (not found), got {code}"
+        );
+    }
+
+    /// Verify that actual invalid input (path traversal) still returns
+    /// exit 2, confirming the exit-code distinction is preserved.
+    #[test]
+    fn run_cli_invalid_input_still_returns_exit_2() {
+        assert_eq!(
+            run_cli("../../../etc/passwd"),
+            2,
+            "path traversal must still return exit 2 (invalid input)"
+        );
+    }
+
     #[test]
     fn run_cli_dispatches_named_asset_not_found() {
         // When AMPLIHACK_HOME and HOME both point to empty dirs AND the
@@ -510,6 +586,44 @@ mod cli_dispatch_tests {
             offenders.is_empty(),
             "recipes still invoke the legacy Python runtime_assets module \
              instead of `amplihack resolve-bundle-asset`: {offenders:?}"
+        );
+    }
+
+    /// Regression for #588: recipes must not contain dead HOOKS_DIR assignments
+    /// that resolve `hooks-dir` (removed in #285). The `|| true` suppresses
+    /// the error but the variable is never read — it's dead code that masks
+    /// the underlying asset-resolver mismatch.
+    #[test]
+    fn recipes_do_not_contain_dead_hooks_dir_assignments() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let recipes_dir = manifest
+            .join("..")
+            .join("..")
+            .join("amplifier-bundle")
+            .join("recipes");
+        if !recipes_dir.is_dir() {
+            eprintln!(
+                "skipping: recipes dir not found at {}",
+                recipes_dir.display()
+            );
+            return;
+        }
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(&recipes_dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).unwrap();
+            // Match the pattern: HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir ..."
+            if body.contains("resolve-bundle-asset hooks-dir") {
+                offenders.push(path.display().to_string());
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "recipes still resolve the removed hooks-dir asset (see #285/#588). \
+             Remove dead HOOKS_DIR assignments: {offenders:?}"
         );
     }
 }

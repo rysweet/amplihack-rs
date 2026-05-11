@@ -647,6 +647,49 @@ Fixes released in **amplihack v0.6.69** (March 16, 2026):
 - **Agent-Agnostic Binary** (PR #3174) - `AMPLIHACK_AGENT_BINARY` env var
 - **Windows Compatibility** (PR #3127) - Phases 1–3 native PowerShell support
 
+## May 2026 — Preflight Asset Resolution Fix
+
+### Unregistered Named Asset Resolution (Issue #588)
+
+**Problem**: The `smart-orchestrator` recipe preflight failed with exit 2 when
+resolving legacy named assets (`helper-path`, `hooks-dir`) that were removed in
+PR #285. The `resolve-bundle-asset` CLI fell through to relative-path validation,
+which rejected them because they lack the `amplifier-bundle/` prefix. Exit 2
+(invalid input) caused confusing diagnostics even though recipes guarded the
+calls with `|| true`.
+
+**Root Cause**: `run_cli()` only checked whether an argument was a *registered*
+named asset. Unregistered single-token arguments (no `/`) fell through to
+`validate_relative_path()`, which requires the `amplifier-bundle/` prefix —
+producing a misleading "invalid input" error instead of "not found".
+
+**Fix**:
+
+1. **`resolve_bundle_asset/mod.rs`** — Added an early-return guard in
+   `run_cli()`: if the argument contains no `/` and is not in `NAMED_ASSETS`,
+   return exit 1 (not found) with a message listing valid named assets.
+2. **`smart-classify-route.yaml`** — Removed dead `HOOKS_DIR=...` line
+   (variable was assigned but never read; `hooks-dir` was removed in #285).
+3. **`smart-validate-summarize.yaml`** — Same dead-code removal.
+
+**Exit code semantics preserved**:
+
+| Code | Before fix | After fix |
+|------|-----------|-----------|
+| `0`  | Asset resolved | Asset resolved |
+| `1`  | Named asset or path not on disk | Named asset or path not on disk, **or** unregistered named asset |
+| `2`  | Path validation failed (traversal, bad chars, missing prefix) | Path validation failed (unchanged) |
+
+**Impact**: Recipes using `amplihack resolve-bundle-asset <name> || true` now
+get clean exit 1 (expected) instead of exit 2 (unexpected) for removed assets.
+No functional change — the `|| true` guard means the recipe never failed — but
+diagnostics are now accurate and the dead code is removed.
+
+**Rule**: When removing a named asset from `NAMED_ASSETS`, also grep recipes
+for shell steps that still reference it and remove the dead assignments.
+
+---
+
 ## See Also
 
 - [Recipe Runner Documentation](./README.md)
