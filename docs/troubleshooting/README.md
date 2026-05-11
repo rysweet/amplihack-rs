@@ -26,6 +26,7 @@ Ahoy, matey! Hit a snag? This be yer map to fix common issues and get back on co
 
 - [Copytree Same-File Crash](copytree-same-file-crash.md) - Fix `SameFileError` when `AMPLIHACK_HOME` points at the source tree
 - [Copilot Installation False Negative](copilot-installation-false-negative.md) - Installation reports failure when it actually succeeded
+- [Copilot npm Hang on WSL/Linux](copilot-npm-hang-wsl-linux.md) - npm hangs indefinitely during `@github/copilot` install on WSL/Linux due to platform-mismatched optional deps
 
 ### Startup Issues
 

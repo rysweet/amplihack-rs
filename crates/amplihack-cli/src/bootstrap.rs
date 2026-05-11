@@ -86,7 +86,11 @@ fn which(tool: &str) -> Option<PathBuf> {
 
 pub fn ensure_tool_available(tool: &str) -> Result<BinaryInfo> {
     if let Ok(binary) = BinaryFinder::find(tool) {
-        let _ = maybe_upgrade_tool(tool);
+        let upgraded = maybe_upgrade_tool(tool).unwrap_or(false);
+        if !upgraded {
+            return Ok(binary);
+        }
+        // Binary may have moved after upgrade — re-locate it.
         return match BinaryFinder::find(tool)
             .with_context(|| format!("failed to re-locate '{tool}' after upgrade"))
         {
@@ -103,8 +107,22 @@ pub fn ensure_tool_available(tool: &str) -> Result<BinaryInfo> {
     }
 
     install_tool(tool)?;
-    BinaryFinder::find(tool)
-        .with_context(|| format!("failed to locate '{tool}' after installation"))
+    BinaryFinder::find(tool).with_context(|| {
+        let prefix_hint = npm_prefix_dir()
+            .map(|p| p.join("bin").display().to_string())
+            .unwrap_or_else(|_| "~/.npm-global/bin".to_string());
+        format!(
+            "failed to locate '{tool}' after installation.\n\
+             Try running:\n  \
+             export PATH=\"{prefix_hint}:$PATH\"\n\
+             If the install succeeded, '{tool}' may not be on your PATH.\n\
+             You can also try installing manually:\n  \
+             npm install -g --prefix {prefix_hint} {pkg}",
+            tool = tool,
+            prefix_hint = prefix_hint,
+            pkg = npm_package_for_install(tool).unwrap_or(tool),
+        )
+    })
 }
 
 /// Map a tool name to the npm package used for installation and upgrades.
@@ -132,32 +150,34 @@ fn install_tool(tool: &str) -> Result<()> {
 }
 
 /// If the tool is an npm-backed CLI whose installed version is older than the
-/// latest published version, reinstall the package in place. Silent no-op when
-/// npm is unavailable, the tool isn't npm-backed, or versions match.
-fn maybe_upgrade_tool(tool: &str) -> Result<()> {
+/// latest published version, reinstall the package in place. Returns `true`
+/// when an upgrade was attempted (regardless of success). Silent no-op
+/// returning `false` when npm is unavailable, the tool isn't npm-backed, or
+/// versions already match.
+fn maybe_upgrade_tool(tool: &str) -> Result<bool> {
     if is_noninteractive() {
-        return Ok(());
+        return Ok(false);
     }
     let Some(pkg) = npm_package_for_install(tool) else {
-        return Ok(());
+        return Ok(false);
     };
     let installed = match get_installed_version(pkg) {
         Some(v) => sanitize_version(&v),
-        None => return Ok(()),
+        None => return Ok(false),
     };
     let latest = match get_latest_version(pkg) {
         Some(v) => sanitize_version(&v),
-        None => return Ok(()),
+        None => return Ok(false),
     };
     if installed.is_empty() || latest.is_empty() || installed == latest {
-        return Ok(());
+        return Ok(false);
     }
 
     println!("📦 Upgrading {tool} ({pkg}): {installed} → {latest}");
     if let Err(err) = install_npm_package(tool, pkg) {
         tracing::warn!(%err, tool, pkg, "tool upgrade failed; continuing with existing install");
     }
-    Ok(())
+    Ok(true)
 }
 
 fn install_npm_package(tool: &str, package: &str) -> Result<()> {
@@ -190,6 +210,37 @@ fn install_npm_package(tool: &str, package: &str) -> Result<()> {
         }
     }
 
+    // Issue #585: After installing @github/copilot with --omit=optional,
+    // install the platform-specific native binary package separately.
+    // This avoids the npm reify hang caused by cross-platform optional deps
+    // while still getting the correct native binary for the current platform.
+    if package == "@github/copilot" {
+        let (os_name, arch) = current_platform();
+        if let Some(platform_pkg) = copilot_platform_package(os_name, arch) {
+            println!("📦 Installing platform binary {platform_pkg}...");
+            if let Err(err) = run_npm_install(&npm, &prefix, platform_pkg) {
+                // Non-fatal: Node.js may have a JS fallback via index.js on
+                // sufficiently recent versions. Warn but don't fail the install.
+                tracing::warn!(
+                    %err,
+                    platform_pkg,
+                    "platform-specific binary install failed; \
+                     copilot may fall back to JS implementation"
+                );
+                eprintln!(
+                    "⚠️  Platform binary {platform_pkg} failed to install: {err}\n   \
+                     Copilot may still work via JS fallback on recent Node.js versions."
+                );
+            }
+        } else {
+            tracing::info!(
+                os_name,
+                arch,
+                "no known platform binary for this OS/arch; skipping"
+            );
+        }
+    }
+
     persist_path_hint(&bin_dir)?;
     Ok(())
 }
@@ -201,15 +252,57 @@ fn run_npm_install(npm: &Path, prefix: &Path, package: &str) -> Result<()> {
         .arg("-g")
         .arg("--prefix")
         .arg(prefix)
+        .arg("--omit=optional")
         .arg(package)
         .arg("--ignore-scripts");
-    let status =
-        run_with_timeout(npm_cmd, INSTALL_TIMEOUT).context("failed to execute npm install")?;
+    let status = run_with_timeout(npm_cmd, INSTALL_TIMEOUT).with_context(|| {
+        format!(
+            "npm install timed out for package '{package}' after {}s.\n\
+             This is often caused by npm hanging on cross-platform optional deps.\n\
+             Try running manually:\n  \
+             npm install -g --prefix {} --omit=optional --ignore-scripts {package}",
+            INSTALL_TIMEOUT.as_secs(),
+            prefix.display(),
+        )
+    })?;
 
     if !status.success() {
-        bail!("npm install failed for package {package}");
+        bail!(
+            "npm install failed for package '{package}' (exit code: {code}).\n\
+             Try running manually:\n  \
+             npm install -g --prefix {prefix} --omit=optional --ignore-scripts {package}\n\
+             If the problem persists, check npm logs:\n  \
+             npm cache clean --force && npm install -g --prefix {prefix} {package}",
+            package = package,
+            code = status
+                .code()
+                .map_or("unknown".to_string(), |c| c.to_string()),
+            prefix = prefix.display(),
+        );
     }
     Ok(())
+}
+
+/// Determine the correct `@github/copilot-{os}-{arch}` package for the
+/// current platform. Returns `None` for unrecognized OS/arch combinations,
+/// which signals the caller to skip the platform binary install (non-fatal).
+fn copilot_platform_package(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("linux", "x86_64") => Some("@github/copilot-linux-x64"),
+        ("linux", "aarch64") => Some("@github/copilot-linux-arm64"),
+        ("macos", "x86_64") => Some("@github/copilot-darwin-x64"),
+        ("macos", "aarch64") => Some("@github/copilot-darwin-arm64"),
+        ("windows", "x86_64") => Some("@github/copilot-win32-x64"),
+        ("windows", "aarch64") => Some("@github/copilot-win32-arm64"),
+        _ => None,
+    }
+}
+
+/// Returns `(os_name, arch)` using Rust's compile-time target constants.
+/// Values match `copilot_platform_package` keys directly ("linux", "macos",
+/// "windows" for OS; "x86_64", "aarch64" for arch).
+fn current_platform() -> (&'static str, &'static str) {
+    (std::env::consts::OS, std::env::consts::ARCH)
 }
 
 /// Remove stale `.<name>-XXXX` temp dirs that npm leaves behind in the scope
@@ -333,13 +426,13 @@ fn configure_codex() -> Result<()> {
 
 fn prepend_path(dir: &Path) -> Result<()> {
     let current = std::env::var_os("PATH").unwrap_or_default();
-    let paths = std::env::split_paths(&current).collect::<Vec<_>>();
-    if paths.iter().any(|existing| existing == dir) {
+    // Check membership without allocating a Vec in the common already-present case.
+    if std::env::split_paths(&current).any(|existing| existing == dir) {
         return Ok(());
     }
 
     let mut updated = vec![dir.to_path_buf()];
-    updated.extend(paths);
+    updated.extend(std::env::split_paths(&current));
     let joined = std::env::join_paths(updated).context("failed to rebuild PATH")?;
     // SAFETY: This CLI is single-process during bootstrap and updates PATH intentionally.
     unsafe {
@@ -417,6 +510,97 @@ mod tests {
         assert_eq!(value["approval_mode"], "auto");
 
         crate::test_support::restore_home(previous_home);
+    }
+
+    // ========================================================================
+    // Issue #585: copilot_platform_package() helper
+    // ========================================================================
+
+    #[test]
+    fn copilot_platform_package_returns_correct_linux_x64() {
+        // Contract: On linux/x86_64, must return @github/copilot-linux-x64
+        let result = copilot_platform_package("linux", "x86_64");
+        assert_eq!(
+            result,
+            Some("@github/copilot-linux-x64"),
+            "linux + x86_64 must map to copilot-linux-x64"
+        );
+    }
+
+    #[test]
+    fn copilot_platform_package_returns_correct_linux_arm64() {
+        let result = copilot_platform_package("linux", "aarch64");
+        assert_eq!(
+            result,
+            Some("@github/copilot-linux-arm64"),
+            "linux + aarch64 must map to copilot-linux-arm64"
+        );
+    }
+
+    #[test]
+    fn copilot_platform_package_returns_correct_macos_arm64() {
+        let result = copilot_platform_package("macos", "aarch64");
+        assert_eq!(
+            result,
+            Some("@github/copilot-darwin-arm64"),
+            "macos + aarch64 must map to copilot-darwin-arm64"
+        );
+    }
+
+    #[test]
+    fn copilot_platform_package_returns_correct_macos_x64() {
+        let result = copilot_platform_package("macos", "x86_64");
+        assert_eq!(
+            result,
+            Some("@github/copilot-darwin-x64"),
+            "macos + x86_64 must map to copilot-darwin-x64"
+        );
+    }
+
+    #[test]
+    fn copilot_platform_package_returns_correct_windows_x64() {
+        let result = copilot_platform_package("windows", "x86_64");
+        assert_eq!(
+            result,
+            Some("@github/copilot-win32-x64"),
+            "windows + x86_64 must map to copilot-win32-x64"
+        );
+    }
+
+    #[test]
+    fn copilot_platform_package_returns_none_for_unknown_os() {
+        let result = copilot_platform_package("freebsd", "x86_64");
+        assert_eq!(
+            result, None,
+            "unknown OS must return None (non-fatal fallback)"
+        );
+    }
+
+    #[test]
+    fn copilot_platform_package_returns_none_for_unknown_arch() {
+        let result = copilot_platform_package("linux", "riscv64");
+        assert_eq!(
+            result, None,
+            "unknown arch must return None (non-fatal fallback)"
+        );
+    }
+
+    // ========================================================================
+    // Issue #585: split_npm_package (existing helper, verify edge cases)
+    // ========================================================================
+
+    #[test]
+    fn split_npm_package_handles_copilot_platform_packages() {
+        // Contract: platform-specific packages like @github/copilot-linux-x64
+        // must parse correctly through split_npm_package.
+        assert_eq!(
+            split_npm_package("@github/copilot-linux-x64"),
+            Some(("github", "copilot-linux-x64"))
+        );
+        assert_eq!(
+            split_npm_package("@github/copilot-darwin-arm64"),
+            Some(("github", "copilot-darwin-arm64"))
+        );
     }
 
     #[test]

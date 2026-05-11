@@ -161,8 +161,6 @@ steps:
       printf '%s' "$DECOMPOSITION_JSON" > "$_DECOMP_TMPFILE"
       TASK_TYPE="$TASK_TYPE"
       FORCE_SINGLE="$FORCE_SINGLE_WORKSTREAM"
-      HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir 2>/dev/null || true)"
-
       RAW_COUNT=$(amplihack orch helper count-workstreams < "$_DECOMP_TMPFILE")
       case "$(printf '%s' "$FORCE_SINGLE" | tr '[:upper:]' '[:lower:]')" in
         true|1) COUNT=1 ;;

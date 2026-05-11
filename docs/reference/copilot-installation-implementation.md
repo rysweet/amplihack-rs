@@ -422,6 +422,104 @@ Before releasing changes:
 - `subprocess.run()` - Execute npm, launch CLI
 - `sys.exit()` - Exit with status code
 
+## Rust CLI: Two-Phase Installation (Current)
+
+The Rust CLI (`bootstrap.rs`) replaces the Python launcher and will use a
+two-phase installation strategy to work around an npm 9.x bug where
+platform-mismatched optional dependencies cause npm to hang indefinitely
+during the reify phase.
+
+> **Implementation status:** Planned for issue
+> [#585](https://github.com/rysweet/amplihack-rs/issues/585). The functions
+> and behavior described below are the target design — update this section
+> after implementation lands.
+
+### Architecture (Rust)
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ ensure_tool_available("copilot")                             │
+│                                                              │
+│ 1. BinaryFinder::find("copilot")                            │
+│    └─ Found? → maybe_upgrade_tool() → return BinaryInfo     │
+│    └─ Not found? → install_tool("copilot")                  │
+│                                                              │
+│ 2. install_tool("copilot")                                   │
+│    └─ npm_package_for_install("copilot") → "@github/copilot"│
+│    └─ install_npm_package("copilot", "@github/copilot")     │
+│                                                              │
+│ 3. install_npm_package()                                     │
+│    ├─ Phase 1: npm install --omit=optional                   │
+│    │   (base package without platform-specific deps)         │
+│    ├─ Phase 2: npm install @github/copilot-{os}-{arch}       │
+│    │   (platform-specific native binary only)                │
+│    │   └─ Failure is non-fatal (JS fallback exists)          │
+│    └─ Retry with cleanup on first failure                    │
+│                                                              │
+│ 4. BinaryFinder::find("copilot") → BinaryInfo               │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Phase 1: Base Package (`--omit=optional`)
+
+```rust
+// run_npm_install() will add --omit=optional to skip platform-mismatched deps
+npm install -g --prefix ~/.npm-global @github/copilot --ignore-scripts --omit=optional
+```
+
+The `--omit=optional` flag tells npm to skip all optional dependencies.
+This avoids the npm 9.x reify hang caused by attempting to download
+platform-mismatched native binaries (e.g., `@github/copilot-darwin-arm64`
+on Linux).
+
+### Phase 2: Platform-Specific Binary
+
+```rust
+// copilot_platform_package() will determine the correct package
+// Based on std::env::consts::OS and std::env::consts::ARCH
+npm install -g --prefix ~/.npm-global @github/copilot-linux-x64 --ignore-scripts
+```
+
+After the base package is installed, `install_npm_package()` will install only
+the native binary package for the current platform. If this fails, a warning
+is logged but installation continues — the `@github/copilot` package includes
+a JavaScript fallback that may work without the native binary on sufficiently
+recent Node.js versions (verify against the actual package requirements).
+
+### Platform Detection (`copilot_platform_package()`)
+
+| `std::env::consts::OS` | `std::env::consts::ARCH` | Package                        |
+|------------------------|-------------------------|--------------------------------|
+| `linux`                | `x86_64`                | `@github/copilot-linux-x64`   |
+| `macos`                | `aarch64`               | `@github/copilot-darwin-arm64` |
+| `macos`                | `x86_64`                | `@github/copilot-darwin-x64`  |
+| `windows`              | `x86_64`                | `@github/copilot-win32-x64`   |
+| Other                  | Other                   | `None` (skip phase 2)          |
+
+### Error Messages
+
+Installation errors now include structured output with:
+- Package name and failure reason
+- Copy-pasteable manual fix commands
+- Cleanup steps for stale npm state
+
+See [Actionable npm Installation Error Messages](../features/npm-install-error-messages.md)
+for the complete error message catalog.
+
+### Why `--omit=optional` Instead of `--os`/`--cpu`?
+
+The npm `--os` and `--cpu` flags were evaluated as a potential fix during
+issue #585 triage but rejected. These flags are documented as platform
+override hints, but npm 9.x
+ignores them during optional dependency resolution. The `--omit=optional`
+approach is correct because:
+
+1. It completely skips optional dependency resolution (no reify hang)
+2. It is supported in npm 8.x+ (safe for npm 9.2.0)
+3. The platform binary is installed separately as a targeted, single-package
+   install that never triggers the multi-platform reify bug
+4. Failure of the platform binary install is non-fatal — JS fallback exists
+
 ## Future Improvements
 
 ### Potential Enhancements
@@ -429,19 +527,20 @@ Before releasing changes:
 1. **Verbose mode**: Show npm output on failure
 2. **Offline install**: Support installing from cache
 3. **Version check**: Verify minimum version requirements
-4. **Auto-upgrade**: Detect outdated installation
+4. ~~**Auto-upgrade**: Detect outdated installation~~ — Implemented in `maybe_upgrade_tool()`
 5. **Alternative installers**: Support pip, brew, etc.
 
 ### Not Recommended
 
 1. **Retry verification**: Masks real issues
-2. **PATH manipulation**: Fragile, platform-specific
+2. ~~**PATH manipulation**: Fragile, platform-specific~~ — Implemented in `prepend_path()` + `persist_path_hint()`
 3. **Binary download**: npm handles this better
 4. **Version pinning**: Users may want latest
+5. **`--os`/`--cpu` npm flags**: Broken in npm 9.x, do not use
 
 ---
 
 **Audience**: Maintainers and contributors
 **Scope**: Implementation details
-**Last Updated**: 2025-02-13
-**Version**: 0.3.2
+**Last Updated**: 2026-05-11
+**Version**: Rust CLI (bootstrap.rs)
