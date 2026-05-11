@@ -168,10 +168,31 @@ steps:
         echo "ERROR: step-08c-implementation-no-op-guard requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
         exit 1
       fi
+      # Check 1: dirty working tree (uncommitted or staged changes, untracked files).
       if ! git diff --quiet || ! git diff --cached --quiet || \
          [ -n "$(git ls-files --others --exclude-standard)" ]; then
         echo "step-08 produced file changes — guard passed."
         exit 0
+      fi
+      # Check 2 (issue #580): detect committed changes.
+      # When the agent commits during step-07/step-08 (auto-commit, git add+commit
+      # in prompt, or tool-based commits), the working tree is clean but real
+      # work exists as new commits. Compare HEAD against the merge-base with
+      # origin/main (or origin/HEAD as fallback) to count commits on this branch.
+      MERGE_BASE_REF="origin/main"
+      if ! git rev-parse --verify "$MERGE_BASE_REF" >/dev/null 2>&1; then
+        MERGE_BASE_REF="origin/HEAD"
+      fi
+      if git rev-parse --verify "$MERGE_BASE_REF" >/dev/null 2>&1; then
+        MERGE_BASE=$(git merge-base HEAD "$MERGE_BASE_REF" 2>/dev/null || true)
+        if [ -n "$MERGE_BASE" ]; then
+          COMMITS_SINCE_BASE=$(git rev-list --count "${MERGE_BASE}..HEAD" 2>/dev/null || echo "0")
+          if [ "$COMMITS_SINCE_BASE" -gt 0 ]; then
+            echo "step-08 produced $COMMITS_SINCE_BASE commit(s) since branch point — guard passed."
+            git --no-pager log --oneline "${MERGE_BASE}..HEAD" >&2
+            exit 0
+          fi
+        fi
       fi
       if [ -n "$JUSTIFICATION" ]; then
         echo "step-08 produced no file changes but declared a no-op justification:" >&2
