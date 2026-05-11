@@ -429,5 +429,17 @@ fn local_install(
     version_stamp::write_installed_version(crate::VERSION)
         .context("writing installed-version stamp")?;
 
+    // Stage assets to ~/.copilot/skills/ so Copilot CLI picks them up
+    // without requiring a separate `amplihack copilot` launch. Best-effort
+    // and intentionally AFTER the version stamp: a failure here must not
+    // block the install or leave the version stamp unwritten.
+    match crate::copilot_setup::ensure_copilot_home_staged() {
+        Ok(()) => println!("  ✅ Copilot home staged (~/.copilot/)"),
+        Err(err) => {
+            tracing::warn!(%err, "failed to stage copilot home during install");
+            eprintln!("  ⚠️  Copilot home staging skipped: {err}");
+        }
+    }
+
     Ok(())
 }
