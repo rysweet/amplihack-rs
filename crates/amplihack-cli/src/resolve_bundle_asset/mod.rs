@@ -148,9 +148,7 @@ pub fn run_cli(arg: &str) -> i32 {
             .map(|(n, _)| *n)
             .collect::<Vec<_>>()
             .join(", ");
-        eprintln!(
-            "ERROR: Unknown asset name {arg:?}. Expected one of: {valid}"
-        );
+        eprintln!("ERROR: Unknown asset name {arg:?}. Expected one of: {valid}");
         return 1;
     }
 
