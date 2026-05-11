@@ -102,7 +102,19 @@ pub fn ensure_tool_available(tool: &str) -> Result<BinaryInfo> {
         };
     }
 
-    install_tool(tool)?;
+    match install_tool(tool) {
+        Ok(()) => {}
+        Err(err) => {
+            eprintln!("❌ Failed to install {tool}: {err:#}");
+            eprintln!();
+            eprintln!("You can install it manually:");
+            if let Some(pkg) = npm_package_for_install(tool) {
+                let prefix = npm_prefix_dir().unwrap_or_else(|_| "~/.npm-global".into());
+                eprintln!("  npm install -g --prefix {} {pkg}", prefix.display());
+            }
+            return Err(err).with_context(|| format!("failed to install '{tool}'"));
+        }
+    }
     BinaryFinder::find(tool)
         .with_context(|| format!("failed to locate '{tool}' after installation"))
 }
@@ -181,12 +193,28 @@ fn install_npm_package(tool: &str, package: &str) -> Result<()> {
     match run_npm_install(&npm, &prefix, package) {
         Ok(()) => {}
         Err(err) => {
+            let is_timeout = err.to_string().contains("timed out");
+            if is_timeout {
+                eprintln!("⚠️  npm install timed out after {}s.", INSTALL_TIMEOUT.as_secs());
+                eprintln!("   This can happen when npm tries to download platform-mismatched");
+                eprintln!("   optional dependencies. Cleaning up and retrying...");
+            }
             // Last-ditch: clean again and retry once. npm's own rename can fail
             // if a concurrent install (or even the first part of this one) raced.
             tracing::warn!(%err, "npm install failed; cleaning stale temp dirs and retrying once");
+            eprintln!("🔄 Retrying npm install for {package}...");
             clean_stale_npm_temp_dirs(&prefix, package);
             remove_package_install_dir(&prefix, package);
-            run_npm_install(&npm, &prefix, package)?;
+            run_npm_install(&npm, &prefix, package).with_context(|| {
+                format!(
+                    "npm install failed for {package} after retry.\n\
+                     To fix manually:\n\
+                     1. rm -rf {prefix}/lib/node_modules/@github/.copilot-*\n\
+                     2. rm -rf {prefix}/lib/node_modules/@github/copilot\n\
+                     3. npm install -g --prefix {prefix} {package}",
+                    prefix = prefix.display(),
+                )
+            })?;
         }
     }
 
@@ -203,6 +231,15 @@ fn run_npm_install(npm: &Path, prefix: &Path, package: &str) -> Result<()> {
         .arg(prefix)
         .arg(package)
         .arg("--ignore-scripts");
+
+    // Force npm to only download optional deps that match the current
+    // platform. Without this, npm tries to reify platform-specific packages
+    // for ALL architectures (e.g. copilot-darwin-arm64 on Linux/WSL), which
+    // can hang indefinitely during the reify phase.
+    let (os_flag, cpu_flag) = npm_platform_flags();
+    npm_cmd.arg("--os").arg(os_flag);
+    npm_cmd.arg("--cpu").arg(cpu_flag);
+
     let status =
         run_with_timeout(npm_cmd, INSTALL_TIMEOUT).context("failed to execute npm install")?;
 
@@ -210,6 +247,33 @@ fn run_npm_install(npm: &Path, prefix: &Path, package: &str) -> Result<()> {
         bail!("npm install failed for package {package}");
     }
     Ok(())
+}
+
+/// Return the `--os` and `--cpu` values that match the current platform,
+/// using npm's naming conventions (which follow Node.js `process.platform`
+/// and `process.arch`).
+fn npm_platform_flags() -> (&'static str, &'static str) {
+    let os = if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "windows") {
+        "win32"
+    } else {
+        "linux" // safe default for unknown Unix-likes
+    };
+
+    let cpu = if cfg!(target_arch = "x86_64") {
+        "x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else if cfg!(target_arch = "arm") {
+        "arm"
+    } else {
+        "x64" // safe default
+    };
+
+    (os, cpu)
 }
 
 /// Remove stale `.<name>-XXXX` temp dirs that npm leaves behind in the scope
@@ -440,5 +504,32 @@ mod tests {
         assert_eq!(profile.matches("Added by amplihack").count(), 1);
 
         crate::test_support::restore_home(previous_home);
+    }
+
+    #[test]
+    fn npm_platform_flags_returns_valid_values() {
+        let (os, cpu) = npm_platform_flags();
+        assert!(
+            ["linux", "darwin", "win32"].contains(&os),
+            "unexpected os: {os}"
+        );
+        assert!(
+            ["x64", "arm64", "arm"].contains(&cpu),
+            "unexpected cpu: {cpu}"
+        );
+    }
+
+    #[test]
+    fn npm_platform_flags_matches_current_platform() {
+        let (os, cpu) = npm_platform_flags();
+        if cfg!(target_os = "linux") {
+            assert_eq!(os, "linux");
+        }
+        if cfg!(target_arch = "x86_64") {
+            assert_eq!(cpu, "x64");
+        }
+        if cfg!(target_arch = "aarch64") {
+            assert_eq!(cpu, "arm64");
+        }
     }
 }
