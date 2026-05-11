@@ -274,9 +274,7 @@ fn run_npm_install(npm: &Path, prefix: &Path, package: &str) -> Result<()> {
              If the problem persists, check npm logs:\n  \
              npm cache clean --force && npm install -g --prefix {prefix} {package}",
             package = package,
-            code = status
-                .code()
-                .map_or("unknown".to_string(), |c| c.to_string()),
+            code = status.code().map_or("unknown".to_string(), |c| c.to_string()),
             prefix = prefix.display(),
         );
     }

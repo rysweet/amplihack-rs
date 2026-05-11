@@ -18,7 +18,10 @@
 fn run_npm_install_uses_omit_optional() {
     // Contract: run_npm_install must pass --omit=optional to npm to prevent
     // the reify hang caused by cross-platform optional dependencies.
-    let bootstrap_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bootstrap.rs"));
+    let bootstrap_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bootstrap.rs"
+    ));
     let fn_start = bootstrap_src
         .find("fn run_npm_install(")
         .expect("run_npm_install must exist");
@@ -26,8 +29,8 @@ fn run_npm_install_uses_omit_optional() {
     let fn_end = find_fn_end(fn_body);
     let fn_body = &fn_body[..fn_end];
     assert!(
-        fn_body.contains("--omit=optional")
-            || fn_body.contains("omit") && fn_body.contains("optional"),
+        fn_body.contains("--omit=optional") || fn_body.contains("omit")
+            && fn_body.contains("optional"),
         "run_npm_install must pass --omit=optional to prevent npm hang on \
          cross-platform optional deps. Got:\n{fn_body}"
     );
@@ -37,7 +40,10 @@ fn run_npm_install_uses_omit_optional() {
 fn run_npm_install_does_not_use_os_cpu_flags() {
     // Contract: --os and --cpu flags are broken in npm 9.x and must NOT
     // be used. PR #585 was closed because this approach was wrong.
-    let bootstrap_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bootstrap.rs"));
+    let bootstrap_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bootstrap.rs"
+    ));
     let fn_start = bootstrap_src
         .find("fn run_npm_install(")
         .expect("run_npm_install must exist");
@@ -63,7 +69,10 @@ fn install_npm_package_calls_platform_binary_install_for_copilot() {
     // Contract: install_npm_package must attempt to install the
     // platform-specific binary package (e.g. @github/copilot-linux-x64)
     // after the base @github/copilot install with --omit=optional.
-    let bootstrap_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bootstrap.rs"));
+    let bootstrap_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bootstrap.rs"
+    ));
     let fn_start = bootstrap_src
         .find("fn install_npm_package(")
         .expect("install_npm_package must exist");
@@ -71,7 +80,7 @@ fn install_npm_package_calls_platform_binary_install_for_copilot() {
     let fn_end = find_fn_end(fn_body);
     let fn_body = &fn_body[..fn_end];
     assert!(
-        fn_body.contains("copilot_platform_package") || fn_body.contains("platform_package"),
+        fn_body.contains("copilot_platform_package")|| fn_body.contains("platform_package"),
         "install_npm_package must call copilot_platform_package to determine \
          the platform-specific binary. Got:\n{fn_body}"
     );
@@ -81,7 +90,10 @@ fn install_npm_package_calls_platform_binary_install_for_copilot() {
 fn copilot_platform_package_helper_exists() {
     // Contract: A copilot_platform_package function must exist to map
     // OS/arch to the correct @github/copilot-{os}-{arch} package name.
-    let bootstrap_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bootstrap.rs"));
+    let bootstrap_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bootstrap.rs"
+    ));
     assert!(
         bootstrap_src.contains("fn copilot_platform_package("),
         "copilot_platform_package helper must exist in bootstrap.rs"
@@ -93,7 +105,10 @@ fn platform_binary_install_failure_is_non_fatal() {
     // Contract: If the platform-specific binary install fails, the error
     // must be logged/warned but must NOT fail the overall install.
     // This is because Node.js 24+ has a JS fallback via index.js.
-    let bootstrap_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bootstrap.rs"));
+    let bootstrap_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bootstrap.rs"
+    ));
     let fn_start = bootstrap_src
         .find("fn install_npm_package(")
         .expect("install_npm_package must exist");
@@ -122,7 +137,10 @@ fn platform_binary_install_failure_is_non_fatal() {
 fn run_npm_install_error_includes_package_name() {
     // Contract: The error message from run_npm_install must include the
     // package name so users know which package failed.
-    let bootstrap_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bootstrap.rs"));
+    let bootstrap_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bootstrap.rs"
+    ));
     let fn_start = bootstrap_src
         .find("fn run_npm_install(")
         .expect("run_npm_install must exist");
@@ -141,7 +159,10 @@ fn run_npm_install_error_includes_package_name() {
 fn run_npm_install_error_includes_manual_fix_command() {
     // Contract: When npm install fails, the error must include a
     // copy-pasteable manual fix command so users can recover.
-    let bootstrap_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bootstrap.rs"));
+    let bootstrap_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bootstrap.rs"
+    ));
     let fn_start = bootstrap_src
         .find("fn run_npm_install(")
         .expect("run_npm_install must exist");
@@ -161,7 +182,10 @@ fn run_npm_install_error_mentions_omit_optional_for_timeout() {
     // Contract: When npm times out, the error must mention --omit=optional
     // as a diagnostic hint, since the hang is often caused by cross-platform
     // optional deps.
-    let bootstrap_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bootstrap.rs"));
+    let bootstrap_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bootstrap.rs"
+    ));
     let fn_start = bootstrap_src
         .find("fn run_npm_install(")
         .expect("run_npm_install must exist");
@@ -191,7 +215,10 @@ fn ensure_tool_available_error_is_actionable() {
     // Contract: When ensure_tool_available fails to locate a tool after
     // installation, the error message must be actionable — not just
     // "failed to locate 'X' after installation".
-    let bootstrap_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bootstrap.rs"));
+    let bootstrap_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bootstrap.rs"
+    ));
     let fn_start = bootstrap_src
         .find("fn ensure_tool_available(")
         .or_else(|| bootstrap_src.find("pub fn ensure_tool_available("))
@@ -220,7 +247,10 @@ fn ensure_tool_available_error_is_actionable() {
 fn run_npm_install_still_uses_ignore_scripts() {
     // Contract: --ignore-scripts must remain to prevent post-install scripts
     // from running during automated install (security requirement).
-    let bootstrap_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bootstrap.rs"));
+    let bootstrap_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bootstrap.rs"
+    ));
     let fn_start = bootstrap_src
         .find("fn run_npm_install(")
         .expect("run_npm_install must exist");
@@ -236,7 +266,10 @@ fn run_npm_install_still_uses_ignore_scripts() {
 #[test]
 fn run_npm_install_still_uses_global_flag() {
     // Contract: -g flag must remain for global npm installs.
-    let bootstrap_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bootstrap.rs"));
+    let bootstrap_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bootstrap.rs"
+    ));
     let fn_start = bootstrap_src
         .find("fn run_npm_install(")
         .expect("run_npm_install must exist");
@@ -252,7 +285,10 @@ fn run_npm_install_still_uses_global_flag() {
 #[test]
 fn install_npm_package_still_cleans_stale_temp_dirs() {
     // Contract: Stale temp dir cleanup must remain (prevents ENOTEMPTY).
-    let bootstrap_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bootstrap.rs"));
+    let bootstrap_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bootstrap.rs"
+    ));
     let fn_start = bootstrap_src
         .find("fn install_npm_package(")
         .expect("install_npm_package must exist");
@@ -268,7 +304,10 @@ fn install_npm_package_still_cleans_stale_temp_dirs() {
 #[test]
 fn install_npm_package_retries_on_failure() {
     // Contract: retry-once logic must remain.
-    let bootstrap_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bootstrap.rs"));
+    let bootstrap_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bootstrap.rs"
+    ));
     let fn_start = bootstrap_src
         .find("fn install_npm_package(")
         .expect("install_npm_package must exist");
