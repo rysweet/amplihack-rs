@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 /// Single global lock for all environment-mutating tests.
@@ -44,6 +44,68 @@ pub(crate) fn set_cwd(path: &Path) -> std::io::Result<std::path::PathBuf> {
 
 pub(crate) fn restore_cwd(previous: &Path) -> std::io::Result<()> {
     std::env::set_current_dir(previous)
+}
+
+/// RAII guard that sets the current working directory and restores the
+/// previous value on drop, even when the test panics.
+///
+/// Tests must acquire `env_lock()` (or an alias like `cwd_env_lock()`) before
+/// constructing this guard so concurrent tests don't observe the mutated cwd.
+/// Restore-on-drop is best-effort: if the prior cwd was deleted, the
+/// restoration is silently dropped — but the guard will never leak the test's
+/// chosen cwd into a subsequent test that runs in the same process.
+pub(crate) struct CwdGuard {
+    previous: PathBuf,
+}
+
+impl CwdGuard {
+    /// Switch the process cwd to `path`, returning a guard that restores the
+    /// prior cwd on drop.
+    pub(crate) fn set(path: &Path) -> std::io::Result<Self> {
+        let previous = std::env::current_dir()?;
+        std::env::set_current_dir(path)?;
+        Ok(Self { previous })
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.previous);
+    }
+}
+
+/// RAII guard that sets `HOME` and restores the previous value on drop, even
+/// when the test panics.
+///
+/// Tests must acquire `env_lock()` (or `home_env_lock()`) before constructing
+/// this guard so concurrent tests don't observe the mutated HOME.
+pub(crate) struct HomeGuard {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl HomeGuard {
+    /// Set `HOME` to `path`, returning a guard that restores (or unsets) the
+    /// prior value on drop.
+    pub(crate) fn set(path: &Path) -> Self {
+        let previous = std::env::var_os("HOME");
+        // SAFETY: edition 2024 requires unsafe; tests serialise via env_lock().
+        unsafe {
+            std::env::set_var("HOME", path);
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for HomeGuard {
+    fn drop(&mut self) {
+        // SAFETY: edition 2024 requires unsafe; tests serialise via env_lock().
+        unsafe {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
 }
 
 /// RAII guard that clears `AMPLIHACK_GRAPH_DB_PATH` and `AMPLIHACK_KUZU_DB_PATH`
