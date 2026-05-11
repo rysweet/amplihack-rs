@@ -187,6 +187,145 @@ fn resolve_recipe_path_uses_working_dir_for_relative_yaml_paths() {
 }
 
 #[test]
+fn resolve_recipe_path_relative_path_resolves_under_amplihack_home() {
+    // Bug repro: user runs `amplihack recipe run amplifier-bundle/recipes/foo.yaml`
+    // from a directory that does NOT contain the bundle, with AMPLIHACK_HOME set
+    // to the installed bundle root. The resolver must locate the recipe under
+    // AMPLIHACK_HOME instead of failing.
+    let _env_guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let temp = tempdir().unwrap();
+    let working_dir = temp.path().join("unrelated");
+    fs::create_dir_all(&working_dir).unwrap();
+
+    let amplihack_home = temp.path().join("amplihack-home");
+    let recipes_dir = amplihack_home.join("amplifier-bundle").join("recipes");
+    fs::create_dir_all(&recipes_dir).unwrap();
+    let recipe_path = recipes_dir.join("quality-audit-cycle.yaml");
+    fs::write(
+        &recipe_path,
+        "name: quality-audit-cycle\nsteps:\n  - id: demo\n    type: bash\n    command: echo hi\n",
+    )
+    .unwrap();
+
+    let previous_cwd = crate::test_support::set_cwd(&working_dir).unwrap();
+    let _amplihack_home_guard = EnvVarGuard::set_path("AMPLIHACK_HOME", &amplihack_home);
+
+    let resolved = resolve_recipe_path(
+        "amplifier-bundle/recipes/quality-audit-cycle.yaml",
+        &working_dir,
+    );
+
+    crate::test_support::restore_cwd(&previous_cwd).unwrap();
+
+    let resolved = resolved.unwrap();
+    assert_eq!(
+        resolved, recipe_path,
+        "relative path-like input must fall back to AMPLIHACK_HOME when not present at cwd or working_dir",
+    );
+}
+
+#[test]
+fn resolve_recipe_path_relative_path_resolves_under_repo_root_walked_from_working_dir() {
+    // The user invokes the runner from a nested dir inside an amplihack-rs repo
+    // checkout, passing a relative path-like input. The resolver should walk up
+    // to the repo root (the dir with `.git`) and find the recipe there.
+    //
+    // The recipe filename is intentionally test-only so the assertion is not
+    // satisfied by a real recipe living at the test process cwd.
+    let _env_guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let temp = tempdir().unwrap();
+    fs::create_dir_all(temp.path().join(".git")).unwrap();
+    let nested_working_dir = temp.path().join("crates").join("foo");
+    fs::create_dir_all(&nested_working_dir).unwrap();
+    let recipes_dir = temp.path().join("amplifier-bundle").join("recipes");
+    fs::create_dir_all(&recipes_dir).unwrap();
+    let recipe_path = recipes_dir.join("test-only-repo-root-recipe.yaml");
+    fs::write(
+        &recipe_path,
+        "name: test-only-repo-root-recipe\nsteps:\n  - id: demo\n    type: bash\n    command: echo hi\n",
+    )
+    .unwrap();
+
+    // Move cwd somewhere that definitely does not contain the test recipe so
+    // the cwd-first preference does not steal the match from the repo root.
+    let cwd_island = temp.path().join("cwd-island");
+    fs::create_dir_all(&cwd_island).unwrap();
+    let previous_cwd = crate::test_support::set_cwd(&cwd_island).unwrap();
+
+    let resolved = resolve_recipe_path(
+        "amplifier-bundle/recipes/test-only-repo-root-recipe.yaml",
+        &nested_working_dir,
+    );
+
+    crate::test_support::restore_cwd(&previous_cwd).unwrap();
+
+    assert_eq!(resolved.unwrap(), recipe_path);
+}
+
+#[test]
+fn resolve_recipe_path_relative_path_prefers_cwd_over_amplihack_home() {
+    // If both cwd and AMPLIHACK_HOME contain a matching file, cwd wins.
+    let _env_guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let temp = tempdir().unwrap();
+
+    let cwd = temp.path().join("cwd");
+    let cwd_recipe_dir = cwd.join("amplifier-bundle").join("recipes");
+    fs::create_dir_all(&cwd_recipe_dir).unwrap();
+    let cwd_recipe = cwd_recipe_dir.join("dup.yaml");
+    fs::write(
+        &cwd_recipe,
+        "name: dup\nsteps:\n  - id: a\n    type: bash\n    command: echo cwd\n",
+    )
+    .unwrap();
+
+    let amplihack_home = temp.path().join("amplihack-home");
+    let home_recipes = amplihack_home.join("amplifier-bundle").join("recipes");
+    fs::create_dir_all(&home_recipes).unwrap();
+    let home_recipe = home_recipes.join("dup.yaml");
+    fs::write(
+        &home_recipe,
+        "name: dup\nsteps:\n  - id: a\n    type: bash\n    command: echo home\n",
+    )
+    .unwrap();
+
+    let previous_cwd = crate::test_support::set_cwd(&cwd).unwrap();
+    let _amplihack_home_guard = EnvVarGuard::set_path("AMPLIHACK_HOME", &amplihack_home);
+
+    let resolved = resolve_recipe_path("amplifier-bundle/recipes/dup.yaml", &cwd);
+
+    crate::test_support::restore_cwd(&previous_cwd).unwrap();
+
+    assert_eq!(resolved.unwrap(), cwd_recipe);
+}
+
+#[test]
+fn resolve_recipe_path_relative_path_falls_through_to_working_dir_when_no_root_matches() {
+    // When none of the search roots contain the file, the resolver should
+    // return the working_dir-relative path so downstream code can emit the
+    // standard "could not open recipe file" error pointing at the path the
+    // caller actually asked for.
+    let temp = tempdir().unwrap();
+    let working_dir = temp.path().join("project");
+    fs::create_dir_all(&working_dir).unwrap();
+
+    let resolved = resolve_recipe_path("recipes/does-not-exist.yaml", &working_dir).unwrap();
+
+    assert_eq!(
+        resolved,
+        working_dir.join("recipes").join("does-not-exist.yaml")
+    );
+}
+
+#[test]
 fn resolve_recipe_path_searches_repo_root_from_nested_working_dir() {
     let temp = tempdir().unwrap();
     fs::create_dir_all(temp.path().join(".git")).unwrap();

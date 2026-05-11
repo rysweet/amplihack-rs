@@ -32,6 +32,22 @@ fn resolve_env_path(path: PathBuf) -> PathBuf {
 }
 
 pub(super) fn amplihack_home_recipe_dir() -> Option<PathBuf> {
+    let amplihack_home = amplihack_home_root()?;
+
+    let candidate = amplihack_home.join("amplifier-bundle").join("recipes");
+    if candidate.is_dir() {
+        return Some(candidate);
+    }
+
+    tracing::warn!(
+        amplihack_home = %amplihack_home.display(),
+        searched = %candidate.display(),
+        "AMPLIHACK_HOME root does not contain a usable amplifier-bundle/recipes directory; ignoring for recipe discovery"
+    );
+    None
+}
+
+pub(super) fn amplihack_home_root() -> Option<PathBuf> {
     let raw = std::env::var_os("AMPLIHACK_HOME")?;
     if raw.is_empty() {
         return None;
@@ -46,17 +62,36 @@ pub(super) fn amplihack_home_recipe_dir() -> Option<PathBuf> {
         return None;
     }
 
-    let candidate = amplihack_home.join("amplifier-bundle").join("recipes");
-    if candidate.is_dir() {
-        return Some(candidate);
-    }
+    Some(amplihack_home)
+}
 
-    tracing::warn!(
-        amplihack_home = %amplihack_home.display(),
-        searched = %candidate.display(),
-        "AMPLIHACK_HOME root does not contain a usable amplifier-bundle/recipes directory; ignoring for recipe discovery"
-    );
-    None
+/// Roots that a *relative* recipe path may be resolved against, in priority order.
+///
+/// This is used when a user passes something like
+/// `amplifier-bundle/recipes/quality-audit-cycle.yaml` from a directory that is
+/// not the amplihack-rs repo. The resolver tries each root in order and returns
+/// the first one where the joined path actually exists on disk.
+///
+/// Order:
+///   1. cwd (preserves prior bare-name CWD-first semantics)
+///   2. working_dir (the recipe runner's stated working directory)
+///   3. repo root discovered by walking up from working_dir
+///   4. AMPLIHACK_HOME (the installed bundle root)
+///   5. ~/.amplihack
+fn relative_recipe_path_search_roots(cwd: &Path, working_dir: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    push_unique_path(&mut roots, cwd.to_path_buf());
+    push_unique_path(&mut roots, working_dir.to_path_buf());
+    if let Some(repo_root) = repo_root_from(working_dir) {
+        push_unique_path(&mut roots, repo_root);
+    }
+    if let Some(amplihack_home) = amplihack_home_root() {
+        push_unique_path(&mut roots, amplihack_home);
+    }
+    if let Ok(home) = super::home_dir() {
+        push_unique_path(&mut roots, home.join(".amplihack"));
+    }
+    roots
 }
 
 pub(crate) fn recipe_search_dirs(
@@ -147,13 +182,31 @@ pub(crate) fn resolve_recipe_path(input: &str, working_dir: impl AsRef<Path>) ->
     }
 
     if looks_like_recipe_path(input) {
-        let is_bare = candidate.components().count() == 1;
-        if is_bare {
-            let cwd_candidate = cwd.join(candidate);
-            if cwd_candidate.is_file() {
-                return Ok(cwd_candidate);
+        // For relative path-like inputs (e.g. `amplifier-bundle/recipes/foo.yaml`
+        // or a bare `foo.yaml`), try each known root in order and return the
+        // first that actually exists. This prevents the runner from claiming
+        // a recipe is missing when it lives under AMPLIHACK_HOME or a parent
+        // repo root rather than the current working directory.
+        let roots = relative_recipe_path_search_roots(&cwd, &working_dir);
+        let mut tried = Vec::with_capacity(roots.len());
+        for root in &roots {
+            let resolved = root.join(candidate);
+            if resolved.is_file() {
+                return Ok(resolved);
             }
+            tried.push(resolved);
         }
+
+        // Preserve prior fallback behavior: if no root contains the file, return
+        // the working_dir-relative path so downstream parsing emits the
+        // existing "could not open recipe file" error. The caller then sees a
+        // path it can reason about (the one it requested), not an arbitrary
+        // search-root path. Tracing carries the full search list for debugging.
+        tracing::debug!(
+            input = input,
+            tried = %tried.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "),
+            "resolve_recipe_path: no candidate root contained a file matching input; returning working_dir-relative path"
+        );
         return resolve_path_from(&working_dir, candidate);
     }
 
