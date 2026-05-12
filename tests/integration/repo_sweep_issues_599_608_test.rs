@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 fn workspace_root() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop(); // tests/ → workspace root
-    path.pop(); // (already at root)
+    path.pop();
     path
 }
 
@@ -43,20 +43,6 @@ fn read_file(relative: &str) -> String {
         .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
 }
 
-/// Collect all `.md` files under a directory, recursively.
-fn collect_md_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    if !dir.is_dir() {
-        return files;
-    }
-    for entry in walkdir(dir) {
-        if entry.extension().and_then(|e| e.to_str()) == Some("md") {
-            files.push(entry);
-        }
-    }
-    files
-}
-
 /// Simple recursive directory walker (no external dep).
 fn walkdir(dir: &Path) -> Vec<PathBuf> {
     let mut result = Vec::new();
@@ -64,7 +50,6 @@ fn walkdir(dir: &Path) -> Vec<PathBuf> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                // Skip hidden dirs and target/
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 if !name.starts_with('.') && name != "target" && name != "node_modules" {
                     result.extend(walkdir(&path));
@@ -77,21 +62,52 @@ fn walkdir(dir: &Path) -> Vec<PathBuf> {
     result
 }
 
-/// Collect all SKILL.md files under amplifier-bundle/skills/ (excluding
-/// ultrathink-orchestrator which is an intentional legacy reference).
+/// Collect all `.md` files under a directory, recursively.
+fn collect_md_files(dir: &Path) -> Vec<PathBuf> {
+    walkdir(dir)
+        .into_iter()
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+        .collect()
+}
+
+/// Collect SKILL.md files, excluding ultrathink-orchestrator (intentional legacy).
 fn collect_skill_files() -> Vec<PathBuf> {
-    let skills_dir = workspace_root().join("amplifier-bundle/skills");
-    let mut files = Vec::new();
-    for path in walkdir(&skills_dir) {
-        if path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md") {
-            // Exclude ultrathink-orchestrator — intentional legacy reference
-            let path_str = path.to_string_lossy();
-            if !path_str.contains("ultrathink-orchestrator") {
-                files.push(path);
+    walkdir(&workspace_root().join("amplifier-bundle/skills"))
+        .into_iter()
+        .filter(|p| {
+            p.file_name().and_then(|n| n.to_str()) == Some("SKILL.md")
+                && !p.to_string_lossy().contains("ultrathink-orchestrator")
+        })
+        .collect()
+}
+
+/// Scan markdown files for line-level violations, returning formatted messages.
+fn scan_lines(
+    files: &[PathBuf],
+    predicate: impl Fn(&str, &str) -> bool,
+) -> Vec<String> {
+    let root = workspace_root();
+    let mut violations = Vec::new();
+    for path in files {
+        let content = fs::read_to_string(path).unwrap_or_default();
+        let rel = path.strip_prefix(&root).unwrap_or(path);
+        for (i, line) in content.lines().enumerate() {
+            if predicate(line, &rel.to_string_lossy()) {
+                violations.push(format!("  {}:{}: {}", rel.display(), i + 1, line.trim()));
             }
         }
     }
-    files
+    violations
+}
+
+/// Extract the body of a named test function from source code.
+fn extract_test_body<'a>(src: &'a str, test_name: &str) -> &'a str {
+    let pos = src
+        .find(&format!("fn {test_name}"))
+        .unwrap_or_else(|| panic!("Test {test_name} must exist"));
+    let after = &src[pos..];
+    let end = after.find("\n    #[test]").unwrap_or(after.len());
+    &after[..end]
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -101,42 +117,21 @@ fn collect_skill_files() -> Vec<PathBuf> {
 mod ultrathink_refs {
     use super::*;
 
+    /// Returns true if a line has a stale `/ultrathink` command reference.
+    fn is_stale_ultrathink(line: &str, rel_path: &str) -> bool {
+        line.contains("/ultrathink")
+            && !line.contains("feat/ultrathink")
+            && !line.contains("ultrathink-orchestrator")
+            && !line.contains("ultrathink-recipe")
+            && !(rel_path.contains("dev-orchestrator") && line.contains("deprecated"))
+    }
+
     /// TC-SWEEP-602-01: No SKILL.md file (except ultrathink-orchestrator and
-    /// dev-orchestrator:478 deprecation alias) should reference `/ultrathink`
-    /// as a command.
+    /// dev-orchestrator:478 deprecation alias) should reference `/ultrathink`.
     #[test]
     fn no_stale_ultrathink_command_refs_in_skills() {
-        let mut violations = Vec::new();
-
-        for path in collect_skill_files() {
-            let content = fs::read_to_string(&path).unwrap_or_default();
-            let rel = path.strip_prefix(&workspace_root()).unwrap_or(&path);
-
-            for (line_num, line) in content.lines().enumerate() {
-                // Match `/ultrathink` as a command (not in a branch name or URL path)
-                if line.contains("/ultrathink")
-                    && !line.contains("feat/ultrathink")
-                    && !line.contains("ultrathink-orchestrator")
-                    && !line.contains("ultrathink-recipe")
-                {
-                    // Allow dev-orchestrator's documented deprecation alias
-                    let is_deprecation_alias = rel
-                        .to_string_lossy()
-                        .contains("dev-orchestrator")
-                        && line.contains("deprecated");
-
-                    if !is_deprecation_alias {
-                        violations.push(format!(
-                            "  {}:{}: {}",
-                            rel.display(),
-                            line_num + 1,
-                            line.trim()
-                        ));
-                    }
-                }
-            }
-        }
-
+        let files = collect_skill_files();
+        let violations = scan_lines(&files, is_stale_ultrathink);
         assert!(
             violations.is_empty(),
             "Found stale /ultrathink command references (should be /dev):\n{}",
@@ -149,46 +144,13 @@ mod ultrathink_refs {
     fn no_stale_ultrathink_in_docs_skills_mirror() {
         let docs_skills = workspace_root().join("docs/claude/skills");
         if !docs_skills.is_dir() {
-            // Mirror may not exist in all builds
             return;
         }
-
-        let mut violations = Vec::new();
-        for path in walkdir(&docs_skills) {
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let content = fs::read_to_string(&path).unwrap_or_default();
-            let rel = path.strip_prefix(&workspace_root()).unwrap_or(&path);
-
-            // Exclude ultrathink-orchestrator — intentional legacy reference
-            if rel.to_string_lossy().contains("ultrathink-orchestrator") {
-                continue;
-            }
-
-            for (line_num, line) in content.lines().enumerate() {
-                if line.contains("/ultrathink")
-                    && !line.contains("feat/ultrathink")
-                    && !line.contains("ultrathink-orchestrator")
-                    && !line.contains("ultrathink-recipe")
-                {
-                    let is_deprecation_alias = rel
-                        .to_string_lossy()
-                        .contains("dev-orchestrator")
-                        && line.contains("deprecated");
-
-                    if !is_deprecation_alias {
-                        violations.push(format!(
-                            "  {}:{}: {}",
-                            rel.display(),
-                            line_num + 1,
-                            line.trim()
-                        ));
-                    }
-                }
-            }
-        }
-
+        let files: Vec<_> = collect_md_files(&docs_skills)
+            .into_iter()
+            .filter(|p| !p.to_string_lossy().contains("ultrathink-orchestrator"))
+            .collect();
+        let violations = scan_lines(&files, is_stale_ultrathink);
         assert!(
             violations.is_empty(),
             "Found stale /ultrathink refs in docs/claude/skills/:\n{}",
@@ -204,7 +166,6 @@ mod ultrathink_refs {
 mod python_hook_refs {
     use super::*;
 
-    /// Python hook scripts that were replaced by the Rust `amplihack-hooks` binary.
     const STALE_PYTHON_HOOKS: &[&str] = &[
         "workflow_enforcement_hook.py",
         "launcher_detector.py",
@@ -212,37 +173,29 @@ mod python_hook_refs {
         "session_start_hook.py",
     ];
 
-    /// TC-SWEEP-603-01: No SKILL.md file should reference nonexistent Python hooks
-    /// in prose (code blocks with "Legacy Python example" comments are allowed
-    /// since they're retained for conceptual illustration).
+    fn has_stale_hook(line: &str) -> bool {
+        STALE_PYTHON_HOOKS.iter().any(|h| line.contains(h))
+    }
+
+    /// TC-SWEEP-603-01: No SKILL.md should reference nonexistent Python hooks
+    /// outside code blocks (legacy examples in code blocks are allowed).
     #[test]
     fn no_python_hook_refs_in_skills() {
+        let root = workspace_root();
         let mut violations = Vec::new();
 
         for path in collect_skill_files() {
             let content = fs::read_to_string(&path).unwrap_or_default();
-            let rel = path.strip_prefix(&workspace_root()).unwrap_or(&path);
-
+            let rel = path.strip_prefix(&root).unwrap_or(&path);
             let mut in_code_block = false;
-            for (line_num, line) in content.lines().enumerate() {
+
+            for (i, line) in content.lines().enumerate() {
                 if line.trim_start().starts_with("```") {
                     in_code_block = !in_code_block;
                     continue;
                 }
-                // Allow references inside code blocks (legacy examples)
-                if in_code_block {
-                    continue;
-                }
-                for hook in STALE_PYTHON_HOOKS {
-                    if line.contains(hook) {
-                        violations.push(format!(
-                            "  {}:{}: references {}: {}",
-                            rel.display(),
-                            line_num + 1,
-                            hook,
-                            line.trim()
-                        ));
-                    }
+                if !in_code_block && has_stale_hook(line) {
+                    violations.push(format!("  {}:{}: {}", rel.display(), i + 1, line.trim()));
                 }
             }
         }
@@ -261,30 +214,8 @@ mod python_hook_refs {
         if !docs_skills.is_dir() {
             return;
         }
-
-        let mut violations = Vec::new();
-        for path in walkdir(&docs_skills) {
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let content = fs::read_to_string(&path).unwrap_or_default();
-            let rel = path.strip_prefix(&workspace_root()).unwrap_or(&path);
-
-            for (line_num, line) in content.lines().enumerate() {
-                for hook in STALE_PYTHON_HOOKS {
-                    if line.contains(hook) {
-                        violations.push(format!(
-                            "  {}:{}: references {}: {}",
-                            rel.display(),
-                            line_num + 1,
-                            hook,
-                            line.trim()
-                        ));
-                    }
-                }
-            }
-        }
-
+        let files = collect_md_files(&docs_skills);
+        let violations = scan_lines(&files, |line, _| has_stale_hook(line));
         assert!(
             violations.is_empty(),
             "Found stale Python hook refs in docs/claude/skills/:\n{}",
@@ -434,69 +365,42 @@ mod github_distributor_gate {
 mod litellm_serialization {
     use super::*;
 
+    const SRC: &str = "crates/amplihack-utils/src/litellm_callbacks.rs";
+
     /// TC-SWEEP-606-01: The test module must contain a SerialLock definition.
     #[test]
     fn has_serial_lock() {
-        let src = read_file("crates/amplihack-utils/src/litellm_callbacks.rs");
-        assert!(
-            src.contains("mod serial_lock"),
-            "litellm_callbacks test module must define a serial_lock submodule"
-        );
+        let src = read_file(SRC);
+        assert!(src.contains("mod serial_lock"), "must define serial_lock submodule");
         assert!(
             src.contains("OnceLock<Mutex<()>>") || src.contains("OnceLock < Mutex < () > >"),
             "SerialLock must use OnceLock<Mutex<()>> pattern"
         );
     }
 
-    /// TC-SWEEP-606-02: The `unregister_removes_callback` test (the flaky one)
-    /// must acquire the serial lock.
+    /// TC-SWEEP-606-02: The flaky test must acquire the serial lock.
     #[test]
     fn flaky_test_uses_serial_lock() {
-        let src = read_file("crates/amplihack-utils/src/litellm_callbacks.rs");
-
-        // Find the test function
-        let test_start = src
-            .find("fn unregister_removes_callback")
-            .expect("unregister_removes_callback test must exist");
-
-        // Find the next test or end of module
-        let after_test = &src[test_start..];
-        let test_end = after_test
-            .find("\n    #[test]")
-            .unwrap_or(after_test.len());
-        let test_body = &after_test[..test_end];
-
+        let src = read_file(SRC);
+        let body = extract_test_body(&src, "unregister_removes_callback");
         assert!(
-            test_body.contains("SerialLock::acquire()"),
-            "unregister_removes_callback must acquire SerialLock to prevent race condition"
+            body.contains("SerialLock::acquire()"),
+            "unregister_removes_callback must acquire SerialLock"
         );
     }
 
-    /// TC-SWEEP-606-03: All tests that touch the global registry must use SerialLock.
+    /// TC-SWEEP-606-03: All registry-mutating tests must use SerialLock.
     #[test]
     fn all_registry_tests_use_serial_lock() {
-        let src = read_file("crates/amplihack-utils/src/litellm_callbacks.rs");
-
-        // Tests that register/unregister callbacks touch global state
-        let registry_tests = [
+        let src = read_file(SRC);
+        for name in [
             "register_returns_none_when_disabled",
             "register_returns_some_when_enabled",
             "unregister_removes_callback",
             "unregister_noop_when_none",
-        ];
-
-        for test_name in &registry_tests {
-            let test_pos = src.find(&format!("fn {test_name}"))
-                .unwrap_or_else(|| panic!("Test {test_name} must exist"));
-
-            let after = &src[test_pos..];
-            let end = after.find("\n    #[test]").unwrap_or(after.len());
-            let body = &after[..end];
-
-            assert!(
-                body.contains("SerialLock::acquire()"),
-                "Test {test_name} touches global registry and must acquire SerialLock"
-            );
+        ] {
+            let body = extract_test_body(&src, name);
+            assert!(body.contains("SerialLock::acquire()"), "Test {name} must acquire SerialLock");
         }
     }
 }
@@ -508,62 +412,40 @@ mod litellm_serialization {
 mod docker_serialization {
     use super::*;
 
+    const SRC: &str = "crates/amplihack-utils/src/docker_detector.rs";
+
     /// TC-SWEEP-607-01: The test module must contain a SerialLock definition.
     #[test]
     fn has_serial_lock() {
-        let src = read_file("crates/amplihack-utils/src/docker_detector.rs");
-        assert!(
-            src.contains("mod serial_lock"),
-            "docker_detector test module must define a serial_lock submodule"
-        );
+        let src = read_file(SRC);
+        assert!(src.contains("mod serial_lock"), "must define serial_lock submodule");
     }
 
-    /// TC-SWEEP-607-02: The flaky `is_in_docker_env_var` test must acquire lock.
+    /// TC-SWEEP-607-02: The flaky test must acquire the lock.
     #[test]
     fn flaky_test_uses_serial_lock() {
-        let src = read_file("crates/amplihack-utils/src/docker_detector.rs");
-
-        let test_start = src
-            .find("fn is_in_docker_env_var")
-            .expect("is_in_docker_env_var test must exist");
-
-        let after = &src[test_start..];
-        let end = after.find("\n    #[test]").unwrap_or(after.len());
-        let body = &after[..end];
-
+        let src = read_file(SRC);
+        let body = extract_test_body(&src, "is_in_docker_env_var");
         assert!(
             body.contains("SerialLock::acquire()"),
-            "is_in_docker_env_var must acquire SerialLock to prevent env var race"
+            "is_in_docker_env_var must acquire SerialLock"
         );
     }
 
     /// TC-SWEEP-607-03: All env-var-mutating tests must acquire the lock.
     #[test]
     fn all_env_mutating_tests_use_serial_lock() {
-        let src = read_file("crates/amplihack-utils/src/docker_detector.rs");
-
-        // Tests that set/remove env vars
-        let env_tests = [
+        let src = read_file(SRC);
+        for name in [
             "is_in_docker_env_var",
             "is_in_docker_false_when_unset",
             "should_use_docker_false_by_default",
             "check_image_exists_false_when_no_docker",
             "should_use_docker_true_for_all_truthy_env_values",
             "should_use_docker_false_for_falsy_env_values",
-        ];
-
-        for test_name in &env_tests {
-            let test_pos = src.find(&format!("fn {test_name}"))
-                .unwrap_or_else(|| panic!("Test {test_name} must exist"));
-
-            let after = &src[test_pos..];
-            let end = after.find("\n    #[test]").unwrap_or(after.len());
-            let body = &after[..end];
-
-            assert!(
-                body.contains("SerialLock::acquire()"),
-                "Test {test_name} mutates env vars and must acquire SerialLock"
-            );
+        ] {
+            let body = extract_test_body(&src, name);
+            assert!(body.contains("SerialLock::acquire()"), "Test {name} must acquire SerialLock");
         }
     }
 }
