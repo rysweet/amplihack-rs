@@ -14,10 +14,11 @@
 //! 3. **Generation** — create agent content ([`AgentGenerator`])
 //! 4. **Building** — assemble bundles ([`BundleBuilder`])
 //! 5. **Packaging** — produce distributable packages ([`FilesystemPackager`])
-//! 6. **Distribution** — publish to GitHub (`GitHubDistributor` — requires `github-distributor` feature)
+//! 6. **Distribution** — publish to GitHub ([`GitHubDistributor`]) via `gh` CLI
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -796,46 +797,243 @@ fn validate_output_dir(path: &Path) -> Result<(), BundleGeneratorError> {
 }
 
 // ---------------------------------------------------------------------------
-// GitHubDistributor (stub) — behind feature gate since it's unimplemented
+// GitHubDistributor
 // ---------------------------------------------------------------------------
 
-/// Distributes agent bundles to GitHub repositories.
+/// Distributes agent bundles to GitHub repositories via the `gh` CLI.
 ///
-/// TODO: implement `create_repository`, `push_bundle`, `create_release`
-#[cfg(feature = "github-distributor")]
+/// Uses [`create_repository`](Self::create_repository),
+/// [`push_bundle`](Self::push_bundle), and
+/// [`create_release`](Self::create_release) internally.
 pub struct GitHubDistributor {
-    /// GitHub personal access token.
-    _token: String,
+    /// GitHub personal access token (passed to `gh` via `GH_TOKEN` env).
+    token: String,
 }
 
-#[cfg(feature = "github-distributor")]
 impl GitHubDistributor {
     /// Create a new distributor with a GitHub token.
     pub fn new(token: impl Into<String>) -> Self {
         Self {
-            _token: token.into(),
+            token: token.into(),
         }
     }
 
     /// Distribute a packaged bundle to GitHub.
     ///
-    /// TODO: implement GitHub API calls for repository creation, push, and release.
+    /// Creates the repository if it does not exist, pushes the bundle archive,
+    /// and creates a tagged release with the bundle attached.
     ///
     /// # Errors
     ///
     /// Returns [`BundleGeneratorError::Distribution`] on failure.
     pub fn distribute(
         &self,
-        _bundle: &PackagedBundle,
-        _repo_name: &str,
+        bundle: &PackagedBundle,
+        repo_name: &str,
     ) -> Result<DistributionResult, BundleGeneratorError> {
-        // TODO: implement GitHub API integration
-        Err(BundleGeneratorError::Distribution {
-            message: "GitHub distribution not yet implemented".into(),
-            platform: Some("github".into()),
-            http_status: None,
+        let start = std::time::Instant::now();
+
+        let repo_url = self.create_repository(repo_name, &bundle.bundle.description)?;
+
+        self.push_bundle(repo_name, &bundle.package_path)?;
+
+        let tag = format!("v{}", bundle.bundle.version);
+        let release_url = self.create_release(repo_name, &tag, &bundle.package_path)?;
+
+        Ok(DistributionResult {
+            success: true,
+            platform: DistributionPlatform::Github,
+            url: Some(release_url),
+            repository: Some(repo_url),
+            branch: Some("main".into()),
+            commit_sha: None,
+            release_tag: Some(tag),
+            errors: vec![],
+            warnings: vec![],
+            distribution_time_seconds: start.elapsed().as_secs_f64(),
         })
     }
+
+    /// Create a GitHub repository if it does not already exist.
+    ///
+    /// Returns the repository URL on success.
+    pub fn create_repository(
+        &self,
+        repo_name: &str,
+        description: &str,
+    ) -> Result<String, BundleGeneratorError> {
+        // Check if the repo already exists
+        let check = Command::new("gh")
+            .env("GH_TOKEN", &self.token)
+            .args(["repo", "view", repo_name, "--json", "url", "-q", ".url"])
+            .output()
+            .map_err(|e| BundleGeneratorError::Distribution {
+                message: format!("Failed to invoke gh CLI: {e}"),
+                platform: Some("github".into()),
+                http_status: None,
+            })?;
+
+        if check.status.success() {
+            let url = String::from_utf8_lossy(&check.stdout).trim().to_string();
+            return Ok(url);
+        }
+
+        // Create the repository
+        let desc_truncated = &description[..description.len().min(100)];
+        let output = Command::new("gh")
+            .env("GH_TOKEN", &self.token)
+            .args([
+                "repo",
+                "create",
+                repo_name,
+                "--public",
+                "--description",
+                desc_truncated,
+                "--clone=false",
+            ])
+            .output()
+            .map_err(|e| BundleGeneratorError::Distribution {
+                message: format!("Failed to invoke gh CLI: {e}"),
+                platform: Some("github".into()),
+                http_status: None,
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(BundleGeneratorError::Distribution {
+                message: format!("Failed to create repository: {stderr}"),
+                platform: Some("github".into()),
+                http_status: None,
+            });
+        }
+
+        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(url)
+    }
+
+    /// Push the bundle archive to the repository.
+    ///
+    /// Uses `gh` to upload the file to the repository's default branch.
+    pub fn push_bundle(
+        &self,
+        repo_name: &str,
+        package_path: &Path,
+    ) -> Result<(), BundleGeneratorError> {
+        let file_name = package_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("bundle.tar.gz");
+
+        let contents = std::fs::read(package_path).map_err(|e| {
+            BundleGeneratorError::Distribution {
+                message: format!("Failed to read bundle at {}: {e}", package_path.display()),
+                platform: Some("github".into()),
+                http_status: None,
+            }
+        })?;
+
+        let b64 = base64_encode(&contents);
+
+        let output = Command::new("gh")
+            .env("GH_TOKEN", &self.token)
+            .args([
+                "api",
+                &format!("repos/{repo_name}/contents/{file_name}"),
+                "-X",
+                "PUT",
+                "-f",
+                &format!("message=Upload bundle {file_name}"),
+                "-f",
+                &format!("content={b64}"),
+            ])
+            .output()
+            .map_err(|e| BundleGeneratorError::Distribution {
+                message: format!("Failed to invoke gh CLI: {e}"),
+                platform: Some("github".into()),
+                http_status: None,
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(BundleGeneratorError::Distribution {
+                message: format!("Failed to push bundle: {stderr}"),
+                platform: Some("github".into()),
+                http_status: None,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Create a GitHub release with the bundle attached as an asset.
+    ///
+    /// Returns the release URL on success.
+    pub fn create_release(
+        &self,
+        repo_name: &str,
+        tag: &str,
+        asset_path: &Path,
+    ) -> Result<String, BundleGeneratorError> {
+        let output = Command::new("gh")
+            .env("GH_TOKEN", &self.token)
+            .args([
+                "release",
+                "create",
+                tag,
+                &asset_path.display().to_string(),
+                "--repo",
+                repo_name,
+                "--title",
+                &format!("Release {tag}"),
+                "--notes",
+                &format!("Agent bundle release {tag}"),
+            ])
+            .output()
+            .map_err(|e| BundleGeneratorError::Distribution {
+                message: format!("Failed to invoke gh CLI: {e}"),
+                platform: Some("github".into()),
+                http_status: None,
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(BundleGeneratorError::Distribution {
+                message: format!("Failed to create release: {stderr}"),
+                platform: Some("github".into()),
+                http_status: None,
+            });
+        }
+
+        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(url)
+    }
+}
+
+/// Simple base64 encoder (avoids pulling in a crate for a single use).
+fn base64_encode(data: &[u8]) -> String {
+    use std::fmt::Write;
+    const CHARS: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        let _ = write!(out, "{}", CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        let _ = write!(out, "{}", CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            let _ = write!(out, "{}", CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            let _ = write!(out, "{}", CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1109,5 +1307,61 @@ mod tests {
         let deserialized: AgentBundle = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.name, bundle.name);
         assert_eq!(deserialized.agents.len(), 1);
+    }
+
+    #[test]
+    fn github_distributor_new_stores_token() {
+        let dist = GitHubDistributor::new("test-token-123");
+        assert_eq!(dist.token, "test-token-123");
+    }
+
+    #[test]
+    fn base64_encode_empty() {
+        assert_eq!(base64_encode(b""), "");
+    }
+
+    #[test]
+    fn base64_encode_hello() {
+        assert_eq!(base64_encode(b"Hello"), "SGVsbG8=");
+    }
+
+    #[test]
+    fn base64_encode_padding_two() {
+        assert_eq!(base64_encode(b"H"), "SA==");
+    }
+
+    #[test]
+    fn base64_encode_no_padding() {
+        assert_eq!(base64_encode(b"abc"), "YWJj");
+    }
+
+    #[test]
+    fn github_distributor_distribute_fails_without_gh() {
+        // When gh CLI is not authenticated or repo doesn't exist,
+        // distribute should return a Distribution error, not panic.
+        let dist = GitHubDistributor::new("invalid-token");
+        let bundle = PackagedBundle {
+            bundle: AgentBundle {
+                id: "test-id".into(),
+                name: "test-bundle".into(),
+                version: "0.1.0".into(),
+                description: "test desc".into(),
+                agents: vec![],
+                manifest: HashMap::new(),
+                metadata: HashMap::new(),
+                status: BundleStatus::Ready,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+            package_path: PathBuf::from("/nonexistent/bundle.tar.gz"),
+            format: PackageFormat::TarGz,
+            checksum: String::new(),
+            size_bytes: 0,
+            created_at: Utc::now(),
+        };
+        let result = dist.distribute(&bundle, "nonexistent-test-repo-xyz");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("DISTRIBUTION_FAILED"));
     }
 }
