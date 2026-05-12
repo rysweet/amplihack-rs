@@ -195,7 +195,7 @@ Update `docs/index.md` or parent document:
 ```markdown
 ## [Section]
 
-- [New Document Title](./path/to/new-doc.md) - Brief description
+- New Document Title - Brief description
 ```
 
 ### Step 6: Validate

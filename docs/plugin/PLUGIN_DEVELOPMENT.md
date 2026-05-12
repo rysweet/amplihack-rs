@@ -836,7 +836,7 @@ for lang in languages:
 - **amplihack Repo**: https://github.com/rysweet/amplihack-rs
 - **Issue Tracker**: https://github.com/rysweet/amplihack-rs/issues
 - **Discussions**: https://github.com/rysweet/amplihack-rs/discussions
-- **Documentation**: [docs/plugin/](./README.md)
+- **Documentation**: docs/plugin/
 
 ## Getting Help
 

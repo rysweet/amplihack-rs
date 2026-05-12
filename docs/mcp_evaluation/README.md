@@ -65,20 +65,20 @@ Choose your path based on what you need:
 - How to interpret results
 - Making integration decisions
 
-**Understand the Architecture** → See [Specs/MCP_EVALUATION_FRAMEWORK.md](../../Specs/MCP_EVALUATION_FRAMEWORK.md)
+**Understand the Architecture** → See Specs/MCP_EVALUATION_FRAMEWORK.md
 
 - Technical design decisions
 - Component breakdown
 - Adapter pattern details
 - Extension points
 
-**See Examples** → Look in [tests/mcp_evaluation/results/](../../tests/mcp_evaluation/results/)
+**See Examples** → Look in tests/mcp_evaluation/results/
 
 - Real evaluation reports
 - Mock vs real server comparisons
 - Example metrics and recommendations
 
-**Get Technical Details** → Check [tests/mcp_evaluation/README.md](../../tests/mcp_evaluation/README.md)
+**Get Technical Details** → Check tests/mcp_evaluation/README.md
 
 - Implementation internals
 - Test scenario definitions
@@ -237,7 +237,7 @@ Ready to evaluate your first tool? Follow this path:
    - Understand decision criteria
 
 4. **Create a Custom Adapter** (Optional)
-   - See [tests/mcp_evaluation/README.md](../../tests/mcp_evaluation/README.md)
+   - See tests/mcp_evaluation/README.md
    - Implement the BaseAdapter interface
    - Run evaluations on your tool
 
@@ -277,7 +277,7 @@ This framework embodies amplihack's core principles:
 
 **Want to contribute an adapter?** Great! See:
 
-- [tests/mcp_evaluation/README.md](../../tests/mcp_evaluation/README.md) for adapter creation guide
+- tests/mcp_evaluation/README.md for adapter creation guide
 - Submit a PR with your adapter and example evaluation
 
 **Have questions?** Check the troubleshooting section in [USER_GUIDE.md](USER_GUIDE.md) first.
@@ -287,8 +287,8 @@ This framework embodies amplihack's core principles:
 Pick your path:
 
 - **New to the framework?** → [USER_GUIDE.md](USER_GUIDE.md)
-- **Need technical details?** → [Specs/MCP_EVALUATION_FRAMEWORK.md](../../Specs/MCP_EVALUATION_FRAMEWORK.md)
-- **Want to build an adapter?** → [tests/mcp_evaluation/README.md](../../tests/mcp_evaluation/README.md)
+- **Need technical details?** → Specs/MCP_EVALUATION_FRAMEWORK.md
+- **Want to build an adapter?** → tests/mcp_evaluation/README.md
 - **Ready to evaluate?** → `cd tests/mcp_evaluation && python run_evaluation.py`
 
 ---

@@ -271,7 +271,7 @@ print(result.duration_seconds) # Execution time
 
 ## Related Documentation
 
-- [Guide Agent](../claude/agents/amplihack/specialized/guide.md) - Socratic teaching agent
+- Guide Agent - Socratic teaching agent
 - [Outside-In Testing Skill](../claude/skills/outside-in-testing/SKILL.md) - Test-driven development
 - [Goal Agent Generator](../GOAL_AGENT_GENERATOR_GUIDE.md) - Create autonomous agents
 - [Agent Memory Integration](../AGENT_MEMORY_INTEGRATION.md) - How agents share knowledge

@@ -217,7 +217,7 @@ rm "$(git rev-parse --git-common-dir)/.claude/runtime/power-steering/workflow_cl
 
 ## Related Documentation
 
-- [Power Steering Overview](./README.md) - Core concepts and philosophy
-- [Configuration Guide](./configuration.md) - Complete configuration options
-- [Troubleshooting Guide](./troubleshooting.md) - Fix common issues
-- [Migration Guide v0.9.1](./migration-v0.9.1.md) - Upgrade from earlier versions
+- Power Steering Overview - Core concepts and philosophy
+- Configuration Guide - Complete configuration options
+- Troubleshooting Guide - Fix common issues
+- Migration Guide v0.9.1 - Upgrade from earlier versions

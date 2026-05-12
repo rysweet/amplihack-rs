@@ -141,6 +141,23 @@ fn run_docker_output(args: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_lock::SerialLock;
+
+    // Module-private serial lock — tests mutate `AMPLIHACK_IN_DOCKER`,
+    // `AMPLIHACK_USE_DOCKER`, and `PATH` env vars which race under
+    // `cargo test --jobs N`.
+    mod serial_lock {
+        use std::sync::{Mutex, MutexGuard, OnceLock};
+        pub struct SerialLock;
+        impl SerialLock {
+            pub fn acquire() -> MutexGuard<'static, ()> {
+                static LK: OnceLock<Mutex<()>> = OnceLock::new();
+                LK.get_or_init(|| Mutex::new(()))
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+            }
+        }
+    }
 
     #[test]
     fn is_available_returns_bool() {
@@ -150,6 +167,7 @@ mod tests {
 
     #[test]
     fn is_in_docker_env_var() {
+        let _serial = SerialLock::acquire();
         // Save and restore.
         let prev = std::env::var("AMPLIHACK_IN_DOCKER").ok();
         // SAFETY: Tests run single-threaded per module; env var mutation is contained.
@@ -169,6 +187,7 @@ mod tests {
 
     #[test]
     fn is_in_docker_false_when_unset() {
+        let _serial = SerialLock::acquire();
         let prev = std::env::var("AMPLIHACK_IN_DOCKER").ok();
         // SAFETY: Tests run single-threaded per module; env var mutation is contained.
         unsafe {
@@ -186,6 +205,7 @@ mod tests {
 
     #[test]
     fn should_use_docker_false_by_default() {
+        let _serial = SerialLock::acquire();
         let prev = std::env::var("AMPLIHACK_USE_DOCKER").ok();
         // SAFETY: Tests run single-threaded per module; env var mutation is contained.
         unsafe {
@@ -201,6 +221,7 @@ mod tests {
 
     #[test]
     fn check_image_exists_false_when_no_docker() {
+        let _serial = SerialLock::acquire();
         // If docker isn't running, this should return false, not panic.
         // We don't assume docker is available in tests.
         let prev_path = std::env::var("PATH").unwrap_or_default();
@@ -234,6 +255,7 @@ mod tests {
 
     #[test]
     fn should_use_docker_true_for_all_truthy_env_values() {
+        let _serial = SerialLock::acquire();
         // Verify each truthy variant of AMPLIHACK_USE_DOCKER is accepted.
         // We can't easily make Docker run in CI, so we only test the
         // "not in docker + docker not running" path — should return false
@@ -268,6 +290,7 @@ mod tests {
 
     #[test]
     fn should_use_docker_false_for_falsy_env_values() {
+        let _serial = SerialLock::acquire();
         let prev = std::env::var("AMPLIHACK_USE_DOCKER").ok();
         for val in &["0", "false", "no", "off", ""] {
             unsafe {

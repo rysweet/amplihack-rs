@@ -468,7 +468,7 @@ with open(summary_path, 'w') as f:
     for evidence_type, items in sorted(by_type.items()):
         f.write(f"### {evidence_type.replace('_', ' ').title()}\n\n")
         for item in items:
-            f.write(f"- [{item.path}](./{evidence_type}/{os.path.basename(item.path)})\n")
+            f.write(f"- {item.path}})\n")
         f.write("\n")
 
 print(f"\nArchive created: {archive_dir}/")

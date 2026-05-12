@@ -227,7 +227,7 @@ What happens:
   boundaries
 
 Philosophy guide:
-[`~/.amplihack/.claude/context/PHILOSOPHY.md`](~/.amplihack/.claude/context/PHILOSOPHY.md)
+[`amplifier-bundle/context/PHILOSOPHY.md`](amplifier-bundle/context/PHILOSOPHY.md)
 
 ### Workflows
 
@@ -245,7 +245,7 @@ selects the right workflow.
 - **OPS_WORKFLOW**: 1-step administrative operations (cleanup, maintenance)
 
 Workflows are customizable - edit
-`~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md` to change process.
+`amplifier-bundle/workflow/DEFAULT_WORKFLOW.md` to change process.
 
 Workflow customization:
 [docs/WORKFLOW_COMPLETION.md](https://rysweet.github.io/amplihack-rs/WORKFLOW_COMPLETION/)
@@ -275,7 +275,7 @@ These are the features you'll use daily:
   bundled recipes, also available via `amplihack recipe` CLI)
 - **[Auto Mode](https://rysweet.github.io/amplihack-rs/AUTO_MODE/)** — Autonomous
   agentic loops
-- **[Multitask](~/.amplihack/.claude/skills/multitask/SKILL.md)** — Parallel
+- **[Multitask](amplifier-bundle/skills/multitask/SKILL.md)** — Parallel
   workstream execution
 - **[Expert Panel](/amplihack:expert-panel)** — Multi-expert review with voting
 - **[N-Version Programming](/amplihack:n-version)** — Generate multiple
@@ -302,9 +302,9 @@ Full reference:
 
 - **[Document-Driven Development](https://rysweet.github.io/amplihack-rs/document_driven_development/)**
   — Docs-first for large features
-- **[Pre-Commit Diagnostics](~/.amplihack/.claude/agents/amplihack/specialized/pre-commit-diagnostic.md)**
+- **[Pre-Commit Diagnostics](docs/claude/agents/amplihack/specialized/pre-commit-diagnostic.md)**
   — Fix linting before push
-- **[CI Diagnostics](~/.amplihack/.claude/agents/amplihack/specialized/ci-diagnostic-workflow.md)**
+- **[CI Diagnostics](docs/claude/agents/amplihack/specialized/ci-diagnostic-workflow.md)**
   — Iterate until PR is mergeable
 - **[Cascade Fallback](/amplihack:cascade)** — Graceful degradation
 - **[Quality Audit](/amplihack:analyze)** — Seek/validate/fix/recurse quality
@@ -337,7 +337,7 @@ Full reference:
   Multi-model support
 - **[RustyClawd](#rustyclawd-integration)** — High-performance Rust launcher
   (5-10x faster startup)
-- **[Remote Execution](~/.amplihack/.claude/tools/amplihack/remote/README.md)**
+- **[Remote Execution](docs/claude/tools/amplihack/remote/README.md)**
   — Distribute work across Azure VMs
 
 </details>
@@ -452,7 +452,7 @@ Supports all models available in GitHub Copilot ecosystem.
 
 ### Workflow Customization
 
-Edit `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md` to customize the
+Edit `amplifier-bundle/workflow/DEFAULT_WORKFLOW.md` to customize the
 development process. Changes apply immediately to all commands.
 
 Custom workflows:
@@ -496,7 +496,7 @@ Custom workflows:
 
 ### Skills & Integrations
 
-- **[Skills System](~/.amplihack/.claude/skills/README.md)** - 85+ skills
+- **Skills System** - 85+ skills
   including office, Azure, and workflow patterns
 - **[GitHub Copilot Integration](https://rysweet.github.io/amplihack-rs/COPILOT_CLI/)** -
   Full CLI support
@@ -542,9 +542,9 @@ Custom workflows:
 
 - **[The Amplihack Way](https://rysweet.github.io/amplihack-rs/THIS_IS_THE_WAY/)** -
   Effective strategies for AI-agent development
-- **[Philosophy](~/.amplihack/.claude/context/PHILOSOPHY.md)** - Ruthless
+- **[Philosophy](amplifier-bundle/context/PHILOSOPHY.md)** - Ruthless
   simplicity, modular design, zero-BS implementation
-- **[Patterns](~/.amplihack/.claude/context/PATTERNS.md)** - Proven solutions
+- **[Patterns](amplifier-bundle/context/PATTERNS.md)** - Proven solutions
   for recurring challenges
 - **[Discoveries](https://rysweet.github.io/amplihack-rs/discoveries/)** -
   Problems, solutions, and learnings
@@ -597,8 +597,8 @@ complete Windows compatibility tracker.
 ### Contributing
 
 Fork the repository and submit PRs. Add agents to
-`~/.amplihack/.claude/agents/`, patterns to
-`~/.amplihack/.claude/context/PATTERNS.md`.
+`amplifier-bundle/agents/`, patterns to
+`amplifier-bundle/context/PATTERNS.md`.
 
 Contributing guide: [CONTRIBUTING.md](CONTRIBUTING.md).
 

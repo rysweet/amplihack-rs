@@ -4,7 +4,7 @@ Complete documentation for the amplihack Claude Code plugin architecture.
 
 ## Quick Navigation
 
-- **Getting Started**: [README](./README.md) - Overview and quick start
+- **Getting Started**: README - Overview and quick start
 - **Installation**: [Installation Guide](./PLUGIN_INSTALLATION.md) - Complete installation instructions
 - **LSP Configuration**: [LSP Guide](./LSP_CONFIGURATION.md) - Language server auto-detection
 - **Development**: [Development Guide](./PLUGIN_DEVELOPMENT.md) - Contributing to the plugin
@@ -28,7 +28,7 @@ For users who want to install and use amplihack:
 
 | Document                                        | Purpose                  | Audience    |
 | ----------------------------------------------- | ------------------------ | ----------- |
-| [README](./README.md)                           | Overview and quick start | All users   |
+| README                           | Overview and quick start | All users   |
 | [PLUGIN_INSTALLATION](./PLUGIN_INSTALLATION.md) | Installation and setup   | New users   |
 | [LSP_CONFIGURATION](./LSP_CONFIGURATION.md)     | Language server setup    | Power users |
 
@@ -207,4 +207,4 @@ The plugin follows amplihack's core philosophy:
 
 ---
 
-**Start here**: [README](./README.md) for overview and quick start.
+**Start here**: README for overview and quick start.

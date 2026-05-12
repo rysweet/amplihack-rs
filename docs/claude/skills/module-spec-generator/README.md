@@ -64,13 +64,13 @@ Anthropic's office document skills integrated into amplihack for comprehensive d
 
 ### Research Reports
 
-- **[Complete Research Report](../runtime/logs/20251108_skills_research/RESEARCH.md)** (357 lines)
+- **Complete Research Report** (357 lines)
   - Comprehensive analysis of Claude Code Skills ecosystem
   - Comparison with MCP (Model Context Protocol)
   - 23+ documented skills from Anthropic and community
   - Key insights from Simon Willison and other experts
 
-- **[Evaluation Matrix & Ideas](../runtime/logs/20251108_skills_research/EVALUATION_MATRIX_AND_IDEAS.md)** (842 lines)
+- **Evaluation Matrix & Ideas** (842 lines)
   - 6-criteria evaluation framework aligned with amplihack philosophy
   - 20 brainstormed skill ideas with priority scores
   - Implementation phases and effort estimates
@@ -290,10 +290,10 @@ When adding new skills:
 
 ## 📚 Related Documentation
 
-- [CLAUDE.md](../../CLAUDE.md) - Project overview and agent system
-- [PHILOSOPHY.md](../context/PHILOSOPHY.md) - Ruthless simplicity principles
-- [PATTERNS.md](../context/PATTERNS.md) - Reusable solution patterns
-- [Agent Catalog](../agents/CATALOG.md) - Specialized agents
+- CLAUDE.md - Project overview and agent system
+- PHILOSOPHY.md - Ruthless simplicity principles
+- PATTERNS.md - Reusable solution patterns
+- Agent Catalog - Specialized agents
 - [Office Skills Integration Status](INTEGRATION_STATUS.md) - Progress tracker
 
 ## License
