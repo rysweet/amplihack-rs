@@ -84,6 +84,19 @@ path = "../../tests/integration/no_python_probe_test.rs"
 [[test]]
 name = "default_workflow_decomposition"
 path = "../../tests/integration/default_workflow_decomposition_test.rs"
+
+# Issue #615: agentic work-verifier contract tests.
+# Locks the behavioral contract for the step-08c pair that replaced the
+# legacy six-escape-hatch bash hollow-success guard. Asserts (a) the agent
+# step's type/wiring/prompt content (investigation surfaces, fast-path
+# opt-outs, three verdicts, JSON-on-last-line), (b) the bash gate's
+# type/wiring, (c) condition-clause preservation, and (d) executes the
+# actual gate command against synthetic verdicts to lock the exit-code
+# mapping (WORK_VERIFIED->0, INSUFFICIENT_EVIDENCE->0+WARN, HOLLOW_SUCCESS->1,
+# empty/unparseable->0+WARN, ALLOW_NO_OP->0, sentinel->0).
+[[test]]
+name = "issue_615_work_verifier"
+path = "../../tests/integration/issue_615_work_verifier_test.rs"
 # Consensus-workflow decomposition parity tests.
 # Locks the v3 contract: composer calls 11 phase sub-recipes, all 60 step IDs
 # preserved in order, brick budget enforced, and 7 mandatory consensus gates
