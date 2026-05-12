@@ -34,7 +34,7 @@ Check session output, status, and pool capacity at any time without reconnecting
 
   Complete guide to using remote sessions including architecture, prerequisites, and common workflows.
 
-  [:octicons-arrow-right-24: Read the User Guide](README.md)
+  [:octicons-arrow-right-24: Read the User Guide](index.md)
 
 - :material-console:{ .lg .middle } **CLI Reference**
 
@@ -193,7 +193,7 @@ Remote Sessions includes:
 
 ## Next Steps
 
-- **New to Remote Sessions?** Start with the [User Guide](README.md)
+- **New to Remote Sessions?** Start with the [User Guide](index.md)
 - **Ready to use it?** Jump to the [Tutorial](TUTORIAL.md)
 - **Need command details?** Check the [CLI Reference](CLI_REFERENCE.md)
 - **Want to contribute?** Read the [Developer Guide](../../amplifier-bundle/tools/amplihack/remote/README.md)
@@ -203,5 +203,5 @@ Remote Sessions includes:
 For issues, questions, or feature requests, see:
 
 - [GitHub Issues](https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding/issues)
-- [Troubleshooting Guide](README.md#troubleshooting)
+- [Troubleshooting Guide](index.md#troubleshooting)
 - [Developer Documentation](../../amplifier-bundle/tools/amplihack/remote/README.md)

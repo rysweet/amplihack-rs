@@ -55,10 +55,10 @@ Anthropic's office document skills integrated into amplihack for comprehensive d
 
 | Skill    | Status     | Description                                                  | Documentation            |
 | -------- | ---------- | ------------------------------------------------------------ | ------------------------ |
-| **pdf**  | Integrated | Comprehensive PDF manipulation - extract, create, merge, OCR | [README](pdf/README.md)  |
-| **xlsx** | Integrated | Excel spreadsheet manipulation with formulas and charts      | [README](xlsx/README.md) |
-| **docx** | Integrated | Word document processing with tracked changes                | [README](docx/README.md) |
-| **pptx** | Integrated | PowerPoint presentation generation                           | [README](pptx/README.md) |
+| **pdf**  | Integrated | Comprehensive PDF manipulation - extract, create, merge, OCR | [README](../pdf/README.md)  |
+| **xlsx** | Integrated | Excel spreadsheet manipulation with formulas and charts      | [README](../xlsx/README.md) |
+| **docx** | Integrated | Word document processing with tracked changes                | [README](../docx/README.md) |
+| **pptx** | Integrated | PowerPoint presentation generation                           | [README](../pptx/README.md) |
 
 ## 📖 Research & Documentation
 
@@ -294,7 +294,7 @@ When adding new skills:
 - PHILOSOPHY.md - Ruthless simplicity principles
 - PATTERNS.md - Reusable solution patterns
 - Agent Catalog - Specialized agents
-- [Office Skills Integration Status](INTEGRATION_STATUS.md) - Progress tracker
+- Office Skills Integration Status - Progress tracker
 
 ## License
 

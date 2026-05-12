@@ -102,7 +102,7 @@ Automatic secure permissions for sensitive files.
 
 Comprehensive security analysis:
 
-- [Neo4j Cleanup Security Audit](NEO4J_CLEANUP_SECURITY_AUDIT.md) - Memory system security review
+- Neo4j Cleanup Security Audit - Memory system security review (removed: Neo4j replaced by Kuzu)
 
 ---
 
