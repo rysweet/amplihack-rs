@@ -438,7 +438,7 @@ ls .github/agents/*.md
 **Note**: Copilot shows "No custom agents configured" until you select one with
 `--agent <name>`.
 
-Full guide: [COPILOT_CLI.md](COPILOT_CLI.md)
+Full guide: [COPILOT_CLI.md](docs/COPILOT_CLI.md)
 
 ### Microsoft Amplifier
 

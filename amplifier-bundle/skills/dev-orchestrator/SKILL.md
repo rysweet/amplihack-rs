@@ -394,7 +394,7 @@ After execution completes, verify the goal was achieved. If not:
 
 ### Enforcement: PostToolUse Workflow Guard
 
-A PostToolUse hook (`workflow_enforcement_hook.py`) actively monitors every
+A PostToolUse hook (`amplihack-hooks`) actively monitors every
 tool call after this skill is invoked. It tracks:
 
 - Whether `/dev` or `dev-orchestrator` was called (sets a flag)

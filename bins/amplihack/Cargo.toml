@@ -207,3 +207,9 @@ path = "tests/issue_537_git_optional_recipes.rs"
 [[test]]
 name = "skill_frontmatter_name"
 path = "../../tests/integration/skill_frontmatter_name_test.rs"
+
+# Issues #599–#608: Repo-sweep regression tests.
+# Guards against re-introduction of stale refs, broken links, missing feature gates.
+[[test]]
+name = "repo_sweep_issues_599_608"
+path = "../../tests/integration/repo_sweep_issues_599_608_test.rs"
