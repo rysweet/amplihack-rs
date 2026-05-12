@@ -8,7 +8,7 @@ Those bundled `SKILL.md` / `skill.md` files are the install-time source of truth
 - **Unique bundled skill names:** 120
 - **Skill definition files:** 121
 - **Legacy parity:** all 118 skill names from `/home/azureuser/src/amplihack/.claude/skills` are present.
-- **Additional current skills:** `amplihack:migrate`, `session-to-agent`
+- **Additional current skills:** `amplihack-migrate`, `session-to-agent`
 
 ## Bundled Skills
 
@@ -16,7 +16,7 @@ Those bundled `SKILL.md` / `skill.md` files are the install-time source of truth
 | --- | --- |
 | `agent-generator-tutor` | `agent-generator-tutor/SKILL.md` |
 | `amplihack-expert` | `amplihack-expert/SKILL.md` |
-| `amplihack:migrate` | `migrate/SKILL.md` |
+| `amplihack-migrate` | `migrate/SKILL.md` |
 | `analyzing-deeply` | `meta-cognitive/analyzing-deeply/SKILL.md` |
 | `anthropologist-analyst` | `anthropologist-analyst/SKILL.md` |
 | `architecting-solutions` | `development/architecting-solutions/SKILL.md` |

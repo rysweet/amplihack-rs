@@ -103,10 +103,16 @@ fn remote_rust_modules_stay_under_500_lines() {
 
 #[test]
 fn github_hooks_scope_creep_is_absent() {
-    let hooks_dir = repo_root().join(".github/hooks");
+    // Check git-tracked files rather than filesystem: runtime tools (amplihack install,
+    // hooks setup) may create .github/hooks/ on disk without committing them.
+    let output = std::process::Command::new("git")
+        .args(["ls-tree", "-r", "--name-only", "HEAD", ".github/hooks/"])
+        .current_dir(repo_root())
+        .output()
+        .expect("git ls-tree");
+    let tracked = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !hooks_dir.exists(),
-        "issue #536 forbids .github/hooks scope creep; remove {} before committing",
-        hooks_dir.display()
+        tracked.trim().is_empty(),
+        "issue #536 forbids .github/hooks scope creep; tracked files:\n{tracked}"
     );
 }
