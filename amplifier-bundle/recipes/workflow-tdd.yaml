@@ -11,6 +11,20 @@ tags: ["development", "tdd", "implementation"]
 # workflow via recipe-runner's automatic context-merging in
 # `_execute_sub_recipe()`; outputs declared by these steps propagate back to
 # the parent and are visible to subsequent phase recipes.
+#
+# FIX #611: TDD steps (07/08/08c/08b) do NOT check goal_already_met.
+# The pre-flight probe (step-06d in workflow-design) sets goal_already_met
+# when the linked GitHub issue is closed by a merged PR. However, a closed
+# issue does not always mean the current task is complete — the design may
+# say "no test changes needed" for a refactoring that still requires
+# implementation. Skipping the entire TDD phase based on that signal caused
+# refactoring tasks to produce no code changes.
+#
+# Step-08c already contains an independent "goal already met" detection
+# (lines ~203-246) that checks the GitHub issue state and exits gracefully
+# if the implementation truly produced zero changes for a closed issue.
+# Downstream phases (publish, finalize) still honour goal_already_met to
+# avoid duplicate PRs.
 
 recursion:
   max_depth: 6
@@ -24,7 +38,7 @@ steps:
   - id: "step-07-write-tests"
     agent: "amplihack:tester"
     working_dir: "{{worktree_setup.worktree_path}}"
-    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback' and goal_already_met != 'true'"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
       # Step 7: TDD - Write Tests First
 
@@ -55,7 +69,7 @@ steps:
   - id: "step-08-implement"
     agent: "amplihack:builder"
     working_dir: "{{worktree_setup.worktree_path}}"
-    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback' and goal_already_met != 'true'"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
       # Step 8: Implement the Solution
 
@@ -105,7 +119,7 @@ steps:
 
   - id: "step-08c-implementation-no-op-guard"
     type: "bash"
-    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback' and goal_already_met != 'true'"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     # Hard-fail early (before checkpoint, refactor, review) if step-08 declared
     # success but reported zero file edits. This catches prompt-misalignment
     # (issue #251 / amplihack-rs #251) closer to the root cause than the
@@ -259,7 +273,7 @@ steps:
   - id: "step-08b-integration"
     agent: "amplihack:integration"
     working_dir: "{{worktree_setup.worktree_path}}"
-    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback' and goal_already_met != 'true'"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
       # Step 8b: External Service Integration
 
