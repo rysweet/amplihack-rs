@@ -381,8 +381,8 @@ Common infrastructure follows amplihack principles:
 - [OOXML Scripts Documentation](ooxml/README.md)
 - [Verification Utilities Documentation](verification/README.md)
 - [Shared Dependencies List](dependencies.txt)
-- [Skills Integration Status](../INTEGRATION_STATUS.md)
-- [Architecture Specification](../../../../Specs/OFFICE_SKILLS_INTEGRATION_ARCHITECTURE.md)
+- Skills Integration Status
+- Architecture Specification
 
 ## Contributing
 

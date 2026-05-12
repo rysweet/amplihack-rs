@@ -58,7 +58,7 @@ Check session output, status, and pool capacity at any time without reconnecting
 
   Internal architecture, component design, and implementation details for contributors.
 
-  [:octicons-arrow-right-24: View Developer Guide](../../.claude/tools/amplihack/remote/README.md)
+  [:octicons-arrow-right-24: View Developer Guide](../../amplifier-bundle/tools/amplihack/remote/README.md)
 
 </div>
 
@@ -196,7 +196,7 @@ Remote Sessions includes:
 - **New to Remote Sessions?** Start with the [User Guide](README.md)
 - **Ready to use it?** Jump to the [Tutorial](TUTORIAL.md)
 - **Need command details?** Check the [CLI Reference](CLI_REFERENCE.md)
-- **Want to contribute?** Read the [Developer Guide](../../.claude/tools/amplihack/remote/README.md)
+- **Want to contribute?** Read the [Developer Guide](../../amplifier-bundle/tools/amplihack/remote/README.md)
 
 ## Support
 
@@ -204,4 +204,4 @@ For issues, questions, or feature requests, see:
 
 - [GitHub Issues](https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding/issues)
 - [Troubleshooting Guide](README.md#troubleshooting)
-- [Developer Documentation](../../.claude/tools/amplihack/remote/README.md)
+- [Developer Documentation](../../amplifier-bundle/tools/amplihack/remote/README.md)

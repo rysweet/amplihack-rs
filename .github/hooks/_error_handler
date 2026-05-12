@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+LOG="${HOME}/.amplihack/logs/errors.log"
+[ -f "$LOG" ] || exit 0
+COUNT=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+if [ "$COUNT" -gt 0 ]; then
+  echo "[amplihack] $COUNT error(s) in $LOG"
+  sed -n '1,5p' "$LOG"
+fi

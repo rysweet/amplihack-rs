@@ -773,9 +773,9 @@ See `docs/recipes/TESTING_RECIPES.md` for guide on testing recipes independently
 ## Related Documentation
 
 - [Recipe Runner Overview](./README.md) - Core Recipe Runner concepts
-- [Workflow System](./../WORKFLOW_SYSTEM.md) - How workflows are structured
-- [UltraThink Command](./../../.claude/commands/amplihack/ultrathink.md) - Full ultrathink reference
-- [Agent Orchestration](./../../.claude/context/CLAUDE.md#agent-delegation-strategy) - How agents are invoked
+- Workflow System - How workflows are structured
+- [UltraThink Command](../claude/commands/amplihack/ultrathink.md) - Full ultrathink reference
+- Agent Orchestration - How agents are invoked
 
 ## Feedback and Issues
 

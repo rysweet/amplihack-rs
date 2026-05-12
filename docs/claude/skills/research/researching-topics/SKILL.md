@@ -187,7 +187,7 @@ The knowledge-builder will:
 ### Escalates To
 
 - **/knowledge-builder**: Deep comprehensive research
-- **/ultrathink**: Complex decision making with research
+- **/dev**: Complex decision making with research
 - **Architecting Solutions Skill**: Apply research to design decisions
 
 ### Saves To
@@ -304,7 +304,7 @@ Use GraphQL when:
 
 This is a complex architectural decision. Would you like me to:
 1. Activate "Architecting Solutions" skill for deeper analysis?
-2. Use /ultrathink for comprehensive tradeoff evaluation?
+2. Use /dev for comprehensive tradeoff evaluation?
 ```
 
 ## Output Guidelines
@@ -404,7 +404,7 @@ Good research provides:
 - **Slash Command**: `/knowledge-builder` for comprehensive deep research
 - **Skill**: "Explaining Concepts" for teaching/learning focus
 - **Skill**: "Architecting Solutions" for applying research to design
-- **Slash Command**: `/ultrathink` for research-based decision making
+- **Slash Command**: `/dev` for research-based decision making
 
 ---
 

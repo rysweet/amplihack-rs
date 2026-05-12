@@ -226,9 +226,9 @@ Examples for all platforms:
 
 ### Examples
 
-- [Scenario Tools](../../.claude/scenarios/)
-- [Agent Library](../../.claude/agents/amplihack/)
-- [Skills Library](../../.claude/skills/)
+- [Scenario Tools](../claude/scenarios)
+- [Agent Library](../claude/agents/amplihack)
+- [Skills Library](../../amplifier-bundle/skills)
 
 ### Community
 

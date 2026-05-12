@@ -381,4 +381,4 @@ None currently supported. All configuration is explicit via dataclasses.
 
 - [First Documentation Site Tutorial](../tutorials/first-docs-site.md) - Step-by-step beginner guide
 - [GitHub Pages API Reference](../reference/github-pages-api.md) - Complete API documentation
-- [Documentation Guidelines](../../DOCUMENTATION_GUIDELINES.md) - Eight rules for good docs
+- [Documentation Guidelines](../DOCUMENTATION_GUIDELINES.md) - Eight rules for good docs

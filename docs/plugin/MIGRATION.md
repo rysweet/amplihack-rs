@@ -609,7 +609,7 @@ A: Yes, use `~/.amplihack/.claude/settings.json` to override plugin defaults. Se
 - [Installation Guide](./INSTALLATION.md) - Install the plugin from scratch
 - [Architecture Overview](./ARCHITECTURE.md) - Understand how the plugin works
 - [CLI Reference](./CLI_REFERENCE.md) - Complete migration command documentation
-- [Multi-IDE Setup](./MULTI_IDE.md) - Configure plugin for different IDEs
+- Multi-IDE Setup - Configure plugin for different IDEs
 
 ---
 

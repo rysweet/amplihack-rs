@@ -881,6 +881,6 @@ tests/eval/
 
 - [Goal-Seeking Agents](GOAL_SEEKING_AGENTS.md) -- End-to-end guide: generation, capabilities, evaluation, self-improvement
 - [SDK Adapters Guide](SDK_ADAPTERS_GUIDE.md) -- Deep dive into each SDK backend
-- [Quick Start](../src/amplihack/eval/QUICK_START.md) -- Get running in 30 seconds
+- Quick Start -- Get running in 30 seconds
 - [Eval Grading Improvements](EVAL_GRADING_IMPROVEMENTS.md) -- Tutorial on fixing grader false negatives and implementing advanced retrieval (NEW: 2026-02-28)
 - [Eval Retrieval Reference](EVAL_RETRIEVAL_REFERENCE.md) -- API reference for entity-linked and multi-entity retrieval methods (NEW: 2026-02-28)

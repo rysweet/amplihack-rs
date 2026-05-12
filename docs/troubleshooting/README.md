@@ -59,7 +59,7 @@ Problems during development?
 ### Testing
 
 - [Benchmarking](../BENCHMARKING.md) - Performance measurement
-- [Test Gap Analyzer](../../.claude/skills/test-gap-analyzer/SKILL.md) - Find untested code
+- [Test Gap Analyzer](../../amplifier-bundle/skills/test-gap-analyzer/SKILL.md) - Find untested code
 
 ### Code Quality
 
@@ -95,7 +95,7 @@ Still stuck? Here's what to do:
 
 1. **Check Discoveries** - [DISCOVERIES.md](../DISCOVERIES.md) has most known issues
 2. **Search Documentation** - Use the [Documentation Graph](../doc_graph_quick_reference.md)
-3. **Review Patterns** - Check [Development Patterns](../../.claude/context/PATTERNS.md)
+3. **Review Patterns** - Check [Development Patterns](../../amplifier-bundle/context/PATTERNS.md)
 4. **Ask for Help** - [GitHub Issues](https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding/issues)
 
 ---

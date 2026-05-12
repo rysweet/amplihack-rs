@@ -550,4 +550,4 @@ After successful migration:
 
 - [Plugin Architecture](./PLUGIN_ARCHITECTURE.md)
 - [README Plugin Section](../README.md#plugin-installation)
-- [Backward Compatibility Spec](../Specs/BACKWARD_COMPATIBILITY.md)
+- Backward Compatibility Spec

@@ -597,7 +597,7 @@ Robust handling of conversation compaction in long sessions:
 
 - [Compaction Overview](power_steering_compaction_overview.md) - What is compaction and how power-steering handles it
 - [Compaction API Reference](power_steering_compaction_api.md) - Developer documentation for CompactionValidator and CompactionContext
-- [How to Customize Power Steering](../.claude/tools/amplihack/HOW_TO_CUSTOMIZE_POWER_STEERING.md#compaction-handling) - Configuration and troubleshooting
+- [How to Customize Power Steering](../amplifier-bundle/tools/amplihack/HOW_TO_CUSTOMIZE_POWER_STEERING.md#compaction-handling) - Configuration and troubleshooting
 
 ### Other Features
 

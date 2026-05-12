@@ -91,4 +91,4 @@ else:
 ## See Also
 
 - [Recipe Runner Documentation](./README.md)
-- [Testing Results](../testing/issue-2381/)
+- Testing Results

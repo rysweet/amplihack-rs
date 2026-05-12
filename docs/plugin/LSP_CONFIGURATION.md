@@ -723,7 +723,7 @@ interface LSPConfig {
 
 ## Next Steps
 
-- [Configure user preferences](./PLUGIN_CONFIGURATION.md)
+- Configure user preferences
 - [Develop custom LSP integrations](./PLUGIN_DEVELOPMENT.md#lsp-integration)
 - [Report LSP issues](https://github.com/rysweet/amplihack-rs/issues)
 
