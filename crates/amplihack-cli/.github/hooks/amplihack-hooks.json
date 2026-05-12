@@ -1,0 +1,47 @@
+{
+  "hooks": {
+    "agentStop": [
+      {
+        "bash": "/home/azureuser/src/amplihack-rs/worktrees/feat/issue-599-fix-all-10-issues-from-the-repo-sweep-599-608-1-59/crates/amplihack-cli/.github/hooks/stop",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ],
+    "postToolUse": [
+      {
+        "bash": "/home/azureuser/src/amplihack-rs/worktrees/feat/issue-599-fix-all-10-issues-from-the-repo-sweep-599-608-1-59/crates/amplihack-cli/.github/hooks/post-tool-use",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ],
+    "preCompact": [
+      {
+        "bash": "/home/azureuser/src/amplihack-rs/worktrees/feat/issue-599-fix-all-10-issues-from-the-repo-sweep-599-608-1-59/crates/amplihack-cli/.github/hooks/pre-compact",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ],
+    "preToolUse": [
+      {
+        "bash": "/home/azureuser/src/amplihack-rs/worktrees/feat/issue-599-fix-all-10-issues-from-the-repo-sweep-599-608-1-59/crates/amplihack-cli/.github/hooks/pre-tool-use",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ],
+    "sessionStart": [
+      {
+        "bash": "/home/azureuser/src/amplihack-rs/worktrees/feat/issue-599-fix-all-10-issues-from-the-repo-sweep-599-608-1-59/crates/amplihack-cli/.github/hooks/session-start",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "bash": "/home/azureuser/src/amplihack-rs/worktrees/feat/issue-599-fix-all-10-issues-from-the-repo-sweep-599-608-1-59/crates/amplihack-cli/.github/hooks/user-prompt-submit",
+        "timeoutSec": 30,
+        "type": "command"
+      }
+    ]
+  },
+  "version": 1
+}
