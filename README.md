@@ -106,7 +106,16 @@ amplihack amplifier
 amplihack copilot
 ```
 
-**Option 3: Pre-built binaries**
+**Option 3: uvx git bootstrap**
+
+```bash
+uvx --from git+https://github.com/rysweet/amplihack-rs.git amplihack --help
+```
+
+`uvx` installs a small shell bootstrap that builds and caches the native Rust
+`amplihack` and `amplihack-hooks` binaries for the exact Git revision requested.
+
+**Option 4: Pre-built binaries**
 
 Download a platform archive from
 https://github.com/rysweet/amplihack-rs/releases, place `amplihack` and

@@ -155,6 +155,12 @@ path = "../../tests/integration/existing_branch_context_test.rs"
 name = "doc_code_drift"
 path = "../../tests/integration/doc_code_drift_test.rs"
 
+# PR #579 recovery readiness contract: exact-head no-op gating, hook readiness,
+# and additive-copy safety. TDD red until pr_recovery_readiness lands.
+[[test]]
+name = "pr_recovery_readiness_contract"
+path = "../../tests/integration/pr_recovery_readiness_contract_test.rs"
+
 # Issue #420 Doc Parity Batch E: hive-mind documentation port.
 # Verifies the four ported docs (tutorials/getting-started, tutorials/tutorial,
 # concepts/design, concepts/eval) exist at kebab-case Diataxis paths, are

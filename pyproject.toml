@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "amplihack"
+version = "0.11.0"
+description = "uvx shell bootstrap for the amplihack Rust CLI"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{ name = "amplihack contributors" }]
+classifiers = [
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+]
+
+[project.urls]
+Homepage = "https://github.com/rysweet/amplihack-rs"
+Repository = "https://github.com/rysweet/amplihack-rs"
+Issues = "https://github.com/rysweet/amplihack-rs/issues"
+
+[tool.setuptools]
+packages = []
+script-files = ["uvx/amplihack"]

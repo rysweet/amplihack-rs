@@ -2,7 +2,7 @@
 
 pub(crate) mod fs_helpers;
 mod hooks;
-mod jsonc;
+pub(crate) mod jsonc;
 mod staging;
 
 use anyhow::{Context, Result};

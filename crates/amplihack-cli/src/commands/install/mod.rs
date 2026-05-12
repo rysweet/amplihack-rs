@@ -2,6 +2,7 @@
 
 mod binary;
 mod clone;
+mod copilot_plugin;
 mod directories;
 mod filesystem;
 mod hooks;
@@ -334,6 +335,19 @@ fn local_install(
     println!("⚙️  Configuring settings.json:");
     let (settings_ok, registered_events) =
         ensure_settings_json(&claude_dir, timestamp, &hooks_bin)?;
+
+    println!();
+    println!("🐙 Configuring GitHub Copilot CLI plugin (if installed):");
+    match copilot_plugin::register_copilot_plugin(repo_root, &hooks_bin)
+        .context("failed to register Copilot CLI plugin")?
+    {
+        true => {
+            println!("  ✅ Copilot CLI plugin amplihack@local refreshed");
+        }
+        false => {
+            println!("  ↩️  Copilot CLI not detected (~/.copilot missing) — skipping");
+        }
+    }
 
     println!();
     println!("🔍 Verifying staged framework assets:");

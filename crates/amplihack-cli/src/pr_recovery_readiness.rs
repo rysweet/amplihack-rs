@@ -1,0 +1,502 @@
+//! PR recovery readiness helpers.
+//!
+//! These pure functions support default-workflow recovery of an existing PR by
+//! separating workflow readiness from merge readiness. They deliberately do not
+//! perform GitHub mutations or launch workflows.
+
+use std::{
+    collections::HashSet,
+    path::{Component, Path, PathBuf},
+};
+
+use anyhow::{Result, bail};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrHeadSnapshot {
+    pub expected_head_sha: String,
+    pub local_head_sha: String,
+    pub pr_head_sha: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedPrHead {
+    pub head_sha: String,
+    pub message: String,
+}
+
+pub fn verify_pr_head(snapshot: &PrHeadSnapshot) -> Result<VerifiedPrHead> {
+    let expected = snapshot.expected_head_sha.trim();
+    let local = snapshot.local_head_sha.trim();
+    let pr = snapshot.pr_head_sha.trim();
+
+    if expected.is_empty() {
+        bail!("blocked: expected_head_sha is empty");
+    }
+    if local != expected {
+        bail!("blocked: local HEAD {local} does not match expected_head_sha {expected}");
+    }
+    if pr != expected {
+        bail!("blocked: PR headRefOid {pr} does not match expected_head_sha {expected}");
+    }
+
+    Ok(VerifiedPrHead {
+        head_sha: expected.to_string(),
+        message: format!("local HEAD == PR headRefOid == expected_head_sha ({expected})"),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledHook {
+    pub namespace: String,
+    pub file_name: String,
+}
+
+impl InstalledHook {
+    pub fn new(namespace: impl Into<String>, file_name: impl Into<String>) -> Self {
+        Self {
+            namespace: namespace.into(),
+            file_name: file_name.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookRegistration {
+    pub event: String,
+    pub command: String,
+}
+
+impl HookRegistration {
+    pub fn new(event: impl Into<String>, command: impl Into<String>) -> Self {
+        Self {
+            event: event.into(),
+            command: command.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookReadinessInput {
+    pub installed_hooks: Vec<InstalledHook>,
+    pub native_registrations: Vec<HookRegistration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadinessBlocker {
+    pub code: &'static str,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookReadiness {
+    pub workflow_ready: bool,
+    pub blockers: Vec<ReadinessBlocker>,
+}
+
+pub fn inspect_hook_readiness(input: &HookReadinessInput) -> HookReadiness {
+    let mut blockers = Vec::new();
+
+    for &(namespace, file_name) in required_installed_hooks() {
+        if !input
+            .installed_hooks
+            .iter()
+            .any(|hook| hook.namespace == namespace && hook.file_name == file_name)
+        {
+            blockers.push(ReadinessBlocker {
+                code: "MISSING_INSTALLED_HOOK",
+                message: format!("missing installed hook {namespace}/{file_name}"),
+            });
+        }
+    }
+
+    for &(event, command_fragment) in required_native_registrations() {
+        if !input.native_registrations.iter().any(|registration| {
+            registration.event == event && registration.command.contains(command_fragment)
+        }) {
+            blockers.push(ReadinessBlocker {
+                code: "MISSING_NATIVE_HOOK_REGISTRATION",
+                message: format!(
+                    "missing native hook registration for {event}: command containing {command_fragment}"
+                ),
+            });
+        }
+    }
+
+    HookReadiness {
+        workflow_ready: blockers.is_empty(),
+        blockers,
+    }
+}
+
+fn required_installed_hooks() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("amplihack", "PreToolUse.js"),
+        ("amplihack", "PostToolUse.js"),
+        ("amplihack", "Stop.js"),
+        ("amplihack", "SessionStart.js"),
+        ("amplihack", "SessionStop.js"),
+        ("amplihack", "UserPromptSubmit.js"),
+        ("amplihack", "PreCompact.js"),
+        ("xpia", "PreToolUse.js"),
+    ]
+}
+
+fn required_native_registrations() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("PreToolUse", "amplihack-hooks pre-tool-use"),
+        ("PostToolUse", "amplihack-hooks post-tool-use"),
+        ("Stop", "amplihack-hooks stop"),
+        ("SessionStart", "amplihack-hooks session-start"),
+        ("SessionStop", "amplihack-hooks session-stop"),
+        (
+            "UserPromptSubmit",
+            "amplihack-hooks workflow-classification-reminder",
+        ),
+        ("UserPromptSubmit", "amplihack-hooks user-prompt-submit"),
+        ("PreCompact", "amplihack-hooks pre-compact"),
+    ]
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdditiveCopyEntry {
+    pub relative_path: PathBuf,
+    pub destination_exists: bool,
+}
+
+impl AdditiveCopyEntry {
+    pub fn file(relative_path: impl Into<PathBuf>, destination_exists: bool) -> Self {
+        Self {
+            relative_path: relative_path.into(),
+            destination_exists,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdditiveCopyPlan {
+    pub destination_root: PathBuf,
+    pub entries: Vec<AdditiveCopyEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdditiveCopyAction {
+    pub relative_path: PathBuf,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlannedAdditiveCopyAction {
+    relative_path: PathBuf,
+    action: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdditiveCopyReadiness {
+    pub workflow_ready: bool,
+    pub actions: Vec<String>,
+    planned_actions: Vec<PlannedAdditiveCopyAction>,
+}
+
+impl AdditiveCopyReadiness {
+    pub fn action_for(&self, relative_path: &str) -> Option<&str> {
+        self.planned_actions
+            .iter()
+            .find(|planned| planned.relative_path == Path::new(relative_path))
+            .map(|planned| planned.action)
+    }
+}
+
+pub fn inspect_additive_copy_plan(plan: &AdditiveCopyPlan) -> Result<AdditiveCopyReadiness> {
+    validate_additive_destination_root(&plan.destination_root)?;
+
+    let mut action_names = Vec::with_capacity(plan.entries.len());
+    let mut planned_actions = Vec::with_capacity(plan.entries.len());
+    let mut seen_relative_paths = HashSet::with_capacity(plan.entries.len());
+
+    for entry in &plan.entries {
+        let relative_path = normalize_additive_relative_path(&entry.relative_path)?;
+        if !seen_relative_paths.insert(relative_path.clone()) {
+            bail!(
+                "duplicate path in additive copy plan: {}",
+                relative_path.display()
+            );
+        }
+        let action = if entry.destination_exists {
+            "skip-existing"
+        } else {
+            "copy-new"
+        };
+
+        action_names.push(action.to_string());
+        planned_actions.push(PlannedAdditiveCopyAction {
+            relative_path,
+            action,
+        });
+    }
+
+    Ok(AdditiveCopyReadiness {
+        workflow_ready: true,
+        actions: action_names,
+        planned_actions,
+    })
+}
+
+fn validate_additive_destination_root(path: &Path) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        bail!("additive copy destination root is empty");
+    }
+    if !path.is_absolute() {
+        bail!(
+            "additive copy destination root must be absolute: {}",
+            path.display()
+        );
+    }
+    for component in path.components() {
+        if component == Component::ParentDir {
+            bail!(
+                "path traversal is not allowed in additive copy destination root: {}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn normalize_additive_relative_path(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        bail!(
+            "absolute path is not allowed in additive copy plan: {}",
+            path.display()
+        );
+    }
+    if path.as_os_str().is_empty() {
+        bail!("empty path is not allowed in additive copy plan");
+    }
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::ParentDir => bail!(
+                "path traversal is not allowed in additive copy plan: {}",
+                path.display()
+            ),
+            Component::CurDir => {}
+            Component::RootDir | Component::Prefix(_) => {
+                bail!(
+                    "absolute path is not allowed in additive copy plan: {}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        bail!("empty path is not allowed in additive copy plan");
+    }
+
+    Ok(normalized)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckStatus {
+    Completed,
+    InProgress,
+    Queued,
+    Pending,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckConclusion {
+    Success,
+    Pending,
+    Failure,
+    Skipped,
+    Neutral,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckRollup {
+    pub name: String,
+    pub status: CheckStatus,
+    pub conclusion: CheckConclusion,
+}
+
+impl CheckRollup {
+    pub fn new(name: impl Into<String>, status: CheckStatus, conclusion: CheckConclusion) -> Self {
+        Self {
+            name: name.into(),
+            status,
+            conclusion,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeState {
+    Blocked,
+    Clean,
+    Unknown(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoOpReportInput {
+    pub head: PrHeadSnapshot,
+    pub checks: Vec<CheckRollup>,
+    pub merge_state: MergeState,
+    pub hook_ready: bool,
+    pub additive_copy_ready: bool,
+    pub files_modified: Vec<PathBuf>,
+    pub manual_merge_performed: bool,
+    pub merge_bypass_performed: bool,
+    pub nested_default_workflow_launched: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoOpReport {
+    pub workflow_ready: bool,
+    pub merge_ready: bool,
+    pub head_sha: String,
+    pub no_op_justification: String,
+    pub manual_merge_performed: bool,
+    pub merge_bypass_performed: bool,
+    pub nested_default_workflow_launched: bool,
+}
+
+pub fn render_no_op_report(input: NoOpReportInput) -> Result<NoOpReport> {
+    if input.manual_merge_performed {
+        bail!("manual merge is prohibited during PR recovery");
+    }
+    if input.merge_bypass_performed {
+        bail!("merge bypass is prohibited during PR recovery");
+    }
+    if input.nested_default_workflow_launched {
+        bail!("nested default-workflow invocation is prohibited during PR recovery");
+    }
+    if !input.hook_ready {
+        bail!("hook readiness is not satisfied");
+    }
+    if !input.additive_copy_ready {
+        bail!("additive-copy readiness is not satisfied");
+    }
+    if !input.files_modified.is_empty() {
+        bail!(
+            "no-op report requires no workflow-owned file modifications; got {} modified files",
+            input.files_modified.len()
+        );
+    }
+
+    let verified_head = verify_pr_head(&input.head)?;
+    let ci_readiness = CiReadinessSummary::from_checks(&input.checks);
+
+    if !ci_readiness.lint_format_green {
+        bail!("no-op report blocked: Lint/Format is not green");
+    }
+    if !ci_readiness.builds_green {
+        bail!("no-op report blocked: builds are not green");
+    }
+
+    let mut merge_blockers = Vec::new();
+    if !matches!(input.merge_state, MergeState::Clean) {
+        merge_blockers.push("GitHub merge state is not clean");
+    }
+    if !ci_readiness.all_checks_merge_passing {
+        merge_blockers.push("GitHub Actions are not all completed successfully");
+    }
+    merge_blockers.extend_from_slice(missing_independent_merge_gate_blockers());
+
+    let test_phrase = if ci_readiness.test_in_progress {
+        "Test in progress"
+    } else if ci_readiness.test_green {
+        "Test green"
+    } else {
+        "Test not green"
+    };
+    let merge_phrase = match input.merge_state {
+        MergeState::Blocked => "merge blocked",
+        MergeState::Clean => "merge clean",
+        MergeState::Unknown(_) => "merge state unknown",
+    };
+    let merge_ready = merge_blockers.is_empty();
+    let final_status = if merge_ready {
+        "MERGE_READY"
+    } else {
+        "NOT_MERGE_READY"
+    };
+    let blocker_phrase = if merge_ready {
+        "all merge-readiness gates are proven".to_string()
+    } else {
+        format!("blockers: {}", merge_blockers.join("; "))
+    };
+
+    let head_sha = verified_head.head_sha;
+    let no_op_justification = format!(
+        "No-op justification: head {head_sha}; Lint/Format green; builds green; {test_phrase}; {merge_phrase}; hook/additive-copy readiness satisfied; no manual merge, merge bypass, or nested default-workflow performed; {blocker_phrase}. {final_status}"
+    );
+
+    Ok(NoOpReport {
+        workflow_ready: true,
+        merge_ready,
+        head_sha,
+        no_op_justification,
+        manual_merge_performed: false,
+        merge_bypass_performed: false,
+        nested_default_workflow_launched: false,
+    })
+}
+
+fn missing_independent_merge_gate_blockers() -> &'static [&'static str] {
+    &[
+        "runnable QA/scenario evidence is not represented in this no-op input",
+        "docs-impact assessment is not represented in this no-op input",
+        "three clean quality-audit SEEK/VALIDATE/FIX cycles are not represented in this no-op input",
+        "focused diff scope evidence is not represented in this no-op input",
+        "PR description evidence is not represented in this no-op input",
+    ]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CiReadinessSummary {
+    lint_format_green: bool,
+    builds_green: bool,
+    test_in_progress: bool,
+    test_green: bool,
+    all_checks_merge_passing: bool,
+}
+
+impl CiReadinessSummary {
+    fn from_checks(checks: &[CheckRollup]) -> Self {
+        let mut summary = Self {
+            lint_format_green: false,
+            builds_green: false,
+            test_in_progress: false,
+            test_green: false,
+            all_checks_merge_passing: true,
+        };
+
+        for check in checks {
+            let completed_and_passing = check.status == CheckStatus::Completed
+                && check.conclusion == CheckConclusion::Success;
+
+            summary.all_checks_merge_passing &= completed_and_passing;
+
+            if check.name.eq_ignore_ascii_case("Lint & Format")
+                || check.name.eq_ignore_ascii_case("Lint/Format")
+            {
+                summary.lint_format_green |= completed_and_passing;
+            }
+            if check.name.eq_ignore_ascii_case("build") {
+                summary.builds_green |= completed_and_passing;
+            }
+            if check.name.eq_ignore_ascii_case("Test") {
+                summary.test_green |= completed_and_passing;
+                summary.test_in_progress |= matches!(
+                    check.status,
+                    CheckStatus::InProgress | CheckStatus::Queued | CheckStatus::Pending
+                );
+            }
+        }
+
+        summary
+    }
+}

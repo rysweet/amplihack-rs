@@ -751,6 +751,189 @@ const BUNDLE_ESSENTIAL_DESTS: &[&str] = &[
 ];
 
 #[test]
+fn local_install_fails_when_copilot_plugin_registration_fails() {
+    // Issue #577 readiness: once Copilot CLI is present, plugin registration
+    // is part of the hook integration contract. Config parse failures must
+    // block install instead of producing success-shaped output with no plugin.
+    with_install_env(|home| {
+        let repo = home.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        helpers::create_bundle_only_source_repo(&repo);
+
+        let copilot_home = home.join(".copilot");
+        fs::create_dir_all(&copilot_home).unwrap();
+        fs::write(copilot_home.join("config.json"), "{ malformed json\n").unwrap();
+
+        let result = local_install(&repo, None);
+
+        assert!(
+            result.is_err(),
+            "local_install must fail when Copilot plugin registration cannot update config.json"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Copilot") || err.contains("config.json") || err.contains("JSON"),
+            "install error should surface the Copilot registration/config failure, got: {err}"
+        );
+    });
+}
+
+#[test]
+fn local_install_registers_copilot_plugin_and_native_hooks_idempotently() {
+    // PR #579 readiness: when Copilot CLI is present, a local install must wire
+    // both Copilot plugin hooks and native Claude hooks, and rerunning install
+    // must refresh them without duplicate registration.
+    with_install_env(|home| {
+        let repo = home.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        helpers::create_bundle_only_source_repo(&repo);
+
+        let copilot_home = home.join(".copilot");
+        fs::create_dir_all(&copilot_home).unwrap();
+        fs::write(
+            copilot_home.join("config.json"),
+            r#"{
+  "installedPlugins": [
+    {
+      "name": "other-plugin",
+      "marketplace": "local",
+      "enabled": true,
+      "cache_path": "/tmp/other-plugin"
+    },
+    {
+      "name": "amplihack",
+      "marketplace": "local",
+      "enabled": false,
+      "cache_path": "/tmp/stale-amplihack"
+    }
+  ],
+  "trustedFolders": ["/tmp/project"]
+}
+"#,
+        )
+        .unwrap();
+
+        local_install(&repo, None).unwrap();
+        local_install(&repo, None).unwrap();
+
+        let plugin_dir = copilot_home
+            .join("installed-plugins")
+            .join("amplihack@local");
+        let plugin_manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(plugin_dir.join("plugin.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            plugin_manifest
+                .get("hooks")
+                .and_then(|value| value.as_str()),
+            Some("./hooks.json"),
+            "Copilot plugin manifest must declare hooks.json"
+        );
+
+        let hooks_json = fs::read_to_string(plugin_dir.join("hooks.json")).unwrap();
+        for expected in [
+            "session-start",
+            "stop",
+            "workflow-classification-reminder",
+            "user-prompt-submit",
+            "pre-tool-use",
+            "post-tool-use",
+        ] {
+            assert!(
+                hooks_json.contains(expected),
+                "Copilot hooks.json must include amplihack-hooks {expected}; got:\n{hooks_json}"
+            );
+        }
+        assert!(
+            !hooks_json.contains("timeout "),
+            "Copilot hook commands must not wrap amplihack-hooks in shell timeout commands"
+        );
+
+        let config: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(copilot_home.join("config.json")).unwrap())
+                .unwrap();
+        let plugins = config["installedPlugins"].as_array().unwrap();
+        assert_eq!(
+            plugins
+                .iter()
+                .filter(
+                    |plugin| plugin.get("name").and_then(|name| name.as_str()) == Some("amplihack")
+                )
+                .count(),
+            1,
+            "amplihack@local must be registered exactly once after repeated installs"
+        );
+        assert!(
+            plugins
+                .iter()
+                .any(|plugin| plugin.get("name").and_then(|name| name.as_str())
+                    == Some("other-plugin")),
+            "registering amplihack must preserve unrelated Copilot plugins"
+        );
+        assert_eq!(
+            config
+                .get("trustedFolders")
+                .and_then(|trusted| trusted.as_array())
+                .map(Vec::len),
+            Some(1),
+            "registering amplihack must preserve unrelated Copilot config fields"
+        );
+
+        let settings = fs::read_to_string(home.join(".claude/settings.json")).unwrap();
+        for expected in [
+            "session-start",
+            "stop",
+            "workflow-classification-reminder",
+            "user-prompt-submit",
+            "pre-tool-use",
+            "post-tool-use",
+            "pre-compact",
+        ] {
+            assert!(
+                settings.contains(expected),
+                "native Claude settings must include amplihack-hooks {expected}; got:\n{settings}"
+            );
+        }
+    });
+}
+
+#[test]
+fn local_install_replaces_managed_bundle_dirs_without_deleting_unmanaged_files() {
+    // Issue #578 readiness: mapped framework directories are managed trees.
+    // Re-install must remove stale files inside them while preserving unrelated
+    // files outside the managed mapping.
+    with_install_env(|home| {
+        let repo = home.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        helpers::create_bundle_only_source_repo(&repo);
+
+        local_install(&repo, None).unwrap();
+
+        let managed_tools = home.join(".amplihack/.claude/tools/amplihack");
+        let stale = managed_tools.join("stale-python-hook.py");
+        fs::write(&stale, "print('old')\n").unwrap();
+        let unmanaged = home.join(".amplihack/.claude/user-notes.txt");
+        fs::write(&unmanaged, "keep me\n").unwrap();
+
+        local_install(&repo, None).unwrap();
+
+        assert!(
+            !stale.exists(),
+            "stale files inside managed mapped dirs must be removed on re-install"
+        );
+        assert!(
+            managed_tools.join("marker.txt").is_file(),
+            "managed mapped dir must still contain source bundle content"
+        );
+        assert_eq!(
+            fs::read_to_string(&unmanaged).unwrap(),
+            "keep me\n",
+            "unmanaged files outside mapped framework dirs must be preserved"
+        );
+    });
+}
+
+#[test]
 fn local_install_from_bundle_only_source_copies_all_essentials() {
     // Issue #416 regression: a clean amplihack-rs checkout has NO top-level
     // `.claude/` (gitignored). Install must read framework assets from
