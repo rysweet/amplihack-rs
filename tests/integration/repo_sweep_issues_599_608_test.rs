@@ -294,74 +294,78 @@ mod readme_path_refs {
 // TC-SWEEP-605: GitHubDistributor is feature-gated
 // ═════════════════════════════════════════════════════════════════════════════
 
-mod github_distributor_gate {
+mod github_distributor_implemented {
     use super::*;
 
-    /// TC-SWEEP-605-01: The `GitHubDistributor` struct must be behind
-    /// `#[cfg(feature = "github-distributor")]`.
+    /// TC-SWEEP-605-01: The `GitHubDistributor` struct exists and is not
+    /// feature-gated (stubs have been replaced with real implementations).
     #[test]
-    fn struct_is_feature_gated() {
+    fn struct_exists_without_feature_gate() {
         let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
 
-        // Find the struct definition
+        assert!(
+            src.contains("pub struct GitHubDistributor"),
+            "GitHubDistributor struct should exist in bundle_generator.rs"
+        );
+
+        // Should NOT be behind a feature gate now that methods are implemented
         let struct_pos = src
             .find("pub struct GitHubDistributor")
-            .expect("GitHubDistributor struct should exist in bundle_generator.rs");
-
-        // The cfg attribute should appear before the struct
+            .unwrap();
         let preceding = &src[..struct_pos];
         let last_cfg = preceding.rfind("#[cfg(feature = \"github-distributor\")]");
         assert!(
-            last_cfg.is_some(),
-            "GitHubDistributor must be gated behind #[cfg(feature = \"github-distributor\")]"
-        );
-
-        // Verify no more than a doc comment + blank lines between cfg and struct
-        let between = &preceding[last_cfg.unwrap()..];
-        let non_attr_lines: Vec<&str> = between
-            .lines()
-            .skip(1) // skip the cfg line itself
-            .filter(|l| !l.trim().is_empty() && !l.trim().starts_with("///"))
-            .collect();
-        assert!(
-            non_attr_lines.is_empty(),
-            "cfg attribute should be immediately before GitHubDistributor (found: {non_attr_lines:?})"
+            last_cfg.is_none(),
+            "GitHubDistributor should no longer be feature-gated (stubs are implemented)"
         );
     }
 
-    /// TC-SWEEP-605-02: The impl block must also be feature-gated.
+    /// TC-SWEEP-605-02: The three formerly-TODO methods are implemented
+    /// (no TODO/todo!/unimplemented! markers remain in the impl block).
     #[test]
-    fn impl_is_feature_gated() {
+    fn no_todo_stubs_remain() {
         let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
 
         let impl_pos = src
             .find("impl GitHubDistributor")
             .expect("GitHubDistributor impl should exist");
+        let impl_block = &src[impl_pos..];
 
-        let preceding = &src[..impl_pos];
-        let last_cfg = preceding.rfind("#[cfg(feature = \"github-distributor\")]");
+        // Find the end of the impl block (next top-level closing brace pattern)
+        let methods = ["create_repository", "push_bundle", "create_release"];
+        for method in &methods {
+            assert!(
+                impl_block.contains(method),
+                "GitHubDistributor should have method: {method}"
+            );
+        }
+
+        // No TODO stubs remaining
+        let next_section = impl_block
+            .find("\n// ---")
+            .unwrap_or(impl_block.len());
+        let impl_text = &impl_block[..next_section];
         assert!(
-            last_cfg.is_some(),
-            "GitHubDistributor impl must be gated behind #[cfg(feature = \"github-distributor\")]"
+            !impl_text.contains("todo!()") && !impl_text.contains("unimplemented!()"),
+            "GitHubDistributor impl should not contain todo!() or unimplemented!()"
         );
     }
 
-    /// TC-SWEEP-605-03: The feature must be declared in Cargo.toml but NOT in default.
+    /// TC-SWEEP-605-03: Each method uses the `gh` CLI (Command::new("gh")).
     #[test]
-    fn feature_declared_not_default() {
-        let toml = read_file("crates/amplihack-utils/Cargo.toml");
+    fn methods_use_gh_cli() {
+        let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
 
+        let impl_pos = src
+            .find("impl GitHubDistributor")
+            .expect("GitHubDistributor impl should exist");
+        let impl_block = &src[impl_pos..];
+
+        // The implementation should invoke `gh` CLI
         assert!(
-            toml.contains("github-distributor = []"),
-            "Cargo.toml must declare github-distributor feature"
+            impl_block.contains("Command::new(\"gh\")"),
+            "GitHubDistributor should use gh CLI via Command::new(\"gh\")"
         );
-
-        // Check default does not include it
-        for line in toml.lines() {
-            if line.starts_with("default") && line.contains("github-distributor") {
-                panic!("github-distributor must NOT be in default features");
-            }
-        }
     }
 }
 
