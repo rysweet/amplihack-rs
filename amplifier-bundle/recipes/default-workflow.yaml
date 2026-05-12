@@ -81,12 +81,14 @@ context:
   #
   # `worktree_setup` mirrors the workflow-worktree (step-04) output object
   # so the recipe-runner threads it across nested recipe boundaries
-  # (smart-execute-routing -> default-workflow -> workflow-tdd, where step-08c
-  # reads ${WORKTREE_SETUP_WORKTREE_PATH}).
+  # (smart-execute-routing -> default-workflow -> workflow-tdd, where the
+  # step-08c work-verifier reads ${WORKTREE_SETUP_WORKTREE_PATH}).
   #
   # `allow_no_op` opts orchestration / docs-only / audit / meta tasks out of
-  # the step-08c hollow-success guard. Defaults to false; smart-classify-route
-  # flips it to true when classification permits no working-tree edits.
+  # the step-08c work-verifier (issue #615 — replaces the legacy bash
+  # hollow-success guard with an agentic verifier + bash enforcer pair).
+  # Defaults to false; smart-classify-route flips it to true when
+  # classification permits no working-tree edits.
   worktree_setup: ""
   allow_no_op: false
   # Skip pre-agent project validation (npm test, build) — default true to avoid blocking on large codebases (see #453)

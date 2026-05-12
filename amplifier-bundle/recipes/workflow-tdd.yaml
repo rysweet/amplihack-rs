@@ -20,11 +20,31 @@ tags: ["development", "tdd", "implementation"]
 # implementation. Skipping the entire TDD phase based on that signal caused
 # refactoring tasks to produce no code changes.
 #
-# Step-08c already contains an independent "goal already met" detection
-# (lines ~203-246) that checks the GitHub issue state and exits gracefully
-# if the implementation truly produced zero changes for a closed issue.
-# Downstream phases (publish, finalize) still honour goal_already_met to
-# avoid duplicate PRs.
+# FIX #615: step-08c is now an AGENTIC two-step verifier, not the legacy
+# six-escape-hatch bash guard. The bash guard kept producing false positives
+# because the truth space is irregular: work can land in worktrees, sibling
+# branches, in-step merged PRs, already-closed issues, or remote-only via
+# `gh pr merge`. Every false positive added another special case until the
+# guard collapsed under its own complexity.
+#
+# Replacement (issue #615):
+#   * step-08c-work-verifier   — type: agent. Inspects real artifacts (git
+#     log, gh pr list, gh issue view, working tree) against the original
+#     task description and emits a JSON verdict on its final stdout line:
+#       { "verdict": "WORK_VERIFIED" | "HOLLOW_SUCCESS" |
+#                    "INSUFFICIENT_EVIDENCE",
+#         "evidence": [...], "rationale": "..." }
+#   * step-08c-enforce-verdict — type: bash. Honours the legacy fast-path
+#     opt-outs (orchestration sentinel, ALLOW_NO_OP) for parity with prior
+#     callers, then maps the verdict to exit code:
+#       WORK_VERIFIED         -> exit 0
+#       INSUFFICIENT_EVIDENCE -> loud warning, exit 0
+#       HOLLOW_SUCCESS        -> print verdict + exit 1
+#
+# The recipe-level `goal_already_met` signal is still consumed by downstream
+# phases (publish, finalize) to avoid duplicate PRs. The agentic verifier
+# subsumes the previous in-step #360 closed-issue probe by inspecting the
+# linked issue itself when judging whether work landed.
 
 recursion:
   max_depth: 6
@@ -117,157 +137,177 @@ steps:
       - Any deviations from design (with justification).
     output: "implementation"
 
-  - id: "step-08c-implementation-no-op-guard"
+  # ==========================================================================
+  # STEP 8c: AGENTIC WORK-VERIFIER (replaces the legacy bash hollow-success
+  # guard — see issue #615 for the architectural rationale).
+  #
+  # Two-step pair:
+  #   step-08c-work-verifier   — agent emits a JSON verdict on its last line
+  #   step-08c-enforce-verdict — bash maps the verdict onto exit code
+  # ==========================================================================
+  - id: "step-08c-work-verifier"
+    agent: "amplihack:analyzer"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
+    prompt: |
+      # Step 8c: Work Verifier (agentic)
+
+      You are the WORK VERIFIER. step-08-implement reported `STATUS: COMPLETE`.
+      Decide whether that claim is supported by **concrete artifacts** and emit
+      a JSON verdict on the very last line of your output. This step replaces
+      the legacy six-escape-hatch bash guard — see
+      https://github.com/rysweet/amplihack-rs/issues/615.
+
+      ## Inputs
+      **Original task (authoritative — judge intent against this):**
+      {{task_description}}
+      **Linked issue:** #{{issue_number}}
+      **Implement-step output (look for `Files modified:`, `Diff summary:`,
+      `No-op justification:`, and the orchestration sentinel
+      `No files modified — orchestration task`):**
+      {{implementation}}
+      **`allow_no_op` opt-out (orchestration / docs-only / audit / meta):**
+      {{allow_no_op}}
+
+      ## Investigation (use shell tools; ALL evidence must be real)
+      Be LIBERAL about WHERE work landed; STRICT about WHETHER it landed.
+      Skip checks only when irrelevant; mention which you skipped and why.
+
+      1. **Working tree** — `git status --porcelain` and
+         `git diff --stat HEAD`. Uncommitted edits and untracked files count.
+      2. **Local commits since branch point** —
+         `git log --oneline origin/main..HEAD` (fall back to `origin/HEAD`).
+         Empty commits and no-op edits do NOT count.
+      3. **Already-merged-during-implement** — the agent may have committed,
+         pushed, opened a PR, and auto-merged into `origin/main` all within
+         step-08; in that case `git merge-base HEAD origin/main` equals HEAD.
+         Detect with `git fetch --quiet origin main || true`,
+         `git log --oneline --since='6 hours ago' origin/main -- .`, and
+         `gh pr list --search 'is:merged author:@me' --limit 20 --json number,title,mergedAt,headRefName`
+         (filter to PRs merged within the recipe run window).
+      4. **Sibling branches / worktrees** — `git branch -a --contains HEAD`
+         and `git worktree list`.
+      5. **Linked GitHub issue** —
+         `gh issue view {{issue_number}} --json state,closedByPullRequestsReferences`
+         (skip if `{{issue_number}}` is empty). If the issue is `CLOSED` by a
+         merged PR whose diff matches the task, verdict = `WORK_VERIFIED`
+         (this is the issue #360 case the legacy guard handled).
+      6. **Recent PRs** —
+         `gh pr list --state all --search 'sort:updated-desc' --limit 20 --json number,title,state,mergedAt,headRefName,url`
+         and look for PRs whose title/branch matches this task.
+      7. **Intent match** — for every artifact, decide whether it actually
+         relates to the task description. Empty files, comment-only changes,
+         or unrelated edits do NOT count.
+
+      ## Fast-path opt-outs (parity with legacy guard, issue #425)
+      * If `allow_no_op` is the literal string `"true"` (orchestration /
+        docs-only / audit / meta classification), emit `WORK_VERIFIED`
+        with rationale `"orchestration opt-out — allow_no_op=true"`.
+      * If the implement-step output contains the canonical sentinel
+        `No files modified — orchestration task` (em-dash U+2014, exact
+        match), emit `WORK_VERIFIED` with rationale
+        `"orchestration sentinel matched"`.
+
+      ## Verdicts
+      * `WORK_VERIFIED` — at least one concrete artifact addresses the task.
+      * `HOLLOW_SUCCESS` — no concrete artifact addresses the task. Fails the recipe.
+      * `INSUFFICIENT_EVIDENCE` — investigation inconclusive (no network, ambiguous
+        wording, etc). The bash gate warns loudly but lets the workflow continue,
+        so use this only when you genuinely cannot decide.
+
+      ## Output (REQUIRED)
+      Write whatever investigation prose you like, then on the **very last
+      line** emit a single JSON object — no code fence, no trailing text:
+
+      {"verdict": "WORK_VERIFIED" | "HOLLOW_SUCCESS" | "INSUFFICIENT_EVIDENCE", "evidence": ["<artifact ref or SHA>", ...], "rationale": "<one paragraph>"}
+
+      The bash gate extracts the last JSON object from your stdout. If you
+      emit malformed JSON the gate treats the verdict as
+      `INSUFFICIENT_EVIDENCE` (loud warning, recipe continues) so a
+      verifier-formatting bug never masks a real failure.
+    output: "verdict_json"
+
+  - id: "step-08c-enforce-verdict"
     type: "bash"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
-    # Hard-fail early (before checkpoint, refactor, review) if step-08 declared
-    # success but reported zero file edits. This catches prompt-misalignment
-    # (issue #251 / amplihack-rs #251) closer to the root cause than the
-    # commit-stage hollow-success guard at step-15.
+    # Issue #615: maps the work-verifier's JSON verdict onto exit code.
+    #
+    # Fast-path opt-outs preserved from the legacy guard (issue #425):
+    #   * Orchestration sentinel in implement output -> exit 0.
+    #   * ALLOW_NO_OP=true (orchestration / docs-only / audit / meta) -> exit 0.
+    # Both opt-outs run BEFORE parsing the verdict so callers that legitimately
+    # produce no working-tree edits never get blocked, even if the verifier
+    # step itself fails or is skipped.
     command: |
       set -euo pipefail
       IMPL="${IMPLEMENTATION:-}"
-      if [ -z "$IMPL" ]; then
-        echo "ERROR: step-08-implement produced no output." >&2
-        exit 1
-      fi
+      VERDICT_RAW="${VERDICT_JSON:-}"
+
       # ----------------------------------------------------------------------
-      # Issue #425: orchestration opt-out.
-      #
-      # Some smart-orchestrator routes (audit, docs-only, orchestration, meta)
-      # legitimately produce no working-tree edits — their "implementation"
-      # is filing GitHub issues, opening child PRs, or coordinating downstream
-      # work. For those classifications the hollow-success guard below is a
-      # FALSE POSITIVE and must be skipped.
-      #
-      # Two opt-out mechanisms (precedence: sentinel > flag):
-      #   1. Sentinel match in implementer output. Canonical bytes (em-dash
-      #      U+2014, exact match via grep -F): "No files modified — orchestration task"
-      #   2. ALLOW_NO_OP context flag, strict equality "true" only. We refuse
-      #      to coerce 1 / yes / on / True so callers cannot accidentally
-      #      bypass the guard with shell-style truthiness.
-      #
-      # These checks MUST run BEFORE the `cd` so orchestration tasks pass
-      # even if WORKTREE_SETUP_WORKTREE_PATH is unset (orchestration mode
-      # may skip worktree setup entirely).
+      # Fast-path opt-outs (issue #425 parity).
       # ----------------------------------------------------------------------
       _ORCH_SENTINEL='No files modified — orchestration task'
-      if printf '%s' "$IMPL" | grep -qF -- "$_ORCH_SENTINEL"; then
-        echo "INFO: step-08c orchestration opt-out — sentinel matched (issue #425)." >&2
-        echo "  Skipping hollow-success guard for orchestration / docs-only task." >&2
+      if [ -n "$IMPL" ] && printf '%s' "$IMPL" | grep -qF -- "$_ORCH_SENTINEL"; then
+        echo "INFO: step-08c-enforce-verdict orchestration opt-out — sentinel matched (issue #425)." >&2
+        echo "  Skipping work-verifier verdict for orchestration / docs-only task." >&2
         exit 0
       fi
       if [ "${ALLOW_NO_OP:-false}" = "true" ]; then
-        echo "INFO: step-08c orchestration opt-out — ALLOW_NO_OP=true (issue #425)." >&2
-        echo "  Skipping hollow-success guard; classification permits no working-tree edits." >&2
+        echo "INFO: step-08c-enforce-verdict orchestration opt-out — ALLOW_NO_OP=true (issue #425)." >&2
+        echo "  Skipping work-verifier verdict; classification permits no working-tree edits." >&2
         exit 0
       fi
-      # Look for the structured "Files modified:" line.
-      FILES_LINE=$(printf '%s\n' "$IMPL" | grep -m1 -i '^[[:space:]]*[*-]\?[[:space:]]*Files modified:' || true)
-      JUSTIFICATION=$(printf '%s\n' "$IMPL" | grep -m1 -i '^[[:space:]]*[*-]\?[[:space:]]*No-op justification:' || true)
-      if [ -z "$FILES_LINE" ]; then
-        echo "WARNING: step-08-implement output is missing the required" >&2
-        echo "'Files modified:' section. The agent did not follow the structured" >&2
-        echo "output schema. Check the implementer prompt and output." >&2
-        # Soft-warn rather than hard-fail to remain backward-compatible with
-        # agents that ignore the schema. The git-diff guard below is the hard gate.
-      fi
-      # Check git diff in the worktree as the source of truth.
-      # Fail-loud (Zero-BS, issue #410): require worktree path from step-04 instead
-      # of silently falling back to $PWD (which is the parent repo and produces
-      # false-positive no-op failures when the worktree contains real work).
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-08c requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
-      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "ERROR: step-08c-implementation-no-op-guard requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
-        exit 1
-      fi
-      # Check 1: dirty working tree (uncommitted or staged changes, untracked files).
-      if ! git diff --quiet || ! git diff --cached --quiet || \
-         [ -n "$(git ls-files --others --exclude-standard)" ]; then
-        echo "step-08 produced file changes — guard passed."
+
+      # ----------------------------------------------------------------------
+      # Parse the verifier's JSON verdict (last JSON object on stdout).
+      # ----------------------------------------------------------------------
+      if [ -z "$VERDICT_RAW" ]; then
+        echo "WARN: step-08c-work-verifier produced no output. Treating as INSUFFICIENT_EVIDENCE per fail-safe contract (issue #615)." >&2
+        echo "  Letting workflow continue with a loud warning rather than masking a possible real failure." >&2
         exit 0
       fi
-      # Check 2 (issue #580): detect committed changes.
-      # When the agent commits during step-07/step-08 (auto-commit, git add+commit
-      # in prompt, or tool-based commits), the working tree is clean but real
-      # work exists as new commits. Compare HEAD against the merge-base with
-      # origin/main (or origin/HEAD as fallback) to count commits on this branch.
-      MERGE_BASE_REF="origin/main"
-      if ! git rev-parse --verify "$MERGE_BASE_REF" >/dev/null 2>&1; then
-        MERGE_BASE_REF="origin/HEAD"
+
+      # Extract the last line that looks like a JSON object. Tolerates the
+      # verifier mixing prose with the final JSON line.
+      VERDICT_LINE=$(printf '%s\n' "$VERDICT_RAW" | grep -E '^[[:space:]]*\{.*"verdict"' | tail -1 || true)
+      if [ -z "$VERDICT_LINE" ]; then
+        # Fall back to scanning the entire blob with jq for the first valid
+        # JSON object containing a "verdict" key.
+        VERDICT_LINE=$(printf '%s' "$VERDICT_RAW" | jq -c 'select(type=="object" and has("verdict"))' 2>/dev/null | tail -1 || true)
       fi
-      if git rev-parse --verify "$MERGE_BASE_REF" >/dev/null 2>&1; then
-        MERGE_BASE=$(git merge-base HEAD "$MERGE_BASE_REF" 2>/dev/null || true)
-        if [ -n "$MERGE_BASE" ]; then
-          COMMITS_SINCE_BASE=$(git rev-list --count "${MERGE_BASE}..HEAD" 2>/dev/null || echo "0")
-          if [ "$COMMITS_SINCE_BASE" -gt 0 ]; then
-            echo "step-08 produced $COMMITS_SINCE_BASE commit(s) since branch point — guard passed."
-            git --no-pager log --oneline "${MERGE_BASE}..HEAD" >&2
-            exit 0
-          fi
-        fi
-      fi
-      if [ -n "$JUSTIFICATION" ]; then
-        echo "step-08 produced no file changes but declared a no-op justification:" >&2
-        echo "$JUSTIFICATION" >&2
-        echo "Allowing workflow to continue under rule 0 exception." >&2
+      if [ -z "$VERDICT_LINE" ]; then
+        echo "WARN: step-08c-work-verifier output did not contain a parseable JSON verdict. Treating as INSUFFICIENT_EVIDENCE (issue #615)." >&2
+        echo "--- verifier stdout (truncated to 4000 bytes) ---" >&2
+        printf '%s\n' "${VERDICT_RAW:0:4000}" >&2
+        echo "--- end ---" >&2
         exit 0
       fi
-      # Issue #360: detect "goal already met" — the desired change is already
-      # in main (e.g., a previous orchestrator round merged it) before treating
-      # this as a hollow-success failure. Probe the linked GitHub issue: if it
-      # is closed by a merged PR, exit 0 with a "pre-existing" marker rather
-      # than failing the round.
-      ISSUE_NUM="${ISSUE_NUMBER:-}"
-      if [ -n "$ISSUE_NUM" ] && command -v gh >/dev/null 2>&1; then
-        ISSUE_STATE=$(gh issue view "$ISSUE_NUM" --json state --jq '.state' 2>/dev/null || true)
-        if [ "$ISSUE_STATE" = "CLOSED" ]; then
-          # closedByPullRequestsReferences items DO NOT carry .state.
-          # Fetch (number, owner/repo) pairs so cross-repo PRs are looked
-          # up correctly (COE cohort review #2).
-          CLOSING_PR_REFS=$(gh issue view "$ISSUE_NUM" \
-            --json closedByPullRequestsReferences \
-            --jq '[.closedByPullRequestsReferences[]? | "\(.number) \(.repository.owner.login)/\(.repository.name)"] | join("\n")' \
-            2>/dev/null || true)
-          MAX_PROBE=10
-          probed=0
-          MERGED_FOUND=0
-          while IFS= read -r ref; do
-            [ -z "$ref" ] && continue
-            probed=$((probed + 1))
-            if [ "$probed" -gt "$MAX_PROBE" ]; then break; fi
-            PR_NUM=$(printf '%s' "$ref" | awk '{print $1}')
-            PR_REPO=$(printf '%s' "$ref" | awk '{print $2}')
-            if [ -n "$PR_REPO" ] && [ "$PR_REPO" != "/" ]; then
-              PR_MERGED=$(timeout 30 gh pr view "$PR_NUM" --repo "$PR_REPO" --json mergedAt --jq '.mergedAt' 2>/dev/null || true)
-            else
-              PR_MERGED=$(timeout 30 gh pr view "$PR_NUM" --json mergedAt --jq '.mergedAt' 2>/dev/null || true)
-            fi
-            # mergedAt is null for unmerged PRs and a timestamp string for merged ones.
-            if [ -n "$PR_MERGED" ] && [ "$PR_MERGED" != "null" ]; then
-              MERGED_FOUND=1
-              break
-            fi
-          done <<< "$CLOSING_PR_REFS"
-          if [ "$MERGED_FOUND" -eq 1 ]; then
-            echo "INFO: step-08-implement produced no file changes, but issue" >&2
-            echo "  #${ISSUE_NUM} is already CLOSED by a merged pull request." >&2
-            echo "  This is a 'goal already met' (#360) — not a hollow success." >&2
-            echo "  Treating as pre-existing success and continuing." >&2
-            exit 0
-          fi
-        fi
-      fi
-      echo "ERROR: step-08-implement claimed success but produced ZERO file changes" >&2
-      echo "and no 'No-op justification:' was provided. This is a hollow-success" >&2
-      echo "condition, almost certainly caused by prompt-misalignment — see" >&2
-      echo "https://github.com/rysweet/amplihack-rs/issues/251." >&2
-      echo "" >&2
-      echo "Inspected worktree: ${WORKTREE_SETUP_WORKTREE_PATH}" >&2
-      echo "Working directory: $PWD" >&2
-      git --no-pager status >&2
-      exit 1
+
+      VERDICT=$(printf '%s' "$VERDICT_LINE" | jq -r '.verdict // "INSUFFICIENT_EVIDENCE"' 2>/dev/null || echo "INSUFFICIENT_EVIDENCE")
+
+      case "$VERDICT" in
+        WORK_VERIFIED)
+          echo "INFO: step-08c work-verifier APPROVED (issue #615)." >&2
+          printf '%s\n' "$VERDICT_LINE" | jq . >&2 || printf '%s\n' "$VERDICT_LINE" >&2
+          exit 0
+          ;;
+        INSUFFICIENT_EVIDENCE)
+          echo "WARN: step-08c work-verifier returned INSUFFICIENT_EVIDENCE — letting workflow continue with a loud warning (issue #615)." >&2
+          printf '%s\n' "$VERDICT_LINE" | jq . >&2 || printf '%s\n' "$VERDICT_LINE" >&2
+          exit 0
+          ;;
+        HOLLOW_SUCCESS)
+          echo "ERROR: step-08c work-verifier rejected step-08-implement with HOLLOW_SUCCESS (issue #615)." >&2
+          echo "  The implement step claimed COMPLETE but the verifier could not find concrete artifacts that address the task." >&2
+          printf '%s\n' "$VERDICT_LINE" | jq . >&2 || printf '%s\n' "$VERDICT_LINE" >&2
+          exit 1
+          ;;
+        *)
+          echo "ERROR: step-08c work-verifier emitted unknown verdict: $VERDICT (issue #615)." >&2
+          printf '%s\n' "$VERDICT_LINE" | jq . >&2 || printf '%s\n' "$VERDICT_LINE" >&2
+          exit 1
+          ;;
+      esac
     output: "implementation_noop_guard"
 
   - id: "step-08b-integration"
