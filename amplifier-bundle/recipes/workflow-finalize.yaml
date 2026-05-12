@@ -282,13 +282,19 @@ steps:
       cd "${REPO_PATH:?step-22b-final-status requires repo_path; ensure parent recipe propagated repo_path context}"
       echo "=== WORKFLOW COMPLETE ==="
       echo ""
-      echo "PR Status:"
-      gh pr view --json state,mergeable,reviews,statusCheckRollup
+      # FIX (#597): Use $PR_URL to identify the PR instead of relying on the
+      # current branch (which is "main" in the parent repo, not the feature branch).
+      PR_URL="$PR_URL"
+      if [ -z "$PR_URL" ]; then
+        echo "WARNING: PR_URL is empty; skipping PR status check" >&2
+      else
+        echo "PR Status:"
+        gh pr view "$PR_URL" --json state,mergeable,reviews,statusCheckRollup
+      fi
       echo ""
       # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
       TASK_DESC="$TASK_DESCRIPTION"
       ISSUE_NUMBER="$ISSUE_NUMBER"
-      PR_URL="$PR_URL"
       printf '=== Task: %s ===\n' "$TASK_DESC"
       printf '=== Issue: #%s ===\n' "$ISSUE_NUMBER"
       printf '=== PR: %s ===\n' "$PR_URL"
