@@ -44,8 +44,7 @@ fn workspace_root() -> &'static Path {
 
 fn read_file(relative: &str) -> String {
     let path = workspace_root().join(relative);
-    fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
 }
 
 /// Simple recursive directory walker (no external dep).
@@ -92,10 +91,7 @@ fn collect_skill_files() -> Vec<PathBuf> {
 }
 
 /// Scan markdown files for line-level violations, returning formatted messages.
-fn scan_lines(
-    files: &[PathBuf],
-    predicate: impl Fn(&str, &str) -> bool,
-) -> Vec<String> {
+fn scan_lines(files: &[PathBuf], predicate: impl Fn(&str, &str) -> bool) -> Vec<String> {
     let root = workspace_root();
     let mut violations = Vec::new();
     for path in files {
@@ -382,7 +378,10 @@ mod litellm_serialization {
     #[test]
     fn has_serial_lock() {
         let src = read_file(SRC);
-        assert!(src.contains("mod serial_lock"), "must define serial_lock submodule");
+        assert!(
+            src.contains("mod serial_lock"),
+            "must define serial_lock submodule"
+        );
         assert!(
             src.contains("OnceLock<Mutex<()>>") || src.contains("OnceLock < Mutex < () > >"),
             "SerialLock must use OnceLock<Mutex<()>> pattern"
@@ -411,7 +410,10 @@ mod litellm_serialization {
             "unregister_noop_when_none",
         ] {
             let body = extract_test_body(&src, name);
-            assert!(body.contains("SerialLock::acquire()"), "Test {name} must acquire SerialLock");
+            assert!(
+                body.contains("SerialLock::acquire()"),
+                "Test {name} must acquire SerialLock"
+            );
         }
     }
 }
@@ -429,7 +431,10 @@ mod docker_serialization {
     #[test]
     fn has_serial_lock() {
         let src = read_file(SRC);
-        assert!(src.contains("mod serial_lock"), "must define serial_lock submodule");
+        assert!(
+            src.contains("mod serial_lock"),
+            "must define serial_lock submodule"
+        );
     }
 
     /// TC-SWEEP-607-02: The flaky test must acquire the lock.
@@ -456,7 +461,10 @@ mod docker_serialization {
             "should_use_docker_false_for_falsy_env_values",
         ] {
             let body = extract_test_body(&src, name);
-            assert!(body.contains("SerialLock::acquire()"), "Test {name} must acquire SerialLock");
+            assert!(
+                body.contains("SerialLock::acquire()"),
+                "Test {name} must acquire SerialLock"
+            );
         }
     }
 }
@@ -480,9 +488,7 @@ mod docs_internal_links {
         let md_files = collect_md_files(&docs_dir);
         let mut broken = Vec::new();
         // Regex-like: match [text](relative/path.md) but not http/https URLs
-        let link_pattern = regex::Regex::new(
-            r"\]\(([^)]+\.md(?:#[^)]*)?)\)"
-        ).unwrap();
+        let link_pattern = regex::Regex::new(r"\]\(([^)]+\.md(?:#[^)]*)?)\)").unwrap();
 
         for file in &md_files {
             let content = fs::read_to_string(file).unwrap_or_default();
@@ -526,7 +532,12 @@ mod docs_internal_links {
             broken.len() <= max_allowed_broken,
             "Too many broken internal links in docs/ ({} found, max {max_allowed_broken}):\n{}",
             broken.len(),
-            broken.iter().take(20).cloned().collect::<Vec<_>>().join("\n")
+            broken
+                .iter()
+                .take(20)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 
@@ -555,9 +566,7 @@ mod docs_internal_links {
 
             for (line_num, line) in content.lines().enumerate() {
                 for dir in &deleted_dirs {
-                    if line.contains(&format!("]({dir}"))
-                        || line.contains(&format!("](../{dir}"))
-                    {
+                    if line.contains(&format!("]({dir}")) || line.contains(&format!("](../{dir}")) {
                         violations.push(format!(
                             "  {}:{}: links to deleted dir {}",
                             rel.display(),
