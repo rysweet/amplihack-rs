@@ -82,7 +82,7 @@ fi
 | Variable | Relationship |
 |----------|-------------|
 | `force_single_workstream` | Independent. Uses the same string-as-boolean pattern. |
-| `allow_no_op` | Independent. `allow_no_op` controls the step-08c hollow-success guard; `skip_pre_agent_validation` controls step-01 pre-flight validation. |
+| `allow_no_op` | Independent. `allow_no_op` is the fast-path opt-out for the step-08c work-verifier (issue #615); `skip_pre_agent_validation` controls step-01 pre-flight validation. |
 | `worktree_setup` | Independent. Both are explicitly forwarded in `smart-execute-routing.yaml`. |
 
 ---

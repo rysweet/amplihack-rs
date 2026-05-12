@@ -26,13 +26,7 @@ Complete reference for how the `worktree_setup` context variable propagates thro
 | `branch_name` | `feat/add-auth-1234` | Branch name created or reused |
 | `is_new_worktree` | `true` | Whether a new worktree was created vs. reattached |
 
-Downstream steps — particularly step-08c (the no-op/hollow-success guard in `workflow-tdd`) — read `WORKTREE_SETUP_WORKTREE_PATH` to verify that implementation actually produced file changes in the worktree directory. Without this variable, step-08c cannot locate the worktree and fails with:
-
-```
-WORKTREE_SETUP_WORKTREE_PATH: step-08c requires worktree_setup.worktree_path
-from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and
-propagated outputs
-```
+Downstream steps — particularly the `step-08c-work-verifier` / `step-08c-enforce-verdict` pair in `workflow-tdd` (issue #615 — replaced the legacy six-escape-hatch bash hollow-success guard with an agentic verifier) — read `WORKTREE_SETUP_WORKTREE_PATH` so the verifier agent runs inside the worktree where implementation actually happened. Without this variable, the verifier cannot inspect the right working tree and may fall back to `INSUFFICIENT_EVIDENCE`.
 
 ---
 
@@ -47,7 +41,7 @@ smart-orchestrator
             ├─ workflow-prep        ← does NOT declare (runs before worktree creation)
             ├─ workflow-worktree    ← PRODUCES worktree_setup (does not consume it)
             ├─ workflow-design      ← does NOT declare (runs before worktree output is needed)
-            ├─ workflow-tdd         ← declares worktree_setup: ""  ← CONSUMER (step-08c)
+            ├─ workflow-tdd         ← declares worktree_setup: ""  ← CONSUMER (step-08c work-verifier)
             ├─ workflow-refactor-review  ← declares worktree_setup: ""
             ├─ workflow-precommit-test   ← declares worktree_setup: ""
             ├─ workflow-publish          ← declares worktree_setup: ""
@@ -89,12 +83,12 @@ The empty-string default is intentional. Bash `${VAR:?msg}` and `${VAR:+alt}` gu
 
 ## Related context variable: allow_no_op
 
-`allow_no_op` controls the step-08c hollow-success guard in `workflow-tdd`. When `true`, the guard permits a step to complete without file changes — used for orchestration, docs-only, or audit tasks that legitimately produce no working-tree edits.
+`allow_no_op` controls the `step-08c-enforce-verdict` fast-path opt-out in `workflow-tdd` (issue #615). When `true`, the enforcer treats the step as `WORK_VERIFIED` without parsing the verifier's verdict — used for orchestration, docs-only, or audit tasks that legitimately produce no working-tree edits.
 
 | Value | Behavior |
 |-------|----------|
-| `false` (default) | step-08c requires at least one file change in the worktree |
-| `true` | step-08c skips the file-change check |
+| `false` (default) | step-08c runs the agentic work-verifier and enforces its verdict |
+| `true` | step-08c-enforce-verdict short-circuits to exit 0 (orchestration / docs-only / audit / meta) |
 
 `allow_no_op` is declared alongside `worktree_setup` in every post-worktree sub-recipe. The smart-classify-route step in `smart-orchestrator` sets it to `true` when the task classification permits no working-tree edits.
 
@@ -144,9 +138,12 @@ These tests load the YAML files directly and parse the `context:` sections, catc
 
 ## Troubleshooting
 
-**Error: `WORKTREE_SETUP_WORKTREE_PATH: step-08c requires worktree_setup.worktree_path...`**
+**Error: `WORKTREE_SETUP_WORKTREE_PATH: ... requires worktree_setup.worktree_path...`** (legacy step-08c bash guard, removed by issue #615)
 
-This means a sub-recipe in the chain is missing the `worktree_setup` context declaration. Check:
+If you still see this error from a stale build, upgrade. In the agentic
+verifier, missing worktree path manifests as the verifier reporting
+`INSUFFICIENT_EVIDENCE` instead. The underlying cause is the same: a
+sub-recipe in the chain is missing the `worktree_setup` context declaration. Check:
 
 1. The sub-recipe's `context:` block includes `worktree_setup: ""`.
 2. The parent recipe's call site passes `worktree_setup` in its context.

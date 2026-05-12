@@ -112,7 +112,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     // Phase 3: workflow-tdd (steps 07-08c)
     "step-07-write-tests",
     "step-08-implement",
-    "step-08c-implementation-no-op-guard",
+    "step-08c-work-verifier",
+    "step-08c-enforce-verdict",
     "step-08b-integration",
     "checkpoint-after-implementation",
     // Phase 4: workflow-refactor-review (steps 09-11b)

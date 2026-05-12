@@ -207,14 +207,18 @@ steps:
     output: "force_single_workstream"
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Issue #425: emit `allow_no_op` so step-08c (workflow-tdd) skips its
-  # hollow-success guard for orchestration / docs-only / audit / meta tasks.
+  # Issue #425: emit `allow_no_op` so the step-08c work-verifier (workflow-tdd)
+  # treats orchestration / docs-only / audit / meta tasks as fast-path
+  # WORK_VERIFIED. Issue #615 replaced the legacy six-escape-hatch bash
+  # hollow-success guard with an agentic verifier; ALLOW_NO_OP is still
+  # honoured by the bash enforcer that follows the verifier so callers that
+  # legitimately produce no working-tree edits never get blocked.
   #
   # Allowlist (case-insensitive substring match against task_description):
   #   audit, docs-only, orchestration, meta
-  # Default: false. Step-08c uses STRICT equality with the literal "true",
-  # so coerced values (1, yes, on, True) cannot accidentally bypass the
-  # guard for code-producing classifications.
+  # Default: false. The step-08c enforcer uses STRICT equality with the
+  # literal "true", so coerced values (1, yes, on, True) cannot accidentally
+  # bypass the guard for code-producing classifications.
   # ─────────────────────────────────────────────────────────────────────────
   - id: "materialize-allow-no-op"
     type: "bash"
