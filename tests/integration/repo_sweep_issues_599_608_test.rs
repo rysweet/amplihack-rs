@@ -27,14 +27,19 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-fn workspace_root() -> PathBuf {
+static WORKSPACE_ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop(); // tests/ → workspace root
     path.pop();
     path
+});
+
+fn workspace_root() -> &'static Path {
+    &WORKSPACE_ROOT
 }
 
 fn read_file(relative: &str) -> String {
@@ -44,22 +49,27 @@ fn read_file(relative: &str) -> String {
 }
 
 /// Simple recursive directory walker (no external dep).
+/// Uses accumulator pattern to avoid intermediate `Vec` allocations per directory.
 fn walkdir(dir: &Path) -> Vec<PathBuf> {
     let mut result = Vec::new();
+    walkdir_into(dir, &mut result);
+    result
+}
+
+fn walkdir_into(dir: &Path, result: &mut Vec<PathBuf>) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 if !name.starts_with('.') && name != "target" && name != "node_modules" {
-                    result.extend(walkdir(&path));
+                    walkdir_into(&path, result);
                 }
             } else {
                 result.push(path);
             }
         }
     }
-    result
 }
 
 /// Collect all `.md` files under a directory, recursively.
@@ -90,9 +100,10 @@ fn scan_lines(
     let mut violations = Vec::new();
     for path in files {
         let content = fs::read_to_string(path).unwrap_or_default();
-        let rel = path.strip_prefix(&root).unwrap_or(path);
+        let rel = path.strip_prefix(root).unwrap_or(path);
+        let rel_str = rel.to_string_lossy();
         for (i, line) in content.lines().enumerate() {
-            if predicate(line, &rel.to_string_lossy()) {
+            if predicate(line, &rel_str) {
                 violations.push(format!("  {}:{}: {}", rel.display(), i + 1, line.trim()));
             }
         }
