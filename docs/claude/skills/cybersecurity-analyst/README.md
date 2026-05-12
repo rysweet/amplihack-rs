@@ -196,9 +196,9 @@ Test security at multiple levels:
 
 ## Links
 
-- [Agent Implementation](/Users/ryan/src/Fritmp/amplihack/.claude/skills/cybersecurity-analyst/cybersecurity-analyst.md)
-- [Quick Reference](/Users/ryan/src/Fritmp/amplihack/.claude/skills/cybersecurity-analyst/QUICK_REFERENCE.md)
-- [All Skills](/Users/ryan/src/Fritmp/amplihack/.claude/skills/README.md)
+- [Agent Implementation](SKILL.md)
+- [Quick Reference](QUICK_REFERENCE.md)
+- All Skills
 
 ## Best Practices
 

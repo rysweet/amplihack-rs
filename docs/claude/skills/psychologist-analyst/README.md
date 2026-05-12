@@ -234,9 +234,9 @@ Understand users' conceptual understanding:
 
 ## Links
 
-- [Agent Implementation](/Users/ryan/src/Fritmp/amplihack/.claude/skills/psychologist-analyst/psychologist-analyst.md)
-- [Quick Reference](/Users/ryan/src/Fritmp/amplihack/.claude/skills/psychologist-analyst/QUICK_REFERENCE.md)
-- [All Skills](/Users/ryan/src/Fritmp/amplihack/.claude/skills/README.md)
+- [Agent Implementation](SKILL.md)
+- [Quick Reference](QUICK_REFERENCE.md)
+- All Skills
 
 ## Best Practices
 
