@@ -165,6 +165,22 @@ impl From<&LiteLLMTraceCallback> for CallbackInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_lock::SerialLock;
+
+    // Module-private serial lock — REGISTRY is a global `Mutex<Vec<..>>` so
+    // tests that register/unregister callbacks must not race each other.
+    mod serial_lock {
+        use std::sync::{Mutex, MutexGuard, OnceLock};
+        pub struct SerialLock;
+        impl SerialLock {
+            pub fn acquire() -> MutexGuard<'static, ()> {
+                static LK: OnceLock<Mutex<()>> = OnceLock::new();
+                LK.get_or_init(|| Mutex::new(()))
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+            }
+        }
+    }
 
     #[test]
     fn callback_logs_start_and_end_without_panic() {
@@ -185,12 +201,14 @@ mod tests {
 
     #[test]
     fn register_returns_none_when_disabled() {
+        let _serial = SerialLock::acquire();
         let result = register_trace_callbacks(Some(false), None);
         assert!(result.is_none());
     }
 
     #[test]
     fn register_returns_some_when_enabled() {
+        let _serial = SerialLock::acquire();
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("trace.jsonl");
         let result = register_trace_callbacks(Some(true), Some(path.to_str().unwrap()));
@@ -202,6 +220,7 @@ mod tests {
 
     #[test]
     fn unregister_removes_callback() {
+        let _serial = SerialLock::acquire();
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("unreg.jsonl");
         let before = registered_callback_count();
@@ -227,6 +246,7 @@ mod tests {
 
     #[test]
     fn unregister_noop_when_none() {
+        let _serial = SerialLock::acquire();
         // Should not panic.
         unregister_trace_callbacks(None);
     }

@@ -120,7 +120,7 @@ go install golang.org/x/tools/gopls@latest
 
 ## Documentation
 
-- **Overview**: [docs/plugin/README.md](./README.md)
+- **Overview**: docs/plugin/README.md
 - **Installation**: [docs/plugin/PLUGIN_INSTALLATION.md](./PLUGIN_INSTALLATION.md)
 - **LSP Config**: [docs/plugin/LSP_CONFIGURATION.md](./LSP_CONFIGURATION.md)
 - **Development**: [docs/plugin/PLUGIN_DEVELOPMENT.md](./PLUGIN_DEVELOPMENT.md)

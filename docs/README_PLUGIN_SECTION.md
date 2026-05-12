@@ -139,7 +139,7 @@ cd ~/project2
 amplihack mode migrate-to-plugin
 ```
 
-See [Migration Guide](./docs/MIGRATION_GUIDE.md) fer detailed instructions.
+See [Migration Guide](./MIGRATION_GUIDE.md) fer detailed instructions.
 
 ### Verification
 
@@ -206,10 +206,10 @@ amplihack mode migrate-to-plugin
 
 ### Documentation
 
-- **[Plugin Architecture](./docs/PLUGIN_ARCHITECTURE.md)** - Technical details, hook registration, settings integration
-- **[Migration Guide](./docs/MIGRATION_GUIDE.md)** - Step-by-step migration from per-project to plugin
-- **[CLI Commands Reference](./docs/PLUGIN_CLI_HELP.md)** - Complete command documentation with examples
-- **[Cross-Tool Compatibility](./docs/PLUGIN_ARCHITECTURE.md#cross-tool-compatibility)** - Claude Code, Copilot, Codex compatibility
+- **[Plugin Architecture](./PLUGIN_ARCHITECTURE.md)** - Technical details, hook registration, settings integration
+- **[Migration Guide](./MIGRATION_GUIDE.md)** - Step-by-step migration from per-project to plugin
+- **[CLI Commands Reference](./PLUGIN_CLI_HELP.md)** - Complete command documentation with examples
+- **[Cross-Tool Compatibility](./PLUGIN_ARCHITECTURE.md#cross-tool-compatibility)** - Claude Code, Copilot, Codex compatibility
 
 ### Cross-Tool Support
 
@@ -219,7 +219,7 @@ amplihack mode migrate-to-plugin
 | **GitHub Copilot** | ⚠️ Partial      | Manual copy to `~/.amplihack/.claude/` |
 | **Codex**          | ⚠️ Unknown      | Test with per-project mode             |
 
-See [Plugin Architecture](./docs/PLUGIN_ARCHITECTURE.md#cross-tool-compatibility) fer details.
+See [Plugin Architecture](./PLUGIN_ARCHITECTURE.md#cross-tool-compatibility) fer details.
 
 ---
 

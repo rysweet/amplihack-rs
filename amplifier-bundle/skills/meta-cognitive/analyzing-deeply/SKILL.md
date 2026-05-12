@@ -340,11 +340,11 @@ What are we giving up:
 
 - **Architect Agent**: For design implications
 - **WebSearch**: For external validation
-- **/ultrathink**: For even deeper structured analysis
+- **/dev**: For even deeper structured analysis
 
 ### Escalates To
 
-- **/ultrathink**: When analysis needs extreme depth (30+ min)
+- **/dev**: When analysis needs extreme depth (30+ min)
 - **/consensus**: When multiple stakeholders need alignment
 - **/debate**: When competing viewpoints need exploration
 - **Architecting Solutions**: Once problem is understood, design solution
@@ -680,7 +680,7 @@ Good deep analysis:
 
 ## Related Capabilities
 
-- **Slash Command**: `/ultrathink` for even deeper analysis
+- **Slash Command**: `/dev` for even deeper analysis
 - **Slash Command**: `/consensus` for multi-stakeholder alignment
 - **Slash Command**: `/debate` for exploring opposing viewpoints
 - **Skill**: "Architecting Solutions" for post-analysis design

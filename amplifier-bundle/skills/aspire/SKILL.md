@@ -163,7 +163,7 @@ builder.AddExecutable("go-svc", "go", ".").WithArgs("run", "main.go");  // Go
 
 ## Integration with Amplihack
 
-**Command**: `/ultrathink "Setup Aspire for microservices"`
+**Command**: `/dev "Setup Aspire for microservices"`
 
 - prompt-writer clarifies requirements → architect uses reference.md for API design
 - builder uses examples.md for implementation → reviewer checks patterns.md for best practices

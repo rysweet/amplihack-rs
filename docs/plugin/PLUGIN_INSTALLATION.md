@@ -591,7 +591,7 @@ amplihack plugin status
 amplihack migrate cleanup --confirm
 ```
 
-See [Migration Guide](./PLUGIN_MIGRATION.md) for details.
+See Migration Guide for details.
 
 ## Getting Help
 
@@ -638,8 +638,8 @@ amplihack plugin diagnose
 After successful installation:
 
 1. [Configure LSP for your languages](./LSP_CONFIGURATION.md)
-2. [Set user preferences](./PLUGIN_CONFIGURATION.md)
-3. [Start using amplihack](./README.md#usage)
+2. Set user preferences
+3. Start using amplihack
 4. [Learn plugin development](./PLUGIN_DEVELOPMENT.md)
 
 ---

@@ -537,7 +537,7 @@ All enhancements follow these principles:
 - [Installation Guide](./INSTALLATION.md) - Install the plugin
 - [Migration Guide](./MIGRATION.md) - Migrate from per-project mode
 - [CLI Reference](./CLI_REFERENCE.md) - Command-line tools
-- [Multi-IDE Setup](./MULTI_IDE.md) - Configure for different IDEs
+- Multi-IDE Setup - Configure for different IDEs
 
 ---
 

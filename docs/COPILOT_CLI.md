@@ -77,7 +77,7 @@ The refactored checker is organized into specialized modules:
 - `result_formatting.py` — Output generation
 - Plus 5 check-specific modules
 
-See [power_steering_checker README](../.claude/tools/amplihack/hooks/power_steering_checker/README.md) for complete module documentation.
+See power_steering_checker README for complete module documentation.
 
 ### Testing
 

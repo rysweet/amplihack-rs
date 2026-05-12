@@ -16,7 +16,7 @@ This is the landing page for the current memory documentation.
 - [Kuzu code schema](./KUZU_CODE_SCHEMA.md) - schema details for the lower-level Kuzu-backed graph store
 - [Ladybug Graph Store API](./LADYBUG_GRAPH_STORE.md) - API reference for `KuzuGraphStore` (ladybug-backed)
 - [Ladybug Migration Guide](../LADYBUG_MIGRATION_GUIDE.md) - migrating from `kuzu_store` to `ladybug_store`
-- [Memory diagrams](../../Specs/MEMORY_AGENTS_DIAGRAMS.md) - presentation-friendly architecture diagrams
+- Memory diagrams - presentation-friendly architecture diagrams
 
 ## What "Memory" Means in This Repo
 

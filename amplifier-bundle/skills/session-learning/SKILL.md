@@ -360,9 +360,13 @@ The learning system follows fail-safe design:
 
 ### Stop Hook: Learning Extraction
 
-Add learning extraction to your stop hook:
+Add learning extraction to your stop hook (Rust implementation in `crates/amplihack-hooks/`):
 
 ```python
+# Legacy Python example — hooks are now implemented in Rust.
+# See crates/amplihack-hooks/ for the current implementation.
+# This example is retained for conceptual illustration.
+#
 # .claude/tools/amplihack/hooks/stop_hook.py
 
 async def extract_session_learnings(transcript: str, session_id: str):
@@ -420,9 +424,13 @@ def on_stop(session_data: dict):
 
 ### Session Start Hook: Learning Injection
 
-Add learning injection to your session start hook:
+Add learning injection to your session start hook (Rust implementation in `crates/amplihack-hooks/`):
 
 ```python
+# Legacy Python example — hooks are now implemented in Rust.
+# See crates/amplihack-hooks/ for the current implementation.
+# This example is retained for conceptual illustration.
+#
 # .claude/tools/amplihack/hooks/session_start_hook.py
 
 def inject_relevant_learnings(initial_prompt: str) -> str:

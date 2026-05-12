@@ -903,9 +903,9 @@ When adding new tools to this directory:
 ## References
 
 - [Claude Code Hooks Documentation](https://docs.claude.com/en/docs/claude-code/hooks)
-- [Project Philosophy](~/.amplihack/.claude/context/PHILOSOPHY.md)
-- [Development Patterns](~/.amplihack/.claude/context/PATTERNS.md)
-- [Workflow Definition](~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md)
+- [Project Philosophy](../../../amplifier-bundle/context/PHILOSOPHY.md)
+- [Development Patterns](../../../amplifier-bundle/context/PATTERNS.md)
+- [Workflow Definition](../workflow/DEFAULT_WORKFLOW.md)
 
 ---
 

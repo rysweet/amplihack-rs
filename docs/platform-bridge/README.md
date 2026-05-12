@@ -335,6 +335,6 @@ See [Security Documentation](../security/platform-bridge-security.md) fer comple
 ## See Also
 
 - [Platform Bridge API Reference](../reference/platform-bridge-api.md) - Complete API documentation
-- [Contributing to Platform Bridge](../contributing/platform-bridge.md) - Extend with new platforms
-- [DEFAULT_WORKFLOW.md](../../.claude/workflow/DEFAULT_WORKFLOW.md) - Full workflow integration
+- Contributing to Platform Bridge - Extend with new platforms
+- [DEFAULT_WORKFLOW.md](../claude/workflow/DEFAULT_WORKFLOW.md) - Full workflow integration
 - [Security Analysis](../security/platform-bridge-security.md) - Security implementation details

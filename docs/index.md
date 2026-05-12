@@ -86,7 +86,7 @@ Centralized plugin system that works across all your projects:
 
 - [Prerequisites](PREREQUISITES.md) - System requirements and dependencies
 - [Interactive Installation](INTERACTIVE_INSTALLATION.md) - Step-by-step setup wizard
-- [Quick Start](README.md) - Basic usage and first commands
+- [Quick Start](../README.md) - Basic usage and first commands
 
 ### Configuration
 
@@ -300,7 +300,7 @@ Specialized AI agents and tools for every development task.
 
 ### Core Agents
 
-<!-- - [Agents Overview](claude/agents/amplihack/README.md) - Complete agent catalog (see individual agent docs below) -->
+<!-- - [Agents Overview](claude/agents/README.md) - Complete agent catalog (see individual agent docs below) -->
 
 - [Architect](claude/agents/amplihack/core/architect.md) - System design and specifications
 - [Builder](claude/agents/amplihack/core/builder.md) - Code implementation from specs
@@ -407,7 +407,7 @@ Specialized AI agents and tools for every development task.
 Modular, on-demand capabilities that extend amplihack:
 
 - [Skills Catalog](skills/SKILL_CATALOG.md) - Complete skills catalog
-<!-- - [Documentation Writing](claude/skills/documentation-writing/README.md) - Eight Rules compliance (Coming soon) -->
+<!-- - [Documentation Writing](claude/skills/documentation-writing/SKILL.md) - Eight Rules compliance (Coming soon) -->
 - [Mermaid Diagrams](claude/skills/mermaid-diagram-generator/SKILL.md) - Visual documentation
 - [Test Gap Analyzer](claude/skills/test-gap-analyzer/SKILL.md) - Find untested code
 - [Code Smell Detector](claude/skills/code-smell-detector/SKILL.md) - Identify anti-patterns
@@ -597,14 +597,14 @@ Robust handling of conversation compaction in long sessions:
 
 - [Compaction Overview](power_steering_compaction_overview.md) - What is compaction and how power-steering handles it
 - [Compaction API Reference](power_steering_compaction_api.md) - Developer documentation for CompactionValidator and CompactionContext
-- [How to Customize Power Steering](../.claude/tools/amplihack/HOW_TO_CUSTOMIZE_POWER_STEERING.md#compaction-handling) - Configuration and troubleshooting
+- [How to Customize Power Steering](../amplifier-bundle/tools/amplihack/HOW_TO_CUSTOMIZE_POWER_STEERING.md#compaction-handling) - Configuration and troubleshooting
 
 ### Other Features
 
 - [Smart Memory Management](features/smart-memory-management.md) - Automatic Node.js memory optimization for Claude Code
 - [Claude.md Preservation](features/claude-md-preservation.md) - Preserve custom instructions
   <!-- Neo4j removed - now using Kuzu embedded database (no session cleanup needed) -->
-  <!-- - [Shutdown Detection](concepts/shutdown-detection.md) - Graceful exit handling (see stop-hook-exit-hang in Troubleshooting) -->
+  <!-- - Shutdown Detection - Graceful exit handling (see stop-hook-exit-hang in Troubleshooting) -->
 
 ### Third-Party Integrations
 
@@ -801,7 +801,7 @@ amplihack excels at:
 
 ## Need Help?
 
-- **Start here**: [Prerequisites](PREREQUISITES.md) → [Interactive Installation](INTERACTIVE_INSTALLATION.md) → [Quick Start](README.md)
+- **Start here**: [Prerequisites](PREREQUISITES.md) → [Interactive Installation](INTERACTIVE_INSTALLATION.md) → [Quick Start](../README.md)
 - **Common issues**: Check [Discoveries](discoveries.md) first
 - **Questions**: See [DDD FAQ](document_driven_development/reference/faq.md)
 - **Report issues**: [GitHub Issues](https://github.com/rysweet/MicrosoftHackathon2025-AgenticCoding/issues)

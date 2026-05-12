@@ -139,9 +139,9 @@ Use traditional stories, metaphors, and oral traditions to convey complex concep
 
 ## Links
 
-- [Agent Implementation](/Users/ryan/src/Fritmp/amplihack/.claude/skills/indigenous-leader-analyst/indigenous-leader-analyst.md)
-- [Quick Reference](/Users/ryan/src/Fritmp/amplihack/.claude/skills/indigenous-leader-analyst/QUICK_REFERENCE.md)
-- [All Skills](/Users/ryan/src/Fritmp/amplihack/.claude/skills/README.md)
+- [Agent Implementation](SKILL.md)
+- [Quick Reference](QUICK_REFERENCE.md)
+- All Skills
 
 ## Best Practices
 

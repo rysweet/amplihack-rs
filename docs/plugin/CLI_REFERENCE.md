@@ -986,7 +986,7 @@ amplihack plugin verify
 - [Installation Guide](./INSTALLATION.md) - Getting started with plugin installation
 - [Architecture Overview](./ARCHITECTURE.md) - How the plugin system works
 - [Migration Guide](./MIGRATION.md) - Migrate from per-project mode
-- [Multi-IDE Setup](./MULTI_IDE.md) - Configure for different IDEs
+- Multi-IDE Setup - Configure for different IDEs
 
 ---
 

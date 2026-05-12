@@ -68,7 +68,7 @@ It provides four browsing modes:
 
 Before browsing, detect which tool is active to set default log paths.
 Prefer directory-based detection (more reliable than env vars); fall back to env vars
-from `src/amplihack/hooks/launcher_detector.py` when directories don't exist:
+from `crates/amplihack-hooks/src/launcher_detector.rs` when directories don't exist:
 
 ```bash
 # Primary: directory-based detection (most reliable)
@@ -90,7 +90,7 @@ if [[ -d "$HOME/.copilot/session-state" ]]; then
 elif [[ -d "$HOME/.claude/projects" ]]; then
   TOOL_CONTEXT="claude-code"
   DEFAULT_LOG_DIR="$HOME/.claude/projects"
-# Fallback: env var detection (same vars as launcher_detector.py)
+# Fallback: env var detection (same vars as launcher_detector.rs)
 elif [[ -n "${CLAUDE_CODE_SESSION:-}${CLAUDE_SESSION_ID:-}${ANTHROPIC_API_KEY:-}" ]]; then
   TOOL_CONTEXT="claude-code"
   DEFAULT_LOG_DIR="$HOME/.claude/projects"

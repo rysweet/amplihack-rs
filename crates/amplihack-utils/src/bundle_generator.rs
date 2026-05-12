@@ -14,7 +14,7 @@
 //! 3. **Generation** — create agent content ([`AgentGenerator`])
 //! 4. **Building** — assemble bundles ([`BundleBuilder`])
 //! 5. **Packaging** — produce distributable packages ([`FilesystemPackager`])
-//! 6. **Distribution** — publish to GitHub ([`GitHubDistributor`])
+//! 6. **Distribution** — publish to GitHub (`GitHubDistributor` — requires `github-distributor` feature)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -796,17 +796,19 @@ fn validate_output_dir(path: &Path) -> Result<(), BundleGeneratorError> {
 }
 
 // ---------------------------------------------------------------------------
-// GitHubDistributor (stub)
+// GitHubDistributor (stub) — behind feature gate since it's unimplemented
 // ---------------------------------------------------------------------------
 
 /// Distributes agent bundles to GitHub repositories.
 ///
 /// TODO: implement `create_repository`, `push_bundle`, `create_release`
+#[cfg(feature = "github-distributor")]
 pub struct GitHubDistributor {
     /// GitHub personal access token.
     _token: String,
 }
 
+#[cfg(feature = "github-distributor")]
 impl GitHubDistributor {
     /// Create a new distributor with a GitHub token.
     pub fn new(token: impl Into<String>) -> Self {

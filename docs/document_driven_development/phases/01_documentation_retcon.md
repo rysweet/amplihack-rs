@@ -382,23 +382,23 @@ myapp init
 myapp run
 ```
 
-**First time?** The init wizard guides you. [See detailed setup →](docs/USER_GUIDE.md#setup)
+**First time?** The init wizard guides you. See detailed setup → `docs/USER_GUIDE.md#setup`
 
 ---
 
 ## Core Concepts
 
-**Profiles** - Capability sets. [Learn more →](docs/PROFILES.md)
-**Providers** - Infrastructure backends. [Learn more →](docs/PROVIDERS.md)
-**Modules** - Pluggable functionality. [Browse modules →](docs/MODULES.md)
+**Profiles** - Capability sets. Learn more → `docs/PROFILES.md`
+**Providers** - Infrastructure backends. Learn more → `docs/PROVIDERS.md`
+**Modules** - Pluggable functionality. Browse modules → `docs/MODULES.md`
 
 ---
 
 ## Next Steps
 
-**For users**: [User Guide](docs/USER_GUIDE.md)
-**For developers**: [Developer Guide](docs/DEVELOPER_GUIDE.md)
-**For architects**: [Architecture](docs/ARCHITECTURE.md)
+**For users**: `docs/USER_GUIDE.md`
+**For developers**: `docs/DEVELOPER_GUIDE.md`
+**For architects**: `docs/ARCHITECTURE.md`
 
 ````
 

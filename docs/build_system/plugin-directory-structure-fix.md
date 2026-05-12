@@ -397,7 +397,7 @@ Build hooks **do not run** in editable mode. Directories remain at repository ro
 - [Plugin Installation Guide](../plugin/INSTALLATION.md) - Install amplihack as global plugin
 - [Plugin Architecture Overview](../plugin/ARCHITECTURE.md) - How plugin system works
 - [UVX Deployment Solutions](../UVX_DEPLOYMENT_SOLUTIONS.md) - Production deployment with UVX
-- [Build System Reference](./build-system-reference.md) - Complete build configuration (coming soon)
+- Build System Reference - Complete build configuration (coming soon)
 
 ## Maintenance Notes
 

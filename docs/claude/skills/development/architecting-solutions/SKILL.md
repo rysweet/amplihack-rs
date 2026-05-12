@@ -160,7 +160,7 @@ Ask these questions in order:
 
 ### Escalates To
 
-- **/ultrathink**: For extremely complex architectural decisions requiring deep analysis
+- **/dev**: For extremely complex architectural decisions requiring deep analysis
 - **/consensus**: When multiple valid approaches exist and team input is needed
 - **Builder Agent**: Once design is complete, hand off specifications for implementation
 
@@ -289,7 +289,7 @@ Good architectural design:
 
 ## Related Capabilities
 
-- **Slash Command**: `/ultrathink` for extremely complex decisions
+- **Slash Command**: `/dev` for extremely complex decisions
 - **Slash Command**: `/consensus` for collaborative architecture decisions
 - **Agent**: Architect agent (this skill invokes it)
 - **Documentation**: `Specs/Architecture.md` for detailed guidelines

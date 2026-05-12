@@ -102,7 +102,7 @@ Automatic secure permissions for sensitive files.
 
 Comprehensive security analysis:
 
-- [Neo4j Cleanup Security Audit](NEO4J_CLEANUP_SECURITY_AUDIT.md) - Memory system security review
+- Neo4j Cleanup Security Audit - Memory system security review (removed: Neo4j replaced by Kuzu)
 
 ---
 
@@ -138,7 +138,7 @@ Cloud deployment security:
 Securing agent memory and knowledge:
 
 - [Memory System Security](../memory/README.md) - Memory security overview
-- [Neo4j Session Cleanup](../features/neo4j-session-cleanup.md) - Secure resource management
+- Neo4j Session Cleanup - Secure resource management
 
 ---
 
@@ -169,8 +169,8 @@ pytest tests/ -k "security or sanitiz" \
 Security principles and patterns:
 
 - [Development Philosophy](../PHILOSOPHY.md) - Security-first thinking
-- [Trust & Anti-Sycophancy](../../.claude/context/TRUST.md) - Honest, secure agent behavior
-- [Workflow Enforcement](../workflow-enforcement.md) - Process security
+- [Trust & Anti-Sycophancy](../../amplifier-bundle/context/TRUST.md) - Honest, secure agent behavior
+- Workflow Enforcement - Process security
 
 ### Quick Security Checklist
 
@@ -189,7 +189,7 @@ Before deploying:
 
 - [Troubleshooting](../troubleshooting/README.md) - Security issue fixes
 - [Features](../features/README.md) - Feature-specific security
-- [Agents](../../.claude/agents/amplihack/specialized/security.md) - Security agent
+- [Agents](../claude/agents/amplihack/specialized/security.md) - Security agent
 
 ---
 

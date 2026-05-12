@@ -551,7 +551,7 @@ A: Yes - compaction occurs to stay within Claude's context window limits (approx
 **See also:**
 
 - [Compaction API Reference](./power_steering_compaction_api.md) - Developer documentation
-- [How to Customize Power-Steering](../.claude/tools/amplihack/HOW_TO_CUSTOMIZE_POWER_STEERING.md#compaction-handling) - Configuration guide
+- [How to Customize Power-Steering](../amplifier-bundle/tools/amplihack/HOW_TO_CUSTOMIZE_POWER_STEERING.md#compaction-handling) - Configuration guide
 
 **Version:** v1.0
 **Status:** Implemented
