@@ -524,10 +524,10 @@ mod docs_internal_links {
             }
         }
 
-        // Known remaining: ~92 links to non-local targets (index.md → README.md,
-        // absolute paths from generated docs, ~/.amplihack/ refs in workflow docs).
-        // These are tracked separately; this test guards against regression.
-        let max_allowed_broken = 95;
+        // Known remaining: ~33 links to placeholder targets in documentation-writing
+        // examples (e.g., ./other.md, ./auth-config.md) and a handful of generated-doc
+        // references. These are tracked separately; this test guards against regression.
+        let max_allowed_broken = 40;
         assert!(
             broken.len() <= max_allowed_broken,
             "Too many broken internal links in docs/ ({} found, max {max_allowed_broken}):\n{}",

@@ -14,7 +14,7 @@
 //! 3. **Generation** — create agent content ([`AgentGenerator`])
 //! 4. **Building** — assemble bundles ([`BundleBuilder`])
 //! 5. **Packaging** — produce distributable packages ([`FilesystemPackager`])
-//! 6. **Distribution** — publish to GitHub ([`GitHubDistributor`] — requires `github-distributor` feature)
+//! 6. **Distribution** — publish to GitHub (`GitHubDistributor` — requires `github-distributor` feature)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
