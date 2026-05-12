@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HOOKS_BIN=""
+for candidate in \
+    "$(command -v amplihack-hooks 2>/dev/null)" \
+    "${HOME}/.amplihack/target/release/amplihack-hooks" \
+    "${HOME}/.amplihack/target/debug/amplihack-hooks"; do
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    HOOKS_BIN="$candidate"
+    break
+  fi
+done
+
+if [ -z "$HOOKS_BIN" ]; then
+  echo "[amplihack] hooks binary not found, skipping" >&2
+  exit 0
+fi
+
+exec "$HOOKS_BIN" pre-compact "$@"
