@@ -78,6 +78,10 @@ repository is created with `--private`.
 | `url` | `Option<String>` | Release URL |
 | `repository` | `Option<String>` | Repository URL |
 | `release_tag` | `Option<String>` | Git tag (e.g. `v1.0.0`) |
+| `branch` | `String` | Target branch (always `"main"`) |
+| `commit_sha` | `Option<String>` | Commit SHA (currently `None`) |
+| `errors` | `Vec<String>` | Non-fatal error messages |
+| `warnings` | `Vec<String>` | Warning messages |
 | `distribution_time_seconds` | `f64` | Wall-clock time |
 
 #### `create_repository`
