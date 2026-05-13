@@ -19,6 +19,10 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 
 - [Auto-Restage Framework Assets on Version Change](self-heal-asset-restage.md) — startup-time version-stamp check that re-runs `amplihack install` automatically when the binary version no longer matches `~/.amplihack/.installed-version`.
 
+## Update Check
+
+- [Startup Self-Update Prompt — Subprocess-Safe Skip](startup-update-prompt-subprocess-safe.md) — startup self-update prompt skips automatically in CI, delegated agents, non-TTY stdin, with `--subprocess-safe`, or when `AMPLIHACK_NONINTERACTIVE` / `AMPLIHACK_AGENT_BINARY` is set; emits a single skip-line to stderr (issue [#625](https://github.com/rysweet/amplihack-rs/issues/625)).
+
 ## Workflow Recovery
 
 - [Workflow-Owned PR Recovery Readiness](pr-recovery-readiness.md) — recover existing pull requests through `default-workflow`, reuse the PR branch, verify hook and additive-copy readiness, and finalize only through workflow-owned steps.

@@ -51,6 +51,11 @@ uuid = { version = "1", features = ["v4"] }
 assert_cmd = "2"
 tempfile = { workspace = true }
 anyhow = { workspace = true }
+# Issue #625: PTY-driven integration test for the interactive update prompt.
+# Linux-only at use site (gated `#[cfg(target_os = "linux")]`); listing here
+# unconditionally is fine because rexpect itself compiles on macOS too — we
+# only gate the test that drives a pseudo-TTY.
+rexpect = "0.6"
 
 [build-dependencies]
 # SEC-WS4-02: Explicit reference forces the Cargo resolver to apply the
