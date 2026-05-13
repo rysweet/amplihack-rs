@@ -1,7 +1,7 @@
 //! Level 2-4 validation: shell out to `dotnet` for build, analyzers, and format checks.
 
 use super::{CsValidatorConfig, Diagnostic, DiagnosticSeverity, EXIT_MISSING_DEPENDENCY};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -38,7 +38,10 @@ fn run_dotnet_command(
     config: &CsValidatorConfig,
 ) -> Result<Vec<Diagnostic>> {
     if !dotnet_available() {
-        bail!("dotnet CLI not found (exit code {})", EXIT_MISSING_DEPENDENCY);
+        bail!(
+            "dotnet CLI not found (exit code {})",
+            EXIT_MISSING_DEPENDENCY
+        );
     }
 
     let output = Command::new("dotnet")
@@ -61,7 +64,12 @@ fn run_dotnet_command(
 pub fn run_dotnet_build(path: &Path, config: &CsValidatorConfig) -> Result<Vec<Diagnostic>> {
     run_dotnet_command(
         path,
-        &["build", "--no-restore", "--nologo", "-p:GenerateFullPaths=true"],
+        &[
+            "build",
+            "--no-restore",
+            "--nologo",
+            "-p:GenerateFullPaths=true",
+        ],
         config,
     )
 }
@@ -134,10 +142,11 @@ fn parse_dotnet_diagnostics(output: &str, config: &CsValidatorConfig) -> Vec<Dia
 /// Extract line number from MSBuild format like `Foo.cs(12,5): error CS1234: msg`
 fn extract_line_number(s: &str) -> Option<u32> {
     if let Some(paren_start) = s.find('(')
-        && let Some(comma_or_paren) = s[paren_start + 1..].find([',', ')']) {
-            let num_str = &s[paren_start + 1..paren_start + 1 + comma_or_paren];
-            return num_str.parse().ok();
-        }
+        && let Some(comma_or_paren) = s[paren_start + 1..].find([',', ')'])
+    {
+        let num_str = &s[paren_start + 1..paren_start + 1 + comma_or_paren];
+        return num_str.parse().ok();
+    }
     None
 }
 
@@ -195,8 +204,14 @@ Program.cs(12,1): error CS0246: The type or namespace name 'Foo' could not be fo
 
     #[test]
     fn extract_line_number_from_msbuild_format() {
-        assert_eq!(extract_line_number("Foo.cs(5,10): error CS1002: ; expected"), Some(5));
-        assert_eq!(extract_line_number("Bar.cs(123,1): warning CS0168: unused"), Some(123));
+        assert_eq!(
+            extract_line_number("Foo.cs(5,10): error CS1002: ; expected"),
+            Some(5)
+        );
+        assert_eq!(
+            extract_line_number("Bar.cs(123,1): warning CS0168: unused"),
+            Some(123)
+        );
         assert_eq!(extract_line_number("no parens here"), None);
     }
 

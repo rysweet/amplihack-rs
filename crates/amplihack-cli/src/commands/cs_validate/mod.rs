@@ -251,7 +251,10 @@ pub fn run_validate(
         for (check_level, check_fn) in [
             (ValidationLevel::Syntax, run_syntax_check as CheckFn),
             (ValidationLevel::Build, build::run_dotnet_build as CheckFn),
-            (ValidationLevel::Analyzers, build::run_dotnet_analyzers as CheckFn),
+            (
+                ValidationLevel::Analyzers,
+                build::run_dotnet_analyzers as CheckFn,
+            ),
             (ValidationLevel::Format, build::run_dotnet_format as CheckFn),
         ] {
             if level < check_level || !result.passed {
@@ -316,7 +319,10 @@ mod tests {
     fn validation_level_from_u8_valid() {
         assert_eq!(ValidationLevel::from_u8(1), Some(ValidationLevel::Syntax));
         assert_eq!(ValidationLevel::from_u8(2), Some(ValidationLevel::Build));
-        assert_eq!(ValidationLevel::from_u8(3), Some(ValidationLevel::Analyzers));
+        assert_eq!(
+            ValidationLevel::from_u8(3),
+            Some(ValidationLevel::Analyzers)
+        );
         assert_eq!(ValidationLevel::from_u8(4), Some(ValidationLevel::Format));
     }
 
@@ -505,10 +511,12 @@ namespace MyApp
         let results = run_validate(&cs, ValidationLevel::Syntax, &cfg).unwrap();
         assert_eq!(results.len(), 1);
         assert!(!results[0].passed);
-        assert!(results[0]
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("brace") || d.message.contains("delimiter")));
+        assert!(
+            results[0]
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("brace") || d.message.contains("delimiter"))
+        );
     }
 
     #[test]

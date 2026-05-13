@@ -86,8 +86,7 @@ pub fn built_in_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "Analysis".to_string(),
-            description: "Test code analysis capabilities (search, diagnostics, hover)"
-                .to_string(),
+            description: "Test code analysis capabilities (search, diagnostics, hover)".to_string(),
             operations: vec![
                 "analyze_code".to_string(),
                 "search_symbols".to_string(),

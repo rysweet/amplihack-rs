@@ -36,11 +36,7 @@ pub fn generate_report(report: &EvaluationReport) -> Result<String> {
         "| Total Operations | {} |",
         report.metrics.total_operations
     )?;
-    writeln!(
-        out,
-        "| Successes | {} |",
-        report.metrics.total_successes
-    )?;
+    writeln!(out, "| Successes | {} |", report.metrics.total_successes)?;
     writeln!(
         out,
         "| Total Duration | {:.2}s |",
@@ -53,13 +49,22 @@ pub fn generate_report(report: &EvaluationReport) -> Result<String> {
     writeln!(out)?;
     match report.recommendation {
         Recommendation::Integrate => {
-            writeln!(out, "> ✅ This tool meets quality and efficiency thresholds for integration.")?;
+            writeln!(
+                out,
+                "> ✅ This tool meets quality and efficiency thresholds for integration."
+            )?;
         }
         Recommendation::Consider => {
-            writeln!(out, "> ⚠️ This tool partially meets thresholds. Consider for specific use cases.")?;
+            writeln!(
+                out,
+                "> ⚠️ This tool partially meets thresholds. Consider for specific use cases."
+            )?;
         }
         Recommendation::DontIntegrate => {
-            writeln!(out, "> ❌ This tool does not meet minimum thresholds for integration.")?;
+            writeln!(
+                out,
+                "> ❌ This tool does not meet minimum thresholds for integration."
+            )?;
         }
     }
     writeln!(out)?;
@@ -70,11 +75,7 @@ pub fn generate_report(report: &EvaluationReport) -> Result<String> {
     for result in &report.scenarios_run {
         writeln!(out, "### {}", result.scenario_name)?;
         writeln!(out)?;
-        writeln!(
-            out,
-            "- Success rate: {:.1}%",
-            result.success_rate * 100.0
-        )?;
+        writeln!(out, "- Success rate: {:.1}%", result.success_rate * 100.0)?;
         writeln!(
             out,
             "- Duration: {:.2}s",

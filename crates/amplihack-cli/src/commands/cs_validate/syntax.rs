@@ -41,30 +41,36 @@ fn check_balanced_delimiters(content: &str) -> Vec<Diagnostic> {
         }
 
         // Handle comment starts
-        if !in_string && !in_verbatim_string && !in_char && !in_line_comment && !in_block_comment
+        if !in_string
+            && !in_verbatim_string
+            && !in_char
+            && !in_line_comment
+            && !in_block_comment
             && ch == '/'
-                && let Some(&next) = chars.peek() {
-                    if next == '/' {
-                        in_line_comment = true;
-                        chars.next();
-                        prev_char = '/';
-                        continue;
-                    } else if next == '*' {
-                        in_block_comment = true;
-                        chars.next();
-                        prev_char = '*';
-                        continue;
-                    }
-                }
+            && let Some(&next) = chars.peek()
+        {
+            if next == '/' {
+                in_line_comment = true;
+                chars.next();
+                prev_char = '/';
+                continue;
+            } else if next == '*' {
+                in_block_comment = true;
+                chars.next();
+                prev_char = '*';
+                continue;
+            }
+        }
 
         // Handle block comment end
         if in_block_comment {
             if ch == '*'
                 && let Some(&next) = chars.peek()
-                    && next == '/' {
-                        in_block_comment = false;
-                        chars.next();
-                    }
+                && next == '/'
+            {
+                in_block_comment = false;
+                chars.next();
+            }
             prev_char = ch;
             continue;
         }
@@ -88,12 +94,13 @@ fn check_balanced_delimiters(content: &str) -> Vec<Diagnostic> {
         if in_verbatim_string {
             if ch == '"' {
                 if let Some(&next) = chars.peek()
-                    && next == '"' {
-                        // Escaped quote in verbatim string
-                        chars.next();
-                        prev_char = '"';
-                        continue;
-                    }
+                    && next == '"'
+                {
+                    // Escaped quote in verbatim string
+                    chars.next();
+                    prev_char = '"';
+                    continue;
+                }
                 in_verbatim_string = false;
             }
             prev_char = ch;
@@ -190,7 +197,11 @@ namespace Foo {
 }
 "#;
         let diags = check_balanced_delimiters(content);
-        assert!(diags.is_empty(), "Expected no diagnostics, got: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "Expected no diagnostics, got: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -205,7 +216,11 @@ class Foo {
 "#;
         let diags = check_balanced_delimiters(content);
         assert!(!diags.is_empty());
-        assert!(diags.iter().any(|d| d.message.contains("Unclosed delimiter")));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("Unclosed delimiter"))
+        );
     }
 
     #[test]
@@ -213,7 +228,11 @@ class Foo {
         let content = "class Foo { } }";
         let diags = check_balanced_delimiters(content);
         assert!(!diags.is_empty());
-        assert!(diags.iter().any(|d| d.message.contains("Unexpected closing")));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("Unexpected closing"))
+        );
     }
 
     #[test]
@@ -234,7 +253,11 @@ class Foo {
 }
 "#;
         let diags = check_balanced_delimiters(content);
-        assert!(diags.is_empty(), "Braces in strings should be ignored: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "Braces in strings should be ignored: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -249,7 +272,11 @@ and unbalanced ( stuff";
 }
 "#;
         let diags = check_balanced_delimiters(content);
-        assert!(diags.is_empty(), "Braces in verbatim strings should be ignored: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "Braces in verbatim strings should be ignored: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -263,7 +290,11 @@ class Foo {
 }
 "#;
         let diags = check_balanced_delimiters(content);
-        assert!(diags.is_empty(), "Braces in comments should be ignored: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "Braces in comments should be ignored: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -279,7 +310,11 @@ class Foo {
 }
 "#;
         let diags = check_balanced_delimiters(content);
-        assert!(diags.is_empty(), "Braces in block comments should be ignored: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "Braces in block comments should be ignored: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -337,6 +372,10 @@ class Foo {
 }
 "#;
         let diags = check_balanced_delimiters(content);
-        assert!(diags.is_empty(), "Braces in char literals should be ignored: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "Braces in char literals should be ignored: {:?}",
+            diags
+        );
     }
 }

@@ -278,7 +278,10 @@ mod tests {
     fn recommendation_display() {
         assert_eq!(format!("{}", Recommendation::Integrate), "INTEGRATE");
         assert_eq!(format!("{}", Recommendation::Consider), "CONSIDER");
-        assert_eq!(format!("{}", Recommendation::DontIntegrate), "DONT_INTEGRATE");
+        assert_eq!(
+            format!("{}", Recommendation::DontIntegrate),
+            "DONT_INTEGRATE"
+        );
     }
 
     #[test]
