@@ -32,6 +32,7 @@ dependencies = [
  "amplihack-state",
  "amplihack-types",
  "anyhow",
+ "base64",
  "clap",
  "libc",
  "regex",
