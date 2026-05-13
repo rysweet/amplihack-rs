@@ -32,8 +32,8 @@ no virtual environment, no `pip install` required.
 # Run a mock evaluation (no MCP server needed)
 amplihack mcp-eval --mock
 
-# Run evaluation for a specific adapter
-amplihack mcp-eval serena
+# Run evaluation for a specific adapter (mock only in initial port)
+amplihack mcp-eval mock
 
 # Run a single scenario
 amplihack mcp-eval --scenario navigation --mock
@@ -49,7 +49,7 @@ amplihack mcp-eval [OPTIONS] [ADAPTER]
 
 Arguments:
   [ADAPTER]    Adapter to evaluate (default: mock)
-               Built-in: mock, serena
+               Built-in: mock
 
 Options:
   --scenario <NAME>   Run only this scenario (navigation, analysis, modification)
@@ -129,8 +129,8 @@ amplihack mcp-eval --config adapters/my-tool.json
 | Old (Python) | New (Rust CLI) |
 |--------------|----------------|
 | `cd tests/mcp_evaluation && python run_evaluation.py` | `amplihack mcp-eval --mock` |
-| `python run_evaluation.py --adapter serena` | `amplihack mcp-eval serena` |
-| `python run_evaluation.py --scenario navigation` | `amplihack mcp-eval --scenario navigation --mock` |
+| `python run_evaluation.py --adapter serena` | `amplihack mcp-eval mock` (serena adapter planned) |
+| `python run_evaluation.py --scenario navigation` | `amplihack mcp-eval --scenario Navigation --mock` |
 
 The Python scripts remain for backward compatibility but are deprecated.
 

@@ -166,6 +166,11 @@ pub fn dispatch(
 ) -> Result<()> {
     let config = load_config(config_path.as_deref())?;
 
+    if !config.enabled {
+        eprintln!("cs-validate: disabled via configuration");
+        return Ok(());
+    }
+
     // Use CLI-provided level if non-zero, otherwise fall back to config
     let effective_level = if level > 0 {
         level
@@ -590,5 +595,25 @@ class Foo {
         fn drop(&mut self) {
             let _ = std::env::set_current_dir(&self.prev);
         }
+    }
+
+    // ── Config-enabled tests ─────────────────────────────────────────────
+
+    #[test]
+    fn dispatch_returns_early_when_disabled() {
+        let dir = TempDir::new().unwrap();
+        let cs = dir.path().join("Test.cs");
+        fs::write(&cs, "class Test { }").unwrap();
+
+        let cfg_path = dir.path().join("cfg.json");
+        fs::write(
+            &cfg_path,
+            r#"{"enabled":false,"validationLevel":1,"analyzerSeverityThreshold":"Error"}"#,
+        )
+        .unwrap();
+
+        // Should succeed without running validation (enabled=false)
+        let result = dispatch(cs, 1, Some(cfg_path), "text".to_string());
+        assert!(result.is_ok());
     }
 }

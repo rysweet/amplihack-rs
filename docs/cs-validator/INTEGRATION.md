@@ -411,27 +411,22 @@ steps:
     inputs:
       version: "8.0.x"
 
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: "3.11"
-
   - script: |
-      sudo apt-get install -y jq
-    displayName: "Install dependencies"
+      cargo install amplihack-cli
+    displayName: "Install amplihack CLI"
 
   - script: |
       dotnet restore
     displayName: "Restore NuGet packages"
 
   - script: |
-      chmod +x tools/*.sh tools/*.py
-      ./tools/cs-validator.sh --level 3 --verbose
+      amplihack cs-validate --level 3 --format json src/ > validation-results.json
     displayName: "Run C# validation"
 
   - task: PublishBuildArtifacts@1
     condition: always()
     inputs:
-      pathToPublish: ".cache/cs-validator"
+      pathToPublish: "validation-results.json"
       artifactName: "validation-results"
 ```
 
@@ -449,8 +444,7 @@ pipeline {
     stages {
         stage('Setup') {
             steps {
-                sh 'apt-get update && apt-get install -y jq'
-                sh 'python3 --version'
+                sh 'cargo install amplihack-cli'
             }
         }
 
@@ -462,17 +456,14 @@ pipeline {
 
         stage('Validate') {
             steps {
-                sh '''
-                    chmod +x tools/*.sh tools/*.py
-                    ./tools/cs-validator.sh --level 3 --verbose
-                '''
+                sh 'amplihack cs-validate --level 3 --format json src/ > validation-results.json'
             }
         }
     }
 
     post {
         always {
-            archiveArtifacts artifacts: '.cache/cs-validator/*.json',
+            archiveArtifacts artifacts: 'validation-results.json',
                            allowEmptyArchive: true
         }
         failure {
@@ -491,18 +482,18 @@ cs-validation:
   image: mcr.microsoft.com/dotnet/sdk:8.0
 
   before_script:
-    - apt-get update
-    - apt-get install -y python3 jq
+    - curl -sSf https://sh.rustup.rs | sh -s -- -y
+    - source "$HOME/.cargo/env"
+    - cargo install amplihack-cli
     - dotnet restore
 
   script:
-    - chmod +x tools/*.sh tools/*.py
-    - ./tools/cs-validator.sh --level 3 --verbose
+    - amplihack cs-validate --level 3 --format json src/ > validation-results.json
 
   artifacts:
     when: always
     paths:
-      - .cache/cs-validator/
+      - validation-results.json
     expire_in: 1 week
 
   only:

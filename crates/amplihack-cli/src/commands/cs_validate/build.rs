@@ -5,6 +5,7 @@ use anyhow::{Result, bail};
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 /// Cached result of `dotnet --version` availability check.
 static DOTNET_AVAILABLE: OnceLock<bool> = OnceLock::new();
@@ -44,10 +45,33 @@ fn run_dotnet_command(
         );
     }
 
-    let output = Command::new("dotnet")
+    let timeout = Duration::from_secs(config.timeout_seconds.into());
+    let start = Instant::now();
+
+    let mut child = Command::new("dotnet")
         .args(args)
         .current_dir(project_dir(path))
-        .output()?;
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+
+    let output = loop {
+        match child.try_wait()? {
+            Some(_status) => break child.wait_with_output()?,
+            None => {
+                if start.elapsed() >= timeout {
+                    // Kill the child on timeout
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    bail!(
+                        "dotnet command timed out after {}s",
+                        config.timeout_seconds
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    };
 
     if output.status.success() {
         return Ok(Vec::new());
