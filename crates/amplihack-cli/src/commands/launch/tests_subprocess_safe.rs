@@ -52,35 +52,59 @@ fn arg_strings(cmd: &std::process::Command) -> Vec<String> {
 }
 
 // ── R6 / #1: resolve_subprocess_safe — pure decision function ──────────────
+//
+// Signature: resolve_subprocess_safe(
+//     explicit_flag: bool,
+//     env_agent_binary: Option<&str>,
+//     env_amplihack_noninteractive: bool,
+//     any_stream_non_tty: bool,
+// ) -> bool
 
 /// #1: explicit_flag=true MUST always return true regardless of other inputs.
 #[test]
 fn resolve_subprocess_safe_explicit_flag_true_always_returns_true() {
-    assert!(resolve_subprocess_safe(true, None, true));
-    assert!(resolve_subprocess_safe(true, Some("copilot"), true));
-    assert!(resolve_subprocess_safe(true, None, false));
-    assert!(resolve_subprocess_safe(true, Some(""), true));
+    assert!(resolve_subprocess_safe(true, None, false, false));
+    assert!(resolve_subprocess_safe(true, Some("copilot"), false, false));
+    assert!(resolve_subprocess_safe(true, None, true, true));
+    assert!(resolve_subprocess_safe(true, Some(""), false, false));
 }
 
 /// #2: AMPLIHACK_AGENT_BINARY set non-empty MUST trigger subprocess-safe even at TTY.
 #[test]
 fn resolve_subprocess_safe_agent_binary_set_returns_true_even_with_tty() {
-    assert!(resolve_subprocess_safe(false, Some("copilot"), true));
-    assert!(resolve_subprocess_safe(false, Some("claude"), true));
-    assert!(resolve_subprocess_safe(false, Some("anything"), true));
+    assert!(resolve_subprocess_safe(
+        false,
+        Some("copilot"),
+        false,
+        false
+    ));
+    assert!(resolve_subprocess_safe(false, Some("claude"), false, false));
+    assert!(resolve_subprocess_safe(
+        false,
+        Some("anything"),
+        false,
+        false
+    ));
 }
 
-/// #3: All streams non-TTY MUST trigger subprocess-safe even with no env signals.
+/// #2b: AMPLIHACK_NONINTERACTIVE=1 MUST trigger subprocess-safe even at TTY
+/// with no other signals.
+#[test]
+fn resolve_subprocess_safe_amplihack_noninteractive_returns_true_even_with_tty() {
+    assert!(resolve_subprocess_safe(false, None, true, false));
+}
+
+/// #3: Any stream non-TTY MUST trigger subprocess-safe even with no env signals.
 #[test]
 fn resolve_subprocess_safe_non_tty_returns_true() {
-    assert!(resolve_subprocess_safe(false, None, false));
+    assert!(resolve_subprocess_safe(false, None, false, true));
 }
 
 /// #4: Interactive context with no signals MUST return false.
 /// (Security-critical invariant: must not silently expand permissions on a TTY.)
 #[test]
 fn resolve_subprocess_safe_interactive_no_signals_returns_false() {
-    assert_eq!(resolve_subprocess_safe(false, None, true), false);
+    assert_eq!(resolve_subprocess_safe(false, None, false, false), false);
 }
 
 /// #5: AMPLIHACK_AGENT_BINARY set to empty string MUST be treated as unset.
@@ -89,27 +113,71 @@ fn resolve_subprocess_safe_interactive_no_signals_returns_false() {
 /// subprocess delegate.)
 #[test]
 fn resolve_subprocess_safe_empty_agent_binary_treated_as_unset() {
-    assert_eq!(resolve_subprocess_safe(false, Some(""), true), false);
+    assert_eq!(
+        resolve_subprocess_safe(false, Some(""), false, false),
+        false
+    );
 }
 
 // ── R6 / #2-#6 + #7-#10: should_inject_subprocess_safe_flags ───────────────
+//
+// Signature: should_inject_subprocess_safe_flags(user_args: &[String]) -> (bool, bool)
+//
+// Caller in build_command_for_dir gates on `subprocess_safe == true` and
+// `binary.name == "copilot"` before calling this — so the dead param has been
+// removed (philosophy review S-1, PR #623). The function still owns the
+// AMPLIHACK_COPILOT_NO_ALLOW_ALL=1 opt-out and the per-flag duplicate
+// suppression logic.
 
-/// #6: When subprocess_safe=true AND no user flags present, both granular
+/// #6: When no user flags present and no NO_ALLOW_ALL opt-out, both granular
 /// flags MUST be injected. Returns (inject_tools, inject_paths).
 #[test]
-fn should_inject_both_flags_when_subprocess_safe_and_no_user_flags() {
+fn should_inject_both_flags_with_no_user_flags_and_no_opt_out() {
+    let _guard = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    unsafe {
+        std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL");
+    }
     let user_args: Vec<String> = vec![];
-    let (inject_tools, inject_paths) = should_inject_subprocess_safe_flags(true, &user_args);
+    let (inject_tools, inject_paths) = should_inject_subprocess_safe_flags(&user_args);
     assert!(inject_tools, "must inject --allow-all-tools");
     assert!(inject_paths, "must inject --allow-all-paths");
+}
+
+/// #6b (security MEDIUM, PR #623 review): AMPLIHACK_COPILOT_NO_ALLOW_ALL=1
+/// MUST suppress BOTH granular flags. The user has explicitly opted out of
+/// amplihack auto-granting permissions to copilot; subprocess-safe defers
+/// to that explicit opt-out instead of partially restoring auto-permissions.
+#[test]
+fn should_skip_both_when_amplihack_copilot_no_allow_all_set() {
+    let _guard = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    unsafe {
+        std::env::set_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL", "1");
+    }
+    let user_args: Vec<String> = vec![];
+    let (inject_tools, inject_paths) = should_inject_subprocess_safe_flags(&user_args);
+    unsafe {
+        std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL");
+    }
+    assert_eq!(
+        inject_tools, false,
+        "AMPLIHACK_COPILOT_NO_ALLOW_ALL=1 must suppress --allow-all-tools"
+    );
+    assert_eq!(
+        inject_paths, false,
+        "AMPLIHACK_COPILOT_NO_ALLOW_ALL=1 must suppress --allow-all-paths"
+    );
 }
 
 /// #7: When user supplied --allow-all-tools, MUST suppress that injection.
 /// (Idempotency / no duplicate user-supplied flag.)
 #[test]
 fn should_skip_tools_when_user_supplied_allow_all_tools() {
+    let _guard = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    unsafe {
+        std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL");
+    }
     let user_args = vec!["--allow-all-tools".to_string()];
-    let (inject_tools, inject_paths) = should_inject_subprocess_safe_flags(true, &user_args);
+    let (inject_tools, inject_paths) = should_inject_subprocess_safe_flags(&user_args);
     assert_eq!(
         inject_tools, false,
         "must not duplicate user --allow-all-tools"
@@ -123,8 +191,12 @@ fn should_skip_tools_when_user_supplied_allow_all_tools() {
 /// #8: When user supplied --allow-all-paths, MUST suppress that injection.
 #[test]
 fn should_skip_paths_when_user_supplied_allow_all_paths() {
+    let _guard = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    unsafe {
+        std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL");
+    }
     let user_args = vec!["--allow-all-paths".to_string()];
-    let (inject_tools, inject_paths) = should_inject_subprocess_safe_flags(true, &user_args);
+    let (inject_tools, inject_paths) = should_inject_subprocess_safe_flags(&user_args);
     assert!(
         inject_tools,
         "user --allow-all-paths does not imply --allow-all-tools; must still inject tools"
@@ -138,8 +210,12 @@ fn should_skip_paths_when_user_supplied_allow_all_paths() {
 /// #9: User-supplied --allow-all is a SUPERSET — MUST suppress BOTH granular flags.
 #[test]
 fn should_skip_both_when_user_supplied_allow_all_superset() {
+    let _guard = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    unsafe {
+        std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL");
+    }
     let user_args = vec!["--allow-all".to_string()];
-    let (inject_tools, inject_paths) = should_inject_subprocess_safe_flags(true, &user_args);
+    let (inject_tools, inject_paths) = should_inject_subprocess_safe_flags(&user_args);
     assert_eq!(
         inject_tools, false,
         "--allow-all is superset of --allow-all-tools"
@@ -148,27 +224,6 @@ fn should_skip_both_when_user_supplied_allow_all_superset() {
         inject_paths, false,
         "--allow-all is superset of --allow-all-paths"
     );
-}
-
-/// #10: When subprocess_safe=false, NEVER inject the granular flags
-/// (regardless of what user passed). This is the security-critical invariant:
-/// the change must NOT silently expand permissions on a TTY.
-#[test]
-fn should_inject_nothing_when_subprocess_safe_false() {
-    let user_args: Vec<String> = vec![];
-    let (inject_tools, inject_paths) = should_inject_subprocess_safe_flags(false, &user_args);
-    assert_eq!(inject_tools, false);
-    assert_eq!(inject_paths, false);
-
-    // Even with user args present, subprocess_safe=false → no granular injection.
-    let user_args = vec![
-        "--remote".to_string(),
-        "--model".to_string(),
-        "gpt-5".to_string(),
-    ];
-    let (inject_tools, inject_paths) = should_inject_subprocess_safe_flags(false, &user_args);
-    assert_eq!(inject_tools, false);
-    assert_eq!(inject_paths, false);
 }
 
 // ── R6 / #19': resolve_no_reflection — precedence resolver ─────────────────
@@ -332,6 +387,49 @@ fn copilot_subprocess_safe_skips_both_granular_when_allow_all_present() {
     );
 }
 
+/// #18b (security MEDIUM, PR #623 review): When AMPLIHACK_COPILOT_NO_ALLOW_ALL=1
+/// is set, subprocess-safe MUST NOT inject the granular flags either. The user
+/// has explicitly opted out of amplihack auto-permissioning copilot — that
+/// opt-out spans both the broader `--allow-all` (#303) and the granular
+/// subprocess-safe flags (#621). Without this, the documented "zero
+/// attack-surface delta" claim would be false for the (NO_ALLOW_ALL=1,
+/// subprocess-safe) configuration.
+#[test]
+fn copilot_subprocess_safe_with_no_allow_all_env_skips_all_three_permission_flags() {
+    let _guard = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    unsafe {
+        std::env::set_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL", "1");
+    }
+
+    let cmd = build_command_for_dir(
+        &copilot_binary(),
+        false,
+        false,
+        false,
+        &[],
+        None,
+        true, // subprocess_safe
+    );
+    let args = arg_strings(&cmd);
+
+    unsafe {
+        std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL");
+    }
+
+    assert!(
+        !args.iter().any(|a| a == "--allow-all"),
+        "NO_ALLOW_ALL=1 must suppress the broader --allow-all (preexisting #303); got {args:?}"
+    );
+    assert!(
+        !args.iter().any(|a| a == "--allow-all-tools"),
+        "NO_ALLOW_ALL=1 must suppress --allow-all-tools even under subprocess-safe; got {args:?}"
+    );
+    assert!(
+        !args.iter().any(|a| a == "--allow-all-paths"),
+        "NO_ALLOW_ALL=1 must suppress --allow-all-paths even under subprocess-safe; got {args:?}"
+    );
+}
+
 /// #19 (security-critical): Copilot WITHOUT subprocess_safe must NOT inject
 /// the granular subprocess-safe flags. The preexisting `--allow-all` default
 /// from issue #303 may still appear (separate code path), but the granular
@@ -428,8 +526,11 @@ fn codex_does_not_get_subprocess_safe_granular_flags() {
 #[test]
 fn copilot_subprocess_safe_flags_appear_before_user_trailing_args() {
     let _guard = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    // Note: do NOT set AMPLIHACK_COPILOT_NO_ALLOW_ALL=1 — after the security
+    // MEDIUM fix (PR #623 review), that env var also suppresses the granular
+    // flags. Suppress only --remote, which is unrelated to argv ordering.
     unsafe {
-        std::env::set_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL", "1");
+        std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL");
         std::env::set_var("AMPLIHACK_COPILOT_NO_REMOTE", "1");
     }
 
@@ -439,7 +540,6 @@ fn copilot_subprocess_safe_flags_appear_before_user_trailing_args() {
     let args = arg_strings(&cmd);
 
     unsafe {
-        std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL");
         std::env::remove_var("AMPLIHACK_COPILOT_NO_REMOTE");
     }
 

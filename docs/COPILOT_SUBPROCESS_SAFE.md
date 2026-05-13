@@ -164,15 +164,16 @@ Run with `RUST_LOG=debug` to see the audit log:
 ```bash
 RUST_LOG=debug amplihack copilot --subprocess-safe -p "test" 2>&1 | grep amplihack_cli
 # DEBUG amplihack_cli::commands: copilot dispatch subprocess_safe_resolved=true
-#   (signals: explicit_flag=true, agent_binary=None, all_streams_tty=false)
-#   no_reflection_effective=true (reason: subprocess_safe default)
+#   explicit_flag=true agent_binary_set=false amplihack_noninteractive=false
+#   any_stream_non_tty=false no_reflection_effective=true
 ```
 
-> **Note:** The exact `tracing::debug!` line format above is illustrative; the
-> final field names and wording are determined during implementation (Step 7).
-> The contract is that the resolved `subprocess_safe` decision, the signals
-> that fired, and the effective `no_reflection` decision are all observable at
-> `debug` level — not the precise string layout.
+> **Note:** The exact `tracing::debug!` line format above reflects the
+> implemented field names (`subprocess_safe_resolved`, `explicit_flag`,
+> `agent_binary_set`, `amplihack_noninteractive`, `any_stream_non_tty`,
+> `no_reflection_effective`). The contract is that the resolved decision and
+> all four input signals are observable at `debug` level — string layout may
+> evolve.
 
 ## Layering with `--allow-all`
 
@@ -191,7 +192,7 @@ tokens) without disturbing the broader `--allow-all` default.
 | --- | :---: | :---: | :---: |
 | Interactive TTY (no flag, no env) | ✅ (preexisting #303) | ❌ | ❌ |
 | Subprocess-safe active | ✅ (preexisting #303) | ✅ (new) | ✅ (new) |
-| Subprocess-safe + `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` | ❌ (opt-out) | ✅ (new) | ✅ (new) |
+| Subprocess-safe + `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` | ❌ (opt-out) | ❌ (opt-out) | ❌ (opt-out) |
 | User passed `--allow-all` themselves | ✅ (user) | ❌ (suppressed by superset) | ❌ (suppressed by superset) |
 
 ## Docker Mode
@@ -308,23 +309,37 @@ This feature does **not**:
 
 ## Security Considerations
 
-- **Zero attack-surface delta.** The preexisting `--allow-all` default (#303)
-  already runs `copilot` with full permissions in every context. Subprocess-safe
-  adds redundant granular flags only in subprocess contexts.
+- **No new attack surface introduced.** The preexisting `--allow-all` default
+  (#303) already runs `copilot` with full permissions in every interactive
+  context. Subprocess-safe adds redundant granular flags only in subprocess
+  contexts where, by definition, no human is supervising stdio prompts
+  anyway. The granular flags do not relax any sandbox boundary that
+  `--allow-all` was already opening.
+- **`AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` opt-out is honored across the board.**
+  The hardened-operator opt-out suppresses the broader `--allow-all`
+  **and** the granular `--allow-all-tools` / `--allow-all-paths`. An
+  operator who has explicitly disabled amplihack auto-permissioning of
+  copilot keeps that posture even when subprocess-safe auto-detects.
+  (See [layering](#layering-with---allow-all) above.)
 - **Trust model unchanged.** Anyone who can set `AMPLIHACK_AGENT_BINARY` or
   redirect stdio already controls process startup; subprocess-safe inherits
   that trust posture, never escalates it.
 - **Reflection auto-disable is a safety improvement.** Prevents nested
   infinite recursion when amplihack invokes itself (the bug that motivated
   issue #621).
-- **`AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` opt-out is preserved.** The blanket
-  `--allow-all` opt-out continues to suppress the broader flag even when
-  subprocess-safe is active. (The granular `--allow-all-tools` /
-  `--allow-all-paths` are still injected — they are the explicit contract of
-  subprocess-safe — but the broader `--allow-all` is suppressed if the user
-  has opted out.)
 - **No `unsafe` blocks; no `unwrap()` on env reads; no runtime-derived argv
   tokens.** The injected flag tokens are compile-time `&'static str` literals.
+
+### Migration note: reflection in piped / CI contexts
+
+If you previously relied on amplihack `copilot` running its post-session
+reflection pass in a non-TTY context (CI logs, piped stdout, `tee`, `nohup`,
+…), be aware that reflection now defaults **off** when subprocess-safe
+auto-detects. To restore the prior behavior, pass `--reflection` explicitly:
+
+```bash
+amplihack copilot --reflection -p "build the thing" 2>&1 | tee out.log
+```
 
 ## See Also
 

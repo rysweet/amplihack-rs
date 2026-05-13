@@ -83,16 +83,20 @@ pub(super) fn build_command_for_dir(
     //
     // When subprocess_safe is active, we ALSO inject the granular
     // `--allow-all-tools` and `--allow-all-paths` flags. This is intentional
-    // layering: the broader `--allow-all` (issue #303) covers the same
-    // permission space, but the granular flags are the explicit contract
-    // callers (Simard engineers, recipe-runner agents) audit for. Both
-    // appearing in argv is accepted by the copilot CLI without conflict.
+    // layering on top of the broader `--allow-all` (issue #303): both
+    // appearing in argv is accepted by the copilot CLI without conflict, and
+    // the granular flags are the explicit contract callers (Simard engineers,
+    // recipe-runner agents) audit for.
+    //
+    // The `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` opt-out (originally introduced
+    // for the broader #303 flag) ALSO suppresses these granular injections —
+    // a user who has explicitly disabled auto-permission grants for copilot
+    // wants permission gates back across the board, not partially restored.
     //
     // Scope: copilot binary only. Other tools (claude, codex, amplifier)
     // are excluded — these flags are copilot-specific.
     if binary.name == "copilot" && subprocess_safe {
-        let (inject_tools, inject_paths) =
-            should_inject_subprocess_safe_flags(subprocess_safe, extra_args);
+        let (inject_tools, inject_paths) = should_inject_subprocess_safe_flags(extra_args);
         if inject_tools {
             cmd.arg("--allow-all-tools");
         }
@@ -120,18 +124,22 @@ pub(super) fn build_command_for_dir(
 ///   * the user explicitly passed `--subprocess-safe` (`explicit_flag`)
 ///   * `AMPLIHACK_AGENT_BINARY` is set to a non-empty value
 ///     (`env_agent_binary = Some(non_empty)`)
-///   * not all three standard streams are TTYs (`all_streams_tty = false`)
+///   * `AMPLIHACK_NONINTERACTIVE=1` is set (`env_amplihack_noninteractive`)
+///   * any of stdin/stdout/stderr is not a TTY (`any_stream_non_tty`)
 ///
 /// Empty-string `env_agent_binary` is treated as "no delegation" (the
 /// documented sentinel value) and does NOT trigger subprocess-safe by itself.
 ///
-/// This function takes the TTY state as a parameter (rather than reading
-/// stdio internally) so it can be unit-tested deterministically without
-/// depending on the test harness's actual stdio state.
+/// All inputs are passed as parameters (rather than read from env / stdio
+/// inside) so this function is unit-testable deterministically without
+/// depending on the test harness's actual env or stdio state. The
+/// production caller in `commands/mod.rs` reads the four signals once and
+/// hands them to this resolver — see also [`crate::util::any_stream_is_non_tty`].
 pub(crate) fn resolve_subprocess_safe(
     explicit_flag: bool,
     env_agent_binary: Option<&str>,
-    all_streams_tty: bool,
+    env_amplihack_noninteractive: bool,
+    any_stream_non_tty: bool,
 ) -> bool {
     if explicit_flag {
         return true;
@@ -139,26 +147,28 @@ pub(crate) fn resolve_subprocess_safe(
     if env_agent_binary.is_some_and(|s| !s.is_empty()) {
         return true;
     }
-    !all_streams_tty
+    if env_amplihack_noninteractive {
+        return true;
+    }
+    any_stream_non_tty
 }
 
 /// Pure decision function (issue #621): which subprocess-safe granular flags
 /// should `build_command_for_dir` inject for Copilot?
 ///
 /// Returns `(inject_allow_all_tools, inject_allow_all_paths)`. Callers must
-/// have already gated on `subprocess_safe == true` and `binary.name ==
-/// "copilot"` — passing `subprocess_safe = false` returns `(false, false)`
-/// unconditionally as a defensive invariant.
+/// have already gated on the surrounding `subprocess_safe == true` and
+/// `binary.name == "copilot"` conditions in `build_command_for_dir`.
 ///
-/// Duplicate suppression rules (each flag computed independently):
+/// Suppression rules (each flag computed independently):
+///   * `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` env var → suppress BOTH
+///     (the user opted out of amplihack auto-granting permissions to copilot;
+///     subprocess-safe defers to that explicit opt-out).
+///   * `--allow-all` (broader superset) in user args → suppress BOTH.
 ///   * `--allow-all-tools` already in user args → suppress tools injection.
 ///   * `--allow-all-paths` already in user args → suppress paths injection.
-///   * `--allow-all` (broader superset) in user args → suppress BOTH.
-pub(super) fn should_inject_subprocess_safe_flags(
-    subprocess_safe: bool,
-    user_args: &[String],
-) -> (bool, bool) {
-    if !subprocess_safe {
+pub(super) fn should_inject_subprocess_safe_flags(user_args: &[String]) -> (bool, bool) {
+    if std::env::var("AMPLIHACK_COPILOT_NO_ALLOW_ALL").as_deref() == Ok("1") {
         return (false, false);
     }
     let user_has_superset = user_args.iter().any(|a| a == "--allow-all");

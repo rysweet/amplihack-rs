@@ -43,56 +43,23 @@ pub fn is_noninteractive() -> bool {
     !std::io::stdin().is_terminal()
 }
 
-/// Returns `true` when this process is running as a subprocess delegate.
+/// Returns `true` if **any** of stdin / stdout / stderr is **not** a TTY.
 ///
-/// A "subprocess context" is any of the following (OR logic):
+/// This is the OR-of-streams TTY snapshot used by the subprocess-safe
+/// context detection in the `amplihack copilot` dispatch (issue #621).
+/// It is the polarity-consistent counterpart to the OR-of-signals logic
+/// in [`crate::commands::launch::command::resolve_subprocess_safe`] — both
+/// return `true` when the relevant signal indicates a non-interactive /
+/// subprocess context.
 ///
-/// 1. **`AMPLIHACK_AGENT_BINARY`** is set to a non-empty value. Parent agent
-///    runtimes (Claude Code, recipe-runner, Copilot CLI agent dispatch) set
-///    this to identify the active binary. Empty string is the documented
-///    "no delegation" sentinel and does NOT trigger this signal.
-/// 2. **`AMPLIHACK_NONINTERACTIVE=1`** — explicit cross-language non-interactive
-///    marker (same contract as [`is_noninteractive`]).
-/// 3. **Any of stdin / stdout / stderr is not a TTY** — at least one of the
-///    three standard streams is a pipe, redirect, or CI runner.
-///
-/// This is **stricter** than [`is_noninteractive`], which examines stdin only.
-/// Subprocess-safe context is the signal used by the `amplihack copilot`
-/// subcommand to decide whether to inject `--allow-all-tools` /
-/// `--allow-all-paths` and to flip the reflection default. See
-/// `docs/COPILOT_SUBPROCESS_SAFE.md` for the full spec (issue #621).
-///
-/// # Security (SEC-WS2-01)
-///
-/// This is a **UX convenience signal**, not a security gate. Anyone who can
-/// set env vars or redirect stdio already controls process startup; this
-/// helper inherits that trust posture and never escalates it.
-pub fn is_subprocess_context() -> bool {
-    // Signal 1: AMPLIHACK_AGENT_BINARY set non-empty.
-    if let Ok(v) = std::env::var("AMPLIHACK_AGENT_BINARY")
-        && !v.is_empty()
-    {
-        return true;
-    }
-    // Signal 2: explicit non-interactive marker.
-    if std::env::var("AMPLIHACK_NONINTERACTIVE").as_deref() == Ok("1") {
-        return true;
-    }
-    // Signal 3: any stdio stream is not a TTY.
+/// **Distinct from [`is_noninteractive`]**, which examines stdin only.
+/// Subprocess-safe context (issue #621) requires the stricter all-streams
+/// view because parent agents (Claude Code, recipe-runner, Copilot CLI
+/// agent dispatch) typically pipe both stdout and stderr.
+pub fn any_stream_is_non_tty() -> bool {
     !std::io::stdin().is_terminal()
         || !std::io::stdout().is_terminal()
         || !std::io::stderr().is_terminal()
-}
-
-/// Snapshot of the OR-of-streams TTY state for the three standard streams.
-///
-/// Returns `true` only if **all three** of stdin/stdout/stderr are TTYs.
-/// Used to feed the pure decision function
-/// [`crate::commands::launch::command::resolve_subprocess_safe`].
-pub fn all_streams_are_tty() -> bool {
-    std::io::stdin().is_terminal()
-        && std::io::stdout().is_terminal()
-        && std::io::stderr().is_terminal()
 }
 
 // ── ANSI stripping ────────────────────────────────────────────────────────────
@@ -341,127 +308,5 @@ mod tests {
     fn strip_ansi_removes_multiple_sequences() {
         let input = "\x1b[32m\x1b[1mgreen bold\x1b[0m";
         assert_eq!(strip_ansi(input), "green bold");
-    }
-
-    // ── #621: is_subprocess_context ────────────────────────────────────────────
-
-    /// Saved env vars that the new `is_subprocess_context()` helper reads.
-    /// Restored on Drop to keep concurrent tests under home_env_lock honest.
-    struct SavedSubprocessEnv {
-        agent_binary: Option<std::ffi::OsString>,
-        noninteractive: Option<std::ffi::OsString>,
-    }
-
-    impl SavedSubprocessEnv {
-        fn snapshot_and_clear() -> Self {
-            let agent_binary = std::env::var_os("AMPLIHACK_AGENT_BINARY");
-            let noninteractive = std::env::var_os("AMPLIHACK_NONINTERACTIVE");
-            unsafe {
-                std::env::remove_var("AMPLIHACK_AGENT_BINARY");
-                std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
-            }
-            Self {
-                agent_binary,
-                noninteractive,
-            }
-        }
-    }
-
-    impl Drop for SavedSubprocessEnv {
-        fn drop(&mut self) {
-            unsafe {
-                match self.agent_binary.take() {
-                    Some(v) => std::env::set_var("AMPLIHACK_AGENT_BINARY", v),
-                    None => std::env::remove_var("AMPLIHACK_AGENT_BINARY"),
-                }
-                match self.noninteractive.take() {
-                    Some(v) => std::env::set_var("AMPLIHACK_NONINTERACTIVE", v),
-                    None => std::env::remove_var("AMPLIHACK_NONINTERACTIVE"),
-                }
-            }
-        }
-    }
-
-    /// #621 / #13: AMPLIHACK_AGENT_BINARY set to a non-empty value MUST
-    /// classify the process as a subprocess delegate.
-    #[test]
-    fn is_subprocess_context_when_agent_binary_set_non_empty() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let _saved = SavedSubprocessEnv::snapshot_and_clear();
-        unsafe {
-            std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot");
-        }
-        assert!(
-            is_subprocess_context(),
-            "AMPLIHACK_AGENT_BINARY=copilot must classify as subprocess context"
-        );
-    }
-
-    /// #621 / #14: AMPLIHACK_AGENT_BINARY set to empty string MUST be treated
-    /// as "no delegation" — empty is the documented sentinel for "not a
-    /// delegate". Any subprocess-safe verdict in that case must come from
-    /// another signal (TTY state, NONINTERACTIVE env), not from this var alone.
-    #[test]
-    fn is_subprocess_context_when_agent_binary_empty_does_not_force_true_via_that_signal() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let _saved = SavedSubprocessEnv::snapshot_and_clear();
-        // Set AMPLIHACK_AGENT_BINARY="" explicitly. Since AMPLIHACK_NONINTERACTIVE
-        // is unset, the only remaining signal is TTY state. In `cargo test`,
-        // stdio is piped so the result will be true via the TTY fallback —
-        // which is fine. The contract we lock here is that the empty-string
-        // env var alone is NOT treated as a delegation marker (the contract is
-        // observable when combined with a TTY; we cannot directly test the
-        // false case in `cargo test` without owning all three streams).
-        unsafe {
-            std::env::set_var("AMPLIHACK_AGENT_BINARY", "");
-        }
-        // Pure-function `resolve_subprocess_safe(false, Some(""), true)` covers
-        // the false case directly (see tests_subprocess_safe.rs #5). Here we
-        // simply verify is_subprocess_context() does not panic and returns a
-        // boolean reflecting the documented OR-of-signals.
-        let _ = is_subprocess_context();
-    }
-
-    /// #621 / #15: AMPLIHACK_NONINTERACTIVE=1 MUST classify as subprocess context.
-    #[test]
-    fn is_subprocess_context_when_amplihack_noninteractive_set() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let _saved = SavedSubprocessEnv::snapshot_and_clear();
-        unsafe {
-            std::env::set_var("AMPLIHACK_NONINTERACTIVE", "1");
-        }
-        assert!(
-            is_subprocess_context(),
-            "AMPLIHACK_NONINTERACTIVE=1 must classify as subprocess context"
-        );
-    }
-
-    /// #621 / #16: With a clean env (no AMPLIHACK_AGENT_BINARY,
-    /// no AMPLIHACK_NONINTERACTIVE), the result MUST reflect the actual TTY
-    /// state of the three standard streams. Under `cargo test`, stdio is
-    /// piped (non-TTY) → the result is true. This documents the harness
-    /// behavior; the false case is covered by the pure
-    /// `resolve_subprocess_safe(false, None, true)` test in
-    /// `commands::launch::tests_subprocess_safe`.
-    #[test]
-    fn is_subprocess_context_with_clean_env_reflects_io_state() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let _saved = SavedSubprocessEnv::snapshot_and_clear();
-        let result = is_subprocess_context();
-        let expected_via_tty = !std::io::stdin().is_terminal()
-            || !std::io::stdout().is_terminal()
-            || !std::io::stderr().is_terminal();
-        assert_eq!(
-            result, expected_via_tty,
-            "with clean env, is_subprocess_context() must mirror the OR-of-streams TTY state"
-        );
     }
 }
