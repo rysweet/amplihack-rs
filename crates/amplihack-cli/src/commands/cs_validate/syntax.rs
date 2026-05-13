@@ -127,16 +127,15 @@ fn check_balanced_delimiters(content: &str) -> Vec<Diagnostic> {
                     ']' => '[',
                     _ => unreachable!(),
                 };
-                if let Some((open, _)) = stack.last() {
-                    if *open == expected {
+                if let Some(&(open, _)) = stack.last() {
+                    if open == expected {
                         stack.pop();
                     } else {
                         diagnostics.push(Diagnostic {
                             severity: DiagnosticSeverity::Error,
                             message: format!(
                                 "Mismatched delimiter: expected closing for '{}', found '{}'",
-                                stack.last().unwrap().0,
-                                ch
+                                open, ch
                             ),
                             line: Some(line_num),
                             column: None,

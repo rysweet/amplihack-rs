@@ -220,6 +220,13 @@ pub fn dispatch(
 
 // ── Main entry point ─────────────────────────────────────────────────────────
 
+type CheckFn = fn(&Path, &CsValidatorConfig) -> Result<Vec<Diagnostic>>;
+
+/// Syntax-only check wrapper matching the CheckFn signature.
+fn run_syntax_check(path: &Path, _config: &CsValidatorConfig) -> Result<Vec<Diagnostic>> {
+    syntax::check_syntax(path)
+}
+
 /// Run validation at the given level on the target path.
 pub fn run_validate(
     path: &Path,
@@ -240,49 +247,20 @@ pub fn run_validate(
             diagnostics: Vec::new(),
         };
 
-        // Level 1: syntax
-        let syntax_diags = syntax::check_syntax(file)?;
-        if !syntax_diags.is_empty() {
-            result.passed = false;
-            result.diagnostics.extend(syntax_diags);
-        }
-
-        // Levels 2+: build
-        if level >= ValidationLevel::Build && result.passed {
-            match build::run_dotnet_build(file, config) {
-                Ok(diags) => {
-                    if !diags.is_empty() {
-                        result.passed = false;
-                        result.diagnostics.extend(diags);
-                    }
-                }
-                Err(e) => return Err(e),
+        // Run checks at each level, stopping on first failure.
+        for (check_level, check_fn) in [
+            (ValidationLevel::Syntax, run_syntax_check as CheckFn),
+            (ValidationLevel::Build, build::run_dotnet_build as CheckFn),
+            (ValidationLevel::Analyzers, build::run_dotnet_analyzers as CheckFn),
+            (ValidationLevel::Format, build::run_dotnet_format as CheckFn),
+        ] {
+            if level < check_level || !result.passed {
+                break;
             }
-        }
-
-        // Level 3: analyzers
-        if level >= ValidationLevel::Analyzers && result.passed {
-            match build::run_dotnet_analyzers(file, config) {
-                Ok(diags) => {
-                    if !diags.is_empty() {
-                        result.passed = false;
-                        result.diagnostics.extend(diags);
-                    }
-                }
-                Err(e) => return Err(e),
-            }
-        }
-
-        // Level 4: format
-        if level >= ValidationLevel::Format && result.passed {
-            match build::run_dotnet_format(file, config) {
-                Ok(diags) => {
-                    if !diags.is_empty() {
-                        result.passed = false;
-                        result.diagnostics.extend(diags);
-                    }
-                }
-                Err(e) => return Err(e),
+            let diags = check_fn(file, config)?;
+            if !diags.is_empty() {
+                result.passed = false;
+                result.diagnostics.extend(diags);
             }
         }
 

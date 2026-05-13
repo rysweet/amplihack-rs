@@ -16,21 +16,28 @@ pub fn dotnet_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Level 2: Run `dotnet build --no-restore --nologo`.
-pub fn run_dotnet_build(path: &Path, config: &CsValidatorConfig) -> Result<Vec<Diagnostic>> {
+/// Resolve the project directory from a file or directory path.
+fn project_dir(path: &Path) -> &Path {
+    if path.is_file() {
+        path.parent().unwrap_or(Path::new("."))
+    } else {
+        path
+    }
+}
+
+/// Require dotnet, then run a command and return parsed diagnostics on failure.
+fn run_dotnet_command(
+    path: &Path,
+    args: &[&str],
+    config: &CsValidatorConfig,
+) -> Result<Vec<Diagnostic>> {
     if !dotnet_available() {
         bail!("dotnet CLI not found (exit code {})", EXIT_MISSING_DEPENDENCY);
     }
 
-    let project_dir = if path.is_file() {
-        path.parent().unwrap_or(Path::new("."))
-    } else {
-        path
-    };
-
     let output = Command::new("dotnet")
-        .args(["build", "--no-restore", "--nologo", "-p:GenerateFullPaths=true"])
-        .current_dir(project_dir)
+        .args(args)
+        .current_dir(project_dir(path))
         .output()?;
 
     if output.status.success() {
@@ -44,39 +51,29 @@ pub fn run_dotnet_build(path: &Path, config: &CsValidatorConfig) -> Result<Vec<D
     Ok(parse_dotnet_diagnostics(&combined, config))
 }
 
+/// Level 2: Run `dotnet build --no-restore --nologo`.
+pub fn run_dotnet_build(path: &Path, config: &CsValidatorConfig) -> Result<Vec<Diagnostic>> {
+    run_dotnet_command(
+        path,
+        &["build", "--no-restore", "--nologo", "-p:GenerateFullPaths=true"],
+        config,
+    )
+}
+
 /// Level 3: Run build with analyzers enabled.
 pub fn run_dotnet_analyzers(path: &Path, config: &CsValidatorConfig) -> Result<Vec<Diagnostic>> {
-    if !dotnet_available() {
-        bail!("dotnet CLI not found (exit code {})", EXIT_MISSING_DEPENDENCY);
-    }
-
-    let project_dir = if path.is_file() {
-        path.parent().unwrap_or(Path::new("."))
-    } else {
-        path
-    };
-
-    let output = Command::new("dotnet")
-        .args([
+    run_dotnet_command(
+        path,
+        &[
             "build",
             "--no-restore",
             "--nologo",
             "-p:GenerateFullPaths=true",
             "-p:RunAnalyzers=true",
             "-p:EnforceCodeStyleInBuild=true",
-        ])
-        .current_dir(project_dir)
-        .output()?;
-
-    if output.status.success() {
-        return Ok(Vec::new());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let combined = format!("{}\n{}", stdout, stderr);
-
-    Ok(parse_dotnet_diagnostics(&combined, config))
+        ],
+        config,
+    )
 }
 
 /// Level 4: Run `dotnet format --verify-no-changes`.
@@ -85,15 +82,9 @@ pub fn run_dotnet_format(path: &Path, _config: &CsValidatorConfig) -> Result<Vec
         bail!("dotnet CLI not found (exit code {})", EXIT_MISSING_DEPENDENCY);
     }
 
-    let project_dir = if path.is_file() {
-        path.parent().unwrap_or(Path::new("."))
-    } else {
-        path
-    };
-
     let output = Command::new("dotnet")
         .args(["format", "--verify-no-changes"])
-        .current_dir(project_dir)
+        .current_dir(project_dir(path))
         .output()?;
 
     if output.status.success() {
