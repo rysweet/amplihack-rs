@@ -43,6 +43,25 @@ pub fn is_noninteractive() -> bool {
     !std::io::stdin().is_terminal()
 }
 
+/// Returns `true` if **any** of stdin / stdout / stderr is **not** a TTY.
+///
+/// This is the OR-of-streams TTY snapshot used by the subprocess-safe
+/// context detection in the `amplihack copilot` dispatch (issue #621).
+/// It is the polarity-consistent counterpart to the OR-of-signals logic
+/// in [`crate::commands::launch::command::resolve_subprocess_safe`] — both
+/// return `true` when the relevant signal indicates a non-interactive /
+/// subprocess context.
+///
+/// **Distinct from [`is_noninteractive`]**, which examines stdin only.
+/// Subprocess-safe context (issue #621) requires the stricter all-streams
+/// view because parent agents (Claude Code, recipe-runner, Copilot CLI
+/// agent dispatch) typically pipe both stdout and stderr.
+pub fn any_stream_is_non_tty() -> bool {
+    !std::io::stdin().is_terminal()
+        || !std::io::stdout().is_terminal()
+        || !std::io::stderr().is_terminal()
+}
+
 // ── ANSI stripping ────────────────────────────────────────────────────────────
 
 /// Remove ANSI escape sequences from `s`.

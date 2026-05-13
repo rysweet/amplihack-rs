@@ -397,4 +397,68 @@ mod tests {
             );
         }
     }
+
+    // ── #621: Copilot --reflection opt-in clap flag ────────────────────────────
+
+    /// #621 / #17: `amplihack copilot --reflection` MUST parse as a recognized
+    /// boolean flag. The Copilot variant currently exposes only `--no-reflection`;
+    /// this test locks the contract that the new `--reflection` opt-in exists
+    /// and is reachable from the CLI surface.
+    #[test]
+    fn copilot_cli_parses_explicit_reflection_flag() {
+        let cli = Cli::try_parse_from(["amplihack", "copilot", "--reflection"])
+            .expect("copilot --reflection must parse");
+        match cli.command {
+            Commands::Copilot {
+                reflection,
+                no_reflection,
+                ..
+            } => {
+                assert!(
+                    reflection,
+                    "--reflection must set the reflection field to true"
+                );
+                assert!(
+                    !no_reflection,
+                    "--no-reflection must remain false when only --reflection is passed"
+                );
+            }
+            other => panic!("expected copilot command, got {other:?}"),
+        }
+    }
+
+    /// #621 / #18: `--reflection` and `--no-reflection` are mutually exclusive
+    /// (clap `conflicts_with`). Passing BOTH MUST produce a parse error rather
+    /// than silently picking one — this prevents ambiguous user intent from
+    /// being resolved by argument order.
+    #[test]
+    fn copilot_cli_rejects_reflection_and_no_reflection_together() {
+        let result =
+            Cli::try_parse_from(["amplihack", "copilot", "--reflection", "--no-reflection"]);
+        assert!(
+            result.is_err(),
+            "passing both --reflection and --no-reflection must be a parse error; got {result:?}"
+        );
+    }
+
+    /// #621 / #18b: Default — when neither --reflection nor --no-reflection is
+    /// passed, both fields default to false. (Subprocess-safe context flips
+    /// the *effective* default at dispatch time via `resolve_no_reflection`,
+    /// but the parsed clap fields themselves remain unchanged.)
+    #[test]
+    fn copilot_cli_reflection_fields_default_false() {
+        let cli = Cli::try_parse_from(["amplihack", "copilot"])
+            .expect("copilot with no flags must parse");
+        match cli.command {
+            Commands::Copilot {
+                reflection,
+                no_reflection,
+                ..
+            } => {
+                assert!(!reflection, "reflection must default to false");
+                assert!(!no_reflection, "no_reflection must default to false");
+            }
+            other => panic!("expected copilot command, got {other:?}"),
+        }
+    }
 }

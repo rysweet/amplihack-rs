@@ -127,6 +127,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         }
         Commands::Copilot {
             no_reflection,
+            reflection,
             subprocess_safe,
             docker,
             append,
@@ -148,6 +149,36 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     None,
                 );
             }
+            // Issue #621: resolve subprocess-safe context once at dispatch
+            // time, then propagate the resolved decision to all downstream
+            // code (launch, docker launcher, env builder). Auto-detection
+            // signals: explicit --subprocess-safe flag, AMPLIHACK_AGENT_BINARY
+            // set non-empty, AMPLIHACK_NONINTERACTIVE=1, or any of stdio
+            // not being a TTY.
+            let env_agent_binary = std::env::var("AMPLIHACK_AGENT_BINARY").ok();
+            let env_amplihack_noninteractive =
+                std::env::var("AMPLIHACK_NONINTERACTIVE").as_deref() == Ok("1");
+            let any_stream_non_tty = crate::util::any_stream_is_non_tty();
+            let subprocess_safe_resolved = launch::resolve_subprocess_safe(
+                subprocess_safe,
+                env_agent_binary.as_deref(),
+                env_amplihack_noninteractive,
+                any_stream_non_tty,
+            );
+            let no_reflection_effective =
+                launch::resolve_no_reflection(reflection, no_reflection, subprocess_safe_resolved);
+            tracing::debug!(
+                target: "amplihack_cli::commands::copilot",
+                explicit_subprocess_safe = subprocess_safe,
+                env_agent_binary = env_agent_binary.as_deref().unwrap_or(""),
+                env_amplihack_noninteractive = env_amplihack_noninteractive,
+                any_stream_non_tty = any_stream_non_tty,
+                subprocess_safe_resolved = subprocess_safe_resolved,
+                explicit_reflection = reflection,
+                explicit_no_reflection = no_reflection,
+                no_reflection_effective = no_reflection_effective,
+                "copilot dispatch decision"
+            );
             launch::run_launch(
                 "copilot",
                 "copilot",
@@ -156,8 +187,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 false,
                 true,
                 false,
-                no_reflection,
-                subprocess_safe,
+                no_reflection_effective,
+                subprocess_safe_resolved,
                 None,
                 args,
             )

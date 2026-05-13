@@ -35,6 +35,7 @@ fn build_command_injects_uvx_plugin_and_project_args_for_claude() {
         false,
         &[],
         Some(execution_dir.path()),
+        false,
     );
     let args = cmd
         .get_args()
@@ -98,6 +99,7 @@ fn build_command_prefers_original_cwd_for_staged_uvx_launches() {
         false,
         &[],
         Some(execution_dir.path()),
+        false,
     );
     let args = cmd
         .get_args()

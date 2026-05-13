@@ -17,9 +17,12 @@ mod tests_command;
 mod tests_env;
 #[cfg(test)]
 mod tests_launch;
+#[cfg(test)]
+mod tests_subprocess_safe;
 
 // Re-exports — public API of the launch module.
 pub(crate) use checkout::resolve_checkout_repo;
+pub(crate) use command::{resolve_no_reflection, resolve_subprocess_safe};
 pub(crate) use power_steering::maybe_prompt_re_enable_power_steering;
 
 // Internal imports from submodules used by run_launch.
@@ -187,6 +190,7 @@ pub fn run_launch(
             skip_permissions,
             &extra_args,
             Some(&execution_dir),
+            subprocess_safe,
         );
         cmd.current_dir(&execution_dir);
         env_builder.apply_to_command(&mut cmd);
