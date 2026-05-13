@@ -4,16 +4,22 @@ use super::{CsValidatorConfig, Diagnostic, DiagnosticSeverity, EXIT_MISSING_DEPE
 use anyhow::{bail, Result};
 use std::path::Path;
 use std::process::Command;
+use std::sync::OnceLock;
 
-/// Check if `dotnet` is available on PATH.
+/// Cached result of `dotnet --version` availability check.
+static DOTNET_AVAILABLE: OnceLock<bool> = OnceLock::new();
+
+/// Check if `dotnet` is available on PATH (cached after first call).
 pub fn dotnet_available() -> bool {
-    Command::new("dotnet")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    *DOTNET_AVAILABLE.get_or_init(|| {
+        Command::new("dotnet")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
 }
 
 /// Resolve the project directory from a file or directory path.
@@ -77,24 +83,15 @@ pub fn run_dotnet_analyzers(path: &Path, config: &CsValidatorConfig) -> Result<V
 }
 
 /// Level 4: Run `dotnet format --verify-no-changes`.
-pub fn run_dotnet_format(path: &Path, _config: &CsValidatorConfig) -> Result<Vec<Diagnostic>> {
-    if !dotnet_available() {
-        bail!("dotnet CLI not found (exit code {})", EXIT_MISSING_DEPENDENCY);
-    }
-
-    let output = Command::new("dotnet")
-        .args(["format", "--verify-no-changes"])
-        .current_dir(project_dir(path))
-        .output()?;
-
-    if output.status.success() {
+pub fn run_dotnet_format(path: &Path, config: &CsValidatorConfig) -> Result<Vec<Diagnostic>> {
+    let diags = run_dotnet_command(path, &["format", "--verify-no-changes"], config)?;
+    if diags.is_empty() {
         return Ok(Vec::new());
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Format failures don't produce MSBuild-style output; synthesize a warning.
     Ok(vec![Diagnostic {
         severity: DiagnosticSeverity::Warning,
-        message: format!("Format check failed: {}", stdout.trim().chars().take(200).collect::<String>()),
+        message: "Format check failed: code does not match `dotnet format` style".to_string(),
         line: None,
         column: None,
     }])

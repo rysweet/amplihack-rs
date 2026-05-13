@@ -41,7 +41,7 @@ impl<'a> ScenarioRunner<'a> {
 
     /// Run a single scenario, collecting measurements.
     pub fn run(&self, scenario: &Scenario) -> Result<ScenarioResult> {
-        let mut measurements = Vec::new();
+        let mut measurements = Vec::with_capacity(scenario.operations.len());
         let mut total_duration = Duration::ZERO;
         let mut successes = 0u32;
 

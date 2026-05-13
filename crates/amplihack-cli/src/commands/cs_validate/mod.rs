@@ -238,7 +238,7 @@ pub fn run_validate(
         anyhow::bail!("No .cs files found at path: {}", path.display());
     }
 
-    let mut results = Vec::new();
+    let mut results = Vec::with_capacity(files.len());
     for file in &files {
         let mut result = ValidationResult {
             file: file.clone(),

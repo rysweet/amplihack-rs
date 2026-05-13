@@ -9,7 +9,7 @@ use std::path::Path;
 
 /// Generate a Markdown report from evaluation results.
 pub fn generate_report(report: &EvaluationReport) -> Result<String> {
-    let mut out = String::new();
+    let mut out = String::with_capacity(1024);
 
     writeln!(out, "# MCP Tool Evaluation Report")?;
     writeln!(out)?;

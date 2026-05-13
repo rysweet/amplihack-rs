@@ -21,7 +21,7 @@ pub fn check_syntax(path: &Path) -> Result<Vec<Diagnostic>> {
 
 /// Check that `{}`, `()`, `[]` are balanced, respecting string/char literals and comments.
 fn check_balanced_delimiters(content: &str) -> Vec<Diagnostic> {
-    let mut stack: Vec<(char, u32)> = Vec::new();
+    let mut stack: Vec<(char, u32)> = Vec::with_capacity(32);
     let mut diagnostics = Vec::new();
     let mut line_num: u32 = 1;
     let mut chars = content.chars().peekable();
