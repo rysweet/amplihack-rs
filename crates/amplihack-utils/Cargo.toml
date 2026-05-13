@@ -5,10 +5,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[features]
-default = []
-github-distributor = []
-
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -19,7 +15,8 @@ tokio = { version = "1", features = ["process", "time", "rt"] }
 sha2 = { workspace = true }
 chrono = { workspace = true }
 libc = { workspace = true }
+base64 = "0.22"
+tempfile = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["process", "time", "rt", "macros"] }
-tempfile = { workspace = true }

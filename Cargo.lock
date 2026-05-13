@@ -449,6 +449,7 @@ dependencies = [
 name = "amplihack-utils"
 version = "0.9.3"
 dependencies = [
+ "base64",
  "chrono",
  "libc",
  "regex",
