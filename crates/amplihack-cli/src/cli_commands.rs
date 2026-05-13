@@ -106,6 +106,11 @@ pub enum Commands {
         /// Disable post-session reflection analysis.
         #[arg(long = "no-reflection")]
         no_reflection: bool,
+        /// Force post-session reflection analysis ON. Overrides the
+        /// subprocess-safe default flip (issue #621). Mutually exclusive
+        /// with `--no-reflection`.
+        #[arg(long = "reflection", conflicts_with = "no_reflection")]
+        reflection: bool,
         /// Skip shared launcher staging/env updates for subprocess delegates.
         #[arg(long = "subprocess-safe")]
         subprocess_safe: bool,
