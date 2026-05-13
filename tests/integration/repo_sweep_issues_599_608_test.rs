@@ -291,47 +291,34 @@ mod readme_path_refs {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// TC-SWEEP-605: GitHubDistributor is feature-gated
+// TC-SWEEP-605: GitHubDistributor is implemented (no longer feature-gated)
 // ═════════════════════════════════════════════════════════════════════════════
 
 mod github_distributor_gate {
     use super::*;
 
-    /// TC-SWEEP-605-01: The `GitHubDistributor` struct must be behind
-    /// `#[cfg(feature = "github-distributor")]`.
+    /// TC-SWEEP-605-01: The `GitHubDistributor` struct must exist without
+    /// a feature gate (implementation is complete).
     #[test]
-    fn struct_is_feature_gated() {
+    fn struct_exists_without_feature_gate() {
         let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
 
-        // Find the struct definition
         let struct_pos = src
             .find("pub struct GitHubDistributor")
             .expect("GitHubDistributor struct should exist in bundle_generator.rs");
 
-        // The cfg attribute should appear before the struct
+        // The cfg attribute should NOT appear before the struct
         let preceding = &src[..struct_pos];
         let last_cfg = preceding.rfind("#[cfg(feature = \"github-distributor\")]");
         assert!(
-            last_cfg.is_some(),
-            "GitHubDistributor must be gated behind #[cfg(feature = \"github-distributor\")]"
-        );
-
-        // Verify no more than a doc comment + blank lines between cfg and struct
-        let between = &preceding[last_cfg.unwrap()..];
-        let non_attr_lines: Vec<&str> = between
-            .lines()
-            .skip(1) // skip the cfg line itself
-            .filter(|l| !l.trim().is_empty() && !l.trim().starts_with("///"))
-            .collect();
-        assert!(
-            non_attr_lines.is_empty(),
-            "cfg attribute should be immediately before GitHubDistributor (found: {non_attr_lines:?})"
+            last_cfg.is_none(),
+            "GitHubDistributor should no longer be feature-gated"
         );
     }
 
-    /// TC-SWEEP-605-02: The impl block must also be feature-gated.
+    /// TC-SWEEP-605-02: The impl block must also be un-gated.
     #[test]
-    fn impl_is_feature_gated() {
+    fn impl_exists_without_feature_gate() {
         let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
 
         let impl_pos = src
@@ -341,27 +328,20 @@ mod github_distributor_gate {
         let preceding = &src[..impl_pos];
         let last_cfg = preceding.rfind("#[cfg(feature = \"github-distributor\")]");
         assert!(
-            last_cfg.is_some(),
-            "GitHubDistributor impl must be gated behind #[cfg(feature = \"github-distributor\")]"
+            last_cfg.is_none(),
+            "GitHubDistributor impl should no longer be feature-gated"
         );
     }
 
-    /// TC-SWEEP-605-03: The feature must be declared in Cargo.toml but NOT in default.
+    /// TC-SWEEP-605-03: The github-distributor feature should no longer exist.
     #[test]
-    fn feature_declared_not_default() {
+    fn feature_removed_from_cargo_toml() {
         let toml = read_file("crates/amplihack-utils/Cargo.toml");
 
         assert!(
-            toml.contains("github-distributor = []"),
-            "Cargo.toml must declare github-distributor feature"
+            !toml.contains("github-distributor"),
+            "Cargo.toml should no longer declare github-distributor feature"
         );
-
-        // Check default does not include it
-        for line in toml.lines() {
-            if line.starts_with("default") && line.contains("github-distributor") {
-                panic!("github-distributor must NOT be in default features");
-            }
-        }
     }
 }
 
