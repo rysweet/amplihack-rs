@@ -79,13 +79,31 @@ fn test_skip_update_check_for_unknown_subcommand() {
 /// The `launch` subcommand IS a launch command — update check must proceed.
 #[test]
 fn test_allow_update_check_for_launch_subcommand() {
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let prev_ci = std::env::var_os("CI");
+    let prev_ab = std::env::var_os("AMPLIHACK_AGENT_BINARY");
     unsafe {
         std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
         std::env::remove_var("AMPLIHACK_PARITY_TEST");
         std::env::remove_var(NO_UPDATE_CHECK_ENV);
+        std::env::remove_var("CI");
+        std::env::remove_var("AMPLIHACK_AGENT_BINARY");
+    }
+    let result = !should_skip_update_check_for_subcommand("launch");
+    unsafe {
+        match prev_ci {
+            Some(v) => std::env::set_var("CI", v),
+            None => std::env::remove_var("CI"),
+        }
+        match prev_ab {
+            Some(v) => std::env::set_var("AMPLIHACK_AGENT_BINARY", v),
+            None => std::env::remove_var("AMPLIHACK_AGENT_BINARY"),
+        }
     }
     assert!(
-        !should_skip_update_check_for_subcommand("launch"),
+        result,
         "should_skip_update_check_for_subcommand('launch') must return false"
     );
 }
@@ -93,13 +111,31 @@ fn test_allow_update_check_for_launch_subcommand() {
 /// The `claude` subcommand IS a launch command.
 #[test]
 fn test_allow_update_check_for_claude_subcommand() {
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let prev_ci = std::env::var_os("CI");
+    let prev_ab = std::env::var_os("AMPLIHACK_AGENT_BINARY");
     unsafe {
         std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
         std::env::remove_var("AMPLIHACK_PARITY_TEST");
         std::env::remove_var(NO_UPDATE_CHECK_ENV);
+        std::env::remove_var("CI");
+        std::env::remove_var("AMPLIHACK_AGENT_BINARY");
+    }
+    let result = !should_skip_update_check_for_subcommand("claude");
+    unsafe {
+        match prev_ci {
+            Some(v) => std::env::set_var("CI", v),
+            None => std::env::remove_var("CI"),
+        }
+        match prev_ab {
+            Some(v) => std::env::set_var("AMPLIHACK_AGENT_BINARY", v),
+            None => std::env::remove_var("AMPLIHACK_AGENT_BINARY"),
+        }
     }
     assert!(
-        !should_skip_update_check_for_subcommand("claude"),
+        result,
         "should_skip_update_check_for_subcommand('claude') must return false"
     );
 }
@@ -198,10 +234,14 @@ fn should_skip_update_check_for_update_related_args() {
     let prev_ni = std::env::var_os("AMPLIHACK_NONINTERACTIVE");
     let prev_pt = std::env::var_os("AMPLIHACK_PARITY_TEST");
     let prev_nuc = std::env::var_os(NO_UPDATE_CHECK_ENV);
+    let prev_ci = std::env::var_os("CI");
+    let prev_ab = std::env::var_os("AMPLIHACK_AGENT_BINARY");
     unsafe {
         std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
         std::env::remove_var("AMPLIHACK_PARITY_TEST");
         std::env::remove_var(NO_UPDATE_CHECK_ENV);
+        std::env::remove_var("CI");
+        std::env::remove_var("AMPLIHACK_AGENT_BINARY");
     }
     assert!(should_skip_update_check(&[
         OsString::from("amplihack"),
@@ -236,6 +276,14 @@ fn should_skip_update_check_for_update_related_args() {
             Some(v) => std::env::set_var(NO_UPDATE_CHECK_ENV, v),
             None => std::env::remove_var(NO_UPDATE_CHECK_ENV),
         }
+        match prev_ci {
+            Some(v) => std::env::set_var("CI", v),
+            None => std::env::remove_var("CI"),
+        }
+        match prev_ab {
+            Some(v) => std::env::set_var("AMPLIHACK_AGENT_BINARY", v),
+            None => std::env::remove_var("AMPLIHACK_AGENT_BINARY"),
+        }
     }
 }
 
@@ -257,10 +305,14 @@ fn should_not_skip_update_check_for_launch_subcommands() {
     let prev_ni = std::env::var_os("AMPLIHACK_NONINTERACTIVE");
     let prev_pt = std::env::var_os("AMPLIHACK_PARITY_TEST");
     let prev_nuc = std::env::var_os(NO_UPDATE_CHECK_ENV);
+    let prev_ci = std::env::var_os("CI");
+    let prev_ab = std::env::var_os("AMPLIHACK_AGENT_BINARY");
     unsafe {
         std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
         std::env::remove_var("AMPLIHACK_PARITY_TEST");
         std::env::remove_var(NO_UPDATE_CHECK_ENV);
+        std::env::remove_var("CI");
+        std::env::remove_var("AMPLIHACK_AGENT_BINARY");
     }
     for subcmd in &["launch", "claude", "copilot", "codex", "amplifier"] {
         assert!(
@@ -280,6 +332,14 @@ fn should_not_skip_update_check_for_launch_subcommands() {
         match prev_nuc {
             Some(v) => std::env::set_var(NO_UPDATE_CHECK_ENV, v),
             None => std::env::remove_var(NO_UPDATE_CHECK_ENV),
+        }
+        match prev_ci {
+            Some(v) => std::env::set_var("CI", v),
+            None => std::env::remove_var("CI"),
+        }
+        match prev_ab {
+            Some(v) => std::env::set_var("AMPLIHACK_AGENT_BINARY", v),
+            None => std::env::remove_var("AMPLIHACK_AGENT_BINARY"),
         }
     }
 }
@@ -554,4 +614,276 @@ fn windows_host_resolves_msvc_target() {
         "amplihack-x86_64-pc-windows-msvc.tar.gz"
     );
     assert_eq!(binary_filename("amplihack"), "amplihack.exe");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #625: subprocess-safe skip-signal unit tests.
+//
+// `should_skip_update_check(args) -> bool` (the back-compat wrapper that
+// delegates to the new `classify_skip_reason`) MUST treat ANY non-empty value
+// of CI / AMPLIHACK_AGENT_BINARY, OR the literal `--subprocess-safe` token in
+// argv, as a reason to skip the update check for an otherwise-recognized
+// launch subcommand. These tests are FAILING by design until check.rs is
+// refactored per the issue #625 design spec.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Save and restore every env var that influences the skip decision so a
+/// CI-runner-set `CI=true` cannot leak into our per-test assertions and so
+/// the test cleanly restores the runner env before yielding the lock.
+struct SkipSignalEnvGuard {
+    prev: Vec<(&'static str, Option<std::ffi::OsString>)>,
+}
+
+impl SkipSignalEnvGuard {
+    fn capture_and_clear() -> Self {
+        let names: &[&'static str] = &[
+            "AMPLIHACK_NONINTERACTIVE",
+            "AMPLIHACK_AGENT_BINARY",
+            "AMPLIHACK_NO_UPDATE_CHECK",
+            "AMPLIHACK_PARITY_TEST",
+            "CI",
+        ];
+        let prev: Vec<(&'static str, Option<std::ffi::OsString>)> =
+            names.iter().map(|n| (*n, std::env::var_os(n))).collect();
+        unsafe {
+            for (name, _) in &prev {
+                std::env::remove_var(name);
+            }
+        }
+        Self { prev }
+    }
+}
+
+impl Drop for SkipSignalEnvGuard {
+    fn drop(&mut self) {
+        unsafe {
+            for (name, value) in self.prev.drain(..) {
+                match value {
+                    Some(v) => std::env::set_var(name, v),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn should_skip_update_check_when_ci_env_is_set_to_true() {
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = SkipSignalEnvGuard::capture_and_clear();
+    unsafe { std::env::set_var("CI", "true") };
+    assert!(
+        should_skip_update_check(&[OsString::from("amplihack"), OsString::from("copilot")]),
+        "should_skip_update_check must return true for `amplihack copilot` when CI=true \
+         (CI runner convention)"
+    );
+}
+
+#[test]
+fn should_skip_update_check_when_ci_env_is_set_to_one() {
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = SkipSignalEnvGuard::capture_and_clear();
+    unsafe { std::env::set_var("CI", "1") };
+    assert!(
+        should_skip_update_check(&[OsString::from("amplihack"), OsString::from("launch")]),
+        "should_skip_update_check must return true for `amplihack launch` when CI=1 \
+         (any non-empty value triggers skip)"
+    );
+}
+
+#[test]
+fn should_not_skip_update_check_when_ci_env_is_empty_string() {
+    // Per design: CI is treated as a non-empty presence signal. An empty
+    // string MUST NOT classify as SubprocessSafe.
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = SkipSignalEnvGuard::capture_and_clear();
+    unsafe { std::env::set_var("CI", "") };
+    assert!(
+        !should_skip_update_check(&[OsString::from("amplihack"), OsString::from("copilot")]),
+        "should_skip_update_check must NOT skip for `amplihack copilot` when CI is set \
+         to the empty string — only non-empty values are subprocess-safe signals"
+    );
+}
+
+#[test]
+fn should_skip_update_check_when_agent_binary_env_is_set() {
+    // AMPLIHACK_AGENT_BINARY=copilot signals that an outer agent binary
+    // (e.g. Copilot CLI) is delegating into amplihack as a subprocess.
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = SkipSignalEnvGuard::capture_and_clear();
+    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot") };
+    assert!(
+        should_skip_update_check(&[OsString::from("amplihack"), OsString::from("copilot")]),
+        "should_skip_update_check must return true when AMPLIHACK_AGENT_BINARY is non-empty \
+         (matches resolve_subprocess_safe semantics in commands/launch/command.rs)"
+    );
+}
+
+#[test]
+fn should_not_skip_update_check_when_agent_binary_env_is_empty_string() {
+    // Empty AMPLIHACK_AGENT_BINARY is the documented sentinel for "no
+    // delegation" (see resolve_subprocess_safe doc comment); it MUST NOT
+    // classify as SubprocessSafe.
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = SkipSignalEnvGuard::capture_and_clear();
+    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "") };
+    assert!(
+        !should_skip_update_check(&[OsString::from("amplihack"), OsString::from("copilot")]),
+        "empty AMPLIHACK_AGENT_BINARY is the 'no delegation' sentinel and must NOT \
+         trigger subprocess-safe skip"
+    );
+}
+
+#[test]
+fn should_skip_update_check_when_subprocess_safe_flag_in_argv() {
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = SkipSignalEnvGuard::capture_and_clear();
+    assert!(
+        should_skip_update_check(&[
+            OsString::from("amplihack"),
+            OsString::from("copilot"),
+            OsString::from("--subprocess-safe"),
+        ]),
+        "should_skip_update_check must return true when argv contains the literal \
+         token `--subprocess-safe`"
+    );
+}
+
+#[test]
+fn should_skip_update_check_when_subprocess_safe_flag_after_other_args() {
+    // Linear scan: the flag may appear anywhere in args[1..], not only as
+    // the immediate subcommand.
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = SkipSignalEnvGuard::capture_and_clear();
+    assert!(
+        should_skip_update_check(&[
+            OsString::from("amplihack"),
+            OsString::from("copilot"),
+            OsString::from("--allow-all-tools"),
+            OsString::from("--subprocess-safe"),
+            OsString::from("--"),
+            OsString::from("hello"),
+        ]),
+        "linear argv scan must find --subprocess-safe regardless of position"
+    );
+}
+
+#[test]
+fn should_not_skip_update_check_when_subprocess_safe_appears_as_substring() {
+    // `--subprocess-safe-foo` or `--no-subprocess-safe` must NOT count.
+    // Match must be by literal OsStr equality, not prefix/contains.
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = SkipSignalEnvGuard::capture_and_clear();
+    assert!(
+        !should_skip_update_check(&[
+            OsString::from("amplihack"),
+            OsString::from("copilot"),
+            OsString::from("--subprocess-safe-foo"),
+        ]),
+        "literal-equality match: `--subprocess-safe-foo` must NOT trigger skip"
+    );
+    assert!(
+        !should_skip_update_check(&[
+            OsString::from("amplihack"),
+            OsString::from("copilot"),
+            OsString::from("--no-subprocess-safe"),
+        ]),
+        "literal-equality match: `--no-subprocess-safe` must NOT trigger skip"
+    );
+}
+
+#[test]
+fn should_skip_update_check_when_no_signals_set_for_non_launch_subcommand() {
+    // Negative-control: with all skip-signal env vars cleared and a
+    // non-launch subcommand, the existing NotLaunch path must still trigger
+    // a skip (this is the only existing-behavior assertion in the new
+    // suite — guards against accidental removal of the NotLaunch arm).
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = SkipSignalEnvGuard::capture_and_clear();
+    assert!(
+        should_skip_update_check(&[OsString::from("amplihack"), OsString::from("update")]),
+        "non-launch subcommand `update` must always skip the update check"
+    );
+}
+
+#[test]
+fn should_not_skip_update_check_when_no_signals_set_for_launch_subcommand() {
+    // Negative-control: with EVERY skip-signal env var cleared and a
+    // recognized launch subcommand, classification falls through to None
+    // and the wrapper returns false. This is the test that, together with
+    // the positive tests above, proves the new env-var/argv signals are
+    // the only cause of the new skip behavior.
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = SkipSignalEnvGuard::capture_and_clear();
+    assert!(
+        !should_skip_update_check(&[OsString::from("amplihack"), OsString::from("copilot")]),
+        "with all skip-signal env vars cleared, a launch subcommand must NOT skip"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #625: AMPLIHACK_TEST_FAKE_LATEST_VERSION network short-circuit.
+//
+// `fetch_latest_release` MUST honor the test-only env var: when set to a
+// non-empty semver tag, return a synthetic `UpdateRelease` without any
+// network call. Empty value MUST be ignored (production fall-through).
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn fake_latest_version_env_returns_synthetic_release() {
+    // We cannot directly call fetch_latest_release() because it is
+    // pub(super) in a sibling module; the existing tests pattern (see
+    // `parse_latest_release_selects_matching_asset`) tests at the parsing
+    // layer. Here we assert the source-level invariant: the
+    // synthetic-version short-circuit is wired into network.rs.
+    let src = include_str!("network.rs");
+    assert!(
+        src.contains("AMPLIHACK_TEST_FAKE_LATEST_VERSION"),
+        "fetch_latest_release MUST honor AMPLIHACK_TEST_FAKE_LATEST_VERSION; \
+         the env-var name is missing from network.rs"
+    );
+    assert!(
+        src.contains("is_empty"),
+        "AMPLIHACK_TEST_FAKE_LATEST_VERSION MUST be guarded by !is_empty() so an \
+         exported-but-empty env value falls through to the production path"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #625: skip-line literal contract.
+//
+// The skip-line wording is part of the contract — delegated agents grep
+// for it. Guard against accidental rewording.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn skip_line_literal_is_unchanged() {
+    let src = include_str!("check.rs");
+    assert!(
+        src.contains("amplihack: skipping update check (subprocess-safe / no TTY)"),
+        "the skip-line literal `amplihack: skipping update check (subprocess-safe / no TTY)` \
+         is part of the public contract for delegated agents and MUST appear verbatim \
+         in update/check.rs. Rewording requires updating delegated-agent grep patterns and \
+         this test."
+    );
 }

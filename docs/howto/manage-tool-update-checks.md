@@ -4,6 +4,13 @@
 > only — the check that runs before `claude`, `copilot`, or `codex` is invoked.
 > For the separate `amplihack` binary self-update system (GitHub release
 > downloads with SHA-256 verification), see the `amplihack update` subcommand.
+>
+> For the **startup self-update prompt** (`Update now? [y/N] (5s timeout):`)
+> and how it skips automatically in CI, delegated agents, non-TTY stdin, with
+> `--subprocess-safe`, or when `AMPLIHACK_NONINTERACTIVE` /
+> `AMPLIHACK_AGENT_BINARY` / `CI` is set, see [Startup Self-Update Prompt —
+> Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md)
+> (issue [#625](https://github.com/rysweet/amplihack-rs/issues/625)).
 
 Before launching `claude`, `copilot`, or `codex`, `amplihack` checks whether a
 newer version of the npm-distributed tool is available. When an update is found,

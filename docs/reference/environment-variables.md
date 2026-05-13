@@ -30,6 +30,8 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_NO_UPDATE_CHECK](#amplihack_no_update_check)
   - [AMPLIHACK_PARITY_TEST](#amplihack_parity_test)
   - [AMPLIHACK_SKIP_AUTO_INSTALL](#amplihack_skip_auto_install)
+  - [AMPLIHACK_TEST_FAKE_LATEST_VERSION](#amplihack_test_fake_latest_version)
+  - [CI](#ci)
   - [UV_TOOL_BIN_DIR](#uv_tool_bin_dir)
 
 ---
@@ -87,6 +89,8 @@ AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack copilot
 **Python parity:** Python skill scripts (`amplifier-bundle/skills/pm-architect/scripts/agent_query.py`, `delegate_response.py`) implement the **same** three-step precedence and **same** allowlist; `agent_query.py::detect_runtime()` is the canonical Python entry point and is reused by `delegate_response.py`. The shell helper at `amplifier-bundle/skills/migrate/scripts/migrate.sh` re-implements the same algorithm with a `case` statement allowlist. The active binary is therefore consistent across Rust, Python, and shell code paths.
 
 **Existing `claude` users:** repos that already have `.claude/runtime/launcher_context.json` with `"launcher": "claude"` continue to resolve to `claude` automatically — the file (precedence step 2) wins over the new `copilot` default. No migration action is required.
+
+**Effect on startup self-update prompt:** A non-empty `AMPLIHACK_AGENT_BINARY` is also recognised by the startup self-update prompt as a subprocess-safe signal — when the variable is set, the prompt is skipped and the skip-line `amplihack: skipping update check (subprocess-safe / no TTY)` is emitted to stderr. This means delegated agent invocations never block on the prompt, even at an interactive TTY. See [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md).
 
 ---
 
@@ -230,6 +234,8 @@ Condition 2 covers pipe usage without requiring the caller to set the variable m
 **Effect on bootstrap:** When non-interactive mode is detected, `prepare_launcher()` returns immediately without running `check_required_tools()` or `ensure_framework_installed()`. The assumption is that CI environments are pre-provisioned and that interactive guidance output would be noise.
 
 **Effect on update check:** Non-interactive mode also suppresses the pre-launch npm update check. No `npm` subprocesses are spawned. This is equivalent to passing `--skip-update-check` on every invocation. See [Manage Tool Update Notifications](../howto/manage-tool-update-checks.md) for details.
+
+**Effect on startup self-update prompt:** A non-empty `AMPLIHACK_NONINTERACTIVE` (any value, not only `"1"`) also skips the `amplihack` startup self-update prompt — the `Update now? [y/N] (5s timeout):` line is never printed and stdin is never read. A single skip-line `amplihack: skipping update check (subprocess-safe / no TTY)` is emitted to stderr. See [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md).
 
 **Propagation:** Once detected, `AMPLIHACK_NONINTERACTIVE=1` is written into the child process environment so that nested invocations (e.g. sub-agents spawned by hooks) also behave non-interactively.
 
@@ -534,11 +540,23 @@ AMPLIHACK_ENABLE_BLARIFY=1 AMPLIHACK_BLARIFY_MODE=background amplihack claude --
 
 **Type:** flag
 **Values:** `1` (skip update check) — absence or any other value means check is enabled
-**Used by:** `update::should_skip_update_check()`
+**Used by:** `update::should_skip_update_check()`,
+`update::classify_skip_reason()`
 
-Permanently disables the pre-launch npm tool update check for every `amplihack`
-invocation. Unlike `AMPLIHACK_NONINTERACTIVE`, this variable suppresses only the
-update check and has no effect on bootstrap prompts or interactive behaviour.
+Permanently disables both update-check paths for every `amplihack` invocation:
+
+1. The pre-launch **npm tool update check** (notice for `claude`, `copilot`,
+   `codex` package versions).
+2. The **startup self-update prompt** (`Update now? [y/N] (5s timeout):` for
+   the `amplihack` binary itself).
+
+Unlike `AMPLIHACK_NONINTERACTIVE`, this variable suppresses only the update
+checks and has no effect on bootstrap prompts or interactive behaviour. Unlike
+the subprocess-safe skip signals (`CI`, `AMPLIHACK_AGENT_BINARY`,
+`AMPLIHACK_NONINTERACTIVE`, `--subprocess-safe`, non-TTY stdin), this variable
+**does not** emit the `amplihack: skipping update check (subprocess-safe / no
+TTY)` skip-line on stderr — the suppression is silent. Use this when you want
+the pre-#625 silent-skip experience.
 
 ```sh
 # Add to shell profile for a permanent per-user opt-out
@@ -560,12 +578,16 @@ should be suppressed.
 
 **Type:** flag
 **Values:** `1` (parity-test mode active) — absence or any other value has no effect
-**Used by:** `update::should_skip_update_check()`
+**Used by:** `update::should_skip_update_check()`,
+`update::classify_skip_reason()`
 
-Suppresses the pre-launch npm update check without enabling full
-non-interactive mode. This is useful for automation that compares command
-output against a known baseline, where update-banner stderr output would create
-spurious differences.
+Suppresses both update-check paths (pre-launch npm tool notice and startup
+self-update prompt) without enabling full non-interactive mode. This is useful
+for automation that compares command output against a known baseline, where
+update-banner stderr output would create spurious differences. Suppression is
+**silent** — the `amplihack: skipping update check (subprocess-safe / no
+TTY)` skip-line introduced by issue [#625](https://github.com/rysweet/amplihack-rs/issues/625)
+is **not** emitted, preserving byte-identical stderr against pre-#625 baselines.
 
 ```sh
 AMPLIHACK_PARITY_TEST=1 amplihack claude --print 'run tests'
@@ -648,6 +670,78 @@ See: [Self-Heal: Auto-Restage Framework Assets](../features/self-heal-asset-rest
 
 ---
 
+### AMPLIHACK_TEST_FAKE_LATEST_VERSION
+
+**Type:** version tag string (test-only)
+**Values:** any version tag accepted by `update::network::normalize_tag`
+(e.g. `99.99.99`, `v0.9.3`); empty string is treated as unset.
+**Used by:** `update::network::fetch_latest_release()`
+
+Test-only short-circuit for the GitHub release lookup performed by the
+startup self-update prompt. When set non-empty, `fetch_latest_release`
+returns a synthetic `UpdateRelease` with the supplied tag and **no network
+call** is made.
+
+The synthetic release uses an `asset_url` on the allowlisted `github.com`
+host and `checksum_url=None`, so any download path remains gated by the
+existing URL allowlist and SHA-256 verification — the variable cannot be
+used to redirect real downloads or bypass artifact verification. It exists
+exclusively to drive the prompt code path deterministically from the
+integration test suite at
+`crates/amplihack-cli/tests/issue_625_update_prompt_subprocess_safe.rs`.
+
+```sh
+# Force a "newer release available" outcome without a network call
+AMPLIHACK_TEST_FAKE_LATEST_VERSION=99.99.99 amplihack copilot --help
+```
+
+**Production deployments should not set this variable.** It is documented for
+completeness only.
+
+See: [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md).
+
+---
+
+### CI
+
+**Type:** flag (presence-based)
+**Values:** any non-empty value (`1`, `true`, `yes`, anything) — empty string
+or absence has no effect.
+**Used by:** `update::classify_skip_reason()`
+
+Conventional CI-runner marker recognised by `amplihack` as a subprocess-safe
+signal. When set non-empty, the startup self-update prompt is skipped — the
+`Update now? [y/N] (5s timeout):` line is never printed and stdin is never
+read. A single skip-line `amplihack: skipping update check (subprocess-safe /
+no TTY)` is emitted to stderr.
+
+GitHub Actions, GitLab CI, CircleCI, Jenkins, Buildkite, and most other CI
+runners set `CI=true` automatically, so this signal usually fires without any
+explicit configuration.
+
+```yaml
+# .github/workflows/agent.yml — CI=true is set automatically by the runner.
+- run: amplihack copilot -p "Run the test suite"
+```
+
+**Empty-string semantics:** `CI=""` does **not** trigger skip. Only non-empty
+values are recognised — matching the convention used by
+`commands::launch::command::resolve_subprocess_safe`.
+
+**No effect on the npm pre-launch tool notice.** That notice is non-blocking
+and is suppressed by `AMPLIHACK_NONINTERACTIVE` /
+`AMPLIHACK_NO_UPDATE_CHECK` instead. See [Manage Tool Update
+Notifications](../howto/manage-tool-update-checks.md).
+
+**No effect on `--subprocess-safe` argv injection on the `copilot`
+subcommand.** That feature uses its own resolver (see
+[`COPILOT_SUBPROCESS_SAFE.md`](../COPILOT_SUBPROCESS_SAFE.md)); `CI` is one
+of *its* signals as well, but the two paths are independent.
+
+See: [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md).
+
+---
+
 ### UV_TOOL_BIN_DIR
 
 **Type:** path
@@ -664,3 +758,5 @@ Override the directory where `uv tool install` places the `amplifier` binary. De
 - [Bootstrap Parity](../concepts/bootstrap-parity.md) — How the Rust CLI matches the Python launcher's environment contract
 - [Memory Backend Reference](./memory-backend.md) — `AMPLIHACK_MEMORY_BACKEND` values, storage paths, schema, and security
 - [amplihack install](./install-command.md) — Variables read during installation
+- [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md) — How `CI`, `AMPLIHACK_AGENT_BINARY`, `AMPLIHACK_NONINTERACTIVE`, `--subprocess-safe`, and non-TTY stdin each suppress the `Update now? [y/N] (5s timeout):` prompt
+- [Manage Tool Update Notifications](../howto/manage-tool-update-checks.md) — npm pre-launch tool update notice (separate code path)

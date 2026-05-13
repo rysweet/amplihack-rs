@@ -37,6 +37,28 @@ pub(crate) fn fetch_branch_head_sha(owner_repo: &str, branch: &str) -> Result<St
 }
 
 pub(super) fn fetch_latest_release() -> Result<UpdateRelease> {
+    // Issue #625 test hook: when AMPLIHACK_TEST_FAKE_LATEST_VERSION is set
+    // to a non-empty value, return a synthetic UpdateRelease without any
+    // network call. This enables deterministic integration tests of the
+    // startup-update prompt path under fixed-version conditions.
+    //
+    // Empty value falls through to the normal production path so an
+    // exported-but-empty env var (`export AMPLIHACK_TEST_FAKE_LATEST_VERSION=`)
+    // does not silently disable real update checks.
+    if let Some(raw) = std::env::var_os("AMPLIHACK_TEST_FAKE_LATEST_VERSION")
+        && !raw.is_empty()
+    {
+        let tag = raw.to_string_lossy().into_owned();
+        let version = normalize_tag(&tag).with_context(|| {
+            format!("AMPLIHACK_TEST_FAKE_LATEST_VERSION is not valid semver: {tag}")
+        })?;
+        return Ok(UpdateRelease {
+            version,
+            asset_url: String::new(),
+            checksum_url: None,
+        });
+    }
+
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
     let asset_name = expected_archive_name()?;
     let response = http_get(&url)
