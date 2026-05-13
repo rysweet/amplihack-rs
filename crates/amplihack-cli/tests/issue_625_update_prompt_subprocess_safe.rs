@@ -297,6 +297,45 @@ fn non_launch_subcommand_does_not_emit_skip_line() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Test 5b — non-launch subcommand WITH SubprocessSafe env signals: STILL silent.
+// Regression test for the outside-in finding that NotLaunch must take precedence
+// over SubprocessSafe env vars in `classify_skip_reason`. Per spec: "Do NOT emit
+// for AMPLIHACK_NO_UPDATE_CHECK / AMPLIHACK_PARITY_TEST or for non-launch
+// subcommands." Real-world impact: `amplihack --version` running inside an
+// agent subprocess (where AMPLIHACK_AGENT_BINARY=copilot is exported) must
+// remain pure passthrough with no skip-line noise on stderr.
+// ────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn non_launch_subcommand_stays_silent_under_subprocess_safe_env() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let mut cmd = cmd_with_clean_env(home.path());
+    // Set every SubprocessSafe env signal simultaneously to prove that
+    // NotLaunch wins for `--version` regardless.
+    cmd.env("AMPLIHACK_NONINTERACTIVE", "1");
+    cmd.env("AMPLIHACK_AGENT_BINARY", "copilot");
+    cmd.env("CI", "true");
+    cmd.arg("--version");
+
+    let (stdout, stderr) = run_with_timeout(cmd, Duration::from_secs(15));
+
+    assert!(
+        !stderr.contains(SKIP_LINE),
+        "skip-line must NOT print for `amplihack --version` even when every \
+         SubprocessSafe env signal is set — non-launch subcommands stay silent. \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains(PROMPT_FRAGMENT) && !stdout.contains(PROMPT_FRAGMENT),
+        "prompt must NOT print for `amplihack --version`; stderr:\n{stderr}\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("amplihack ") || stderr.contains("amplihack "),
+        "version output must still print; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Test 6 — explicit opt-out via AMPLIHACK_NO_UPDATE_CHECK=1: silent skip.
 // MUST NOT emit the skip-line (this is an ExplicitOptOut, not SubprocessSafe).
 // ────────────────────────────────────────────────────────────────────────────
