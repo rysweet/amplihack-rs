@@ -4,18 +4,137 @@ This is your complete guide to evaluating MCP tools with the framework. Follow t
 
 ## Table of Contents
 
-1. [Introduction](#introduction)
-2. [Prerequisites](#prerequisites)
-3. [Evaluation Workflow Overview](#evaluation-workflow-overview)
-4. [Phase 1: Setup](#phase-1-setup)
-5. [Phase 2: Understanding the Framework](#phase-2-understanding-the-framework)
-6. [Phase 3: Running Your First Evaluation](#phase-3-running-your-first-evaluation)
-7. [Phase 4: Analyzing Results](#phase-4-analyzing-results)
-8. [Phase 5: Making Decisions](#phase-5-making-decisions)
-9. [Real MCP Tool Evaluation](#real-mcp-tool-evaluation)
-10. [Common Workflows](#common-workflows)
-11. [Troubleshooting](#troubleshooting)
-12. [Next Steps](#next-steps)
+1. [Rust CLI (`amplihack mcp-eval`)](#rust-cli-amplihack-mcp-eval)
+2. [Introduction](#introduction)
+3. [Prerequisites](#prerequisites)
+4. [Evaluation Workflow Overview](#evaluation-workflow-overview)
+5. [Phase 1: Setup](#phase-1-setup)
+6. [Phase 2: Understanding the Framework](#phase-2-understanding-the-framework)
+7. [Phase 3: Running Your First Evaluation](#phase-3-running-your-first-evaluation)
+8. [Phase 4: Analyzing Results](#phase-4-analyzing-results)
+9. [Phase 5: Making Decisions](#phase-5-making-decisions)
+10. [Real MCP Tool Evaluation](#real-mcp-tool-evaluation)
+11. [Common Workflows](#common-workflows)
+12. [Troubleshooting](#troubleshooting)
+13. [Next Steps](#next-steps)
+
+---
+
+## Rust CLI (`amplihack mcp-eval`)
+
+The recommended way to run MCP evaluations is via the native Rust CLI subcommand. This
+replaces the Python `run_evaluation.py` script with a single binary — no Python runtime,
+no virtual environment, no `pip install` required.
+
+### Quick Start
+
+```bash
+# Run a mock evaluation (no MCP server needed)
+amplihack mcp-eval --mock
+
+# Run evaluation for a specific adapter
+amplihack mcp-eval serena
+
+# Run a single scenario
+amplihack mcp-eval --scenario navigation --mock
+
+# Save report to file
+amplihack mcp-eval --mock --output results/eval-report.md
+```
+
+### Command Reference
+
+```
+amplihack mcp-eval [OPTIONS] [ADAPTER]
+
+Arguments:
+  [ADAPTER]    Adapter to evaluate (default: mock)
+               Built-in: mock, serena
+
+Options:
+  --scenario <NAME>   Run only this scenario (navigation, analysis, modification)
+  --mock              Use mock adapter (dry-run, no MCP server needed)
+  --config <PATH>     Custom adapter configuration file (JSON)
+  --output <PATH>     Write report to file (default: stdout)
+  -h, --help          Print help
+```
+
+### Evaluation Scenarios
+
+The CLI includes three built-in evaluation scenarios:
+
+| Scenario | What it tests | Metrics collected |
+|----------|---------------|-------------------|
+| **Navigation** | File discovery, path resolution, directory traversal | Success rate, operation count, time |
+| **Analysis** | Content inspection, pattern matching, data extraction | Accuracy, completeness, time |
+| **Modification** | File updates, content changes, rollback safety | Success rate, correctness, time |
+
+### Scoring and Recommendations
+
+After running all scenarios, the CLI computes aggregate scores and produces a recommendation:
+
+| Recommendation | Criteria |
+|----------------|----------|
+| **INTEGRATE** | Quality ≥ 80% AND efficiency ≥ 1.5× baseline |
+| **CONSIDER** | Quality ≥ 60% OR efficiency ≥ 1.2× baseline |
+| **DONT_INTEGRATE** | Below both thresholds |
+
+### Example Output
+
+```
+$ amplihack mcp-eval --mock
+
+MCP Tool Evaluation Report
+==========================
+Adapter: MockAdapter (SerenaAdapter simulation)
+Date: 2026-05-13T01:23:00Z
+
+Scenarios:
+  ✓ Navigation    quality=92%  efficiency=2.1x  PASS
+  ✓ Analysis      quality=88%  efficiency=1.8x  PASS
+  ✓ Modification  quality=85%  efficiency=1.6x  PASS
+
+Aggregate:
+  Quality Score:    88.3%
+  Efficiency Score: 1.83x baseline
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Recommendation: INTEGRATE
+The evaluated tool provides significant quality and efficiency improvements
+across all tested scenarios. Strong recommendation for integration.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+### Custom Adapters
+
+To evaluate a real MCP tool, create an adapter configuration:
+
+```json
+{
+  "name": "my-tool",
+  "endpoint": "http://localhost:3000/mcp",
+  "capabilities": ["navigation", "analysis", "modification"],
+  "timeout_seconds": 30
+}
+```
+
+Then run:
+
+```bash
+amplihack mcp-eval --config adapters/my-tool.json
+```
+
+### Migration from Python Scripts
+
+| Old (Python) | New (Rust CLI) |
+|--------------|----------------|
+| `cd tests/mcp_evaluation && python run_evaluation.py` | `amplihack mcp-eval --mock` |
+| `python run_evaluation.py --adapter serena` | `amplihack mcp-eval serena` |
+| `python run_evaluation.py --scenario navigation` | `amplihack mcp-eval --scenario navigation --mock` |
+
+The Python scripts remain for backward compatibility but are deprecated.
+
+---
 
 ## Introduction
 

@@ -399,4 +399,46 @@ pub enum Commands {
         #[command(subcommand)]
         command: crate::commands::session_tree::SessionTreeCommands,
     },
+
+    /// Validate C# files at configurable strictness levels (1-4).
+    ///
+    /// Level 1: syntax (balanced delimiters, patterns). Level 2: + dotnet build.
+    /// Level 3: + analyzers. Level 4: + dotnet format --verify-no-changes.
+    #[command(name = "cs-validate")]
+    CsValidate {
+        /// Path to a .cs file or directory to validate
+        path: PathBuf,
+        /// Validation level (1-4)
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=4))]
+        level: u8,
+        /// Override config file path
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Output format
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+        format: String,
+    },
+
+    /// Evaluate MCP tool integration quality using scenarios and scoring.
+    ///
+    /// Produces a recommendation: INTEGRATE / CONSIDER / DONT_INTEGRATE
+    /// based on quality and efficiency metrics.
+    #[command(name = "mcp-eval")]
+    McpEval {
+        /// Adapter to evaluate (default: mock)
+        #[arg(default_value = "mock")]
+        adapter: String,
+        /// Filter to a specific scenario
+        #[arg(long)]
+        scenario: Option<String>,
+        /// Run in mock/dry-run mode without an MCP server
+        #[arg(long)]
+        mock: bool,
+        /// Output path for the report
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Override config file path
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
 }

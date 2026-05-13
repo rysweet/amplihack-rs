@@ -4,12 +4,14 @@ pub mod append;
 pub mod auto_mode;
 pub mod builder;
 pub mod completions;
+pub mod cs_validate;
 pub mod doctor;
 pub mod fleet;
 pub mod hive_haymaker;
 pub mod install;
 pub mod launch;
 pub mod lock;
+pub mod mcp_eval;
 pub mod memory;
 pub mod mode;
 pub mod multitask;
@@ -334,6 +336,19 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::SessionTree { command } => session_tree::run(command),
         Commands::Reflect { command } => dispatch_reflect(command),
         Commands::Builder { command } => dispatch_builder(command),
+        Commands::CsValidate {
+            path,
+            level,
+            config,
+            format,
+        } => cs_validate::dispatch(path, level, config, format),
+        Commands::McpEval {
+            adapter,
+            scenario,
+            mock,
+            output,
+            config,
+        } => mcp_eval::dispatch(adapter, scenario, mock, output, config),
     }
 }
 
