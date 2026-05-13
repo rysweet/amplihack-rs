@@ -63,10 +63,7 @@ fn run_dotnet_command(
                     // Kill the child on timeout
                     let _ = child.kill();
                     let _ = child.wait();
-                    bail!(
-                        "dotnet command timed out after {}s",
-                        config.timeout_seconds
-                    );
+                    bail!("dotnet command timed out after {}s", config.timeout_seconds);
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
