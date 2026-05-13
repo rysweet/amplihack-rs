@@ -238,12 +238,17 @@ pub(super) fn should_skip_update_check(args: &[OsString]) -> bool {
 /// Precedence (first match wins):
 ///   1. ExplicitOptOut: `AMPLIHACK_NO_UPDATE_CHECK=1` or
 ///      `AMPLIHACK_PARITY_TEST=1`. Silent — never emits the skip-line.
-///   2. SubprocessSafe (env): `AMPLIHACK_NONINTERACTIVE` non-empty,
+///   2. NotLaunch: `args[1]` is not in
+///      `{launch, claude, copilot, codex, amplifier}`. Silent — the check
+///      would never have fired for this subcommand, so there is nothing to
+///      announce as "suppressed". This MUST take precedence over the
+///      SubprocessSafe checks below: per spec, the skip-line is only emitted
+///      when the invocation WOULD have triggered the check (recognized launch
+///      subcommand) but a subprocess-safe signal suppressed it.
+///   3. SubprocessSafe (env): `AMPLIHACK_NONINTERACTIVE` non-empty,
 ///      `AMPLIHACK_AGENT_BINARY` non-empty, or `CI` non-empty.
-///   3. SubprocessSafe (argv): linear OsStr-equality scan of `args[1..]`
+///   4. SubprocessSafe (argv): linear OsStr-equality scan of `args[1..]`
 ///      for the literal `--subprocess-safe` long flag.
-///   4. NotLaunch: `args[1]` is not in
-///      `{launch, claude, copilot, codex, amplifier}`.
 ///
 /// `None` only when a recognized launch subcommand is invoked AND no other
 /// signal fires.
@@ -257,7 +262,22 @@ pub(super) fn classify_skip_reason(args: &[OsString]) -> Option<SkipReason> {
         return Some(SkipReason::ExplicitOptOut);
     }
 
-    // (2) SubprocessSafe via env — emit the skip-line.
+    // (2) NotLaunch: silent passthrough for non-launch subcommands.
+    //
+    // This MUST run before the SubprocessSafe checks — see precedence note in
+    // the doc-comment above. For e.g. `amplihack --version` running inside an
+    // agent subprocess (AMPLIHACK_AGENT_BINARY=copilot), we want pure
+    // passthrough with no extra stderr noise, since the update check was
+    // never going to fire for `--version` regardless.
+    let first_arg = args.get(1).and_then(|arg| arg.to_str());
+    if !matches!(
+        first_arg,
+        Some("launch") | Some("claude") | Some("copilot") | Some("codex") | Some("amplifier")
+    ) {
+        return Some(SkipReason::NotLaunch);
+    }
+
+    // (3) SubprocessSafe via env — emit the skip-line.
     //
     // Each var is treated as an opaque presence signal: any non-empty value
     // triggers skip. Empty string is the documented "no delegation" sentinel
@@ -274,22 +294,13 @@ pub(super) fn classify_skip_reason(args: &[OsString]) -> Option<SkipReason> {
         return Some(SkipReason::SubprocessSafe);
     }
 
-    // (3) SubprocessSafe via argv: linear OsStr-equality scan for the
+    // (4) SubprocessSafe via argv: linear OsStr-equality scan for the
     // literal `--subprocess-safe` clap long flag. We scan pre-clap so the
     // skip can fire before any update I/O. Match must be by full equality
     // so e.g. `--subprocess-safe-foo` or `--no-subprocess-safe` do NOT count.
     let needle = std::ffi::OsStr::new(SUBPROCESS_SAFE_ARG);
     if args.iter().skip(1).any(|a| a.as_os_str() == needle) {
         return Some(SkipReason::SubprocessSafe);
-    }
-
-    // (4) NotLaunch: silent passthrough for non-launch subcommands.
-    let first_arg = args.get(1).and_then(|arg| arg.to_str());
-    if !matches!(
-        first_arg,
-        Some("launch") | Some("claude") | Some("copilot") | Some("codex") | Some("amplifier")
-    ) {
-        return Some(SkipReason::NotLaunch);
     }
 
     None

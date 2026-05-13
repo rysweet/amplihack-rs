@@ -1,4 +1,5 @@
 use super::check::should_skip_update_check;
+use super::check::{SkipReason, classify_skip_reason};
 use super::install::{binary_filename, extract_archive, find_binary};
 use super::network::{
     github_error_message, is_retryable_error, parse_latest_release, validate_download_url,
@@ -838,6 +839,66 @@ fn should_not_skip_update_check_when_no_signals_set_for_launch_subcommand() {
     assert!(
         !should_skip_update_check(&[OsString::from("amplihack"), OsString::from("copilot")]),
         "with all skip-signal env vars cleared, a launch subcommand must NOT skip"
+    );
+}
+
+#[test]
+fn classify_skip_reason_for_non_launch_subcommand_returns_not_launch_even_with_env_signals() {
+    // Regression test for issue #625 outside-in finding: when stdin is a
+    // TTY and the subcommand is non-launch (e.g. `amplihack --version`),
+    // BUT a SubprocessSafe env signal is set (as is common inside agent
+    // subprocesses where AMPLIHACK_AGENT_BINARY=copilot is exported), the
+    // classification MUST resolve to NotLaunch, not SubprocessSafe.
+    //
+    // Per spec: "Do NOT emit for AMPLIHACK_NO_UPDATE_CHECK / AMPLIHACK_PARITY_TEST
+    // or for non-launch subcommands." If SubprocessSafe took precedence over
+    // NotLaunch, then `amplihack --version` running inside an agent subprocess
+    // would unnecessarily emit the skip-line for a subcommand that never
+    // would have triggered the update check in the first place.
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = SkipSignalEnvGuard::capture_and_clear();
+
+    // Set every SubprocessSafe env signal simultaneously to prove that
+    // NotLaunch wins over all of them when the subcommand is non-launch.
+    unsafe {
+        std::env::set_var("AMPLIHACK_NONINTERACTIVE", "1");
+        std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot");
+        std::env::set_var("CI", "true");
+    }
+
+    for non_launch in ["--version", "--help", "version", "update", "doctor"] {
+        let args = [OsString::from("amplihack"), OsString::from(non_launch)];
+        let reason = classify_skip_reason(&args);
+        assert_eq!(
+            reason,
+            Some(SkipReason::NotLaunch),
+            "non-launch subcommand `{non_launch}` MUST classify as NotLaunch \
+             (silent passthrough), not SubprocessSafe, even when every \
+             SubprocessSafe env signal is set; got {reason:?}. \
+             This protects `amplihack --version` from emitting the skip-line \
+             when run inside an agent subprocess."
+        );
+    }
+}
+
+#[test]
+fn classify_skip_reason_explicit_opt_out_wins_over_not_launch_for_non_launch_subcommand() {
+    // ExplicitOptOut takes precedence over NotLaunch (both silent — order
+    // is observable only via the SkipReason variant returned).
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = SkipSignalEnvGuard::capture_and_clear();
+    unsafe { std::env::set_var(NO_UPDATE_CHECK_ENV, "1") };
+    let args = [OsString::from("amplihack"), OsString::from("--version")];
+    assert_eq!(
+        classify_skip_reason(&args),
+        Some(SkipReason::ExplicitOptOut),
+        "ExplicitOptOut MUST take precedence over NotLaunch so the variant \
+         accurately reflects user intent (preserved for future telemetry / \
+         debug logging hooks)"
     );
 }
 
