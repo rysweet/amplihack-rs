@@ -4,12 +4,136 @@ This guide covers integrating the C# validation tool into various development wo
 
 ## Table of Contents
 
-1. [Claude Code Integration](#claude-code-integration)
-2. [Git Hooks Integration](#git-hooks-integration)
-3. [CI/CD Integration](#cicd-integration)
-4. [IDE Integration](#ide-integration)
-5. [Custom Workflows](#custom-workflows)
-6. [Troubleshooting](#troubleshooting)
+1. [Rust CLI (`amplihack cs-validate`)](#rust-cli-amplihack-cs-validate)
+2. [Claude Code Integration](#claude-code-integration)
+3. [Git Hooks Integration](#git-hooks-integration)
+4. [CI/CD Integration](#cicd-integration)
+5. [IDE Integration](#ide-integration)
+6. [Custom Workflows](#custom-workflows)
+7. [Troubleshooting](#troubleshooting)
+
+---
+
+## Rust CLI (`amplihack cs-validate`)
+
+The recommended way to run C# validation is via the native Rust CLI subcommand. This replaces
+the legacy shell/Python scripts with a single statically-linked binary — no Python, no jq,
+no external script dependencies.
+
+### Installation
+
+The `cs-validate` subcommand is built into `amplihack`. If you have the CLI installed,
+it's already available:
+
+```bash
+amplihack cs-validate --help
+```
+
+### Usage
+
+```bash
+# Validate a single file at the default level (2)
+amplihack cs-validate src/Services/MyService.cs
+
+# Validate an entire directory recursively
+amplihack cs-validate src/
+
+# Specify validation level
+amplihack cs-validate --level 3 src/
+
+# Output as JSON (for CI consumption)
+amplihack cs-validate --format json --level 4 src/
+
+# Use a specific config file
+amplihack cs-validate --config .claude/config/cs-validator.json src/
+```
+
+### Command Reference
+
+```
+amplihack cs-validate [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>    File or directory to validate (*.cs files discovered recursively)
+
+Options:
+  --level <1-4>      Validation level (default: from config or 2)
+                       1 = Syntax only (balanced delimiters, patterns)
+                       2 = Syntax + dotnet build
+                       3 = Syntax + build + Roslyn analyzers
+                       4 = All + dotnet format verification
+  --config <PATH>    Config file path override
+  --format <FORMAT>  Output format: text (default) or json
+  -h, --help         Print help
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | All validations passed |
+| 1 | Validation failed (syntax, build, or analyzer errors) |
+| 2 | Configuration error (malformed JSON, invalid level) |
+| 3 | Timeout exceeded |
+| 4 | Required dependency missing (`dotnet` not found for levels 2-4) |
+
+### Configuration
+
+The CLI searches for configuration in this order:
+
+1. Path passed via `--config`
+2. Workspace-local: `.claude/config/cs-validator.json`
+3. Global: `~/.amplihack/.claude/config/cs-validator.json`
+
+Config schema:
+
+```json
+{
+  "enabled": true,
+  "validationLevel": 2,
+  "analyzerSeverityThreshold": "Error",
+  "skipProjects": ["Tests/**/*.csproj"],
+  "timeoutSeconds": 30,
+  "parallel": true,
+  "cacheEnabled": true,
+  "reporting": {
+    "format": "json",
+    "verbose": false,
+    "outputFile": ".cache/cs-validator/last-run.json"
+  }
+}
+```
+
+### Validation Levels Explained
+
+| Level | What it does | Dependencies | Typical time |
+|-------|-------------|--------------|--------------|
+| 1 | Regex-based syntax: balanced `{}`, `()`, `[]`; namespace/class structure; common patterns | None (pure Rust) | <100ms |
+| 2 | Level 1 + `dotnet build --no-restore --nologo` | .NET SDK | 2-4s |
+| 3 | Level 2 + `-p:RunAnalyzers=true -p:EnforceCodeStyleInBuild=true` | .NET SDK | 3-5s |
+| 4 | Level 3 + `dotnet format --verify-no-changes` | .NET SDK | 4-6s |
+
+### Graceful Degradation
+
+If `dotnet` is not installed and a level ≥2 is requested, the CLI:
+
+1. Prints a clear error: `error: dotnet CLI not found (required for level 2+)`
+2. Exits with code 4
+3. Does NOT silently fall back to Level 1
+
+This ensures CI pipelines fail loudly rather than producing misleading "pass" results.
+
+### Migration from Shell Scripts
+
+The Rust CLI is a drop-in replacement for `tools/cs-validator.sh`:
+
+| Old (shell) | New (Rust CLI) |
+|------------|----------------|
+| `./tools/cs-validator.sh --level 2` | `amplihack cs-validate --level 2 .` |
+| `./tools/cs-validator.sh --level 4 --verbose` | `amplihack cs-validate --level 4 .` |
+| `SKIP_CS_VALIDATION=1` | (omit the command) |
+
+The shell scripts remain for backward compatibility but are deprecated.
 
 ---
 
@@ -17,7 +141,27 @@ This guide covers integrating the C# validation tool into various development wo
 
 The primary use case for this tool is integration with Claude Code's stop hooks.
 
-### Setup
+### Setup (Rust CLI — recommended)
+
+1. **Add to your stop hook** (`.claude/hooks/stop.sh`):
+
+   ```bash
+   #!/bin/bash
+   # Run C# validation after Claude Code edits
+   amplihack cs-validate --level 2 .
+   ```
+
+2. **Customize validation level** (optional):
+   Edit `~/.amplihack/.claude/hooks/stop.sh` and change the `--level` parameter:
+
+   ```bash
+   amplihack cs-validate --level 3 .
+   ```
+
+3. **Configure validation settings** (optional):
+   Edit `~/.amplihack/.claude/config/cs-validator.json` to customize behavior
+
+### Setup (Legacy shell scripts)
 
 1. **Copy the stop hook example**:
 
@@ -104,7 +248,7 @@ Run validation before each commit:
    echo "Running C# validation on staged files..."
 
    # Run validator with level 2 (syntax + build)
-   if ! ./tools/cs-validator.sh --level 2; then
+   if ! amplihack cs-validate --level 2 .; then
        echo ""
        echo "Commit blocked by validation errors"
        echo "Fix the errors above or use: git commit --no-verify"
@@ -139,7 +283,7 @@ set -e
 
 echo "Running full C# validation before push..."
 
-if ! ./tools/cs-validator.sh --level 3; then
+if ! amplihack cs-validate --level 3 .; then
     echo ""
     echo "Push blocked by validation errors"
     echo "Fix the errors above or use: git push --no-verify"
@@ -228,28 +372,21 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.11"
-
-      - name: Install jq
-        run: sudo apt-get install -y jq
+      - name: Install amplihack CLI
+        run: cargo install amplihack-cli
 
       - name: Restore dependencies
         run: dotnet restore
 
       - name: Run C# Validation
-        run: |
-          chmod +x tools/*.sh tools/*.py
-          ./tools/cs-validator.sh --level 3 --verbose
+        run: amplihack cs-validate --level 3 --format json src/ > validation-results.json
 
       - name: Upload validation results
         if: always()
         uses: actions/upload-artifact@v3
         with:
           name: validation-results
-          path: .cache/cs-validator/*.json
+          path: validation-results.json
 ```
 
 ### Azure Pipelines
@@ -274,27 +411,22 @@ steps:
     inputs:
       version: "8.0.x"
 
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: "3.11"
-
   - script: |
-      sudo apt-get install -y jq
-    displayName: "Install dependencies"
+      cargo install amplihack-cli
+    displayName: "Install amplihack CLI"
 
   - script: |
       dotnet restore
     displayName: "Restore NuGet packages"
 
   - script: |
-      chmod +x tools/*.sh tools/*.py
-      ./tools/cs-validator.sh --level 3 --verbose
+      amplihack cs-validate --level 3 --format json src/ > validation-results.json
     displayName: "Run C# validation"
 
   - task: PublishBuildArtifacts@1
     condition: always()
     inputs:
-      pathToPublish: ".cache/cs-validator"
+      pathToPublish: "validation-results.json"
       artifactName: "validation-results"
 ```
 
@@ -312,8 +444,7 @@ pipeline {
     stages {
         stage('Setup') {
             steps {
-                sh 'apt-get update && apt-get install -y jq'
-                sh 'python3 --version'
+                sh 'cargo install amplihack-cli'
             }
         }
 
@@ -325,17 +456,14 @@ pipeline {
 
         stage('Validate') {
             steps {
-                sh '''
-                    chmod +x tools/*.sh tools/*.py
-                    ./tools/cs-validator.sh --level 3 --verbose
-                '''
+                sh 'amplihack cs-validate --level 3 --format json src/ > validation-results.json'
             }
         }
     }
 
     post {
         always {
-            archiveArtifacts artifacts: '.cache/cs-validator/*.json',
+            archiveArtifacts artifacts: 'validation-results.json',
                            allowEmptyArchive: true
         }
         failure {
@@ -354,18 +482,18 @@ cs-validation:
   image: mcr.microsoft.com/dotnet/sdk:8.0
 
   before_script:
-    - apt-get update
-    - apt-get install -y python3 jq
+    - curl -sSf https://sh.rustup.rs | sh -s -- -y
+    - source "$HOME/.cargo/env"
+    - cargo install amplihack-cli
     - dotnet restore
 
   script:
-    - chmod +x tools/*.sh tools/*.py
-    - ./tools/cs-validator.sh --level 3 --verbose
+    - amplihack cs-validate --level 3 --format json src/ > validation-results.json
 
   artifacts:
     when: always
     paths:
-      - .cache/cs-validator/
+      - validation-results.json
     expire_in: 1 week
 
   only:
