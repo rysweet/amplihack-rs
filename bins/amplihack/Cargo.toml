@@ -38,6 +38,7 @@ serde_yaml = { workspace = true }
 tempfile = { workspace = true }
 libc = { workspace = true }
 regex = { workspace = true }
+base64 = "0.22"
 
 [[test]]
 name = "investigation_workflow_decomposition"
@@ -232,3 +233,12 @@ path = "../../tests/integration/skill_frontmatter_name_test.rs"
 [[test]]
 name = "repo_sweep_issues_599_608"
 path = "../../tests/integration/repo_sweep_issues_599_608_test.rs"
+
+# Issue #605: GitHubDistributor TDD tests.
+# Defines the contract for the fixed GitHubDistributor implementation.
+# Tests FAIL against the feature-gated stubs and PASS after applying the
+# implementation (UTF-8 truncation, base64 crate, temp file push, SHA
+# idempotency, visibility parameter).
+[[test]]
+name = "github_distributor_tdd"
+path = "../../tests/integration/github_distributor_tdd_test.rs"

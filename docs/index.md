@@ -424,6 +424,7 @@ Production-ready executable tools following the Progressive Maturity Model:
 - [Scenario Tools Overview](claude/scenarios/README.md) - Progressive maturity model
 - [Create Your Own Tools](CREATE_YOUR_OWN_TOOLS.md) - Build custom tools
 - [Agent Bundle Generator](agent-bundle-generator-guide.md) - Package agents for distribution
+- [GitHub Distribution](features/github-distribution.md) - Publish bundles to GitHub via `gh` CLI
 
 #### Available Tools
 

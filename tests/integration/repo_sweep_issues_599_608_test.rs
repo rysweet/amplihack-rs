@@ -291,47 +291,35 @@ mod readme_path_refs {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// TC-SWEEP-605: GitHubDistributor is feature-gated
+// TC-SWEEP-605: GitHubDistributor is a real implementation (no feature gate)
 // ═════════════════════════════════════════════════════════════════════════════
 
 mod github_distributor_gate {
     use super::*;
 
-    /// TC-SWEEP-605-01: The `GitHubDistributor` struct must be behind
-    /// `#[cfg(feature = "github-distributor")]`.
+    /// TC-SWEEP-605-01: The `GitHubDistributor` struct must exist and NOT be
+    /// behind a feature gate (feature gate was removed when stubs were replaced
+    /// with real implementation).
     #[test]
-    fn struct_is_feature_gated() {
+    fn struct_exists_not_feature_gated() {
         let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
 
-        // Find the struct definition
         let struct_pos = src
             .find("pub struct GitHubDistributor")
             .expect("GitHubDistributor struct should exist in bundle_generator.rs");
 
-        // The cfg attribute should appear before the struct
+        // The cfg attribute should NOT appear before the struct
         let preceding = &src[..struct_pos];
         let last_cfg = preceding.rfind("#[cfg(feature = \"github-distributor\")]");
         assert!(
-            last_cfg.is_some(),
-            "GitHubDistributor must be gated behind #[cfg(feature = \"github-distributor\")]"
-        );
-
-        // Verify no more than a doc comment + blank lines between cfg and struct
-        let between = &preceding[last_cfg.unwrap()..];
-        let non_attr_lines: Vec<&str> = between
-            .lines()
-            .skip(1) // skip the cfg line itself
-            .filter(|l| !l.trim().is_empty() && !l.trim().starts_with("///"))
-            .collect();
-        assert!(
-            non_attr_lines.is_empty(),
-            "cfg attribute should be immediately before GitHubDistributor (found: {non_attr_lines:?})"
+            last_cfg.is_none(),
+            "GitHubDistributor must NOT be behind a feature gate (stubs replaced with real impl)"
         );
     }
 
-    /// TC-SWEEP-605-02: The impl block must also be feature-gated.
+    /// TC-SWEEP-605-02: The impl block must also NOT be feature-gated.
     #[test]
-    fn impl_is_feature_gated() {
+    fn impl_not_feature_gated() {
         let src = read_file("crates/amplihack-utils/src/bundle_generator.rs");
 
         let impl_pos = src
@@ -339,29 +327,25 @@ mod github_distributor_gate {
             .expect("GitHubDistributor impl should exist");
 
         let preceding = &src[..impl_pos];
-        let last_cfg = preceding.rfind("#[cfg(feature = \"github-distributor\")]");
-        assert!(
-            last_cfg.is_some(),
-            "GitHubDistributor impl must be gated behind #[cfg(feature = \"github-distributor\")]"
-        );
+        // Check there's no cfg(feature) on the line immediately before impl
+        let prev_lines: Vec<&str> = preceding.lines().rev().take(3).collect();
+        for line in &prev_lines {
+            assert!(
+                !line.contains("cfg(feature"),
+                "GitHubDistributor impl must NOT be behind a feature gate"
+            );
+        }
     }
 
-    /// TC-SWEEP-605-03: The feature must be declared in Cargo.toml but NOT in default.
+    /// TC-SWEEP-605-03: The github-distributor feature must NOT exist in Cargo.toml.
     #[test]
-    fn feature_declared_not_default() {
+    fn feature_flag_removed() {
         let toml = read_file("crates/amplihack-utils/Cargo.toml");
 
         assert!(
-            toml.contains("github-distributor = []"),
-            "Cargo.toml must declare github-distributor feature"
+            !toml.contains("github-distributor"),
+            "github-distributor feature flag must be removed from Cargo.toml"
         );
-
-        // Check default does not include it
-        for line in toml.lines() {
-            if line.starts_with("default") && line.contains("github-distributor") {
-                panic!("github-distributor must NOT be in default features");
-            }
-        }
     }
 }
 

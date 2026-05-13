@@ -32,6 +32,7 @@ dependencies = [
  "amplihack-state",
  "amplihack-types",
  "anyhow",
+ "base64",
  "clap",
  "libc",
  "regex",
@@ -448,6 +449,7 @@ dependencies = [
 name = "amplihack-utils"
 version = "0.9.3"
 dependencies = [
+ "base64",
  "chrono",
  "libc",
  "regex",

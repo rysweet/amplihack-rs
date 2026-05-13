@@ -23,6 +23,10 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 
 - [Workflow-Owned PR Recovery Readiness](pr-recovery-readiness.md) — recover existing pull requests through `default-workflow`, reuse the PR branch, verify hook and additive-copy readiness, and finalize only through workflow-owned steps.
 
+## GitHub Distribution
+
+- [GitHub Distribution](github-distribution.md) — publish agent bundles to GitHub repositories via the `gh` CLI, with idempotent uploads, visibility control, and tagged releases.
+
 ## Additional Features
 
 Additional feature documentation will be added as features are ported from upstream.

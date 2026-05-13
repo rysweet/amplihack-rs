@@ -173,7 +173,11 @@ amplihack bundle package ~/my-agent --format tar.gz --output ./dist
 
 ### `bundle distribute`
 
-Distribute a packaged bundle to GitHub.
+Distribute a packaged bundle to a GitHub repository via the `gh` CLI.
+Creates the repository if it does not exist, uploads the bundle via the
+Contents API, and creates a tagged release with the bundle as an asset.
+
+See [GitHub Distribution Guide](features/github-distribution.md) for full details.
 
 **Syntax:**
 
@@ -189,17 +193,22 @@ amplihack bundle distribute <PACKAGE_PATH> [OPTIONS]
 
 - `--github` - Distribute to GitHub (default)
 - `--release` - Create a GitHub release
-- `--public` - Make repository public (default: private)
-- `--pypi` - Distribute to PyPI (coming soon)
+- `--public` - Make repository public (default: public)
+- `--private` - Make repository private
+- `--token` - GitHub token (or set `GH_TOKEN` env var)
 
 **Examples:**
 
 ```bash
-# Distribute to GitHub
-amplihack bundle distribute ./packages/my-agent.uvx --github
+# Distribute to a public GitHub repo (default)
+amplihack bundle distribute ./packages/my-agent.tar.gz --github
 
-# Create public release
-amplihack bundle distribute ./packages/my-agent.uvx --github --release --public
+# Distribute to a private repo
+amplihack bundle distribute ./packages/my-agent.tar.gz --github --private
+
+# Create public release with explicit token
+amplihack bundle distribute ./packages/my-agent.tar.gz --github --release \
+  --token ghp_xxxx
 ```
 
 ### `bundle pipeline`
