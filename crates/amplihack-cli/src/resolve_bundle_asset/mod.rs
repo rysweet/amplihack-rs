@@ -7,7 +7,11 @@ mod search;
 
 use search::{named_asset_search_bases, search_bases};
 
-const SAFE_PATH_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-./";
+/// O(1) check for allowed path characters (A-Z a-z 0-9 _ - . /).
+/// Replaces the O(n) linear scan of a constant string.
+fn is_safe_path_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/')
+}
 
 /// Named asset mappings for runtime bundle assets.
 ///
@@ -50,7 +54,7 @@ pub fn validate_relative_path(relative_path: &str) -> Result<()> {
     if !relative_path.starts_with("amplifier-bundle/") {
         bail!("Path must start with 'amplifier-bundle/': {relative_path:?}");
     }
-    if !relative_path.chars().all(|ch| SAFE_PATH_CHARS.contains(ch)) {
+    if !relative_path.chars().all(is_safe_path_char) {
         bail!("Path contains unsafe characters (allowed: A-Z a-z 0-9 _ - . /): {relative_path:?}");
     }
     Ok(())
