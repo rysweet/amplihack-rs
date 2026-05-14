@@ -98,18 +98,24 @@ pub fn resolve_asset(relative_path: &str) -> Result<PathBuf> {
 /// 3. Walk up from cwd for a repo/project root marker
 /// 4. Workspace root (compile-time anchor)
 /// 5. cwd
+fn named_asset_names() -> String {
+    NAMED_ASSETS
+        .iter()
+        .map(|(n, _)| *n)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub fn resolve_named_asset(name: &str) -> Result<PathBuf> {
     let rel_paths = NAMED_ASSETS
         .iter()
         .find(|(n, _)| *n == name)
         .map(|(_, paths)| *paths)
         .ok_or_else(|| {
-            let valid = NAMED_ASSETS
-                .iter()
-                .map(|(n, _)| *n)
-                .collect::<Vec<_>>()
-                .join(", ");
-            anyhow::anyhow!("Unknown asset name {name:?}. Expected one of: {valid}")
+            anyhow::anyhow!(
+                "Unknown asset name {name:?}. Expected one of: {}",
+                named_asset_names()
+            )
         })?;
 
     for base in named_asset_search_bases() {
@@ -127,40 +133,8 @@ pub fn resolve_named_asset(name: &str) -> Result<PathBuf> {
     )
 }
 
-pub fn run_cli(arg: &str) -> i32 {
-    // Dispatch named assets (e.g. "multitask-orchestrator")
-    if NAMED_ASSETS.iter().any(|(name, _)| *name == arg) {
-        return match resolve_named_asset(arg) {
-            Ok(path) => {
-                println!("{}", path.display());
-                0
-            }
-            Err(err) => {
-                eprintln!("ERROR: {err}");
-                if err.to_string().contains("not found") {
-                    1
-                } else {
-                    2
-                }
-            }
-        };
-    }
-
-    // Guard: if the arg has no '/' it looks like a named-asset lookup, not a
-    // raw relative path. Return exit 1 (not found) instead of letting
-    // validate_relative_path reject it with exit 2 (invalid input). (#588)
-    if !arg.contains('/') {
-        let valid = NAMED_ASSETS
-            .iter()
-            .map(|(n, _)| *n)
-            .collect::<Vec<_>>()
-            .join(", ");
-        eprintln!("ERROR: Unknown asset name {arg:?}. Expected one of: {valid}");
-        return 1;
-    }
-
-    // Fall through to raw amplifier-bundle/ path resolution
-    match resolve_asset(arg) {
+fn resolve_result_to_exit(result: Result<PathBuf>) -> i32 {
+    match result {
         Ok(path) => {
             println!("{}", path.display());
             0
@@ -174,6 +148,27 @@ pub fn run_cli(arg: &str) -> i32 {
             }
         }
     }
+}
+
+pub fn run_cli(arg: &str) -> i32 {
+    // Dispatch named assets (e.g. "multitask-orchestrator")
+    if NAMED_ASSETS.iter().any(|(name, _)| *name == arg) {
+        return resolve_result_to_exit(resolve_named_asset(arg));
+    }
+
+    // Guard: if the arg has no '/' it looks like a named-asset lookup, not a
+    // raw relative path. Return exit 1 (not found) instead of letting
+    // validate_relative_path reject it with exit 2 (invalid input). (#588)
+    if !arg.contains('/') {
+        eprintln!(
+            "ERROR: Unknown asset name {arg:?}. Expected one of: {}",
+            named_asset_names()
+        );
+        return 1;
+    }
+
+    // Fall through to raw amplifier-bundle/ path resolution
+    resolve_result_to_exit(resolve_asset(arg))
 }
 
 #[cfg(test)]
