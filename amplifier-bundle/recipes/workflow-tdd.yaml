@@ -4,47 +4,17 @@ version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "tdd", "implementation"]
 
-# workflow-tdd: extracted from default-workflow.yaml as a composable phase brick.
+# workflow-tdd: composable phase brick extracted from default-workflow.yaml.
+# Context flows in via recipe-runner's _execute_sub_recipe(); outputs propagate
+# back to the parent and are visible to subsequent phase recipes.
 #
-# Preserves every original step verbatim — the layered review steps the LLM
-# converges through must remain intact. Context flows in from the parent
-# workflow via recipe-runner's automatic context-merging in
-# `_execute_sub_recipe()`; outputs declared by these steps propagate back to
-# the parent and are visible to subsequent phase recipes.
-#
-# FIX #611: TDD steps (07/08/08c/08b) do NOT check goal_already_met.
-# The pre-flight probe (step-06d in workflow-design) sets goal_already_met
-# when the linked GitHub issue is closed by a merged PR. However, a closed
-# issue does not always mean the current task is complete — the design may
-# say "no test changes needed" for a refactoring that still requires
-# implementation. Skipping the entire TDD phase based on that signal caused
-# refactoring tasks to produce no code changes.
-#
-# FIX #615: step-08c is now an AGENTIC two-step verifier, not the legacy
-# six-escape-hatch bash guard. The bash guard kept producing false positives
-# because the truth space is irregular: work can land in worktrees, sibling
-# branches, in-step merged PRs, already-closed issues, or remote-only via
-# `gh pr merge`. Every false positive added another special case until the
-# guard collapsed under its own complexity.
-#
-# Replacement (issue #615):
-#   * step-08c-work-verifier   — type: agent. Inspects real artifacts (git
-#     log, gh pr list, gh issue view, working tree) against the original
-#     task description and emits a JSON verdict on its final stdout line:
-#       { "verdict": "WORK_VERIFIED" | "HOLLOW_SUCCESS" |
-#                    "INSUFFICIENT_EVIDENCE",
-#         "evidence": [...], "rationale": "..." }
-#   * step-08c-enforce-verdict — type: bash. Honours the legacy fast-path
-#     opt-outs (orchestration sentinel, ALLOW_NO_OP) for parity with prior
-#     callers, then maps the verdict to exit code:
-#       WORK_VERIFIED         -> exit 0
-#       INSUFFICIENT_EVIDENCE -> loud warning, exit 0
-#       HOLLOW_SUCCESS        -> print verdict + exit 1
-#
-# The recipe-level `goal_already_met` signal is still consumed by downstream
-# phases (publish, finalize) to avoid duplicate PRs. The agentic verifier
-# subsumes the previous in-step #360 closed-issue probe by inspecting the
-# linked issue itself when judging whether work landed.
+# FIX #611: TDD steps do NOT check goal_already_met (closed issue ≠ complete).
+# FIX #615: step-08c is an AGENTIC two-step verifier (work-verifier agent +
+#   enforce-verdict bash gate), replacing the legacy bash hollow-success guard.
+#   Verdicts: WORK_VERIFIED→exit 0, INSUFFICIENT_EVIDENCE→warn+exit 0,
+#   HOLLOW_SUCCESS→exit 1. See issue #615 for full design.
+# FIX #624: enforce-verdict normalizes LLM synonym verdicts and fail-safes
+#   unknown strings to INSUFFICIENT_EVIDENCE instead of exit 1.
 
 recursion:
   max_depth: 6
