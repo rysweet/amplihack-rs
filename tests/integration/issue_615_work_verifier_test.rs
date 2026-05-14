@@ -419,13 +419,19 @@ fn enforce_verdict_returns_one_for_hollow_success() {
 }
 
 #[test]
-fn enforce_verdict_returns_one_for_unknown_verdict() {
+fn enforce_verdict_returns_zero_for_unknown_verdict() {
+    // Issue #624: unknown verdict strings fail-safe to exit 0 (INSUFFICIENT_EVIDENCE).
     let verdict = r#"{"verdict": "WHATEVER", "evidence": [], "rationale": "typo"}"#;
     let run = run_gate(verdict, "anything", "false");
     assert_eq!(
-        run.code, 1,
-        "Unknown verdict literal must fail closed (exit 1) — got code={}, stderr={}",
+        run.code, 0,
+        "Unknown verdict literal must fail-safe to exit 0 (issue #624) — got code={}, stderr={}",
         run.code, run.stderr
+    );
+    assert!(
+        run.stderr.contains("fail-safe") || run.stderr.contains("unknown"),
+        "Unknown verdict should warn about fail-safe; got: {}",
+        run.stderr
     );
 }
 

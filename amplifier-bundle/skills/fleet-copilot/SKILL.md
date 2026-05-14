@@ -54,7 +54,7 @@ Definition of Done:
 ### Step 3: Enable lock
 
 ```bash
-python .claude/tools/amplihack/lock_tool.py lock
+amplihack lock
 ```
 
 ### Step 4: Start working

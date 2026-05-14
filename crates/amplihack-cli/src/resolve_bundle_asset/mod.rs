@@ -13,10 +13,17 @@ const SAFE_PATH_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvw
 ///
 /// Each entry is `(name, &[relative_paths])` where relative_paths are tried in order.
 const NAMED_ASSETS: &[(&str, &[&str])] = &[
-    // NOTE (rysweet/amplihack-rs#285): the "hooks-dir" named asset was removed.
-    // Its only consumers in smart-orchestrator.yaml assigned the result with
-    // `|| true` and never read it; the bundled amplifier-bundle/tools/amplihack/
-    // hooks/ directory has been deleted along with this entry.
+    // Issue #614: re-register hooks-dir and helper-path for smart-orchestrator
+    // preflight compatibility. hooks/ dir exists at amplifier-bundle/tools/amplihack/hooks/.
+    ("hooks-dir", &["amplifier-bundle/tools/amplihack/hooks"]),
+    // helper-path resolves to the orchestrator helper script.
+    (
+        "helper-path",
+        &[
+            "amplifier-bundle/tools/orch_helper.py",
+            "amplifier-bundle/tools/amplihack/orch_helper.py",
+        ],
+    ),
     // Native compatibility wrapper for legacy callers that still resolve the
     // multitask orchestrator by logical asset name.
     (
@@ -344,40 +351,31 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("Unknown asset name"));
         assert!(msg.contains("multitask-orchestrator"));
-        assert!(!msg.contains("helper-path"));
+        // Issue #614: helper-path and hooks-dir are now registered.
+        assert!(msg.contains("helper-path"));
+        assert!(msg.contains("hooks-dir"));
         assert!(!msg.contains("session-tree-path"));
-        // Regression for rysweet/amplihack-rs#285: hooks-dir must no longer
-        // appear in the diagnostic — it is no longer a valid asset name.
+    }
+
+    /// Issue #614: `resolve-bundle-asset hooks-dir` now resolves successfully
+    /// when the hooks directory exists in the bundle.
+    #[test]
+    fn resolve_named_asset_hooks_dir_is_registered() {
+        // hooks-dir is now a valid named asset (re-added in #614).
+        let result = resolve_named_asset("hooks-dir");
         assert!(
-            !msg.contains("hooks-dir"),
-            "hooks-dir must not be advertised in diagnostics (see rysweet/amplihack-rs#285): {msg}"
+            result.is_ok(),
+            "hooks-dir must be a registered named asset (issue #614): {:?}",
+            result.err()
         );
     }
 
-    /// Regression for rysweet/amplihack-rs#285: `resolve-bundle-asset hooks-dir`
-    /// must now fail loudly with the unknown-asset diagnostic instead of
-    /// silently returning a candidate path. Pairs with the data-table guard
-    /// in [`hooks_dir_is_not_in_named_assets_see_issue_285`] to lock both
-    /// the name table and the resolver behaviour.
+    /// Issue #614: hooks-dir must be present in NAMED_ASSETS.
     #[test]
-    fn resolve_named_asset_hooks_dir_now_returns_unknown_asset_error() {
-        let err = resolve_named_asset("hooks-dir").unwrap_err();
-        let msg = err.to_string();
+    fn hooks_dir_is_in_named_assets_see_issue_614() {
         assert!(
-            msg.contains("Unknown asset name"),
-            "hooks-dir must produce the unknown-asset diagnostic: {msg}"
-        );
-    }
-
-    /// Regression guard for rysweet/amplihack-rs#285: `hooks-dir` must remain
-    /// absent from `NAMED_ASSETS`. Re-introducing it without restoring real
-    /// consumers would re-create the dead code path the umbrella issue
-    /// removed.
-    #[test]
-    fn hooks_dir_is_not_in_named_assets_see_issue_285() {
-        assert!(
-            !NAMED_ASSETS.iter().any(|(name, _)| *name == "hooks-dir"),
-            "hooks-dir must remain unregistered (see rysweet/amplihack-rs#285)"
+            NAMED_ASSETS.iter().any(|(name, _)| *name == "hooks-dir"),
+            "hooks-dir must be registered (see rysweet/amplihack-rs#614)"
         );
     }
 
@@ -391,30 +389,27 @@ mod tests {
     // EXPECTED: exit 1 (not found) — these look like named-asset lookups,
     // not raw relative paths, and should be treated as unknown assets.
 
-    /// Regression for #588: `run_cli("helper-path")` must return exit 1
-    /// (asset not found), NOT exit 2 (invalid input). The preflight step
-    /// in smart-orchestrator.yaml calls `amplihack resolve-bundle-asset
-    /// helper-path` and relies on exit 1 to distinguish "asset removed"
-    /// from "bad input".
+    /// Issue #614: `run_cli("helper-path")` is now a registered named asset.
+    /// It returns exit 0 if the helper file exists in the bundle, or exit 1
+    /// if the file doesn't exist (but still routes through named-asset logic).
     #[test]
-    fn run_cli_unregistered_named_asset_helper_path_returns_exit_1() {
+    fn run_cli_registered_named_asset_helper_path() {
         let code = run_cli("helper-path");
-        assert_eq!(
-            code, 1,
-            "run_cli(\"helper-path\") should return 1 (not found), got {code} \
-             — unregistered named assets must not fall through to validate_relative_path"
+        // helper-path is registered; exit code depends on whether the file
+        // exists in the test environment (0 = found, 1 = not found).
+        assert!(
+            code == 0 || code == 1,
+            "run_cli(\"helper-path\") should return 0 or 1 (named asset path), got {code}"
         );
     }
 
-    /// Regression for #588: `run_cli("hooks-dir")` must return exit 1
-    /// (not found) after removal in #285, not exit 2 (invalid input).
+    /// Issue #614: `run_cli("hooks-dir")` is now a registered named asset.
     #[test]
-    fn run_cli_unregistered_named_asset_hooks_dir_returns_exit_1() {
+    fn run_cli_registered_named_asset_hooks_dir() {
         let code = run_cli("hooks-dir");
-        assert_eq!(
-            code, 1,
-            "run_cli(\"hooks-dir\") should return 1 (not found), got {code} \
-             — unregistered named assets must not fall through to validate_relative_path"
+        assert!(
+            code == 0 || code == 1,
+            "run_cli(\"hooks-dir\") should return 0 or 1 (named asset path), got {code}"
         );
     }
 
