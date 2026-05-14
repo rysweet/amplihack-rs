@@ -13,6 +13,8 @@ Use this guide when a recipe step fails unexpectedly — a shell step hangs, an 
 - [Update completes but assets are stale](#update-completes-but-assets-are-stale)
 - [Install fails after switching to the Rust repository](#install-fails-after-switching-to-the-rust-repository)
 - [Step-08c fails with WORKTREE_SETUP_WORKTREE_PATH not set](#step-08c-fails-with-worktree_setup_worktree_path-not-set)
+- [Step-08c rejects a valid verdict synonym](#step-08c-rejects-a-valid-verdict-synonym)
+- [Step-08c reports hollow success on a clean worktree after commit](#step-08c-reports-hollow-success-on-a-clean-worktree-after-commit)
 
 ---
 
@@ -345,6 +347,58 @@ context:
 ```
 
 See [worktree_setup Context Propagation](../reference/worktree-setup-propagation.md) for the complete propagation chain and design rationale.
+
+---
+
+## Step-08c rejects a valid verdict synonym
+
+**Symptom:** The recipe fails at `step-08c-enforce-verdict` with exit code 1, even though the work-verifier agent approved the work. The error log shows a verdict string like `VERIFIED`, `SUCCESS`, or `APPROVED` instead of the canonical `WORK_VERIFIED`.
+
+**Cause:** The work-verifier agent is an LLM. It sometimes produces natural synonyms of the three canonical verdict strings (`WORK_VERIFIED`, `HOLLOW_SUCCESS`, `INSUFFICIENT_EVIDENCE`). Before issue #624, the enforce-verdict bash gate used a strict `case` statement with a `*) exit 1` default — any non-canonical string hard-failed the recipe after the PR had already been opened.
+
+**Fix:** The enforce-verdict step now normalizes common synonyms before the case gate:
+
+| LLM synonym | Normalized to |
+|---|---|
+| `VERIFIED`, `SUCCESS`, `APPROVED`, `PASS`, `PASSED` | `WORK_VERIFIED` |
+| `FAILED`, `NO_WORK`, `EMPTY`, `NO_ARTIFACTS` | `HOLLOW_SUCCESS` |
+| `INCONCLUSIVE`, `UNKNOWN`, `UNCLEAR`, `PARTIAL` | `INSUFFICIENT_EVIDENCE` |
+
+If the verdict string is still unrecognized after synonym mapping, the gate **fail-safes to `INSUFFICIENT_EVIDENCE`** (exit 0 with a loud warning) instead of exit 1. An LLM producing a novel verdict string never hard-fails a recipe that already has real artifacts.
+
+**Verify:**
+
+```sh
+# Run the verdict enforcement integration tests
+cargo test enforce_verdict -- --nocapture
+# The "unknown verdict" test should pass with exit 0 (not exit 1)
+```
+
+---
+
+## Step-08c reports hollow success on a clean worktree after commit
+
+**Symptom:** After the implement step successfully commits, pushes, and opens a PR, `step-08c-work-verifier` reports `HOLLOW_SUCCESS` because the working tree is clean (no uncommitted changes).
+
+**Cause:** A clean working tree after a successful commit/push is **correct behavior** — it means the work was committed to the branch. The legacy bash hollow-success guard counted uncommitted working-tree changes and treated a clean tree as "no work done," which is incorrect for the commit-then-verify flow.
+
+**Fix:** The work-verifier agent (issue #596) now treats `git log` and PR state as **primary evidence** and working-tree state as **secondary**:
+
+1. **Primary:** `git log --oneline origin/main..HEAD` — commits on the branch since divergence
+2. **Primary:** `gh pr list` — PRs matching the task on this branch
+3. **Primary:** `gh issue view` — linked issue closure by merged PR
+4. **Secondary:** `git status --porcelain` — uncommitted edits (additional evidence, not required)
+
+A clean worktree with commits on the branch and/or an open PR produces `WORK_VERIFIED`. The agent only reports `HOLLOW_SUCCESS` when **all** evidence sources show no work — no commits, no PR, no file changes, no linked issue resolution.
+
+**Verify:**
+
+```sh
+# After a successful implement step that committed and pushed:
+git log --oneline origin/main..HEAD   # Should show commits
+gh pr list --head "$(git branch --show-current)"  # Should show PR
+# The verifier should produce WORK_VERIFIED, not HOLLOW_SUCCESS
+```
 
 ---
 

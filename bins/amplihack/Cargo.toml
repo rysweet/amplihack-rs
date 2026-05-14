@@ -242,3 +242,7 @@ path = "../../tests/integration/repo_sweep_issues_599_608_test.rs"
 [[test]]
 name = "github_distributor_tdd"
 path = "../../tests/integration/github_distributor_tdd_test.rs"
+
+[[test]]
+name = "p1_workflow_reliability"
+path = "../../tests/integration/p1_workflow_reliability_test.rs"

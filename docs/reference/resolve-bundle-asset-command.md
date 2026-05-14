@@ -24,17 +24,14 @@ steps, providing the same path-resolution logic without a Python dependency.
 
 | Name | Resolves to |
 |------|-------------|
+| `hooks-dir` | `amplifier-bundle/tools/amplihack/hooks/` |
+| `helper-path` | `amplifier-bundle/tools/orch_helper.py` (fallback: `amplifier-bundle/tools/amplihack/orch_helper.py`) |
 | `multitask-orchestrator` | `amplifier-bundle/bin/multitask-orchestrator.sh` |
 
-Previously available named assets that have been removed:
-
-| Name | Removed in | Notes |
-|------|-----------|-------|
-| `hooks-dir` | PR #285 | Hooks directory moved; asset no longer needed |
-| `helper-path` | PR #285 | Python shim replaced by native Rust resolver |
-
-Attempting to resolve a removed named asset returns exit 1 with a diagnostic
-listing valid names. See [Exit Codes](#exit-codes) below.
+`hooks-dir` and `helper-path` were re-registered in issue #614 to restore
+compatibility with `smart-orchestrator.yaml` preflight steps (lines 58, 74)
+which resolve these assets during recipe startup. `helper-path` tries two
+candidate paths in order and returns the first that exists on disk.
 
 ### Relative Paths
 
@@ -53,13 +50,21 @@ must:
 amplihack resolve-bundle-asset multitask-orchestrator
 # Output: /home/user/.amplihack/amplifier-bundle/bin/multitask-orchestrator.sh
 
+# Resolve the hooks directory (used by smart-orchestrator preflight)
+amplihack resolve-bundle-asset hooks-dir
+# Output: /home/user/.amplihack/amplifier-bundle/tools/amplihack/hooks
+
+# Resolve the orchestrator helper script
+amplihack resolve-bundle-asset helper-path
+# Output: /home/user/.amplihack/amplifier-bundle/tools/orch_helper.py
+
 # Resolve a relative path under amplifier-bundle/
 amplihack resolve-bundle-asset amplifier-bundle/tools/statusline.sh
 # Output: /home/user/.amplihack/amplifier-bundle/tools/statusline.sh
 
-# Attempt to resolve a removed named asset
-amplihack resolve-bundle-asset hooks-dir
-# Stderr: ERROR: Unknown asset name "hooks-dir". Expected one of: multitask-orchestrator
+# Attempt to resolve an unknown named asset
+amplihack resolve-bundle-asset nonexistent-thing
+# Stderr: ERROR: Unknown asset name "nonexistent-thing". Expected one of: hooks-dir, helper-path, multitask-orchestrator
 # Exit: 1
 ```
 
@@ -75,13 +80,13 @@ amplihack resolve-bundle-asset hooks-dir
 
 If `<ASSET>` contains no `/` and is not a registered named asset key, the
 command returns exit code **1** (not found) with a diagnostic listing valid
-named assets. This prevents legacy asset names (e.g. `helper-path`,
-`hooks-dir`) from falling through to relative-path validation — which would
-reject them with exit 2 because they lack the `amplifier-bundle/` prefix.
+named assets. This prevents unknown names from falling through to
+relative-path validation — which would reject them with exit 2 because they
+lack the `amplifier-bundle/` prefix.
 
 ```sh
-$ amplihack resolve-bundle-asset hooks-dir
-ERROR: Unknown asset name "hooks-dir". Expected one of: multitask-orchestrator
+$ amplihack resolve-bundle-asset unknown-asset
+ERROR: Unknown asset name "unknown-asset". Expected one of: hooks-dir, helper-path, multitask-orchestrator
 $ echo $?
 1
 ```
