@@ -4,47 +4,17 @@ version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "tdd", "implementation"]
 
-# workflow-tdd: extracted from default-workflow.yaml as a composable phase brick.
+# workflow-tdd: composable phase brick extracted from default-workflow.yaml.
+# Context flows in via recipe-runner's _execute_sub_recipe(); outputs propagate
+# back to the parent and are visible to subsequent phase recipes.
 #
-# Preserves every original step verbatim — the layered review steps the LLM
-# converges through must remain intact. Context flows in from the parent
-# workflow via recipe-runner's automatic context-merging in
-# `_execute_sub_recipe()`; outputs declared by these steps propagate back to
-# the parent and are visible to subsequent phase recipes.
-#
-# FIX #611: TDD steps (07/08/08c/08b) do NOT check goal_already_met.
-# The pre-flight probe (step-06d in workflow-design) sets goal_already_met
-# when the linked GitHub issue is closed by a merged PR. However, a closed
-# issue does not always mean the current task is complete — the design may
-# say "no test changes needed" for a refactoring that still requires
-# implementation. Skipping the entire TDD phase based on that signal caused
-# refactoring tasks to produce no code changes.
-#
-# FIX #615: step-08c is now an AGENTIC two-step verifier, not the legacy
-# six-escape-hatch bash guard. The bash guard kept producing false positives
-# because the truth space is irregular: work can land in worktrees, sibling
-# branches, in-step merged PRs, already-closed issues, or remote-only via
-# `gh pr merge`. Every false positive added another special case until the
-# guard collapsed under its own complexity.
-#
-# Replacement (issue #615):
-#   * step-08c-work-verifier   — type: agent. Inspects real artifacts (git
-#     log, gh pr list, gh issue view, working tree) against the original
-#     task description and emits a JSON verdict on its final stdout line:
-#       { "verdict": "WORK_VERIFIED" | "HOLLOW_SUCCESS" |
-#                    "INSUFFICIENT_EVIDENCE",
-#         "evidence": [...], "rationale": "..." }
-#   * step-08c-enforce-verdict — type: bash. Honours the legacy fast-path
-#     opt-outs (orchestration sentinel, ALLOW_NO_OP) for parity with prior
-#     callers, then maps the verdict to exit code:
-#       WORK_VERIFIED         -> exit 0
-#       INSUFFICIENT_EVIDENCE -> loud warning, exit 0
-#       HOLLOW_SUCCESS        -> print verdict + exit 1
-#
-# The recipe-level `goal_already_met` signal is still consumed by downstream
-# phases (publish, finalize) to avoid duplicate PRs. The agentic verifier
-# subsumes the previous in-step #360 closed-issue probe by inspecting the
-# linked issue itself when judging whether work landed.
+# FIX #611: TDD steps do NOT check goal_already_met (closed issue ≠ complete).
+# FIX #615: step-08c is an AGENTIC two-step verifier (work-verifier agent +
+#   enforce-verdict bash gate), replacing the legacy bash hollow-success guard.
+#   Verdicts: WORK_VERIFIED→exit 0, INSUFFICIENT_EVIDENCE→warn+exit 0,
+#   HOLLOW_SUCCESS→exit 1. See issue #615 for full design.
+# FIX #624: enforce-verdict normalizes LLM synonym verdicts and fail-safes
+#   unknown strings to INSUFFICIENT_EVIDENCE instead of exit 1.
 
 recursion:
   max_depth: 6
@@ -137,14 +107,8 @@ steps:
       - Any deviations from design (with justification).
     output: "implementation"
 
-  # ==========================================================================
-  # STEP 8c: AGENTIC WORK-VERIFIER (replaces the legacy bash hollow-success
-  # guard — see issue #615 for the architectural rationale).
-  #
-  # Two-step pair:
-  #   step-08c-work-verifier   — agent emits a JSON verdict on its last line
-  #   step-08c-enforce-verdict — bash maps the verdict onto exit code
-  # ==========================================================================
+  # STEP 8c: AGENTIC WORK-VERIFIER — replaces legacy bash hollow-success guard (#615).
+  # Two-step pair: work-verifier (agent→JSON verdict) + enforce-verdict (bash→exit code).
   - id: "step-08c-work-verifier"
     agent: "amplihack:analyzer"
     working_dir: "{{worktree_setup.worktree_path}}"
@@ -173,28 +137,33 @@ steps:
       Be LIBERAL about WHERE work landed; STRICT about WHETHER it landed.
       Skip checks only when irrelevant; mention which you skipped and why.
 
-      1. **Working tree** — `git status --porcelain` and
-         `git diff --stat HEAD`. Uncommitted edits and untracked files count.
-      2. **Local commits since branch point** —
+      IMPORTANT: A clean working tree after a successful commit/push is
+      CORRECT behavior — it means work was committed, not that no work was
+      done. Prioritize git log and PR evidence over working tree state.
+
+      1. **Local commits since branch point (PRIMARY)** —
          `git log --oneline origin/main..HEAD` (fall back to `origin/HEAD`).
          Empty commits and no-op edits do NOT count.
-      3. **Already-merged-during-implement** — the agent may have committed,
+      2. **Already-merged-during-implement** — the agent may have committed,
          pushed, opened a PR, and auto-merged into `origin/main` all within
          step-08; in that case `git merge-base HEAD origin/main` equals HEAD.
          Detect with `git fetch --quiet origin main || true`,
          `git log --oneline --since='6 hours ago' origin/main -- .`, and
          `gh pr list --search 'is:merged author:@me' --limit 20 --json number,title,mergedAt,headRefName`
          (filter to PRs merged within the recipe run window).
-      4. **Sibling branches / worktrees** — `git branch -a --contains HEAD`
+      3. **Sibling branches / worktrees** — `git branch -a --contains HEAD`
          and `git worktree list`.
-      5. **Linked GitHub issue** —
+      4. **Linked GitHub issue** —
          `gh issue view {{issue_number}} --json state,closedByPullRequestsReferences`
          (skip if `{{issue_number}}` is empty). If the issue is `CLOSED` by a
          merged PR whose diff matches the task, verdict = `WORK_VERIFIED`
          (this is the issue #360 case the legacy guard handled).
-      6. **Recent PRs** —
+      5. **Recent PRs** —
          `gh pr list --state all --search 'sort:updated-desc' --limit 20 --json number,title,state,mergedAt,headRefName,url`
          and look for PRs whose title/branch matches this task.
+      6. **Working tree (SECONDARY)** — `git status --porcelain` and
+         `git diff --stat HEAD`. Uncommitted edits and untracked files count
+         as additional evidence, but a clean tree is NOT evidence of no work.
       7. **Intent match** — for every artifact, decide whether it actually
          relates to the task description. Empty files, comment-only changes,
          or unrelated edits do NOT count.
@@ -285,6 +254,13 @@ steps:
 
       VERDICT=$(printf '%s' "$VERDICT_LINE" | jq -r '.verdict // "INSUFFICIENT_EVIDENCE"' 2>/dev/null || echo "INSUFFICIENT_EVIDENCE")
 
+      # Issue #624: Normalize common LLM synonym verdicts before the case gate.
+      case "$VERDICT" in
+        VERIFIED|SUCCESS|APPROVED|PASS|PASSED) VERDICT="WORK_VERIFIED" ;;
+        FAILED|NO_WORK|EMPTY|NO_ARTIFACTS)     VERDICT="HOLLOW_SUCCESS" ;;
+        INCONCLUSIVE|UNKNOWN|UNCLEAR|PARTIAL)  VERDICT="INSUFFICIENT_EVIDENCE" ;;
+      esac
+
       case "$VERDICT" in
         WORK_VERIFIED)
           echo "INFO: step-08c work-verifier APPROVED (issue #615)." >&2
@@ -303,9 +279,12 @@ steps:
           exit 1
           ;;
         *)
-          echo "ERROR: step-08c work-verifier emitted unknown verdict: $VERDICT (issue #615)." >&2
+          # Issue #624: Unknown verdicts fail-safe to INSUFFICIENT_EVIDENCE.
+          # An LLM producing novel verdict strings should never hard-fail a
+          # recipe that already has real artifacts (e.g. an open PR).
+          echo "WARN: step-08c unknown verdict '$VERDICT' — fail-safe to INSUFFICIENT_EVIDENCE (issue #624)." >&2
           printf '%s\n' "$VERDICT_LINE" | jq . >&2 || printf '%s\n' "$VERDICT_LINE" >&2
-          exit 1
+          exit 0
           ;;
       esac
     output: "implementation_noop_guard"
