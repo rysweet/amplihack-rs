@@ -14,15 +14,18 @@ This module provides the core building blocks for orchestrating Claude processes
 ## Module Structure
 
 ```
-orchestration/
-├── README.md               # This file
-├── EXAMPLE_USAGE.py        # Comprehensive usage examples
-├── __init__.py             # Public exports
-├── claude_process.py       # Core process management
-├── execution.py            # Execution strategies
-├── session.py              # Session management
-└── patterns/               # Reusable patterns (future)
-    └── __init__.py
+crates/amplihack-orchestration/
+├── src/
+│   ├── lib.rs              # Public exports
+│   ├── claude_process.rs   # Core process management
+│   ├── execution.rs        # Execution strategies
+│   ├── session.rs          # Session management
+│   └── patterns/
+│       └── mod.rs          # Reusable patterns (future)
+├── examples/
+│   └── usage.rs            # Comprehensive usage examples
+└── docs/
+    └── README.md           # This file
 ```
 
 ## Core Components
@@ -31,23 +34,23 @@ orchestration/
 
 Manages a single Claude CLI subprocess:
 
-```python
-from orchestration import ClaudeProcess
+```rust
+use amplihack_orchestration::ClaudeProcess;
 
-process = ClaudeProcess(
-    prompt="Analyze this code",
-    process_id="security-analysis",
-    working_dir=Path("/project"),
-    log_dir=Path("/logs"),
-    model="claude-3-opus",
-    stream_output=True,
-    timeout=300
-)
+let process = ClaudeProcess::new(ClaudeProcessConfig {
+    prompt: "Analyze this code".into(),
+    process_id: "security-analysis".into(),
+    working_dir: PathBuf::from("/project"),
+    log_dir: PathBuf::from("/logs"),
+    model: Some("claude-3-opus".into()),
+    stream_output: true,
+    timeout: Some(300),
+});
 
-result = process.run()
-print(f"Exit code: {result.exit_code}")
-print(f"Duration: {result.duration}s")
-print(f"Output: {result.output}")
+let result = process.run()?;
+println!("Exit code: {}", result.exit_code);
+println!("Duration: {}s", result.duration);
+println!("Output: {}", result.output);
 ```
 
 **Features**:
@@ -62,33 +65,33 @@ print(f"Output: {result.output}")
 
 Structured result from process execution:
 
-```python
-@dataclass
-class ProcessResult:
-    exit_code: int      # 0=success, -1=timeout, other=error
-    output: str         # Combined stdout
-    stderr: str         # Stderr output
-    duration: float     # Execution time in seconds
-    process_id: str     # Process identifier
+```rust
+pub struct ProcessResult {
+    pub exit_code: i32,      // 0=success, -1=timeout, other=error
+    pub output: String,      // Combined stdout
+    pub stderr: String,      // Stderr output
+    pub duration: f64,       // Execution time in seconds
+    pub process_id: String,  // Process identifier
+}
 ```
 
 ### OrchestratorSession
 
 Session management with logging:
 
-```python
-from orchestration import OrchestratorSession
+```rust
+use amplihack_orchestration::OrchestratorSession;
 
-session = OrchestratorSession(
-    pattern_name="parallel-analysis",
-    working_dir=Path("/project")
-)
+let session = OrchestratorSession::new(
+    "parallel-analysis",
+    PathBuf::from("/project"),
+);
 
-# Factory method creates configured processes
-p1 = session.create_process("Analyze security", "security")
-p2 = session.create_process("Analyze performance", "performance")
+// Factory method creates configured processes
+let p1 = session.create_process("Analyze security", "security");
+let p2 = session.create_process("Analyze performance", "performance");
 
-session.log("Starting analysis")
+session.log("Starting analysis");
 ```
 
 ## Execution Strategies
@@ -97,13 +100,13 @@ session.log("Starting analysis")
 
 Run multiple processes concurrently:
 
-```python
-from orchestration import run_parallel
+```rust
+use amplihack_orchestration::run_parallel;
 
-results = run_parallel(processes, max_workers=3)
+let results = run_parallel(processes, Some(3));
 
-successful = [r for r in results if r.exit_code == 0]
-print(f"{len(successful)}/{len(results)} succeeded")
+let successful: Vec<_> = results.iter().filter(|r| r.exit_code == 0).collect();
+println!("{}/{} succeeded", successful.len(), results.len());
 ```
 
 **Use cases**:
@@ -116,15 +119,15 @@ print(f"{len(successful)}/{len(results)} succeeded")
 
 Run processes one at a time:
 
-```python
-from orchestration import run_sequential
+```rust
+use amplihack_orchestration::run_sequential;
 
-# With output passing
-results = run_sequential(
+// With output passing
+let results = run_sequential(
     processes,
-    pass_output=True,      # Pass output to next process
-    stop_on_failure=True   # Stop on first error
-)
+    true,      // pass_output: pass output to next process
+    true,      // stop_on_failure: stop on first error
+);
 ```
 
 **Use cases**:
@@ -137,13 +140,14 @@ results = run_sequential(
 
 Try processes until one succeeds:
 
-```python
-from orchestration import run_with_fallback
+```rust
+use amplihack_orchestration::run_with_fallback;
 
-result = run_with_fallback(processes, timeout=300)
+let result = run_with_fallback(processes, Some(Duration::from_secs(300)));
 
-if result.exit_code == 0:
-    print(f"Succeeded with: {result.process_id}")
+if result.exit_code == 0 {
+    println!("Succeeded with: {}", result.process_id);
+}
 ```
 
 **Use cases**:
@@ -156,14 +160,14 @@ if result.exit_code == 0:
 
 Run processes in parallel batches:
 
-```python
-from orchestration import run_batched
+```rust
+use amplihack_orchestration::run_batched;
 
-results = run_batched(
+let results = run_batched(
     processes,
-    batch_size=3,
-    pass_output=True  # Pass batch outputs to next batch
-)
+    3,         // batch_size
+    true,      // pass_output: pass batch outputs to next batch
+);
 ```
 
 **Use cases**:
@@ -176,57 +180,59 @@ results = run_batched(
 
 ### Multi-Agent Parallel Analysis
 
-```python
-from pathlib import Path
-from orchestration import OrchestratorSession, run_parallel
+```rust
+use std::path::PathBuf;
+use amplihack_orchestration::{OrchestratorSession, run_parallel};
 
-# Create session
-session = OrchestratorSession("multi-agent")
+// Create session
+let session = OrchestratorSession::new("multi-agent", None);
 
-# Create agent processes
-agents = [
+// Create agent processes
+let agents = vec![
     session.create_process("Analyze security", "security"),
     session.create_process("Analyze performance", "performance"),
     session.create_process("Analyze maintainability", "maintainability"),
-]
+];
 
-# Run in parallel
-results = run_parallel(agents, max_workers=3)
+// Run in parallel
+let results = run_parallel(agents, Some(3));
 
-# Process results
-for result in results:
-    if result.exit_code == 0:
-        print(f"✓ {result.process_id}: {result.duration:.1f}s")
-    else:
-        print(f"✗ {result.process_id}: FAILED")
+// Process results
+for result in &results {
+    if result.exit_code == 0 {
+        println!("✓ {}: {:.1}s", result.process_id, result.duration);
+    } else {
+        println!("✗ {}: FAILED", result.process_id);
+    }
+}
 ```
 
 ### Sequential Pipeline
 
-```python
-session = OrchestratorSession("pipeline")
+```rust
+let session = OrchestratorSession::new("pipeline", None);
 
-stages = [
+let stages = vec![
     session.create_process("Analyze codebase", "analyze"),
     session.create_process("Create improvement plan", "plan"),
     session.create_process("Implement improvements", "implement"),
-]
+];
 
-results = run_sequential(stages, pass_output=True, stop_on_failure=True)
+let results = run_sequential(stages, true, true);
 ```
 
 ### Adaptive Fallback
 
-```python
-session = OrchestratorSession("adaptive")
+```rust
+let session = OrchestratorSession::new("adaptive", None);
 
-strategies = [
-    session.create_process("Advanced analysis", "advanced", timeout=300),
-    session.create_process("Standard analysis", "standard", timeout=300),
-    session.create_process("Basic analysis", "basic", timeout=300),
-]
+let strategies = vec![
+    session.create_process_with_timeout("Advanced analysis", "advanced", 300),
+    session.create_process_with_timeout("Standard analysis", "standard", 300),
+    session.create_process_with_timeout("Basic analysis", "basic", 300),
+];
 
-result = run_with_fallback(strategies, timeout=300)
+let result = run_with_fallback(strategies, Some(Duration::from_secs(300)));
 ```
 
 ## Design Principles
@@ -234,7 +240,7 @@ result = run_with_fallback(strategies, timeout=300)
 ### Ruthless Simplicity
 
 - Direct implementation, no over-engineering
-- Reuse proven patterns from auto_mode.py
+- Reuse proven patterns from auto_mode.rs
 - Clear contracts and boundaries
 
 ### Modular Design (Bricks & Studs)
@@ -255,15 +261,15 @@ result = run_with_fallback(strategies, timeout=300)
 This module can be regenerated from:
 
 1. This README (specification)
-2. auto_mode.py (proven subprocess patterns)
+2. auto_mode.rs (proven subprocess patterns)
 3. Project philosophy (PHILOSOPHY.md)
 
-Key extraction points from auto_mode.py:
+Key extraction points from auto_mode.rs:
 
-- Lines 69-161: Subprocess mechanics with PTY
-- Lines 82-97: PTY setup and Popen
-- Lines 103-128: Thread-based output capture
-- Lines 110-127: PTY stdin feeding
+- Subprocess mechanics with PTY
+- PTY setup and Command::new()
+- Thread-based output capture
+- PTY stdin feeding
 
 ## Future Extensions
 
@@ -280,9 +286,12 @@ Potential additions (not implemented yet):
 
 To test the infrastructure:
 
-```python
+```bash
+# Run tests
+cargo test -p amplihack-orchestration
+
 # Run examples
-python orchestration/EXAMPLE_USAGE.py
+cargo run --example usage
 
 # Check logs
 ls -la .claude/runtime/logs/
@@ -306,13 +315,13 @@ The orchestration infrastructure is designed to be integrated with:
 
 **Inputs**:
 
-- prompt: str (required)
-- process_id: str (required)
-- working_dir: Path (required)
-- log_dir: Path (required)
-- model: Optional[str]
-- stream_output: bool = True
-- timeout: Optional[int] = None
+- prompt: String (required)
+- process_id: String (required)
+- working_dir: PathBuf (required)
+- log_dir: PathBuf (required)
+- model: Option<String>
+- stream_output: bool = true
+- timeout: Option<u64> = None
 
 **Outputs**:
 
@@ -330,26 +339,26 @@ The orchestration infrastructure is designed to be integrated with:
 
 **run_parallel**:
 
-- Input: List[ClaudeProcess], optional max_workers
-- Output: List[ProcessResult] in completion order
-- Guarantees: All processes execute, exceptions converted to failed results
+- Input: Vec<ClaudeProcess>, optional max_workers: Option<usize>
+- Output: Vec<ProcessResult> in completion order
+- Guarantees: All processes execute, errors converted to failed results
 
 **run_sequential**:
 
-- Input: List[ClaudeProcess], optional pass_output, stop_on_failure
-- Output: List[ProcessResult] in execution order
+- Input: Vec<ClaudeProcess>, optional pass_output: bool, stop_on_failure: bool
+- Output: Vec<ProcessResult> in execution order
 - Guarantees: Order preserved, output passing works, stops on failure if requested
 
 **run_with_fallback**:
 
-- Input: List[ClaudeProcess], optional timeout
+- Input: Vec<ClaudeProcess>, optional timeout: Option<Duration>
 - Output: Single ProcessResult (first success or last failure)
 - Guarantees: Tries all until success, applies timeout to each
 
 **run_batched**:
 
-- Input: List[ClaudeProcess], batch_size, optional pass_output
-- Output: List[ProcessResult] in batch completion order
+- Input: Vec<ClaudeProcess>, batch_size: usize, optional pass_output: bool
+- Output: Vec<ProcessResult> in batch completion order
 - Guarantees: Batches process in order, batch outputs can pass to next batch
 
 ## License

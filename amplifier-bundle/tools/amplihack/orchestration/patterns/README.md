@@ -12,7 +12,7 @@ Each pattern addresses a different aspect of reliability:
 
 ## Patterns
 
-### 1. N-Version Programming (`n_version.py`)
+### 1. N-Version Programming (`n_version.rs`)
 
 Generate N independent implementations in parallel, compare them, and select the best.
 
@@ -25,18 +25,19 @@ Generate N independent implementations in parallel, compare them, and select the
 
 **Example:**
 
-```python
-from .n_version import run_n_version
+```rust
+use amplihack_orchestration::patterns::n_version::run_n_version;
 
-result = run_n_version(
-    task_prompt="Implement password hashing function",
-    n=3,
-    selection_criteria=["security", "correctness", "simplicity"],
-    timeout=300,
-)
+let result = run_n_version(RunNVersionConfig {
+    task_prompt: "Implement password hashing function".into(),
+    n: 3,
+    selection_criteria: vec!["security".into(), "correctness".into(), "simplicity".into()],
+    timeout: Some(300),
+    ..Default::default()
+});
 
-print(f"Selected: {result['selected']}")
-print(f"Rationale: {result['rationale']}")
+println!("Selected: {}", result.selected);
+println!("Rationale: {}", result.rationale);
 ```
 
 **Based on:** `~/.amplihack/.claude/workflow/N_VERSION_WORKFLOW.md`
@@ -50,20 +51,20 @@ print(f"Rationale: {result['rationale']}")
 
 **Returns:**
 
-```python
-{
-    "versions": List[ProcessResult],      # All N implementation outputs
-    "comparison": ProcessResult,          # Reviewer analysis
-    "selected": str,                      # "version_1", "version_2", or "hybrid"
-    "rationale": str,                     # Selection explanation
-    "session_id": str,                    # For log tracking
-    "success": bool,                      # Overall success
+```rust
+NVersionResult {
+    versions: Vec<ProcessResult>,      // All N implementation outputs
+    comparison: ProcessResult,          // Reviewer analysis
+    selected: String,                   // "version_1", "version_2", or "hybrid"
+    rationale: String,                  // Selection explanation
+    session_id: String,                 // For log tracking
+    success: bool,                      // Overall success
 }
 ```
 
 ---
 
-### 2. Multi-Agent Debate (`debate.py`)
+### 2. Multi-Agent Debate (`debate.rs`)
 
 Conduct structured debate with multiple perspectives to reach consensus on complex decisions.
 
@@ -76,18 +77,19 @@ Conduct structured debate with multiple perspectives to reach consensus on compl
 
 **Example:**
 
-```python
-from .debate import run_debate
+```rust
+use amplihack_orchestration::patterns::debate::run_debate;
 
-result = run_debate(
-    decision_question="Should we use PostgreSQL or MongoDB?",
-    perspectives=["security", "performance", "simplicity", "cost"],
-    rounds=3,
-    timeout=180,
-)
+let result = run_debate(RunDebateConfig {
+    decision_question: "Should we use PostgreSQL or MongoDB?".into(),
+    perspectives: vec!["security".into(), "performance".into(), "simplicity".into(), "cost".into()],
+    rounds: 3,
+    timeout: Some(180),
+    ..Default::default()
+});
 
-print(f"Consensus: {result['synthesis'].output}")
-print(f"Confidence: {result['confidence']}")
+println!("Consensus: {}", result.synthesis.output);
+println!("Confidence: {}", result.confidence);
 ```
 
 **Based on:** `~/.amplihack/.claude/workflow/DEBATE_WORKFLOW.md`
@@ -102,20 +104,20 @@ print(f"Confidence: {result['confidence']}")
 
 **Returns:**
 
-```python
-{
-    "rounds": List[dict],                 # Each round's results
-    "positions": Dict[str, List[str]],    # Position history per perspective
-    "synthesis": ProcessResult,           # Final consensus
-    "confidence": str,                    # "HIGH", "MEDIUM", or "LOW"
-    "session_id": str,                    # For log tracking
-    "success": bool,                      # Overall success
+```rust
+DebateResult {
+    rounds: Vec<RoundResult>,                 // Each round's results
+    positions: HashMap<String, Vec<String>>,   // Position history per perspective
+    synthesis: ProcessResult,                  // Final consensus
+    confidence: String,                        // "HIGH", "MEDIUM", or "LOW"
+    session_id: String,                        // For log tracking
+    success: bool,                             // Overall success
 }
 ```
 
 ---
 
-### 3. Fallback Cascade (`cascade.py`)
+### 3. Fallback Cascade (`cascade.rs`)
 
 Graceful degradation through cascading fallback strategies.
 
@@ -128,19 +130,21 @@ Graceful degradation through cascading fallback strategies.
 
 **Example:**
 
-```python
-from .cascade import run_cascade
+```rust
+use amplihack_orchestration::patterns::cascade::run_cascade;
 
-result = run_cascade(
-    task_prompt="Generate API documentation",
-    fallback_strategy="quality",      # or "service", "freshness", "completeness"
-    timeout_strategy="balanced",      # or "aggressive", "patient"
-    notification_level="explicit",
-)
+let result = run_cascade(RunCascadeConfig {
+    task_prompt: "Generate API documentation".into(),
+    fallback_strategy: "quality".into(),      // or "service", "freshness", "completeness"
+    timeout_strategy: "balanced".into(),      // or "aggressive", "patient"
+    notification_level: "explicit".into(),
+    ..Default::default()
+});
 
-print(f"Succeeded at {result['cascade_level']} level")
-if result['degradation']:
-    print(f"Degradation: {result['degradation']}")
+println!("Succeeded at {} level", result.cascade_level);
+if !result.degradation.is_empty() {
+    println!("Degradation: {}", result.degradation);
+}
 ```
 
 **Based on:** `~/.amplihack/.claude/workflow/CASCADE_WORKFLOW.md`
@@ -155,14 +159,14 @@ if result['degradation']:
 
 **Returns:**
 
-```python
-{
-    "result": ProcessResult,              # Final successful result
-    "cascade_level": str,                 # "primary", "secondary", "tertiary", or "failed"
-    "degradation": str,                   # Degradation description (if any)
-    "attempts": List[ProcessResult],      # All attempts made
-    "session_id": str,                    # For log tracking
-    "success": bool,                      # Whether any level succeeded
+```rust
+CascadeResult {
+    result: ProcessResult,              // Final successful result
+    cascade_level: String,              // "primary", "secondary", "tertiary", or "failed"
+    degradation: String,                // Degradation description (if any)
+    attempts: Vec<ProcessResult>,       // All attempts made
+    session_id: String,                 // For log tracking
+    success: bool,                      // Whether any level succeeded
 }
 ```
 
@@ -172,9 +176,9 @@ if result['degradation']:
 
 All patterns share these common parameters:
 
-- `working_dir: Optional[Path]` - Working directory (default: current dir)
-- `model: Optional[str]` - Claude model to use (default: CLI default)
-- `timeout: Optional[int]` - Timeout per process in seconds
+- `working_dir: Option<PathBuf>` - Working directory (default: current dir)
+- `model: Option<String>` - Claude model to use (default: CLI default)
+- `timeout: Option<u64>` - Timeout per process in seconds
 
 ## Session Logs
 
@@ -198,7 +202,7 @@ Session IDs are returned in results for traceability.
 
 ## Examples
 
-See `PATTERN_EXAMPLES.py` for complete working examples of each pattern.
+See `examples/patterns.rs` for complete working examples of each pattern.
 
 ## Integration with Workflows
 
@@ -214,15 +218,15 @@ All patterns are built on the orchestration infrastructure:
 
 ```
 patterns/
-├── n_version.py        # N-Version Programming orchestrator
-├── debate.py           # Multi-Agent Debate orchestrator
-├── cascade.py          # Fallback Cascade orchestrator
-└── __init__.py         # Pattern exports
+├── n_version.rs        # N-Version Programming orchestrator
+├── debate.rs           # Multi-Agent Debate orchestrator
+├── cascade.rs          # Fallback Cascade orchestrator
+└── mod.rs              # Pattern exports
 
 Uses:
-../claude_process.py    # Subprocess wrapper
-../execution.py         # Parallel/sequential/fallback helpers
-../session.py           # Session management
+../claude_process.rs    # Subprocess wrapper
+../execution.rs         # Parallel/sequential/fallback helpers
+../session.rs           # Session management
 ```
 
 ## Philosophy Alignment
@@ -239,69 +243,75 @@ These patterns follow Amplihack's core principles:
 
 ### Custom Cascade Levels
 
-```python
-from .cascade import create_custom_cascade
+```rust
+use amplihack_orchestration::patterns::cascade::create_custom_cascade;
 
-result = create_custom_cascade(
-    task_prompt="Analyze code",
-    levels=[
-        {
-            "name": "deep_analysis",
-            "timeout": 120,
-            "constraint": "comprehensive analysis with all recommendations",
+let result = create_custom_cascade(CreateCustomCascadeConfig {
+    task_prompt: "Analyze code".into(),
+    levels: vec![
+        CascadeLevel {
+            name: "deep_analysis".into(),
+            timeout: 120,
+            constraint: "comprehensive analysis with all recommendations".into(),
+            ..Default::default()
         },
-        {
-            "name": "quick_scan",
-            "timeout": 30,
-            "constraint": "identify major issues only",
+        CascadeLevel {
+            name: "quick_scan".into(),
+            timeout: 30,
+            constraint: "identify major issues only".into(),
+            ..Default::default()
         },
-        {
-            "name": "syntax_check",
-            "timeout": 5,
-            "constraint": "basic syntax validation",
+        CascadeLevel {
+            name: "syntax_check".into(),
+            timeout: 5,
+            constraint: "basic syntax validation".into(),
+            ..Default::default()
         },
     ],
-)
+    ..Default::default()
+});
 ```
 
 ### Custom N-Version Profiles
 
-```python
-result = run_n_version(
-    task_prompt="Implement feature",
-    diversity_profiles=[
-        {
-            "name": "security_first",
-            "traits": "Prioritize security over all else, defensive programming",
+```rust
+let result = run_n_version(RunNVersionConfig {
+    task_prompt: "Implement feature".into(),
+    diversity_profiles: Some(vec![
+        DiversityProfile {
+            name: "security_first".into(),
+            traits: "Prioritize security over all else, defensive programming".into(),
         },
-        {
-            "name": "performance_first",
-            "traits": "Optimize for speed, minimize allocations",
+        DiversityProfile {
+            name: "performance_first".into(),
+            traits: "Optimize for speed, minimize allocations".into(),
         },
-        {
-            "name": "maintainability_first",
-            "traits": "Optimize for readability and future changes",
+        DiversityProfile {
+            name: "maintainability_first".into(),
+            traits: "Optimize for readability and future changes".into(),
         },
-    ],
-)
+    ]),
+    ..Default::default()
+});
 ```
 
 ### Extended Debate Perspectives
 
-```python
-result = run_debate(
-    decision_question="Which framework?",
-    perspectives=[
-        "security",
-        "performance",
-        "simplicity",
-        "maintainability",
-        "cost",
-        "scalability",
-        "user_experience",
+```rust
+let result = run_debate(RunDebateConfig {
+    decision_question: "Which framework?".into(),
+    perspectives: vec![
+        "security".into(),
+        "performance".into(),
+        "simplicity".into(),
+        "maintainability".into(),
+        "cost".into(),
+        "scalability".into(),
+        "user_experience".into(),
     ],
-    rounds=4,  # More rounds for complex decisions
-)
+    rounds: 4,  // More rounds for complex decisions
+    ..Default::default()
+});
 ```
 
 ## Contributing
@@ -310,9 +320,9 @@ When adding new patterns:
 
 1. Create new file in `patterns/` directory
 2. Implement using orchestration infrastructure
-3. Add comprehensive docstrings
-4. Update `__init__.py` exports
-5. Add examples to `PATTERN_EXAMPLES.py`
+3. Add comprehensive doc comments
+4. Update `mod.rs` exports
+5. Add examples to `examples/patterns.rs`
 6. Update this README
 
 ## References

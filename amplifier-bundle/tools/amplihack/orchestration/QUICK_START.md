@@ -10,15 +10,15 @@ The orchestration infrastructure is already installed at:
 .claude/tools/amplihack/orchestration/
 ```
 
-### Basic Import
+### Basic Usage
 
-```python
-from pathlib import Path
-from orchestration import (
+```rust
+use std::path::PathBuf;
+use amplihack_orchestration::{
     OrchestratorSession,
     run_parallel,
     run_sequential,
-)
+};
 ```
 
 ## Common Patterns
@@ -27,161 +27,163 @@ from orchestration import (
 
 Run multiple agents in parallel:
 
-```python
-# Create session
-session = OrchestratorSession("parallel-agents")
+```rust
+// Create session
+let session = OrchestratorSession::new("parallel-agents", None);
 
-# Create agent processes
-agents = [
+// Create agent processes
+let agents = vec![
     session.create_process("Analyze security", "security"),
     session.create_process("Analyze performance", "performance"),
     session.create_process("Analyze maintainability", "maintainability"),
-]
+];
 
-# Run in parallel
-results = run_parallel(agents, max_workers=3)
+// Run in parallel
+let results = run_parallel(agents, Some(3));
 
-# Check results
-for r in results:
-    if r.exit_code == 0:
-        print(f"✓ {r.process_id} completed in {r.duration:.1f}s")
+// Check results
+for r in &results {
+    if r.exit_code == 0 {
+        println!("✓ {} completed in {:.1}s", r.process_id, r.duration);
+    }
+}
 ```
 
 ### Pattern 2: Sequential Pipeline
 
 Run stages with output passing:
 
-```python
-session = OrchestratorSession("pipeline")
+```rust
+let session = OrchestratorSession::new("pipeline", None);
 
-stages = [
+let stages = vec![
     session.create_process("Analyze code", "analyze"),
     session.create_process("Create plan", "plan"),
     session.create_process("Implement", "implement"),
-]
+];
 
-results = run_sequential(stages, pass_output=True)
+let results = run_sequential(stages, true, false);
 ```
 
 ### Pattern 3: Retry with Fallback
 
 Try different approaches:
 
-```python
-from orchestration import run_with_fallback
+```rust
+use amplihack_orchestration::run_with_fallback;
 
-session = OrchestratorSession("retry")
+let session = OrchestratorSession::new("retry", None);
 
-attempts = [
-    session.create_process("Complex approach", "advanced", timeout=300),
-    session.create_process("Simple approach", "basic", timeout=300),
-]
+let attempts = vec![
+    session.create_process_with_timeout("Complex approach", "advanced", 300),
+    session.create_process_with_timeout("Simple approach", "basic", 300),
+];
 
-result = run_with_fallback(attempts)
+let result = run_with_fallback(attempts, None);
 ```
 
 ### Pattern 4: Batched Processing
 
 Process many items in controlled batches:
 
-```python
-from orchestration import run_batched
+```rust
+use amplihack_orchestration::run_batched;
 
-session = OrchestratorSession("batch")
+let session = OrchestratorSession::new("batch", None);
 
-# Create many processes
-processes = [
-    session.create_process(f"Process item {i}", f"item-{i}")
-    for i in range(20)
-]
+// Create many processes
+let processes: Vec<_> = (0..20)
+    .map(|i| session.create_process(&format!("Process item {}", i), &format!("item-{}", i)))
+    .collect();
 
-# Run in batches of 5
-results = run_batched(processes, batch_size=5)
+// Run in batches of 5
+let results = run_batched(processes, 5, false);
 ```
 
 ## Quick Reference
 
 ### OrchestratorSession
 
-```python
-session = OrchestratorSession(
-    pattern_name="my-pattern",      # Pattern identifier
-    working_dir=Path("/project"),   # Optional: defaults to cwd
-    base_log_dir=Path("/logs"),     # Optional: defaults to .claude/runtime/logs
-    model="claude-3-opus"           # Optional: defaults to CLI default
-)
+```rust
+let session = OrchestratorSession::new_with_config(OrchestratorSessionConfig {
+    pattern_name: "my-pattern".into(),      // Pattern identifier
+    working_dir: Some(PathBuf::from("/project")),   // Optional: defaults to cwd
+    base_log_dir: Some(PathBuf::from("/logs")),     // Optional: defaults to .claude/runtime/logs
+    model: Some("claude-3-opus".into()),            // Optional: defaults to CLI default
+});
 
-# Factory method
-process = session.create_process(
-    prompt="Task description",
-    process_id="task-001",          # Optional: auto-generated if omitted
-    timeout=300                     # Optional: seconds
-)
+// Factory method
+let process = session.create_process_with_timeout(
+    "Task description",       // prompt
+    "task-001",               // process_id (optional: auto-generated if omitted)
+    300,                      // timeout in seconds (optional)
+);
 ```
 
 ### ClaudeProcess
 
-```python
-from orchestration import ClaudeProcess
+```rust
+use amplihack_orchestration::ClaudeProcess;
 
-process = ClaudeProcess(
-    prompt="Analyze this code",
-    process_id="analyze-001",
-    working_dir=Path.cwd(),
-    log_dir=Path(".logs"),
-    model="claude-3-sonnet",        # Optional
-    stream_output=True,             # Optional: default True
-    timeout=300                     # Optional: default None (no timeout)
-)
+let process = ClaudeProcess::new(ClaudeProcessConfig {
+    prompt: "Analyze this code".into(),
+    process_id: "analyze-001".into(),
+    working_dir: std::env::current_dir().unwrap(),
+    log_dir: PathBuf::from(".logs"),
+    model: Some("claude-3-sonnet".into()),  // Optional
+    stream_output: true,                     // Optional: default true
+    timeout: Some(300),                      // Optional: default None (no timeout)
+});
 
-result = process.run()
+let result = process.run()?;
 ```
 
 ### ProcessResult
 
-```python
-# After running a process
-result = process.run()
+```rust
+// After running a process
+let result = process.run()?;
 
-# Check result
-if result.exit_code == 0:
-    print(f"Success! Output:\n{result.output}")
-else:
-    print(f"Failed with code {result.exit_code}")
-    print(f"Error: {result.stderr}")
+// Check result
+if result.exit_code == 0 {
+    println!("Success! Output:\n{}", result.output);
+} else {
+    println!("Failed with code {}", result.exit_code);
+    println!("Error: {}", result.stderr);
+}
 
-print(f"Duration: {result.duration:.1f}s")
+println!("Duration: {:.1}s", result.duration);
 ```
 
 ### Execution Helpers
 
-```python
-from orchestration import (
+```rust
+use amplihack_orchestration::{
     run_parallel,
     run_sequential,
     run_with_fallback,
-    run_batched
-)
+    run_batched,
+};
 
-# Parallel (independent tasks)
-results = run_parallel(processes, max_workers=3)
+// Parallel (independent tasks)
+let results = run_parallel(processes, Some(3));
 
-# Sequential (dependent tasks)
-results = run_sequential(
+// Sequential (dependent tasks)
+let results = run_sequential(
     processes,
-    pass_output=True,       # Pass output to next
-    stop_on_failure=True    # Stop on first error
-)
+    true,       // pass_output: pass output to next
+    true,       // stop_on_failure: stop on first error
+);
 
-# Fallback (retry until success)
-result = run_with_fallback(processes, timeout=300)
+// Fallback (retry until success)
+let result = run_with_fallback(processes, Some(Duration::from_secs(300)));
 
-# Batched (controlled parallelism)
-results = run_batched(
+// Batched (controlled parallelism)
+let results = run_batched(
     processes,
-    batch_size=5,
-    pass_output=True        # Pass batch outputs
-)
+    5,          // batch_size
+    true,       // pass_output: pass batch outputs
+);
 ```
 
 ## Logging
@@ -206,59 +208,57 @@ All operations are logged automatically:
 
 ### ❌ Don't: Create processes without a session
 
-```python
-# Hard to manage logs and state
-process = ClaudeProcess(prompt, id, cwd, log_dir, ...)
+```rust
+// Hard to manage logs and state
+let process = ClaudeProcess::new(config);
 ```
 
 ### ✅ Do: Use session factory
 
-```python
-session = OrchestratorSession("my-pattern")
-process = session.create_process(prompt, id)
+```rust
+let session = OrchestratorSession::new("my-pattern", None);
+let process = session.create_process(prompt, id);
 ```
 
 ### ❌ Don't: Run sequential when parallel is possible
 
-```python
-# Slower for independent tasks
-results = run_sequential(independent_tasks)
+```rust
+// Slower for independent tasks
+let results = run_sequential(independent_tasks, false, false);
 ```
 
 ### ✅ Do: Use parallel for independent tasks
 
-```python
-results = run_parallel(independent_tasks)
+```rust
+let results = run_parallel(independent_tasks, None);
 ```
 
 ### ❌ Don't: Forget timeout for long-running tasks
 
-```python
-process = session.create_process(prompt)  # No timeout!
+```rust
+let process = session.create_process(prompt, "id");  // No timeout!
 ```
 
 ### ✅ Do: Set reasonable timeouts
 
-```python
-process = session.create_process(prompt, timeout=300)
+```rust
+let process = session.create_process_with_timeout(prompt, "id", 300);
 ```
 
 ## Examples
 
 See detailed examples in:
 
-- `EXAMPLE_USAGE.py` - Runnable examples
+- `examples/usage.rs` - Runnable examples
 - `README.md` - Complete documentation
 
 ## Troubleshooting
 
-### Import Error
+### Build Error
 
-```python
-# Add to path
-import sys
-sys.path.insert(0, '.claude/tools/amplihack')
-from orchestration import *
+```bash
+# Ensure the crate is in your workspace
+cargo build -p amplihack-orchestration
 ```
 
 ### Process Hangs
@@ -276,7 +276,7 @@ from orchestration import *
 ## Next Steps
 
 1. **Read**: `README.md` for complete documentation
-2. **Run**: `EXAMPLE_USAGE.py` for working examples
+2. **Run**: `cargo run --example usage` for working examples
 3. **Integrate**: Replace subprocess logic in existing code
 4. **Extend**: Create patterns in `patterns/` directory
 
@@ -284,5 +284,5 @@ from orchestration import *
 
 - Documentation: `README.md`
 - Implementation: `IMPLEMENTATION_SUMMARY.md`
-- Examples: `EXAMPLE_USAGE.py`
-- Source: `claude_process.py`, `execution.py`, `session.py`
+- Examples: `examples/usage.rs`
+- Source: `claude_process.rs`, `execution.rs`, `session.rs`
