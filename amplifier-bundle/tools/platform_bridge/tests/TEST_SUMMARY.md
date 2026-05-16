@@ -8,11 +8,11 @@
 
 | File                    | Test Methods | Focus Area                                   |
 | ----------------------- | ------------ | -------------------------------------------- |
-| `test_detector.py`      | 33           | Platform detection from git remotes          |
-| `test_github_bridge.py` | 34           | GitHub CLI operations                        |
-| `test_azdo_bridge.py`   | 39           | Azure DevOps CLI operations                  |
-| `test_cli.py`           | 39           | Command-line interface                       |
-| `test_security.py`      | 38           | Security validation and injection prevention |
+| `detector_test.rs`      | 33           | Platform detection from git remotes          |
+| `github_bridge_test.rs` | 34           | GitHub CLI operations                        |
+| `azdo_bridge_test.rs`   | 39           | Azure DevOps CLI operations                  |
+| `cli_test.rs`           | 39           | Command-line interface                       |
+| `security_test.rs`      | 38           | Security validation and injection prevention |
 
 ### By Testing Pyramid Level
 
@@ -22,7 +22,7 @@
 
 ## Test Coverage Matrix
 
-### Platform Detection (`test_detector.py`)
+### Platform Detection (`detector_test.rs`)
 
 ✅ **Platform Enum** (3 tests)
 
@@ -46,7 +46,7 @@
 
 - Remote URL extraction, caching, subprocess validation
 
-### GitHub Bridge (`test_github_bridge.py`)
+### GitHub Bridge (`github_bridge_test.rs`)
 
 ✅ **create_issue** (6 tests)
 
@@ -76,7 +76,7 @@
 
 - Timeout propagation, initialization
 
-### Azure DevOps Bridge (`test_azdo_bridge.py`)
+### Azure DevOps Bridge (`azdo_bridge_test.rs`)
 
 ✅ **Initialization** (5 tests)
 
@@ -110,7 +110,7 @@
 
 - Consistency with GitHub bridge
 
-### CLI Interface (`test_cli.py`)
+### CLI Interface (`cli_test.rs`)
 
 ✅ **create-issue** (6 tests)
 
@@ -152,7 +152,7 @@
 
 - Valid JSON, pretty-printing, consistency
 
-### Security (`test_security.py`)
+### Security (`security_test.rs`)
 
 ✅ **Command Injection Prevention** (5 tests)
 
@@ -215,7 +215,7 @@
 2. CLI security integration (all 3 tests)
 3. Timeout configuration (all 2 tests)
 
-## Test Fixtures (conftest.py)
+## Test Fixtures (common/mod.rs)
 
 **30+ shared fixtures** providing:
 
@@ -241,7 +241,7 @@ scripts/probe-no-python.sh
 
 ### Expected behavior (TDD)
 
-**Before implementation**: All tests will fail with ImportError
+**Before implementation**: All tests will fail with compile errors
 **During implementation**: Tests pass as features are implemented
 **After implementation**: All 183 tests should pass
 
@@ -266,27 +266,27 @@ scripts/probe-no-python.sh
 
 Based on test dependencies, implement in this order:
 
-1. **detector.py** (33 tests)
+1. **detector.rs** (33 tests)
    - Platform enum
-   - PlatformDetector class
+   - PlatformDetector struct
    - Git remote parsing
    - Caching logic
 
-2. **github_bridge.py** (34 tests)
-   - GitHubBridge class
+2. **github_bridge.rs** (34 tests)
+   - GitHubBridge struct
    - 5 operation methods
    - Response formatting
    - Error handling
 
-3. **azdo_bridge.py** (39 tests)
-   - AzureDevOpsBridge class
+3. **azdo_bridge.rs** (39 tests)
+   - AzureDevOpsBridge struct
    - Configuration management
    - 5 operation methods (matching GitHub)
    - Response formatting
 
-4. **cli.py** (39 tests)
-   - CLI class
-   - Argument parsing (argparse)
+4. **cli.rs** (39 tests)
+   - Cli struct
+   - Argument parsing (clap)
    - Command routing
    - JSON output formatting
 
@@ -300,7 +300,7 @@ Based on test dependencies, implement in this order:
 
 ### Adding new tests
 
-1. Add fixtures to `conftest.py` if shared
+1. Add fixtures to `common/mod.rs` if shared
 2. Follow existing naming conventions
 3. Use AAA pattern
 4. Mock external dependencies
