@@ -230,7 +230,7 @@ impl ParallelOrchestrator {
             .unwrap_or(100 * 1024 * 1024);
 
         thread::spawn(move || {
-            let mut child_guard = child_arc.lock().unwrap();
+            let mut child_guard = child_arc.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ref mut child) = *child_guard
                 && let Some(stdout) = child.stdout.take()
             {
@@ -475,7 +475,7 @@ impl ParallelOrchestrator {
             let proc = self.processes.get(&ws.issue);
 
             let maybe_code = proc.and_then(|arc| {
-                let mut guard = arc.lock().unwrap();
+                let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
                 guard.as_mut().and_then(|child| {
                     child
                         .try_wait()
@@ -527,7 +527,7 @@ impl ParallelOrchestrator {
             if ws.timeout_policy == INTERRUPT_PRESERVE_TIMEOUT_POLICY
                 && let Some(proc_arc) = self.processes.get(&issue)
             {
-                let mut guard = proc_arc.lock().unwrap();
+                let mut guard = proc_arc.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(ref mut child) = *guard {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -547,7 +547,7 @@ impl ParallelOrchestrator {
             }
             let issue = ws.issue;
             if let Some(proc_arc) = self.processes.get(&issue) {
-                let mut guard = proc_arc.lock().unwrap();
+                let mut guard = proc_arc.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(ref mut child) = *guard {
                     println!("[{issue}] Terminating PID {}...", ws.pid.unwrap_or(0));
                     let _ = child.kill();

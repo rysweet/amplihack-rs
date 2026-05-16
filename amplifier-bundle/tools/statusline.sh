@@ -1,4 +1,6 @@
 #!/bin/bash
+# statusline.sh tolerates individual command failures (display-only)
+# so pipefail is intentionally not set — partial output is better than no output
 
 # Amplihack Status Line
 # Shows: directory, git branch, model, tokens, cost, duration, background agents

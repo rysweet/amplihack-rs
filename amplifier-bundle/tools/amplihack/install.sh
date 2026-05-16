@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # Enhanced install script for dual-mode hook path management
 # Issue #254: default install source is now the amplihack-rs repo (which bundles framework assets)
 # if the AMPLIHACK_INSTALL_LOCATION variable is not set, default to https://github.com/rysweet/amplihack-rs
@@ -45,10 +46,8 @@ if [ -f "$HOME/.claude/settings.json" ]; then
   echo "Updating hook commands in settings.json for global installation..."
 
   # Issue #522: all .py shims formerly at tools/amplihack/hooks/ have been
-  # fully removed. Any prior settings.json that referenced them — under
-  # any path format (relative, tilde, absolute) — must be rewritten to invoke
-  # the native `amplihack-hooks` binary instead. session_start.py is the last
-  # remaining legacy Python hook, targeted for removal in a future release.
+  # fully removed. Settings.json must invoke the native `amplihack-hooks`
+  # binary for ALL hooks including session-start (completed in issue #637).
   HOOKS_BIN="amplihack-hooks"
 
   if grep -q '"\.claude/tools/amplihack/hooks/' "$HOME/.claude/settings.json"; then
@@ -61,43 +60,23 @@ if [ -f "$HOME/.claude/settings.json" ]; then
     echo "  → No amplihack hook paths found, this may already be a native install"
   fi
 
-  # Rewrite any remaining .py hook references to native subcommands
-  # (issue #522). session_start.py is legacy — kept as absolute path pending removal.
+  # Rewrite ALL remaining .py hook references to native subcommands.
+  # Every hook — including session-start — now uses the Rust binary.
   sed -i.tmp \
-    -e 's|"\.claude/tools/amplihack/hooks/session_start\.py"|"'"$HOME"'/.claude/tools/amplihack/hooks/session_start.py"|g' \
-    -e 's|"~/.claude/tools/amplihack/hooks/session_start\.py"|"'"$HOME"'/.claude/tools/amplihack/hooks/session_start.py"|g' \
+    -e 's|"[^"]*tools/amplihack/hooks/session_start\.py"|"'"$HOOKS_BIN"' session-start"|g' \
     -e 's|"[^"]*tools/amplihack/hooks/stop\.py"|"'"$HOOKS_BIN"' stop"|g' \
     -e 's|"[^"]*tools/amplihack/hooks/post_tool_use\.py"|"'"$HOOKS_BIN"' post-tool-use"|g' \
     -e 's|"[^"]*tools/amplihack/hooks/user_prompt_submit\.py"|"'"$HOOKS_BIN"' user-prompt-submit"|g' \
     -e 's|"[^"]*tools/amplihack/hooks/session_end\.py"|"'"$HOOKS_BIN"' session-end"|g' \
     -e 's|"[^"]*tools/amplihack/hooks/session_stop\.py"|"'"$HOOKS_BIN"' session-stop"|g' \
     -e 's|"[^"]*tools/amplihack/hooks/precommit_prefs\.py"|"'"$HOOKS_BIN"' precommit-prefs"|g' \
+    -e 's|"[^"]*tools/amplihack/hooks/pre_tool_use\.py"|"'"$HOOKS_BIN"' pre-tool-use"|g' \
     "$HOME/.claude/settings.json"
 
   if [ $? -eq 0 ]; then
     rm -f "$HOME/.claude/settings.json.tmp"
     NATIVE_REFS=$(grep -c "amplihack-hooks " "$HOME/.claude/settings.json" 2>/dev/null || echo 0)
     echo "  ✅ Hook commands updated; $NATIVE_REFS native amplihack-hooks invocations registered"
-
-    # session_start.py is the sole remaining legacy Python hook (targeted
-    # for removal). All other hook commands invoke the native
-    # amplihack-hooks binary (see amplihack-cli install flow).
-    echo "Verifying hook files exist..."
-    MISSING_HOOKS=0
-    for hook in "session_start.py"; do
-      if [ -f "$HOME/.claude/tools/amplihack/hooks/$hook" ]; then
-        echo "  ✅ $hook found"
-      else
-        echo "  ⚠️  $hook missing (out-of-scope; install pipeline normally provides it)"
-        MISSING_HOOKS=$((MISSING_HOOKS + 1))
-      fi
-    done
-
-    if [ $MISSING_HOOKS -eq 0 ]; then
-      echo "  ✅ All in-scope hook files verified"
-    else
-      echo "  ⚠️  Warning: $MISSING_HOOKS expected hook files missing"
-    fi
 
     # StatusLine Configuration Management
     echo "Checking statusLine configuration..."
@@ -188,7 +167,7 @@ else
         "hooks": [
           {
             "type": "command",
-            "command": "HOME_PLACEHOLDER/.claude/tools/amplihack/hooks/session_start.py",
+            "command": "amplihack-hooks session-start",
             "timeout": 10000
           }
         ]

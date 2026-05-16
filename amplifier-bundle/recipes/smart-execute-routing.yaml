@@ -392,6 +392,8 @@ steps:
     fatal: false
     type: "bash"
     command: |
+      # Cleanup workstream state files. Uses /tmp because workstream JSON is
+      # ephemeral per-run and does not need to survive reboots.
       rm -f /tmp/smart-orch-ws-*.json 2>/dev/null || true
       echo "ok"
     output: "cleanup_status"

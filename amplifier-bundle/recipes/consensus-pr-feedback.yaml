@@ -30,9 +30,10 @@ steps:
         exit 1
       fi
       git add -A
-      git commit -m "Address PR review feedback" 2>/dev/null || true
+      git commit -m "Address PR review feedback" || echo "Nothing to commit (working tree clean)" >&2
       if git remote get-url origin >/dev/null 2>&1; then
-        git pull --rebase 2>/dev/null && git push 2>/dev/null || true
+        git pull --rebase || echo "WARNING: rebase failed, pushing anyway" >&2
+        git push || echo "WARNING: push failed — may need manual push" >&2
       else
         echo "Skipping push — no remote configured" >&2
       fi

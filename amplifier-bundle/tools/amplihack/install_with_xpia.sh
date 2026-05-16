@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # Enhanced install script with XPIA security hook integration
 # Fixes Issue #137: XPIA hooks not configured during installation
 
@@ -201,9 +202,8 @@ main() {
     print_status "Verifying hook files..."
     MISSING_HOOKS=0
 
-    # Check amplihack hooks — all .py shims removed in favor of native
-    # amplihack-hooks subcommands. session_start.py is the sole remaining
-    # legacy Python hook, targeted for removal.
+    # Check amplihack hooks — all hooks are now native Rust subcommands
+    # of the amplihack-hooks binary. No Python hooks remain.
     if command -v amplihack-hooks &> /dev/null; then
         print_success "amplihack-hooks binary found"
     else
@@ -211,12 +211,12 @@ main() {
         MISSING_HOOKS=$((MISSING_HOOKS + 1))
     fi
 
-    # Check XPIA hooks
-    for hook in "session_start.py" "post_tool_use.py" "pre_tool_use.py"; do
-        if [ -f "$HOME/.claude/tools/xpia/hooks/$hook" ]; then
-            print_success "XPIA $hook found"
+    # Verify native hook subcommands are functional
+    for subcmd in "session-start" "post-tool-use" "pre-tool-use"; do
+        if amplihack-hooks "$subcmd" --help &>/dev/null 2>&1; then
+            print_success "amplihack-hooks $subcmd available"
         else
-            print_warning "XPIA $hook missing"
+            print_warning "amplihack-hooks $subcmd not responding"
             MISSING_HOOKS=$((MISSING_HOOKS + 1))
         fi
     done

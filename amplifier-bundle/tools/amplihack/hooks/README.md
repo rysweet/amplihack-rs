@@ -88,8 +88,7 @@ named subcommand of `amplihack-hooks`):
 | `user_prompt_submit.py`   | `amplihack-hooks user-prompt-submit`|
 | `session_end.py`          | `amplihack-hooks session-end`       |
 | `session_stop.py`         | `amplihack-hooks session-stop`      |
-| `precommit_prefs.py`      | `amplihack-hooks precommit-prefs`   |
+| `session_start.py`        | `amplihack-hooks session-start`     |
 
-`session_start.py` is the sole remaining legacy Python hook, targeted for
-removal. It is still served by its existing path-based hook elsewhere in
-the install pipeline.
+All Python hooks have been removed. Every hook event is served by a native
+`amplihack-hooks` subcommand.

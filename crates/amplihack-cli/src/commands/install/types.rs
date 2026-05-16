@@ -159,7 +159,7 @@ pub(super) const RUNTIME_DIRS: &[&str] = &[
     "runtime/analysis",
 ];
 pub(super) const XPIA_HOOK_FILES: &[&str] =
-    &["session_start.py", "post_tool_use.py", "pre_tool_use.py"];
+    &["session_start.sh", "post_tool_use.sh", "pre_tool_use.sh"];
 
 /// Discriminates between hook command styles.
 #[derive(Clone)]
@@ -197,13 +197,15 @@ pub(super) struct ObservedNativeHookContractEntry {
     pub matcher: Option<String>,
 }
 
-// Mirrors the canonical Python hook files plus the native Rust install contract.
+// Mirrors the canonical hook contract — all hooks use native Rust binary.
+// No Python shims remain. The `hook_file` field is retained for drift
+// diagnostics but is always `None` — all events use `amplihack-hooks <subcmd>`.
 // UserPromptSubmit is intentionally launcher-ordered so the lightweight
 // workflow-classification reminder runs before user-prompt-submit.
 pub(super) const CANONICAL_AMPLIHACK_HOOK_CONTRACT: &[CanonicalHookContractEntry] = &[
     CanonicalHookContractEntry {
         event: "SessionStart",
-        hook_file: Some("session_start.py"),
+        hook_file: None,
         native_subcmd: Some("session-start"),
         timeout: Some(10),
         matcher: None,

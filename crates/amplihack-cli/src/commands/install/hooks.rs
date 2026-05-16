@@ -96,6 +96,10 @@ pub(super) fn build_hook_wrapper(spec: &HookSpec, hooks_bin: &Path) -> Value {
     Value::Object(wrapper)
 }
 
+/// Maps native subcommand names to the legacy Python filenames they replaced.
+/// Used only for migration — detecting old Python hook registrations in
+/// settings.json so they can be replaced with native `amplihack-hooks` invocations.
+/// No Python hooks are shipped or required; this is strictly cleanup logic.
 pub(super) fn legacy_hook_script_name(subcmd: &str) -> Option<&'static str> {
     match subcmd {
         "session-start" => Some("session_start.py"),
@@ -112,9 +116,9 @@ pub(super) fn legacy_hook_script_name(subcmd: &str) -> Option<&'static str> {
 /// Type-directed idempotency check.
 ///
 /// `BinarySubcmd` matches either the native `amplihack-hooks <subcmd>` wrapper or
-/// a legacy staged Python hook path for the corresponding hook. This lets a fresh
-/// Rust reinstall replace older Python registrations in place instead of appending
-/// duplicate wrappers.
+/// a legacy Python hook path for the corresponding hook. This lets a fresh
+/// Rust install replace older registrations in place instead of appending
+/// duplicate wrappers. No Python hooks are shipped — this is migration-only.
 pub(super) fn wrapper_matches(wrapper: &Value, spec: &HookSpec, hook_system: &str) -> bool {
     let Some(wrapper_obj) = wrapper.as_object() else {
         return false;

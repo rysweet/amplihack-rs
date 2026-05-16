@@ -98,7 +98,7 @@ impl DocumentationGenerator {
         .to_string()
     }
 
-    /// Troubleshooting section with 6 common issues.
+    /// Troubleshooting section with common issues.
     pub fn generate_troubleshooting_section() -> String {
         "### Common Issues\n\n\
          **Issue: Agent not found**\n\
@@ -217,14 +217,15 @@ mod tests {
     #[test]
     fn test_prerequisites_section() {
         let s = DocumentationGenerator::generate_prerequisites_section();
-        assert!(s.contains("Python >= 3.11"));
+        assert!(s.contains("Amplihack >= 1.0.0"));
+        assert!(s.contains("cargo install amplihack"));
         assert!(s.contains("uvx"));
     }
 
     #[test]
-    fn test_troubleshooting_has_six_issues() {
+    fn test_troubleshooting_has_five_issues() {
         let s = DocumentationGenerator::generate_troubleshooting_section();
-        assert_eq!(s.matches("**Issue:").count(), 6);
+        assert_eq!(s.matches("**Issue:").count(), 5);
     }
 
     #[test]
