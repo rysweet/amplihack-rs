@@ -32,42 +32,44 @@ This document maintains **14 foundational patterns** that apply across most ampl
 
 **Challenge**: Modules become tightly coupled, making them hard to regenerate or replace.
 
-**Solution**: Design modules as self-contained "bricks" with clear "studs" (public API) defined via `__all__`.
+**Solution**: Design modules as self-contained "bricks" with clear "studs" (public API) using `pub` visibility.
 
-```python
-"""Module docstring documents philosophy and public API.
+```rust
+//! Module-level documentation comment documents philosophy and public API.
+//!
+//! # Philosophy
+//! - Single responsibility
+//! - Standard library only (when possible)
+//! - Self-contained and regeneratable
+//!
+//! # Public API (the "studs")
+//! - [`MainClass`]: Primary functionality
+//! - [`helper_function`]: Utility function
+//! - [`CONSTANT`]: Configuration value
 
-Philosophy:
-- Single responsibility
-- Standard library only (when possible)
-- Self-contained and regeneratable
+// ... implementation ...
 
-Public API (the "studs"):
-    MainClass: Primary functionality
-    helper_function: Utility function
-    CONSTANT: Configuration value
-"""
-
-# ... implementation ...
-
-__all__ = ["MainClass", "helper_function", "CONSTANT"]
+// `pub` visibility defines the public interface
+pub struct MainClass { /* ... */ }
+pub fn helper_function() { /* ... */ }
+pub const CONSTANT: &str = "value";
 ```
 
 **Module Structure**:
 
 ```
 module_name/
-├── __init__.py         # Public interface via __all__
-├── README.md          # Contract specification
-├── core.py           # Implementation
+├── mod.rs            # Public interface via pub exports
+├── README.md         # Contract specification
+├── core.rs           # Implementation
 ├── tests/            # Test the contract
 └── examples/         # Working examples
 ```
 
 **Key Points**:
 
-- Module docstring documents philosophy and public API
-- `__all__` defines the public interface explicitly
+- Module-level documentation comment documents philosophy and public API
+- `pub` visibility defines the public interface explicitly
 - Standard library only for core utilities (avoid circular dependencies)
 - Tests verify the contract, not implementation details
 
@@ -79,28 +81,46 @@ module_name/
 
 **Solution**: Every function must work or not exist.
 
-```python
-# BAD - Stub that does nothing
-def process_payment(amount):
-    # TODO: Implement Stripe integration
-    raise NotImplementedError("Coming soon")
+```rust
+// BAD - Stub that does nothing
+fn process_payment(amount: f64) -> Result<(), Box<dyn std::error::Error>> {
+    // TODO: Implement Stripe integration
+    unimplemented!("Coming soon")
+}
 
-# GOOD - Working implementation
-def process_payment(amount, payments_file="payments.json"):
-    """Record payment locally - fully functional."""
-    payment = {
-        "amount": amount,
-        "timestamp": datetime.now().isoformat(),
-        "id": str(uuid.uuid4())
-    }
+// GOOD - Working implementation
+use std::fs;
+use std::path::Path;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use chrono::Utc;
 
-    payments = []
-    if Path(payments_file).exists():
-        payments = json.loads(Path(payments_file).read_text())
+#[derive(Debug, Serialize, Deserialize)]
+struct Payment {
+    amount: f64,
+    timestamp: String,
+    id: String,
+}
 
-    payments.append(payment)
-    Path(payments_file).write_text(json.dumps(payments, indent=2))
-    return payment
+fn process_payment(amount: f64, payments_file: &str) -> Result<Payment, Box<dyn std::error::Error>> {
+    let payment = Payment {
+        amount,
+        timestamp: Utc::now().to_rfc3339(),
+        id: Uuid::new_v4().to_string(),
+    };
+
+    let mut payments: Vec<Payment> = if Path::new(payments_file).exists() {
+        let data = fs::read_to_string(payments_file)?;
+        serde_json::from_str(&data)?
+    } else {
+        Vec::new()
+    };
+
+    payments.push(payment);
+    let last = payments.last().unwrap().clone();
+    fs::write(payments_file, serde_json::to_string_pretty(&payments)?)?;
+    Ok(last)
+}
 ```
 
 **Key Points**:
@@ -125,31 +145,29 @@ def process_payment(amount, payments_file="payments.json"):
 3. **Services/Config**: Verify endpoints, check response format
 4. **Error Handling**: Plan for rate limits, timeouts, specific error types
 
-```python
-# WRONG - assumptions without validation
-client = Anthropic()
-message = client.messages.create(
-    model="claude-3-5-sonnet-20241022",  # ❌ Not verified
-    max_tokens="1024",  # ❌ Wrong type
-    messages=[{"role": "user", "content": prompt}]
-)
+```rust
+// WRONG - assumptions without validation
+let client = Anthropic::new();
+let message = client.messages().create(
+    "claude-3-5-sonnet-20241022",  // ❌ Not verified
+    "1024",                         // ❌ Wrong type (should be u32)
+    &[Message::user(prompt)],
+)?;
 
-# RIGHT - validated against docs
-VALID_MODELS = ["claude-3-opus-20240229", "claude-3-sonnet-20241022"]
-model = "claude-3-sonnet-20241022"  # ✓ Verified
-max_tokens = 1024  # ✓ Correct type
+// RIGHT - validated against docs
+const VALID_MODELS: &[&str] = &["claude-3-opus-20240229", "claude-3-sonnet-20241022"];
+let model = "claude-3-sonnet-20241022";  // ✓ Verified
+let max_tokens: u32 = 1024;              // ✓ Correct type
 
-if model not in VALID_MODELS:
-    raise ValueError(f"Invalid model: {model}")
+if !VALID_MODELS.contains(&model) {
+    return Err(format!("Invalid model: {model}").into());
+}
 
-try:
-    message = client.messages.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}]
-    )
-except Exception as e:
-    raise RuntimeError(f"API call failed: {e}")
+let message = client.messages().create(
+    model,
+    max_tokens,
+    &[Message::user(prompt)],
+).map_err(|e| format!("API call failed: {e}"))?;
 ```
 
 **Key Points**:
@@ -164,34 +182,41 @@ except Exception as e:
 
 **Solution**:
 
-```python
-import asyncio
-from claude_code_sdk import ClaudeSDKClient, ClaudeCodeOptions
+```rust
+use claude_code_sdk::{ClaudeCodeOptions, query_async};
+use tokio::time::{timeout, Duration};
 
-async def extract_with_claude_sdk(prompt: str, timeout_seconds: int = 120):
-    """Extract using Claude Code SDK with proper timeout handling"""
-    try:
-        async with asyncio.timeout(timeout_seconds):
-            async with ClaudeSDKClient(
-                options=ClaudeCodeOptions(
-                    system_prompt="Extract information...",
-                    max_turns=1,
-                )
-            ) as client:
-                await client.query(prompt)
+async fn extract_with_claude_sdk(
+    prompt: &str,
+    timeout_seconds: u64,
+) -> Result<String, Box<dyn std::error::Error>> {
+    /// Extract using Claude Code SDK with proper timeout handling
+    let options = ClaudeCodeOptions {
+        system_prompt: Some("Extract information...".to_string()),
+        max_turns: Some(1),
+        ..Default::default()
+    };
 
-                response = ""
-                async for message in client.receive_response():
-                    if hasattr(message, "content"):
-                        content = getattr(message, "content", [])
-                        if isinstance(content, list):
-                            for block in content:
-                                if hasattr(block, "text"):
-                                    response += getattr(block, "text", "")
-                return response
-    except asyncio.TimeoutError:
-        print(f"Claude Code SDK timed out after {timeout_seconds} seconds")
-        return ""
+    match timeout(
+        Duration::from_secs(timeout_seconds),
+        query_async(prompt, options),
+    ).await {
+        Ok(Ok(messages)) => {
+            let mut response = String::new();
+            for message in messages {
+                if let Some(content) = message.content_text() {
+                    response.push_str(&content);
+                }
+            }
+            Ok(response)
+        }
+        Ok(Err(e)) => Err(e.into()),
+        Err(_) => {
+            eprintln!("Claude Code SDK timed out after {timeout_seconds} seconds");
+            Ok(String::new())
+        }
+    }
+}
 ```
 
 **Key Points**:
@@ -208,40 +233,58 @@ async def extract_with_claude_sdk(prompt: str, timeout_seconds: int = 120):
 
 **Solution**: Create a safe subprocess wrapper with user-friendly, actionable error messages.
 
-```python
-def safe_subprocess_call(
-    cmd: List[str],
-    context: str,
-    timeout: Optional[int] = 30,
-) -> Tuple[int, str, str]:
-    """Safely execute subprocess with comprehensive error handling."""
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout
-        )
-        return result.returncode, result.stdout, result.stderr
+```rust
+use std::process::Command;
+use std::time::Duration;
 
-    except FileNotFoundError:
-        cmd_name = cmd[0] if cmd else "command"
-        error_msg = f"Command not found: {cmd_name}\n"
-        if context:
-            error_msg += f"Context: {context}\n"
-        error_msg += "Please ensure the tool is installed and in your PATH."
-        return 127, "", error_msg
+struct SubprocessResult {
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+}
 
-    except subprocess.TimeoutExpired:
-        cmd_name = cmd[0] if cmd else "command"
-        error_msg = f"Command timed out after {timeout}s: {cmd_name}\n"
-        if context:
-            error_msg += f"Context: {context}\n"
-        return 124, "", error_msg
+fn safe_subprocess_call(
+    cmd: &[&str],
+    context: &str,
+    timeout_secs: Option<u64>,
+) -> SubprocessResult {
+    /// Safely execute subprocess with comprehensive error handling.
+    let (program, args) = match cmd.split_first() {
+        Some((p, a)) => (*p, a),
+        None => return SubprocessResult {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "Empty command".to_string(),
+        },
+    };
 
-    except Exception as e:
-        cmd_name = cmd[0] if cmd else "command"
-        error_msg = f"Unexpected error running {cmd_name}: {str(e)}\n"
-        if context:
-            error_msg += f"Context: {context}\n"
-        return 1, "", error_msg
+    let result = Command::new(program)
+        .args(args)
+        .output();
+
+    match result {
+        Ok(output) => SubprocessResult {
+            exit_code: output.status.code().unwrap_or(1),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let mut error_msg = format!("Command not found: {program}\n");
+            if !context.is_empty() {
+                error_msg.push_str(&format!("Context: {context}\n"));
+            }
+            error_msg.push_str("Please ensure the tool is installed and in your PATH.");
+            SubprocessResult { exit_code: 127, stdout: String::new(), stderr: error_msg }
+        }
+        Err(e) => {
+            let mut error_msg = format!("Unexpected error running {program}: {e}\n");
+            if !context.is_empty() {
+                error_msg.push_str(&format!("Context: {context}\n"));
+            }
+            SubprocessResult { exit_code: 1, stdout: String::new(), stderr: error_msg }
+        }
+    }
+}
 ```
 
 **Key Points**:
@@ -257,46 +300,66 @@ def safe_subprocess_call(
 
 **Solution**: Check all prerequisites at startup with clear, actionable error messages.
 
-```python
-@dataclass
-class ToolCheckResult:
-    tool: str
-    available: bool
-    path: Optional[str] = None
-    version: Optional[str] = None
-    error: Optional[str] = None
+```rust
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::Command;
 
-class PrerequisiteChecker:
-    REQUIRED_TOOLS = {
-        "node": "--version",
-        "npm": "--version",
-        "uv": "--version",
+#[derive(Debug)]
+struct ToolCheckResult {
+    tool: String,
+    available: bool,
+    path: Option<PathBuf>,
+    version: Option<String>,
+    error: Option<String>,
+}
+
+struct PrerequisiteChecker {
+    required_tools: HashMap<String, String>,
+}
+
+impl PrerequisiteChecker {
+    fn new() -> Self {
+        let mut required_tools = HashMap::new();
+        required_tools.insert("node".into(), "--version".into());
+        required_tools.insert("npm".into(), "--version".into());
+        required_tools.insert("uv".into(), "--version".into());
+        Self { required_tools }
     }
 
-    def check_and_report(self) -> bool:
-        """Check prerequisites and print report if any are missing."""
-        result = self.check_all_prerequisites()
+    fn check_and_report(&self) -> bool {
+        /// Check prerequisites and print report if any are missing.
+        let result = self.check_all_prerequisites();
 
-        if result.all_available:
-            return True
+        if result.iter().all(|r| r.available) {
+            return true;
+        }
 
-        print(self.format_missing_prerequisites(result.missing_tools))
-        return False
+        let missing: Vec<_> = result.iter().filter(|r| !r.available).collect();
+        self.format_missing_prerequisites(&missing);
+        false
+    }
+}
 
-class Launcher:
-    def prepare_launch(self) -> bool:
-        """Check prerequisites FIRST before any other operations"""
-        checker = PrerequisiteChecker()
-        if not checker.check_and_report():
-            return False
-        return self._setup_environment()
+struct Launcher;
+
+impl Launcher {
+    fn prepare_launch(&self) -> bool {
+        /// Check prerequisites FIRST before any other operations
+        let checker = PrerequisiteChecker::new();
+        if !checker.check_and_report() {
+            return false;
+        }
+        self.setup_environment()
+    }
+}
 ```
 
 **Key Points**:
 
 - Check at entry point before any operations
 - Check all at once - show all issues
-- Structured results with dataclasses
+- Structured results with derive structs
 - Never auto-install - user control first
 
 ### Pattern: Resilient Batch Processing
@@ -305,25 +368,54 @@ class Launcher:
 
 **Solution**:
 
-```python
-class ResilientProcessor:
-    async def process_batch(self, items):
-        results = {"succeeded": [], "failed": []}
+```rust
+use chrono::Utc;
 
-        for item in items:
-            try:
-                result = await self.process_item(item)
-                results["succeeded"].append(result)
-                self.save_results(results)  # Save after every item
-            except Exception as e:
-                results["failed"].append({
-                    "item": item,
-                    "error": str(e),
-                    "timestamp": datetime.now().isoformat()
-                })
-                continue  # Continue processing other items
+struct ResilientProcessor;
 
-        return results
+#[derive(Debug)]
+struct BatchResults<T> {
+    succeeded: Vec<T>,
+    failed: Vec<FailedItem>,
+}
+
+#[derive(Debug)]
+struct FailedItem {
+    item: String,
+    error: String,
+    timestamp: String,
+}
+
+impl ResilientProcessor {
+    async fn process_batch<T: ToString + Clone>(
+        &self,
+        items: &[T],
+    ) -> BatchResults<String> {
+        let mut results = BatchResults {
+            succeeded: Vec::new(),
+            failed: Vec::new(),
+        };
+
+        for item in items {
+            match self.process_item(item).await {
+                Ok(result) => {
+                    results.succeeded.push(result);
+                    self.save_results(&results); // Save after every item
+                }
+                Err(e) => {
+                    results.failed.push(FailedItem {
+                        item: item.to_string(),
+                        error: e.to_string(),
+                        timestamp: Utc::now().to_rfc3339(),
+                    });
+                    continue; // Continue processing other items
+                }
+            }
+        }
+
+        results
+    }
+}
 ```
 
 **Key Points**:
@@ -340,38 +432,45 @@ class ResilientProcessor:
 
 **Solution**: Follow testing pyramid with 60% unit tests, 30% integration tests, 10% E2E tests.
 
-```python
-"""Tests for module - TDD approach.
+```rust
+/// Tests for module - TDD approach.
+///
+/// Testing pyramid:
+/// - 60% Unit tests (fast, heavily mocked)
+/// - 30% Integration tests (multiple components)
+/// - 10% E2E tests (complete workflows)
 
-Testing pyramid:
-- 60% Unit tests (fast, heavily mocked)
-- 30% Integration tests (multiple components)
-- 10% E2E tests (complete workflows)
-"""
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-# UNIT TESTS (60%)
-class TestPlatformDetection:
-    def test_detect_macos(self):
-        with patch("platform.system", return_value="Darwin"):
-            checker = PrerequisiteChecker()
-            assert checker.platform == Platform.MACOS
+    // UNIT TESTS (60%)
+    #[test]
+    fn test_detect_macos() {
+        // With a mock platform detection returning "Darwin"
+        let checker = PrerequisiteChecker::with_platform(Platform::MacOS);
+        assert_eq!(checker.platform, Platform::MacOS);
+    }
 
-# INTEGRATION TESTS (30%)
-class TestPrerequisiteIntegration:
-    def test_full_check_workflow(self):
-        checker = PrerequisiteChecker()
-        with patch("shutil.which") as mock_which:
-            mock_which.side_effect = lambda x: f"/usr/bin/{x}"
-            result = checker.check_all_prerequisites()
-            assert result.all_available is True
+    // INTEGRATION TESTS (30%)
+    #[test]
+    fn test_full_check_workflow() {
+        let checker = PrerequisiteChecker::new();
+        // With all tools available on PATH
+        let result = checker.check_all_prerequisites();
+        assert!(result.iter().all(|r| r.available));
+    }
 
-# E2E TESTS (10%)
-class TestEndToEnd:
-    def test_complete_workflow_with_guidance(self):
-        checker = PrerequisiteChecker()
-        result = checker.check_all_prerequisites()
-        message = checker.format_missing_prerequisites(result.missing_tools)
-        assert "prerequisite" in message.lower()
+    // E2E TESTS (10%)
+    #[test]
+    fn test_complete_workflow_with_guidance() {
+        let checker = PrerequisiteChecker::new();
+        let result = checker.check_all_prerequisites();
+        let missing: Vec<_> = result.iter().filter(|r| !r.available).collect();
+        let message = checker.format_missing_prerequisites(&missing);
+        assert!(message.to_lowercase().contains("prerequisite"));
+    }
+}
 ```
 
 **Key Points**:
@@ -389,27 +488,39 @@ class TestEndToEnd:
 
 **Solution**: Detect platform automatically and provide exact installation commands.
 
-```python
-class Platform(Enum):
-    MACOS = "macos"
-    LINUX = "linux"
-    WSL = "wsl"
-    WINDOWS = "windows"
+```rust
+use std::collections::HashMap;
 
-class PrerequisiteChecker:
-    INSTALL_COMMANDS = {
-        Platform.MACOS: {
-            "node": "brew install node",
-            "git": "brew install git",
-        },
-        Platform.LINUX: {
-            "node": "# Ubuntu/Debian:\nsudo apt install nodejs\n# Fedora:\nsudo dnf install nodejs",
-        },
+#[derive(Debug, Clone, PartialEq)]
+enum Platform {
+    MacOS,
+    Linux,
+    Wsl,
+    Windows,
+}
+
+impl PrerequisiteChecker {
+    fn install_commands() -> HashMap<Platform, HashMap<&'static str, &'static str>> {
+        let mut commands = HashMap::new();
+        commands.insert(Platform::MacOS, HashMap::from([
+            ("node", "brew install node"),
+            ("git", "brew install git"),
+        ]));
+        commands.insert(Platform::Linux, HashMap::from([
+            ("node", "# Ubuntu/Debian:\nsudo apt install nodejs\n# Fedora:\nsudo dnf install nodejs"),
+        ]));
+        commands
     }
 
-    def get_install_command(self, tool: str) -> str:
-        platform_commands = self.INSTALL_COMMANDS.get(self.platform, {})
-        return platform_commands.get(tool, f"Please install {tool} manually")
+    fn get_install_command(&self, tool: &str) -> String {
+        let commands = Self::install_commands();
+        commands
+            .get(&self.platform)
+            .and_then(|cmds| cmds.get(tool))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Please install {tool} manually"))
+    }
+}
 ```
 
 **Key Points**:
@@ -424,26 +535,38 @@ class PrerequisiteChecker:
 
 **Solution**: Detect environment automatically and adapt through configuration objects.
 
-```python
-class EnvironmentAdapter:
-    def detect_environment(self) -> str:
-        if self._is_uvx_environment():
-            return "uvx"
-        elif self._is_testing_environment():
-            return "testing"
-        else:
-            return "normal"
+```rust
+use std::collections::HashMap;
 
-    def get_config(self) -> Dict[str, Any]:
-        env = self.detect_environment()
-        configs = {
-            "uvx": {"use_add_dir": True, "timeout_multiplier": 1.5},
-            "normal": {"use_add_dir": False, "timeout_multiplier": 1.0},
-            "testing": {"use_add_dir": False, "timeout_multiplier": 0.5},
+struct EnvironmentAdapter;
+
+#[derive(Debug)]
+struct EnvConfig {
+    use_add_dir: bool,
+    timeout_multiplier: f64,
+}
+
+impl EnvironmentAdapter {
+    fn detect_environment(&self) -> &str {
+        if self.is_uvx_environment() {
+            "uvx"
+        } else if self.is_testing_environment() {
+            "testing"
+        } else {
+            "normal"
         }
-        config = configs.get(env, configs["normal"])
-        self._apply_env_overrides()  # Allow env variable overrides
-        return config
+    }
+
+    fn get_config(&self) -> EnvConfig {
+        let env = self.detect_environment();
+        let config = match env {
+            "uvx" => EnvConfig { use_add_dir: true, timeout_multiplier: 1.5 },
+            "testing" => EnvConfig { use_add_dir: false, timeout_multiplier: 0.5 },
+            _ => EnvConfig { use_add_dir: false, timeout_multiplier: 1.0 },
+        };
+        self.apply_env_overrides(config) // Allow env variable overrides
+    }
+}
 ```
 
 **Key Points**:
@@ -460,31 +583,59 @@ class EnvironmentAdapter:
 
 **Solution**: Smart caching with invalidation strategies.
 
-```python
-from functools import lru_cache
-import threading
+```rust
+use std::collections::HashMap;
+use std::sync::Mutex;
 
-class SmartCache:
-    @lru_cache(maxsize=128)
-    def expensive_operation(self, input_data: str) -> str:
-        return self._compute_expensive_result(input_data)
+struct SmartCache {
+    cache: Mutex<HashMap<String, String>>,
+    hits: Mutex<u64>,
+    misses: Mutex<u64>,
+}
 
-    def invalidate_cache(self) -> None:
-        with self._lock:
-            self.expensive_operation.cache_clear()
-
-    def get_cache_stats(self) -> Dict[str, Any]:
-        cache_info = self.expensive_operation.cache_info()
-        return {
-            "hits": cache_info.hits,
-            "misses": cache_info.misses,
-            "hit_rate": cache_info.hits / max(1, cache_info.hits + cache_info.misses)
+impl SmartCache {
+    fn new() -> Self {
+        Self {
+            cache: Mutex::new(HashMap::new()),
+            hits: Mutex::new(0),
+            misses: Mutex::new(0),
         }
+    }
+
+    fn expensive_operation(&self, input_data: &str) -> String {
+        let cache = self.cache.lock().unwrap();
+        if let Some(cached) = cache.get(input_data) {
+            *self.hits.lock().unwrap() += 1;
+            return cached.clone();
+        }
+        drop(cache);
+
+        *self.misses.lock().unwrap() += 1;
+        let result = self.compute_expensive_result(input_data);
+        self.cache.lock().unwrap().insert(input_data.to_string(), result.clone());
+        result
+    }
+
+    fn invalidate_cache(&self) {
+        self.cache.lock().unwrap().clear();
+    }
+
+    fn get_cache_stats(&self) -> HashMap<String, f64> {
+        let hits = *self.hits.lock().unwrap();
+        let misses = *self.misses.lock().unwrap();
+        let total = hits + misses;
+        HashMap::from([
+            ("hits".into(), hits as f64),
+            ("misses".into(), misses as f64),
+            ("hit_rate".into(), hits as f64 / total.max(1) as f64),
+        ])
+    }
+}
 ```
 
 **Key Points**:
 
-- lru_cache for automatic size management
+- HashMap with Mutex for thread-safe caching with size control
 - Thread safety is essential
 - Provide invalidation methods
 - Track cache performance
@@ -497,24 +648,34 @@ class SmartCache:
 
 **Solution**:
 
-```python
-def write_with_retry(filepath: Path, data: str, max_retries: int = 3):
-    """Write file with exponential backoff for cloud sync issues"""
-    retry_delay = 0.1
+```rust
+use std::fs;
+use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
-    for attempt in range(max_retries):
-        try:
-            filepath.parent.mkdir(parents=True, exist_ok=True)
-            filepath.write_text(data)
-            return
-        except OSError as e:
-            if e.errno == 5 and attempt < max_retries - 1:
-                if attempt == 0:
-                    print("File I/O error - retrying. May be cloud sync issue.")
-                time.sleep(retry_delay)
-                retry_delay *= 2
-            else:
-                raise
+fn write_with_retry(filepath: &Path, data: &str, max_retries: u32) -> std::io::Result<()> {
+    /// Write file with exponential backoff for cloud sync issues
+    let mut retry_delay = Duration::from_millis(100);
+
+    for attempt in 0..max_retries {
+        if let Some(parent) = filepath.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        match fs::write(filepath, data) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.raw_os_error() == Some(5) && attempt < max_retries - 1 => {
+                if attempt == 0 {
+                    eprintln!("File I/O error - retrying. May be cloud sync issue.");
+                }
+                thread::sleep(retry_delay);
+                retry_delay *= 2;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
 ```
 
 **Key Points**:
@@ -529,67 +690,96 @@ def write_with_retry(filepath: Path, data: str, max_retries: int = 3):
 
 **Solution**: Explicitly categorize and filter system-generated files based on semantic purpose, not just directory structure.
 
-```python
-from pathlib import Path
-from typing import Set, List
+```rust
+use std::collections::HashSet;
 
-class GitAwareFileFilter:
-    """Distinguish system metadata from user content in git operations"""
+struct GitAwareFileFilter;
 
-    # System-generated files that should never trigger conflicts
-    SYSTEM_METADATA = {
-        ".version",           # Framework version tracking
-        ".state",            # Runtime state
-        "settings.json",     # Auto-generated settings
-        "*.pyc",             # Compiled bytecode
-        "__pycache__",       # Python cache
-        ".pytest_cache",     # Test cache
+impl GitAwareFileFilter {
+    /// Distinguish system metadata from user content in git operations
+
+    // System-generated files that should never trigger conflicts
+    fn system_metadata() -> HashSet<&'static str> {
+        HashSet::from([
+            ".version",           // Framework version tracking
+            ".state",             // Runtime state
+            "settings.json",      // Auto-generated settings
+            // Rust build artifacts are in target/ (excluded via .gitignore)
+        ])
     }
 
-    def _filter_conflicts(
-        self, uncommitted_files: List[str], essential_dirs: List[str]
-    ) -> List[str]:
-        """Filter git status to exclude system metadata"""
-        conflicts = []
-        for file_path in uncommitted_files:
-            if file_path.startswith(".claude/"):
-                relative_path = file_path[8:]  # Strip ".claude/"
+    fn filter_conflicts(
+        &self,
+        uncommitted_files: &[String],
+        essential_dirs: &[String],
+    ) -> Vec<String> {
+        /// Filter git status to exclude system metadata
+        let metadata = Self::system_metadata();
+        let mut conflicts = Vec::new();
 
-                # Skip system-generated metadata - safe to overwrite
-                if relative_path in self.SYSTEM_METADATA:
-                    continue
+        for file_path in uncommitted_files {
+            if let Some(relative_path) = file_path.strip_prefix(".claude/") {
+                // Skip system-generated metadata - safe to overwrite
+                if metadata.contains(relative_path) {
+                    continue;
+                }
 
-                # Check if file is in essential directories (user content)
-                for essential_dir in essential_dirs:
-                    if (
-                        relative_path.startswith(essential_dir + "/")
-                        or relative_path == essential_dir
-                    ):
-                        conflicts.append(file_path)
-                        break
+                // Check if file is in essential directories (user content)
+                for essential_dir in essential_dirs {
+                    if relative_path.starts_with(&format!("{essential_dir}/"))
+                        || relative_path == essential_dir
+                    {
+                        conflicts.push(file_path.clone());
+                        break;
+                    }
+                }
+            }
+        }
 
-        return conflicts
+        conflicts
+    }
+}
 ```
 
 **Usage in conflict detection**:
 
-```python
-class ConflictChecker:
-    def check_conflicts(self, source_dir: Path, essential_dirs: List[str]) -> List[Path]:
-        """Check for REAL conflicts - ignore system metadata"""
-        result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            capture_output=True, text=True, cwd=source_dir
-        )
+```rust
+use std::path::Path;
+use std::process::Command;
 
-        uncommitted = self._parse_git_status(result.stdout)
-        user_changes = self._filter_conflicts(uncommitted, essential_dirs)
+struct ConflictChecker;
 
-        if user_changes:
-            raise ConflictError(
-                f"Uncommitted user content: {user_changes}\n"
-                f"(System metadata changes are normal and ignored)"
-            )
+#[derive(Debug)]
+struct ConflictError(String);
+
+impl ConflictChecker {
+    fn check_conflicts(
+        &self,
+        source_dir: &Path,
+        essential_dirs: &[String],
+    ) -> Result<(), ConflictError> {
+        /// Check for REAL conflicts - ignore system metadata
+        let output = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(source_dir)
+            .output()
+            .map_err(|e| ConflictError(e.to_string()))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let uncommitted = self.parse_git_status(&stdout);
+        let filter = GitAwareFileFilter;
+        let user_changes = filter.filter_conflicts(&uncommitted, essential_dirs);
+
+        if !user_changes.is_empty() {
+            return Err(ConflictError(format!(
+                "Uncommitted user content: {user_changes:?}\n\
+                 (System metadata changes are normal and ignored)"
+            )));
+        }
+
+        Ok(())
+    }
+}
 ```
 
 **Key Points**:
@@ -608,23 +798,33 @@ class ConflictChecker:
 
 **Solution**: Design APIs to be fully async or fully sync, not both.
 
-```python
-# WRONG - Creates nested event loops
-class Service:
-    def process(self, data):
-        return asyncio.run(self._async_process(data))  # Creates new loop
+```rust
+// WRONG - Blocks the async runtime
+struct Service;
 
-# RIGHT - Pure async throughout
-class Service:
-    async def process(self, data):
-        return await self._async_process(data)  # No new loop
+impl Service {
+    fn process(&self, data: &str) -> String {
+        // Using block_on inside async code causes deadlocks
+        tokio::runtime::Runtime::new().unwrap()
+            .block_on(self.async_process(data))
+    }
+}
+
+// RIGHT - Pure async throughout
+struct Service;
+
+impl Service {
+    async fn process(&self, data: &str) -> String {
+        self.async_process(data).await  // No runtime nesting
+    }
+}
 ```
 
 **Key Points**:
 
 - Never mix sync/async APIs
-- Avoid asyncio.run() in libraries
-- Let caller manage the event loop
+- Avoid `block_on()` in libraries
+- Let the caller manage the tokio runtime
 
 ## Documentation & Investigation Patterns
 
