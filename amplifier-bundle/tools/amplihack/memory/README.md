@@ -29,10 +29,10 @@ The Agent Memory System is now fully integrated into the Claude tools framework,
 
 **Location**: `~/.amplihack/.claude/tools/amplihack/memory/`
 
-- `__init__.py` - Integration interface with graceful degradation
-- `context_preservation.py` - Specialized context preservation utilities
+- `mod.rs` - Integration interface with graceful degradation
+- `context_preservation.rs` - Specialized context preservation utilities
 - `INTEGRATION_GUIDE.md` - Comprehensive integration documentation
-- `examples.py` - Working examples and patterns
+- `examples.rs` - Working examples and patterns
 - `README.md` - This overview document
 
 ### ✅ Verified Requirements
@@ -49,7 +49,7 @@ The Agent Memory System is now fully integrated into the Claude tools framework,
 
 - 100% success rate across 90 concurrent operations
 - Zero data corruption in stress testing
-- Proper locking with threading.RLock()
+- Proper locking with std::sync::RwLock
 - Database WAL mode for concurrent access
 
 **Security**: ✅ IMPLEMENTED
@@ -63,131 +63,148 @@ The Agent Memory System is now fully integrated into the Claude tools framework,
 
 ### Basic Usage
 
-```python
-from .claude.tools.amplihack.memory import get_memory_manager, MemoryType
+```rust
+use amplihack_memory::{get_memory_manager, MemoryType};
 
-# Get memory manager for current session
-memory = get_memory_manager()
+// Get memory manager for current session
+let memory = get_memory_manager(None)?;
 
-# Store agent memory
-memory_id = memory.store(
-    agent_id="architect",
-    title="API Design Decision",
-    content="Decided to use REST API with JSON responses",
-    memory_type=MemoryType.DECISION,
-    importance=8,
-    tags=["api", "architecture"]
-)
+// Store agent memory
+let memory_id = memory.store(
+    "architect",
+    "API Design Decision",
+    "Decided to use REST API with JSON responses",
+    MemoryType::Decision,
+    8,
+    &["api", "architecture"],
+)?;
 
-# Retrieve memories
-decisions = memory.retrieve(
-    agent_id="architect",
-    memory_type=MemoryType.DECISION,
-    min_importance=7
-)
+// Retrieve memories
+let decisions = memory.retrieve(
+    Some("architect"),
+    Some(MemoryType::Decision),
+    Some(7),
+    None,
+)?;
 ```
 
 ### Context Preservation
 
-```python
-from .claude.tools.amplihack.memory.context_preservation import (
-    preserve_current_context, restore_latest_context
-)
+```rust
+use amplihack_memory::context_preservation::{
+    preserve_current_context, restore_latest_context,
+};
 
-# Preserve conversation context
-memory_id = preserve_current_context(
-    agent_id="orchestrator",
-    summary="Working on user authentication system",
-    decisions=["Using JWT tokens", "REST API pattern"],
-    tasks=["Design user model", "Create auth endpoints"]
-)
+// Preserve conversation context
+let memory_id = preserve_current_context(
+    "orchestrator",
+    "Working on user authentication system",
+    &["Using JWT tokens", "REST API pattern"],
+    &["Design user model", "Create auth endpoints"],
+)?;
 
-# Restore context later
-context = restore_latest_context("orchestrator")
+// Restore context later
+if let Some(context) = restore_latest_context("orchestrator")? {
+    println!("Summary: {}", context.conversation_summary);
+}
 ```
 
 ## Key Features
 
 ### 1. Agent Memory Integration
 
-```python
-class ArchitectAgent:
-    def __init__(self, session_id=None):
-        self.memory = get_memory_manager(session_id)
-        self.agent_id = "architect"
+```rust
+use amplihack_memory::{get_memory_manager, MemoryType};
 
-    def make_decision(self, context, decision):
-        return self.memory.store(
-            agent_id=self.agent_id,
-            title=f"Decision: {context}",
-            content=decision,
-            memory_type=MemoryType.DECISION,
-            importance=8
-        )
+pub struct ArchitectAgent {
+    memory: Option<MemoryManager>,
+    agent_id: String,
+}
+
+impl ArchitectAgent {
+    pub fn new(session_id: Option<&str>) -> Self {
+        let memory = get_memory_manager(session_id).ok();
+        Self { memory, agent_id: "architect".to_string() }
+    }
+
+    pub fn make_decision(&self, context: &str, decision: &str) -> Option<String> {
+        let memory = self.memory.as_ref()?;
+        memory.store(
+            &self.agent_id,
+            &format!("Decision: {context}"),
+            decision,
+            MemoryType::Decision,
+            8,
+            &[],
+        ).ok()
+    }
+}
 ```
 
 ### 2. Workflow State Management
 
-```python
-from .claude.tools.amplihack.memory.context_preservation import ContextPreserver
+```rust
+use amplihack_memory::context_preservation::ContextPreserver;
 
-preserver = ContextPreserver()
-workflow_id = preserver.preserve_workflow_state(
-    workflow_name="API_Development",
-    current_step="implement_auth",
-    completed_steps=["design_schema", "create_models"],
-    pending_steps=["write_tests", "deploy"],
-    step_results={"design_schema": {"tables": 5}}
-)
+let preserver = ContextPreserver::new(None);
+let workflow_id = preserver.preserve_workflow_state(
+    "API_Development",
+    "implement_auth",
+    &["design_schema", "create_models"],
+    &["write_tests", "deploy"],
+    &[("design_schema".into(), json!({"tables": 5}))].into_iter().collect(),
+    None,
+)?;
 ```
 
 ### 3. Multi-Agent Collaboration
 
-```python
-# Share insights between agents
+```rust
+// Share insights between agents
 memory.store(
-    agent_id="architect",
-    title="Insight for Backend Team: Database Choice",
-    content="PostgreSQL selected for ACID compliance",
-    memory_type=MemoryType.CONTEXT,
-    tags=["collaboration", "backend_team", "database"]
-)
+    "architect",
+    "Insight for Backend Team: Database Choice",
+    "PostgreSQL selected for ACID compliance",
+    MemoryType::Context,
+    6,
+    &["collaboration", "backend_team", "database"],
+)?;
 ```
 
 ### 4. Performance Optimization
 
-```python
-# Batch operations for efficiency
-batch_memories = [
-    {"agent_id": "agent1", "title": "Memory 1", "content": "Content 1"},
-    {"agent_id": "agent2", "title": "Memory 2", "content": "Content 2"}
-]
-memory_ids = memory.store_batch(batch_memories)
+```rust
+// Batch operations for efficiency
+let batch_memories = vec![
+    BatchEntry { agent_id: "agent1", title: "Memory 1", content: "Content 1" },
+    BatchEntry { agent_id: "agent2", title: "Memory 2", content: "Content 2" },
+];
+let memory_ids = memory.store_batch(&batch_memories)?;
 
-# Efficient filtering
-recent_decisions = memory.retrieve(
-    agent_id="architect",
-    memory_type=MemoryType.DECISION,
-    min_importance=8,
-    limit=10
-)
+// Efficient filtering
+let recent_decisions = memory.retrieve(
+    Some("architect"),
+    Some(MemoryType::Decision),
+    Some(8),
+    Some(10),
+)?;
 ```
 
 ### 5. Graceful Degradation
 
-```python
-from .claude.tools.amplihack.memory import activate_memory
+```rust
+use amplihack_memory::activate_memory;
 
-# Disable memory for performance-critical operations
-activate_memory(False)
-# ... perform critical operations ...
-activate_memory(True)
+// Disable memory for performance-critical operations
+activate_memory(false);
+// ... perform critical operations ...
+activate_memory(true);
 
-# Safe operations with fallback
-memory = get_memory_manager()
-if memory:
-    memory.store(...)  # Store if available
-# Continue without memory if unavailable
+// Safe operations with fallback
+if let Ok(memory) = get_memory_manager(None) {
+    let _ = memory.store(...)?; // Store if available
+}
+// Continue without memory if unavailable
 ```
 
 ## Testing Results
@@ -218,18 +235,18 @@ if memory:
 
 ```
 .claude/tools/amplihack/memory/
-├── __init__.py              # Integration interface
-├── context_preservation.py  # Context utilities
-├── examples.py             # Usage examples
+├── mod.rs                   # Integration interface
+├── context_preservation.rs  # Context utilities
+├── examples.rs             # Usage examples
 ├── INTEGRATION_GUIDE.md    # Comprehensive guide
 └── README.md              # This overview
 
 src/amplihack/memory/
-├── __init__.py            # Public API
-├── manager.py            # MemoryManager interface
-├── database.py           # SQLite backend
-├── models.py             # Data models
-├── maintenance.py        # Cleanup utilities
+├── mod.rs                # Public API
+├── manager.rs            # MemoryManager interface
+├── database.rs           # SQLite backend
+├── models.rs             # Data models
+├── maintenance.rs        # Cleanup utilities
 └── README.md            # Core documentation
 ```
 
@@ -258,14 +275,14 @@ src/amplihack/memory/
 
 ## Maintenance
 
-```python
-from amplihack.memory.maintenance import MemoryMaintenance
+```rust
+use amplihack_memory::maintenance::MemoryMaintenance;
 
-maintenance = MemoryMaintenance()
-maintenance.cleanup_expired()          # Remove expired memories
-maintenance.cleanup_old_sessions(30)   # Remove old sessions
-maintenance.vacuum_database()          # Optimize database
-maintenance.optimize_indexes()         # Update query optimization
+let maintenance = MemoryMaintenance::new()?;
+maintenance.cleanup_expired()?;          // Remove expired memories
+maintenance.cleanup_old_sessions(30)?;   // Remove old sessions
+maintenance.vacuum_database()?;          // Optimize database
+maintenance.optimize_indexes()?;         // Update query optimization
 ```
 
 ## Error Handling
@@ -279,7 +296,7 @@ The system includes comprehensive error handling:
 
 ## Examples
 
-See `examples.py` for complete working examples:
+See `examples.rs` for complete working examples:
 
 - Basic agent memory integration
 - Context preservation patterns
