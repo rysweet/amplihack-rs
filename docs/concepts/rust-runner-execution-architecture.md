@@ -1,6 +1,6 @@
 # Rust Runner Execution Architecture
 
-How `amplihack.recipes.rust_runner_execution` manages subprocess I/O, progress tracking, and safe file operations for the Rust recipe runner.
+How the `amplihack` Rust CLI binary manages subprocess I/O, progress tracking, and safe file operations for recipe execution.
 
 ## Contents
 

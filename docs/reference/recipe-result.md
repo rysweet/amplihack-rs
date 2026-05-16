@@ -15,11 +15,7 @@
 
 ## Class Overview
 
-```python
-from amplihack.recipes.models import RecipeResult, StepResult, RecipeStatus
-```
-
-`RecipeResult` is a dataclass. It is returned by `RecipeRunner.run()` and by the `amplihack recipe run` CLI command when `--output json` is used.
+`RecipeResult` is the structured output of a recipe run. It is returned by the `amplihack recipe run` CLI command when `--output json` is used. The JSON schema uses the same field names documented below.
 
 ---
 
@@ -99,47 +95,37 @@ for step in result.step_results:
 
 ### Check overall status
 
-```python
-from amplihack.recipes.runner import RecipeRunner
-from amplihack.recipes.models import RecipeStatus
-
-runner = RecipeRunner()
-result = runner.run("default-workflow", {"task_description": "add input validation"})
-
-if result.status == RecipeStatus.SUCCESS:
-    print(f"Done in {result.duration_seconds:.1f}s")
-else:
-    print(f"Failed: {result.error}")
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="add input validation" \
+  --verbose --output json | jq '.status'
+# "SUCCESS"
 ```
 
 ### Count successful steps
 
-```python
-from amplihack.recipes.models import StepStatus
-
-successes = sum(1 for s in result.step_results if s.status == StepStatus.SUCCESS)
-print(f"{successes} of {len(result.step_results)} steps succeeded")
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="add input validation" \
+  --output json | jq '[.step_results[] | select(.status == "SUCCESS")] | length'
 ```
 
 ### Serialise to JSON
 
-```python
-import json
-import dataclasses
+The `--output json` flag produces the full `RecipeResult` as JSON:
 
-# RecipeResult is a dataclass; convert with asdict()
-data = dataclasses.asdict(result)
-print(json.dumps(data, indent=2, default=str))
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="add input validation" \
+  --output json | jq .
 ```
 
 ### Log a one-line summary
 
-```python
-import logging
+Without `--output json`, the CLI prints a one-line summary to stderr:
 
-log = logging.getLogger(__name__)
-log.info(str(result))
-# INFO: RecipeResult(default-workflow: SUCCESS, 22 steps)
+```
+RecipeResult(default-workflow: SUCCESS, 22 steps)
 ```
 
 ---
@@ -155,7 +141,7 @@ amplihack recipe run default-workflow \
 # "SUCCESS"
 ```
 
-The JSON schema mirrors `dataclasses.asdict(result)` with the `status` field serialised as the string value of the `RecipeStatus` enum.
+The JSON schema matches the fields documented in [Attributes](#attributes) with the `status` field serialised as a string value (`"SUCCESS"`, `"FAILURE"`, `"PARTIAL"`).
 
 ---
 

@@ -226,12 +226,12 @@ Claude Code launches, sees filtered environment
 ### Module Location
 
 - **Profile YAML files**: `~/.amplihack/.claude/profiles/*.yaml`
-- **Implementation**: `~/.amplihack/.claude/tools/amplihack/profile_management/`
-  - `staging.py` - File staging logic
-  - `loader.py` - Profile loading
-  - `parser.py` - YAML parsing
-  - `config.py` - Configuration management
-- **Integration**: `src/amplihack/__init__.py` (install), `src/amplihack/cli.py` (launch)
+- **Implementation**: The profile management logic is implemented in the Rust `amplihack` binary within the `profile_management` module, handling:
+  - File staging (which files to copy during install)
+  - Profile loading (resolving URI schemes to profile definitions)
+  - YAML parsing (reading and validating profile configurations)
+  - Configuration management (merging include/exclude patterns)
+- **Integration**: The `amplihack install` and `amplihack claude` CLI commands invoke the profile system
 
 ### Error Handling
 

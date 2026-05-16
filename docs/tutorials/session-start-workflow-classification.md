@@ -220,7 +220,7 @@ unset AMPLIHACK_USE_RECIPES
 
 ### "Recipe Runner unavailable" Message
 
-**Cause**: `amplihack.recipes` module not installed or ImportError
+**Cause**: `amplihack` CLI binary not installed or not on PATH
 
 **Solution**: Falls back to Tier 2 (Workflow Skills) automatically - no action needed
 

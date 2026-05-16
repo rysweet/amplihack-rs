@@ -28,8 +28,8 @@ Tier 3: Markdown Workflows (Baseline Fallback)
 
 ### 2. Recipe Runner Detection
 
-- Automatic detection of `amplihack.recipes` module availability
-- Falls back gracefully if module not installed
+- Automatic detection of the `amplihack` CLI binary availability
+- Falls back gracefully if binary not installed
 
 ### 3. Environment Variable Control
 
@@ -45,20 +45,16 @@ export AMPLIHACK_USE_RECIPES=0
 
 Recipe Runner receives context from ultrathink:
 
-```python
-run_recipe_by_name(
-    "default-workflow",
-    adapter=sdk_adapter,
-    user_context={
-        "task": "{TASK_DESCRIPTION}",
-        "workflow_type": "development" | "investigation",
-    }
-)
+```bash
+amplihack recipe run default-workflow \
+  -c task="{TASK_DESCRIPTION}" \
+  -c workflow_type="development" \
+  --verbose
 ```
 
 ### 5. Error Handling
 
-- ImportError from `amplihack.recipes` → Falls back to Workflow Skills
+- `amplihack` CLI binary not found → Falls back to Workflow Skills
 - Recipe execution exception → Falls back to Workflow Skills
 - Skills unavailable → Falls back to Markdown workflows
 
@@ -83,7 +79,7 @@ run_recipe_by_name(
 
 ✅ **100% Backward Compatible**
 
-- When `amplihack.recipes` module unavailable: ultrathink behaves exactly as before
+- When `amplihack` CLI binary unavailable: ultrathink behaves exactly as before
 - Existing workflows (Skills, Markdown) continue to work
 - No breaking changes to ultrathink command interface
 - Environment variable defaults to enabled but fails gracefully
@@ -92,7 +88,7 @@ run_recipe_by_name(
 
 ### Test 1: Recipe Runner Unavailable (Fallback Path)
 
-- **Environment**: `amplihack.recipes` module not installed
+- **Environment**: `amplihack` CLI binary not installed
 - **Expected**: Falls back to Workflow Skills
 - **Result**: ✅ PASS - Fallback chain works as designed
 - **Evidence**: Current session successfully executing DEFAULT_WORKFLOW.md
@@ -172,8 +168,8 @@ After this PR is merged:
 
 ## Success Criteria Met
 
-✅ Check if amplihack.recipes module available
-✅ If yes: invoke run_recipe_by_name('default-workflow')
+✅ Check if amplihack CLI binary available
+✅ If yes: invoke `amplihack recipe run default-workflow -c task="..." --verbose`
 ✅ If no: fallback to Read(DEFAULT_WORKFLOW.md)
 ✅ Add AMPLIHACK_USE_RECIPES env var for opt-out
 ✅ Test both paths work

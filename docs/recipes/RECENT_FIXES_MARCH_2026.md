@@ -349,8 +349,8 @@ Neither path resolved to the installed package location (`site-packages/amplihac
 **Impact**:
 
 - All 16 bundled recipes now discoverable from any working directory
-- Works correctly after `pip install amplihack`
-- Verified: `cd /tmp && python -c 'from amplihack.recipes import list_recipes; print(len(list_recipes()))'` → 16 recipes (was 0)
+- Works correctly after `cargo install amplihack-rs`
+- Verified: `amplihack recipe list | wc -l` → 16 recipes (was 0)
 
 **Tests Added**:
 

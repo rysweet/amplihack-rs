@@ -116,18 +116,14 @@ print(f"Written to: {result.file_path}")
 
 ### Persist all recipe step outputs
 
-```python
-from amplihack.append_handler import AppendHandler
-from amplihack.recipes.runner import RecipeRunner
+```bash
+# Run recipe with JSON output and save step results
+amplihack recipe run default-workflow \
+  -c task_description="add caching layer" \
+  --verbose --output json > run-log.json
 
-runner = RecipeRunner()
-handler = AppendHandler(output_dir="./run-logs")
-recipe_result = runner.run("default-workflow", {"task_description": "add caching layer"})
-
-for step in recipe_result.step_results:
-    if step.output:
-        result = handler.append(f"# {step.step_name}\n\n{step.output}")
-        print(f"Step {step.step_id} saved: {result.file_path}")
+# Extract individual step outputs
+cat run-log.json | jq '.step_results[] | {step_id, step_name, output}' > step-outputs.json
 ```
 
 ### Handle permission errors

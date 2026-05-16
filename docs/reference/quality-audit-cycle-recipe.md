@@ -146,25 +146,19 @@ For simpler steps that only need one variable:
 
 ## Invocation
 
-Use `run_recipe_by_name()` from Python:
+Use `amplihack recipe run` from the CLI:
 
-```python
-from amplihack.recipes import run_recipe_by_name
-
-result = run_recipe_by_name(
-    "quality-audit-cycle",
-    user_context={
-        "target_path": "src/amplihack",
-        "repo_path": ".",
-        "min_cycles": "3",
-        "max_cycles": "6",
-    },
-    progress=True,
-)
+```bash
+amplihack recipe run quality-audit-cycle \
+  -c target_path="src/amplihack" \
+  -c repo_path="." \
+  -c min_cycles="3" \
+  -c max_cycles="6" \
+  --verbose
 ```
 
 > **Do not use** `amplihack recipe execute` — this CLI form is deprecated.
-> `run_recipe_by_name()` is the canonical invocation, consistent with
+> `amplihack recipe run` is the canonical invocation, consistent with
 > `dev-orchestrator` and all other recipe workflows.
 
 ## See Also

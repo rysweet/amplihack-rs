@@ -1,5 +1,11 @@
 # Eval System Architecture
 
+> **Note:** This document describes the eval system architecture originally implemented
+> in the Python version of amplihack. The concepts (progressive test levels L1-L12,
+> self-improvement loops, domain evaluation) remain relevant. In the Rust version
+> (`amplihack-rs`), use `amplihack eval` CLI commands instead of the Python entry points
+> referenced below (e.g., `progressive_test_suite.py`, `sdk_eval_loop.py`).
+
 Comprehensive guide to the evaluation and self-improvement infrastructure for goal-seeking agents. Covers the progressive test suite (L1-L12), long-horizon memory testing with 12 information blocks (including security domain), 5-way matrix evaluation across SDKs, self-improvement loop with patch proposer + reviewer voting, and the standalone amplihack-agent-eval package.
 
 ## Overview

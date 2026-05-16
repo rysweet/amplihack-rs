@@ -1,8 +1,8 @@
 # Rust Runner Execution — API Reference
 
-Module: `amplihack.recipes.rust_runner_execution`
+The `amplihack` Rust CLI binary (`recipe-runner-rs`) handles subprocess management, progress tracking, JSONL event emission, and log I/O for recipe execution.
 
-Subprocess management, progress tracking, JSONL event emission, and log I/O helpers for the Rust recipe runner. Consumed primarily by [`rust_runner.py`](#); callers outside that module should use the public surface documented below.
+Subprocess management, progress tracking, JSONL event emission, and log I/O helpers for the Rust recipe runner. The Rust binary replaces the legacy Python recipe-runner module. Callers should use `amplihack recipe run` instead of the Python API.
 
 ## Contents
 
@@ -24,72 +24,37 @@ Subprocess management, progress tracking, JSONL event emission, and log I/O help
 
 ### `execute_rust_command`
 
-```python
-def execute_rust_command(
-    cmd: list[str],
-    *,
-    name: str,
-    progress: bool,
-    env_builder: Callable[[], dict[str, str]],
-) -> RecipeResult:
+The Rust binary handles command execution internally. To run a recipe:
+
+```bash
+amplihack recipe run my-recipe --verbose
 ```
 
-Run a compiled `recipe-runner-rs` command and return a fully typed [`RecipeResult`](./recipe-result.md).
+The binary manages:
 
-| Parameter     | Type                           | Description                                                                                                                                    |
-| ------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cmd`         | `list[str]`                    | Argument list (first element is the binary path). Never passed through a shell.                                                                |
-| `name`        | `str`                          | Recipe name, used for progress-file paths and log file naming.                                                                                 |
-| `progress`    | `bool`                         | When `True`, creates a per-recipe log file, writes progress JSON after each step marker, and prints the log path to stderr for live `tail -f`. |
-| `env_builder` | `Callable[[], dict[str, str]]` | Zero-argument callable that returns the subprocess environment. Use [`build_rust_env`](#build_rust_env) unless you have a custom requirement.  |
+| Concern       | Description                                                                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Command       | The recipe name and context flags. Never passed through a shell.                                                                               |
+| Progress      | When `--verbose` is set, creates a per-recipe log file, writes progress JSON after each step marker, and prints the log path to stderr for live `tail -f`. |
+| Environment   | Filtered environment with only allowlisted variables (see [build_rust_env](#build_rust_env)).                                                   |
 
-Returns a [`RecipeResult`](./recipe-result.md) with `success`, `step_results`, `context`, and `log_path`.
-
-Raises `RuntimeError` on non-zero exit or JSON parse failure.
+Returns structured JSON output when `--output json` is used. See [`RecipeResult`](./recipe-result.md).
 
 **Example:**
 
-```python
-import shutil
-from amplihack.recipes.rust_runner_execution import execute_rust_command, build_rust_env
-from amplihack.recipes.rust_runner import find_rust_binary, _build_rust_env
-
-binary = find_rust_binary()
-cmd = [binary, "run", "--recipe", "my-recipe"]
-# _build_rust_env() is the pre-wired wrapper that supplies the correct wrapper_factory.
-result = execute_rust_command(
-    cmd=cmd,
-    name="my-recipe",
-    progress=True,
-    env_builder=_build_rust_env,
-)
-print(result.success, result.log_path)
+```bash
+amplihack recipe run my-recipe --verbose --output json | jq '.success'
 ```
 
 ---
 
 ### `read_progress_file`
 
-```python
-def read_progress_file(path: Path | str) -> dict[str, Any] | None:
-```
+The Rust binary writes progress JSON files during execution. These can be read by monitoring tools:
 
-Read and validate a progress JSON file written by the recipe runner. Returns `None` on any I/O or parse error — callers must handle the `None` case gracefully.
-
-**Example:**
-
-```python
-import tempfile, os
-from pathlib import Path
-from amplihack.recipes.rust_runner_execution import read_progress_file
-
-progress_dir = Path(tempfile.gettempdir())
-path = progress_dir / "amplihack-progress-my_recipe-12345.json"
-info = read_progress_file(path)
-if info:
-    total = info.get("total_steps") or 0  # 0 means unknown; Python layer always writes 0
-    step_label = f"{info['current_step']}" + (f"/{total}" if total else "")
-    print(f"Step {step_label}: {info.get('step_name', '')}")
+```bash
+# Progress files are written to the system temp directory
+cat /tmp/amplihack-progress-my_recipe-12345.json
 ```
 
 Returned dict fields (required fields are always present when the function returns non-`None`; optional fields may be absent):
@@ -109,18 +74,14 @@ Returned dict fields (required fields are always present when the function retur
 
 ### `emit_step_transition`
 
-```python
-def emit_step_transition(step_name: str, status: str) -> None:
-```
+The Rust binary emits machine-readable JSONL step-transition events to **stderr** with immediate flush.
 
-Write a machine-readable JSONL step-transition event to **stderr** with immediate flush.
-
-| Parameter   | Values                                        |
+| Field       | Values                                        |
 | ----------- | --------------------------------------------- |
 | `step_name` | Arbitrary label matching the recipe step name |
 | `status`    | `"start"` · `"done"` · `"fail"` · `"skip"`    |
 
-This function is called automatically by the streaming layer; only call it directly from custom step implementations that execute outside the Rust binary (e.g., Python pre/post-hooks).
+These events are emitted automatically by the recipe runner during execution.
 
 **Output format:**
 
@@ -134,26 +95,9 @@ This function is called automatically by the streaming layer; only call it direc
 
 ### `build_rust_env`
 
-```python
-def build_rust_env(
-    *,
-    wrapper_factory: Callable[[str], str],
-    which: Callable[..., str | None],
-) -> dict[str, str]:
-```
+The Rust binary builds a filtered environment for subprocess execution. Only variables on an internal allowlist are included, preventing accidental secret leakage (e.g. `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`).
 
-Return a filtered environment dictionary suitable for passing to `subprocess.Popen`. Only variables on the `_ALLOWED_RUST_ENV_VARS` allowlist are included, preventing accidental secret leakage (e.g. `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`).
-
-Both parameters are keyword-only:
-
-| Parameter         | Type                         | Description                                                                                                                                                                            |
-| ----------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `wrapper_factory` | `Callable[[str], str]`       | Takes the real `copilot` binary path and returns a path to a temporary directory containing a shim `copilot` script. Used to intercept nested `copilot` invocations inside the recipe. |
-| `which`           | `Callable[..., str \| None]` | Locates the real `copilot` binary on `PATH` (pass `shutil.which`).                                                                                                                     |
-
-If `AMPLIHACK_AGENT_BINARY` is not `"copilot"`, neither callable is invoked.
-
-> **Note:** Most callers should use `rust_runner._build_rust_env()` directly — it is the pre-wired version that supplies the Copilot compatibility `wrapper_factory`. Call `build_rust_env()` directly only when you need a custom wrapper strategy.
+If `AMPLIHACK_AGENT_BINARY` is `"copilot"`, the binary creates a shim wrapper to intercept nested `copilot` invocations inside the recipe.
 
 **Allowlisted variable families:**
 
@@ -165,7 +109,7 @@ If `AMPLIHACK_AGENT_BINARY` is not `"copilot"`, neither callable is invoked.
 | TLS / CA bundles | `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`          |
 | Locale           | `LANG`, `LC_ALL`, `LC_CTYPE`                                     |
 | Temp dirs        | `TMPDIR`, `TMP`, `TEMP`                                          |
-| Runtime          | `PYTHONPATH`, `RECIPE_RUNNER_RS_PATH`, `CLAUDE_PROJECT_DIR`      |
+| Runtime          | `RECIPE_RUNNER_RS_PATH`, `CLAUDE_PROJECT_DIR`                |
 
 ---
 
@@ -188,7 +132,7 @@ Written to `/tmp/amplihack-progress-<recipe>-<pid>.json` after each step transit
 }
 ```
 
-> **Note:** `total_steps` is always `0` when written by the Python streaming layer (the Rust binary does not report step totals). Treat `0` as "unknown".
+> **Note:** `total_steps` may be `0` if the recipe does not report step totals upfront. Treat `0` as "unknown".
 
 An optional workstream sidecar at `$AMPLIHACK_WORKSTREAM_PROGRESS_FILE` augments the main file with:
 

@@ -56,11 +56,11 @@ The ultrathink command follows this execution hierarchy:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ TIER 1: Recipe Runner (Code-Enforced)                      │
-│ ✓ Python SDK adapters execute each step                    │
+│ ✓ Rust CLI executes each step                              │
 │ ✓ Fail-fast on errors                                      │
 │ ✓ Context accumulation automatic                           │
 │ ✓ Conditional execution reliable                           │
-│ ✗ Requires amplihack.recipes module                        │
+│ ✗ Requires amplihack CLI binary                            │
 └─────────────────────────────────────────────────────────────┘
                            ↓ Falls back to
 ┌─────────────────────────────────────────────────────────────┐
@@ -85,12 +85,12 @@ The ultrathink command follows this execution hierarchy:
 **Recipe Runner (Tier 1):**
 
 - `AMPLIHACK_USE_RECIPES` is unset or set to `1` (default)
-- `amplihack.recipes` module is installed and importable
+- `amplihack` CLI binary is installed and available on PATH
 - Recipe for the workflow exists (default-workflow, investigation-workflow, qa-workflow)
 
 **Workflow Skills (Tier 2):**
 
-- Recipe Runner unavailable (ImportError when trying `from amplihack.recipes import run_recipe_by_name`)
+- Recipe Runner unavailable (`amplihack` binary not found on PATH)
 - OR `AMPLIHACK_USE_RECIPES=0` is set
 - Skill definition exists in `.claude/skills/` directory
 
@@ -104,30 +104,23 @@ The ultrathink command follows this execution hierarchy:
 
 ### Architecture
 
-```python
+```bash
 # Recipe Runner execution flow for ultrathink
 
-from amplihack.recipes import run_recipe_by_name
-
 # 1. Load recipe YAML (default-workflow.yaml)
-# 2. Create SDK adapter (bridges Claude Code tools to Python)
-# 3. Execute steps sequentially via adapter
-# 4. Accumulate context between steps
-# 5. Stop on first error (fail-fast)
+# 2. Execute steps sequentially via agent adapters
+# 3. Accumulate context between steps
+# 4. Stop on first error (fail-fast)
 
-result = run_recipe_by_name(
-    "default-workflow",
-    adapter=sdk_adapter,  # Claude Code SDK adapter
-    user_context={
-        "task": "implement JWT authentication",
-        "user_requirements": "Use RS256 algorithm, store keys in vault"
-    }
-)
+amplihack recipe run default-workflow \
+  -c task="implement JWT authentication" \
+  -c user_requirements="Use RS256 algorithm, store keys in vault" \
+  --verbose
 
-# Result contains:
-# - success: bool (True if all steps passed)
-# - context: dict (accumulated context from all steps)
-# - errors: list (any errors that occurred)
+# Result output includes:
+# - success: whether all steps passed
+# - context: accumulated context from all steps
+# - errors: any errors that occurred
 # - steps_executed: int (number of steps completed)
 ```
 
@@ -201,12 +194,10 @@ Recipe Runner stops on first error:
 # 4. Does NOT continue to Step 7
 
 # Error handling in ultrathink:
-try:
-    result = run_recipe_by_name("default-workflow", adapter=sdk_adapter, user_context={...})
-except Exception as e:
-    print(f"Recipe execution failed at step {e.step_number}: {e.message}")
-    print("Falling back to workflow skills...")
-    Skill(skill="default-workflow")  # Fall back to Tier 2
+# If recipe runner fails, fall back to workflow skills
+amplihack recipe run default-workflow \
+  -c task="..." \
+  --verbose || echo "Recipe execution failed, falling back to workflow skills..."
 ```
 
 ## Environment Variable Control
@@ -279,15 +270,11 @@ export AMPLIHACK_USE_RECIPES=0
 1. Detects task type: Development (keyword "implement")
 2. Checks environment: AMPLIHACK_USE_RECIPES not set to 0
 3. Tries Recipe Runner:
-   from amplihack.recipes import run_recipe_by_name  # SUCCESS
+   amplihack recipe run --help  # SUCCESS — binary found
 4. Executes via Recipe Runner:
-   result = run_recipe_by_name(
-       "default-workflow",
-       adapter=sdk_adapter,
-       user_context={
-           "task": "implement user registration with email verification"
-       }
-   )
+   amplihack recipe run default-workflow \
+     -c task="implement user registration with email verification" \
+     --verbose
 5. Recipe Runner automatically:
    - Step 1: Task clarification (code-enforced)
    - Step 2: Git branch creation (code-enforced)
@@ -310,15 +297,11 @@ export AMPLIHACK_USE_RECIPES=0
 1. Detects task type: Investigation (keyword "investigate")
 2. Checks environment: AMPLIHACK_USE_RECIPES not set to 0
 3. Tries Recipe Runner:
-   from amplihack.recipes import run_recipe_by_name  # SUCCESS
+   amplihack recipe run --help  # SUCCESS — binary found
 4. Executes via Recipe Runner:
-   result = run_recipe_by_name(
-       "investigation-workflow",
-       adapter=sdk_adapter,
-       user_context={
-           "task": "investigate caching layer"
-       }
-   )
+   amplihack recipe run investigation-workflow \
+     -c task="investigate caching layer" \
+     --verbose
 5. Recipe Runner automatically:
    - Phase 1: Scope Definition (code-enforced)
    - Phase 2: Exploration Strategy (code-enforced)
@@ -340,7 +323,7 @@ export AMPLIHACK_USE_RECIPES=0
 1. Detects task type: Development
 2. Checks environment: AMPLIHACK_USE_RECIPES not set to 0
 3. Tries Recipe Runner:
-   from amplihack.recipes import run_recipe_by_name  # ImportError: No module named 'amplihack.recipes'
+   amplihack recipe run --help  # FAILS — binary not found on PATH
 4. Falls back to workflow skills:
    Skill(skill="default-workflow")
 5. Skill loads workflow instructions
@@ -380,9 +363,9 @@ export AMPLIHACK_USE_RECIPES=0
 1. Detects task type: Development
 2. Checks environment: AMPLIHACK_USE_RECIPES not set to 0
 3. Tries Recipe Runner:
-   from amplihack.recipes import run_recipe_by_name  # SUCCESS
+   amplihack recipe run --help  # SUCCESS — binary found
 4. Executes via Recipe Runner:
-   result = run_recipe_by_name("default-workflow", adapter=sdk_adapter, user_context={...})
+   amplihack recipe run default-workflow -c task="..." --verbose
 5. Recipe Runner executes:
    - Step 1-10: SUCCESS (code-enforced)
    - Step 11: FAILS (adapter error - SDK tool unavailable)
@@ -397,82 +380,44 @@ export AMPLIHACK_USE_RECIPES=0
 
 ## Context Passing to Recipe Runner
 
-Recipe Runner receives context from ultrathink via `user_context` parameter:
+Recipe Runner receives context from ultrathink via `-c` flags:
 
 ### Development Tasks
 
-```python
-result = run_recipe_by_name(
-    "default-workflow",
-    adapter=sdk_adapter,
-    user_context={
-        "task": "implement JWT authentication",
-        "user_requirements": "Use RS256 algorithm, store keys in vault",
-        "user_constraints": "Must pass CI within 30 minutes",
-        "project_context": {
-            "language": "Python",
-            "framework": "FastAPI",
-            "auth_system": "existing-basic-auth"
-        }
-    }
-)
+```bash
+amplihack recipe run default-workflow \
+  -c task="implement JWT authentication" \
+  -c user_requirements="Use RS256 algorithm, store keys in vault" \
+  -c user_constraints="Must pass CI within 30 minutes" \
+  -c language="Python" \
+  -c framework="FastAPI" \
+  --verbose
 ```
 
 ### Investigation Tasks
 
-```python
-result = run_recipe_by_name(
-    "investigation-workflow",
-    adapter=sdk_adapter,
-    user_context={
-        "task": "investigate caching layer",
-        "focus_areas": ["Redis integration", "cache invalidation", "performance"],
-        "depth": "deep",  # quick, standard, deep
-        "output_format": "architecture-doc"  # or "investigation-report"
-    }
-)
+```bash
+amplihack recipe run investigation-workflow \
+  -c task="investigate caching layer" \
+  -c focus_areas="Redis integration, cache invalidation, performance" \
+  -c depth="deep" \
+  -c output_format="architecture-doc" \
+  --verbose
 ```
 
 ### Q&A Tasks
 
-```python
-result = run_recipe_by_name(
-    "qa-workflow",
-    adapter=sdk_adapter,
-    user_context={
-        "question": "what is the purpose of the workflow system?",
-        "context_needed": ["workflow types", "execution hierarchy"],
-        "detail_level": "concise"  # concise, balanced, detailed
-    }
-)
+```bash
+amplihack recipe run qa-workflow \
+  -c question="what is the purpose of the workflow system?" \
+  -c context_needed="workflow types, execution hierarchy" \
+  -c detail_level="concise" \
+  --verbose
 ```
 
 ### Context Available to Recipe Steps
 
-Each recipe step can access:
-
-```python
-# user_context (provided by ultrathink)
-user_context = {
-    "task": "...",
-    "user_requirements": "...",
-    # ... etc
-}
-
-# context (accumulated from previous steps)
-context = {
-    "clarified_requirements": {...},  # From Step 1
-    "design": {...},                  # From Step 5
-    "implementation": {...},          # From Step 6
-    # ... etc
-}
-
-# Recipe step can use both:
-result = sdk_adapter.invoke_agent(
-    agent_type="builder",
-    prompt=f"Task: {user_context['task']}\nDesign: {context['design']}"
-)
-```
+Each recipe step can access context variables passed via `-c` flags, plus accumulated context from previous steps. The recipe runner merges user-provided context with step outputs automatically.
 
 ## Troubleshooting
 
@@ -486,8 +431,8 @@ result = sdk_adapter.invoke_agent(
 **Diagnosis:**
 
 ```bash
-# Check if Recipe Runner module is installed
-PYTHONPATH=src python3 -c "from amplihack.recipes import run_recipe_by_name; print('Recipe Runner available')"
+# Check if Recipe Runner binary is installed
+amplihack recipe run --help && echo 'Recipe Runner available' || echo 'Recipe Runner not found'
 
 # Check environment variable
 echo $AMPLIHACK_USE_RECIPES
@@ -498,8 +443,8 @@ echo $AMPLIHACK_USE_RECIPES
 **Solution:**
 
 ```bash
-# If module not installed:
-pip install amplihack[recipes]
+# If binary not installed:
+cargo install amplihack-rs
 
 # If environment variable is 0:
 unset AMPLIHACK_USE_RECIPES
@@ -507,31 +452,31 @@ unset AMPLIHACK_USE_RECIPES
 export AMPLIHACK_USE_RECIPES=1
 ```
 
-### Problem: Recipe Runner Fails with ImportError
+### Problem: Recipe Runner Fails with Binary Not Found
 
 **Symptoms:**
 
-- Error message: "ImportError: No module named 'amplihack.recipes'"
+- Error message: "amplihack: command not found"
 - Falls back to workflow skills
 
 **Diagnosis:**
 
 ```bash
-# Check Python path
-python3 -c "import sys; print('\n'.join(sys.path))"
+# Check if amplihack is on PATH
+which amplihack
 
-# Check if recipes module exists
-find ~/.local/lib/python*/site-packages/amplihack -name "recipes" -type d
+# Check installation
+cargo install --list | grep amplihack
 ```
 
 **Solution:**
 
 ```bash
-# Reinstall amplihack with recipes support
-pip install --upgrade amplihack[recipes]
+# Reinstall the amplihack CLI binary
+cargo install amplihack-rs --force
 
-# Or install recipes module separately
-pip install amplihack-recipes
+# Or build from source
+cargo install --git https://github.com/rysweet/amplihack-rs-recipe-runner
 ```
 
 ### Problem: Recipe Execution Fails Mid-Workflow
@@ -711,7 +656,7 @@ export AMPLIHACK_USE_RECIPES=0
 # Then Recipe Runner is not installed or disabled
 
 # To verify Recipe Runner installation:
-PYTHONPATH=src python3 -c "from amplihack.recipes import run_recipe_by_name; print('Recipe Runner installed')"
+amplihack recipe run --help && echo 'Recipe Runner installed' || echo 'Recipe Runner not found'
 ```
 
 ## Benefits of Recipe Runner Integration
