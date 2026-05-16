@@ -63,7 +63,7 @@ If you haven't already, install the centralized plugin.
 
 ```bash
 # Install or upgrade amplihack
-pip install --upgrade amplihack
+cargo install amplihack
 
 # Install plugin
 amplihack plugin install

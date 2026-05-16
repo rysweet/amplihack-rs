@@ -110,7 +110,7 @@ found" after `cargo install amplihack`.
 
 ```bash
 # Copy bundled recipes to global location
-cp -r $(python -c "import amplihack; print(amplihack.__path__[0])")/amplifier-bundle/recipes/* \
+cp -r $(amplihack info --bundle-path)/amplifier-bundle/recipes/* \
   ~/.amplihack/.claude/recipes/
 ```
 

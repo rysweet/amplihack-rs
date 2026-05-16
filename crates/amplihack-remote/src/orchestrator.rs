@@ -173,10 +173,10 @@ impl Orchestrator {
         match result {
             Ok(Ok(output)) if output.status.success() => Ok(()),
             Ok(Ok(_)) => Err(RemoteError::provisioning(
-                "azlin command failed. Install: pip install azlin",
+                "azlin command failed. Install: cargo install azlin",
             )),
             Ok(Err(_)) => Err(RemoteError::provisioning(
-                "azlin not found. Install: pip install azlin",
+                "azlin not found. Install: cargo install azlin",
             )),
             Err(_) => Err(RemoteError::provisioning("azlin version check timed out")),
         }

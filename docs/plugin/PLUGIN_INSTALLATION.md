@@ -96,7 +96,7 @@ git clone https://github.com/rysweet/amplihack-rs.git
 cd amplihack
 
 # Install in editable mode
-pip install -e .
+cargo install --path .
 
 # Install plugin from source
 amplihack plugin install --dev
@@ -109,7 +109,7 @@ amplihack plugin status
 
 ```bash
 # Install directly from GitHub
-pip install git+https://github.com/rysweet/amplihack-rs.git
+cargo install --git https://github.com/rysweet/amplihack-rs.git
 
 # Install plugin
 amplihack plugin install
@@ -313,7 +313,7 @@ amplihack plugin status --verbose
 
 ```bash
 # Update amplihack package
-pip install --upgrade amplihack
+cargo install amplihack
 
 # Update plugin
 amplihack plugin update
@@ -367,7 +367,7 @@ Config files remain in `~/.amplihack/config/` for reinstallation.
 amplihack plugin uninstall --purge
 
 # Remove amplihack package
-pip uninstall amplihack
+cargo uninstall amplihack
 
 # Verify removal
 ls ~/.amplihack/

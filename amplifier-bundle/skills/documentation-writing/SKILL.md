@@ -130,12 +130,9 @@ docs/
 
 Every concept needs a runnable example:
 
-```python
+```bash
 # Example: Analyze file complexity
-from amplihack import analyze
-
-result = analyze("src/main.py")
-print(f"Complexity: {result.score}")
+amplihack analyze src/main.rs
 # Output: Complexity: 12.5
 ```
 

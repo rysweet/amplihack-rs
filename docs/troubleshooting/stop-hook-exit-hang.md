@@ -75,14 +75,14 @@ amplihack
 
 ```bash
 # Verify you're running the new version
-python -c "import amplihack; print(amplihack.__version__)"
+amplihack --version
 # Should show 0.9.1 or later
 ```
 
 **Solution**: Clear any cached installations
 
 ```bash
-pip uninstall amplihack
+cargo uninstall amplihack
 pip cache purge
 cargo install amplihack-rs
 ```

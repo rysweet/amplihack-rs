@@ -4,7 +4,7 @@ version: 1.0.0
 description: |
   Extracts key learnings from conversations, debugging sessions, and failed attempts.
   Use at session end or after solving complex problems to capture insights.
-  Stores discoveries in memory (via amplihack.memory.discoveries), suggests PATTERNS.md updates, and recommends new agent creation.
+  Stores discoveries in memory (via `amplihack memory store-discovery` CLI), suggests PATTERNS.md updates, and recommends new agent creation.
   Ensures knowledge persists across sessions via Kuzu memory backend.
 ---
 
@@ -428,7 +428,7 @@ Before finalizing an extraction, verify:
 
 ### Discovery Memory Lifecycle
 
-1. **Extraction**: Stored in memory via `store_discovery()` during session
+1. **Extraction**: Stored in memory via `amplihack memory store-discovery` CLI during session
 2. **Visibility**: Retrieved by `get_recent_discoveries()` at session start
 3. **Action**: Agents can query memory when solving similar problems
 4. **Prevention**: Prevents repeating same mistakes across sessions

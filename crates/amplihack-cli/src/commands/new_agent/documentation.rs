@@ -47,9 +47,7 @@ impl DocumentationGenerator {
              ## Installation\n\n\
              ### Option 1: Install from UVX Package\n\n\
              ```bash\nuvx install {name}-{ver}.uvx\nuvx run {name}-{ver}.uvx\n```\n\n\
-             ### Option 2: Install from Source\n\n\
-             ```bash\ncd {name}\npip install -e .\n```\n\n\
-             ### Option 3: Manual Integration\n\n\
+             ### Option 2: Manual Integration\n\n\
              ```bash\ncp -r agents/ ~/.claude/agents/custom/\n```\n\n\
              ## Quick Start\n\n\
              ### Using with Amplihack\n\n\
@@ -88,16 +86,14 @@ impl DocumentationGenerator {
     /// Prerequisites section content.
     pub fn generate_prerequisites_section() -> String {
         "### Required\n\n\
-         - Python >= 3.11\n\
-         - Amplihack >= 1.0.0 (or Claude Code environment)\n\n\
+         - Rust stable toolchain\n\
+         - Amplihack >= 1.0.0 (`cargo install amplihack` or Claude Code environment)\n\n\
          ### Optional\n\n\
          - `uvx` - For UVX package installation\n\
-         - `pytest` - For running tests\n\
          - `git` - For version control integration\n\n\
          ### Installation\n\n\
          ```bash\n\
-         pip install amplihack pytest\n\
-         pip install uvx\n\
+         cargo install amplihack\n\
          ```"
         .to_string()
     }
@@ -108,12 +104,10 @@ impl DocumentationGenerator {
          **Issue: Agent not found**\n\
          Ensure agents are installed in ~/.claude/agents/custom/. \
          Verify manifest.json is present.\n\n\
-         **Issue: Import errors**\n\
-         Verify dependencies: `pip install -r requirements.txt`\n\n\
-         **Issue: Tests failing**\n\
-         Check Python version (3.11+) and dependencies: `pytest tests/ -v`\n\n\
+         **Issue: Agents not loading**\n\
+         Verify the agent bundle structure with: `amplihack agents list`\n\n\
          **Issue: UVX installation fails**\n\
-         Install uvx: `pip install uvx`\n\n\
+         Install uvx: `cargo install uvx` or use npm.\n\n\
          **Issue: Permission denied when copying agents**\n\
          Use `sudo cp -r agents/ ~/.claude/agents/custom/` or adjust permissions.\n\n\
          **Issue: Agents not appearing in Claude Code**\n\
@@ -151,7 +145,7 @@ impl DocumentationGenerator {
              ### Quick Install (UVX)\n\n\
              ```bash\nuvx install {bundle_name}-{version}.uvx\n```\n\n\
              ### From Source\n\n\
-             ```bash\ncd {bundle_name}\npip install -e .\n```\n\n\
+             ```bash\ncd {bundle_name}\ncp -r agents/ ~/.claude/agents/custom/\n```\n\n\
              ### Manual Copy\n\n\
              ```bash\ncp -r agents/ ~/.claude/agents/custom/\n```\n"
         )

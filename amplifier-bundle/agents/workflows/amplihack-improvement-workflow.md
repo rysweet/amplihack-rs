@@ -309,7 +309,7 @@ time_to_complete: [duration]
 
 ### Store Discoveries in Memory
 
-When patterns emerge, use `store_discovery()` from `amplihack.memory.discoveries`:
+When patterns emerge, use `amplihack memory store-discovery`:
 
 ```markdown
 ## Improvement Pattern Discovered

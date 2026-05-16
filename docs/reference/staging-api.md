@@ -300,7 +300,7 @@ print(STAGING_MANIFEST)
 
 ```bash
 # Find package location
-python -c "import amplihack; print(amplihack.__file__)"
+amplihack info --paths
 
 # Check source .claude/ directory
 ls -la /path/to/package/.claude/

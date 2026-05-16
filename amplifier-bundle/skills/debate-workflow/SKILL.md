@@ -349,7 +349,7 @@ Counter: [Additional evidence or reasoning]
 - Document full debate transcript
 - Include all perspective arguments
 - Record synthesis and final decision
-- Store in memory using `store_discovery()` from `amplihack.memory.discoveries`
+- Store in memory using the `amplihack memory store-discovery` CLI command
 - Update relevant architecture docs
 
 **Decision Record Template:**

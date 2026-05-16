@@ -261,7 +261,7 @@ What's Missing:
 - Adjust timeouts based on success rates
 - Improve secondary approaches if frequently used
 - Update tertiary if inadequate
-- Store learnings in memory using `store_discovery()` from `amplihack.memory.discoveries`
+- Store learnings in memory using the `amplihack memory store-discovery` CLI command
 
 **Optimization Criteria:**
 

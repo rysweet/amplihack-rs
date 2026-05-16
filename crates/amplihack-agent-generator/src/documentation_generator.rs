@@ -53,14 +53,7 @@ uvx install {name}-{version}.uvx
 uvx run {name}-{version}.uvx
 ```
 
-### Option 2: Install from Source
-
-```bash
-cd {name}
-pip install -e .
-```
-
-### Option 3: Manual Integration
+### Option 2: Manual Integration
 
 ```bash
 cp -r agents/ ~/.claude/agents/custom/
@@ -153,21 +146,14 @@ Solution: Ensure agents are installed in correct directory
 
 **Issue: Import errors**
 ```
-Solution: Verify dependencies are installed
-pip install -r requirements.txt
-```
-
-**Issue: Tests failing**
-```
-Solution: Check Python version and dependencies
-python --version  # Should be 3.11+
-pytest tests/ -v
+Solution: Verify the agent bundle structure
+amplihack agents list
 ```
 
 **Issue: UVX installation fails**
 ```
 Solution: Install uvx if not available
-pip install uvx
+cargo install uvx
 ```"#
         .into()
 }
@@ -176,13 +162,11 @@ pip install uvx
 pub fn generate_prerequisites_section() -> String {
     r#"### Required
 
-- Python >= 3.11
-- Amplihack >= 1.0.0 (or Claude Code environment)
+- Amplihack >= 1.0.0 (`cargo install amplihack` or Claude Code environment)
 
 ### Optional
 
 - `uvx` - For UVX package installation
-- `pytest` - For running tests
 - `git` - For version control integration"#
         .into()
 }
@@ -232,7 +216,8 @@ mod tests {
     #[test]
     fn prerequisites_not_empty() {
         let prereq = generate_prerequisites_section();
-        assert!(prereq.contains("Python >= 3.11"));
+        assert!(prereq.contains("Amplihack >= 1.0.0"));
+        assert!(prereq.contains("cargo install amplihack"));
     }
 
     #[test]
