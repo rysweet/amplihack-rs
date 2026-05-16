@@ -114,8 +114,7 @@ exec amplihack recipe run {recipe} $CONTEXT_FLAGS --verbose
     let tree_id =
         std::env::var("AMPLIHACK_TREE_ID").unwrap_or_else(|_| format!("{:08x}", rand_u32()));
     let max_depth = std::env::var("AMPLIHACK_MAX_DEPTH").unwrap_or_else(|_| "3".to_string());
-    let max_sessions =
-        std::env::var("AMPLIHACK_MAX_SESSIONS").unwrap_or_else(|_| "10".to_string());
+    let max_sessions = std::env::var("AMPLIHACK_MAX_SESSIONS").unwrap_or_else(|_| "10".to_string());
 
     let run_sh = ws.work_dir.join("run.sh");
     let run_content = format!(
@@ -164,8 +163,7 @@ pub(super) fn write_classic_launcher(ws: &Workstream, delegate: &str) -> Result<
     let tree_id =
         std::env::var("AMPLIHACK_TREE_ID").unwrap_or_else(|_| format!("{:08x}", rand_u32()));
     let max_depth = std::env::var("AMPLIHACK_MAX_DEPTH").unwrap_or_else(|_| "3".to_string());
-    let max_sessions =
-        std::env::var("AMPLIHACK_MAX_SESSIONS").unwrap_or_else(|_| "10".to_string());
+    let max_sessions = std::env::var("AMPLIHACK_MAX_SESSIONS").unwrap_or_else(|_| "10".to_string());
 
     let run_sh = ws.work_dir.join("run.sh");
     let run_content = format!(

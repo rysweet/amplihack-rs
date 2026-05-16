@@ -7,8 +7,7 @@ use std::fs;
 use std::path::Path;
 
 fn multitask_dir() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/amplihack-cli/src/commands/multitask")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/amplihack-cli/src/commands/multitask")
 }
 
 // ========================================================================
@@ -20,13 +19,23 @@ fn every_multitask_module_under_brick_limit() {
     let mut violations = Vec::new();
     for entry in fs::read_dir(multitask_dir()).expect("multitask dir") {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
         let lines = fs::read_to_string(&path).unwrap().lines().count();
         if lines > 400 {
-            violations.push(format!("{}: {} lines", path.file_name().unwrap().to_string_lossy(), lines));
+            violations.push(format!(
+                "{}: {} lines",
+                path.file_name().unwrap().to_string_lossy(),
+                lines
+            ));
         }
     }
-    assert!(violations.is_empty(), "Brick limit violations:\n  {}", violations.join("\n  "));
+    assert!(
+        violations.is_empty(),
+        "Brick limit violations:\n  {}",
+        violations.join("\n  ")
+    );
 }
 
 // ========================================================================
@@ -35,11 +44,15 @@ fn every_multitask_module_under_brick_limit() {
 
 #[test]
 fn multitask_module_has_extracted_submodules() {
-    let count = fs::read_dir(multitask_dir()).unwrap()
+    let count = fs::read_dir(multitask_dir())
+        .unwrap()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("rs"))
         .count();
-    assert!(count >= 4, "Expected ≥4 .rs files (mod+models+orchestrator+extracted), found {count}");
+    assert!(
+        count >= 4,
+        "Expected ≥4 .rs files (mod+models+orchestrator+extracted), found {count}"
+    );
 }
 
 // ========================================================================
@@ -51,22 +64,31 @@ fn launcher_template_invokes_amplihack_recipe_run() {
     let mut found = false;
     for entry in fs::read_dir(multitask_dir()).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
         let content = fs::read_to_string(&path).unwrap();
         if content.contains("launcher.sh") && content.contains("amplihack recipe run") {
             found = true;
         }
     }
-    assert!(found, "No launcher.sh template with 'amplihack recipe run' found");
+    assert!(
+        found,
+        "No launcher.sh template with 'amplihack recipe run' found"
+    );
 }
 
 #[test]
 fn run_sh_template_uses_bash_not_python() {
     for entry in fs::read_dir(multitask_dir()).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
         let content = fs::read_to_string(&path).unwrap();
-        if content.contains("exec bash launcher.sh") { return; }
+        if content.contains("exec bash launcher.sh") {
+            return;
+        }
     }
     panic!("No 'exec bash launcher.sh' found in multitask module");
 }
@@ -87,12 +109,16 @@ fn multitask_module_zero_python_in_non_comment_code() {
     ];
     for entry in fs::read_dir(multitask_dir()).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
         let content = fs::read_to_string(&path).unwrap();
         let fname = path.file_name().unwrap().to_string_lossy().to_string();
         for (i, line) in content.lines().enumerate() {
             let t = line.trim();
-            if t.starts_with("//") || t.starts_with("///") { continue; }
+            if t.starts_with("//") || t.starts_with("///") {
+                continue;
+            }
             for (pat, desc) in &forbidden {
                 if t.contains(pat) {
                     panic!("{fname}:{}: forbidden {desc} in code: {t}", i + 1);
@@ -110,17 +136,28 @@ fn multitask_module_zero_python_in_non_comment_code() {
 fn no_bare_mutex_unwrap() {
     for entry in fs::read_dir(multitask_dir()).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
         let content = fs::read_to_string(&path).unwrap();
         let fname = path.file_name().unwrap().to_string_lossy().to_string();
         let mut in_test = false;
         for (i, line) in content.lines().enumerate() {
             let t = line.trim();
-            if t == "#[cfg(test)]" { in_test = true; }
-            if in_test { continue; }
-            if t.starts_with("//") { continue; }
+            if t == "#[cfg(test)]" {
+                in_test = true;
+            }
+            if in_test {
+                continue;
+            }
+            if t.starts_with("//") {
+                continue;
+            }
             if t.contains(".lock().unwrap()") {
-                panic!("{fname}:{}: bare .lock().unwrap() — use .unwrap_or_else(|e| e.into_inner())", i + 1);
+                panic!(
+                    "{fname}:{}: bare .lock().unwrap() — use .unwrap_or_else(|e| e.into_inner())",
+                    i + 1
+                );
             }
         }
     }
@@ -134,12 +171,23 @@ fn no_bare_mutex_unwrap() {
 fn run_sh_exports_session_tree_vars() {
     for entry in fs::read_dir(multitask_dir()).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
         let content = fs::read_to_string(&path).unwrap();
         if content.contains("exec bash launcher.sh") {
-            assert!(content.contains("AMPLIHACK_TREE_ID"), "run.sh must export AMPLIHACK_TREE_ID");
-            assert!(content.contains("AMPLIHACK_SESSION_DEPTH"), "run.sh must export AMPLIHACK_SESSION_DEPTH");
-            assert!(content.contains("AMPLIHACK_MAX_DEPTH"), "run.sh must export AMPLIHACK_MAX_DEPTH");
+            assert!(
+                content.contains("AMPLIHACK_TREE_ID"),
+                "run.sh must export AMPLIHACK_TREE_ID"
+            );
+            assert!(
+                content.contains("AMPLIHACK_SESSION_DEPTH"),
+                "run.sh must export AMPLIHACK_SESSION_DEPTH"
+            );
+            assert!(
+                content.contains("AMPLIHACK_MAX_DEPTH"),
+                "run.sh must export AMPLIHACK_MAX_DEPTH"
+            );
             return;
         }
     }
@@ -154,11 +202,15 @@ fn run_sh_exports_session_tree_vars() {
 fn launcher_has_strict_error_handling() {
     for entry in fs::read_dir(multitask_dir()).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
         let content = fs::read_to_string(&path).unwrap();
         if content.contains("amplihack recipe run") && content.contains("launcher.sh") {
-            assert!(content.contains("set -euo pipefail"),
-                "launcher.sh template must include 'set -euo pipefail'");
+            assert!(
+                content.contains("set -euo pipefail"),
+                "launcher.sh template must include 'set -euo pipefail'"
+            );
             return;
         }
     }

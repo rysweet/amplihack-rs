@@ -1,6 +1,6 @@
 //! Utility functions for the parallel workstream orchestrator.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
