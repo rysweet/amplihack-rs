@@ -45,14 +45,14 @@ Skill: Executes 3 iterations of EVAL->ANALYZE->RESEARCH->IMPROVE->RE-EVAL->DECID
 
 ## Runner Script
 
-The self-improvement loop is implemented as a Python CLI:
+The self-improvement loop is implemented as a Rust CLI:
 
 ```bash
 # Basic usage
-python -m amplihack.eval.self_improve.runner --sdk mini --iterations 3
+amplihack eval self-improve --sdk mini --iterations 3
 
 # Full options
-python -m amplihack.eval.self_improve.runner \
+amplihack eval self-improve \
   --sdk mini \
   --iterations 5 \
   --improvement-threshold 2.0 \
@@ -73,7 +73,7 @@ Run the L1-L12 progressive test suite on the current agent implementation.
 **Execution:**
 
 ```bash
-python -m amplihack.eval.progressive_test_suite \
+amplihack eval progressive-test-suite \
   --agent-name <agent_name> \
   --output-dir <output_dir>/iteration_N/eval \
   --levels L1 L2 L3 L4 L5 L6

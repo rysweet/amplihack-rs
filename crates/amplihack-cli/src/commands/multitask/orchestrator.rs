@@ -611,53 +611,39 @@ impl ParallelOrchestrator {
 
     fn write_recipe_launcher(&self, ws: &Workstream) -> Result<()> {
         let resume_context = self.build_resume_context(ws);
-        let safe_recipe = serde_json::to_string(&ws.recipe)?;
+        let safe_recipe = &ws.recipe;
         let safe_context = serde_json::to_string(&resume_context)?;
 
-        let launcher_py = ws.work_dir.join("launcher.py");
+        // Write context JSON so the launcher script can pass it via -c flags
+        let context_json = ws.work_dir.join("context.json");
+        fs::write(&context_json, &safe_context)?;
+
+        let launcher_sh = ws.work_dir.join("launcher.sh");
         let launcher_content = format!(
-            r#"#!/usr/bin/env python3
-"""Workstream launcher - Rust recipe runner execution."""
-import sys
-import json
-import logging
-from pathlib import Path
+            r#"#!/bin/bash
+# Workstream launcher - Rust recipe runner execution.
+set -euo pipefail
 
-repo_root = Path(__file__).resolve().parent
-src_path = repo_root / "src"
-if src_path.exists():
-    sys.path.insert(0, str(src_path))
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+CONTEXT_JSON="$REPO_ROOT/context.json"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# Build -c flags from context JSON
+CONTEXT_FLAGS=""
+if command -v jq >/dev/null 2>&1 && [ -f "$CONTEXT_JSON" ]; then
+    while IFS='=' read -r key value; do
+        CONTEXT_FLAGS="$CONTEXT_FLAGS -c $key=$value"
+    done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' "$CONTEXT_JSON")
+fi
 
-try:
-    from amplihack.recipes import run_recipe_by_name
-except ImportError:
-    print("ERROR: amplihack package not importable.")
-    sys.exit(2)
+echo "Starting recipe: {recipe}"
+echo "Work dir: $REPO_ROOT"
 
-user_context = json.loads({safe_context})
-result = run_recipe_by_name(
-    {safe_recipe},
-    user_context=user_context,
-    progress=True,
-)
-
-print()
-print("=" * 60)
-print("RECIPE EXECUTION RESULTS")
-print("=" * 60)
-for sr in result.step_results:
-    print(f"  [{{sr.status.value:>9}}] {{sr.step_id}}")
-print(f"\nOverall: {{'SUCCESS' if result.success else 'FAILED'}}")
-sys.exit(0 if result.success else 1)
-"#
+exec amplihack recipe run {recipe} $CONTEXT_FLAGS --verbose
+"#,
+            recipe = safe_recipe,
         );
-        fs::write(&launcher_py, launcher_content)?;
-        set_executable(&launcher_py)?;
+        fs::write(&launcher_sh, launcher_content)?;
+        set_executable(&launcher_sh)?;
 
         let depth: u32 = std::env::var("AMPLIHACK_SESSION_DEPTH")
             .ok()
@@ -683,7 +669,7 @@ export AMPLIHACK_WORKSTREAM_ISSUE='{issue}'
 export AMPLIHACK_WORKSTREAM_PROGRESS_FILE='{progress_file}'
 export AMPLIHACK_WORKSTREAM_STATE_FILE='{state_file}'
 export AMPLIHACK_WORKTREE_PATH='{worktree_path}'
-exec python3 -u launcher.py
+exec bash launcher.sh
 "#,
             work_dir = ws.work_dir.display(),
             depth = depth + 1,

@@ -26,9 +26,8 @@ Development framework for Claude Code with specialized agents and automated work
 
 ### Technology Stack
 
-- **Language**: Python
-- **Language**: JavaScript/TypeScript
 - **Language**: Rust
+- **Language**: JavaScript/TypeScript
 - **Framework**: [Main framework if applicable]
 - **Database**: [Database system if applicable]
 

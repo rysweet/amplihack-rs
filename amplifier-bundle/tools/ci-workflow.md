@@ -95,8 +95,8 @@ println!("Final status: {}", poll_result.final_status);
 The `diagnose` command checks:
 
 1. **CI Status**: GitHub Actions/CI status from PR or branch
-2. **Lint Check**: Runs available linters (pre-commit, flake8, etc.)
-3. **Test Check**: Executes test suites (pytest, unittest, etc.)
+2. **Lint Check**: Runs available linters (pre-commit, clippy, etc.)
+3. **Test Check**: Executes test suites (cargo test, npm test, etc.)
 4. **Build Check**: Verifies build process (make, npm, cargo, etc.)
 
 ## Fix Iteration Strategy
@@ -105,8 +105,8 @@ The `iterate-fixes` command:
 
 1. Runs diagnostics to identify issues
 2. Applies automatic fixes based on issue type:
-   - **Lint issues**: Runs auto-formatters (black, isort, pre-commit)
-   - **Dependency issues**: Updates dependencies (npm install, pip install)
+   - **Lint issues**: Runs auto-formatters (cargo fmt, cargo clippy --fix, pre-commit)
+   - **Dependency issues**: Updates dependencies (cargo update, npm install)
    - **Test failures**: Logs for manual intervention
 3. Commits and pushes fixes
 4. Re-runs diagnostics

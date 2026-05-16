@@ -233,13 +233,13 @@ Templates are validation tools used in Step 8, not workflow alternatives:
 
 ### Template 1: Import/Dependency Validation
 
-```python
-# Validates import resolution
-def validate_import_fix():
-    # Verify imports resolve correctly
-    # Check dependency versions
-    # Test import paths
-    pass
+```rust
+// Validates import resolution
+fn validate_import_fix() {
+    // Verify imports resolve correctly
+    // Check dependency versions
+    // Test import paths
+}
 ```
 
 ### Template 2: Configuration Validation
@@ -254,13 +254,13 @@ validate_config:
 
 ### Template 3: Test Fix Validation
 
-```python
-# Validates test fixes
-def validate_test_fix():
-    # Run specific test in isolation
-    # Verify assertion logic
-    # Check test data setup
-    pass
+```rust
+// Validates test fixes
+fn validate_test_fix() {
+    // Run specific test in isolation
+    // Verify assertion logic
+    // Check test data setup
+}
 ```
 
 ### Template 4: CI/CD Validation

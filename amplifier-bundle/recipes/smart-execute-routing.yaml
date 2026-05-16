@@ -74,7 +74,7 @@ steps:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Recursion guard -- derive from session_info (registered atomically in setup-session)
-  # Uses pure shell grep instead of Python subprocess for status extraction.
+  # Uses pure shell grep instead of subprocess for status extraction.
   # ─────────────────────────────────────────────────────────────────────────
 
   - id: "derive-recursion-guard"

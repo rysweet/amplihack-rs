@@ -257,33 +257,31 @@ All subprocess invocations use list-form args (`["cmd", "arg1", "arg2"]`), never
 
 ## Quick Reference
 
-```python
-from amplihack.skills.multitask.orchestrator import ParallelOrchestrator
-
-orch = ParallelOrchestrator(repo_url="https://github.com/org/repo")
-orch.setup()
+```bash
+# Multitask parallel orchestration via CLI
+amplihack multitask orchestrate \
+  --repo-url "https://github.com/org/repo"
 
 # Add workstreams with custom timeouts
-orch.add(
-    issue=100,
-    branch="feat/fast-task",
-    description="Fast task",
-    task="...",
-    timeout_policy="interrupt-preserve",  # default
-    max_runtime=3600,                     # 1 hour
-)
-orch.add(
-    issue=101,
-    branch="feat/long-task",
-    description="Long task",
-    task="...",
-    timeout_policy="continue-preserve",   # don't interrupt
-    max_runtime=14400,                    # 4 hours
-)
+amplihack multitask add \
+  --issue 100 \
+  --branch "feat/fast-task" \
+  --description "Fast task" \
+  --task "..." \
+  --timeout-policy "interrupt-preserve" \
+  --max-runtime 3600   # 1 hour
 
-orch.launch_all()
-orch.monitor()        # blocks; each ws has its own budget
-report = orch.report()
+amplihack multitask add \
+  --issue 101 \
+  --branch "feat/long-task" \
+  --description "Long task" \
+  --task "..." \
+  --timeout-policy "continue-preserve" \
+  --max-runtime 14400  # 4 hours
+
+amplihack multitask launch-all
+amplihack multitask monitor   # blocks; each ws has its own budget
+amplihack multitask report
 ```
 
 See also: [`reference.md`](reference.md) for the full API, [`examples.md`](examples.md) for worked examples.

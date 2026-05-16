@@ -9,20 +9,20 @@ User: What tests should I run for my changes?
 
 Claude: Analyzing your changes...
 
-Changed: src/amplihack/core/processor.py
+Changed: crates/amplihack-cli/src/core/processor.rs
 
 Tier 1 (Fast - 30s):
-  pytest tests/unit/test_processor.py -v
+  cargo test -p amplihack-cli processor -- --test-threads=1
 
 Tier 2 (Impacted - 2m):
-  pytest tests/unit/test_processor.py tests/integration/test_pipeline.py -v
+  cargo test -p amplihack-cli processor pipeline -- --test-threads=1
 
 Start with Tier 1 for quick feedback.
 ```
 
 ## Features
 
-- **Import Dependency Analysis**: Maps source files to tests via Python imports
+- **Import Dependency Analysis**: Maps source files to tests via module imports
 - **Three-Tier Testing**: Fast (< 1 min), Impacted (< 5 min), Full Suite
 - **Reliability Tracking**: Excludes flaky tests from fast runs
 - **Cache-Based**: Stores mappings in `~/.amplihack/.claude/data/test-mapping/`

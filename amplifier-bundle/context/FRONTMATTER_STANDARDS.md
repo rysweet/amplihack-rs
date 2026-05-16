@@ -37,7 +37,7 @@ description: What this skill does and when to use it.
 | Field           | Description |
 | --------------- | ----------- |
 | `license`       | License name or reference to a bundled license file. |
-| `compatibility` | Environment requirements (max 500 chars). E.g., "Requires git and Python 3.10+". |
+| `compatibility` | Environment requirements (max 500 chars). E.g., "Requires git and Rust 1.85+". |
 | `metadata`      | Arbitrary key-value map. Use for version, author, or other custom data. |
 | `allowed-tools` | Space-delimited list of pre-approved tools (experimental). |
 

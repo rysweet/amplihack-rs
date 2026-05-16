@@ -165,34 +165,40 @@ If > 300 LOC added:
 
 These automatically invoke validation:
 
-```python
-# Complexity Detector
-if len(new_agents) > 2:
-    trigger("Too many agents - simplify")
+```rust
+// Complexity Detector
+if new_agents.len() > 2 {
+    trigger("Too many agents - simplify");
+}
 
-if lines_of_code > 200:
-    trigger("Too much code - decompose")
+if lines_of_code > 200 {
+    trigger("Too much code - decompose");
+}
 
-if test_lines > implementation_lines:
-    trigger("Over-testing - focus on behavior")
+if test_lines > implementation_lines {
+    trigger("Over-testing - focus on behavior");
+}
 ```
 
 ### Hard Stops
 
 These halt progress immediately:
 
-```python
-# Security Stop
-if vulnerability_detected:
-    stop("Security issue - must fix first")
+```rust
+// Security Stop
+if vulnerability_detected {
+    stop("Security issue - must fix first");
+}
 
-# Philosophy Stop
-if has_stubs_or_placeholders:
-    stop("Zero-BS violation - no stubs allowed")
+// Philosophy Stop
+if has_stubs_or_placeholders {
+    stop("Zero-BS violation - no stubs allowed");
+}
 
-# Redundancy Stop
-if duplicate_functionality > 30%:
-    stop("Too much duplication - consolidate")
+// Redundancy Stop
+if duplicate_functionality > 30 {
+    stop("Too much duplication - consolidate");
+}
 ```
 
 ## Usage Patterns

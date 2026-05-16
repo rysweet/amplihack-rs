@@ -368,7 +368,7 @@ Configure JWT authentication for API access.
 ## Prerequisites
 
 - [ ] API key from [developer portal](https://portal.example.com)
-- [ ] Python 3.10+ installed
+- [ ] Rust toolchain installed
 
 ## Steps
 
@@ -380,26 +380,25 @@ export AUTH_API_KEY="your-api-key-here"  # pragma: allowlist secret
 
 ### 2. Initialize Authentication
 
-```python
-from amplihack.auth import Authenticator
+```rust
+use myapp::auth::Authenticator;
 
-auth = Authenticator()
-token = auth.get_token()
-print(f"Token: {token[:20]}...")
-# Output: Token: eyJhbGciOiJIUzI1N...
+let auth = Authenticator::new();
+let token = auth.get_token()?;
+println!("Token: {}...", &token[..20]);
+// Output: Token: eyJhbGciOiJIUzI1N...
 ```
 
 ### 3. Use Token in Requests
 
-```python
-import requests
-
-response = requests.get(
-    "https://api.example.com/data",
-    headers={"Authorization": f"Bearer {token}"}
-)
-print(response.status_code)
-# Output: 200
+```rust
+let client = reqwest::Client::new();
+let response = client.get("https://api.example.com/data")
+    .header("Authorization", format!("Bearer {token}"))
+    .send()
+    .await?;
+println!("{}", response.status());
+// Output: 200 OK
 ```
 
 ## Troubleshooting

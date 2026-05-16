@@ -127,7 +127,7 @@ When building EXECUTABLE code:
 - DO NOT read or reference .claude/skills/ content
 - DO NOT use skills as code templates
 - DO use .claude/scenarios/ for production tool examples
-- DO use standard Python/language patterns and best practices
+- DO use standard language patterns and best practices
 - DO create new code following project philosophy (PHILOSOPHY.md, PATTERNS.md)
 
 Skills are markdown documentation loaded by Claude - they are NOT starter code.

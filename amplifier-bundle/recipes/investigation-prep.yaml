@@ -32,7 +32,7 @@ steps:
       if [ -n "$ERRORS" ]; then
         echo "=== INVESTIGATION-WORKFLOW PRE-FLIGHT FAILED ===" >&2
         printf "%b\n" "$ERRORS" >&2
-        echo "Restart: run_recipe_by_name('investigation-workflow', user_context={...}, progress=True)" >&2
+        echo "Restart: amplihack recipe run investigation-workflow -c task_description='...' -c repo_path=." >&2
         exit 1
       fi
       echo "=== Pre-flight passed ==="

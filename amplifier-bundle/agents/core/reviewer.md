@@ -240,18 +240,9 @@ gh pr edit 123 --body "${current_desc}\n\n## Review"  # ❌ WRONG
 
 When implementing review posting:
 
-```python
-# Correct implementation
-def post_review_comment(pr_number, review_content):
-    """Post a review as a PR comment."""
-    cmd = [
-        'gh', 'pr', 'comment', str(pr_number),
-        '--body', review_content
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise Exception(f"Failed to post review comment: {result.stderr}")
-    return True
+```bash
+# Correct implementation — post a review as a PR comment
+gh pr comment "$pr_number" --body "$review_content"
 ```
 
 ### Handling Complex Markdown
@@ -264,9 +255,9 @@ gh pr comment 123 --body "$(cat <<'EOF'
 ## Review Summary
 
 **Critical Issues**:
-```python
-def process_data():
-    data = load()  # Memory leak - data never freed
+```rust
+fn process_data() {
+    let data = load();  // Memory leak - data never freed
 ````
 
 **Suggestions**:

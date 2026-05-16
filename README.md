@@ -8,8 +8,7 @@ systematic software engineering.
 **📚 [View Full Documentation](https://rysweet.github.io/amplihack-rs/)**
 
 **Requires**: Rust 1.88+ (edition 2024), Node.js 18+, git, and cmake for the
-LadybugDB graph database engine. Python is not required for the amplihack
-runtime, hooks, recipes, or install path.
+LadybugDB graph database engine.
 
 ```sh
 # Quick start
@@ -128,8 +127,7 @@ describe tasks and the framework orchestrates their execution.
 ### Runtime and install path
 
 `amplihack` ships the runtime entrypoint, recipe runner, hook engine, install
-path, and update path as native binaries. Python is not required for runtime
-execution, bundled hooks, orchestration recipes, or installation.
+path, and update path as native binaries.
 
 ### First Session
 

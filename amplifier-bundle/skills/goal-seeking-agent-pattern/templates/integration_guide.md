@@ -17,25 +17,18 @@ This guide explains how to integrate the `goal_agent_generator` module into your
 ### Prerequisites
 
 ```bash
-# Python 3.10 or higher
-python --version  # Should be 3.10+
+# Rust toolchain
+rustc --version  # Stable Rust required
 
 # amplihack framework
-pip install amplihack
+cargo install amplihack
 ```
 
 ### Verify Installation
 
-```python
-from amplihack.goal_agent_generator import (
-    PromptAnalyzer,
-    ObjectivePlanner,
-    SkillSynthesizer,
-    AgentAssembler,
-    GoalAgentPackager,
-)
-
-print("goal_agent_generator installed successfully")
+```bash
+amplihack --version
+amplihack goal-agent-generator --help
 ```
 
 ## Basic Usage
@@ -55,56 +48,36 @@ amplihack goal-agent-generator execute \
   --max-turns 10
 ```
 
-### Programmatic Usage: 5-Step Process
+### CLI Usage: 5-Step Process
 
-```python
-from amplihack.goal_agent_generator import (
-    PromptAnalyzer,
-    ObjectivePlanner,
-    SkillSynthesizer,
-    AgentAssembler,
-    GoalAgentPackager,
-)
-from pathlib import Path
-
-# Step 1: Define goal (natural language)
-goal_text = """
+```bash
+# Step 1: Define goal (natural language) in a prompt file
+cat > my-goal.md << 'EOF'
 Automate data pipeline:
 - Collect from multiple sources
 - Transform to common schema
 - Validate quality
 - Publish to warehouse
-"""
+EOF
 
 # Step 2: Analyze goal
-analyzer = PromptAnalyzer()
-goal_definition = analyzer.analyze_text(goal_text)
+amplihack goal-agent-generator analyze --prompt-file my-goal.md
 
 # Step 3: Generate execution plan
-planner = ObjectivePlanner()
-execution_plan = planner.generate_plan(goal_definition)
+amplihack goal-agent-generator plan --prompt-file my-goal.md --output plan.json
 
 # Step 4: Synthesize skills
-synthesizer = SkillSynthesizer()
-skills = synthesizer.synthesize(execution_plan)
+amplihack goal-agent-generator synthesize --plan-file plan.json --output ./skills
 
 # Step 5: Assemble and package agent
-assembler = AgentAssembler()
-agent_bundle = assembler.assemble(
-    goal_definition=goal_definition,
-    execution_plan=execution_plan,
-    skills=skills,
-    bundle_name="data-pipeline-agent"
-)
+amplihack goal-agent-generator create \
+  --prompt-file my-goal.md \
+  --bundle-name "data-pipeline-agent" \
+  --output .claude/agents/goal-driven/data-pipeline-agent
 
-packager = GoalAgentPackager()
-packager.package(
-    bundle=agent_bundle,
-    output_dir=Path(".claude/agents/goal-driven/data-pipeline-agent")
-)
-
-print(f"Agent created: {agent_bundle.name}")
-print(f"Estimated duration: {execution_plan.total_estimated_duration}")
+# Output:
+# Agent created: data-pipeline-agent
+# Estimated duration: shown in plan.json
 ```
 
 ## API Reference
@@ -434,23 +407,19 @@ amplihack goal-agent-generator list
 
 ### Pattern 1: Integrate with Existing Workflows
 
-```python
-# In your workflow orchestration code
-from amplihack.goal_agent_generator import PromptAnalyzer, ObjectivePlanner
+```bash
+# In your workflow orchestration, dynamically create a goal agent from a task description
+amplihack goal-agent-generator analyze \
+  --prompt "Your task description here"
 
-def create_goal_agent_for_task(task_description: str):
-    """Dynamically create goal agent from task description"""
-    analyzer = PromptAnalyzer()
-    goal_def = analyzer.analyze_text(task_description)
+amplihack goal-agent-generator plan \
+  --prompt-file task-goal.md \
+  --output plan.json
 
-    planner = ObjectivePlanner()
-    plan = planner.generate_plan(goal_def)
-
-    # Use plan for orchestration
-    for phase in plan.phases:
-        execute_phase(phase)
-
-    return plan
+# Use plan for orchestration — execute each phase
+amplihack goal-agent-generator execute \
+  --agent-path .claude/agents/goal-driven/my-task-agent \
+  --auto-mode
 ```
 
 ### Pattern 2: Integrate with CI/CD
@@ -469,13 +438,13 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
         with:
-          python-version: "3.10"
+          toolchain: stable
 
       - name: Install amplihack
-        run: pip install amplihack
+        run: cargo install amplihack
 
       - name: Execute deployment agent
         run: |
@@ -487,104 +456,93 @@ jobs:
 
 ### Pattern 3: Integrate with Existing Agents
 
-```python
-# In existing agent code
-from amplihack.goal_agent_generator import PromptAnalyzer, ObjectivePlanner
+```bash
+# In existing agent workflows, delegate complex tasks to goal-seeking agent
+# First analyze if the task warrants a goal-seeking approach
+amplihack goal-agent-generator analyze \
+  --prompt "Your complex task description here" \
+  --output analysis.json
 
-class ExistingAgent:
-    def complex_task(self, task_description: str):
-        """Delegate complex task to goal-seeking agent"""
-        # Analyze if task requires goal-seeking agent
-        analyzer = PromptAnalyzer()
-        goal_def = analyzer.analyze_text(task_description)
+# If complexity is "complex", use goal-seeking agent
+amplihack goal-agent-generator create \
+  --prompt "Your complex task description here" \
+  --output .claude/agents/goal-driven/complex-task
 
-        if goal_def.complexity == "complex":
-            # Use goal-seeking agent
-            planner = ObjectivePlanner()
-            plan = planner.generate_plan(goal_def)
-            return self.execute_goal_plan(plan)
-        else:
-            # Use traditional approach
-            return self.execute_traditional(task_description)
+amplihack goal-agent-generator execute \
+  --agent-path .claude/agents/goal-driven/complex-task \
+  --auto-mode
 ```
 
 ### Pattern 4: Custom Phase Templates
 
-```python
-from amplihack.goal_agent_generator import ObjectivePlanner
+```bash
+# Custom phase templates can be applied via config overlays
+# Create a domain-specific config file:
+cat > ml-config.json << 'EOF'
+{
+  "domain_overrides": {
+    "ml-training": [
+      {"name": "Data Preparation", "description": "Prepare training data", "capabilities": ["data-loading", "cleaning"]},
+      {"name": "Model Training", "description": "Train ML model", "capabilities": ["training", "validation"]},
+      {"name": "Model Evaluation", "description": "Evaluate model performance", "capabilities": ["testing", "metrics"]},
+      {"name": "Model Deployment", "description": "Deploy model to production", "capabilities": ["deployment", "monitoring"]}
+    ]
+  }
+}
+EOF
 
-class CustomPlanner(ObjectivePlanner):
-    """Custom planner with domain-specific phase templates"""
-
-    CUSTOM_PHASE_TEMPLATES = {
-        "ml-training": [
-            ("Data Preparation", "Prepare training data", ["data-loading", "cleaning"]),
-            ("Model Training", "Train ML model", ["training", "validation"]),
-            ("Model Evaluation", "Evaluate model performance", ["testing", "metrics"]),
-            ("Model Deployment", "Deploy model to production", ["deployment", "monitoring"]),
-        ],
-    }
-
-    def generate_plan(self, goal_definition):
-        # Use custom templates for ML domain
-        if "machine learning" in goal_definition.goal.lower():
-            goal_definition.domain = "ml-training"
-
-        return super().generate_plan(goal_definition)
+# Use the custom config with plan generation
+amplihack goal-agent-generator plan \
+  --prompt-file ml-goal.md \
+  --config ml-config.json \
+  --output plan.json
 ```
 
 ## Advanced Customization
 
 ### Custom Goal Analysis
 
-```python
-from amplihack.goal_agent_generator import PromptAnalyzer
+```bash
+# Custom domain keywords can be configured via a config overlay
+cat > custom-analyzer-config.json << 'EOF'
+{
+  "domain_keywords": {
+    "ml-training": ["train", "model", "machine learning", "neural", "dataset"],
+    "iot-processing": ["sensor", "device", "telemetry", "iot", "edge"]
+  },
+  "keyword_overrides": {
+    "tensorflow": "ml-training",
+    "pytorch": "ml-training"
+  }
+}
+EOF
 
-class CustomPromptAnalyzer(PromptAnalyzer):
-    """Custom analyzer with additional domain keywords"""
-
-    DOMAIN_KEYWORDS = {
-        **PromptAnalyzer.DOMAIN_KEYWORDS,  # Include defaults
-        "ml-training": ["train", "model", "machine learning", "neural", "dataset"],
-        "iot-processing": ["sensor", "device", "telemetry", "iot", "edge"],
-    }
-
-    def _classify_domain(self, prompt: str) -> str:
-        # Custom domain classification logic
-        domain = super()._classify_domain(prompt)
-
-        # Additional custom logic
-        if "tensorflow" in prompt.lower() or "pytorch" in prompt.lower():
-            return "ml-training"
-
-        return domain
+# Analyze with custom domain classification
+amplihack goal-agent-generator analyze \
+  --prompt-file my-goal.md \
+  --config custom-analyzer-config.json
 ```
 
 ### Custom Skill Mapping
 
-```python
-from amplihack.goal_agent_generator import SkillSynthesizer
+```bash
+# Custom skill mappings can be configured via a config overlay
+cat > custom-skills-config.json << 'EOF'
+{
+  "skill_mapping": {
+    "ml-*": "ml-engineer",
+    "data-viz-*": "visualization-specialist",
+    "iot-*": "iot-processor"
+  }
+}
+EOF
 
-class CustomSkillSynthesizer(SkillSynthesizer):
-    """Custom skill synthesizer with project-specific skills"""
-
-    CUSTOM_SKILL_MAPPING = {
-        "ml-*": "ml-engineer",
-        "data-viz-*": "visualization-specialist",
-        "iot-*": "iot-processor",
-    }
-
-    def synthesize(self, execution_plan):
-        skills = super().synthesize(execution_plan)
-
-        # Add custom skills
-        for phase in execution_plan.phases:
-            for capability in phase.required_capabilities:
-                for pattern, skill_name in self.CUSTOM_SKILL_MAPPING.items():
-                    if self._matches_pattern(capability, pattern):
-                        skills.append(self._create_skill(skill_name, capability))
-
-        return skills
+# Synthesize skills with custom mapping
+amplihack goal-agent-generator synthesize \
+  --plan-file plan.json \
+  --config custom-skills-config.json \
+  --output ./skills
+```
 ```
 
 ## Troubleshooting

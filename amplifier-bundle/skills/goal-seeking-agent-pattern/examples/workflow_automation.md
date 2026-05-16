@@ -99,16 +99,15 @@ adapting strategy based on change type (hotfix/feature/patch) and environment he
 
 ### Execution Plan
 
-```python
-from amplihack.goal_agent_generator import ObjectivePlanner, PromptAnalyzer
-
+```bash
 # Analyze goal
-analyzer = PromptAnalyzer()
-goal_def = analyzer.analyze_text(goal_text)
+amplihack goal-agent-generator analyze \
+  --prompt-file goal.md
 
 # Generate plan
-planner = ObjectivePlanner()
-plan = planner.generate_plan(goal_def)
+amplihack goal-agent-generator plan \
+  --prompt-file goal.md \
+  --output plan.json
 
 # Result: 5-phase execution plan
 ```
@@ -205,66 +204,27 @@ Success indicators:
 
 ### Implementation
 
-```python
-from amplihack.goal_agent_generator import (
-    PromptAnalyzer,
-    ObjectivePlanner,
-    SkillSynthesizer,
-    AgentAssembler,
-    GoalAgentPackager,
-)
-from pathlib import Path
+```bash
+# Goal definition (save to goal.md):
+# Automate software release workflow:
+# - Pre-release validation (tests, lint, security)
+# - Artifact creation (build, tag, changelog)
+# - Staging deployment with smoke tests
+# - Production deployment with gradual rollout
+# - Post-release monitoring and notifications
+#
+# Adapt strategy based on change type (hotfix/feature/patch).
 
-# Step 1: Define goal
-goal_text = """
-Automate software release workflow:
-- Pre-release validation (tests, lint, security)
-- Artifact creation (build, tag, changelog)
-- Staging deployment with smoke tests
-- Production deployment with gradual rollout
-- Post-release monitoring and notifications
+# Create agent in one step
+amplihack goal-agent-generator create \
+  --prompt-file goal.md \
+  --bundle-name "release-workflow-agent" \
+  --output .claude/agents/goal-driven/release-workflow-agent
 
-Adapt strategy based on change type (hotfix/feature/patch).
-"""
-
-# Step 2: Analyze and plan
-analyzer = PromptAnalyzer()
-goal_def = analyzer.analyze_text(goal_text)
-
-planner = ObjectivePlanner()
-execution_plan = planner.generate_plan(goal_def)
-
-# Step 3: Synthesize skills
-synthesizer = SkillSynthesizer()
-skills = synthesizer.synthesize(execution_plan)
-
-# Result: 5 skills identified
-# - validator: Pre-release validation
-# - builder: Artifact creation
-# - deployer: Staging/production deployment
-# - monitor: Health checks and metrics
-# - documenter: Post-release tasks
-
-# Step 4: Assemble agent
-assembler = AgentAssembler()
-agent_bundle = assembler.assemble(
-    goal_definition=goal_def,
-    execution_plan=execution_plan,
-    skills=skills,
-    bundle_name="release-workflow-agent"
-)
-
-# Step 5: Package for deployment
-packager = GoalAgentPackager()
-packager.package(
-    bundle=agent_bundle,
-    output_dir=Path(".claude/agents/goal-driven/release-workflow-agent")
-)
-
-print(f"Agent created: {agent_bundle.name}")
-print(f"Phases: {len(execution_plan.phases)}")
-print(f"Skills: {[s.name for s in skills]}")
-print(f"Estimated duration: {execution_plan.total_estimated_duration}")
+# View generated plan details
+cat .claude/agents/goal-driven/release-workflow-agent/plan.yaml
+# Phases: 5
+# Skills: validator, builder, deployer, monitor, documenter
 ```
 
 ### Adaptive Behavior

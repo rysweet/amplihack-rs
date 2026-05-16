@@ -113,7 +113,7 @@ Recipe steps pass outputs via template variables:
 
 ### Fallback Behavior
 
-If `amplihack` package is not importable in the clone environment, `launcher.py` exits with code 2. The orchestrator reports this as a failure.
+If the `amplihack` CLI binary is not available in the clone environment, `launcher.sh` exits with a non-zero code. The orchestrator reports this as a failure.
 
 To use classic mode as fallback, specify `--mode classic` when invoking the orchestrator.
 

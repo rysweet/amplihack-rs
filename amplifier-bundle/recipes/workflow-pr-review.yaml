@@ -374,11 +374,11 @@ steps:
         fi
         [ "$tracked_rc" -eq 0 ] || [ "$untracked_rc" -eq 0 ] || echo "None found"
       }
-      scan_or_none "Checking for TODO/FIXME comments" "(TODO|FIXME)" '*.py' '*.ts' '*.js' '*.rs' '*.sh' '*.bash' '*.md' '*.yaml' '*.yml' Makefile Dockerfile
-      scan_or_none "Checking for stub indicators" "(NotImplementedError|raise NotImplemented|pass  # stub)" '*.py'
+      scan_or_none "Checking for TODO/FIXME comments" "(TODO|FIXME)" '*.rs' '*.ts' '*.js' '*.sh' '*.bash' '*.md' '*.yaml' '*.yml' Makefile Dockerfile
+      scan_or_none "Checking for stub indicators" "(todo!|unimplemented!|panic!.*stub)" '*.rs'
       echo "--- Checking for Forbidden Patterns ---"
       scan_or_none "Shell: || true, >/dev/null 2>&1, set +e" '\|\| true|\|\| :|>/dev/null 2>&1|2>/dev/null|&>/dev/null|set \+e' '*.sh' '*.bash' Makefile Dockerfile
-      scan_or_none "Python: bare except, except pass, return None in except" 'except:$|except .*:.*pass$|except.*:.*return None' '*.py'
+      scan_or_none "Rust: unwrap without context, expect without message" '\.unwrap\(\)$|\.expect\(\"\"\)' '*.rs'
       scan_or_none "TypeScript/JS: empty catch, catch return undefined" 'catch.*\{.*\}$|catch.*return undefined|catch.*return \[\]' '*.ts' '*.js'
       echo ""
       echo "=== Zero-BS Verification Complete ==="

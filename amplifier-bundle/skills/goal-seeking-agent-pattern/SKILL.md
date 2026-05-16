@@ -459,48 +459,35 @@ except OptimalFailedError:
 
 The `goal_agent_generator` module provides the implementation for goal-seeking agents. Here's how to integrate:
 
-### Core API
+### Core CLI
 
-```python
-from amplihack.goal_agent_generator import (
-    PromptAnalyzer,
-    ObjectivePlanner,
-    SkillSynthesizer,
-    AgentAssembler,
-    GoalAgentPackager,
-)
-
+```bash
 # Step 1: Analyze natural language goal
-analyzer = PromptAnalyzer()
-goal_definition = analyzer.analyze_text("""
-Automate AKS cluster production readiness verification.
-Check security, networking, monitoring, and compliance.
-Generate report with actionable recommendations.
-""")
+amplihack goal-agent-generator analyze \
+  --prompt "Automate AKS cluster production readiness verification. \
+Check security, networking, monitoring, and compliance. \
+Generate report with actionable recommendations."
 
 # Step 2: Generate execution plan
-planner = ObjectivePlanner()
-execution_plan = planner.generate_plan(goal_definition)
+amplihack goal-agent-generator plan --prompt-file my-goal.md
 
 # Step 3: Synthesize required skills
-synthesizer = SkillSynthesizer()
-skills = synthesizer.synthesize(execution_plan)
+amplihack goal-agent-generator synthesize --plan-file plan.json
 
 # Step 4: Assemble complete agent
-assembler = AgentAssembler()
-agent_bundle = assembler.assemble(
-    goal_definition=goal_definition,
-    execution_plan=execution_plan,
-    skills=skills,
-    bundle_name="aks-readiness-checker"
-)
+amplihack goal-agent-generator assemble \
+  --skills-dir ./skills \
+  --bundle-name "aks-readiness-checker"
 
 # Step 5: Package for deployment
-packager = GoalAgentPackager()
-packager.package(
-    bundle=agent_bundle,
-    output_dir=".claude/agents/goal-driven/aks-readiness-checker"
-)
+amplihack goal-agent-generator package \
+  --agent-dir ./agent \
+  --output .claude/agents/goal-driven/aks-readiness-checker
+
+# Or do all steps at once:
+amplihack goal-agent-generator create \
+  --prompt-file my-goal.md \
+  --output .claude/agents/goal-driven/aks-readiness-checker
 ```
 
 ### CLI Integration
@@ -529,25 +516,23 @@ amplihack goal-agent-generator test \
 
 Extracts structured information from natural language:
 
-```python
-from amplihack.goal_agent_generator import PromptAnalyzer
-from pathlib import Path
+```bash
+# Analyze from file
+amplihack goal-agent-generator analyze --prompt-file ./prompts/my-goal.md
 
-analyzer = PromptAnalyzer()
+# Analyze from text
+amplihack goal-agent-generator analyze \
+  --prompt "Deploy and monitor microservices to AKS"
 
-# From file
-goal_def = analyzer.analyze(Path("./prompts/my-goal.md"))
-
-# From text
-goal_def = analyzer.analyze_text("Deploy and monitor microservices to AKS")
-
-# GoalDefinition contains:
-print(goal_def.goal)               # "Deploy and monitor microservices to AKS"
-print(goal_def.domain)             # "deployment"
-print(goal_def.constraints)        # ["Zero downtime", "Rollback capability"]
-print(goal_def.success_criteria)   # ["All pods running", "Metrics visible"]
-print(goal_def.complexity)         # "moderate"
-print(goal_def.context)            # {"priority": "high", "scale": "medium"}
+# Output (JSON):
+# {
+#   "goal": "Deploy and monitor microservices to AKS",
+#   "domain": "deployment",
+#   "constraints": ["Zero downtime", "Rollback capability"],
+#   "success_criteria": ["All pods running", "Metrics visible"],
+#   "complexity": "moderate",
+#   "context": {"priority": "high", "scale": "medium"}
+# }
 ```
 
 Domain classification:
@@ -571,26 +556,20 @@ Complexity determination:
 
 Generates multi-phase execution plans:
 
-```python
-from amplihack.goal_agent_generator import ObjectivePlanner
+```bash
+# Generate execution plan from a goal definition
+amplihack goal-agent-generator plan --prompt-file my-goal.md
 
-planner = ObjectivePlanner()
-plan = planner.generate_plan(goal_definition)
+# Output (JSON) includes:
+# - phases[]: name, description, estimated_duration, required_capabilities,
+#             dependencies, parallel_safe, success_indicators
+# - total_estimated_duration
+# - required_skills
+# - parallel_opportunities
+# - risk_factors
 
-# ExecutionPlan contains:
-for i, phase in enumerate(plan.phases, 1):
-    print(f"Phase {i}: {phase.name}")
-    print(f"  Description: {phase.description}")
-    print(f"  Duration: {phase.estimated_duration}")
-    print(f"  Capabilities: {', '.join(phase.required_capabilities)}")
-    print(f"  Dependencies: {', '.join(phase.dependencies)}")
-    print(f"  Parallel Safe: {phase.parallel_safe}")
-    print(f"  Success Indicators: {phase.success_indicators}")
-
-print(f"\nTotal Duration: {plan.total_estimated_duration}")
-print(f"Required Skills: {', '.join(plan.required_skills)}")
-print(f"Parallel Opportunities: {plan.parallel_opportunities}")
-print(f"Risk Factors: {plan.risk_factors}")
+# Save plan to file for subsequent steps
+amplihack goal-agent-generator plan --prompt-file my-goal.md --output plan.json
 ```
 
 Phase templates by domain:
@@ -606,20 +585,17 @@ Phase templates by domain:
 
 Maps capabilities to skills:
 
-```python
-from amplihack.goal_agent_generator import SkillSynthesizer
+```bash
+# Synthesize skills from execution plan
+amplihack goal-agent-generator synthesize --plan-file plan.json
 
-synthesizer = SkillSynthesizer()
-skills = synthesizer.synthesize(execution_plan)
+# Output (JSON) includes list of SkillDefinitions:
+# - name, description, capabilities[]
+# - implementation_type: "native" | "delegated"
+# - delegation_target (if delegated)
 
-# list[SkillDefinition]
-for skill in skills:
-    print(f"Skill: {skill.name}")
-    print(f"  Description: {skill.description}")
-    print(f"  Capabilities: {', '.join(skill.capabilities)}")
-    print(f"  Type: {skill.implementation_type}")
-    if skill.implementation_type == "delegated":
-        print(f"  Delegates to: {skill.delegation_target}")
+# Save skills to directory for assembly
+amplihack goal-agent-generator synthesize --plan-file plan.json --output ./skills
 ```
 
 Capability mapping:
@@ -635,31 +611,23 @@ Capability mapping:
 
 Combines components into executable bundle:
 
-```python
-from amplihack.goal_agent_generator import AgentAssembler
+```bash
+# Assemble agent from skills directory
+amplihack goal-agent-generator assemble \
+  --skills-dir ./skills \
+  --bundle-name "custom-agent"
 
-assembler = AgentAssembler()
-bundle = assembler.assemble(
-    goal_definition=goal_definition,
-    execution_plan=execution_plan,
-    skills=skills,
-    bundle_name="custom-agent"  # Optional, auto-generated if omitted
-)
-
-# GoalAgentBundle contains:
-print(bundle.id)                    # UUID
-print(bundle.name)                  # "custom-agent" or auto-generated
-print(bundle.version)               # "1.0.0"
-print(bundle.status)                # "ready"
-print(bundle.auto_mode_config)      # Configuration for auto-mode execution
-print(bundle.metadata)              # Domain, complexity, skills, etc.
-
-# Auto-mode configuration
-config = bundle.auto_mode_config
-print(config["max_turns"])          # Based on complexity
-print(config["initial_prompt"])     # Generated execution prompt
-print(config["success_criteria"])   # From goal definition
-print(config["constraints"])        # From goal definition
+# Output: GoalAgentBundle (JSON) containing:
+# - id: UUID
+# - name: "custom-agent" or auto-generated
+# - version: "1.0.0"
+# - status: "ready"
+# - auto_mode_config:
+#     max_turns: based on complexity
+#     initial_prompt: generated execution prompt
+#     success_criteria: from goal definition
+#     constraints: from goal definition
+# - metadata: domain, complexity, skills, etc.
 ```
 
 Auto-mode configuration:
@@ -674,15 +642,11 @@ Auto-mode configuration:
 
 Packages bundle for deployment:
 
-```python
-from amplihack.goal_agent_generator import GoalAgentPackager
-from pathlib import Path
-
-packager = GoalAgentPackager()
-packager.package(
-    bundle=agent_bundle,
-    output_dir=Path(".claude/agents/goal-driven/my-agent")
-)
+```bash
+# Package agent bundle for deployment
+amplihack goal-agent-generator package \
+  --agent-dir ./agent \
+  --output .claude/agents/goal-driven/my-agent
 
 # Creates:
 # .claude/agents/goal-driven/my-agent/
@@ -703,16 +667,16 @@ Real goal-seeking agents from the amplihack project:
 
 **Goal-Seeking Solution**:
 
-```python
+```bash
 # Goal: Automate AKS production readiness verification
-goal = """
-Verify AKS cluster production readiness:
+amplihack goal-agent-generator create \
+  --prompt "Verify AKS cluster production readiness:
 - Security: RBAC, network policies, Key Vault integration
 - Networking: Ingress, DNS, load balancers
 - Monitoring: Container Insights, alerts, dashboards
 - Compliance: Azure Policy, resource quotas
-Generate actionable report with recommendations.
-"""
+Generate actionable report with recommendations." \
+  --output .claude/agents/goal-driven/aks-readiness-checker
 
 # Agent decomposes into phases:
 # 1. Security Audit (parallel): RBAC check, network policies, Key Vault
@@ -737,25 +701,22 @@ Generate actionable report with recommendations.
 
 **Implementation**:
 
-```python
+```bash
 # Located in: .claude/agents/amplihack/specialized/azure-kubernetes-expert.md
 # Uses knowledge base: .claude/data/azure_aks_expert/
 
-# Integrates with goal_agent_generator:
-from amplihack.goal_agent_generator import (
-    PromptAnalyzer, ObjectivePlanner, AgentAssembler
-)
+# Integrates with goal_agent_generator CLI:
+amplihack goal-agent-generator analyze \
+  --prompt-file aks-goal.md
 
-analyzer = PromptAnalyzer()
-goal_def = analyzer.analyze_text(goal)
+amplihack goal-agent-generator plan \
+  --prompt-file aks-goal.md \
+  --output plan.json  # Generates 5-phase plan
 
-planner = ObjectivePlanner()
-plan = planner.generate_plan(goal_def)  # Generates 5-phase plan
-
-# Domain-specific customization:
-plan.phases[0].required_capabilities = [
-    "rbac-audit", "network-policy-check", "key-vault-integration"
-]
+# Domain-specific customization via config overlay:
+amplihack goal-agent-generator assemble \
+  --skills-dir ./skills \
+  --capabilities "rbac-audit,network-policy-check,key-vault-integration"
 ```
 
 **Lessons Learned**:
@@ -1126,35 +1087,23 @@ context.metrics.record("transformation-accuracy", accuracy)
 
 ### Integration Example
 
-```python
-from claude_agent_sdk import AgentContext, create_agent
-from amplihack.goal_agent_generator import GoalAgentBundle
+```bash
+# Create a goal-seeking agent bundle, then execute via the agent SDK
+amplihack goal-agent-generator create \
+  --prompt-file my-goal.md \
+  --output .claude/agents/goal-driven/my-agent
 
-# Create SDK-enabled goal-seeking agent
-def create_goal_agent(bundle: GoalAgentBundle) -> Agent:
-    context = AgentContext(
-        name=bundle.name,
-        version=bundle.version,
-        capabilities=bundle.metadata["required_capabilities"]
-    )
+# Execute the packaged agent in auto-mode
+amplihack goal-agent-generator execute \
+  --agent-path .claude/agents/goal-driven/my-agent \
+  --auto-mode \
+  --max-turns 10
 
-    # Register phases as agent tasks
-    for phase in bundle.execution_plan.phases:
-        context.register_task(
-            name=phase.name,
-            capabilities=phase.required_capabilities,
-            executor=create_phase_executor(phase)
-        )
-
-    # Create agent with SDK
-    agent = create_agent(context)
-
-    # Execute goal
-    return agent
-
-# Usage:
-agent = create_goal_agent(agent_bundle)
-result = await agent.execute(bundle.auto_mode_config["initial_prompt"])
+# The execute command:
+# - Loads the agent bundle (metadata.json, plan.yaml, skills.yaml)
+# - Registers phases as agent tasks
+# - Creates an SDK-enabled agent context
+# - Runs the agent with the generated initial prompt
 ```
 
 ## 8. Trade-Off Analysis
@@ -1417,40 +1366,37 @@ Collect data from multiple sources (S3, database, API), transform to common sche
 
 ### Step 2: Analyze with PromptAnalyzer
 
-```python
-from amplihack.goal_agent_generator import PromptAnalyzer
+```bash
+amplihack goal-agent-generator analyze \
+  --prompt "Automate Multi-Source Data Pipeline..."
 
-analyzer = PromptAnalyzer()
-goal_definition = analyzer.analyze_text(goal_text)
-
-# Result:
-# goal_definition.goal = "Automate Multi-Source Data Pipeline"
-# goal_definition.domain = "data-processing"
-# goal_definition.complexity = "moderate"
-# goal_definition.constraints = [
+# Result (JSON):
+# {
+#   "goal": "Automate Multi-Source Data Pipeline",
+#   "domain": "data-processing",
+#   "complexity": "moderate",
+#   "constraints": [
 #     "Must handle source unavailability gracefully",
 #     "No data loss (failed records logged)",
 #     "Idempotent (safe to re-run)",
 #     "Resource limits: 8GB RAM, 4 CPU cores"
-# ]
-# goal_definition.success_criteria = [
+#   ],
+#   "success_criteria": [
 #     "All sources successfully ingested",
 #     "Data transformed to target schema",
 #     "Quality checks pass (completeness, accuracy)",
 #     "Data published to warehouse",
 #     "Pipeline completes within 30 minutes"
-# ]
+#   ]
+# }
 ```
 
 ### Step 3: Generate Plan with ObjectivePlanner
 
-```python
-from amplihack.goal_agent_generator import ObjectivePlanner
+```bash
+amplihack goal-agent-generator plan --prompt-file goal.md --output plan.json
 
-planner = ObjectivePlanner()
-execution_plan = planner.generate_plan(goal_definition)
-
-# Result: 4-phase plan
+# Result: 4-phase plan (saved to plan.json)
 # Phase 1: Data Collection (parallel)
 #   - Collect from S3 (parallel-safe)
 #   - Collect from database (parallel-safe)
@@ -1482,11 +1428,8 @@ execution_plan = planner.generate_plan(goal_definition)
 
 ### Step 4: Synthesize Skills
 
-```python
-from amplihack.goal_agent_generator import SkillSynthesizer
-
-synthesizer = SkillSynthesizer()
-skills = synthesizer.synthesize(execution_plan)
+```bash
+amplihack goal-agent-generator synthesize --plan-file plan.json --output ./skills
 
 # Result: 3 skills
 # Skill 1: data-collector
@@ -1504,16 +1447,10 @@ skills = synthesizer.synthesize(execution_plan)
 
 ### Step 5: Assemble Agent
 
-```python
-from amplihack.goal_agent_generator import AgentAssembler
-
-assembler = AgentAssembler()
-agent_bundle = assembler.assemble(
-    goal_definition=goal_definition,
-    execution_plan=execution_plan,
-    skills=skills,
-    bundle_name="multi-source-data-pipeline"
-)
+```bash
+amplihack goal-agent-generator assemble \
+  --skills-dir ./skills \
+  --bundle-name "multi-source-data-pipeline"
 
 # Result: GoalAgentBundle
 # - Name: multi-source-data-pipeline
@@ -1524,15 +1461,10 @@ agent_bundle = assembler.assemble(
 
 ### Step 6: Package Agent
 
-```python
-from amplihack.goal_agent_generator import GoalAgentPackager
-from pathlib import Path
-
-packager = GoalAgentPackager()
-packager.package(
-    bundle=agent_bundle,
-    output_dir=Path(".claude/agents/goal-driven/multi-source-data-pipeline")
-)
+```bash
+amplihack goal-agent-generator package \
+  --agent-dir ./agent \
+  --output .claude/agents/goal-driven/multi-source-data-pipeline
 
 # Creates agent package:
 # .claude/agents/goal-driven/multi-source-data-pipeline/
@@ -1950,7 +1882,7 @@ Goal-seeking agents must meet these quality standards:
 **Step 1**: Install amplihack (if not already)
 
 ```bash
-pip install amplihack
+cargo install amplihack
 ```
 
 **Step 2**: Write a goal prompt

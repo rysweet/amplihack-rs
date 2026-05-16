@@ -100,14 +100,13 @@ for flaky failures, and verify coverage thresholds are met.
 
 ### Execution Plan
 
-```python
-from amplihack.goal_agent_generator import PromptAnalyzer, ObjectivePlanner
+```bash
+amplihack goal-agent-generator analyze \
+  --prompt-file goal.md
 
-analyzer = PromptAnalyzer()
-goal_def = analyzer.analyze_text(goal_text)
-
-planner = ObjectivePlanner()
-execution_plan = planner.generate_plan(goal_def)
+amplihack goal-agent-generator plan \
+  --prompt-file goal.md \
+  --output plan.json
 
 # Result: 4-phase plan
 ```
@@ -180,49 +179,17 @@ Success indicators:
 
 ### Implementation
 
-```python
-from amplihack.goal_agent_generator import (
-    PromptAnalyzer,
-    ObjectivePlanner,
-    SkillSynthesizer,
-    AgentAssembler,
-    GoalAgentPackager,
-)
-from pathlib import Path
-import ast
-import subprocess
-from typing import List, Dict, Any
+```bash
+# Goal definition (save to goal.md):
+# Analyze code, generate comprehensive tests (unit + edge cases),
+# execute tests with intelligent retry for flaky failures,
+# verify coverage ≥ 80%.
 
-# Goal definition
-goal_text = """
-Analyze code, generate comprehensive tests (unit + edge cases),
-execute tests with intelligent retry for flaky failures,
-verify coverage ≥ 80%.
-"""
-
-# Create agent
-analyzer = PromptAnalyzer()
-goal_def = analyzer.analyze_text(goal_text)
-
-planner = ObjectivePlanner()
-execution_plan = planner.generate_plan(goal_def)
-
-synthesizer = SkillSynthesizer()
-skills = synthesizer.synthesize(execution_plan)
-
-assembler = AgentAssembler()
-agent_bundle = assembler.assemble(
-    goal_definition=goal_def,
-    execution_plan=execution_plan,
-    skills=skills,
-    bundle_name="adaptive-test-generator"
-)
-
-packager = GoalAgentPackager()
-packager.package(
-    bundle=agent_bundle,
-    output_dir=Path(".claude/agents/goal-driven/adaptive-test-generator")
-)
+# Create agent in one step
+amplihack goal-agent-generator create \
+  --prompt-file goal.md \
+  --bundle-name "adaptive-test-generator" \
+  --output .claude/agents/goal-driven/adaptive-test-generator
 ```
 
 ### Adaptive Behavior

@@ -97,14 +97,13 @@ transform to common schema, validate quality, and publish to data warehouse.
 
 ### Execution Plan
 
-```python
-from amplihack.goal_agent_generator import PromptAnalyzer, ObjectivePlanner
+```bash
+amplihack goal-agent-generator analyze \
+  --prompt-file goal.md
 
-analyzer = PromptAnalyzer()
-goal_def = analyzer.analyze_text(goal_text)
-
-planner = ObjectivePlanner()
-execution_plan = planner.generate_plan(goal_def)
+amplihack goal-agent-generator plan \
+  --prompt-file goal.md \
+  --output plan.json
 
 # Result: 4-phase plan with parallel collection
 ```
@@ -179,52 +178,20 @@ Success indicators:
 
 ### Implementation
 
-```python
-from amplihack.goal_agent_generator import (
-    PromptAnalyzer,
-    ObjectivePlanner,
-    SkillSynthesizer,
-    AgentAssembler,
-    GoalAgentPackager,
-)
-from pathlib import Path
-import asyncio
-from datetime import datetime
-from typing import List, Dict, Any
+```bash
+# Goal definition (save to goal.md):
+# Automate multi-source data pipeline:
+# - Collect from S3, PostgreSQL, REST API (parallel)
+# - Transform to common schema
+# - Validate quality (completeness, accuracy, consistency)
+# - Publish to data warehouse
+# Handle source failures gracefully, ensure idempotency.
 
-# Goal definition
-goal_text = """
-Automate multi-source data pipeline:
-- Collect from S3, PostgreSQL, REST API (parallel)
-- Transform to common schema
-- Validate quality (completeness, accuracy, consistency)
-- Publish to data warehouse
-Handle source failures gracefully, ensure idempotency.
-"""
-
-# Create agent
-analyzer = PromptAnalyzer()
-goal_def = analyzer.analyze_text(goal_text)
-
-planner = ObjectivePlanner()
-execution_plan = planner.generate_plan(goal_def)
-
-synthesizer = SkillSynthesizer()
-skills = synthesizer.synthesize(execution_plan)
-
-assembler = AgentAssembler()
-agent_bundle = assembler.assemble(
-    goal_definition=goal_def,
-    execution_plan=execution_plan,
-    skills=skills,
-    bundle_name="multi-source-data-pipeline"
-)
-
-packager = GoalAgentPackager()
-packager.package(
-    bundle=agent_bundle,
-    output_dir=Path(".claude/agents/goal-driven/data-pipeline")
-)
+# Create agent in one step
+amplihack goal-agent-generator create \
+  --prompt-file goal.md \
+  --bundle-name "multi-source-data-pipeline" \
+  --output .claude/agents/goal-driven/data-pipeline
 ```
 
 ### Adaptive Behavior

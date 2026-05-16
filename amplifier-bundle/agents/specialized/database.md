@@ -62,12 +62,12 @@ ALTER TABLE events ADD COLUMN user_id UUID
 
 ### Simple First Approach
 
-```python
-# Start with SQLite for simplicity
-conn = sqlite3.connect('data.db')
+```rust
+// Start with SQLite for simplicity
+let conn = Connection::open("data.db")?;
 
-# Move to PostgreSQL when needed
-# Not before
+// Move to PostgreSQL when needed
+// Not before
 ```
 
 ## Working Process

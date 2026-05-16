@@ -54,13 +54,13 @@ Power-steering hook blocks session termination with "work incomplete" when sessi
 
 ### Root Cause
 
-When Claude Code compacts a session (due to context window limits), the `transcript_path` provided to hooks contains only the compacted summary, not the full conversation history. The `pre_compact.py` hook DOES save the full transcript before compaction, but the power-steering checker didn't know to look for it.
+When Claude Code compacts a session (due to context window limits), the `transcript_path` provided to hooks contains only the compacted summary, not the full conversation history. The pre-compact hook DOES save the full transcript before compaction, but the power-steering checker didn't know to look for it.
 
 **Flow before fix**:
 
-1. Session reaches context limit → Claude Code compacts → Calls `pre_compact.py` hook
-2. `pre_compact.py` saves full transcript to `session_dir/CONVERSATION_TRANSCRIPT.md`
-3. User attempts to stop session → `stop.py` hook called
+1. Session reaches context limit → Claude Code compacts → Calls pre-compact hook
+2. Pre-compact hook saves full transcript to `session_dir/CONVERSATION_TRANSCRIPT.md`
+3. User attempts to stop session → stop hook called
 4. Power-steering receives `transcript_path` pointing to compacted transcript (~50 messages)
 5. SDK analysis sees only "Phase 1: Scope Definition" → Reports work incomplete
 
@@ -72,15 +72,16 @@ Two-part fix following the issue's Option A and Option B:
 
 New method `_get_pre_compaction_transcript(session_id)` checks for compaction by looking for `compaction_events.json` in the session's log directory. If found, returns path to the preserved full transcript.
 
-```python
-# In check() method:
-pre_compaction_path = self._get_pre_compaction_transcript(session_id)
-if pre_compaction_path:
-    # Session was compacted - load the full transcript
-    transcript = self._load_pre_compaction_transcript(pre_compaction_path)
-else:
-    # Normal case - use provided transcript
-    transcript = self._load_transcript(transcript_path)
+```rust
+// In check() method:
+let pre_compaction_path = self.get_pre_compaction_transcript(session_id);
+let transcript = if let Some(path) = pre_compaction_path {
+    // Session was compacted - load the full transcript
+    self.load_pre_compaction_transcript(&path)
+} else {
+    // Normal case - use provided transcript
+    self.load_transcript(transcript_path)
+};
 ```
 
 **Part 2: State-Based Verification Fallback**
@@ -95,7 +96,7 @@ When state verification passes (PR mergeable + CI passing), it can override tran
 
 ### Key Files Changed
 
-- `~/.amplihack/.claude/tools/amplihack/hooks/power_steering_checker.py`:
+- `crates/amplihack-hooks/src/power_steering/`:
   - Added `_get_pre_compaction_transcript()` method
   - Added `_load_pre_compaction_transcript()` method (handles both markdown and JSONL)
   - Added `_verify_actual_state()` method
@@ -142,30 +143,32 @@ Two critical bugs in the UVX file copying system (Issue #1940):
 
 ### Solution
 
-**Bug #1 Fix** (7 lines after line 491):
+**Bug #1 Fix** (legacy installer code):
 
-```python
-# Bug #1 Fix: Respect user cancellation (Issue #1940)
-# When user responds 'n' to conflict prompt, should_proceed=False
-# Exit gracefully with code 0 (user-initiated cancellation, not an error)
-if not copy_strategy.should_proceed:
-    print("\n❌ Operation cancelled - cannot proceed without updating .claude/ directory")
-    print("   Commit your changes and try again\n")
-    sys.exit(0)
+```
+// Bug #1 Fix: Respect user cancellation (Issue #1940)
+// When user responds 'n' to conflict prompt, should_proceed=False
+// Exit gracefully with code 0 (user-initiated cancellation, not an error)
+if !copy_strategy.should_proceed {
+    eprintln!("\n❌ Operation cancelled - cannot proceed without updating .claude/ directory");
+    eprintln!("   Commit your changes and try again\n");
+    std::process::exit(0);
+}
 ```
 
-**Bug #2 Fix** (9 lines after line 521):
+**Bug #2 Fix** (legacy installer code):
 
-```python
-# Bug #2 Fix: Detect empty copy results (Issue #1940)
-# When copytree_manifest returns empty list, no files were copied
-# This indicates a package installation problem - exit with clear error
-if not copied:
-    print("\n❌ Failed to copy .claude files - cannot proceed")
-    print(f"   Package location: {amplihack_src}")
-    print(f"   Looking for .claude/ at: {amplihack_src}/.claude/")
-    print("   This may indicate a package installation problem\n")
-    sys.exit(1)
+```
+// Bug #2 Fix: Detect empty copy results (Issue #1940)
+// When copytree_manifest returns empty list, no files were copied
+// This indicates a package installation problem - exit with clear error
+if copied.is_empty() {
+    eprintln!("\n❌ Failed to copy .claude files - cannot proceed");
+    eprintln!("   Package location: {amplihack_src}");
+    eprintln!("   Looking for .claude/ at: {amplihack_src}/.claude/");
+    eprintln!("   This may indicate a package installation problem\n");
+    std::process::exit(1);
+}
 ```
 
 **Import Fix**: Moved `copytree_manifest` import to module level (line 9) to make it patchable in tests.
@@ -201,13 +204,13 @@ Amplihack hangs during Claude Code exit. User suspected sessionstop hook causing
 
 ### Root Cause
 
-**BrokenPipeError race condition in `hook_processor.py`**:
+**BrokenPipeError race condition in the legacy hook processor**:
 
 1. Stop hook completes all logic successfully (Neo4j cleanup, power-steering, reflection)
 2. Returns `{"decision": "approve"}` and tries to write to stdout
 3. Claude Code has already closed the pipe/connection (timing race)
-4. `sys.stdout.flush()` at line 169 raises `BrokenPipeError: [Errno 32] Broken pipe`
-5. Exception handler (line 308) catches it and tries to call `write_output({})` AGAIN at line 331
+4. `stdout.flush()` raises BrokenPipeError
+5. Exception handler catches it and tries to call `write_output({})` AGAIN
 6. Second write also fails with BrokenPipeError (same broken pipe)
 7. No handler for second failure → HANG
 
@@ -217,8 +220,8 @@ Amplihack hangs during Claude Code exit. User suspected sessionstop hook causing
 [2025-12-13T19:48:34] INFO: === STOP HOOK ENDED (decision: approve - no reflection) ===
 [2025-12-13T19:48:34] ERROR: Unexpected error in stop: [Errno 32] Broken pipe
 [2025-12-13T19:48:34] ERROR: Traceback:
-  File "hook_processor.py", line 277: self.write_output(output)  ← FIRST FAILURE
-  File "hook_processor.py", line 169: sys.stdout.flush()
+  hook_processor write_output: self.write_output(output)  ← FIRST FAILURE
+  hook_processor stdout flush
 BrokenPipeError: [Errno 32] Broken pipe
 ```
 
@@ -230,24 +233,28 @@ BrokenPipeError: [Errno 32] Broken pipe
 
 ### Solution
 
-**Add BrokenPipeError handling to `write_output()` method in `hook_processor.py`:**
+**Add BrokenPipeError handling to the output writing method in the hook processor:**
 
-```python
-def write_output(self, output: Dict[str, Any]):
-    """Write JSON output to stdout, handling broken pipe gracefully."""
-    try:
-        json.dump(output, sys.stdout)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-    except BrokenPipeError:
-        # Pipe closed - Claude Code has already exited
-        # Log but don't raise (fail-open design)
-        self.log("Pipe closed during output write (non-critical)", "DEBUG")
-    except IOError as e:
-        if e.errno == errno.EPIPE:  # Broken pipe on some systems
-            self.log("Broken pipe during output write (non-critical)", "DEBUG")
-        else:
-            raise  # Re-raise other IOErrors
+```rust
+fn write_output(&self, output: &serde_json::Value) -> Result<()> {
+    match (|| -> Result<()> {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        serde_json::to_writer(&mut handle, output)?;
+        writeln!(handle)?;
+        handle.flush()?;
+        Ok(())
+    })() {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+            // Pipe closed - Claude Code has already exited
+            // Log but don't raise (fail-open design)
+            log::debug!("Pipe closed during output write (non-critical)");
+            Ok(())
+        }
+        Err(e) => Err(e.into()),
+    }
+}
 ```
 
 **Alternative approach:** Wrap all `write_output()` calls in exception handlers (4 locations), but centralizing in the method is cleaner.
@@ -257,15 +264,15 @@ def write_output(self, output: Dict[str, Any]):
 1. **Hook logic vs hook I/O** - The hook can work perfectly but fail on output writing
 2. **Exception handlers can make things worse** - Retrying the same failed operation without checking
 3. **Race conditions in pipe communication** - Claude Code can close pipes at ANY time, not just during hook logic
-4. **Fail-open philosophy incomplete** - Recent fix (45778fcd) addressed `sys.exit(1)` but missed BrokenPipeError
-5. **All hooks vulnerable** - Same `hook_processor.py` base class used by sessionstart, prompt-submit, etc.
+4. **Fail-open philosophy incomplete** - Recent fix (45778fcd) addressed exit handling but missed BrokenPipeError
+5. **All hooks vulnerable** - Same hook processor base used by sessionstart, prompt-submit, etc.
 6. **Log evidence is critical** - Hook completed successfully but logs showed BrokenPipeError during output write
 
 ### Related
 
-- **File**: `~/.amplihack/.claude/tools/amplihack/hooks/hook_processor.py` (lines 161-169, 277, 289, 306, 331)
-- **File**: `~/.amplihack/.claude/tools/amplihack/hooks/stop.py` (completes successfully, issue is in base class)
-- **Recent fix**: Commit 45778fcd fixed `sys.exit(1)` but didn't address BrokenPipeError
+- **File**: `crates/amplihack-hooks/src/hook_processor/` (output writing logic)
+- **File**: `crates/amplihack-hooks/src/stop/` (completes successfully, issue is in base module)
+- **Recent fix**: Commit 45778fcd fixed exit handling but didn't address BrokenPipeError
 - **Investigation methodology**: INVESTIGATION_WORKFLOW.md (6-phase systematic investigation)
 - **Log evidence**: `~/.amplihack/.claude/runtime/logs/stop.log` shows "HOOK ENDED" followed by BrokenPipeError
 
@@ -399,12 +406,14 @@ The `.version` file is a **system-generated tracking file** that stores the git 
 
 1. **Git Status Detection**: `GitConflictDetector._get_uncommitted_files()` correctly detects ALL uncommitted files including `.version` (status: M)
 
-2. **Filtering Logic Gap**: `_filter_conflicts()` at lines 82-97 in `git_conflict_detector.py` only checks files against ESSENTIAL_DIRS patterns:
+2. **Filtering Logic Gap**: `_filter_conflicts()` in `git_conflict_detector` only checks files against ESSENTIAL_DIRS patterns:
 
-   ```python
-   for essential_dir in essential_dirs:
-       if relative_path.startswith(essential_dir + "/"):
-           conflicts.append(file_path)
+   ```rust
+   for essential_dir in &essential_dirs {
+       if relative_path.starts_with(&format!("{}/", essential_dir)) {
+           conflicts.push(file_path.clone());
+       }
+   }
    ```
 
 3. **ESSENTIAL_DIRS Are All Subdirectories**: `["agents/amplihack", "commands/amplihack", "context/", ...]` - all contain "/"
@@ -419,25 +428,24 @@ The `.version` file is a **system-generated tracking file** that stores the git 
 
 Exclude system-generated metadata files from conflict detection by adding explicit categorization:
 
-```python
-# In src/amplihack/safety/git_conflict_detector.py
+```rust
+// In git_conflict_detector module
 
-SYSTEM_METADATA = {
-    ".version",        # Framework version tracking (auto-generated)
-    "settings.json",   # Runtime settings (auto-generated)
-}
+const SYSTEM_METADATA: &[&str] = &[
+    ".version",        // Framework version tracking (auto-generated)
+    "settings.json",   // Runtime settings (auto-generated)
+];
 
-def _filter_conflicts(
-    self, uncommitted_files: List[str], essential_dirs: List[str]
-) -> List[str]:
-    """Filter uncommitted files for conflicts with essential_dirs."""
-    conflicts = []
-    for file_path in uncommitted_files:
-        if file_path.startswith(".claude/"):
-            relative_path = file_path[8:]
+fn filter_conflicts(
+    &self, uncommitted_files: &[String], essential_dirs: &[String]
+) -> Vec<String> {
+    let mut conflicts = Vec::new();
+    for file_path in uncommitted_files {
+        if file_path.starts_with(".claude/") {
+            let relative_path = &file_path[8..];
 
-            # Skip system-generated metadata - safe to overwrite
-            if relative_path in SYSTEM_METADATA:
+            // Skip system-generated metadata - safe to overwrite
+            if SYSTEM_METADATA.contains(&relative_path) {
                 continue
 
             # Existing filtering logic for essential directories
@@ -524,9 +532,9 @@ Implemented flexible timeout resolution system:
 
 ### Files Changed
 
-- `src/amplihack/cli.py`: Added `--no-timeout` flag and `resolve_timeout()` function
-- `src/amplihack/launcher/auto_mode.py`: Accept `None` timeout using `nullcontext`
-- `tests/unit/test_auto_mode_timeout.py`: 19 comprehensive tests
+- `crates/amplihack-cli/src/commands/cli.rs`: Added `--no-timeout` flag and `resolve_timeout()` function
+- `crates/amplihack-cli/src/commands/auto_mode.rs`: Accept `None` timeout
+- `tests/`: 19 comprehensive tests
 - `docs/AUTO_MODE.md`: Added timeout configuration documentation
 
 ## Power-Steering Session Type Detection Fix (2025-11-25)
@@ -696,22 +704,24 @@ arguments.
 
 ### Solution
 
-Modified `src/amplihack/launcher/core.py` in `build_claude_command()` method:
+Modified launcher module in `build_claude_command()`:
 
-```python
-if claude_binary == "claude-trace":
-    # claude-trace requires --run-with followed by the command and arguments
-    # Format: claude-trace --run-with chat [claude-args...]
-    cmd = [claude_binary, "--run-with", "chat"]
+```rust
+if claude_binary == "claude-trace" {
+    // claude-trace requires --run-with followed by the command and arguments
+    // Format: claude-trace --run-with chat [claude-args...]
+    let mut cmd = vec![claude_binary.to_string(), "--run-with".into(), "chat".into()];
 
-    # Add Claude arguments after the command
-    cmd.append("--dangerously-skip-permissions")
+    // Add Claude arguments after the command
+    cmd.push("--dangerously-skip-permissions".into());
 
-    # Add system prompt, --add-dir, and forwarded arguments...
-    if self.claude_args:
-        cmd.extend(self.claude_args)
+    // Add system prompt, --add-dir, and forwarded arguments...
+    if let Some(args) = &self.claude_args {
+        cmd.extend(args.iter().cloned());
+    }
 
-    return cmd
+    return cmd;
+}
 ```
 
 ### Key Learnings
@@ -1014,16 +1024,16 @@ Justified Complexity: Benefit Gain / Complexity Cost > 3.0
 
 **Application to AI Agents**:
 
-```python
-# Generate diverse implementations
-implementations = [
-    agent1.generate(spec),
-    agent2.generate(spec),
-    agent3.generate(spec),
-]
+```rust
+// Generate diverse implementations
+let implementations = vec![
+    agent1.generate(&spec),
+    agent2.generate(&spec),
+    agent3.generate(&spec),
+];
 
-# Expert review selects best (not voting)
-best = expert_reviewer.select_best(implementations, criteria)
+// Expert review selects best (not voting)
+let best = expert_reviewer.select_best(&implementations, &criteria);
 ```
 
 **When Diversity Fails**:
@@ -1423,7 +1433,7 @@ Investigation triggered by system reminder messages showing "SessionStart:startu
 
 ### Root Cause
 
-**Claude Code Internal Bug**: The hook execution engine spawns **two separate Python processes** for each hook invocation, regardless of configuration.
+**Claude Code Internal Bug**: The hook execution engine spawns **two separate processes** for each hook invocation, regardless of configuration.
 
 **Current Configuration** (CORRECT per schema):
 
@@ -1433,7 +1443,7 @@ Investigation triggered by system reminder messages showing "SessionStart:startu
     "hooks": [  // ✓ Required by Claude Code schema
       {
         "type": "command",
-        "command": "$CLAUDE_PROJECT_DIR/.claude/tools/amplihack/hooks/session_start.py",
+        "command": "$CLAUDE_PROJECT_DIR/.claude/tools/amplihack/hooks/session_start",
         "timeout": 10000
       }
     ]
@@ -1470,20 +1480,20 @@ Settings validation failed:
 - Only 1 SessionStart hook registered in settings.json
 - No duplicate configurations found
 - Schema validation confirms format is correct
-- **Two separate Python processes** spawn anyway (different PIDs)
+- **Two separate processes** spawn anyway (different PIDs)
 
 **From `~/.amplihack/.claude/runtime/logs/session_start.log`**:
 
 ```
-[2025-11-21T13:01:07.113446] INFO: session_start hook starting (Python 3.13.9)
-[2025-11-21T13:01:07.113687] INFO: session_start hook starting (Python 3.13.9)
+[2025-11-21T13:01:07.113446] INFO: session_start hook starting
+[2025-11-21T13:01:07.113687] INFO: session_start hook starting
 ```
 
 **From `~/.amplihack/.claude/runtime/logs/stop.log`**:
 
 ```
-[2025-11-20T21:37:05.173846] INFO: stop hook starting (Python 3.13.9)
-[2025-11-20T21:37:05.427256] INFO: stop hook starting (Python 3.13.9)
+[2025-11-20T21:37:05.173846] INFO: stop hook starting
+[2025-11-20T21:37:05.427256] INFO: stop hook starting
 ```
 
 **Pattern**: All hooks (SessionStart, Stop, PostToolUse) show double execution with microsecond-level timing differences, indicating true parallel process spawning.
@@ -1505,7 +1515,7 @@ Settings validation failed:
 **Workarounds**:
 
 1. Accept the duplication (hooks are idempotent, safe but wasteful)
-2. Add process-level deduplication in hook_processor.py (complex)
+2. Add process-level deduplication in the hook processor (complex)
 3. Wait for upstream Claude Code fix
 
 **Tracking**: Claude Code GitHub Issue #10871 "Plugin-registered hooks are executed twice with different PIDs"
@@ -1520,7 +1530,7 @@ Our configuration **matches the official schema exactly**:
     "hooks": [  // ✓ REQUIRED by schema
       {
         "type": "command",
-        "command": "$CLAUDE_PROJECT_DIR/.claude/tools/amplihack/hooks/session_start.py",
+        "command": "$CLAUDE_PROJECT_DIR/.claude/tools/amplihack/hooks/session_start",
         "timeout": 10000
       }
     ]
@@ -1588,7 +1598,7 @@ Configuration correctness verified:
 ### Files Analyzed
 
 - `~/.amplihack/.claude/settings.json` (1 SessionStart hook, 1 Stop hook)
-- `~/.amplihack/.claude/tools/amplihack/hooks/session_start.py` (hook implementation)
+- `crates/amplihack-hooks/src/session_start/` (hook implementation)
 - `~/.amplihack/.claude/runtime/logs/session_start.log` (execution evidence)
 - `~/.amplihack/.claude/runtime/logs/stop.log` (execution evidence)
 - Claude Code schema (hook format requirements)
@@ -1770,13 +1780,14 @@ Failed to create container... Conflict... already in use
 
 **Logic Flaw in Port Detection**: The `is_our_neo4j_container()` function checked if a container with the expected NAME existed, but didn't retrieve the ACTUAL ports the container was using.
 
-**Exact Bug Location**: `src/amplihack/memory/neo4j/port_manager.py:147-149`
+**Exact Bug Location**: `crates/amplihack-cli/src/commands/memory/port_manager.rs`
 
-```python
-# BROKEN - Assumes container is on ports from .env
-if is_our_neo4j_container():  # Only checks name, doesn't get ports!
-    messages.append(f"✅ Our Neo4j container found on ports {bolt_port}/{http_port}")
-    return bolt_port, http_port, messages  # Returns WRONG ports from .env
+```rust
+// BROKEN - Assumes container is on ports from .env
+if is_our_neo4j_container() {  // Only checks name, doesn't get ports!
+    messages.push(format!("✅ Our Neo4j container found on ports {bolt_port}/{http_port}"));
+    return (bolt_port, http_port, messages);  // Returns WRONG ports from .env
+}
 ```
 
 **Error Sequence**:
@@ -1792,47 +1803,43 @@ if is_our_neo4j_container():  # Only checks name, doesn't get ports!
 
 **Added `get_container_ports()` function** that queries actual container ports using `docker port`:
 
-```python
-def get_container_ports(container_name: str = "amplihack-neo4j") -> Optional[Tuple[int, int]]:
-    """Get actual ports from running Neo4j container.
+```rust
+fn get_container_ports(container_name: &str) -> Option<(u16, u16)> {
+    /// Get actual ports from running Neo4j container.
+    ///
+    /// Uses `docker port` command to inspect actual port mappings,
+    /// not what .env file claims.
+    let output = Command::new("docker")
+        .args(["port", container_name])
+        .output()
+        .ok()?;
 
-    Uses `docker port` command to inspect actual port mappings,
-    not what .env file claims.
+    if !output.status.success() {
+        return None;
+    }
 
-    Returns:
-        (bolt_port, http_port) if container running with ports, None otherwise
-    """
-    result = subprocess.run(
-        ["docker", "port", container_name],
-        capture_output=True,
-        timeout=5,
-        text=True,
-    )
-
-    if result.returncode != 0:
-        return None
-
-    # Parse output: "7687/tcp -> 0.0.0.0:7787"
-    # Extract actual host ports from both ports
-    # ...
-    return bolt_port, http_port
+    // Parse output: "7687/tcp -> 0.0.0.0:7787"
+    // Extract actual host ports from both ports
+    // ...
+    Some((bolt_port, http_port))
+}
 ```
 
 **Updated `resolve_port_conflicts()`** to use actual ports:
 
-```python
-# FIXED - Use actual container ports, not .env ports
-container_ports = get_container_ports("amplihack-neo4j")
-if container_ports:
-    actual_bolt, actual_http = container_ports
-    messages.append(f"✅ Our Neo4j container found on ports {actual_bolt}/{actual_http}")
+```rust
+// FIXED - Use actual container ports, not .env ports
+if let Some((actual_bolt, actual_http)) = get_container_ports("amplihack-neo4j") {
+    messages.push(format!("✅ Our Neo4j container found on ports {actual_bolt}/{actual_http}"));
 
-    # Update .env if ports don't match
-    if (actual_bolt != bolt_port or actual_http != http_port) and project_root:
-        _update_env_ports(project_root, actual_bolt, actual_http)
-        messages.append(f"✅ Updated .env to match container ports")
+    // Update .env if ports don't match
+    if (actual_bolt != bolt_port || actual_http != http_port) && project_root.is_some() {
+        update_env_ports(project_root.unwrap(), actual_bolt, actual_http);
+        messages.push("✅ Updated .env to match container ports".into());
+    }
 
-    return actual_bolt, actual_http, messages
+    return (actual_bolt, actual_http, messages);
+}
 ```
 
 ### Key Learnings
@@ -1868,12 +1875,12 @@ if container_ports:
 - Edge cases (5 tests)
 - Integration scenarios (3 tests)
 
-**Test Location**: `tests/unit/memory/neo4j/test_port_manager.py`
+**Test Location**: `tests/unit/memory/neo4j/`
 
 ### Files Modified
 
-- `src/amplihack/memory/neo4j/port_manager.py`: Added `get_container_ports()`, updated `resolve_port_conflicts()`
-- `tests/unit/memory/neo4j/test_port_manager.py`: Added comprehensive test suite (29 tests)
+- `crates/amplihack-cli/src/commands/memory/port_manager.rs`: Added `get_container_ports()`, updated `resolve_port_conflicts()`
+- `tests/unit/memory/neo4j/`: Added comprehensive test suite (29 tests)
 
 ### Verification
 
@@ -2142,10 +2149,10 @@ Mandatory user testing (USER_PREFERENCES.md requirement) caught a **production-b
 
 **Bug**: `SubIssue` dataclass not hashable, but `OrchestrationConfig` uses `set()` for deduplication
 
-```python
-# This passed all unit tests but fails in real usage:
-config = OrchestrationConfig(sub_issues=[...])
-# TypeError: unhashable type: 'SubIssue'
+```rust
+// This passed all unit tests but fails in real usage:
+let config = OrchestrationConfig::new(sub_issues);
+// Error: SubIssue cannot be hashed for deduplication
 ```
 
 ### How It Was Missed
@@ -2164,16 +2171,17 @@ config = OrchestrationConfig(sub_issues=[...])
 
 ### Fix
 
-```python
-# Before
-@dataclass
-class SubIssue:
-    labels: List[str] = field(default_factory=list)
+```rust
+// Before
+struct SubIssue {
+    labels: Vec<String>,
+}
 
-# After
-@dataclass(frozen=True)
-class SubIssue:
-    labels: tuple = field(default_factory=tuple)
+// After — derive Hash, Eq for set deduplication
+#[derive(Hash, Eq, PartialEq)]
+struct SubIssue {
+    labels: Vec<String>,
+}
 ```
 
 ### Validation
@@ -2214,18 +2222,20 @@ class SubIssue:
 
 ```bash
 # Test like a user would
-python -c "from module import Class; obj = Class(...)"  # Real instantiation
-config = RealConfig(real_data)  # No mocks
-result = api.actual_method()  # Real workflow
+amplihack --version                     # Real CLI invocation
+config = create_real_config(real_data)  # No mocks
+result = api.actual_method()            # Real workflow
 ```
 
 **NOT sufficient**:
 
-```python
-# Unit test approach (can miss real issues)
-@patch("module.Class")
-def test_with_mock(mock_class):  # Never tests real instantiation
-    ...
+```rust
+// Unit test approach (can miss real issues)
+#[test]
+fn test_with_mock() {
+    let mock_class = MockClass::new();  // Never tests real instantiation
+    // ...
+}
 ```
 
 ### Lessons Learned
@@ -2348,26 +2358,23 @@ cp -r .claude docs/.claude
 
 **Technical Details**:
 
-Location: `~/.amplihack/.claude/tools/amplihack/hooks/user_prompt_submit.py:226-228`
+Location: `crates/amplihack-hooks/src/user_prompt_submit/`
 
-```python
-# WRONG - async function called without await
-enhanced_prompt, memory_metadata = inject_memory_for_agents(
-    user_prompt, agent_types, session_id
-)
-
-# Returns coroutine object, never executes!
+```rust
+// WRONG - async function called without .await
+let (enhanced_prompt, memory_metadata) = inject_memory_for_agents(
+    &user_prompt, &agent_types, &session_id
+);
+// Returns a Future, never executes!
 ```
 
 **Fix Required**:
 
-```python
-# Make hook method async
-async def process(self, input_data: dict[str, Any]) -> dict[str, Any]:
-    # Await async function
-    enhanced_prompt, memory_metadata = await inject_memory_for_agents(
-        user_prompt, agent_types, session_id
-    )
+```rust
+// Await async function
+let (enhanced_prompt, memory_metadata) = inject_memory_for_agents(
+    &user_prompt, &agent_types, &session_id
+).await?;
 ```
 
 **Impact**:
@@ -2379,8 +2386,8 @@ async def process(self, input_data: dict[str, Any]) -> dict[str, Any]:
 
 **Supporting Evidence**:
 
-- `agent_memory_hook.py` lines 96-169: `async def inject_memory_for_agents()`
-- `agent_memory_hook.py` lines 171-244: `async def extract_learnings_from_conversation()`
+- `agent_memory_hook` module: `async fn inject_memory_for_agents()`
+- `agent_memory_hook` module: `async fn extract_learnings_from_conversation()`
 - Both are async but called without await in hooks
 
 **Architecture Findings**:
@@ -2399,7 +2406,7 @@ async def process(self, input_data: dict[str, Any]) -> dict[str, Any]:
 
 **Solution Path**:
 
-1. Fix async/await in user_prompt_submit.py hook
+1. Fix async/await in user_prompt_submit hook
 2. Make hook process() method async
 3. Verify Claude Code hooks support async execution
 4. Add runtime verification (print memory injection status)

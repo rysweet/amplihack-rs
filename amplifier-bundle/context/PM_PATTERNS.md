@@ -59,7 +59,7 @@ When refining 100+ backlog items, create batch processor with status tracking:
 4. **Apply template** to remaining 140 in parallel batches
 5. **Review exceptions** (items that don't fit template)
 
-**Implementation**: Use `batch_process.py` with state persistence
+**Implementation**: Use `amplihack batch` with state persistence
 
 **Benefits**:
 
@@ -84,7 +84,7 @@ When coordinating 5+ workstreams simultaneously:
 
 **Execution**: All workstream analyses run in parallel, synthesis sequential
 
-**Implementation**: Use `coordinate.py --parallel`
+**Implementation**: Use `amplihack coordinate --parallel`
 
 **Benefits**:
 
@@ -106,7 +106,7 @@ When maintaining PM context across sessions:
 3. **Context restorer** - loads relevant past decisions
 4. **Pattern recognizer** - identifies recurring decision types
 
-**Implementation**: Use `session_state.py` and `search_decisions.py`
+**Implementation**: Use `amplihack session-state` and `amplihack search-decisions`
 
 **Benefits**:
 
@@ -128,7 +128,7 @@ When managing multiple projects:
 3. **Best practice curator** - documents successful approaches
 4. **Anti-pattern detector** - flags previously failed approaches
 
-**Implementation**: Use `search_decisions.py --patterns`
+**Implementation**: Use `amplihack search-decisions --patterns`
 
 **Benefits**:
 
@@ -194,46 +194,47 @@ Based on common PM task patterns, these specialized agents would be valuable:
 
 **Parallel Execution (Default)**:
 
-```python
-# Example: Parallel epic analysis
-from asyncio import gather
+```rust
+// Example: Parallel epic analysis
+use tokio::join;
 
-tasks = [
-    user_research_agent(epic),
-    competitive_analysis_agent(epic),
-    technical_feasibility_agent(epic),
-    business_value_agent(epic)
-]
+let (user_research, competitive, technical, business) = join!(
+    user_research_agent(&epic),
+    competitive_analysis_agent(&epic),
+    technical_feasibility_agent(&epic),
+    business_value_agent(&epic),
+);
 
-results = await gather(*tasks)
-synthesis = synthesize_epic_plan(results)
+let synthesis = synthesize_epic_plan(&[user_research, competitive, technical, business]);
 ```
 
 **Sequential with Checkpoints**:
 
-```python
-# Example: Batch processing with state
-processor = BatchProcessor("refine_backlog")
+```rust
+// Example: Batch processing with state
+let mut processor = BatchProcessor::new("refine_backlog");
 
-for item in backlog_items:
-    if processor.is_processed(item.id):
-        continue  # Resume from checkpoint
+for item in &backlog_items {
+    if processor.is_processed(&item.id) {
+        continue; // Resume from checkpoint
+    }
 
-    result = refine_item(item)
-    processor.mark_processed(item.id, result)  # Save after EACH item
+    let result = refine_item(item);
+    processor.mark_processed(&item.id, &result); // Save after EACH item
+}
 ```
 
 **Hybrid (Parallel batches, Sequential synthesis)**:
 
-```python
-# Example: Parallel workstream analysis
-workstream_analyses = await gather(*[
-    analyze_workstream(ws) for ws in workstreams
-])
+```rust
+// Example: Parallel workstream analysis
+let workstream_analyses = join_all(
+    workstreams.iter().map(|ws| analyze_workstream(ws))
+).await;
 
-# Sequential synthesis of findings
-conflicts = detect_conflicts(workstream_analyses)
-recommendations = generate_recommendations(workstream_analyses, conflicts)
+// Sequential synthesis of findings
+let conflicts = detect_conflicts(&workstream_analyses);
+let recommendations = generate_recommendations(&workstream_analyses, &conflicts);
 ```
 
 ## Success Metrics
@@ -262,10 +263,10 @@ recommendations = generate_recommendations(workstream_analyses, conflicts)
 
 ### Completed Patterns
 
-- ✅ Batch Status Tracking (`batch_process.py`)
-- ✅ Session State Management (`session_state.py`)
-- ✅ Parallel Execution (`coordinate.py --parallel`)
-- ✅ Transcript Search (`search_decisions.py`)
+- ✅ Batch Status Tracking (`amplihack batch`)
+- ✅ Session State Management (`amplihack session-state`)
+- ✅ Parallel Execution (`amplihack coordinate --parallel`)
+- ✅ Transcript Search (`amplihack search-decisions`)
 - ✅ Cognitive Offloading Documentation (this file)
 
 ### Future Enhancements
@@ -282,7 +283,7 @@ recommendations = generate_recommendations(workstream_analyses, conflicts)
 
 ```bash
 # Initialize batch processor
-python batch_process.py --processor refine_backlog --batch-size 10
+amplihack batch --processor refine_backlog --batch-size 10
 
 # Progress saved after each item - safe to interrupt
 # Resume automatically from last checkpoint on restart
@@ -292,7 +293,7 @@ python batch_process.py --processor refine_backlog --batch-size 10
 
 ```bash
 # Parallel analysis (5x faster for 5 workstreams)
-python coordinate.py --parallel
+amplihack coordinate --parallel
 
 # Output includes:
 # - Individual workstream health analyses (parallel)
@@ -305,30 +306,30 @@ python coordinate.py --parallel
 
 ```bash
 # Search past authentication decisions
-python search_decisions.py --query "authentication"
+amplihack search-decisions --query "authentication"
 
 # Restore full context from past session
-python search_decisions.py --restore 20251120_140530
+amplihack search-decisions --restore 20251120_140530
 
 # Analyze decision patterns across all projects
-python search_decisions.py --patterns
+amplihack search-decisions --patterns
 ```
 
 ### Example 4: Session State Preservation
 
 ```bash
 # Record decision
-python session_state.py update-decision \
+amplihack session-state update-decision \
   "Use OAuth 2.0 for authentication" \
   "Industry standard, extensive library support, meets security requirements"
 
 # Track stakeholder preference
-python session_state.py track-preference \
+amplihack session-state track-preference \
   "Product Owner" \
   "Prefers simple UI over feature richness"
 
 # View current state
-python session_state.py show
+amplihack session-state show
 ```
 
 ## Philosophy Alignment
@@ -336,7 +337,7 @@ python session_state.py show
 ### Ruthless Simplicity
 
 - File-based state (no databases)
-- Direct Python scripts (no frameworks)
+- Direct CLI commands (no frameworks)
 - Simple decomposition rules
 - Clear success metrics
 

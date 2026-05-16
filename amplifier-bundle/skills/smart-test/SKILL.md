@@ -152,15 +152,14 @@ Smart Test Analysis
 ------------------------------------------
 
 Changed Files:
-- src/amplihack/core/processor.py
-- src/amplihack/utils/helpers.py
+- crates/amplihack-cli/src/core/processor.rs
+- crates/amplihack-cli/src/utils/helpers.rs
 
 Tier 1 (Fast - 45s estimated):
-  pytest tests/unit/test_processor.py tests/unit/test_helpers.py -v
+  cargo test -p amplihack-cli processor helpers -- --test-threads=1
 
 Tier 2 (Impacted - 3m estimated):
-  pytest tests/unit/test_processor.py tests/unit/test_helpers.py \
-         tests/integration/test_pipeline.py -v
+  cargo test -p amplihack-cli processor helpers pipeline -- --test-threads=1
 
 Tier 3 (Full - 12m estimated):
   pytest
@@ -262,19 +261,19 @@ pytest
 version: 1
 last_updated: "2025-11-25T10:00:00Z"
 mappings:
-  src/amplihack/core/processor.py:
+  crates/amplihack-cli/src/core/processor.rs:
     direct_tests:
-      - tests/unit/test_processor.py
+      - crates/amplihack-cli/tests/processor_test.rs
     indirect_tests:
-      - tests/integration/test_pipeline.py
+      - crates/amplihack-cli/tests/pipeline_integration.rs
     transitive_tests:
-      - tests/e2e/test_full_workflow.py
+      - tests/e2e/full_workflow_test.rs
 
-  src/amplihack/utils/helpers.py:
+  crates/amplihack-cli/src/utils/helpers.rs:
     direct_tests:
-      - tests/unit/test_helpers.py
+      - crates/amplihack-cli/tests/helpers_test.rs
     indirect_tests:
-      - tests/unit/test_processor.py # processor imports helpers
+      - crates/amplihack-cli/tests/processor_test.rs  # processor imports helpers
 ```
 
 ### reliability.yaml
@@ -284,13 +283,13 @@ mappings:
 version: 1
 last_updated: "2025-11-25T10:00:00Z"
 tests:
-  tests/unit/test_processor.py::test_basic:
+  crates/amplihack-cli/tests/processor_test.rs::test_basic:
     passes: 98
     failures: 2
     reliability: 0.98
     last_failure: "2025-11-20"
 
-  tests/integration/test_api.py::test_timeout:
+  crates/amplihack-cli/tests/api_integration.rs::test_timeout:
     passes: 45
     failures: 15
     reliability: 0.75

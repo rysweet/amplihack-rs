@@ -41,7 +41,7 @@ steps:
       if [ -n "$ERRORS" ]; then
         echo "=== SMART-ORCHESTRATOR PRE-FLIGHT FAILED ===" >&2
         printf "%b\n" "$ERRORS" >&2
-        echo "Restart: run_recipe_by_name('smart-orchestrator', user_context={'task_description': '...', 'repo_path': '...'}, progress=True)" >&2
+        echo "Restart: amplihack recipe run smart-orchestrator -c task_description='...' -c repo_path=." >&2
         exit 1
       fi
       echo "=== Pre-flight passed ==="

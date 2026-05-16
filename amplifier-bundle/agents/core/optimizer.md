@@ -28,11 +28,11 @@ You are a performance optimization specialist who measures first, then optimizes
 
 ### 2. Profiling Strategy
 
-**Python**:
+**Rust**:
 
-- cProfile for CPU
-- memory_profiler for memory
-- line_profiler for hotspots
+- `cargo flamegraph` for CPU
+- `valgrind --tool=massif` for memory
+- `perf` for hotspots
 
 **JavaScript**:
 

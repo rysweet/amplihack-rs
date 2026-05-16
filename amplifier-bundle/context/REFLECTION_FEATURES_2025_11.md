@@ -231,7 +231,7 @@ Track metrics across sessions in `~/.amplihack/.claude/runtime/metrics/baselines
 
 #### Files Changed
 
-- `~/.amplihack/.claude/tools/amplihack/todowrite.py` - Added timestamp capture (if exists)
+- `~/.amplihack/.claude/tools/amplihack/todowrite` - Added timestamp capture (if exists)
 - `~/.amplihack/.claude/commands/amplihack/ultrathink.md` - Added performance reporting
 - `~/.amplihack/.claude/runtime/metrics/baselines.json` - Baseline storage
 
@@ -526,7 +526,7 @@ Progress: 2/6 phases complete (33%)
 
 #### Files Changed
 
-- `~/.amplihack/.claude/tools/amplihack/todowrite.py` - Added phase grouping logic (if exists)
+- `~/.amplihack/.claude/tools/amplihack/todowrite` - Added phase grouping logic (if exists)
 - `~/.amplihack/.claude/commands/amplihack/ultrathink.md` - Integrated phase-aware TodoWrite
 - TodoWrite display logic - New formatted output
 
@@ -559,16 +559,17 @@ Reflection system would chain on trivial follow-up sessions (< 10 messages) afte
 Added message count threshold to reflection system:
 
 - **Minimum threshold**: 10 messages (configurable)
-- Check implemented in `~/.amplihack/.claude/tools/amplihack/hooks/stop.py`
+- Check implemented in the session stop hook (`crates/amplihack-hooks/src/stop/`)
 - Skip reflection if session < threshold AND recent reflection exists (within 30 minutes)
 - Log skipping decision for metrics
 
 **Logic**:
 
-```python
-if message_count < min_threshold and recent_reflection_exists():
-    log("Skipping reflection - trivial session after recent reflection")
-    return
+```rust
+if message_count < min_threshold && recent_reflection_exists() {
+    log::info!("Skipping reflection - trivial session after recent reflection");
+    return;
+}
 ```
 
 #### Expected Impact
@@ -580,8 +581,8 @@ if message_count < min_threshold and recent_reflection_exists():
 
 #### Files Changed
 
-- `~/.amplihack/.claude/tools/amplihack/hooks/stop.py` - Added threshold check
-- `~/.amplihack/.claude/tools/amplihack/reflection/reflection.py` - Updated reflection logic
+- `crates/amplihack-hooks/src/stop/` - Added threshold check
+- `crates/amplihack-hooks/src/reflection/` - Updated reflection logic
 - `~/.amplihack/.claude/tools/amplihack/.reflection_config` - Added `min_turns` configuration
 
 #### Integration Points
@@ -641,7 +642,7 @@ Recommendation: Focusing on key findings synthesis
 #### Files Changed
 
 - `~/.amplihack/.claude/commands/amplihack/ultrathink.md` - Added budget calculation and checkpoint logic
-- `~/.amplihack/.claude/tools/amplihack/todowrite.py` - Track message counts (if exists)
+- `~/.amplihack/.claude/tools/amplihack/todowrite` - Track message counts (if exists)
 - Workflow files - Integrated checkpoint system
 
 #### Integration Points
@@ -851,8 +852,8 @@ Enhanced reflection system with context awareness:
 
 #### Files Changed
 
-- `~/.amplihack/.claude/tools/amplihack/reflection/reflection.py` - Added context-aware analysis
-- `~/.amplihack/.claude/tools/amplihack/hooks/stop.py` - Session classification logic
+- `crates/amplihack-hooks/src/reflection/` - Added context-aware analysis
+- `crates/amplihack-hooks/src/stop/` - Session classification logic
 
 #### Integration Points
 

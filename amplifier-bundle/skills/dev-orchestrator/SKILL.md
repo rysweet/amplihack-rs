@@ -184,7 +184,7 @@ cd /path/to/repo && env -u CLAUDECODE \
 
 **Key points:**
 
-- `amplihack recipe run` — the native Rust binary; no Python wrapper needed
+- `amplihack recipe run` — the native Rust binary; no wrapper needed
 - `-c key=value` — passes context variables (equivalent to `user_context` dict)
 - `--verbose` — streams recipe-runner stderr live so you see nested step activity
 - The recipe runner manages its own child processes (agent sessions, bash steps) as direct subprocesses
