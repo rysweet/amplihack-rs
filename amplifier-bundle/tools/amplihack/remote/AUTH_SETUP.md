@@ -4,15 +4,15 @@ Complete guide for setting up Azure Service Principal authentication for remote 
 
 ## Quick Start
 
-```python
-from claude.tools.amplihack.remote.auth import get_azure_auth
+```rust
+use amplihack_remote::auth::get_azure_auth;
 
-# Get authenticated credential
-credential, subscription_id, resource_group = get_azure_auth(debug=True)
+// Get authenticated credential
+let (credential, subscription_id, resource_group) = get_azure_auth(None, true)?;
 
-# Use with Azure SDK
-from azure.mgmt.compute import ComputeManagementClient
-compute_client = ComputeManagementClient(credential, subscription_id)
+// Use with Azure SDK
+use azure_mgmt_compute::Client as ComputeClient;
+let compute_client = ComputeClient::new(credential, &subscription_id)?;
 ```
 
 ## Setup Steps
@@ -63,21 +63,22 @@ AZURE_SUBSCRIPTION_ID=your-subscription-id
 
 ```bash
 cd .claude/tools/amplihack/remote
-python3 test_auth.py
+cargo test -p amplihack-remote
 ```
 
 Or test with a real API call:
 
-```python
-from claude.tools.amplihack.remote.auth import get_azure_auth
-from azure.mgmt.resource import ResourceManagementClient
+```rust
+use amplihack_remote::auth::get_azure_auth;
+use azure_mgmt_resource::Client as ResourceClient;
 
-credential, sub_id, _ = get_azure_auth()
-client = ResourceManagementClient(credential, sub_id)
+let (credential, sub_id, _) = get_azure_auth(None, false)?;
+let client = ResourceClient::new(credential, &sub_id)?;
 
-# List resource groups
-for rg in client.resource_groups.list():
-    print(f"  - {rg.name} ({rg.location})")
+// List resource groups
+for rg in client.resource_groups().list().await? {
+    println!("  - {} ({})", rg.name, rg.location);
+}
 ```
 
 ## Architecture
@@ -89,20 +90,21 @@ for rg in client.resource_groups.list():
 ├── .env                              # Credentials (git-ignored)
 ├── .env.example                      # Template with instructions
 └── .claude/tools/amplihack/remote/
-    ├── auth.py                       # Authentication module
-    ├── test_auth.py                  # Test suite
+    ├── auth.rs                       # Authentication module
+    ├── tests/auth_test.rs            # Test suite
     └── AUTH_SETUP.md                 # This file
 ```
 
 ### Module Structure
 
-```python
-# Core classes
-AzureCredentials         # Dataclass for credential storage
-AzureAuthenticator       # Main authentication handler
+```rust
+// Core types
+struct AzureCredentials { /* credential storage */ }
+struct AzureAuthenticator { /* main authentication handler */ }
 
-# Convenience function
-get_azure_auth()         # One-line authentication
+// Convenience function
+fn get_azure_auth(env_file: Option<&Path>, debug: bool)
+    -> Result<(Credential, String, Option<String>)>;
 ```
 
 ### Credential Search Order
@@ -116,18 +118,18 @@ get_azure_auth()         # One-line authentication
 
 Enable debug logging to troubleshoot authentication:
 
-```python
-credential, sub_id, rg = get_azure_auth(debug=True)
+```rust
+let (credential, sub_id, rg) = get_azure_auth(None, true)?;
 
-# Output:
-# [DEBUG] Found .env file: /path/to/.env
-# [DEBUG] Loading environment from: /path/to/.env
-# [DEBUG] Tenant ID: ✓
-# [DEBUG] Client ID: ✓
-# [DEBUG] Client Secret: ✓
-# [DEBUG] Subscription ID: ✓
-# [DEBUG] Resource Group: (not set)
-# [DEBUG] Creating ClientSecretCredential
+// Output:
+// [DEBUG] Found .env file: /path/to/.env
+// [DEBUG] Loading environment from: /path/to/.env
+// [DEBUG] Tenant ID: ✓
+// [DEBUG] Client ID: ✓
+// [DEBUG] Client Secret: ✓
+// [DEBUG] Subscription ID: ✓
+// [DEBUG] Resource Group: (not set)
+// [DEBUG] Creating ClientSecretCredential
 ```
 
 ## Security Best Practices
@@ -159,33 +161,33 @@ git check-ignore -v .env
 
 For production, use Azure Managed Identity instead of Service Principals:
 
-```python
-from azure.identity import DefaultAzureCredential
+```rust
+use azure_identity::DefaultAzureCredential;
 
-# Automatically uses Managed Identity when running on Azure
-credential = DefaultAzureCredential()
+// Automatically uses Managed Identity when running on Azure
+let credential = DefaultAzureCredential::default();
 ```
 
 ## Integration with Remote Execution
 
 The auth module is designed to work seamlessly with the remote execution system:
 
-```python
-from claude.tools.amplihack.remote.auth import get_azure_auth
-from claude.tools.amplihack.remote.executor import RemoteExecutor
+```rust
+use amplihack_remote::auth::get_azure_auth;
+use amplihack_remote::executor::RemoteExecutor;
 
-# Authenticate
-credential, sub_id, rg = get_azure_auth()
+// Authenticate
+let (credential, sub_id, rg) = get_azure_auth(None, false)?;
 
-# Execute remotely
-executor = RemoteExecutor(
-    credential=credential,
-    subscription_id=sub_id,
-    resource_group=rg or "default-rg"
-)
+// Execute remotely
+let executor = RemoteExecutor::new(
+    credential,
+    &sub_id,
+    rg.as_deref().unwrap_or("default-rg"),
+);
 
-result = executor.run_command("python3 --version")
-print(result.stdout)
+let result = executor.run_command("rustc --version")?;
+println!("{}", result.stdout);
 ```
 
 ## Troubleshooting
@@ -217,10 +219,10 @@ ClientAuthenticationError: Authentication failed
 ModuleNotFoundError: No module named 'azure'
 ```
 
-**Solution**: Install Azure SDK:
+**Solution**: Install Azure SDK crates (add to Cargo.toml):
 
 ```bash
-uv pip install azure-identity azure-mgmt-compute azure-mgmt-network azure-mgmt-resource
+cargo add azure_identity azure_mgmt_compute azure_mgmt_network azure_mgmt_resource
 ```
 
 ### .env Not Found
@@ -241,25 +243,17 @@ uv pip install azure-identity azure-mgmt-compute azure-mgmt-network azure-mgmt-r
 
 ```bash
 cd .claude/tools/amplihack/remote
-python3 test_auth.py
+cargo test -p amplihack-remote
 ```
 
 ### Integration Test
 
 ```bash
-python3 << 'EOF'
-from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path.cwd() / '.claude'))
-from tools.amplihack.remote.auth import get_azure_auth
-from azure.mgmt.resource import ResourceManagementClient
-
-credential, sub_id, _ = get_azure_auth(debug=True)
-client = ResourceManagementClient(credential, sub_id)
-rgs = list(client.resource_groups.list())
-print(f"✓ Successfully authenticated! Found {len(rgs)} resource groups.")
-EOF
+cargo test -p amplihack-remote --test integration -- --nocapture 2>&1
+# Expected output:
+# running 1 test
+# ✓ Successfully authenticated! Found N resource groups.
+# test integration ... ok
 ```
 
 ## Reference
@@ -284,7 +278,7 @@ EOF
   - `resource_group: Optional[str]` - Resource group
 
 - **AzureAuthenticator**: Main authentication class
-  - `__init__(env_file, debug)` - Initialize authenticator
+  - `new(env_file, debug)` - Initialize authenticator
   - `get_credentials()` - Get credentials object
   - `get_credential()` - Get Azure SDK credential
   - `get_subscription_id()` - Get subscription ID
@@ -298,6 +292,6 @@ EOF
 1. ✓ Authentication module implemented
 2. ✓ Tests passing
 3. ✓ Documentation complete
-4. → Integrate with `executor.py`
-5. → Integrate with `orchestrator.py`
+4. → Integrate with `executor.rs`
+5. → Integrate with `orchestrator.rs`
 6. → End-to-end remote execution testing

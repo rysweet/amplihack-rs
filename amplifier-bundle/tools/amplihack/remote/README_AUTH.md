@@ -2,16 +2,16 @@
 
 ## One-Line Usage
 
-```python
-from claude.tools.amplihack.remote.auth import get_azure_auth
+```rust
+use amplihack_remote::auth::get_azure_auth;
 
-credential, subscription_id, resource_group = get_azure_auth()
+let (credential, subscription_id, resource_group) = get_azure_auth(None, false)?;
 ```
 
 ## Files
 
-- **auth.py** - Main authentication module
-- **test_auth.py** - Test suite (run: `python3 test_auth.py`)
+- **auth.rs** - Main authentication module
+- **tests/auth_test.rs** - Test suite (run: `cargo test -p amplihack-remote`)
 - **AUTH_SETUP.md** - Complete setup guide
 - **README_AUTH.md** - This file (quick reference)
 
@@ -19,45 +19,46 @@ credential, subscription_id, resource_group = get_azure_auth()
 
 ### Basic Authentication
 
-```python
-from claude.tools.amplihack.remote.auth import get_azure_auth
+```rust
+use amplihack_remote::auth::get_azure_auth;
 
-credential, sub_id, rg = get_azure_auth()
-print(f"Authenticated! Subscription: {sub_id}")
+let (credential, sub_id, rg) = get_azure_auth(None, false)?;
+println!("Authenticated! Subscription: {sub_id}");
 ```
 
 ### With Debug Logging
 
-```python
-credential, sub_id, rg = get_azure_auth(debug=True)
-# Outputs debug info to stderr
+```rust
+let (credential, sub_id, rg) = get_azure_auth(None, true)?;
+// Outputs debug info to stderr
 ```
 
 ### With Azure SDK
 
-```python
-from claude.tools.amplihack.remote.auth import get_azure_auth
-from azure.mgmt.compute import ComputeManagementClient
+```rust
+use amplihack_remote::auth::get_azure_auth;
+use azure_mgmt_compute::Client as ComputeClient;
 
-credential, sub_id, _ = get_azure_auth()
-compute_client = ComputeManagementClient(credential, sub_id)
+let (credential, sub_id, _) = get_azure_auth(None, false)?;
+let compute_client = ComputeClient::new(credential, &sub_id)?;
 
-# List VMs
-for vm in compute_client.virtual_machines.list_all():
-    print(f"  - {vm.name}")
+// List VMs
+for vm in compute_client.virtual_machines().list_all().await? {
+    println!("  - {}", vm.name);
+}
 ```
 
 ### Using Authenticator Class
 
-```python
-from claude.tools.amplihack.remote.auth import AzureAuthenticator
+```rust
+use amplihack_remote::auth::AzureAuthenticator;
 
-auth = AzureAuthenticator(debug=True)
+let auth = AzureAuthenticator::new(None, true)?;
 
-# Get components separately
-credential = auth.get_credential()
-subscription_id = auth.get_subscription_id()
-resource_group = auth.get_resource_group()
+// Get components separately
+let credential = auth.get_credential()?;
+let subscription_id = auth.get_subscription_id()?;
+let resource_group = auth.get_resource_group();
 ```
 
 ## Configuration
@@ -78,10 +79,10 @@ See `.env.example` for template and setup instructions.
 
 ```bash
 # Run test suite
-python3 test_auth.py
+cargo test -p amplihack-remote
 
 # Verify implementation
-python3 ../../verify_auth_implementation.py
+cargo test -p amplihack-remote --test auth_test
 ```
 
 ## Troubleshooting
@@ -113,49 +114,49 @@ ClientAuthenticationError: Authentication failed
 ModuleNotFoundError: No module named 'azure'
 ```
 
-**Fix**: Install Azure SDK:
+**Fix**: Install Azure SDK crates (add to Cargo.toml):
 
 ```bash
-uv pip install azure-identity azure-mgmt-compute azure-mgmt-network azure-mgmt-resource
+cargo add azure_identity azure_mgmt_compute azure_mgmt_network azure_mgmt_resource
 ```
 
 ## Integration
 
 ### With Remote Executor
 
-```python
-from claude.tools.amplihack.remote.auth import get_azure_auth
-from claude.tools.amplihack.remote.executor import RemoteExecutor
+```rust
+use amplihack_remote::auth::get_azure_auth;
+use amplihack_remote::executor::RemoteExecutor;
 
-credential, sub_id, rg = get_azure_auth()
+let (credential, sub_id, rg) = get_azure_auth(None, false)?;
 
-executor = RemoteExecutor(
-    credential=credential,
-    subscription_id=sub_id,
-    resource_group=rg or "default-rg"
-)
+let executor = RemoteExecutor::new(
+    credential,
+    &sub_id,
+    rg.as_deref().unwrap_or("default-rg"),
+);
 
-result = executor.run_command("python3 --version")
-print(result.stdout)
+let result = executor.run_command("rustc --version")?;
+println!("{}", result.stdout);
 ```
 
 ### With Orchestrator
 
-```python
-from claude.tools.amplihack.remote.auth import get_azure_auth
-from claude.tools.amplihack.remote.orchestrator import RemoteOrchestrator
+```rust
+use amplihack_remote::auth::get_azure_auth;
+use amplihack_remote::orchestrator::RemoteOrchestrator;
 
-credential, sub_id, rg = get_azure_auth()
+let (credential, sub_id, rg) = get_azure_auth(None, false)?;
 
-orchestrator = RemoteOrchestrator(
-    credential=credential,
-    subscription_id=sub_id,
-    resource_group=rg or "default-rg"
-)
+let orchestrator = RemoteOrchestrator::new(
+    credential,
+    &sub_id,
+    rg.as_deref().unwrap_or("default-rg"),
+);
 
-orchestrator.provision_vm()
-orchestrator.execute_remotely("pip install -r requirements.txt")
-orchestrator.cleanup()
+orchestrator.provision_vm()?;
+orchestrator.execute_remotely("cargo build")?;
+orchestrator.cleanup()?;
 ```
 
 ## API Reference
@@ -217,7 +218,7 @@ Dataclass for credential storage.
 For complete documentation, see:
 
 - **AUTH_SETUP.md** - Detailed setup and troubleshooting
-- **test_auth.py** - Example test cases
+- **tests/auth_test.rs** - Example test cases
 - **IMPLEMENTATION_SUMMARY.md** - Implementation details
 
 ---

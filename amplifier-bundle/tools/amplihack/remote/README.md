@@ -33,7 +33,7 @@ This module enables executing amplihack commands on remote Azure VMs using azlin
 
 ## Components
 
-### 1. errors.py
+### 1. errors.rs
 
 Error class hierarchy for remote execution operations.
 
@@ -47,7 +47,7 @@ Error class hierarchy for remote execution operations.
 - `IntegrationError` - Result integration errors
 - `CleanupError` - VM cleanup errors
 
-### 2. context_packager.py
+### 2. context_packager.rs
 
 Secure context packaging with multi-layer secret detection.
 
@@ -67,15 +67,16 @@ Secure context packaging with multi-layer secret detection.
 
 **Usage**:
 
-```python
-with ContextPackager(repo_path) as packager:
-    secrets = packager.scan_secrets()
-    if secrets:
-        raise PackagingError("Secrets detected")
-    archive = packager.package()
+```rust
+let packager = ContextPackager::new(repo_path);
+let secrets = packager.scan_secrets()?;
+if !secrets.is_empty() {
+    return Err(PackagingError::new("Secrets detected"));
+}
+let archive = packager.package()?;
 ```
 
-### 3. orchestrator.py
+### 3. orchestrator.rs
 
 VM lifecycle management via azlin CLI.
 
@@ -88,15 +89,15 @@ VM lifecycle management via azlin CLI.
 
 **Usage**:
 
-```python
-orchestrator = Orchestrator()
-options = VMOptions(size='Standard_D2s_v3')
-vm = orchestrator.provision_or_reuse(options)
-# ... use vm ...
-orchestrator.cleanup(vm)
+```rust
+let orchestrator = Orchestrator::new();
+let options = VMOptions { size: "Standard_D2s_v3".into(), ..Default::default() };
+let vm = orchestrator.provision_or_reuse(&options)?;
+// ... use vm ...
+orchestrator.cleanup(&vm)?;
 ```
 
-### 4. executor.py
+### 4. executor.rs
 
 Remote command execution and file transfer.
 
@@ -109,17 +110,17 @@ Remote command execution and file transfer.
 
 **Usage**:
 
-```python
-executor = Executor(vm, timeout_minutes=120)
-executor.transfer_context(archive_path)
-result = executor.execute_remote(
-    command='auto',
-    prompt='implement feature X',
-    max_turns=10
-)
+```rust
+let executor = Executor::new(&vm, Duration::from_secs(120 * 60));
+executor.transfer_context(&archive_path)?;
+let result = executor.execute_remote(
+    "auto",
+    "implement feature X",
+    10,  // max_turns
+)?;
 ```
 
-### 5. integrator.py
+### 5. integrator.rs
 
 Result integration into local repository.
 
@@ -132,13 +133,13 @@ Result integration into local repository.
 
 **Usage**:
 
-```python
-integrator = Integrator(repo_path)
-summary = integrator.integrate(results_dir)
-report = integrator.create_summary_report(summary)
+```rust
+let integrator = Integrator::new(repo_path);
+let summary = integrator.integrate(&results_dir)?;
+let report = integrator.create_summary_report(&summary);
 ```
 
-### 6. cli.py
+### 6. cli.rs
 
 Click-based CLI entry point.
 
@@ -160,19 +161,18 @@ amplihack remote --max-turns 20 ultrathink "analyze code"
 
 ```
 .claude/tools/amplihack/remote/
-├── __init__.py              # Public API
-├── cli.py                   # CLI entry point
-├── context_packager.py      # Context packaging
-├── orchestrator.py          # VM lifecycle
-├── executor.py              # Remote execution (includes bootstrap script)
-├── integrator.py            # Result integration
-├── errors.py                # Error classes
+├── mod.rs                   # Public API
+├── cli.rs                   # CLI entry point
+├── context_packager.rs      # Context packaging
+├── orchestrator.rs          # VM lifecycle
+├── executor.rs              # Remote execution (includes bootstrap script)
+├── integrator.rs            # Result integration
+├── errors.rs                # Error types
 ├── README.md                # This file
 └── tests/
-    ├── __init__.py
-    ├── test_context_packager.py
-    ├── test_orchestrator.py
-    └── test_integrator.py
+    ├── context_packager_test.rs
+    ├── orchestrator_test.rs
+    └── integrator_test.rs
 
 .claude/commands/amplihack/
 └── remote.md                # Slash command docs
@@ -214,25 +214,22 @@ Use size shortcuts (s/m/l/xl) or full Azure VM names:
 
 ### Programmatic Usage
 
-```python
-from pathlib import Path
-from amplihack.remote import (
-    execute_remote_workflow,
-    VMOptions
-)
+```rust
+use std::path::PathBuf;
+use amplihack_remote::{execute_remote_workflow, VMOptions};
 
 execute_remote_workflow(
-    repo_path=Path.cwd(),
-    command='auto',
-    prompt='implement feature X',
-    max_turns=10,
-    vm_options=VMOptions(
-        size='Standard_D2s_v3',
-        keep_vm=False,
-        no_reuse=False
-    ),
-    timeout=120
-)
+    &PathBuf::from("."),
+    "auto",
+    "implement feature X",
+    10,  // max_turns
+    &VMOptions {
+        size: "Standard_D2s_v3".into(),
+        keep_vm: false,
+        no_reuse: false,
+    },
+    120,  // timeout minutes
+)?;
 ```
 
 ## Security
@@ -254,7 +251,7 @@ execute_remote_workflow(
 - `*credentials*`, `*secret*` - Credential/secret files <!-- pragma: allowlist secret -->
 - `*.pem`, `*.key`, `*.p12`, `*.pfx` - Private keys and certificates
 - `.ssh/`, `.aws/`, `.azure/` - Cloud credentials
-- `node_modules/`, `__pycache__/`, `.venv/` - Dependencies and cache
+- `node_modules/`, `target/`, `.venv/` - Dependencies and cache
 
 ### API Key Transfer
 
@@ -265,15 +262,14 @@ Only `ANTHROPIC_API_KEY` is transferred, using secure SSH environment passing. N
 ### Run Unit Tests
 
 ```bash
-cd .claude/tools/amplihack/remote
-python -m pytest tests/
+cargo test -p amplihack-remote
 ```
 
 ### Test Coverage
 
-- `test_context_packager.py` - Secret detection, packaging, exclusions
-- `test_orchestrator.py` - VM provisioning, reuse, cleanup
-- `test_integrator.py` - Branch import, log copying, conflict detection
+- `tests/context_packager_test.rs` - Secret detection, packaging, exclusions
+- `tests/orchestrator_test.rs` - VM provisioning, reuse, cleanup
+- `tests/integrator_test.rs` - Branch import, log copying, conflict detection
 
 ### Manual Testing
 
@@ -398,9 +394,9 @@ azlin new --size s --name my-vm --yes
 
 ### Local Machine
 
-- Python 3.11+
+- Rust 1.70+
 - Git 2.30+
-- azlin (via `pip install azlin`)
+- azlin (via `cargo install azlin`)
 - Azure CLI 2.50+ (used by azlin)
 - ANTHROPIC_API_KEY in environment
 
