@@ -32,7 +32,7 @@ steps:
       if [ -n "$ERRORS" ]; then
         echo "=== INVESTIGATION-WORKFLOW PRE-FLIGHT FAILED ===" >&2
         printf "%b\n" "$ERRORS" >&2
-        echo "Restart: run_recipe_by_name('investigation-workflow', user_context={...}, progress=True)" >&2
+        echo "Restart: amplihack recipe run investigation-workflow -c task_description='...' -c repo_path=." >&2
         exit 1
       fi
       echo "=== Pre-flight passed ==="
@@ -51,7 +51,7 @@ steps:
   #
   # Mirrors amplihack PR #4444 — adapted for amplihack-rs's executor, which
   # exposes context vars as uppercase env vars (e.g. `task_description` →
-  # `TASK_DESCRIPTION`) without the Python recipe-runner's `RECIPE_VAR_`
+  # `TASK_DESCRIPTION`) without the Rust recipe-runner's `RECIPE_VAR_`
   # prefix. The `output:` key overwrites the empty default in place.
   # ==========================================================================
   - id: "normalize-question"

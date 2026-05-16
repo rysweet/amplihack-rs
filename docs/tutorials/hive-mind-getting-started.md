@@ -7,7 +7,7 @@ CLI surface and the Azure deployment described in upstream `amplihack` are
 
 > **Rust port note**
 > Upstream `amplihack` (Python) ships the hive mind as
-> `from amplihack.agents.goal_seeking.hive_mind …` and a `python -m
+> `amplihack hive ...` CLI commands. (Previously used `python -m
 > amplihack.eval.long_horizon_memory` runner backed by Azure Event
 > Hubs / Service Bus. The Rust port at
 > [`crates/amplihack-hive/`](../reference/hive-api.md) re-implements the

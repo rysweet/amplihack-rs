@@ -33,7 +33,7 @@ Output:
 
 ### Step 2: Read the Public Interface (**init**.py)
 
-```python
+```rust
 # .claude/tools/amplihack/string_utils/__init__.py
 from .core import truncate, normalize, slugify
 from .utils import TextMetrics, COMMON_STOPWORDS
@@ -49,7 +49,7 @@ __all__ = ["truncate", "normalize", "slugify", "TextMetrics", "COMMON_STOPWORDS"
 
 ### Step 3: Analyze Core Functions
 
-```python
+```rust
 # .claude/tools/amplihack/string_utils/core.py
 
 def truncate(text: str, max_length: int, suffix: str = "...") -> str:
@@ -127,7 +127,7 @@ def slugify(text: str, max_length: int = None) -> str:
 
 ### Step 4: Analyze Utilities
 
-```python
+```rust
 # .claude/tools/amplihack/string_utils/utils.py
 
 class TextMetrics:
@@ -165,7 +165,7 @@ COMMON_STOPWORDS = {
 
 ### Step 5: Check Test Coverage
 
-```python
+```rust
 # .claude/tools/amplihack/string_utils/tests/test_core.py
 
 class TestTruncate:
@@ -212,7 +212,7 @@ class TestSlugify:
 
 ### Step 6: Review Examples
 
-```python
+```rust
 # .claude/tools/amplihack/string_utils/examples/usage.py
 
 from string_utils import truncate, normalize, slugify, TextMetrics
@@ -245,7 +245,7 @@ print(f"Avg len: {metrics.avg_word_length()}")  # 5.5
 
 ### Step 7: Check Dependencies
 
-```python
+```rust
 # Review all imports
 # core.py: no imports (uses only builtins)
 # utils.py: no imports (uses only builtins)

@@ -314,7 +314,7 @@ CLAUDE.md exists?
 
 ### Preservation Process
 
-```python
+```rust
 # Simplified preservation flow
 if claude_md_exists():
     if has_custom_content():

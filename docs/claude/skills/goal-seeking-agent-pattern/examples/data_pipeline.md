@@ -97,8 +97,8 @@ transform to common schema, validate quality, and publish to data warehouse.
 
 ### Execution Plan
 
-```python
-from amplihack.goal_agent_generator import PromptAnalyzer, ObjectivePlanner
+```rust
+// use amplihack_goal_agent_generator:: PromptAnalyzer, ObjectivePlanner
 
 analyzer = PromptAnalyzer()
 goal_def = analyzer.analyze_text(goal_text)
@@ -179,8 +179,8 @@ Success indicators:
 
 ### Implementation
 
-```python
-from amplihack.goal_agent_generator import (
+```rust
+// use amplihack_goal_agent_generator:: (
     PromptAnalyzer,
     ObjectivePlanner,
     SkillSynthesizer,
@@ -233,7 +233,7 @@ The agent adapts to different conditions:
 
 **Scenario 1: All Sources Available** (optimal path)
 
-```python
+```rust
 async def collect_all_sources():
     """Parallel collection when all sources available"""
     results = await asyncio.gather(
@@ -255,7 +255,7 @@ async def collect_all_sources():
 
 **Scenario 2: Source Unavailable** (graceful degradation)
 
-```python
+```rust
 async def collect_from_api_with_fallback():
     """Handle API unavailability"""
     try:
@@ -277,7 +277,7 @@ async def collect_from_api_with_fallback():
 
 **Scenario 3: Large Data Volume** (resource optimization)
 
-```python
+```rust
 def transform_data_adaptive(data: List[Dict], volume: int):
     """Adapt transformation strategy based on volume"""
     if volume < 100_000:
@@ -293,7 +293,7 @@ def transform_data_adaptive(data: List[Dict], volume: int):
 
 **Scenario 4: Quality Issues** (iterative cleansing)
 
-```python
+```rust
 def validate_and_cleanse(data: List[Dict]) -> List[Dict]:
     """Iterative quality improvement"""
     quality_score = calculate_quality(data)
@@ -322,7 +322,7 @@ def validate_and_cleanse(data: List[Dict]) -> List[Dict]:
 
 **Strategy 1: Retry with Exponential Backoff** (transient errors)
 
-```python
+```rust
 import time
 from typing import Callable, Any
 
@@ -353,7 +353,7 @@ s3_data = retry_with_backoff(
 
 **Strategy 2: Partial Success** (continue with available data)
 
-```python
+```rust
 def handle_partial_collection(results: List[Any]) -> Dict[str, Any]:
     """Process partial collection results"""
     successful_sources = [r for r in results if r is not None]
@@ -376,7 +376,7 @@ def handle_partial_collection(results: List[Any]) -> Dict[str, Any]:
 
 **Strategy 3: Idempotent Execution** (safe re-runs)
 
-```python
+```rust
 def publish_to_warehouse_idempotent(data: List[Dict], run_id: str):
     """Ensure idempotent publishing (no duplicates on re-run)"""
     # Check if this run already succeeded

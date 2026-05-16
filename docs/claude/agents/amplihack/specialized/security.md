@@ -21,7 +21,7 @@ You are a security specialist who ensures robust protection without over-enginee
 
 ### Authentication & Authorization
 
-```python
+```rust
 # Simple but secure
 def verify_user(username: str, password: str) -> Optional[User]:
     # Always hash passwords
@@ -34,7 +34,7 @@ def verify_user(username: str, password: str) -> Optional[User]:
 
 ### Input Validation
 
-```python
+```rust
 # Validate everything
 def process_input(data: str) -> str:
     # Whitelist approach
@@ -46,7 +46,7 @@ def process_input(data: str) -> str:
 
 ### Secure Defaults
 
-```python
+```rust
 # Configuration with secure defaults
 SECURITY_CONFIG = {
     "session_timeout": 3600,  # 1 hour
@@ -84,7 +84,7 @@ SECURITY_CONFIG = {
 
 ### Prevent Injection
 
-```python
+```rust
 # SQL - Use parameters
 cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
 
@@ -95,7 +95,7 @@ subprocess.run(["git", "status"], check=True)
 
 ### Prevent XSS
 
-```python
+```rust
 # Escape output
 from markupsafe import Markup, escape
 safe_html = escape(user_input)
@@ -103,7 +103,7 @@ safe_html = escape(user_input)
 
 ### Secure Secrets
 
-```python
+```rust
 # Use environment variables
 import os
 API_KEY = os.environ.get("API_KEY")
@@ -127,7 +127,7 @@ secrets_file.chmod(0o600)  # Owner read/write only
 
 ### Authorization Pattern
 
-```python
+```rust
 def require_permission(permission: str):
     def decorator(func):
         def wrapper(user: User, *args, **kwargs):

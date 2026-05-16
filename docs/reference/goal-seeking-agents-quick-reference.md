@@ -36,7 +36,7 @@ amplihack new --enable-spawning --sdk claude "Adaptive learning agent"
 
 | Command                                           | Description                      |
 | ------------------------------------------------- | -------------------------------- |
-| `python -m amplihack.eval.progressive_test_suite` | Run L1-L12 eval                  |
+| `amplihack eval progressive-test-suite` | Run L1-L12 eval                  |
 | `--runs 3`                                        | 3-run median eval (recommended)  |
 | `--grader-votes 3`                                | Multi-vote grading for stability |
 | `--sdk {mini,claude,copilot,microsoft}`           | Test specific SDK                |
@@ -46,9 +46,9 @@ amplihack new --enable-spawning --sdk claude "Adaptive learning agent"
 
 | Command                                  | Description                |
 | ---------------------------------------- | -------------------------- |
-| `python -m amplihack.eval.sdk_eval_loop` | Run improvement iterations |
+| `amplihack eval sdk-eval-loop` | Run improvement iterations |
 | `--sdk copilot --iterations 5`           | 5 loops on Copilot SDK     |
-| `python -m amplihack.eval.matrix_eval`   | 5-way agent comparison     |
+| `amplihack eval matrix-eval`   | 5-way agent comparison     |
 
 ## SDK Selection Guide
 
@@ -88,7 +88,7 @@ amplihack new --sdk copilot "Code documentation agent"
 cd code_documentation_agent/
 
 # 3. Run 3-run median eval with multi-vote grading
-python -m amplihack.eval.progressive_test_suite \
+amplihack eval progressive-test-suite \
   --runs 3 \
   --grader-votes 3 \
   --sdk copilot
@@ -98,7 +98,7 @@ python -m amplihack.eval.progressive_test_suite \
 
 ```bash
 # Run 5 improvement iterations
-python -m amplihack.eval.sdk_eval_loop \
+amplihack eval sdk-eval-loop \
   --sdk copilot \
   --iterations 5 \
   --output improvement_report.json
@@ -108,7 +108,7 @@ python -m amplihack.eval.sdk_eval_loop \
 
 ```bash
 # Compare all 4 SDKs
-python -m amplihack.eval.matrix_eval \
+amplihack eval matrix-eval \
   --runs 3 \
   --output sdk_comparison.json
 ```
@@ -117,7 +117,7 @@ python -m amplihack.eval.matrix_eval \
 
 ```bash
 # 1000-turn dialogue evaluation
-python -m amplihack.eval.long_horizon_memory \
+amplihack eval long-horizon-memory \
   --turns 1000 \
   --questions 20 \
   --output memory_eval.json

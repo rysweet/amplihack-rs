@@ -129,7 +129,7 @@ Implement graceful degradation through cascading fallback strategies. When optim
 - If fails or times out: Continue to Step 3
 - Log attempt and reason for failure
 
-```python
+```rust
 # Pseudocode for primary attempt
 try:
     result = execute_primary_approach(timeout=PRIMARY_TIMEOUT)
@@ -153,7 +153,7 @@ except ExternalServiceError as e:
 - If fails or times out: Continue to Step 4
 - Log attempt and reason for failure
 
-```python
+```rust
 # Pseudocode for secondary attempt
 log_degradation(from_level="PRIMARY", to_level="SECONDARY")
 try:
@@ -175,7 +175,7 @@ except TimeoutError:
 - Log success (degraded but functional)
 - DONE (guaranteed completion)
 
-```python
+```rust
 # Pseudocode for tertiary attempt
 log_degradation(from_level="SECONDARY", to_level="TERTIARY")
 try:
@@ -287,7 +287,7 @@ What's Missing:
 
 **Implementation:**
 
-```python
+```rust
 async def get_weather(location: str) -> WeatherData:
     """Get weather data with cascade fallback"""
 
@@ -336,7 +336,7 @@ async def get_weather(location: str) -> WeatherData:
 
 **Implementation:**
 
-```python
+```rust
 def search_and_rank(query: str) -> List[Result]:
     """Search with ML ranking, fallback to simple ranking"""
 

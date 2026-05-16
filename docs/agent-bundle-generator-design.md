@@ -28,7 +28,7 @@ graph TD
 
 **Interface (Stud):**
 
-```python
+```rust
 class PromptParser:
     def parse(self, prompt: str) -> ParsedPrompt:
         """Parse natural language prompt into structured format."""
@@ -50,7 +50,7 @@ class PromptParser:
 
 **Interface (Stud):**
 
-```python
+```rust
 class IntentExtractor:
     def extract(self, parsed_prompt: ParsedPrompt) -> Intent:
         """Extract intent and requirements from parsed prompt."""
@@ -72,7 +72,7 @@ class IntentExtractor:
 
 **Interface (Stud):**
 
-```python
+```rust
 class AgentGenerator:
     def generate(self, intent: Intent) -> List[AgentDefinition]:
         """Generate agent definitions based on intent."""
@@ -94,7 +94,7 @@ class AgentGenerator:
 
 **Interface (Stud):**
 
-```python
+```rust
 class BundleBuilder:
     def build(self, agents: List[AgentDefinition]) -> Bundle:
         """Build complete agent bundle with all dependencies."""
@@ -116,7 +116,7 @@ class BundleBuilder:
 
 **Interface (Stud):**
 
-```python
+```rust
 class PackageManager:
     def package(self, bundle: Bundle) -> Package:
         """Create uvx-compatible package from bundle."""
@@ -138,7 +138,7 @@ class PackageManager:
 
 **Interface (Stud):**
 
-```python
+```rust
 class DistributionSystem:
     def distribute(self, package: Package, target: str) -> URL:
         """Distribute package to specified target."""
@@ -322,8 +322,8 @@ POST /api/v1/bundles/{bundle_id}/deploy
 
 ### Python API Interface
 
-```python
-from amplihack.bundle_generator import BundleGenerator
+```rust
+// use amplihack_bundle_generator:: BundleGenerator
 
 # Create generator
 generator = BundleGenerator()
@@ -426,7 +426,7 @@ Input → Sanitization → Validation → AST Check → Security Scan → Approv
 
 ### Secret Management
 
-```python
+```rust
 class SecretManager:
     """Manages secrets and prevents exposure."""
 
@@ -459,7 +459,7 @@ graph LR
 
 #### Stage 1: Direct Agent Testing (Pre-Bundle)
 
-```python
+```rust
 class AgentValidator:
     """Validate agent functionality before bundling."""
 
@@ -509,7 +509,7 @@ class AgentValidator:
 
 #### Stage 2: Bundle Generation with Validation
 
-```python
+```rust
 class BundleGenerator:
     """Generate bundle only after agent validation passes."""
 
@@ -536,7 +536,7 @@ class BundleGenerator:
 
 #### Stage 3: Bundle Testing (Post-Bundle)
 
-```python
+```rust
 class BundleValidator:
     """Validate bundle functionality after generation."""
 
@@ -629,7 +629,7 @@ E2E Tests (20%)
 
 ### Test Data Management
 
-```python
+```rust
 # Enhanced fixture structure for three-stage testing
 fixtures/
 ├── agents/
@@ -746,7 +746,7 @@ jobs:
 
 ### Error Recovery Strategy
 
-```python
+```rust
 class ErrorRecovery:
     strategies = {
         'retry': RetryWithBackoff(),
@@ -760,7 +760,7 @@ class ErrorRecovery:
 
 ### Metrics Collection
 
-```python
+```rust
 metrics = {
     'generation_time': Histogram(),
     'success_rate': Counter(),
@@ -772,7 +772,7 @@ metrics = {
 
 ### Logging Strategy
 
-```python
+```rust
 # Structured logging
 logger.info("bundle_generated", {
     "bundle_id": bundle.id,
@@ -786,7 +786,7 @@ logger.info("bundle_generated", {
 
 ### Version Migration
 
-```python
+```rust
 class BundleMigrator:
     """Migrate bundles between versions."""
 
@@ -808,7 +808,7 @@ class BundleMigrator:
 
 ### Claude Code SDK Integration
 
-```python
+```rust
 from claude_code import Client, Message
 import os
 from typing import Optional
@@ -857,7 +857,7 @@ class ClaudeIntegration:
 
 ### GitHub API Integration
 
-```python
+```rust
 import github
 from github import Github, GithubException
 
@@ -913,7 +913,7 @@ class GitHubIntegration:
 
 ### UVX Packaging Requirements
 
-```python
+```rust
 class UvxPackager:
     """Package bundles for uvx execution."""
 
@@ -988,7 +988,7 @@ amplihack bundle generate --template-dir ./my-templates "my prompt"
 
 ```bash
 # Install from PyPI
-pip install amplihack-bundle-generator
+cargo install amplihack-bundle-generator
 
 # Or via uvx for zero-install
 uvx --from amplihack-bundle-generator generate "create security scanner"
@@ -1026,7 +1026,7 @@ jobs:
 
       - name: Install Bundle Generator
         run: |
-          pip install amplihack-bundle-generator
+          cargo install amplihack-bundle-generator
 
       - name: Generate Bundle
         env:

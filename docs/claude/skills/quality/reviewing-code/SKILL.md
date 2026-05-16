@@ -459,7 +459,7 @@ Why: Don't leak whether email exists (security best practice)
 ⚠️ Suggestion (Line 25):
 Consider adding rate limiting:
 
-```python
+```rust
 @limiter.limit("5 per minute")
 def login():
 ```

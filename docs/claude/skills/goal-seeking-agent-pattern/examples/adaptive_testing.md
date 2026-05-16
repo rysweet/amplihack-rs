@@ -100,8 +100,8 @@ for flaky failures, and verify coverage thresholds are met.
 
 ### Execution Plan
 
-```python
-from amplihack.goal_agent_generator import PromptAnalyzer, ObjectivePlanner
+```rust
+// use amplihack_goal_agent_generator:: PromptAnalyzer, ObjectivePlanner
 
 analyzer = PromptAnalyzer()
 goal_def = analyzer.analyze_text(goal_text)
@@ -180,8 +180,8 @@ Success indicators:
 
 ### Implementation
 
-```python
-from amplihack.goal_agent_generator import (
+```rust
+// use amplihack_goal_agent_generator:: (
     PromptAnalyzer,
     ObjectivePlanner,
     SkillSynthesizer,
@@ -231,7 +231,7 @@ The agent adapts based on code characteristics:
 
 **Scenario 1: Simple Pure Function** (basic unit tests)
 
-```python
+```rust
 # Code to test
 def calculate_total(items: List[float]) -> float:
     """Calculate total of item prices."""
@@ -257,7 +257,7 @@ def test_calculate_total_negative_values():
 
 **Scenario 2: Complex Logic** (property-based tests)
 
-```python
+```rust
 # Code to test
 def binary_search(arr: List[int], target: int) -> int:
     """Binary search implementation. Returns index or -1."""
@@ -302,7 +302,7 @@ def test_binary_search_edge_single():
 
 **Scenario 3: API Endpoint** (integration tests with mocks)
 
-```python
+```rust
 # Code to test
 from flask import Flask, jsonify, request
 app = Flask(__name__)
@@ -360,7 +360,7 @@ def test_create_user_invalid_email(client, mock_database):
 
 **Scenario 4: Flaky Test** (intelligent retry with better assertions)
 
-```python
+```rust
 # Original flaky test (timing-sensitive)
 def test_async_operation():
     """Test async operation completion"""
@@ -402,7 +402,7 @@ async def test_async_operation_asyncio():
 
 **Fix Strategy 1: Import Errors** (auto-fix imports)
 
-```python
+```rust
 # Test failure: ModuleNotFoundError: No module named 'calculator'
 # Agent analyzes and fixes:
 
@@ -429,7 +429,7 @@ def fix_import_errors(test_file: Path, source_file: Path):
 
 **Fix Strategy 2: Assertion Errors** (improve assertions)
 
-```python
+```rust
 # Test failure: AssertionError (no clear message)
 def test_calculate_total():
     result = calculate_total([1, 2, 3])
@@ -448,7 +448,7 @@ def test_calculate_total_improved():
 
 **Fix Strategy 3: Mock Setup** (auto-configure mocks)
 
-```python
+```rust
 # Test failure: AttributeError: 'MagicMock' object has no attribute 'return_value'
 # Agent detects missing mock setup:
 

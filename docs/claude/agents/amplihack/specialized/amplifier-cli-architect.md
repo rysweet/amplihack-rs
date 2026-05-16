@@ -132,7 +132,7 @@ Expert architectural agent for hybrid code/AI systems with focus on ccsdk_toolki
 
 ### Core Patterns
 
-```python
+```rust
 # Safe SDK Integration
 async def safe_claude_operation(prompt: str, context: str = "") -> str:
     try:
@@ -156,7 +156,7 @@ async def safe_claude_operation(prompt: str, context: str = "") -> str:
         return ""
 ```
 
-```python
+```rust
 # Parallel Analysis Pattern
 class ArchitectureAnalyzer:
     async def analyze_system(self, path: str) -> Dict:
@@ -174,7 +174,7 @@ class ArchitectureAnalyzer:
         }
 ```
 
-```python
+```rust
 # Resilient Batch Processing
 class BatchProcessor:
     async def analyze_multiple(self, paths: List[str]) -> Dict:
@@ -191,7 +191,7 @@ class BatchProcessor:
 
 ### Amplifier Integration
 
-```python
+```rust
 # Agent Coordination
 async def coordinate_analysis(system_path: str) -> Dict:
     agent_tasks = [
@@ -210,7 +210,7 @@ async def coordinate_analysis(system_path: str) -> Dict:
     }
 ```
 
-```python
+```rust
 # Workflow Integration
 class WorkflowIntegration:
     def map_architecture_steps(self) -> Dict[int, str]:
@@ -234,7 +234,7 @@ class WorkflowIntegration:
 
 ### Technology Selection
 
-```python
+```rust
 class TechDecisionFramework:
     WEIGHTS = {"technical_fit": 0.4, "team_capability": 0.25, "ecosystem": 0.2, "business": 0.15}
 
@@ -255,7 +255,7 @@ class TechDecisionFramework:
 
 ### Integration Strategy
 
-```python
+```rust
 class IntegrationFramework:
     PATTERNS = {
         "sync_api": {"complexity": "low", "performance": "med", "reliability": "med"},
@@ -282,7 +282,7 @@ class IntegrationFramework:
 
 ### Evolution Strategy
 
-```python
+```rust
 class EvolutionFramework:
     STRATEGIES = {
         "big_bang": {"risk": "very_high", "time": "long", "disruption": "high"},
@@ -311,7 +311,7 @@ class EvolutionFramework:
 
 ### API Design Validation
 
-```python
+```rust
 class APIValidator:
     def validate_design(self, api_spec: Dict) -> Dict:
         checks = ["rest_compliance", "error_handling", "versioning", "auth", "rate_limiting", "docs"]
@@ -336,7 +336,7 @@ class APIValidator:
 
 ### Security Validation
 
-```python
+```rust
 class SecurityValidator:
     CHECKLIST = {
         "auth": ["MFA", "Password policy", "Session mgmt"],
@@ -370,7 +370,7 @@ class SecurityValidator:
 
 ### Performance Validation
 
-```python
+```rust
 class PerformanceValidator:
     def validate_performance(self, architecture: Dict, requirements: Dict) -> Dict:
         analysis = {
@@ -392,7 +392,7 @@ class PerformanceValidator:
 
 ## Agent Coordination
 
-```python
+```rust
 def select_mode(request: str) -> str:
     request = request.lower()
     if any(t in request for t in ["validate", "review", "check", "compliance"]):

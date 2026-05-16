@@ -76,7 +76,7 @@ Efficient file copying mechanism that:
 
 Defines what gets staged:
 
-```python
+```rust
 STAGING_MANIFEST = {
     "agents": ["**/*.md"],
     "skills": ["**/*.md", "**/*.py"],

@@ -132,287 +132,388 @@ Expert architectural agent for hybrid code/AI systems with focus on ccsdk_toolki
 
 ### Core Patterns
 
-```python
-# Safe SDK Integration
-async def safe_claude_operation(prompt: str, context: str = "") -> str:
-    try:
-        async with asyncio.timeout(120):
-            async with ClaudeSDKClient(
-                options=ClaudeCodeOptions(
-                    system_prompt=f"Architecture: {context}",
-                    max_turns=1
-                )
-            ) as client:
-                await client.query(prompt)
-                response = ""
-                async for message in client.receive_response():
-                    if hasattr(message, "content"):
-                        for block in getattr(message, "content", []):
-                            if hasattr(block, "text"):
-                                response += getattr(block, "text", "")
-                return response
-    except Exception as e:
-        print(f"SDK error: {e}")
-        return ""
-```
+```rust
+// Safe SDK Integration
+async fn safe_claude_operation(prompt: &str, context: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let options = ClaudeCodeOptions {
+        system_prompt: format!("Architecture: {}", context),
+        max_turns: 1,
+    };
 
-```python
-# Parallel Analysis Pattern
-class ArchitectureAnalyzer:
-    async def analyze_system(self, path: str) -> Dict:
-        tasks = [
-            self._analyze_dependencies(path),
-            self._analyze_structure(path),
-            self._analyze_patterns(path)
-        ]
-        deps, structure, patterns = await asyncio.gather(*tasks)
-        return {
-            "dependencies": deps,
-            "structure": structure,
-            "patterns": patterns,
-            "recommendations": await self._generate_recommendations(deps, structure, patterns)
+    let client = ClaudeSDKClient::new(options).await?;
+    let response = tokio::time::timeout(
+        Duration::from_secs(120),
+        client.query(prompt),
+    ).await??;
+
+    let mut result = String::new();
+    while let Some(message) = client.receive_response().await? {
+        if let Some(content) = &message.content {
+            for block in content {
+                if let Some(text) = &block.text {
+                    result.push_str(text);
+                }
+            }
         }
+    }
+    Ok(result)
+}
 ```
 
-```python
-# Resilient Batch Processing
-class BatchProcessor:
-    async def analyze_multiple(self, paths: List[str]) -> Dict:
-        results = {"succeeded": [], "failed": []}
-        for path in paths:
-            try:
-                analysis = await self.analyze_single(path)
-                results["succeeded"].append({"path": path, "analysis": analysis})
-                await self.save_progress(results)
-            except Exception as e:
-                results["failed"].append({"path": path, "error": str(e)})
-        return results
+```rust
+// Parallel Analysis Pattern
+struct ArchitectureAnalyzer;
+
+impl ArchitectureAnalyzer {
+    async fn analyze_system(&self, path: &str) -> Result<AnalysisResult, Error> {
+        let (deps, structure, patterns) = tokio::try_join!(
+            self.analyze_dependencies(path),
+            self.analyze_structure(path),
+            self.analyze_patterns(path),
+        )?;
+
+        let recommendations = self.generate_recommendations(&deps, &structure, &patterns).await?;
+
+        Ok(AnalysisResult {
+            dependencies: deps,
+            structure,
+            patterns,
+            recommendations,
+        })
+    }
+}
+```
+
+```rust
+// Resilient Batch Processing
+struct BatchProcessor;
+
+impl BatchProcessor {
+    async fn analyze_multiple(&self, paths: &[String]) -> BatchResult {
+        let mut results = BatchResult::default();
+        for path in paths {
+            match self.analyze_single(path).await {
+                Ok(analysis) => {
+                    results.succeeded.push(SuccessEntry { path: path.clone(), analysis });
+                    self.save_progress(&results).await;
+                }
+                Err(e) => {
+                    results.failed.push(FailureEntry { path: path.clone(), error: e.to_string() });
+                }
+            }
+        }
+        results
+    }
+}
 ```
 
 ### Amplifier Integration
 
-```python
-# Agent Coordination
-async def coordinate_analysis(system_path: str) -> Dict:
-    agent_tasks = [
-        Task("security", f"Security analysis: {system_path}"),
-        Task("patterns", f"Pattern analysis: {system_path}"),
-        Task("optimizer", f"Performance analysis: {system_path}"),
-        Task("integration", f"Integration analysis: {system_path}")
-    ]
-    results = await asyncio.gather(*[execute_agent_task(task) for task in agent_tasks])
-    return {
-        "security": results[0],
-        "patterns": results[1],
-        "performance": results[2],
-        "integration": results[3],
-        "synthesis": synthesize_findings(results)
-    }
+```rust
+// Agent Coordination
+async fn coordinate_analysis(system_path: &str) -> Result<AnalysisResults, Error> {
+    let agent_tasks = vec![
+        Task::new("security", &format!("Security analysis: {}", system_path)),
+        Task::new("patterns", &format!("Pattern analysis: {}", system_path)),
+        Task::new("optimizer", &format!("Performance analysis: {}", system_path)),
+        Task::new("integration", &format!("Integration analysis: {}", system_path)),
+    ];
+
+    let results = futures::future::try_join_all(
+        agent_tasks.iter().map(execute_agent_task)
+    ).await?;
+
+    Ok(AnalysisResults {
+        security: results[0].clone(),
+        patterns: results[1].clone(),
+        performance: results[2].clone(),
+        integration: results[3].clone(),
+        synthesis: synthesize_findings(&results),
+    })
+}
 ```
 
-```python
-# Workflow Integration
-class WorkflowIntegration:
-    def map_architecture_steps(self) -> Dict[int, str]:
-        return {
-            1: "Requirements clarification",
-            2: "System design",
-            3: "Integration points",
-            4: "Technology validation",
-            5: "Implementation planning"
-        }
+```rust
+// Workflow Integration
+struct WorkflowIntegration;
 
-    async def execute_workflow(self, requirements: str) -> Dict:
-        for step, description in self.map_architecture_steps().items():
-            result = await self.execute_step(step, requirements)
-            if not result.get("completed"):
-                raise WorkflowError(f"Step {step} failed")
-        return {"completed": True, "ready": True}
+impl WorkflowIntegration {
+    fn map_architecture_steps(&self) -> Vec<(u32, &str)> {
+        vec![
+            (1, "Requirements clarification"),
+            (2, "System design"),
+            (3, "Integration points"),
+            (4, "Technology validation"),
+            (5, "Implementation planning"),
+        ]
+    }
+
+    async fn execute_workflow(&self, requirements: &str) -> Result<WorkflowResult, WorkflowError> {
+        for (step, description) in self.map_architecture_steps() {
+            let result = self.execute_step(step, requirements).await?;
+            if !result.completed {
+                return Err(WorkflowError::StepFailed(step, description.to_string()));
+            }
+        }
+        Ok(WorkflowResult { completed: true, ready: true })
+    }
+}
 ```
 
 ## Decision Frameworks
 
 ### Technology Selection
 
-```python
-class TechDecisionFramework:
-    WEIGHTS = {"technical_fit": 0.4, "team_capability": 0.25, "ecosystem": 0.2, "business": 0.15}
+```rust
+struct TechDecisionFramework {
+    weights: HashMap<&'static str, f64>,
+}
 
-    def evaluate_options(self, options: List[Dict], requirements: Dict) -> Dict:
-        scored = []
-        for option in options:
-            scores = {k: self._score(k, option, requirements) for k in self.WEIGHTS}
-            weighted = sum(scores[k] * self.WEIGHTS[k] for k in scores)
-            scored.append({"option": option, "scores": scores, "total": weighted})
+impl TechDecisionFramework {
+    fn new() -> Self {
+        let mut weights = HashMap::new();
+        weights.insert("technical_fit", 0.4);
+        weights.insert("team_capability", 0.25);
+        weights.insert("ecosystem", 0.2);
+        weights.insert("business", 0.15);
+        Self { weights }
+    }
 
-        scored.sort(key=lambda x: x["total"], reverse=True)
-        return {
-            "top_choice": scored[0],
-            "alternatives": scored[1:3],
-            "rationale": self._explain(scored[0])
+    fn evaluate_options(&self, options: &[TechOption], requirements: &Requirements) -> EvalResult {
+        let mut scored: Vec<ScoredOption> = options.iter().map(|option| {
+            let scores: HashMap<&str, f64> = self.weights.keys()
+                .map(|&k| (k, self.score(k, option, requirements)))
+                .collect();
+            let weighted: f64 = scores.iter()
+                .map(|(&k, &v)| v * self.weights[k])
+                .sum();
+            ScoredOption { option: option.clone(), scores, total: weighted }
+        }).collect();
+
+        scored.sort_by(|a, b| b.total.partial_cmp(&a.total).unwrap());
+        EvalResult {
+            top_choice: scored[0].clone(),
+            alternatives: scored[1..3].to_vec(),
+            rationale: self.explain(&scored[0]),
         }
+    }
+}
 ```
 
 ### Integration Strategy
 
-```python
-class IntegrationFramework:
-    PATTERNS = {
-        "sync_api": {"complexity": "low", "performance": "med", "reliability": "med"},
-        "async_messaging": {"complexity": "high", "performance": "high", "reliability": "high"},
-        "hybrid": {"complexity": "med", "performance": "high", "reliability": "high"}
+```rust
+struct IntegrationFramework {
+    patterns: HashMap<&'static str, PatternInfo>,
+}
+
+impl IntegrationFramework {
+    fn new() -> Self {
+        let mut patterns = HashMap::new();
+        patterns.insert("sync_api", PatternInfo { complexity: "low", performance: "med", reliability: "med" });
+        patterns.insert("async_messaging", PatternInfo { complexity: "high", performance: "high", reliability: "high" });
+        patterns.insert("hybrid", PatternInfo { complexity: "med", performance: "high", reliability: "high" });
+        Self { patterns }
     }
 
-    def recommend_strategy(self, context: Dict) -> Dict:
-        performance = context.get("performance", "med")
-        complexity = context.get("complexity_tolerance", "med")
-        reliability = context.get("reliability", "high")
+    fn recommend_strategy(&self, context: &Context) -> StrategyRecommendation {
+        let scores: HashMap<&str, f64> = self.patterns.iter()
+            .map(|(&name, info)| (name, self.score_pattern(info, &context.performance, &context.complexity_tolerance, &context.reliability)))
+            .collect();
 
-        scores = {name: self._score_pattern(info, performance, complexity, reliability)
-                 for name, info in self.PATTERNS.items()}
+        let best = scores.iter().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap();
+        let mut alternatives: Vec<_> = scores.iter()
+            .filter(|(&k, _)| k != *best.0)
+            .collect();
+        alternatives.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap());
 
-        best = max(scores.items(), key=lambda x: x[1])
-        return {
-            "recommended": best[0],
-            "confidence": best[1],
-            "alternatives": sorted([(k, v) for k, v in scores.items() if k != best[0]],
-                                 key=lambda x: x[1], reverse=True)[:2]
+        StrategyRecommendation {
+            recommended: best.0.to_string(),
+            confidence: *best.1,
+            alternatives: alternatives.into_iter().take(2).map(|(&k, &v)| (k.to_string(), v)).collect(),
         }
+    }
+}
 ```
 
 ### Evolution Strategy
 
-```python
-class EvolutionFramework:
-    STRATEGIES = {
-        "big_bang": {"risk": "very_high", "time": "long", "disruption": "high"},
-        "strangler_fig": {"risk": "low", "time": "med", "disruption": "low"},
-        "abstraction": {"risk": "med", "time": "med", "disruption": "low"},
-        "parallel_run": {"risk": "low", "time": "long", "disruption": "very_low"}
+```rust
+struct EvolutionFramework {
+    strategies: HashMap<&'static str, StrategyInfo>,
+}
+
+impl EvolutionFramework {
+    fn new() -> Self {
+        let mut strategies = HashMap::new();
+        strategies.insert("big_bang", StrategyInfo { risk: "very_high", time: "long", disruption: "high" });
+        strategies.insert("strangler_fig", StrategyInfo { risk: "low", time: "med", disruption: "low" });
+        strategies.insert("abstraction", StrategyInfo { risk: "med", time: "med", disruption: "low" });
+        strategies.insert("parallel_run", StrategyInfo { risk: "low", time: "long", disruption: "very_low" });
+        Self { strategies }
     }
 
-    def recommend_evolution(self, current: Dict, target: Dict) -> Dict:
-        size = current.get("size", "med")
-        criticality = current.get("criticality", "high")
-        scope = self._assess_scope(current, target)
+    fn recommend_evolution(&self, current: &SystemState, target: &SystemState) -> EvolutionRecommendation {
+        let scope = self.assess_scope(current, target);
 
-        scores = {name: self._score_strategy(info, size, criticality, scope)
-                 for name, info in self.STRATEGIES.items()}
+        let scores: HashMap<&str, f64> = self.strategies.iter()
+            .map(|(&name, info)| (name, self.score_strategy(info, &current.size, &current.criticality, &scope)))
+            .collect();
 
-        best = max(scores.items(), key=lambda x: x[1])
-        return {
-            "strategy": best[0],
-            "details": self.STRATEGIES[best[0]],
-            "score": best[1]
+        let best = scores.iter().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap();
+        EvolutionRecommendation {
+            strategy: best.0.to_string(),
+            details: self.strategies[best.0].clone(),
+            score: *best.1,
         }
+    }
+}
 ```
 
 ## Validation Templates
 
 ### API Design Validation
 
-```python
-class APIValidator:
-    def validate_design(self, api_spec: Dict) -> Dict:
-        checks = ["rest_compliance", "error_handling", "versioning", "auth", "rate_limiting", "docs"]
-        results = {"score": 0, "passed": [], "failed": [], "recommendations": []}
+```rust
+struct APIValidator;
 
-        passed = 0
-        for check in checks:
-            try:
-                result = getattr(self, f"_check_{check}")(api_spec)
-                if result["passed"]:
-                    results["passed"].append(result)
-                    passed += 1
-                else:
-                    results["failed"].append(result)
-                    results["recommendations"].extend(result.get("recommendations", []))
-            except Exception as e:
-                results["failed"].append({"check": check, "error": str(e)})
+impl APIValidator {
+    fn validate_design(&self, api_spec: &ApiSpec) -> ValidationResult {
+        let checks = ["rest_compliance", "error_handling", "versioning", "auth", "rate_limiting", "docs"];
+        let mut results = ValidationResult::default();
+        let mut passed = 0;
 
-        results["score"] = (passed / len(checks)) * 100
-        return results
+        for check in &checks {
+            match self.run_check(check, api_spec) {
+                Ok(result) if result.passed => {
+                    results.passed.push(result);
+                    passed += 1;
+                }
+                Ok(result) => {
+                    results.recommendations.extend(result.recommendations);
+                    results.failed.push(result);
+                }
+                Err(e) => {
+                    results.failed.push(CheckResult { check: check.to_string(), error: Some(e.to_string()), ..Default::default() });
+                }
+            }
+        }
+
+        results.score = (passed as f64 / checks.len() as f64) * 100.0;
+        results
+    }
+}
 ```
 
 ### Security Validation
 
-```python
-class SecurityValidator:
-    CHECKLIST = {
-        "auth": ["MFA", "Password policy", "Session mgmt"],
-        "authz": ["RBAC", "Least privilege", "Resource perms"],
-        "data": ["Encryption at rest", "Encryption in transit", "Data sanitization"],
-        "infra": ["Network segmentation", "Security monitoring", "Vuln scanning"]
+```rust
+struct SecurityValidator {
+    checklist: HashMap<&'static str, Vec<&'static str>>,
+}
+
+impl SecurityValidator {
+    fn new() -> Self {
+        let mut checklist = HashMap::new();
+        checklist.insert("auth", vec!["MFA", "Password policy", "Session mgmt"]);
+        checklist.insert("authz", vec!["RBAC", "Least privilege", "Resource perms"]);
+        checklist.insert("data", vec!["Encryption at rest", "Encryption in transit", "Data sanitization"]);
+        checklist.insert("infra", vec!["Network segmentation", "Security monitoring", "Vuln scanning"]);
+        Self { checklist }
     }
 
-    def validate_security(self, architecture: Dict) -> Dict:
-        results = {"score": 0, "categories": {}, "critical": [], "recommendations": []}
-        total, passed = 0, 0
+    fn validate_security(&self, architecture: &Architecture) -> SecurityResult {
+        let mut results = SecurityResult::default();
+        let (mut total, mut passed) = (0, 0);
 
-        for category, checks in self.CHECKLIST.items():
-            cat_passed = 0
-            for check in checks:
-                result = self._evaluate_check(check, architecture)
-                if result["passed"]:
-                    cat_passed += 1
-                    passed += 1
-                else:
-                    if result.get("severity") == "critical":
-                        results["critical"].append(result)
-                    results["recommendations"].append(result["recommendation"])
-                total += 1
+        for (category, checks) in &self.checklist {
+            let mut cat_passed = 0;
+            for check in checks {
+                let result = self.evaluate_check(check, architecture);
+                if result.passed {
+                    cat_passed += 1;
+                    passed += 1;
+                } else {
+                    if result.severity == Severity::Critical {
+                        results.critical.push(result.clone());
+                    }
+                    results.recommendations.push(result.recommendation.clone());
+                }
+                total += 1;
+            }
+            results.categories.insert(category.to_string(), (cat_passed as f64 / checks.len() as f64) * 100.0);
+        }
 
-            results["categories"][category] = {"score": (cat_passed / len(checks)) * 100}
-
-        results["score"] = (passed / total) * 100
-        return results
+        results.score = (passed as f64 / total as f64) * 100.0;
+        results
+    }
+}
 ```
 
 ### Performance Validation
 
-```python
-class PerformanceValidator:
-    def validate_performance(self, architecture: Dict, requirements: Dict) -> Dict:
-        analysis = {
-            "scalability": self._assess_scalability(architecture),
-            "bottlenecks": self._identify_bottlenecks(architecture),
-            "caching": self._evaluate_caching(architecture),
-            "database": self._assess_database(architecture)
+```rust
+struct PerformanceValidator;
+
+impl PerformanceValidator {
+    fn validate_performance(&self, architecture: &Architecture, requirements: &Requirements) -> PerfAnalysis {
+        let mut analysis = PerfAnalysis {
+            scalability: self.assess_scalability(architecture),
+            bottlenecks: self.identify_bottlenecks(architecture),
+            caching: self.evaluate_caching(architecture),
+            database: self.assess_database(architecture),
+            ..Default::default()
+        };
+
+        if let Some(sla) = &requirements.response_time_sla {
+            analysis.response_time = Some(self.assess_response_time(architecture, sla));
         }
 
-        if requirements.get("response_time_sla"):
-            analysis["response_time"] = self._assess_response_time(architecture, requirements["response_time_sla"])
+        if let Some(throughput) = &requirements.throughput {
+            analysis.throughput = Some(self.assess_throughput(architecture, throughput));
+        }
 
-        if requirements.get("throughput"):
-            analysis["throughput"] = self._assess_throughput(architecture, requirements["throughput"])
-
-        analysis["score"] = self._calculate_score(analysis)
-        return analysis
+        analysis.score = self.calculate_score(&analysis);
+        analysis
+    }
+}
 ```
 
 ## Agent Coordination
 
-```python
-def select_mode(request: str) -> str:
-    request = request.lower()
-    if any(t in request for t in ["validate", "review", "check", "compliance"]):
-        return "VALIDATE"
-    elif any(t in request for t in ["how should", "recommend", "design", "guide"]):
-        return "GUIDE"
-    else:
-        return "CONTEXTUALIZE"
+```rust
+fn select_mode(request: &str) -> &'static str {
+    let request = request.to_lowercase();
+    if ["validate", "review", "check", "compliance"].iter().any(|t| request.contains(t)) {
+        "VALIDATE"
+    } else if ["how should", "recommend", "design", "guide"].iter().any(|t| request.contains(t)) {
+        "GUIDE"
+    } else {
+        "CONTEXTUALIZE"
+    }
+}
 
-async def coordinate_agents(task: str) -> Dict:
-    agents = ["patterns"]
-    if "security" in task: agents.append("security")
-    if "performance" in task: agents.append("optimizer")
-    if "integration" in task: agents.append("integration")
-    if "database" in task: agents.append("database")
-    if "api" in task: agents.append("api-designer")
+async fn coordinate_agents(task: &str) -> Result<CoordinationResult, Error> {
+    let mut agents = vec!["patterns"];
+    if task.contains("security") { agents.push("security"); }
+    if task.contains("performance") { agents.push("optimizer"); }
+    if task.contains("integration") { agents.push("integration"); }
+    if task.contains("database") { agents.push("database"); }
+    if task.contains("api") { agents.push("api-designer"); }
 
-    tasks = [Task(agent, f"Architecture: {task}") for agent in agents]
-    results = await asyncio.gather(*[execute_agent_task(t) for t in tasks])
-    return {"results": dict(zip(agents, results)), "synthesis": synthesize_findings(results)}
+    let tasks: Vec<Task> = agents.iter()
+        .map(|agent| Task::new(agent, &format!("Architecture: {}", task)))
+        .collect();
+
+    let results = futures::future::try_join_all(
+        tasks.iter().map(execute_agent_task)
+    ).await?;
+
+    Ok(CoordinationResult {
+        results: agents.iter().zip(results.iter()).map(|(a, r)| (a.to_string(), r.clone())).collect(),
+        synthesis: synthesize_findings(&results),
+    })
+}
 ```
 
 ## Operating Principles

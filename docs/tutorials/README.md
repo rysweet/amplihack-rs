@@ -48,8 +48,8 @@ Complete hands-on guide to autonomous learning agents. Interactive 10-lesson cur
 
 **Start Learning**:
 
-```python
-from amplihack.agents.teaching.generator_teacher import GeneratorTeacher
+```rust
+// use amplihack_domain_agents:: GeneratorTeacher
 teacher = GeneratorTeacher()
 content = teacher.teach_lesson("L01")
 print(content)

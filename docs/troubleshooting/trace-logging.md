@@ -204,7 +204,7 @@ mv trace_sanitized.jsonl trace_*.jsonl
 
 **Solution 2: Custom sensitive data**
 
-```python
+```rust
 # Extend TokenSanitizer for custom patterns
 # File: custom_sanitizer.py
 
@@ -613,7 +613,7 @@ cat .claude/logs/*.log | grep -i "trace\|sanitiz"
 
 **Solution 3: API call bypassed logging**
 
-```python
+```rust
 # If using custom API client, ensure trace logger is initialized
 from trace.trace_logger import TraceLogger
 

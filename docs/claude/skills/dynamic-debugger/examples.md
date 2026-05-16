@@ -8,7 +8,7 @@ Production-ready debugging examples fer all supported languages. Each example sh
 
 Async function returns coroutine instead of actual value:
 
-```python
+```rust
 # user_service.py
 import asyncio
 import aiohttp
@@ -101,7 +101,7 @@ Show me the code around line 14
 
 ### Solution
 
-```python
+```rust
 async def get_user_email(user_id: int):
     """Get user email - FIXED."""
     user = await fetch_user(user_id)  # ✅ Added await

@@ -57,8 +57,8 @@ steps:
       #
       # MIRROR: consensus-workflow.yaml step3-setup-worktree must keep the same
       # validation gates and resolution algorithm. Do not patch one without the
-      # other. The Python parity test in
-      # amplifier-bundle/tools/test_default_workflow_fixes.py guards drift.
+      # other. The parity test in
+      # amplifier-bundle/tools/test_default_workflow_fixes.rs guards drift.
       # ========================================================================
       EXISTING_BRANCH="${EXISTING_BRANCH:-}"
       PR_NUMBER="${PR_NUMBER:-}"

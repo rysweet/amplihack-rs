@@ -12,7 +12,7 @@ The orchestration infrastructure is already installed at:
 
 ### Basic Import
 
-```python
+```rust
 from pathlib import Path
 from orchestration import (
     OrchestratorSession,
@@ -27,7 +27,7 @@ from orchestration import (
 
 Run multiple agents in parallel:
 
-```python
+```rust
 # Create session
 session = OrchestratorSession("parallel-agents")
 
@@ -51,7 +51,7 @@ for r in results:
 
 Run stages with output passing:
 
-```python
+```rust
 session = OrchestratorSession("pipeline")
 
 stages = [
@@ -67,7 +67,7 @@ results = run_sequential(stages, pass_output=True)
 
 Try different approaches:
 
-```python
+```rust
 from orchestration import run_with_fallback
 
 session = OrchestratorSession("retry")
@@ -84,7 +84,7 @@ result = run_with_fallback(attempts)
 
 Process many items in controlled batches:
 
-```python
+```rust
 from orchestration import run_batched
 
 session = OrchestratorSession("batch")
@@ -103,7 +103,7 @@ results = run_batched(processes, batch_size=5)
 
 ### OrchestratorSession
 
-```python
+```rust
 session = OrchestratorSession(
     pattern_name="my-pattern",      # Pattern identifier
     working_dir=Path("/project"),   # Optional: defaults to cwd
@@ -121,7 +121,7 @@ process = session.create_process(
 
 ### ClaudeProcess
 
-```python
+```rust
 from orchestration import ClaudeProcess
 
 process = ClaudeProcess(
@@ -139,7 +139,7 @@ result = process.run()
 
 ### ProcessResult
 
-```python
+```rust
 # After running a process
 result = process.run()
 
@@ -155,7 +155,7 @@ print(f"Duration: {result.duration:.1f}s")
 
 ### Execution Helpers
 
-```python
+```rust
 from orchestration import (
     run_parallel,
     run_sequential,
@@ -206,40 +206,40 @@ All operations are logged automatically:
 
 ### ❌ Don't: Create processes without a session
 
-```python
+```rust
 # Hard to manage logs and state
 process = ClaudeProcess(prompt, id, cwd, log_dir, ...)
 ```
 
 ### ✅ Do: Use session factory
 
-```python
+```rust
 session = OrchestratorSession("my-pattern")
 process = session.create_process(prompt, id)
 ```
 
 ### ❌ Don't: Run sequential when parallel is possible
 
-```python
+```rust
 # Slower for independent tasks
 results = run_sequential(independent_tasks)
 ```
 
 ### ✅ Do: Use parallel for independent tasks
 
-```python
+```rust
 results = run_parallel(independent_tasks)
 ```
 
 ### ❌ Don't: Forget timeout for long-running tasks
 
-```python
+```rust
 process = session.create_process(prompt)  # No timeout!
 ```
 
 ### ✅ Do: Set reasonable timeouts
 
-```python
+```rust
 process = session.create_process(prompt, timeout=300)
 ```
 
@@ -254,7 +254,7 @@ See detailed examples in:
 
 ### Import Error
 
-```python
+```rust
 # Add to path
 import sys
 sys.path.insert(0, '.claude/tools/amplihack')

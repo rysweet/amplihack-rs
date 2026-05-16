@@ -57,7 +57,7 @@ uvx --from git+https://github.com/rysweet/amplihack-rs amplihack --reinstall
 # Check git_utils module exists
 python3 << 'EOF'
 try:
-    from amplihack.tools.amplihack.git_utils import (
+    // use amplihack_utils::git_utils:: (
         is_worktree,
         get_common_git_dir,
         find_disabled_file
@@ -114,7 +114,7 @@ git worktree add /tmp/test-worktree-migration main
 # Test counter persistence
 cd /tmp/test-worktree-migration
 python3 << 'EOF'
-from amplihack.tools.amplihack.git_utils import get_common_git_dir
+// use amplihack_utils::git_utils:: get_common_git_dir
 from pathlib import Path
 import json
 
@@ -211,7 +211,7 @@ import json
 print("=== Power Steering Migration Verification ===\n")
 
 # Test 1: Worktree detection
-from amplihack.tools.amplihack.git_utils import is_worktree, get_common_git_dir
+// use amplihack_utils::git_utils:: is_worktree, get_common_git_dir
 print(f"✓ Worktree detection: {is_worktree()}")
 print(f"✓ Common dir: {get_common_git_dir()}")
 
@@ -227,7 +227,7 @@ assert json.loads(counter_file.read_text())["count"] == 5
 print(f"✓ Counter persistence works")
 
 # Test 4: .disabled detection
-from amplihack.tools.amplihack.git_utils import find_disabled_file
+// use amplihack_utils::git_utils:: find_disabled_file
 test_disabled = state_dir / ".disabled"
 test_disabled.touch()
 assert find_disabled_file() is not None
@@ -277,7 +277,7 @@ fi
 ```bash
 # Verify .disabled file location
 python3 << 'EOF'
-from amplihack.tools.amplihack.git_utils import find_disabled_file
+// use amplihack_utils::git_utils:: find_disabled_file
 result = find_disabled_file()
 if result:
     print(f"Found: {result}")
@@ -303,7 +303,7 @@ Include this diagnostic output:
 # Generate diagnostic report
 python3 << 'EOF'
 import subprocess
-from amplihack.tools.amplihack.git_utils import is_worktree, get_common_git_dir, find_disabled_file
+// use amplihack_utils::git_utils:: is_worktree, get_common_git_dir, find_disabled_file
 
 print("=== Migration Diagnostic ===")
 print(f"amplihack version: {subprocess.check_output(['amplihack', '--version'], text=True).strip()}")

@@ -81,18 +81,18 @@ Top-level entry point. Auto-detects repo URL from git remote.
 
 ### How Steps Execute
 
-In recipe mode, each workstream runs the Recipe Runner's Python execution loop:
+In recipe mode, each workstream runs via the `amplihack recipe run` CLI:
 
-```python
-# Inside launcher.py (generated per workstream)
-for step in recipe.steps:
-    if step.type == "bash":
-        result = subprocess.run(["bash", "-c", rendered_command])
-    elif step.type == "agent":
-        result = subprocess.run(["claude", "-p", rendered_prompt])
+```bash
+# Inside launcher.sh (generated per workstream)
+# Invokes the Rust recipe-runner-rs binary which handles:
+# - Step execution (bash commands, agent sessions)
+# - Progress tracking and context variable passing
+# - Error recovery and step ordering
+amplihack recipe run <recipe> -c key=value --verbose
 ```
 
-The `CLISubprocessAdapter` handles the dispatch. Each agent step creates a new `claude -p` session.
+The recipe runner binary handles the dispatch. Each agent step creates a new agent session.
 
 ### Context Flow Between Steps
 
@@ -113,7 +113,7 @@ Recipe steps pass outputs via template variables:
 
 ### Fallback Behavior
 
-If `amplihack` package is not importable in the clone environment, `launcher.py` exits with code 2. The orchestrator reports this as a failure.
+If the `amplihack` CLI binary is not available in the clone environment, `launcher.sh` exits with a non-zero code. The orchestrator reports this as a failure.
 
 To use classic mode as fallback, specify `--mode classic` when invoking the orchestrator.
 
@@ -122,7 +122,7 @@ To use classic mode as fallback, specify `--mode classic` when invoking the orch
 ```
 /tmp/amplihack-workstreams/
   ws-123/           # Clone of feat/my-feature branch
-    launcher.py     # Recipe runner invocation (recipe mode)
+    launcher.sh     # Recipe runner invocation (recipe mode)
     run.sh          # Shell wrapper (sets session tree vars)
     TASK.md         # Task description (classic mode only)
     ...             # Full repo clone

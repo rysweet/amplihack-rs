@@ -69,7 +69,7 @@ The `.version` file is a **system-generated tracking file** that stores the git 
 
 2. **Filtering Logic Gap**: `_filter_conflicts()` at lines 82-97 in `git_conflict_detector.py` only checks files against ESSENTIAL_DIRS patterns:
 
-   ```python
+   ```rust
    for essential_dir in essential_dirs:
        if relative_path.startswith(essential_dir + "/"):
            conflicts.append(file_path)
@@ -87,7 +87,7 @@ The `.version` file is a **system-generated tracking file** that stores the git 
 
 Exclude system-generated metadata files from conflict detection by adding explicit categorization:
 
-```python
+```rust
 # In src/amplihack/safety/git_conflict_detector.py
 
 SYSTEM_METADATA = {
@@ -366,7 +366,7 @@ arguments.
 
 Modified `src/amplihack/launcher/core.py` in `build_claude_command()` method:
 
-```python
+```rust
 if claude_binary == "claude-trace":
     # claude-trace requires --run-with followed by the command and arguments
     # Format: claude-trace --run-with chat [claude-args...]
@@ -682,7 +682,7 @@ Justified Complexity: Benefit Gain / Complexity Cost > 3.0
 
 **Application to AI Agents**:
 
-```python
+```rust
 # Generate diverse implementations
 implementations = [
     agent1.generate(spec),
@@ -1440,7 +1440,7 @@ Failed to create container... Conflict... already in use
 
 **Exact Bug Location**: `src/amplihack/memory/neo4j/port_manager.py:147-149`
 
-```python
+```rust
 # BROKEN - Assumes container is on ports from .env
 if is_our_neo4j_container():  # Only checks name, doesn't get ports!
     messages.append(f"✅ Our Neo4j container found on ports {bolt_port}/{http_port}")
@@ -1460,7 +1460,7 @@ if is_our_neo4j_container():  # Only checks name, doesn't get ports!
 
 **Added `get_container_ports()` function** that queries actual container ports using `docker port`:
 
-```python
+```rust
 def get_container_ports(container_name: str = "amplihack-neo4j") -> Optional[Tuple[int, int]]:
     """Get actual ports from running Neo4j container.
 
@@ -1488,7 +1488,7 @@ def get_container_ports(container_name: str = "amplihack-neo4j") -> Optional[Tup
 
 **Updated `resolve_port_conflicts()`** to use actual ports:
 
-```python
+```rust
 # FIXED - Use actual container ports, not .env ports
 container_ports = get_container_ports("amplihack-neo4j")
 if container_ports:
@@ -1810,7 +1810,7 @@ Mandatory user testing (USER_PREFERENCES.md requirement) caught a **production-b
 
 **Bug**: `SubIssue` dataclass not hashable, but `OrchestrationConfig` uses `set()` for deduplication
 
-```python
+```rust
 # This passed all unit tests but fails in real usage:
 config = OrchestrationConfig(sub_issues=[...])
 # TypeError: unhashable type: 'SubIssue'
@@ -1832,7 +1832,7 @@ config = OrchestrationConfig(sub_issues=[...])
 
 ### Fix
 
-```python
+```rust
 # Before
 @dataclass
 class SubIssue:
@@ -1889,7 +1889,7 @@ result = api.actual_method()  # Real workflow
 
 **NOT sufficient**:
 
-```python
+```rust
 # Unit test approach (can miss real issues)
 @patch("module.Class")
 def test_with_mock(mock_class):  # Never tests real instantiation

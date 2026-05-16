@@ -6,8 +6,8 @@
 
 Prevent token exposure in logs, errors, and debug output with automatic sanitization.
 
-```python
-from amplihack.utils.token_sanitizer import TokenSanitizer
+```rust
+// use amplihack_utils::token_sanitizer::{ TokenSanitizer
 
 sanitizer = TokenSanitizer()
 
@@ -46,8 +46,8 @@ TokenSanitizer detects and redacts these token types:
 
 When API calls fail, error messages often contain authentication tokens:
 
-```python
-from amplihack.utils.token_sanitizer import TokenSanitizer
+```rust
+// use amplihack_utils::token_sanitizer::{ TokenSanitizer
 
 sanitizer = TokenSanitizer()
 
@@ -70,8 +70,8 @@ API call failed: Authentication failed with [REDACTED-GITHUB-TOKEN]
 
 When debugging configuration, sanitize before printing:
 
-```python
-from amplihack.utils.token_sanitizer import TokenSanitizer
+```rust
+// use amplihack_utils::token_sanitizer::{ TokenSanitizer
 
 config = {
     "github_token": "gho_1234567890abcdefghij",
@@ -89,8 +89,8 @@ print(safe_config)
 
 Process existing log files to remove tokens:
 
-```python
-from amplihack.utils.token_sanitizer import TokenSanitizer
+```rust
+// use amplihack_utils::token_sanitizer::{ TokenSanitizer
 from pathlib import Path
 
 sanitizer = TokenSanitizer()
@@ -106,8 +106,8 @@ log_file.write_text(sanitized)
 
 Conditionally sanitize only when tokens are detected:
 
-```python
-from amplihack.utils.token_sanitizer import TokenSanitizer
+```rust
+// use amplihack_utils::token_sanitizer::{ TokenSanitizer
 
 sanitizer = TokenSanitizer()
 message = "Debug info: connection established"
@@ -124,10 +124,10 @@ logger.debug(message)
 
 Sanitize errors before returning to clients:
 
-```python
+```rust
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from amplihack.utils.token_sanitizer import TokenSanitizer
+// use amplihack_utils::token_sanitizer::{ TokenSanitizer
 
 app = FastAPI()
 sanitizer = TokenSanitizer()
@@ -147,9 +147,9 @@ async def sanitize_errors(request: Request, exc: Exception):
 
 Create a logging wrapper that auto-sanitizes:
 
-```python
+```rust
 import logging
-from amplihack.utils.token_sanitizer import TokenSanitizer
+// use amplihack_utils::token_sanitizer::{ TokenSanitizer
 
 class SanitizingLogger:
     def __init__(self, name: str):
@@ -173,8 +173,8 @@ logger.debug(f"Token: {github_token}")  # Automatically sanitized
 
 Sanitize all HTTP traffic logs:
 
-```python
-from amplihack.utils.token_sanitizer import TokenSanitizer
+```rust
+// use amplihack_utils::token_sanitizer::{ TokenSanitizer
 import httpx
 
 sanitizer = TokenSanitizer()
@@ -203,7 +203,7 @@ TokenSanitizer is optimized for production use:
 
 1. **Reuse instances**: Create one TokenSanitizer and reuse it
 
-   ```python
+   ```rust
    # Good - reuse instance
    sanitizer = TokenSanitizer()
    for log in logs:
@@ -216,13 +216,13 @@ TokenSanitizer is optimized for production use:
 
 2. **Check before sanitizing**: Use `contains_token()` to skip clean data
 
-   ```python
+   ```rust
    if sanitizer.contains_token(data):
        data = sanitizer.sanitize(data)
    ```
 
 3. **Batch processing**: Sanitize in batches for large datasets
-   ```python
+   ```rust
    results = []
    for item in large_dataset:
        results.append(sanitizer.sanitize(item))
@@ -237,7 +237,7 @@ If safe text is being redacted, check pattern lengths:
 **Problem**: Short strings like `"sk-short"` shouldn't match
 **Solution**: Patterns require 6+ characters after prefix
 
-```python
+```rust
 # These are NOT detected as tokens (too short)
 safe_texts = [
     "gho_",      # Prefix only
@@ -253,7 +253,7 @@ If real tokens aren't detected, verify token format:
 **Problem**: Token not being redacted
 **Solution**: Check token format matches known patterns
 
-```python
+```rust
 # Supported GitHub token prefixes
 valid_prefixes = ["gho_", "ghp_", "ghs_", "ghu_", "ghr_"]
 
@@ -270,7 +270,7 @@ If sanitization is slow:
 
 1. **Profile token density**: Are most strings clean?
 
-   ```python
+   ```rust
    # Check before sanitizing
    if sanitizer.contains_token(text):
        text = sanitizer.sanitize(text)
@@ -278,14 +278,14 @@ If sanitization is slow:
 
 2. **Reduce nested depth**: Very deep nesting (10+ levels) impacts performance
 
-   ```python
+   ```rust
    # Consider flattening deeply nested structures
    flat_data = flatten_dict(nested_data)
    sanitized = sanitizer.sanitize(flat_data)
    ```
 
 3. **Batch processing**: Process in chunks for huge datasets
-   ```python
+   ```rust
    CHUNK_SIZE = 1000
    for i in range(0, len(items), CHUNK_SIZE):
        chunk = items[i:i+CHUNK_SIZE]

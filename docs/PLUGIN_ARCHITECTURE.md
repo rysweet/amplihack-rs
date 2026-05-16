@@ -166,7 +166,7 @@ User executes: amplihack plugin install <source>
 
 **Install Methods:**
 
-```python
+```rust
 # From Git URL
 amplihack plugin install https://github.com/rysweet/amplihack-rs
 

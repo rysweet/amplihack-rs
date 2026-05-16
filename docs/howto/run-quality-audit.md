@@ -6,28 +6,21 @@ escalating-depth SEEK/VALIDATE/FIX/RECURSE cycles.
 ## Prerequisites
 
 - amplihack installed (`AMPLIHACK_HOME` set)
-- Python 3.10+ with `amplihack` package importable
+- `amplihack` CLI binary on PATH
 - Target repository checked out locally
 
 ## Basic Invocation
 
-```python
-from amplihack.recipes import run_recipe_by_name
-
-result = run_recipe_by_name(
-    "quality-audit-cycle",
-    user_context={
-        "task_description": "Run quality audit on the payments module",
-        "repo_path": ".",
-        "target_path": "src/payments",
-    },
-    progress=True,
-)
-print(f"Recipe result: {result}")
+```bash
+amplihack recipe run quality-audit-cycle \
+  -c task_description="Run quality audit on the payments module" \
+  -c repo_path="." \
+  -c target_path="src/payments" \
+  --verbose
 ```
 
-> **Note:** Use `run_recipe_by_name()` — not `amplihack recipe execute`. The
-> Python API is the canonical invocation path, matching how `dev-orchestrator`
+> **Note:** Use `amplihack recipe run` — not `amplihack recipe execute`. The
+> CLI is the canonical invocation path, matching how `dev-orchestrator`
 > and all other recipes are launched.
 
 ## Setting `repo_path`
@@ -35,16 +28,12 @@ print(f"Recipe result: {result}")
 The `repo_path` variable tells agent steps where the repository root is. Set it
 so that `target_path` resolves relative to the repo:
 
-```python
-result = run_recipe_by_name(
-    "quality-audit-cycle",
-    user_context={
-        "task_description": "Audit the crates directory",
-        "repo_path": "/home/user/src/my-project",
-        "target_path": "crates/",
-    },
-    progress=True,
-)
+```bash
+amplihack recipe run quality-audit-cycle \
+  -c task_description="Audit the crates directory" \
+  -c repo_path="/home/user/src/my-project" \
+  -c target_path="crates/" \
+  --verbose
 ```
 
 When `repo_path` is set, each agent step's `working_dir` is set to that path,
@@ -62,33 +51,25 @@ giving agents file-system access to the target directory.
 
 Set `target_path` to audit a specific part of the codebase:
 
-```python
-result = run_recipe_by_name(
-    "quality-audit-cycle",
-    user_context={
-        "target_path": "src/amplihack/fleet",
-        "repo_path": ".",
-        "min_cycles": "2",
-        "max_cycles": "4",
-    },
-    progress=True,
-)
+```bash
+amplihack recipe run quality-audit-cycle \
+  -c target_path="src/amplihack/fleet" \
+  -c repo_path="." \
+  -c min_cycles="2" \
+  -c max_cycles="4" \
+  --verbose
 ```
 
 ## Filtering by Category
 
 Limit the audit to specific issue categories:
 
-```python
-result = run_recipe_by_name(
-    "quality-audit-cycle",
-    user_context={
-        "target_path": "src/amplihack",
-        "repo_path": ".",
-        "categories": "security,reliability,error_swallowing",
-    },
-    progress=True,
-)
+```bash
+amplihack recipe run quality-audit-cycle \
+  -c target_path="src/amplihack" \
+  -c repo_path="." \
+  -c categories="security,reliability,error_swallowing" \
+  --verbose
 ```
 
 Available categories: `security`, `reliability`, `dead_code`, `silent_fallbacks`,
@@ -99,18 +80,14 @@ Available categories: `security`, `reliability`, `dead_code`, `silent_fallbacks`
 
 ## Adjusting Cycle Limits
 
-```python
-result = run_recipe_by_name(
-    "quality-audit-cycle",
-    user_context={
-        "target_path": "src/amplihack",
-        "repo_path": ".",
-        "min_cycles": "3",
-        "max_cycles": "6",
-        "severity_threshold": "high",
-    },
-    progress=True,
-)
+```bash
+amplihack recipe run quality-audit-cycle \
+  -c target_path="src/amplihack" \
+  -c repo_path="." \
+  -c min_cycles="3" \
+  -c max_cycles="6" \
+  -c severity_threshold="high" \
+  --verbose
 ```
 
 ## Troubleshooting
@@ -122,7 +99,7 @@ The agent cannot find `target_path`. Likely causes:
 1. **Missing `repo_path`** — set `repo_path` to the repo root so
    agents resolve relative paths correctly.
 2. **Relative path with wrong CWD** — ensure your shell's CWD is the repo root
-   before calling `run_recipe_by_name()`, or use an absolute `target_path`.
+   before running `amplihack recipe run`, or use an absolute `target_path`.
 
 ### Bash step errors like `json: command not found`
 

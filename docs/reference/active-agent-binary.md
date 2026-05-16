@@ -22,7 +22,7 @@ let binary: String = agent_binary_resolver::resolve(&cwd);
 
 **Canonical entry point (Python):**
 
-```python
+```rust
 # Defined in amplifier-bundle/skills/pm-architect/scripts/agent_query.py
 from agent_query import detect_runtime
 
@@ -195,7 +195,7 @@ Command::new(binary)
 
 ### From a Python skill helper
 
-```python
+```rust
 # Defined in amplifier-bundle/skills/pm-architect/scripts/agent_query.py
 from agent_query import detect_runtime
 

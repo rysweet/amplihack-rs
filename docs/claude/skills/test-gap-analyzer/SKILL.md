@@ -322,7 +322,7 @@ Current:
 
 ### Unit Test Template
 
-```python
+```rust
 def test_function_name_happy_path():
     """Test function with valid inputs."""
     # Arrange
@@ -338,7 +338,7 @@ def test_function_name_happy_path():
 
 ### Error Case Template
 
-```python
+```rust
 def test_function_name_invalid_input():
     """Test function raises ValueError on invalid input."""
     with pytest.raises(ValueError, match="Expected error message"):
@@ -347,7 +347,7 @@ def test_function_name_invalid_input():
 
 ### Edge Case Template
 
-```python
+```rust
 def test_function_name_edge_case():
     """Test function handles edge case correctly."""
     # Test boundary conditions
@@ -357,7 +357,7 @@ def test_function_name_edge_case():
 
 ### Integration Test Template
 
-```python
+```rust
 def test_user_service_with_database(test_db):
     """Test user service with real database."""
     user_service = UserService(test_db)

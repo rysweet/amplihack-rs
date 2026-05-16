@@ -15,8 +15,8 @@
 
 ## Overview
 
-```python
-from amplihack.append_handler import AppendHandler, AppendResult
+```rust
+// use amplihack_append_handler:: AppendHandler, AppendResult
 ```
 
 `AppendHandler` writes one file per append call. Files are created atomically using `os.open()` with `O_CREAT | O_WRONLY | O_EXCL` to prevent overwriting existing output. The caller receives an `AppendResult` describing the outcome.
@@ -27,7 +27,7 @@ from amplihack.append_handler import AppendHandler, AppendResult
 
 `AppendResult` is a dataclass describing a single append operation:
 
-```python
+```rust
 @dataclass
 class AppendResult:
     success: bool
@@ -47,8 +47,8 @@ class AppendResult:
 
 **Checking the result:**
 
-```python
-from amplihack.append_handler import AppendHandler
+```rust
+// use amplihack_append_handler:: AppendHandler
 
 handler = AppendHandler(output_dir="~/.amplihack/.claude/runtime/output")
 result = handler.append("Agent completed task successfully.\n\nSummary: 3 files modified.")
@@ -97,8 +97,8 @@ ls ~/.amplihack/.claude/runtime/output/ | tail -5
 
 ### Write a session summary
 
-```python
-from amplihack.append_handler import AppendHandler
+```rust
+// use amplihack_append_handler:: AppendHandler
 
 handler = AppendHandler(output_dir="~/.amplihack/.claude/runtime/output")
 
@@ -116,23 +116,19 @@ print(f"Written to: {result.file_path}")
 
 ### Persist all recipe step outputs
 
-```python
-from amplihack.append_handler import AppendHandler
-from amplihack.recipes.runner import RecipeRunner
+```bash
+# Run recipe with JSON output and save step results
+amplihack recipe run default-workflow \
+  -c task_description="add caching layer" \
+  --verbose --output json > run-log.json
 
-runner = RecipeRunner()
-handler = AppendHandler(output_dir="./run-logs")
-recipe_result = runner.run("default-workflow", {"task_description": "add caching layer"})
-
-for step in recipe_result.step_results:
-    if step.output:
-        result = handler.append(f"# {step.step_name}\n\n{step.output}")
-        print(f"Step {step.step_id} saved: {result.file_path}")
+# Extract individual step outputs
+cat run-log.json | jq '.step_results[] | {step_id, step_name, output}' > step-outputs.json
 ```
 
 ### Handle permission errors
 
-```python
+```rust
 handler = AppendHandler(output_dir="/root/protected")
 result = handler.append("some content")
 

@@ -269,7 +269,7 @@ AMPLIHACK_TRACE_LOGGING=true:
 
 When disabled, trace logging has near-zero impact:
 
-```python
+```rust
 def log_request(self, request):
     if not self.is_enabled():
         return  # <0.1ms exit

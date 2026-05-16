@@ -16,7 +16,7 @@ You have a research paper PDF and need to extract all text for analysis.
 
 **Claude**: I'll extract the text from the PDF using pdfplumber for better layout preservation.
 
-```python
+```rust
 import pdfplumber
 
 with pdfplumber.open("research_paper.pdf") as pdf:
@@ -51,7 +51,7 @@ You have a financial report PDF with multiple tables that need to be extracted a
 
 **Claude**: I'll use pdfplumber to extract tables and pandas to create a structured Excel file.
 
-```python
+```rust
 import pdfplumber
 import pandas as pd
 
@@ -103,7 +103,7 @@ Generate a multi-page report PDF with title, sections, and formatted text.
 
 **Claude**: I'll use reportlab to create a structured PDF with proper formatting.
 
-```python
+```rust
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
@@ -200,7 +200,7 @@ Combine multiple invoice PDFs into a single document for archiving.
 
 **Claude**: I'll use pypdf to merge all PDFs while preserving their content.
 
-```python
+```rust
 from pypdf import PdfWriter, PdfReader
 from pathlib import Path
 
@@ -268,7 +268,7 @@ echo "Images extracted to extracted_images/"
 
 Alternative Python approach:
 
-```python
+```rust
 # If pdfimages is not available, use pdf2image
 from pdf2image import convert_from_path
 from pathlib import Path
@@ -305,7 +305,7 @@ A scanned invoice PDF needs text extraction for accounting software.
 
 **Claude**: I'll use pytesseract to perform OCR on the scanned document.
 
-```python
+```rust
 import pytesseract
 from pdf2image import convert_from_path
 
@@ -350,7 +350,7 @@ Break a large document into individual page files for review.
 
 **Claude**: I'll extract each page as a separate PDF file.
 
-```python
+```rust
 from pypdf import PdfReader, PdfWriter
 from pathlib import Path
 
@@ -389,7 +389,7 @@ Protect a confidential document with a password before sharing.
 
 **Claude**: I'll encrypt the PDF with a password.
 
-```python
+```rust
 from pypdf import PdfReader, PdfWriter
 
 reader = PdfReader("confidential_report.pdf")
@@ -440,7 +440,7 @@ Some pages in a scanned document are oriented incorrectly.
 
 **Claude**: I'll rotate the specified pages and save the result.
 
-```python
+```rust
 from pypdf import PdfReader, PdfWriter
 
 reader = PdfReader("document.pdf")
@@ -479,7 +479,7 @@ Review PDF properties and metadata for document management.
 
 **Claude**: I'll extract and display all available PDF metadata.
 
-```python
+```rust
 from pypdf import PdfReader
 from datetime import datetime
 
@@ -535,7 +535,7 @@ Page size: 612.0 x 792.0 points
 
 ### Error Handling
 
-```python
+```rust
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
@@ -552,7 +552,7 @@ except Exception as e:
 
 ### Progress Tracking
 
-```python
+```rust
 from pypdf import PdfReader
 
 reader = PdfReader("large_document.pdf")
@@ -571,7 +571,7 @@ print("\nComplete!")
 
 ### Batch Processing
 
-```python
+```rust
 from pypdf import PdfReader
 from pathlib import Path
 

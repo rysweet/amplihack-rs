@@ -116,7 +116,7 @@ mod tests {
 
 ### Test Structure (Upstream Python, reference only)
 
-```python
+```rust
 """Tests for [feature] security.
 
 Testing pyramid:
@@ -126,7 +126,7 @@ Testing pyramid:
 """
 
 import pytest
-from amplihack.tracing.token_sanitizer import TokenSanitizer
+// use amplihack_tracing::token_sanitizer::{ TokenSanitizer
 
 # Unit tests (60%)
 class TestBasicFunctionality:

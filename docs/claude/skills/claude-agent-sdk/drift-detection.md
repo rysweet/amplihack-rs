@@ -43,7 +43,7 @@ Each source URL has a content hash that changes when source content changes:
 
 **Hash Generation:**
 
-```python
+```rust
 import hashlib
 import requests
 
@@ -77,7 +77,7 @@ Location: `~/.amplihack/.claude/skills/claude-agent-sdk/scripts/check_drift.py`
 
 **Core Functionality:**
 
-```python
+```rust
 #!/usr/bin/env python3
 """
 Drift detection script for Claude Agent SDK skill.
@@ -383,7 +383,7 @@ After updates, verify:
 
 **Source Coverage:**
 
-```python
+```rust
 def validate_source_coverage(skill_content: str, sources: List[str]) -> bool:
     """Verify all sources are referenced in skill."""
     for source in sources:
@@ -396,7 +396,7 @@ def validate_source_coverage(skill_content: str, sources: List[str]) -> bool:
 
 **Required Sections:**
 
-```python
+```rust
 REQUIRED_SECTIONS = {
     "SKILL.md": [
         "Overview",
@@ -443,7 +443,7 @@ def validate_sections(file_path: Path, required: List[str]) -> bool:
 
 **Token Budget Enforcement:**
 
-```python
+```rust
 def count_tokens_approximate(text: str) -> int:
     """Approximate token count (words * 1.3)."""
     return int(len(text.split()) * 1.3)
@@ -474,7 +474,7 @@ BUDGETS = {
 
 **Internal Links:**
 
-```python
+```rust
 def validate_internal_links(skill_dir: Path) -> bool:
     """Verify all internal markdown links exist."""
     import re
@@ -497,14 +497,14 @@ def validate_internal_links(skill_dir: Path) -> bool:
 
 **Code Syntax:**
 
-````python
+````rust
 def validate_code_examples(file_path: Path) -> bool:
     """Extract and validate Python code blocks."""
     import ast
     import re
 
     content = file_path.read_text()
-    code_blocks = re.findall(r'```python\n(.*?)\n```', content, re.DOTALL)
+    code_blocks = re.findall(r'```rust\n(.*?)\n```', content, re.DOTALL)
 
     for i, code in enumerate(code_blocks):
         try:

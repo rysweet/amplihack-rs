@@ -27,26 +27,26 @@ steps:
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
     prompt: |
-       # Step 14: Bump Version in pyproject.toml (MANDATORY)
+       # Step 14: Bump Version in Cargo.toml (MANDATORY)
 
-       Before committing, bump `pyproject.toml` to match the change type.
+       Before committing, bump `Cargo.toml` to match the change type.
 
        **Task:** {{task_description}}
 
        Required:
        1. Review `git diff main...HEAD`.
        2. Classify as PATCH (fix/docs/refactor), MINOR (backward-compatible feature/API), or MAJOR (breaking).
-       3. Read and update the current `version = "X.Y.Z"` line.
+       3. Read and update the current `version = "X.Y.Z"` line in the workspace Cargo.toml.
        4. Verify the new version.
 
        Useful commands:
        ```bash
        cd {{repo_path}}
        git diff main...HEAD --stat
-       CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | head -1 | cut -d'"' -f2)
+       CURRENT_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
        echo "Current version: $CURRENT_VERSION"
-       # sed -i 's/version = "X.Y.Z"/version = "NEW.VERSION"/' pyproject.toml
-       grep -E '^version = ' pyproject.toml | head -1
+       # sed -i 's/version = "X.Y.Z"/version = "NEW.VERSION"/' Cargo.toml
+       grep -E '^version = ' Cargo.toml | head -1
        ```
 
        **Output JSON:**

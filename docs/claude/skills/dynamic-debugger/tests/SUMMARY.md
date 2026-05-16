@@ -133,7 +133,7 @@ The test file is complete and ready to run once the syntax error is fixed:
 
 **Known Issue**: `monitor_session.py` line 159 has syntax error:
 
-```python
+```rust
 global MAX_MEMORY_MB, SESSION_TIMEOUT_MIN
 ```
 

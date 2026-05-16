@@ -87,7 +87,7 @@ pip install my-project
 
 Create a simple script:
 
-```python
+```rust
 from my_project import hello
 
 result = hello("World")
@@ -149,7 +149,7 @@ Complete API documentation.
 
 Greet someone by name.
 
-```python
+```rust
 def hello(name: str) -> str:
     """Return a greeting.
 
@@ -164,7 +164,7 @@ def hello(name: str) -> str:
 
 Example:
 
-```python
+```rust
 from my_project import hello
 
 greeting = hello("Captain")
@@ -182,7 +182,7 @@ EOF
 
 Create a Python script to generate your site:
 
-```python
+```rust
 # generate_docs.py
 from claude_skills.documentation_writing.github_pages import (
     SiteConfig,
@@ -269,7 +269,7 @@ Press `Ctrl+C` to stop the server.
 
 Create a validation script:
 
-```python
+```rust
 # validate_docs.py
 from claude_skills.documentation_writing.github_pages import validate_site
 
@@ -357,7 +357,7 @@ git push origin main
 
 Create a deployment script:
 
-```python
+```rust
 # deploy_docs.py
 from claude_skills.documentation_writing.github_pages import (
     SiteConfig,
@@ -475,7 +475,7 @@ Now that you have a working docs site, explore these topics:
 
 Add custom colors and features:
 
-```python
+```rust
 config = SiteConfig(
     project_name="My Project",
     project_url="https://github.com/user/repo",
@@ -497,7 +497,7 @@ config = SiteConfig(
 
 Define your own navigation structure:
 
-```python
+```rust
 config = SiteConfig(
     project_name="My Project",
     project_url="https://github.com/user/repo",

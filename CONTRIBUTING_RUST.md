@@ -6,7 +6,7 @@ Rust core runtime for amplihack deterministic infrastructure.
 
 - **Rust** 2024 edition (1.85+): `rustup update stable`
 - **GNU cross toolchain** (for ARM64 Linux): `sudo apt-get install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu`
-- **Python 3.11+** with amplihack installed (for SDK bridge tests)
+- **amplihack** CLI installed (for integration tests)
 
 ## Build & Test
 
@@ -30,7 +30,7 @@ scripts/dev-space.sh prune-targets --repo-target
 
 ### Golden file tests
 
-610 golden test cases validate hook parity with Python:
+610 golden test cases validate hook behavior:
 
 ```bash
 cargo test --test golden           # run golden file suite

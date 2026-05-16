@@ -315,7 +315,7 @@ Step 3: Present formatted table with costs
 
 ### Automated Resource Tagging
 
-```python
+```rust
 # Claude Code can compose this workflow using MCP tools
 
 # 1. Get all untagged resources
@@ -334,7 +334,7 @@ print(f"Tagged {len(untagged_resources)} resources")
 
 ### Automated Access Review
 
-```python
+```rust
 # Complete access review workflow
 
 # 1. List all role assignments

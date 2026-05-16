@@ -13,9 +13,9 @@
 
 ## Import Documentation
 
-```python
+```rust
 # Upstream Python API (reference only)
-from amplihack.memory.neo4j import Neo4jConnector, DocGraphIntegration
+// use amplihack_memory::neo4j::{ Neo4jConnector, DocGraphIntegration
 from pathlib import Path
 
 connector = Neo4jConnector()
@@ -45,7 +45,7 @@ amplihack memory index --project my-project docs/
 
 ## Link to Code
 
-```python
+```rust
 # Upstream Python API (reference only)
 link_count = doc_integration.link_docs_to_code()
 print(f"Created {link_count} links")
@@ -55,7 +55,7 @@ print(f"Created {link_count} links")
 
 ## Query Documentation
 
-```python
+```rust
 # Upstream Python API (reference only)
 results = doc_integration.query_relevant_docs("authentication", limit=5)
 
@@ -115,7 +115,7 @@ From each markdown file:
 
 ### Find documentation about a topic
 
-```python
+```rust
 # Upstream Python API (reference only)
 docs = doc_integration.query_relevant_docs("neo4j memory")
 ```
@@ -145,7 +145,7 @@ RETURN df.title, df.path
 
 ## Statistics
 
-```python
+```rust
 # Upstream Python API (reference only)
 stats = doc_integration.get_doc_stats()
 print(f"Documents: {stats['doc_count']}")
@@ -175,7 +175,7 @@ file.rs:42     → file.rs, line 42
 See [Blarify Integration](../concepts/blarify-integration.md) for how the code
 graph connects to the documentation knowledge graph.
 
-```python
+```rust
 # Upstream Python API (reference only)
 # 1. Import code graph
 blarify = BlarifyIntegration(connector)
@@ -193,7 +193,7 @@ doc_integration.link_docs_to_code()
 See [Agent Memory Architecture](../concepts/agent-memory-architecture.md) for
 the full memory integration story.
 
-```python
+```rust
 # Upstream Python API (reference only)
 doc_integration.import_documentation(Path("docs/"))
 doc_integration.link_docs_to_memories()
@@ -242,7 +242,7 @@ cargo test --package amplihack-memory -- doc_graph
 
 ### Import all project docs
 
-```python
+```rust
 # Upstream Python API (reference only)
 from pathlib import Path
 
@@ -259,7 +259,7 @@ for doc_file in doc_files:
 
 ### Find documentation for current task
 
-```python
+```rust
 # Upstream Python API (reference only)
 def get_relevant_docs(task_description: str):
     """Find documentation relevant to a task."""

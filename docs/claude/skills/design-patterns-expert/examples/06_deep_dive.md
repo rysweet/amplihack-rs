@@ -101,7 +101,7 @@ sequenceDiagram
 
 ### Complete Implementation: Python
 
-```python
+```rust
 from abc import ABC, abstractmethod
 
 # ============ Component Hierarchy ============
@@ -419,7 +419,7 @@ clientCode(compressedEncrypted);
 - Client can't distinguish decorated from undecorated
 - **When**: Need complete interface compatibility
 
-```python
+```rust
 class Decorator(Component):
     def __init__(self, component: Component):
         self.component = component
@@ -434,7 +434,7 @@ class Decorator(Component):
 - Client can access decorator-specific functionality
 - **When**: Need both forwarding AND new capabilities
 
-```python
+```rust
 class Decorator(Component):
     def operation(self):
         return self.component.operation()
@@ -449,7 +449,7 @@ class Decorator(Component):
 - Wrap functions instead of objects
 - **When**: Decorating functions, not classes
 
-```python
+```rust
 def timing_decorator(func):
     def wrapper(*args, **kwargs):
         start = time.time()
@@ -469,7 +469,7 @@ def slow_function():
 - Chain decorators for layered processing
 - **When**: Large data, memory constraints
 
-```python
+```rust
 class BufferedDecorator(StreamDecorator):
     def __init__(self, stream, buffer_size=8192):
         super().__init__(stream)
@@ -488,7 +488,7 @@ class BufferedDecorator(StreamDecorator):
 - **Problem**: Shared decorator state in concurrent environment
 - **Solution**: Make decorators stateless OR use thread-local storage
 
-```python
+```rust
 import threading
 
 class ThreadSafeDecorator(Decorator):
@@ -507,7 +507,7 @@ class ThreadSafeDecorator(Decorator):
 - **Problem**: Long decorator chains hold references
 - **Solution**: Use weak references OR limit chain depth
 
-```python
+```rust
 import weakref
 
 class SmartDecorator(Decorator):

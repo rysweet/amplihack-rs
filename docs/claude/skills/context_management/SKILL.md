@@ -33,7 +33,7 @@ User: Check my current token usage
 
 I'll use the `context_manager` tool to check status:
 
-```python
+```rust
 from context_manager import check_context_status
 
 status = check_context_status(current_tokens=<current_count>)
@@ -48,7 +48,7 @@ User: Create a context snapshot named "auth-implementation"
 
 I'll use the `context_manager` tool to create a snapshot:
 
-```python
+```rust
 from context_manager import create_context_snapshot
 
 snapshot = create_context_snapshot(
@@ -66,7 +66,7 @@ User: Restore context from snapshot <snapshot_id> at essential level
 
 I'll use the `context_manager` tool to rehydrate:
 
-```python
+```rust
 from context_manager import rehydrate_from_snapshot
 
 context = rehydrate_from_snapshot(
@@ -84,7 +84,7 @@ User: List my context snapshots
 
 I'll use the `context_manager` tool to list snapshots:
 
-```python
+```rust
 from context_manager import list_context_snapshots
 
 snapshots = list_context_snapshots()
@@ -109,7 +109,7 @@ Check current token usage and get recommendations.
 
 **Usage:**
 
-```python
+```rust
 from context_manager import check_context_status
 
 status = check_context_status(current_tokens=750000)
@@ -130,7 +130,7 @@ Create intelligent context snapshot.
 
 **Usage:**
 
-```python
+```rust
 from context_manager import create_context_snapshot
 
 snapshot = create_context_snapshot(
@@ -153,7 +153,7 @@ Restore context from snapshot at specified detail level.
 
 **Usage:**
 
-```python
+```rust
 from context_manager import rehydrate_from_snapshot
 
 context = rehydrate_from_snapshot(
@@ -174,7 +174,7 @@ List all available context snapshots.
 
 **Usage:**
 
-```python
+```rust
 from context_manager import list_context_snapshots
 
 snapshots = list_context_snapshots()
@@ -193,7 +193,7 @@ for snapshot in snapshots:
 
 Periodically check status during long sessions:
 
-```python
+```rust
 status = check_context_status(current_tokens=current)
 
 if status.threshold_status == 'consider':
@@ -211,7 +211,7 @@ elif status.threshold_status == 'urgent':
 
 When 70-85% threshold reached, create a named snapshot:
 
-```python
+```rust
 snapshot = create_context_snapshot(
     conversation_data=messages,
     name='descriptive-name'
@@ -232,7 +232,7 @@ After snapshot creation:
 
 After compaction, restore essential context:
 
-```python
+```rust
 # Start minimal
 context = rehydrate_from_snapshot(
     snapshot_id='20251116_143522',
@@ -323,7 +323,7 @@ See tool documentation for complete API reference and implementation details.
 
 Check before long operation and create snapshot if needed:
 
-```python
+```rust
 status = check_context_status(current_tokens=current)
 if status.threshold_status in ['recommended', 'urgent']:
     create_context_snapshot(messages, name='before-refactoring')
@@ -333,7 +333,7 @@ if status.threshold_status in ['recommended', 'urgent']:
 
 Save state when pausing work on one feature to start another:
 
-```python
+```rust
 # Pausing work on Feature A
 create_context_snapshot(messages, name='feature-a-paused')
 
@@ -347,7 +347,7 @@ context = rehydrate_from_snapshot('feature-a-snapshot-id', level='standard')
 
 Create comprehensive snapshot for teammate:
 
-```python
+```rust
 snapshot = create_context_snapshot(
     messages,
     name='handoff-to-alice-api-work'

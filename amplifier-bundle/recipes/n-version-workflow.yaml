@@ -278,8 +278,8 @@ steps:
       5. **Risk Assessment** - Potential failure modes and mitigations
 
       Format code with clear file headers:
-      ```python
-      # File: version_1/src/implementation.py
+      ```rust
+      // File: version_1/src/implementation.rs
       [code]
       ```
 
@@ -343,8 +343,8 @@ steps:
       5. **Risk Assessment** - Potential failure modes and mitigations
 
       Format code with clear file headers:
-      ```python
-      # File: version_2/src/implementation.py
+      ```rust
+      // File: version_2/src/implementation.rs
       [code]
       ```
 
@@ -408,8 +408,8 @@ steps:
       5. **Risk Assessment** - Potential failure modes and mitigations
 
       Format code with clear file headers:
-      ```python
-      # File: version_3/src/implementation.py
+      ```rust
+      // File: version_3/src/implementation.rs
       [code]
       ```
 
@@ -1120,27 +1120,25 @@ steps:
       ## REQUIRED DOCUMENTATION:
       Include this documentation block in the code:
 
-      ```python
-      """
-      N-Version Implementation Selection
-
-      Generated Versions: {{num_versions}}
-      Selection: [chosen version or "Hybrid of vX and vY"]
-
-      Rationale:
-      - [Why this was selected]
-      - [What each version contributed]
-      - [Why other versions were rejected]
-
-      Selection Criteria Applied:
-      1. Correctness: [results]
-      2. Security: [results]
-      3. Simplicity: [results]
-      4. Philosophy: [results]
-      5. Performance: [results]
-
-      See: n_version_analysis.md for full comparison matrix
-      """
+      ```rust
+      //! N-Version Implementation Selection
+      //!
+      //! Generated Versions: {{num_versions}}
+      //! Selection: [chosen version or "Hybrid of vX and vY"]
+      //!
+      //! Rationale:
+      //! - [Why this was selected]
+      //! - [What each version contributed]
+      //! - [Why other versions were rejected]
+      //!
+      //! Selection Criteria Applied:
+      //! 1. Correctness: [results]
+      //! 2. Security: [results]
+      //! 3. Simplicity: [results]
+      //! 4. Philosophy: [results]
+      //! 5. Performance: [results]
+      //!
+      //! See: n_version_analysis.md for full comparison matrix
       ```
 
       Output as JSON:

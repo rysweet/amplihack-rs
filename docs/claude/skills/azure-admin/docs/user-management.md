@@ -428,7 +428,7 @@ az sql server ad-admin set \
 
 **Azure SDK (Python):**
 
-```python
+```rust
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 

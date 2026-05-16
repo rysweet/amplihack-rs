@@ -17,8 +17,8 @@ amplihack approach:
 
 ## Core Components
 
-- **context_preservation.py**: Extracts and structures requirements
-- **pre_compact.py**: Exports conversation before compaction
+- **context preservation module**: Extracts and structures requirements
+- **pre-compact hook** (`crates/amplihack-hooks/`): Exports conversation before compaction
 - **Agent injection**: Include requirements in ALL agent prompts
 
 ## Agent Context Format
@@ -44,8 +44,8 @@ amplihack approach:
 ## File Locations
 
 ```
-.claude/tools/amplihack/context_preservation.py
-.claude/tools/amplihack/hooks/pre_compact.py
+crates/amplihack-hooks/src/context_preservation/
+crates/amplihack-hooks/src/pre_compact/
 .claude/runtime/logs/<session_id>/ORIGINAL_REQUEST.md
 ```
 

@@ -4,8 +4,8 @@
 
 A `GoalSeekingAgent` is a single unit that can learn, reason, and act. It has one `Memory` instance and one `AgenticLoop` (OODA cycle). Every operation — learning content, answering questions, pursuing multi-step goals — runs through the same OODA loop.
 
-```python
-from amplihack.memory import Memory
+```rust
+// use amplihack_memory:: Memory
 
 mem = Memory("agent_0")
 mem.remember("Server prod-db-01 runs PostgreSQL 15.4")
@@ -345,9 +345,9 @@ The `GraphStore` protocol has four implementations:
 
 ### Configuration
 
-```python
-from amplihack.memory.network_store import NetworkGraphStore
-from amplihack.memory.memory_store import InMemoryGraphStore
+```rust
+// use amplihack_memory::network_store:: NetworkGraphStore
+// use amplihack_memory::memory_store:: InMemoryGraphStore
 
 store = NetworkGraphStore(
     agent_id="agent_0",
@@ -366,7 +366,7 @@ export AMPLIHACK_MEMORY_TRANSPORT=azure_service_bus
 export AMPLIHACK_MEMORY_CONNECTION_STRING="Endpoint=sb://..."
 ```
 
-```python
+```rust
 mem = Memory("agent_0")  # auto-wraps with NetworkGraphStore
 ```
 

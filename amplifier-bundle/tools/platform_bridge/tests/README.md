@@ -4,7 +4,7 @@ Comprehensive TDD test suite for the platform bridge module following the testin
 
 ## Test Files
 
-### 1. `conftest.py` - Shared Test Fixtures
+### 1. `common/mod.rs` - Shared Test Fixtures
 
 **Purpose**: Provides common test data, mocks, and utilities for all test modules.
 
@@ -19,9 +19,9 @@ Comprehensive TDD test suite for the platform bridge module following the testin
 - Azure DevOps configuration examples
 - Expected command structures
 
-**Usage**: All fixtures are automatically available to all test files via pytest's fixture discovery.
+**Usage**: All fixtures are automatically available to all test files via Rust's test module system.
 
-### 2. `test_detector.py` - Platform Detection Tests
+### 2. `detector_test.rs` - Platform Detection Tests
 
 **Coverage**: 100+ test cases
 
@@ -40,23 +40,27 @@ Comprehensive TDD test suite for the platform bridge module following the testin
 
 **Key Test Patterns**:
 
-```python
-@patch("subprocess.run")
-def test_detect_github_https_url(self, mock_run, git_remote_output_github):
-    """Should detect GitHub from HTTPS URL."""
-    mock_run.return_value = MagicMock(
-        returncode=0,
-        stdout=git_remote_output_github,
-        stderr=""
-    )
+```rust
+#[test]
+fn test_detect_github_https_url() {
+    // Arrange: set up mock command runner
+    let mock_output = CommandOutput {
+        status: 0,
+        stdout: git_remote_output_github().into(),
+        stderr: String::new(),
+    };
+    let runner = MockCommandRunner::new(mock_output);
 
-    detector = PlatformDetector()
-    platform = detector.detect()
+    // Act
+    let detector = PlatformDetector::new(Box::new(runner));
+    let platform = detector.detect();
 
-    assert platform == Platform.GITHUB
+    // Assert
+    assert_eq!(platform, Platform::GitHub);
+}
 ```
 
-### 3. `test_github_bridge.py` - GitHub Bridge Tests
+### 3. `github_bridge_test.rs` - GitHub Bridge Tests
 
 **Coverage**: 70+ test cases
 
@@ -75,24 +79,28 @@ def test_detect_github_https_url(self, mock_run, git_remote_output_github):
 
 **Key Test Patterns**:
 
-```python
-@patch("subprocess.run")
-def test_create_issue_success(self, mock_run):
-    """Should create issue and return success dict."""
-    mock_run.return_value = MagicMock(
-        returncode=0,
-        stdout='{"number": 123, "url": "https://github.com/owner/repo/issues/123"}',
-        stderr=""
-    )
+```rust
+#[test]
+fn test_create_issue_success() {
+    // Arrange: mock gh CLI returning a created issue
+    let mock_output = CommandOutput {
+        status: 0,
+        stdout: r#"{"number": 123, "url": "https://github.com/owner/repo/issues/123"}"#.into(),
+        stderr: String::new(),
+    };
+    let runner = MockCommandRunner::new(mock_output);
 
-    bridge = GitHubBridge()
-    result = bridge.create_issue(title="Test Issue", body="Issue description")
+    // Act
+    let bridge = GitHubBridge::new(Box::new(runner));
+    let result = bridge.create_issue("Test Issue", "Issue description").unwrap();
 
-    assert result["success"] is True
-    assert result["issue_number"] == 123
+    // Assert
+    assert!(result.success);
+    assert_eq!(result.issue_number, 123);
+}
 ```
 
-### 4. `test_azdo_bridge.py` - Azure DevOps Bridge Tests
+### 4. `azdo_bridge_test.rs` - Azure DevOps Bridge Tests
 
 **Coverage**: 75+ test cases
 
@@ -112,25 +120,30 @@ def test_create_issue_success(self, mock_run):
 
 **Key Test Patterns**:
 
-```python
-@patch("subprocess.run")
-def test_create_issue_uses_config_org_and_project(self, mock_run, azdo_config_complete):
-    """Should use organization and project from config."""
-    mock_run.return_value = MagicMock(
-        returncode=0,
-        stdout=json.dumps({"id": 789}),
-        stderr=""
-    )
+```rust
+#[test]
+fn test_create_issue_uses_config_org_and_project() {
+    // Arrange: mock az CLI with org/project config
+    let mock_output = CommandOutput {
+        status: 0,
+        stdout: r#"{"id": 789}"#.into(),
+        stderr: String::new(),
+    };
+    let runner = MockCommandRunner::new(mock_output);
+    let config = azdo_config_complete();
 
-    bridge = AzureDevOpsBridge(config=azdo_config_complete)
-    bridge.create_issue(title="Test", body="Test")
+    // Act
+    let bridge = AzureDevOpsBridge::new(Box::new(runner), config);
+    bridge.create_issue("Test", "Test").unwrap();
 
-    args = mock_run.call_args[0][0]
-    org_index = args.index("--org")
-    assert "myorg" in args[org_index + 1]
+    // Assert
+    let args = runner.last_call_args();
+    let org_index = args.iter().position(|a| a == "--org").unwrap();
+    assert!(args[org_index + 1].contains("myorg"));
+}
 ```
 
-### 5. `test_cli.py` - CLI Interface Tests
+### 5. `cli_test.rs` - CLI Interface Tests
 
 **Coverage**: 85+ test cases
 
@@ -151,27 +164,29 @@ def test_create_issue_uses_config_org_and_project(self, mock_run, azdo_config_co
 
 **Key Test Patterns**:
 
-```python
-@patch("..cli.GitHubBridge")
-def test_create_issue_parses_arguments(self, mock_bridge_class):
-    """Should parse create-issue command arguments."""
-    mock_bridge = MagicMock()
-    mock_bridge_class.return_value = mock_bridge
-    mock_bridge.create_issue.return_value = {"success": True, "issue_number": 123}
+```rust
+#[test]
+fn test_create_issue_parses_arguments() {
+    // Arrange: set up mock bridge
+    let mock_bridge = MockGitHubBridge::new();
+    mock_bridge.on_create_issue(BridgeResult {
+        success: true,
+        issue_number: Some(123),
+        ..Default::default()
+    });
 
-    cli = CLI(platform="github")
-    args = ["create-issue", "--title", "Test Issue", "--body", "Issue description"]
+    // Act
+    let cli = Cli::new(Platform::GitHub, Box::new(mock_bridge));
+    let args = vec!["create-issue", "--title", "Test Issue", "--body", "Issue description"];
+    let result = cli.run(&args);
 
-    result = cli.run(args)
-
-    assert result == 0
-    mock_bridge.create_issue.assert_called_once_with(
-        title="Test Issue",
-        body="Issue description"
-    )
+    // Assert
+    assert_eq!(result, 0);
+    assert_eq!(mock_bridge.create_issue_calls(), 1);
+}
 ```
 
-### 6. `test_security.py` - Security Tests
+### 6. `security_test.rs` - Security Tests
 
 **Coverage**: 65+ test cases
 
@@ -190,25 +205,27 @@ def test_create_issue_parses_arguments(self, mock_bridge_class):
 
 **Key Test Patterns**:
 
-```python
-@patch("subprocess.run")
-def test_pr_title_injection_prevented(self, mock_run, malicious_pr_title):
-    """Should prevent command injection via PR title."""
-    mock_run.return_value = MagicMock(returncode=0, stdout='{"number": 123}', stderr="")
+```rust
+#[test]
+fn test_pr_title_injection_prevented() {
+    // Arrange: use malicious PR title
+    let mock_output = CommandOutput {
+        status: 0,
+        stdout: r#"{"number": 123}"#.into(),
+        stderr: String::new(),
+    };
+    let runner = MockCommandRunner::new(mock_output);
+    let malicious_title = malicious_pr_title();
 
-    bridge = GitHubBridge()
-    result = bridge.create_draft_pr(
-        title=malicious_pr_title,
-        body="Normal body",
-        branch="feature/test"
-    )
+    // Act
+    let bridge = GitHubBridge::new(Box::new(runner));
+    let _result = bridge.create_draft_pr(&malicious_title, "Normal body", "feature/test");
 
-    # Verify subprocess.run was called with list, not shell=True
-    args = mock_run.call_args[0][0]
-    assert isinstance(args, list)
-
-    kwargs = mock_run.call_args[1]
-    assert kwargs.get("shell") is not True
+    // Assert: command was called with list args, not shell interpolation
+    let args = runner.last_call_args();
+    assert!(args.len() > 1, "should use arg list, not shell string");
+    assert!(!runner.used_shell(), "must not use shell=true");
+}
 ```
 
 ## Running Tests
@@ -238,16 +255,24 @@ All tests are written **before** implementation. Tests will fail until correspon
 
 All tests follow AAA pattern:
 
-```python
-def test_example(self):
-    # Arrange - Set up test data and mocks
-    mock_run.return_value = MagicMock(returncode=0, stdout='{"number": 123}')
+```rust
+#[test]
+fn test_example() {
+    // Arrange - Set up test data and mocks
+    let mock_output = CommandOutput {
+        status: 0,
+        stdout: r#"{"number": 123}"#.into(),
+        stderr: String::new(),
+    };
+    let runner = MockCommandRunner::new(mock_output);
 
-    # Act - Execute the functionality
-    result = bridge.create_issue(title="Test", body="Test")
+    // Act - Execute the functionality
+    let bridge = GitHubBridge::new(Box::new(runner));
+    let result = bridge.create_issue("Test", "Test").unwrap();
 
-    # Assert - Verify the outcome
-    assert result["success"] is True
+    // Assert - Verify the outcome
+    assert!(result.success);
+}
 ```
 
 ### Clear Test Names
@@ -262,28 +287,28 @@ Test names describe behavior being tested:
 
 All external dependencies are mocked:
 
-- `subprocess.run` - Mock CLI tool calls
+- `Command` execution - Mock CLI tool calls via trait objects
 - Platform detection - Mock git commands
-- File system operations - Use tmp_path fixtures
+- File system operations - Use `tempdir` crate fixtures
 
 ## Expected Test Failures (TDD)
 
-Until implementation is complete, expect these import failures:
+Until implementation is complete, expect these compile errors:
 
-```python
-# Module not implemented yet
-from ..detector import PlatformDetector, Platform  # ImportError
-from ..github_bridge import GitHubBridge  # ImportError
-from ..azdo_bridge import AzureDevOpsBridge  # ImportError
-from ..cli import CLI, main  # ImportError
+```rust
+// Modules not implemented yet
+use crate::detector::{PlatformDetector, Platform};  // unresolved import
+use crate::github_bridge::GitHubBridge;              // unresolved import
+use crate::azdo_bridge::AzureDevOpsBridge;           // unresolved import
+use crate::cli::{Cli, main};                         // unresolved import
 ```
 
 After implementation, expect these test failures:
 
-1. **detector.py**: Missing Platform enum, PlatformDetector class, detection logic
-2. **github_bridge.py**: Missing GitHubBridge class, 5 operations methods
-3. **azdo_bridge.py**: Missing AzureDevOpsBridge class, config loading, 5 operations
-4. **cli.py**: Missing CLI class, argument parsing, command routing
+1. **detector.rs**: Missing Platform enum, PlatformDetector struct, detection logic
+2. **github_bridge.rs**: Missing GitHubBridge struct, 5 operation methods
+3. **azdo_bridge.rs**: Missing AzureDevOpsBridge struct, config loading, 5 operations
+4. **cli.rs**: Missing Cli struct, argument parsing, command routing
 5. **Security**: Missing input validation, sanitization, escaping logic
 
 ## Test Coverage Goals
@@ -313,7 +338,7 @@ When adding new functionality:
 
 ## Test Data
 
-All test data is centralized in `conftest.py`:
+All test data is centralized in `common/mod.rs`:
 
 - Realistic URLs for both platforms
 - Example API responses

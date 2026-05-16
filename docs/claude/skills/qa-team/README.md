@@ -16,7 +16,7 @@ QA Team is the renamed primary skill for outside-in validation. It helps you cre
 
 **Traditional Testing** (Inside-Out):
 
-```python
+```rust
 # Knows internal implementation
 def test_user_service():
     service = UserService()

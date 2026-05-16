@@ -205,7 +205,7 @@ Extract the command arguments to determine which operation to perform:
 
 Use the `session_reflection.py` orchestrator:
 
-```python
+```rust
 from .claude.tools.amplihack.hooks.session_reflection import ReflectionOrchestrator
 
 orchestrator = ReflectionOrchestrator()
@@ -229,7 +229,7 @@ The orchestrator will:
 
 Update the `.reflection_config` file:
 
-```python
+```rust
 from pathlib import Path
 import json
 
@@ -249,7 +249,7 @@ print(f"✓ Reflection {'enabled' if config['enabled'] else 'disabled'}")
 
 Read and display the current configuration:
 
-```python
+```rust
 config_path = Path(".claude/tools/amplihack/.reflection_config")
 with open(config_path) as f:
     config = json.load(f)
@@ -262,7 +262,7 @@ print(json.dumps(config, indent=2))
 
 Update a specific configuration key:
 
-```python
+```rust
 key = args[1]  # e.g., "depth"
 value = args[2]  # e.g., "comprehensive"
 

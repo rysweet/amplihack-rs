@@ -289,7 +289,7 @@ I create a workstream file (.pm/workstreams/ws-NNN.yaml) tracking:
 - Current status (RUNNING, PAUSED, COMPLETED, FAILED)
 
 **Step 5: Execution** (if using ClaudeProcess orchestration)
-```python
+```rust
 from orchestration.claude_process import ClaudeProcess
 
 process = ClaudeProcess(

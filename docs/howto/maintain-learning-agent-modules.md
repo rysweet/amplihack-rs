@@ -70,7 +70,7 @@ For example, to tune an intent:
 
 The following signatures must stay callable:
 
-```python
+```rust
 async def learn_from_content(self, content: str) -> dict[str, Any]
 async def answer_question(
     self,
@@ -129,8 +129,8 @@ If you only changed one area, run its module-aligned tests first and then run th
 
 Pass `model` when constructing the agent:
 
-```python
-from amplihack.agents.goal_seeking.learning_agent import LearningAgent
+```rust
+// use amplihack_domain_agents:: LearningAgent
 
 agent = LearningAgent(
     agent_name="release-notes",
@@ -142,10 +142,10 @@ If you omit `model`, `LearningAgent` falls back to `EVAL_MODEL`.
 
 ### Enable hierarchical memory
 
-```python
+```rust
 from pathlib import Path
 
-from amplihack.agents.goal_seeking.learning_agent import LearningAgent
+// use amplihack_domain_agents:: LearningAgent
 
 agent = LearningAgent(
     agent_name="timeline-analyst",
@@ -158,8 +158,8 @@ When hierarchical mode is enabled, the agent stores richer provenance and tempor
 
 ### Use a prompt variant
 
-```python
-from amplihack.agents.goal_seeking.learning_agent import LearningAgent
+```rust
+// use amplihack_domain_agents:: LearningAgent
 
 agent = LearningAgent(
     agent_name="variant-check",

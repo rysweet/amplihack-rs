@@ -51,7 +51,7 @@ Tests consideration-to-session-type mapping logic.
 
 Tests use minimal transcript structures that represent realistic scenarios:
 
-```python
+```rust
 # DEVELOPMENT session
 [
     {"type": "user", "message": {"content": "Add feature X"}},
@@ -190,7 +190,7 @@ Different session types should have different considerations applied to prevent 
 
 ### Test Pattern
 
-```python
+```rust
 def test_<session_type>_session_skips_<consideration_category>_checks(self):
     # 1. Create transcript for session type
     # 2. Run power steering check

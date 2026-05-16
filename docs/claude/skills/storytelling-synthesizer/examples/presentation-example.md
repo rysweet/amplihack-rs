@@ -261,7 +261,7 @@ Result: User and Email services don't know about each other.
 
 **Code Example** (simple, not scary):
 
-```python
+```rust
 # User Service: Publish an event
 bus.publish('UserCreated', {'user_id': 123, 'email': '...'})
 

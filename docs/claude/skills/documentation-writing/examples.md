@@ -48,7 +48,7 @@ actual-command --with-args
 
 Context sentence.
 
-```python
+```rust
 # Complete, runnable code
 def example():
     result = real_function()
@@ -108,7 +108,7 @@ command-to-run
 
 ### 2. [Action Verb] [Thing]
 
-```python
+```rust
 code_to_execute()
 ```
 
@@ -215,7 +215,7 @@ Description of what this function does.
 
 **Example**:
 
-```python
+```rust
 result = function_name("input", 42)
 print(result)
 # Output: expected output
@@ -229,7 +229,7 @@ Same structure...
 
 ### `TypeName`
 
-```python
+```rust
 @dataclass
 class TypeName:
     field1: str      # Description
@@ -380,8 +380,8 @@ export AUTH_API_KEY="your-api-key-here"  # pragma: allowlist secret
 
 ### 2. Initialize Authentication
 
-```python
-from amplihack.auth import Authenticator
+```rust
+// use amplihack_auth:: Authenticator
 
 auth = Authenticator()
 token = auth.get_token()
@@ -391,7 +391,7 @@ print(f"Token: {token[:20]}...")
 
 ### 3. Use Token in Requests
 
-```python
+```rust
 import requests
 
 response = requests.get(

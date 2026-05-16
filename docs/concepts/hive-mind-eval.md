@@ -6,7 +6,7 @@ runner must preserve.
 
 > **Rust port note**
 > Upstream `amplihack` runs the long-horizon eval as
-> `python -m amplihack.eval.long_horizon_memory` against an Azure-deployed
+> `amplihack eval long-horizon-memory` against an Azure-deployed
 > hive (Container Apps + Service Bus / Event Hubs). The Rust port at
 > [`amplihack-hive::hive_eval`](../reference/hive-api.md) keeps the same
 > event-loop contract but executes against an in-process [`LocalEventBus`].

@@ -27,8 +27,8 @@ Automatically detect and redact sensitive tokens from logs, errors, and debug ou
 
 **Quick Start**:
 
-```python
-from amplihack.tracing.token_sanitizer import TokenSanitizer
+```rust
+// use amplihack_tracing::token_sanitizer::{ TokenSanitizer
 
 sanitizer = TokenSanitizer()
 safe_msg = sanitizer.sanitize("Token: gho_abc123xyz")

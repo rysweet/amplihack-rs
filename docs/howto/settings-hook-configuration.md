@@ -139,8 +139,8 @@ $HOME/.amplihack/.claude/tools/amplihack/hooks/session_start.py
 
 New in v0.5.27, this function validates hook files exist before configuration:
 
-```python
-from amplihack.settings import validate_hook_paths
+```rust
+// use amplihack_settings:: validate_hook_paths
 
 hooks = [
     {"type": "SessionStart", "file": "session_start.py", "timeout": 10}

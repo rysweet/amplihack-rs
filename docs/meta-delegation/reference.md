@@ -16,7 +16,7 @@ Execute a task in an isolated subprocess environment with automatic validation.
 
 **Signature:**
 
-```python
+```rust
 def run_meta_delegation(
     goal: str,
     success_criteria: str,
@@ -97,7 +97,7 @@ Result object returned by `run_meta_delegation()`.
 
 **Attributes:**
 
-```python
+```rust
 @dataclass
 class MetaDelegationResult:
     status: str                          # "SUCCESS", "PARTIAL", or "FAILURE"
@@ -115,7 +115,7 @@ class MetaDelegationResult:
 
 **Methods:**
 
-```python
+```rust
 def get_evidence_by_type(self, evidence_type: str) -> List[EvidenceItem]:
     """
     Filter evidence by type.
@@ -207,7 +207,7 @@ def from_json(cls, json_str: str) -> 'MetaDelegationResult':
 
 Individual piece of evidence collected during execution.
 
-```python
+```rust
 @dataclass
 class EvidenceItem:
     type: str                # Evidence type (see Evidence Types below)
@@ -267,7 +267,7 @@ class EvidenceItem:
 
 Generated test scenario from Gadugi (when `enable_scenarios=True`).
 
-```python
+```rust
 @dataclass
 class TestScenario:
     name: str                   # Scenario name
@@ -299,7 +299,7 @@ class TestScenario:
 
 Raised when execution exceeds the specified timeout.
 
-```python
+```rust
 class DelegationTimeout(Exception):
     """
     Delegation execution exceeded timeout.
@@ -322,8 +322,8 @@ class DelegationTimeout(Exception):
 
 **Example:**
 
-```python
-from amplihack.meta_delegation import run_meta_delegation, DelegationTimeout
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation, DelegationTimeout
 
 try:
     result = run_meta_delegation(
@@ -343,7 +343,7 @@ except DelegationTimeout as e:
 
 Raised when subprocess fails to start or crashes.
 
-```python
+```rust
 class DelegationError(Exception):
     """
     Delegation subprocess failed.
@@ -366,8 +366,8 @@ class DelegationError(Exception):
 
 **Example:**
 
-```python
-from amplihack.meta_delegation import run_meta_delegation, DelegationError
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation, DelegationError
 
 try:
     result = run_meta_delegation(
@@ -388,7 +388,7 @@ except DelegationError as e:
 
 Valid values for `persona_type` parameter:
 
-```python
+```rust
 class Persona(Enum):
     GUIDE = "guide"
     QA_ENGINEER = "qa_engineer"
@@ -413,7 +413,7 @@ See [Concepts: Personas](./concepts.md#personas) for detailed behavior.
 
 Valid values for `platform` parameter:
 
-```python
+```rust
 class Platform(Enum):
     CLAUDE_CODE = "claude-code"
     COPILOT = "copilot"
@@ -459,8 +459,8 @@ python my_delegation.py
 
 Register custom evidence collectors for specialized artifacts:
 
-```python
-from amplihack.meta_delegation import register_evidence_collector
+```rust
+// use amplihack_meta_delegation:: register_evidence_collector
 
 def collect_performance_metrics(working_dir: str) -> List[EvidenceItem]:
     """Custom collector for performance metrics."""
@@ -493,8 +493,8 @@ perf_metrics = result.get_evidence_by_type("performance_metrics")
 
 Implement custom success evaluation logic:
 
-```python
-from amplihack.meta_delegation import register_success_evaluator
+```rust
+// use amplihack_meta_delegation:: register_success_evaluator
 
 def custom_evaluator(
     goal: str,
@@ -549,8 +549,8 @@ result = run_meta_delegation(
 
 Monitor subprocess execution in real-time:
 
-```python
-from amplihack.meta_delegation import run_meta_delegation_async
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation_async
 import asyncio
 
 async def run_with_monitoring():
@@ -593,14 +593,14 @@ result = asyncio.run(run_with_monitoring())
 
 Complete type definitions for type checking:
 
-```python
+```rust
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
 # Import all public types
-from amplihack.meta_delegation import (
+// use amplihack_meta_delegation:: (
     MetaDelegationResult,
     EvidenceItem,
     TestScenario,
@@ -645,7 +645,7 @@ Evidence collection adds minimal overhead:
 
 For projects > 1000 files, consider:
 
-```python
+```rust
 result = run_meta_delegation(
     goal="...",
     success_criteria="...",

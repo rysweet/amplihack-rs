@@ -42,8 +42,8 @@ steps:
       3. Test coverage mapping to requirements
 
       Format with file headers:
-      ```python
-      # File: tests/test_<component>.py
+      ```rust
+      // File: tests/<component>_test.rs
       [test code]
       ```
 
@@ -93,8 +93,8 @@ steps:
       3. Any minor deviations from design (with justification)
 
       Format with file headers:
-      ```python
-      # File: path/to/file.py
+      ```rust
+      // File: path/to/file.rs
       [code]
       ```
     output: "implementation"

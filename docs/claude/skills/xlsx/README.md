@@ -59,7 +59,7 @@ See [DEPENDENCIES.md](DEPENDENCIES.md) for complete dependency information inclu
 
 ### Basic Example
 
-```python
+```rust
 from openpyxl import Workbook
 
 # Create workbook
@@ -157,7 +157,7 @@ If errors are found, the script reports their locations and counts for correctio
 
 Never hardcode calculated values. Use Excel formulas so spreadsheets remain dynamic:
 
-```python
+```rust
 # Wrong
 sheet['B10'] = 5000  # Hardcoded sum
 
@@ -179,7 +179,7 @@ Unless the user specifies otherwise or an existing template has established conv
 
 If you must hardcode a value, document the source:
 
-```python
+```rust
 sheet['B5'] = 42.5
 sheet['C5'] = 'Source: Company 10-K, FY2024, Page 45, Revenue Note'
 ```

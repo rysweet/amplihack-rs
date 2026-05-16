@@ -144,7 +144,7 @@ No stubs, placeholders, or dead code; every function works or doesn't exist; qua
 ```bash
 git clone https://github.com/owner/repo.git
 cd repo
-uv pip install -e .
+cargo build --release
 amplihack launch
 ```
 

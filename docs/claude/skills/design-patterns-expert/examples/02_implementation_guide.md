@@ -36,7 +36,7 @@ ConcreteStrategyB : Strategy
 
 1. **Define Strategy interface**:
 
-   ```python
+   ```rust
    class Strategy:
        def execute(self, data):
            pass
@@ -44,7 +44,7 @@ ConcreteStrategyB : Strategy
 
 2. **Create Concrete Strategies**:
 
-   ```python
+   ```rust
    class ConcreteStrategyA(Strategy):
        def execute(self, data):
            # Algorithm A implementation
@@ -58,7 +58,7 @@ ConcreteStrategyB : Strategy
 
 3. **Create Context that uses Strategy**:
 
-   ```python
+   ```rust
    class Context:
        def __init__(self, strategy: Strategy):
            self.strategy = strategy
@@ -72,7 +72,7 @@ ConcreteStrategyB : Strategy
 
 ### Code Example: Python
 
-```python
+```rust
 from abc import ABC, abstractmethod
 
 # Strategy interface

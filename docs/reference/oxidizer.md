@@ -158,33 +158,18 @@ guide. Key rules enforced on every iteration:
 - `cargo-deny` for license/advisory checks, `cargo-udeps` for unused deps
 - See <https://effective-rust.com/use-tools.html>
 
-## Using via Python API
+## Using via CLI
 
-!!! note "Upstream Python API"
-    The example below uses the upstream Python `run_recipe_by_name` API from
-    the original amplihack project. In amplihack-rs, invoke the oxidizer recipe
-    via the `recipe-runner-rs` CLI as shown in [Quick Start](#quick-start).
-
-```python
-from amplihack.recipes import run_recipe_by_name
-
-result = run_recipe_by_name(
-    "oxidizer-workflow",
-    user_context={
-        "python_package_path": "src/mypackage",
-        "rust_target_path": "rust/mypackage",
-        "rust_repo_name": "my-rust-crate",
-        "rust_repo_org": "myorg",
-    },
-)
-
-if result.success:
-    print("Migration complete — 100% parity achieved")
-else:
-    for sr in result.step_results:
-        if sr.error:
-            print(f"  {sr.step_id}: {sr.error}")
+```bash
+amplihack recipe run oxidizer-workflow \
+  -c python_package_path="src/mypackage" \
+  -c rust_target_path="rust/mypackage" \
+  -c rust_repo_name="my-rust-crate" \
+  -c rust_repo_org="myorg" \
+  --verbose
 ```
+
+On success the recipe exits 0 with a "100% parity achieved" summary. On failure, the output includes per-step error details.
 
 ## Recipe Location
 

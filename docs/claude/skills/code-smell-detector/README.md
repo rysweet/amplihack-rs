@@ -36,7 +36,7 @@ The skill analyzes your code and:
 
 **Bad Pattern**:
 
-```python
+```rust
 class DataProcessor(ABC):
     @abstractmethod
     def process(self, data):
@@ -49,7 +49,7 @@ class SimpleDataProcessor(DataProcessor):
 
 **Good Pattern**:
 
-```python
+```rust
 def process_data(data):
     """Process data by doubling it."""
     return data * 2
@@ -59,7 +59,7 @@ def process_data(data):
 
 **Bad Pattern**:
 
-```python
+```rust
 class Entity(Base):
     pass
 
@@ -75,7 +75,7 @@ class User(AuditableEntity):
 
 **Good Pattern**:
 
-```python
+```rust
 class User:
     def __init__(self, storage, timestamp_service, audit_log):
         self.storage = storage
@@ -87,7 +87,7 @@ class User:
 
 **Bad Pattern**:
 
-```python
+```rust
 def process_user(user_dict, validate=True, save=True, notify=True, log=True):
     if validate:
         # validation logic (20 lines)
@@ -102,7 +102,7 @@ def process_user(user_dict, validate=True, save=True, notify=True, log=True):
 
 **Good Pattern**:
 
-```python
+```rust
 def validate_user(user_dict):
     """Validate user data."""
     # 5 lines of focused validation
@@ -124,7 +124,7 @@ def process_user(user_dict):
 
 **Bad Pattern**:
 
-```python
+```rust
 class UserService:
     def create_user(self, name, email):
         db = Database()  # Hardcoded dependency
@@ -136,7 +136,7 @@ class UserService:
 
 **Good Pattern**:
 
-```python
+```rust
 class UserService:
     def __init__(self, db, email_service):
         self.db = db
@@ -152,7 +152,7 @@ class UserService:
 
 **Bad Pattern**:
 
-```python
+```rust
 # module/__init__.py
 from .core import process_data, _internal_helper
 from .utils import validate_input, LOG_LEVEL
@@ -161,7 +161,7 @@ from .utils import validate_input, LOG_LEVEL
 
 **Good Pattern**:
 
-```python
+```rust
 # module/__init__.py
 from .core import process_data
 from .utils import validate_input

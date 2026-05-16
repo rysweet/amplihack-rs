@@ -66,7 +66,7 @@ Key elements:
 
 Example module structure:
 
-```python
+```rust
 # __init__.py - ONLY public exports
 from .core import primary_function, secondary_function
 from .models import InputModel, OutputModel
@@ -82,7 +82,7 @@ __all__ = [
 
 Example public function:
 
-```python
+```rust
 def primary_function(input_model: InputModel) -> OutputModel:
     """One-line summary.
 

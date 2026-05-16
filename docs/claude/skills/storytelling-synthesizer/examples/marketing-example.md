@@ -86,7 +86,7 @@ A 2-day integration project became a week. Your deployment is complicated. Every
 
 Quick-start guide. 10 lines of code.
 
-```python
+```rust
 from our_api import Client
 
 client = Client(api_key="your-key")

@@ -13,7 +13,7 @@ This skill helps you proactively manage Claude's context window by:
 
 ## Quick Start
 
-```python
+```rust
 from context_management import context_management_skill
 
 # Check current token usage
@@ -85,7 +85,7 @@ This skill follows the **brick philosophy** with four independent, single-respon
 
 ### Public Interface
 
-```python
+```rust
 # Main skill entry point
 context_management_skill(action, **kwargs)
 
@@ -100,7 +100,7 @@ list_snapshots()
 
 ### Pattern 1: Preventive Monitoring
 
-```python
+```rust
 # Check token usage periodically
 status = check_status(current_tokens=current)
 
@@ -111,7 +111,7 @@ if status['status'] == 'recommended':
 
 ### Pattern 2: Progressive Rehydration
 
-```python
+```rust
 # Start with minimal context
 context = rehydrate_context(snapshot_id, level='essential')
 
@@ -126,7 +126,7 @@ if need_everything:
 
 ### Pattern 3: Context Switching
 
-```python
+```rust
 # Pause current work
 snapshot_a = create_snapshot(messages, name='feature-a-paused')
 
@@ -168,7 +168,7 @@ context = rehydrate_context(snapshot_a_id, level='standard')
 
 Default thresholds (in `token_monitor.py`):
 
-```python
+```rust
 THRESHOLDS = {
     'ok': 0.5,          # 0-50%: No action needed
     'consider': 0.7,    # 70%+: Consider snapshotting
@@ -183,7 +183,7 @@ Default location: `~/.amplihack/.claude/runtime/context-snapshots/`
 
 Can be customized:
 
-```python
+```rust
 result = context_management_skill(
     'snapshot',
     conversation_data=messages,
@@ -197,7 +197,7 @@ Default: 1,000,000 tokens (Claude's context window)
 
 Can be customized:
 
-```python
+```rust
 result = context_management_skill(
     'status',
     current_tokens=current,
@@ -295,7 +295,7 @@ Each brick has ONE job:
 
 ### Snapshot not found
 
-```python
+```rust
 result = rehydrate_context('invalid_id')
 # Returns: {'status': 'error', 'error': 'Snapshot not found: invalid_id'}
 

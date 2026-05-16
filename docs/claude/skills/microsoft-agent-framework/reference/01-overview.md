@@ -203,7 +203,7 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 
 ### Python
 
-```python
+```rust
 import asyncio
 from agents_framework import Agent, ModelClient
 

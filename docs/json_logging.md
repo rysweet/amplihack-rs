@@ -121,7 +121,7 @@ Logged when an error occurs during execution.
 
 ### Reading Events with Python
 
-```python
+```rust
 import json
 from pathlib import Path
 
@@ -158,7 +158,7 @@ cat auto.jsonl | jq -s '[.[] | select(.event == "agent_invoked") | .agent] | uni
 
 ### Monitoring Session Progress
 
-```python
+```rust
 import json
 from pathlib import Path
 

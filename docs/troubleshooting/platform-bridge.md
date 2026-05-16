@@ -8,7 +8,7 @@ Solutions to common problems when usin' the platform bridge.
 
 **Symptoms**:
 
-```python
+```rust
 PlatformDetectionError: Could not detect platform from git remotes
 ```
 
@@ -92,7 +92,7 @@ PlatformDetectionError: Could not detect platform from git remotes
 
 3. **Verify detection**:
 
-   ```python
+   ```rust
    from claude.tools.platform_bridge import detect_platform, Platform
 
    platform = detect_platform()
@@ -108,7 +108,7 @@ PlatformDetectionError: Could not detect platform from git remotes
 
 **Symptoms**:
 
-```python
+```rust
 CLIToolMissingError: GitHub CLI not found. Install with: brew install gh
 ```
 
@@ -147,7 +147,7 @@ CLIToolMissingError: GitHub CLI not found. Install with: brew install gh
 
 **Symptoms**:
 
-```python
+```rust
 CLIToolMissingError: Azure CLI not found. Install with: curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 ```
 
@@ -308,7 +308,7 @@ az: Token has expired
 
 **Symptoms**:
 
-```python
+```rust
 BranchNotFoundError: Branch 'feat/test' doesn't exist
 ```
 
@@ -329,7 +329,7 @@ BranchNotFoundError: Branch 'feat/test' doesn't exist
    ```
 
 3. **Then create PR**:
-   ```python
+   ```rust
    pr = bridge.create_draft_pr(
        title="Test",
        body="Body",
@@ -344,7 +344,7 @@ BranchNotFoundError: Branch 'feat/test' doesn't exist
 
 **Symptoms**:
 
-```python
+```rust
 PRNotFoundError: PR #999 doesn't exist
 ```
 
@@ -363,7 +363,7 @@ PRNotFoundError: PR #999 doesn't exist
    ```
 
 2. **Use correct PR number**:
-   ```python
+   ```rust
    # Use actual PR number from list
    bridge.mark_pr_ready(pr_number=123)  # Correct number
    ```
@@ -420,7 +420,7 @@ az: AuthorizationFailed
 
 1. **Increase timeout** (if needed):
 
-   ```python
+   ```rust
    # Default timeout be 60 seconds fer CI checks
    # If yer CI be slower, wait longer before checkin'
    import time
@@ -430,7 +430,7 @@ az: AuthorizationFailed
 
 2. **Poll instead of block**:
 
-   ```python
+   ```rust
    import time
 
    def wait_for_ci(bridge, pr_number, max_wait=600):
@@ -455,7 +455,7 @@ az: AuthorizationFailed
 
 **Symptoms**:
 
-```python
+```rust
 subprocess.TimeoutExpired: Command timed out after 30 seconds
 ```
 
@@ -519,7 +519,7 @@ git remote add mirror <other-url>
 
 Create separate bridge instances fer each project:
 
-```python
+```rust
 # Project A: GitHub
 bridge_a = PlatformBridge("/path/to/monorepo/project-a")
 
@@ -557,7 +557,7 @@ export PLATFORM_BRIDGE_DEBUG=1
 
 Then run yer code:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge
 
 bridge = PlatformBridge()  # Will print debug info

@@ -38,7 +38,7 @@ as the current install/launch contract.
 
 **File**: `amplihack/launcher/__init__.py`
 
-```python
+```rust
 def launch_copilot() -> None:
     """Launch GitHub Copilot CLI, installing if needed."""
 
@@ -77,7 +77,7 @@ def install_copilot() -> bool:
 
 **Implementation**:
 
-```python
+```rust
 def install_copilot() -> bool:
     """Install GitHub Copilot CLI via npm."""
     try:
@@ -113,7 +113,7 @@ def install_copilot() -> bool:
 
 **Success Path**:
 
-```python
+```rust
 if not shutil.which("github-copilot-cli"):
     success = install_copilot()
     if not success:
@@ -124,7 +124,7 @@ if not shutil.which("github-copilot-cli"):
 
 **Failure Path**:
 
-```python
+```rust
 # npm install failed
 if not success:
     print("Failed to install Copilot CLI")
@@ -137,7 +137,7 @@ if not success:
 
 **Code**:
 
-```python
+```rust
 if not shutil.which("github-copilot-cli"):
     success = install_copilot()
 
@@ -159,7 +159,7 @@ if not shutil.which("github-copilot-cli"):
 
 **Code**:
 
-```python
+```rust
 if not shutil.which("github-copilot-cli"):
     success = install_copilot()
     if not success:
@@ -217,7 +217,7 @@ T+200ms: PATH propagates to current process
 
 **Test**: Installation triggers when needed
 
-```python
+```rust
 def test_launch_copilot_installs_when_missing(monkeypatch):
     """Verify installation happens when CLI not found."""
     with patch('shutil.which', return_value=None), \
@@ -229,7 +229,7 @@ def test_launch_copilot_installs_when_missing(monkeypatch):
 
 **Test**: Failure reported accurately
 
-```python
+```rust
 def test_launch_copilot_reports_install_failure(monkeypatch):
     """Verify failure message when installation fails."""
     with patch('shutil.which', return_value=None), \
@@ -241,7 +241,7 @@ def test_launch_copilot_reports_install_failure(monkeypatch):
 
 **Test**: No installation when already present
 
-```python
+```rust
 def test_launch_copilot_skips_install_when_present(monkeypatch):
     """Verify no installation when CLI already exists."""
     install_mock = Mock()
@@ -288,7 +288,7 @@ test $? -eq 0
 
 ### npm Not Found
 
-```python
+```rust
 try:
     result = subprocess.run(["npm", ...])
 except FileNotFoundError:
@@ -413,7 +413,7 @@ Before releasing changes:
 **Files**:
 
 - `amplihack/launcher/__init__.py` - Main implementation
-- `tests/test_launcher.py` - Unit tests
+- `tests/test_launcher.sh` - Unit tests
 - `scripts/install.sh` - Installation script
 
 **Dependencies**:

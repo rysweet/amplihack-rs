@@ -101,7 +101,7 @@ steps:
         rule 0's "provably impossible" exception applies. Empty list with no
         justification = workflow failure.
       - `Diff summary:` — one line per file describing the change.
-      - Complete implementation code (all files), with `# File: path/to/file.py`
+      - Complete implementation code (all files), with `# File: path/to/file.ext`
         headers.
       - Brief explanation of key decisions.
       - Any deviations from design (with justification).

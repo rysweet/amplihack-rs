@@ -355,7 +355,7 @@ ORDER BY s.start_time;
 
 ### Phase 2: Data Migration
 
-```python
+```rust
 # Migration script outline
 
 def migrate_memories():

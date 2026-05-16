@@ -7,14 +7,14 @@ structure-aware compiler that produces accurate, actionable diagnostics.
 
 ## Import
 
-```python
-from amplihack.workflows import GhAwCompiler, Diagnostic, compile_workflow
+```rust
+// use amplihack_workflows:: GhAwCompiler, Diagnostic, compile_workflow
 ```
 
 ## Quick Start
 
-```python
-from amplihack.workflows import compile_workflow
+```rust
+// use amplihack_workflows:: compile_workflow
 
 with open(".github/workflows/issue-classifier.md") as f:
     content = f.read()
@@ -27,7 +27,7 @@ for d in diagnostics:
 
 ## `compile_workflow()`
 
-```python
+```rust
 def compile_workflow(content: str, filename: str = "<input>") -> list[Diagnostic]
 ```
 
@@ -44,7 +44,7 @@ Compiles a workflow file and returns a list of `Diagnostic` objects.
 
 ## `Diagnostic`
 
-```python
+```rust
 @dataclass
 class Diagnostic:
     severity: str      # "error" or "warning"
@@ -56,7 +56,7 @@ class Diagnostic:
 
 ## `GhAwCompiler`
 
-```python
+```rust
 compiler = GhAwCompiler()
 diagnostics = compiler.compile(content, filename="my-workflow.md")
 ```

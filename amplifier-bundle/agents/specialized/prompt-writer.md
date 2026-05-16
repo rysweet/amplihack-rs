@@ -104,7 +104,7 @@ The request is unclear. Ask user to clarify:
 "I need clarification on your request. Are you asking for:
 
 A) EXECUTABLE CODE - A working program/script/application that runs and performs actions
-Example: A CLI tool that analyzes files, an API server, a Python script
+Example: A CLI tool that analyzes files, an API server, a Rust binary
 
 B) DOCUMENTATION - A guide, skill, or template for Claude Code or users
 Example: A Claude Code skill, a how-to guide, documentation
@@ -127,7 +127,7 @@ When building EXECUTABLE code:
 - DO NOT read or reference .claude/skills/ content
 - DO NOT use skills as code templates
 - DO use .claude/scenarios/ for production tool examples
-- DO use standard Python/language patterns and best practices
+- DO use standard language patterns and best practices
 - DO create new code following project philosophy (PHILOSOPHY.md, PATTERNS.md)
 
 Skills are markdown documentation loaded by Claude - they are NOT starter code.

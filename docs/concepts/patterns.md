@@ -37,7 +37,7 @@ This document maintains **14 foundational patterns** that apply across most ampl
 
 **Solution**: Design modules as self-contained "bricks" with clear "studs" (public API) defined via `__all__`.
 
-```python
+```rust
 """Module docstring documents philosophy and public API.
 
 Philosophy:
@@ -82,7 +82,7 @@ module_name/
 
 **Solution**: Every function must work or not exist.
 
-```python
+```rust
 # BAD - Stub that does nothing
 def process_payment(amount):
     # TODO: Implement Stripe integration
@@ -128,7 +128,7 @@ def process_payment(amount, payments_file="payments.json"):
 3. **Services/Config**: Verify endpoints, check response format
 4. **Error Handling**: Plan for rate limits, timeouts, specific error types
 
-```python
+```rust
 # WRONG - assumptions without validation
 client = Anthropic()
 message = client.messages.create(
@@ -167,7 +167,7 @@ except Exception as e:
 
 **Solution**:
 
-```python
+```rust
 import asyncio
 from claude_code_sdk import ClaudeSDKClient, ClaudeCodeOptions
 
@@ -211,7 +211,7 @@ async def extract_with_claude_sdk(prompt: str, timeout_seconds: int = 120):
 
 **Solution**: Create a safe subprocess wrapper with user-friendly, actionable error messages.
 
-```python
+```rust
 def safe_subprocess_call(
     cmd: List[str],
     context: str,
@@ -260,7 +260,7 @@ def safe_subprocess_call(
 
 **Solution**: Check all prerequisites at startup with clear, actionable error messages.
 
-```python
+```rust
 @dataclass
 class ToolCheckResult:
     tool: str
@@ -308,7 +308,7 @@ class Launcher:
 
 **Solution**:
 
-```python
+```rust
 class ResilientProcessor:
     async def process_batch(self, items):
         results = {"succeeded": [], "failed": []}
@@ -343,7 +343,7 @@ class ResilientProcessor:
 
 **Solution**: Follow testing pyramid with 60% unit tests, 30% integration tests, 10% E2E tests.
 
-```python
+```rust
 """Tests for module - TDD approach.
 
 Testing pyramid:
@@ -392,7 +392,7 @@ class TestEndToEnd:
 
 **Solution**: Detect platform automatically and provide exact installation commands.
 
-```python
+```rust
 class Platform(Enum):
     MACOS = "macos"
     LINUX = "linux"
@@ -427,7 +427,7 @@ class PrerequisiteChecker:
 
 **Solution**: Detect environment automatically and adapt through configuration objects.
 
-```python
+```rust
 class EnvironmentAdapter:
     def detect_environment(self) -> str:
         if self._is_uvx_environment():
@@ -463,7 +463,7 @@ class EnvironmentAdapter:
 
 **Solution**: Smart caching with invalidation strategies.
 
-```python
+```rust
 from functools import lru_cache
 import threading
 
@@ -500,7 +500,7 @@ class SmartCache:
 
 **Solution**:
 
-```python
+```rust
 def write_with_retry(filepath: Path, data: str, max_retries: int = 3):
     """Write file with exponential backoff for cloud sync issues"""
     retry_delay = 0.1
@@ -532,7 +532,7 @@ def write_with_retry(filepath: Path, data: str, max_retries: int = 3):
 
 **Solution**: Explicitly categorize and filter system-generated files based on semantic purpose, not just directory structure.
 
-```python
+```rust
 from pathlib import Path
 from typing import Set, List
 
@@ -576,7 +576,7 @@ class GitAwareFileFilter:
 
 **Usage in conflict detection**:
 
-```python
+```rust
 class ConflictChecker:
     def check_conflicts(self, source_dir: Path, essential_dirs: List[str]) -> List[Path]:
         """Check for REAL conflicts - ignore system metadata"""
@@ -611,7 +611,7 @@ class ConflictChecker:
 
 **Solution**: Design APIs to be fully async or fully sync, not both.
 
-```python
+```rust
 # WRONG - Creates nested event loops
 class Service:
     def process(self, data):

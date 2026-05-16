@@ -4,7 +4,7 @@
 
 ### Minimal Python Agent
 
-```python
+```rust
 from claude_agents import Agent
 
 # Simplest possible agent
@@ -34,7 +34,7 @@ console.log(result.response);
 
 ### Agent with Custom System Prompt
 
-```python
+```rust
 from claude_agents import Agent
 
 agent = Agent(
@@ -50,7 +50,7 @@ print(result.response)
 
 ### Agent with Custom Tools
 
-```python
+```rust
 from claude_agents import Agent
 from claude_agents.tools import Tool
 
@@ -91,7 +91,7 @@ print(result.response)
 
 ### Agent with MCP Integration
 
-```python
+```rust
 from claude_agents import Agent
 from claude_agents.mcp import MCPClient
 
@@ -125,7 +125,7 @@ result = agent.run(
 
 ### File Operations Tool
 
-```python
+```rust
 from claude_agents.tools import Tool
 import os
 from pathlib import Path
@@ -195,7 +195,7 @@ file_tool = Tool(
 
 ### Code Execution Tool
 
-```python
+```rust
 import subprocess
 import tempfile
 from pathlib import Path
@@ -276,7 +276,7 @@ code_exec_tool = Tool(
 
 ### Web Search Tool
 
-```python
+```rust
 import aiohttp
 from typing import List, Dict
 
@@ -340,7 +340,7 @@ search_tool = Tool(
 
 ### Database Query Tool
 
-```python
+```rust
 import sqlite3
 from typing import List, Dict, Any
 
@@ -403,7 +403,7 @@ db_tool = Tool(
 
 ### MCP Tool Wrapper
 
-```python
+```rust
 from claude_agents.mcp import MCPClient
 from claude_agents import Agent
 
@@ -428,7 +428,7 @@ result = agent.run("Use the custom_tool to process this data: [data]")
 
 ### Logging Hook
 
-```python
+```rust
 from claude_agents.hooks import PreToolUseHook, PostToolUseHook
 import logging
 from datetime import datetime
@@ -472,7 +472,7 @@ agent = Agent(
 
 ### Validation Hook
 
-```python
+```rust
 from claude_agents.hooks import PreToolUseHook
 import re
 
@@ -539,7 +539,7 @@ agent = Agent(
 
 ### Rate Limiting Hook
 
-```python
+```rust
 from claude_agents.hooks import PreToolUseHook
 import time
 from collections import defaultdict
@@ -605,7 +605,7 @@ agent = Agent(
 
 ### Cost Tracking Hook
 
-```python
+```rust
 from claude_agents.hooks import PostToolUseHook
 from collections import defaultdict
 from typing import Dict
@@ -670,7 +670,7 @@ cost_tracker.report()
 
 ### Subagent Delegation
 
-```python
+```rust
 from claude_agents import Agent
 from claude_agents.tools import Tool
 
@@ -711,7 +711,7 @@ final_report = main_agent.run(
 
 ### Agentic Search Pattern
 
-```python
+```rust
 from claude_agents import Agent
 
 # Agent with search and analysis tools
@@ -742,7 +742,7 @@ result = search_agent.run(
 
 ### Context Compaction Strategy
 
-```python
+```rust
 from claude_agents import Agent
 
 # Agent with automatic context compaction
@@ -760,7 +760,7 @@ for i in range(100):
 
 ### Verification Pattern
 
-```python
+```rust
 from claude_agents import Agent
 
 # Agent with self-verification
@@ -787,7 +787,7 @@ result = verification_agent.run(
 
 ### Error Recovery Pattern
 
-```python
+```rust
 from claude_agents import Agent, AgentError
 
 # Agent with retry logic
@@ -815,7 +815,7 @@ for attempt in range(max_retries):
 
 ### Integration with Amplihack Agents
 
-```python
+```rust
 # .claude/agents/amplihack/specialized/data_analyzer.md
 """
 You are a data analysis specialist.
@@ -849,7 +849,7 @@ result = analyzer.run("Analyze sales_data.csv and identify trends")
 
 ### Integration with auto_mode.py
 
-```python
+```rust
 # In amplihack/auto_mode.py
 from claude_agents import Agent
 from claude_agents.tools import Tool
@@ -874,7 +874,7 @@ result = agent.run(user_task)
 
 ### Integration with Existing Tools
 
-```python
+```rust
 # Wrap existing Amplihack tools for Agent SDK
 from claude_agents.tools import Tool
 

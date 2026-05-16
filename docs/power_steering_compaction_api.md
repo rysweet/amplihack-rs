@@ -18,7 +18,7 @@ Validates that critical session data was preserved during compaction.
 
 **API:**
 
-```python
+```rust
 class CompactionValidator:
     """Validates conversation compaction and data preservation.
 
@@ -170,7 +170,7 @@ Enhanced context object with compaction diagnostics.
 
 **API:**
 
-```python
+```rust
 @dataclass
 class CompactionContext:
     """Compaction event metadata and diagnostics.
@@ -275,7 +275,7 @@ Result object returned by validation methods.
 
 **API:**
 
-```python
+```rust
 @dataclass
 class ValidationResult:
     """Result of compaction validation with recovery guidance.
@@ -356,7 +356,7 @@ The `CompactionValidator` integrates into the main power-steering checker.
 
 **Integration method:**
 
-```python
+```rust
 class PowerSteeringChecker:
     """Main power-steering checker with compaction support."""
 
@@ -429,7 +429,7 @@ The compaction system handles 10 edge case scenarios comprehensively tested.
 
 **Expected:**
 
-```python
+```rust
 ctx = validator.get_compaction_context(transcript)
 assert not ctx.detected
 assert ctx.turn_at_compaction == 0
@@ -442,7 +442,7 @@ assert ctx.validation_passed  # No validation needed
 
 **Expected:**
 
-```python
+```rust
 result = validator.validate(transcript, "session_123")
 assert result.passed
 assert result.compaction_context.detected
@@ -455,7 +455,7 @@ assert len(result.warnings) == 0
 
 **Expected:**
 
-```python
+```rust
 result = validator.validate_todos(transcript)
 assert not result.passed
 assert "TODO items lost" in result.warnings
@@ -468,7 +468,7 @@ assert "Recreate TODO list" in result.recovery_steps[0]
 
 **Expected:**
 
-```python
+```rust
 result = validator.validate_objectives(transcript)
 assert not result.passed
 assert "objectives unclear" in result.warnings[0].lower()
@@ -481,7 +481,7 @@ assert "restate your goal" in result.recovery_steps[0].lower()
 
 **Expected:**
 
-```python
+```rust
 ctx = validator.get_compaction_context(transcript)
 assert ctx.detected
 # Reports latest compaction event
@@ -494,7 +494,7 @@ assert ctx.turn_at_compaction > 0
 
 **Expected:**
 
-```python
+```rust
 result = validator.validate(transcript, "session_123")
 # Should warn about potential data loss
 if not result.passed:
@@ -507,7 +507,7 @@ if not result.passed:
 
 **Expected:**
 
-```python
+```rust
 ctx = validator.get_compaction_context([])
 assert not ctx.detected
 assert ctx.validation_passed  # Fail-open
@@ -519,7 +519,7 @@ assert ctx.validation_passed  # Fail-open
 
 **Expected:**
 
-```python
+```rust
 # Should not crash, fail-open
 result = validator.validate(malformed_transcript, "session_123")
 assert result.passed  # Fail-open on errors
@@ -531,7 +531,7 @@ assert result.passed  # Fail-open on errors
 
 **Expected:**
 
-```python
+```rust
 import time
 start = time.time()
 result = validator.validate(large_transcript, "session_123")
@@ -546,7 +546,7 @@ assert duration < 0.5  # Should complete in < 500ms
 
 **Expected:**
 
-```python
+```rust
 # CompactionValidator is stateless and thread-safe
 import concurrent.futures
 
@@ -590,7 +590,7 @@ Compaction events expose these metrics for monitoring:
 
 Compaction events log at appropriate levels:
 
-```python
+```rust
 import logging
 
 logger = logging.getLogger("power_steering.compaction")
@@ -640,7 +640,7 @@ logger.debug(f"Compaction context: {ctx.to_dict()}")
 
 **Example integration:**
 
-```python
+```rust
 from power_steering_checker import CompactionValidator, ValidationResult
 
 def check_session_completeness(transcript: list[dict], session_id: str):

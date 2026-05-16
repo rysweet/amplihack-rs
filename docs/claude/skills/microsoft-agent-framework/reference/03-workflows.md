@@ -12,7 +12,7 @@ Workflows in Microsoft Agent Framework are graph-based orchestration systems tha
 
 ## Basic Workflow
 
-```python
+```rust
 from agents_framework import GraphWorkflow, Agent, ModelClient
 
 # Create workflow
@@ -49,7 +49,7 @@ Nodes are execution units in the workflow graph.
 3. **Decision nodes**: Route based on conditions
 4. **Parallel nodes**: Execute multiple operations concurrently
 
-```python
+```rust
 # Agent node
 workflow.add_node("agent1", my_agent)
 
@@ -74,7 +74,7 @@ Edges define execution flow between nodes.
 3. **Parallel**: Node A → [Node B, Node C] (both execute)
 4. **Join**: [Node A, Node B] → Node C (wait for both)
 
-```python
+```rust
 # Sequential
 workflow.add_edge("node1", "node2")
 
@@ -89,7 +89,7 @@ workflow.add_edge(["worker1", "worker2", "worker3"], "aggregator")
 
 Route based on state or output:
 
-```python
+```rust
 def should_approve(state):
     """Return True to approve, False to reject"""
     return state.get("confidence", 0) > 0.8
@@ -106,7 +106,7 @@ workflow.add_conditional_edge(
 
 **String-based routing**:
 
-```python
+```rust
 def route_by_category(state):
     """Return string matching edge key"""
     return state.get("category", "default")
@@ -127,7 +127,7 @@ workflow.add_conditional_edge(
 
 Workflow state is a dictionary passed between nodes:
 
-```python
+```rust
 def node_function(state: dict) -> dict:
     """
     Receive state, process, return updated state.
@@ -155,7 +155,7 @@ print(result.state)  # Final state after all nodes
 
 ### Sequential Pipeline
 
-```python
+```rust
 workflow = GraphWorkflow()
 
 # Add stages
@@ -174,7 +174,7 @@ result = await workflow.run(initial_message="Research topic")
 
 ### Parallel Execution
 
-```python
+```rust
 workflow = GraphWorkflow()
 
 # Multiple workers
@@ -194,7 +194,7 @@ result = await workflow.run(initial_state={"task": "analyze data"})
 
 ### Conditional Branching
 
-```python
+```rust
 workflow = GraphWorkflow()
 
 workflow.add_node("classifier", classifier_agent)
@@ -218,7 +218,7 @@ workflow.set_entry_point("classifier")
 
 ### Iterative Refinement
 
-```python
+```rust
 workflow = GraphWorkflow()
 
 workflow.add_node("generate", generator_agent)
@@ -250,7 +250,7 @@ def safe_needs_revision(state):
 
 ### Human-in-the-Loop
 
-```python
+```rust
 from agents_framework import HumanApproval
 
 workflow = GraphWorkflow()
@@ -281,7 +281,7 @@ workflow.add_conditional_edge(
 
 ### Error Handling & Retry
 
-```python
+```rust
 workflow = GraphWorkflow()
 
 workflow.add_node("try_operation", operation_agent)
@@ -323,7 +323,7 @@ workflow.add_conditional_edge(
 
 Save workflow state and resume later:
 
-```python
+```rust
 from agents_framework import CheckpointManager
 
 checkpoint_manager = CheckpointManager(storage_path="./checkpoints")
@@ -344,7 +344,7 @@ result = await workflow.resume(checkpoint_id="workflow-123")
 
 Embed workflows within workflows:
 
-```python
+```rust
 # Sub-workflow
 sub_workflow = GraphWorkflow()
 sub_workflow.add_node("step1", agent1)
@@ -365,7 +365,7 @@ main_workflow.add_edge("sub_process", "finalize")
 
 Stream outputs as workflow executes:
 
-```python
+```rust
 async for event in workflow.run_stream(initial_state={"task": "process"}):
     print(f"Node: {event.node_name}")
     print(f"Output: {event.output}")
@@ -376,7 +376,7 @@ async for event in workflow.run_stream(initial_state={"task": "process"}):
 
 Inspect workflow execution history:
 
-```python
+```rust
 result = await workflow.run(initial_state={"task": "debug me"})
 
 # Access execution history
@@ -391,7 +391,7 @@ for step in result.history:
 
 ### Sequential Handoff
 
-```python
+```rust
 # Research → Write → Review → Publish
 workflow = GraphWorkflow()
 
@@ -407,7 +407,7 @@ workflow.add_edge("review", "publish")
 
 ### Concurrent Specialization
 
-```python
+```rust
 # Multiple specialists work in parallel, then synthesize
 workflow = GraphWorkflow()
 
@@ -425,7 +425,7 @@ workflow.add_edge(["security_expert", "performance_expert", "ux_expert"], "synth
 
 ### Hierarchical Delegation
 
-```python
+```rust
 # Manager delegates to workers, aggregates results
 workflow = GraphWorkflow()
 
@@ -444,7 +444,7 @@ workflow.add_edge(["worker1", "worker2", "worker3"], "report")
 
 ### Magentic Pattern (Dynamic Routing)
 
-```python
+```rust
 # Route to appropriate specialist based on query
 workflow = GraphWorkflow()
 
@@ -513,7 +513,7 @@ var result = await workflow.RunAsync(new Dictionary<string, object>
 
 ## Performance Optimization
 
-```python
+```rust
 # Use parallel execution where possible
 workflow.add_edge("START", ["worker1", "worker2", "worker3"])
 

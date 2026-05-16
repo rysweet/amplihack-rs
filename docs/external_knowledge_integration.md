@@ -70,8 +70,8 @@ scripts/
 
 #### Basic Document Fetching
 
-```python
-from amplihack.memory.neo4j import (
+```rust
+// use amplihack_memory::neo4j::{ (
     Neo4jConnector,
     ExternalKnowledgeManager,
     KnowledgeSource,
@@ -99,7 +99,7 @@ with Neo4jConnector() as conn:
 
 #### Linking to Code
 
-```python
+```rust
 # Link documentation to code file
 manager.link_to_code(
     doc_url="https://docs.python.org/3/library/json.html",
@@ -124,7 +124,7 @@ manager.link_to_memory(
 
 #### Querying Knowledge
 
-```python
+```rust
 # Search documentation
 results = manager.query_external_knowledge(
     query_text="json parsing",
@@ -147,8 +147,8 @@ docs = manager.get_function_documentation("parse_json_data:1.0")
 
 #### API References
 
-```python
-from amplihack.memory.neo4j import APIReference, KnowledgeSource
+```rust
+// use amplihack_memory::neo4j::{ APIReference, KnowledgeSource
 
 # Store API reference
 api_ref = APIReference(
@@ -169,7 +169,7 @@ manager.store_api_reference(api_ref)
 
 #### Maintenance
 
-```python
+```rust
 # Get statistics
 stats = manager.get_knowledge_stats()
 print(f"Total docs: {stats['total_docs']}")
@@ -322,7 +322,7 @@ The following libraries have pre-configured URLs:
 
 Documents have configurable TTL:
 
-```python
+```rust
 doc = ExternalDoc(
     url="https://example.com/doc",
     title="Example",
@@ -341,7 +341,7 @@ doc = ExternalDoc(
 
 Support multiple documentation versions:
 
-```python
+```rust
 # Store Python 3.10 docs
 doc_310 = manager.fetch_api_docs(
     url="https://docs.python.org/3.10/library/asyncio.html",
@@ -365,7 +365,7 @@ results = manager.query_external_knowledge(
 
 Trust scores (0.0-1.0) indicate source reliability:
 
-```python
+```rust
 # High trust - official documentation
 manager.fetch_api_docs(
     url="https://docs.python.org/3/library/json.html",
@@ -432,8 +432,8 @@ Tests:
 
 ### Example 1: Augment Code Analysis
 
-```python
-from amplihack.memory.neo4j import (
+```rust
+// use amplihack_memory::neo4j::{ (
     Neo4jConnector,
     ExternalKnowledgeManager,
     BlarifyIntegration,
@@ -470,8 +470,8 @@ with Neo4jConnector() as conn:
 
 ### Example 2: Memory with Source Attribution
 
-```python
-from amplihack.memory.neo4j import (
+```rust
+// use amplihack_memory::neo4j::{ (
     Neo4jConnector,
     MemoryStore,
     ExternalKnowledgeManager,
@@ -507,7 +507,7 @@ with Neo4jConnector() as conn:
 
 ### Example 3: Version-Aware Documentation
 
-```python
+```rust
 # Import docs for multiple Python versions
 versions = ["3.10", "3.11", "3.12"]
 
@@ -582,12 +582,12 @@ pip install requests
 ```bash
 # Start Neo4j
 export NEO4J_PASSWORD='your_password'
-python -c "from amplihack.memory.neo4j import ensure_neo4j_running; ensure_neo4j_running(blocking=True)"
+python -c "// use amplihack_memory::neo4j::{ ensure_neo4j_running; ensure_neo4j_running(blocking=True)"
 ```
 
 ### Issue: Cache not working
 
-```python
+```rust
 # Force refresh bypasses cache
 doc = manager.fetch_api_docs(
     url="https://example.com/doc",
@@ -597,7 +597,7 @@ doc = manager.fetch_api_docs(
 
 ### Issue: Expired documents returned
 
-```python
+```rust
 # Run cleanup
 removed = manager.cleanup_expired_docs()
 print(f"Removed {removed} expired documents")

@@ -6,7 +6,7 @@ Complete API documentation fer the platform bridge module.
 
 ### Public API
 
-```python
+```rust
 __all__ = [
     "PlatformBridge",
     "detect_platform",
@@ -24,7 +24,7 @@ Main entry point fer platform-agnostic git operations.
 
 **Constructor**:
 
-```python
+```rust
 PlatformBridge(repo_path: str = ".") -> PlatformBridge
 ```
 
@@ -39,7 +39,7 @@ PlatformBridge(repo_path: str = ".") -> PlatformBridge
 
 **Example**:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge
 
 # Use current directory
@@ -62,7 +62,7 @@ Create an issue (GitHub) or work item (Azure DevOps).
 
 **Signature**:
 
-```python
+```rust
 def create_issue(
     self,
     title: str,
@@ -79,7 +79,7 @@ def create_issue(
 
 **Returns**:
 
-```python
+```rust
 {
     "number": 42,                    # Issue/work item number
     "url": "https://...",            # Web URL to issue
@@ -95,7 +95,7 @@ def create_issue(
 
 **Example**:
 
-```python
+```rust
 issue = bridge.create_issue(
     title="Add authentication",
     body="Implement JWT authentication\n\n## Requirements\n- Token validation\n- Refresh tokens",
@@ -125,7 +125,7 @@ Create a draft pull request on both platforms.
 
 **Signature**:
 
-```python
+```rust
 def create_draft_pr(
     self,
     title: str,
@@ -144,7 +144,7 @@ def create_draft_pr(
 
 **Returns**:
 
-```python
+```rust
 {
     "number": 123,                   # PR number
     "url": "https://...",            # Web URL to PR
@@ -163,7 +163,7 @@ def create_draft_pr(
 
 **Example**:
 
-```python
+```rust
 pr = bridge.create_draft_pr(
     title="feat: Add JWT authentication",
     body="## Summary\n\nImplements JWT authentication\n\n## Test Plan\n- Unit tests\n- Integration tests",
@@ -194,7 +194,7 @@ Mark a draft PR as ready fer review.
 
 **Signature**:
 
-```python
+```rust
 def mark_pr_ready(self, pr_number: int) -> Dict[str, Any]
 ```
 
@@ -204,7 +204,7 @@ def mark_pr_ready(self, pr_number: int) -> Dict[str, Any]
 
 **Returns**:
 
-```python
+```rust
 {
     "number": 123,              # PR number
     "state": "open",            # New state (no longer draft)
@@ -220,7 +220,7 @@ def mark_pr_ready(self, pr_number: int) -> Dict[str, Any]
 
 **Example**:
 
-```python
+```rust
 result = bridge.mark_pr_ready(pr_number=123)
 
 if result['success']:
@@ -247,7 +247,7 @@ Add a comment to a pull request.
 
 **Signature**:
 
-```python
+```rust
 def add_pr_comment(
     self,
     pr_number: int,
@@ -262,7 +262,7 @@ def add_pr_comment(
 
 **Returns**:
 
-```python
+```rust
 {
     "comment_id": "456",         # Comment identifier
     "pr_number": 123,            # PR number
@@ -279,7 +279,7 @@ def add_pr_comment(
 
 **Example**:
 
-```python
+```rust
 comment = bridge.add_pr_comment(
     pr_number=123,
     comment="All tests be passin'! Ready fer merge. 🚢"
@@ -308,7 +308,7 @@ Check CI/CD pipeline status fer a pull request.
 
 **Signature**:
 
-```python
+```rust
 def check_ci_status(self, pr_number: int) -> Dict[str, Any]
 ```
 
@@ -318,7 +318,7 @@ def check_ci_status(self, pr_number: int) -> Dict[str, Any]
 
 **Returns**:
 
-```python
+```rust
 {
     "all_passing": True,           # All checks passed
     "total_checks": 5,             # Total number of checks
@@ -348,7 +348,7 @@ def check_ci_status(self, pr_number: int) -> Dict[str, Any]
 
 **Example**:
 
-```python
+```rust
 status = bridge.check_ci_status(pr_number=123)
 
 if status['all_passing']:
@@ -384,7 +384,7 @@ Standalone function to detect platform from git remotes without creatin' a Platf
 
 **Signature**:
 
-```python
+```rust
 def detect_platform(repo_path: str = ".") -> Platform
 ```
 
@@ -404,7 +404,7 @@ def detect_platform(repo_path: str = ".") -> Platform
 
 **Example**:
 
-```python
+```rust
 from claude.tools.platform_bridge import detect_platform, Platform
 
 platform = detect_platform()
@@ -434,7 +434,7 @@ elif platform == Platform.AZDO:
 
 Enumeration of supported platforms.
 
-```python
+```rust
 class Platform(Enum):
     GITHUB = "github"
     AZDO = "azdo"
@@ -447,7 +447,7 @@ class Platform(Enum):
 
 **Example**:
 
-```python
+```rust
 from claude.tools.platform_bridge import Platform
 
 if bridge.platform == Platform.GITHUB:
@@ -472,7 +472,7 @@ Raised when platform cannot be determined from git remotes.
 
 **Example**:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge, PlatformDetectionError
 
 try:
@@ -497,7 +497,7 @@ Raised when required CLI tool (gh or az) not be installed.
 
 **Example**:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge, CLIToolMissingError
 
 try:
@@ -522,7 +522,7 @@ Raised when specified PR number doesn't exist.
 
 **Example**:
 
-```python
+```rust
 from claude.tools.platform_bridge import PRNotFoundError
 
 try:
@@ -545,7 +545,7 @@ Raised when specified branch doesn't exist in repository.
 
 **Example**:
 
-```python
+```rust
 from claude.tools.platform_bridge import BranchNotFoundError
 
 try:
@@ -564,7 +564,7 @@ except BranchNotFoundError as e:
 
 All functions use proper type hints:
 
-```python
+```rust
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 
@@ -595,7 +595,7 @@ The platform bridge be **thread-safe** fer read operations but **not thread-safe
 
 **Safe** (multiple threads):
 
-```python
+```rust
 # Multiple threads can check CI status simultaneously
 status1 = bridge.check_ci_status(pr_number=123)
 status2 = bridge.check_ci_status(pr_number=456)
@@ -603,7 +603,7 @@ status2 = bridge.check_ci_status(pr_number=456)
 
 **Unsafe** (avoid):
 
-```python
+```rust
 # Don't create multiple PRs from different threads
 # Results be unpredictable
 ```

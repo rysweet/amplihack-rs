@@ -11,7 +11,7 @@ amplihack resolve-bundle-asset <ASSET>
 Resolves a named bundle asset or a relative path under `amplifier-bundle/` to
 an absolute filesystem path. Prints the resolved path to stdout on success.
 
-This command replaces `python3 -m amplihack.runtime_assets` in recipe shell
+This command replaces `amplihack runtime_assets` in recipe shell
 steps, providing the same path-resolution logic without a Python dependency.
 
 ## Arguments

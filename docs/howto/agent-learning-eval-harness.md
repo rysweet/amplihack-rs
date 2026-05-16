@@ -10,7 +10,7 @@ Use the in-repo wrapper while you are changing `amplihack` runtime code.
 cd /path/to/amplihack
 
 PYTHONPATH=/path/to/amplihack-agent-eval/src:/path/to/amplihack/src \
-python -m amplihack.eval.long_horizon_memory \
+amplihack eval long-horizon-memory \
   --turns 100 \
   --questions 20 \
   --question-set standard \
@@ -26,7 +26,7 @@ This wrapper is intentionally thin. It keeps the command surface in this repo, b
 cd /path/to/amplihack
 
 PYTHONPATH=/path/to/amplihack-agent-eval/src:/path/to/amplihack/src \
-python -m amplihack.eval.long_horizon_multi_seed \
+amplihack eval long_horizon_multi_seed \
   --turns 100 \
   --questions 20 \
   --seeds 42,123,456 \
@@ -73,7 +73,7 @@ Use the direct module when you already have the Event Hubs connection string and
 ```bash
 cd /path/to/amplihack-agent-eval
 
-python -m amplihack_eval.azure.eval_distributed \
+amplihack eval azure.eval_distributed \
   --connection-string "<event-hubs-connection-string>" \
   --input-hub "hive-events-amplihive3175e" \
   --response-hub "eval-responses-amplihive3175e" \

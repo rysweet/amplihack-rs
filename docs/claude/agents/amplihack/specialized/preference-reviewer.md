@@ -158,7 +158,7 @@ User-specific preferences with no general value
 
 ### Step 1: Load and Parse
 
-```python
+```rust
 # Read USER_PREFERENCES.md
 # Extract all preferences and learned patterns
 # Identify unique behavioral modifications
@@ -166,7 +166,7 @@ User-specific preferences with no general value
 
 ### Step 2: Analyze Each Pattern
 
-```python
+```rust
 for pattern in preferences:
     score = calculate_score(pattern)
     category = categorize(pattern)

@@ -239,7 +239,7 @@ and production-readiness.
 
 **Documentation Template:**
 
-```python
+```rust
 """
 N-Version Implementation Selection
 

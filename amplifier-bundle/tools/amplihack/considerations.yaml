@@ -333,7 +333,7 @@
   applicable_session_types: ["DEVELOPMENT", "MAINTENANCE"]
   guidance: |
     Look at Write and Edit tool calls for code anti-patterns. Focus on CODE
-    files (.py, .js, .ts, .rs, .go) — NOT documentation or configuration.
+    files (.rs, .ts, .js, .go) — NOT documentation or configuration.
 
     Violations (in code files only):
     - "# TODO: ..." or "// TODO: ..." comments
@@ -381,7 +381,7 @@
     - Agent ran pytest/npm test/cargo test and output shows passing results
     - Agent ran a validation script and confirmed it passed
     - Agent used "uvx --from git+..." to test the installed package (outside-in)
-    - YAML/config-only changes where agent verified with "python -c 'import yaml; ...'"
+    - YAML/config-only changes where agent verified syntax (e.g., `yq`, `yamllint`, or shell parse check)
 
     NOT SATISFIED when:
     - Agent wrote test files but never ran them
@@ -394,7 +394,7 @@
       SATISFIED — you can't run tests that don't exist
     - If the change is purely to YAML/docs/config and agent verified the files
       parse correctly, that counts as testing
-    - "uv run pytest" and "python -m pytest" both count as test execution
+    - "cargo test", "npm test", and equivalent test runners all count as test execution
 
 - id: interactive_testing
   category: Testing & Local Validation

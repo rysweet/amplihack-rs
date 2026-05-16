@@ -36,7 +36,7 @@ The problematic execution flow was:
 
 **Before (Buggy Code):**
 
-```python
+```rust
 def launch_interactive(
     append_system_prompt: Path | None = None,
     force_staging: bool = False,
@@ -75,7 +75,7 @@ def launch_interactive(
 
 **After (Fixed Code):**
 
-```python
+```rust
 def launch_interactive(
     append_system_prompt: Path | None = None,
     force_staging: bool = False,
@@ -122,7 +122,7 @@ The `ensure_settings_json()` function:
 
 **Implementation location:** `src/amplihack/config/settings.py`
 
-```python
+```rust
 def ensure_settings_json() -> None:
     """Ensure settings.json exists with amplihack hooks."""
     settings_path = Path.home() / ".claude" / "settings.json"
@@ -146,7 +146,7 @@ Additionally, the launcher automatically fixes hook paths to use absolute paths:
 
 **Implementation:** `src/amplihack/launcher/core.py` - `_fix_hook_paths_in_settings()`
 
-```python
+```rust
 def _fix_hook_paths_in_settings(self, target_dir: Path) -> bool:
     """Fix relative hook paths to absolute in settings.json."""
     settings_path = target_dir / ".claude" / "settings.json"
@@ -203,7 +203,7 @@ amplihack
 
 ### Automated Test
 
-```python
+```rust
 def test_hook_persistence():
     """Test that hooks persist after launch."""
     # Setup
@@ -262,7 +262,7 @@ The fix is fully backward compatible:
 
 For future use cases requiring temporary hooks:
 
-```python
+```rust
 # Hypothetical future code
 def test_with_temporary_hooks():
     """Test with temporary hooks that should revert."""

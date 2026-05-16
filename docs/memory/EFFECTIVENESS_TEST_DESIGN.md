@@ -372,7 +372,7 @@ These metrics are **automatically collected** by test harness:
 
 #### 3.1.1 Time Metrics
 
-```python
+```rust
 class TimeMetrics:
     execution_time: float          # Total task execution time (seconds)
     time_to_first_action: float   # Time until agent takes first action
@@ -384,7 +384,7 @@ class TimeMetrics:
 
 #### 3.1.2 Quality Metrics
 
-```python
+```rust
 class QualityMetrics:
     test_pass_rate: float         # Percentage of tests passing (0-1)
     code_complexity: int          # Cyclomatic complexity
@@ -397,7 +397,7 @@ class QualityMetrics:
 
 #### 3.1.3 Memory Usage Metrics
 
-```python
+```rust
 class MemoryMetrics:
     memory_retrievals: int        # Number of memory queries
     memory_hits: int              # Number of relevant memories found
@@ -409,7 +409,7 @@ class MemoryMetrics:
 
 #### 3.1.4 Output Metrics
 
-```python
+```rust
 class OutputMetrics:
     lines_of_code: int            # LOC generated
     files_modified: int           # Number of files changed
@@ -425,7 +425,7 @@ These metrics require **manual assessment** (sample subset):
 
 #### 3.2.1 Decision Quality
 
-```python
+```rust
 class DecisionQuality:
     architecture_appropriateness: int    # 1-5 scale
     pattern_selection_quality: int       # 1-5 scale
@@ -437,7 +437,7 @@ class DecisionQuality:
 
 #### 3.2.2 Pattern Recognition
 
-```python
+```rust
 class PatternRecognition:
     recognized_previous_solution: bool   # Did agent reference past work?
     adapted_pattern_appropriately: bool  # Was adaptation correct?
@@ -448,7 +448,7 @@ class PatternRecognition:
 
 ### 3.3 Metric Collection Implementation
 
-```python
+```rust
 # Test harness will collect metrics automatically
 class MetricsCollector:
     def __init__(self, scenario_id: str, config: str):
@@ -500,7 +500,7 @@ class MetricsCollector:
 
 **Goal**: Detect 20% improvement with 80% power at α=0.05
 
-```python
+```rust
 # Using standard power analysis
 from scipy.stats import power
 from statsmodels.stats.power import tt_ind_solve_power
@@ -535,7 +535,7 @@ This provides:
 
 #### 4.2.1 Primary Comparison: Paired T-Test
 
-```python
+```rust
 from scipy.stats import ttest_rel
 
 def compare_configurations(baseline_times, treatment_times):
@@ -571,7 +571,7 @@ def compare_configurations(baseline_times, treatment_times):
 
 #### 4.2.2 Multiple Comparisons Correction
 
-```python
+```rust
 from statsmodels.stats.multitest import multipletests
 
 def analyze_all_metrics(baseline_data, treatment_data, metrics):
@@ -621,7 +621,7 @@ Following Cohen's guidelines:
 
 Report 95% confidence intervals for all metrics:
 
-```python
+```rust
 def calculate_confidence_intervals(data, confidence=0.95):
     """Calculate confidence intervals for metrics."""
     results = {}
@@ -651,7 +651,7 @@ def calculate_confidence_intervals(data, confidence=0.95):
 
 Generate comparison visualizations:
 
-```python
+```rust
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -677,7 +677,7 @@ def plot_comparison(baseline, sqlite, neo4j, metric_name):
 
 ### 5.1 Control Configuration Setup
 
-```python
+```rust
 class ControlConfiguration:
     """Configuration with no memory system."""
 
@@ -773,7 +773,7 @@ scripts/memory_test_harness.py
 
 ### 6.2 Core Interface
 
-```python
+```rust
 # scripts/memory_test_harness.py
 
 class MemoryTestHarness:

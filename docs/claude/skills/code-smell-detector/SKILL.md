@@ -50,7 +50,7 @@ This skill identifies anti-patterns that violate amplihack's development philoso
 
 **Example - SMELL**:
 
-```python
+```rust
 # BAD: Over-abstracted
 class DataProcessor(ABC):
     @abstractmethod
@@ -64,7 +64,7 @@ class SimpleDataProcessor(DataProcessor):
 
 **Example - FIXED**:
 
-```python
+```rust
 # GOOD: Direct implementation
 def process_data(data):
     """Process data by doubling it."""
@@ -104,7 +104,7 @@ def process_data(data):
 
 **Example - SMELL**:
 
-```python
+```rust
 # BAD: Complex inheritance
 class Entity:
     def save(self): pass
@@ -122,7 +122,7 @@ class User(AuditableEntity):
 
 **Example - FIXED**:
 
-```python
+```rust
 # GOOD: Composition over inheritance
 class User:
     def __init__(self, storage, timestamp_service, audit_log):
@@ -168,7 +168,7 @@ class User:
 
 **Example - SMELL**:
 
-```python
+```rust
 # BAD: Large function doing multiple things
 def process_user_data(user_dict, validate=True, save=True, notify=True, log=True):
     if validate:
@@ -198,7 +198,7 @@ def process_user_data(user_dict, validate=True, save=True, notify=True, log=True
 
 **Example - FIXED**:
 
-```python
+```rust
 # GOOD: Separated concerns
 def validate_user_data(user_dict):
     """Validate user data structure."""
@@ -259,7 +259,7 @@ def process_user_data(user_dict):
 
 **Example - SMELL**:
 
-```python
+```rust
 # BAD: Tight coupling
 class UserService:
     def create_user(self, name, email):
@@ -278,7 +278,7 @@ class UserService:
 
 **Example - FIXED**:
 
-```python
+```rust
 # GOOD: Loose coupling via dependency injection
 class UserService:
     def __init__(self, db, email_service):
@@ -331,7 +331,7 @@ user_service = UserService(db=PostgresDB(), email_service=SMTPService())
 
 **Example - SMELL**:
 
-```python
+```rust
 # BAD: No __all__ - unclear public interface
 # module/__init__.py
 from .core import process_data, _internal_helper
@@ -342,7 +342,7 @@ from .utils import validate_input, LOG_LEVEL
 
 **Example - FIXED**:
 
-```python
+```rust
 # GOOD: Clear public interface via __all__
 # module/__init__.py
 from .core import process_data
@@ -415,7 +415,7 @@ For each smell found:
 
 **Check**: `class X(ABC)` with exactly 1 concrete implementation
 
-```python
+```rust
 # BAD pattern detection
 - Count implementations of abstract class
 - If count <= 2 and not used as interface: FLAG
@@ -427,7 +427,7 @@ For each smell found:
 
 **Check**: Class hierarchy depth
 
-```python
+```rust
 # BAD pattern detection
 - Follow inheritance chain: class -> parent -> grandparent...
 - If depth > 2: FLAG
@@ -439,7 +439,7 @@ For each smell found:
 
 **Check**: All function bodies
 
-```python
+```rust
 # BAD pattern detection
 - Count lines in function (excluding docstring)
 - If > 50 lines: FLAG
@@ -452,7 +452,7 @@ For each smell found:
 
 **Check**: Class instantiation inside methods/functions
 
-```python
+```rust
 # BAD pattern detection
 - Search for "= ServiceName()" inside methods
 - If found: FLAG
@@ -464,7 +464,7 @@ For each smell found:
 
 **Check**: Python modules
 
-```python
+```rust
 # BAD pattern detection
 - Look for __all__ definition
 - If missing: FLAG
@@ -479,7 +479,7 @@ For each smell found:
 
 ### Smell: "Utility Class" Holder
 
-```python
+```rust
 # BAD
 class StringUtils:
     @staticmethod
@@ -489,7 +489,7 @@ class StringUtils:
 
 **Fix**: Use direct function
 
-```python
+```rust
 # GOOD
 def clean_string(s):
     return s.strip().lower()
@@ -499,7 +499,7 @@ def clean_string(s):
 
 ### Smell: "Manager" Class
 
-```python
+```rust
 # BAD
 class UserManager:
     def create(self): pass
@@ -511,7 +511,7 @@ class UserManager:
 
 **Fix**: Split into focused services
 
-```python
+```rust
 # GOOD
 class UserService:
     def __init__(self, db, email):
@@ -529,7 +529,7 @@ def validate_user(user): pass
 
 ### Smell: God Function
 
-```python
+```rust
 # BAD - 200 line function doing everything
 def process_order(order_data, validate, save, notify, etc...):
     # 200 lines mixing validation, transformation, DB, email, logging
@@ -537,7 +537,7 @@ def process_order(order_data, validate, save, notify, etc...):
 
 **Fix**: Compose small functions
 
-```python
+```rust
 # GOOD
 def process_order(order_data):
     validate_order(order_data)
@@ -551,7 +551,7 @@ def process_order(order_data):
 
 ### Smell: Brittle Inheritance
 
-```python
+```rust
 # BAD
 class Base:
     def work(self): pass
@@ -565,7 +565,7 @@ class Derived(Middle):
 
 **Fix**: Use clear, testable composition
 
-```python
+```rust
 # GOOD
 class Worker:
     def __init__(self, validator, transformer):
@@ -581,7 +581,7 @@ class Worker:
 
 ### Smell: Hidden Dependencies
 
-```python
+```rust
 # BAD
 def fetch_data(user_id):
     db = Database()  # Where's this coming from?
@@ -590,7 +590,7 @@ def fetch_data(user_id):
 
 **Fix**: Inject dependencies explicitly
 
-```python
+```rust
 # GOOD
 def fetch_data(user_id, db):
     return db.query(f"SELECT * FROM users WHERE id={user_id}")

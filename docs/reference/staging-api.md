@@ -14,7 +14,7 @@ Ensures amplihack framework files are staged to `~/.amplihack/.claude/`.
 
 **Signature:**
 
-```python
+```rust
 def _ensure_amplihack_staged() -> None:
     """Ensure amplihack is staged to ~/.amplihack/.claude/ (UVX mode only)."""
 ```
@@ -40,7 +40,7 @@ def _ensure_amplihack_staged() -> None:
 
 **Example:**
 
-```python
+```rust
 def cmd_copilot(args):
     """Launch GitHub Copilot CLI with amplihack."""
     # Ensure staging before launching
@@ -56,7 +56,7 @@ Copies files from source to destination based on manifest specification.
 
 **Signature:**
 
-```python
+```rust
 def copytree_manifest(
     source: Path,
     dest: Path,
@@ -75,7 +75,7 @@ def copytree_manifest(
 
 **Manifest Format:**
 
-```python
+```rust
 STAGING_MANIFEST = {
     "agents": ["**/*.md"],              # All agent markdown files
     "skills": ["**/*.md", "**/*.py"],   # Skill docs and Python files
@@ -89,9 +89,9 @@ STAGING_MANIFEST = {
 
 **Example:**
 
-```python
+```rust
 from pathlib import Path
-from amplihack.deployment import copytree_manifest
+// use amplihack_deployment:: copytree_manifest
 
 source = Path(__file__).parent / ".claude"
 dest = Path.home() / ".amplihack" / ".claude"
@@ -110,7 +110,7 @@ Detects current deployment mode (development vs UVX).
 
 **Signature:**
 
-```python
+```rust
 def get_deployment_mode() -> str:
     """Detect deployment mode: 'development' or 'uvx'."""
 ```
@@ -122,7 +122,7 @@ def get_deployment_mode() -> str:
 
 **Detection Logic:**
 
-```python
+```rust
 def get_deployment_mode() -> str:
     # Check for .git directory (development)
     if (Path(__file__).parent.parent / ".git").exists():
@@ -137,8 +137,8 @@ def get_deployment_mode() -> str:
 
 **Example:**
 
-```python
-from amplihack.deployment import get_deployment_mode
+```rust
+// use amplihack_deployment:: get_deployment_mode
 
 mode = get_deployment_mode()
 if mode == "uvx":
@@ -154,7 +154,7 @@ else:
 
 Defines which files to copy during staging.
 
-```python
+```rust
 STAGING_MANIFEST: Dict[str, List[str]] = {
     "agents": ["**/*.md"],
     "skills": ["**/*.md", "**/*.py"],
@@ -170,7 +170,7 @@ STAGING_MANIFEST: Dict[str, List[str]] = {
 
 Target directory for staged files.
 
-```python
+```rust
 STAGING_TARGET: Path = Path.home() / ".amplihack" / ".claude"
 ```
 
@@ -178,7 +178,7 @@ STAGING_TARGET: Path = Path.home() / ".amplihack" / ".claude"
 
 ### Permission Errors
 
-```python
+```rust
 try:
     _ensure_amplihack_staged()
 except PermissionError as e:
@@ -190,7 +190,7 @@ except PermissionError as e:
 
 ### Missing Source Files
 
-```python
+```rust
 try:
     copytree_manifest(source, dest, STAGING_MANIFEST)
 except FileNotFoundError as e:
@@ -204,10 +204,10 @@ except FileNotFoundError as e:
 
 ### Verify Staging in Tests
 
-```python
+```rust
 import pytest
 from pathlib import Path
-from amplihack.cli import _ensure_amplihack_staged
+// use amplihack_cli:: _ensure_amplihack_staged
 
 def test_staging_creates_directory(tmp_path, monkeypatch):
     """Test that staging creates target directory."""
@@ -257,8 +257,8 @@ cargo install amplihack-rs amplihack copilot --help
 
 **Check deployment mode:**
 
-```python
-from amplihack.deployment import get_deployment_mode
+```rust
+// use amplihack_deployment:: get_deployment_mode
 print(get_deployment_mode())
 # Should print: "uvx"
 ```
@@ -290,8 +290,8 @@ cargo install amplihack-rs amplihack copilot
 
 **Check manifest:**
 
-```python
-from amplihack.cli import STAGING_MANIFEST
+```rust
+// use amplihack_cli:: STAGING_MANIFEST
 print(STAGING_MANIFEST)
 # Verify expected patterns are present
 ```

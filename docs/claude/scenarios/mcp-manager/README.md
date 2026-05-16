@@ -221,7 +221,7 @@ Business logic operations:
 
 You can also use MCP Manager as a Python library:
 
-```python
+```rust
 from pathlib import Path
 from mcp_manager import (
     read_config,

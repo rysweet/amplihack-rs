@@ -200,7 +200,7 @@ When suggesting changes:
 
 **Code Changed**:
 
-```python
+```rust
 class PermissionValidator:
     def __init__(self):
         self.cache = {}
@@ -232,7 +232,7 @@ The caching layer adds complexity without proven benefit:
 4. Permission checks are usually not in hot paths
 
 SUGGESTION - Start simpler:
-```python
+```rust
 def check_permission(user, resource):
     """Check if user can access resource."""
     # Direct implementation
@@ -281,7 +281,7 @@ See .claude/skills/pr-review-assistant/ for specification template.
 **PR**: Add data processing pipeline
 
 **Code Changed**:
-```python
+```rust
 def process_data(data):
     """Process data through pipeline."""
     # TODO: Add error handling
@@ -314,7 +314,7 @@ Zero-BS Issues Found:
    - Either raise exception or return Result type
 
 SUGGESTION:
-```python
+```rust
 def process_data(data):
     """Process data through pipeline.
 
@@ -370,7 +370,7 @@ ADD: tests/test_role_manager.py with 85%+ coverage
 **PR**: Add simplified config loader
 
 **Code Changed**:
-```python
+```rust
 def load_config(path):
     """Load YAML config from file.
 
@@ -449,7 +449,7 @@ gh pr diff <PR-NUMBER> | grep "^---" | head -1
 
 ### Pattern 1: Configuration Complexity
 
-```python
+```rust
 # OVER-ENGINEERED: 50-line config class
 class ConfigManager:
     def __init__(self, env_file, schema_file, validators):
@@ -464,7 +464,7 @@ config = yaml.safe_load(open('.env.yaml'))
 
 ### Pattern 2: Factory Pattern When Not Needed
 
-```python
+```rust
 # OVER-ENGINEERED: Factory for single implementation
 class ValidationFactory:
     def create_validator(self, type):
@@ -479,7 +479,7 @@ def validate_email(email):
 
 ### Pattern 3: Generic Base Classes for One Use
 
-```python
+```rust
 # OVER-ENGINEERED: Base class never subclassed
 class BaseRepository(ABC):
     @abstractmethod
@@ -498,7 +498,7 @@ class UserRepository:
 
 ### Pattern 4: Premature Optimization
 
-```python
+```rust
 # OVER-ENGINEERED: Complex caching for cache that's not needed
 cache = LRUCache(maxsize=1000)
 stats = CacheStats()

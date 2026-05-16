@@ -32,7 +32,7 @@ The wrapper in this repo delegates to `amplihack_eval`, so include both repos on
 
 ```bash
 PYTHONPATH=/path/to/amplihack-agent-eval/src:/path/to/amplihack/src \
-python -m amplihack.eval.long_horizon_memory \
+amplihack eval long-horizon-memory \
   --turns 100 \
   --questions 20 \
   --output-dir /tmp/eval-run
@@ -52,7 +52,7 @@ If you need `standard` versus `holdout` question slices, use the `amplihack-agen
 
 ```bash
 PYTHONPATH=/path/to/amplihack-agent-eval/src:/path/to/amplihack/src \
-python -m amplihack.eval.long_horizon_multi_seed \
+amplihack eval long_horizon_multi_seed \
   --turns 100 \
   --questions 20 \
   --seeds 42,123,456,789 \

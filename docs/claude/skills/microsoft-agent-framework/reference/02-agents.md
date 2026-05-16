@@ -14,7 +14,7 @@ An agent in Microsoft Agent Framework is a stateful conversational entity that c
 
 ### Basic Agent
 
-```python
+```rust
 from agents_framework import Agent, ModelClient
 
 agent = Agent(
@@ -26,7 +26,7 @@ agent = Agent(
 
 ### Agent with Configuration
 
-```python
+```rust
 agent = Agent(
     name="code_reviewer",
     model=ModelClient(
@@ -69,7 +69,7 @@ var agent = new Agent(
 
 ### 1. Initialization
 
-```python
+```rust
 # Agent created with configuration
 agent = Agent(name="agent", model=model, instructions="...")
 
@@ -79,7 +79,7 @@ agent = Agent(name="agent", model=model, instructions="...")
 
 ### 2. Message Processing
 
-```python
+```rust
 # Single-turn conversation
 response = await agent.run(message="Hello")
 
@@ -101,7 +101,7 @@ response2 = await agent.run(thread=thread, message="Follow-up")
 
 ### 3. Tool Execution
 
-```python
+```rust
 @function_tool
 def get_data(query: str) -> dict:
     return {"result": "data"}
@@ -115,7 +115,7 @@ response = await agent.run(message="Get data for X")
 
 ### 4. State Management
 
-```python
+```rust
 from agents_framework import Thread
 
 thread = Thread()
@@ -136,7 +136,7 @@ for message in thread.messages:
 
 Force agent to return data in a specific format:
 
-```python
+```rust
 from pydantic import BaseModel
 
 class TaskBreakdown(BaseModel):
@@ -182,7 +182,7 @@ var breakdown = response.Parsed<TaskBreakdown>();
 
 Allow agent to call multiple tools simultaneously:
 
-```python
+```rust
 @function_tool
 def get_weather(location: str) -> str:
     return f"Weather in {location}: Sunny"
@@ -206,7 +206,7 @@ response = await agent.run(message="What's the weather and time in Seattle?")
 
 Stream agent responses as they're generated:
 
-```python
+```rust
 thread = Thread()
 
 async for chunk in agent.run_stream(thread=thread, message="Explain quantum computing"):
@@ -227,7 +227,7 @@ await foreach (var chunk in agent.RunStreamAsync(thread, "Explain quantum comput
 
 Monitor token consumption:
 
-```python
+```rust
 response = await agent.run(message="Hello")
 
 print(f"Prompt tokens: {response.usage.prompt_tokens}")
@@ -237,7 +237,7 @@ print(f"Total tokens: {response.usage.total_tokens}")
 
 ### Temperature & Sampling Control
 
-```python
+```rust
 # Low temperature for deterministic outputs
 code_agent = Agent(
     model=ModelClient(model="gpt-4", temperature=0.1),
@@ -253,7 +253,7 @@ creative_agent = Agent(
 
 ### Max Tokens & Truncation
 
-```python
+```rust
 agent = Agent(
     model=ModelClient(
         model="gpt-4",
@@ -265,7 +265,7 @@ agent = Agent(
 
 ### Stop Sequences
 
-```python
+```rust
 agent = Agent(
     model=ModelClient(
         model="gpt-4",
@@ -279,7 +279,7 @@ agent = Agent(
 
 ### Chain-of-Thought Agents
 
-```python
+```rust
 agent = Agent(
     model=model,
     instructions="""Think step-by-step:
@@ -294,7 +294,7 @@ agent = Agent(
 
 ### Specialized Agents
 
-```python
+```rust
 # Research agent
 researcher = Agent(
     model=model,
@@ -319,7 +319,7 @@ reviewer = Agent(
 
 ### Persona-Based Agents
 
-```python
+```rust
 expert_agent = Agent(
     model=model,
     instructions="""You are Dr. Smith, a senior software architect with 20 years experience.
@@ -335,7 +335,7 @@ beginner_agent = Agent(
 
 ### Error-Handling Agents
 
-```python
+```rust
 from agents_framework import RetryPolicy, ErrorHandler
 
 agent = Agent(
@@ -356,7 +356,7 @@ agent = Agent(
 
 ### Agent-to-Agent Messages
 
-```python
+```rust
 # Agent 1 generates message for Agent 2
 response1 = await agent1.run(message="Research AI trends")
 
@@ -366,7 +366,7 @@ response2 = await agent2.run(message=f"Summarize this: {response1.content}")
 
 ### Shared Thread
 
-```python
+```rust
 thread = Thread()
 
 # Multiple agents share conversation history
@@ -377,7 +377,7 @@ await agent2.run(thread=thread, message="Continue the conversation")
 
 ### Agent Handoff
 
-```python
+```rust
 async def handoff_flow():
     thread = Thread()
 
@@ -407,7 +407,7 @@ async def handoff_flow():
 
 ## Debugging Agents
 
-```python
+```rust
 import logging
 
 # Enable debug logging
@@ -432,7 +432,7 @@ print(f"Usage: {response.usage}")
 4. **Token Efficiency**: Prune conversation history to reduce context
 5. **Batch Processing**: Process multiple messages concurrently
 
-```python
+```rust
 # Batch process
 messages = ["Query 1", "Query 2", "Query 3"]
 

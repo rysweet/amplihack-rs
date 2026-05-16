@@ -1,5 +1,11 @@
 # Eval System Architecture
 
+> **Note:** This document describes the eval system architecture originally implemented
+> in the Python version of amplihack. The concepts (progressive test levels L1-L12,
+> self-improvement loops, domain evaluation) remain relevant. In the Rust version
+> (`amplihack-rs`), use `amplihack eval` CLI commands instead of the Python entry points
+> referenced below (e.g., `progressive_test_suite.py`, `sdk_eval_loop.py`).
+
 Comprehensive guide to the evaluation and self-improvement infrastructure for goal-seeking agents. Covers the progressive test suite (L1-L12), long-horizon memory testing with 12 information blocks (including security domain), 5-way matrix evaluation across SDKs, self-improvement loop with patch proposer + reviewer voting, and the standalone amplihack-agent-eval package.
 
 ## Overview
@@ -127,7 +133,7 @@ Each level represents a specific cognitive capability:
 
 Defined in `src/amplihack/eval/test_levels.py`:
 
-```python
+```rust
 @dataclass
 class TestLevel:
     level_id: str           # "L1", "L2", etc.
@@ -236,22 +242,22 @@ memory isolation.
 
 ```bash
 # Single run
-python -m amplihack.eval.progressive_test_suite --sdk mini --levels L1 L2 L3
+amplihack eval progressive-test-suite --sdk mini --levels L1 L2 L3
 
 # Parallel runs (3-run median for stability)
-python -m amplihack.eval.progressive_test_suite --runs 3 --sdk mini
+amplihack eval progressive-test-suite --runs 3 --sdk mini
 
 # Multi-vote grading (3 votes per question)
-python -m amplihack.eval.progressive_test_suite --grader-votes 3 --sdk mini
+amplihack eval progressive-test-suite --grader-votes 3 --sdk mini
 
 # Recommended: 3-run median + 3-vote grading
-python -m amplihack.eval.progressive_test_suite --runs 3 --grader-votes 3 --sdk mini
+amplihack eval progressive-test-suite --runs 3 --grader-votes 3 --sdk mini
 
 # Advanced levels
-python -m amplihack.eval.progressive_test_suite --advanced --sdk mini
+amplihack eval progressive-test-suite --advanced --sdk mini
 
 # All levels
-python -m amplihack.eval.progressive_test_suite \
+amplihack eval progressive-test-suite \
     --levels L1 L2 L3 L4 L5 L6 L8 L9 L10 L11 L12 --sdk mini
 ```
 
@@ -282,13 +288,13 @@ generating prompt tuning recommendations:
 
 ```bash
 # Single SDK
-python -m amplihack.eval.sdk_eval_loop --sdks mini --loops 5
+amplihack eval sdk-eval-loop --sdks mini --loops 5
 
 # All SDKs comparison (4-way)
-python -m amplihack.eval.sdk_eval_loop --all-sdks --loops 3
+amplihack eval sdk-eval-loop --all-sdks --loops 3
 
 # Specific levels
-python -m amplihack.eval.sdk_eval_loop --sdks mini claude --loops 3 --levels L1 L2 L3
+amplihack eval sdk-eval-loop --sdks mini claude --loops 3 --levels L1 L2 L3
 ```
 
 Each loop iteration:
@@ -321,10 +327,10 @@ Closed-loop improvement: EVAL -> ANALYZE -> RESEARCH -> IMPROVE -> RE-EVAL -> DE
 
 ```bash
 # Basic usage
-python -m amplihack.eval.self_improve.runner --sdk mini --iterations 5
+amplihack eval self-improve --sdk mini --iterations 5
 
 # With all options
-python -m amplihack.eval.self_improve.runner \
+amplihack eval self-improve \
     --sdk mini \
     --iterations 5 \
     --improvement-threshold 2.0 \
@@ -360,9 +366,9 @@ CLI options:
 
 Evaluates 5 domain-specific agents using the `DomainEvalHarness`:
 
-```python
-from amplihack.eval.domain_eval_harness import DomainEvalHarness
-from amplihack.agents.domain_agents.code_review.agent import CodeReviewAgent
+```rust
+use amplihack_agent_eval::domain_eval::DomainEvalHarness;
+use amplihack_domain_agents::code_review::CodeReviewAgent;
 
 harness = DomainEvalHarness(CodeReviewAgent("test"))
 report = harness.run()
@@ -391,16 +397,16 @@ LLM grading.
 
 ```bash
 # Quick test
-python -m amplihack.eval.long_horizon_memory --turns 100 --questions 20
+amplihack eval long-horizon-memory --turns 100 --questions 20
 
 # Full stress test (best score: 98.9%)
-python -m amplihack.eval.long_horizon_memory --turns 1000 --questions 100
+amplihack eval long-horizon-memory --turns 1000 --questions 100
 
 # With SDK agent
-python -m amplihack.eval.long_horizon_memory --sdk claude --turns 500 --questions 50
+amplihack eval long-horizon-memory --sdk claude --turns 500 --questions 50
 
 # Large-scale with subprocess segmentation (prevents OOM on 5000+ turns)
-python -m amplihack.eval.long_horizon_memory --turns 5000 --questions 200 --segment-size 100
+amplihack eval long-horizon-memory --turns 5000 --questions 200 --segment-size 100
 ```
 
 **Subprocess segmentation** (`--segment-size N`): For 5000+ turn evaluations, native memory from Kuzu C++ and aiohttp accumulates ~3MB/turn. The `--segment-size` flag splits the learning phase into subprocess segments of N turns each. Each subprocess loads its turn slice, learns it into the shared on-disk DB, then exits -- freeing all native memory. After all segments complete, the questioning phase runs against the accumulated DB. Default (`--segment-size 0`) runs everything in one process.
@@ -452,13 +458,13 @@ Tests memory at scale with:
 
 ```bash
 # Full 5-way matrix
-python -m amplihack.eval.matrix_eval --turns 500 --questions 50
+amplihack eval matrix-eval --turns 500 --questions 50
 
 # Specific agents
-python -m amplihack.eval.matrix_eval --agents mini claude --turns 100 --questions 20
+amplihack eval matrix-eval --agents mini claude --turns 100 --questions 20
 
 # With markdown report
-python -m amplihack.eval.matrix_eval --turns 500 --questions 50 \
+amplihack eval matrix-eval --turns 500 --questions 50 \
     --report-path Specs/MATRIX_EVAL_REPORT.md
 ```
 
@@ -481,11 +487,11 @@ Output: per-agent reports, shared ground truth, matrix comparison JSON, and a ma
 Automated improvement loop targeting the long-horizon eval. Uses **patch proposer** and **reviewer voting** for safe iteration:
 
 ```bash
-python -m amplihack.eval.long_horizon_self_improve \
+amplihack eval long-horizon-self-improve \
     --turns 100 --questions 20 --iterations 3
 
 # With multi-agent architecture
-python -m amplihack.eval.long_horizon_self_improve \
+amplihack eval long-horizon-self-improve \
     --turns 100 --questions 20 --multi-agent
 ```
 
@@ -534,9 +540,9 @@ The `FAILURE_TAXONOMY` in `error_analyzer.py` maps symptoms to root causes:
 Beyond memory, the system evaluates 5 general-purpose capabilities via `general_capability_eval.py`:
 
 ```bash
-PYTHONPATH=src python -m amplihack.eval.general_capability_eval --eval tool_use,planning,reasoning
-PYTHONPATH=src python -m amplihack.eval.general_capability_eval --eval all --sdk mini
-PYTHONPATH=src python -m amplihack.eval.general_capability_eval --eval planning --output-dir /tmp/cap-eval
+amplihack eval general-capability --eval tool_use,planning,reasoning
+amplihack eval general-capability --eval all --sdk mini
+amplihack eval general-capability --eval planning --output-dir /tmp/cap-eval
 ```
 
 | Eval Type                   | What It Tests                                  | Scenarios |
@@ -553,7 +559,7 @@ Each eval type defines scenarios with gold-standard expectations, runs the agent
 
 ### 1. Define the test content in `test_levels.py`
 
-```python
+```rust
 L13_LEVEL = TestLevel(
     level_id="L13",
     level_name="Analogical Reasoning",
@@ -576,7 +582,7 @@ L13_LEVEL = TestLevel(
 
 Add your level to the appropriate list in `test_levels.py`:
 
-```python
+```rust
 # For standard learn-then-test levels:
 STANDARD_LEVELS = [..., L13_LEVEL]
 
@@ -588,7 +594,7 @@ CUSTOM_LEVELS = [L13_LEVEL]
 
 In `grader.py`, add criteria to `_build_grading_prompt()`:
 
-```python
+```rust
 elif level == "L13":
     level_criteria = (
         "\n\nL13 ANALOGICAL REASONING grading criteria:\n"
@@ -604,7 +610,7 @@ In `progressive_test_suite.py`, add `"L13"` to the `--levels` choices list.
 ### 5. Run and validate
 
 ```bash
-PYTHONPATH=src python -m amplihack.eval.progressive_test_suite \
+amplihack eval progressive-test-suite \
     --output-dir /tmp/eval_l13 \
     --levels L13
 ```
@@ -627,8 +633,8 @@ src/amplihack/agents/domain_agents/my_domain/
 Subclass `DomainAgent` and implement: `_register_tools()`, `execute_task()`,
 `get_eval_levels()`, `teach()`, and `get_system_prompt()`.
 
-```python
-from amplihack.agents.domain_agents.base import DomainAgent, EvalLevel, TaskResult
+```rust
+use amplihack_domain_agents::base::{DomainAgent, EvalLevel, TaskResult};
 
 class MyDomainAgent(DomainAgent):
     def __init__(self, agent_name="my_agent", model="gpt-4o-mini", skill_injector=None):
@@ -660,8 +666,8 @@ class MyDomainAgent(DomainAgent):
 
 ### 3. Run the eval
 
-```python
-from amplihack.eval.domain_eval_harness import DomainEvalHarness
+```rust
+use amplihack_agent_eval::domain_eval::DomainEvalHarness;
 
 harness = DomainEvalHarness(MyDomainAgent("test"))
 report = harness.run()
@@ -775,7 +781,7 @@ amplihack_eval/                       src/amplihack/eval/
 
 3. **`long_horizon_memory.py`** imports data types from the package:
 
-   ```python
+   ```rust
    from amplihack_eval.data.long_horizon import (
        GradingRubric, GroundTruth, Question,
        generate_dialogue, generate_questions,
@@ -786,7 +792,7 @@ amplihack_eval/                       src/amplihack/eval/
    installation instructions.
 
 4. **`compat.py`** re-exports all key types from the standalone package,
-   so existing code can `from amplihack.eval.compat import EvalRunner`.
+   so existing code can use the `amplihack_agent_eval::compat` module.
    If the package is not installed, `compat.py` is a no-op (no errors).
 
 5. **`agent_adapter.py`** provides three adapter implementations that wrap
@@ -797,9 +803,9 @@ amplihack_eval/                       src/amplihack/eval/
 
 ### Using the Adapters
 
-```python
+```rust
 from amplihack_eval.core.runner import EvalRunner
-from amplihack.eval.agent_adapter import AmplihackLearningAgentAdapter
+use amplihack_agent_eval::agent_adapter::AmplihackLearningAgentAdapter;
 
 # Create adapter wrapping amplihack's LearningAgent
 adapter = AmplihackLearningAgentAdapter("eval-agent", model="gpt-4o-mini")

@@ -20,7 +20,7 @@ The platform bridge follows a **delegation security model** where authentication
 
 The bridge uses `gh` CLI fer all GitHub operations:
 
-```python
+```rust
 # Bridge NEVER handles GitHub tokens directly
 bridge = PlatformBridge()  # No tokens or credentials passed
 
@@ -46,7 +46,7 @@ issue = bridge.create_issue(title="Test", body="Body")
 
 The bridge uses `az` CLI fer all Azure DevOps operations:
 
-```python
+```rust
 # Bridge NEVER handles Azure DevOps PATs directly
 bridge = PlatformBridge()  # No tokens or credentials passed
 
@@ -74,7 +74,7 @@ All user inputs be validated before bein' passed to subprocess calls.
 
 ### Title Validation
 
-```python
+```rust
 def _validate_title(title: str) -> None:
     """Validate issue/PR title"""
     if not title or not title.strip():
@@ -91,7 +91,7 @@ def _validate_title(title: str) -> None:
 
 ### Branch Name Validation
 
-```python
+```rust
 def _validate_branch_name(branch: str) -> None:
     """Validate git branch name"""
     if not branch or not branch.strip():
@@ -108,7 +108,7 @@ def _validate_branch_name(branch: str) -> None:
 
 ### Body/Description Validation
 
-```python
+```rust
 def _validate_body(body: str) -> None:
     """Validate issue/PR body"""
     if not body or not body.strip():
@@ -129,7 +129,7 @@ All subprocess calls use **parameterized commands** to prevent shell injection.
 
 ### Correct Pattern (Safe)
 
-```python
+```rust
 # SAFE - Command and args as list
 subprocess.run(
     ["gh", "issue", "create", "--title", title, "--body", body],
@@ -148,7 +148,7 @@ subprocess.run(
 
 ### Anti-Pattern (Unsafe)
 
-```python
+```rust
 # UNSAFE - Don't do this!
 subprocess.run(
     f"gh issue create --title '{title}' --body '{body}'",
@@ -167,7 +167,7 @@ subprocess.run(
 
 All subprocess calls have timeouts to prevent hangs:
 
-```python
+```rust
 result = subprocess.run(
     cmd,
     capture_output=True,
@@ -188,7 +188,7 @@ Errors be handled to prevent information leakage:
 
 ### Safe Error Messages
 
-```python
+```rust
 try:
     result = subprocess.run(cmd, ...)
     if result.returncode != 0:
@@ -224,7 +224,7 @@ The bridge reads git configuration but never writes to filesystem (except throug
 
 ### Read-Only Operations
 
-```python
+```rust
 # Bridge only reads git config
 def _get_git_remote(repo_path: Path) -> str:
     """Read git remote URL (read-only)"""
@@ -337,7 +337,7 @@ User Code → PlatformBridge → gh/az CLI → GitHub/Azure DevOps API
 
 1. **Never Add Credential Parameters**:
 
-   ```python
+   ```rust
    # ❌ WRONG - Don't add token parameters
    def create_issue(self, title: str, token: str):
        ...
@@ -349,7 +349,7 @@ User Code → PlatformBridge → gh/az CLI → GitHub/Azure DevOps API
 
 2. **Always Validate Inputs**:
 
-   ```python
+   ```rust
    # ✅ RIGHT - Validate before subprocess
    def create_issue(self, title: str, body: str):
        self._validate_title(title)
@@ -359,7 +359,7 @@ User Code → PlatformBridge → gh/az CLI → GitHub/Azure DevOps API
 
 3. **Use Parameterized Commands**:
 
-   ```python
+   ```rust
    # ✅ RIGHT - List of args
    subprocess.run(["gh", "issue", "create", "--title", title])
 
@@ -369,7 +369,7 @@ User Code → PlatformBridge → gh/az CLI → GitHub/Azure DevOps API
 
 4. **Set Timeouts**:
 
-   ```python
+   ```rust
    # ✅ RIGHT - Always set timeout
    subprocess.run(cmd, timeout=30)
 

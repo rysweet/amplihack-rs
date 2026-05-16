@@ -41,7 +41,7 @@ steps:
       if [ -n "$ERRORS" ]; then
         echo "=== SMART-ORCHESTRATOR PRE-FLIGHT FAILED ===" >&2
         printf "%b\n" "$ERRORS" >&2
-        echo "Restart: run_recipe_by_name('smart-orchestrator', user_context={'task_description': '...', 'repo_path': '...'}, progress=True)" >&2
+        echo "Restart: amplihack recipe run smart-orchestrator -c task_description='...' -c repo_path=." >&2
         exit 1
       fi
       echo "=== Pre-flight passed ==="
@@ -247,7 +247,7 @@ steps:
     type: "bash"
     condition: "'Development' in task_type or 'Investigation' in task_type or task_type == ''"
     command: |
-      # #283: replace python3 uuid with /proc/sys/kernel/random/uuid (POSIX)
+      # #283: replace scripted uuid with /proc/sys/kernel/random/uuid (POSIX)
       SESSION_ID=$(tr -d '-' < /proc/sys/kernel/random/uuid | head -c 8)
 
       # #248: native Rust subcommand for session tree registration
@@ -258,7 +258,7 @@ steps:
         DEPTH_VAL=${DEPTH_STR:-0}
         # Validate extracted values
         if ! echo "$TREE_ID" | grep -qE '^[A-Za-z0-9_-]+$'; then
-          # #283: replace python3 json with printf (inputs are fixed literals)
+          # #283: replace scripted json with printf (inputs are fixed literals)
           printf '{"session_id":"error","tree_id":"error","depth":0,"status":"registration_failed","error":"invalid tree_id extracted"}\n'
           exit 0
         fi

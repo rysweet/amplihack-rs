@@ -14,7 +14,7 @@ The Gather pattern enables agents to iteratively collect information from multip
 
 **Implementation:**
 
-```python
+```rust
 from claude_agents import Agent
 
 gather_agent = Agent(
@@ -43,7 +43,7 @@ result = gather_agent.run(
 
 **Optimization:**
 
-```python
+```rust
 # Provide structure to guide gathering
 system_prompt = """Gather information systematically:
 
@@ -69,7 +69,7 @@ The Act pattern focuses on choosing and executing the right tools for a task.
 
 **Implementation:**
 
-```python
+```rust
 action_agent = Agent(
     model="claude-sonnet-4-5-20250929",
     tools=[file_tools, data_tools, notification_tools],
@@ -109,7 +109,7 @@ The Verify pattern enables agents to check their own work for accuracy.
 
 **Implementation:**
 
-```python
+```rust
 verify_agent = Agent(
     model="claude-sonnet-4-5-20250929",
     tools=[calculator_tool, code_exec_tool, test_tool],
@@ -147,7 +147,7 @@ The Iterate pattern enables progressive refinement of outputs.
 
 **Implementation:**
 
-```python
+```rust
 iterate_agent = Agent(
     model="claude-sonnet-4-5-20250929",
     tools=[generate_tool, analyze_tool, improve_tool],
@@ -170,7 +170,7 @@ result = iterate_agent.run(
 
 **Convergence Control:**
 
-```python
+```rust
 # Set clear stopping criteria
 system_prompt = """Iterate until meeting criteria:
 - No syntax errors
@@ -189,7 +189,7 @@ Maximum 10 iterations."""
 
 1. **Task Isolation**: Specialized subtasks with different tool requirements
 
-```python
+```rust
 with main_agent.subagent(
     system="Security expert focused on vulnerabilities",
     tools=[security_tools]
@@ -199,7 +199,7 @@ with main_agent.subagent(
 
 2. **Context Partitioning**: Prevent context pollution from unrelated information
 
-```python
+```rust
 # Main agent context stays clean
 with main_agent.subagent(inherit_system=False) as research_agent:
     # Research agent has isolated context
@@ -209,7 +209,7 @@ with main_agent.subagent(inherit_system=False) as research_agent:
 
 3. **Parallel Workflows**: Multiple independent processes
 
-```python
+```rust
 # Note: Subagents are sequential, but pattern supports parallel conceptually
 security_task = main_agent.subagent(system="Security audit")
 performance_task = main_agent.subagent(system="Performance analysis")
@@ -220,7 +220,7 @@ perf_result = performance_task.run(code)
 
 4. **Permission Boundaries**: Different security contexts
 
-```python
+```rust
 with main_agent.subagent(
     allowed_tools=["read_file"],  # Restricted permissions
     disallowed_tools=["write_file", "bash"]
@@ -238,7 +238,7 @@ with main_agent.subagent(
 
 **Strategy 1: Token Threshold**
 
-```python
+```rust
 agent = Agent(
     model="claude-sonnet-4-5-20250929",
     max_context_tokens=100000  # Start compaction at 100K
@@ -247,7 +247,7 @@ agent = Agent(
 
 **Strategy 2: Turn-Based Summarization**
 
-```python
+```rust
 # Every N turns, summarize earlier conversation
 if agent.current_turn % 10 == 0:
     agent.compact_context(strategy="summarize_old", keep_recent=5)
@@ -255,7 +255,7 @@ if agent.current_turn % 10 == 0:
 
 **Strategy 3: Smart Retention**
 
-```python
+```rust
 # Keep important information, summarize rest
 agent.compact_context(
     strategy="smart",
@@ -266,7 +266,7 @@ agent.compact_context(
 
 **Strategy 4: External Memory**
 
-```python
+```rust
 # Store context externally, summarize references
 context_store = {}
 
@@ -283,7 +283,7 @@ class MemoryHook(PostToolUseHook):
 
 **Pattern 1: Agent State Dictionary**
 
-```python
+```rust
 agent = Agent(model="claude-sonnet-4-5-20250929")
 agent.state = {
     "processed_files": [],
@@ -300,7 +300,7 @@ def process_file_tool(filename: str) -> dict:
 
 **Pattern 2: Persistent State**
 
-```python
+```rust
 import json
 from pathlib import Path
 
@@ -329,7 +329,7 @@ class StatefulAgent:
 
 **Pattern 1: Lazy Loading**
 
-```python
+```rust
 # Don't load all tools upfront
 def get_tool_when_needed(tool_name: str):
     tool_registry = {
@@ -351,7 +351,7 @@ if "analyze large dataset" in user_task:
 
 **Pattern 2: Result Streaming**
 
-```python
+```rust
 # Stream large results instead of holding in memory
 def streaming_analysis_tool(data_path: str):
     """Yield results incrementally."""
@@ -371,7 +371,7 @@ agent = Agent(
 
 **Good: Focused tools**
 
-```python
+```rust
 def read_file(path: str) -> str:
     """Read file contents. Does one thing well."""
     return Path(path).read_text()
@@ -384,7 +384,7 @@ def write_file(path: str, content: str) -> bool:
 
 **Bad: Multi-purpose tools**
 
-```python
+```rust
 def file_operations(
     operation: str,
     path: str,
@@ -407,7 +407,7 @@ def file_operations(
 
 **Idempotent tools** can be called multiple times safely:
 
-```python
+```rust
 def create_directory(path: str) -> dict:
     """Create directory. Safe to call multiple times."""
     path_obj = Path(path)
@@ -421,7 +421,7 @@ def create_directory(path: str) -> dict:
 
 **Non-idempotent tools need safeguards:**
 
-```python
+```rust
 def send_notification(message: str, recipient: str) -> dict:
     """Send notification. Not idempotent - implement deduplication."""
     notification_id = hashlib.md5(
@@ -440,7 +440,7 @@ def send_notification(message: str, recipient: str) -> dict:
 
 **Pattern 1: Structured Error Returns**
 
-```python
+```rust
 def api_call(endpoint: str) -> dict:
     """Return structured results with error info."""
     try:
@@ -470,7 +470,7 @@ def api_call(endpoint: str) -> dict:
 
 **Pattern 2: Graceful Degradation**
 
-```python
+```rust
 def get_data_with_fallback(source: str) -> dict:
     """Try primary source, fall back to cache."""
     try:
@@ -487,7 +487,7 @@ def get_data_with_fallback(source: str) -> dict:
 
 **Pattern: Composite Tools**
 
-```python
+```rust
 def analyze_codebase(path: str) -> dict:
     """High-level tool that composes lower-level tools."""
     # Uses multiple smaller tools internally
@@ -513,7 +513,7 @@ def analyze_codebase(path: str) -> dict:
 
 **Pattern: Tool Pipelines**
 
-```python
+```rust
 # Define pipeline of tools
 pipeline = [
     ("load", load_data_tool),
@@ -543,7 +543,7 @@ def execute_pipeline(data_path: str) -> dict:
 
 **Pattern: Input Sanitization**
 
-```python
+```rust
 from claude_agents.hooks import PreToolUseHook
 import re
 
@@ -570,7 +570,7 @@ class InputSanitizationHook(PreToolUseHook):
 
 **Pattern: Role-Based Access**
 
-```python
+```rust
 class RoleBasedPermissionHook(PreToolUseHook):
     def __init__(self, user_role: str):
         self.user_role = user_role
@@ -603,7 +603,7 @@ agent = Agent(
 
 **Pattern: Data Redaction**
 
-```python
+```rust
 class DataRedactionHook(PostToolUseHook):
     def __init__(self):
         self.patterns = {
@@ -634,7 +634,7 @@ class DataRedactionHook(PostToolUseHook):
 
 **Pattern: Comprehensive Audit Trail**
 
-```python
+```rust
 class AuditLogHook(PreToolUseHook, PostToolUseHook):
     def __init__(self, audit_db_path: str):
         self.db_path = audit_db_path
@@ -692,7 +692,7 @@ class AuditLogHook(PreToolUseHook, PostToolUseHook):
 
 **Pattern: Dynamic Tool Loading**
 
-```python
+```rust
 # Start with minimal tools
 essential_tools = ["read_file", "write_file"]
 optional_tools = {
@@ -715,7 +715,7 @@ if "analyze" in user_task:
 
 **Pattern: Batch Processing**
 
-```python
+```rust
 import asyncio
 
 async def process_batch(items: list, agent: Agent) -> list:
@@ -740,7 +740,7 @@ async def process_batch(items: list, agent: Agent) -> list:
 
 **Pattern: Result Caching**
 
-```python
+```rust
 from functools import lru_cache
 import hashlib
 
@@ -792,7 +792,7 @@ class CachePreHook(PreToolUseHook):
 
 **Problem:**
 
-```python
+```rust
 # Don't: Single agent trying to do everything
 god_agent = Agent(
     model="claude-sonnet-4-5-20250929",
@@ -803,7 +803,7 @@ god_agent = Agent(
 
 **Solution:**
 
-```python
+```rust
 # Do: Specialized agents with focused capabilities
 code_agent = Agent(tools=[code_tools], system="Code specialist")
 data_agent = Agent(tools=[data_tools], system="Data specialist")
@@ -814,7 +814,7 @@ api_agent = Agent(tools=[api_tools], system="API specialist")
 
 **Problem:**
 
-```python
+```rust
 # Don't: Let irrelevant context accumulate
 agent = Agent(model="claude-sonnet-4-5-20250929")
 for task in many_unrelated_tasks:
@@ -823,7 +823,7 @@ for task in many_unrelated_tasks:
 
 **Solution:**
 
-```python
+```rust
 # Do: Use fresh context or subagents for unrelated tasks
 for task in many_unrelated_tasks:
     with agent.subagent() as task_agent:
@@ -834,7 +834,7 @@ for task in many_unrelated_tasks:
 
 **Problem:**
 
-```python
+```rust
 # Don't: Rely on exact string matching
 def verify_result(result: str) -> bool:
     return result == "Expected exact output"  # Too brittle
@@ -842,7 +842,7 @@ def verify_result(result: str) -> bool:
 
 **Solution:**
 
-```python
+```rust
 # Do: Semantic or constraint-based verification
 def verify_result(result: dict) -> bool:
     return (
@@ -856,7 +856,7 @@ def verify_result(result: dict) -> bool:
 
 **Problem:**
 
-```python
+```rust
 # Don't: Complex abstractions when simple suffices
 from abc import ABC, abstractmethod
 
@@ -875,7 +875,7 @@ class ConcreteToolFactoryImpl(AbstractToolFactory):
 
 **Solution:**
 
-```python
+```rust
 # Do: Simple, direct tool creation
 def create_my_tool() -> Tool:
     return Tool(name="my_tool", description="...", function=my_func)

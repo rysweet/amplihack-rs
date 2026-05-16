@@ -102,21 +102,21 @@ When LSP is configured, Claude Code gains powerful code intelligence:
 
 **Type Information**: Claude sees exact types, not guesses
 
-```python
+```rust
 # Claude knows: user is type User | None from models.User
 user = get_current_user()
 ```
 
 **Diagnostics**: Claude receives LSP warnings/errors
 
-```python
+```rust
 # Pyright reports: "name" is not accessed
 from typing import List, Set  # Claude sees this warning
 ```
 
 **Navigation**: Claude can jump to definitions
 
-```python
+```rust
 # Claude uses LSP goToDefinition to find authenticate() in auth.py
 result = authenticate(credentials)
 ```

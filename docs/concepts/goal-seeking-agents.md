@@ -112,9 +112,9 @@ python main.py
 
 ### 4. Use the Python API directly
 
-```python
+```rust
 # Upstream Python API (reference only)
-from amplihack.agents.goal_seeking.sdk_adapters.factory import create_agent
+// use amplihack_domain_agents:: create_agent
 
 agent = create_agent(
     name="my-learner",
@@ -394,7 +394,7 @@ See [Goal Agent Generator](agent-generator.md) for the generation system and
 
 ### GoalSeekingAgent Interface
 
-```python
+```rust
 # Upstream Python API (reference only)
 class GoalSeekingAgent(ABC):
     def learn_from_content(self, content: str) -> dict[str, Any]: ...

@@ -194,7 +194,7 @@ fn build_suppressed_workflow_rules() -> String {
     "## Default Workflow\n\n\
      A recipe-managed workflow is already active for this session.\n\n\
      Do NOT invoke `Skill(skill=\"dev-orchestrator\")`, do NOT run \
-     `run_recipe_by_name(\"smart-orchestrator\")`, and do NOT reinterpret \
+     `amplihack recipe run smart-orchestrator`, and do NOT reinterpret \
      the current prompt as a new top-level task.\n\n\
      Follow the current prompt exactly. Return only the requested output \
      format. Use tools only when the prompt explicitly requires them."

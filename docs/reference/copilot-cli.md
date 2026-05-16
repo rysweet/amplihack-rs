@@ -457,7 +457,7 @@ python3 .claude/tools/amplihack/hooks/pre_commit.py "$@"
 
 **Python Implementation** (`~/.amplihack/.claude/tools/amplihack/hooks/pre_commit.py`):
 
-```python
+```rust
 #!/usr/bin/env python3
 """Pre-commit hook implementation."""
 
@@ -499,7 +499,7 @@ The hook system automatically detects the calling platform by checking:
 
 **Claude Code** (Direct Injection):
 
-```python
+```rust
 # Hook returns JSON with context
 return {
     "hookSpecificOutput": {
@@ -511,7 +511,7 @@ return {
 
 **Copilot CLI** (File-Based Injection):
 
-```python
+```rust
 # Hook writes to AGENTS.md
 with open(".github/agents/AGENTS.md", "w") as f:
     f.write("""

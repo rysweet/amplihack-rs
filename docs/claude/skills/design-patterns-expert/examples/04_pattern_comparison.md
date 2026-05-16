@@ -48,7 +48,7 @@ You're trying to: **Create different types of database connections based on data
 
 **Example**:
 
-```python
+```rust
 class ConnectionCreator(ABC):
     @abstractmethod
     def create_connection(self) -> Connection:
@@ -97,7 +97,7 @@ class PostgreSQLCreator(ConnectionCreator):
 
 **Example**:
 
-```python
+```rust
 class DatabaseFactory(ABC):
     @abstractmethod
     def create_connection(self) -> Connection:
@@ -151,7 +151,7 @@ class MySQLFactory(DatabaseFactory):
 
 **Example**:
 
-```python
+```rust
 def create_connection(db_type: str, config: dict) -> Connection:
     """Simple factory function for database connections."""
     if db_type == "mysql":
@@ -193,7 +193,7 @@ conn = create_connection("mysql", {"host": "localhost", "port": 3306})
 
 **For your specific use case** (creating database connections):
 
-```python
+```rust
 class ConnectionFactory:
     """Simple factory class with registry pattern."""
     _creators = {}

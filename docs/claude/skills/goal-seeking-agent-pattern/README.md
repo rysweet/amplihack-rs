@@ -139,8 +139,8 @@ Example: AKS SRE automation combines Azure, Kubernetes, networking, and security
 
 ### Programmatic API
 
-```python
-from amplihack.goal_agent_generator import (
+```rust
+// use amplihack_goal_agent_generator:: (
     PromptAnalyzer,
     ObjectivePlanner,
     SkillSynthesizer,

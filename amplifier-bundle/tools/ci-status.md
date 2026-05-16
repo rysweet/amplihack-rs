@@ -8,44 +8,44 @@ Provides a simple, structured way to check CI status without complex bash script
 
 ## Usage
 
-### As a Python Module
+### As a Rust Library
 
-```python
-from ci_status import check_ci_status
+```rust
+use amplihack::ci_status::check_ci_status;
 
-# Check current branch
-result = check_ci_status()
+// Check current branch
+let result = check_ci_status(None)?;
 
-# Check specific PR
-result = check_ci_status("123")  # or "#123"
+// Check specific PR
+let result = check_ci_status(Some("123"))?;  // or Some("#123")
 
-# Check specific branch
-result = check_ci_status("main")
+// Check specific branch
+let result = check_ci_status(Some("main"))?;
 
-# Access structured data
-if result["success"]:
-    print(f"Status: {result['status']}")
-    print(f"Total checks: {result['summary']['total']}")
+// Access structured data
+if result.success {
+    println!("Status: {}", result.status);
+    println!("Total checks: {}", result.summary.total);
+}
 ```
 
 ### As a CLI Tool
 
 ```bash
 # Check current branch
-python .claude/tools/ci_status.py
+amplihack ci-status
 
 # Check specific PR
-python .claude/tools/ci_status.py 123
+amplihack ci-status 123
 
 # Check specific branch
-python .claude/tools/ci_status.py main
+amplihack ci-status main
 
 # Get JSON output
-python .claude/tools/ci_status.py --json
+amplihack ci-status --json
 
 # Make executable and use directly
-chmod +x .claude/tools/ci_status.py
-./.claude/tools/ci_status.py
+amplihack ci-status
 ```
 
 ## Output Structure
@@ -94,7 +94,7 @@ chmod +x .claude/tools/ci_status.py
 
 ## Requirements
 
-- Python 3.6+
+- Rust toolchain
 - GitHub CLI (`gh`) installed and authenticated
 - Git repository with GitHub remote
 
@@ -102,43 +102,52 @@ chmod +x .claude/tools/ci_status.py
 
 ### Check if CI is passing before merge
 
-```python
-from ci_status import check_ci_status
+```rust
+use amplihack::ci_status::check_ci_status;
 
-result = check_ci_status()
-if result["success"] and result["status"] == "PASSING":
-    print("Safe to merge!")
-else:
-    print(f"CI status: {result['status']}")
+let result = check_ci_status(None)?;
+if result.success && result.status == "PASSING" {
+    println!("Safe to merge!");
+} else {
+    println!("CI status: {}", result.status);
+}
 ```
 
 ### Monitor CI progress
 
-```python
-import time
-from ci_status import check_ci_status
+```rust
+use std::{thread, time::Duration};
+use amplihack::ci_status::check_ci_status;
 
-while True:
-    result = check_ci_status("123")  # PR number
-    print(f"Status: {result['status']}")
+loop {
+    let result = check_ci_status(Some("123"))?;  // PR number
+    println!("Status: {}", result.status);
 
-    if result["status"] in ["PASSING", "FAILING"]:
-        break
+    if result.status == "PASSING" || result.status == "FAILING" {
+        break;
+    }
 
-    time.sleep(30)  # Check every 30 seconds
+    thread::sleep(Duration::from_secs(30));  // Check every 30 seconds
+}
 ```
 
 ### Get failed checks details
 
-```python
-from ci_status import check_ci_status
+```rust
+use amplihack::ci_status::check_ci_status;
 
-result = check_ci_status()
-if result["status"] == "FAILING" and result.get("checks"):
-    failed = [c for c in result["checks"] if c["conclusion"] == "FAILURE"]
-    for check in failed:
-        print(f"Failed: {check['name']}")
-        print(f"  URL: {check.get('detailsUrl', 'N/A')}")
+let result = check_ci_status(None)?;
+if result.status == "FAILING" {
+    if let Some(checks) = &result.checks {
+        let failed: Vec<_> = checks.iter()
+            .filter(|c| c.conclusion == "FAILURE")
+            .collect();
+        for check in failed {
+            println!("Failed: {}", check.name);
+            println!("  URL: {}", check.details_url.as_deref().unwrap_or("N/A"));
+        }
+    }
+}
 ```
 
 ## Error Handling
@@ -165,5 +174,5 @@ This tool can be used by agents to:
 
 - Commands have a 30-second timeout
 - Results are not cached (always fresh)
-- Minimal dependencies (Python standard library only)
+- Minimal dependencies (Rust standard library)
 - Efficient JSON parsing for large check lists

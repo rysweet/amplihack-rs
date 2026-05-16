@@ -6,7 +6,7 @@ One-page reference for the amplihack Claude Code plugin.
 
 ```bash
 # Install
-pip install amplihack
+cargo install amplihack
 amplihack plugin install
 
 # Verify
@@ -133,4 +133,4 @@ go install golang.org/x/tools/gopls@latest
 
 ---
 
-**Get started**: `pip install amplihack && amplihack plugin install`
+**Get started**: `cargo install amplihack && amplihack plugin install`

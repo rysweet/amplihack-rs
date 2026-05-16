@@ -25,7 +25,7 @@ Generate N independent implementations in parallel, compare them, and select the
 
 **Example:**
 
-```python
+```rust
 from .n_version import run_n_version
 
 result = run_n_version(
@@ -50,7 +50,7 @@ print(f"Rationale: {result['rationale']}")
 
 **Returns:**
 
-```python
+```rust
 {
     "versions": List[ProcessResult],      # All N implementation outputs
     "comparison": ProcessResult,          # Reviewer analysis
@@ -76,7 +76,7 @@ Conduct structured debate with multiple perspectives to reach consensus on compl
 
 **Example:**
 
-```python
+```rust
 from .debate import run_debate
 
 result = run_debate(
@@ -102,7 +102,7 @@ print(f"Confidence: {result['confidence']}")
 
 **Returns:**
 
-```python
+```rust
 {
     "rounds": List[dict],                 # Each round's results
     "positions": Dict[str, List[str]],    # Position history per perspective
@@ -128,7 +128,7 @@ Graceful degradation through cascading fallback strategies.
 
 **Example:**
 
-```python
+```rust
 from .cascade import run_cascade
 
 result = run_cascade(
@@ -155,7 +155,7 @@ if result['degradation']:
 
 **Returns:**
 
-```python
+```rust
 {
     "result": ProcessResult,              # Final successful result
     "cascade_level": str,                 # "primary", "secondary", "tertiary", or "failed"
@@ -239,7 +239,7 @@ These patterns follow Amplihack's core principles:
 
 ### Custom Cascade Levels
 
-```python
+```rust
 from .cascade import create_custom_cascade
 
 result = create_custom_cascade(
@@ -266,7 +266,7 @@ result = create_custom_cascade(
 
 ### Custom N-Version Profiles
 
-```python
+```rust
 result = run_n_version(
     task_prompt="Implement feature",
     diversity_profiles=[
@@ -288,7 +288,7 @@ result = run_n_version(
 
 ### Extended Debate Perspectives
 
-```python
+```rust
 result = run_debate(
     decision_question="Which framework?",
     perspectives=[

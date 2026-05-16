@@ -4,15 +4,15 @@
 
 Implemented three fault-tolerance pattern orchestrators using the orchestration infrastructure:
 
-1. **N-Version Programming** (`n_version.py`) - 351 lines
-2. **Multi-Agent Debate** (`debate.py`) - 400 lines
-3. **Fallback Cascade** (`cascade.py`) - 392 lines
+1. **N-Version Programming** (`n_version.rs`) - 351 lines
+2. **Multi-Agent Debate** (`debate.rs`) - 400 lines
+3. **Fallback Cascade** (`cascade.rs`) - 392 lines
 
 Total implementation: ~1,143 lines of production code
 
 ## Implementation Details
 
-### 1. N-Version Programming (`n_version.py`)
+### 1. N-Version Programming (`n_version.rs`)
 
 **Purpose:** Generate N independent implementations in parallel, compare them, and select the best.
 
@@ -36,14 +36,14 @@ Total implementation: ~1,143 lines of production code
 
 **Returns:**
 
-```python
-{
-    "versions": List[ProcessResult],
-    "comparison": ProcessResult,
-    "selected": str,  # "version_N" or "hybrid"
-    "rationale": str,
-    "session_id": str,
-    "success": bool,
+```rust
+NVersionResult {
+    versions: Vec<ProcessResult>,
+    comparison: ProcessResult,
+    selected: String,  // "version_N" or "hybrid"
+    rationale: String,
+    session_id: String,
+    success: bool,
 }
 ```
 
@@ -63,7 +63,7 @@ Total implementation: ~1,143 lines of production code
 
 ---
 
-### 2. Multi-Agent Debate (`debate.py`)
+### 2. Multi-Agent Debate (`debate.rs`)
 
 **Purpose:** Conduct structured debate with multiple perspectives to reach consensus.
 
@@ -86,14 +86,14 @@ Total implementation: ~1,143 lines of production code
 
 **Returns:**
 
-```python
-{
-    "rounds": List[dict],
-    "positions": Dict[str, List[str]],
-    "synthesis": ProcessResult,
-    "confidence": str,  # "HIGH", "MEDIUM", "LOW"
-    "session_id": str,
-    "success": bool,
+```rust
+DebateResult {
+    rounds: Vec<RoundResult>,
+    positions: HashMap<String, Vec<String>>,
+    synthesis: ProcessResult,
+    confidence: String,  // "HIGH", "MEDIUM", "LOW"
+    session_id: String,
+    success: bool,
 }
 ```
 
@@ -114,7 +114,7 @@ Total implementation: ~1,143 lines of production code
 
 ---
 
-### 3. Fallback Cascade (`cascade.py`)
+### 3. Fallback Cascade (`cascade.rs`)
 
 **Purpose:** Graceful degradation through cascading fallback strategies.
 
@@ -139,14 +139,14 @@ Total implementation: ~1,143 lines of production code
 
 **Returns:**
 
-```python
-{
-    "result": ProcessResult,
-    "cascade_level": str,  # "primary", "secondary", "tertiary", or "failed"
-    "degradation": str,
-    "attempts": List[ProcessResult],
-    "session_id": str,
-    "success": bool,
+```rust
+CascadeResult {
+    result: ProcessResult,
+    cascade_level: String,  // "primary", "secondary", "tertiary", or "failed"
+    degradation: String,
+    attempts: Vec<ProcessResult>,
+    session_id: String,
+    success: bool,
 }
 ```
 
@@ -178,15 +178,15 @@ Total implementation: ~1,143 lines of production code
 All patterns are built on the orchestration infrastructure:
 
 ```
-orchestration/
-├── claude_process.py       # Subprocess wrapper
-├── execution.py            # Parallel/sequential/fallback helpers
-├── session.py              # Session management
+crates/amplihack-orchestration/src/
+├── claude_process.rs       # Subprocess wrapper
+├── execution.rs            # Parallel/sequential/fallback helpers
+├── session.rs              # Session management
 └── patterns/
-    ├── n_version.py        # N-Version orchestrator
-    ├── debate.py           # Debate orchestrator
-    ├── cascade.py          # Cascade orchestrator
-    └── __init__.py         # Exports
+    ├── n_version.rs        # N-Version orchestrator
+    ├── debate.rs           # Debate orchestrator
+    ├── cascade.rs          # Cascade orchestrator
+    └── mod.rs              # Exports
 ```
 
 **Infrastructure Usage:**
@@ -205,40 +205,43 @@ Each pattern is testable with simple examples:
 
 ### N-Version Test:
 
-```python
-result = run_n_version(
-    task_prompt="Implement password hashing function",
-    n=3,
-    selection_criteria=["security", "best_practices"]
-)
-assert result['success']
-assert result['selected'] in ['version_1', 'version_2', 'version_3', 'hybrid']
-assert len(result['versions']) == 3
+```rust
+let result = run_n_version(RunNVersionConfig {
+    task_prompt: "Implement password hashing function".into(),
+    n: 3,
+    selection_criteria: vec!["security".into(), "best_practices".into()],
+    ..Default::default()
+});
+assert!(result.success);
+assert!(["version_1", "version_2", "version_3", "hybrid"].contains(&result.selected.as_str()));
+assert_eq!(result.versions.len(), 3);
 ```
 
 ### Debate Test:
 
-```python
-result = run_debate(
-    decision_question="Should we use PostgreSQL or Redis?",
-    perspectives=["security", "performance", "simplicity"],
-    rounds=3
-)
-assert result['success']
-assert result['confidence'] in ['HIGH', 'MEDIUM', 'LOW']
-assert len(result['rounds']) == 3
+```rust
+let result = run_debate(RunDebateConfig {
+    decision_question: "Should we use PostgreSQL or Redis?".into(),
+    perspectives: vec!["security".into(), "performance".into(), "simplicity".into()],
+    rounds: 3,
+    ..Default::default()
+});
+assert!(result.success);
+assert!(["HIGH", "MEDIUM", "LOW"].contains(&result.confidence.as_str()));
+assert_eq!(result.rounds.len(), 3);
 ```
 
 ### Cascade Test:
 
-```python
-result = run_cascade(
-    task_prompt="Generate API documentation",
-    timeout_strategy="balanced"
-)
-assert result['success']
-assert result['cascade_level'] in ['primary', 'secondary', 'tertiary']
-assert len(result['attempts']) >= 1
+```rust
+let result = run_cascade(RunCascadeConfig {
+    task_prompt: "Generate API documentation".into(),
+    timeout_strategy: "balanced".into(),
+    ..Default::default()
+});
+assert!(result.success);
+assert!(["primary", "secondary", "tertiary"].contains(&result.cascade_level.as_str()));
+assert!(result.attempts.len() >= 1);
 ```
 
 ---
@@ -296,33 +299,45 @@ Every pattern creates a session with logs because:
 
 ### Adding New N-Version Profiles:
 
-```python
-custom_profiles = [
-    {
-        "name": "security_focused",
-        "traits": "Prioritize security over all else",
+```rust
+let custom_profiles = vec![
+    DiversityProfile {
+        name: "security_focused".into(),
+        traits: "Prioritize security over all else".into(),
     },
-    # ... more profiles
-]
-run_n_version(task, diversity_profiles=custom_profiles)
+    // ... more profiles
+];
+run_n_version(RunNVersionConfig {
+    task_prompt: task.into(),
+    diversity_profiles: Some(custom_profiles),
+    ..Default::default()
+});
 ```
 
 ### Adding New Debate Perspectives:
 
-```python
-# Patterns auto-create profiles for unknown perspectives
-run_debate(question, perspectives=["security", "legal", "ethical"])
+```rust
+// Patterns auto-create profiles for unknown perspectives
+run_debate(RunDebateConfig {
+    decision_question: question.into(),
+    perspectives: vec!["security".into(), "legal".into(), "ethical".into()],
+    ..Default::default()
+});
 ```
 
 ### Adding New Cascade Strategies:
 
-```python
-custom_constraints = {
-    "primary": "with full GPU acceleration",
-    "secondary": "with CPU-only processing",
-    "tertiary": "with minimal computation",
-}
-run_cascade(task, custom_constraints=custom_constraints)
+```rust
+let custom_constraints = HashMap::from([
+    ("primary".into(), "with full GPU acceleration".into()),
+    ("secondary".into(), "with CPU-only processing".into()),
+    ("tertiary".into(), "with minimal computation".into()),
+]);
+run_cascade(RunCascadeConfig {
+    task_prompt: task.into(),
+    custom_constraints: Some(custom_constraints),
+    ..Default::default()
+});
 ```
 
 ---
@@ -387,11 +402,11 @@ Potential improvements (not implemented):
 
 ## Deliverables Checklist
 
-✅ `n_version.py` - Complete (351 lines)
-✅ `debate.py` - Complete (400 lines)
-✅ `cascade.py` - Complete (392 lines)
-✅ `__init__.py` - Updated with exports
-✅ `PATTERN_EXAMPLES.py` - Complete working examples
+✅ `n_version.rs` - Complete (351 lines)
+✅ `debate.rs` - Complete (400 lines)
+✅ `cascade.rs` - Complete (392 lines)
+✅ `mod.rs` - Updated with exports
+✅ `examples/patterns.rs` - Complete working examples
 ✅ `README.md` - Comprehensive documentation
 ✅ `IMPLEMENTATION_NOTES.md` - This file
 
@@ -415,11 +430,12 @@ All files created in:
 
 ```
 patterns/
-├── __init__.py                 # 41 lines
-├── n_version.py                # 351 lines
-├── debate.py                   # 400 lines
-├── cascade.py                  # 392 lines
-├── PATTERN_EXAMPLES.py         # 195 lines
+├── mod.rs                      # 41 lines
+├── n_version.rs                # 351 lines
+├── debate.rs                   # 400 lines
+├── cascade.rs                  # 392 lines
+├── examples/
+│   └── patterns.rs             # 195 lines
 ├── README.md                   # 348 lines
 └── IMPLEMENTATION_NOTES.md     # This file
 ```

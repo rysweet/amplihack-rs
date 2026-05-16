@@ -10,7 +10,7 @@ The UVX data models provide immutable, type-safe structures for managing UVX pat
 
 ### 1. Make Invalid States Unrepresentable
 
-```python
+```rust
 # UVX detection can only be one of four explicit states
 class UVXDetectionResult(Enum):
     LOCAL_DEPLOYMENT = auto()      # Clear: running locally
@@ -21,7 +21,7 @@ class UVXDetectionResult(Enum):
 
 ### 2. Immutable Where Possible
 
-```python
+```rust
 @dataclass(frozen=True)
 class UVXDetectionState:
     """Immutable state representing UVX detection results."""
@@ -36,7 +36,7 @@ class UVXDetectionState:
 
 ### 3. Clear Validation and Error States
 
-```python
+```rust
 @dataclass(frozen=True)
 class FrameworkLocation:
     validation_errors: List[str] = field(default_factory=list)
@@ -56,7 +56,7 @@ class FrameworkLocation:
 
 ### 4. Security-Focused Path Resolution
 
-```python
+```rust
 def resolve_file(self, relative_path: str) -> Optional[Path]:
     # Basic validation for path traversal attacks
     if ".." in relative_path or "\x00" in relative_path:
@@ -75,7 +75,7 @@ def resolve_file(self, relative_path: str) -> Optional[Path]:
 
 ### 1. UVX Detection State
 
-```python
+```rust
 # Environment information
 @dataclass(frozen=True)
 class UVXEnvironmentInfo:
@@ -98,7 +98,7 @@ class UVXDetectionState:
 
 ### 2. Path Resolution Data
 
-```python
+```rust
 # Resolved framework location
 @dataclass(frozen=True)
 class FrameworkLocation:
@@ -120,7 +120,7 @@ class PathResolutionResult:
 
 ### 3. Configuration State
 
-```python
+```rust
 @dataclass(frozen=True)
 class UVXConfiguration:
     # Environment variables to check
@@ -148,7 +148,7 @@ class UVXConfiguration:
 
 ### 4. Session State Management
 
-```python
+```rust
 @dataclass
 class UVXSessionState:
     """Mutable session state for UVX operations."""
@@ -172,9 +172,9 @@ class UVXSessionState:
 
 ### Basic Detection and Resolution
 
-```python
-from amplihack.utils.uvx_detection import detect_uvx_deployment, resolve_framework_paths
-from amplihack.utils.uvx_models import UVXConfiguration
+```rust
+// use amplihack_utils::uvx_detection::{ detect_uvx_deployment, resolve_framework_paths
+// use amplihack_utils::uvx_models::{ UVXConfiguration
 
 # Configure detection
 config = UVXConfiguration(debug_enabled=True, allow_staging=True)
@@ -191,8 +191,8 @@ if resolution.is_successful:
 
 ### Complete Session Management
 
-```python
-from amplihack.utils.uvx_staging_v2 import create_uvx_session
+```rust
+// use amplihack_utils::uvx_staging::create_uvx_session;
 
 # Create complete initialized session
 session = create_uvx_session()
@@ -203,9 +203,9 @@ if session.is_ready:
 
 ### File Staging with Error Handling
 
-```python
-from amplihack.utils.uvx_staging_v2 import UVXStager
-from amplihack.utils.uvx_models import UVXConfiguration
+```rust
+// use amplihack_utils::uvx_staging::UVXStager;
+// use amplihack_utils::uvx_models::{ UVXConfiguration
 
 config = UVXConfiguration(
     overwrite_existing=False,
@@ -264,7 +264,7 @@ else:
 
 ### Before (Mutable State)
 
-```python
+```rust
 class UVXStager:
     def __init__(self):
         self._staged_files: Set[Path] = set()
@@ -276,7 +276,7 @@ class UVXStager:
 
 ### After (Immutable State)
 
-```python
+```rust
 # Clear data structures
 detection = detect_uvx_deployment()
 print(f"Result: {detection.result.name}")

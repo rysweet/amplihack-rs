@@ -340,7 +340,7 @@ Complete metadata:
 
 ### Prerequisites
 
-1. **amplihack installed**: `pip install amplihack`
+1. **amplihack installed**: `cargo install amplihack`
 2. **Claude API access**: Set `ANTHROPIC_API_KEY` environment variable
 3. **Working directory**: Appropriate permissions
 
@@ -443,7 +443,7 @@ done
 
 **Solutions:**
 
-- Ensure amplihack is installed: `pip install amplihack`
+- Ensure amplihack is installed: `cargo install amplihack`
 - Verify Claude API access: `echo $ANTHROPIC_API_KEY`
 - Check main.py has executable permissions: `chmod +x main.py`
 

@@ -158,7 +158,7 @@ User-specific preferences with no general value
 
 ### Step 1: Load and Parse
 
-```python
+```bash
 # Read USER_PREFERENCES.md
 # Extract all preferences and learned patterns
 # Identify unique behavioral modifications
@@ -166,16 +166,18 @@ User-specific preferences with no general value
 
 ### Step 2: Analyze Each Pattern
 
-```python
-for pattern in preferences:
-    score = calculate_score(pattern)
-    category = categorize(pattern)
-    if score >= 60:
-        generate_contribution(pattern, score, category)
-    elif score >= 40:
-        document_potential(pattern, score)
-    else:
-        mark_as_local(pattern, score)
+```rust
+for pattern in &preferences {
+    let score = calculate_score(pattern);
+    let category = categorize(pattern);
+    if score >= 60 {
+        generate_contribution(pattern, score, &category);
+    } else if score >= 40 {
+        document_potential(pattern, score);
+    } else {
+        mark_as_local(pattern, score);
+    }
+}
 ```
 
 ### Step 3: Prioritize Contributions
@@ -223,50 +225,50 @@ Before proposing a contribution:
 
 ### Input Preference
 
-"Always use type hints in Python code generation"
+"Always use strong typing and derive macros in Rust code generation"
 
 ### Analysis
 
-- **Generalizability**: 28/30 (Most Python developers want type hints)
+- **Generalizability**: 28/30 (Most Rust developers benefit from strong typing)
 - **Implementation**: 25/30 (Configuration flag + template update)
-- **User Impact**: 18/20 (Improves code quality and IDE support)
-- **Philosophy**: 19/20 (Aligns with explicit contracts)
+- **User Impact**: 18/20 (Improves code quality and compile-time safety)
+- **Philosophy**: 19/20 (Aligns with explicit contracts and zero-cost abstractions)
 - **Total**: 90/100 ✅
 
 ### Output
 
 ```markdown
-## Contribution Candidate: Python Type Hints Configuration
+## Contribution Candidate: Rust Strong Typing Configuration
 
 **Score**: 90/100
 **Category**: Configuration Option
 
 ### GitHub Issue
 
-**Title**: Add configuration option for Python type hints in code generation
+**Title**: Add configuration option for Rust derive macros and strong typing in code generation
 
 **Body**:
 
 ## Problem
 
-Users working with Python often want generated code to include type hints for better IDE support and runtime type checking.
+Users working with Rust often want generated code to include derive macros and strong typing for better compile-time safety and ergonomics.
 
 ## Proposed Solution
 
-Add a configuration option `python.useTypeHints` that controls whether generated Python code includes type annotations.
+Add a configuration option `rust.useStrongTyping` that controls whether generated Rust code includes derive macros (Debug, Clone, Serialize, etc.) and explicit type annotations.
 
 ## Implementation
 
 - Add config flag to preferences schema
-- Update Python code generation templates
+- Update Rust code generation templates
 - Provide option in /customize command
 
 ## User Value
 
 - Improves code maintainability
-- Better IDE autocomplete
+- Better compile-time error detection
 - Catches type errors early
-- Industry best practice
+- Idiomatic Rust patterns
 ```
 
 ## Success Metrics

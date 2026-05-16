@@ -99,8 +99,8 @@ adapting strategy based on change type (hotfix/feature/patch) and environment he
 
 ### Execution Plan
 
-```python
-from amplihack.goal_agent_generator import ObjectivePlanner, PromptAnalyzer
+```rust
+// use amplihack_goal_agent_generator:: ObjectivePlanner, PromptAnalyzer
 
 # Analyze goal
 analyzer = PromptAnalyzer()
@@ -205,8 +205,8 @@ Success indicators:
 
 ### Implementation
 
-```python
-from amplihack.goal_agent_generator import (
+```rust
+// use amplihack_goal_agent_generator:: (
     PromptAnalyzer,
     ObjectivePlanner,
     SkillSynthesizer,
@@ -273,7 +273,7 @@ The agent adapts based on context:
 
 **Hotfix Release** (urgent bug fix):
 
-```python
+```rust
 # Phase 1: Minimal validation (skip long-running tests)
 if release_type == "hotfix":
     validation_scope = "critical-tests-only"
@@ -292,7 +292,7 @@ if release_type == "hotfix":
 
 **Feature Release** (standard):
 
-```python
+```rust
 # Phase 1: Full validation
 if release_type == "feature":
     validation_scope = "comprehensive"
@@ -310,7 +310,7 @@ if release_type == "feature":
 
 **Degraded Environment** (system issues):
 
-```python
+```rust
 # If environment is degraded, delay release
 if environment_health < HEALTH_THRESHOLD:
     escalate(
@@ -331,7 +331,7 @@ The agent implements three recovery strategies:
 
 **Strategy 1: Retry with Backoff** (transient failures)
 
-```python
+```rust
 # Build failures (network issues, resource contention)
 @retry(max_attempts=3, backoff=exponential)
 def build_artifacts():
@@ -348,7 +348,7 @@ def build_artifacts():
 
 **Strategy 2: Alternative Strategy** (approach failures)
 
-```python
+```rust
 # Deployment strategy failures
 def deploy_to_production():
     strategies = [
@@ -369,7 +369,7 @@ def deploy_to_production():
 
 **Strategy 3: Rollback** (safety mechanism)
 
-```python
+```rust
 # Automatic rollback on health check failures
 def monitor_deployment_health():
     for check in health_checks:

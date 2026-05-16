@@ -15,8 +15,8 @@ Learn how to implement proper exception handling in amplihack following project 
 
 Import the relevant exception from `amplihack.exceptions`:
 
-```python
-from amplihack.exceptions import (
+```rust
+// use amplihack_exceptions:: (
     ClaudeBinaryNotFoundError,  # For binary not found
     ConfigurationError,         # For config issues
     RecipeNotFoundError,        # For missing recipes
@@ -45,7 +45,7 @@ See [Exception Handling Reference](../reference/exception-handling.md) for the c
 
 #### For Fail-Open Operations
 
-```python
+```rust
 import logging
 
 def collect_optional_metrics():
@@ -61,10 +61,10 @@ def collect_optional_metrics():
 
 #### For Fail-Safe Operations
 
-```python
+```rust
 import sys
 import logging
-from amplihack.exceptions import ConfigurationError
+// use amplihack_exceptions:: ConfigurationError
 
 def load_required_config():
     """Load critical configuration or exit."""
@@ -82,7 +82,7 @@ def load_required_config():
 
 ### Before (Silent Failure)
 
-```python
+```rust
 # Anti-pattern: Silent exception
 def risky_operation():
     try:
@@ -93,7 +93,7 @@ def risky_operation():
 
 ### After (Logged Failure)
 
-```python
+```rust
 import logging
 
 def risky_operation():
@@ -109,7 +109,7 @@ def risky_operation():
 
 ### Pattern 1: Standard Hook (Fail-Open)
 
-```python
+```rust
 #!/usr/bin/env python3
 import sys
 from pathlib import Path
@@ -128,7 +128,7 @@ def process_hook(input_data):
 
 ### Pattern 2: Power Steering Hook (Sanitized Logging)
 
-```python
+```rust
 import logging
 
 def _log_sdk_error(operation: str, error: Exception):
@@ -151,7 +151,7 @@ def validate_sdk_response(response: str) -> bool:
 
 ### Pattern 3: Stop Hook (Lock Check)
 
-```python
+```rust
 class StopHook:
     def check_lock_flag(self):
         """Check if continuous work mode is active."""
@@ -168,7 +168,7 @@ class StopHook:
 
 ### Scenario 1: File Operations
 
-```python
+```rust
 from pathlib import Path
 import logging
 
@@ -193,10 +193,10 @@ def read_optional_config(config_path: Path):
 
 ### Scenario 2: External Process Calls
 
-```python
+```rust
 import subprocess
 import logging
-from amplihack.exceptions import LaunchError
+// use amplihack_exceptions:: LaunchError
 
 def launch_claude_cli(args: list[str]):
     """Launch Claude CLI with error handling."""
@@ -222,7 +222,7 @@ def launch_claude_cli(args: list[str]):
 
 ### Scenario 3: API/Network Calls
 
-```python
+```rust
 import logging
 import requests
 
@@ -250,9 +250,9 @@ def fetch_update_info():
 
 ### Unit Test Example
 
-```python
+```rust
 import pytest
-from amplihack.exceptions import ConfigurationError
+// use amplihack_exceptions:: ConfigurationError
 
 def test_config_loading_with_invalid_file():
     """Test that invalid config raises ConfigurationError."""
@@ -270,7 +270,7 @@ def test_metrics_collection_fails_gracefully():
 
 ### Outside-In Test Example
 
-```python
+```rust
 # tests/outside-in/test_hook_error_handling.yaml
 ---
 scenario: "Hook handles errors gracefully"
@@ -288,7 +288,7 @@ then:
 
 ### Choose the Right Level
 
-```python
+```rust
 import logging
 
 # DEBUG - Expected failures, diagnostics
@@ -306,7 +306,7 @@ logging.critical("Database corruption detected")
 
 ### Include Context in Log Messages
 
-```python
+```rust
 # Bad: No context
 logging.error("Failed")
 

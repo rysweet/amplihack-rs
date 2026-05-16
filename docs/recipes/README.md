@@ -4,15 +4,9 @@ A code-enforced workflow execution engine that reads declarative YAML recipe fil
 
 **Standalone repo & docs**: [github.com/rysweet/amplihack-recipe-runner](https://github.com/rysweet/amplihack-rs-recipe-runner) · [rysweet.github.io/amplihack-recipe-runner](https://rysweet.github.io/amplihack-recipe-runner/)
 
-## Engine Selection
+## Engine
 
-The recipe runner supports two engines. Set `RECIPE_RUNNER_ENGINE` to choose explicitly:
-
-| Value       | Engine                                                                 | Notes                                                     |
-| ----------- | ---------------------------------------------------------------------- | --------------------------------------------------------- |
-| `rust`      | [recipe-runner-rs](https://github.com/rysweet/amplihack-rs-recipe-runner) | Standalone binary, ~5ms startup, comprehensive test suite |
-| `python`    | Built-in Python runner                                                 | No extra install needed                                   |
-| _(not set)_ | Auto-detect                                                            | Uses Rust if binary found in PATH, Python otherwise       |
+The recipe runner uses the Rust engine (`recipe-runner-rs`). Set `RECIPE_RUNNER_RS_PATH` to override the binary location:
 
 ```bash
 # Install the Rust binary
@@ -20,31 +14,30 @@ cargo install --git https://github.com/rysweet/amplihack-rs-recipe-runner
 
 # Or set path explicitly
 export RECIPE_RUNNER_RS_PATH=/path/to/recipe-runner-rs
-
-# Force a specific engine
-export RECIPE_RUNNER_ENGINE=rust   # or python
 ```
 
 The Rust binary is automatically installed during `amplihack install` if `cargo` is available. To check or manually trigger installation:
 
-```python
-from amplihack.recipes import ensure_rust_recipe_runner
+```bash
+# Verify the Rust recipe runner is available
+amplihack recipe run --help
 
-ensure_rust_recipe_runner()  # Installs if missing, no-op if present
+# Install if missing
+cargo install --git https://github.com/rysweet/amplihack-rs-recipe-runner
 ```
 
-## Engine Feature Comparison
+## Engine Features
 
-The Rust engine supports additional features not available in the Python engine:
+The Rust engine supports the full feature set:
 
-| Feature                     | Rust | Python |
-| --------------------------- | ---- | ------ |
-| `parallel_group`            | ✅   | ❌     |
-| `continue_on_error`         | ✅   | ❌     |
-| `when_tags`                 | ✅   | ❌     |
-| `hooks` (pre/post/on_error) | ✅   | ❌     |
-| `extends` (inheritance)     | ✅   | ❌     |
-| `recursion` config          | ✅   | ❌     |
+| Feature                     | Supported |
+| --------------------------- | --------- |
+| `parallel_group`            | ✅        |
+| `continue_on_error`         | ✅        |
+| `when_tags`                 | ✅        |
+| `hooks` (pre/post/on_error) | ✅        |
+| `extends` (inheritance)     | ✅        |
+| `recursion` config          | ✅        |
 
 Set `RECIPE_RUNNER_ENGINE=rust` to use the full feature set.
 
@@ -342,21 +335,16 @@ The Recipe Runner automatically discovers recipes from these standard directorie
 5. **CWD Source** — `src/amplihack/amplifier-bundle/recipes/` (CWD-relative, development)
 6. **Project-Specific** — `.claude/recipes/` (project-local recipes, can override)
 
-Later directories override earlier ones when recipe names collide. All bundled recipes are automatically available after pip install without additional configuration.
+Later directories override earlier ones when recipe names collide. All bundled recipes are automatically available after installation without additional configuration.
 
-**Key Feature (v0.9.0)**: Recipe discovery now includes the installed package's absolute path, resolved via `Path(__file__)`. This ensures all 16 bundled recipes are discoverable when you run amplihack from any working directory, not just from the amplihack repository itself.
+**Key Feature (v0.9.0)**: Recipe discovery includes the binary-relative path, ensuring all 16 bundled recipes are discoverable when you run amplihack from any working directory, not just from the amplihack repository itself.
 
-```python
-from amplihack.recipes import list_recipes, find_recipe
-
+```bash
 # List all discovered recipes
-for recipe_info in list_recipes():
-    print(f"{recipe_info.name}: {recipe_info.step_count} steps")
+amplihack recipe list
 
-# Find a specific recipe by name
-path = find_recipe("default-workflow")
-if path:
-    print(f"Found at: {path}")
+# Show details of a specific recipe
+amplihack recipe show default-workflow
 ```
 
 ### Tracking Upstream Changes
@@ -365,32 +353,22 @@ The `amplifier-bundle/recipes/` directory contains recipes from Microsoft's upst
 
 **Create baseline manifest:**
 
-```python
-from amplihack.recipes import update_manifest
-
+```bash
 # Records SHA-256 hash of each recipe file
-manifest_path = update_manifest()
-print(f"Manifest: {manifest_path}")
+amplihack recipe manifest update
 ```
 
 **Check for local modifications:**
 
-```python
-from amplihack.recipes import check_upstream_changes
-
-changes = check_upstream_changes()
-for change in changes:
-    print(f"{change['name']}: {change['status']}")  # modified/new/deleted
+```bash
+amplihack recipe manifest check
 ```
 
 **Sync from upstream:**
 
-```python
-from amplihack.recipes import sync_upstream
-
+```bash
 # Fetches latest from microsoft/amplifier-bundle-recipes
-result = sync_upstream()
-print(f"Added: {result['added']}, Updated: {result['updated']}")
+amplihack recipe sync
 ```
 
 This downloads the latest recipes from `https://github.com/microsoft/amplifier-bundle-recipes`, compares against local files, and copies any changes. The manifest is automatically updated after sync.
@@ -399,13 +377,13 @@ This downloads the latest recipes from `https://github.com/microsoft/amplifier-b
 
 ```bash
 # 1. Create initial manifest (do once)
-python -c "from amplihack.recipes import update_manifest; update_manifest()"
+amplihack recipe manifest update
 
 # 2. Check periodically for upstream updates
-python -c "from amplihack.recipes import sync_upstream; print(sync_upstream())"
+amplihack recipe sync
 
 # 3. Check for local modifications before committing
-python -c "from amplihack.recipes import check_upstream_changes; print(check_upstream_changes())"
+amplihack recipe manifest check
 ```
 
 You can also add this to a git pre-commit hook or CI job to automatically stay in sync.

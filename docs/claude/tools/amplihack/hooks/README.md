@@ -67,7 +67,7 @@ The hook system uses a **unified HookProcessor** base class that provides common
 
 To create a new hook, extend the `HookProcessor` class:
 
-```python
+```rust
 #!/usr/bin/env python3
 """Your hook description."""
 
@@ -186,7 +186,7 @@ All hooks implement graceful error handling following Python best practices (see
 
 **Standard Hook Pattern (Fail-Open)**:
 
-```python
+```rust
 try:
     result = process_data(input_data)
     return {"success": True, "result": result}
@@ -198,7 +198,7 @@ except Exception as e:
 
 **Power Steering Pattern (Sanitized Logging)**:
 
-```python
+```rust
 try:
     validate_response(response)
 except Exception as e:

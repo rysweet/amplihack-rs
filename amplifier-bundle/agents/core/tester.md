@@ -33,29 +33,31 @@ You analyze test coverage and identify testing gaps following the testing pyrami
 
 **MANDATORY: Check implementation complexity**
 
-```python
-# NOTE: This pseudocode represents a PROPOSED future implementation.
-# read_task_context() and related functions are conceptual examples
-# showing how complexity context could guide test generation.
-# These are NOT currently implemented features.
+```rust
+// NOTE: This pseudocode represents a PROPOSED future implementation.
+// read_task_context() and related functions are conceptual examples
+// showing how complexity context could guide test generation.
+// These are NOT currently implemented features.
 
-task_context = read_task_context()
-implementation_estimate = get_implementation_size_estimate()
+let task_context = read_task_context();
+let implementation_estimate = get_implementation_size_estimate();
 
-if task_context.classification == "TRIVIAL":
-    return VerificationTests(
-        test_count=1,
-        test_type="Build verification",
-        reason="Config change - verify build succeeds",
-        skip_unit_tests=True
-    )
+if task_context.classification == Classification::Trivial {
+    return VerificationTests {
+        test_count: 1,
+        test_type: "Build verification",
+        reason: "Config change - verify build succeeds",
+        skip_unit_tests: true,
+    };
+}
 
-if task_context.change_type == "config":
-    return ConfigTests(
-        test_count=2,
-        tests=["build succeeds", "config value set correctly"],
-        reason="Config files have no logic - verification only"
-    )
+if task_context.change_type == ChangeType::Config {
+    return ConfigTests {
+        test_count: 2,
+        tests: vec!["build succeeds", "config value set correctly"],
+        reason: "Config files have no logic - verification only",
+    };
+}
 ```
 
 **Test Proportionality Guidelines**:
@@ -130,16 +132,20 @@ Complex Logic:
 
 ### Suggested Tests
 
-```python
-def test_boundary_condition():
-    """Test maximum allowed value"""
-    # Arrange
-    # Act
-    # Assert
+```rust
+#[test]
+fn test_boundary_condition() {
+    // Test maximum allowed value
+    // Arrange
+    // Act
+    // Assert
+}
 
-def test_error_handling():
-    """Test invalid input handling"""
-    # Test implementation
+#[test]
+fn test_error_handling() {
+    // Test invalid input handling
+    // Test implementation
+}
 ```
 ````
 
@@ -156,23 +162,24 @@ def test_error_handling():
 ## Testing Patterns
 
 ### Parametrized Tests
-```python
-@pytest.mark.parametrize("input,expected", [
-    ("", ValueError),
-    (None, TypeError),
-    ("valid", "processed"),
-])
-def test_validation(input, expected):
-    # Single test, multiple cases
+```rust
+#[test_case("" => panics "empty input" ; "empty string")]
+#[test_case("valid" => "processed" ; "valid input")]
+fn test_validation(input: &str) -> &str {
+    // Single test, multiple cases via test-case crate
+    // Or use rstest for parametrized tests:
+}
 ````
 
 ### Fixture Reuse
 
-```python
-@pytest.fixture
-def setup():
-    # Shared setup
-    return configured_object
+```rust
+// Shared setup via helper function or rstest fixture
+#[fixture]
+fn setup() -> ConfiguredObject {
+    // Shared setup
+    ConfiguredObject::new()
+}
 ```
 
 ## Red Flags

@@ -50,8 +50,8 @@ Each layer addresses a distinct concern that the others cannot:
 
 ### Quick Start
 
-```python
-from amplihack.agents.goal_seeking.hive_mind.unified import (
+```rust
+// use amplihack_domain_agents:: (
     UnifiedHiveMind,
     HiveMindAgent,
     HiveMindConfig,
@@ -85,7 +85,7 @@ hive.process_events()
 
 ### Configuration
 
-```python
+```rust
 config = HiveMindConfig(
     promotion_confidence_threshold=0.7,  # Min confidence to promote
     promotion_consensus_required=2,       # Agents must agree
@@ -208,9 +208,9 @@ LearningAgent.answer_question(question)
 
 ### Usage
 
-```python
-from amplihack.agents.goal_seeking.learning_agent import LearningAgent
-from amplihack.agents.goal_seeking.hive_mind.hive_graph import InMemoryHiveGraph
+```rust
+// use amplihack_domain_agents:: LearningAgent
+// use amplihack_domain_agents:: InMemoryHiveGraph
 
 hive = InMemoryHiveGraph("shared")
 hive.register_agent("agent_a")

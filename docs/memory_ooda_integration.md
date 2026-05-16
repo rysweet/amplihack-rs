@@ -170,7 +170,7 @@ answer_question:     question → LLM(detect intent) → memory.search() → LLM
 
 The `AgenticLoop` (PERCEIVE→REASON→ACT→LEARN) is instantiated but dead:
 
-```python
+```rust
 # LearningAgent.__init__ — line 175
 self.loop = AgenticLoop(...)  # created but never called
 
@@ -194,7 +194,7 @@ answer = self._synthesize_with_llm(question, ...) # direct LLM call
 
 ### 2.3 Evidence from Code
 
-```python
+```rust
 # agentic_loop.py:353 — run_iteration exists and is correct
 def run_iteration(self, goal: str, observation: str) -> LoopState:
     perception = self.perceive(observation, goal)   # reads memory
@@ -302,7 +302,7 @@ flowchart TD
 
 #### OBSERVE Phase
 
-```python
+```rust
 def observe(self, input_text: str) -> ObservationResult:
     # 1. Perceive the raw input
     obs_type = self._classify_input(input_text)  # "learn", "answer", "act"
@@ -325,7 +325,7 @@ def observe(self, input_text: str) -> ObservationResult:
 
 #### ORIENT Phase
 
-```python
+```rust
 def orient(self, obs: ObservationResult) -> OrientationResult:
     # 1. recall(similar past situations)
     past_situations = self.memory.recall(
@@ -350,7 +350,7 @@ def orient(self, obs: ObservationResult) -> OrientationResult:
 
 #### DECIDE Phase
 
-```python
+```rust
 def decide(self, obs: ObservationResult, orient: OrientationResult) -> ActionDecision:
     # LLM reasons with FULL context: current + recalled memory
     context = self._format_context(obs, orient)
@@ -369,7 +369,7 @@ def decide(self, obs: ObservationResult, orient: OrientationResult) -> ActionDec
 
 #### ACT Phase
 
-```python
+```rust
 def act(self, obs: ObservationResult, decision: ActionDecision) -> ActionOutcome:
     # Execute the chosen action
     outcome = self.action_executor.execute(decision.action, **decision.params)
@@ -501,7 +501,7 @@ Until: is_goal_achieved(state) == True OR max_iterations
 
 The unified agent exposes the same external interface as today:
 
-```python
+```rust
 class UnifiedGoalSeekingAgent:
     # Same interface as LearningAgent + GoalSeekingAgent combined
 
@@ -528,7 +528,7 @@ class UnifiedGoalSeekingAgent:
 
 The eval harness calls exactly these methods:
 
-```python
+```rust
 # From eval harness (simplified)
 agent = LearningAgent(agent_name="eval_agent")
 
@@ -546,7 +546,7 @@ for question in questions:
 
 The unified agent preserves the same signatures. The eval harness requires **zero changes**:
 
-```python
+```rust
 # Eval harness — no changes needed
 agent = UnifiedGoalSeekingAgent(agent_name="eval_agent")
 # OR (backward compat alias)
@@ -572,7 +572,7 @@ agent.answer_question(question, "L1")   # → one OODA iteration
 
 The `ReasoningTrace` dataclass is preserved. The unified OODA loop emits equivalent trace data:
 
-```python
+```rust
 ReasoningTrace(
     question=question,
     intent={"intent": "simple_recall"},  # same as before
@@ -689,8 +689,8 @@ ReasoningTrace(
 
 The new `Memory` facade (added in commit `0ed27334`) provides the clean interface the OODA loop needs:
 
-```python
-from amplihack.memory import Memory
+```rust
+// use amplihack_memory:: Memory
 
 mem = Memory("my-agent")          # topology: single (default) or distributed
 mem.remember("The sky is blue")   # store observation/fact/outcome

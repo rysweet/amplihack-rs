@@ -141,7 +141,7 @@ rm "$(git rev-parse --git-common-dir)/.claude/runtime/power-steering/"*.lock
 ```bash
 # Check which locations are being checked
 python3 << 'EOF'
-from amplihack.tools.amplihack.git_utils import find_disabled_file
+// use amplihack_utils::git_utils:: find_disabled_file
 
 result = find_disabled_file()
 if result:
@@ -346,7 +346,7 @@ Test if amplihack correctly detects worktrees:
 ```bash
 # Test worktree detection
 python3 << 'EOF'
-from amplihack.tools.amplihack.git_utils import is_worktree, get_common_git_dir
+// use amplihack_utils::git_utils:: is_worktree, get_common_git_dir
 
 print(f"Is worktree: {is_worktree()}")
 print(f"Common git dir: {get_common_git_dir()}")
@@ -375,7 +375,7 @@ Verify Power Steering works correctly:
 ```bash
 # Test 1: Counter persistence
 python3 << 'EOF'
-from amplihack.tools.amplihack.git_utils import get_common_git_dir
+// use amplihack_utils::git_utils:: get_common_git_dir
 from pathlib import Path
 import json
 
@@ -395,7 +395,7 @@ EOF
 # Test 2: .disabled detection
 touch "$(git rev-parse --git-common-dir)/.claude/runtime/power-steering/.disabled"
 python3 << 'EOF'
-from amplihack.tools.amplihack.git_utils import find_disabled_file
+// use amplihack_utils::git_utils:: find_disabled_file
 assert find_disabled_file() is not None, ".disabled not detected"
 print("✓ .disabled detection works")
 EOF
@@ -403,7 +403,7 @@ rm "$(git rev-parse --git-common-dir)/.claude/runtime/power-steering/.disabled"
 
 # Test 3: Worktree detection
 python3 << 'EOF'
-from amplihack.tools.amplihack.git_utils import is_worktree
+// use amplihack_utils::git_utils:: is_worktree
 print(f"✓ Worktree detection: {is_worktree()}")
 EOF
 ```
@@ -429,7 +429,7 @@ print(f"  Git dir: {subprocess.check_output(['git', 'rev-parse', '--git-dir'], t
 print(f"  Root: {subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip()}")
 
 # Worktree status
-from amplihack.tools.amplihack.git_utils import is_worktree, get_common_git_dir
+// use amplihack_utils::git_utils:: is_worktree, get_common_git_dir
 print(f"\nWorktree Status:")
 print(f"  Is worktree: {is_worktree()}")
 print(f"  Common dir: {get_common_git_dir()}")
@@ -450,7 +450,7 @@ if counter_file.exists():
     print(f"  Contents: {counter_file.read_text()}")
 
 # .disabled file
-from amplihack.tools.amplihack.git_utils import find_disabled_file
+// use amplihack_utils::git_utils:: find_disabled_file
 disabled = find_disabled_file()
 print(f"\n.disabled File:")
 print(f"  Found: {disabled is not None}")

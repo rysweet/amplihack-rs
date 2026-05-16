@@ -561,8 +561,8 @@ steps:
 
       Check Kuzu availability. If Kuzu is NOT available:
         1. Print a LOUD ERROR: "ERROR: Kuzu graph database is not available."
-        2. Attempt to fix: check if kuzu Python package is installed (pip show kuzu).
-           If missing, install it: pip install kuzu
+        2. Attempt to fix: check if kuzu is available (amplihack kuzu status).
+           If missing, install it: cargo install kuzu or use amplihack kuzu setup
         3. Check for the database directory (~/.amplihack/kuzu_db or env KUZU_DB_PATH)
         4. If still unavailable after fix attempt, FAIL with clear error message
            explaining what is wrong and how to fix it. Do NOT silently skip.

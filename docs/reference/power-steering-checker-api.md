@@ -28,7 +28,7 @@ See power_steering_checker package README for module details.
 
 ## Public API (`__init__.py`)
 
-```python
+```rust
 from power_steering_checker import (
     # Main entry points
     PowerSteeringChecker,
@@ -69,7 +69,7 @@ Module-level convenience wrapper. Creates a `PowerSteeringChecker` and calls `.c
 
 **Example**
 
-```python
+```rust
 import sys
 from pathlib import Path
 from power_steering_checker import check_session
@@ -104,7 +104,7 @@ Returns `True` if power-steering is currently disabled for the project.
 
 **Example**
 
-```python
+```rust
 from power_steering_checker import is_disabled
 
 if is_disabled():
@@ -126,7 +126,7 @@ ResultFormattingMixin → text output, continuation prompt generation
 
 ### Constructor
 
-```python
+```rust
 checker = PowerSteeringChecker(project_root: Path | None = None)
 ```
 
@@ -163,7 +163,7 @@ All data classes are defined in `considerations.py` and re-exported from `__init
 
 Final decision from the checker.
 
-```python
+```rust
 @dataclass
 class PowerSteeringResult:
     decision: Literal["approve", "block"]
@@ -195,7 +195,7 @@ class PowerSteeringResult:
 
 Result from a single consideration check.
 
-```python
+```rust
 @dataclass
 class CheckerResult:
     consideration_id: str
@@ -217,7 +217,7 @@ class CheckerResult:
 
 **Properties**
 
-```python
+```rust
 result.id  # Alias for consideration_id (backward compatibility)
 ```
 
@@ -227,7 +227,7 @@ result.id  # Alias for consideration_id (backward compatibility)
 
 Aggregate of all check results for a session.
 
-```python
+```rust
 @dataclass
 class ConsiderationAnalysis:
     results: dict[str, CheckerResult] = field(default_factory=dict)
@@ -237,13 +237,13 @@ class ConsiderationAnalysis:
 
 **Properties**
 
-```python
+```rust
 analysis.has_blockers  # True if any blocker failed
 ```
 
 **Methods**
 
-```python
+```rust
 analysis.add_result(result: CheckerResult) -> None
 # Adds result; automatically appends to failed_blockers or failed_warnings
 
@@ -257,7 +257,7 @@ analysis.group_by_category() -> dict[str, list[CheckerResult]]
 
 Persistent record of a blocked session written to disk.
 
-```python
+```rust
 @dataclass
 class PowerSteeringRedirect:
     redirect_number: int
@@ -280,7 +280,7 @@ These module-level booleans reflect whether optional dependencies are available.
 | `COMPACTION_AVAILABLE` | `progress_tracking` | `compaction_validator`  | Enables compaction event detection  |
 | `TURN_STATE_AVAILABLE` | `result_formatting` | `power_steering_state`  | Enables turn-aware state tracking   |
 
-```python
+```rust
 from power_steering_checker import SDK_AVAILABLE
 
 if not SDK_AVAILABLE:
@@ -294,7 +294,7 @@ if not SDK_AVAILABLE:
 
 A SIGALRM-based timeout for wrapping external subprocess or SDK calls.
 
-```python
+```rust
 from power_steering_checker import _timeout
 
 with _timeout(25):
@@ -317,7 +317,7 @@ with _timeout(25):
 
 Retry-aware file writer that handles transient I/O errors from cloud-synced directories (iCloud, OneDrive, Dropbox).
 
-```python
+```rust
 from power_steering_checker.progress_tracking import _write_with_retry
 
 _write_with_retry(Path("/some/file.json"), data='{"key": "val"}')

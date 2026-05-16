@@ -182,7 +182,7 @@ pip install azure-identity
 
 **Example Usage:**
 
-```python
+```rust
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.resource import ResourceManagementClient
 from azure.mgmt.compute import ComputeManagementClient
@@ -405,7 +405,7 @@ POST https://management.azure.com/providers/Microsoft.ResourceGraph/resources?ap
 
 **Python SDK:**
 
-```python
+```rust
 from azure.mgmt.resourcegraph import ResourceGraphClient
 from azure.mgmt.resourcegraph.models import QueryRequest
 
@@ -483,7 +483,7 @@ POST https://api.loganalytics.io/v1/workspaces/{workspace-id}/query
 
 **Retry Logic Example (Python):**
 
-```python
+```rust
 import time
 from azure.core.exceptions import HttpResponseError
 

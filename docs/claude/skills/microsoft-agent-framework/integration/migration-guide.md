@@ -67,7 +67,7 @@ Return structured feedback.
 
 **Convert to Agent Framework**:
 
-```python
+```rust
 # src/agents/reviewer.py
 from agents_framework import Agent, ModelClient
 from pydantic import BaseModel
@@ -96,7 +96,7 @@ reviewer_agent = Agent(
 
 **amplihack** (stateless):
 
-```python
+```rust
 # Each call is independent
 result1 = reviewer.process({"file": "module1.py"})
 result2 = reviewer.process({"file": "module2.py"})
@@ -105,7 +105,7 @@ result2 = reviewer.process({"file": "module2.py"})
 
 **Agent Framework** (stateful):
 
-```python
+```rust
 from agents_framework import Thread
 
 thread = Thread()
@@ -127,7 +127,7 @@ result2 = await reviewer_agent.run(
 
 **amplihack orchestration** (manual):
 
-```python
+```rust
 # Manual sequential execution
 analysis = analyzer.process({"code": code})
 review = reviewer.process({"code": code})
@@ -139,7 +139,7 @@ report = synthesize(analysis, review, tests)
 
 **Agent Framework workflow**:
 
-```python
+```rust
 from agents_framework import GraphWorkflow
 
 workflow = GraphWorkflow()
@@ -160,7 +160,7 @@ result = await workflow.run(initial_state={"code": code})
 
 ### Step 6: Add Enterprise Features
 
-```python
+```rust
 # Telemetry
 from opentelemetry import trace
 tracer = trace.get_tracer(__name__)
@@ -187,7 +187,7 @@ reviewer_agent.middleware = [LoggingMiddleware()]
 
 Keep amplihack agents for file operations:
 
-```python
+```rust
 # Agent Framework for orchestration
 workflow = GraphWorkflow()
 
@@ -243,7 +243,7 @@ workflow.add_node("files", file_agent)
 
 **Agent Framework** (stateful):
 
-```python
+```rust
 # Over-engineered for one-shot review
 reviewer = Agent(model=model, instructions="Review code")
 thread = Thread()  # Unnecessary for single use
@@ -258,7 +258,7 @@ response = await reviewer.run(thread=thread, message="Review: [code]")
 You are a code reviewer. Analyze the provided code and return feedback.
 ```
 
-```python
+```rust
 # Simple invocation
 from claude import Agent
 reviewer = Agent(".claude/agents/amplihack/reviewer.md")
@@ -269,7 +269,7 @@ result = reviewer.process({"code": code})
 
 **Agent Framework** (complex):
 
-```python
+```rust
 workflow = GraphWorkflow()
 workflow.add_node("step1", agent1)
 workflow.add_node("step2", agent2)
@@ -279,7 +279,7 @@ result = await workflow.run(initial_state=state)
 
 **amplihack** (simple):
 
-```python
+```rust
 # Direct sequential execution
 result1 = agent1.process({"input": data})
 result2 = agent2.process({"input": result1})
@@ -304,7 +304,7 @@ result2 = agent2.process({"input": result1})
 
 **Agent Framework** (API-centric):
 
-```python
+```rust
 @function_tool
 def read_file(path: str) -> str:
     with open(path) as f:
@@ -315,7 +315,7 @@ agent = Agent(tools=[read_file])
 
 **amplihack** (native file ops):
 
-```python
+```rust
 # Direct file operations in agent context
 reviewer = Agent(".claude/agents/amplihack/reviewer.md")
 result = reviewer.process({"files": ["src/module.py"]})
@@ -373,7 +373,7 @@ amplihack (Orchestrator)
 
 #### 2. Create Integration Layer
 
-```python
+```rust
 # src/integration/bridge.py
 from agents_framework import Agent, Thread
 from claude import Agent as ClaudeAgent
@@ -410,7 +410,7 @@ class HybridOrchestrator:
 
 #### 3. Use Context Sharing
 
-```python
+```rust
 # Share context between systems
 class SharedContext:
     def __init__(self):
@@ -441,7 +441,7 @@ response = await af_agent.run(
 
 **Phase 1**: Keep amplihack, add Agent Framework for conversations
 
-```python
+```rust
 # amplihack handles core logic
 result = amplihack_agent.process(task)
 
@@ -452,7 +452,7 @@ await af_agent.run(thread=thread, message=f"Result: {result}")
 
 **Phase 2**: Migrate complex workflows to Agent Framework
 
-```python
+```rust
 # Agent Framework workflow
 workflow = GraphWorkflow()
 # ... workflow definition ...
@@ -468,7 +468,7 @@ workflow.add_node("files", agent)
 
 **Phase 3**: Full hybrid with clear boundaries
 
-```python
+```rust
 # Clear separation of concerns
 orchestrator = HybridOrchestrator()
 result = await orchestrator.process(task)
@@ -492,7 +492,7 @@ result = await orchestrator.process(task)
 
 **Test functional equivalence**:
 
-```python
+```rust
 # Test both implementations produce same result
 amplihack_result = amplihack_agent.process({"input": test_input})
 af_result = await af_agent.run(message=test_input)
@@ -501,7 +501,7 @@ assert normalize(amplihack_result) == normalize(af_result.content)
 
 **Test performance**:
 
-```python
+```rust
 import time
 
 # amplihack

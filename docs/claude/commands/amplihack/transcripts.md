@@ -55,7 +55,7 @@ When this command is invoked, use the `transcript_manager` tool to handle the re
 
 ### List Sessions (No Args or "list")
 
-```python
+```rust
 from transcript_manager import TranscriptManager, list_transcripts, get_transcript_summary
 
 # List all available sessions
@@ -70,7 +70,7 @@ for i, session_id in enumerate(sessions[:10], 1):  # Show latest 10
 
 ### Restore Latest Session ("latest")
 
-```python
+```rust
 from transcript_manager import list_transcripts, restore_transcript, TranscriptManager
 
 sessions = list_transcripts()
@@ -82,7 +82,7 @@ if sessions:
 
 ### Restore Specific Session (<session_id>)
 
-```python
+```rust
 from transcript_manager import restore_transcript, TranscriptManager
 
 context = restore_transcript(session_id)
@@ -97,7 +97,7 @@ print(manager.format_context_display(context))
 
 ### Save Checkpoint ("save")
 
-```python
+```rust
 from transcript_manager import save_checkpoint, TranscriptManager
 from datetime import datetime
 

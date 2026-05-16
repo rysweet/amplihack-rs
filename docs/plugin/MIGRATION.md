@@ -592,7 +592,7 @@ A: No, as long as CI environments have the plugin installed. Add to your CI setu
 # .github/workflows/test.yml
 - name: Install amplihack plugin
   run: |
-    pip install amplihack
+    cargo install amplihack
     amplihack plugin install
 ```
 

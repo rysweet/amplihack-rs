@@ -36,7 +36,7 @@ Final score multiplied by 100 for readability (0-100 scale)
 
 Maps user-set priority to normalized score:
 
-```python
+```rust
 def priority_score(priority: str) -> float:
     return {
         "HIGH": 1.0,
@@ -51,7 +51,7 @@ def priority_score(priority: str) -> float:
 
 Measures how many other items this item would unblock:
 
-```python
+```rust
 def blocking_score(item: BacklogItem, all_items: List[BacklogItem]) -> float:
     """Calculate blocking impact score."""
     blocking_count = count_items_blocked_by(item, all_items)
@@ -71,7 +71,7 @@ def blocking_score(item: BacklogItem, all_items: List[BacklogItem]) -> float:
 
 Inverse of complexity—simpler tasks score higher:
 
-```python
+```rust
 def ease_score(complexity: str) -> float:
     return {
         "simple": 1.0,    # < 2 hours
@@ -86,7 +86,7 @@ def ease_score(complexity: str) -> float:
 
 Measures alignment with project primary goals:
 
-```python
+```rust
 def goal_alignment_score(item: BacklogItem, config: PMConfig) -> float:
     """Calculate business value based on goal alignment."""
     # Start with priority-based value
@@ -138,7 +138,7 @@ Score = (1.0 × 0.40) + (0.67 × 0.30) + (0.6 × 0.20) + (0.85 × 0.10)
 
 Rate confidence in recommendation (0.0-1.0):
 
-```python
+```rust
 def estimate_confidence(item: BacklogItem) -> float:
     confidence = 0.5  # Neutral baseline
 
@@ -175,7 +175,7 @@ def estimate_confidence(item: BacklogItem) -> float:
 
 ### Estimation Algorithm
 
-```python
+```rust
 def estimate_complexity(item: BacklogItem) -> str:
     # Start with estimated hours
     if item.estimated_hours < 2:
@@ -214,7 +214,7 @@ def extract_technical_signals(item: BacklogItem) -> dict:
 
 Categorize items to adjust scoring and delegation:
 
-```python
+```rust
 def categorize_item(item: BacklogItem) -> str:
     """Categorize as feature, bug, refactor, doc, test, or other."""
     text = (item.title + " " + item.description).lower()
@@ -240,7 +240,7 @@ def categorize_item(item: BacklogItem) -> str:
 
 Identify dependencies between backlog items:
 
-```python
+```rust
 def detect_dependencies(item: BacklogItem, all_items: List[BacklogItem]) -> List[str]:
     """Return list of backlog IDs this item depends on."""
     dependencies = []
@@ -272,7 +272,7 @@ def detect_dependencies(item: BacklogItem, all_items: List[BacklogItem]) -> List
 
 Count how many items this item would unblock:
 
-```python
+```rust
 def count_blocking(item: BacklogItem, all_items: List[BacklogItem]) -> int:
     """Count items that depend on this item."""
     count = 0
@@ -292,7 +292,7 @@ def count_blocking(item: BacklogItem, all_items: List[BacklogItem]) -> int:
 
 Before starting work, verify dependencies are met:
 
-```python
+```rust
 def has_unmet_dependencies(item: BacklogItem, all_items: List[BacklogItem]) -> bool:
     """Check if item has dependencies not yet completed."""
     dependencies = detect_dependencies(item, all_items)
@@ -313,7 +313,7 @@ def has_unmet_dependencies(item: BacklogItem, all_items: List[BacklogItem]) -> b
 
 #### Capacity Check
 
-```python
+```rust
 def can_start_workstream(active_count: int, max_concurrent: int = 5) -> tuple[bool, str]:
     """Check if new workstream can be started."""
     if active_count >= max_concurrent:
@@ -324,7 +324,7 @@ def can_start_workstream(active_count: int, max_concurrent: int = 5) -> tuple[bo
 
 #### Conflict Detection
 
-```python
+```rust
 def detect_conflicts(workstreams: List[WorkstreamState], backlog_items: List[BacklogItem]) -> List[dict]:
     """Detect conflicts between active workstreams."""
     conflicts = []
@@ -355,7 +355,7 @@ def detect_conflicts(workstreams: List[WorkstreamState], backlog_items: List[Bac
 
 #### Stall Detection
 
-```python
+```rust
 from datetime import datetime, timedelta
 
 def detect_stalled_workstreams(workstreams: List[WorkstreamState], threshold_hours: int = 2) -> List[dict]:
@@ -385,7 +385,7 @@ def detect_stalled_workstreams(workstreams: List[WorkstreamState], threshold_hou
 
 Suggest optimal agent for work based on category:
 
-```python
+```rust
 def suggest_agent(item: BacklogItem) -> str:
     """Suggest best agent for backlog item."""
     category = categorize_item(item)
@@ -407,7 +407,7 @@ def suggest_agent(item: BacklogItem) -> str:
 
 Autonomous PM operation when user grants permission:
 
-```python
+```rust
 def autopilot_cycle(state_manager: PMStateManager, dry_run: bool = True) -> dict:
     """Execute one autopilot decision cycle."""
     decisions = []
@@ -530,7 +530,7 @@ summary: Started 1 workstream, paused 1 stalled
 
 Learn from completed workstreams to improve recommendations:
 
-```python
+```rust
 def record_outcome(ws: WorkstreamState, success: bool, notes: str):
     """Record workstream outcome for learning."""
     outcome = {
@@ -556,7 +556,7 @@ def record_outcome(ws: WorkstreamState, success: bool, notes: str):
 
 Use historical data to improve estimates:
 
-```python
+```rust
 def improve_estimate(item: BacklogItem, outcomes: List[dict]) -> int:
     """Improve estimate based on historical outcomes."""
     category = categorize_item(item)
@@ -584,7 +584,7 @@ def improve_estimate(item: BacklogItem, outcomes: List[dict]) -> int:
 
 Track agent effectiveness by category:
 
-```python
+```rust
 def analyze_agent_performance(outcomes: List[dict]) -> dict:
     """Analyze which agents perform best for which categories."""
     perf = {}
@@ -673,7 +673,7 @@ version: string # Schema version
 
 ### ClaudeProcess Integration
 
-```python
+```rust
 from orchestration.claude_process import ClaudeProcess
 from pathlib import Path
 
@@ -713,7 +713,7 @@ def start_workstream_with_process(
 
 Use resilient file operations:
 
-```python
+```rust
 from session.file_utils import retry_file_operation, FileOperationError
 
 @retry_file_operation(max_retries=3, delay=0.1)
@@ -762,7 +762,7 @@ Total pre-load: ~50 tokens (YAML frontmatter only)
 
 ### Recovery Strategies
 
-```python
+```rust
 def safe_load_backlog(state_manager: PMStateManager) -> List[BacklogItem]:
     """Load backlog with error recovery."""
     try:

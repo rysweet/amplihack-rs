@@ -27,8 +27,8 @@ Jump to a specific task:
 
 **Solution**:
 
-```python
-from amplihack.meta_delegation import run_meta_delegation
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation
 
 result = run_meta_delegation(
     goal="Create a function to validate email addresses",
@@ -83,7 +83,7 @@ What is your primary goal?
 
 **Examples**:
 
-```python
+```rust
 # Teaching scenario
 run_meta_delegation(
     goal="Explain how OAuth2 works and implement a simple example",
@@ -121,8 +121,8 @@ run_meta_delegation(
 
 **Solution**:
 
-```python
-from amplihack.meta_delegation import run_meta_delegation
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation
 
 # Step 1: Design phase
 design = run_meta_delegation(
@@ -163,7 +163,7 @@ Implementation score: 88/100
 
 **Solution**:
 
-```python
+```rust
 result = run_meta_delegation(
     goal="Create a web scraper for news articles",
     success_criteria="Scraper works, handles errors, has tests"
@@ -209,8 +209,8 @@ print(f"Found {len(py_files)} Python files")
 
 **Solution**:
 
-```python
-from amplihack.meta_delegation import run_meta_delegation, DelegationTimeout
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation, DelegationTimeout
 
 # Set custom timeout
 try:
@@ -257,8 +257,8 @@ Evidence collected before timeout: 8
 
 **Solution**:
 
-```python
-from amplihack.meta_delegation import run_meta_delegation
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation
 
 goal = "Implement a Redis cache wrapper"
 success_criteria = "Wrapper works, handles connection errors, has tests"
@@ -304,8 +304,8 @@ if result.status == "SUCCESS":
 
 **Solution**:
 
-```python
-from amplihack.meta_delegation import run_meta_delegation
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation
 
 goal = "Create a markdown to HTML converter"
 success_criteria = "Converts basic markdown, handles headers/links/lists, has tests"
@@ -360,8 +360,8 @@ amplifier       | SUCCESS    |  90/100 |   9 items |     35.7s
 
 **Solution**:
 
-```python
-from amplihack.meta_delegation import run_meta_delegation
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation
 
 # Enable scenario generation
 result = run_meta_delegation(
@@ -424,8 +424,8 @@ Invalid CVV Code
 
 **Solution**:
 
-```python
-from amplihack.meta_delegation import run_meta_delegation
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation
 import os
 import shutil
 
@@ -514,8 +514,8 @@ evidence_archive_20260120_103045/
 
 **Solution**:
 
-```python
-from amplihack.meta_delegation import run_meta_delegation
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation
 
 # Pipeline configuration
 pipeline = [
@@ -638,8 +638,8 @@ Overall Pipeline Score: 91.7/100
 
 **Solution**:
 
-```python
-from amplihack.meta_delegation import run_meta_delegation
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation
 
 # Standard delegation
 result = run_meta_delegation(

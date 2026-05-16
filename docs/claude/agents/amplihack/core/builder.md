@@ -75,7 +75,7 @@ module_name/
 
 #### Public Interface
 
-```python
+```rust
 # __init__.py - ONLY public exports
 from .core import primary_function, secondary_function
 from .models import InputModel, OutputModel
@@ -85,7 +85,7 @@ __all__ = ['primary_function', 'secondary_function', 'InputModel', 'OutputModel'
 
 #### Core Implementation
 
-```python
+```rust
 # core.py - Main logic with clear docstrings
 def primary_function(input: InputModel) -> OutputModel:
     """One-line summary.
@@ -126,7 +126,7 @@ def primary_function(input: InputModel) -> OutputModel:
 
 ### 5. Testing Approach
 
-```python
+```rust
 # tests/test_core.py
 def test_contract_fulfilled():
     """Test that module fulfills its contract"""
@@ -144,7 +144,7 @@ def test_examples_work():
 
 ### Simple Service Module
 
-```python
+```rust
 class Service:
     def __init__(self, config: dict = None):
         self.config = config or {}
@@ -157,7 +157,7 @@ class Service:
 
 ### Pipeline Stage Module
 
-```python
+```rust
 async def process_batch(items: list[Item]) -> list[Result]:
     """Process items with error handling"""
     results = []

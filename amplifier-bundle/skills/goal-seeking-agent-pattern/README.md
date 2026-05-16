@@ -137,36 +137,33 @@ Example: AKS SRE automation combines Azure, Kubernetes, networking, and security
 
 ## Integration with goal_agent_generator
 
-### Programmatic API
+### CLI Usage
 
-```python
-from amplihack.goal_agent_generator import (
-    PromptAnalyzer,
-    ObjectivePlanner,
-    SkillSynthesizer,
-    AgentAssembler,
-    GoalAgentPackager,
-)
-
+```bash
 # Step 1: Analyze goal
-analyzer = PromptAnalyzer()
-goal_def = analyzer.analyze_text("Your goal here")
+amplihack goal-agent-generator analyze \
+  --prompt "Your goal here"
 
 # Step 2: Generate plan
-planner = ObjectivePlanner()
-plan = planner.generate_plan(goal_def)
+amplihack goal-agent-generator plan --prompt-file my-goal.md --output plan.json
 
 # Step 3: Synthesize skills
-synthesizer = SkillSynthesizer()
-skills = synthesizer.synthesize(plan)
+amplihack goal-agent-generator synthesize --plan-file plan.json --output ./skills
 
 # Step 4: Assemble agent
-assembler = AgentAssembler()
-bundle = assembler.assemble(goal_def, plan, skills, bundle_name="my-agent")
+amplihack goal-agent-generator assemble \
+  --skills-dir ./skills \
+  --bundle-name "my-agent"
 
 # Step 5: Package for deployment
-packager = GoalAgentPackager()
-packager.package(bundle, output_dir=".claude/agents/goal-driven/my-agent")
+amplihack goal-agent-generator package \
+  --agent-dir ./agent \
+  --output .claude/agents/goal-driven/my-agent
+
+# Or do all steps at once:
+amplihack goal-agent-generator create \
+  --prompt "Your goal here" \
+  --output .claude/agents/goal-driven/my-agent
 ```
 
 ### CLI Usage

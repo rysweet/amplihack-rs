@@ -6,7 +6,7 @@ Microsoft Agent Framework has built-in OpenTelemetry support for distributed tra
 
 ### Basic Setup
 
-```python
+```rust
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
@@ -27,7 +27,7 @@ response = await agent.run(message="Hello")
 
 ### Exporting to Backend
 
-```python
+```rust
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 
 # Export to Jaeger, Zipkin, or other OTLP-compatible backend
@@ -38,7 +38,7 @@ provider.add_span_processor(processor)
 
 ### Custom Spans
 
-```python
+```rust
 tracer = trace.get_tracer(__name__)
 
 async def process_workflow():
@@ -64,7 +64,7 @@ The framework automatically traces:
 - Workflow execution
 - Model API calls
 
-```python
+```rust
 # All operations automatically create spans
 response = await agent.run(message="What's 2+2?")
 
@@ -79,7 +79,7 @@ response = await agent.run(message="What's 2+2?")
 
 ### Built-in Metrics
 
-```python
+```rust
 from opentelemetry import metrics
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader, ConsoleMetricExporter
@@ -101,7 +101,7 @@ metrics.set_meter_provider(provider)
 
 ### Custom Metrics
 
-```python
+```rust
 meter = metrics.get_meter(__name__)
 
 request_counter = meter.create_counter(
@@ -124,7 +124,7 @@ latency_histogram.record(123.45, {"agent": "researcher"})
 
 ### Structured Logging
 
-```python
+```rust
 import logging
 from agents_framework import configure_logging
 
@@ -149,7 +149,7 @@ response = await agent.run(message="Hello")
 
 ### Custom Logging
 
-```python
+```rust
 import logging
 
 logger = logging.getLogger(__name__)
@@ -177,7 +177,7 @@ async def custom_workflow():
 
 ### Token Usage Tracking
 
-```python
+```rust
 class TokenTracker:
     def __init__(self):
         self.total_prompt_tokens = 0
@@ -203,7 +203,7 @@ print(f"Total cost: ${tracker.get_costs():.4f}")
 
 ### Latency Monitoring
 
-```python
+```rust
 import time
 
 class LatencyMonitor:
@@ -227,7 +227,7 @@ class LatencyMonitor:
 
 ### Tool Performance Tracking
 
-```python
+```rust
 from agents_framework import function_tool
 from functools import wraps
 import time
@@ -259,7 +259,7 @@ async def expensive_operation(param: str) -> str:
 
 ### Exception Monitoring
 
-```python
+```rust
 from agents_framework import ErrorHandler
 
 class SentryErrorHandler(ErrorHandler):
@@ -284,7 +284,7 @@ agent = Agent(
 
 ### Error Rate Monitoring
 
-```python
+```rust
 class ErrorRateMonitor:
     def __init__(self):
         self.total_requests = 0
@@ -315,7 +315,7 @@ class ErrorRateMonitor:
 
 ### Request/Response Logging
 
-```python
+```rust
 class DebugMiddleware:
     async def process_request(self, message: dict, context: dict):
         print("=" * 60)
@@ -338,7 +338,7 @@ agent = Agent(model=model, middleware=[DebugMiddleware()])
 
 ### Time-Travel Debugging (Workflows)
 
-```python
+```rust
 result = await workflow.run(initial_state={"task": "debug me"})
 
 # Inspect each step
@@ -354,7 +354,7 @@ for i, step in enumerate(result.history):
 
 ### DevUI Integration
 
-```python
+```rust
 from agents_framework.devui import start_devui
 
 # Start development UI
@@ -369,7 +369,7 @@ start_devui(port=8000)
 
 ## Production Monitoring Stack
 
-```python
+```rust
 # Complete production setup
 from opentelemetry import trace, metrics
 from opentelemetry.sdk.trace import TracerProvider

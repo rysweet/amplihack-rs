@@ -23,7 +23,7 @@ When `KuzuBackend.store_memory()` is called, the system automatically:
 
 Created when memory metadata contains a file path:
 
-```python
+```rust
 memory = MemoryEntry(
     id="mem-1",
     memory_type=MemoryType.EPISODIC,
@@ -39,7 +39,7 @@ memory = MemoryEntry(
 
 Created when function names appear in memory content:
 
-```python
+```rust
 memory = MemoryEntry(
     id="mem-2",
     memory_type=MemoryType.SEMANTIC,
@@ -64,8 +64,8 @@ Each memory-code link includes:
 
 ### Enable Auto-Linking (Default)
 
-```python
-from amplihack.memory.backends.kuzu_backend import KuzuBackend
+```rust
+// use amplihack_memory::backends::kuzu_backend::{ KuzuBackend
 
 # Auto-linking enabled by default
 backend = KuzuBackend()
@@ -77,7 +77,7 @@ backend.store_memory(memory)
 
 ### Disable Auto-Linking
 
-```python
+```rust
 # Disable for performance-critical scenarios
 backend = KuzuBackend(enable_auto_linking=False)
 ```
@@ -86,7 +86,7 @@ backend = KuzuBackend(enable_auto_linking=False)
 
 Find code linked to a memory:
 
-```python
+```rust
 # Get all files linked to a memory
 result = backend.connection.execute("""
     MATCH (m:EpisodicMemory {memory_id: $memory_id})-[r:RELATES_TO_FILE_EPISODIC]->(cf:CodeFile)
@@ -98,7 +98,7 @@ result = backend.connection.execute("""
 
 Find memories linked to a file:
 
-```python
+```rust
 # Get all memories about a specific file
 result = backend.connection.execute("""
     MATCH (m:EpisodicMemory)-[r:RELATES_TO_FILE_EPISODIC]->(cf:CodeFile {file_id: $file_id})
@@ -138,9 +138,9 @@ Auto-linking creates 10 relationship types (5 memory types × 2 code targets):
 
 ## Example: Full Workflow
 
-```python
-from amplihack.memory.backends.kuzu_backend import KuzuBackend
-from amplihack.memory.models import MemoryEntry, MemoryType
+```rust
+// use amplihack_memory::backends::kuzu_backend::{ KuzuBackend
+// use amplihack_memory::models:: MemoryEntry, MemoryType
 from datetime import datetime
 
 # Initialize backend
@@ -148,8 +148,8 @@ backend = KuzuBackend()
 backend.initialize()
 
 # Import code graph (prerequisite)
-from amplihack.memory.kuzu.code_graph import KuzuCodeGraph
-from amplihack.memory.kuzu.connector import KuzuConnector
+// use amplihack_memory::kuzu::code_graph::{ KuzuCodeGraph
+// use amplihack_memory::kuzu::connector::{ KuzuConnector
 
 connector = KuzuConnector()
 connector.connect()

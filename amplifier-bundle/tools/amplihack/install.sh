@@ -44,11 +44,11 @@ fi
 if [ -f "$HOME/.claude/settings.json" ]; then
   echo "Updating hook commands in settings.json for global installation..."
 
-  # Issue #522: the .py shims at tools/amplihack/hooks/{stop,post_tool_use}.py
-  # have been deleted. Any prior settings.json that referenced them — under
+  # Issue #522: all .py shims formerly at tools/amplihack/hooks/ have been
+  # fully removed. Any prior settings.json that referenced them — under
   # any path format (relative, tilde, absolute) — must be rewritten to invoke
-  # the native `amplihack-hooks` binary instead. session_start.py is out of
-  # scope for #522 and continues to be rewritten to its absolute path.
+  # the native `amplihack-hooks` binary instead. session_start.py is the last
+  # remaining legacy Python hook, targeted for removal in a future release.
   HOOKS_BIN="amplihack-hooks"
 
   if grep -q '"\.claude/tools/amplihack/hooks/' "$HOME/.claude/settings.json"; then
@@ -61,8 +61,8 @@ if [ -f "$HOME/.claude/settings.json" ]; then
     echo "  → No amplihack hook paths found, this may already be a native install"
   fi
 
-  # Rewrite stop.py and post_tool_use.py references to native subcommands
-  # (issue #522). Keep session_start.py as an absolute path (out of scope).
+  # Rewrite any remaining .py hook references to native subcommands
+  # (issue #522). session_start.py is legacy — kept as absolute path pending removal.
   sed -i.tmp \
     -e 's|"\.claude/tools/amplihack/hooks/session_start\.py"|"'"$HOME"'/.claude/tools/amplihack/hooks/session_start.py"|g' \
     -e 's|"~/.claude/tools/amplihack/hooks/session_start\.py"|"'"$HOME"'/.claude/tools/amplihack/hooks/session_start.py"|g' \
@@ -79,10 +79,9 @@ if [ -f "$HOME/.claude/settings.json" ]; then
     NATIVE_REFS=$(grep -c "amplihack-hooks " "$HOME/.claude/settings.json" 2>/dev/null || echo 0)
     echo "  ✅ Hook commands updated; $NATIVE_REFS native amplihack-hooks invocations registered"
 
-    # Verify the only remaining hook file we still ship is session_start.py
-    # (out of scope for #522). The other hook commands now invoke the
-    # native binary, which the install pipeline stages via amplihack-hooks
-    # (see amplihack-cli install flow).
+    # session_start.py is the sole remaining legacy Python hook (targeted
+    # for removal). All other hook commands invoke the native
+    # amplihack-hooks binary (see amplihack-cli install flow).
     echo "Verifying hook files exist..."
     MISSING_HOOKS=0
     for hook in "session_start.py"; do

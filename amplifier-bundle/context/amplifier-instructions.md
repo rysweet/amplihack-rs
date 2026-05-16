@@ -18,14 +18,12 @@ Amplihack integrates with the Microsoft Amplifier ecosystem bundles:
 | --------------------------------- | -------------------------- | ----------------------- |
 | `amplifier-bundle-recipes`        | Core workflow recipes      | Foundation (transitive) |
 | `amplifier-bundle-lsp`            | LSP infrastructure (base)  | Foundation              |
-| `amplifier-bundle-lsp-python`     | Python LSP integration     | lsp (base)              |
 | `amplifier-bundle-lsp-typescript` | TypeScript LSP integration | lsp (base)              |
-| `amplifier-bundle-python-dev`     | Python dev tools           | Foundation              |
 | `amplifier-bundle-ts-dev`         | TypeScript dev tools       | Foundation              |
 | `amplifier-bundle-shadow`         | Shadow mode observability  | Foundation              |
 | `amplifier-bundle-issues`         | GitHub issues integration  | Foundation              |
 
-**Total**: 7 external bundles + amplihack = 8 bundles
+**Total**: 5 external bundles + amplihack = 6 bundles
 
 ## Using with Amplifier
 
@@ -51,7 +49,7 @@ includes:
 | Recipes   | `amplifier-bundle/recipes/` | 10                |
 | Context   | `../.claude/context/`       | 3 files           |
 | Workflows | `../.claude/workflow/`      | 7 docs            |
-| Bundles   | External includes           | 7 + amplihack = 8 |
+| Bundles   | External includes           | 5 + amplihack = 6 |
 
 ## Tool Integration
 
@@ -61,7 +59,6 @@ The LSP bundles provide intelligent code analysis and completion:
 
 **Prerequisites**:
 
-- Python: `pip install pyright` (or `npm install -g pyright`)
 - TypeScript: `npm install -g typescript typescript-language-server`
 
 **What they provide**:
@@ -71,16 +68,9 @@ The LSP bundles provide intelligent code analysis and completion:
 - Symbol search and code navigation
 - Real-time diagnostics and error detection
 
-**Usage**: LSP tools activate automatically when editing Python/TypeScript files. The base `amplifier-bundle-lsp` provides infrastructure, while language-specific bundles add integration.
+**Usage**: LSP tools activate automatically when editing TypeScript files. The base `amplifier-bundle-lsp` provides infrastructure, while language-specific bundles add integration.
 
 ### Development Tool Bundles
-
-**Python Dev** (`amplifier-bundle-python-dev`):
-
-- pytest integration
-- pip/poetry package management
-- Virtual environment handling
-- Python-specific code quality tools
 
 **TypeScript Dev** (`amplifier-bundle-ts-dev`):
 
@@ -127,27 +117,27 @@ All hook modules wrap existing Claude Code hooks via lazy imports, delegating to
 
 ### Session Lifecycle Hooks (3)
 
-| Module               | Wraps              | Purpose                                                                                                                 |
-| -------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| `hook-session-start` | `session_start.py` | Version mismatch detection, auto-update, global hook migration, preferences injection, Neo4j startup, context injection |
-| `hook-session-stop`  | `session_stop.py`  | Learning capture, memory storage via MemoryCoordinator (SQLite/Neo4j)                                                   |
-| `hook-post-tool-use` | `post_tool_use.py` | Tool registry execution, metrics tracking, error detection for file ops                                                 |
+| Module               | Hook                     | Purpose                                                                                                                 |
+| -------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `hook-session-start` | `session_start` | Version mismatch detection, auto-update, global hook migration, preferences injection, Neo4j startup, context injection |
+| `hook-session-stop`  | `session_stop`  | Learning capture, memory storage via MemoryCoordinator (SQLite/Neo4j)                                                   |
+| `hook-post-tool-use` | `post_tool_use` | Tool registry execution, metrics tracking, error detection for file ops                                                 |
 
 ### Feature Hooks (5)
 
-| Module                | Wraps                   | Purpose                                                          |
-| --------------------- | ----------------------- | ---------------------------------------------------------------- |
-| `hook-power-steering` | `power_steering_*.py`   | Session completion verification (21 considerations)              |
-| `hook-memory`         | `agent_memory_hook.py`  | Persistent memory injection on prompt, extraction on session end |
-| `hook-pre-tool-use`   | `pre_tool_use.py`       | Block dangerous operations (--no-verify, rm -rf)                 |
-| `hook-pre-compact`    | `pre_compact.py`        | Export transcript before context compaction                      |
-| `hook-user-prompt`    | `user_prompt_submit.py` | Inject user preferences on every prompt                          |
+| Module                | Hook                          | Purpose                                                          |
+| --------------------- | ----------------------------- | ---------------------------------------------------------------- |
+| `hook-power-steering` | `power_steering`   | Session completion verification (21 considerations)              |
+| `hook-memory`         | `agent_memory`  | Persistent memory injection on prompt, extraction on session end |
+| `hook-pre-tool-use`   | `pre_tool_use`       | Block dangerous operations (--no-verify, rm -rf)                 |
+| `hook-pre-compact`    | `pre_compact`        | Export transcript before context compaction                      |
+| `hook-user-prompt`    | `user_prompt_submit` | Inject user preferences on every prompt                          |
 
 ### Lock Mode Hook (1)
 
-| Module           | Wraps          | Purpose                                    |
-| ---------------- | -------------- | ------------------------------------------ |
-| `hook-lock-mode` | `lock_mode.py` | Continuous work mode via context injection |
+| Module           | Hook             | Purpose                                    |
+| ---------------- | ---------------- | ------------------------------------------ |
+| `hook-lock-mode` | `lock_mode` | Continuous work mode via context injection |
 
 **Total**: 3 lifecycle + 5 feature + 1 lock = **9 hooks**
 

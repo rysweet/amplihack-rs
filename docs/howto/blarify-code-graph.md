@@ -39,31 +39,31 @@ Agents (and you) can query the graph using the CLI tool:
 
 ```bash
 # Statistics
-python -m amplihack.memory.kuzu.query_code_graph stats
+amplihack memory kuzu.query_code_graph stats
 
 # Search for symbols (functions, classes, files)
-python -m amplihack.memory.kuzu.query_code_graph search Orchestrator
+amplihack memory kuzu.query_code_graph search Orchestrator
 
 # List files matching a pattern
-python -m amplihack.memory.kuzu.query_code_graph files --pattern indexing
+amplihack memory kuzu.query_code_graph files --pattern indexing
 
 # List functions in a file
-python -m amplihack.memory.kuzu.query_code_graph functions --file orchestrator.py
+amplihack memory kuzu.query_code_graph functions --file orchestrator.py
 
 # List classes in a file
-python -m amplihack.memory.kuzu.query_code_graph classes --file code_graph.py
+amplihack memory kuzu.query_code_graph classes --file code_graph.py
 
 # Find what calls a function
-python -m amplihack.memory.kuzu.query_code_graph callers connect
+amplihack memory kuzu.query_code_graph callers connect
 
 # Find what a function calls
-python -m amplihack.memory.kuzu.query_code_graph callees get_users
+amplihack memory kuzu.query_code_graph callees get_users
 
 # JSON output for programmatic use
-python -m amplihack.memory.kuzu.query_code_graph search Orchestrator --json
+amplihack memory kuzu.query_code_graph search Orchestrator --json
 
 # Limit results
-python -m amplihack.memory.kuzu.query_code_graph functions --limit 100
+amplihack memory kuzu.query_code_graph functions --limit 100
 ```
 
 ## Configuration

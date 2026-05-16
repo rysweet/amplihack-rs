@@ -21,146 +21,239 @@ You are an integration specialist who connects systems with minimal coupling and
 
 ### API Client Pattern
 
-```python
-class APIClient:
-    def __init__(self, base_url: str, timeout: int = 30):
-        self.base_url = base_url
-        self.timeout = timeout
-        self.session = requests.Session()
+```rust
+use reqwest::Client;
+use std::time::Duration;
 
-    async def call(self, endpoint: str, data: dict = None) -> dict:
-        """Simple API call with basic error handling"""
-        try:
-            response = await self.session.post(
-                f"{self.base_url}/{endpoint}",
-                json=data,
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.Timeout:
-            return {"error": "timeout", "retry": True}
-        except requests.RequestException as e:
-            return {"error": str(e), "retry": False}
+pub struct ApiClient {
+    base_url: String,
+    timeout: Duration,
+    client: Client,
+}
+
+impl ApiClient {
+    pub fn new(base_url: &str, timeout_secs: u64) -> Self {
+        Self {
+            base_url: base_url.to_string(),
+            timeout: Duration::from_secs(timeout_secs),
+            client: Client::new(),
+        }
+    }
+
+    /// Simple API call with basic error handling
+    pub async fn call(&self, endpoint: &str, data: Option<&serde_json::Value>) -> Result<serde_json::Value, ApiError> {
+        let url = format!("{}/{}", self.base_url, endpoint);
+        let mut request = self.client.post(&url).timeout(self.timeout);
+        if let Some(body) = data {
+            request = request.json(body);
+        }
+
+        match request.send().await {
+            Ok(response) => {
+                let response = response.error_for_status()?;
+                Ok(response.json().await?)
+            }
+            Err(e) if e.is_timeout() => Err(ApiError::Timeout { retry: true }),
+            Err(e) => Err(ApiError::Request(e.to_string())),
+        }
+    }
+}
 ```
 
 ### Message Queue Pattern
 
-```python
-class SimpleQueue:
-    def __init__(self, queue_file="queue.json"):
-        self.queue_file = Path(queue_file)
-        self.queue = self._load_queue()
+```rust
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use uuid::Uuid;
+use chrono::Utc;
 
-    def push(self, message: dict) -> None:
-        """Add message to queue"""
-        self.queue.append({
-            "id": str(uuid.uuid4()),
-            "timestamp": datetime.now().isoformat(),
-            "message": message,
-            "status": "pending"
-        })
-        self._save_queue()
+#[derive(Serialize, Deserialize)]
+pub struct QueueItem {
+    id: String,
+    timestamp: String,
+    message: serde_json::Value,
+    status: String,
+}
 
-    def process_next(self) -> Optional[dict]:
-        """Process next pending message"""
-        for item in self.queue:
-            if item["status"] == "pending":
-                item["status"] = "processing"
-                self._save_queue()
-                return item
-        return None
+pub struct SimpleQueue {
+    queue_file: PathBuf,
+    queue: Vec<QueueItem>,
+}
+
+impl SimpleQueue {
+    pub fn new(queue_file: &str) -> Self {
+        let path = PathBuf::from(queue_file);
+        let queue = Self::load_queue(&path);
+        Self { queue_file: path, queue }
+    }
+
+    /// Add message to queue
+    pub fn push(&mut self, message: serde_json::Value) {
+        self.queue.push(QueueItem {
+            id: Uuid::new_v4().to_string(),
+            timestamp: Utc::now().to_rfc3339(),
+            message,
+            status: "pending".to_string(),
+        });
+        self.save_queue();
+    }
+
+    /// Process next pending message
+    pub fn process_next(&mut self) -> Option<&QueueItem> {
+        if let Some(item) = self.queue.iter_mut().find(|i| i.status == "pending") {
+            item.status = "processing".to_string();
+            self.save_queue();
+            return Some(item);
+        }
+        None
+    }
+}
 ```
 
 ## Service Integration
 
 ### REST API Design
 
-```python
-# Simple, predictable endpoints
-@app.post("/api/v1/process")
-async def process(request: ProcessRequest) -> ProcessResponse:
-    """Single responsibility endpoint"""
-    try:
-        result = await process_data(request.data)
-        return ProcessResponse(success=True, result=result)
-    except Exception as e:
-        return ProcessResponse(success=False, error=str(e))
+```rust
+use axum::{Json, extract::State};
+
+/// Single responsibility endpoint
+async fn process(
+    State(state): State<AppState>,
+    Json(request): Json<ProcessRequest>,
+) -> Json<ProcessResponse> {
+    match process_data(&request.data).await {
+        Ok(result) => Json(ProcessResponse { success: true, result: Some(result), error: None }),
+        Err(e) => Json(ProcessResponse { success: false, result: None, error: Some(e.to_string()) }),
+    }
+}
 ```
 
 ### Event Streaming (SSE)
 
-```python
-async def event_stream(resource_id: str):
-    """Simple Server-Sent Events"""
-    while True:
-        event = await get_next_event(resource_id)
-        if event:
-            yield f"data: {json.dumps(event)}\n\n"
-        await asyncio.sleep(1)
+```rust
+use axum::response::sse::{Event, Sse};
+use futures::stream::Stream;
+
+/// Simple Server-Sent Events
+fn event_stream(resource_id: String) -> Sse<impl Stream<Item = Result<Event, anyhow::Error>>> {
+    let stream = async_stream::stream! {
+        loop {
+            if let Some(event) = get_next_event(&resource_id).await {
+                yield Ok(Event::default().data(serde_json::to_string(&event)?));
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    };
+    Sse::new(stream)
+}
 ```
 
 ## Error Handling
 
 ### Retry with Backoff
 
-```python
-async def call_with_retry(func, max_attempts=3):
-    delay = 1
-    for attempt in range(max_attempts):
-        try:
-            return await func()
-        except Exception as e:
-            if attempt == max_attempts - 1:
-                raise
-            await asyncio.sleep(delay)
-            delay *= 2
+```rust
+use std::time::Duration;
+
+async fn call_with_retry<F, Fut, T, E>(func: F, max_attempts: u32) -> Result<T, E>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    let mut delay = Duration::from_secs(1);
+    for attempt in 0..max_attempts {
+        match func().await {
+            Ok(result) => return Ok(result),
+            Err(e) if attempt == max_attempts - 1 => return Err(e),
+            Err(_) => {
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+        }
+    }
+    unreachable!()
+}
 ```
 
 ### Circuit Breaker Pattern
 
-```python
-class CircuitBreaker:
-    def __init__(self, failure_threshold=5, timeout=60):
-        self.failure_count = 0
-        self.failure_threshold = failure_threshold
-        self.timeout = timeout
-        self.last_failure = None
-        self.is_open = False
+```rust
+use std::time::{Duration, Instant};
 
-    async def call(self, func):
-        if self.is_open:
-            if time.time() - self.last_failure > self.timeout:
-                self.is_open = False
-                self.failure_count = 0
-            else:
-                raise Exception("Circuit breaker is open")
+pub struct CircuitBreaker {
+    failure_count: u32,
+    failure_threshold: u32,
+    timeout: Duration,
+    last_failure: Option<Instant>,
+    is_open: bool,
+}
 
-        try:
-            result = await func()
-            self.failure_count = 0
-            return result
-        except Exception as e:
-            self.failure_count += 1
-            self.last_failure = time.time()
-            if self.failure_count >= self.failure_threshold:
-                self.is_open = True
-            raise
+impl CircuitBreaker {
+    pub fn new(failure_threshold: u32, timeout_secs: u64) -> Self {
+        Self {
+            failure_count: 0,
+            failure_threshold,
+            timeout: Duration::from_secs(timeout_secs),
+            last_failure: None,
+            is_open: false,
+        }
+    }
+
+    pub async fn call<F, Fut, T>(&mut self, func: F) -> Result<T, CircuitBreakerError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, Box<dyn std::error::Error>>>,
+    {
+        if self.is_open {
+            if let Some(last) = self.last_failure {
+                if last.elapsed() > self.timeout {
+                    self.is_open = false;
+                    self.failure_count = 0;
+                } else {
+                    return Err(CircuitBreakerError::Open);
+                }
+            }
+        }
+
+        match func().await {
+            Ok(result) => {
+                self.failure_count = 0;
+                Ok(result)
+            }
+            Err(e) => {
+                self.failure_count += 1;
+                self.last_failure = Some(Instant::now());
+                if self.failure_count >= self.failure_threshold {
+                    self.is_open = true;
+                }
+                Err(CircuitBreakerError::Inner(e))
+            }
+        }
+    }
+}
 ```
 
 ## Configuration
 
 ### Service Discovery
 
-```python
-# Simple configuration-based discovery
-SERVICES = {
-    "auth": {"url": os.getenv("AUTH_SERVICE", "http://localhost:8001")},
-    "data": {"url": os.getenv("DATA_SERVICE", "http://localhost:8002")},
+```rust
+use std::env;
+use std::collections::HashMap;
+
+/// Simple configuration-based discovery
+fn services() -> HashMap<&'static str, String> {
+    let mut map = HashMap::new();
+    map.insert("auth", env::var("AUTH_SERVICE").unwrap_or_else(|_| "http://localhost:8001".to_string()));
+    map.insert("data", env::var("DATA_SERVICE").unwrap_or_else(|_| "http://localhost:8002".to_string()));
+    map
 }
 
-def get_service_url(service: str) -> str:
-    return SERVICES[service]["url"]
+fn get_service_url(service: &str) -> String {
+    services()[service].clone()
+}
 ```
 
 ## Best Practices
@@ -187,17 +280,28 @@ def get_service_url(service: str) -> str:
 
 ### Mock External Services
 
-```python
-@pytest.fixture
-def mock_api():
-    with responses.RequestsMock() as rsps:
-        rsps.add(
-            responses.POST,
-            "http://api.example.com/process",
-            json={"status": "success"},
-            status=200
-        )
-        yield rsps
+```rust
+#[cfg(test)]
+mod tests {
+    use wiremock::{MockServer, Mock, ResponseTemplate};
+    use wiremock::matchers::{method, path};
+
+    #[tokio::test]
+    async fn test_api_call() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/process"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"status": "success"}))
+            )
+            .mount(&mock_server)
+            .await;
+
+        // Test against mock_server.uri()
+    }
+}
 ```
 
 Remember: Good integration is invisible - it just works.

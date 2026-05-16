@@ -31,9 +31,9 @@ Let's start with a simple task: creating a Python function with tests.
 
 ### Create a Python Script
 
-```python
+```rust
 # first_meta_delegation.py
-from amplihack.meta_delegation import run_meta_delegation
+// use amplihack_meta_delegation:: run_meta_delegation
 
 # Define what we want
 goal = "Create a Python function that calculates factorial of a number"
@@ -97,9 +97,9 @@ Personas change how the agent approaches your task. Let's compare.
 
 ### Experiment: Same Task, Different Personas
 
-```python
+```rust
 # persona_comparison.py
-from amplihack.meta_delegation import run_meta_delegation
+// use amplihack_meta_delegation:: run_meta_delegation
 
 goal = "Analyze the security of a user authentication system"
 success_criteria = "Identify vulnerabilities, suggest fixes, provide examples"
@@ -199,7 +199,7 @@ Success criteria determine how well the agent succeeded. Let's practice writing 
 
 ### Bad Success Criteria ❌
 
-```python
+```rust
 # Too vague
 success_criteria = "Make it good"
 
@@ -212,7 +212,7 @@ success_criteria = "Must achieve 100% code coverage"
 
 ### Good Success Criteria ✅
 
-```python
+```rust
 # Specific and measurable
 success_criteria = """
 - Function accepts integer input
@@ -239,14 +239,14 @@ Try improving these criteria:
 
 **Original:**
 
-```python
+```rust
 goal = "Create a REST API"
 success_criteria = "API works"
 ```
 
 **Improved:**
 
-```python
+```rust
 goal = "Create a REST API for user management"
 success_criteria = """
 - API has GET /users endpoint (returns user list)
@@ -266,9 +266,9 @@ Evidence is proof of what the agent accomplished. Let's analyze it.
 
 ### Example: Examining Evidence
 
-```python
+```rust
 # examine_evidence.py
-from amplihack.meta_delegation import run_meta_delegation
+// use amplihack_meta_delegation:: run_meta_delegation
 
 result = run_meta_delegation(
     goal="Create a module for parsing CSV files",
@@ -366,9 +366,9 @@ Not all delegations succeed. Let's learn to handle failures gracefully.
 
 ### Example: Dealing with Failure
 
-```python
+```rust
 # handle_failures.py
-from amplihack.meta_delegation import run_meta_delegation
+// use amplihack_meta_delegation:: run_meta_delegation
 
 # Intentionally difficult task
 goal = "Implement a quantum computer simulator in Python"
@@ -460,9 +460,9 @@ When delegation fails or partially succeeds:
 
 Create a meta-delegation for a real task:
 
-```python
+```rust
 # complete_workflow.py
-from amplihack.meta_delegation import run_meta_delegation
+// use amplihack_meta_delegation:: run_meta_delegation
 
 # Step 1: Design phase
 print("Phase 1: Architecture Design")

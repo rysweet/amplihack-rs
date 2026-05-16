@@ -23,27 +23,26 @@ Automatically detects the calling platform by checking:
 
 **Claude Code** (Direct Injection):
 
-```python
-# Hook returns JSON with context
-return {
+```json
+// Hook returns JSON with context
+{
     "hookSpecificOutput": {
         "additionalContext": "User preferences: talk like a pirate"
     }
 }
-# AI sees context immediately
+// AI sees context immediately
 ```
 
 **Copilot CLI** (File-Based Injection):
 
-```python
+```bash
 # Hook writes to AGENTS.md
-with open(".github/agents/AGENTS.md", "w") as f:
-    f.write("""
+cat > ".github/agents/AGENTS.md" <<'EOF'
 # Active Agents and Context
 
 @~/.amplihack/.claude/context/USER_PREFERENCES.md
 @~/.amplihack/.claude/context/PHILOSOPHY.md
-    """)
+EOF
 # Copilot reads file via @include on next request
 ```
 
@@ -55,7 +54,7 @@ with open(".github/agents/AGENTS.md", "w") as f:
 
 - ✅ Preference injection works on both platforms
 - ✅ Context loading works everywhere
-- ✅ Zero duplication (single Python implementation)
+- ✅ Zero duplication (single Rust implementation)
 - ✅ Automatic platform adaptation
 
 **What Works Where**:
@@ -83,12 +82,12 @@ See [@docs/COPILOT_CLI.md](../../docs/COPILOT_CLI.md) for:
 
 **Architecture**: Single source of truth in `~/.amplihack/.claude/`, symlinked from `.github/`
 
-**Hook Pattern**: Bash wrappers → Python implementations (zero duplication)
+**Hook Pattern**: Rust hook modules (crates/amplihack-hooks/)
 
 **Key Files**:
 
 - `.github/copilot-instructions.md` - Base Copilot instructions
 - `.github/agents/amplihack/` - Symlink to `~/.amplihack/.claude/agents/amplihack/`
 - `.github/agents/skills/` - Symlinks to `~/.amplihack/.claude/skills/`
-- `.github/hooks/*` - Bash wrappers calling `~/.amplihack/.claude/tools/amplihack/hooks/*.py`
+- `.github/hooks/*` - Wrappers calling the native `amplihack-hooks` binary
 - `.github/mcp-servers.json` - MCP server configuration

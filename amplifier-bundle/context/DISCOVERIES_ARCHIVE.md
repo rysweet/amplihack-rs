@@ -161,7 +161,7 @@ AI-powered reflection failing silently with "No session messages found".
 
 ### Solution
 
-Fixed interface contract - stop.py now passes messages directly to reflection.py.
+Fixed interface contract - stop hook now passes messages directly to reflection module.
 
 ### Key Learnings
 
@@ -179,7 +179,7 @@ UVX argument passthrough failing for claude-trace integration.
 
 ### Solution
 
-Modified `build_claude_command()` in launcher/core.py to handle claude-trace's `--run-with chat` requirement.
+Modified `build_claude_command()` in the launcher module to handle claude-trace's `--run-with chat` requirement.
 
 ### Key Learnings
 

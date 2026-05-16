@@ -31,8 +31,8 @@ The distributed hive mind already has a **transport-agnostic event bus** in plac
 
 **Factory function:**
 
-```python
-from amplihack.agents.goal_seeking.hive_mind.event_bus import create_event_bus
+```rust
+// use amplihack_domain_agents:: create_event_bus
 
 bus = create_event_bus(
     backend="azure",          # "local" | "azure" | "redis"
@@ -45,7 +45,7 @@ bus = create_event_bus(
 
 **`BusEvent` (immutable data model):**
 
-```python
+```rust
 @dataclass(frozen=True)
 class BusEvent:
     event_id: str       # UUID4 hex
@@ -57,7 +57,7 @@ class BusEvent:
 
 **`EventBus` Protocol (transport interface):**
 
-```python
+```rust
 class EventBus(Protocol):
     def publish(self, event: BusEvent) -> None: ...
     def subscribe(self, agent_id: str, event_types: list[str] | None = None) -> None: ...
@@ -193,7 +193,7 @@ spec:
 
 **Agent code (before Dapr):**
 
-```python
+```rust
 # Direct Azure SDK
 sender = ServiceBusSender(conn_str, topic_name="hive-graph")
 sender.send_messages(ServiceBusMessage(json.dumps(event.to_dict())))
@@ -201,7 +201,7 @@ sender.send_messages(ServiceBusMessage(json.dumps(event.to_dict())))
 
 **Agent code (after Dapr):**
 
-```python
+```rust
 # Dapr sidecar — no Azure SDK
 import httpx
 httpx.post("http://localhost:3500/v1.0/publish/hive-pubsub/hive-graph",
@@ -247,7 +247,7 @@ httpx.post("http://localhost:3500/v1.0/publish/hive-pubsub/hive-graph",
 
 **Relationship to existing `BusEvent`:**
 
-```python
+```rust
 # Current BusEvent fields
 @dataclass(frozen=True)
 class BusEvent:

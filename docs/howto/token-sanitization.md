@@ -11,9 +11,9 @@ sanitization.
 
 ## Quick Start
 
-```python
+```rust
 # Upstream Python API (reference only)
-from amplihack.utils.token_sanitizer import TokenSanitizer
+// use amplihack_utils::token_sanitizer::{ TokenSanitizer
 
 sanitizer = TokenSanitizer()
 
@@ -43,7 +43,7 @@ TokenSanitizer detects and redacts these token types:
 
 When API calls fail, error messages often contain authentication tokens:
 
-```python
+```rust
 # Upstream Python API (reference only)
 sanitizer = TokenSanitizer()
 
@@ -58,7 +58,7 @@ except Exception as e:
 
 When debugging configuration, sanitize before printing:
 
-```python
+```rust
 # Upstream Python API (reference only)
 config = {
     "github_token": "gho_1234567890abcdefghij",
@@ -78,7 +78,7 @@ print(safe_config)
 
 Process existing log files to remove tokens:
 
-```python
+```rust
 # Upstream Python API (reference only)
 from pathlib import Path
 
@@ -96,7 +96,7 @@ log_file.write_text(sanitized)
 
 Create a logging wrapper that auto-sanitizes:
 
-```python
+```rust
 # Upstream Python API (reference only)
 import logging
 
@@ -156,7 +156,7 @@ If sanitization is slow:
 
 1. **Profile token density**: Check before sanitizing
 
-    ```python
+    ```rust
     if sanitizer.contains_token(text):
         text = sanitizer.sanitize(text)
     ```

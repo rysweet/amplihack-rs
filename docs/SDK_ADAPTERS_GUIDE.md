@@ -15,8 +15,8 @@ The `GoalSeekingAgent` abstraction allows you to write agent logic once and run 
 - The SDK-specific `_run_sdk_agent()` is used only for general task execution through the SDK's native agent loop (not for eval).
 - There is no mock mode. All SDK adapters require their respective SDK packages to be installed.
 
-```python
-from amplihack.agents.goal_seeking.sdk_adapters.factory import create_agent
+```rust
+// use amplihack_domain_agents:: create_agent
 
 # Same interface, different backends:
 agent = create_agent(name="learner", sdk="copilot")
@@ -48,12 +48,12 @@ agent.close()
 
 The `GoalSeekingAgent` ABC in `base.py` provides `learn_from_content()` and `answer_question()` as public methods. Both delegate to an internal `LearningAgent` instance:
 
-```python
+```rust
 class GoalSeekingAgent(ABC):
     def _get_learning_agent(self):
         """Lazily create a LearningAgent sharing this agent's storage path."""
         if not hasattr(self, "_learning_agent_cache"):
-            from amplihack.agents.goal_seeking.learning_agent import LearningAgent
+            // use amplihack_domain_agents:: LearningAgent
             eval_model = os.environ.get("EVAL_MODEL", "claude-sonnet-4-5-20250929")
             self._learning_agent_cache = LearningAgent(
                 agent_name=f"{self.name}_learning",
@@ -212,7 +212,7 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 
 The Claude SDK uses `ClaudeSDKClient` with an async context manager pattern. Each `_run_sdk_agent()` call creates a fresh client with `ClaudeAgentOptions`:
 
-```python
+```rust
 options = ClaudeAgentOptions(
     model=self._sdk_agent["model"],
     system_prompt=self._sdk_agent["system"],
@@ -264,7 +264,7 @@ pip install agent-framework-core
 
 Tools are registered via the `FunctionTool` wrapper pattern. The 7 learning tools from `GoalSeekingAgent` are wrapped as `FunctionTool` objects:
 
-```python
+```rust
 from agent_framework import FunctionTool
 tool = FunctionTool(name="learn_from_content", description="...", func=wrapper_fn)
 ```
@@ -281,7 +281,7 @@ tool = FunctionTool(name="learn_from_content", description="...", func=wrapper_f
 
 Unlike other SDKs, the Microsoft framework uses a session for multi-turn conversation state:
 
-```python
+```rust
 self._sdk_agent = AFAgent(chat_client, instructions=system_prompt, name=self.name, tools=tools)
 self._session = self._sdk_agent.create_session()
 
@@ -388,7 +388,7 @@ To add support for a new SDK:
 
 2. **Implement** the four abstract methods:
 
-```python
+```rust
 from .base import GoalSeekingAgent, AgentTool, AgentResult, SDKType
 
 class NewSDKGoalSeekingAgent(GoalSeekingAgent):

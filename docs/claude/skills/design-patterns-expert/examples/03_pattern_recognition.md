@@ -27,7 +27,7 @@ This is a classic use case for the **Observer pattern**.
 
 ### Quick Example for Your Use Case
 
-```python
+```rust
 class UserProfile:  # Subject
     def __init__(self):
         self.observers = []
@@ -91,7 +91,7 @@ profile.update_profile("John Doe", "john@example.com")
 
 **Direct Method Calls**:
 
-```python
+```rust
 profile.update_profile()
 ui.refresh()
 logging.log_change()

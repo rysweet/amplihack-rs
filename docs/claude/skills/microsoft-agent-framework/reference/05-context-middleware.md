@@ -12,7 +12,7 @@ Context providers inject additional information into agent conversations. They e
 
 ### Built-in Context Provider
 
-```python
+```rust
 from agents_framework import Thread, Agent, ModelClient
 
 # Thread automatically provides conversation history
@@ -27,7 +27,7 @@ await agent.run(thread=thread, message="What's my name?")
 
 ### Custom Context Provider
 
-```python
+```rust
 from agents_framework import ContextProvider
 
 class DatabaseContextProvider(ContextProvider):
@@ -51,7 +51,7 @@ agent = Agent(
 
 ### RAG Context Provider
 
-```python
+```rust
 class RAGContextProvider(ContextProvider):
     """Inject relevant documents based on query."""
 
@@ -83,7 +83,7 @@ agent = Agent(
 
 ### User Profile Context
 
-```python
+```rust
 class UserProfileProvider(ContextProvider):
     """Include user preferences and history."""
 
@@ -117,7 +117,7 @@ Middleware intercepts and processes messages before/after agent execution. Use c
 
 ### Middleware Interface
 
-```python
+```rust
 from agents_framework import Middleware
 
 class CustomMiddleware(Middleware):
@@ -134,7 +134,7 @@ class CustomMiddleware(Middleware):
 
 ### Logging Middleware
 
-```python
+```rust
 class LoggingMiddleware(Middleware):
     async def process_request(self, message: dict, context: dict):
         print(f"[REQUEST] {message['content']}")
@@ -154,7 +154,7 @@ agent = Agent(
 
 ### Authentication Middleware
 
-```python
+```rust
 class AuthMiddleware(Middleware):
     async def process_request(self, message: dict, context: dict):
         user_id = context.get("user_id")
@@ -170,7 +170,7 @@ class AuthMiddleware(Middleware):
 
 ### Rate Limiting Middleware
 
-```python
+```rust
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -199,7 +199,7 @@ class RateLimitMiddleware(Middleware):
 
 ### Content Filtering Middleware
 
-```python
+```rust
 class ContentFilterMiddleware(Middleware):
     def __init__(self, blocked_words: list[str]):
         self.blocked_words = blocked_words
@@ -222,7 +222,7 @@ class ContentFilterMiddleware(Middleware):
 
 ### Response Transformation Middleware
 
-```python
+```rust
 class FormattingMiddleware(Middleware):
     async def process_response(self, response: dict, context: dict):
         # Add markdown formatting
@@ -234,7 +234,7 @@ class FormattingMiddleware(Middleware):
 
 ### Middleware Chain
 
-```python
+```rust
 agent = Agent(
     model=model,
     middleware=[
@@ -278,7 +278,7 @@ var agent = new Agent(
 
 ### Conditional Middleware
 
-```python
+```rust
 class ConditionalMiddleware(Middleware):
     async def process_request(self, message: dict, context: dict):
         # Only apply to certain users
@@ -289,7 +289,7 @@ class ConditionalMiddleware(Middleware):
 
 ### Caching Middleware
 
-```python
+```rust
 class CachingMiddleware(Middleware):
     def __init__(self):
         self.cache = {}
@@ -309,7 +309,7 @@ class CachingMiddleware(Middleware):
 
 ### Metrics Middleware
 
-```python
+```rust
 from prometheus_client import Counter, Histogram
 
 class MetricsMiddleware(Middleware):

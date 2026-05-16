@@ -47,7 +47,7 @@ START: Need AI agent?
 
 **Example**: Multi-turn tech support
 
-```python
+```rust
 # Agent Framework - maintains context
 thread = Thread()
 await agent.run(thread=thread, message="My app crashed")
@@ -68,7 +68,7 @@ await agent.run(thread=thread, message="It happened after the update")
 
 **Example**: Parallel analysis workflow
 
-```python
+```rust
 workflow.add_edge("START", ["security", "performance", "ux"])
 workflow.add_edge(["security", "performance", "ux"], "synthesize")
 ```
@@ -120,7 +120,7 @@ workflow.add_edge(["security", "performance", "ux"], "synthesize")
 
 **Example**: Code review
 
-```python
+```rust
 # amplihack - stateless
 reviewer = Agent(".claude/agents/amplihack/reviewer.md")
 result = reviewer.process({"files": ["src/module.py"]})
@@ -180,7 +180,7 @@ result = reviewer.process({"files": ["src/module.py"]})
 
 **Example**: Code review with discussion
 
-```python
+```rust
 # amplihack reviews code
 review = amplihack_reviewer.process({"files": ["src/"]})
 

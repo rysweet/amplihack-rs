@@ -95,7 +95,7 @@ amplihack claude
 
 Power-Steering uses regex pattern matching to detect the preference:
 
-```python
+```rust
 # Simplified detection logic
 pattern = r'NEVER.*(?:Merge|merge).*(?:PR|Pull Request).*(?:Without|without).*(?:Permission|permission)'
 

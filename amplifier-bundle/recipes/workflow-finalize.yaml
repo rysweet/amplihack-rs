@@ -316,7 +316,7 @@ steps:
       export ISSUE_VAL
       PR_VAL="$PR_URL"
       export PR_VAL
-      # Pure jq — no Python dependency (#242).
+      # Pure jq — no external dependency (#242).
       # jq -n constructs the object; --arg passes env vars in safely (no quoting hazards).
       jq -n \
         --arg task "${TASK_VAL}" \

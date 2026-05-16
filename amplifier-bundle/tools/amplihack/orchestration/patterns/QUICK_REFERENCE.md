@@ -2,127 +2,133 @@
 
 ## Import
 
-```python
-from .claude.tools.amplihack.orchestration.patterns import (
+```rust
+use amplihack_orchestration::patterns::{
     run_n_version,
     run_debate,
     run_cascade,
     create_custom_cascade,
-)
+};
 ```
 
 ## N-Version Programming
 
 **Use when:** Critical implementations requiring multiple attempts
 
-```python
-result = run_n_version(
-    task_prompt="Implement feature X",
-    n=3,                          # Number of versions
-    selection_criteria=[          # Optional
+```rust
+let result = run_n_version(NVersionConfig {
+    task_prompt: "Implement feature X",
+    n: 3,                                // Number of versions
+    selection_criteria: Some(vec![       // Optional
         "correctness",
         "security",
-        "simplicity"
-    ],
-    timeout=300                   # Per version
-)
+        "simplicity",
+    ]),
+    timeout: Some(Duration::from_secs(300)), // Per version
+    ..Default::default()
+})?;
 
-# Access results
-print(result['selected'])         # "version_1", "version_2", etc.
-print(result['rationale'])        # Why selected
-print(result['versions'])         # All ProcessResult objects
-print(result['comparison'])       # Reviewer analysis
+// Access results
+println!("{}", result.selected);         // "version_1", "version_2", etc.
+println!("{}", result.rationale);        // Why selected
+println!("{:?}", result.versions);       // All ProcessResult objects
+println!("{}", result.comparison);       // Reviewer analysis
 ```
 
 ## Multi-Agent Debate
 
 **Use when:** Complex decisions needing multiple viewpoints
 
-```python
-result = run_debate(
-    decision_question="Which database?",
-    perspectives=[                # Optional
+```rust
+let result = run_debate(DebateConfig {
+    decision_question: "Which database?",
+    perspectives: Some(vec![             // Optional
         "security",
         "performance",
-        "simplicity"
-    ],
-    rounds=3,                     # Number of debate rounds
-    timeout=180                   # Per perspective
-)
+        "simplicity",
+    ]),
+    rounds: 3,                           // Number of debate rounds
+    timeout: Some(Duration::from_secs(180)), // Per perspective
+    ..Default::default()
+})?;
 
-# Access results
-print(result['synthesis'])        # Final consensus
-print(result['confidence'])       # "HIGH", "MEDIUM", "LOW"
-print(result['rounds'])           # Each round's results
-print(result['positions'])        # History per perspective
+// Access results
+println!("{}", result.synthesis);        // Final consensus
+println!("{}", result.confidence);       // "HIGH", "MEDIUM", "LOW"
+println!("{:?}", result.rounds);         // Each round's results
+println!("{:?}", result.positions);      // History per perspective
 ```
 
 ## Fallback Cascade
 
 **Use when:** Need guaranteed completion with degradation
 
-```python
-result = run_cascade(
-    task_prompt="Generate documentation",
-    fallback_strategy="quality", # quality, service, freshness, completeness, accuracy
-    timeout_strategy="balanced", # aggressive, balanced, patient
-    notification_level="warning", # silent, warning, explicit
-)
+```rust
+let result = run_cascade(CascadeConfig {
+    task_prompt: "Generate documentation",
+    fallback_strategy: FallbackStrategy::Quality, // Quality, Service, Freshness, Completeness, Accuracy
+    timeout_strategy: TimeoutStrategy::Balanced,   // Aggressive, Balanced, Patient
+    notification_level: NotificationLevel::Warning, // Silent, Warning, Explicit
+    ..Default::default()
+})?;
 
-# Access results
-print(result['cascade_level'])    # "primary", "secondary", "tertiary"
-print(result['degradation'])      # Degradation description
-print(result['result'])           # Final ProcessResult
-print(result['attempts'])         # All attempts
+// Access results
+println!("{}", result.cascade_level);    // "primary", "secondary", "tertiary"
+println!("{}", result.degradation);      // Degradation description
+println!("{:?}", result.result);         // Final ProcessResult
+println!("{:?}", result.attempts);       // All attempts
 ```
 
 ## Custom Cascade
 
 **Use when:** Need specific cascade behavior
 
-```python
-result = create_custom_cascade(
-    task_prompt="Analyze code",
-    levels=[
-        {
-            "name": "comprehensive",
-            "timeout": 120,
-            "constraint": "full analysis",
-            "model": None,        # Optional
+```rust
+let result = create_custom_cascade(CustomCascadeConfig {
+    task_prompt: "Analyze code",
+    levels: vec![
+        CascadeLevel {
+            name: "comprehensive",
+            timeout: Duration::from_secs(120),
+            constraint: "full analysis",
+            model: None,           // Optional
         },
-        {
-            "name": "quick",
-            "timeout": 30,
-            "constraint": "basic analysis",
+        CascadeLevel {
+            name: "quick",
+            timeout: Duration::from_secs(30),
+            constraint: "basic analysis",
+            model: None,
         },
-        {
-            "name": "minimal",
-            "timeout": 5,
-            "constraint": "syntax check only",
+        CascadeLevel {
+            name: "minimal",
+            timeout: Duration::from_secs(5),
+            constraint: "syntax check only",
+            model: None,
         },
     ],
-)
+    ..Default::default()
+})?;
 ```
 
 ## Common Parameters
 
 All patterns support:
 
-| Parameter     | Type   | Default     | Description                       |
-| ------------- | ------ | ----------- | --------------------------------- |
-| `working_dir` | `Path` | current dir | Working directory                 |
-| `model`       | `str`  | None        | Claude model (None = CLI default) |
-| `timeout`     | `int`  | None        | Timeout per process (seconds)     |
+| Parameter     | Type              | Default     | Description                       |
+| ------------- | ----------------- | ----------- | --------------------------------- |
+| `working_dir` | `PathBuf`         | current dir | Working directory                 |
+| `model`       | `Option<String>`  | None        | Claude model (None = CLI default) |
+| `timeout`     | `Option<Duration>`| None        | Timeout per process               |
 
 ## Return Structure
 
-All patterns return `Dict[str, Any]` with:
+All patterns return a `PatternResult` struct with:
 
-| Key                                 | Type   | Description                 |
-| ----------------------------------- | ------ | --------------------------- |
-| `session_id`                        | `str`  | Session identifier for logs |
-| `success`                           | `bool` | Whether operation succeeded |
-| Additional keys specific to pattern |        | See pattern docs            |
+| Field                               | Type     | Description                 |
+| ----------------------------------- | -------- | --------------------------- |
+| `session_id`                        | `String` | Session identifier for logs |
+| `success`                           | `bool`   | Whether operation succeeded |
+| Additional fields specific to pattern |        | See pattern docs            |
 
 ## Session Logs
 
@@ -135,14 +141,17 @@ Find logs at: `~/.amplihack/.claude/runtime/logs/<session_id>/`
 
 All patterns handle errors gracefully:
 
-```python
-result = run_n_version(task_prompt="...")
-if not result['success']:
-    print("Failed:", result['rationale'])
-    # Check individual attempts
-    for version in result['versions']:
-        if version.exit_code != 0:
-            print(f"Error: {version.stderr}")
+```rust
+let result = run_n_version(config)?;
+if !result.success {
+    eprintln!("Failed: {}", result.rationale);
+    // Check individual attempts
+    for version in &result.versions {
+        if version.exit_code != 0 {
+            eprintln!("Error: {}", version.stderr);
+        }
+    }
+}
 ```
 
 ## Timeout Strategies
@@ -209,7 +218,7 @@ Need multiple implementations?
 
 ## Examples
 
-See `PATTERN_EXAMPLES.py` for complete working examples.
+See `examples/patterns.rs` for complete working examples.
 
 ## Full Documentation
 

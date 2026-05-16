@@ -37,7 +37,7 @@ The agent's answer contains the correct current value ($1.4M) but also mentions 
 
 The grader was checking for incorrect patterns WITHOUT first verifying that the correct answer was present:
 
-```python
+```rust
 # BUGGY VERSION (from before PR #2674)
 if any(pattern in answer.lower() for pattern in incorrect_patterns):
     score = 0.0  # Wrong! Penalizes even when correct answer is present
@@ -51,7 +51,7 @@ This caused false negatives when answers contained both historical and current i
 
 Only apply incorrect pattern penalties when the correct keywords are NOT present:
 
-```python
+```rust
 # FIXED VERSION (from PR #2674)
 def _deterministic_grade(answer: str, rubric: GradingRubric) -> float:
     answer_lower = answer.lower()
@@ -106,7 +106,7 @@ Questions about structured entities (incident IDs, CVE numbers, etc.) often fail
 
 When structured entity IDs are detected, search ALL facts containing that entity:
 
-```python
+```rust
 def _entity_linked_retrieval(self, question: str) -> list[Fact]:
     """
     Retrieves all facts containing structured entity IDs found in the question.
@@ -181,7 +181,7 @@ Standard retrieval searches for both terms together and often finds nothing beca
 
 Detect questions with 2+ named entities, retrieve facts for EACH entity independently, then merge results:
 
-```python
+```rust
 def _multi_entity_retrieval(self, question: str) -> list[Fact]:
     """
     Detects questions with multiple entities and retrieves facts for each independently.
@@ -251,7 +251,7 @@ Use multi-entity retrieval when:
 
 The most powerful approach combines all three techniques:
 
-```python
+```rust
 def answer_question(self, question: str) -> str:
     # 1. Detect question intent
     intent = self._detect_intent(question)
@@ -293,7 +293,7 @@ Question received
 
 When adding new incorrect patterns to grading rubrics:
 
-```python
+```rust
 # DON'T: Apply incorrect patterns unconditionally
 if "outdated_info" in answer:
     return 0.0
@@ -307,7 +307,7 @@ if not has_correct_answer and "outdated_info" in answer:
 
 Multiple retrieval strategies can return overlapping facts:
 
-```python
+```rust
 def _deduplicate_facts(self, facts: list[Fact]) -> list[Fact]:
     seen = set()
     unique = []
@@ -324,7 +324,7 @@ def _deduplicate_facts(self, facts: list[Fact]) -> list[Fact]:
 
 For debugging and analysis:
 
-```python
+```rust
 def answer_question(self, question: str) -> str:
     retrieval_method = None
 
@@ -349,10 +349,10 @@ Grading improvements should be validated with multiple grading runs:
 
 ```bash
 # Single run (unreliable)
-python -m amplihack.eval.progressive_test_suite --sdk mini
+amplihack eval progressive-test-suite --sdk mini
 
 # Multi-vote grading (recommended)
-python -m amplihack.eval.progressive_test_suite --grader-votes 3 --sdk mini
+amplihack eval progressive-test-suite --grader-votes 3 --sdk mini
 ```
 
 ## Results

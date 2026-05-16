@@ -128,7 +128,7 @@ Target test coverage percentage (typically 85%+)
 ````
 ## Example Usage
 
-```python
+```rust
 from module_name import PublicFunction, DataModel
 
 # Usage example 1
@@ -286,7 +286,7 @@ Claude:
 ## Public Interface (The "Studs")
 
 ### Functions
-```python
+```rust
 def primary_function(param: Type) -> ReturnType:
     """Brief description.
 
@@ -300,7 +300,7 @@ def primary_function(param: Type) -> ReturnType:
 
 ### Classes
 
-```python
+```rust
 class DataModel:
     """Brief description of responsibility.
 
@@ -359,7 +359,7 @@ module_name/
 
 ## Example Usage
 
-```python
+```rust
 from module_name import primary_function, DataModel
 
 # Basic usage

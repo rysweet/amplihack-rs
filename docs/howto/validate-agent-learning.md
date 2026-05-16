@@ -29,7 +29,7 @@ Without validation, you can't verify that:
 
 Verify experiences are stored after execution.
 
-```python
+```rust
 # agents/my-agent/tests/test_memory_storage.py
 
 import pytest
@@ -101,7 +101,7 @@ def test_stores_patterns_when_detected(agent_with_clean_memory, tmp_path):
 
 Verify relevant experiences are retrieved before execution.
 
-```python
+```rust
 # agents/my-agent/tests/test_memory_retrieval.py
 
 import pytest
@@ -173,7 +173,7 @@ def test_filters_by_confidence(agent_with_mock_experiences, tmp_path):
 
 Verify patterns are recognized after repeated occurrences.
 
-```python
+```rust
 # agents/my-agent/tests/test_pattern_recognition.py
 
 import pytest
@@ -251,7 +251,7 @@ def test_does_not_duplicate_known_patterns(agent, tmp_path):
 
 Verify performance improves over time.
 
-```python
+```rust
 # agents/my-agent/tests/test_learning_improvement.py
 
 import pytest
@@ -320,7 +320,7 @@ def test_knowledge_accumulation(agent, tmp_path):
 
 End-to-end validation of learning behavior.
 
-```python
+```rust
 # agents/my-agent/tests/test_learning_integration.py
 
 import pytest
@@ -425,7 +425,7 @@ agents/my-agent/tests/
 
 ### Shared Fixtures
 
-```python
+```rust
 # agents/my-agent/tests/conftest.py
 
 import pytest
@@ -617,7 +617,7 @@ jobs:
 
 **Diagnosis**:
 
-```python
+```rust
 # Add debug logging
 def test_stores_experiences_after_run(agent, tmp_path):
     result = agent.execute_task("Test task", tmp_path)
@@ -646,7 +646,7 @@ def test_stores_experiences_after_run(agent, tmp_path):
 
 **Diagnosis**:
 
-```python
+```rust
 def test_runtime_improves_across_runs(agent, tmp_path):
     runtimes = []
 
@@ -670,7 +670,7 @@ def test_runtime_improves_across_runs(agent, tmp_path):
 
 **Solution**: Adjust test expectations:
 
-```python
+```rust
 # Allow for variance
 assert last_runtime <= first_runtime * 1.2, \
     "Runtime should not degrade significantly"
@@ -682,7 +682,7 @@ assert last_runtime <= first_runtime * 1.2, \
 
 **Diagnosis**:
 
-```python
+```rust
 def test_recognizes_pattern_after_threshold(agent, tmp_path):
     for i in range(3):
         result = agent.execute_task("Test task", tmp_path)
@@ -711,7 +711,7 @@ def test_recognizes_pattern_after_threshold(agent, tmp_path):
 
 Use realistic test data that contains actual patterns:
 
-```python
+```rust
 @pytest.fixture
 def realistic_test_data(tmp_path):
     """Create realistic test data with patterns."""
@@ -737,7 +737,7 @@ This is a tutorial without code examples.
 
 Test across different scenarios:
 
-```python
+```rust
 @pytest.mark.parametrize("num_runs,expected_patterns", [
     (2, 0),  # Not enough runs to recognize pattern
     (3, 1),  # Threshold met, should recognize 1 pattern
@@ -760,7 +760,7 @@ def test_pattern_recognition_threshold(agent, tmp_path, num_runs, expected_patte
 
 Ensure tests don't interfere with each other:
 
-```python
+```rust
 @pytest.fixture(autouse=True)
 def isolate_memory(agent):
     """Automatically clear memory before and after each test."""
@@ -775,7 +775,7 @@ def isolate_memory(agent):
 
 ### 4. Test Edge Cases
 
-```python
+```rust
 def test_handles_empty_target(agent, tmp_path):
     """Verify agent handles empty target gracefully."""
 

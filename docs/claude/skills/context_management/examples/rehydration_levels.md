@@ -62,7 +62,7 @@ Files modified: jwt_handler.py, middleware.py, auth_service.py
 
 ### Code Example
 
-```python
+```rust
 from context_management import rehydrate_context
 
 # Quick refresh - just need the basics
@@ -142,7 +142,7 @@ Files modified: jwt_handler.py, middleware.py, auth_service.py
 
 ### Code Example
 
-```python
+```rust
 from context_management import rehydrate_context
 
 # Standard restoration - most common choice
@@ -240,7 +240,7 @@ Files modified: jwt_handler.py, middleware.py, auth_service.py
 
 ### Code Example
 
-```python
+```rust
 from context_management import rehydrate_context
 
 # Comprehensive - need everything
@@ -271,7 +271,7 @@ Need context?
 
 Start minimal, upgrade as needed:
 
-```python
+```rust
 from context_management import rehydrate_context
 
 snapshot_id = '20251116_143522'
@@ -293,7 +293,7 @@ context = rehydrate_context(snapshot_id, level='comprehensive')
 
 ### Scenario: Same Snapshot, Different Levels
 
-```python
+```rust
 snapshot_id = '20251116_143522'
 
 # Essential: ~200 tokens
@@ -313,7 +313,7 @@ print(f"Comprehensive tokens: ~1250 (6x essential)")
 
 If you have 900,000 tokens used and need context:
 
-```python
+```rust
 # Current usage: 900k / 1M (90%)
 # Remaining: 100k tokens
 
@@ -337,7 +337,7 @@ If you have 900,000 tokens used and need context:
 
 **Why:** Just need to remember what I was doing, task is straightforward
 
-```python
+```rust
 context = rehydrate_context(snapshot_id, level='essential')
 # Quick refresh, back to work
 ```
@@ -350,7 +350,7 @@ context = rehydrate_context(snapshot_id, level='essential')
 
 **Why:** Need to rebuild mental model, remember decisions and open items
 
-```python
+```rust
 context = rehydrate_context(snapshot_id, level='standard')
 # Good context refresh for new week
 ```
@@ -363,7 +363,7 @@ context = rehydrate_context(snapshot_id, level='standard')
 
 **Why:** Need complete picture including all decisions and tools used
 
-```python
+```rust
 context = rehydrate_context(snapshot_id, level='comprehensive')
 # Full context for debugging
 ```
@@ -376,7 +376,7 @@ context = rehydrate_context(snapshot_id, level='comprehensive')
 
 **Why:** Reviewer needs full context including rationales and alternatives
 
-```python
+```rust
 context = rehydrate_context(snapshot_id, level='comprehensive')
 # Complete picture for review
 ```
@@ -389,7 +389,7 @@ context = rehydrate_context(snapshot_id, level='comprehensive')
 
 **Why:** Can't afford more tokens, get minimum needed
 
-```python
+```rust
 context = rehydrate_context(snapshot_id, level='essential')
 # Minimal tokens, essential info only
 ```
@@ -398,7 +398,7 @@ context = rehydrate_context(snapshot_id, level='essential')
 
 ### Pattern 1: Start Small, Grow
 
-```python
+```rust
 # Always start with essential
 context = rehydrate_context(snapshot_id, level='essential')
 
@@ -414,7 +414,7 @@ if need_everything:
 
 ### Pattern 2: Match Use Case
 
-```python
+```rust
 def choose_level(use_case):
     """Helper to choose appropriate level."""
     if use_case in ['quick_refresh', 'short_break']:
@@ -432,7 +432,7 @@ context = rehydrate_context(snapshot_id, level=level)
 
 ### Pattern 3: Token Budget Aware
 
-```python
+```rust
 def safe_rehydrate(snapshot_id, current_tokens, max_tokens=1_000_000):
     """Choose level based on available token budget."""
     remaining = max_tokens - current_tokens

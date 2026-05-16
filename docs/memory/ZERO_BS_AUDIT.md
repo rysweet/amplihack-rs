@@ -74,7 +74,7 @@ This audit found the Neo4j memory system to be **exceptionally well-implemented*
 
 1. **Line 291**: `last_error` could be typed more explicitly
 
-   ```python
+   ```rust
    # Current
    last_error = None
 
@@ -86,7 +86,7 @@ This audit found the Neo4j memory system to be **exceptionally well-implemented*
 
 2. **Lines 295-298**: Result consumption pattern is correct but could add comment
 
-   ```python
+   ```rust
    # Current
    result = session.run(query, parameters or {})
    return [dict(record) for record in result]
@@ -120,7 +120,7 @@ This audit found the Neo4j memory system to be **exceptionally well-implemented*
 
 1. **Lines 334-335, 360-361: Bare except blocks**
 
-   ```python
+   ```rust
    # Line 334-335
    except:
        pass
@@ -133,7 +133,7 @@ This audit found the Neo4j memory system to be **exceptionally well-implemented*
    **Severity**: MEDIUM - Swallows all exceptions
    **Fix**:
 
-   ```python
+   ```rust
    except Exception as e:
        logger.debug(f"Docker check failed: {e}")
    ```
@@ -141,7 +141,7 @@ This audit found the Neo4j memory system to be **exceptionally well-implemented*
    **Location**: Lines 334-335, 360-361, 382-383
 
 2. **Line 256: Missing import**
-   ```python
+   ```rust
    # Line 256 references os.environ but os not imported at module level
    env = os.environ.copy()
    ```
@@ -185,7 +185,7 @@ This audit found the Neo4j memory system to be **exceptionally well-implemented*
 
 1. **Lines 136-159: Could extract constraint creation logic**
 
-   ```python
+   ```rust
    # Current: Inline loop with try/except
    for constraint in constraints:
        try:
@@ -299,7 +299,7 @@ This audit found the Neo4j memory system to be **exceptionally well-implemented*
 
 1. **Line 149: Return type annotation uses old-style tuple**
 
-   ```python
+   ```rust
    # Current
    def _build_isolation_clause(self, context: RetrievalContext) -> tuple[str, Dict[str, Any]]:
 
@@ -392,7 +392,7 @@ This audit found the Neo4j memory system to be **exceptionally well-implemented*
 
 1. **Lines 85-105: `detect_task_category()` could use more robust matching**
 
-   ```python
+   ```rust
    # Current: Simple keyword matching
    if any(kw in task_lower for kw in keywords):
        return category
@@ -447,7 +447,7 @@ This audit found the Neo4j memory system to be **exceptionally well-implemented*
 
 1. **Lines 190-191: Bare except block**
 
-   ```python
+   ```rust
    # Line 190-191
    except:
        return False
@@ -456,7 +456,7 @@ This audit found the Neo4j memory system to be **exceptionally well-implemented*
    **Severity**: MEDIUM - Swallows all exceptions
    **Fix**:
 
-   ```python
+   ```rust
    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
        logger.debug(f"Command check failed: {e}")
        return False
@@ -464,7 +464,7 @@ This audit found the Neo4j memory system to be **exceptionally well-implemented*
 
 2. **Lines 354-356: Bare try/except with import**
 
-   ```python
+   ```rust
    # Line 354-356
    try:
        import neo4j  # noqa: F401
@@ -475,7 +475,7 @@ This audit found the Neo4j memory system to be **exceptionally well-implemented*
    **This is ACCEPTABLE** - ImportError is specific enough.
 
 3. **Lines 367-368: Bare except**
-   ```python
+   ```rust
    except:
        return False
    ```
@@ -489,7 +489,7 @@ This audit found the Neo4j memory system to be **exceptionally well-implemented*
 
 2. **Line 527: Type hint typo**
 
-   ```python
+   ```rust
    # Current
    def install_missing(self, confirm: bool = True) -> Dict[str, any]:
 

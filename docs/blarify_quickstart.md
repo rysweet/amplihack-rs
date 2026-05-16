@@ -96,8 +96,8 @@ Step 6: Code graph statistics
 
 ### Example 1: Query Code Files
 
-```python
-from amplihack.memory.neo4j import Neo4jConnector, BlarifyIntegration
+```rust
+// use amplihack_memory::neo4j::{ Neo4jConnector, BlarifyIntegration
 
 with Neo4jConnector() as conn:
     integration = BlarifyIntegration(conn)
@@ -107,8 +107,8 @@ with Neo4jConnector() as conn:
 
 ### Example 2: Get Code Context for Memory
 
-```python
-from amplihack.memory.neo4j import Neo4jConnector, BlarifyIntegration
+```rust
+// use amplihack_memory::neo4j::{ Neo4jConnector, BlarifyIntegration
 
 with Neo4jConnector() as conn:
     integration = BlarifyIntegration(conn)
@@ -122,8 +122,8 @@ with Neo4jConnector() as conn:
 
 ### Example 3: Link Memory to Code
 
-```python
-from amplihack.memory.neo4j import Neo4jConnector, MemoryStore, BlarifyIntegration
+```rust
+// use amplihack_memory::neo4j::{ Neo4jConnector, MemoryStore, BlarifyIntegration
 
 with Neo4jConnector() as conn:
     memory_store = MemoryStore(conn)
@@ -193,7 +193,7 @@ LIMIT 10
 
 ```bash
 # Use amplihack memory system tools
-python -c "from amplihack.memory.neo4j import ensure_neo4j_running; ensure_neo4j_running()"
+python -c "// use amplihack_memory::neo4j::{ ensure_neo4j_running; ensure_neo4j_running()"
 ```
 
 ### Issue: "blarify not found"

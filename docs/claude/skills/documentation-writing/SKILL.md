@@ -130,9 +130,9 @@ docs/
 
 Every concept needs a runnable example:
 
-```python
+```rust
 # Example: Analyze file complexity
-from amplihack import analyze
+// use amplihack:: analyze
 
 result = analyze("src/main.py")
 print(f"Complexity: {result.score}")
@@ -196,7 +196,7 @@ This document describes the intended behavior of Feature X.
 
 ## Planned Interface
 
-```python
+```rust
 # [PLANNED] - This API will be implemented
 def future_function(input: str) -> Result:
     """Process input and return result."""

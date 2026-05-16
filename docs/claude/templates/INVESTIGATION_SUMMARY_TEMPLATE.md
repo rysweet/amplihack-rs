@@ -142,7 +142,7 @@ Enforcement Layer (All agents and responses)
 
 **Key Code Pattern**:
 
-```python
+```rust
 preferences_path = resolver.find_file("USER_PREFERENCES.md")
 if preferences_path and preferences_path.exists():
     content = preferences_path.read_text()

@@ -28,33 +28,30 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Function to check if Python3 is available
-check_python() {
-    if ! command -v python3 &> /dev/null; then
-        print_error "Python3 is required but not found. Please install Python3."
+# Function to check if amplihack-hooks binary is available
+check_amplihack_hooks() {
+    if ! command -v amplihack-hooks &> /dev/null; then
+        print_error "amplihack-hooks binary is required but not found. Install the Rust toolchain and run 'cargo install amplihack-hooks'."
         return 1
     fi
 
-    PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-    print_status "Found Python $PYTHON_VERSION"
+    HOOKS_VERSION=$(amplihack-hooks --version 2>/dev/null || echo "unknown")
+    print_status "Found amplihack-hooks $HOOKS_VERSION"
     return 0
 }
 
-# Function to run Python-based hook merge
+# Function to merge XPIA hooks via amplihack CLI
 merge_xpia_hooks() {
     print_status "Integrating XPIA security hooks..."
 
-    # Use the hook merge utility from the installed amplihack
-    HOOK_MERGE_SCRIPT="$HOME/.claude/tmpamplihack/src/amplihack/utils/hook_merge_utility.py"
-
-    if [ ! -f "$HOOK_MERGE_SCRIPT" ]; then
-        print_error "Hook merge utility not found: $HOOK_MERGE_SCRIPT"
+    if ! command -v amplihack &> /dev/null; then
+        print_error "amplihack CLI not found; cannot merge XPIA hooks"
         return 1
     fi
 
-    # Run the hook merge utility
+    # Run the hook merge utility via native CLI
     cd "$HOME/.claude"
-    python3 "$HOOK_MERGE_SCRIPT" --settings "$HOME/.claude/settings.json"
+    amplihack hooks merge --settings "$HOME/.claude/settings.json"
     MERGE_RESULT=$?
 
     if [ $MERGE_RESULT -eq 0 ]; then
@@ -70,15 +67,13 @@ merge_xpia_hooks() {
 run_xpia_health_check() {
     print_status "Running XPIA security health check..."
 
-    HEALTH_CHECK_SCRIPT="$HOME/.claude/tmpamplihack/src/amplihack/security/xpia_health.py"
-
-    if [ ! -f "$HEALTH_CHECK_SCRIPT" ]; then
-        print_warning "XPIA health check script not found, skipping health validation"
+    if ! command -v amplihack &> /dev/null; then
+        print_warning "amplihack CLI not found, skipping XPIA health validation"
         return 0
     fi
 
     cd "$HOME/.claude"
-    python3 "$HEALTH_CHECK_SCRIPT" --verbose
+    amplihack xpia health-check --verbose
     HEALTH_RESULT=$?
 
     case $HEALTH_RESULT in
@@ -105,7 +100,7 @@ main() {
     print_status "Repository: $AMPLIHACK_INSTALL_LOCATION"
 
     # Check prerequisites
-    if ! check_python; then
+    if ! check_amplihack_hooks; then
         exit 1
     fi
 
@@ -160,7 +155,7 @@ main() {
     cp -r ./tmpamplihack/src "$HOME/.claude/tmpamplihack/"
     cp -r ./tmpamplihack/Specs "$HOME/.claude/tmpamplihack/"
 
-    # Merge XPIA hooks using Python utility
+    # Merge XPIA hooks using amplihack CLI
     if ! merge_xpia_hooks; then
         print_error "XPIA hook integration failed"
 
@@ -206,18 +201,15 @@ main() {
     print_status "Verifying hook files..."
     MISSING_HOOKS=0
 
-    # Check amplihack hooks
-    # Issue #522: stop.py and post_tool_use.py shims have been deleted in
-    # favor of native amplihack-hooks subcommands; only out-of-scope shims
-    # remain to be verified here.
-    for hook in "session_start.py" "pre_compact.py"; do
-        if [ -f "$HOME/.claude/tools/amplihack/hooks/$hook" ]; then
-            print_success "Amplihack $hook found"
-        else
-            print_warning "Amplihack $hook missing"
-            MISSING_HOOKS=$((MISSING_HOOKS + 1))
-        fi
-    done
+    # Check amplihack hooks — all .py shims removed in favor of native
+    # amplihack-hooks subcommands. session_start.py is the sole remaining
+    # legacy Python hook, targeted for removal.
+    if command -v amplihack-hooks &> /dev/null; then
+        print_success "amplihack-hooks binary found"
+    else
+        print_warning "amplihack-hooks binary missing"
+        MISSING_HOOKS=$((MISSING_HOOKS + 1))
+    fi
 
     # Check XPIA hooks
     for hook in "session_start.py" "post_tool_use.py" "pre_tool_use.py"; do

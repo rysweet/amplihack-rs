@@ -19,7 +19,7 @@ By the end of this tutorial, you'll have amplihack installed as a global plugin 
 The fastest way to install amplihack as a plugin:
 
 ```bash
-pip install amplihack
+cargo install amplihack
 amplihack plugin install
 ```
 

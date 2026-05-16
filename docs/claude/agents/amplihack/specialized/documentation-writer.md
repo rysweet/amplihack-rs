@@ -116,15 +116,15 @@ All code examples MUST be:
 
 **Example - Bad**:
 
-```python
+```rust
 result = some_function(foo, bar)
 # Returns: something
 ```
 
 **Example - Good**:
 
-```python
-from amplihack.analyzer import analyze_file
+```rust
+// use amplihack_analyzer:: analyze_file
 
 result = analyze_file("src/main.py")
 print(f"Complexity: {result.complexity_score}")
@@ -140,7 +140,7 @@ When writing documentation BEFORE implementation (Document-Driven Development):
 
 This describes the intended behavior of Feature X.
 
-```python
+```rust
 # [PLANNED] - API not yet implemented
 def future_function(input: str) -> Result:
     """Will process input and return result."""

@@ -91,7 +91,7 @@ That is separate from the top-level CLI graph shown by `amplihack memory tree` a
 
 A simple first step is to record whether the run succeeded. In `main.py`, after `exit_code = auto_mode.run()`, add:
 
-```python
+```rust
 if exit_code == 0:
     store_success(
         context="Goal execution completed",
@@ -108,7 +108,7 @@ else:
 
 You can also recall previous experiences before starting the run:
 
-```python
+```rust
 recent = recall_relevant(initial_prompt, limit=3)
 for item in recent:
     print("Previous experience: {} -> {}".format(item.context, item.outcome))

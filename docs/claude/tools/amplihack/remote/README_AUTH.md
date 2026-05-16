@@ -2,7 +2,7 @@
 
 ## One-Line Usage
 
-```python
+```rust
 from claude.tools.amplihack.remote.auth import get_azure_auth
 
 credential, subscription_id, resource_group = get_azure_auth()
@@ -19,7 +19,7 @@ credential, subscription_id, resource_group = get_azure_auth()
 
 ### Basic Authentication
 
-```python
+```rust
 from claude.tools.amplihack.remote.auth import get_azure_auth
 
 credential, sub_id, rg = get_azure_auth()
@@ -28,14 +28,14 @@ print(f"Authenticated! Subscription: {sub_id}")
 
 ### With Debug Logging
 
-```python
+```rust
 credential, sub_id, rg = get_azure_auth(debug=True)
 # Outputs debug info to stderr
 ```
 
 ### With Azure SDK
 
-```python
+```rust
 from claude.tools.amplihack.remote.auth import get_azure_auth
 from azure.mgmt.compute import ComputeManagementClient
 
@@ -49,7 +49,7 @@ for vm in compute_client.virtual_machines.list_all():
 
 ### Using Authenticator Class
 
-```python
+```rust
 from claude.tools.amplihack.remote.auth import AzureAuthenticator
 
 auth = AzureAuthenticator(debug=True)
@@ -123,7 +123,7 @@ uv pip install azure-identity azure-mgmt-compute azure-mgmt-network azure-mgmt-r
 
 ### With Remote Executor
 
-```python
+```rust
 from claude.tools.amplihack.remote.auth import get_azure_auth
 from claude.tools.amplihack.remote.executor import RemoteExecutor
 
@@ -141,7 +141,7 @@ print(result.stdout)
 
 ### With Orchestrator
 
-```python
+```rust
 from claude.tools.amplihack.remote.auth import get_azure_auth
 from claude.tools.amplihack.remote.orchestrator import RemoteOrchestrator
 

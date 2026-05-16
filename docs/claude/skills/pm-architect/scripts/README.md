@@ -233,7 +233,7 @@ No other external dependencies - standard library only.
 
 When Claude uses the pm-architect skill, it calls these scripts via the Bash tool:
 
-```python
+```rust
 # Example: Claude analyzes backlog
 result = bash("python .claude/skills/pm-architect/scripts/analyze_backlog.py")
 recommendations = json.loads(result)

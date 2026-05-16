@@ -15,7 +15,7 @@ Code context injection enriches memory retrieval by automatically including info
 
 Added `include_code_context` parameter to `RetrievalQuery`:
 
-```python
+```rust
 @dataclass
 class RetrievalQuery:
     """Query to retrieve memories.
@@ -47,7 +47,7 @@ The enrichment process:
 4. **Format context**: Convert code information to LLM-readable format
 5. **Add to metadata**: Inject `code_context` key into memory metadata
 
-```python
+```rust
 async def _enrich_with_code_context(
     self, memories: list[MemoryEntry]
 ) -> list[MemoryEntry]:
@@ -94,7 +94,7 @@ Code context is formatted as markdown-style text for LLM consumption:
 
 Added public accessor for code graph:
 
-```python
+```rust
 def get_code_graph(self) -> KuzuCodeGraph | None:
     """Get code graph instance for querying code-memory relationships.
 
@@ -114,9 +114,9 @@ def get_code_graph(self) -> KuzuCodeGraph | None:
 
 ### Basic Usage
 
-```python
-from amplihack.memory.coordinator import MemoryCoordinator, RetrievalQuery
-from amplihack.memory.types import MemoryType
+```rust
+// use amplihack_memory::coordinator:: MemoryCoordinator, RetrievalQuery
+// use amplihack_memory::types:: MemoryType
 
 coordinator = MemoryCoordinator()
 
@@ -143,7 +143,7 @@ for memory in memories:
 
 ### Integration with Agent Context Building
 
-```python
+```rust
 # In agent initialization or context building
 query = RetrievalQuery(
     query_text="current task context",
@@ -191,7 +191,7 @@ for memory in relevant_memories:
 
 ### Benchmarks
 
-```python
+```rust
 import time
 
 # Store some memories
@@ -231,7 +231,7 @@ print(f"Retrieval with code context: {elapsed_ms:.1f}ms")
 
 Extend memory hooks to automatically inject code context:
 
-```python
+```rust
 # In PreRequest hook or agent initialization
 def inject_memory_context(agent_context: dict) -> dict:
     """Inject memories with code context into agent context."""
@@ -250,7 +250,7 @@ def inject_memory_context(agent_context: dict) -> dict:
 
 Add code overview to session initialization:
 
-```python
+```rust
 # In SessionStart hook
 async def load_code_overview(session: Session):
     """Load code structure overview into session context."""
@@ -266,7 +266,7 @@ async def load_code_overview(session: Session):
 
 Hook into edit operations to inject related memories:
 
-```python
+```rust
 # Before file edit
 def get_file_context(file_path: str) -> dict:
     """Get memories and code context for file."""
@@ -365,7 +365,7 @@ amplihack memory blarify /path/to/codebase
 
 # Check code graph stats
 python -c "
-from amplihack.memory.backends import create_backend
+// use amplihack_memory::backends:: create_backend
 backend = create_backend('kuzu')
 code_graph = backend.get_code_graph()
 if code_graph:

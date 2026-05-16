@@ -36,7 +36,7 @@ Total implementation: ~1,143 lines of production code
 
 **Returns:**
 
-```python
+```rust
 {
     "versions": List[ProcessResult],
     "comparison": ProcessResult,
@@ -86,7 +86,7 @@ Total implementation: ~1,143 lines of production code
 
 **Returns:**
 
-```python
+```rust
 {
     "rounds": List[dict],
     "positions": Dict[str, List[str]],
@@ -139,7 +139,7 @@ Total implementation: ~1,143 lines of production code
 
 **Returns:**
 
-```python
+```rust
 {
     "result": ProcessResult,
     "cascade_level": str,  # "primary", "secondary", "tertiary", or "failed"
@@ -205,7 +205,7 @@ Each pattern is testable with simple examples:
 
 ### N-Version Test:
 
-```python
+```rust
 result = run_n_version(
     task_prompt="Implement password hashing function",
     n=3,
@@ -218,7 +218,7 @@ assert len(result['versions']) == 3
 
 ### Debate Test:
 
-```python
+```rust
 result = run_debate(
     decision_question="Should we use PostgreSQL or Redis?",
     perspectives=["security", "performance", "simplicity"],
@@ -231,7 +231,7 @@ assert len(result['rounds']) == 3
 
 ### Cascade Test:
 
-```python
+```rust
 result = run_cascade(
     task_prompt="Generate API documentation",
     timeout_strategy="balanced"
@@ -296,7 +296,7 @@ Every pattern creates a session with logs because:
 
 ### Adding New N-Version Profiles:
 
-```python
+```rust
 custom_profiles = [
     {
         "name": "security_focused",
@@ -309,14 +309,14 @@ run_n_version(task, diversity_profiles=custom_profiles)
 
 ### Adding New Debate Perspectives:
 
-```python
+```rust
 # Patterns auto-create profiles for unknown perspectives
 run_debate(question, perspectives=["security", "legal", "ethical"])
 ```
 
 ### Adding New Cascade Strategies:
 
-```python
+```rust
 custom_constraints = {
     "primary": "with full GPU acceleration",
     "secondary": "with CPU-only processing",

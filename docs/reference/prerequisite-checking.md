@@ -25,7 +25,7 @@ Main class that orchestrates prerequisite verification and installation.
 
 Unified dataclass representing the outcome of an installation attempt.
 
-```python
+```rust
 @dataclass
 class InstallationResult:
     """Result of an installation attempt."""
@@ -51,7 +51,7 @@ class InstallationResult:
 
 All subprocess operations use comprehensive exception handling:
 
-```python
+```rust
 def check_copilot() -> bool:
     """Check if Copilot CLI is installed.
 
@@ -75,7 +75,7 @@ On Windows Subsystem for Linux (WSL), attempting to execute a non-existent comma
 
 Automatic OS detection with WSL support:
 
-```python
+```rust
 class Platform(str, Enum):
     MACOS = "macos"
     LINUX = "linux"
@@ -113,7 +113,7 @@ User approval workflow:
 4. **Audit**: Log all attempts (success or failure)
 5. **Verify**: Optional post-install verification
 
-```python
+```rust
 # Example approval prompt
 Do you want to proceed with installing node? [y/N]: y
 
@@ -152,7 +152,7 @@ All installation attempts logged to `.claude/runtime/logs/installation_audit.jso
 
 ### Example Error Handling
 
-```python
+```rust
 # Safe subprocess wrapper
 def safe_subprocess_call(cmd: list[str], context: str, timeout: int = 30):
     """Safely execute subprocess with comprehensive error handling."""
@@ -178,8 +178,8 @@ def safe_subprocess_call(cmd: list[str], context: str, timeout: int = 30):
 
 ### Check Prerequisites
 
-```python
-from amplihack.utils.prerequisites import check_prerequisites
+```rust
+// use amplihack_utils::prerequisites::{ check_prerequisites
 
 # Non-interactive check
 success = check_prerequisites(interactive=False)
@@ -190,8 +190,8 @@ if not success:
 
 ### Interactive Installation
 
-```python
-from amplihack.utils.prerequisites import check_prerequisites
+```rust
+// use amplihack_utils::prerequisites::{ check_prerequisites
 
 # Interactive with prompts
 success = check_prerequisites(interactive=True)
@@ -200,8 +200,8 @@ success = check_prerequisites(interactive=True)
 
 ### Check Specific Tool
 
-```python
-from amplihack.launcher.copilot import check_copilot
+```rust
+// use amplihack_launcher::copilot:: check_copilot
 
 if check_copilot():
     print("Copilot CLI is installed")
@@ -215,8 +215,8 @@ else:
 
 All launchers check prerequisites before execution:
 
-```python
-from amplihack.utils.prerequisites import check_prerequisites
+```rust
+// use amplihack_utils::prerequisites::{ check_prerequisites
 
 def launch():
     if not check_prerequisites(interactive=True):
@@ -228,8 +228,8 @@ def launch():
 
 Specific copilot check with auto-install:
 
-```python
-from amplihack.launcher.copilot import check_copilot, install_copilot
+```rust
+// use amplihack_launcher::copilot:: check_copilot, install_copilot
 
 if not check_copilot():
     print("Copilot CLI not found. Auto-installing...")
@@ -243,7 +243,7 @@ if not check_copilot():
 
 Comprehensive tests for all exception paths:
 
-```python
+```rust
 # tests/launcher/test_copilot.py
 class TestCheckCopilot:
     def test_check_copilot_installed(self, mock_run):

@@ -478,7 +478,7 @@ Projects can add custom agents without modifying the plugin:
 
 Custom agents coexist with plugin agents:
 
-```python
+```rust
 # Available agents in this project:
 available = plugin_agents + custom_agents
 # = [architect, builder, reviewer, ...] + [domain-expert, legacy-system-specialist]

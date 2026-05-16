@@ -15,8 +15,8 @@ Complete reference for `amplihack.tracing.token_sanitizer` module.
 
 **Module**: `amplihack.tracing.token_sanitizer`
 
-```python
-from amplihack.tracing.token_sanitizer import TokenSanitizer
+```rust
+// use amplihack_tracing::token_sanitizer::{ TokenSanitizer
 
 sanitizer = TokenSanitizer()
 ```
@@ -33,7 +33,7 @@ TokenSanitizer detects and redacts sensitive tokens from strings and data struct
 
 ### Constructor
 
-```python
+```rust
 TokenSanitizer()
 ```
 
@@ -45,8 +45,8 @@ Initializes TokenSanitizer with compiled regex patterns for all supported token 
 
 **Example**:
 
-```python
-from amplihack.tracing.token_sanitizer import TokenSanitizer
+```rust
+// use amplihack_tracing::token_sanitizer::{ TokenSanitizer
 
 sanitizer = TokenSanitizer()
 ```
@@ -59,7 +59,7 @@ sanitizer = TokenSanitizer()
 
 ### contains_token
 
-```python
+```rust
 sanitizer.contains_token(text: str) -> bool
 ```
 
@@ -78,7 +78,7 @@ Check if text contains any sensitive tokens.
 
 **Example**:
 
-```python
+```rust
 sanitizer = TokenSanitizer()
 
 # Check before expensive sanitization
@@ -100,7 +100,7 @@ print(sanitizer.contains_token("no tokens here"))  # False
 
 ### sanitize
 
-```python
+```rust
 sanitizer.sanitize(data: Any) -> Any
 ```
 
@@ -122,7 +122,7 @@ Sanitize tokens from data structure. Recursively processes strings, dicts, and l
 
 **String sanitization**:
 
-```python
+```rust
 sanitizer = TokenSanitizer()
 
 result = sanitizer.sanitize("Token: gho_abc123xyz")
@@ -132,7 +132,7 @@ print(result)
 
 **Dictionary sanitization**:
 
-```python
+```rust
 data = {
     "github_token": "gho_1234567890",
     "openai_key": "sk-proj-abc123",
@@ -150,7 +150,7 @@ print(result)
 
 **List sanitization**:
 
-```python
+```rust
 logs = [
     "2024-01-14 INFO Server started",
     "2024-01-14 DEBUG Token: gho_abc123",
@@ -163,7 +163,7 @@ sanitized_logs = sanitizer.sanitize(logs)
 
 **Nested structure sanitization**:
 
-```python
+```rust
 config = {
     "auth": {
         "github": {"token": "gho_abc123"},
@@ -203,7 +203,7 @@ TokenSanitizer uses compiled regex patterns to detect tokens. All patterns are i
 
 **Examples**:
 
-```python
+```rust
 # Detected
 "gho_1234567890abcdefghij"  # OAuth token
 "ghp_1234567890abcdefghij"  # Personal access token
@@ -226,7 +226,7 @@ TokenSanitizer uses compiled regex patterns to detect tokens. All patterns are i
 
 **Examples**:
 
-```python
+```rust
 # Detected
 "sk-1234567890abcdefghij"       # Standard key
 "sk-proj-1234567890abcdefghij"  # Project key
@@ -246,7 +246,7 @@ TokenSanitizer uses compiled regex patterns to detect tokens. All patterns are i
 
 **Examples**:
 
-```python
+```rust
 # Detected
 "sk-ant-1234567890abcdefghij"
 
@@ -263,7 +263,7 @@ TokenSanitizer uses compiled regex patterns to detect tokens. All patterns are i
 
 **Examples**:
 
-```python
+```rust
 # Detected
 "Bearer abc123xyz"
 "Authorization: Bearer longtoken123"
@@ -281,7 +281,7 @@ TokenSanitizer uses compiled regex patterns to detect tokens. All patterns are i
 
 **Examples**:
 
-```python
+```rust
 # Detected (header.payload.signature)
 "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
 
@@ -298,7 +298,7 @@ TokenSanitizer uses compiled regex patterns to detect tokens. All patterns are i
 
 **Examples**:
 
-```python
+```rust
 # Detected
 "azure-key-1234567890abcdefghij"
 
@@ -315,7 +315,7 @@ TokenSanitizer uses compiled regex patterns to detect tokens. All patterns are i
 
 **Examples**:
 
-```python
+```rust
 # Detected
 "DefaultEndpointsProtocol=https;AccountName=myaccount;AccountKey=abc123==;EndpointSuffix=core.windows.net"
 
@@ -341,7 +341,7 @@ All patterns enforce length limits to prevent matching entire files:
 
 Patterns match tokens even when embedded in text:
 
-```python
+```rust
 # All detected
 "Token: gho_abc123 End"      # Middle of string
 "gho_abc123"                 # Entire string
@@ -372,7 +372,7 @@ Patterns match tokens even when embedded in text:
 
 Typical performance benchmarks:
 
-```python
+```rust
 # Simple string: 100 iterations
 Average: 0.8ms per sanitization
 
@@ -405,7 +405,7 @@ TokenSanitizer is thread-safe for all operations:
 
 Safe to share one instance across threads:
 
-```python
+```rust
 # Module-level instance (shared)
 sanitizer = TokenSanitizer()
 

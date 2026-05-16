@@ -22,7 +22,7 @@ because the historical value $1.2M matches an "incorrect pattern." This is a
 The grader checked for incorrect patterns WITHOUT first verifying that the
 correct answer was present:
 
-```python
+```rust
 # BUGGY: penalizes even when correct answer IS present
 if any(pattern in answer.lower() for pattern in incorrect_patterns):
     score = 0.0
@@ -32,7 +32,7 @@ if any(pattern in answer.lower() for pattern in incorrect_patterns):
 
 Only apply incorrect pattern penalties when the correct keywords are NOT present:
 
-```python
+```rust
 def _deterministic_grade(answer: str, rubric: GradingRubric) -> float:
     answer_lower = answer.lower()
 

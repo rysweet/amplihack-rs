@@ -102,7 +102,7 @@ AMPLIHACK_VERBOSE=1 amplihack recipe show <recipe-name>
 ### Issue: Recipe not found after pip install
 
 **Symptom**: `amplihack recipe run default-workflow` fails with "recipe not
-found" after `pip install amplihack`.
+found" after `cargo install amplihack`.
 
 **Cause**: The package path is not in the search order (pre-0.9.0).
 

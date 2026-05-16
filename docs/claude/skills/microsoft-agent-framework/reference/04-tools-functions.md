@@ -17,7 +17,7 @@ Tools allow agents to perform actions beyond text generation. They enable agents
 
 Use the `@function_tool` decorator to convert Python functions into agent tools:
 
-```python
+```rust
 from agents_framework import function_tool
 
 @function_tool
@@ -72,7 +72,7 @@ var agent = new Agent(
 
 For I/O-bound operations:
 
-```python
+```rust
 @function_tool
 async def fetch_url(url: str) -> str:
     """Fetch content from a URL."""
@@ -85,7 +85,7 @@ async def fetch_url(url: str) -> str:
 
 Use Pydantic models for structured inputs/outputs:
 
-```python
+```rust
 from pydantic import BaseModel
 
 class SearchQuery(BaseModel):
@@ -111,7 +111,7 @@ def search_documents(query: SearchQuery) -> list[SearchResult]:
 
 Agent decides when to use tools based on user message:
 
-```python
+```rust
 agent = Agent(
     model=model,
     instructions="You are a helpful assistant with access to tools",
@@ -127,7 +127,7 @@ response = await agent.run(message="What's the weather in Seattle?")
 
 Require agent to use a specific tool:
 
-```python
+```rust
 response = await agent.run(
     message="Get weather",
     tool_choice={"type": "function", "function": {"name": "get_weather"}}
@@ -138,7 +138,7 @@ response = await agent.run(
 
 See which tools were called:
 
-```python
+```rust
 response = await agent.run(message="What's 23 * 45 and the weather in NYC?")
 
 for tool_call in response.tool_calls:
@@ -151,7 +151,7 @@ for tool_call in response.tool_calls:
 
 Execute multiple tools concurrently:
 
-```python
+```rust
 agent = Agent(
     model=model,
     tools=[get_weather, get_news, get_stock_price],
@@ -171,7 +171,7 @@ response = await agent.run(
 
 Control which tools can be called:
 
-```python
+```rust
 from agents_framework import ToolAuthorizer
 
 class CustomAuthorizer(ToolAuthorizer):
@@ -193,7 +193,7 @@ agent = Agent(
 
 Require human approval for sensitive operations:
 
-```python
+```rust
 from agents_framework import HumanApproval
 
 @function_tool
@@ -229,7 +229,7 @@ var deleteWithApproval = new HumanApproval(
 
 Handle tool failures gracefully:
 
-```python
+```rust
 @function_tool
 def risky_operation(param: str) -> str:
     """Operation that might fail."""
@@ -253,7 +253,7 @@ agent = Agent(
 
 Set execution time limits:
 
-```python
+```rust
 from agents_framework import ToolConfig
 
 @function_tool
@@ -276,7 +276,7 @@ agent = Agent(
 
 Prevent excessive tool calls:
 
-```python
+```rust
 from agents_framework import RateLimiter
 
 rate_limiter = RateLimiter(
@@ -295,7 +295,7 @@ def api_call(endpoint: str) -> str:
 
 ### Data Retrieval Tools
 
-```python
+```rust
 @function_tool
 def query_database(sql: str) -> list[dict]:
     """Execute SQL query and return results."""
@@ -318,7 +318,7 @@ def search_knowledge_base(query: str, top_k: int = 5) -> list[dict]:
 
 ### Computation Tools
 
-```python
+```rust
 @function_tool
 def calculate(expression: str) -> float:
     """Evaluate mathematical expression."""
@@ -336,7 +336,7 @@ def analyze_data(data: list[float]) -> dict:
 
 ### External Integration Tools
 
-```python
+```rust
 @function_tool
 async def send_email(to: str, subject: str, body: str) -> str:
     """Send email via SMTP."""
@@ -363,7 +363,7 @@ async def post_to_slack(channel: str, message: str) -> str:
 
 ### File System Tools
 
-```python
+```rust
 @function_tool
 def read_file(path: str) -> str:
     """Read file contents."""
@@ -385,7 +385,7 @@ def list_directory(path: str) -> list[str]:
 
 ### Code Execution Tools
 
-```python
+```rust
 @function_tool
 def run_python_code(code: str) -> str:
     """Execute Python code in sandboxed environment."""
@@ -410,7 +410,7 @@ def run_shell_command(command: str) -> str:
 
 ### 1. Clear, Descriptive Names
 
-```python
+```rust
 # Good
 @function_tool
 def get_customer_order_history(customer_id: str) -> list[dict]:
@@ -426,7 +426,7 @@ def get_data(id: str) -> list:
 
 ### 2. Comprehensive Docstrings
 
-```python
+```rust
 @function_tool
 def search_products(
     query: str,
@@ -461,7 +461,7 @@ def search_products(
 
 ### 3. Type Safety
 
-```python
+```rust
 from typing import Literal
 
 @function_tool
@@ -476,7 +476,7 @@ def set_thermostat(
 
 ### 4. Error Messages
 
-```python
+```rust
 @function_tool
 def get_user_profile(user_id: str) -> dict:
     """Retrieve user profile."""
@@ -493,7 +493,7 @@ def get_user_profile(user_id: str) -> dict:
 
 ### 5. Idempotency
 
-```python
+```rust
 @function_tool
 def create_or_update_record(record_id: str, data: dict) -> str:
     """Create new record or update existing one."""
@@ -507,7 +507,7 @@ def create_or_update_record(record_id: str, data: dict) -> str:
 
 ## Testing Tools
 
-```python
+```rust
 import pytest
 
 @function_tool
@@ -531,7 +531,7 @@ async def test_tool_in_agent():
 
 ### Caching Tool Results
 
-```python
+```rust
 from functools import lru_cache
 
 @function_tool
@@ -543,7 +543,7 @@ def expensive_lookup(key: str) -> dict:
 
 ### Batch Tool Operations
 
-```python
+```rust
 @function_tool
 def batch_lookup(keys: list[str]) -> list[dict]:
     """Lookup multiple keys at once (more efficient)."""
@@ -552,7 +552,7 @@ def batch_lookup(keys: list[str]) -> list[dict]:
 
 ### Async for I/O
 
-```python
+```rust
 @function_tool
 async def fetch_multiple_urls(urls: list[str]) -> list[str]:
     """Fetch multiple URLs concurrently."""

@@ -36,11 +36,11 @@ Approximately 20 minutes.
 
 Create `tutorial_learning_agent.py`:
 
-```python
+```rust
 import asyncio
 from pathlib import Path
 
-from amplihack.agents.goal_seeking.learning_agent import LearningAgent
+// use amplihack_domain_agents:: LearningAgent
 
 
 CONTENT = """
@@ -114,7 +114,7 @@ The important point is that callers still use the old method name. The refactor 
 
 The call to:
 
-```python
+```rust
 await agent.answer_question("What version shipped in February 2026?")
 ```
 
@@ -131,7 +131,7 @@ For a direct recall question, temporal code generation is usually not involved.
 
 The call to:
 
-```python
+```rust
 await agent.answer_question_agentic(
     "How did the Project Atlas version change from January 2026 to March 2026?"
 )

@@ -118,8 +118,8 @@ Find relevant documentation:
 
 ### Import Documentation
 
-```python
-from amplihack.memory.neo4j import Neo4jConnector, DocGraphIntegration
+```rust
+// use amplihack_memory::neo4j::{ Neo4jConnector, DocGraphIntegration
 
 # Connect to Neo4j
 connector = Neo4jConnector()
@@ -144,7 +144,7 @@ print(f"Imported: {stats}")
 
 ### Link to Code
 
-```python
+```rust
 # Link documentation to code nodes
 link_count = doc_integration.link_docs_to_code(project_id="my-project")
 print(f"Created {link_count} doc-code links")
@@ -152,7 +152,7 @@ print(f"Created {link_count} doc-code links")
 
 ### Query Documentation
 
-```python
+```rust
 # Search for relevant documentation
 results = doc_integration.query_relevant_docs(
     query_text="neo4j memory",
@@ -165,7 +165,7 @@ for doc in results:
 
 ### Get Statistics
 
-```python
+```rust
 # Get documentation graph statistics
 stats = doc_integration.get_doc_stats()
 print(f"Total documents: {stats['doc_count']}")
@@ -240,7 +240,7 @@ Bold text is treated as important concepts:
 Code block languages become concepts:
 
 ````markdown
-```python
+```rust
 def example():
     pass
 ```
@@ -318,9 +318,9 @@ All tests PASSED ✓
 
 Documentation graph integrates with blarify code graph:
 
-```python
+```rust
 # Import code graph first (from blarify)
-from amplihack.memory.neo4j import BlarifyIntegration
+// use amplihack_memory::neo4j::{ BlarifyIntegration
 
 blarify = BlarifyIntegration(connector)
 blarify.import_blarify_output(Path("code_graph.json"))
@@ -342,7 +342,7 @@ This creates bidirectional links:
 
 Documentation graph integrates with agent memories:
 
-```python
+```rust
 # Import documentation
 doc_integration.import_documentation(Path("docs/"))
 
@@ -426,7 +426,7 @@ All tests use REAL markdown files from the project (not mocks or stubs).
 
 When an agent encounters a problem:
 
-```python
+```rust
 # Find relevant documentation
 docs = doc_integration.query_relevant_docs("circuit breaker pattern")
 
@@ -440,7 +440,7 @@ for doc in docs:
 
 When generating code:
 
-```python
+```rust
 # Find documentation for a concept
 docs = doc_integration.query_relevant_docs("authentication")
 
@@ -454,7 +454,7 @@ for doc in docs:
 
 When consolidating memories:
 
-```python
+```rust
 # Link memories to official documentation
 link_count = doc_integration.link_docs_to_memories()
 
@@ -526,13 +526,13 @@ All operations remain sub-second.
 docker-compose -f docker/docker-compose.neo4j.yml up -d
 
 # Or use the ensure function
-from amplihack.memory.neo4j import ensure_neo4j_running
+// use amplihack_memory::neo4j::{ ensure_neo4j_running
 ensure_neo4j_running(blocking=True)
 ```
 
 ### Import Errors
 
-```python
+```rust
 # Check if file is valid markdown
 assert file_path.suffix.lower() in ['.md', '.markdown']
 
@@ -547,7 +547,7 @@ assert connector.connect()
 
 Ensure code graph is imported first:
 
-```python
+```rust
 # Import code graph
 blarify = BlarifyIntegration(connector)
 blarify.import_blarify_output(blarify_json_path)

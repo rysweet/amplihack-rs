@@ -76,7 +76,7 @@ When this command is invoked, execute the following workflow systematically:
 
 Extract and validate the three required arguments:
 
-```python
+```rust
 # Parse arguments from command invocation
 skill_name = args[0]  # e.g., "data-transformer"
 skill_type = args[1]  # e.g., "agent"
@@ -285,7 +285,7 @@ optional:
 
 1. Determine output path:
 
-   ```python
+   ```rust
    output_paths = {
        "skill": ".claude/skills/{skill_name}/SKILL.md",
        "agent": ".claude/agents/amplihack/specialized/{skill_name}.md",

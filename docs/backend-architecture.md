@@ -41,8 +41,8 @@ Wraps the existing MemoryDatabase implementation.
 
 **Usage:**
 
-```python
-from amplihack.memory.backends import SQLiteBackend
+```rust
+// use amplihack_memory::backends:: SQLiteBackend
 
 backend = SQLiteBackend(db_path="/path/to/memory.db")
 coordinator = MemoryCoordinator(backend=backend)
@@ -78,8 +78,8 @@ Edges:
 
 **Usage:**
 
-```python
-from amplihack.memory.backends import KuzuBackend
+```rust
+// use amplihack_memory::backends:: KuzuBackend
 
 backend = KuzuBackend(db_path="/path/to/memory_kuzu/")
 coordinator = MemoryCoordinator(backend=backend)
@@ -103,7 +103,7 @@ The `create_backend()` factory function handles backend selection:
 
 **Examples:**
 
-```python
+```rust
 # Use default backend (Kùzu or SQLite)
 coordinator = MemoryCoordinator()
 
@@ -112,7 +112,7 @@ coordinator = MemoryCoordinator(backend_type="sqlite")
 coordinator = MemoryCoordinator(backend_type="kuzu")
 
 # Custom backend instance
-from amplihack.memory.backends import SQLiteBackend
+// use amplihack_memory::backends:: SQLiteBackend
 backend = SQLiteBackend(db_path="/tmp/memory.db")
 coordinator = MemoryCoordinator(backend=backend)
 
@@ -128,8 +128,8 @@ The `MemoryCoordinator` now accepts a `backend` parameter instead of `database`:
 
 **Old API (deprecated but still works):**
 
-```python
-from amplihack.memory.database import MemoryDatabase
+```rust
+// use amplihack_memory::database:: MemoryDatabase
 
 database = MemoryDatabase()
 coordinator = MemoryCoordinator(database=database)
@@ -137,7 +137,7 @@ coordinator = MemoryCoordinator(database=database)
 
 **New API (recommended):**
 
-```python
+```rust
 coordinator = MemoryCoordinator(backend_type="sqlite")
 # or
 coordinator = MemoryCoordinator()  # Uses default backend
@@ -147,7 +147,7 @@ coordinator = MemoryCoordinator()  # Uses default backend
 
 - `get_backend_info()`: Returns backend capabilities and information
 
-```python
+```rust
 info = coordinator.get_backend_info()
 # {
 #     "backend_name": "sqlite",
@@ -188,7 +188,7 @@ All backends must meet these performance requirements:
 
 No changes required! The coordinator still works with the old `database` parameter:
 
-```python
+```rust
 # Old code continues to work
 database = MemoryDatabase()
 coordinator = MemoryCoordinator(database=database)
@@ -198,7 +198,7 @@ coordinator = MemoryCoordinator(database=database)
 
 Use the new backend-aware API:
 
-```python
+```rust
 # Simple - use default backend
 coordinator = MemoryCoordinator()
 

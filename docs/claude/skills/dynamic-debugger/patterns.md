@@ -10,7 +10,7 @@ Production-ready debugging patterns, best practices, and common pitfalls fer all
 
 **Solution:** Set strategic breakpoints at checkpoints and inspect state
 
-```python
+```rust
 # Python example
 async def process_pipeline(data):
     # Checkpoint 1: Input validation
@@ -246,7 +246,7 @@ public:
 
 **Solution:** Track user input through entire flow with breakpoints
 
-```python
+```rust
 # Python example
 def create_user(username: str, email: str):
     # Checkpoint 1: Raw input
@@ -306,7 +306,7 @@ async function authenticateUser(credentials) {
 
 **Pattern 9: Coroutine State Inspection**
 
-```python
+```rust
 import asyncio
 
 async def fetch_data(url):

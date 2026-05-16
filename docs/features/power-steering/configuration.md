@@ -423,9 +423,9 @@ grep -i "never.*merge.*without.*permission" .claude/context/USER_PREFERENCES.md
 
 Run Power-Steering manually:
 
-```python
+```rust
 # In Python REPL
-from amplihack.hooks.power_steering_checker import PowerSteeringChecker
+// use amplihack_hooks::power_steering_checker::{ PowerSteeringChecker
 
 checker = PowerSteeringChecker()
 result = checker.check_consideration("ci_status")

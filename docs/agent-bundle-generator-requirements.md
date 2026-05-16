@@ -20,7 +20,7 @@ As a developer, I want to describe an agentic behavior in natural language so th
   - **Intent classification**: Map to predefined categories (monitoring, testing, development, etc.)
   - **Confidence scoring**: Assign 0-100% confidence to extracted intents
 - System SHALL handle ambiguous prompts through clarification dialogue:
-  ```python
+  ```rust
   # Example clarification flow
   if confidence_score < 70:
       options = suggest_similar_intents(parsed_prompt)
@@ -51,7 +51,7 @@ As a developer, I want to describe an agentic behavior in natural language so th
     - bandit
   ```
 - System SHALL create custom prompts using template substitution:
-  ```python
+  ```rust
   template = load_template(agent_type)
   prompt = template.substitute(
       domain=extracted_domain,
@@ -94,7 +94,7 @@ As a developer, I want to describe an agentic behavior in natural language so th
 
 - System SHALL include native trace logging capabilities:
 
-  ```python
+  ```rust
   # Native trace logging integration
   import os
   os.environ["AMPLIHACK_TRACE_LOGGING"] = "true"
@@ -106,7 +106,7 @@ As a developer, I want to describe an agentic behavior in natural language so th
 
 - System SHALL integrate with Claude Code SDK:
 
-  ```python
+  ```rust
   # SDK integration pattern
   from claude_code import Client
 
@@ -154,7 +154,7 @@ As a developer, I want to describe an agentic behavior in natural language so th
 
 - NFR-4: Secret protection mechanisms:
 
-  ```python
+  ```rust
   # Automatic secret detection and removal
   SECRET_PATTERNS = [
       r'api[_-]?key["\']?\s*[:=]\s*["\']?[\w-]+',
@@ -178,7 +178,7 @@ As a developer, I want to describe an agentic behavior in natural language so th
   safety check --json bundle/requirements.txt
   ```
 - NFR-6: Prompt injection prevention:
-  ```python
+  ```rust
   # Input sanitization
   def sanitize_prompt(prompt: str) -> str:
       # Remove command injection attempts

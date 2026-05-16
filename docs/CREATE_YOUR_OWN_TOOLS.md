@@ -202,7 +202,7 @@ Create executable code for complex processing.
 
 **Structure:**
 
-```python
+```rust
 """
 Your tool description.
 """
@@ -305,7 +305,7 @@ All tools should adhere to amplihack's philosophy (see `~/.amplihack/.claude/con
 
 ❌ **Don't do this:**
 
-```python
+```rust
 try:
     result = process()
 except:
@@ -314,7 +314,7 @@ except:
 
 ✅ **Do this:**
 
-```python
+```rust
 try:
     result = process()
 except ProcessingError as e:
@@ -326,7 +326,7 @@ except ProcessingError as e:
 
 ✅ **Always provide feedback:**
 
-```python
+```rust
 logger.info(f"Found {len(files)} files to process")
 for file in files[:5]:  # Show first 5
     logger.info(f"  • {file.name}")
@@ -338,7 +338,7 @@ if len(files) > 5:
 
 ✅ **Validate early:**
 
-```python
+```rust
 def generate_docs(source_dir: Path, output_dir: Path) -> None:
     if not source_dir.exists():
         raise ValueError(f"Source directory does not exist: {source_dir}")

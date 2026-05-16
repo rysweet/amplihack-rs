@@ -68,7 +68,7 @@ python .claude/tools/ci_workflow.py poll-status --json
 
 ## Python API Usage
 
-```python
+```rust
 from claude.tools.ci_workflow import diagnose_ci, iterate_fixes, poll_status
 
 # Run diagnostics

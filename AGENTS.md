@@ -113,7 +113,7 @@ cd /path/to/repo && amplihack recipe run smart-orchestrator \
 
 **Key points:**
 
-- `amplihack recipe run` — native Rust CLI command, no Python runtime required
+- `amplihack recipe run` — native Rust CLI command, no external runtime required
 - `-c key=value` — passes context variables to the recipe
 - The recipe runner manages its own child processes (agent sessions, bash steps) as direct subprocesses
 - Streams recipe-runner stderr live so you see nested step activity

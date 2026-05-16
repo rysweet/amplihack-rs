@@ -6,8 +6,8 @@
 
 ## Import Documentation
 
-```python
-from amplihack.memory.neo4j import Neo4jConnector, DocGraphIntegration
+```rust
+// use amplihack_memory::neo4j::{ Neo4jConnector, DocGraphIntegration
 from pathlib import Path
 
 # Setup
@@ -31,7 +31,7 @@ for doc_path in Path("docs/").glob("**/*.md"):
 
 ## Link to Code
 
-```python
+```rust
 # Link documentation to code nodes (from blarify)
 link_count = doc_integration.link_docs_to_code()
 print(f"Created {link_count} links")
@@ -41,7 +41,7 @@ print(f"Created {link_count} links")
 
 ## Query Documentation
 
-```python
+```rust
 # Search for relevant docs
 results = doc_integration.query_relevant_docs("authentication", limit=5)
 
@@ -97,7 +97,7 @@ From each markdown file:
 
 ### Find documentation about a topic
 
-```python
+```rust
 docs = doc_integration.query_relevant_docs("neo4j memory")
 ```
 
@@ -126,7 +126,7 @@ RETURN df.title, df.path
 
 ## Statistics
 
-```python
+```rust
 # Get graph statistics
 stats = doc_integration.get_doc_stats()
 print(f"Documents: {stats['doc_count']}")
@@ -153,7 +153,7 @@ file.py:42 → file.py, line 42
 
 ### With Code Graph (blarify)
 
-```python
+```rust
 # 1. Import code graph
 blarify = BlarifyIntegration(connector)
 blarify.import_blarify_output(Path("code_graph.json"))
@@ -167,7 +167,7 @@ doc_integration.link_docs_to_code()
 
 ### With Memory System
 
-```python
+```rust
 # Import docs and link to memories
 doc_integration.import_documentation(Path("docs/"))
 doc_integration.link_docs_to_memories()
@@ -217,7 +217,7 @@ python scripts/test_doc_parsing_standalone.py
 
 ### Import all project docs
 
-```python
+```rust
 from pathlib import Path
 
 # Find all markdown files
@@ -235,7 +235,7 @@ for doc_file in doc_files:
 
 ### Find documentation for current task
 
-```python
+```rust
 def get_relevant_docs(task_description: str) -> List[Dict]:
     """Find documentation relevant to a task."""
     # Extract key terms from task
@@ -254,7 +254,7 @@ def get_relevant_docs(task_description: str) -> List[Dict]:
 
 ### Update documentation graph
 
-```python
+```rust
 # Re-import changed files (idempotent)
 changed_files = get_changed_markdown_files()
 

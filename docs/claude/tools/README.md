@@ -103,7 +103,7 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 **Example**:
 
-```python
+```rust
 # Automatically triggered by Claude Code on session start
 # Injects context visible to Claude in the conversation
 ```
@@ -123,7 +123,7 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 **Example**:
 
-```python
+```rust
 # Automatically triggered on every user message
 # Ensures preferences persist across conversation turns
 ```
@@ -143,7 +143,7 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 **Example**:
 
-```python
+```rust
 # Automatically triggered after each tool use
 # Metrics saved to .claude/runtime/metrics/
 ```
@@ -164,7 +164,7 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 **Example**:
 
-```python
+```rust
 # Automatically triggered before Claude Code compacts context
 # Ensures no conversation history is lost
 ```
@@ -187,7 +187,7 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 **Example**:
 
-```python
+```rust
 # Automatically triggered when Claude tries to stop
 # Lock flag enables continuous multi-turn work
 ```
@@ -196,8 +196,8 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 All hooks inherit from `HookProcessor` which provides:
 
-```python
-from amplihack.hooks.hook_processor import HookProcessor
+```rust
+// use amplihack_hooks::hook_processor:: HookProcessor
 
 class MyHook(HookProcessor):
     def __init__(self):
@@ -231,8 +231,8 @@ Builders create structured documentation and exports from session data.
 
 **Usage**:
 
-```python
-from amplihack.builders.claude_transcript_builder import ClaudeTranscriptBuilder
+```rust
+// use amplihack_builders::claude_transcript_builder:: ClaudeTranscriptBuilder
 
 # Create builder
 builder = ClaudeTranscriptBuilder(session_id="20250105_143022")
@@ -286,8 +286,8 @@ Multi-process orchestration for parallel, sequential, and fault-tolerant executi
 
 **Usage**:
 
-```python
-from amplihack.orchestration.claude_process import ClaudeProcess
+```rust
+// use amplihack_orchestration::claude_process:: ClaudeProcess
 
 # Create process
 process = ClaudeProcess(
@@ -313,8 +313,8 @@ print(f"Output: {result.output}")
 
 #### 1. Parallel Execution
 
-```python
-from amplihack.orchestration.execution import run_parallel
+```rust
+// use amplihack_orchestration::execution:: run_parallel
 
 processes = [
     ClaudeProcess("task1", "p1", cwd, log_dir),
@@ -328,8 +328,8 @@ successful = [r for r in results if r.exit_code == 0]
 
 #### 2. Sequential Execution
 
-```python
-from amplihack.orchestration.execution import run_sequential
+```rust
+// use amplihack_orchestration::execution:: run_sequential
 
 processes = [...]
 results = run_sequential(
@@ -341,8 +341,8 @@ results = run_sequential(
 
 #### 3. Fallback Execution
 
-```python
-from amplihack.orchestration.execution import run_with_fallback
+```rust
+// use amplihack_orchestration::execution:: run_with_fallback
 
 # Try optimal approach, fall back to alternatives
 processes = [
@@ -356,8 +356,8 @@ result = run_with_fallback(processes, timeout=300)
 
 #### 4. Batched Execution
 
-```python
-from amplihack.orchestration.execution import run_batched
+```rust
+// use amplihack_orchestration::execution:: run_batched
 
 processes = [...]  # 10 processes
 results = run_batched(
@@ -377,8 +377,8 @@ Generate N independent solutions and select the best through comparison.
 
 **Usage**:
 
-```python
-from amplihack.orchestration.patterns.n_version import run_n_version
+```rust
+// use amplihack_orchestration::patterns::n_version::{ run_n_version
 
 result = run_n_version(
     prompt="Implement JWT token validation",
@@ -393,8 +393,8 @@ Structured debate with multiple perspectives to converge on best decision.
 
 **Usage**:
 
-```python
-from amplihack.orchestration.patterns.debate import run_debate
+```rust
+// use amplihack_orchestration::patterns::debate::{ run_debate
 
 result = run_debate(
     question="Should we use PostgreSQL or Redis?",
@@ -409,8 +409,8 @@ Graceful degradation: optimal → pragmatic → minimal.
 
 **Usage**:
 
-```python
-from amplihack.orchestration.patterns.cascade import run_cascade
+```rust
+// use amplihack_orchestration::patterns::cascade::{ run_cascade
 
 result = run_cascade(
     task="Generate API documentation",
@@ -430,8 +430,8 @@ Persistent memory storage for agents with session management.
 
 **Usage**:
 
-```python
-from amplihack.memory.interface import AgentMemory
+```rust
+// use amplihack_memory::interface:: AgentMemory
 
 # Create memory for agent
 memory = AgentMemory("my-agent", session_id="session_123")
@@ -511,8 +511,8 @@ Unified session lifecycle management for Claude Code workflows.
 
 **Usage**:
 
-```python
-from amplihack.session.session_toolkit import SessionToolkit
+```rust
+// use amplihack_session::session_toolkit:: SessionToolkit
 
 # Create toolkit
 toolkit = SessionToolkit(
@@ -571,8 +571,8 @@ AI-powered session analysis and improvement suggestions.
 
 **Usage**:
 
-```python
-from amplihack.reflection.reflection import process_reflection_analysis
+```rust
+// use amplihack_reflection::reflection:: process_reflection_analysis
 
 # Analyze session messages
 messages = [
@@ -635,7 +635,7 @@ if issue_number:
 
 **Usage**:
 
-```python
+```rust
 from .claude.tools.ci_status import check_ci_status
 
 # Check current branch
@@ -654,7 +654,7 @@ print(f"URL: {status['url']}")
 
 **Usage**:
 
-```python
+```rust
 from .claude.tools.github_issue import create_issue
 
 result = create_issue(
@@ -688,8 +688,8 @@ Hooks are automatically triggered by Claude Code. To enable:
 
 ### 2. Session Management
 
-```python
-from amplihack.session.session_toolkit import SessionToolkit
+```rust
+// use amplihack_session::session_toolkit:: SessionToolkit
 
 toolkit = SessionToolkit()
 
@@ -704,8 +704,8 @@ with toolkit.session("my_task") as session:
 
 ### 3. Memory Storage
 
-```python
-from amplihack.memory.interface import AgentMemory
+```rust
+// use amplihack_memory::interface:: AgentMemory
 
 with AgentMemory("my-agent") as memory:
     memory.store("config", {"theme": "dark"})
@@ -714,9 +714,9 @@ with AgentMemory("my-agent") as memory:
 
 ### 4. Orchestration
 
-```python
-from amplihack.orchestration.claude_process import ClaudeProcess
-from amplihack.orchestration.execution import run_parallel
+```rust
+// use amplihack_orchestration::claude_process:: ClaudeProcess
+// use amplihack_orchestration::execution:: run_parallel
 
 processes = [
     ClaudeProcess("analyze security", "p1", cwd, log_dir),
@@ -731,12 +731,12 @@ results = run_parallel(processes, max_workers=3)
 
 ### Complete Workflow Example
 
-```python
+```rust
 from pathlib import Path
-from amplihack.session.session_toolkit import SessionToolkit
-from amplihack.memory.interface import AgentMemory
-from amplihack.orchestration.claude_process import ClaudeProcess
-from amplihack.orchestration.execution import run_parallel
+// use amplihack_session::session_toolkit:: SessionToolkit
+// use amplihack_memory::interface:: AgentMemory
+// use amplihack_orchestration::claude_process:: ClaudeProcess
+// use amplihack_orchestration::execution:: run_parallel
 
 # Initialize components
 toolkit = SessionToolkit()
@@ -786,8 +786,8 @@ with toolkit.session("comprehensive_analysis") as session:
 
 ### Custom Hook Example
 
-```python
-from amplihack.hooks.hook_processor import HookProcessor
+```rust
+// use amplihack_hooks::hook_processor:: HookProcessor
 from typing import Any, Dict
 
 class CustomHook(HookProcessor):

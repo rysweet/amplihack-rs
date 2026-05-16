@@ -26,7 +26,7 @@ When pre-commit fails:
 
 Execute in parallel:
 
-```python
+```bash
 [
     bash("pre-commit run --all-files --verbose"),
     bash("git status --porcelain"),
@@ -40,16 +40,16 @@ Execute in parallel:
 Categorize failures:
 
 1. **Formatting Issues** (auto-fixable)
-   - prettier, black, isort failures
+   - prettier, rustfmt failures
    - Action: Let tools auto-fix
 
 2. **Linting Errors** (need manual fix)
-   - ruff, flake8, pylint failures
+   - clippy warnings/errors
    - Action: Fix code issues
 
-3. **Type Check Failures** (logic issues)
-   - mypy, pyright errors
-   - Action: Fix type annotations
+3. **Compilation Failures** (logic issues)
+   - rustc errors, type mismatches
+   - Action: Fix types and logic
 
 4. **Silent Failures** (environment issues)
    - Hooks not running
@@ -66,8 +66,8 @@ Iterate until all pass:
 ### Round 1
 
 ✗ prettier: 5 files need formatting
-✗ ruff: 3 linting errors
-✓ mypy: Type checks pass
+✗ clippy: 3 linting errors
+✓ cargo check: Compilation passes
 
 Actions:
 
@@ -77,12 +77,12 @@ Actions:
 ### Round 2
 
 ✓ prettier: All files formatted
-✗ ruff: 1 error remaining
-✓ mypy: Type checks pass
+✗ clippy: 1 error remaining
+✓ cargo check: Compilation passes
 
 Actions:
 
-1. Fixing final ruff error
+1. Fixing final clippy error
 
 ### Round 3
 
@@ -115,14 +115,15 @@ Before fixing issues:
 ls -la .git/hooks/pre-commit
 
 # Verify tools available
-which ruff prettier pyright
+which rustfmt clippy prettier cargo
 
 # Check for merge conflicts
 git status | grep -E "^UU|both modified"
 
-# Validate Python environment
-python --version
-pip list | grep -E "ruff|black|mypy"
+# Validate Rust toolchain
+rustc --version
+cargo --version
+rustup show
 ```
 
 ### 2. Automated Fixes
@@ -131,14 +132,14 @@ Let tools fix what they can:
 
 ```bash
 # Auto-fix all formatting issues
-python .claude/tools/precommit_workflow.py auto-fix
+cargo fmt --all
 
-# Or fix with specific tools only:
-python .claude/tools/precommit_workflow.py auto-fix --tools prettier,black,ruff
+# Fix clippy warnings where possible:
+cargo clippy --fix --allow-dirty
 
 # This automatically:
-# - Runs all configured formatters
-# - Applies safe fixes
+# - Runs rustfmt on all source files
+# - Applies safe clippy fixes
 # - Stages the changes
 ```
 
@@ -146,9 +147,9 @@ python .claude/tools/precommit_workflow.py auto-fix --tools prettier,black,ruff
 
 For issues requiring code changes:
 
-1. **Linting Errors**: Fix code quality issues
-2. **Type Errors**: Add/fix type annotations
-3. **Import Errors**: Resolve circular imports
+1. **Linting Errors**: Fix clippy warnings
+2. **Type Errors**: Fix type mismatches and lifetime issues
+3. **Import Errors**: Resolve module/crate dependency issues
 4. **Test Failures**: Fix breaking tests
 
 ### 4. Verification
@@ -157,12 +158,12 @@ Confirm all issues resolved:
 
 ```bash
 # Verify all pre-commit checks pass
-python .claude/tools/precommit_workflow.py verify-success
+cargo fmt --all -- --check && cargo clippy -- -D warnings && cargo test
 
 # This checks:
-# - All hooks pass
-# - Staged changes are valid
-# - No unstaged formatting changes
+# - All formatting correct
+# - No clippy warnings
+# - All tests pass
 # - Ready to commit status
 ```
 
@@ -171,10 +172,10 @@ python .claude/tools/precommit_workflow.py verify-success
 ### Pattern: Formatting Loop
 
 ```
-Symptom: prettier and black conflict
+Symptom: rustfmt and prettier conflict on generated files
 Solution:
-1. Run black first
-2. Run prettier second
+1. Run cargo fmt first
+2. Run prettier on non-Rust files second
 3. Configure compatible settings
 ```
 
@@ -195,8 +196,8 @@ Solution:
 Symptom: Works in CI but not locally
 Check: Tool versions
 Solution:
-1. Match local versions to .pre-commit-config.yaml
-2. Update virtual environment
+1. Match local toolchain to rust-toolchain.toml
+2. Update with rustup
 3. Reinstall hooks
 ```
 
@@ -241,7 +242,7 @@ If issues persist after 3 rounds:
 2. Invoke silent-failure-detector
 3. Search patterns with pattern-matcher
 4. Verify tool installations
-5. Check Python version compatibility
+5. Check Rust toolchain compatibility
 
 ## Quick Commands
 
@@ -284,15 +285,15 @@ chmod +x .git/hooks/pre-commit
 
 ### Initial State
 
-- Hooks failing: prettier, ruff, mypy
+- Hooks failing: prettier, clippy, cargo check
 - Conflicts detected: No
 - Environment valid: Yes
 
 ### Resolution Steps Taken
 
 1. ✓ Ran prettier --write (5 files fixed)
-2. ✓ Fixed ruff errors (3 issues resolved)
-3. ✓ Updated type annotations (2 functions)
+2. ✓ Fixed clippy errors (3 issues resolved)
+3. ✓ Fixed type mismatches (2 functions)
 
 ### Final State
 

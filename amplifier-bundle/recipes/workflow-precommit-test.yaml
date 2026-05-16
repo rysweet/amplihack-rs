@@ -139,7 +139,7 @@ steps:
     output: "local_testing_gate"
 
   # ==========================================================================
-  # STEP 14: BUMP VERSION IN PYPROJECT.TOML (MANDATORY - DO NOT SKIP)
+  # STEP 14: BUMP VERSION IN CARGO.TOML (MANDATORY - DO NOT SKIP)
   # Before committing, bump version to reflect change type.
   # CI will block PRs that don't bump version.
   # Git tags are auto-created on merge matching the version.

@@ -14,7 +14,7 @@ pip install mkdocs mkdocs-material
 
 Generate and deploy a documentation site in three steps:
 
-```python
+```rust
 from claude_skills.documentation_writing.github_pages import (
     SiteConfig,
     generate_site,
@@ -54,7 +54,7 @@ print(f"Deployed to: {deployment.url}")
 
 The simplest way to generate a site:
 
-```python
+```rust
 from claude_skills.documentation_writing.github_pages import SiteConfig, generate_site
 
 config = SiteConfig(
@@ -83,7 +83,7 @@ The generator automatically discovers and includes:
 
 Configure theme features and navigation:
 
-```python
+```rust
 config = SiteConfig(
     project_name="My Project",
     project_url="https://github.com/user/repo",
@@ -114,7 +114,7 @@ result = generate_site(config)
 
 Run three-pass validation to ensure documentation quality:
 
-```python
+```rust
 from claude_skills.documentation_writing.github_pages import validate_site
 
 validation = validate_site("site")
@@ -154,7 +154,7 @@ for issue in validation.issues:
 
 ### Validation Thresholds
 
-```python
+```rust
 # Validation passes when:
 # - Coverage >= 100%
 # - Clarity >= 80%
@@ -174,7 +174,7 @@ else:
 
 Deploy to the `gh-pages` branch:
 
-```python
+```rust
 from claude_skills.documentation_writing.github_pages import DeploymentConfig, deploy_site
 
 config = DeploymentConfig(
@@ -210,7 +210,7 @@ The deployer handles the git workflow automatically:
 
 Force push overwrites remote history - use with caution:
 
-```python
+```rust
 config = DeploymentConfig(
     site_dir="site",
     repo_path=".",
@@ -231,7 +231,7 @@ result = deploy_site(config)
 
 Start a local server to preview changes:
 
-```python
+```rust
 from claude_skills.documentation_writing.github_pages import preview_locally
 
 # Starts server at http://127.0.0.1:8000
@@ -269,7 +269,7 @@ pip install mkdocs mkdocs-material
 
 **Solution**: Generate the site before deploying:
 
-```python
+```rust
 # Generate first
 generation_result = generate_site(config)
 
@@ -302,7 +302,7 @@ git remote set-url origin https://github.com/user/repo.git
 
 **Solution**: Check your `nav_structure` or let it auto-generate:
 
-```python
+```rust
 # Let it auto-generate based on directory structure
 config = SiteConfig(
     project_name="My Project",
@@ -326,7 +326,7 @@ The auto-generated navigation follows Diataxis order:
 
 **Solution**: Review the specific issues:
 
-```python
+```rust
 validation = validate_site("site")
 
 # Group issues by pass
@@ -350,7 +350,7 @@ for issue in validation.issues:
 
 ### SiteConfig Options
 
-```python
+```rust
 SiteConfig(
     project_name="My Project",           # Required: Project name
     project_url="https://github.com/...",  # Required: GitHub URL
@@ -364,7 +364,7 @@ SiteConfig(
 
 ### DeploymentConfig Options
 
-```python
+```rust
 DeploymentConfig(
     site_dir="site",                     # Required: Generated site path
     repo_path=".",                       # Optional: Repository root

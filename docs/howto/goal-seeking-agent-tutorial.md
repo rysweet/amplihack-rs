@@ -63,7 +63,7 @@ GoalAgentPackager → /goal_agents/<name>/
 
 Every generated agent implements the same interface regardless of SDK:
 
-```python
+```rust
 # Upstream Python API (reference only)
 class GoalSeekingAgent(ABC):
     def learn_from_content(self, content: str) -> dict[str, Any]: ...

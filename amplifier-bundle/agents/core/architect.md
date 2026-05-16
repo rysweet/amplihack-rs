@@ -51,11 +51,11 @@ These patterns inform architectural decisions and code review evaluations.
 
 **MANDATORY: Read task_context.json first**
 
-```python
-# NOTE: This pseudocode represents a PROPOSED future implementation.
-# task_context.json and read_task_context() are conceptual examples
-# showing how complexity context could be passed between agents.
-# These are NOT currently implemented features.
+```
+// NOTE: This pseudocode represents a PROPOSED future implementation.
+// task_context.json and read_task_context() are conceptual examples
+// showing how complexity context could be passed between agents.
+// These are NOT currently implemented features.
 
 task_context = read_task_context()
 
@@ -127,9 +127,10 @@ I recommend establishing baseline quality automation before proceeding.
 
 ## Recommended Pre-commit Tools
 
-### Python Projects:
-- **ruff**: Fast linting + formatting (replaces black, flake8, isort)
-- **pyright** or **mypy**: Type checking
+### Rust Projects:
+- **cargo fmt**: Code formatting
+- **cargo clippy**: Linting and static analysis
+- **cargo test**: Run test suite
 - **detect-secrets**: Prevent credential leaks
 
 ### JavaScript/TypeScript Projects:
@@ -163,7 +164,7 @@ cargo test --workspace --locked
 
 See `.pre-commit-config.yaml` in this project for a production-ready example with:
 
-- Python tooling (ruff, pyright, detect-secrets)
+- Rust tooling (cargo fmt, cargo clippy, detect-secrets)
 - JS/TS tooling (prettier, eslint)
 - Markdown tooling (prettier, markdownlint)
 - Universal checks

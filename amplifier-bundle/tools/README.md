@@ -23,43 +23,43 @@ This directory contains the core infrastructure for the Amplihack framework's in
 .claude/tools/
 ├── amplihack/                  # Main amplihack framework tools
 │   ├── builders/               # Transcript and documentation builders
-│   │   ├── claude_transcript_builder.py    # Session transcripts
-│   │   ├── codex_transcripts_builder.py    # Codex-optimized exports
-│   │   └── export_on_compact_integration.py # Compaction integration
+│   │   ├── claude_transcript_builder.rs    # Session transcripts
+│   │   ├── codex_transcripts_builder.rs    # Codex-optimized exports
+│   │   └── export_on_compact_integration.rs # Compaction integration
 │   ├── orchestration/          # Multi-process orchestration
-│   │   ├── claude_process.py   # Single process execution
-│   │   ├── execution.py        # Parallel/sequential/fallback execution
-│   │   ├── session.py          # Session coordination
+│   │   ├── claude_process.rs   # Single process execution
+│   │   ├── execution.rs        # Parallel/sequential/fallback execution
+│   │   ├── session.rs          # Session coordination
 │   │   └── patterns/           # Fault tolerance patterns
-│   │       ├── n_version.py    # N-version programming
-│   │       ├── debate.py       # Multi-agent debate
-│   │       ├── cascade.py      # Fallback cascade
-│   │       └── expert_panel.py # Expert consensus
+│   │       ├── n_version.rs    # N-version programming
+│   │       ├── debate.rs       # Multi-agent debate
+│   │       ├── cascade.rs      # Fallback cascade
+│   │       └── expert_panel.rs # Expert consensus
 │   ├── memory/                 # Agent memory system
-│   │   ├── interface.py        # Clean API for memory operations
-│   │   ├── core.py             # SQLite-based backend
-│   │   ├── context_preservation.py # Context management
+│   │   ├── interface.rs        # Clean API for memory operations
+│   │   ├── core.rs             # SQLite-based backend
+│   │   ├── context_preservation.rs # Context management
 │   │   └── examples/           # Usage examples
 │   ├── reflection/             # AI-powered reflection system
-│   │   ├── reflection.py       # Session analysis and improvement
-│   │   ├── semantic_duplicate_detector.py # Issue deduplication
-│   │   ├── contextual_error_analyzer.py   # Error pattern analysis
-│   │   ├── security.py         # Content sanitization
-│   │   └── display.py          # User-facing output
+│   │   ├── reflection.rs       # Session analysis and improvement
+│   │   ├── semantic_duplicate_detector.rs # Issue deduplication
+│   │   ├── contextual_error_analyzer.rs   # Error pattern analysis
+│   │   ├── security.rs         # Content sanitization
+│   │   └── display.rs          # User-facing output
 │   ├── session/                # Session lifecycle management
-│   │   ├── session_toolkit.py  # Unified session interface
-│   │   ├── claude_session.py   # Core session implementation
-│   │   ├── session_manager.py  # Multi-session coordination
-│   │   ├── toolkit_logger.py   # Session logging
-│   │   └── file_utils.py       # Safe file operations
-│   ├── context_preservation.py # Context extraction and export
-│   ├── xpia_defense.py         # Cross-Process Injection Attack defense
-│   └── paths.py                # Path utilities
-├── ci_status.py                # CI/CD status checking
-├── ci_workflow.py              # CI diagnostic workflow
-├── precommit_workflow.py       # Pre-commit diagnostic workflow
-├── github_issue.py             # GitHub issue creation
-├── improvement_validator.py    # Improvement validation
+│   │   ├── session_toolkit.rs  # Unified session interface
+│   │   ├── claude_session.rs   # Core session implementation
+│   │   ├── session_manager.rs  # Multi-session coordination
+│   │   ├── toolkit_logger.rs   # Session logging
+│   │   └── file_utils.rs       # Safe file operations
+│   ├── context_preservation.rs # Context extraction and export
+│   ├── xpia_defense.rs         # Cross-Process Injection Attack defense
+│   └── paths.rs                # Path utilities
+├── ci_status.rs                # CI/CD status checking
+├── ci_workflow.rs              # CI diagnostic workflow
+├── precommit_workflow.rs       # Pre-commit diagnostic workflow
+├── github_issue.rs             # GitHub issue creation
+├── improvement_validator.rs    # Improvement validation
 └── test-utilities/             # Testing utilities
 ```
 
@@ -80,7 +80,7 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 ### Available Hooks
 
-#### `session_start.py`
+#### `session_start`
 
 **Purpose**: Initialize session with context and preferences
 
@@ -96,12 +96,12 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 **Example**:
 
-```python
-# Automatically triggered by Claude Code on session start
-# Injects context visible to Claude in the conversation
+```rust
+// Automatically triggered by Claude Code on session start
+// Injects context visible to Claude in the conversation
 ```
 
-#### `user_prompt_submit.py`
+#### `user_prompt_submit`
 
 **Purpose**: Inject user preferences on every user message
 
@@ -116,12 +116,12 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 **Example**:
 
-```python
-# Automatically triggered on every user message
-# Ensures preferences persist across conversation turns
+```rust
+// Automatically triggered on every user message
+// Ensures preferences persist across conversation turns
 ```
 
-#### `post_tool_use.py`
+#### `post_tool_use`
 
 **Purpose**: Track tool usage and collect metrics
 
@@ -136,12 +136,12 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 **Example**:
 
-```python
-# Automatically triggered after each tool use
-# Metrics saved to .claude/runtime/metrics/
+```rust
+// Automatically triggered after each tool use
+// Metrics saved to .claude/runtime/metrics/
 ```
 
-#### `pre_compact.py`
+#### `pre_compact`
 
 **Purpose**: Export conversation before context compaction
 
@@ -157,12 +157,12 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 **Example**:
 
-```python
-# Automatically triggered before Claude Code compacts context
-# Ensures no conversation history is lost
+```rust
+// Automatically triggered before Claude Code compacts context
+// Ensures no conversation history is lost
 ```
 
-#### `stop.py`
+#### `stop`
 
 **Purpose**: Control stop behavior with lock flag
 
@@ -180,15 +180,15 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 **Example**:
 
-```python
-# Automatically triggered when Claude tries to stop
-# Lock flag enables continuous multi-turn work
+```rust
+// Automatically triggered when Claude tries to stop
+// Lock flag enables continuous multi-turn work
 ```
 
 ### Base Hook Processor
 
-> **Note (rysweet/amplihack-rs#285):** the bundled `amplihack/hooks/` Python
-> tree (including `hook_processor.py`) was removed. Hook orchestration in
+> **Note (rysweet/amplihack-rs#285):** the bundled `amplihack/hooks/`
+> tree (including `hook_processor`) was removed. Hook orchestration in
 > amplihack-rs is implemented in the Rust `amplihack-hooks` crate; consult
 > that crate for the current API.
 
@@ -198,33 +198,33 @@ Builders create structured documentation and exports from session data.
 
 ### Claude Transcript Builder
 
-**File**: `amplihack/builders/claude_transcript_builder.py`
+**File**: `crates/amplihack-builders/src/claude_transcript_builder.rs`
 
 **Purpose**: Build comprehensive session transcripts for documentation and knowledge extraction
 
 **Usage**:
 
-```python
-from amplihack.builders.claude_transcript_builder import ClaudeTranscriptBuilder
+```rust
+use amplihack_builders::ClaudeTranscriptBuilder;
 
-# Create builder
-builder = ClaudeTranscriptBuilder(session_id="20250105_143022")
+// Create builder
+let builder = ClaudeTranscriptBuilder::new("20250105_143022");
 
-# Build transcript
-transcript_path = builder.build_session_transcript(
-    messages=[
-        {"role": "user", "content": "Hello", "timestamp": "2025-01-05T14:30:22"},
-        {"role": "assistant", "content": "Hi!", "timestamp": "2025-01-05T14:30:23"},
+// Build transcript
+let transcript_path = builder.build_session_transcript(
+    &[
+        Message { role: "user", content: "Hello", timestamp: "2025-01-05T14:30:22" },
+        Message { role: "assistant", content: "Hi!", timestamp: "2025-01-05T14:30:23" },
     ],
-    metadata={"project": "amplihack"}
-)
+    &Metadata { project: "amplihack".into() },
+)?;
 
-# Build session summary
-summary = builder.build_session_summary(messages, metadata)
-print(f"Total words: {summary['total_words']}")
+// Build session summary
+let summary = builder.build_session_summary(&messages, &metadata)?;
+println!("Total words: {}", summary.total_words);
 
-# Export for codex
-codex_path = builder.export_for_codex(messages, metadata)
+// Export for codex
+let codex_path = builder.export_for_codex(&messages, &metadata)?;
 ```
 
 **Outputs**:
@@ -236,7 +236,7 @@ codex_path = builder.export_for_codex(messages, metadata)
 
 ### Codex Transcripts Builder
 
-**File**: `amplihack/builders/codex_transcripts_builder.py`
+**File**: `crates/amplihack-builders/src/codex_transcripts_builder.rs`
 
 **Purpose**: Create codex-optimized exports for knowledge systems
 
@@ -252,31 +252,29 @@ codex_path = builder.export_for_codex(messages, metadata)
 Multi-process orchestration for parallel, sequential, and fault-tolerant
 execution.
 
-> **Native Rust port (Wave 2 de-Pythonification, Epic #511).** The Python modules
-> previously located at `amplihack/orchestration/` have been ported to the
-> Rust crate `crates/amplihack-orchestration` and the original `.py` files
-> deleted. Use the Rust API directly from the workspace; no shell-callable
-> CLI is exposed (the orchestration crate is a library used by other Rust
-> components).
+> **Rust implementation (formerly Wave 2 de-Pythonification, Epic #511).** The
+> orchestration modules are implemented in the Rust crate
+> `crates/amplihack-orchestration`. The orchestration crate is a library used
+> by other Rust components; no shell-callable CLI is exposed.
 
 **Crate**: [`amplihack-orchestration`](../../crates/amplihack-orchestration/)
 
-**Migration map** (Python → Rust):
+**Module map**:
 
-| Python path | Rust path |
+| Module | Crate path |
 |---|---|
-| `orchestration.claude_process` | `amplihack_orchestration::claude_process` |
-| `orchestration.execution` | `amplihack_orchestration::execution` |
-| `orchestration.session` | `amplihack_orchestration::session` |
-| `orchestration.patterns.n_version` | `amplihack_orchestration::patterns::n_version` |
-| `orchestration.patterns.debate` | `amplihack_orchestration::patterns::debate` |
-| `orchestration.patterns.cascade` | `amplihack_orchestration::patterns::cascade` |
-| `orchestration.patterns.expert_panel` | `amplihack_orchestration::patterns::expert_panel` |
+| `claude_process` | `amplihack_orchestration::claude_process` |
+| `execution` | `amplihack_orchestration::execution` |
+| `session` | `amplihack_orchestration::session` |
+| `patterns::n_version` | `amplihack_orchestration::patterns::n_version` |
+| `patterns::debate` | `amplihack_orchestration::patterns::debate` |
+| `patterns::cascade` | `amplihack_orchestration::patterns::cascade` |
+| `patterns::expert_panel` | `amplihack_orchestration::patterns::expert_panel` |
 
-The Rust API mirrors the Python public surface (`ProcessRunner`, `ClaudeProcess`,
+The public API exposes `ProcessRunner`, `ClaudeProcess`,
 `run_parallel`, `run_sequential`, `run_with_fallback`, `run_batched`,
 `OrchestratorSession`, `run_n_version`, `run_debate`, `run_cascade`,
-`create_custom_cascade`, `run_expert_panel`). See the crate's `tests/` for
+`create_custom_cascade`, `run_expert_panel`. See the crate's `tests/` for
 behavioral examples covering all four patterns.
 
 ## Memory System
@@ -285,43 +283,45 @@ Persistent memory storage for agents with session management.
 
 ### Agent Memory Interface
 
-**File**: `amplihack/memory/interface.py`
+**File**: `crates/amplihack-memory/src/interface.rs`
 
 **Purpose**: Simple agent memory API following bricks & studs philosophy
 
 **Usage**:
 
-```python
-from amplihack.memory.interface import AgentMemory
+```rust
+use amplihack_memory::AgentMemory;
 
-# Create memory for agent
-memory = AgentMemory("my-agent", session_id="session_123")
+// Create memory for agent
+let mut memory = AgentMemory::new("my-agent", Some("session_123"))?;
 
-# Store data
-memory.store("user-pref", "dark-mode")
-memory.store("config", {"theme": "dark"}, memory_type="json")
+// Store data
+memory.store("user-pref", "dark-mode")?;
+memory.store_json("config", &serde_json::json!({"theme": "dark"}))?;
 
-# Retrieve data
-value = memory.retrieve("user-pref")  # "dark-mode"
+// Retrieve data
+let value = memory.retrieve("user-pref")?;  // "dark-mode"
 
-# List keys
-keys = memory.list_keys()               # ['user-pref', 'config']
-keys = memory.list_keys("user-*")       # ['user-pref']
+// List keys
+let keys = memory.list_keys(None)?;           // ["user-pref", "config"]
+let keys = memory.list_keys(Some("user-*"))?; // ["user-pref"]
 
-# Delete data
-memory.delete("old-key")
+// Delete data
+memory.delete("old-key")?;
 
-# Clear session
-memory.clear_session()
+// Clear session
+memory.clear_session()?;
 
-# Get statistics
-stats = memory.get_stats()
-print(f"Keys: {stats['key_count']}")
+// Get statistics
+let stats = memory.get_stats()?;
+println!("Keys: {}", stats.key_count);
 
-# Context manager usage
-with AgentMemory("my-agent") as memory:
-    memory.store("temp", "value")
-    # Automatically closed on exit
+// RAII scoped usage
+{
+    let memory = AgentMemory::new("my-agent", None)?;
+    memory.store("temp", "value")?;
+    // Automatically closed on drop
+}
 ```
 
 **Features**:
@@ -334,7 +334,7 @@ with AgentMemory("my-agent") as memory:
 
 ### Memory Backend
 
-**File**: `amplihack/memory/core.py`
+**File**: `crates/amplihack-memory/src/core.rs`
 
 **Purpose**: Low-level SQLite-based memory storage
 
@@ -369,8 +369,8 @@ Unified session lifecycle management for Claude Code workflows.
 **Crate**: `amplihack-session` (`crates/amplihack-session/`)
 
 > **Note (rysweet/amplihack-rs#532):** the bundled `amplihack/session/`
-> Python tree was removed in de-Pythonification wave 3b. Session management
-> is now provided by the native Rust `amplihack-session` crate.
+> tree was removed. Session management is provided by the native Rust
+> `amplihack-session` crate.
 
 **Purpose**: Single interface for all session management capabilities
 
@@ -387,7 +387,7 @@ let mut toolkit = SessionToolkit::new(
     "INFO",
 )?;
 
-// RAII helper (mirrors the Python `with toolkit.session(...)` block).
+// RAII helper for scoped session management.
 quick_session("analysis_task", |toolkit, sid| {
     let session = toolkit.manager_mut().get_session(sid).unwrap();
     let _ = session.execute_command("analyze code", None, serde_json::json!({}))?;
@@ -407,8 +407,8 @@ let cleaned = toolkit.cleanup_old_data(30, 7, 24)?;
 
 **Modules** (under `crates/amplihack-session/src/`):
 
-- `session.rs` - `ClaudeSession` + `CommandExecutor` trait (replaces the
-  Python heartbeat thread with explicit `check_health()`).
+- `session.rs` - `ClaudeSession` + `CommandExecutor` trait (uses explicit
+  `check_health()` for health monitoring).
 - `manager.rs` - `SessionManager`: persist / resume / archive / cleanup
   (auto-save thread replaced with explicit `save_all_active()`).
 - `logger.rs` - `ToolkitLogger`: structured JSON-line writer with
@@ -422,26 +422,25 @@ AI-powered session analysis and improvement suggestions.
 
 ### Reflection Analysis
 
-**File**: `amplihack/reflection/reflection.py`
+**File**: `crates/amplihack-reflection/src/reflection.rs`
 
 **Purpose**: Analyze sessions and create GitHub issues for improvements
 
 **Usage**:
 
-```python
-from amplihack.reflection.reflection import process_reflection_analysis
+```rust
+use amplihack_reflection::process_reflection_analysis;
 
-# Analyze session messages
-messages = [
-    {"content": "Error: module not found"},
-    {"content": "Fixed by updating imports"},
-]
+// Analyze session messages
+let messages = vec![
+    Message { content: "Error: module not found".into() },
+    Message { content: "Fixed by updating imports".into() },
+];
 
-# Process analysis
-issue_number = process_reflection_analysis(messages)
-
-if issue_number:
-    print(f"Created issue: #{issue_number}")
+// Process analysis
+if let Some(issue_number) = process_reflection_analysis(&messages)? {
+    println!("Created issue: #{issue_number}");
+}
 ```
 
 **Features**:
@@ -460,7 +459,7 @@ if issue_number:
 
 ### Semantic Duplicate Detector
 
-**File**: `amplihack/reflection/semantic_duplicate_detector.py`
+**File**: `crates/amplihack-reflection/src/semantic_duplicate_detector.rs`
 
 **Purpose**: Detect duplicate GitHub issues before creation
 
@@ -473,7 +472,7 @@ if issue_number:
 
 ### Contextual Error Analyzer
 
-**File**: `amplihack/reflection/contextual_error_analyzer.py`
+**File**: `crates/amplihack-reflection/src/contextual_error_analyzer.rs`
 
 **Purpose**: Analyze error patterns with context awareness
 
@@ -488,47 +487,47 @@ if issue_number:
 
 ### CI Status Checker
 
-**File**: `ci_status.py`
+**File**: `ci_status.rs`
 
 **Usage**:
 
-```python
-from .claude.tools.ci_status import check_ci_status
+```rust
+use amplihack_tools::ci_status::check_ci_status;
 
-# Check current branch
-status = check_ci_status()
+// Check current branch
+let status = check_ci_status(None)?;
 
-# Check specific PR
-status = check_ci_status(ref="123")
+// Check specific PR
+let status = check_ci_status(Some("123"))?;
 
-print(f"Status: {status['status']}")
-print(f"URL: {status['url']}")
+println!("Status: {}", status.status);
+println!("URL: {}", status.url);
 ```
 
 ### GitHub Issue Creation
 
-**File**: `github_issue.py`
+**File**: `github_issue.rs`
 
 **Usage**:
 
-```python
-from .claude.tools.github_issue import create_issue
+```rust
+use amplihack_tools::github_issue::create_issue;
 
-result = create_issue(
-    title="Bug report",
-    body="Details here",
-    labels=["bug", "priority-high"]
-)
+let result = create_issue(
+    "Bug report",
+    "Details here",
+    &["bug", "priority-high"],
+)?;
 
-print(f"Issue URL: {result['url']}")
+println!("Issue URL: {}", result.url);
 ```
 
 ### CI/Pre-commit Workflows
 
 **Files**:
 
-- `ci_workflow.py` - CI diagnostic and fix workflow
-- `precommit_workflow.py` - Pre-commit diagnostic workflow
+- `ci_workflow.rs` - CI diagnostic and fix workflow
+- `precommit_workflow.rs` - Pre-commit diagnostic workflow
 
 **Purpose**: Automated diagnostics for CI and pre-commit failures
 
@@ -536,9 +535,8 @@ print(f"Issue URL: {result['url']}")
 
 ### 1. Basic Hook Usage
 
-> **Note (rysweet/amplihack-rs#285):** Claude Code hooks are now provided
-> by the Rust `amplihack-hooks` crate; the bundled `amplihack/hooks/`
-> Python directory was removed.
+> **Note (rysweet/amplihack-rs#285):** Claude Code hooks are provided
+> by the Rust `amplihack-hooks` crate; see that crate for the current API.
 
 ### 2. Session Management
 
@@ -556,95 +554,111 @@ quick_session("my_task", |toolkit, sid| {
 
 ### 3. Memory Storage
 
-```python
-from amplihack.memory.interface import AgentMemory
+```rust
+use amplihack_memory::AgentMemory;
 
-with AgentMemory("my-agent") as memory:
-    memory.store("config", {"theme": "dark"})
-    config = memory.retrieve("config")
+{
+    let memory = AgentMemory::new("my-agent", None)?;
+    memory.store_json("config", &serde_json::json!({"theme": "dark"}))?;
+    let config = memory.retrieve("config")?;
+}
 ```
 
 ### 4. Orchestration
 
-```python
-from amplihack.orchestration.claude_process import ClaudeProcess
-from amplihack.orchestration.execution import run_parallel
+```rust
+use amplihack_orchestration::{ClaudeProcess, run_parallel};
+use std::path::PathBuf;
 
-processes = [
-    ClaudeProcess("analyze security", "p1", cwd, log_dir),
-    ClaudeProcess("analyze performance", "p2", cwd, log_dir),
-    ClaudeProcess("analyze code quality", "p3", cwd, log_dir),
-]
+let cwd = PathBuf::from(".");
+let log_dir = PathBuf::from(".claude/runtime/logs");
 
-results = run_parallel(processes, max_workers=3)
+let processes = vec![
+    ClaudeProcess::new("analyze security", "p1", &cwd, &log_dir),
+    ClaudeProcess::new("analyze performance", "p2", &cwd, &log_dir),
+    ClaudeProcess::new("analyze code quality", "p3", &cwd, &log_dir),
+];
+
+let results = run_parallel(&processes, 3)?;
 ```
 
 ## Integration Examples
 
 ### Complete Workflow Example
 
-```python
-# NOTE: session management has been ported to the Rust `amplihack-session`
-# crate (rysweet/amplihack-rs#532). The example below shows how the
-# remaining Python-side helpers compose with the Rust toolkit via shell
-# invocation. For a pure-Rust example see
-# `crates/amplihack-session/examples/advanced_scenarios.rs`.
-from pathlib import Path
-from amplihack.memory.interface import AgentMemory
-from amplihack.orchestration.claude_process import ClaudeProcess
-from amplihack.orchestration.execution import run_parallel
+```rust
+use amplihack_session::{quick_session, SessionToolkit};
+use amplihack_memory::AgentMemory;
+use amplihack_orchestration::{ClaudeProcess, run_parallel};
+use std::path::PathBuf;
 
-# Session lifecycle is now driven by the Rust `amplihack-session` crate;
-# the Python placeholder below is illustrative only.
-toolkit = None  # Use the Rust SessionToolkit, see crates/amplihack-session
+// For a full example see `crates/amplihack-session/examples/advanced_scenarios.rs`.
 
-with toolkit.session("comprehensive_analysis") as session:
-    logger = toolkit.get_logger("main")
-    logger.info("Starting comprehensive analysis")
+let mut toolkit = SessionToolkit::new(
+    PathBuf::from(".claude/runtime"),
+    true,
+    "INFO",
+)?;
 
-    # Use memory to store configuration
-    memory = AgentMemory("analysis-agent", session_id=session.session_id)
-    memory.store("analysis_config", {
+quick_session("comprehensive_analysis", |toolkit, sid| {
+    let logger = toolkit.logger();
+    logger.info("Starting comprehensive analysis", None)?;
+
+    // Use memory to store configuration
+    let memory = AgentMemory::new("analysis-agent", Some(sid))?;
+    memory.store_json("analysis_config", &serde_json::json!({
         "depth": "deep",
         "targets": ["security", "performance", "quality"]
-    })
+    }))?;
 
-    # Create parallel analysis processes
-    config = memory.retrieve("analysis_config")
-    processes = [
-        ClaudeProcess(
-            f"Analyze {target}",
-            f"{target}_analysis",
-            Path.cwd(),
-            Path(".claude/runtime/logs")
+    // Create parallel analysis processes
+    let targets = ["security", "performance", "quality"];
+    let cwd = PathBuf::from(".");
+    let log_dir = PathBuf::from(".claude/runtime/logs");
+
+    let processes: Vec<_> = targets.iter().map(|target| {
+        ClaudeProcess::new(
+            &format!("Analyze {target}"),
+            &format!("{target}_analysis"),
+            &cwd,
+            &log_dir,
         )
-        for target in config["targets"]
-    ]
+    }).collect();
 
-    # Execute in parallel
-    logger.info(f"Running {len(processes)} analyses in parallel")
-    results = run_parallel(processes, max_workers=3)
+    // Execute in parallel
+    logger.info(&format!("Running {} analyses in parallel", processes.len()), None)?;
+    let results = run_parallel(&processes, 3)?;
 
-    # Process results
-    successful = [r for r in results if r.exit_code == 0]
-    logger.info(f"Completed {len(successful)}/{len(results)} analyses")
+    // Process results
+    let successful: Vec<_> = results.iter().filter(|r| r.exit_code == 0).collect();
+    logger.info(
+        &format!("Completed {}/{} analyses", successful.len(), results.len()),
+        None,
+    )?;
 
-    # Store results in memory
-    for result in successful:
-        memory.store(
-            f"result_{result.process_id}",
-            {"output": result.output, "duration": result.duration}
-        )
+    // Store results in memory
+    for result in &successful {
+        memory.store_json(
+            &format!("result_{}", result.process_id),
+            &serde_json::json!({
+                "output": result.output,
+                "duration": result.duration
+            }),
+        )?;
+    }
 
-    # Session stats
-    stats = toolkit.get_session_stats()
-    logger.info(f"Session stats: {stats}")
+    // Session stats
+    let stats = toolkit.get_toolkit_stats();
+    logger.info(&format!("Session stats: {stats:?}"), None)?;
+
+    Ok::<_, amplihack_session::SessionError>(())
+})?;
 ```
 
 ### Custom Hook Example
 
 > **Note (rysweet/amplihack-rs#285):** the `amplihack.hooks.hook_processor`
-> Python base class was removed alongside the bundled `amplihack/hooks/`
+> base class was removed alongside the bundled `amplihack/hooks/`
 > tree. Custom hooks are now implemented in the Rust `amplihack-hooks`
 > crate; refer to that crate for the current extension API.
 
@@ -678,11 +692,11 @@ All file operations use `validate_path_containment()` to prevent path traversal 
 
 ### Content Sanitization
 
-Reflection system uses `security.py` to sanitize all content before GitHub issue creation.
+Reflection system uses `security.rs` to sanitize all content before GitHub issue creation.
 
 ### XPIA Defense
 
-`xpia_defense.py` provides Cross-Process Injection Attack protection.
+`xpia_defense.rs` provides Cross-Process Injection Attack protection.
 
 ### Permissions
 
@@ -695,7 +709,7 @@ Reflection system uses `security.py` to sanitize all content before GitHub issue
 ### Hook Not Running
 
 > **Note (rysweet/amplihack-rs#285):** hooks are implemented in the Rust
-> `amplihack-hooks` crate, not as Python files under `.claude/tools/`.
+> `amplihack-hooks` crate, not as files under `.claude/tools/`.
 > Refer to that crate's diagnostics and the runtime logs in
 > `~/.amplihack/.claude/runtime/logs/` when troubleshooting.
 
@@ -704,7 +718,7 @@ Reflection system uses `security.py` to sanitize all content before GitHub issue
 1. Check `~/.amplihack/.claude/runtime/memory.db` exists
 2. Verify session_id is consistent
 3. Check file permissions
-4. Confirm `enabled=True` when creating AgentMemory
+4. Confirm `enabled: true` when creating AgentMemory
 
 ### Orchestration Timeouts
 

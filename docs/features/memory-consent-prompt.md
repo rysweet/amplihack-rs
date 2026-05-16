@@ -114,8 +114,8 @@ amplihack
 
 If ye be integrin' amplihack into yer own tools:
 
-```python
-from amplihack.launcher.memory_config import prompt_user_consent
+```rust
+// use amplihack_launcher::memory_config:: prompt_user_consent
 
 # Basic usage
 config = {
@@ -181,7 +181,7 @@ jobs:
 
 ```dockerfile
 FROM python:3.11
-RUN pip install amplihack
+RUN cargo install amplihack
 CMD ["amplihack"]
 # Detects non-interactive stdin
 # Auto-applies recommended settings
@@ -262,8 +262,8 @@ $ amplihack
 
 2. Verify memory config:
 
-   ```python
-   from amplihack.launcher.memory_config import get_memory_config
+   ```rust
+   // use amplihack_launcher::memory_config:: get_memory_config
    config = get_memory_config()
    print(config)
    ```
@@ -349,7 +349,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install amplihack
-        run: pip install amplihack
+        run: cargo install amplihack
 
       - name: Run tests
         run: amplihack test
@@ -369,7 +369,7 @@ services:
     working_dir: /workspace
     environment:
       - AMPLIHACK_MEMORY_AUTO_ACCEPT=true
-    command: sh -c "pip install amplihack && amplihack"
+    command: sh -c "cargo install amplihack && amplihack"
 ```
 
 ### Custom Script
@@ -404,7 +404,7 @@ The system detects non-interactive environments by checkin':
 2. **Terminal presence**: Is this a TTY?
 3. **CI environment variables**: `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, etc.
 
-```python
+```rust
 import sys
 import os
 
@@ -427,7 +427,7 @@ Uses platform-appropriate timeout mechanisms:
 
 **Unix/Linux/macOS**:
 
-```python
+```rust
 import select
 
 def prompt_with_timeout(timeout_seconds=30):
@@ -444,7 +444,7 @@ def prompt_with_timeout(timeout_seconds=30):
 
 **Windows**:
 
-```python
+```rust
 import msvcrt
 import time
 
@@ -471,7 +471,7 @@ def prompt_with_timeout(timeout_seconds=30):
 
 When timeout occurs or non-interactive detected:
 
-```python
+```rust
 def get_default_consent(config):
     """Determine default consent behavior"""
 

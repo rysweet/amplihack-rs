@@ -360,137 +360,53 @@ The learning system follows fail-safe design:
 
 ### Stop Hook: Learning Extraction
 
-Add learning extraction to your stop hook (Rust implementation in `crates/amplihack-hooks/`):
+Add learning extraction to your stop hook (implemented in `crates/amplihack-hooks/src/stop/`):
 
-```python
-# Legacy Python example — hooks are now implemented in Rust.
-# See crates/amplihack-hooks/ for the current implementation.
-# This example is retained for conceptual illustration.
-#
-# .claude/tools/amplihack/hooks/stop_hook.py
+```rust
+// Conceptual illustration of the learning extraction flow.
+// See crates/amplihack-hooks/src/stop/ for the actual Rust implementation.
 
-async def extract_session_learnings(transcript: str, session_id: str):
-    """Extract learnings from session transcript at stop."""
-    from pathlib import Path
-    import yaml
-    from datetime import datetime
+/// Extract learnings from session transcript at stop.
+async fn extract_session_learnings(transcript: &str, session_id: &str) -> Result<()> {
+    // Only extract if session was substantive (not just a quick question)
+    if transcript.len() < 1000 {
+        return Ok(());
+    }
 
-    # Only extract if session was substantive (not just a quick question)
-    if len(transcript) < 1000:
-        return
+    let extraction_prompt = format!(
+        "Analyze this session transcript and extract any reusable learnings.\n\
+         Categories: errors, workflows, tools, architecture, debugging\n\
+         For each learning, provide: category, keywords, summary, insight, confidence.\n\
+         Transcript:\n{}", &transcript[..transcript.len().min(5000)]
+    );
 
-    # Use Claude to extract insights (simplified example)
-    extraction_prompt = f"""
-    Analyze this session transcript and extract any reusable learnings.
-
-    Categories:
-    - errors: Error patterns and solutions
-    - workflows: Process improvements
-    - tools: Tool usage insights
-    - architecture: Design decisions
-    - debugging: Debug strategies
-
-    For each learning, provide:
-    - category (one of the above)
-    - keywords (3-5 searchable terms)
-    - summary (one sentence)
-    - insight (detailed explanation)
-    - example (code if applicable)
-    - confidence (0.5-1.0)
-
-    Transcript:
-    {transcript[:5000]}  # Truncate for token limits
-    """
-
-    # ... call Claude to extract ...
-    # ... parse response and add to appropriate YAML files ...
-
-def on_stop(session_data: dict):
-    """Stop hook entry point."""
-    # ... other stop hook logic ...
-
-    # Extract learnings (non-blocking)
-    try:
-        import asyncio
-        asyncio.create_task(
-            extract_session_learnings(
-                session_data.get("transcript", ""),
-                session_data.get("session_id", "")
-            )
-        )
-    except Exception as e:
-        print(f"Learning extraction failed (non-blocking): {e}")
+    // ... call LLM to extract ...
+    // ... parse response and store in learning YAML files ...
+    Ok(())
+}
 ```
 
 ### Session Start Hook: Learning Injection
 
-Add learning injection to your session start hook (Rust implementation in `crates/amplihack-hooks/`):
+Add learning injection to your session start hook (implemented in `crates/amplihack-hooks/src/session_start/`):
 
-```python
-# Legacy Python example — hooks are now implemented in Rust.
-# See crates/amplihack-hooks/ for the current implementation.
-# This example is retained for conceptual illustration.
-#
-# .claude/tools/amplihack/hooks/session_start_hook.py
+```rust
+// Conceptual illustration of the learning injection flow.
+// See crates/amplihack-hooks/src/session_start/ for the actual Rust implementation.
 
-def inject_relevant_learnings(initial_prompt: str) -> str:
-    """Find and format relevant learnings for injection."""
-    from pathlib import Path
-    import yaml
+/// Find and format relevant learnings for injection.
+fn inject_relevant_learnings(initial_prompt: &str) -> String {
+    let learnings_dir = PathBuf::from(".claude/data/learnings");
+    if !learnings_dir.exists() {
+        return String::new();
+    }
 
-    learnings_dir = Path(".claude/data/learnings")
-    if not learnings_dir.exists():
-        return ""
+    // Extract keywords from prompt, find matching learnings,
+    // return top 3 matches formatted as context injection.
+    // ...
 
-    # Extract keywords from prompt
-    prompt_lower = initial_prompt.lower()
-    task_keywords = set()
-    for word in prompt_lower.split():
-        if len(word) > 3:  # Skip short words
-            task_keywords.add(word.strip(".,!?"))
-
-    # Find matching learnings
-    matches = []
-    for yaml_file in learnings_dir.glob("*.yaml"):
-        if yaml_file.name.startswith("_"):
-            continue  # Skip _stats.yaml
-
-        try:
-            data = yaml.safe_load(yaml_file.read_text())
-            for learning in data.get("learnings", []):
-                learning_keywords = set(k.lower() for k in learning.get("keywords", []))
-                overlap = task_keywords & learning_keywords
-                if overlap:
-                    score = len(overlap) * learning.get("confidence", 0.5)
-                    matches.append((score, learning))
-        except Exception:
-            continue
-
-    # Return top 3 matches
-    matches.sort(key=lambda x: x[0], reverse=True)
-    if not matches:
-        return ""
-
-    context = "## Past Learnings Relevant to This Task\n\n"
-    for score, learning in matches[:3]:
-        context += f"### {learning.get('summary', 'Insight')}\n"
-        context += f"{learning.get('insight', '')}\n\n"
-
-    return context
-
-def on_session_start(session_data: dict) -> dict:
-    """Session start hook entry point."""
-    initial_prompt = session_data.get("prompt", "")
-
-    # Inject relevant learnings
-    try:
-        learning_context = inject_relevant_learnings(initial_prompt)
-        if learning_context:
-            session_data["injected_context"] = learning_context
-    except Exception as e:
-        print(f"Learning injection failed (non-blocking): {e}")
-
-    return session_data
+    format!("## Past Learnings Relevant to This Task\n\n{}", matches_text)
+}
 ```
 
 ## Limitations

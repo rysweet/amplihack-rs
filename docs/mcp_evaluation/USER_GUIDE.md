@@ -794,7 +794,7 @@ curl http://localhost:3000/health
 
 Create an adapter for your tool in `adapters/`:
 
-```python
+```rust
 # adapters/your_tool_adapter.py
 
 from .base_adapter import BaseAdapter
@@ -1116,7 +1116,7 @@ Want to evaluate your own tool? See:
 
 Need to test specific capabilities? Create custom scenarios:
 
-```python
+```rust
 # framework/custom_scenarios.py
 
 from .scenarios import BaseScenario

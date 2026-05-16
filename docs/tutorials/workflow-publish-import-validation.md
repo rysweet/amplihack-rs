@@ -154,7 +154,7 @@ EOF
 
 and suppose that file contains:
 
-```python
+```rust
 import definitely_missing_module
 ```
 

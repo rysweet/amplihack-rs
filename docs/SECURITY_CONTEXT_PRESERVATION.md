@@ -45,7 +45,7 @@ This document describes the comprehensive security enhancements implemented in t
 
 Centralized security configuration with the following limits:
 
-```python
+```rust
 MAX_INPUT_SIZE = 50 * 1024      # 50KB maximum input
 MAX_LINE_LENGTH = 1000          # Maximum line length
 MAX_SENTENCES = 100             # Maximum sentences to process
@@ -80,7 +80,7 @@ Provides safe methods for all regex operations:
 **Fallback**: Graceful degradation for Windows (no timeout)
 **Duration**: 1 second maximum for any regex operation
 
-```python
+```rust
 def timeout_handler(signum, frame):
     raise RegexTimeoutError(f"Regex operation timed out after {REGEX_TIMEOUT}s")
 
@@ -97,7 +97,7 @@ signal.signal(signal.SIGALRM, old_handler)
 **Unicode Normalization**: Prevents encoding-based bypass attempts
 **HTML Escaping**: Protects against injection in output contexts
 
-```python
+```rust
 ALLOWED_CHARS = set(
     'abcdefghijklmnopqrstuvwxyz'
     'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -123,7 +123,7 @@ ALLOWED_CHARS = set(
 **Information Hiding**: Security errors don't expose system internals
 **Graceful Degradation**: System continues operating when individual operations fail
 
-```python
+```rust
 except (RegexTimeoutError, Exception):
     # Secure fallback without exposing error details
     requirements.append("[Requirements extraction failed - manual review needed]")
@@ -246,7 +246,7 @@ python -m pytest tests/test_context_preservation_security.py -v
 
 1. **Replace imports**:
 
-   ```python
+   ```rust
    # Old
    from context_preservation import ContextPreserver
 
@@ -256,7 +256,7 @@ python -m pytest tests/test_context_preservation_security.py -v
 
 2. **Handle new exceptions**:
 
-   ```python
+   ```rust
    try:
        result = preserver.extract_original_request(prompt)
    except (InputValidationError, RegexTimeoutError) as e:
@@ -296,7 +296,7 @@ python -m pytest tests/test_context_preservation_security.py -v
 
 ### Recommended Logging
 
-```python
+```rust
 # Log security events
 logger.warning(f"Input validation failed: {type(e).__name__}")
 logger.info(f"Regex timeout occurred in {operation}")

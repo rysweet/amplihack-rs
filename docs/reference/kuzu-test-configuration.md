@@ -28,7 +28,7 @@ was fixed.
 
 Each kuzu-specific test file has `pytest.importorskip("kuzu")` near the top:
 
-```python
+```rust
 import pytest
 
 pytest.importorskip("kuzu")  # skips entire module if kuzu not installed

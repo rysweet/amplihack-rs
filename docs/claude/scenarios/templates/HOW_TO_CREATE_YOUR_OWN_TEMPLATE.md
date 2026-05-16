@@ -57,7 +57,7 @@ mkdir examples
 
 #### Template Code Structure
 
-```python
+```rust
 #!/usr/bin/env python3
 """
 {Your Tool Name}
@@ -134,7 +134,7 @@ if __name__ == '__main__':
 
 Implement these security measures:
 
-```python
+```rust
 import re
 from pathlib import Path
 
@@ -169,7 +169,7 @@ def sanitize_user_input(content: str) -> str:
 
 Create comprehensive test coverage:
 
-```python
+```rust
 # tests/test_{your_tool}.py
 import pytest
 from pathlib import Path
@@ -262,7 +262,7 @@ mv prototype.py tool.py
 
 ### Configuration Options
 
-```python
+```rust
 # Typical configuration structure
 DEFAULT_CONFIG = {
     '{config_key}': '{default_value}',

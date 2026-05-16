@@ -10,25 +10,20 @@ Recipe Runner includes enhanced discovery diagnostics to help troubleshoot recip
 
 Recipes are discovered in this priority order:
 
-1. **Installed Package Path** - `site-packages/amplihack/amplifier-bundle/recipes/` (for pip-installed amplihack)
-2. **Repository Root** - repo-root `amplifier-bundle/recipes/` (resolved via `Path(__file__)`, for editable installs)
+1. **Binary-relative Path** - Recipes bundled alongside the `amplihack` binary
+2. **Repository Root** - repo-root `amplifier-bundle/recipes/`
 3. **Global Installation** - `~/.amplihack/.claude/recipes/` (user-installed recipes)
 4. **CWD Bundle** - `amplifier-bundle/recipes/` (CWD-relative, legacy compatibility)
-5. **CWD Source** - `src/amplihack/amplifier-bundle/recipes/` (CWD-relative, development)
-6. **Project-local** - `.claude/recipes/` (project-specific recipes, can override)
+5. **Project-local** - `.claude/recipes/` (project-specific recipes, can override)
 
-**Why this matters**: When amplihack is pip-installed and you run from any directory, the installed package path (1) is the only reliable location for bundled recipes. CWD-relative paths (4, 5) only work when running from the amplihack repo directory.
+**Why this matters**: When amplihack is installed via `cargo install` and you run from any directory, the binary-relative path (1) is the only reliable location for bundled recipes. CWD-relative paths (4) only work when running from the amplihack repo directory.
 
 ### Debug Logging
 
-Enable debug logging to see exactly which paths are searched:
+Enable verbose output to see exactly which paths are searched:
 
-```python
-import logging
-logging.basicConfig(level=logging.DEBUG)
-
-from amplihack.recipes import discover_recipes
-recipes = discover_recipes()
+```bash
+AMPLIHACK_LOG=debug amplihack recipe list
 ```
 
 **Output shows**:
@@ -42,28 +37,23 @@ recipes = discover_recipes()
 
 Check if global recipes are properly installed:
 
-```python
-from amplihack.recipes import verify_global_installation
-
-result = verify_global_installation()
-if not result["has_global_recipes"]:
-    print("Warning: No global recipes found!")
-    print(f"Checked: {result['global_paths_checked']}")
-else:
-    print(f"✅ Found {sum(result['global_recipe_count'])} global recipes")
+```bash
+amplihack recipe list --verbose
 ```
+
+This displays all discovered recipes and the paths they were loaded from. If no recipes are found, verify that `~/.amplihack/.claude/recipes/` exists and contains recipe YAML files.
 
 ## Common Issues
 
 ### Issue: "No recipes discovered" when running from different directory
 
-**Symptom**: `list_recipes()` returns empty list when running from a project other than amplihack's repo
+**Symptom**: `amplihack recipe list` returns empty when running from a project other than amplihack's repo
 **Cause**: Discovery used only CWD-relative paths before version 0.9.0
-**Solution**: Upgrade to amplihack >= 0.9.0 which includes absolute package paths in discovery
+**Solution**: Upgrade to amplihack >= 0.9.0 which includes binary-relative paths in discovery
 
 ### Issue: "No recipes discovered" in /tmp clone
 
-**Symptom**: `list_recipes()` returns empty list
+**Symptom**: `amplihack recipe list` returns empty
 **Cause**: Global recipes not installed at `~/.amplihack/.claude/recipes/`
 **Solution**: Verify global installation exists
 
@@ -77,10 +67,8 @@ else:
 
 ### Version 0.9.0 (March 2026)
 
-- Issue #2812, PR #2813: Recipe discovery now includes installed package path
-- Absolute paths resolved via `Path(__file__)` work for wheel installs
-- Recipes discoverable from any working directory after pip install
-- Added `_PACKAGE_BUNDLE_DIR` and `_REPO_ROOT_BUNDLE_DIR` search paths
+- Issue #2812, PR #2813: Recipe discovery now includes binary-relative path
+- Recipes discoverable from any working directory after `cargo install`
 
 ### Version 0.5.32
 

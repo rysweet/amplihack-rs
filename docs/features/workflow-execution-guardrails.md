@@ -48,24 +48,15 @@ amplihack recipe run default-workflow \
   -c "expected_gh_account=rysweet"
 ```
 
-### Inspect the resolved execution root programmatically
+### Inspect the resolved execution root via CLI
 
-```python
-from amplihack.recipes import run_recipe_by_name
-
-result = run_recipe_by_name(
-    "default-workflow",
-    user_context={
-        "task_description": "Retcon workflow execution guardrails docs",
-        "repo_path": "/home/user/src/amplihack",
-        "branch_prefix": "docs",
-        "expected_gh_account": "rysweet",
-    },
-    progress=True,
-)
-
-print(result.context["worktree_setup"]["execution_root"])
-print(result.context["worktree_setup"]["branch_name"])
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="Retcon workflow execution guardrails docs" \
+  -c repo_path="/home/user/src/amplihack" \
+  -c branch_prefix="docs" \
+  -c expected_gh_account="rysweet" \
+  --verbose --output json | jq '.context.worktree_setup'
 ```
 
 ---

@@ -10,7 +10,7 @@ This file documents 10 common mistakes and anti-patterns when using design patte
 
 **Bad Example**:
 
-```python
+```rust
 class DatabaseConnection(Singleton):
     """DON'T DO THIS"""
     pass
@@ -43,7 +43,7 @@ def test_user_service():
 
 **Correct Approach - Dependency Injection**:
 
-```python
+```rust
 class UserService:
     """GOOD: Dependencies explicit and injectable"""
 
@@ -83,7 +83,7 @@ def test_user_service():
 
 **Bad Example**:
 
-```python
+```rust
 # DON'T DO THIS - Over-engineered for single use case
 
 class UserFactory:
@@ -117,7 +117,7 @@ user = User("Alice", "alice@example.com")
 
 **Correct Approach - Wait Until You Need It**:
 
-```python
+```rust
 # Start simple
 user = User("Alice", "alice@example.com")
 
@@ -153,7 +153,7 @@ class UserFactory:
 
 **Bad Example**:
 
-```python
+```rust
 # DON'T DO THIS - Pattern stuffing for simple to-do app
 
 # Singleton + Factory + Builder + Observer + Strategy + Command
@@ -197,7 +197,7 @@ todo = builder.set_title("Buy milk").set_due_date("2024-01-01").build()
 
 **Correct Approach - Ruthless Simplicity**:
 
-```python
+```rust
 # GOOD: Simple, direct, readable
 
 @dataclass
@@ -243,7 +243,7 @@ todo_list.add(Todo("Buy milk", datetime(2024, 1, 1)))
 
 **Bad Example**:
 
-```python
+```rust
 # DON'T DO THIS - Abstract Factory for tiny product family
 
 class GUIFactory(ABC):
@@ -277,7 +277,7 @@ button = factory.create_button()  # Just call WindowsButton()!
 
 **Correct Approach - Use Simpler Pattern**:
 
-```python
+```rust
 # GOOD: Factory Method for single product type
 
 class ButtonFactory:
@@ -318,7 +318,7 @@ class Button:
 
 **Bad Example**:
 
-```python
+```rust
 # DON'T DO THIS - No detach mechanism
 
 class EventPublisher:
@@ -359,7 +359,7 @@ for i in range(1000):
 
 **Correct Approach - Proper Lifecycle Management**:
 
-```python
+```rust
 # GOOD: Proper subscribe/unsubscribe with context manager
 
 class EventPublisher:
@@ -426,7 +426,7 @@ with subscribe_to(publisher, component):
 
 **Bad Example**:
 
-```python
+```rust
 # DON'T DO THIS - Visitor for simple operation
 
 class Shape(ABC):
@@ -470,7 +470,7 @@ area = circle.accept(visitor)  # Why not circle.area()?
 
 **Correct Approach - Simple Polymorphism**:
 
-```python
+```rust
 # GOOD: Simple polymorphism for simple operations
 
 class Shape(ABC):
@@ -518,7 +518,7 @@ print(f"Square area: {square.area()}")
 
 **Bad Example**:
 
-```python
+```rust
 # DON'T DO THIS - Decorator chain hell
 
 connection = LoggingDecorator(
@@ -554,7 +554,7 @@ connection = LoggingDecorator(
 
 **Correct Approach - Pipeline or Builder Pattern**:
 
-```python
+```rust
 # GOOD: Pipeline pattern with explicit builder
 
 class ConnectionBuilder:
@@ -608,7 +608,7 @@ connection = (
 
 **Bad Example**:
 
-```python
+```rust
 # DON'T DO THIS - Command without undo = just callbacks!
 
 class Command(ABC):
@@ -639,7 +639,7 @@ def print_message(message):
 
 **Correct Approach - Either Support Undo or Use Callbacks**:
 
-```python
+```rust
 # Option 1: GOOD - Command WITH undo support
 
 class Command(ABC):
@@ -698,7 +698,7 @@ button.click()
 
 **Bad Example**:
 
-```python
+```rust
 # DON'T DO THIS - State pattern for on/off
 
 class State(ABC):
@@ -740,7 +740,7 @@ light.toggle()  # Just use: light.is_on = not light.is_on
 
 **Correct Approach - Use Simple State Variables**:
 
-```python
+```rust
 # GOOD: Simple boolean for simple cases
 
 class Light:
@@ -805,7 +805,7 @@ class Document:
 
 **Bad Example**:
 
-```python
+```rust
 # DON'T DO THIS - Template Method with no variance
 
 class DataProcessor(ABC):
@@ -856,7 +856,7 @@ class XMLProcessor(DataProcessor):
 
 **Correct Approach - Strategy for Variable Algorithms**:
 
-```python
+```rust
 # GOOD: Strategy pattern when algorithm varies
 
 class DataProcessor:

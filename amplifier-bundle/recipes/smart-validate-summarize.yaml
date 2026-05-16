@@ -136,7 +136,7 @@ steps:
   # ─────────────────────────────────────────────────────────────────────────
   # Teardown: mark this session complete in the session tree
   # Runs unconditionally so the slot is freed even on partial/failed runs.
-  # Combines session completion + workflow semaphore clearing in one Python call.
+  # Combines session completion + workflow semaphore clearing in one shell call.
   # ─────────────────────────────────────────────────────────────────────────
 
   - id: "complete-session"
@@ -144,7 +144,7 @@ steps:
     command: |
       # FIX (#469/#311): Use env var — safe against injection and word-splitting.
       SESSION_JSON="$SESSION_INFO"
-      # #283: parse session fields via jq instead of inline Python.
+      # #283: parse session fields via jq instead of inline scripting.
       SESSION_ID=$(printf '%s' "$SESSION_JSON" | jq -r '.session_id // ""' 2>/dev/null || echo "")
       TREE_ID=$(printf '%s' "$SESSION_JSON" | jq -r '.tree_id // ""' 2>/dev/null || echo "")
       STATUS=$(printf '%s' "$SESSION_JSON" | jq -r '.status // ""' 2>/dev/null || echo "")

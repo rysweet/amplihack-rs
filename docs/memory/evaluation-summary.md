@@ -103,19 +103,19 @@ The current top-level `amplihack` parser does not expose `memory evaluate`. Run 
 
 ```bash
 # Compare all backends
-python -m amplihack.memory.cli_evaluate
+amplihack memory cli_evaluate
 
 # Evaluate a specific backend
-python -m amplihack.memory.cli_evaluate --backend sqlite
+amplihack memory cli_evaluate --backend sqlite
 
 # Save report to file
-python -m amplihack.memory.cli_evaluate --output report.md
+amplihack memory cli_evaluate --output report.md
 ```
 
 ### Python API
 
-```python
-from amplihack.memory.evaluation import run_evaluation
+```rust
+// use amplihack_memory::evaluation:: run_evaluation
 
 # Evaluate and generate report
 report = await run_evaluation("sqlite")

@@ -78,7 +78,7 @@ Create a new directory...
 
 ## Step 2: Write the Agent Code
 
-```python
+```rust
 # ... complete, runnable code
 ```
 ````
@@ -306,7 +306,7 @@ Choosing the brick philosophy means accepting:
 Always specify the language:
 
 ````markdown
-```python
+```rust
 def example():
     pass
 ```
@@ -317,7 +317,7 @@ def example():
 Include expected output:
 
 ```markdown
-```python
+```rust
 print("Hello")
 # Output: Hello
 ````

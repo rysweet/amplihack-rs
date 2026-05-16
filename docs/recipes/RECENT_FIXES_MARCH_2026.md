@@ -291,8 +291,8 @@ system.
 
 **Import**:
 
-```python
-from amplihack.workflows import GhAwCompiler, Diagnostic, compile_workflow
+```rust
+// use amplihack_workflows:: GhAwCompiler, Diagnostic, compile_workflow
 ```
 
 **Key improvements over the previous parser**:
@@ -307,8 +307,8 @@ from amplihack.workflows import GhAwCompiler, Diagnostic, compile_workflow
 
 **Example**:
 
-```python
-from amplihack.workflows import compile_workflow
+```rust
+// use amplihack_workflows:: compile_workflow
 
 diags = compile_workflow(content, filename="issue-classifier.md")
 # [ERROR] issue-classifier.md:5:1: Unrecognised frontmatter field 'stirct' (possible typo). Did you mean: 'strict'?
@@ -349,8 +349,8 @@ Neither path resolved to the installed package location (`site-packages/amplihac
 **Impact**:
 
 - All 16 bundled recipes now discoverable from any working directory
-- Works correctly after `pip install amplihack`
-- Verified: `cd /tmp && python -c 'from amplihack.recipes import list_recipes; print(len(list_recipes()))'` → 16 recipes (was 0)
+- Works correctly after `cargo install amplihack-rs`
+- Verified: `amplihack recipe list | wc -l` → 16 recipes (was 0)
 
 **Tests Added**:
 

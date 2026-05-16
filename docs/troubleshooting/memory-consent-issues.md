@@ -8,7 +8,7 @@ Run this diagnostic command:
 
 ```bash
 python3 -c "
-from amplihack.launcher.memory_config import get_memory_config
+// use amplihack_launcher::memory_config:: get_memory_config
 import json
 config = get_memory_config()
 print(json.dumps(config, indent=2))
@@ -61,7 +61,7 @@ amplihack
 
 #### Solution 3: Check Platform Compatibility
 
-```python
+```rust
 # Test stdin detection
 import sys
 print(f"stdin is TTY: {sys.stdin.isatty()}")
@@ -216,8 +216,8 @@ export NODE_OPTIONS="--max-old-space-size=8192"
 
 #### Solution 2: Verify Memory Config
 
-```python
-from amplihack.launcher.memory_config import get_memory_config
+```rust
+// use amplihack_launcher::memory_config:: get_memory_config
 config = get_memory_config()
 print(f"Recommended: {config['recommended_limit_mb']} MB")
 print(f"NODE_OPTIONS: {config['node_options']}")
@@ -252,8 +252,8 @@ Remove conflictin' settings.
 
 #### Solution 1: Verify RAM Detection
 
-```python
-from amplihack.launcher.memory_config import detect_system_ram_gb
+```rust
+// use amplihack_launcher::memory_config:: detect_system_ram_gb
 ram_gb = detect_system_ram_gb()
 print(f"Detected RAM: {ram_gb} GB")
 ```
@@ -496,14 +496,14 @@ echo "=== stdin Check ==="
 test -t 0 && echo "Interactive" || echo "Non-interactive"
 
 echo "=== RAM Detection ==="
-python3 -c "from amplihack.launcher.memory_config import detect_system_ram_gb; print(f'{detect_system_ram_gb()} GB')"
+python3 -c "// use amplihack_launcher::memory_config:: detect_system_ram_gb; print(f'{detect_system_ram_gb()} GB')"
 
 echo "=== Current NODE_OPTIONS ==="
 echo "$NODE_OPTIONS"
 
 echo "=== Memory Config Test ==="
 python3 -c "
-from amplihack.launcher.memory_config import get_memory_config
+// use amplihack_launcher::memory_config:: get_memory_config
 import json
 config = get_memory_config()
 print(json.dumps(config, indent=2))

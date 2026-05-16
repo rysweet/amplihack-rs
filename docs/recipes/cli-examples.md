@@ -221,7 +221,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install amplihack
-        run: pip install amplihack
+        run: cargo install amplihack
 
       - name: Run verification workflow
         run: |
@@ -265,7 +265,7 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Install amplihack
-        run: pip install amplihack
+        run: cargo install amplihack
 
       - name: Run CI diagnostic workflow
         run: |

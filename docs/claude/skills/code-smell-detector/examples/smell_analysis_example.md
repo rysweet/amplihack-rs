@@ -6,7 +6,7 @@ This document shows how the code-smell-detector skill analyzes real code pattern
 
 ### Code Under Review
 
-```python
+```rust
 # user_service.py
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -84,7 +84,7 @@ class EmailService:
 
 **Fix**:
 
-```python
+```rust
 # BEFORE (has abstraction)
 class UserProcessor(ABC):
     @abstractmethod
@@ -119,7 +119,7 @@ def process_user(user):
 
 **Fix**:
 
-```python
+```rust
 # BEFORE - One big function doing everything
 def create_user_and_notify(self, name, email, phone, country, notify=True,
                             validate=True, log=True, audit=True):
@@ -188,7 +188,7 @@ def create_user_and_notify(self, name, email, phone, country,
 
 **Fix**:
 
-```python
+```rust
 # BEFORE - Hidden dependency
 class UserService:
     def __init__(self):
@@ -227,7 +227,7 @@ service = UserService(email_service=SMTPEmailService())
 
 **Fix**:
 
-```python
+```rust
 # Add at module level
 __all__ = ['UserService', 'validate_user_data', 'create_user_dict']
 
@@ -239,7 +239,7 @@ __all__ = ['UserService', 'validate_user_data', 'create_user_dict']
 
 ### Refactored Code (All Smells Fixed)
 
-```python
+```rust
 # user_service.py
 """User management and notification service."""
 
@@ -356,7 +356,7 @@ IMPACT:
 
 ### Pattern 1: Composition Over Inheritance
 
-```python
+```rust
 # BEFORE: 3-level inheritance
 class Entity: pass
 class TimestampedEntity(Entity): pass
@@ -371,7 +371,7 @@ class User:
 
 ### Pattern 2: Direct Functions Over Utility Classes
 
-```python
+```rust
 # BEFORE: Utility class
 class StringUtils:
     @staticmethod
@@ -383,7 +383,7 @@ def clean_string(s): return s.strip().lower()
 
 ### Pattern 3: Dependency Injection
 
-```python
+```rust
 # BEFORE: Hidden dependency
 def fetch_user(id):
     db = Database()
@@ -396,7 +396,7 @@ def fetch_user(id, db):
 
 ### Pattern 4: Split God Functions
 
-```python
+```rust
 # BEFORE: 100 line function
 def complex_workflow(data, ...): pass
 

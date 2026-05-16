@@ -99,7 +99,7 @@ Return: Structured project map for quality audit
 
 Use one of these division strategies (see [Codebase Division Strategies](#codebase-division-strategies)):
 
-```python
+```rust
 # By directory (most common)
 divisions = ["src/core/", "src/api/", "src/utils/", "tests/"]
 
@@ -230,7 +230,7 @@ _Health Checks & Observability_:
 
 ### Step 2.4: Consolidate Findings
 
-```python
+```rust
 findings = {
     "critical": [],    # Security, data loss risks
     "high": [],        # Architecture violations
@@ -250,7 +250,7 @@ findings = {
 
 Multiple agents may flag the same issue. Merge duplicates:
 
-```python
+```rust
 # Group by file + line range
 # Merge findings with >80% overlap
 # Preserve all perspectives in merged issue
@@ -299,7 +299,7 @@ EOF
 
 Maintain mapping for Phase 4:
 
-```python
+```rust
 issue_map = {
     "issue-123": {"file": "src/auth.py", "severity": "high"},
     "issue-124": {"file": "src/utils.py", "severity": "medium"},
@@ -354,7 +354,7 @@ done
 
 Match each child issue against PR changes using a multi-factor confidence algorithm:
 
-```python
+```rust
 def calculate_confidence_score(issue: dict, pr: dict) -> float:
     """
     Calculate confidence that PR fixed this issue.
@@ -544,7 +544,7 @@ Generate summary report of validation results:
 
 Prepare for PR generation with validated issue list:
 
-```python
+```rust
 # Filter to only open issues after validation
 validated_open_issues = [
     issue for issue in child_issues
@@ -591,7 +591,7 @@ export AUDIT_ENABLE_VALIDATION=true
 
 Phase 3.5 uses graceful degradation:
 
-```python
+```rust
 try:
     # Attempt PR discovery
     merged_prs = scan_merged_prs(parent_issue, days=30)
@@ -839,7 +839,7 @@ EOF
 
 Best for: Monorepos, standard project layouts
 
-```python
+```rust
 divisions = glob("src/*/") + glob("lib/*/")
 ```
 
@@ -847,7 +847,7 @@ divisions = glob("src/*/") + glob("lib/*/")
 
 Best for: MVC/MVVM architectures
 
-```python
+```rust
 divisions = ["models/", "views/", "controllers/", "services/", "utils/"]
 ```
 
@@ -855,7 +855,7 @@ divisions = ["models/", "views/", "controllers/", "services/", "utils/"]
 
 Best for: Feature-sliced architectures
 
-```python
+```rust
 divisions = ["features/auth/", "features/payments/", "features/users/"]
 ```
 
@@ -863,7 +863,7 @@ divisions = ["features/auth/", "features/payments/", "features/users/"]
 
 Best for: Clean architecture, hexagonal
 
-```python
+```rust
 divisions = ["domain/", "application/", "infrastructure/", "presentation/"]
 ```
 
@@ -871,7 +871,7 @@ divisions = ["domain/", "application/", "infrastructure/", "presentation/"]
 
 Best for: Large codebases, targeted audits
 
-```python
+```rust
 # Audit only highest-complexity modules first
 divisions = get_modules_by_complexity(threshold=10)
 ```
@@ -1000,7 +1000,7 @@ AUDIT_SEVERITY_THRESHOLD=high
 
 **Solution**: Further subdivide large directories
 
-```python
+```rust
 # Instead of "src/" use "src/auth/", "src/api/", etc.
 ```
 

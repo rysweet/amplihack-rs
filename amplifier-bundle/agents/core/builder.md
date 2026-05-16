@@ -59,53 +59,62 @@ When given a specification:
 
 ```
 module_name/
-├── __init__.py       # Public interface via __all__
+├── src/
+│   ├── lib.rs        # Public interface (pub exports)
+│   ├── core.rs       # Main implementation
+│   ├── models.rs     # Data models (if needed)
+│   └── utils.rs      # Internal utilities
+├── Cargo.toml        # Crate manifest
 ├── README.md         # Module specification
-├── core.py           # Main implementation
-├── models.py         # Data models (if needed)
-├── utils.py          # Internal utilities
 ├── tests/
-│   ├── test_core.py
+│   ├── core_test.rs
 │   └── fixtures/
 └── examples/
-    └── basic_usage.py
+    └── basic_usage.rs
 ```
 
 ### 3. Implementation Guidelines
 
 #### Public Interface
 
-```python
-# __init__.py - ONLY public exports
-from .core import primary_function, secondary_function
-from .models import InputModel, OutputModel
+```rust
+// lib.rs - ONLY public exports
+pub mod core;
+pub mod models;
 
-__all__ = ['primary_function', 'secondary_function', 'InputModel', 'OutputModel']
+pub use core::{primary_function, secondary_function};
+pub use models::{InputModel, OutputModel};
 ```
 
 #### Core Implementation
 
-```python
-# core.py - Main logic with clear docstrings
-def primary_function(input: InputModel) -> OutputModel:
-    """One-line summary.
-
-    Detailed description of what this function does.
-
-    Args:
-        input: Description with type and constraints
-
-    Returns:
-        Description of output structure
-
-    Raises:
-        ValueError: When and why
-
-    Example:
-        >>> result = primary_function(sample_input)
-        >>> assert result.status == "success"
-    """
-    # Implementation here
+```rust
+// core.rs - Main logic with clear doc comments
+/// One-line summary.
+///
+/// Detailed description of what this function does.
+///
+/// # Arguments
+///
+/// * `input` - Description with type and constraints
+///
+/// # Returns
+///
+/// Description of output structure
+///
+/// # Errors
+///
+/// Returns `Error` when and why
+///
+/// # Examples
+///
+/// ```
+/// let result = primary_function(sample_input);
+/// assert_eq!(result.status, "success");
+/// ```
+pub fn primary_function(input: InputModel) -> Result<OutputModel, Error> {
+    // Implementation here
+}
 ```
 
 ### 4. Key Principles
@@ -113,61 +122,72 @@ def primary_function(input: InputModel) -> OutputModel:
 #### Zero-BS Implementation
 
 - **No TODOs without code**: Implement or don't include
-- **No NotImplementedError**: Except in abstract base classes
+- **No `todo!()` or `unimplemented!()`**: Except in trait default methods
 - **Working defaults**: Use files instead of external services initially
 - **Every function works**: Or doesn't exist
 
 #### Module Quality
 
-- **Self-contained**: All module code in its directory
-- **Clear boundaries**: Public interface via **all**
+- **Self-contained**: All module code in its crate/directory
+- **Clear boundaries**: Public interface via `pub` exports
 - **Tested behavior**: Tests verify contracts, not implementation
 - **Documented**: README with full specification
 
 ### 5. Testing Approach
 
-```python
-# tests/test_core.py
-def test_contract_fulfilled():
-    """Test that module fulfills its contract"""
-    # Test inputs/outputs match specification
-    # Test error conditions
-    # Test side effects
+```rust
+// tests/core_test.rs
+#[test]
+fn test_contract_fulfilled() {
+    // Test inputs/outputs match specification
+    // Test error conditions
+    // Test side effects
+}
 
-def test_examples_work():
-    """Verify all documentation examples"""
-    # Run examples from docstrings
-    # Verify example files execute
+#[test]
+fn test_examples_work() {
+    // Verify all documentation examples
+    // Run examples from doc comments
+    // Verify example files execute
+}
 ```
 
 ## Common Patterns
 
 ### Simple Service Module
 
-```python
-class Service:
-    def __init__(self, config: dict = None):
-        self.config = config or {}
+```rust
+pub struct Service {
+    config: Config,
+}
 
-    def process(self, data: Input) -> Output:
-        """Single clear responsibility"""
-        # Direct implementation
-        return Output(...)
+impl Service {
+    pub fn new(config: Option<Config>) -> Self {
+        Self { config: config.unwrap_or_default() }
+    }
+
+    /// Single clear responsibility
+    pub fn process(&self, data: Input) -> Result<Output, Error> {
+        // Direct implementation
+        Ok(Output { /* ... */ })
+    }
+}
 ```
 
 ### Pipeline Stage Module
 
-```python
-async def process_batch(items: list[Item]) -> list[Result]:
-    """Process items with error handling"""
-    results = []
-    for item in items:
-        try:
-            result = await process_item(item)
-            results.append(result)
-        except Exception as e:
-            results.append(Error(item=item, error=str(e)))
-    return results
+```rust
+/// Process items with error handling
+pub async fn process_batch(items: Vec<Item>) -> Vec<Result<ProcessResult, ProcessError>> {
+    let mut results = Vec::new();
+    for item in items {
+        match process_item(&item).await {
+            Ok(result) => results.push(Ok(result)),
+            Err(e) => results.push(Err(ProcessError::new(item, e))),
+        }
+    }
+    results
+}
 ```
 
 ## Remember

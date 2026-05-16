@@ -4,7 +4,7 @@ Simple examples showing how to use the context-management skill for common tasks
 
 ## Example 1: Check Token Usage
 
-```python
+```rust
 from context_management import check_status
 
 # Check current token usage
@@ -25,7 +25,7 @@ Recommendation: Context is healthy. No action needed.
 
 ## Example 2: Create a Snapshot
 
-```python
+```rust
 from context_management import create_snapshot
 
 # Sample conversation data
@@ -58,7 +58,7 @@ File: .claude/runtime/context-snapshots/20251116_143522.json
 
 ## Example 3: List All Snapshots
 
-```python
+```rust
 from context_management import list_snapshots
 
 # Get all snapshots
@@ -98,7 +98,7 @@ Size: 18KB
 
 ## Example 4: Rehydrate Context
 
-```python
+```rust
 from context_management import rehydrate_context
 
 # Rehydrate at essential level
@@ -132,7 +132,7 @@ Tests: 12/15 passing
 
 ## Example 5: Progressive Detail Levels
 
-```python
+```rust
 from context_management import rehydrate_context
 
 snapshot_id = '20251116_143522'
@@ -158,7 +158,7 @@ print(result['context'][:200], "...")
 
 ## Example 6: Error Handling
 
-```python
+```rust
 from context_management import (
     create_snapshot,
     rehydrate_context,
@@ -186,7 +186,7 @@ if result['status'] == 'error':
 
 ## Example 7: Using Main Skill Function
 
-```python
+```rust
 from context_management import context_management_skill
 
 # All actions through single function
@@ -214,7 +214,7 @@ result = context_management_skill('list')
 
 ## Example 8: Custom Configuration
 
-```python
+```rust
 from pathlib import Path
 from context_management import context_management_skill
 
@@ -242,7 +242,7 @@ result = context_management_skill(
 
 ## Example 9: Complete Workflow
 
-```python
+```rust
 from context_management import (
     check_status,
     create_snapshot,

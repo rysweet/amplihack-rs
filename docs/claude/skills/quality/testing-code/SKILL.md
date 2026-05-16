@@ -86,7 +86,7 @@ Understand what to test:
 
 Follow this structure:
 
-```python
+```rust
 def test_function_name_condition_expected():
     """
     Test that function_name handles condition and returns expected result.
@@ -119,7 +119,7 @@ Test individual functions in isolation.
 
 **Python Example**:
 
-```python
+```rust
 import pytest
 from mymodule import calculate_total
 
@@ -184,7 +184,7 @@ Test multiple components working together.
 
 **Example**:
 
-```python
+```rust
 def test_user_registration_flow():
     """Test complete user registration workflow."""
     # Arrange: Set up test database
@@ -209,7 +209,7 @@ Isolate code from external dependencies.
 
 **Python Example**:
 
-```python
+```rust
 from unittest.mock import Mock, patch
 
 def test_send_notification_calls_email_service():
@@ -235,7 +235,7 @@ Test multiple inputs efficiently.
 
 **Python Example**:
 
-```python
+```rust
 @pytest.mark.parametrize("input,expected", [
     (0, "zero"),
     (1, "one"),
@@ -254,7 +254,7 @@ Generate test cases automatically.
 
 **Python Example**:
 
-```python
+```rust
 from hypothesis import given
 from hypothesis.strategies import integers
 
@@ -373,7 +373,7 @@ For each function/class, ensure tests for:
 
 **Testing Implementation Details**:
 
-```python
+```rust
 # Bad: Tests internal state
 def test_cache_uses_dict():
     cache = Cache()
@@ -388,7 +388,7 @@ def test_cache_stores_and_retrieves_value():
 
 **Overly Complex Tests**:
 
-```python
+```rust
 # Bad: Test is hard to understand
 def test_complex():
     data = [process(x) for x in range(100) if x % 2]
@@ -403,7 +403,7 @@ def test_calculate_returns_average():
 
 **Not Testing Edge Cases**:
 
-```python
+```rust
 # Incomplete: Only tests happy path
 def test_divide():
     assert divide(10, 2) == 5
@@ -492,7 +492,7 @@ I'll create tests for:
 
 ## Generated Tests
 
-```python
+```rust
 import pytest
 from unittest.mock import Mock, patch
 from myapp.auth import authenticate, InvalidCredentialsError, UserNotFoundError

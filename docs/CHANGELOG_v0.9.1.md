@@ -64,7 +64,7 @@ Removed SettingsManager from launch_interactive() in src/amplihack/launcher/core
 
 SettingsManager follows a backup/restore pattern designed for temporary configuration changes:
 
-```python
+```rust
 # Backup/restore pattern (temporary changes)
 1. Create backup of current state
 2. Make changes
@@ -87,7 +87,7 @@ But INCORRECT for:
 
 Instead of using SettingsManager, hooks are now written directly during launch:
 
-```python
+```rust
 # Before (BUGGY)
 with SettingsManager() as settings:
     # SettingsManager creates backup WITHOUT hooks

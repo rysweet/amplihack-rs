@@ -18,13 +18,13 @@ Bug in `auto_mode.py` line 203 using incorrect Claude SDK argument.
 
 Changed from incorrect:
 
-```python
+```rust
 permission_mode="allow"
 ```
 
 To correct:
 
-```python
+```rust
 dangerously_allow_permissions=True
 ```
 

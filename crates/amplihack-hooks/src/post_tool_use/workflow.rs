@@ -31,11 +31,10 @@ const DEV_SKILL_NAMES: &[&str] = &[
 const WORKFLOW_EVIDENCE_TOOLS: &[&str] = &["Agent", "agent", "TaskCreate"];
 
 const WORKFLOW_EVIDENCE_BASH: &[&str] = &[
-    "run_recipe_by_name",
-    "smart-orchestrator",
-    "recipe_runner",
-    "amplihack.recipes",
     "amplihack recipe run",
+    "smart-orchestrator",
+    "recipe-runner-rs",
+    "recipe_runner",
     "git checkout -b",
     "git switch -c",
     "git branch ",
@@ -154,7 +153,7 @@ fn has_workflow_evidence(tool_name: &str, tool_input: &Value) -> bool {
 fn workflow_bypass_warning(tool_calls_since: u64) -> String {
     format!(
         "WORKFLOW BYPASS DETECTED: /dev was invoked but no recipe runner execution detected after \
-{tool_calls_since} tool calls. You MUST execute via run_recipe_by_name('smart-orchestrator'). \
+{tool_calls_since} tool calls. You MUST execute via `amplihack recipe run smart-orchestrator`. \
 Direct implementation without the recipe runner is PROHIBITED for Development tasks. The \
 23-step workflow, recursion guards, and goal verification are being skipped. STOP and invoke \
 the recipe runner NOW."

@@ -17,7 +17,7 @@ The Agent Memory System provides persistent memory capabilities for AI agents wi
 
 ### Basic Memory Operations
 
-```python
+```rust
 from .claude.tools.amplihack.memory import get_memory_manager, MemoryType
 
 # Get memory manager for current session
@@ -46,7 +46,7 @@ results = memory.search("API design")
 
 ### Context Preservation
 
-```python
+```rust
 from .claude.tools.amplihack.memory.context_preservation import (
     ContextPreserver, preserve_current_context, restore_latest_context
 )
@@ -72,7 +72,7 @@ if context:
 
 Each agent can maintain its own memory namespace for decisions, learnings, and context.
 
-```python
+```rust
 class ArchitectAgent:
     def __init__(self, session_id=None):
         from .claude.tools.amplihack.memory import get_memory_manager
@@ -133,7 +133,7 @@ class ArchitectAgent:
 
 Track multi-step workflows across agent collaborations.
 
-```python
+```rust
 class WorkflowManager:
     def __init__(self, workflow_name, session_id=None):
         from .claude.tools.amplihack.memory.context_preservation import ContextPreserver
@@ -207,7 +207,7 @@ class WorkflowManager:
 
 Maintain conversation context across session boundaries.
 
-```python
+```rust
 def preserve_session_context(session_id, context_data):
     """Preserve comprehensive session context."""
     from .claude.tools.amplihack.memory.context_preservation import ContextPreserver
@@ -293,7 +293,7 @@ def restore_session_context(session_id):
 
 Enable agents to share context and build on each other's work.
 
-```python
+```rust
 class CollaborativeMemory:
     def __init__(self, session_id=None):
         from .claude.tools.amplihack.memory import get_memory_manager
@@ -379,7 +379,7 @@ class CollaborativeMemory:
 
 ### Memory Manager Configuration
 
-```python
+```rust
 # For high-performance scenarios
 from .claude.tools.amplihack.memory import activate_memory, get_memory_manager
 
@@ -409,7 +409,7 @@ memory_ids = memory.store_batch(batch_memories)
 
 ### Query Optimization
 
-```python
+```rust
 # Efficient memory retrieval patterns
 memory = get_memory_manager()
 
@@ -440,7 +440,7 @@ critical_recent = memory.retrieve(
 
 ### Robust Memory Operations
 
-```python
+```rust
 def safe_memory_operation(memory_func, *args, **kwargs):
     """Wrapper for safe memory operations with fallbacks."""
     try:
@@ -474,7 +474,7 @@ def agent_with_memory_fallback(agent_id, operation_data):
 
 ### Environment-Specific Configuration
 
-```python
+```rust
 import os
 
 # Check if memory should be enabled
@@ -493,7 +493,7 @@ else:
 
 ### Hook Integration
 
-```python
+```rust
 # In agent scripts or workflow hooks
 def pre_workflow_hook(workflow_context):
     """Hook to preserve context before workflow execution."""
@@ -526,7 +526,7 @@ def post_workflow_hook(workflow_results):
 
 ### Tool Integration
 
-```python
+```rust
 # Integration with existing Claude tools
 def enhanced_tool_with_memory(tool_name, tool_args, agent_id="tool_agent"):
     """Wrapper to add memory capabilities to existing tools."""
@@ -580,9 +580,9 @@ def enhanced_tool_with_memory(tool_name, tool_args, agent_id="tool_agent"):
 
 ### Maintenance
 
-```python
+```rust
 # Regular maintenance operations
-from amplihack.memory.maintenance import MemoryMaintenance
+// use amplihack_memory::maintenance:: MemoryMaintenance
 
 def weekly_maintenance():
     """Perform weekly memory system maintenance."""
@@ -611,20 +611,20 @@ def weekly_maintenance():
 
 **Import Errors**:
 
-```python
+```rust
 # Ensure correct Python path
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), 'relative/path/to/src'))
 
-from amplihack.memory import MemoryManager
+// use amplihack_memory:: MemoryManager
 ```
 
 **Performance Issues**:
 
-```python
+```rust
 # Check database size and optimize
-from amplihack.memory.maintenance import MemoryMaintenance
+// use amplihack_memory::maintenance:: MemoryMaintenance
 maintenance = MemoryMaintenance()
 stats = maintenance.analyze_memory_usage()
 print(f"Database size: {stats.get('db_size_bytes', 0)} bytes")
@@ -632,7 +632,7 @@ print(f"Database size: {stats.get('db_size_bytes', 0)} bytes")
 
 **Memory Conflicts**:
 
-```python
+```rust
 # Use session isolation
 memory1 = get_memory_manager(session_id="session_1")
 memory2 = get_memory_manager(session_id="session_2")
@@ -641,7 +641,7 @@ memory2 = get_memory_manager(session_id="session_2")
 
 ### Debug Mode
 
-```python
+```rust
 # Enable detailed logging
 import logging
 logging.basicConfig(level=logging.DEBUG)

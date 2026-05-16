@@ -72,7 +72,7 @@ Studs are what other bricks connect to. Design them before implementing anything
 
 If your module makes decisions based on external rules, extract those rules into a `Protocol`:
 
-```python
+```rust
 @runtime_checkable
 class PromotionPolicy(Protocol):
     def should_promote(self, fact: HiveFact, source_agent: str) -> bool: ...
@@ -87,7 +87,7 @@ no magic numbers in the module itself.
 
 Every method returns a dict with named keys, not a naked bool or tuple:
 
-```python
+```rust
 # Good: caller knows what happened at each layer
 {"fact_id": "hf_abc", "promoted": True, "event_published": True, "gossip_triggered": False}
 
@@ -109,7 +109,7 @@ A "stub" is any function that:
 
 Every method must do real work. For `store_and_promote`:
 
-```python
+```rust
 def store_and_promote(self, concept, content, confidence, tags=None):
     # Build the fact
     fact = HiveFact(...)
@@ -134,7 +134,7 @@ def store_and_promote(self, concept, content, confidence, tags=None):
 
 Use `try/except ImportError` at module level for optional dependencies:
 
-```python
+```rust
 try:
     from .gossip import GossipProtocol, run_gossip_round as _run_gossip_round
     _HAS_GOSSIP = True
@@ -165,7 +165,7 @@ This is the **dependency injection** pattern: let callers compose the system.
 The existing `cognitive_adapter._promote_to_hive()` still calls `hive.promote_fact()` directly.
 To fully integrate the orchestrator, a caller can pass the orchestrator as the `hive_store`:
 
-```python
+```rust
 # The orchestrator satisfies the duck-typed promote_fact interface
 adapter = CognitiveAdapter(
     agent_name="agent_a",
@@ -181,7 +181,7 @@ Full CognitiveAdapter integration is a future enhancement tracked in DESIGN.md.
 
 Always add new exports to `__init__.py` with a graceful try/except:
 
-```python
+```rust
 try:
     from .orchestrator import (
         DefaultPromotionPolicy,

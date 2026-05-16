@@ -37,24 +37,15 @@ You want two things to be true before you continue:
 
 ## Step 2: Run the Workflow and Capture the Result Context
 
-Use the Python API so you can inspect `worktree_setup` directly after the run.
+Use the CLI to run the workflow and inspect the result context.
 
-```python
-from amplihack.recipes import run_recipe_by_name
-
-result = run_recipe_by_name(
-    "smart-orchestrator",
-    user_context={
-        "task_description": "Retcon workflow execution guardrails docs",
-        "repo_path": "/home/user/src/amplihack",
-        "branch_prefix": "docs",
-        "expected_gh_account": "rysweet",
-    },
-    progress=True,
-)
-
-print(result.success)
-print(result.context["worktree_setup"])
+```bash
+amplihack recipe run smart-orchestrator \
+  -c task_description="Retcon workflow execution guardrails docs" \
+  -c repo_path="/home/user/src/amplihack" \
+  -c branch_prefix="docs" \
+  -c expected_gh_account="rysweet" \
+  --verbose --output json | jq '{success: .success, worktree_setup: .context.worktree_setup}'
 ```
 
 Equivalent CLI invocation:
@@ -89,10 +80,12 @@ What to notice:
 - `worktree_path` still exists, but it matches `execution_root`
 - downstream steps do not fall back to the repository root or ambient shell `cwd`
 
-If you are integrating with recipe results, read:
+If you are integrating with recipe results, read the `execution_root` from the JSON output:
 
-```python
-root = result.context["worktree_setup"]["execution_root"]
+```bash
+amplihack recipe run smart-orchestrator \
+  -c task_description="..." \
+  --output json | jq '.context.worktree_setup.execution_root'
 ```
 
 Do not build new integrations around `worktree_path`.
@@ -131,17 +124,13 @@ The observer reports a stall only after 300 continuous seconds with no activity 
 
 Now repeat the run with the wrong GitHub account in context:
 
-```python
-run_recipe_by_name(
-    "default-workflow",
-    user_context={
-        "task_description": "Retcon workflow execution guardrails docs",
-        "repo_path": "/home/user/src/amplihack",
-        "branch_prefix": "docs",
-        "expected_gh_account": "octocat",
-    },
-    progress=True,
-)
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="Retcon workflow execution guardrails docs" \
+  -c repo_path="/home/user/src/amplihack" \
+  -c branch_prefix="docs" \
+  -c expected_gh_account="octocat" \
+  --verbose
 ```
 
 When the workflow reaches a mutating `gh` step, it stops before the mutation runs:

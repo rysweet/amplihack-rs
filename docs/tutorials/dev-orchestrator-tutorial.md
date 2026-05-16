@@ -418,7 +418,7 @@ message as a development task.
 - To disable for this session: `export AMPLIHACK_AUTO_DEV=false`
 - To override for one prompt: prefix with "just answer", "without workflow", or "skip orchestration"
 - To check whether the hook would inject the routing prompt:
-  ```python
+  ```rust
   import sys
   sys.path.insert(0, 'amplifier-bundle/tools/amplihack/hooks')
   from dev_intent_router import should_auto_route

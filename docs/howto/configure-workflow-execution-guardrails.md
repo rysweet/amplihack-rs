@@ -53,29 +53,17 @@ In practice, pass the repository root and let step 04 create or reuse the worktr
 
 ---
 
-## 3. Read the Canonical Execution Root from `RecipeResult.context`
+## 3. Read the Canonical Execution Root from Recipe Output
 
-Use the programmatic API when you need to inspect the final `execution_root` directly.
+Use the CLI with `--output json` when you need to inspect the final `execution_root` directly.
 
-```python
-from amplihack.recipes import run_recipe_by_name
-
-result = run_recipe_by_name(
-    "default-workflow",
-    user_context={
-        "task_description": "Retcon workflow execution guardrails docs",
-        "repo_path": "/home/user/src/amplihack",
-        "branch_prefix": "docs",
-        "expected_gh_account": "rysweet",
-    },
-    progress=False,
-)
-
-worktree_setup = result.context["worktree_setup"]
-
-print(worktree_setup["execution_root"])
-print(worktree_setup["worktree_path"])  # temporary compatibility alias
-print(worktree_setup["branch_name"])
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="Retcon workflow execution guardrails docs" \
+  -c repo_path="/home/user/src/amplihack" \
+  -c branch_prefix="docs" \
+  -c expected_gh_account="rysweet" \
+  --output json | jq '.context.worktree_setup | {execution_root, worktree_path, branch_name}'
 ```
 
 Treat `execution_root` as the authoritative path. Use `worktree_path` only when you are keeping an older integration running during migration.
@@ -86,7 +74,7 @@ Treat `execution_root` as the authoritative path. Use `worktree_path` only when 
 
 During the compatibility window, both fields point at the same location:
 
-```python
+```rust
 assert worktree_setup["execution_root"] == worktree_setup["worktree_path"]
 ```
 

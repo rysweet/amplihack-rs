@@ -6,34 +6,34 @@ Programmatic GitHub issue creation with validation and structured output.
 
 ## Module Location
 
-`/Users/ryan/src/hackathon/MicrosoftHackathon2025-AgenticCoding/.claude/tools/github_issue.py`
+Available as the `amplihack github-issue` CLI subcommand.
 
 ## Public Interface
 
 ### Main Function
 
-```python
-from github_issue import create_issue
+```rust
+use amplihack::github_issue::create_issue;
 
-result = create_issue(
-    title="Bug: Authentication fails",  # Required
-    body="Details here",               # Optional
-    labels=["bug", "auth"],           # Optional
-    assignees=["username"],           # Optional
-    milestone="v1.0",                 # Optional
-    project="Sprint 1",               # Optional
-    repo="owner/repo"                 # Optional (uses current if omitted)
-)
+let result = create_issue(CreateIssueOptions {
+    title: "Bug: Authentication fails".into(),  // Required
+    body: Some("Details here".into()),           // Optional
+    labels: vec!["bug".into(), "auth".into()],   // Optional
+    assignees: vec!["username".into()],           // Optional
+    milestone: Some("v1.0".into()),              // Optional
+    project: Some("Sprint 1".into()),            // Optional
+    repo: Some("owner/repo".into()),             // Optional (uses current if omitted)
+})?;
 ```
 
 ### Return Structure
 
-```python
+```json
 {
-    'success': bool,
-    'issue_url': str,      # If successful
-    'issue_number': int,   # If successful
-    'error': str           # If failed
+    "success": true,
+    "issue_url": "https://github.com/...",
+    "issue_number": 42,
+    "error": null
 }
 ```
 
@@ -57,10 +57,10 @@ The tool handles:
 
 ```bash
 # Simple issue
-python github_issue.py "Title here"
+amplihack github-issue "Title here"
 
 # With options
-python github_issue.py "Bug report" \
+amplihack github-issue "Bug report" \
     --body "Description" \
     --label bug \
     --label high-priority \
@@ -73,7 +73,7 @@ python github_issue.py "Bug report" \
 - Wraps `gh issue create` command
 - Validates inputs before execution
 - Parses output to extract issue URL and number
-- Returns structured Python dict for programmatic use
+- Returns structured JSON for programmatic use
 - Zero dependencies beyond standard library
 
 ## Testing
@@ -81,7 +81,7 @@ python github_issue.py "Bug report" \
 Run test suite:
 
 ```bash
-python test_github_issue.py
+cargo test
 ```
 
 ## Philosophy Compliance

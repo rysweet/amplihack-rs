@@ -150,7 +150,7 @@ steps:
             "id": 1,
             "category": "security|reliability|dead_code|test_gaps|doc_gaps|silent_fallback|error_swallowing|structural|documentation|hardcoded_limits",
             "severity": "critical|high|medium|low",
-            "file": "path/to/file.py",
+            "file": "path/to/file.rs",
             "line": 42,
             "description": "what was found",
             "evidence": "the actual code or grep output proving this",
