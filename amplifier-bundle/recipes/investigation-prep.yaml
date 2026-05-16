@@ -51,7 +51,7 @@ steps:
   #
   # Mirrors amplihack PR #4444 — adapted for amplihack-rs's executor, which
   # exposes context vars as uppercase env vars (e.g. `task_description` →
-  # `TASK_DESCRIPTION`) without the Python recipe-runner's `RECIPE_VAR_`
+  # `TASK_DESCRIPTION`) without the Rust recipe-runner's `RECIPE_VAR_`
   # prefix. The `output:` key overwrites the empty default in place.
   # ==========================================================================
   - id: "normalize-question"

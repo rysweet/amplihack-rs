@@ -83,7 +83,7 @@ steps:
     command: |
       # FIX (#469/#311): Use env var — safe against injection and word-splitting.
       SESSION_JSON="$SESSION_INFO"
-      # Extract status using shell grep — no Python subprocess needed
+      # Extract status using shell grep — no external subprocess needed
       if echo "$SESSION_JSON" | grep -qE '"status" *: *"ok"'; then
         echo "ALLOWED"
       elif echo "$SESSION_JSON" | grep -qE '"status" *: *"no_tree_script"'; then
@@ -171,7 +171,7 @@ steps:
       # FIX (#469/#311): Use env var — safe against injection and word-splitting.
       SESSION_JSON="$SESSION_INFO"
       # #283: parse tree_id, depth, and workstreams count using jq instead of
-      # inline Python. jq is a standard CLI tool and removes a python3 heredoc.
+      # inline scripting. jq is a standard CLI tool and keeps parsing in shell.
       TREE_ID=$(printf '%s' "$SESSION_JSON" | jq -r '.tree_id // ""' 2>/dev/null || echo "")
       SESSION_DEPTH=$(printf '%s' "$SESSION_JSON" | jq -r '.depth // 0' 2>/dev/null || echo "0")
       if [ -n "$WS_FILE" ] && [ -f "$WS_FILE" ]; then

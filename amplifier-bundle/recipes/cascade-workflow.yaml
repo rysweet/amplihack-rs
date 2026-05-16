@@ -968,85 +968,105 @@ steps:
 
       1. **Test Each Cascade Level Independently**:
 
-         ```python
-         def test_primary_level():
-             """Test PRIMARY succeeds when dependencies available"""
-             # Setup: Ensure all external dependencies are available
-             # Execute: Run operation with PRIMARY approach
-             # Assert: Result has optimal quality
-             # Assert: No fallback occurred
+         ```rust
+         #[test]
+         fn test_primary_level() {
+             // Test PRIMARY succeeds when dependencies available
+             // Setup: Ensure all external dependencies are available
+             // Execute: Run operation with PRIMARY approach
+             // Assert: Result has optimal quality
+             // Assert: No fallback occurred
+         }
 
-         def test_secondary_level():
-             """Test SECONDARY succeeds independently"""
-             # Setup: Configure to skip PRIMARY
-             # Execute: Run SECONDARY approach directly
-             # Assert: Result has acceptable quality
-             # Assert: Degradation is documented
+         #[test]
+         fn test_secondary_level() {
+             // Test SECONDARY succeeds independently
+             // Setup: Configure to skip PRIMARY
+             // Execute: Run SECONDARY approach directly
+             // Assert: Result has acceptable quality
+             // Assert: Degradation is documented
+         }
 
-         def test_tertiary_level():
-             """Test TERTIARY succeeds with NO external deps"""
-             # Setup: Disable ALL external services
-             # Execute: Run TERTIARY approach
-             # Assert: Result has minimal but functional quality
-             # Assert: No external calls were made
-             # Assert: ALWAYS succeeds
+         #[test]
+         fn test_tertiary_level() {
+             // Test TERTIARY succeeds with NO external deps
+             // Setup: Disable ALL external services
+             // Execute: Run TERTIARY approach
+             // Assert: Result has minimal but functional quality
+             // Assert: No external calls were made
+             // Assert: ALWAYS succeeds
+         }
          ```
 
       2. **Test Fallback Transitions**:
 
-         ```python
-         def test_primary_to_secondary_fallback():
-             """Test clean handoff from PRIMARY to SECONDARY"""
-             with mock_primary_failure():
-                 result = execute_cascade()
-                 assert result.level == "SECONDARY"
-                 assert result.degradation == "moderate"
-                 assert "fallback" in result.metadata
+         ```rust
+         #[test]
+         fn test_primary_to_secondary_fallback() {
+             // Test clean handoff from PRIMARY to SECONDARY
+             let _guard = mock_primary_failure();
+             let result = execute_cascade();
+             assert_eq!(result.level, "SECONDARY");
+             assert_eq!(result.degradation, "moderate");
+             assert!(result.metadata.contains("fallback"));
+         }
 
-         def test_secondary_to_tertiary_fallback():
-             """Test clean handoff from SECONDARY to TERTIARY"""
-             with mock_primary_and_secondary_failure():
-                 result = execute_cascade()
-                 assert result.level == "TERTIARY"
-                 assert result.degradation == "maximum"
-                 assert result.status == "SUCCESS"  # MUST succeed
+         #[test]
+         fn test_secondary_to_tertiary_fallback() {
+             // Test clean handoff from SECONDARY to TERTIARY
+             let _guard = mock_primary_and_secondary_failure();
+             let result = execute_cascade();
+             assert_eq!(result.level, "TERTIARY");
+             assert_eq!(result.degradation, "maximum");
+             assert_eq!(result.status, "SUCCESS"); // MUST succeed
+         }
          ```
 
       3. **Test Tertiary Always-Succeeds Guarantee**:
 
-         ```python
-         def test_tertiary_with_network_down():
-             """TERTIARY must succeed even with no network"""
-             with disable_all_network():
-                 result = execute_tertiary()
-                 assert result.status == "SUCCESS"
+         ```rust
+         #[test]
+         fn test_tertiary_with_network_down() {
+             // TERTIARY must succeed even with no network
+             let _guard = disable_all_network();
+             let result = execute_tertiary();
+             assert_eq!(result.status, "SUCCESS");
+         }
 
-         def test_tertiary_with_all_services_down():
-             """TERTIARY must succeed with all services unavailable"""
-             with mock_all_external_services_down():
-                 result = execute_tertiary()
-                 assert result.status == "SUCCESS"
+         #[test]
+         fn test_tertiary_with_all_services_down() {
+             // TERTIARY must succeed with all services unavailable
+             let _guard = mock_all_external_services_down();
+             let result = execute_tertiary();
+             assert_eq!(result.status, "SUCCESS");
+         }
 
-         def test_tertiary_with_database_unavailable():
-             """TERTIARY must succeed without database"""
-             with mock_database_unavailable():
-                 result = execute_tertiary()
-                 assert result.status == "SUCCESS"
+         #[test]
+         fn test_tertiary_with_database_unavailable() {
+             // TERTIARY must succeed without database
+             let _guard = mock_database_unavailable();
+             let result = execute_tertiary();
+             assert_eq!(result.status, "SUCCESS");
+         }
 
-         def test_tertiary_is_deterministic():
-             """TERTIARY must produce same output for same input"""
-             result1 = execute_tertiary(input_data)
-             result2 = execute_tertiary(input_data)
-             assert result1.output == result2.output
+         #[test]
+         fn test_tertiary_is_deterministic() {
+             // TERTIARY must produce same output for same input
+             let result1 = execute_tertiary(input_data);
+             let result2 = execute_tertiary(input_data);
+             assert_eq!(result1.output, result2.output);
+         }
          ```
 
       4. **State Preservation Tests**:
 
-         ```python
-         def test_state_passed_between_levels():
-             """Verify context is preserved during fallbacks"""
-             # Track state through cascade
-             # Assert no data loss during transitions
+         ```rust
+         #[test]
+         fn test_state_passed_between_levels() {
+             // Verify context is preserved during fallbacks
+             // Track state through cascade
+             // Assert no data loss during transitions
+         }
          ```
 
       **CURRENT EXECUTION VALIDATION**:

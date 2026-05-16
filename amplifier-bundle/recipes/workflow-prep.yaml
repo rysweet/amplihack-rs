@@ -181,8 +181,8 @@ steps:
 
       **Phase 1 — Project structure**
       Print: `## Progress: Phase 1/4 — Scanning project structure`
-      Use Glob to identify top-level layout, key config files (pyproject.toml,
-      package.json, Cargo.toml, etc.), and source directory organization.
+      Use Glob to identify top-level layout, key config files (Cargo.toml,
+      package.json, etc.), and source directory organization.
 
       **Phase 2 — Relevant code paths**
       Print: `## Progress: Phase 2/4 — Searching for task-relevant code`
