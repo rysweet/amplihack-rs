@@ -5,8 +5,11 @@
 //! and classic execution modes, per-workstream timeout budgets, state
 //! persistence for resumption, and automatic cleanup of completed workstreams.
 
+mod launcher;
 mod models;
 mod orchestrator;
+mod state;
+mod utils;
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -85,7 +88,7 @@ pub fn run_cleanup(config_path: &str, dry_run: bool) -> Result<()> {
 pub fn run_status(base_dir: Option<&str>) -> Result<()> {
     let base = base_dir
         .map(|s| s.to_string())
-        .unwrap_or_else(orchestrator::default_base_dir);
+        .unwrap_or_else(utils::default_base_dir);
     let state_dir = Path::new(&base).join("state");
 
     if !state_dir.exists() {
