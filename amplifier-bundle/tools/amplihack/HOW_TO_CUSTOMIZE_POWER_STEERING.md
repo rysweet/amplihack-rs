@@ -567,42 +567,43 @@ For complex requirements, you may want to implement a custom specific checker.
 
 **Requirements:**
 
-- Python programming knowledge
+- Rust programming knowledge
 - Understanding of transcript structure
-- Ability to modify `power_steering_checker.py`
+- Ability to modify the `power_steering_checker` Rust module
 
 **Steps:**
 
-1. Add method to `PowerSteeringChecker` class
-2. Method signature: `def _check_my_thing(self, transcript: List[Dict], session_id: str) -> bool`
-3. Return `True` if satisfied, `False` if failed
-4. Use fail-open error handling (catch exceptions, return True)
+1. Add method to `PowerSteeringChecker` struct
+2. Method signature: `fn check_my_thing(&self, transcript: &[Message], session_id: &str) -> bool`
+3. Return `true` if satisfied, `false` if failed
+4. Use fail-open error handling (catch errors, return true)
 5. Reference method in YAML: `checker: _check_my_thing`
 
 **Example:**
 
-```python
-def _check_custom_requirement(self, transcript: List[Dict], session_id: str) -> bool:
-    """Check custom team requirement.
+```rust
+fn check_custom_requirement(
+    &self,
+    transcript: &[Message],
+    session_id: &str,
+) -> bool {
+    /// Check custom team requirement.
+    /// Returns true if requirement met, false otherwise.
+    let result = (|| -> Result<bool, Box<dyn std::error::Error>> {
+        for msg in transcript {
+            if msg.msg_type == "user" {
+                let content = msg.content.to_lowercase();
+                if content.contains("custom keyword") {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    })();
 
-    Returns:
-        True if requirement met, False otherwise
-    """
-    try:
-        # Your custom logic here
-        requirement_met = False
-
-        for msg in transcript:
-            if msg.get("type") == "user":
-                content = str(msg.get("message", {}).get("content", ""))
-                if "custom keyword" in content.lower():
-                    requirement_met = True
-                    break
-
-        return requirement_met
-    except Exception:
-        # Fail-open: return True on any error
-        return True
+    // Fail-open: return true on any error
+    result.unwrap_or(true)
+}
 ```
 
 ### Performance Considerations

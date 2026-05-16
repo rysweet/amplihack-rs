@@ -90,5 +90,6 @@ named subcommand of `amplihack-hooks`):
 | `session_stop.py`         | `amplihack-hooks session-stop`      |
 | `precommit_prefs.py`      | `amplihack-hooks precommit-prefs`   |
 
-`session_start.py` is out of scope for issue #522 and is still served by
-its existing path-based hook elsewhere in the install pipeline.
+`session_start.py` is the sole remaining legacy Python hook, targeted for
+removal. It is still served by its existing path-based hook elsewhere in
+the install pipeline.

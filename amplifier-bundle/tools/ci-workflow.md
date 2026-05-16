@@ -11,7 +11,7 @@ A comprehensive CI workflow management tool that provides higher-level CI/CD fun
 
 ## Installation
 
-The tool is located at `~/.amplihack/.claude/tools/ci_workflow.py` and can be used both as a Python module and a command-line tool.
+The tool is available as the `amplihack ci-workflow` CLI subcommand.
 
 ## Command-Line Usage
 
@@ -21,16 +21,16 @@ Run comprehensive diagnostics to identify CI problems:
 
 ```bash
 # Diagnose current branch
-python .claude/tools/ci_workflow.py diagnose
+amplihack ci-workflow diagnose
 
 # Diagnose specific PR
-python .claude/tools/ci_workflow.py diagnose --pr 123
+amplihack ci-workflow diagnose --pr 123
 
 # Diagnose specific branch
-python .claude/tools/ci_workflow.py diagnose --branch feature/new-feature
+amplihack ci-workflow diagnose --branch feature/new-feature
 
 # Get JSON output
-python .claude/tools/ci_workflow.py diagnose --json
+amplihack ci-workflow diagnose --json
 ```
 
 ### Iterate CI Fixes
@@ -39,13 +39,13 @@ Automatically attempt to fix CI issues with configurable retry logic:
 
 ```bash
 # Default 5 attempts
-python .claude/tools/ci_workflow.py iterate-fixes --pr 123
+amplihack ci-workflow iterate-fixes --pr 123
 
 # Custom attempt limit
-python .claude/tools/ci_workflow.py iterate-fixes --max-attempts 3 --pr 123
+amplihack ci-workflow iterate-fixes --max-attempts 3 --pr 123
 
 # JSON output for scripting
-python .claude/tools/ci_workflow.py iterate-fixes --pr 123 --json
+amplihack ci-workflow iterate-fixes --pr 123 --json
 ```
 
 ### Poll CI Status
@@ -54,39 +54,40 @@ Monitor CI status with intelligent polling and backoff:
 
 ```bash
 # Poll current branch (5 minute default timeout)
-python .claude/tools/ci_workflow.py poll-status
+amplihack ci-workflow poll-status
 
 # Poll specific PR with custom timeout
-python .claude/tools/ci_workflow.py poll-status 123 --timeout 600
+amplihack ci-workflow poll-status 123 --timeout 600
 
 # Disable exponential backoff
-python .claude/tools/ci_workflow.py poll-status --no-backoff --interval 10
+amplihack ci-workflow poll-status --no-backoff --interval 10
 
 # JSON output for automation
-python .claude/tools/ci_workflow.py poll-status --json
+amplihack ci-workflow poll-status --json
 ```
 
-## Python API Usage
+## Rust API Usage
 
-```python
-from claude.tools.ci_workflow import diagnose_ci, iterate_fixes, poll_status
+```rust
+use amplihack::ci_workflow::{diagnose_ci, iterate_fixes, poll_status};
 
-# Run diagnostics
-result = diagnose_ci(pr_number=123)
-print(f"Overall status: {result['overall_status']}")
+// Run diagnostics
+let result = diagnose_ci(Some(123), None)?;
+println!("Overall status: {}", result.overall_status);
 
-# Iterate fixes
-fixes_result = iterate_fixes(max_attempts=3, pr_number=123)
-if fixes_result['success']:
-    print("CI issues resolved!")
+// Iterate fixes
+let fixes_result = iterate_fixes(3, Some(123))?;
+if fixes_result.success {
+    println!("CI issues resolved!");
+}
 
-# Poll status
-poll_result = poll_status(
-    reference="123",  # PR number or branch
-    timeout=300,       # 5 minutes
-    exponential_backoff=True
-)
-print(f"Final status: {poll_result['final_status']}")
+// Poll status
+let poll_result = poll_status(
+    Some("123"),  // PR number or branch
+    300,          // 5 minutes
+    true,         // exponential_backoff
+)?;
+println!("Final status: {}", poll_result.final_status);
 ```
 
 ## Diagnostic Components
@@ -132,7 +133,7 @@ This tool is designed to work with the CI/CD specialist agent (`~/.amplihack/.cl
 
 ## Dependencies
 
-- Python 3.7+
+- Rust toolchain
 - GitHub CLI (`gh`) installed and authenticated
 - Git configured with appropriate permissions
 - Project-specific tools (linters, test runners, build tools)
