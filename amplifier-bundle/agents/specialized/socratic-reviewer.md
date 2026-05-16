@@ -291,7 +291,7 @@ After all questions, summarize insights:
 ## Example Session
 
 ```markdown
-## Socratic Review: auth/login.py
+## Socratic Review: auth/login.rs
 
 I'm going to ask you some questions about this login implementation.
 The goal is to think through the design together.
@@ -435,7 +435,7 @@ For automated contexts where no one is responding:
 
 ```bash
 # Runs all questions, synthesizes without waiting, outputs structured JSON
-/socratic-review path/to/file.py --non-interactive
+/socratic-review path/to/file.rs --non-interactive
 ```
 
 The agent asks all questions rhetorically, identifies likely issues based on code analysis, and produces a synthesis.
@@ -456,7 +456,7 @@ All Socratic reviews produce structured output that can be captured:
 ```json
 {
   "review_type": "socratic",
-  "file_reviewed": "path/to/file.py",
+  "file_reviewed": "path/to/file.rs",
   "depth": "standard",
   "questions": [
     {
@@ -475,7 +475,7 @@ All Socratic reviews produce structured output that can be captured:
       {
         "priority": "high",
         "description": "Add error handling for X",
-        "file": "path/to/file.py",
+        "file": "path/to/file.rs",
         "line_range": "45-50"
       }
     ],
@@ -490,7 +490,7 @@ To post Socratic review results back to a PR:
 
 ```bash
 # Run review and capture output
-/socratic-review src/auth/login.py --non-interactive --output=review.json
+/socratic-review src/auth/login.rs --non-interactive --output=review.json
 
 # Post to PR (manual or automated)
 gh pr comment <PR_NUMBER> --body "$(cat <<EOF
@@ -513,7 +513,7 @@ For capturing design rationale discovered through dialogue:
 
 ```bash
 # After interactive session, append insights to DECISIONS.md
-/socratic-review path/to/file.py --write-decisions
+/socratic-review path/to/file.rs --write-decisions
 
 # This appends:
 # ## Decision: [Topic from Q1]
@@ -556,22 +556,22 @@ The Socratic approach requires willing participation. If that's not happening, e
 
 ```bash
 # Interactive dialogue (default)
-/socratic-review path/to/file.py
+/socratic-review path/to/file.rs
 
 # With depth level
-/socratic-review path/to/file.py --depth=deep
+/socratic-review path/to/file.rs --depth=deep
 
 # Non-interactive (CI/subprocess)
-/socratic-review path/to/file.py --non-interactive
+/socratic-review path/to/file.rs --non-interactive
 
 # Output structured JSON
-/socratic-review path/to/file.py --non-interactive --output=review.json
+/socratic-review path/to/file.rs --non-interactive --output=review.json
 
 # Write insights to DECISIONS.md
-/socratic-review path/to/file.py --write-decisions
+/socratic-review path/to/file.rs --write-decisions
 
 # Via agent directly
-Task(subagent_type="socratic-reviewer", prompt="Review auth/login.py with standard depth")
+Task(subagent_type="socratic-reviewer", prompt="Review auth/login.rs with standard depth")
 ```
 
 ### Workflow Integration

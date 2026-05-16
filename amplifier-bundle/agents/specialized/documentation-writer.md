@@ -116,19 +116,19 @@ All code examples MUST be:
 
 **Example - Bad**:
 
-```python
-result = some_function(foo, bar)
-# Returns: something
+```rust
+let result = some_function(foo, bar);
+// Returns: something
 ```
 
 **Example - Good**:
 
-```python
-from amplihack.analyzer import analyze_file
+```rust
+use amplihack::analyzer::analyze_file;
 
-result = analyze_file("src/main.py")
-print(f"Complexity: {result.complexity_score}")
-# Output: Complexity: 12.5
+let result = analyze_file("src/main.rs");
+println!("Complexity: {}", result.complexity_score);
+// Output: Complexity: 12.5
 ```
 
 ### 5. Retcon Exception
@@ -140,11 +140,12 @@ When writing documentation BEFORE implementation (Document-Driven Development):
 
 This describes the intended behavior of Feature X.
 
-```python
-# [PLANNED] - API not yet implemented
-def future_function(input: str) -> Result:
-    """Will process input and return result."""
-    pass
+```rust
+// [PLANNED] - API not yet implemented
+/// Will process input and return result.
+pub fn future_function(input: &str) -> Result<Output, Error> {
+    todo!()
+}
 ```
 ````
 

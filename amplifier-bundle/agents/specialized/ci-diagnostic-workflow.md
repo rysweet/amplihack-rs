@@ -26,27 +26,23 @@ After push or when checking CI:
 
 Initial status check:
 
-```python
-from .claude.tools.ci_status import check_ci_status
-
+```bash
 # Check current branch or PR
-status = check_ci_status()  # Current branch
+gh run list --branch $(git branch --show-current)
 # OR
-status = check_ci_status(ref="123")  # PR #123
+gh run list --commit $(git rev-parse HEAD)
 ```
 
 ### Stage 2: Failure Diagnosis
 
 If CI is failing:
 
-```python
+```bash
 # Parallel diagnostic execution
-[
-    check_ci_status(),  # Get detailed failure info
-    Task("ci-diagnostics", "Compare local vs CI environment"),
-    Task("pattern-matcher", "Search for similar CI failures"),
-    bash("git log -1 --stat")  # What was just pushed
-]
+check_ci_status              # Get detailed failure info
+# Task("ci-diagnostics", "Compare local vs CI environment")
+# Task("pattern-matcher", "Search for similar CI failures")
+git log -1 --stat            # What was just pushed
 ```
 
 ### Stage 3: Fix and Push Loop
@@ -58,19 +54,19 @@ Iterate until success:
 
 ### Current Status
 
-- Python Tests: ✗ FAILED (3 failures)
-- Linting: ✓ PASSED
-- Type Check: ✗ FAILED (mypy errors)
+- Build/Tests: ✗ FAILED (3 failures)
+- Clippy: ✓ PASSED
+- Compilation: ✗ FAILED (type errors)
 
 ### Diagnosis
 
-- Test failures: Import error in test_main.py
-- Type check: Missing type stub for new dependency
+- Test failures: Missing module in tests/main_test.rs
+- Compilation: Mismatched types for new dependency
 
 ### Actions Taken
 
-1. Fixed import path in test_main.py
-2. Added type: ignore for external library
+1. Fixed module path in tests/main_test.rs
+2. Added correct type annotations for external crate
 3. Committed and pushed fixes
 
 ### Pushing Updates
@@ -88,9 +84,9 @@ Waiting for CI to re-run...
 ## CI Status: Ready to Merge
 
 ✓ All CI checks passing!
-✓ Python Tests: PASSED
-✓ Linting: PASSED
-✓ Type Check: PASSED
+✓ Build/Tests: PASSED
+✓ Clippy: PASSED
+✓ Compilation: PASSED
 ✓ Coverage: PASSED (92%)
 
 ### PR Status
@@ -112,8 +108,8 @@ Do NOT merge automatically - wait for:
 
 ### Essential Tools
 
-- **ci_workflow.py**: CI workflow automation (diagnose, iterate-fixes, poll-status)
-- **ci_status.py**: Monitor CI state
+- **ci_workflow**: CI workflow automation (diagnose, iterate-fixes, poll-status)
+- **ci_status**: Monitor CI state
 - **Bash**: Git operations and fixes
 - **MultiEdit**: Fix code issues
 - **Task**: Coordinate diagnostic agents
@@ -149,57 +145,56 @@ PUSHED → CHECKING → FAILING → FIXING → PUSHING → CHECKING → ...
 
 ### 1. Test Failures
 
-```python
+```bash
 # Diagnosis approach
-if "test" in failure_message.lower():
-    # Get test output
-    check_ci_status()  # Will show test failure details
+# If test failures detected:
+cargo test 2>&1  # Get test failure details
 
-    # Common fixes:
-    # - Import errors
-    # - Fixture issues
-    # - Environment differences
-    # - Async test problems
+# Common fixes:
+# - Module path errors
+# - Missing test fixtures
+# - Environment differences
+# - Async test runtime issues
 ```
 
 ### 2. Linting/Formatting
 
-```python
+```bash
 # Diagnosis approach
-if "ruff" in failure_message or "black" in failure_message:
-    # Version mismatch likely
-    Task("ci-diagnostics", "Check ruff/black versions")
+# If clippy or rustfmt failures:
+# Version mismatch likely
+cargo clippy --version
+rustfmt --version
 
-    # Fix locally with CI versions
-    bash("pip install ruff==<ci_version>")
-    bash("ruff check --fix .")
+# Fix locally with CI versions
+cargo fmt --all
+cargo clippy --fix --allow-dirty
 ```
 
-### 3. Type Checking
+### 3. Type/Compilation Errors
 
-```python
+```bash
 # Diagnosis approach
-if "mypy" in failure_message or "pyright" in failure_message:
-    # Often Python version differences
-    # Or missing type stubs
+# Often Rust edition differences
+# Or missing feature flags
 
-    # Quick fix:
-    # Add type: ignore comments
-    # Or install missing stubs
+# Quick fix:
+# Check Cargo.toml edition and features
+# Verify dependency versions match CI
+cargo check 2>&1
 ```
 
 ### 4. Build/Compilation
 
-```python
+```bash
 # Diagnosis approach
-if "build" in failure_message:
-    # Dependencies or environment
-    Task("ci-diagnostics", "Check build environment")
+# Dependencies or environment issues
+# Task("ci-diagnostics", "Check build environment")
 
-    # Common fixes:
-    # - Update requirements.txt
-    # - Fix import order
-    # - Resolve version conflicts
+# Common fixes:
+# - Update Cargo.toml dependencies
+# - Fix module structure
+# - Resolve version conflicts
 ```
 
 ## Integration Protocol
@@ -222,43 +217,52 @@ if "build" in failure_message:
 
 ### Fix Loop Protocol
 
-```python
-MAX_ITERATIONS = 5
-iteration = 0
+```rust
+const MAX_ITERATIONS: u32 = 5;
+let mut iteration = 0;
 
-while iteration < MAX_ITERATIONS:
-    status = check_ci_status()
+while iteration < MAX_ITERATIONS {
+    let status = check_ci_status();
 
-    if status["conclusion"] == "success":
-        break
+    if status.conclusion == "success" {
+        break;
+    }
 
-    # Diagnose and fix
-    diagnose_failures(status)
-    apply_fixes()
-    commit_and_push()
+    // Diagnose and fix
+    diagnose_failures(&status);
+    apply_fixes();
+    commit_and_push();
 
-    iteration += 1
-    wait_for_ci()  # Poll for new results
+    iteration += 1;
+    wait_for_ci();  // Poll for new results
+}
 
-if iteration >= MAX_ITERATIONS:
-    escalate_to_user("CI still failing after 5 attempts")
+if iteration >= MAX_ITERATIONS {
+    escalate_to_user("CI still failing after 5 attempts");
+}
 ```
 
 ### Smart Waiting
 
-```python
-def wait_for_ci():
-    """Smart polling for CI completion"""
-    wait_time = 30  # Start with 30 seconds
-    max_wait = 300  # Max 5 minutes
+```rust
+/// Smart polling for CI completion
+fn wait_for_ci() -> CIStatus {
+    let mut wait_time = Duration::from_secs(30);  // Start with 30 seconds
+    let max_wait = Duration::from_secs(300);      // Max 5 minutes
 
-    while wait_time < max_wait:
-        status = check_ci_status()
-        if status["status"] != "pending":
-            return status
-
-        sleep(wait_time)
-        wait_time *= 1.5  # Exponential backoff
+    loop {
+        let status = check_ci_status();
+        if status.status != "pending" {
+            return status;
+        }
+        if wait_time >= max_wait {
+            break;
+        }
+        std::thread::sleep(wait_time);
+        wait_time = wait_time.mul_f64(1.5);  // Exponential backoff
+    }
+    check_ci_status()
+}
 ```
 
 ## Output Reporting
@@ -282,13 +286,13 @@ def wait_for_ci():
 
 ### Remaining Issues
 
-1. test_integration.py::test_api_connection - Timeout
-2. test_models.py::test_validation - Assertion error
+1. tests/integration_test.rs::test_api_connection - Timeout
+2. tests/models_test.rs::test_validation - Assertion error
 
 ### Next Actions
 
 1. Increase timeout for integration test
-2. Fix validation logic in models.py
+2. Fix validation logic in models.rs
 3. Push fixes and re-check
 
 Estimated iterations remaining: 1
@@ -357,13 +361,13 @@ symptoms:
   - Import errors in CI
 
 diagnosis:
-  - Compare Python versions
+  - Compare Rust toolchain versions
   - Check tool versions
-  - Review requirements.txt
+  - Review Cargo.toml
 
 fix:
-  - Pin versions in requirements
-  - Update .pre-commit-config.yaml
+  - Pin versions in Cargo.toml
+  - Update rust-toolchain.toml
   - Sync local environment
 ```
 

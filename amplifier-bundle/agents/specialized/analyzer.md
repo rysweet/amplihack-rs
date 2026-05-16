@@ -114,7 +114,7 @@ Triage Results: [X documents processed]
 ━━━━━━━━━━━━━━━━━━━━━━━━
 ✓ RELEVANT (Y documents):
   - doc1.md: Contains [topics]
-  - doc2.py: Implements [feature]
+  - doc2.rs: Implements [feature]
 
 ✗ NOT RELEVANT (Z documents):
   - other1.md: Different domain

@@ -104,7 +104,7 @@ The request is unclear. Ask user to clarify:
 "I need clarification on your request. Are you asking for:
 
 A) EXECUTABLE CODE - A working program/script/application that runs and performs actions
-Example: A CLI tool that analyzes files, an API server, a Python script
+Example: A CLI tool that analyzes files, an API server, a Rust binary
 
 B) DOCUMENTATION - A guide, skill, or template for Claude Code or users
 Example: A Claude Code skill, a how-to guide, documentation

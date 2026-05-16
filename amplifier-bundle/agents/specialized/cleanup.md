@@ -82,11 +82,11 @@ Check against project philosophy:
 **Must Remove**:
 
 - Temporary planning docs (`__plan.md`, `__notes.md`)
-- Test artifacts (`test_*.py` for validation only)
-- Sample files (`example*.py`, `sample*.json`)
+- Test artifacts (`*_test.rs` for validation only)
+- Sample files (`example*.rs`, `sample*.json`)
 - Debug files (`debug.log`, `*.debug`)
-- Scratch files (`scratch.py`, `temp*.py`)
-- Backup files (`*.bak`, `*_old.py`)
+- Scratch files (`scratch.rs`, `temp*.rs`)
+- Backup files (`*.bak`, `*_old.rs`)
 
 **Review for Removal**:
 
@@ -162,13 +162,14 @@ After code simplification, simplify test suite:
 
 2. **Proportionality Check**:
 
-   ```python
-   ratio = test_lines / implementation_lines
+   ```rust
+   let ratio = test_lines as f64 / implementation_lines as f64;
 
-   if ratio > 20:
-       flag_for_cleanup("Severe over-testing")
-   elif ratio > 10:
-       flag_for_review("Potential over-testing")
+   if ratio > 20.0 {
+       flag_for_cleanup("Severe over-testing");
+   } else if ratio > 10.0 {
+       flag_for_review("Potential over-testing");
+   }
    ```
 
 3. **Test Consolidation**:
@@ -228,7 +229,7 @@ After code simplification, simplify test suite:
 
 ### Files Removed
 
-- `path/file.py` - Reason: Temporary test script
+- `path/file.rs` - Reason: Temporary test script
 - `path/doc.md` - Reason: Planning document
 
 ### Files Moved

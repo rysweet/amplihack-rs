@@ -127,9 +127,10 @@ I recommend establishing baseline quality automation before proceeding.
 
 ## Recommended Pre-commit Tools
 
-### Python Projects:
-- **ruff**: Fast linting + formatting (replaces black, flake8, isort)
-- **pyright** or **mypy**: Type checking
+### Rust Projects:
+- **cargo fmt**: Code formatting
+- **cargo clippy**: Linting and static analysis
+- **cargo test**: Run test suite
 - **detect-secrets**: Prevent credential leaks
 
 ### JavaScript/TypeScript Projects:
@@ -163,7 +164,7 @@ cargo test --workspace --locked
 
 See `.pre-commit-config.yaml` in this project for a production-ready example with:
 
-- Python tooling (ruff, pyright, detect-secrets)
+- Rust tooling (cargo fmt, cargo clippy, detect-secrets)
 - JS/TS tooling (prettier, eslint)
 - Markdown tooling (prettier, markdownlint)
 - Universal checks
