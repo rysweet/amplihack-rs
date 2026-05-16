@@ -78,7 +78,7 @@ Extract quantitative data from agent execution.
 
 ### Example Signals
 
-```python
+```rust
 # During execution, track:
 class AgentExecution:
     def __init__(self):
@@ -109,7 +109,7 @@ class AgentExecution:
 
 Store these signals in experience metadata:
 
-```python
+```rust
 from amplihack_memory import Experience, ExperienceType
 from datetime import datetime
 
@@ -132,7 +132,7 @@ Create metrics from raw signals.
 
 ### Performance Metrics
 
-```python
+```rust
 # agents/my-agent/metrics.py
 
 from amplihack_memory import MemoryConnector, ExperienceType
@@ -210,7 +210,7 @@ def calculate_performance_metrics(
 
 ### Quality Metrics
 
-```python
+```rust
 @dataclass
 class QualityMetrics:
     precision: float  # True positives / (True positives + False positives)
@@ -278,7 +278,7 @@ def calculate_quality_metrics(
 
 ### Learning Metrics
 
-```python
+```rust
 @dataclass
 class LearningMetrics:
     total_patterns: int
@@ -345,7 +345,7 @@ def calculate_learning_metrics(
 
 Create a unified metrics calculator:
 
-```python
+```rust
 @dataclass
 class AgentMetrics:
     """Complete metrics for agent."""
@@ -454,7 +454,7 @@ def _identify_weaknesses(
 
 Expose metrics via CLI:
 
-```python
+```rust
 # agents/my-agent/cli.py
 
 @cli.command()
@@ -543,7 +543,7 @@ python -m my_agent metrics --format json > metrics.json
 
 Test that metrics accurately reflect agent behavior:
 
-```python
+```rust
 # agents/my-agent/tests/test_metrics.py
 
 import pytest
@@ -625,7 +625,7 @@ def test_overall_score_improves_with_better_metrics(agent_with_mock_data):
 
 ### Security Scanner Metrics
 
-```python
+```rust
 @dataclass
 class SecurityMetrics:
     vulnerabilities_found: int
@@ -654,7 +654,7 @@ def calculate_security_metrics(memory: MemoryConnector) -> SecurityMetrics:
 
 ### Performance Optimizer Metrics
 
-```python
+```rust
 @dataclass
 class OptimizationMetrics:
     optimizations_suggested: int
@@ -692,7 +692,7 @@ def calculate_optimization_metrics(memory: MemoryConnector) -> OptimizationMetri
 
 Don't try to reconstruct metrics after the fact. Track signals as work happens:
 
-```python
+```rust
 class AgentExecution:
     def __init__(self):
         self.metrics_tracker = MetricsTracker()
@@ -715,7 +715,7 @@ class AgentExecution:
 
 Quality metrics (precision, recall) require ground truth. Plan for validation:
 
-```python
+```rust
 # Store results for validation
 experience = Experience(
     experience_type=ExperienceType.SUCCESS,
@@ -745,7 +745,7 @@ def validate_findings(validation_id: str, results: ValidationResults):
 
 Always compare to a baseline:
 
-```python
+```rust
 # First run establishes baseline
 if not memory.has_baseline():
     memory.set_baseline(metrics)
@@ -760,7 +760,7 @@ else:
 
 Create trend visualizations:
 
-```python
+```rust
 @cli.command()
 def metrics_trend():
     """Show metrics trend over time."""

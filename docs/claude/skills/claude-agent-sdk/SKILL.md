@@ -77,7 +77,7 @@ export ANTHROPIC_API_KEY="your-api-key-here"  # pragma: allowlist secret
 
 Or pass it explicitly in code:
 
-```python
+```rust
 from claude_agents import Agent
 
 agent = Agent(api_key="your-api-key-here")
@@ -87,7 +87,7 @@ agent = Agent(api_key="your-api-key-here")
 
 **Python Example:**
 
-```python
+```rust
 from claude_agents import Agent
 
 # Create agent with default settings
@@ -121,7 +121,7 @@ Tools extend agent capabilities with external functions:
 
 **Python:**
 
-```python
+```rust
 from claude_agents import Agent
 from claude_agents.tools import Tool
 
@@ -185,7 +185,7 @@ The SDK manages conversation context automatically:
 
 **Subagents for Context Isolation:**
 
-```python
+```rust
 # Spawn subagent with isolated context
 with agent.subagent(
     system="You are a code reviewer focused on security.",
@@ -214,7 +214,7 @@ Tools are the agent's interface to external capabilities.
 
 **Custom Tool Schema:**
 
-```python
+```rust
 Tool(
     name="tool_name",              # Unique identifier
     description="What it does",    # Clear capability description
@@ -230,7 +230,7 @@ Tool(
 **MCP Integration:**
 The SDK can use Model Context Protocol (MCP) servers as tool providers:
 
-```python
+```rust
 from claude_agents import Agent
 from claude_agents.mcp import MCPClient
 
@@ -249,7 +249,7 @@ Control which tools agents can access:
 
 **Allowed Tools (Whitelist):**
 
-```python
+```rust
 agent = Agent(
     model="claude-sonnet-4-5-20250929",
     tools=[tool1, tool2, tool3, tool4],
@@ -259,7 +259,7 @@ agent = Agent(
 
 **Disallowed Tools (Blacklist):**
 
-```python
+```rust
 agent = Agent(
     model="claude-sonnet-4-5-20250929",
     tools=[tool1, tool2, tool3],
@@ -285,7 +285,7 @@ Hooks provide lifecycle event interception for observability, validation, and co
 
 **Basic Hook Example:**
 
-```python
+```rust
 from claude_agents.hooks import PreToolUseHook
 
 class LoggingHook(PreToolUseHook):
@@ -302,7 +302,7 @@ agent = Agent(
 
 **Blocking Tool Use:**
 
-```python
+```rust
 class ValidationHook(PreToolUseHook):
     async def execute(self, context):
         if context.tool_name == "bash" and "rm -rf" in context.tool_input.get("command", ""):
@@ -314,7 +314,7 @@ class ValidationHook(PreToolUseHook):
 
 ### File Operations
 
-```python
+```rust
 from claude_agents import Agent
 
 agent = Agent(
@@ -329,7 +329,7 @@ result = agent.run(
 
 ### Code Execution
 
-```python
+```rust
 agent = Agent(
     model="claude-sonnet-4-5-20250929",
     allowed_tools=["bash"]
@@ -342,7 +342,7 @@ result = agent.run(
 
 ### Agentic Search (Gather-Act Pattern)
 
-```python
+```rust
 # Agent automatically gathers information iteratively
 search_agent = Agent(
     model="claude-sonnet-4-5-20250929",
@@ -356,7 +356,7 @@ result = search_agent.run(
 
 ### Subagent Delegation
 
-```python
+```rust
 main_agent = Agent(model="claude-sonnet-4-5-20250929")
 
 # Delegate specialized task to subagent
@@ -372,7 +372,7 @@ main_agent.run(f"Based on this analysis: {analysis.response}, what actions shoul
 
 ### Error Handling
 
-```python
+```rust
 from claude_agents import Agent, AgentError
 
 agent = Agent(model="claude-sonnet-4-5-20250929")
@@ -387,7 +387,7 @@ except AgentError as e:
 
 ### Verification Pattern
 
-```python
+```rust
 # Agent can self-verify results
 agent = Agent(
     model="claude-sonnet-4-5-20250929",
@@ -443,7 +443,7 @@ The Agent SDK skill integrates with the Amplihack framework:
 
 **Creating Amplihack Agents with SDK:**
 
-```python
+```rust
 # In .claude/agents/amplihack/specialized/my_agent.md
 # Use Agent SDK patterns for tool-using agents
 from claude_agents import Agent
@@ -460,7 +460,7 @@ def create_specialized_agent():
 
 **Using MCP Servers in Amplihack:**
 
-```python
+```rust
 # Integrate MCP tools into Amplihack workflow
 from claude_agents.mcp import MCPClient
 
@@ -477,7 +477,7 @@ result = agent.run("Create a GitHub issue for the bug we just found")
 
 **Hooks for Amplihack Observability:**
 
-```python
+```rust
 # Log all agent actions to Amplihack runtime logs
 class AmplihackLoggingHook(PreToolUseHook):
     async def execute(self, context):
@@ -493,7 +493,7 @@ class AmplihackLoggingHook(PreToolUseHook):
 
 ### Essential Commands
 
-```python
+```rust
 # Basic agent
 agent = Agent(model="claude-sonnet-4-5-20250929")
 result = agent.run("task")
@@ -519,7 +519,7 @@ agent = Agent(model="...", mcp_clients=[mcp])
 
 ### Common Tool Patterns
 
-```python
+```rust
 # File operations
 tools=["read_file", "write_file", "glob"]
 

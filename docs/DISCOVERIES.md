@@ -123,7 +123,7 @@ Auto mode integration with Claude Code SDK had multiple failure modes including 
 
 **Issue #1013 resolution** implemented hybrid session management:
 
-```python
+```rust
 # Hybrid approach: SDK fork for subprocess + environment variable export
 session_data = self._sdk.export_for_subprocess()
 os.environ["CLAUDE_CODE_SESSION_ID"] = session_data["session_id"]
@@ -133,7 +133,7 @@ fork_output = fork_manager.create_fork(session_id)
 
 **Test enforcement** updated to respect auto mode:
 
-```python
+```rust
 # Check if running in auto mode before enforcing tests
 if not is_auto_mode():
     enforce_test_requirements()
@@ -170,7 +170,7 @@ Proxy failed to start with port already in use errors, causing sessions to hang 
 
 **Dynamic port selection** with retry:
 
-```python
+```rust
 # Try binding to requested port, fall back to dynamic port if busy
 for attempt in range(max_retries):
     try:
@@ -186,7 +186,7 @@ for attempt in range(max_retries):
 
 **Health check timeout**:
 
-```python
+```rust
 # Don't wait forever for proxy
 health_check_timeout = 30  # seconds
 if not wait_for_proxy_health(timeout=health_check_timeout):
@@ -228,7 +228,7 @@ User-provided hooks failed silently or with cryptic errors. Common failure modes
 
 **Hook validation at installation time**:
 
-```python
+```rust
 def validate_hook(hook_path: Path) -> None:
     if not hook_path.exists():
         raise HookValidationError(f"Hook does not exist: {hook_path}")
@@ -242,7 +242,7 @@ def validate_hook(hook_path: Path) -> None:
 
 **Clear timeout handling**:
 
-```python
+```rust
 try:
     result = subprocess.run(
         hook_cmd,
@@ -473,7 +473,7 @@ High-frequency agent operations hit Claude API rate limits, causing:
 
 **Rate limit protection system**:
 
-```python
+```rust
 class RateLimitProtection:
     def __init__(self, requests_per_minute=50):
         self.rpm_limit = requests_per_minute
@@ -492,7 +492,7 @@ class RateLimitProtection:
 
 **Exponential backoff with jitter**:
 
-```python
+```rust
 def exponential_backoff(attempt: int) -> float:
     base_delay = 2 ** attempt
     jitter = random.uniform(0, 0.1 * base_delay)

@@ -44,7 +44,7 @@ services:
 
 **Template:**
 
-```python
+```rust
 """Configuration management for <your config file>."""
 
 import json  # or yaml, toml, etc.
@@ -145,7 +145,7 @@ def _cleanup_old_backups(backup_dir: Path, stem: str, keep_count: int = 10) -> N
 
 **Template:**
 
-```python
+```rust
 """Business logic for <configuration entity> management."""
 
 from dataclasses import dataclass, field
@@ -303,7 +303,7 @@ def validate_config(config: dict[str, Any]) -> list[str]:
 
 **Template:**
 
-```python
+```rust
 """Command-line interface."""
 
 import argparse
@@ -488,7 +488,7 @@ if __name__ == "__main__":
 
 **File**: `__init__.py`
 
-```python
+```rust
 """Your tool - Configuration management."""
 
 from .config_manager import backup_config, read_config, restore_config, write_config
@@ -521,7 +521,7 @@ __version__ = "1.0.0"
 
 **File**: `tests/test_config_manager.py`
 
-```python
+```rust
 """Tests for config_manager."""
 
 import json
@@ -558,7 +558,7 @@ def test_backup_config(temp_config):
 
 **File**: `tests/test_operations.py`
 
-```python
+```rust
 """Tests for operations."""
 
 import pytest
@@ -619,7 +619,7 @@ Before considering your tool complete:
 
 ### YAML Configuration
 
-```python
+```rust
 import yaml
 
 def read_config(path):
@@ -635,7 +635,7 @@ def write_config(path, data):
 
 ### TOML Configuration
 
-```python
+```rust
 import tomli
 import tomli_w
 
@@ -652,7 +652,7 @@ def write_config(path, data):
 
 ### Environment Variables
 
-```python
+```rust
 # For .env files
 from dotenv import dotenv_values, set_key
 

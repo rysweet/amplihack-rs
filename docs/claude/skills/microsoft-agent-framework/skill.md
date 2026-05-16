@@ -40,7 +40,7 @@ Stateful conversational entities that process messages, call tools, and maintain
 
 **Python Example**:
 
-```python
+```rust
 from agents_framework import Agent, ModelClient
 
 # Create agent with model
@@ -82,7 +82,7 @@ Extend agent capabilities by providing callable functions.
 
 **Python Example**:
 
-```python
+```rust
 from agents_framework import function_tool
 
 @function_tool
@@ -122,7 +122,7 @@ Graph-based orchestration for multi-agent systems with conditional routing and p
 
 **Python Example**:
 
-```python
+```rust
 from agents_framework import Workflow, GraphWorkflow
 
 # Define workflow graph
@@ -172,7 +172,7 @@ Maintain conversation history and shared state across agents.
 
 **Python**:
 
-```python
+```rust
 from agents_framework import Thread, ContextProvider
 
 # Thread maintains conversation history
@@ -197,7 +197,7 @@ Add cross-cutting concerns like logging, auth, and monitoring.
 
 **Python**:
 
-```python
+```rust
 from agents_framework import Middleware
 from opentelemetry import trace
 
@@ -236,7 +236,7 @@ public class LoggingMiddleware : IMiddleware
 
 ### Human-in-the-Loop Approval
 
-```python
+```rust
 from agents_framework import HumanInTheLoop
 
 @function_tool
@@ -255,7 +255,7 @@ agent = Agent(tools=[delete_file_with_approval])
 
 ### Parallel Agent Execution
 
-```python
+```rust
 workflow = GraphWorkflow()
 
 # Add multiple agents
@@ -272,7 +272,7 @@ result = await workflow.run(message="Analyze market trends")
 
 ### Structured Output Generation
 
-```python
+```rust
 from pydantic import BaseModel
 
 class WeatherReport(BaseModel):
@@ -293,7 +293,7 @@ print(f"{report.location}: {report.temperature}°F, {report.conditions}")
 
 ### Error Handling & Retries
 
-```python
+```rust
 from agents_framework import RetryPolicy
 
 agent = Agent(
@@ -335,7 +335,7 @@ except Exception as e:
 
 **Hybrid Approach**:
 
-```python
+```rust
 # Use amplihack for orchestration
 from claude import Agent as ClaudeAgent
 
@@ -367,7 +367,7 @@ See `@integration/amplihack-integration.md` for complete patterns.
 
 2. **Create Basic Agent**:
 
-   ```python
+   ```rust
    from agents_framework import Agent, ModelClient
 
    agent = Agent(
@@ -381,7 +381,7 @@ See `@integration/amplihack-integration.md` for complete patterns.
 
 3. **Add Tools**:
 
-   ```python
+   ```rust
    @function_tool
    def calculate(expr: str) -> float:
        return eval(expr)
@@ -391,7 +391,7 @@ See `@integration/amplihack-integration.md` for complete patterns.
 
 4. **Build Workflow**:
 
-   ```python
+   ```rust
    workflow = GraphWorkflow()
    workflow.add_node("agent1", agent1)
    workflow.add_node("agent2", agent2)
@@ -400,7 +400,7 @@ See `@integration/amplihack-integration.md` for complete patterns.
    ```
 
 5. **Add Telemetry**:
-   ```python
+   ```rust
    from opentelemetry import trace
    tracer = trace.get_tracer(__name__)
    with tracer.start_as_current_span("agent-run"):

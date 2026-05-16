@@ -20,7 +20,7 @@ run today.
 Every hive mind starts with a prompt that defines what your agent knows and
 cares about. Write a system prompt describing your agent's domain and purpose.
 
-```python
+```rust
 # prompts/security_analyst.py
 SYSTEM_PROMPT = """You are a cloud security analyst for a distributed infrastructure.
 You monitor server events, detect anomalies, and correlate findings across systems.
@@ -48,8 +48,8 @@ The `Memory` facade requires zero configuration to get started. It defaults
 to a local `cognitive` backend backed by a Kuzu graph database. No network,
 no YAML, no environment variables required.
 
-```python
-from amplihack.memory import Memory
+```rust
+// use amplihack_memory:: Memory
 
 # Zero-config local memory — works out of the box
 mem = Memory("security-analyst-1")
@@ -65,7 +65,7 @@ Under the hood this resolves to:
 The storage path is created automatically on first use. The Kuzu database
 persists between runs.
 
-```python
+```rust
 # Verify the memory is alive
 print(mem._agent_name)  # "security-analyst-1"
 mem.close()             # Always close to flush the Kuzu buffer
@@ -78,8 +78,8 @@ mem.close()             # Always close to flush the Kuzu buffer
 The entire API is two methods: `remember()` stores a fact, `recall()` retrieves
 relevant facts for a query.
 
-```python
-from amplihack.memory import Memory
+```rust
+// use amplihack_memory:: Memory
 
 mem = Memory("security-analyst-1")
 
@@ -134,10 +134,10 @@ Add a second agent and connect them through a shared `DistributedHiveGraph`.
 Both agents learn different facts. Either agent can recall facts learned by
 the other because all facts flow through the shared hive.
 
-```python
+```rust
 from pathlib import Path
-from amplihack.memory import Memory
-from amplihack.agents.goal_seeking.hive_mind.distributed_hive_graph import (
+// use amplihack_memory:: Memory
+// use amplihack_domain_agents:: (
     DistributedHiveGraph,
 )
 
@@ -233,8 +233,8 @@ export AMPLIHACK_MEMORY_GOSSIP_ENABLED=true
 With this configuration, `Memory("my-agent")` automatically uses the
 distributed topology and Azure Service Bus — no code changes needed:
 
-```python
-from amplihack.memory import Memory
+```rust
+// use amplihack_memory:: Memory
 
 # Config comes from memory.yaml or env vars
 mem = Memory("security-analyst-42")
@@ -353,8 +353,8 @@ spec:
 
 Load the manifest and instantiate agents in Python:
 
-```python
-from amplihack.agents.goal_seeking.hive_mind.controller import HiveController
+```rust
+// use amplihack_domain_agents:: HiveController
 
 controller = HiveController.from_yaml("hive-config.yaml")
 controller.apply()  # Creates all agents, hives, and connections
@@ -628,7 +628,7 @@ curl -X POST "https://${SOC_URL}/query" \
 
 ### Python batch verification
 
-```python
+```rust
 import httpx
 import time
 
@@ -674,7 +674,7 @@ with httpx.Client() as client:
 bash experiments/hive_mind/deploy_azure_hive.sh --eval
 
 # Or run with custom parameters
-python -m amplihack_eval.run \
+amplihack eval run \
   --scenario long_horizon \
   --topology distributed \
   --num-agents 100 \

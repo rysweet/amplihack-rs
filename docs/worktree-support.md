@@ -57,8 +57,8 @@ touch "$(git rev-parse --git-common-dir)/.claude/runtime/power-steering/.disable
 
 Power Steering automatically detects git worktrees using `git rev-parse --git-common-dir`:
 
-```python
-from amplihack.tools.amplihack.git_utils import (
+```rust
+// use amplihack_utils::git_utils:: (
     get_common_git_dir,
     is_worktree
 )
@@ -108,9 +108,9 @@ Power Steering checks three locations for the `.disabled` file:
 2. Shared Git directory (affects all worktrees)
 3. Project root (backward compatible)
 
-```python
+```rust
 # Example: Multi-path check
-from amplihack.tools.amplihack.git_utils import find_disabled_file
+// use amplihack_utils::git_utils:: find_disabled_file
 
 disabled_file = find_disabled_file()
 if disabled_file:
@@ -190,7 +190,7 @@ mkdir -p "$(git rev-parse --git-common-dir)/.claude/runtime/power-steering/"
 ```bash
 # Show all checked locations
 python3 << 'EOF'
-from amplihack.tools.amplihack.git_utils import find_disabled_file
+// use amplihack_utils::git_utils:: find_disabled_file
 result = find_disabled_file()
 if result:
     print(f"Found: {result}")

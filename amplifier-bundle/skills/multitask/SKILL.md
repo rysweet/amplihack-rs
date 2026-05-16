@@ -65,8 +65,8 @@ User provides task list
         v
 For each task:
   1. Clone branch to /tmp/amplihack-workstreams/ws-{issue}/
-  2. Write launcher.py (Recipe Runner with CLISubprocessAdapter)
-  3. Write run.sh (sets session tree vars, runs launcher.py)
+  2. Write launcher.sh (Recipe Runner via amplihack CLI)
+  3. Write run.sh (sets session tree vars, runs launcher.sh)
   4. Launch subprocess via Popen
         |
         v
@@ -144,7 +144,7 @@ tail -f /tmp/amplihack-workstreams/log-*.txt
 tail -f /tmp/amplihack-workstreams/log-123.txt
 
 # Check running processes
-ps aux | grep launcher.py
+ps aux | grep launcher.sh
 
 # Final report
 cat /tmp/amplihack-workstreams/REPORT.md

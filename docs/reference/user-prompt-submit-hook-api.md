@@ -52,7 +52,7 @@ Compares CLAUDE.md vs AMPLIHACK.md and injects framework instructions if they di
 
 **Algorithm**:
 
-```python
+```rust
 def _inject_amplihack_if_different(self) -> str:
     # 1. Find AMPLIHACK.md (priority order)
     amplihack_md = self._find_amplihack_md()
@@ -102,7 +102,7 @@ def _inject_amplihack_if_different(self) -> str:
 
 **CLAUDE.md location**: Always `project_root/CLAUDE.md`
 
-```python
+```rust
 def _find_amplihack_md(self) -> Optional[Path]:
     # Try plugin location
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
@@ -128,7 +128,7 @@ def _find_amplihack_md(self) -> Optional[Path]:
 
 ### Cache Structure
 
-```python
+```rust
 class UserPromptSubmitHook(HookProcessor):
     def __init__(self):
         super().__init__("user_prompt_submit")
@@ -173,7 +173,7 @@ Speedup factor:              80x
 
 Files are compared using whitespace-normalized content:
 
-```python
+```rust
 if claude_content.strip() == amplihack_content.strip():
     # Files are identical (ignoring leading/trailing whitespace)
 ```
@@ -196,7 +196,7 @@ This balances correctness (ignore formatting) with accuracy (detect real changes
 
 All errors result in graceful degradation:
 
-```python
+```rust
 try:
     return self._inject_amplihack_if_different()
 except Exception as e:
@@ -239,7 +239,7 @@ This ensures all framework instructions are available.
 
 ### Full process() Method Flow
 
-```python
+```rust
 def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
     context_parts = []
 
@@ -309,7 +309,7 @@ def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
 
 Test the comparison logic:
 
-```python
+```rust
 def test_inject_amplihack_different_files():
     """Test injection when CLAUDE.md differs from AMPLIHACK.md."""
     hook = UserPromptSubmitHook()

@@ -54,7 +54,7 @@ Use Expert Panel Review when you need:
 
 ## Basic Usage
 
-```python
+```rust
 from .claude.tools.amplihack.orchestration.patterns import run_expert_panel
 
 # Review a code implementation
@@ -73,7 +73,7 @@ print(f"Votes: {result['decision'].approve_votes} approve, {result['decision'].r
 
 ### Default Experts (3 experts)
 
-```python
+```rust
 # Default panel covers essential domains
 result = run_expert_panel(
     solution=code_to_review,
@@ -90,7 +90,7 @@ Default experts:
 
 ### Custom Experts
 
-```python
+```rust
 # Define custom expert panel
 custom_experts = [
     {"domain": "security", "focus": "threat modeling, input validation"},
@@ -112,7 +112,7 @@ result = run_expert_panel(
 
 **Simple Majority (Default)**
 
-```python
+```rust
 # Count votes, majority wins
 result = run_expert_panel(
     solution=code,
@@ -124,7 +124,7 @@ result = run_expert_panel(
 
 **Weighted by Confidence**
 
-```python
+```rust
 # Weight votes by expert confidence scores
 result = run_expert_panel(
     solution=code,
@@ -136,7 +136,7 @@ result = run_expert_panel(
 
 **Unanimous**
 
-```python
+```rust
 # Require all experts to agree
 result = run_expert_panel(
     solution=critical_code,
@@ -148,7 +148,7 @@ result = run_expert_panel(
 
 ### Quorum Requirements
 
-```python
+```rust
 # Set minimum non-abstain votes required
 result = run_expert_panel(
     solution=code,
@@ -162,7 +162,7 @@ result = run_expert_panel(
 
 ## Result Structure
 
-```python
+```rust
 result = {
     "reviews": [ExpertReview, ...],  # All expert reviews
     "decision": AggregatedDecision,   # Final decision
@@ -196,7 +196,7 @@ if result["dissent_report"]:
 
 Combine Expert Panel with N-Version Programming for ultimate robustness:
 
-```python
+```rust
 from .claude.tools.amplihack.orchestration.patterns import run_n_version, run_expert_panel
 
 # Step 1: Generate 3 implementations
@@ -236,7 +236,7 @@ print(f"Selected version {best_version['version']} with {best_version['decision'
 
 ### Code Review Gate
 
-```python
+```rust
 def code_review_gate(pr_code: str) -> bool:
     """Gate PR merge on expert panel approval."""
     result = run_expert_panel(
@@ -262,7 +262,7 @@ def code_review_gate(pr_code: str) -> bool:
 
 ### Security Audit
 
-```python
+```rust
 # Security-critical code requires unanimous approval
 security_experts = [
     {"domain": "authentication", "focus": "auth mechanisms, session management"},
@@ -286,7 +286,7 @@ else:
 
 ### Design Review Board
 
-```python
+```rust
 # Multi-stakeholder design approval
 stakeholder_experts = [
     {"domain": "architecture", "focus": "system design, scalability"},
@@ -335,7 +335,7 @@ if result["dissent_report"]:
 
 Track effectiveness:
 
-```python
+```rust
 # Track decision quality
 panel_decisions = []
 
@@ -355,7 +355,7 @@ print(f"Unanimous rate: {unanimous_rate:.1%}")  # Target: 70-80%
 
 ### Conditional Escalation
 
-```python
+```rust
 # Start with simple majority, escalate to unanimous if split
 result = run_expert_panel(solution, aggregation_method="simple_majority", quorum=3)
 
@@ -379,7 +379,7 @@ if result["decision"].consensus_type == "split":
 
 ### Time-Bounded Reviews
 
-```python
+```rust
 # Set timeout per expert review
 result = run_expert_panel(
     solution=code,
@@ -402,7 +402,7 @@ result = run_expert_panel(
 
 All expert reviews and decisions logged:
 
-```python
+```rust
 result = run_expert_panel(...)
 print(f"Session logs: {result['session_id']}")
 # Logs location: .claude/runtime/logs/<session_id>/
@@ -410,7 +410,7 @@ print(f"Session logs: {result['session_id']}")
 
 ## Error Handling
 
-```python
+```rust
 result = run_expert_panel(...)
 
 if not result["success"]:

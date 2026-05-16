@@ -56,7 +56,7 @@ variable (direct Python imports, existing test suites, legacy configurations).
 If you call the knowledge builder directly from Python, note that newer code
 uses `agent_cmd` and older examples may still refer to `claude_cmd`:
 
-```python
+```rust
 # Old (deprecated)
 orchestrator = KnowledgeOrchestrator(claude_cmd="claude")
 

@@ -6,7 +6,7 @@
 
 Multiple agents debate a topic and converge on a consensus:
 
-```python
+```rust
 async def debate_pattern(topic: str, rounds: int = 3):
     """Multi-agent debate to reach consensus."""
     agents = {
@@ -40,7 +40,7 @@ async def debate_pattern(topic: str, rounds: int = 3):
 
 Agent reviews and improves its own output:
 
-```python
+```rust
 async def reflection_pattern(task: str, iterations: int = 2):
     """Agent iteratively refines output."""
     generator = Agent(model=model, instructions="Generate content")
@@ -59,7 +59,7 @@ async def reflection_pattern(task: str, iterations: int = 2):
 
 Break down complex tasks into subtasks:
 
-```python
+```rust
 async def hierarchical_planning(goal: str):
     """Decompose goal into plan and execute."""
     planner = Agent(model=model, instructions="Create detailed plans")
@@ -88,7 +88,7 @@ async def hierarchical_planning(goal: str):
 
 Stream agent response as it's generated:
 
-```python
+```rust
 async def stream_response(agent: Agent, message: str):
     """Display response incrementally."""
     print("Agent: ", end="", flush=True)
@@ -103,7 +103,7 @@ async def stream_response(agent: Agent, message: str):
 
 Stream updates from workflow execution:
 
-```python
+```rust
 async def stream_workflow(workflow: GraphWorkflow, initial_state: dict):
     """Stream workflow progress."""
     async for event in workflow.run_stream(initial_state=initial_state):
@@ -118,7 +118,7 @@ async def stream_workflow(workflow: GraphWorkflow, initial_state: dict):
 
 Stream tool execution results:
 
-```python
+```rust
 @function_tool
 async def search_and_summarize(query: str) -> str:
     """Search and stream results."""
@@ -136,7 +136,7 @@ async def search_and_summarize(query: str) -> str:
 
 ### Basic RAG
 
-```python
+```rust
 from agents_framework import Agent, ContextProvider
 
 class RAGAgent:
@@ -163,7 +163,7 @@ class RAGAgent:
 
 ### Multi-Hop RAG
 
-```python
+```rust
 async def multi_hop_rag(question: str, max_hops: int = 3):
     """Follow-up retrieval based on partial answers."""
     agent = Agent(model=model)
@@ -193,7 +193,7 @@ async def multi_hop_rag(question: str, max_hops: int = 3):
 
 ### Hybrid Search RAG
 
-```python
+```rust
 async def hybrid_search_rag(question: str):
     """Combine keyword and semantic search."""
     # Keyword search
@@ -219,7 +219,7 @@ async def hybrid_search_rag(question: str):
 
 ### Checkpointing Pattern
 
-```python
+```rust
 from agents_framework import CheckpointManager
 
 async def long_running_workflow(data: list, checkpoint_id: str):
@@ -251,7 +251,7 @@ async def long_running_workflow(data: list, checkpoint_id: str):
 
 ### Background Task Pattern
 
-```python
+```rust
 import asyncio
 from typing import Dict
 
@@ -293,7 +293,7 @@ result = await manager.get_result("job123")
 
 ### Batching Pattern
 
-```python
+```rust
 async def batch_processing(items: list, batch_size: int = 10):
     """Process items in batches."""
     results = []
@@ -314,7 +314,7 @@ async def batch_processing(items: list, batch_size: int = 10):
 
 ### Caching Pattern
 
-```python
+```rust
 from functools import lru_cache
 import hashlib
 
@@ -342,7 +342,7 @@ class CachedAgent:
 
 ### Load Balancing Pattern
 
-```python
+```rust
 class LoadBalancedAgents:
     def __init__(self, agents: list[Agent]):
         self.agents = agents
@@ -367,7 +367,7 @@ load_balancer = LoadBalancedAgents(agents)
 
 ### Retry with Exponential Backoff
 
-```python
+```rust
 import asyncio
 
 async def retry_with_backoff(agent: Agent, message: str, max_retries: int = 3):
@@ -386,7 +386,7 @@ async def retry_with_backoff(agent: Agent, message: str, max_retries: int = 3):
 
 ### Fallback Pattern
 
-```python
+```rust
 async def fallback_pattern(message: str):
     """Try multiple approaches until one succeeds."""
     strategies = [
@@ -407,7 +407,7 @@ async def fallback_pattern(message: str):
 
 ### Circuit Breaker Pattern
 
-```python
+```rust
 from datetime import datetime, timedelta
 
 class CircuitBreaker:
@@ -444,7 +444,7 @@ class CircuitBreaker:
 
 ### Mock Agent Pattern
 
-```python
+```rust
 class MockAgent:
     def __init__(self, canned_responses: dict):
         self.responses = canned_responses
@@ -469,7 +469,7 @@ async def test_workflow():
 
 ### Deterministic Testing
 
-```python
+```rust
 # Use temperature=0 for deterministic outputs
 test_agent = Agent(
     model=ModelClient(model="gpt-4", temperature=0),

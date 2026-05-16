@@ -98,7 +98,7 @@ Now let's use the platform bridge to create an issue. The code be identical fer 
 
 Create a file called `create_issue.py`:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge
 
 # Automatically detects platform from git remote
@@ -176,7 +176,7 @@ Now create a draft PR programmatically.
 
 Create `create_pr.py`:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge
 
 bridge = PlatformBridge()
@@ -235,7 +235,7 @@ Let's add a comment to the PR.
 
 Create `add_comment.py`:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge
 
 bridge = PlatformBridge()
@@ -278,7 +278,7 @@ Finally, let's check if CI be runnin'.
 
 Create `check_ci.py`:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge
 import time
 
@@ -338,7 +338,7 @@ Individual checks:
 
 If all CI checks pass, ye can mark the PR as ready:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge
 
 bridge = PlatformBridge()

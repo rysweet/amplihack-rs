@@ -565,7 +565,7 @@ Added message count threshold to reflection system:
 
 **Logic**:
 
-```python
+```rust
 if message_count < min_threshold and recent_reflection_exists():
     log("Skipping reflection - trivial session after recent reflection")
     return

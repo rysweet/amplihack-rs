@@ -725,7 +725,7 @@ allowed-tools: Read, Grep, Glob # Cannot modify files
 
 **Name Validation**:
 
-```python
+```rust
 import re
 
 def validate_skill_name(name):
@@ -742,7 +742,7 @@ def validate_skill_name(name):
 
 **YAML Validation**:
 
-```python
+```rust
 import yaml
 
 def validate_yaml_frontmatter(content):
@@ -775,7 +775,7 @@ def validate_yaml_frontmatter(content):
 
 ### Token Budget Validation
 
-```python
+```rust
 import tiktoken
 
 def validate_token_budget(skill_path):
@@ -916,7 +916,7 @@ To use skills with the SDK, you MUST configure filesystem loading:
 
 **Python**:
 
-```python
+```rust
 from anthropic import Anthropic
 
 options = ClaudeAgentOptions(

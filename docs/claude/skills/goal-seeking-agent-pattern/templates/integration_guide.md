@@ -21,13 +21,13 @@ This guide explains how to integrate the `goal_agent_generator` module into your
 python --version  # Should be 3.10+
 
 # amplihack framework
-pip install amplihack
+cargo install amplihack
 ```
 
 ### Verify Installation
 
-```python
-from amplihack.goal_agent_generator import (
+```rust
+// use amplihack_goal_agent_generator:: (
     PromptAnalyzer,
     ObjectivePlanner,
     SkillSynthesizer,
@@ -57,8 +57,8 @@ amplihack goal-agent-generator execute \
 
 ### Programmatic Usage: 5-Step Process
 
-```python
-from amplihack.goal_agent_generator import (
+```rust
+// use amplihack_goal_agent_generator:: (
     PromptAnalyzer,
     ObjectivePlanner,
     SkillSynthesizer,
@@ -115,7 +115,7 @@ Extracts structured goal definitions from natural language.
 
 **Methods**:
 
-```python
+```rust
 class PromptAnalyzer:
     def analyze(self, prompt_path: Path) -> GoalDefinition:
         """Analyze prompt from file"""
@@ -126,7 +126,7 @@ class PromptAnalyzer:
 
 **GoalDefinition Fields**:
 
-```python
+```rust
 @dataclass
 class GoalDefinition:
     raw_prompt: str              # Original prompt text
@@ -151,7 +151,7 @@ class GoalDefinition:
 
 **Example**:
 
-```python
+```rust
 analyzer = PromptAnalyzer()
 goal_def = analyzer.analyze_text("Audit AKS cluster security and compliance")
 
@@ -166,7 +166,7 @@ Generates multi-phase execution plans with dependencies.
 
 **Methods**:
 
-```python
+```rust
 class ObjectivePlanner:
     def generate_plan(self, goal_definition: GoalDefinition) -> ExecutionPlan:
         """Generate execution plan from goal"""
@@ -174,7 +174,7 @@ class ObjectivePlanner:
 
 **ExecutionPlan Fields**:
 
-```python
+```rust
 @dataclass
 class ExecutionPlan:
     goal_id: uuid.UUID
@@ -187,7 +187,7 @@ class ExecutionPlan:
 
 **PlanPhase Fields**:
 
-```python
+```rust
 @dataclass
 class PlanPhase:
     name: str
@@ -201,7 +201,7 @@ class PlanPhase:
 
 **Example**:
 
-```python
+```rust
 planner = ObjectivePlanner()
 plan = planner.generate_plan(goal_def)
 
@@ -220,7 +220,7 @@ Maps execution capabilities to skills.
 
 **Methods**:
 
-```python
+```rust
 class SkillSynthesizer:
     def synthesize(self, execution_plan: ExecutionPlan) -> list[SkillDefinition]:
         """Synthesize skills from execution plan"""
@@ -228,7 +228,7 @@ class SkillSynthesizer:
 
 **SkillDefinition Fields**:
 
-```python
+```rust
 @dataclass
 class SkillDefinition:
     name: str
@@ -240,7 +240,7 @@ class SkillDefinition:
 
 **Example**:
 
-```python
+```rust
 synthesizer = SkillSynthesizer()
 skills = synthesizer.synthesize(plan)
 
@@ -257,7 +257,7 @@ Combines components into executable agent bundle.
 
 **Methods**:
 
-```python
+```rust
 class AgentAssembler:
     def assemble(
         self,
@@ -271,7 +271,7 @@ class AgentAssembler:
 
 **GoalAgentBundle Fields**:
 
-```python
+```rust
 @dataclass
 class GoalAgentBundle:
     id: uuid.UUID
@@ -287,7 +287,7 @@ class GoalAgentBundle:
 
 **Example**:
 
-```python
+```rust
 assembler = AgentAssembler()
 bundle = assembler.assemble(
     goal_definition=goal_def,
@@ -307,7 +307,7 @@ Packages agent bundle for deployment.
 
 **Methods**:
 
-```python
+```rust
 class GoalAgentPackager:
     def package(
         self,
@@ -330,7 +330,7 @@ output_dir/
 
 **Example**:
 
-```python
+```rust
 packager = GoalAgentPackager()
 packager.package(
     bundle=bundle,
@@ -434,9 +434,9 @@ amplihack goal-agent-generator list
 
 ### Pattern 1: Integrate with Existing Workflows
 
-```python
+```rust
 # In your workflow orchestration code
-from amplihack.goal_agent_generator import PromptAnalyzer, ObjectivePlanner
+// use amplihack_goal_agent_generator:: PromptAnalyzer, ObjectivePlanner
 
 def create_goal_agent_for_task(task_description: str):
     """Dynamically create goal agent from task description"""
@@ -475,7 +475,7 @@ jobs:
           python-version: "3.10"
 
       - name: Install amplihack
-        run: pip install amplihack
+        run: cargo install amplihack
 
       - name: Execute deployment agent
         run: |
@@ -487,9 +487,9 @@ jobs:
 
 ### Pattern 3: Integrate with Existing Agents
 
-```python
+```rust
 # In existing agent code
-from amplihack.goal_agent_generator import PromptAnalyzer, ObjectivePlanner
+// use amplihack_goal_agent_generator:: PromptAnalyzer, ObjectivePlanner
 
 class ExistingAgent:
     def complex_task(self, task_description: str):
@@ -510,8 +510,8 @@ class ExistingAgent:
 
 ### Pattern 4: Custom Phase Templates
 
-```python
-from amplihack.goal_agent_generator import ObjectivePlanner
+```rust
+// use amplihack_goal_agent_generator:: ObjectivePlanner
 
 class CustomPlanner(ObjectivePlanner):
     """Custom planner with domain-specific phase templates"""
@@ -537,8 +537,8 @@ class CustomPlanner(ObjectivePlanner):
 
 ### Custom Goal Analysis
 
-```python
-from amplihack.goal_agent_generator import PromptAnalyzer
+```rust
+// use amplihack_goal_agent_generator:: PromptAnalyzer
 
 class CustomPromptAnalyzer(PromptAnalyzer):
     """Custom analyzer with additional domain keywords"""
@@ -562,8 +562,8 @@ class CustomPromptAnalyzer(PromptAnalyzer):
 
 ### Custom Skill Mapping
 
-```python
-from amplihack.goal_agent_generator import SkillSynthesizer
+```rust
+// use amplihack_goal_agent_generator:: SkillSynthesizer
 
 class CustomSkillSynthesizer(SkillSynthesizer):
     """Custom skill synthesizer with project-specific skills"""
@@ -595,7 +595,7 @@ class CustomSkillSynthesizer(SkillSynthesizer):
 
 **Solution**: Use explicit domain keywords
 
-```python
+```rust
 # Add domain-specific keywords
 goal_text = """
 Deploy Kubernetes application to production.
@@ -612,7 +612,7 @@ analyzer = CustomPromptAnalyzer()  # See Custom Goal Analysis above
 
 **Solution**: Adjust goal complexity or customize planner
 
-```python
+```rust
 # Simplify goal (fewer phases)
 goal_text = "Collect and publish data"  # 2 phases
 
@@ -626,7 +626,7 @@ goal_text = "Collect, validate, transform, quality-check, and publish data"  # 5
 
 **Solution**: Customize skill synthesizer or use explicit capability names
 
-```python
+```rust
 # Use capability names that match your agents
 phase.required_capabilities = [
     "azure-kubernetes-operations",  # Matches azure-kubernetes-expert agent

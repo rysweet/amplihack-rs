@@ -52,7 +52,7 @@ Install from PyPI with one command:
 
 ```bash
 # Install amplihack
-pip install amplihack
+cargo install amplihack
 
 # Install the plugin
 amplihack plugin install
@@ -77,7 +77,7 @@ Plugin is ready! Start using with: claude
 
 ```bash
 # Install using uv
-uv pip install amplihack
+uv cargo install amplihack
 
 # Install plugin
 uvx --from amplihack plugin-install
@@ -261,8 +261,8 @@ pip3 install amplihack
 amplihack plugin install
 
 # If using multiple Python versions
-python3.11 -m pip install amplihack
-python3.11 -m amplihack plugin install
+python3.11 -m cargo install amplihack
+amplihack plugin install
 ```
 
 ### Linux (Ubuntu/Debian)
@@ -326,7 +326,7 @@ amplihack plugin status
 
 ```bash
 # Install specific version
-pip install amplihack==0.9.0
+cargo install amplihack==0.9.0
 
 # Update plugin to match
 amplihack plugin update --version 0.9.0
@@ -508,13 +508,13 @@ amplihack plugin status --verbose
 pip list | grep amplihack
 
 # If missing, reinstall
-pip install amplihack
+cargo install amplihack
 
 # Check Python version
 python --version  # Must be 3.9+
 
 # If multiple Python versions
-python3.11 -m pip install amplihack
+python3.11 -m cargo install amplihack
 ```
 
 ## Advanced Installation
@@ -552,7 +552,7 @@ export HTTP_PROXY=http://proxy.corp.com:8080
 export HTTPS_PROXY=http://proxy.corp.com:8080
 
 # Install with proxy
-pip install amplihack --proxy $HTTP_PROXY
+cargo install amplihack --proxy $HTTP_PROXY
 amplihack plugin install
 ```
 
@@ -564,7 +564,7 @@ python -m venv ~/venvs/amplihack
 source ~/venvs/amplihack/bin/activate
 
 # Install
-pip install amplihack
+cargo install amplihack
 amplihack plugin install
 
 # Plugin persists outside venv at ~/.amplihack/

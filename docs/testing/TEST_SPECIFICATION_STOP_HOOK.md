@@ -406,7 +406,7 @@ Rapid repeated stop calls **Steps**:
 
 #### 1. `temp_project_root` (pytest fixture)
 
-```python
+```rust
 @pytest.fixture
 def temp_project_root(tmp_path):
     """Create temporary project structure."""
@@ -423,7 +423,7 @@ def temp_project_root(tmp_path):
 
 #### 2. `stop_hook` (pytest fixture)
 
-```python
+```rust
 @pytest.fixture
 def stop_hook(temp_project_root):
     """Create StopHook instance with test paths."""
@@ -439,7 +439,7 @@ def stop_hook(temp_project_root):
 
 #### 3. `active_lock` (pytest fixture)
 
-```python
+```rust
 @pytest.fixture
 def active_lock(stop_hook):
     """Create active lock file."""
@@ -451,7 +451,7 @@ def active_lock(stop_hook):
 
 #### 4. `custom_prompt` (pytest fixture)
 
-```python
+```rust
 @pytest.fixture
 def custom_prompt(stop_hook):
     """Create custom continuation prompt."""
@@ -463,7 +463,7 @@ def custom_prompt(stop_hook):
 
 #### 5. `captured_subprocess` (pytest fixture)
 
-```python
+```rust
 @pytest.fixture
 def captured_subprocess():
     """Run hook as subprocess and capture output."""
@@ -480,7 +480,7 @@ def captured_subprocess():
 
 #### 1. Mock Path.exists()
 
-```python
+```rust
 @patch.object(Path, 'exists')
 def test_with_mocked_exists(mock_exists):
     mock_exists.return_value = True  # or False
@@ -488,7 +488,7 @@ def test_with_mocked_exists(mock_exists):
 
 #### 2. Mock Path.read_text()
 
-```python
+```rust
 @patch.object(Path, 'read_text')
 def test_with_mocked_read(mock_read):
     mock_read.side_effect = PermissionError("Access denied")
@@ -496,7 +496,7 @@ def test_with_mocked_read(mock_read):
 
 #### 3. Mock process() method
 
-```python
+```rust
 @patch.object(StopHook, 'process')
 def test_run_with_mocked_process(mock_process):
     mock_process.return_value = {"decision": "block", "reason": "test"}
@@ -504,7 +504,7 @@ def test_run_with_mocked_process(mock_process):
 
 #### 4. Mock save_metric()
 
-```python
+```rust
 @patch.object(StopHook, 'save_metric')
 def test_metrics_called(mock_save_metric):
     # Test code
@@ -546,7 +546,7 @@ degrade user experience.
 
 #### Test: Hook Execution Time (INTEG-SUBPROCESS-005)
 
-```python
+```rust
 def test_hook_execution_time_no_lock(captured_subprocess):
     """Verify hook completes in < 200ms with no lock."""
     input_data = {"session_id": "perf_test"}
@@ -561,7 +561,7 @@ def test_hook_execution_time_no_lock(captured_subprocess):
 
 #### Test: Lock Check Performance
 
-```python
+```rust
 def test_lock_check_performance(stop_hook, active_lock):
     """Verify lock checking is fast."""
     timings = []
@@ -576,7 +576,7 @@ def test_lock_check_performance(stop_hook, active_lock):
 
 #### Test: Custom Prompt Read Performance
 
-```python
+```rust
 def test_custom_prompt_read_performance(stop_hook, custom_prompt):
     """Verify prompt reading is fast."""
     custom_prompt("Test prompt content")
@@ -595,7 +595,7 @@ def test_custom_prompt_read_performance(stop_hook, custom_prompt):
 
 Create benchmark script `scripts/benchmark_stop_hook.py`:
 
-```python
+```rust
 #!/usr/bin/env python3
 """Benchmark stop hook performance."""
 import statistics

@@ -101,7 +101,7 @@ Each scenario tests multiple capabilities and measures both quality (correctness
 
 Adapters are the framework's secret weapon - they enable ANY MCP tool to be evaluated without changing the core framework. An adapter implements three operations:
 
-```python
+```rust
 async def enable(self, shared_context):
     """Make tool available to agent"""
 

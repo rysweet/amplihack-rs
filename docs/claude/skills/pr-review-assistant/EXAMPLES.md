@@ -8,7 +8,7 @@ A PR adds a new feature to handle user notifications across multiple channels (e
 
 ### Original Code (Over-Engineered)
 
-```python
+```rust
 # notification/channel.py
 from abc import ABC, abstractmethod
 from typing import Protocol
@@ -101,7 +101,7 @@ pattern with template method. Each channel must implement validate(),
 
 **SUGGESTION**: Use simple direct functions
 
-```python
+```rust
 # notification/email.py
 def send_email(to: str, message: str) -> bool:
     """Send email notification."""
@@ -232,7 +232,7 @@ Internal: None
 - ✅ Empty user_id raises ValueError
 
 ## Example Usage
-```python
+```rust
 from auth import create_token, validate_token
 
 # Create token for user
@@ -283,7 +283,7 @@ A PR adds data validation pipeline for user input.
 
 ### Original Code
 
-```python
+```rust
 # validation/pipeline.py
 
 def validate_input(data: dict) -> dict:
@@ -342,7 +342,7 @@ TODOs, and error handling that swallows exceptions.
 
    CURRENT:
 
-   ```python
+   ```rust
    if field not in data:
        pass  # Silent - bad!
    ```
@@ -350,7 +350,7 @@ TODOs, and error handling that swallows exceptions.
 
 SHOULD BE:
 
-```python
+```rust
 if field not in data:
     raise ValueError(f"Required field missing: {field}")
 ```
@@ -362,7 +362,7 @@ if field not in data:
 
    CURRENT:
 
-   ```python
+   ```rust
    try:
        result = transform_data(data)
    except Exception:
@@ -371,7 +371,7 @@ if field not in data:
 
    SHOULD BE:
 
-   ```python
+   ```rust
    try:
        result = transform_data(data)
    except Exception as e:
@@ -389,7 +389,7 @@ if field not in data:
 
 **SUGGESTION**: Zero-BS implementation
 
-```python
+```rust
 def validate_input(data: dict) -> dict:
     """Validate and transform user input.
 
@@ -454,7 +454,7 @@ def transform_data(data: dict) -> dict:
 A PR adds a new caching layer for database queries.
 
 ### Original Code
-```python
+```rust
 # caching/cache.py
 
 class QueryCache:
@@ -531,7 +531,7 @@ Tests should verify public contract:
 
 **ACTION NEEDED**: Create tests/test_cache.py
 
-```python
+```rust
 import pytest
 import time
 from caching.cache import QueryCache
@@ -604,7 +604,7 @@ The current implementation can't distinguish between:
 
 This ambiguity could be a problem. Consider using a different approach:
 
-```python
+```rust
 def get(self, key: str, default=_NOT_FOUND):
     """Get cached value, with default if not found or expired."""
     if key in self.cache:
@@ -637,7 +637,7 @@ This makes the contract clearer.
 A PR adds a simple configuration loader.
 
 ### Code
-```python
+```rust
 # config/loader.py
 
 def load_config(path: str) -> dict:
@@ -678,7 +678,7 @@ def merge_configs(base: dict, override: dict) -> dict:
 
 ### Test Code
 
-```python
+```rust
 # tests/test_config.py
 
 import pytest

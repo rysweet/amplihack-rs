@@ -60,7 +60,7 @@ Provides a unified interface to different AI platform CLIs.
 
 **Purpose**: Hide platform-specific differences behind a common API.
 
-```python
+```rust
 class PlatformCLI(Protocol):
     """Abstract interface for platform CLIs."""
 
@@ -138,7 +138,7 @@ Defines agent behavior patterns based on persona type.
 
 **Persona Characteristics:**
 
-```python
+```rust
 @dataclass
 class PersonaStrategy:
     """Defines persona-specific behavior."""
@@ -153,7 +153,7 @@ class PersonaStrategy:
 
 #### Guide Persona
 
-```python
+```rust
 GUIDE = PersonaStrategy(
     name="guide",
     communication_style="socratic",
@@ -187,7 +187,7 @@ GUIDE = PersonaStrategy(
 
 #### QA Engineer Persona
 
-```python
+```rust
 QA_ENGINEER = PersonaStrategy(
     name="qa_engineer",
     communication_style="precise",
@@ -222,7 +222,7 @@ QA_ENGINEER = PersonaStrategy(
 
 #### Architect Persona
 
-```python
+```rust
 ARCHITECT = PersonaStrategy(
     name="architect",
     communication_style="strategic",
@@ -257,7 +257,7 @@ ARCHITECT = PersonaStrategy(
 
 #### Junior Developer Persona
 
-```python
+```rust
 JUNIOR_DEV = PersonaStrategy(
     name="junior_dev",
     communication_style="task_focused",
@@ -301,7 +301,7 @@ Generates comprehensive test scenarios for QA validation.
 
 **Scenario Categories:**
 
-```python
+```rust
 class ScenarioCategory(Enum):
     HAPPY_PATH = "happy_path"
     ERROR_HANDLING = "error_handling"
@@ -321,7 +321,7 @@ class ScenarioCategory(Enum):
 
 **Example Scenario Generation:**
 
-```python
+```rust
 Goal: "Create a user registration API"
 
 Generated Scenarios:
@@ -351,7 +351,7 @@ Evaluates task completion against success criteria using evidence-based scoring.
 
 **Evaluation Algorithm:**
 
-```python
+```rust
 def evaluate_success(
     success_criteria: str,
     evidence: List[EvidenceItem],
@@ -429,7 +429,7 @@ Systematically collects artifacts produced during execution.
 
 **Evidence Types and Patterns:**
 
-```python
+```rust
 EVIDENCE_PATTERNS = {
     "code_file": ["*.py", "*.js", "*.ts", "*.go", "*.rs", "*.java"],
     "test_file": ["test_*.py", "*_test.py", "*.test.js", "test/*.py"],
@@ -501,7 +501,7 @@ Coordinates all modules and manages the complete delegation lifecycle.
 
 **Error Handling:**
 
-```python
+```rust
 try:
     # Run delegation
     result = orchestrate_delegation(...)
@@ -618,9 +618,9 @@ finally:
 
 Meta-delegation supports concurrent delegations:
 
-```python
+```rust
 import asyncio
-from amplihack.meta_delegation import run_meta_delegation
+// use amplihack_meta_delegation:: run_meta_delegation
 
 async def run_concurrent_delegations():
     """Run multiple delegations in parallel."""
@@ -685,8 +685,8 @@ async def run_concurrent_delegations():
 
 Implement the `PlatformCLI` protocol:
 
-```python
-from amplihack.meta_delegation import PlatformCLI, register_platform
+```rust
+// use amplihack_meta_delegation:: PlatformCLI, register_platform
 
 class MyPlatformCLI(PlatformCLI):
     """Custom platform implementation."""
@@ -722,8 +722,8 @@ result = run_meta_delegation(
 
 Define a new persona strategy:
 
-```python
-from amplihack.meta_delegation import PersonaStrategy, register_persona
+```rust
+// use amplihack_meta_delegation:: PersonaStrategy, register_persona
 
 RESEARCHER = PersonaStrategy(
     name="researcher",

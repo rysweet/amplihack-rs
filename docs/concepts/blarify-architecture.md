@@ -378,7 +378,7 @@ Full Text Search:
 
 ### Adding New Node Types
 
-```python
+```rust
 def _import_custom_nodes(self, nodes: List[Dict]) -> int:
     query = """
     UNWIND $nodes as node
@@ -392,7 +392,7 @@ def _import_custom_nodes(self, nodes: List[Dict]) -> int:
 
 ### Adding New Relationships
 
-```python
+```rust
 def _create_custom_relationship(self, source_id: str, target_id: str) -> int:
     query = """
     MATCH (source {id: $source_id})
@@ -406,7 +406,7 @@ def _create_custom_relationship(self, source_id: str, target_id: str) -> int:
 
 ### Custom Linking Logic
 
-```python
+```rust
 def link_custom_pattern(self, pattern: str) -> int:
     query = """
     MATCH (m:Memory)
@@ -432,7 +432,7 @@ def link_custom_pattern(self, pattern: str) -> int:
 
 ### Key Metrics
 
-```python
+```rust
 # Import metrics
 counts = integration.import_blarify_output(path)
 # Track: files, classes, functions, relationships
@@ -448,7 +448,7 @@ stats = integration.get_code_stats()
 
 ### Health Checks
 
-```python
+```rust
 # Connection health
 if conn.verify_connectivity():
     print("✓ Kuzu healthy")

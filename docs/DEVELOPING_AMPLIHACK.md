@@ -441,7 +441,7 @@ amplihack is a **development framework** that enhances Claude Code and GitHub Co
 
 **File**: `core.py:20-543`
 
-```python
+```rust
 class ClaudeLauncher:
     """Launches Claude Code with proper configuration and performance optimization."""
 ```
@@ -458,7 +458,7 @@ class ClaudeLauncher:
 
 **Constructor**:
 
-```python
+```rust
 def __init__(
     self,
     append_system_prompt: Optional[Path] = None,
@@ -477,8 +477,8 @@ def __init__(
 
 **Example**:
 
-```python
-from amplihack.launcher.core import ClaudeLauncher
+```rust
+// use amplihack_launcher::core:: ClaudeLauncher
 
 # Basic launch
 launcher = ClaudeLauncher()
@@ -512,7 +512,7 @@ exit_code = launcher.launch()
 
 **Example**:
 
-```python
+```rust
 launcher = ClaudeLauncher()
 if launcher.prepare_launch():
     # Ready to launch
@@ -537,7 +537,7 @@ if launcher.prepare_launch():
 
 **Example**:
 
-```python
+```rust
 launcher = ClaudeLauncher(
     claude_args=["--model", "claude-sonnet-4-5-20250929"]
 )
@@ -564,7 +564,7 @@ cmd = launcher.build_claude_command()
 
 **Example**:
 
-```python
+```rust
 launcher = ClaudeLauncher()
 exit_code = launcher.launch()
 sys.exit(exit_code)
@@ -580,7 +580,7 @@ sys.exit(exit_code)
 
 **Key Methods**:
 
-```python
+```rust
 def find_claude_directory() -> Optional[Path]:
     """Find .claude directory in current or parent directories."""
 
@@ -590,8 +590,8 @@ def get_project_root(claude_dir: Path) -> Path:
 
 **Example**:
 
-```python
-from amplihack.launcher.detector import ClaudeDirectoryDetector
+```rust
+// use amplihack_launcher::detector:: ClaudeDirectoryDetector
 
 detector = ClaudeDirectoryDetector()
 claude_dir = detector.find_claude_directory()
@@ -609,7 +609,7 @@ if claude_dir:
 
 **Key Function**:
 
-```python
+```rust
 def checkout_repository(repo_uri: str) -> Optional[str]:
     """
     Checkout GitHub repository.
@@ -631,8 +631,8 @@ def checkout_repository(repo_uri: str) -> Optional[str]:
 
 **Example**:
 
-```python
-from amplihack.launcher.repo_checkout import checkout_repository
+```rust
+// use amplihack_launcher::repo_checkout:: checkout_repository
 
 repo_path = checkout_repository("microsoft/TypeScript")
 if repo_path:
@@ -657,7 +657,7 @@ if repo_path:
 
 **Constructor**:
 
-```python
+```rust
 class AgentGenerator:
     """Generate agent content from extracted requirements."""
 
@@ -691,9 +691,9 @@ class AgentGenerator:
 
 **Example**:
 
-```python
-from amplihack.bundle_generator.generator import AgentGenerator
-from amplihack.bundle_generator.parser import IntentParser
+```rust
+// use amplihack_agent_generator::generator::{ AgentGenerator
+// use amplihack_agent_generator::parser::{ IntentParser
 
 parser = IntentParser()
 intent = parser.parse("Create an agent that validates JSON schemas")
@@ -791,7 +791,7 @@ Model: {model}
 
 **Example**:
 
-```python
+```rust
 issues = generator.validate_agent(agent)
 if issues:
     print(f"Validation failed: {issues}")
@@ -809,7 +809,7 @@ else:
 
 **Key Methods**:
 
-```python
+```rust
 def parse(self, user_input: str) -> ExtractedIntent:
     """
     Parse user input to extract agent requirements.
@@ -824,8 +824,8 @@ def parse(self, user_input: str) -> ExtractedIntent:
 
 **Example**:
 
-```python
-from amplihack.bundle_generator.parser import IntentParser
+```rust
+// use amplihack_agent_generator::parser::{ IntentParser
 
 parser = IntentParser()
 intent = parser.parse(
@@ -849,7 +849,7 @@ print(f"Agent count: {len(intent.agent_requirements)}")
 
 **Key Methods**:
 
-```python
+```rust
 def package(
     self,
     agents: List[GeneratedAgent],
@@ -902,7 +902,7 @@ bundle-name/
 
 **Constructor**:
 
-```python
+```rust
 class XPIADefender(XPIADefenseInterface):
     """Core XPIA Defense implementation."""
 
@@ -935,9 +935,9 @@ XPIA_BLACKLIST_DOMAINS=malicious-site.com
 
 **Example**:
 
-```python
-from amplihack.security.xpia_defender import XPIADefender
-from amplihack.security.xpia_defense_interface import SecurityConfiguration, SecurityLevel
+```rust
+// use amplihack_security::xpia_defender:: XPIADefender
+// use amplihack_security::xpia_defense_interface:: SecurityConfiguration, SecurityLevel
 
 # With environment configuration
 defender = XPIADefender()
@@ -963,7 +963,7 @@ defender = XPIADefender(config)
 
 **Signature**:
 
-```python
+```rust
 async def validate_content(
     self,
     content: str,
@@ -987,7 +987,7 @@ async def validate_content(
 
 **Content Types**:
 
-```python
+```rust
 class ContentType(str, Enum):
     USER_INPUT = "user_input"
     COMMAND = "command"
@@ -998,8 +998,8 @@ class ContentType(str, Enum):
 
 **Example**:
 
-```python
-from amplihack.security.xpia_defense_interface import (
+```rust
+// use amplihack_security::xpia_defense_interface:: (
     ContentType, ValidationContext
 )
 
@@ -1033,7 +1033,7 @@ else:
 
 **Signature**:
 
-```python
+```rust
 async def validate_bash_command(
     self,
     command: str,
@@ -1052,7 +1052,7 @@ async def validate_bash_command(
 
 **Dangerous Patterns Detected** (lines 209-217):
 
-```python
+```rust
 dangerous_commands = [
     "rm -rf /",
     "mkfs",
@@ -1066,7 +1066,7 @@ dangerous_commands = [
 
 **Example**:
 
-```python
+```rust
 # Safe command
 result = await defender.validate_bash_command(
     command="ls",
@@ -1093,7 +1093,7 @@ assert result.risk_level == RiskLevel.CRITICAL
 
 **Signature**:
 
-```python
+```rust
 async def validate_agent_communication(
     self,
     source_agent: str,
@@ -1113,7 +1113,7 @@ async def validate_agent_communication(
 
 **Example**:
 
-```python
+```rust
 result = await defender.validate_agent_communication(
     source_agent="builder",
     target_agent="reviewer",
@@ -1135,7 +1135,7 @@ result = await defender.validate_agent_communication(
 
 **Returns**:
 
-```python
+```rust
 {
     "status": "healthy",
     "enabled": True,
@@ -1171,8 +1171,8 @@ result = await defender.validate_agent_communication(
 
 **Example**:
 
-```python
-from amplihack.security.xpia_defender import WebFetchXPIADefender
+```rust
+// use amplihack_security::xpia_defender:: WebFetchXPIADefender
 
 defender = WebFetchXPIADefender()
 
@@ -1192,7 +1192,7 @@ if result.is_valid:
 
 **Risk Levels** (`xpia_defense_interface.py`):
 
-```python
+```rust
 class RiskLevel(str, Enum):
     NONE = "none"
     LOW = "low"
@@ -1203,7 +1203,7 @@ class RiskLevel(str, Enum):
 
 **Threat Types**:
 
-```python
+```rust
 class ThreatType(str, Enum):
     INJECTION = "injection"
     PRIVILEGE_ESCALATION = "privilege_escalation"
@@ -1249,7 +1249,7 @@ class ThreatType(str, Enum):
 
 **Key Function**:
 
-```python
+```rust
 def check_prerequisites() -> bool:
     """
     Check all required prerequisites.
@@ -1267,8 +1267,8 @@ def check_prerequisites() -> bool:
 
 **Example**:
 
-```python
-from amplihack.utils.prerequisites import check_prerequisites
+```rust
+// use amplihack_utils::prerequisites::{ check_prerequisites
 
 if not check_prerequisites():
     print("Missing prerequisites")
@@ -1285,7 +1285,7 @@ if not check_prerequisites():
 
 **Key Functions**:
 
-```python
+```rust
 def get_claude_cli_path(auto_install: bool = True) -> Optional[str]:
     """
     Get path to Claude CLI executable.
@@ -1308,8 +1308,8 @@ def install_claude_cli() -> bool:
 
 **Example**:
 
-```python
-from amplihack.utils.claude_cli import (
+```rust
+// use amplihack_utils::claude_cli::{ (
     get_claude_cli_path,
     install_claude_cli
 )
@@ -1328,7 +1328,7 @@ if not claude_path:
 
 **Usage**:
 
-```python
+```rust
 import os
 
 # Enable native trace logging
@@ -1632,7 +1632,7 @@ amplihack --help
 amplihack claude
 
 # With local changes (editable install)
-python -m amplihack claude
+amplihack claude
 ```
 
 ---
@@ -1716,7 +1716,7 @@ Describe expected input format and validation.
 
 ### Core Algorithm
 
-```python
+```rust
 def process(input_data):
     # Pseudocode or actual implementation
     pass
@@ -1758,7 +1758,7 @@ List any dependencies on other agents or services.
 
 ## Example Usage
 
-```python
+```rust
 # Example 1: Basic usage
 result = my_agent.process(input_data)
 
@@ -1792,10 +1792,10 @@ amplihack claude
 
 ```bash
 # Interactive mode
-python -m amplihack.bundle_generator.cli create
+amplihack bundle_generator.cli create
 
 # Or specify requirements
-python -m amplihack.bundle_generator.cli create \
+amplihack bundle_generator.cli create \
   --name my-agent \
   --description "Agent that does X" \
   --output ./my-agent-bundle
@@ -1803,10 +1803,10 @@ python -m amplihack.bundle_generator.cli create \
 
 **Programmatic creation**:
 
-```python
-from amplihack.bundle_generator.parser import IntentParser
-from amplihack.bundle_generator.generator import AgentGenerator
-from amplihack.bundle_generator.packager import BundlePackager
+```rust
+// use amplihack_agent_generator::parser::{ IntentParser
+// use amplihack_agent_generator::generator::{ AgentGenerator
+// use amplihack_agent_generator::packager::{ BundlePackager
 
 # Parse requirements
 parser = IntentParser()
@@ -1895,12 +1895,12 @@ tests/
 
 **Example test**:
 
-```python
+```rust
 # tests/launcher/test_core.py
 
 import pytest
 from unittest.mock import patch
-from amplihack.launcher.core import ClaudeLauncher
+// use amplihack_launcher::core:: ClaudeLauncher
 
 def test_launcher_basic_creation():
     """Test basic launcher creation."""
@@ -2045,7 +2045,7 @@ jobs:
 
 1. **Define Requirements**:
 
-```python
+```rust
 # requirements.txt or inline
 """
 Create an agent that:
@@ -2059,11 +2059,11 @@ Create an agent that:
 2. **Generate Agent**:
 
 ```bash
-python -m amplihack.bundle_generator.cli create \
+amplihack bundle_generator.cli create \
   --interactive
 
 # Or non-interactive
-python -m amplihack.bundle_generator.cli create \
+amplihack bundle_generator.cli create \
   --name python-style-validator \
   --description "Validates Python code style and suggests improvements" \
   --output ./bundles/python-validator
@@ -2245,10 +2245,10 @@ source security.env
 
 **7.5.2 Validate Content**:
 
-```python
+```rust
 import asyncio
-from amplihack.security.xpia_defender import XPIADefender
-from amplihack.security.xpia_defense_interface import (
+// use amplihack_security::xpia_defender:: XPIADefender
+// use amplihack_security::xpia_defense_interface:: (
     ContentType, ValidationContext
 )
 
@@ -2278,7 +2278,7 @@ asyncio.run(main())
 
 **7.5.3 Validate Bash Commands**:
 
-```python
+```rust
 async def validate_command():
     defender = XPIADefender()
 
@@ -2299,7 +2299,7 @@ async def validate_command():
 
 **7.5.4 Check System Health**:
 
-```python
+```rust
 async def check_health():
     defender = XPIADefender()
     health = await defender.health_check()
@@ -2397,7 +2397,7 @@ claude --version
 ```bash
 # Check UVX detection
 python -c "
-from amplihack.uvx.manager import UVXManager
+// use amplihack_utils::uvx::manager::{ UVXManager
 mgr = UVXManager()
 print('UVX mode:', mgr.is_uvx_mode())
 print('Temp dir:', mgr.get_temp_directory())
@@ -2489,11 +2489,11 @@ amplihack claude
 
 #### 8.2.2 Test Security Validation
 
-```python
+```rust
 # Debug script: debug_security.py
 import asyncio
-from amplihack.security.xpia_defender import XPIADefender
-from amplihack.security.xpia_defense_interface import ContentType
+// use amplihack_security::xpia_defender:: XPIADefender
+// use amplihack_security::xpia_defense_interface:: ContentType
 
 async def test_security():
     defender = XPIADefender()
@@ -2628,12 +2628,12 @@ htop -p $(pgrep -f amplihack)
 
 #### Example: Create Security Scanner Agent
 
-```python
+```rust
 # create_security_scanner.py
 
-from amplihack.bundle_generator.parser import IntentParser
-from amplihack.bundle_generator.generator import AgentGenerator
-from amplihack.bundle_generator.packager import BundlePackager
+// use amplihack_agent_generator::parser::{ IntentParser
+// use amplihack_agent_generator::generator::{ AgentGenerator
+// use amplihack_agent_generator::packager::{ BundlePackager
 from pathlib import Path
 
 def create_security_scanner():
@@ -2721,13 +2721,13 @@ python create_security_scanner.py
 
 #### Example: WebFetch with XPIA Security
 
-```python
+```rust
 # secure_webfetch.py
 
 import asyncio
 import aiohttp
-from amplihack.security.xpia_defender import WebFetchXPIADefender
-from amplihack.security.xpia_defense_interface import ValidationContext
+// use amplihack_security::xpia_defender:: WebFetchXPIADefender
+// use amplihack_security::xpia_defense_interface:: ValidationContext
 
 class SecureWebFetch:
     """WebFetch tool with XPIA security validation."""
@@ -2829,12 +2829,12 @@ if __name__ == "__main__":
 
 #### Example: Programmatic Claude Launch
 
-```python
+```rust
 # launch_claude.py
 
 import sys
 from pathlib import Path
-from amplihack.launcher.core import ClaudeLauncher
+// use amplihack_launcher::core:: ClaudeLauncher
 
 def launch_claude(
     project_dir: Path,
@@ -3057,16 +3057,16 @@ amplihack claude -- --model claude-sonnet-4-5-20250929
 
 ```bash
 # Interactive mode
-python -m amplihack.bundle_generator.cli create
+amplihack bundle_generator.cli create
 
 # Non-interactive
-python -m amplihack.bundle_generator.cli create \
+amplihack bundle_generator.cli create \
   --name agent-name \
   --description "Agent description" \
   --output ./output-dir
 
 # With options
-python -m amplihack.bundle_generator.cli create \
+amplihack bundle_generator.cli create \
   --name agent-name \
   --include-tests \
   --include-docs

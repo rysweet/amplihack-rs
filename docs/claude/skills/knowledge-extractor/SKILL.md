@@ -251,7 +251,7 @@ Extract and structure knowledge:
 Place knowledge in correct locations:
 
 ```
-Memory → Store discovery using store_discovery() from amplihack.memory.discoveries
+Memory → Store discovery using amplihack memory store-discovery CLI command
 PATTERNS.md → New pattern in appropriate section
 Agent → Create in .claude/agents/amplihack/specialized/
 ```

@@ -43,7 +43,7 @@ When this command is invoked, you MUST:
 
 1. **Import the orchestrator**:
 
-   ```python
+   ```rust
    import sys
    from pathlib import Path
    sys.path.insert(0, str(Path.cwd() / ".claude/tools/amplihack"))
@@ -52,7 +52,7 @@ When this command is invoked, you MUST:
 
 2. **Execute the pattern**:
 
-   ```python
+   ```rust
    result = run_debate(
        decision_question="{QUESTION_OR_DECISION}",
        perspectives=["security", "performance", "simplicity"],  # or custom

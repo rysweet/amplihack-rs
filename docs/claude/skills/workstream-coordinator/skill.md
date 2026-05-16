@@ -230,7 +230,7 @@ Recommendations:
 
 ## Coordination Algorithm
 
-```python
+```rust
 def coordinate(project_root):
     # Load workstreams
     workstreams = load_all_workstreams(project_root)
@@ -269,7 +269,7 @@ def coordinate(project_root):
 
 ## Stall Detection Logic
 
-```python
+```rust
 def detect_stalled(workstreams, threshold_hours=2):
     stalled = []
     now = datetime.now(timezone.utc)
@@ -294,7 +294,7 @@ def detect_stalled(workstreams, threshold_hours=2):
 
 ## Conflict Detection Logic
 
-```python
+```rust
 def detect_conflicts(workstreams, backlog_items):
     conflicts = []
 

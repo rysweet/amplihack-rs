@@ -36,7 +36,7 @@ Base exception for all amplihack-specific errors.
 
 **Usage**: Catch this to handle any amplihack error broadly.
 
-```python
+```rust
 try:
     # amplihack operation
     pass
@@ -63,8 +63,8 @@ Raised when the Claude CLI binary cannot be located or installed.
 
 **Example**:
 
-```python
-from amplihack.exceptions import ClaudeBinaryNotFoundError
+```rust
+// use amplihack_exceptions:: ClaudeBinaryNotFoundError
 
 try:
     path = require_claude_cli()
@@ -133,8 +133,8 @@ Raised when configuration is missing or invalid.
 
 **Example**:
 
-```python
-from amplihack.exceptions import ConfigurationError
+```rust
+// use amplihack_exceptions:: ConfigurationError
 
 try:
     config = load_config()
@@ -172,8 +172,8 @@ Raised when a requested recipe cannot be found.
 
 **Example**:
 
-```python
-from amplihack.exceptions import RecipeNotFoundError
+```rust
+// use amplihack_exceptions:: RecipeNotFoundError
 
 try:
     recipe = load_recipe("my-recipe")
@@ -199,7 +199,7 @@ Raised when a recipe file fails validation.
 
 All exceptions should be logged at an appropriate level:
 
-```python
+```rust
 import logging
 
 try:
@@ -212,8 +212,8 @@ except AmplihackError as e:
 
 Catch specific exceptions when you can handle them differently:
 
-```python
-from amplihack.exceptions import (
+```rust
+// use amplihack_exceptions:: (
     ClaudeBinaryNotFoundError,
     LaunchError,
     ConfigurationError
@@ -236,7 +236,7 @@ except ConfigurationError:
 
 Hooks and monitoring code should fail-open (continue operation on error):
 
-```python
+```rust
 try:
     collect_metrics()
 except Exception as e:
@@ -248,8 +248,8 @@ except Exception as e:
 
 Critical operations should fail-safe (halt on error):
 
-```python
-from amplihack.exceptions import ConfigurationError
+```rust
+// use amplihack_exceptions:: ConfigurationError
 
 try:
     config = load_critical_config()
@@ -262,7 +262,7 @@ except ConfigurationError as e:
 
 Always specify the exception type or use `Exception`:
 
-```python
+```rust
 # Bad
 try:
     operation()
@@ -282,7 +282,7 @@ Hooks implement specific exception handling patterns based on their purpose:
 
 ### Session Hooks (fail-open)
 
-```python
+```rust
 try:
     inject_context()
 except Exception as e:
@@ -292,7 +292,7 @@ except Exception as e:
 
 ### Power Steering Hook (sanitized logging)
 
-```python
+```rust
 try:
     validate_response()
 except Exception as e:
@@ -302,7 +302,7 @@ except Exception as e:
 
 ### Stop Hook (fail-safe for lock checks)
 
-```python
+```rust
 try:
     check_lock_flag()
 except Exception as e:
@@ -327,7 +327,7 @@ Use appropriate logging levels based on exception severity:
 
 Previously, many exception blocks were silent:
 
-```python
+```rust
 # Before
 try:
     operation()
@@ -339,7 +339,7 @@ except Exception:
 
 All exception blocks now log errors while preserving fail-open/fail-safe semantics:
 
-```python
+```rust
 # After
 try:
     operation()

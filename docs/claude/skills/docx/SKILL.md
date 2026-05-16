@@ -92,7 +92,7 @@ When implementing tracked changes, only mark text that actually changes. Repeati
 
 Example - Changing "30 days" to "60 days" in a sentence:
 
-```python
+```rust
 # BAD - Replaces entire sentence
 '<w:del><w:r><w:delText>The term is 30 days.</w:delText></w:r></w:del><w:ins><w:r><w:t>The term is 60 days.</w:t></w:r></w:ins>'
 

@@ -157,7 +157,7 @@ Amplihack follows the philosophy documented in `~/.amplihack/.claude/context/PHI
 
 ❌ **Don't do this:**
 
-```python
+```rust
 # Create generic, future-proof abstraction
 class DataStore(ABC):
     @abstractmethod
@@ -172,7 +172,7 @@ class DataStore(ABC):
 
 ✅ **Do this:**
 
-```python
+```rust
 # Simple, direct implementation
 def save_config(config: dict, path: Path) -> None:
     path.write_text(json.dumps(config))
@@ -185,7 +185,7 @@ def load_config(path: Path) -> dict:
 
 ❌ **Don't do this:**
 
-```python
+```rust
 def process_data(data):
     # TODO: Add validation
     # TODO: Handle edge cases
@@ -194,7 +194,7 @@ def process_data(data):
 
 ✅ **Do this:**
 
-```python
+```rust
 def process_data(data: list[dict]) -> list[dict]:
     if not data:
         raise ValueError("Data cannot be empty")
@@ -205,7 +205,7 @@ def process_data(data: list[dict]) -> list[dict]:
 
 ❌ **Don't do this:**
 
-```python
+```rust
 try:
     result = dangerous_operation()
 except:
@@ -214,7 +214,7 @@ except:
 
 ✅ **Do this:**
 
-```python
+```rust
 try:
     result = dangerous_operation()
 except SpecificError as e:
@@ -354,7 +354,7 @@ Amplihack enforces test-driven development through the workflow.
 
 **Unit tests** for business logic:
 
-```python
+```rust
 def test_generate_jwt_token():
     token = generate_jwt(user_id="123", role="admin")
     payload = decode_jwt(token)
@@ -364,7 +364,7 @@ def test_generate_jwt_token():
 
 **Integration tests** for system interactions:
 
-```python
+```rust
 def test_authentication_flow(client):
     # Register
     response = client.post("/auth/register", json=user_data)
@@ -381,7 +381,7 @@ def test_authentication_flow(client):
 
 **End-to-end tests** for critical flows:
 
-```python
+```rust
 def test_complete_user_journey():
     # Registration → Login → Profile Update → Logout
     # Tests entire user lifecycle

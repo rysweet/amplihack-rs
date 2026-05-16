@@ -52,7 +52,7 @@ changes because of the lock.
 
 Implemented exponential backoff retry logic for file I/O:
 
-```python
+```rust
 def write_with_retry(filepath, data, max_retries=3):
     retry_delay = 0.1
     for attempt in range(max_retries):

@@ -132,7 +132,7 @@ The key insight: **Durability first, then parallelization.**
 
 **1. Durable Queue Storage**
 
-```python
+```rust
 class DurableQueue:
     """Each partition is a write-ahead log on disk."""
 
@@ -175,7 +175,7 @@ class DurableQueue:
 
 **2. Partition-Based Distribution**
 
-```python
+```rust
 def get_partition(task_id, num_partitions):
     """Always put same task in same partition."""
     return hash(task_id) % num_partitions
@@ -189,7 +189,7 @@ Benefits:
 
 **3. Worker Lifecycle**
 
-```python
+```rust
 class Worker:
     def __init__(self, partition_id):
         self.partition = DurableQueue(partition_id)
@@ -220,7 +220,7 @@ class Worker:
 
 When a worker dies, its partitions are reassigned to healthy workers. This is detected through heartbeat timeout (no heartbeat for 30 seconds = worker dead).
 
-```python
+```rust
 def detect_failed_workers():
     """Coordinator detects dead workers."""
     now = time.time()
@@ -408,7 +408,7 @@ Currently, failed tasks are logged. We want:
 
 ## CODE EXAMPLE: Using the Queue
 
-```python
+```rust
 from task_queue import TaskQueue
 
 # Initialize

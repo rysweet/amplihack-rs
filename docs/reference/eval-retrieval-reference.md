@@ -18,7 +18,7 @@ multi-hop reasoning questions.
 
 ### Signature
 
-```python
+```rust
 def _entity_linked_retrieval(
     self,
     question: str,
@@ -65,7 +65,7 @@ def _entity_linked_retrieval(
 
 ### Signature
 
-```python
+```rust
 def _multi_entity_retrieval(
     self,
     question: str,
@@ -101,7 +101,7 @@ def _multi_entity_retrieval(
 
 ### Signature
 
-```python
+```rust
 def _standard_retrieval(
     self,
     question: str,

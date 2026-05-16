@@ -22,8 +22,8 @@ Meta-delegation is a system that runs AI agents (like guides, QA engineers, arch
 
 ### Basic Usage
 
-```python
-from amplihack.meta_delegation import run_meta_delegation
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation
 
 result = run_meta_delegation(
     goal="Create a REST API for user authentication with JWT tokens",
@@ -158,8 +158,8 @@ See [Concepts](./concepts.md#architecture) for detailed architecture.
 
 ## Example: Complete Workflow
 
-```python
-from amplihack.meta_delegation import run_meta_delegation
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation
 
 # 1. Define a complex task
 goal = """
@@ -226,7 +226,7 @@ Multi-format configuration parser supporting JSON, YAML, and TOML...
 
 ### Common Commands
 
-```python
+```rust
 # Run with default settings (guide persona, claude-code platform)
 result = run_meta_delegation(goal="...", success_criteria="...")
 

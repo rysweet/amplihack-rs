@@ -66,7 +66,7 @@ Private helper files may exist when needed to keep the main ownership modules re
 
 The modules are implemented as **mixin classes** that `LearningAgent` inherits from:
 
-```python
+```rust
 class LearningAgent(
     IntentDetectorMixin,
     TemporalReasoningMixin,

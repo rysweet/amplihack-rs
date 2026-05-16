@@ -98,7 +98,7 @@ While workstreams are running:
 tail -f /tmp/amplihack-workstreams/log-100.txt
 
 # Check which processes are still running
-ps aux | grep launcher.py
+ps aux | grep launcher.sh
 
 # See the final report after completion
 cat /tmp/amplihack-workstreams/REPORT.md

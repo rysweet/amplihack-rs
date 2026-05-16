@@ -31,7 +31,7 @@ orchestration/
 
 Manages a single Claude CLI subprocess:
 
-```python
+```rust
 from orchestration import ClaudeProcess
 
 process = ClaudeProcess(
@@ -62,7 +62,7 @@ print(f"Output: {result.output}")
 
 Structured result from process execution:
 
-```python
+```rust
 @dataclass
 class ProcessResult:
     exit_code: int      # 0=success, -1=timeout, other=error
@@ -76,7 +76,7 @@ class ProcessResult:
 
 Session management with logging:
 
-```python
+```rust
 from orchestration import OrchestratorSession
 
 session = OrchestratorSession(
@@ -97,7 +97,7 @@ session.log("Starting analysis")
 
 Run multiple processes concurrently:
 
-```python
+```rust
 from orchestration import run_parallel
 
 results = run_parallel(processes, max_workers=3)
@@ -116,7 +116,7 @@ print(f"{len(successful)}/{len(results)} succeeded")
 
 Run processes one at a time:
 
-```python
+```rust
 from orchestration import run_sequential
 
 # With output passing
@@ -137,7 +137,7 @@ results = run_sequential(
 
 Try processes until one succeeds:
 
-```python
+```rust
 from orchestration import run_with_fallback
 
 result = run_with_fallback(processes, timeout=300)
@@ -156,7 +156,7 @@ if result.exit_code == 0:
 
 Run processes in parallel batches:
 
-```python
+```rust
 from orchestration import run_batched
 
 results = run_batched(
@@ -176,7 +176,7 @@ results = run_batched(
 
 ### Multi-Agent Parallel Analysis
 
-```python
+```rust
 from pathlib import Path
 from orchestration import OrchestratorSession, run_parallel
 
@@ -203,7 +203,7 @@ for result in results:
 
 ### Sequential Pipeline
 
-```python
+```rust
 session = OrchestratorSession("pipeline")
 
 stages = [
@@ -217,7 +217,7 @@ results = run_sequential(stages, pass_output=True, stop_on_failure=True)
 
 ### Adaptive Fallback
 
-```python
+```rust
 session = OrchestratorSession("adaptive")
 
 strategies = [
@@ -280,7 +280,7 @@ Potential additions (not implemented yet):
 
 To test the infrastructure:
 
-```python
+```rust
 # Run examples
 python orchestration/EXAMPLE_USAGE.py
 

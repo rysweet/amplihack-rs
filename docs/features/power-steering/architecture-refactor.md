@@ -103,7 +103,7 @@ No module imports from a module that is at the same level or below in this chain
 
 All imports that worked against the original `power_steering_checker.py` continue to work against the package `__init__.py`:
 
-```python
+```rust
 # Before (single file)
 from power_steering_checker import PowerSteeringChecker
 from power_steering_checker import check_session, is_disabled
@@ -135,14 +135,14 @@ All 19 `except Exception` blocks now:
 
 Before:
 
-```python
+```rust
 except Exception:
     pass  # Line 5020 — is_disabled() silent failure
 ```
 
 After:
 
-```python
+```rust
 except Exception as e:
     logger.warning(
         "PowerSteeringChecker creation failed, assuming not disabled: %s",
@@ -206,13 +206,13 @@ The refactor also addressed six security issues identified during analysis. See 
 1. Place in the module where it is consumed (see Constants Placement above).
 2. Use the pattern:
 
-   ```python
+   ```rust
    MY_CONSTANT = int(os.getenv("PSC_MY_CONSTANT", "default_value"))
    ```
 
    Or, if the module already has `_env_int`:
 
-   ```python
+   ```rust
    MY_CONSTANT = _env_int("PSC_MY_CONSTANT", default_value)
    ```
 
@@ -222,7 +222,7 @@ The refactor also addressed six security issues identified during analysis. See 
 
 Each module can be tested in isolation by importing only that module. Tests that previously required the full `PowerSteeringChecker` class can now test individual mixins directly:
 
-```python
+```rust
 # Test considerations logic without instantiating PowerSteeringChecker
 from power_steering_checker.considerations import ConsiderationsMixin
 

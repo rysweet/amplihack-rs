@@ -127,7 +127,7 @@ Goal Progress Dashboard:
 
 **Scoring:**
 
-```python
+```rust
 text = (item.title + " " + item.description).lower()
 goal_words = set(goal.lower().split())
 matches = sum(1 for word in goal_words if word in text)
@@ -170,7 +170,7 @@ Recommendation: Parallel approach - BL-004 (Goal 1) + BL-007 (Goal 3) concurrent
 
 ### Goal Alignment Scoring
 
-```python
+```rust
 def calculate_goal_alignment(backlog_item, goals):
     text = (item.title + " " + item.description).lower()
     scores = {}
@@ -184,7 +184,7 @@ def calculate_goal_alignment(backlog_item, goals):
 
 ### Goal Progress Calculation
 
-```python
+```rust
 def calculate_goal_progress(goal, backlog_items):
     milestones = goal.milestones
     completed = sum(1 for m in milestones if m.status == "done")

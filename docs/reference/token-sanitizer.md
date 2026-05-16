@@ -45,8 +45,8 @@ The redacted form matters: downstream systems use the prefix to decide which key
 
 ## Usage
 
-```python
-from amplihack.utils.token_sanitizer import sanitize
+```rust
+// use amplihack_utils::token_sanitizer::{ sanitize
 
 raw_body = '{"api_key": "sk-proj-xxxxxxxxxxxxxxxxxxxxxxxx"}'  # pragma: allowlist secret
 clean_body = sanitize(raw_body)
@@ -56,7 +56,7 @@ print(clean_body)
 
 The function is idempotent — the replacement strings (e.g. `sk-***`) contain only three asterisks after the prefix, which is shorter than the `{6,}` minimum required by any pattern. A second call produces the same output.
 
-```python
+```rust
 # Idempotent: safe to call twice
 twice = sanitize(sanitize(raw_body))
 assert twice == sanitize(raw_body)
@@ -91,8 +91,8 @@ Recursively sanitizes a dictionary. Returns a new dict with secrets replaced.
 - Nested dicts and lists are processed recursively.
 - `None` input returns an empty dict.
 
-```python
-from amplihack.utils.token_sanitizer import sanitize_dict
+```rust
+// use amplihack_utils::token_sanitizer::{ sanitize_dict
 
 raw = {"Authorization": "Bearer sk-ant-abc123", "Content-Type": "application/json"}
 clean = sanitize_dict(raw)
@@ -105,7 +105,7 @@ clean = sanitize_dict(raw)
 
 Patterns are defined as a list of `(raw_string_regex, replacement)` tuples in `token_sanitizer.py`. Insert more-specific patterns **before** less-specific ones:
 
-```python
+```rust
 # In token_sanitizer.py — maintain specificity order
 PATTERNS = [
     (r"sk-proj-[a-zA-Z0-9_-]{6,}", "sk-proj-***"),  # More specific

@@ -338,7 +338,7 @@ Session has 500+ turns but no compaction warnings.
 
 **Check:**
 
-```python
+```rust
 # View session diagnostics (if available)
 from power_steering_checker import CompactionValidator
 
@@ -440,7 +440,7 @@ Compaction events expose metrics for monitoring session health.
 
 **Monitor session health:**
 
-```python
+```rust
 from power_steering_checker import CompactionValidator
 
 # Track compaction rate
@@ -463,7 +463,7 @@ if compaction_rate > 0.5:
 
 **Track validation quality:**
 
-```python
+```rust
 validation_failures = 0
 validation_total = 0
 

@@ -404,7 +404,7 @@ Split into:
 
 **Add Comments to Complex Code**:
 
-```python
+```rust
 def complex_algorithm(data):
     # Review note: Using binary search here because data is pre-sorted
     # from database query (see line 45). Time complexity: O(log n)

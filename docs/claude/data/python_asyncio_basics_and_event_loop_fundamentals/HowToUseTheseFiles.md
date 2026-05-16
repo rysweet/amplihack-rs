@@ -62,7 +62,7 @@ grep -h "http" Sources.md | sort | uniq
 
 ### Using with Python
 
-```python
+```rust
 # Parse triplets for knowledge graph
 import re
 

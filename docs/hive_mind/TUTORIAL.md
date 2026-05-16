@@ -13,8 +13,8 @@ uv sync
 
 The fastest way to see the hive mind work. All state lives in Python dicts.
 
-```python
-from amplihack.agents.goal_seeking.hive_mind.hive_graph import (
+```rust
+// use amplihack_domain_agents:: (
     InMemoryHiveGraph,
     HiveFact,
     create_hive_graph,
@@ -47,8 +47,8 @@ for fact in results:
 
 Split agents across domain-specific hives, then query across the whole tree.
 
-```python
-from amplihack.agents.goal_seeking.hive_mind.hive_graph import (
+```rust
+// use amplihack_domain_agents:: (
     InMemoryHiveGraph,
     HiveFact,
 )
@@ -98,10 +98,10 @@ print(f"\nSecurity hive found {len(results)} results across federation")
 Connect a real LLM-backed LearningAgent to a shared hive for distributed memory.
 Facts learned by the agent are auto-promoted to the hive; queries merge local + hive facts.
 
-```python
+```rust
 from pathlib import Path
-from amplihack.agents.goal_seeking.learning_agent import LearningAgent
-from amplihack.agents.goal_seeking.hive_mind.hive_graph import InMemoryHiveGraph
+// use amplihack_domain_agents:: LearningAgent
+// use amplihack_domain_agents:: InMemoryHiveGraph
 
 # Create shared hive
 hive = InMemoryHiveGraph("shared-hive")
@@ -151,12 +151,12 @@ by content, and returns merged results.
 Each agent owns its own Kuzu database. A shared HiveGraphStore acts as the
 federation layer. FederatedGraphStore composes local + hive for unified queries.
 
-```python
+```rust
 # Requires: pip install kuzu
 # Requires: amplihack-memory-lib installed
 
-from amplihack.agents.goal_seeking.hive_mind.distributed import AgentNode
-from amplihack.agents.goal_seeking.hive_mind.event_bus import create_event_bus
+// use amplihack_domain_agents:: AgentNode
+// use amplihack_domain_agents:: create_event_bus
 
 # Create event bus (local for testing, "redis" or "azure" for production)
 bus = create_event_bus("local")

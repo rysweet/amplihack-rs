@@ -35,7 +35,7 @@ Provide common string manipulation utilities with consistent behavior and clear 
 
 ### Functions
 
-```python
+```rust
 def truncate(text: str, max_length: int, suffix: str = "...") -> str:
     """Truncate text to maximum length, appending suffix if truncated.
 
@@ -143,7 +143,7 @@ string_utils/
 
 ### **init**.py
 
-```python
+```rust
 from .core import truncate, normalize, slugify
 
 __all__ = ["truncate", "normalize", "slugify"]
@@ -197,7 +197,7 @@ Four separate test files, one per function, plus shared fixtures.
 
 ## Example Usage
 
-```python
+```rust
 from string_utils import truncate, normalize, slugify
 
 # Truncation examples
@@ -226,7 +226,7 @@ print(slug_short)  # "python-django"
 
 These implementations should be straightforward:
 
-```python
+```rust
 # Example: truncate - simple, no tricks
 def truncate(text: str, max_length: int, suffix: str = "...") -> str:
     if not isinstance(text, str):
@@ -256,7 +256,7 @@ When raising errors:
 - Explain what was wrong
 - Suggest how to fix it
 
-```python
+```rust
 raise ValueError(
     f"max_length ({max_length}) must be >= suffix length ({len(suffix)})"
 )

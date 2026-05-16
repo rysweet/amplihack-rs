@@ -13,7 +13,7 @@ One-page reference for the context-management skill.
 
 ## Basic Usage
 
-```python
+```rust
 from context_management import context_management_skill
 
 # 1. Check status
@@ -43,7 +43,7 @@ result = context_management_skill('list')
 
 ## Convenience Functions
 
-```python
+```rust
 from context_management import (
     check_status,
     create_snapshot,
@@ -77,7 +77,7 @@ snapshots = list_snapshots()
 
 ## Typical Workflow
 
-```python
+```rust
 # 1. Monitor usage
 status = check_status(current_tokens=850000)
 
@@ -98,7 +98,7 @@ context = rehydrate_context(snapshot_id, level='essential')
 
 ### Example 1: Preventive Snapshot
 
-```python
+```rust
 # Before starting risky operation
 status = check_status(current_tokens=current)
 if status['status'] != 'ok':
@@ -107,7 +107,7 @@ if status['status'] != 'ok':
 
 ### Example 2: Context Switching
 
-```python
+```rust
 # Pause feature A
 snap_a = create_snapshot(messages, name='feature-a')
 
@@ -119,7 +119,7 @@ context = rehydrate_context(snap_a['snapshot']['snapshot_id'])
 
 ### Example 3: Progressive Restoration
 
-```python
+```rust
 # Start minimal
 context = rehydrate_context(snapshot_id, level='essential')
 
@@ -152,7 +152,7 @@ create_snapshot(messages, name='ready-for-review')
 
 ## Error Handling
 
-```python
+```rust
 # Status always succeeds
 status = check_status(current_tokens=current)
 
@@ -191,7 +191,7 @@ All three are complementary.
 
 ## Configuration Options
 
-```python
+```rust
 # Custom snapshot directory
 context_management_skill(
     'snapshot',

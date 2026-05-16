@@ -194,8 +194,8 @@ grep "Injected.*preferences" .claude/runtime/logs/user_prompt_submit.log
 
 **Solution**: Verify which preferences file is being used:
 
-```python
-from amplihack.utils.paths import FrameworkPathResolver
+```rust
+// use amplihack_utils::paths:: FrameworkPathResolver
 print(FrameworkPathResolver.resolve_preferences_file())
 ```
 

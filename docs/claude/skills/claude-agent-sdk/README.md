@@ -58,7 +58,7 @@ claude-agent-sdk/
 
 **Manual activation**:
 
-```python
+```rust
 # In Claude Code conversations
 @~/.amplihack/.claude/skills/claude-agent-sdk/SKILL.md
 ```
@@ -330,7 +330,7 @@ This skill integrates with the Amplihack framework:
 
 **Agent Creation**:
 
-```python
+```rust
 # Use Agent SDK patterns in Amplihack specialized agents
 from claude_agents import Agent
 
@@ -345,7 +345,7 @@ def create_specialized_agent():
 
 **MCP in Amplihack**:
 
-```python
+```rust
 # Integrate MCP servers into Amplihack workflows
 from claude_agents.mcp import MCPClient
 
@@ -355,7 +355,7 @@ agent = Agent(mcp_clients=[mcp])
 
 **Observability**:
 
-```python
+```rust
 # Log agent actions to Amplihack runtime logs
 class AmplihackLoggingHook(PreToolUseHook):
     async def execute(self, context):

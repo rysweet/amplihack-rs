@@ -233,7 +233,7 @@ Works with:
 
 `.claude/scenarios/code-reviewer/code_reviewer.py`:
 
-```python
+```rust
 #!/usr/bin/env python3
 """Automated code review with security and quality checks."""
 
@@ -626,7 +626,7 @@ Validation results:
 
 **Test Cases**:
 
-```python
+```rust
 # Test invalid name
 /amplihack:skill-builder DataTransformer skill "Description"
 Expected: Error - "Name must be kebab-case"
@@ -707,7 +707,7 @@ Expected: .claude/scenarios/test-scenario/README.md
 
 **Detection**:
 
-```python
+```rust
 def check_name_conflict(skill_name, skill_type):
     paths = {
         "skill": f".claude/skills/{skill_name}/SKILL.md",
@@ -871,7 +871,7 @@ Delivers complete skill in .claude/skills/api-tester/
 
 **Diagnosis**:
 
-```python
+```rust
 # Check 1: Description keywords
 skill_md = Path(".claude/skills/my-skill/SKILL.md").read_text()
 frontmatter = parse_yaml_frontmatter(skill_md)
@@ -899,7 +899,7 @@ yaml.safe_load(frontmatter_text)  # Should not error
 
 **Diagnosis**:
 
-```python
+```rust
 import tiktoken
 
 encoding = tiktoken.encoding_for_model("claude-sonnet-4-5")

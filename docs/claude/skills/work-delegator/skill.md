@@ -283,7 +283,7 @@ PM: Delegation package ready for builder agent.
 
 ## Complexity Estimation Algorithm
 
-```python
+```rust
 def estimate_complexity(item: dict) -> str:
     hours = item.get("estimated_hours", 4)
 

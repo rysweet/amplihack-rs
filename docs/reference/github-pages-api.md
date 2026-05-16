@@ -4,7 +4,7 @@ Complete Python API reference for generating, validating, and deploying document
 
 ## Module
 
-```python
+```rust
 from claude_skills.documentation_writing.github_pages import (
     # Configuration
     SiteConfig,
@@ -28,7 +28,7 @@ from claude_skills.documentation_writing.github_pages import (
 
 Generate a documentation site using MkDocs with Material theme.
 
-```python
+```rust
 def generate_site(config: SiteConfig) -> GenerationResult:
     """Generate documentation site using MkDocs.
 
@@ -49,7 +49,7 @@ def generate_site(config: SiteConfig) -> GenerationResult:
 
 **Example**:
 
-```python
+```rust
 from claude_skills.documentation_writing.github_pages import SiteConfig, generate_site
 
 config = SiteConfig(
@@ -92,7 +92,7 @@ The generator automatically discovers:
 
 Run three-pass validation on generated documentation site.
 
-```python
+```rust
 def validate_site(site_dir: Path | str) -> ValidationResult:
     """Run complete three-pass validation on documentation site.
 
@@ -111,7 +111,7 @@ def validate_site(site_dir: Path | str) -> ValidationResult:
 
 **Example**:
 
-```python
+```rust
 from claude_skills.documentation_writing.github_pages import validate_site
 
 validation = validate_site("site")
@@ -156,7 +156,7 @@ for issue in validation.issues:
 
 **Overall Pass Criteria**:
 
-```python
+```rust
 passed = (
     coverage >= 100.0
     and clarity >= 80.0
@@ -170,7 +170,7 @@ passed = (
 
 Deploy generated documentation site to GitHub Pages.
 
-```python
+```rust
 def deploy_site(config: DeploymentConfig) -> DeploymentResult:
     """Deploy documentation site to GitHub Pages.
 
@@ -191,7 +191,7 @@ def deploy_site(config: DeploymentConfig) -> DeploymentResult:
 
 **Example**:
 
-```python
+```rust
 from claude_skills.documentation_writing.github_pages import DeploymentConfig, deploy_site
 
 config = DeploymentConfig(
@@ -248,7 +248,7 @@ If deployment fails, the deployer automatically:
 
 Start local preview server for documentation site.
 
-```python
+```rust
 def preview_locally(config_path: Path | str = "mkdocs.yml", port: int = 8000) -> None:
     """Start local preview server for documentation site.
 
@@ -265,7 +265,7 @@ def preview_locally(config_path: Path | str = "mkdocs.yml", port: int = 8000) ->
 
 **Example**:
 
-```python
+```rust
 from claude_skills.documentation_writing.github_pages import preview_locally
 
 # Starts server at http://127.0.0.1:8000
@@ -294,7 +294,7 @@ mkdocs serve --dev-addr 127.0.0.1:8000
 
 Configuration for documentation site generation.
 
-```python
+```rust
 @dataclass
 class SiteConfig:
     """Configuration for site generation.
@@ -322,7 +322,7 @@ class SiteConfig:
 
 **Example with Defaults**:
 
-```python
+```rust
 from claude_skills.documentation_writing.github_pages import SiteConfig
 
 config = SiteConfig(
@@ -334,7 +334,7 @@ config = SiteConfig(
 
 **Example with Custom Theme Features**:
 
-```python
+```rust
 config = SiteConfig(
     project_name="My Project",
     project_url="https://github.com/user/repo",
@@ -354,7 +354,7 @@ config = SiteConfig(
 
 **Example with Custom Navigation**:
 
-```python
+```rust
 config = SiteConfig(
     project_name="My Project",
     project_url="https://github.com/user/repo",
@@ -388,7 +388,7 @@ Invalid URLs raise `ValueError`.
 
 Configuration for GitHub Pages deployment.
 
-```python
+```rust
 @dataclass
 class DeploymentConfig:
     """Configuration for deployment.
@@ -410,7 +410,7 @@ class DeploymentConfig:
 
 **Example**:
 
-```python
+```rust
 from claude_skills.documentation_writing.github_pages import DeploymentConfig
 
 config = DeploymentConfig(
@@ -422,7 +422,7 @@ config = DeploymentConfig(
 
 **⚠️ Force Push Warning**:
 
-```python
+```rust
 # DANGEROUS - Only use if you know what you're doing
 config = DeploymentConfig(
     site_dir="site",
@@ -444,7 +444,7 @@ Force push should ONLY be used when:
 
 Result of documentation site generation.
 
-```python
+```rust
 @dataclass
 class GenerationResult:
     """Result of site generation.
@@ -470,7 +470,7 @@ class GenerationResult:
 
 **Example**:
 
-```python
+```rust
 result = generate_site(config)
 
 if result.success:
@@ -505,7 +505,7 @@ else:
 
 Result of three-pass documentation validation.
 
-```python
+```rust
 @dataclass
 class ValidationResult:
     """Result of three-pass validation.
@@ -529,7 +529,7 @@ class ValidationResult:
 
 **Example**:
 
-```python
+```rust
 validation = validate_site("site")
 
 # Check overall pass
@@ -558,7 +558,7 @@ print(f"\nIssues: {len(errors)} errors, {len(warnings)} warnings, {len(info)} in
 
 Single validation issue found during site validation.
 
-```python
+```rust
 @dataclass
 class ValidationIssue:
     """Single validation issue.
@@ -582,7 +582,7 @@ class ValidationIssue:
 
 **Example**:
 
-```python
+```rust
 validation = validate_site("site")
 
 # Review all issues with suggestions
@@ -617,7 +617,7 @@ if errors:
 
 Result of GitHub Pages deployment.
 
-```python
+```rust
 @dataclass
 class DeploymentResult:
     """Result of deployment.
@@ -641,7 +641,7 @@ class DeploymentResult:
 
 **Example**:
 
-```python
+```rust
 result = deploy_site(config)
 
 if result.success:
@@ -664,7 +664,7 @@ elif "push failed" in str(result.errors):
 
 **Success Case**:
 
-```python
+```rust
 DeploymentResult(
     success=True,
     branch="gh-pages",
@@ -676,7 +676,7 @@ DeploymentResult(
 
 **Failure Case**:
 
-```python
+```rust
 DeploymentResult(
     success=False,
     branch="gh-pages",
@@ -688,7 +688,7 @@ DeploymentResult(
 
 **No Changes Case**:
 
-```python
+```rust
 DeploymentResult(
     success=True,
     branch="gh-pages",
@@ -710,7 +710,7 @@ Currently no environment variables are supported. All configuration is explicit 
 
 End-to-end workflow from generation to deployment:
 
-```python
+```rust
 from claude_skills.documentation_writing.github_pages import (
     SiteConfig,
     DeploymentConfig,

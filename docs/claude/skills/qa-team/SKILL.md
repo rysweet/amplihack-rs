@@ -54,7 +54,7 @@ This skill helps you create **agentic outside-in tests** that verify application
 
 **Traditional Inside-Out Testing**:
 
-```python
+```rust
 # Tightly coupled to implementation
 def test_calculator_add():
     calc = Calculator()
@@ -1866,7 +1866,7 @@ For complete shadow environment documentation, see the **shadow-testing** skill.
 
 #### Pattern 1: CLI Tests in Shadow (Amplifier)
 
-```python
+```rust
 # Create shadow with your local library changes
 shadow.create(local_sources=["~/repos/my-lib:org/my-lib"])
 
@@ -2057,7 +2057,7 @@ Claude, use the shadow-testing skill to set up a shadow environment
 
 Or for Amplifier users, the shadow tool is built-in:
 
-```python
+```rust
 shadow.create(local_sources=["~/repos/lib:org/lib"])
 ```
 

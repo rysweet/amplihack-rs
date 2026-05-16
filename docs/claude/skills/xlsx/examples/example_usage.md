@@ -10,7 +10,7 @@ This document provides 10 comprehensive examples demonstrating the XLSX skill's 
 
 **Implementation**:
 
-```python
+```rust
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
@@ -65,7 +65,7 @@ python .claude/skills/xlsx/scripts/recalc.py expenses.xlsx
 
 **Implementation**:
 
-```python
+```rust
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
@@ -133,7 +133,7 @@ python .claude/skills/xlsx/scripts/recalc.py revenue_projection.xlsx
 
 **Implementation**:
 
-```python
+```rust
 import pandas as pd
 
 # Sample data (in practice, load from CSV)
@@ -177,7 +177,7 @@ print("Sales analysis created: sales_analysis.xlsx")
 
 **Implementation**:
 
-```python
+```rust
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
@@ -268,7 +268,7 @@ python .claude/skills/xlsx/scripts/recalc.py income_statement.xlsx
 
 **Implementation**:
 
-```python
+```rust
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
 
@@ -355,7 +355,7 @@ python .claude/skills/xlsx/scripts/recalc.py budget_model.xlsx
 
 **Implementation**:
 
-```python
+```rust
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
@@ -482,7 +482,7 @@ python .claude/skills/xlsx/scripts/recalc.py dcf_model.xlsx
 
 **Implementation**:
 
-```python
+```rust
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
@@ -582,7 +582,7 @@ python .claude/skills/xlsx/scripts/recalc.py dashboard.xlsx
 
 **Implementation**:
 
-```python
+```rust
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Font
@@ -645,7 +645,7 @@ wb.save('sales_report.xlsx')
 
 **Implementation**:
 
-```python
+```rust
 from openpyxl import Workbook
 import subprocess
 import json
@@ -702,7 +702,7 @@ else:
 
 **Implementation**:
 
-```python
+```rust
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 

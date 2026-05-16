@@ -32,7 +32,7 @@ github_pages/
 
 ### Configuration Dataclasses
 
-```python
+```rust
 from github_pages import SiteConfig, DeploymentConfig
 
 # Site generation configuration
@@ -57,7 +57,7 @@ deploy_config = DeploymentConfig(
 
 ### Result Dataclasses
 
-```python
+```rust
 from github_pages import GenerationResult, ValidationResult, DeploymentResult
 
 # GenerationResult fields:
@@ -85,7 +85,7 @@ from github_pages import GenerationResult, ValidationResult, DeploymentResult
 
 ### Main Functions
 
-```python
+```rust
 from github_pages import generate_site, validate_site, deploy_site, preview_locally
 
 # Generate documentation site
@@ -144,7 +144,7 @@ Content marked with `[PLANNED]` is excluded from reality checks.
 
 ## Usage Example
 
-```python
+```rust
 from github_pages import (
     SiteConfig,
     DeploymentConfig,

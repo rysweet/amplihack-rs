@@ -275,7 +275,7 @@ An agent should be considered a distinct "type" when:
 
 Each shared memory fragment receives scores across multiple dimensions:
 
-```python
+```rust
 class MemoryQuality:
     def __init__(self):
         self.confidence: float = 0.0      # Agent's confidence (0-1)
@@ -335,7 +335,7 @@ Quality Score    Status              Action
 
 **Solution**: Temporal metadata with validity windows.
 
-```python
+```rust
 class TemporalMemory:
     valid_from: datetime
     valid_until: Optional[datetime]  # None = still valid
@@ -370,7 +370,7 @@ Status: Deprecated, replaced by: mem_0892
 
 **Solution**: Each memory has a "context fingerprint" describing where it applies.
 
-```python
+```rust
 class ContextFingerprint:
     project_type: List[str]      # ["web_app", "api_service"]
     scale: str                   # "small", "medium", "large"
@@ -399,7 +399,7 @@ Current Context: {type: "api_service", scale: "large", ...}
 
 **Solution**: Explicit contradiction tracking and resolution.
 
-```python
+```rust
 class ContradictionDetector:
     def detect_contradictions(self, new_memory: Memory,
                              existing_memories: List[Memory]) -> List[Contradiction]:
@@ -427,7 +427,7 @@ class ContradictionDetector:
 
 **Solution**: Track per-agent contribution quality and weight accordingly.
 
-```python
+```rust
 class AgentReputation:
     agent_id: str
     contributions: int
@@ -546,7 +546,7 @@ Does it contradict existing memory?
 
 **Implementation**:
 
-```python
+```rust
 class AutomaticResolver:
     def resolve(self, conflict: Conflict) -> Resolution:
         # Temporal resolution
@@ -785,7 +785,7 @@ Modern systems use **three-store hybrid**:
 
 **Implementation Pattern**:
 
-```python
+```rust
 class HybridMemoryStore:
     def __init__(self):
         self.vector_store = VectorStore()      # For semantic search
@@ -917,7 +917,7 @@ ORDER BY m.quality_score DESC
 
 **Process**:
 
-```python
+```rust
 # 1. Agent identifies its type and task context
 agent = AgentInstance(type="architect", task="api_design")
 context = Context(
@@ -1068,7 +1068,7 @@ Memory B: "Use React Context + hooks for state management"
 
 **Query Impact**:
 
-```python
+```rust
 # Before deprecation (2024-06-01)
 query = "How to manage state in React app?"
 → Returns Memory A (Redux) as top result
@@ -1085,7 +1085,7 @@ query = "How to manage state in React app?"
 
 **Pattern**: While agent types don't directly share memory, they can reference patterns from other types.
 
-```python
+```rust
 # Builder memory (not shared with Optimizer directly)
 builder_memory = Memory(
     agent_type="builder",
@@ -1182,7 +1182,7 @@ After 1000 uses: quality = 1.00
 
 **Solution**: Use logarithmic quality updates or bounded scoring with decay.
 
-```python
+```rust
 def update_quality_bounded(current: float, feedback: float,
                           count: int) -> float:
     """Update quality with diminishing returns."""
@@ -1273,7 +1273,7 @@ Irrelevant old patterns dilute search results
 
 **Solution**: Implement memory lifecycle management.
 
-```python
+```rust
 class MemoryLifecycle:
     def archive_old_memories(self):
         """Move old, unused memories to archive."""
@@ -1330,7 +1330,7 @@ class MemoryLifecycle:
 
 **Code Example**:
 
-```python
+```rust
 # /src/amplihack/memory/graph_store.py
 class GraphMemoryStore:
     def __init__(self, neo4j_uri: str, vector_store: VectorStore):
@@ -1393,7 +1393,7 @@ class GraphMemoryStore:
 
 **Code Example**:
 
-```python
+```rust
 # /src/amplihack/memory/quality.py
 class QualityManager:
     def compute_quality(self, memory: Memory) -> float:
@@ -1533,7 +1533,7 @@ class QualityManager:
 
 **Approach**: Wrap existing agents with memory-aware decorators.
 
-```python
+```rust
 # /src/amplihack/memory/agent_memory.py
 from functools import wraps
 from typing import Callable
@@ -1610,7 +1610,7 @@ class ArchitectAgent:
 
 Update orchestrator to enable memory for agents:
 
-```python
+```rust
 # /src/amplihack/launcher/orchestrator.py
 class Orchestrator:
     def __init__(self):
@@ -1659,7 +1659,7 @@ class Orchestrator:
 
 **Monitoring Dashboard**:
 
-```python
+```rust
 # /src/amplihack/memory/monitoring.py
 class MemoryMetrics:
     def __init__(self, metrics_backend):

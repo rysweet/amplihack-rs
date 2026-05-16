@@ -165,7 +165,7 @@ If > 300 LOC added:
 
 These automatically invoke validation:
 
-```python
+```rust
 # Complexity Detector
 if len(new_agents) > 2:
     trigger("Too many agents - simplify")
@@ -181,7 +181,7 @@ if test_lines > implementation_lines:
 
 These halt progress immediately:
 
-```python
+```rust
 # Security Stop
 if vulnerability_detected:
     stop("Security issue - must fix first")

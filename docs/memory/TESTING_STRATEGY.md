@@ -80,13 +80,13 @@ Total: ~200 tests targeting >80% coverage
 
 **File**: `tests/memory/unit/test_memory_coordinator.py`
 
-```python
+```rust
 """Unit tests for MemoryCoordinator - the main memory interface."""
 
 import pytest
 from datetime import datetime, timedelta
-from amplihack.memory.coordinator import MemoryCoordinator
-from amplihack.memory.models import MemoryEntry, MemoryType, MemoryQuery
+// use amplihack_memory::coordinator:: MemoryCoordinator
+// use amplihack_memory::models:: MemoryEntry, MemoryType, MemoryQuery
 
 
 class TestMemoryCoordinatorStore:
@@ -321,13 +321,13 @@ class TestMemoryCoordinatorWorkingMemory:
 
 **Test Fixtures** (`conftest.py`):
 
-```python
+```rust
 """Shared test fixtures for memory system tests."""
 
 import pytest
 from datetime import datetime
 from unittest.mock import MagicMock
-from amplihack.memory.models import MemoryEntry, MemoryType
+// use amplihack_memory::models:: MemoryEntry, MemoryType
 
 
 @pytest.fixture
@@ -383,11 +383,11 @@ def create_mock_memory(
 
 **File**: `tests/memory/unit/test_security_capabilities.py`
 
-```python
+```rust
 """Security tests for memory system capabilities."""
 
 import pytest
-from amplihack.memory.models import MemoryQuery
+// use amplihack_memory::models:: MemoryQuery
 
 
 class TestSecurityEnforcement:
@@ -414,7 +414,7 @@ class TestSecurityEnforcement:
     def test_agent_id_isolation(self, mock_backend):
         """Test agents can only access their own memories."""
         # ARRANGE
-        from amplihack.memory.coordinator import MemoryCoordinator
+        // use amplihack_memory::coordinator:: MemoryCoordinator
         coordinator = MemoryCoordinator(backend=mock_backend)
 
         # ACT - Try to access another agent's memories
@@ -442,14 +442,14 @@ class TestSecurityEnforcement:
 
 **File**: `tests/memory/integration/test_kuzu_integration.py`
 
-```python
+```rust
 """Integration tests with real Kùzu database."""
 
 import pytest
 from pathlib import Path
-from amplihack.memory.backends.kuzu_backend import KuzuBackend
-from amplihack.memory.coordinator import MemoryCoordinator
-from amplihack.memory.models import MemoryType, MemoryQuery
+// use amplihack_memory::backends::kuzu_backend::{ KuzuBackend
+// use amplihack_memory::coordinator:: MemoryCoordinator
+// use amplihack_memory::models:: MemoryType, MemoryQuery
 
 
 @pytest.mark.integration
@@ -576,12 +576,12 @@ class TestMemoryPipelineIntegration:
 
 **File**: `tests/memory/integration/test_performance.py`
 
-```python
+```rust
 """Performance benchmark tests for memory system (NFR1: <50ms retrieval)."""
 
 import pytest
 import time
-from amplihack.memory.models import MemoryQuery
+// use amplihack_memory::models:: MemoryQuery
 
 
 @pytest.mark.performance
@@ -642,7 +642,7 @@ class TestPerformanceBenchmarks:
 
 **File**: `tests/memory/e2e/test_agent_memory_workflows.py`
 
-```python
+```rust
 """End-to-end tests for agent memory workflows."""
 
 import pytest
@@ -726,7 +726,7 @@ class TestAgentMemoryWorkflows:
 
 ### Learning Metrics Definition
 
-```python
+```rust
 """Dataclass for measuring agent learning metrics."""
 
 from dataclasses import dataclass
@@ -778,12 +778,12 @@ class LearningMetrics:
 
 **File**: `tests/agents/test_doc_analyzer_learning.py`
 
-```python
+```rust
 """Learning tests for Document Analyzer agent."""
 
 import pytest
-from amplihack.memory.coordinator import MemoryCoordinator
-from amplihack.agents.doc_analyzer import DocumentAnalyzerAgent
+// use amplihack_memory::coordinator:: MemoryCoordinator
+// use amplihack_domain_agents:: DocumentAnalyzerAgent
 
 
 @pytest.mark.agent_learning
@@ -880,11 +880,11 @@ class TestDocumentAnalyzerLearning:
 
 **File**: `tests/agents/test_pattern_recognizer_learning.py`
 
-```python
+```rust
 """Learning tests for Pattern Recognizer agent."""
 
 import pytest
-from amplihack.agents.pattern_recognizer import PatternRecognizerAgent
+// use amplihack_domain_agents:: PatternRecognizerAgent
 
 
 @pytest.mark.agent_learning
@@ -948,11 +948,11 @@ class TestPatternRecognizerLearning:
 
 **File**: `tests/agents/test_bug_predictor_learning.py`
 
-```python
+```rust
 """Learning tests for Bug Predictor agent."""
 
 import pytest
-from amplihack.agents.bug_predictor import BugPredictorAgent
+// use amplihack_domain_agents:: BugPredictorAgent
 
 
 @pytest.mark.agent_learning
@@ -1028,11 +1028,11 @@ class TestBugPredictorLearning:
 
 **File**: `tests/agents/test_performance_optimizer_learning.py`
 
-```python
+```rust
 """Learning tests for Performance Optimizer agent."""
 
 import pytest
-from amplihack.agents.performance_optimizer import PerformanceOptimizerAgent
+// use amplihack_domain_agents:: PerformanceOptimizerAgent
 
 
 @pytest.mark.agent_learning
@@ -1093,7 +1093,7 @@ Each scenario follows the outside-in approach:
 
 ### Scenario 1: Document Analysis Flow
 
-```python
+```rust
 """Outside-in test: User wants to understand MS Learn documentation."""
 
 def test_user_analyzes_ms_learn_docs(kuzu_coordinator):
@@ -1136,7 +1136,7 @@ def test_user_analyzes_ms_learn_docs(kuzu_coordinator):
 
 ### Scenario 2: Pattern Recognition Flow
 
-```python
+```rust
 """Outside-in test: User wants to identify design patterns in codebase."""
 
 def test_user_identifies_design_patterns(kuzu_coordinator, sample_codebase):
@@ -1173,7 +1173,7 @@ def test_user_identifies_design_patterns(kuzu_coordinator, sample_codebase):
 
 ### Scenario 3: Bug Prediction Flow
 
-```python
+```rust
 """Outside-in test: User wants to find potential bugs before they occur."""
 
 def test_user_predicts_bugs_in_code(kuzu_coordinator):
@@ -1216,7 +1216,7 @@ def test_user_predicts_bugs_in_code(kuzu_coordinator):
 
 ### Scenario 4: Performance Optimization Flow
 
-```python
+```rust
 """Outside-in test: User wants to optimize slow code."""
 
 def test_user_optimizes_slow_code(kuzu_coordinator):
@@ -1438,11 +1438,11 @@ scenarios:
 
 **File**: `tests/gadugi_scenarios/metric_collectors.py`
 
-```python
+```rust
 """Metric collection hooks for gadugi-agentic-test integration."""
 
 from typing import Dict, Any
-from amplihack.memory.models import LearningMetrics
+// use amplihack_memory::models:: LearningMetrics
 
 
 class GadugiMetricCollector:
@@ -1724,7 +1724,7 @@ All tests run automatically on:
 
 ## Appendix A: Helper Functions
 
-```python
+```rust
 """Test helper functions."""
 
 from pathlib import Path

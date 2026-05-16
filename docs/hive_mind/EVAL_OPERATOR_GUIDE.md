@@ -8,7 +8,7 @@ This is a how-to guide. It focuses on which repo to run from, which environment 
 
 | Goal                                                                   | Repo                   | Command family                                           |
 | ---------------------------------------------------------------------- | ---------------------- | -------------------------------------------------------- |
-| Edit the agent runtime and run the thin local wrappers                 | `amplihack`            | `python -m amplihack.eval.*`                             |
+| Edit the agent runtime and run the thin local wrappers                 | `amplihack`            | `amplihack eval *`                             |
 | Run the authoritative local eval CLI                                   | `amplihack-agent-eval` | `amplihack-eval run`, `amplihack-eval compare`           |
 | Run the distributed Azure runner against an already live hive          | `amplihack`            | `python deploy/azure_hive/eval_distributed.py`           |
 | Deploy Azure and run an end-to-end distributed eval                    | `amplihack-agent-eval` | `./run_distributed_eval.sh`                              |
@@ -67,7 +67,7 @@ Use this when you are editing runtime code in `amplihack` and want to exercise t
 ```bash
 cd "${AMPLIHACK_SOURCE_ROOT}"
 
-python -m amplihack.eval.long_horizon_memory \
+amplihack eval long-horizon-memory \
   --turns 100 \
   --questions 20 \
   --output-dir /tmp/eval-run
@@ -78,7 +78,7 @@ For multi-seed comparison:
 ```bash
 cd "${AMPLIHACK_SOURCE_ROOT}"
 
-python -m amplihack.eval.long_horizon_multi_seed \
+amplihack eval long_horizon_multi_seed \
   --turns 100 \
   --questions 20 \
   --seeds 42,123,456,789 \
@@ -92,7 +92,7 @@ Use the progressive suite when you want the L1-L12 surface rather than the long-
 ```bash
 cd "${AMPLIHACK_SOURCE_ROOT}"
 
-python -m amplihack.eval.progressive_test_suite \
+amplihack eval progressive-test-suite \
   --output-dir /tmp/eval-progressive \
   --runs 3 \
   --grader-votes 3 \
@@ -279,8 +279,8 @@ unset AMPLIHACK_EH_RESPONSE_HUB
 
 | Path                                              | Typical output                                                       |
 | ------------------------------------------------- | -------------------------------------------------------------------- |
-| `python -m amplihack.eval.progressive_test_suite` | `summary.json` plus per-level score files                            |
-| `python -m amplihack.eval.long_horizon_memory`    | `eval_report.json`-style report output                               |
+| `amplihack eval progressive-test-suite` | `summary.json` plus per-level score files                            |
+| `amplihack eval long-horizon-memory`    | `eval_report.json`-style report output                               |
 | `amplihack-eval run` or `compare`                 | report directories under your chosen `--output-dir`                  |
 | `./run_distributed_eval.sh`                       | `/tmp/eval-results-*` with report, metadata, logs, and rerun command |
 | Aspire monitor                                    | `aspire_eval_monitor_progress.json` unless overridden                |

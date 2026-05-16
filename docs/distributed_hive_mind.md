@@ -158,7 +158,7 @@ Facts with confidence >= 0.9 escalate from group hives to the root. Federated qu
 
 Consistent hash ring with 64 virtual nodes per agent. Maps fact content to ring positions. Supports dynamic agent join/leave with automatic fact redistribution.
 
-```python
+```rust
 ring = HashRing(replication_factor=3)
 ring.add_agent("agent_0")
 owners = ring.get_agents("sarah chen birthday")  # Returns 3 agents
@@ -192,7 +192,7 @@ Implements the `ShardTransport` Protocol for cloud deployments. Uses `azure-even
 - `correlation_id + threading.Event` for synchronous `query_shard()` semantics
 - `handle_shard_query()` calls `agent.memory.search()` (CognitiveAdapter: n-gram, reranking, semantic) when an agent instance is bound; falls back to raw `ShardStore.search()`
 
-```python
+```rust
 # Activated automatically when env vars are set (agent_entrypoint.py)
 transport = EventHubsShardTransport(
     connection_string=os.environ["AMPLIHACK_EH_CONNECTION_STRING"],
@@ -551,7 +551,7 @@ export AMPLIHACK_MEMORY_SEARCH_TIMEOUT=1.0
 
 Or set programmatically:
 
-```python
+```rust
 NetworkGraphStore(..., search_timeout=1.0)
 ```
 
@@ -648,7 +648,7 @@ contains all expected keywords.
 
 ### Programmatic Usage
 
-```python
+```rust
 from experiments.hive_mind.query_hive import HiveQueryClient, _score_response
 
 client = HiveQueryClient(timeout=10)

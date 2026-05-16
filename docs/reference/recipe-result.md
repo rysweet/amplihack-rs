@@ -41,7 +41,7 @@ RecipeResult(<recipe-name>: <STATUS>, <N> steps)
 
 **Examples:**
 
-```python
+```rust
 result = runner.run("default-workflow", context)
 
 print(str(result))
@@ -66,7 +66,7 @@ The summary includes:
 
 Each entry in `step_results` is a `StepResult`:
 
-```python
+```rust
 @dataclass
 class StepResult:
     step_id: str          # e.g. "step-1", "step-2"
@@ -78,7 +78,7 @@ class StepResult:
 
 Accessing step results directly:
 
-```python
+```rust
 result = runner.run("default-workflow", context)
 
 for step in result.step_results:

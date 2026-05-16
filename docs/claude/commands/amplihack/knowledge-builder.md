@@ -63,10 +63,10 @@ Total: ~270 questions with web-researched answers
 
 ## Implementation
 
-```python
+```rust
 import sys
 
-from amplihack.knowledge_builder import KnowledgeBuilder
+// use amplihack_knowledge_builder:: KnowledgeBuilder
 
 # Get topic from user prompt (everything after the command)
 topic = """{{PROMPT}}"""

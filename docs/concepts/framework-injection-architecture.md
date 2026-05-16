@@ -67,7 +67,7 @@ This order ensures preferences override framework defaults, and framework instru
 
 The hook caches comparison results using modification times:
 
-```python
+```rust
 cache_key = (amplihack_mtime, claude_mtime)
 
 # Cache hit: File mtimes haven't changed
@@ -115,7 +115,7 @@ Content comparison handles all cases correctly.
 
 Formatting differences (line endings, trailing spaces) shouldn't trigger injection:
 
-```python
+```rust
 if claude_content.strip() == amplihack_content.strip():
     # Files are effectively identical
     skip_injection()

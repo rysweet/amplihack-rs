@@ -48,7 +48,7 @@ hard rejects (read path only):  values containing / or ..
 The transformation is idempotent — sanitizing an already-clean ID returns it
 unchanged.
 
-```python
+```rust
 import re
 
 def _sanitize_session_id(session_id: str | None) -> str:
@@ -64,8 +64,8 @@ def _sanitize_session_id(session_id: str | None) -> str:
 
 ### `_sanitize_session_id`
 
-```python
-from amplihack.tools.lock_tool import _sanitize_session_id
+```rust
+// use amplihack_tools::lock_tool::{ _sanitize_session_id
 
 safe_id = _sanitize_session_id(raw_session_id)
 ```
@@ -81,7 +81,7 @@ safe_id = _sanitize_session_id(raw_session_id)
 
 **Examples**:
 
-```python
+```rust
 _sanitize_session_id("my-session_01")      # → "my-session_01"  (unchanged)
 _sanitize_session_id("../../etc/passwd")   # → "______etc_passwd"
 _sanitize_session_id("abc\nid=evil")       # → "abc_id_evil"

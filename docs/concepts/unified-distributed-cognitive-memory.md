@@ -93,7 +93,7 @@ The target state extends the same distributed contract to the operations that st
 
 The system preserves the original question as the authoritative query context.
 
-```python
+```rust
 # [PLANNED] - Illustrative interface shape, not yet implemented
 from dataclasses import dataclass
 

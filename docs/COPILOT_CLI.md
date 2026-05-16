@@ -460,7 +460,7 @@ python3 .claude/tools/amplihack/hooks/pre_commit.py "$@"
 
 **Python Implementation** (`~/.amplihack/.claude/tools/amplihack/hooks/pre_commit.py`):
 
-```python
+```rust
 #!/usr/bin/env python3
 """Pre-commit hook implementation."""
 
@@ -518,7 +518,7 @@ The hook system automatically detects the calling platform by checking:
 
 **Claude Code** (Direct Injection):
 
-```python
+```rust
 # Hook returns JSON with context
 return {
     "hookSpecificOutput": {
@@ -530,7 +530,7 @@ return {
 
 **Copilot CLI** (File-Based Injection):
 
-```python
+```rust
 # Hook writes to AGENTS.md
 with open(".github/agents/AGENTS.md", "w") as f:
     f.write("""
@@ -1171,7 +1171,7 @@ tests/
 
 **Unit Test Example**:
 
-```python
+```rust
 def test_pre_commit_hook():
     """Test pre-commit hook runs successfully."""
     result = subprocess.run(
@@ -1183,7 +1183,7 @@ def test_pre_commit_hook():
 
 **Integration Test Example**:
 
-```python
+```rust
 def test_hook_calls_python():
     """Test bash wrapper calls Python implementation."""
     with patch('subprocess.run') as mock_run:
@@ -1197,7 +1197,7 @@ def test_hook_calls_python():
 
 **Unit Test Example**:
 
-```python
+```rust
 def test_mcp_servers_config():
     """Test MCP servers configuration is valid."""
     with open(".github/mcp-servers.json") as f:

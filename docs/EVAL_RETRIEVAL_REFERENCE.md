@@ -23,7 +23,7 @@ This reference documents the retrieval methods added to the amplihack evaluation
 
 ### Method Signature
 
-```python
+```rust
 def _entity_linked_retrieval(
     self,
     question: str,
@@ -73,7 +73,7 @@ The method recognizes these structured ID formats:
 
 ### Example Usage
 
-```python
+```rust
 # Question containing incident ID
 question = "What was the root cause of INC-2024-089?"
 
@@ -112,7 +112,7 @@ facts = agent._entity_linked_retrieval(question)
 
 ### Method Signature
 
-```python
+```rust
 def _multi_entity_retrieval(
     self,
     question: str,
@@ -166,7 +166,7 @@ The method detects entities using these patterns:
 
 ### Example Usage
 
-```python
+```rust
 # Multi-entity question
 question = "How did the Snowfall incident affect the Alpine Lodge project?"
 
@@ -208,7 +208,7 @@ facts = agent._multi_entity_retrieval(question)
 
 ### Decision Algorithm
 
-```python
+```rust
 def _select_retrieval_strategy(self, question: str) -> str:
     """
     Selects the most appropriate retrieval strategy for a question.
@@ -276,7 +276,7 @@ def _select_retrieval_strategy(self, question: str) -> str:
 
 ### Recommended Implementation
 
-```python
+```rust
 def answer_question(self, question: str) -> str:
     """
     Answers a question using intelligent retrieval strategy selection.
@@ -330,7 +330,7 @@ Primary Strategy
 
 ### Implementation
 
-```python
+```rust
 def _deduplicate_facts(self, facts: list[Fact]) -> list[Fact]:
     """
     Removes duplicate facts based on fact ID or content hash.
@@ -362,7 +362,7 @@ def _deduplicate_facts(self, facts: list[Fact]) -> list[Fact]:
 
 Multiple retrieval strategies can return the same facts:
 
-```python
+```rust
 # Question: "What's the status of INC-2024-089?"
 
 # Entity-linked retrieval finds:
@@ -410,7 +410,7 @@ Retrieval Limit (facts per entity)
 
 ### Missing Entity Patterns
 
-```python
+```rust
 def _entity_linked_retrieval(self, question: str) -> list[Fact]:
     try:
         entity_ids = self._extract_entity_ids(question)
@@ -432,7 +432,7 @@ def _entity_linked_retrieval(self, question: str) -> list[Fact]:
 
 ### Ambiguous Entities
 
-```python
+```rust
 def _multi_entity_retrieval(self, question: str) -> list[Fact]:
     entities = self._extract_entities(question)
 
@@ -452,7 +452,7 @@ def _multi_entity_retrieval(self, question: str) -> list[Fact]:
 
 ### Unit Test Example
 
-```python
+```rust
 def test_entity_linked_retrieval():
     agent = LearningAgent("test")
 
@@ -470,7 +470,7 @@ def test_entity_linked_retrieval():
 
 ### Integration Test Example
 
-```python
+```rust
 def test_combined_retrieval_strategy():
     agent = LearningAgent("test")
 

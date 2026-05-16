@@ -6,7 +6,7 @@ Automatic platform detection and unified interface fer GitHub and Azure DevOps o
 
 The platform bridge automatically detects whether yer repository be hosted on GitHub or Azure DevOps and uses the appropriate CLI tools. No configuration needed, matey!
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge
 
 # Automatically detects platform from git remote
@@ -58,7 +58,7 @@ The platform bridge supports five core operations needed by DEFAULT_WORKFLOW:
 
 The platform bridge examines yer git remote URLs to determine the platform:
 
-```python
+```rust
 # Detects GitHub
 git remote -v
 # origin  https://github.com/owner/repo.git (fetch)
@@ -108,7 +108,7 @@ Ye **don't** need both CLIs installed - only the one fer yer current repository'
 
 ### Creating an Issue/Work Item
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge
 
 bridge = PlatformBridge()
@@ -126,7 +126,7 @@ print(f"Created: {issue['url']}")
 
 ### Creating a Draft Pull Request
 
-```python
+```rust
 # Create draft PR (both platforms)
 pr = bridge.create_draft_pr(
     title="feat: Add new feature",
@@ -140,7 +140,7 @@ print(f"Draft PR created: {pr['url']}")
 
 ### Marking PR Ready for Review
 
-```python
+```rust
 # Mark PR as ready (removes draft status)
 result = bridge.mark_pr_ready(pr_number=42)
 
@@ -150,7 +150,7 @@ if result['success']:
 
 ### Adding Comments to PR
 
-```python
+```rust
 # Add comment to PR
 comment = bridge.add_pr_comment(
     pr_number=42,
@@ -160,7 +160,7 @@ comment = bridge.add_pr_comment(
 
 ### Checking CI Status
 
-```python
+```rust
 # Check CI pipeline status
 status = bridge.check_ci_status(pr_number=42)
 
@@ -174,7 +174,7 @@ else:
 
 The platform bridge provides clear, actionable error messages:
 
-```python
+```rust
 try:
     bridge = PlatformBridge()
 except PlatformDetectionError as e:
@@ -209,7 +209,7 @@ The platform bridge be integrated into DEFAULT_WORKFLOW.md at these steps:
 
 **Step 3: Create Issue/Work Item**
 
-```python
+```rust
 # Platform-agnostic issue creation
 bridge = PlatformBridge()
 issue = bridge.create_issue(title=title, body=body)
@@ -217,7 +217,7 @@ issue = bridge.create_issue(title=title, body=body)
 
 **Step 15: Create Draft PR**
 
-```python
+```rust
 # Works on both GitHub and Azure DevOps
 pr = bridge.create_draft_pr(
     title=pr_title,
@@ -229,14 +229,14 @@ pr = bridge.create_draft_pr(
 
 **Step 20: Mark PR Ready**
 
-```python
+```rust
 # Remove draft status
 bridge.mark_pr_ready(pr_number=pr_number)
 ```
 
 **Step 21: Check CI Status**
 
-```python
+```rust
 # Platform-agnostic CI status check
 status = bridge.check_ci_status(pr_number=pr_number)
 if not status['all_passing']:

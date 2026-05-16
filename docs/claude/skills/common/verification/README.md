@@ -79,7 +79,7 @@ Optional features:
 
 Skills tests can use verification functions directly:
 
-```python
+```rust
 import sys
 from pathlib import Path
 
@@ -187,7 +187,7 @@ To add a new skill:
 
 1. Add skill definition to `SKILLS` dict:
 
-   ```python
+   ```rust
    SKILLS = {
        "newskill": {
            "python_required": ["package1", "package2"],

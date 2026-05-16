@@ -23,7 +23,7 @@ Use the thin wrapper when you are editing `amplihack` and want a fast local chec
 cd /path/to/amplihack
 
 PYTHONPATH=/path/to/amplihack-agent-eval/src:/path/to/amplihack/src \
-python -m amplihack.eval.long_horizon_memory \
+amplihack eval long-horizon-memory \
   --turns 100 \
   --questions 20 \
   --question-set standard \

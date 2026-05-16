@@ -240,7 +240,7 @@ gh pr edit 123 --body "${current_desc}\n\n## Review"  # ❌ WRONG
 
 When implementing review posting:
 
-```python
+```rust
 # Correct implementation
 def post_review_comment(pr_number, review_content):
     """Post a review as a PR comment."""
@@ -264,7 +264,7 @@ gh pr comment 123 --body "$(cat <<'EOF'
 ## Review Summary
 
 **Critical Issues**:
-```python
+```rust
 def process_data():
     data = load()  # Memory leak - data never freed
 ````

@@ -30,7 +30,7 @@ Microsoft Agent Framework and amplihack are complementary systems that can work 
 
 amplihack manages the high-level workflow, delegating to Agent Framework for stateful conversations.
 
-```python
+```rust
 # amplihack orchestrator (pseudocode)
 from claude import Agent as ClaudeAgent
 from agents_framework import Agent as AFAgent, Thread
@@ -68,7 +68,7 @@ for step in plan.steps:
 
 Agent Framework workflow uses amplihack agents as tools.
 
-```python
+```rust
 from agents_framework import function_tool, Agent, GraphWorkflow
 import subprocess
 
@@ -105,7 +105,7 @@ result = await workflow.run(initial_state={"code_path": "./src"})
 
 Run both systems in parallel for different aspects of a task.
 
-```python
+```rust
 import asyncio
 
 async def parallel_processing(task):
@@ -144,7 +144,7 @@ async def parallel_processing(task):
 
 Systems pass control back and forth.
 
-```python
+```rust
 async def sequential_handoff(user_query):
     # amplihack for initial analysis
     analysis = amplihack_agent.process({"query": user_query})
@@ -174,7 +174,7 @@ async def sequential_handoff(user_query):
 
 ### Example 1: Code Review with Conversation
 
-```python
+```rust
 # amplihack reviews code
 from claude import Agent as ClaudeAgent
 
@@ -199,7 +199,7 @@ response = await discussion_agent.run(
 
 ### Example 2: Customer Support Pipeline
 
-```python
+```rust
 # Agent Framework handles customer conversation
 from agents_framework import Agent, Thread, GraphWorkflow
 
@@ -230,7 +230,7 @@ if conversation.requires_escalation:
 
 ### Example 3: Research Pipeline
 
-```python
+```rust
 # Agent Framework workflow coordinates
 from agents_framework import GraphWorkflow, Agent
 

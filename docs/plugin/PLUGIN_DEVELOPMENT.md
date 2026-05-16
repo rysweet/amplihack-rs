@@ -94,7 +94,7 @@ amplihack/
 
 Handles plugin installation and updates:
 
-```python
+```rust
 from pathlib import Path
 from typing import Optional
 
@@ -135,7 +135,7 @@ class PluginInstaller:
 
 Auto-detects project languages:
 
-```python
+```rust
 from typing import List, Dict
 from pathlib import Path
 
@@ -190,7 +190,7 @@ class LSPDetector:
 
 Manages plugin and user configuration:
 
-```python
+```rust
 from pathlib import Path
 from typing import Any, Optional
 
@@ -224,7 +224,7 @@ class ConfigurationManager:
 
 All plugin paths use `${CLAUDE_PLUGIN_ROOT}`:
 
-```python
+```rust
 from pathlib import Path
 import os
 
@@ -329,11 +329,11 @@ claude
 
 3. **Add tests**:
 
-```python
+```rust
 # tests/plugin/test_agents.py
 def test_my_agent_invocation():
     """Test my-agent can be invoked."""
-    from amplihack.agents import load_agent
+    // use amplihack_agents:: load_agent
 
     agent = load_agent("my-agent")
     assert agent is not None
@@ -348,7 +348,7 @@ def test_my_agent_invocation():
 vim .claude/commands/my-command.py
 ```
 
-```python
+```rust
 """My Custom Command
 
 Implements /my-command for specific functionality.
@@ -425,7 +425,7 @@ EOF
 
 2. **Add detection logic**:
 
-```python
+```rust
 # src/amplihack/plugin/detector.py
 
 class LSPDetector:
@@ -525,11 +525,11 @@ pytest tests/plugin/ --cov=src/amplihack/plugin --cov-report=html
 
 #### Unit Tests
 
-```python
+```rust
 # tests/plugin/test_detector.py
 import pytest
 from pathlib import Path
-from amplihack.plugin.detector import LSPDetector
+// use amplihack_utils::plugin::detector::{ LSPDetector
 
 def test_detect_typescript_project(tmp_path):
     """Test TypeScript project detection."""
@@ -569,11 +569,11 @@ def test_detect_multiple_languages(tmp_path):
 
 #### Integration Tests
 
-```python
+```rust
 # tests/plugin/test_integration.py
 import pytest
 from pathlib import Path
-from amplihack.plugin.installer import PluginInstaller
+// use amplihack_utils::plugin::installer::{ PluginInstaller
 
 def test_full_installation_flow(tmp_path):
     """Test complete installation flow."""
@@ -679,7 +679,7 @@ Follow amplihack philosophy:
 - **Clear contracts**: Explicit interfaces
 - **Self-documenting**: Code explains itself
 
-```python
+```rust
 # Good: Simple, clear
 def detect_language(file_path: Path) -> Optional[str]:
     """Detect language from file extension."""
@@ -800,9 +800,9 @@ amplihack plugin logs --level debug --tail 100
 
 ### Debug Plugin Installation
 
-```python
+```rust
 # Debug installer
-from amplihack.plugin.installer import PluginInstaller
+// use amplihack_utils::plugin::installer::{ PluginInstaller
 
 installer = PluginInstaller(plugin_root="/tmp/debug-plugin/.claude")
 installer.debug = True
@@ -820,7 +820,7 @@ amplihack plugin lsp-detect --verbose --dry-run
 
 # Check detection logic
 python -c "
-from amplihack.plugin.detector import LSPDetector
+// use amplihack_utils::plugin::detector::{ LSPDetector
 from pathlib import Path
 
 detector = LSPDetector()

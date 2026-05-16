@@ -161,7 +161,7 @@ not Observe→Orient→Decide→Act.
 
 **orient() when called directly:**
 
-```python
+```rust
 def orient(self):
     facts = self.memory.search(query, limit=15)    # ← hardcoded int
     return {"input": self._current_input, "facts": fact_strings}
@@ -269,7 +269,7 @@ Stop words removed, tokens < 3 chars stripped.
 **At query time (search_local / CognitiveAdapter):** Results are re-ranked using
 n-gram overlap score between the query and `concept + content`:
 
-```python
+```rust
 score = _ngram_overlap_score(query, f"{concept} {content}")
 ```
 
@@ -311,7 +311,7 @@ different:
 
 **File:** `deploy/azure_hive/agent_entrypoint.py:278-328`
 
-```python
+```rust
 local_memory = agent.memory.memory          # CognitiveAdapter → CognitiveMemory
 distributed_memory = DistributedCognitiveMemory(
     local_memory=local_memory,
@@ -368,7 +368,7 @@ store_fact(context, fact, ...)
 
 Any method not explicitly defined is proxied to `self._local`:
 
-```python
+```rust
 def __getattr__(self, name):
     if name.startswith("__") and name.endswith("__"):
         raise AttributeError(name)
@@ -451,7 +451,7 @@ and never trigger another SHARD_QUERY (preventing recursive storms).
 
 **File:** `hive_mind/distributed_memory.py`
 
-```python
+```rust
 def _merge_fact_lists(local_results, hive_dicts, limit):
     seen = set()        # MD5 hashes of content
     merged = []

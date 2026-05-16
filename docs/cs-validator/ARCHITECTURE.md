@@ -118,7 +118,7 @@ update_result() {
 
 **Key Functions**:
 
-```python
+```rust
 validate_balanced_delimiters(content, filepath)
     # Check for balanced {}, (), []
     # Returns: list of errors

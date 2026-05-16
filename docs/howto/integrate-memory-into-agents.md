@@ -42,7 +42,7 @@ The generated package exposes helper functions such as:
 
 A minimal integration pattern is to recall relevant experience before the run and store the result afterward.
 
-```python
+```rust
 recent = recall_relevant(initial_prompt, limit=3)
 for item in recent:
     print("Previous experience: {} -> {}".format(item.context, item.outcome))

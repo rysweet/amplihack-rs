@@ -194,7 +194,7 @@ Based on common PM task patterns, these specialized agents would be valuable:
 
 **Parallel Execution (Default)**:
 
-```python
+```rust
 # Example: Parallel epic analysis
 from asyncio import gather
 
@@ -211,7 +211,7 @@ synthesis = synthesize_epic_plan(results)
 
 **Sequential with Checkpoints**:
 
-```python
+```rust
 # Example: Batch processing with state
 processor = BatchProcessor("refine_backlog")
 
@@ -225,7 +225,7 @@ for item in backlog_items:
 
 **Hybrid (Parallel batches, Sequential synthesis)**:
 
-```python
+```rust
 # Example: Parallel workstream analysis
 workstream_analyses = await gather(*[
     analyze_workstream(ws) for ws in workstreams

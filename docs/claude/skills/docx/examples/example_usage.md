@@ -293,7 +293,7 @@ python ooxml/scripts/unpack.py contract.docx unpacked/
 grep -n "30 days" unpacked/word/document.xml
 ```
 
-```python
+```rust
 # batch1_timeline.py
 from defusedxml import minidom
 
@@ -420,7 +420,7 @@ cat unpacked/word/comments.xml
 
 Python script for structured extraction:
 
-```python
+```rust
 from defusedxml import minidom
 
 doc = minidom.parse("unpacked/word/comments.xml")
@@ -661,7 +661,7 @@ done
 
 Python script for detailed analysis:
 
-```python
+```rust
 # Extract structure from markdown
 with open("proposal_structure.md") as f:
     content = f.read()
@@ -746,7 +746,7 @@ Generate multiple contract documents from a template by replacing placeholder va
 ]
 ```
 
-```python
+```rust
 import json
 import shutil
 from pathlib import Path
@@ -810,7 +810,7 @@ for i, client in enumerate(clients, 1):
 
 ### Error Handling for OOXML Operations
 
-```python
+```rust
 from defusedxml import minidom
 from pathlib import Path
 
@@ -860,7 +860,7 @@ soffice output.docx  # Manual verification
 
 ### Batch Processing with Progress
 
-```python
+```rust
 from pathlib import Path
 from tqdm import tqdm  # pip install tqdm
 

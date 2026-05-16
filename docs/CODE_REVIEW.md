@@ -38,7 +38,7 @@ calls = 34 lines **Savings**: 26 lines, better maintainability
 
 **Fix**: Added try/except for `TimeoutExpired`
 
-```python
+```rust
 try:
     subprocess.run(..., timeout=30)
 except subprocess.TimeoutExpired:
@@ -55,7 +55,7 @@ but never displayed (stub-like behavior)
 
 **Fix**: Capture and display summary output
 
-```python
+```rust
 code, summary = self.run_sdk(...)
 if code == 0:
     print(summary)
@@ -72,7 +72,7 @@ else:
 
 **Fix**: Added `working_dir` parameter with proper default
 
-```python
+```rust
 def __init__(self, ..., working_dir: Optional[Path] = None):
     self.working_dir = working_dir if working_dir is not None else Path.cwd()
 ```
@@ -86,7 +86,7 @@ annotation **Impact**: Pyright type checker error
 
 **Fix**: Proper Optional typing
 
-```python
+```rust
 working_dir: Optional[Path] = None
 # And proper None handling
 self.working_dir = working_dir if working_dir is not None else Path.cwd()
@@ -107,7 +107,7 @@ self.working_dir = working_dir if working_dir is not None else Path.cwd()
 **Before**: Simple string matching `"COMPLETE" in eval_result` **After**:
 Multiple signal patterns
 
-```python
+```rust
 if (
     "evaluation: complete" in eval_lower
     or "objective achieved" in eval_lower

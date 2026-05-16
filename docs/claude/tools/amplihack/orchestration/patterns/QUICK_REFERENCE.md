@@ -2,7 +2,7 @@
 
 ## Import
 
-```python
+```rust
 from .claude.tools.amplihack.orchestration.patterns import (
     run_n_version,
     run_debate,
@@ -15,7 +15,7 @@ from .claude.tools.amplihack.orchestration.patterns import (
 
 **Use when:** Critical implementations requiring multiple attempts
 
-```python
+```rust
 result = run_n_version(
     task_prompt="Implement feature X",
     n=3,                          # Number of versions
@@ -38,7 +38,7 @@ print(result['comparison'])       # Reviewer analysis
 
 **Use when:** Complex decisions needing multiple viewpoints
 
-```python
+```rust
 result = run_debate(
     decision_question="Which database?",
     perspectives=[                # Optional
@@ -61,7 +61,7 @@ print(result['positions'])        # History per perspective
 
 **Use when:** Need guaranteed completion with degradation
 
-```python
+```rust
 result = run_cascade(
     task_prompt="Generate documentation",
     fallback_strategy="quality", # quality, service, freshness, completeness, accuracy
@@ -80,7 +80,7 @@ print(result['attempts'])         # All attempts
 
 **Use when:** Need specific cascade behavior
 
-```python
+```rust
 result = create_custom_cascade(
     task_prompt="Analyze code",
     levels=[
@@ -135,7 +135,7 @@ Find logs at: `~/.amplihack/.claude/runtime/logs/<session_id>/`
 
 All patterns handle errors gracefully:
 
-```python
+```rust
 result = run_n_version(task_prompt="...")
 if not result['success']:
     print("Failed:", result['rationale'])

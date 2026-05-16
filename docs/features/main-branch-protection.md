@@ -416,7 +416,7 @@ Allow ✅
 
 ### Error Message Template
 
-```python
+```rust
 MAIN_BRANCH_ERROR_MESSAGE = """⛔ Direct commits to '{branch}' branch are not allowed.
 
 Please use the feature branch workflow:

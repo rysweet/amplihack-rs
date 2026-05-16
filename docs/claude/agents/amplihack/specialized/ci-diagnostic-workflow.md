@@ -26,7 +26,7 @@ After push or when checking CI:
 
 Initial status check:
 
-```python
+```rust
 from .claude.tools.ci_status import check_ci_status
 
 # Check current branch or PR
@@ -39,7 +39,7 @@ status = check_ci_status(ref="123")  # PR #123
 
 If CI is failing:
 
-```python
+```rust
 # Parallel diagnostic execution
 [
     check_ci_status(),  # Get detailed failure info
@@ -149,7 +149,7 @@ PUSHED → CHECKING → FAILING → FIXING → PUSHING → CHECKING → ...
 
 ### 1. Test Failures
 
-```python
+```rust
 # Diagnosis approach
 if "test" in failure_message.lower():
     # Get test output
@@ -164,7 +164,7 @@ if "test" in failure_message.lower():
 
 ### 2. Linting/Formatting
 
-```python
+```rust
 # Diagnosis approach
 if "ruff" in failure_message or "black" in failure_message:
     # Version mismatch likely
@@ -177,7 +177,7 @@ if "ruff" in failure_message or "black" in failure_message:
 
 ### 3. Type Checking
 
-```python
+```rust
 # Diagnosis approach
 if "mypy" in failure_message or "pyright" in failure_message:
     # Often Python version differences
@@ -190,7 +190,7 @@ if "mypy" in failure_message or "pyright" in failure_message:
 
 ### 4. Build/Compilation
 
-```python
+```rust
 # Diagnosis approach
 if "build" in failure_message:
     # Dependencies or environment
@@ -222,7 +222,7 @@ if "build" in failure_message:
 
 ### Fix Loop Protocol
 
-```python
+```rust
 MAX_ITERATIONS = 5
 iteration = 0
 
@@ -246,7 +246,7 @@ if iteration >= MAX_ITERATIONS:
 
 ### Smart Waiting
 
-```python
+```rust
 def wait_for_ci():
     """Smart polling for CI completion"""
     wait_time = 30  # Start with 30 seconds

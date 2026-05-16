@@ -280,7 +280,7 @@ Use this 5-question framework to evaluate goal-seeking applicability:
 
 Goal-seeking agents have four core components:
 
-```python
+```rust
 # Component 1: Goal Definition
 class GoalDefinition:
     """Structured representation of objective"""
@@ -405,7 +405,7 @@ Phase A → [Decision] → Phase B (success path)
 
 Goal-seeking agents maintain state across phases:
 
-```python
+```rust
 class AgentState:
     """Runtime state for goal-seeking agent"""
     current_phase: str
@@ -423,7 +423,7 @@ Three error recovery strategies:
 
 **Retry with Backoff**: Same approach, exponential delay
 
-```python
+```rust
 for attempt in range(MAX_RETRIES):
     try:
         result = execute_phase(phase)
@@ -435,7 +435,7 @@ for attempt in range(MAX_RETRIES):
 
 **Alternative Strategy**: Different approach to same goal
 
-```python
+```rust
 for strategy in STRATEGIES:
     try:
         result = execute_phase(phase, strategy)
@@ -448,7 +448,7 @@ else:
 
 **Graceful Degradation**: Accept partial success
 
-```python
+```rust
 try:
     result = execute_phase_optimal(phase)
 except OptimalFailedError:
@@ -461,8 +461,8 @@ The `goal_agent_generator` module provides the implementation for goal-seeking a
 
 ### Core API
 
-```python
-from amplihack.goal_agent_generator import (
+```rust
+// use amplihack_goal_agent_generator:: (
     PromptAnalyzer,
     ObjectivePlanner,
     SkillSynthesizer,
@@ -529,8 +529,8 @@ amplihack goal-agent-generator test \
 
 Extracts structured information from natural language:
 
-```python
-from amplihack.goal_agent_generator import PromptAnalyzer
+```rust
+// use amplihack_goal_agent_generator:: PromptAnalyzer
 from pathlib import Path
 
 analyzer = PromptAnalyzer()
@@ -571,8 +571,8 @@ Complexity determination:
 
 Generates multi-phase execution plans:
 
-```python
-from amplihack.goal_agent_generator import ObjectivePlanner
+```rust
+// use amplihack_goal_agent_generator:: ObjectivePlanner
 
 planner = ObjectivePlanner()
 plan = planner.generate_plan(goal_definition)
@@ -606,8 +606,8 @@ Phase templates by domain:
 
 Maps capabilities to skills:
 
-```python
-from amplihack.goal_agent_generator import SkillSynthesizer
+```rust
+// use amplihack_goal_agent_generator:: SkillSynthesizer
 
 synthesizer = SkillSynthesizer()
 skills = synthesizer.synthesize(execution_plan)
@@ -635,8 +635,8 @@ Capability mapping:
 
 Combines components into executable bundle:
 
-```python
-from amplihack.goal_agent_generator import AgentAssembler
+```rust
+// use amplihack_goal_agent_generator:: AgentAssembler
 
 assembler = AgentAssembler()
 bundle = assembler.assemble(
@@ -674,8 +674,8 @@ Auto-mode configuration:
 
 Packages bundle for deployment:
 
-```python
-from amplihack.goal_agent_generator import GoalAgentPackager
+```rust
+// use amplihack_goal_agent_generator:: GoalAgentPackager
 from pathlib import Path
 
 packager = GoalAgentPackager()
@@ -703,7 +703,7 @@ Real goal-seeking agents from the amplihack project:
 
 **Goal-Seeking Solution**:
 
-```python
+```rust
 # Goal: Automate AKS production readiness verification
 goal = """
 Verify AKS cluster production readiness:
@@ -737,12 +737,12 @@ Generate actionable report with recommendations.
 
 **Implementation**:
 
-```python
+```rust
 # Located in: .claude/agents/amplihack/specialized/azure-kubernetes-expert.md
 # Uses knowledge base: .claude/data/azure_aks_expert/
 
 # Integrates with goal_agent_generator:
-from amplihack.goal_agent_generator import (
+// use amplihack_goal_agent_generator:: (
     PromptAnalyzer, ObjectivePlanner, AgentAssembler
 )
 
@@ -771,7 +771,7 @@ plan.phases[0].required_capabilities = [
 
 **Goal-Seeking Solution**:
 
-```python
+```rust
 # Goal: Diagnose CI failure and iterate fixes until success
 goal = """
 CI pipeline failing after push.
@@ -801,7 +801,7 @@ Stop at mergeable state without auto-merging.
 
 **Implementation**:
 
-```python
+```rust
 # Located in: .claude/agents/amplihack/specialized/ci-diagnostic-workflow.md
 
 # Fix iteration loop:
@@ -851,7 +851,7 @@ if iteration >= MAX_ITERATIONS:
 
 **Goal-Seeking Solution**:
 
-```python
+```rust
 # Goal: Fix pre-commit hook failures before commit
 goal = """
 Pre-commit hooks failing.
@@ -877,7 +877,7 @@ Ensure all hooks pass before allowing commit.
 
 **Implementation**:
 
-```python
+```rust
 # Located in: .claude/agents/amplihack/specialized/pre-commit-diagnostic.md
 
 # Hook failure patterns:
@@ -916,7 +916,7 @@ if rerun_result.returncode == 0:
 
 **Goal-Seeking Solution**:
 
-```python
+```rust
 # Goal: Select optimal fix strategy based on problem context
 goal = """
 Analyze issue and select fix mode:
@@ -941,7 +941,7 @@ Analyze issue and select fix mode:
 
 **Implementation**:
 
-```python
+```rust
 # Located in: .claude/agents/amplihack/specialized/fix-agent.md
 
 # Mode selection logic:
@@ -1048,7 +1048,7 @@ When the Agent SDK Skill is integrated, goal-seeking agents can leverage:
 
 ### Enhanced Autonomy
 
-```python
+```rust
 # Agent SDK provides enhanced context management
 from claude_agent_sdk import AgentContext, Tool
 
@@ -1071,7 +1071,7 @@ class GoalSeekingAgent:
 
 ### Tool Discovery
 
-```python
+```rust
 # SDK enables dynamic tool discovery
 available_tools = context.discover_tools(capability="data-processing")
 
@@ -1084,7 +1084,7 @@ tool = context.select_tool(
 
 ### Memory Management
 
-```python
+```rust
 # SDK provides persistent memory across sessions
 context.memory.store("deployment-history", deployment_record)
 previous = context.memory.retrieve("deployment-history")
@@ -1097,7 +1097,7 @@ if previous and previous.failed:
 
 ### Agent Delegation
 
-```python
+```rust
 # SDK simplifies agent-to-agent delegation
 result = await context.delegate(
     agent="security-analyzer",
@@ -1115,7 +1115,7 @@ results = await context.delegate_parallel([
 
 ### Observability
 
-```python
+```rust
 # SDK provides built-in tracing and metrics
 with context.trace("data-transformation"):
     result = transform_data(input_data)
@@ -1126,9 +1126,9 @@ context.metrics.record("transformation-accuracy", accuracy)
 
 ### Integration Example
 
-```python
+```rust
 from claude_agent_sdk import AgentContext, create_agent
-from amplihack.goal_agent_generator import GoalAgentBundle
+// use amplihack_goal_agent_generator:: GoalAgentBundle
 
 # Create SDK-enabled goal-seeking agent
 def create_goal_agent(bundle: GoalAgentBundle) -> Agent:
@@ -1221,7 +1221,7 @@ Goal-seeking agents should escalate to humans when:
 
 **Max Iterations Exceeded**:
 
-```python
+```rust
 if iteration_count >= MAX_ITERATIONS:
     escalate(
         reason="Reached maximum iterations without success",
@@ -1235,7 +1235,7 @@ if iteration_count >= MAX_ITERATIONS:
 
 **Timeout Exceeded**:
 
-```python
+```rust
 if elapsed_time > MAX_DURATION:
     escalate(
         reason="Execution time exceeded limit",
@@ -1251,7 +1251,7 @@ if elapsed_time > MAX_DURATION:
 
 **Destructive Operations**:
 
-```python
+```rust
 if operation.is_destructive() and not operation.has_approval():
     escalate(
         reason="Destructive operation requires human approval",
@@ -1262,7 +1262,7 @@ if operation.is_destructive() and not operation.has_approval():
 
 **Production Changes**:
 
-```python
+```rust
 if target_environment == "production":
     escalate(
         reason="Production deployments require human verification",
@@ -1275,7 +1275,7 @@ if target_environment == "production":
 
 **Low Confidence**:
 
-```python
+```rust
 if decision_confidence < CONFIDENCE_THRESHOLD:
     escalate(
         reason="Confidence below threshold for autonomous decision",
@@ -1287,7 +1287,7 @@ if decision_confidence < CONFIDENCE_THRESHOLD:
 
 **Conflicting Strategies**:
 
-```python
+```rust
 if len(viable_strategies) > 1 and not clear_winner:
     escalate(
         reason="Multiple viable strategies, need human judgment",
@@ -1300,7 +1300,7 @@ if len(viable_strategies) > 1 and not clear_winner:
 
 **Unrecognized Errors**:
 
-```python
+```rust
 if error_type not in KNOWN_ERROR_PATTERNS:
     escalate(
         reason="Encountered unknown error pattern",
@@ -1312,7 +1312,7 @@ if error_type not in KNOWN_ERROR_PATTERNS:
 
 **Environment Mismatch**:
 
-```python
+```rust
 if detected_environment != expected_environment:
     escalate(
         reason="Environment mismatch detected",
@@ -1347,7 +1347,7 @@ if detected_environment != expected_environment:
 
 **Example Escalation**:
 
-```python
+```rust
 escalate(
     reason="CI failure diagnosis unsuccessful after 5 iterations",
     context={
@@ -1417,8 +1417,8 @@ Collect data from multiple sources (S3, database, API), transform to common sche
 
 ### Step 2: Analyze with PromptAnalyzer
 
-```python
-from amplihack.goal_agent_generator import PromptAnalyzer
+```rust
+// use amplihack_goal_agent_generator:: PromptAnalyzer
 
 analyzer = PromptAnalyzer()
 goal_definition = analyzer.analyze_text(goal_text)
@@ -1444,8 +1444,8 @@ goal_definition = analyzer.analyze_text(goal_text)
 
 ### Step 3: Generate Plan with ObjectivePlanner
 
-```python
-from amplihack.goal_agent_generator import ObjectivePlanner
+```rust
+// use amplihack_goal_agent_generator:: ObjectivePlanner
 
 planner = ObjectivePlanner()
 execution_plan = planner.generate_plan(goal_definition)
@@ -1482,8 +1482,8 @@ execution_plan = planner.generate_plan(goal_definition)
 
 ### Step 4: Synthesize Skills
 
-```python
-from amplihack.goal_agent_generator import SkillSynthesizer
+```rust
+// use amplihack_goal_agent_generator:: SkillSynthesizer
 
 synthesizer = SkillSynthesizer()
 skills = synthesizer.synthesize(execution_plan)
@@ -1504,8 +1504,8 @@ skills = synthesizer.synthesize(execution_plan)
 
 ### Step 5: Assemble Agent
 
-```python
-from amplihack.goal_agent_generator import AgentAssembler
+```rust
+// use amplihack_goal_agent_generator:: AgentAssembler
 
 assembler = AgentAssembler()
 agent_bundle = assembler.assemble(
@@ -1524,8 +1524,8 @@ agent_bundle = assembler.assemble(
 
 ### Step 6: Package Agent
 
-```python
-from amplihack.goal_agent_generator import GoalAgentPackager
+```rust
+// use amplihack_goal_agent_generator:: GoalAgentPackager
 from pathlib import Path
 
 packager = GoalAgentPackager()
@@ -1555,7 +1555,7 @@ amplihack goal-agent-generator execute \
 # Or programmatically:
 ```
 
-```python
+```rust
 from claude_code import execute_auto_mode
 
 result = execute_auto_mode(
@@ -1656,7 +1656,7 @@ Total Execution: ✓ SUCCESS (41 minutes, all success criteria met)
 
 If pipeline fails, agent adapts:
 
-```python
+```rust
 # Example: API source completely unavailable
 if phase1_result["api"]["status"] == "unavailable":
     # Agent adapts: continues with partial data
@@ -1693,7 +1693,7 @@ Goal-seeking agents relate to and integrate with other patterns:
 
 **Example**:
 
-```python
+```rust
 # Goal-seeking agent reaches decision point
 if len(viable_strategies) > 1:
     # Invoke debate pattern
@@ -1717,7 +1717,7 @@ if len(viable_strategies) > 1:
 
 **Example**:
 
-```python
+```rust
 # Critical security validation phase
 if phase.is_critical():
     # Generate N versions
@@ -1741,7 +1741,7 @@ if phase.is_critical():
 
 **Example**:
 
-```python
+```rust
 # Data transformation with fallback
 try:
     # Optimal: ML-based transformation
@@ -1765,7 +1765,7 @@ except MLModelUnavailable:
 
 **Example**:
 
-```python
+```rust
 # Before automating deployment, understand current system
 if goal.requires_system_knowledge():
     # Run investigation workflow
@@ -1788,7 +1788,7 @@ if goal.requires_system_knowledge():
 
 **Example**:
 
-```python
+```rust
 # Goal: Implement new feature
 if goal.involves_code_changes():
     # DDD Phase 1: Generate specifications
@@ -1811,7 +1811,7 @@ if goal.involves_code_changes():
 
 **Example**:
 
-```python
+```rust
 # After goal-seeking agent generates code
 if changes_made:
     # Run pre-commit diagnostic
@@ -1950,7 +1950,7 @@ Goal-seeking agents must meet these quality standards:
 **Step 1**: Install amplihack (if not already)
 
 ```bash
-pip install amplihack
+cargo install amplihack
 ```
 
 **Step 2**: Write a goal prompt

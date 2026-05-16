@@ -93,7 +93,7 @@ The fix simplifies installation verification:
 
 The original code performed redundant verification:
 
-```python
+```rust
 # Install Copilot CLI
 success = install_copilot()  # npm returns success
 
@@ -109,7 +109,7 @@ The redundant check failed due to PATH propagation timing - the binary was insta
 
 Trust the installer's return value instead of re-checking:
 
-```python
+```rust
 # Install Copilot CLI
 success = install_copilot()  # Validates via npm exit code
 
@@ -156,7 +156,7 @@ echo $?
 
 Unit tests verify correct behavior:
 
-```python
+```rust
 def test_launch_copilot_installs_when_missing():
     """Installation triggers when CLI not found."""
     with patch('shutil.which', return_value=None), \

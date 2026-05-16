@@ -16,7 +16,7 @@ File locking using `fcntl.flock()` ensures atomic read-modify-write operations. 
 
 ### File Locking Protocol
 
-```python
+```rust
 # [IMPLEMENTED] - Actual implementation
 import fcntl
 from contextlib import contextmanager
@@ -71,7 +71,7 @@ Full support via `fcntl.flock()`. Advisory locks work across all processes acces
 
 Graceful degradation. Windows lacks `fcntl` module. Implementation uses try/except to detect platform:
 
-```python
+```rust
 # [IMPLEMENTED] - Platform detection pattern
 try:
     import fcntl
@@ -133,7 +133,7 @@ All lock operations logged to `.claude/runtime/power-steering/{session_id}/file_
 
 File locking operates transparently during counter increments. No user action required.
 
-```python
+```rust
 # User perspective: Works the same with or without locking
 manager = TurnStateManager(project_root, session_id)
 state = manager.load_state()

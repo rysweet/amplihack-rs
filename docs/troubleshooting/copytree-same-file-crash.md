@@ -49,7 +49,7 @@ The guard:
 
 ```bash
 # Reproduce the original crash (before fix):
-AMPLIHACK_HOME=$(pwd) python -c "from amplihack.install import copytree_manifest; copytree_manifest('.', '.')"
+AMPLIHACK_HOME=$(pwd) python -c "// use amplihack_install:: copytree_manifest; copytree_manifest('.', '.')"
 # Expected (after fix): prints skip warnings, exits cleanly
 
 # Run the regression tests:

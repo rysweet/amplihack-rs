@@ -8,7 +8,7 @@ This workflow shows the complete cycle from issue creation to PR merge, workin' 
 
 ### Step 1: Create Issue/Work Item
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge
 
 bridge = PlatformBridge()
@@ -60,7 +60,7 @@ git push -u origin feat/issue-42-authentication
 
 ### Step 5: Create Draft PR
 
-```python
+```rust
 # Create draft PR fer early feedback
 pr = bridge.create_draft_pr(
     title="feat: Add user authentication",
@@ -90,7 +90,7 @@ print(f"Draft PR created: {pr['url']}")
 
 ### Step 6: Add Progress Comments
 
-```python
+```rust
 # Update PR with progress
 bridge.add_pr_comment(
     pr_number=pr['number'],
@@ -100,7 +100,7 @@ bridge.add_pr_comment(
 
 ### Step 7: Check CI Status
 
-```python
+```rust
 import time
 
 # Wait fer CI to run
@@ -121,7 +121,7 @@ else:
 
 ### Step 8: Mark PR Ready
 
-```python
+```rust
 # After all checks pass and ye be ready fer review
 result = bridge.mark_pr_ready(pr_number=pr['number'])
 
@@ -151,7 +151,7 @@ When CI checks fail, use this workflow to diagnose and fix:
 
 ### Check Which Tests Failed
 
-```python
+```rust
 status = bridge.check_ci_status(pr_number=123)
 
 # Print detailed failure information
@@ -167,7 +167,7 @@ for check in status['checks']:
 
 ### Add Comment with Fix Plan
 
-```python
+```rust
 bridge.add_pr_comment(
     pr_number=123,
     comment="""## CI Failure Analysis
@@ -188,7 +188,7 @@ Expected fix time: 15 minutes
 
 ### After Fixin' Issues
 
-```python
+```rust
 # Push yer fixes
 # git add . && git commit -m "fix: CI issues" && git push
 
@@ -209,7 +209,7 @@ if status['all_passing']:
 
 Manage several PRs simultaneously:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge
 
 bridge = PlatformBridge()
@@ -239,7 +239,7 @@ for pr_info in prs:
 
 Switch between GitHub and Azure DevOps projects seamlessly:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge, Platform
 
 # Project A: GitHub
@@ -271,7 +271,7 @@ azdo_issue = bridge_azdo.create_issue(
 
 Create release PRs automatically:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge
 import datetime
 
@@ -323,7 +323,7 @@ if status['all_passing']:
 
 Some features only work on certain platforms:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge, Platform
 
 bridge = PlatformBridge()
@@ -350,7 +350,7 @@ else:
 
 Process multiple issues or PRs efficiently:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge
 
 bridge = PlatformBridge()
@@ -391,7 +391,7 @@ print(f"\nEpic created: {epic['url']}")
 
 Handle errors gracefully:
 
-```python
+```rust
 from claude.tools.platform_bridge import (
     PlatformBridge,
     CLIToolMissingError,
@@ -436,7 +436,7 @@ except PRNotFoundError as e:
 
 Use platform bridge in automated workflows:
 
-```python
+```rust
 from claude.tools.platform_bridge import PlatformBridge
 
 def workflow_step_3_create_issue(title: str, body: str):

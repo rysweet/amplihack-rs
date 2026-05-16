@@ -10,7 +10,7 @@ You're implementing a complex authentication system that requires multiple itera
 
 ### Workflow
 
-```python
+```rust
 from context_management import check_status, create_snapshot, rehydrate_context
 
 # === PHASE 1: Start Implementation ===
@@ -68,7 +68,7 @@ You need to switch between multiple features frequently without losing context.
 
 ### Workflow
 
-```python
+```rust
 from context_management import create_snapshot, rehydrate_context, list_snapshots
 
 # === Working on Feature A ===
@@ -111,7 +111,7 @@ You're about to perform a large refactoring that might use a lot of tokens for d
 
 ### Workflow
 
-```python
+```rust
 from context_management import check_status, create_snapshot
 
 # === Before Refactoring ===
@@ -154,7 +154,7 @@ You need to hand off work to a teammate with full context.
 
 ### Workflow
 
-```python
+```rust
 from context_management import create_snapshot
 
 # === End of Your Work Session ===
@@ -205,7 +205,7 @@ Create snapshots at key milestones for easy rollback or reference.
 
 ### Workflow
 
-```python
+```rust
 from context_management import create_snapshot
 
 # === Milestone 1: Basic Implementation Complete ===
@@ -247,7 +247,7 @@ Start with minimal context, progressively add more as needed.
 
 ### Workflow
 
-```python
+```rust
 from context_management import rehydrate_context
 
 snapshot_id = '20251116_143522'
@@ -288,7 +288,7 @@ Integrate token monitoring into your workflow.
 
 ### Workflow
 
-```python
+```rust
 from context_management import check_status, create_snapshot
 
 class ContextManager:
@@ -338,7 +338,7 @@ manager.check_and_snapshot(880_000, messages, 'tests-added')
 
 ### 1. Monitor Regularly
 
-```python
+```rust
 # Check at natural breakpoints
 # - After completing a module
 # - Before starting complex discussions
@@ -348,7 +348,7 @@ status = check_status(current_tokens=current)
 
 ### 2. Name Descriptively
 
-```python
+```rust
 # Good naming
 create_snapshot(messages, name='auth-jwt-validation-complete')
 create_snapshot(messages, name='before-database-refactoring')
@@ -362,7 +362,7 @@ create_snapshot(messages, name='test')
 
 ### 3. Create Snapshots Proactively
 
-```python
+```rust
 # Don't wait for 95% - snapshot at 70-85%
 if status['status'] in ['consider', 'recommended']:
     create_snapshot(messages, name=f'{current_task}-snapshot')
@@ -370,7 +370,7 @@ if status['status'] in ['consider', 'recommended']:
 
 ### 4. Start Minimal on Restoration
 
-```python
+```rust
 # Always start with essential
 context = rehydrate_context(snapshot_id, level='essential')
 
@@ -381,7 +381,7 @@ if need_more_context:
 
 ### 5. Clean Up Old Snapshots
 
-```python
+```rust
 from context_management import list_snapshots
 
 # Periodically review snapshots

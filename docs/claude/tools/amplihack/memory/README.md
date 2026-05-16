@@ -63,7 +63,7 @@ The Agent Memory System is now fully integrated into the Claude tools framework,
 
 ### Basic Usage
 
-```python
+```rust
 from .claude.tools.amplihack.memory import get_memory_manager, MemoryType
 
 # Get memory manager for current session
@@ -89,7 +89,7 @@ decisions = memory.retrieve(
 
 ### Context Preservation
 
-```python
+```rust
 from .claude.tools.amplihack.memory.context_preservation import (
     preserve_current_context, restore_latest_context
 )
@@ -110,7 +110,7 @@ context = restore_latest_context("orchestrator")
 
 ### 1. Agent Memory Integration
 
-```python
+```rust
 class ArchitectAgent:
     def __init__(self, session_id=None):
         self.memory = get_memory_manager(session_id)
@@ -128,7 +128,7 @@ class ArchitectAgent:
 
 ### 2. Workflow State Management
 
-```python
+```rust
 from .claude.tools.amplihack.memory.context_preservation import ContextPreserver
 
 preserver = ContextPreserver()
@@ -143,7 +143,7 @@ workflow_id = preserver.preserve_workflow_state(
 
 ### 3. Multi-Agent Collaboration
 
-```python
+```rust
 # Share insights between agents
 memory.store(
     agent_id="architect",
@@ -156,7 +156,7 @@ memory.store(
 
 ### 4. Performance Optimization
 
-```python
+```rust
 # Batch operations for efficiency
 batch_memories = [
     {"agent_id": "agent1", "title": "Memory 1", "content": "Content 1"},
@@ -175,7 +175,7 @@ recent_decisions = memory.retrieve(
 
 ### 5. Graceful Degradation
 
-```python
+```rust
 from .claude.tools.amplihack.memory import activate_memory
 
 # Disable memory for performance-critical operations
@@ -258,8 +258,8 @@ src/amplihack/memory/
 
 ## Maintenance
 
-```python
-from amplihack.memory.maintenance import MemoryMaintenance
+```rust
+// use amplihack_memory::maintenance:: MemoryMaintenance
 
 maintenance = MemoryMaintenance()
 maintenance.cleanup_expired()          # Remove expired memories

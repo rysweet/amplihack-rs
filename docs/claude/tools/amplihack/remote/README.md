@@ -67,7 +67,7 @@ Secure context packaging with multi-layer secret detection.
 
 **Usage**:
 
-```python
+```rust
 with ContextPackager(repo_path) as packager:
     secrets = packager.scan_secrets()
     if secrets:
@@ -88,7 +88,7 @@ VM lifecycle management via azlin CLI.
 
 **Usage**:
 
-```python
+```rust
 orchestrator = Orchestrator()
 options = VMOptions(size='Standard_D2s_v3')
 vm = orchestrator.provision_or_reuse(options)
@@ -109,7 +109,7 @@ Remote command execution and file transfer.
 
 **Usage**:
 
-```python
+```rust
 executor = Executor(vm, timeout_minutes=120)
 executor.transfer_context(archive_path)
 result = executor.execute_remote(
@@ -132,7 +132,7 @@ Result integration into local repository.
 
 **Usage**:
 
-```python
+```rust
 integrator = Integrator(repo_path)
 summary = integrator.integrate(results_dir)
 report = integrator.create_summary_report(summary)
@@ -214,9 +214,9 @@ Use size shortcuts (s/m/l/xl) or full Azure VM names:
 
 ### Programmatic Usage
 
-```python
+```rust
 from pathlib import Path
-from amplihack.remote import (
+// use amplihack_remote:: (
     execute_remote_workflow,
     VMOptions
 )

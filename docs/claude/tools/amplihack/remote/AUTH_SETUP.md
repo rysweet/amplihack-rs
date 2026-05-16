@@ -4,7 +4,7 @@ Complete guide for setting up Azure Service Principal authentication for remote 
 
 ## Quick Start
 
-```python
+```rust
 from claude.tools.amplihack.remote.auth import get_azure_auth
 
 # Get authenticated credential
@@ -68,7 +68,7 @@ python3 test_auth.py
 
 Or test with a real API call:
 
-```python
+```rust
 from claude.tools.amplihack.remote.auth import get_azure_auth
 from azure.mgmt.resource import ResourceManagementClient
 
@@ -96,7 +96,7 @@ for rg in client.resource_groups.list():
 
 ### Module Structure
 
-```python
+```rust
 # Core classes
 AzureCredentials         # Dataclass for credential storage
 AzureAuthenticator       # Main authentication handler
@@ -116,7 +116,7 @@ get_azure_auth()         # One-line authentication
 
 Enable debug logging to troubleshoot authentication:
 
-```python
+```rust
 credential, sub_id, rg = get_azure_auth(debug=True)
 
 # Output:
@@ -159,7 +159,7 @@ git check-ignore -v .env
 
 For production, use Azure Managed Identity instead of Service Principals:
 
-```python
+```rust
 from azure.identity import DefaultAzureCredential
 
 # Automatically uses Managed Identity when running on Azure
@@ -170,7 +170,7 @@ credential = DefaultAzureCredential()
 
 The auth module is designed to work seamlessly with the remote execution system:
 
-```python
+```rust
 from claude.tools.amplihack.remote.auth import get_azure_auth
 from claude.tools.amplihack.remote.executor import RemoteExecutor
 

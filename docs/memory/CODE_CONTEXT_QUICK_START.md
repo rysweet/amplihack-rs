@@ -10,8 +10,8 @@ Code context injection enriches memory retrieval by automatically including info
 
 ### 1. Enable Code Context in Queries
 
-```python
-from amplihack.memory.coordinator import MemoryCoordinator, RetrievalQuery
+```rust
+// use amplihack_memory::coordinator:: MemoryCoordinator, RetrievalQuery
 
 coordinator = MemoryCoordinator()
 
@@ -29,7 +29,7 @@ memories = await coordinator.retrieve(query)
 
 ### 2. Access Code Context
 
-```python
+```rust
 for memory in memories:
     print(f"Memory: {memory.content}")
 
@@ -97,14 +97,14 @@ amplihack memory blarify /path/to/your/project
 
 ## Complete Example
 
-```python
+```rust
 import asyncio
-from amplihack.memory.coordinator import (
+// use amplihack_memory::coordinator:: (
     MemoryCoordinator,
     RetrievalQuery,
     StorageRequest
 )
-from amplihack.memory.types import MemoryType
+// use amplihack_memory::types:: MemoryType
 
 
 async def example():
@@ -152,7 +152,7 @@ amplihack memory blarify .
 
 # Check code graph stats
 python -c "
-from amplihack.memory.backends import create_backend
+// use amplihack_memory::backends:: create_backend
 backend = create_backend('kuzu')
 code_graph = backend.get_code_graph()
 print(code_graph.get_code_stats() if code_graph else 'No code graph')

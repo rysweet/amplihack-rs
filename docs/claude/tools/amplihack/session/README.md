@@ -12,7 +12,7 @@ A comprehensive session management system for Claude Code that provides persiste
 
 ## Quick Start
 
-```python
+```rust
 from .session_toolkit import SessionToolkit
 
 # Create toolkit
@@ -56,7 +56,7 @@ session/
 
 The main interface for all session management operations.
 
-```python
+```rust
 toolkit = SessionToolkit(
     runtime_dir=Path(".claude/runtime"),
     auto_save=True,
@@ -86,7 +86,7 @@ toolkit.cleanup_old_data()
 
 Enhanced session wrapper with timeout and error handling.
 
-```python
+```rust
 from .claude_session import ClaudeSession, SessionConfig
 
 config = SessionConfig(
@@ -107,7 +107,7 @@ with session:
 
 Structured logging with operation tracking.
 
-```python
+```rust
 from .toolkit_logger import ToolkitLogger
 
 logger = ToolkitLogger(
@@ -133,7 +133,7 @@ child = logger.create_child_logger("sub_component")
 
 Defensive file I/O with retry logic and verification.
 
-```python
+```rust
 from .file_utils import (
     safe_read_file, safe_write_file,
     safe_read_json, safe_write_json,
@@ -159,7 +159,7 @@ def custom_operation():
 
 ### SessionConfig
 
-```python
+```rust
 from .claude_session import SessionConfig
 
 config = SessionConfig(
@@ -198,7 +198,7 @@ The toolkit creates and manages the following directory structure:
 
 ### Basic Usage
 
-```python
+```rust
 from .session_toolkit import quick_session
 
 # Quick session for simple tasks
@@ -209,7 +209,7 @@ with quick_session("analysis") as session:
 
 ### Advanced Workflow
 
-```python
+```rust
 from .session_toolkit import SessionToolkit
 from .claude_session import SessionConfig
 
@@ -245,7 +245,7 @@ toolkit.export_session_data(session_id, "analysis_export.json")
 
 ### Error Recovery
 
-```python
+```rust
 with toolkit.session("error_recovery") as session:
     logger = toolkit.get_logger("processor")
 
@@ -265,7 +265,7 @@ with toolkit.session("error_recovery") as session:
 
 ### Batch Processing
 
-```python
+```rust
 def process_batches(items):
     with toolkit.session("batch_processing") as session:
         logger = toolkit.get_logger("batch_processor")
@@ -320,7 +320,7 @@ Comprehensive error handling throughout:
 
 ### With Claude Code
 
-```python
+```rust
 # In your Claude Code workflow
 from .claude.tools.amplihack.session import SessionToolkit
 

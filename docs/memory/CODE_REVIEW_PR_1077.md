@@ -68,7 +68,7 @@ $ find . -name "*.py" -exec grep -l "remember\|recall" {} \; | grep -v test | gr
 **Recommendation**:
 Add integration layer before merge:
 
-```python
+```rust
 # src/amplihack/agents/memory_integration.py
 class AgentMemoryIntegration:
     """Hook for agents to access memory system."""
@@ -80,7 +80,7 @@ class AgentMemoryIntegration:
         Returns None if Neo4j unavailable (graceful fallback).
         """
         try:
-            from amplihack.memory.neo4j import AgentMemoryManager
+            // use amplihack_memory::neo4j::{ AgentMemoryManager
             return AgentMemoryManager(agent_type)
         except Exception:
             return None
@@ -114,8 +114,8 @@ class AgentMemoryIntegration:
 
 Use memory system to store and retrieve design patterns:
 
-```python
-from amplihack.agents.memory_integration import AgentMemoryIntegration
+```rust
+// use amplihack_domain_agents:: AgentMemoryIntegration
 
 # When making design decision:
 AgentMemoryIntegration.store_design_decision(
@@ -161,14 +161,14 @@ But user requirement was dependency *management*, not just *checking*.
 **Recommendation**:
 
 Option 1 (Preferred): Add optional auto-install with explicit user permission:
-```python
+```rust
 # .claude/agents/amplihack/infrastructure/neo4j-setup-agent.md
 
 ## Auto-Installation (Optional)
 
 When missing dependencies detected, agent can optionally install with user permission:
 
-```python
+```rust
 if missing_docker_compose:
     response = ask_user("Docker Compose is missing. Install it now? (y/n)")
     if response.lower() == 'y':
@@ -225,7 +225,7 @@ All tests are infrastructure tests (container, CRUD, queries). Zero tests verify
 
 **Missing Tests**:
 
-```python
+```rust
 # tests/integration/test_agent_memory_integration.py
 def test_architect_agent_stores_design_decision():
     """Verify architect agent can store decisions in memory."""
@@ -273,7 +273,7 @@ Claims "<500ms session start impact" but no benchmarks provided. Background thre
 
 **Code Evidence**:
 
-```python
+```rust
 def _start_neo4j_background(self):
     """Start Neo4j in background thread (non-blocking)."""
     def start_neo4j():
@@ -286,7 +286,7 @@ Background thread doesn't mean no impact - thread creation, Docker calls, all co
 **Recommendation**:
 Add benchmarking:
 
-```python
+```rust
 # tests/performance/test_session_start_timing.py
 def test_session_start_time_with_neo4j():
     times = []
@@ -319,7 +319,7 @@ Many failure modes print warnings but continue silently. Users won't know memory
 
 1. **Background Neo4j startup**:
 
-```python
+```rust
 # src/amplihack/launcher/core.py:586
 except Exception as e:
     print(f"[WARN] Neo4j initialization error: {e}")
@@ -330,7 +330,7 @@ What existing memory system? There isn't one. This is misleading.
 
 2. **Agent memory fallback**:
 
-```python
+```rust
 # src/amplihack/agents/memory_integration.py (proposed)
 except Exception:
     return None
@@ -341,7 +341,7 @@ Swallowing all exceptions is dangerous. What if it's a programming error?
 **Recommendation**:
 Add structured error reporting:
 
-```python
+```rust
 from enum import Enum
 
 class MemorySystemStatus(Enum):
@@ -416,7 +416,7 @@ Code tries `docker-compose` (v1) then falls back to `docker compose` (v2), then 
 
 **Example**:
 
-```python
+```rust
 # lifecycle.py:180
 # Try docker-compose first
 result = subprocess.run(["docker-compose", "--version"], ...)
@@ -430,7 +430,7 @@ User sees multiple failed attempts in logs even though it eventually works.
 **Recommendation**:
 Detect once, cache decision:
 
-```python
+```rust
 class DockerComposeDetector:
     _detected: Optional[str] = None
 
@@ -464,7 +464,7 @@ Circuit breaker has half-open recovery logic but no tests verify it works.
 
 **Code**:
 
-```python
+```rust
 if self.state == CircuitState.HALF_OPEN:
     try:
         result = func(*args, **kwargs)
@@ -475,7 +475,7 @@ if self.state == CircuitState.HALF_OPEN:
 
 **Missing Test**:
 
-```python
+```rust
 def test_circuit_breaker_half_open_recovery():
     cb = CircuitBreaker(failure_threshold=2, success_threshold=2)
 
@@ -511,8 +511,8 @@ System collects metrics (OperationMetric, SystemHealth) but no way to view them 
 
 **What's There**:
 
-```python
-from amplihack.memory.neo4j.monitoring import get_global_metrics
+```rust
+// use amplihack_memory::neo4j::monitoring::{ get_global_metrics
 metrics = get_global_metrics()
 # Now what? Print to console?
 ```
@@ -556,7 +556,7 @@ Top Agent Types:
 **Problem**:
 Lots of INFO logging that clutters output:
 
-```python
+```rust
 logger.info("Agent %s stored memory %s", ...)
 logger.info("Agent %s recalled %d memories", ...)
 ```
@@ -565,7 +565,7 @@ For production use, these should be DEBUG level.
 
 **Recommendation**:
 
-```python
+```rust
 logger.debug("Agent %s stored memory %s", ...)  # Not INFO
 logger.info("Memory system initialized")  # High-level events only
 ```
@@ -583,14 +583,14 @@ Methods return `Dict[str, Any]` for structured data. Could use TypedDict for bet
 
 **Example**:
 
-```python
+```rust
 def recall(...) -> List[Dict[str, Any]]:
     # What keys are in this dict? What types?
 ```
 
 **Better**:
 
-```python
+```rust
 from typing import TypedDict
 
 class MemoryDict(TypedDict):
@@ -614,7 +614,7 @@ def recall(...) -> List[MemoryDict]:
 **Problem**:
 Docs show examples of agents using memory, but agents can't actually do this yet:
 
-```python
+```rust
 # examples/neo4j_memory_demo.py:28
 architect = AgentMemoryManager("architect", project_id="demo-project")
 architect.remember(...)

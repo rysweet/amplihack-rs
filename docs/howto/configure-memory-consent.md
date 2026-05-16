@@ -224,9 +224,9 @@ direnv allow
 
 If ye be buildin' tools that use amplihack:
 
-```python
+```rust
 import os
-from amplihack.launcher.memory_config import prompt_user_consent
+// use amplihack_launcher::memory_config:: prompt_user_consent
 
 # Set defaults programmatically
 os.environ['AMPLIHACK_MEMORY_PROMPT_TIMEOUT'] = '45'

@@ -33,7 +33,7 @@ Four-phase fix addressing all failure modes:
 
 Added structured diagnostic logging to understand failure patterns:
 
-```python
+```rust
 # Diagnostic log entry example
 {
     "timestamp": "2025-12-17T19:30:00Z",
@@ -60,7 +60,7 @@ Added structured diagnostic logging to understand failure patterns:
 
 State validation after every load operation:
 
-```python
+```rust
 def _validate_state(state: Dict) -> bool:
     """Validate loaded state data"""
     if not isinstance(state, dict):
@@ -95,7 +95,7 @@ Three-layer reliability for state persistence:
 
 **Layer 1: fsync() force flush**
 
-```python
+```rust
 with open(state_file, 'w') as f:
     json.dump(state_data, f, indent=2)
     f.flush()
@@ -104,7 +104,7 @@ with open(state_file, 'w') as f:
 
 **Layer 2: Verification read**
 
-```python
+```rust
 # Immediately read back what we wrote
 with open(state_file, 'r') as f:
     verified_data = json.load(f)
@@ -116,7 +116,7 @@ if verified_data != state_data:
 
 **Layer 3: Retry with exponential backoff**
 
-```python
+```rust
 retry_delays = [0.1, 0.2, 0.4]  # Cloud sync tolerance
 for delay in retry_delays:
     try:

@@ -470,7 +470,7 @@ Each scenario is scored on:
 
 ### For Automated Testing (Claude Agent SDK)
 
-```python
+```rust
 from claude_agent_sdk import Agent, TestHarness
 
 agent = Agent.load("anthropologist-analyst")

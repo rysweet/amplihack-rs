@@ -136,7 +136,7 @@
 
 **Claude Code**: ✅ WORKS
 
-```python
+```rust
 # session_start.py returns:
 return {
     "hookSpecificOutput": {
@@ -227,7 +227,7 @@ and applies the appropriate context injection strategy:
 
 **How It Works**:
 
-```python
+```rust
 # Hook detects platform
 if is_claude_code():
     # Direct injection - Claude sees immediately

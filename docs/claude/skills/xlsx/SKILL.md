@@ -85,7 +85,7 @@ A user may ask you to create, edit, or analyze the contents of an .xlsx file. Yo
 
 For data analysis, visualization, and basic operations, use **pandas** which provides powerful data manipulation capabilities:
 
-```python
+```rust
 import pandas as pd
 
 # Read Excel
@@ -109,7 +109,7 @@ df.to_excel('output.xlsx', index=False)
 
 ### ❌ WRONG - Hardcoding Calculated Values
 
-```python
+```rust
 # Bad: Calculating in Python and hardcoding result
 total = df['Sales'].sum()
 sheet['B10'] = total  # Hardcodes 5000
@@ -125,7 +125,7 @@ sheet['D20'] = avg  # Hardcodes 42.5
 
 ### ✅ CORRECT - Using Excel Formulas
 
-```python
+```rust
 # Good: Let Excel calculate the sum
 sheet['B10'] = '=SUM(B2:B9)'
 
@@ -160,7 +160,7 @@ This applies to ALL calculations - totals, percentages, ratios, differences, etc
 
 ### Creating new Excel files
 
-```python
+```rust
 # Using openpyxl for formulas and formatting
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -189,7 +189,7 @@ wb.save('output.xlsx')
 
 ### Editing existing Excel files
 
-```python
+```rust
 # Using openpyxl to preserve formulas and formatting
 from openpyxl import load_workbook
 

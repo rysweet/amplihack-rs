@@ -73,7 +73,7 @@ amplifier-bundle/skills/code-visualizer/
 
 ### Data Contract (`graph.py`)
 
-```python
+```rust
 @dataclass(frozen=True)
 class Node:
     id: str           # mermaid-safe identifier
@@ -101,7 +101,7 @@ shared class. The data contract is the only coupling.
 
 Each analyzer is a self-contained brick exposing exactly one entry point:
 
-```python
+```rust
 def normalize(paths: Iterable[Path]) -> Graph: ...
 ```
 
@@ -119,7 +119,7 @@ name (string). It loads analyzers lazily via `importlib.import_module` so
 adding a new language never requires touching the dispatcher's import
 statements.
 
-```python
+```rust
 from scripts.dispatcher import analyze
 
 graphs: dict[str, Graph] = analyze(target_path)
@@ -140,7 +140,7 @@ The dispatcher:
 
 The renderer is language-blind:
 
-```python
+```rust
 from scripts.mermaid_renderer import render, render_combined
 
 per_language: str = render(graph)            # one diagram for one language
@@ -152,7 +152,7 @@ escaped to prevent diagram-syntax injection.
 
 ### Staleness Detection
 
-```python
+```rust
 from scripts.staleness import is_stale
 
 stale = is_stale(
@@ -292,7 +292,7 @@ module. There is **no base class to subclass**.
 
 1. Create `scripts/<lang>_analyzer.py` with the entry point:
 
-   ```python
+   ```rust
    from collections.abc import Iterable
    from pathlib import Path
    from graph import Edge, Graph, Node  # sibling import; works under `python visualizer.py`
@@ -308,7 +308,7 @@ module. There is **no base class to subclass**.
 
 2. Register the language in `scripts/dispatcher.py`:
 
-   ```python
+   ```rust
    LANGUAGES = {
        "python":     {"exts": {".py"},                          "module": "python_analyzer"},
        "typescript": {"exts": {".ts", ".tsx", ".js", ".jsx",

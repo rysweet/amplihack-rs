@@ -142,5 +142,5 @@ The current top-level parser does **not** expose these older surfaces:
 If you need the backend evaluation module directly, run:
 
 ```bash
-python -m amplihack.memory.cli_evaluate --backend sqlite
+amplihack memory cli_evaluate --backend sqlite
 ```

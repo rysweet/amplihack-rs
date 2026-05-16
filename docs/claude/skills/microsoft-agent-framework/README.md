@@ -227,7 +227,7 @@ See `@metadata/sources.json` for complete URL mappings and priorities.
 
 Stateful conversational entities that process messages, call tools, and maintain context.
 
-```python
+```rust
 from agents_framework import Agent, ModelClient
 
 agent = Agent(
@@ -243,7 +243,7 @@ response = await agent.run(message="Hello!")
 
 Graph-based orchestration for multi-agent systems with conditional routing.
 
-```python
+```rust
 from agents_framework import GraphWorkflow
 
 workflow = GraphWorkflow()
@@ -258,7 +258,7 @@ result = await workflow.run(initial_message="Research AI trends")
 
 Extend agent capabilities by providing callable functions.
 
-```python
+```rust
 from agents_framework import function_tool
 
 @function_tool
@@ -273,7 +273,7 @@ agent = Agent(model=model, tools=[get_weather])
 
 Intercept and process messages before/after agent execution.
 
-```python
+```rust
 from agents_framework import Middleware
 
 class LoggingMiddleware(Middleware):

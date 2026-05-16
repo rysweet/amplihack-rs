@@ -38,8 +38,8 @@ assert_eq!(result, "Token: [REDACTED-GITHUB-TOKEN]");
 
 ### Upstream Python API (reference only)
 
-```python
-from amplihack.tracing.token_sanitizer import TokenSanitizer
+```rust
+// use amplihack_tracing::token_sanitizer::{ TokenSanitizer
 
 sanitizer = TokenSanitizer()
 ```
@@ -58,7 +58,7 @@ let sanitizer = TokenSanitizer::new();
 
 **Python (upstream):**
 
-```python
+```rust
 sanitizer = TokenSanitizer()
 ```
 
@@ -80,7 +80,7 @@ fn contains_token(&self, text: &str) -> bool
 
 **Python (upstream):**
 
-```python
+```rust
 def contains_token(self, text: str) -> bool
 ```
 
@@ -118,7 +118,7 @@ fn sanitize(&self, text: &str) -> String
 
 **Python (upstream):**
 
-```python
+```rust
 def sanitize(self, data: Any) -> Any
 ```
 

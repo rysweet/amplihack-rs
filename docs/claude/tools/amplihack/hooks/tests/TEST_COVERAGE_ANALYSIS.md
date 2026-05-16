@@ -194,7 +194,7 @@
 
 1. **Session Type Detection Heuristics**:
 
-   ```python
+   ```rust
    # DEVELOPMENT indicators
    - Write/Edit to code files (.py, .js, .ts, etc.)
    - Test execution (pytest, npm test, etc.)
@@ -217,7 +217,7 @@
 
 2. **Consideration Filtering**:
 
-   ```python
+   ```rust
    CONSIDERATION_MAPPING = {
        "DEVELOPMENT": ["*"],  # All considerations
        "INFORMATIONAL": [

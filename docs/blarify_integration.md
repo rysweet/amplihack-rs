@@ -141,9 +141,9 @@ python scripts/import_codebase_to_neo4j.py --project-id my-project
 
 ### Initialize Integration
 
-```python
-from amplihack.memory.neo4j.connector import Neo4jConnector
-from amplihack.memory.neo4j.code_graph import BlarifyIntegration
+```rust
+// use amplihack_memory::neo4j::connector::{ Neo4jConnector
+// use amplihack_memory::neo4j::code_graph::{ BlarifyIntegration
 
 with Neo4jConnector() as conn:
     integration = BlarifyIntegration(conn)
@@ -154,7 +154,7 @@ with Neo4jConnector() as conn:
 
 ### Import Code Graph
 
-```python
+```rust
 from pathlib import Path
 
 # Import blarify output
@@ -168,7 +168,7 @@ print(f"Imported {counts['files']} files, {counts['functions']} functions")
 
 ### Link Code to Memories
 
-```python
+```rust
 # Create relationships between code and memories
 link_count = integration.link_code_to_memories(project_id="my-project")
 print(f"Created {link_count} code-memory relationships")
@@ -176,7 +176,7 @@ print(f"Created {link_count} code-memory relationships")
 
 ### Query Code Context
 
-```python
+```rust
 # Get code context for a memory
 context = integration.query_code_context(memory_id="memory-123")
 
@@ -189,7 +189,7 @@ for func in context["functions"]:
 
 ### Get Statistics
 
-```python
+```rust
 stats = integration.get_code_stats(project_id="my-project")
 print(f"Files: {stats['file_count']}")
 print(f"Classes: {stats['class_count']}")
@@ -217,7 +217,7 @@ Test coverage:
 
 ### Manual Testing
 
-```python
+```rust
 # 1. Create sample blarify output
 from scripts.test_blarify_integration import create_sample_blarify_output
 import json
@@ -407,14 +407,14 @@ Verify Neo4j is running:
 docker ps | grep neo4j
 
 # Or use memory system tools
-python -m amplihack.memory.neo4j.connector
+amplihack memory neo4j.connector
 ```
 
 ### Import Failed
 
 Check blarify output format:
 
-```python
+```rust
 import json
 with open(".amplihack/blarify_output.json") as f:
     data = json.load(f)
@@ -425,7 +425,7 @@ with open(".amplihack/blarify_output.json") as f:
 
 Verify metadata format:
 
-```python
+```rust
 # Memories must have file path in metadata
 memory_store.create_memory(
     content="...",

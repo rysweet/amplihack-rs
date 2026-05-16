@@ -250,7 +250,7 @@ token refresh, AND audit logging.
 
 ## Evidence
 
-```python
+```rust
 class Authenticator:
     def authenticate(self, ...): ...      # Lines 45-80
     def manage_session(self, ...): ...    # Lines 81-110

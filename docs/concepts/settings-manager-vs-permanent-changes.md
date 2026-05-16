@@ -6,7 +6,7 @@ Understanding when to use backup/restore patterns versus direct configuration wr
 
 SettingsManager implements a classic backup/restore pattern:
 
-```python
+```rust
 class SettingsManager:
     def __enter__(self):
         self.backup = read_current_settings()
@@ -22,7 +22,7 @@ This pattern is **correct** for temporary changes that should revert.
 
 Using SettingsManager for permanent changes creates a bug:
 
-```python
+```rust
 # BUGGY CODE (pre-v0.9.1)
 with SettingsManager() as settings:
     # 1. SettingsManager creates backup WITHOUT hooks
@@ -53,7 +53,7 @@ with SettingsManager() as settings:
 
 **Example - Testing temporary feature:**
 
-```python
+```rust
 with SettingsManager() as settings:
     settings.enable_experimental_feature()
     run_tests()
@@ -71,7 +71,7 @@ with SettingsManager() as settings:
 
 **Example - Installing hooks (v0.9.1+):**
 
-```python
+```rust
 # CORRECT CODE (v0.9.1+)
 def launch_interactive():
     ensure_settings_json()  # Direct write
@@ -116,7 +116,7 @@ New Production State (changes persist)
 
 **Before (Buggy):**
 
-```python
+```rust
 def launch_interactive():
     with SettingsManager() as settings:  # Creates backup WITHOUT hooks
         ensure_settings_json()           # Adds hooks
@@ -126,7 +126,7 @@ def launch_interactive():
 
 **After (Fixed):**
 
-```python
+```rust
 def launch_interactive():
     ensure_settings_json()  # Direct write - hooks persist
     # ... session ...
@@ -155,7 +155,7 @@ def launch_interactive():
 
 Context managers (with statements) are inherently designed for cleanup:
 
-```python
+```rust
 with open(file) as f:    # Open
     process(f)           # Use
     # Automatic close on exit
@@ -171,7 +171,7 @@ SettingsManager follows this pattern - it's **supposed to** revert changes.
 
 For permanent changes, use direct operations:
 
-```python
+```rust
 config = load_config()
 config.update(permanent_changes)
 save_config(config)
@@ -182,7 +182,7 @@ save_config(config)
 
 If temporary hook configuration is needed:
 
-```python
+```rust
 # Hypothetical future use case
 def test_with_temporary_hooks():
     with SettingsManager() as settings:  # OK for temporary testing

@@ -31,8 +31,8 @@ writing your first prompt file to running self-improvement loops.
 
 ### Via Python
 
-```python
-from amplihack.agents.teaching.generator_teacher import GeneratorTeacher
+```rust
+// use amplihack_domain_agents:: GeneratorTeacher
 
 teacher = GeneratorTeacher()
 
@@ -111,7 +111,7 @@ Prompt (.md) --> PromptAnalyzer --> GoalDefinition
 
 Every generated agent implements the same interface regardless of SDK:
 
-```python
+```rust
 class GoalSeekingAgent(ABC):
     def learn_from_content(self, content: str) -> dict[str, Any]
     def answer_question(self, question: str) -> str
@@ -382,7 +382,7 @@ amplihack new --file research_assistant.md --sdk claude --multi-agent --enable-s
 Run all 12 levels:
 
 ```bash
-python -m amplihack.eval.progressive_test_suite \
+amplihack eval progressive-test-suite \
     --agent-name my-agent \
     --output-dir eval_results/ \
     --sdk mini
@@ -391,7 +391,7 @@ python -m amplihack.eval.progressive_test_suite \
 Run specific levels:
 
 ```bash
-python -m amplihack.eval.progressive_test_suite \
+amplihack eval progressive-test-suite \
     --agent-name my-agent \
     --output-dir eval_results/ \
     --levels L1 L2 L3 \
@@ -425,7 +425,7 @@ The suite produces a JSON report:
 Compare SDKs head-to-head:
 
 ```bash
-python -m amplihack.eval.sdk_eval_loop \
+amplihack eval sdk-eval-loop \
     --sdks mini claude copilot \
     --loops 3 \
     --levels L1 L2 L3
@@ -434,7 +434,7 @@ python -m amplihack.eval.sdk_eval_loop \
 ### Multi-Seed for Statistical Significance
 
 ```bash
-python -m amplihack.eval.long_horizon_multi_seed \
+amplihack eval long_horizon_multi_seed \
     --seeds 3 \
     --agent-name my-agent
 ```
@@ -448,7 +448,7 @@ Write the command to evaluate `security-scanner` on L1-L6 with the mini SDK.
 **Expected**:
 
 ```bash
-python -m amplihack.eval.progressive_test_suite \
+amplihack eval progressive-test-suite \
     --agent-name security-scanner \
     --output-dir ./results/ \
     --levels L1 L2 L3 L4 L5 L6 \
@@ -521,7 +521,7 @@ EVAL -> ANALYZE -> RESEARCH -> IMPROVE -> RE-EVAL -> DECIDE
 ### Running the Loop
 
 ```bash
-python -m amplihack.eval.self_improve.runner \
+amplihack eval self-improve \
     --sdk mini \
     --iterations 5 \
     --output-dir improve_results/ \
@@ -538,7 +538,7 @@ python -m amplihack.eval.self_improve.runner \
 
 ### ErrorAnalyzer Output
 
-```python
+```rust
 ErrorAnalysis(
     failure_mode="retrieval_miss",
     affected_level="L3",
@@ -610,7 +610,7 @@ amplihack new --file security_analyzer.md \
 ### Domain-Specific Eval
 
 ```bash
-python -m amplihack.eval.domain_eval_harness \
+amplihack eval domain_eval_harness \
     --domain security \
     --agent-name security-analyzer \
     --output-dir security_eval/
@@ -638,8 +638,8 @@ specialized evaluation (medical diagnosis, legal analysis, security, etc.).
 
 ### Anatomy of a Test Level
 
-```python
-from amplihack.eval.test_levels import TestLevel, TestArticle, TestQuestion
+```rust
+// use amplihack_agent_eval::test_levels:: TestLevel, TestArticle, TestQuestion
 
 CUSTOM_LEVEL = TestLevel(
     level_id="CUSTOM-1",
@@ -757,8 +757,8 @@ When `needs_math=True`:
 3. **Injection**: Pre-computed result inserted into synthesis prompt
 4. **Post-validation**: `_validate_arithmetic()` checks answer for wrong math
 
-```python
-from amplihack.agents.goal_seeking.action_executor import calculate
+```rust
+// use amplihack_domain_agents:: calculate
 result = calculate("(26 - 18) / 18 * 100")
 # {"result": 44.4444, "expression": "(26 - 18) / 18 * 100"}
 ```
@@ -780,8 +780,8 @@ Classify these questions by intent:
 The `propose_patch()` function in `amplihack.eval.self_improve.patch_proposer`
 generates specific code patches:
 
-```python
-from amplihack.eval.self_improve.patch_proposer import (
+```rust
+// use amplihack_eval::self_improve::patch_proposer::{ (
     propose_patch, PatchProposal, PatchHistory
 )
 ```
@@ -804,7 +804,7 @@ to defend the change.
 
 ### RunnerConfig
 
-```python
+```rust
 RunnerConfig(
     sdk_type="mini",
     max_iterations=5,
@@ -831,8 +831,8 @@ Kuzu graph database (with SQLite fallback).
 
 ### Export
 
-```python
-from amplihack.agents.goal_seeking.memory_retrieval import MemoryRetriever
+```rust
+// use amplihack_domain_agents:: MemoryRetriever
 import json
 
 retriever = MemoryRetriever("my-agent")
@@ -843,7 +843,7 @@ with open("snapshot.json", "w") as f:
 
 ### Import
 
-```python
+```rust
 with open("snapshot.json") as f:
     facts = json.load(f)
 
@@ -896,7 +896,7 @@ alone. This is a warning, not an error.
 LLM outputs are stochastic. Use 3-run medians:
 
 ```bash
-python -m amplihack.eval.long_horizon_multi_seed --seeds 3 --agent-name my-agent
+amplihack eval long_horizon_multi_seed --seeds 3 --agent-name my-agent
 ```
 
 **Self-improvement loop applies a change then reverts it**
@@ -950,23 +950,23 @@ Options:
 
 ```bash
 # Progressive test suite
-python -m amplihack.eval.progressive_test_suite \
+amplihack eval progressive-test-suite \
     --agent-name NAME --output-dir DIR [--levels L1 L2 ...] [--sdk SDK]
 
 # SDK comparison loop
-python -m amplihack.eval.sdk_eval_loop \
+amplihack eval sdk-eval-loop \
     --sdks SDK1 SDK2 ... --loops N [--levels L1 L2 ...]
 
 # Multi-seed for statistics
-python -m amplihack.eval.long_horizon_multi_seed \
+amplihack eval long_horizon_multi_seed \
     --seeds N --agent-name NAME
 
 # Self-improvement loop
-python -m amplihack.eval.self_improve.runner \
+amplihack eval self-improve \
     --agent-name NAME --iterations N --output-dir DIR [--sdk SDK]
 
 # Domain-specific eval
-python -m amplihack.eval.domain_eval_harness \
+amplihack eval domain_eval_harness \
     --domain DOMAIN --agent-name NAME --output-dir DIR
 ```
 

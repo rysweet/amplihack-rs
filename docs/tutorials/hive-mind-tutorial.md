@@ -7,7 +7,7 @@ re-exported from `amplihack_hive::*` today.
 
 > **Rust port note**
 > Upstream `amplihack` (Python) exposes the hive mind through
-> `from amplihack.agents.goal_seeking.hive_mind …`. The Rust port keeps the
+> `amplihack hive ...` CLI commands. The Rust port keeps the
 > same conceptual layers (storage, transport, discovery, query) but with a
 > trimmed public surface — see
 > [`hive-api.md`](../reference/hive-api.md) for the authoritative list. The

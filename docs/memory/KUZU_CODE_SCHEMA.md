@@ -16,8 +16,8 @@ The Kuzu Code Graph Schema extends the 5-type memory system with code structure 
 
 ## Quick Start
 
-```python
-from amplihack.memory.backends import KuzuBackend
+```rust
+// use amplihack_memory::backends:: KuzuBackend
 
 # Initialize backend (creates memory + code schema)
 backend = KuzuBackend()
@@ -84,7 +84,7 @@ CREATE NODE TABLE CodeFile(
 
 **Example**:
 
-```python
+```rust
 backend.connection.execute("""
     CREATE (f:CodeFile {
         file_id: $file_id,
@@ -137,7 +137,7 @@ CREATE NODE TABLE Class(
 
 **Example**:
 
-```python
+```rust
 backend.connection.execute("""
     CREATE (c:Class {
         class_id: $class_id,
@@ -199,7 +199,7 @@ CREATE NODE TABLE Function(
 
 **Example**:
 
-```python
+```rust
 backend.connection.execute("""
     CREATE (f:Function {
         function_id: $function_id,
@@ -642,9 +642,9 @@ The code graph schema integrates seamlessly with the existing 5-type memory syst
 
 When memories are stored, the system can automatically link them to relevant code:
 
-```python
-from amplihack.memory import MemoryService
-from amplihack.memory.backends import KuzuBackend
+```rust
+// use amplihack_memory:: MemoryService
+// use amplihack_memory::backends:: KuzuBackend
 
 backend = KuzuBackend()
 backend.initialize()
@@ -668,7 +668,7 @@ memory = service.store_memory(
 
 Retrieve memories relevant to current code context:
 
-```python
+```rust
 # Working on kuzu_backend.py, need relevant memories
 memories = backend.connection.execute("""
     MATCH (f:CodeFile {file_path: $file_path})
@@ -683,7 +683,7 @@ memories = backend.connection.execute("""
 
 Navigate code structure with memory awareness:
 
-```python
+```rust
 # Find all classes and their methods with related memories
 result = backend.connection.execute("""
     MATCH (c:Class)<-[:METHOD_OF]-(m:Function)
@@ -703,7 +703,7 @@ result = backend.connection.execute("""
 
 **Benchmark**:
 
-```python
+```rust
 import time
 backend = KuzuBackend()
 start = time.time()
@@ -722,7 +722,7 @@ print(f"Schema initialization: {elapsed*1000:.1f}ms")
 
 **Benchmark**:
 
-```python
+```rust
 # Find all functions in a file
 start = time.time()
 result = backend.connection.execute("""
@@ -778,7 +778,7 @@ The schema follows semantic versioning:
 
 Existing memory databases automatically upgrade:
 
-```python
+```rust
 backend = KuzuBackend()  # Existing database
 backend.initialize()      # Adds code schema, preserves memory data
 ```

@@ -21,7 +21,7 @@ The skill automatically activates when working with:
 
 Or invoke programmatically:
 
-```python
+```rust
 Skill(skill="consensus-voting")
 ```
 

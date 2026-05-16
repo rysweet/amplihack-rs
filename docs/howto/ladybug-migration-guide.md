@@ -29,8 +29,8 @@ agent workstreams) can safely share a single database directory.
 | You are... | Action required |
 |---|---|
 | Using `amplihack memory tree` / `export` / `import` CLI | None -- transparent |
-| Importing `from amplihack.memory import KuzuGraphStore` | None -- still works |
-| Importing `from amplihack.memory.kuzu_store import ...` | Update import path |
+| Importing `// use amplihack_memory:: KuzuGraphStore` | None -- still works |
+| Importing `// use amplihack_memory::kuzu_store:: ...` | Update import path |
 | Running tests that mock `kuzu_store` internals | Update mock paths |
 | Calling `KuzuGraphStore(db_path=...)` | None -- API unchanged |
 
@@ -38,18 +38,18 @@ agent workstreams) can safely share a single database directory.
 
 ### 1. Update direct imports
 
-```python
+```rust
 # Before
-from amplihack.memory.kuzu_store import KuzuGraphStore
+// use amplihack_memory::kuzu_store:: KuzuGraphStore
 
 # After
-from amplihack.memory.ladybug_store import KuzuGraphStore
+// use amplihack_memory::ladybug_store:: KuzuGraphStore
 ```
 
 The package-level import still works without changes:
 
-```python
-from amplihack.memory import KuzuGraphStore  # no change needed
+```rust
+// use amplihack_memory:: KuzuGraphStore  # no change needed
 ```
 
 ### 2. Install ladybug
@@ -65,7 +65,7 @@ neither package is installed, the import raises `ImportError`.
 
 ### 3. Update mock/patch targets in tests
 
-```python
+```rust
 # Before
 @mock.patch("amplihack.memory.kuzu_store.ladybug.Database")
 
@@ -89,7 +89,7 @@ cargo test
 
 ```bash
 # Quick smoke test (upstream Python)
-python3 -c "from amplihack.memory.ladybug_store import KuzuGraphStore; print('OK')"
+python3 -c "// use amplihack_memory::ladybug_store:: KuzuGraphStore; print('OK')"
 
 # Run graph store tests (upstream Python)
 pytest tests/test_graph_store.py -q
@@ -101,7 +101,7 @@ pytest tests/test_graph_store.py -q
 
 Open a database for read-only access with a shared lock:
 
-```python
+```rust
 store = KuzuGraphStore(db_path="~/.amplihack/memory.db", read_only=True)
 nodes = store.query_nodes("Session", filters={"status": "completed"})
 store.close()

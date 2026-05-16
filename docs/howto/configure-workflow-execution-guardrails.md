@@ -74,7 +74,7 @@ Treat `execution_root` as the authoritative path. Use `worktree_path` only when 
 
 During the compatibility window, both fields point at the same location:
 
-```python
+```rust
 assert worktree_setup["execution_root"] == worktree_setup["worktree_path"]
 ```
 

@@ -125,7 +125,7 @@ in the configuration section of this documentation.
 - Test examples as part of CI when possible
 
 **Example - Bad**:
-```python
+```rust
 # Example usage (not tested)
 result = some_function(foo, bar, baz)
 # Returns: something useful
@@ -133,9 +133,9 @@ result = some_function(foo, bar, baz)
 
 **Example - Good**:
 
-```python
+```rust
 # Example: Analyze a Python file
-from amplihack.analyzer import analyze_file
+// use amplihack_analyzer:: analyze_file
 
 result = analyze_file("src/main.py")
 print(result.complexity_score)
@@ -144,7 +144,7 @@ print(result.complexity_score)
 
 **Exception**: Retcon'd documentation (written before implementation) can use realistic pseudocode, clearly marked:
 
-```python
+```rust
 # [PLANNED - Not yet implemented]
 # This will be the interface for the new feature
 result = future_feature(input_data)

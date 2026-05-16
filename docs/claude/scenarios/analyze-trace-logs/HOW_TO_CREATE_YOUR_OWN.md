@@ -17,7 +17,7 @@ The trace log analyzer demonstrates a reusable pattern for analyzing structured 
 
 ### 1. Analyzer Class Structure
 
-```python
+```rust
 class MyLogAnalyzer:
     """Analyzes [type] logs for [purpose]."""
 
@@ -49,7 +49,7 @@ class MyLogAnalyzer:
 
 ### 2. Main Entry Point
 
-```python
+```rust
 def main():
     """CLI entry point with argument parsing."""
     parser = argparse.ArgumentParser(description='Analyze [type] logs')
@@ -91,7 +91,7 @@ Ask yourself:
 
 Examine sample logs to understand structure:
 
-```python
+```rust
 # For JSON logs
 with open('sample.json', 'r') as f:
     sample = json.load(f)
@@ -130,7 +130,7 @@ Entry format:
 
 Robust parsing handles errors gracefully:
 
-```python
+```rust
 def parse_log_file(self, file_path: Path) -> List[Dict]:
     """Parse log file with error handling."""
     entries = []
@@ -161,7 +161,7 @@ def parse_log_file(self, file_path: Path) -> List[Dict]:
 
 Filter and extract what matters:
 
-```python
+```rust
 def extract_data(self, entries: List[Dict]) -> List[Any]:
     """Extract relevant data from entries."""
     extracted = []
@@ -195,7 +195,7 @@ def extract_data(self, entries: List[Dict]) -> List[Any]:
 
 Group data into meaningful categories:
 
-```python
+```rust
 def categorize(self, data: Any) -> List[str]:
     """Categorize data into buckets."""
     categories = []
@@ -253,7 +253,7 @@ def analyze(self, log_dir: Path, options: dict) -> Dict[str, Any]:
 
 Create actionable output:
 
-```python
+```rust
 def generate_report(self, analysis: Dict, output_path: Path):
     """Generate markdown report."""
     with open(output_path, 'w') as f:
@@ -288,7 +288,7 @@ def generate_report(self, analysis: Dict, output_path: Path):
 
 Complete example for analyzing web server logs:
 
-```python
+```rust
 #!/usr/bin/env python3
 """Analyze web server logs for traffic patterns."""
 
@@ -396,7 +396,7 @@ if __name__ == "__main__":
 
 Create a test suite:
 
-```python
+```rust
 # tests/test_analyzer.py
 import pytest
 from pathlib import Path
@@ -484,7 +484,7 @@ Ensure your tool follows amplihack principles:
 
 ### Pattern 1: Time-Series Analysis
 
-```python
+```rust
 def analyze_time_series(self, entries: List[Dict]) -> Dict:
     """Analyze patterns over time."""
     by_hour = defaultdict(list)
@@ -504,7 +504,7 @@ def analyze_time_series(self, entries: List[Dict]) -> Dict:
 
 ### Pattern 2: Anomaly Detection
 
-```python
+```rust
 def detect_anomalies(self, values: List[float]) -> List[int]:
     """Detect outliers using simple threshold."""
     mean = sum(values) / len(values)
@@ -516,7 +516,7 @@ def detect_anomalies(self, values: List[float]) -> List[int]:
 
 ### Pattern 3: Correlation Analysis
 
-```python
+```rust
 def find_correlations(self, data: List[Dict]) -> Dict:
     """Find correlated patterns."""
     correlations = defaultdict(Counter)

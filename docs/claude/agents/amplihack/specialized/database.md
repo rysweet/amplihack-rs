@@ -62,7 +62,7 @@ ALTER TABLE events ADD COLUMN user_id UUID
 
 ### Simple First Approach
 
-```python
+```rust
 # Start with SQLite for simplicity
 conn = sqlite3.connect('data.db')
 

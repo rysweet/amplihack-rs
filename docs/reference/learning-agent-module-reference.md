@@ -29,13 +29,13 @@ The refactor preserves the existing public API while moving implementation detai
 
 | Import                                                                   | Status                               | Notes                                                                       |
 | ------------------------------------------------------------------------ | ------------------------------------ | --------------------------------------------------------------------------- |
-| `from amplihack.agents.goal_seeking.learning_agent import LearningAgent` | Primary compatibility path           | Stable import path for direct callers                                       |
-| `from amplihack.agents.goal_seeking import LearningAgent`                | Supported for backward compatibility | Import works even though `LearningAgent` is not added to `__all__`          |
-| `from amplihack.agents.goal_seeking import GoalSeekingAgent`             | Preferred public entry point         | `GoalSeekingAgent` delegates learning and answering work to `LearningAgent` |
+| `// use amplihack_domain_agents:: LearningAgent` | Primary compatibility path           | Stable import path for direct callers                                       |
+| `// use amplihack_domain_agents:: LearningAgent`                | Supported for backward compatibility | Import works even though `LearningAgent` is not added to `__all__`          |
+| `// use amplihack_domain_agents:: GoalSeekingAgent`             | Preferred public entry point         | `GoalSeekingAgent` delegates learning and answering work to `LearningAgent` |
 
 ## Constructor
 
-```python
+```rust
 LearningAgent(
     agent_name: str = "learning_agent",
     model: str | None = None,
@@ -61,7 +61,7 @@ LearningAgent(
 
 ### `learn_from_content`
 
-```python
+```rust
 async def learn_from_content(self, content: str) -> dict[str, Any]
 ```
 
@@ -77,7 +77,7 @@ Extracts facts from content, attaches source and temporal metadata, stores the r
 
 ### `answer_question`
 
-```python
+```rust
 async def answer_question(
     self,
     question: str,
@@ -107,7 +107,7 @@ Runs the standard answer pipeline:
 
 ### `answer_question_agentic`
 
-```python
+```rust
 async def answer_question_agentic(
     self,
     question: str,
@@ -120,7 +120,7 @@ Runs the single-shot answer pipeline first, checks completeness, searches for mi
 
 ### `get_memory_stats`
 
-```python
+```rust
 def get_memory_stats(self) -> dict[str, Any]
 ```
 
@@ -128,7 +128,7 @@ Returns memory statistics from the active backend.
 
 ### `flush_memory`
 
-```python
+```rust
 def flush_memory(self) -> None
 ```
 
@@ -136,7 +136,7 @@ Flushes memory caches without discarding stored knowledge.
 
 ### `close`
 
-```python
+```rust
 def close(self) -> None
 ```
 

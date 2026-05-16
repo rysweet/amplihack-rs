@@ -6,17 +6,17 @@ API reference for `amplihack.memory.ladybug_store.KuzuGraphStore`.
 
 ## Import
 
-```python
+```rust
 # Preferred — stable package-level export
-from amplihack.memory import KuzuGraphStore
+// use amplihack_memory:: KuzuGraphStore
 
 # Direct module import
-from amplihack.memory.ladybug_store import KuzuGraphStore
+// use amplihack_memory::ladybug_store:: KuzuGraphStore
 ```
 
 ## Constructor
 
-```python
+```rust
 KuzuGraphStore(
     db_path: str | Path | None = None,
     buffer_pool_size: int = 67_108_864,   # 64 MB
@@ -40,7 +40,7 @@ locked via `fcntl.flock` before the database is opened. Read-only mode uses
 
 ### ensure_table
 
-```python
+```rust
 store.ensure_table(table: str, schema: dict[str, str]) -> None
 ```
 
@@ -48,7 +48,7 @@ Create a node table if it doesn't exist. The schema maps column names to Kùzu
 types. If `node_id` is included in the schema, it becomes the `PRIMARY KEY`.
 You must include `node_id` for `create_node` / `get_node` to work.
 
-```python
+```rust
 store.ensure_table("Session", {
     "node_id": "STRING",
     "start_time": "STRING",
@@ -59,7 +59,7 @@ store.ensure_table("Session", {
 
 ### ensure_rel_table
 
-```python
+```rust
 store.ensure_rel_table(
     rel_type: str,
     from_table: str,
@@ -70,7 +70,7 @@ store.ensure_rel_table(
 
 Create a relationship table if it doesn't exist.
 
-```python
+```rust
 store.ensure_rel_table("REMEMBERS", "Session", "EpisodicMemory", schema={
     "strength": "DOUBLE",
 })
@@ -80,14 +80,14 @@ store.ensure_rel_table("REMEMBERS", "Session", "EpisodicMemory", schema={
 
 ### create_node
 
-```python
+```rust
 store.create_node(table: str, properties: dict[str, Any]) -> str
 ```
 
 Create a node with the given properties. Returns the `node_id` (auto-generated
 UUID if not provided in `properties`).
 
-```python
+```rust
 node_id = store.create_node("Session", {
     "start_time": "2026-04-10T07:00:00Z",
     "status": "active",
@@ -96,7 +96,7 @@ node_id = store.create_node("Session", {
 
 ### get_node
 
-```python
+```rust
 store.get_node(table: str, node_id: str) -> dict[str, Any] | None
 ```
 
@@ -104,7 +104,7 @@ Retrieve a node by ID. Returns `None` if not found.
 
 ### update_node
 
-```python
+```rust
 store.update_node(table: str, node_id: str, properties: dict[str, Any]) -> None
 ```
 
@@ -113,7 +113,7 @@ modified.
 
 ### delete_node
 
-```python
+```rust
 store.delete_node(table: str, node_id: str) -> None
 ```
 
@@ -123,7 +123,7 @@ Delete a node by ID.
 
 ### query_nodes
 
-```python
+```rust
 store.query_nodes(
     table: str,
     filters: dict[str, Any] | None = None,
@@ -133,13 +133,13 @@ store.query_nodes(
 
 Query nodes with optional equality filters. Returns up to `limit` rows.
 
-```python
+```rust
 sessions = store.query_nodes("Session", filters={"status": "active"}, limit=10)
 ```
 
 ### search_nodes
 
-```python
+```rust
 store.search_nodes(
     table: str,
     text: str,
@@ -153,7 +153,7 @@ Keyword-tokenized search. Splits `text` into up to 6 meaningful keywords
 columns (or only the specified `fields`) using Cypher `CONTAINS()`. Falls back
 to exact substring match when no usable tokens remain.
 
-```python
+```rust
 results = store.search_nodes(
     "SemanticMemory",
     text="authentication",
@@ -166,7 +166,7 @@ results = store.search_nodes(
 
 ### create_edge
 
-```python
+```rust
 store.create_edge(
     rel_type: str,
     from_table: str,
@@ -179,7 +179,7 @@ store.create_edge(
 
 Create a directed edge between two nodes.
 
-```python
+```rust
 store.create_edge(
     "REMEMBERS", "Session", session_id,
     "EpisodicMemory", memory_id,
@@ -189,7 +189,7 @@ store.create_edge(
 
 ### get_edges
 
-```python
+```rust
 store.get_edges(
     node_id: str,
     rel_type: str | None = None,
@@ -203,7 +203,7 @@ Query edges connected to a node. `direction` controls traversal: `"out"`
 
 ### delete_edge
 
-```python
+```rust
 store.delete_edge(rel_type: str, from_id: str, to_id: str) -> None
 ```
 
@@ -213,7 +213,7 @@ Delete a specific edge.
 
 ### export_nodes
 
-```python
+```rust
 store.export_nodes(
     node_ids: list[str] | None = None,
 ) -> list[tuple[str, str, dict]]
@@ -224,7 +224,7 @@ exports all nodes.
 
 ### export_edges
 
-```python
+```rust
 store.export_edges(
     node_ids: list[str] | None = None,
 ) -> list[tuple[str, str, str, str, str, dict]]
@@ -236,7 +236,7 @@ the set.
 
 ### import_nodes / import_edges
 
-```python
+```rust
 store.import_nodes(nodes: list[tuple[str, str, dict]]) -> int
 store.import_edges(edges: list[tuple[str, str, str, str, str, dict]]) -> int
 ```
@@ -249,7 +249,7 @@ tables. Duplicate `node_id` values are silently skipped (MERGE semantics).
 
 ### get_all_node_ids
 
-```python
+```rust
 store.get_all_node_ids(table: str | None = None) -> set[str]
 ```
 
@@ -257,14 +257,14 @@ Return all node IDs across all tables, or for a specific table.
 
 ### close
 
-```python
+```rust
 store.close() -> None
 ```
 
 Close the database connection and release the flock. Always call this when done,
 or use a context manager pattern:
 
-```python
+```rust
 store = KuzuGraphStore(db_path="/tmp/test.db")
 try:
     store.create_node("Session", {"status": "active"})

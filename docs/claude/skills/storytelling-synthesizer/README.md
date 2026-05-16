@@ -214,7 +214,7 @@ SECTION 4: THE IMPLEMENTATION (600 words)
 - Edge case handling
 
 Code snippet example:
-```python
+```rust
 class TokenCache:
     def validate_fast(self, token):
         # First: check in-process cache (1ms)

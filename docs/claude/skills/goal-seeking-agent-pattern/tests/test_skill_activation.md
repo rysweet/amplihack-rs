@@ -23,7 +23,7 @@ This test suite validates the Goal-Seeking Agent Pattern Skill across 22 test ca
 
 **Test Cases**:
 
-```python
+```rust
 def test_trigger_word_complex_workflow():
     prompt = "I need to design a complex workflow for data processing"
     assert skill_should_activate(prompt, triggers=["complex workflow"])
@@ -49,7 +49,7 @@ def test_trigger_word_multi_phase():
 
 **Test Cases**:
 
-```python
+```rust
 def test_target_agent_architect():
     agent_context = {"role": "architect", "task": "design automation"}
     assert skill_should_activate_for_agent(agent_context, target="architect")
@@ -67,7 +67,7 @@ def test_not_activated_for_builder():
 
 **Test Cases**:
 
-```python
+```rust
 def test_skill_priority():
     metadata = load_skill_metadata("goal-seeking-agent-pattern")
     assert metadata["priority"] == "medium"
@@ -85,7 +85,7 @@ def test_skill_complexity():
 
 **Test Cases**:
 
-```python
+```rust
 def test_allowed_tools():
     metadata = load_skill_metadata("goal-seeking-agent-pattern")
     allowed_tools = metadata["allowed-tools"]
@@ -110,7 +110,7 @@ def test_allowed_tools():
 
 **Test Cases**:
 
-```python
+```rust
 def test_decision_framework_questions():
     skill_content = read_skill_content("goal-seeking-agent-pattern")
 
@@ -140,7 +140,7 @@ def test_decision_matrix():
 
 **Test Cases**:
 
-```python
+```rust
 def test_problem_indicators():
     skill_content = read_skill_content("goal-seeking-agent-pattern")
 
@@ -159,7 +159,7 @@ def test_problem_indicators():
 
 **Test Cases**:
 
-```python
+```rust
 def test_when_not_to_use():
     skill_content = read_skill_content("goal-seeking-agent-pattern")
 
@@ -182,7 +182,7 @@ def test_when_not_to_use():
 
 **Test Cases**:
 
-```python
+```rust
 def test_api_classes_documented():
     skill_content = read_skill_content("goal-seeking-agent-pattern")
 
@@ -197,7 +197,7 @@ def test_api_import_examples():
     skill_content = read_skill_content("goal-seeking-agent-pattern")
 
     # Check import statement examples
-    assert "from amplihack.goal_agent_generator import" in skill_content
+    assert "// use amplihack_goal_agent_generator::" in skill_content
 ```
 
 **Expected**: All 5 API classes documented with import examples
@@ -208,7 +208,7 @@ def test_api_import_examples():
 
 **Test Cases**:
 
-```python
+```rust
 def test_cli_commands():
     skill_content = read_skill_content("goal-seeking-agent-pattern")
 
@@ -235,7 +235,7 @@ def test_cli_options():
 
 **Test Cases**:
 
-```python
+```rust
 import ast
 import re
 
@@ -265,7 +265,7 @@ def test_python_code_examples_valid():
 
 **Test Cases**:
 
-```python
+```rust
 def test_real_examples_count():
     skill_content = read_skill_content("goal-seeking-agent-pattern")
 
@@ -293,7 +293,7 @@ def test_real_examples_references():
 
 **Test Cases**:
 
-```python
+```rust
 def test_example_files_exist():
     examples_dir = Path(".claude/skills/goal-seeking-agent-pattern/examples")
 
@@ -323,7 +323,7 @@ def test_example_files_content():
 
 **Test Cases**:
 
-```python
+```rust
 def test_examples_use_framework():
     examples_dir = Path(".claude/skills/goal-seeking-agent-pattern/examples")
 
@@ -352,7 +352,7 @@ def test_examples_use_framework():
 
 **Test Cases**:
 
-```python
+```rust
 def test_all_sections_present():
     skill_content = read_skill_content("goal-seeking-agent-pattern")
 
@@ -384,7 +384,7 @@ def test_all_sections_present():
 
 **Test Cases**:
 
-```python
+```rust
 def test_template_files_exist():
     templates_dir = Path(".claude/skills/goal-seeking-agent-pattern/templates")
 
@@ -421,7 +421,7 @@ def test_integration_guide_sections():
 
 **Test Cases**:
 
-```python
+```rust
 def test_readme_exists():
     readme_file = Path(".claude/skills/goal-seeking-agent-pattern/README.md")
     assert readme_file.exists()
@@ -455,7 +455,7 @@ def test_readme_has_examples():
 
 **Test Cases**:
 
-```python
+```rust
 def test_no_over_engineering():
     skill_content = read_skill_content("goal-seeking-agent-pattern")
 
@@ -482,7 +482,7 @@ def test_clear_when_not_to_use():
 
 **Test Cases**:
 
-```python
+```rust
 def test_modular_components():
     skill_content = read_skill_content("goal-seeking-agent-pattern")
 
@@ -509,7 +509,7 @@ def test_clear_interfaces():
 
 **Test Cases**:
 
-````python
+````rust
 def test_no_todos():
     skill_content = read_skill_content("goal-seeking-agent-pattern")
 
@@ -537,7 +537,7 @@ def test_no_placeholders():
 
 **Test Cases**:
 
-````python
+````rust
 def test_getting_started_section():
     skill_content = read_skill_content("goal-seeking-agent-pattern")
 
@@ -561,7 +561,7 @@ def test_runnable_examples():
 
 **Test Cases**:
 
-```python
+```rust
 def test_simple_example_first():
     readme_content = read_file(".claude/skills/goal-seeking-agent-pattern/README.md")
 
@@ -593,7 +593,7 @@ def test_examples_ordered_by_complexity():
 
 **Test Cases**:
 
-```python
+```rust
 def test_skill_loads_successfully():
     """Test that skill YAML frontmatter is valid"""
     skill_file = Path(".claude/skills/goal-seeking-agent-pattern/SKILL.md")

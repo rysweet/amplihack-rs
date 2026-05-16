@@ -24,7 +24,7 @@ This document describes the comprehensive failing tests created for session mana
 
 **Expected Message Format**:
 
-```python
+```rust
 {
     'role': 'user' | 'assistant',
     'content': 'message content',
@@ -80,7 +80,7 @@ This document describes the comprehensive failing tests created for session mana
 
 **Fork Workflow**:
 
-```python
+```rust
 if session_duration >= 60 minutes:
     1. Export current session transcript
     2. Create summary of work so far
@@ -145,7 +145,7 @@ if session_duration >= 60 minutes:
 
 **Backward Compatibility Requirements**:
 
-```python
+```rust
 # Old code still works
 auto_mode = AutoMode(sdk="claude", prompt="Test")
 auto_mode.run()  # Works as before
@@ -177,7 +177,7 @@ auto_mode.run()  # Includes message tracking and export
 
 **Metadata Structure**:
 
-```python
+```rust
 {
     "session_id": "auto_claude_1234567890",
     "start_time": "2024-01-01T00:00:00",
@@ -334,7 +334,7 @@ python tests/test_auto_mode_session_management.py
 
 **Interface**:
 
-```python
+```rust
 from builders.claude_transcript_builder import ClaudeTranscriptBuilder
 
 builder = ClaudeTranscriptBuilder(session_id=self.session_id)

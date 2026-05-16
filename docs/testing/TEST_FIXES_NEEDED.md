@@ -24,7 +24,7 @@ pytest's monkeypatch.
 
 Instead of mocking the instance, mock at the import level:
 
-```python
+```rust
 def test_unit_process_004_permission_error_accessing_lock_file(stop_hook):
     """UNIT-PROCESS-004: Permission error accessing lock file."""
     import pathlib
@@ -50,7 +50,7 @@ def test_unit_process_004_permission_error_accessing_lock_file(stop_hook):
 Accept that testing exception paths requires real file system errors, making
 these integration tests:
 
-```python
+```rust
 @pytest.mark.skipif(sys.platform == "win32", reason="Unix permissions only")
 def test_unit_process_004_permission_error_accessing_lock_file(stop_hook):
     """UNIT-PROCESS-004: Permission error accessing lock file."""
@@ -88,7 +88,7 @@ directory.
 
 **Step 1**: Update `hook_processor.py` to check environment variable first:
 
-```python
+```rust
 def __init__(self, hook_name: str):
     """Initialize the hook processor."""
     self.hook_name = hook_name
@@ -110,7 +110,7 @@ def __init__(self, hook_name: str):
 **Step 2**: The `captured_subprocess` fixture already sets this environment
 variable:
 
-```python
+```rust
 env = os.environ.copy()
 env['AMPLIHACK_PROJECT_ROOT'] = str(temp_project_root)
 ```

@@ -102,7 +102,7 @@ The orchestrator is the **single entry point** for interacting with all four lay
 
 ### Core API
 
-```python
+```rust
 orchestrator = HiveMindOrchestrator(
     agent_id="agent_a",
     hive_graph=hive,       # Layer 1
@@ -133,7 +133,7 @@ results = orchestrator.drain_events()
 
 The orchestrator doesn't hardcode thresholds. Instead, a `PromotionPolicy` protocol decides what happens at each layer:
 
-```python
+```rust
 class PromotionPolicy(Protocol):
     def should_promote(self, fact, source_agent) -> bool: ...   # Layer 1
     def should_gossip(self, fact, source_agent) -> bool: ...    # Layer 3
@@ -150,7 +150,7 @@ Default thresholds:
 
 ### HiveFact
 
-```python
+```rust
 @dataclass
 class HiveFact:
     fact_id: str          # "hf_" + 12-char hex

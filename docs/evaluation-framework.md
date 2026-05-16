@@ -33,23 +33,23 @@ The current top-level `amplihack` parser does **not** expose `amplihack memory e
 
 ```bash
 # Compare all backends
-python -m amplihack.memory.cli_evaluate
+amplihack memory cli_evaluate
 
 # Evaluate a specific backend
-python -m amplihack.memory.cli_evaluate --backend sqlite
+amplihack memory cli_evaluate --backend sqlite
 
 # Save report to file
-python -m amplihack.memory.cli_evaluate --output report.md
+amplihack memory cli_evaluate --output report.md
 
 # Custom database path
-python -m amplihack.memory.cli_evaluate --backend sqlite --db-path /tmp/memory.db
+amplihack memory cli_evaluate --backend sqlite --db-path /tmp/memory.db
 ```
 
 ### Using Python API
 
-```python
+```rust
 import asyncio
-from amplihack.memory.evaluation import run_evaluation
+// use amplihack_memory::evaluation:: run_evaluation
 
 # Evaluate all backends
 async def main():
@@ -65,10 +65,10 @@ asyncio.run(main())
 
 Measures retrieval quality using test queries with ground truth:
 
-```python
-from amplihack.memory.backends import create_backend
-from amplihack.memory.coordinator import MemoryCoordinator
-from amplihack.memory.evaluation import QualityEvaluator
+```rust
+// use amplihack_memory::backends:: create_backend
+// use amplihack_memory::coordinator:: MemoryCoordinator
+// use amplihack_memory::evaluation:: QualityEvaluator
 
 # Create coordinator
 backend = create_backend(backend_type="sqlite")
@@ -110,8 +110,8 @@ print(f"NDCG: {metrics.ndcg_score:.2f}")
 
 Measures speed and throughput:
 
-```python
-from amplihack.memory.evaluation import PerformanceEvaluator
+```rust
+// use amplihack_memory::evaluation:: PerformanceEvaluator
 
 evaluator = PerformanceEvaluator(coordinator)
 
@@ -139,7 +139,7 @@ if contracts["retrieval_latency_ok"]:
 
 **Scalability Testing:**
 
-```python
+```rust
 # Test at multiple scales
 results = await evaluator.evaluate_scalability(scales=[100, 1000, 10000])
 
@@ -153,8 +153,8 @@ for scale, metrics in results.items():
 
 Measures robustness and data integrity:
 
-```python
-from amplihack.memory.evaluation import ReliabilityEvaluator
+```rust
+// use amplihack_memory::evaluation:: ReliabilityEvaluator
 
 evaluator = ReliabilityEvaluator(coordinator)
 
@@ -184,8 +184,8 @@ print(f"Error Recovery: {metrics.error_recovery_score:.2f}")
 
 Compare multiple backends:
 
-```python
-from amplihack.memory.evaluation import BackendComparison
+```rust
+// use amplihack_memory::evaluation:: BackendComparison
 
 comparison = BackendComparison()
 
@@ -280,7 +280,7 @@ Performance Contracts:
 
 ### QualityEvaluator
 
-```python
+```rust
 class QualityEvaluator:
     async def evaluate(test_queries: list[QueryTestCase]) -> QualityMetrics
     async def create_test_set(num_memories: int) -> list[QueryTestCase]
@@ -288,7 +288,7 @@ class QualityEvaluator:
 
 ### PerformanceEvaluator
 
-```python
+```rust
 class PerformanceEvaluator:
     async def evaluate(num_operations: int) -> PerformanceMetrics
     async def evaluate_scalability(scales: list[int]) -> dict[int, PerformanceMetrics]
@@ -297,14 +297,14 @@ class PerformanceEvaluator:
 
 ### ReliabilityEvaluator
 
-```python
+```rust
 class ReliabilityEvaluator:
     async def evaluate() -> ReliabilityMetrics
 ```
 
 ### BackendComparison
 
-```python
+```rust
 class BackendComparison:
     async def evaluate_backend(backend_type: str, **config) -> ComparisonReport
     async def compare_all() -> dict[str, ComparisonReport]
@@ -313,7 +313,7 @@ class BackendComparison:
 
 ### Convenience Function
 
-```python
+```rust
 async def run_evaluation(backend_type: str | None = None, **config) -> str
 ```
 

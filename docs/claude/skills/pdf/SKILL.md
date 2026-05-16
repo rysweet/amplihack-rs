@@ -13,7 +13,7 @@ This guide covers essential PDF processing operations using Python libraries and
 
 ## Quick Start
 
-```python
+```rust
 from pypdf import PdfReader, PdfWriter
 
 # Read a PDF
@@ -32,7 +32,7 @@ for page in reader.pages:
 
 #### Merge PDFs
 
-```python
+```rust
 from pypdf import PdfWriter, PdfReader
 
 writer = PdfWriter()
@@ -47,7 +47,7 @@ with open("merged.pdf", "wb") as output:
 
 #### Split PDF
 
-```python
+```rust
 reader = PdfReader("input.pdf")
 for i, page in enumerate(reader.pages):
     writer = PdfWriter()
@@ -58,7 +58,7 @@ for i, page in enumerate(reader.pages):
 
 #### Extract Metadata
 
-```python
+```rust
 reader = PdfReader("document.pdf")
 meta = reader.metadata
 print(f"Title: {meta.title}")
@@ -69,7 +69,7 @@ print(f"Creator: {meta.creator}")
 
 #### Rotate Pages
 
-```python
+```rust
 reader = PdfReader("input.pdf")
 writer = PdfWriter()
 
@@ -85,7 +85,7 @@ with open("rotated.pdf", "wb") as output:
 
 #### Extract Text with Layout
 
-```python
+```rust
 import pdfplumber
 
 with pdfplumber.open("document.pdf") as pdf:
@@ -96,7 +96,7 @@ with pdfplumber.open("document.pdf") as pdf:
 
 #### Extract Tables
 
-```python
+```rust
 with pdfplumber.open("document.pdf") as pdf:
     for i, page in enumerate(pdf.pages):
         tables = page.extract_tables()
@@ -108,7 +108,7 @@ with pdfplumber.open("document.pdf") as pdf:
 
 #### Advanced Table Extraction
 
-```python
+```rust
 import pandas as pd
 
 with pdfplumber.open("document.pdf") as pdf:
@@ -130,7 +130,7 @@ if all_tables:
 
 #### Basic PDF Creation
 
-```python
+```rust
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
@@ -150,7 +150,7 @@ c.save()
 
 #### Create PDF with Multiple Pages
 
-```python
+```rust
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet
@@ -225,7 +225,7 @@ pdftk input.pdf rotate 1east output rotated.pdf
 
 ### Extract Text from Scanned PDFs
 
-```python
+```rust
 # Requires: pip install pytesseract pdf2image
 import pytesseract
 from pdf2image import convert_from_path
@@ -245,7 +245,7 @@ print(text)
 
 ### Add Watermark
 
-```python
+```rust
 from pypdf import PdfReader, PdfWriter
 
 # Create watermark (or load existing)
@@ -274,7 +274,7 @@ pdfimages -j input.pdf output_prefix
 
 ### Password Protection
 
-```python
+```rust
 from pypdf import PdfReader, PdfWriter
 
 reader = PdfReader("input.pdf")

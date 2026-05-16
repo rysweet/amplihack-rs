@@ -26,7 +26,7 @@ To add these languages, contribute to dap-mcp project:
 
 1. Create new config class in `dap_mcp/config.py`:
 
-   ```python
+   ```rust
    class NodeDebugger(DAPConfig):
        type: Literal["node"]
        # Add node-specific fields

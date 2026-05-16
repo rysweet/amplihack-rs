@@ -41,7 +41,7 @@ When this command is invoked, you MUST:
 
 1. **Import the orchestrator**:
 
-   ```python
+   ```rust
    import sys
    from pathlib import Path
    sys.path.insert(0, str(Path.cwd() / ".claude/tools/amplihack"))
@@ -50,7 +50,7 @@ When this command is invoked, you MUST:
 
 2. **Execute the pattern**:
 
-   ```python
+   ```rust
    result = run_cascade(
        task_prompt="{TASK_DESCRIPTION}",
        fallback_strategy="quality",  # or "service", "freshness"

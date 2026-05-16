@@ -52,7 +52,7 @@ Power-Steering respects the USER_PREFERENCES.md setting "NEVER Merge PRs Without
 
 ### Detection Method
 
-```python
+```rust
 def _user_prefers_no_auto_merge(self) -> bool:
     """
     Detect if user has set preference to never auto-merge PRs.
@@ -90,7 +90,7 @@ def _user_prefers_no_auto_merge(self) -> bool:
 
 ### Validation Method
 
-```python
+```rust
 def _check_ci_status_no_auto_merge(self) -> CheckResult:
     """
     Validate CI status WITHOUT requiring PR merge.
@@ -132,7 +132,7 @@ def _check_ci_status_no_auto_merge(self) -> CheckResult:
 
 ### Integration Method
 
-```python
+```rust
 def _check_ci_status(self) -> CheckResult:
     """
     Check CI status with preference awareness.
@@ -158,7 +158,7 @@ def _check_ci_status(self) -> CheckResult:
 
 ### CheckResult
 
-```python
+```rust
 @dataclass
 class CheckResult:
     """Result of a Power-Steering consideration check."""
@@ -178,7 +178,7 @@ class CheckResult:
 
 **Usage in Preference Awareness**:
 
-```python
+```rust
 # Success case
 CheckResult(
     satisfied=True,
@@ -272,7 +272,7 @@ merge applies - subsequent PRs require separate approval.
 
 Preference detection occurs **during each `_check_ci_status()` call**, not at initialization:
 
-```python
+```rust
 # In _check_ci_status()
 if self._user_prefers_no_auto_merge():
     return self._check_ci_status_no_auto_merge()
@@ -348,7 +348,7 @@ gh pr view --json state,statusCheckRollup,isDraft
 
 **Implementation**:
 
-```python
+```rust
 try:
     # Attempt preference detection
     if self._user_prefers_no_auto_merge():
@@ -375,7 +375,7 @@ return self._check_ci_status_standard()
 
 Test coverage for preference awareness:
 
-```python
+```rust
 # test_power_steering_checker.py
 
 class TestMergePreferenceAwareness:
@@ -410,7 +410,7 @@ class TestMergePreferenceAwareness:
 
 End-to-end validation:
 
-```python
+```rust
 class TestMergePreferenceIntegration:
     """Integration tests for merge preference workflow."""
 
@@ -540,7 +540,7 @@ class TestMergePreferenceIntegration:
 
 Enable detailed logging:
 
-```python
+```rust
 # In power_steering_checker.py
 logger.setLevel(logging.DEBUG)
 

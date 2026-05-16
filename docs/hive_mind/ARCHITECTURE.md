@@ -90,7 +90,7 @@ to fan out queries via Event Hubs and merge results.
 
 **DI wiring** happens in `agent_entrypoint.py` (composition root):
 
-```python
+```rust
 # Agent created with local memory (topology-unaware)
 agent = GoalSeekingAgent(...)
 
@@ -193,7 +193,7 @@ graph TD
     Merge -->|"union elements + union tombstones"| Tombstones
 ```
 
-```python
+```rust
 # On promote:  self._fact_set.add(fact.fact_id)
 # On retract:  self._fact_set.remove(fact_id)
 # On merge:    self._fact_set.merge(other._fact_set)
@@ -205,7 +205,7 @@ Each agent's trust score is stored in an LWWRegister. On merge, the register
 with the later timestamp wins. Deterministic tiebreaking by string comparison
 of value ensures convergence regardless of merge order.
 
-```python
+```rust
 # On update_trust:  self._trust_registers[agent_id].set(trust, time.time())
 # On merge:         self._trust_registers[agent_id].merge(other._trust_registers[agent_id])
 ```

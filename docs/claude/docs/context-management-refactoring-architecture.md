@@ -58,7 +58,7 @@ The original context management implementation had several architectural issues:
 
 **Public API**:
 
-```python
+```rust
 # Data Models
 ContextStatus(current_tokens, max_tokens, percentage, threshold_status, recommendation)
 ContextSnapshot(snapshot_id, name, timestamp, ...)
@@ -103,7 +103,7 @@ run_automation(current_tokens, conversation_data) -> Dict
 
 **Public API**:
 
-```python
+```rust
 # Data Models
 TranscriptSummary(session_id, timestamp, target, message_count, ...)
 
@@ -144,7 +144,7 @@ get_current_session_id() -> str
 
 **Public API**:
 
-```python
+```rust
 # Data Models
 HookResult(actions_taken, warnings, metadata, skip_remaining)
 
@@ -177,7 +177,7 @@ aggregate_hook_results(results) -> Dict
 
 **Public API**:
 
-```python
+```rust
 context_management_hook(input_data) -> HookResult
 register_context_hook() -> None
 ```
@@ -203,14 +203,14 @@ register_context_hook() -> None
 
 **Before** (tight coupling):
 
-```python
+```rust
 from context_management.automation import run_automation
 # ... inline logic to call run_automation
 ```
 
 **After** (extensible):
 
-```python
+```rust
 from tool_registry import get_global_registry, aggregate_hook_results
 
 def _setup_tool_hooks(self):
@@ -325,7 +325,7 @@ print(manager.format_context_display(context))
 
 - Adding new tool hooks is easy:
 
-  ```python
+  ```rust
   # new_tool_hook.py
   @register_tool_hook
   def my_hook(input_data):

@@ -22,7 +22,7 @@
 
 ### Functions
 
-```python
+```rust
 def function_name(param: Type) -> ReturnType:
     """Brief description.
     Args: ...
@@ -63,7 +63,7 @@ module_name/
 
 ## Example Usage
 
-```python
+```rust
 from module_name import function, Class
 # usage examples
 ```

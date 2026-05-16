@@ -75,7 +75,7 @@ The cost is that some flows need both repos checked out at the same time, especi
 
 ## How A Local Eval Run Works
 
-For a local wrapper run such as `python -m amplihack.eval.long_horizon_memory`:
+For a local wrapper run such as `amplihack eval long-horizon-memory`:
 
 1. you run a thin wrapper from `amplihack`
 2. that wrapper imports data types and runner logic from `amplihack_eval`
@@ -98,7 +98,7 @@ That is why the thin wrappers in `amplihack` are useful for runtime iteration, w
 
 ## How A Distributed Azure Run Works
 
-For `./run_distributed_eval.sh` or `python -m amplihack_eval.azure.eval_distributed`:
+For `./run_distributed_eval.sh` or `amplihack eval azure.eval_distributed`:
 
 1. the eval repo decides the run shape: turns, questions, question set, retries, and output location
 2. if deployment is needed, it calls `amplihack/deploy/azure_hive/deploy.sh`

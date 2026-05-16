@@ -26,7 +26,7 @@ When pre-commit fails:
 
 Execute in parallel:
 
-```python
+```rust
 [
     bash("pre-commit run --all-files --verbose"),
     bash("git status --porcelain"),

@@ -90,7 +90,7 @@ Each diagnosis takes 25-45 minutes (average 35 minutes). We encounter
 
 ### Inputs
 
-```python
+```rust
 {
     "pr_number": str,              # GitHub PR number
     "failure_logs": str,           # Complete CI log output
@@ -127,7 +127,7 @@ Deploy specialized agents in parallel:
 
 ### Outputs
 
-```python
+```rust
 {
     "root_cause": {
         "primary": str,            # Main issue identified

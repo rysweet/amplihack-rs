@@ -10,7 +10,7 @@ Provides a simple, structured way to check CI status without complex bash script
 
 ### As a Python Module
 
-```python
+```rust
 from ci_status import check_ci_status
 
 # Check current branch
@@ -102,7 +102,7 @@ chmod +x .claude/tools/ci_status.py
 
 ### Check if CI is passing before merge
 
-```python
+```rust
 from ci_status import check_ci_status
 
 result = check_ci_status()
@@ -114,7 +114,7 @@ else:
 
 ### Monitor CI progress
 
-```python
+```rust
 import time
 from ci_status import check_ci_status
 
@@ -130,7 +130,7 @@ while True:
 
 ### Get failed checks details
 
-```python
+```rust
 from ci_status import check_ci_status
 
 result = check_ci_status()

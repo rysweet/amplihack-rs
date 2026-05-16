@@ -140,7 +140,7 @@ On cross-device rename errors (rare; can occur if `/tmp` is on a different files
 
 ### File creation flags
 
-```python
+```rust
 O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW
 ```
 
@@ -158,7 +158,7 @@ All progress files and log files are created with mode `0o600` (owner read/write
 
 The binary is launched as:
 
-```python
+```rust
 subprocess.Popen(cmd, ...)  # cmd is list[str], shell=False (default)
 ```
 
@@ -174,7 +174,7 @@ Before any file is opened under `/tmp`, `_validate_path_within_tmpdir(path)` cal
 
 ### Recipe name sanitization
 
-```python
+```rust
 _RECIPE_NAME_SANITIZE_RE = re.compile(r"[^a-zA-Z0-9_]")
 _MAX_RECIPE_NAME_LEN = 64
 ```

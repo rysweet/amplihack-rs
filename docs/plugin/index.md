@@ -46,7 +46,7 @@ For contributors and plugin developers:
 
 ```bash
 # Install amplihack
-pip install amplihack
+cargo install amplihack
 
 # Install plugin
 amplihack plugin install

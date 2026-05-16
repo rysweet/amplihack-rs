@@ -32,7 +32,7 @@ python .claude/tools/precommit_workflow.py verify-success
 
 ### Python API
 
-```python
+```rust
 from claude.tools.precommit_workflow import PreCommitWorkflow
 
 workflow = PreCommitWorkflow()

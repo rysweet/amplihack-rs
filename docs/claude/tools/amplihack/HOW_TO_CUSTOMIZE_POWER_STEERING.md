@@ -581,7 +581,7 @@ For complex requirements, you may want to implement a custom specific checker.
 
 **Example:**
 
-```python
+```rust
 def _check_custom_requirement(self, transcript: List[Dict], session_id: str) -> bool:
     """Check custom team requirement.
 

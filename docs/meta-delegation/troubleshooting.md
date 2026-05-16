@@ -45,7 +45,7 @@ DelegationTimeout: Execution exceeded 30 minutes
 
 #### Solution 1: Increase Timeout
 
-```python
+```rust
 # For complex tasks, allow more time
 result = run_meta_delegation(
     goal="Complex architecture design",
@@ -56,8 +56,8 @@ result = run_meta_delegation(
 
 #### Solution 2: Check Partial Results
 
-```python
-from amplihack.meta_delegation import run_meta_delegation, DelegationTimeout
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation, DelegationTimeout
 
 try:
     result = run_meta_delegation(goal="...", success_criteria="...")
@@ -72,7 +72,7 @@ except DelegationTimeout as e:
 
 #### Solution 3: Break Into Smaller Tasks
 
-```python
+```rust
 # Instead of one large task
 result = run_meta_delegation(
     goal="Design and implement complete system",
@@ -96,7 +96,7 @@ implementation = run_meta_delegation(
 
 #### Solution 4: Check Execution Log
 
-```python
+```rust
 result = run_meta_delegation(...)
 
 # Check if agent is stuck
@@ -144,7 +144,7 @@ which amplifier      # For Amplifier
 
 #### Solution 2: Check PATH
 
-```python
+```rust
 import os
 import shutil
 
@@ -160,8 +160,8 @@ if not shutil.which(platform_cmd):
 
 #### Solution 3: Use Specific Platform Path
 
-```python
-from amplihack.meta_delegation import run_meta_delegation
+```rust
+// use amplihack_meta_delegation:: run_meta_delegation
 
 result = run_meta_delegation(
     goal="...",
@@ -198,7 +198,7 @@ Task completed but score is unexpectedly low.
 
 #### Solution 1: Review Success Criteria
 
-```python
+```rust
 # Too vague - hard to evaluate
 success_criteria = "Make it good"
 
@@ -213,7 +213,7 @@ success_criteria = """
 
 #### Solution 2: Check Evidence Details
 
-```python
+```rust
 result = run_meta_delegation(...)
 
 if result.success_score < 70:
@@ -233,7 +233,7 @@ if result.success_score < 70:
 
 #### Solution 3: Check Test Results
 
-```python
+```rust
 result = run_meta_delegation(...)
 
 # Look for test failures in logs
@@ -248,7 +248,7 @@ if "FAILED" in result.execution_log or "ERROR" in result.execution_log:
 
 #### Solution 4: Try Different Persona
 
-```python
+```rust
 # If junior_dev produces low scores
 result_junior = run_meta_delegation(
     goal="...",
@@ -290,7 +290,7 @@ Task completed but expected artifacts not collected.
 
 #### Solution 1: Check Working Directory
 
-```python
+```rust
 import os
 
 result = run_meta_delegation(
@@ -307,7 +307,7 @@ if os.path.exists("/tmp/my_delegation"):
 
 #### Solution 2: Check Execution Log for File Paths
 
-```python
+```rust
 result = run_meta_delegation(...)
 
 # Search log for file creation
@@ -323,7 +323,7 @@ for file_path in file_mentions:
 
 #### Solution 3: Enable Artifact Preservation
 
-```python
+```rust
 import os
 
 # Keep artifacts after delegation
@@ -355,7 +355,7 @@ ValueError: Invalid platform: my-platform
 
 #### Solution 1: Check Platform Name
 
-```python
+```rust
 # Incorrect
 result = run_meta_delegation(platform="claude")  # Wrong
 result = run_meta_delegation(platform="github-copilot")  # Wrong
@@ -368,8 +368,8 @@ result = run_meta_delegation(platform="amplifier")
 
 #### Solution 2: List Available Platforms
 
-```python
-from amplihack.meta_delegation import list_platforms
+```rust
+// use amplihack_meta_delegation:: list_platforms
 
 print("Available platforms:")
 for platform in list_platforms():
@@ -396,7 +396,7 @@ DelegationError: Permission denied
 
 #### Solution 1: Use User-Writable Directory
 
-```python
+```rust
 import os
 import tempfile
 
@@ -442,9 +442,9 @@ DelegationError: Subprocess killed
 
 #### Solution 1: Monitor Memory Usage
 
-```python
+```rust
 import psutil
-from amplihack.meta_delegation import run_meta_delegation
+// use amplihack_meta_delegation:: run_meta_delegation
 
 # Check available memory before delegation
 available_mb = psutil.virtual_memory().available / (1024 * 1024)
@@ -456,7 +456,7 @@ if available_mb < 500:
 
 #### Solution 2: Reduce Scope
 
-```python
+```rust
 # Instead of large codebase
 result = run_meta_delegation(
     goal="Generate entire application with 20 modules",
@@ -505,7 +505,7 @@ Expected SUCCESS but got PARTIAL.
 
 #### Solution 1: Review Partial Completion Notes
 
-```python
+```rust
 result = run_meta_delegation(...)
 
 if result.status == "PARTIAL":
@@ -520,7 +520,7 @@ if result.status == "PARTIAL":
 
 #### Solution 2: Retry with Adjustments
 
-```python
+```rust
 result = run_meta_delegation(
     goal="Complex implementation",
     success_criteria="Feature A, Feature B, Feature C, comprehensive tests"
@@ -543,7 +543,7 @@ if result.status == "PARTIAL":
 
 **Symptom:**
 
-```python
+```rust
 result.export_evidence("./archive")
 # Error: Directory exists but is not empty
 ```
@@ -552,7 +552,7 @@ result.export_evidence("./archive")
 
 #### Solution 1: Use Unique Directory Names
 
-```python
+```rust
 from datetime import datetime
 
 # Generate unique directory name
@@ -565,7 +565,7 @@ print(f"Evidence exported to: {archive_dir}")
 
 #### Solution 2: Clear Existing Directory
 
-```python
+```rust
 import shutil
 import os
 
@@ -596,7 +596,7 @@ Using `guide` persona but getting implementation without explanations.
 
 #### Solution 1: Verify Persona Selection
 
-```python
+```rust
 result = run_meta_delegation(
     goal="Explain how OAuth works",
     success_criteria="Clear explanation with examples",
@@ -609,7 +609,7 @@ print(f"Persona used: {result.persona_used}")
 
 #### Solution 2: Align Goal with Persona
 
-```python
+```rust
 # Goal doesn't match guide persona
 result = run_meta_delegation(
     goal="Implement OAuth quickly",  # Implementation goal
@@ -627,7 +627,7 @@ result = run_meta_delegation(
 
 #### Solution 3: Check Persona Effectiveness
 
-```python
+```rust
 # Try same task with different personas
 personas = ["guide", "qa_engineer", "architect", "junior_dev"]
 
@@ -646,7 +646,7 @@ for persona in personas:
 
 ### Enable Debug Logging
 
-```python
+```rust
 import logging
 
 # Enable debug logging
@@ -660,7 +660,7 @@ result = run_meta_delegation(...)
 
 ### Inspect Subprocess State
 
-```python
+```rust
 result = run_meta_delegation(...)
 
 print(f"Subprocess PID: {result.subprocess_pid}")
@@ -678,8 +678,8 @@ if "ERROR" in result.execution_log:
 
 ### Validate Environment
 
-```python
-from amplihack.meta_delegation import validate_environment
+```rust
+// use amplihack_meta_delegation:: validate_environment
 
 # Check if system is ready for meta-delegation
 issues = validate_environment()
@@ -698,7 +698,7 @@ else:
 
 ### Optimize for Speed
 
-```python
+```rust
 result = run_meta_delegation(
     goal="Quick implementation needed",
     success_criteria="Basic working code",
@@ -710,7 +710,7 @@ result = run_meta_delegation(
 
 ### Optimize for Quality
 
-```python
+```rust
 result = run_meta_delegation(
     goal="Production-ready feature",
     success_criteria="Comprehensive tests, documentation, edge cases handled",
@@ -726,7 +726,7 @@ result = run_meta_delegation(
 
 ### Collect Diagnostic Information
 
-```python
+```rust
 result = run_meta_delegation(...)
 
 # Save diagnostic bundle

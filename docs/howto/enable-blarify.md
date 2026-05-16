@@ -138,7 +138,7 @@ python3 -c "import blarify; print('ok')"
 ```bash
 # Run the prerequisite check standalone to see the failure reason
 python3 -c "
-from amplihack.memory.kuzu.indexing.prerequisite_checker import PrerequisiteChecker
+// use amplihack_memory::kuzu::{ PrerequisiteChecker
 checker = PrerequisiteChecker()
 result = checker.check()
 print(result)

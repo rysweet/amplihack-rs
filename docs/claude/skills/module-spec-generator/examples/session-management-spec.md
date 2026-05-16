@@ -37,7 +37,7 @@ Provide session lifecycle management with persistent storage, structured logging
 
 ### Classes
 
-```python
+```rust
 class ClaudeSession:
     """Wrapper around Claude API session with timeout and state tracking.
 
@@ -217,7 +217,7 @@ class ToolkitLogger:
 
 ### Functions
 
-```python
+```rust
 def create_session_dir(path: str) -> Path:
     """Create session directory with proper structure.
 
@@ -311,7 +311,7 @@ session_management/
 
 ### **init**.py
 
-```python
+```rust
 from .claude_session import ClaudeSession
 from .session_manager import SessionManager
 from .toolkit_logger import ToolkitLogger
@@ -400,7 +400,7 @@ Defensive file operations: save_with_retry, load_with_retry, etc.
 
 ## Example Usage
 
-```python
+```rust
 from session_management import (
     ClaudeSession,
     SessionManager,

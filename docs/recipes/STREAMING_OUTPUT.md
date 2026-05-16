@@ -37,7 +37,7 @@ Replace timeouts with streaming output monitoring:
 
 ### CLISubprocessAdapter
 
-```python
+```rust
 def execute_agent_step(self, prompt: str, ...) -> str:
     """Execute agent step without timeout, stream output."""
     # 1. Create log file for output capture
@@ -157,14 +157,14 @@ See `tests/unit/recipes/test_streaming_adapters.py` for complete test coverage.
 
 ### From Old Pattern
 
-```python
+```rust
 # OLD: Hard timeout, no progress
 result = subprocess.run(cmd, timeout=1800, ...)
 ```
 
 ### To New Pattern
 
-```python
+```rust
 # NEW: Streaming output, no timeout for agents
 with open(log_file, "w") as fh:
     proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT)
@@ -178,7 +178,7 @@ proc.wait()
 
 ### Bash Steps Unchanged
 
-```python
+```rust
 # Bash steps KEEP timeout (they should be fast)
 subprocess.run(["/bin/bash", "-c", command], timeout=120)
 ```

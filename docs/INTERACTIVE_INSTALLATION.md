@@ -35,7 +35,7 @@ The interactive installation feature extends the prerequisite checking system to
 
 ### Data Structures
 
-```python
+```rust
 @dataclass
 class InstallationResult:
     """Result of an installation attempt."""
@@ -104,8 +104,8 @@ Extended method that combines prerequisite checking with installation.
 
 ### Basic Usage
 
-```python
-from amplihack.utils.prerequisites import PrerequisiteChecker
+```rust
+// use amplihack_utils::prerequisites::{ PrerequisiteChecker
 
 checker = PrerequisiteChecker()
 result = checker.check_and_install(interactive=True)
@@ -118,7 +118,7 @@ else:
 
 ### Non-Interactive Mode
 
-```python
+```rust
 # Just check, don't install
 result = checker.check_and_install(interactive=False)
 # Same as check_all_prerequisites()
@@ -126,8 +126,8 @@ result = checker.check_and_install(interactive=False)
 
 ### Direct Installation
 
-```python
-from amplihack.utils.prerequisites import InteractiveInstaller, Platform
+```rust
+// use amplihack_utils::prerequisites::{ InteractiveInstaller, Platform
 
 installer = InteractiveInstaller(Platform.MACOS)
 result = installer.install_tool("node")
@@ -146,7 +146,7 @@ The feature uses platform-specific installation commands stored in `INSTALL_COMM
 
 ### macOS
 
-```python
+```rust
 {
     "node": ["brew", "install", "node"],
     "npm": ["brew", "install", "node"],
@@ -158,7 +158,7 @@ The feature uses platform-specific installation commands stored in `INSTALL_COMM
 
 ### Linux (Ubuntu/Debian)
 
-```python
+```rust
 {
     "node": ["sudo", "apt", "install", "-y", "nodejs"],
     "npm": ["sudo", "apt", "install", "-y", "npm"],
@@ -170,7 +170,7 @@ The feature uses platform-specific installation commands stored in `INSTALL_COMM
 
 ### Windows
 
-```python
+```rust
 {
     "node": ["winget", "install", "OpenJS.NodeJS"],
     "npm": ["winget", "install", "OpenJS.NodeJS"],

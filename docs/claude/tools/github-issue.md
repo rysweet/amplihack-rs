@@ -12,7 +12,7 @@ Programmatic GitHub issue creation with validation and structured output.
 
 ### Main Function
 
-```python
+```rust
 from github_issue import create_issue
 
 result = create_issue(
@@ -28,7 +28,7 @@ result = create_issue(
 
 ### Return Structure
 
-```python
+```rust
 {
     'success': bool,
     'issue_url': str,      # If successful

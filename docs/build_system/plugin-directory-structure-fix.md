@@ -73,7 +73,7 @@ After building the wheel, `build_hooks.py` removes copied directories from `src/
 
 ### Build Hook Architecture
 
-```python
+```rust
 # pyproject.toml
 [build-system]
 requires = ["setuptools>=45", "wheel"]
@@ -109,7 +109,7 @@ Build complete, repository clean
 
 ### Package Data Declaration
 
-```python
+```rust
 # pyproject.toml
 [tool.setuptools.package-data]
 amplihack = [
@@ -136,7 +136,7 @@ This tells setuptools to include these directories in the wheel **after** build 
 
 The build system uses `ignore_patterns()` to exclude specific files/directories from copied content:
 
-```python
+```rust
 ignore = ignore_patterns(
     "*.pyc", "__pycache__", "*.pyo", "*.pyd",  # Python bytecode
     ".git", ".gitignore", ".gitattributes",    # Git metadata

@@ -1,17 +1,17 @@
 # Git Utilities API Reference
 
-Technical documentation for `amplihack.tools.amplihack.git_utils` module providing git worktree detection and shared directory utilities.
+Technical documentation for the git utilities module (`amplihack-utils` crate) providing git worktree detection and shared directory utilities.
 
 ## Overview
 
-The `git_utils` module provides utilities for detecting git worktrees and finding shared directories across worktree configurations. These functions enable Power Steering and other tools to work correctly in both standard repositories and worktree environments.
+The git utilities module provides utilities for detecting git worktrees and finding shared directories across worktree configurations. These functions enable Power Steering and other tools to work correctly in both standard repositories and worktree environments.
 
 ## Installation
 
 The module is included in amplihack core:
 
-```python
-from amplihack.tools.amplihack.git_utils import (
+```rust
+// Rust: use amplihack_utils::git_utils::{ (
     is_worktree,
     get_common_git_dir,
     find_disabled_file
@@ -22,7 +22,7 @@ from amplihack.tools.amplihack.git_utils import (
 
 ### is_worktree
 
-```python
+```rust
 def is_worktree(cwd: Optional[str] = None) -> bool
 ```
 
@@ -43,8 +43,8 @@ Detect if the current directory is a git worktree.
 
 **Example**:
 
-```python
-from amplihack.tools.amplihack.git_utils import is_worktree
+```rust
+// Rust: use amplihack_utils::git_utils::{ is_worktree
 
 # Check current directory
 if is_worktree():
@@ -59,7 +59,7 @@ if is_worktree("/path/to/worktree"):
 
 **Error Handling**:
 
-```python
+```rust
 # Non-git directory
 is_worktree("/tmp/not-a-repo")  # Returns False
 
@@ -69,7 +69,7 @@ is_worktree("/root/restricted")  # Returns False
 
 ### get_common_git_dir
 
-```python
+```rust
 def get_common_git_dir(cwd: Optional[str] = None) -> str
 ```
 
@@ -90,8 +90,8 @@ Get the common git directory shared across all worktrees.
 
 **Example**:
 
-```python
-from amplihack.tools.amplihack.git_utils import get_common_git_dir
+```rust
+// Rust: use amplihack_utils::git_utils::{ get_common_git_dir
 
 # Standard repo
 common_dir = get_common_git_dir()
@@ -104,10 +104,10 @@ common_dir = get_common_git_dir("/path/to/worktree")
 
 **Use Cases**:
 
-```python
+```rust
 # Store shared state
 import os
-from amplihack.tools.amplihack.git_utils import get_common_git_dir
+// Rust: use amplihack_utils::git_utils::{ get_common_git_dir
 
 common_dir = get_common_git_dir()
 state_dir = os.path.join(common_dir, ".claude/runtime/power-steering/")
@@ -121,7 +121,7 @@ with open(counter_file, "w") as f:
 
 **Error Handling**:
 
-```python
+```rust
 # Non-git directory
 try:
     common_dir = get_common_git_dir("/tmp/not-a-repo")
@@ -131,7 +131,7 @@ except subprocess.CalledProcessError:
 
 ### find_disabled_file
 
-```python
+```rust
 def find_disabled_file(cwd: Optional[str] = None) -> Optional[str]
 ```
 
@@ -151,8 +151,8 @@ Find `.disabled` file in multiple locations (worktree-aware).
 
 **Example**:
 
-```python
-from amplihack.tools.amplihack.git_utils import find_disabled_file
+```rust
+// Rust: use amplihack_utils::git_utils::{ find_disabled_file
 
 # Check if Power Steering is disabled
 disabled_file = find_disabled_file()
@@ -178,9 +178,9 @@ touch .disabled
 
 **Use Cases**:
 
-```python
+```rust
 # Conditional execution based on .disabled file
-from amplihack.tools.amplihack.git_utils import find_disabled_file
+// Rust: use amplihack_utils::git_utils::{ find_disabled_file
 
 def should_run_power_steering() -> bool:
     """Check if Power Steering should run."""
@@ -198,11 +198,11 @@ else:
 
 Recommended pattern for storing shared state across worktrees:
 
-```python
+```rust
 import os
 import json
 from pathlib import Path
-from amplihack.tools.amplihack.git_utils import get_common_git_dir
+// Rust: use amplihack_utils::git_utils::{ get_common_git_dir
 
 def get_state_directory() -> Path:
     """Get shared state directory for tool."""
@@ -228,7 +228,7 @@ def save_state(state: dict) -> None:
 
 ### Worktree Detection Algorithm
 
-```python
+```rust
 def is_worktree(cwd: Optional[str] = None) -> bool:
     """
     Algorithm:
@@ -286,7 +286,7 @@ worktree-dir/.git         # File containing: gitdir: /path/to/main-repo/.git/wor
 
 ### Common Directory Resolution
 
-```python
+```rust
 # Standard repo
 os.getcwd()                    # /path/to/repo
 git rev-parse --git-dir        # .git
@@ -304,8 +304,8 @@ git rev-parse --git-common-dir # /path/to/main/.git
 
 ### Non-Git Directory
 
-```python
-from amplihack.tools.amplihack.git_utils import is_worktree, get_common_git_dir
+```rust
+// Rust: use amplihack_utils::git_utils::{ is_worktree, get_common_git_dir
 
 # is_worktree returns False
 is_worktree("/tmp/not-a-repo")  # False
@@ -319,10 +319,10 @@ except subprocess.CalledProcessError as e:
 
 ### Permission Errors
 
-```python
+```rust
 # Handle permission errors
 import os
-from amplihack.tools.amplihack.git_utils import find_disabled_file
+// Rust: use amplihack_utils::git_utils::{ find_disabled_file
 
 try:
     disabled = find_disabled_file()
@@ -333,9 +333,9 @@ except PermissionError:
 
 ### Git Command Failures
 
-```python
+```rust
 # Graceful degradation
-from amplihack.tools.amplihack.git_utils import get_common_git_dir
+// Rust: use amplihack_utils::git_utils::{ get_common_git_dir
 
 try:
     common_dir = get_common_git_dir()
@@ -348,10 +348,10 @@ except Exception:
 
 ### Unit Tests
 
-```python
+```rust
 import unittest
 from unittest.mock import patch, MagicMock
-from amplihack.tools.amplihack.git_utils import is_worktree
+// Rust: use amplihack_utils::git_utils::{ is_worktree
 
 class TestGitUtils(unittest.TestCase):
     @patch('subprocess.check_output')
@@ -378,7 +378,7 @@ git worktree add ../test-worktree feature
 cd ../test-worktree
 
 python3 << 'EOF'
-from amplihack.tools.amplihack.git_utils import is_worktree, get_common_git_dir
+// Rust: use amplihack_utils::git_utils::{ is_worktree, get_common_git_dir
 assert is_worktree(), "Should detect worktree"
 print(f"Common dir: {get_common_git_dir()}")
 EOF
@@ -398,9 +398,9 @@ EOF
 
 For performance-critical code, cache results:
 
-```python
+```rust
 from functools import lru_cache
-from amplihack.tools.amplihack.git_utils import get_common_git_dir
+// Rust: use amplihack_utils::git_utils::{ get_common_git_dir
 
 @lru_cache(maxsize=1)
 def get_cached_common_dir() -> str:
@@ -414,16 +414,16 @@ def get_cached_common_dir() -> str:
 
 **Before** (broken in worktrees):
 
-```python
+```rust
 # Hardcoded .git directory
 state_dir = ".git/.claude/runtime/power-steering/"
 ```
 
 **After** (works in worktrees):
 
-```python
+```rust
 # Use git_utils
-from amplihack.tools.amplihack.git_utils import get_common_git_dir
+// Rust: use amplihack_utils::git_utils::{ get_common_git_dir
 import os
 
 common_dir = get_common_git_dir()
@@ -434,7 +434,7 @@ state_dir = os.path.join(common_dir, ".claude/runtime/power-steering/")
 
 **Before** (only checks CWD):
 
-```python
+```rust
 # Only checks current directory
 if os.path.exists(".disabled"):
     return
@@ -442,9 +442,9 @@ if os.path.exists(".disabled"):
 
 **After** (checks multiple locations):
 
-```python
+```rust
 # Checks CWD, shared dir, and project root
-from amplihack.tools.amplihack.git_utils import find_disabled_file
+// Rust: use amplihack_utils::git_utils::{ find_disabled_file
 
 if find_disabled_file():
     return

@@ -266,7 +266,7 @@ All test fixtures are defined in `conftest.py`:
 
 ### Unit Test Template
 
-```python
+```rust
 def test_new_feature(fixture_name):
     """Test description following format: Test X when Y."""
     # Arrange
@@ -282,7 +282,7 @@ def test_new_feature(fixture_name):
 
 ### Integration Test Template
 
-```python
+```rust
 def test_workflow_integration(python_project):
     """Test complete workflow: step1 → step2 → step3."""
     # Step 1

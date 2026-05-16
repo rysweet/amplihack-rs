@@ -22,7 +22,7 @@ For database connections, **Singleton is almost always the wrong choice**. Let m
 
 **1. Global State Issues**
 
-```python
+```rust
 # With Singleton - implicit global state
 db = DatabaseConnection.get_instance()  # Where does this come from?
 db.query(...)  # Hidden dependency!
@@ -34,7 +34,7 @@ db.query(...)  # Hidden dependency!
 
 **2. Testing Nightmares**
 
-```python
+```rust
 def test_user_service():
     # How do you test this without hitting real database?
     service = UserService()
@@ -47,7 +47,7 @@ def test_user_service():
 
 **3. Concurrency Problems**
 
-```python
+```rust
 class DatabaseConnection:
     _instance = None
     def __new__(cls):
@@ -73,7 +73,7 @@ class DatabaseConnection:
 
 **Code**:
 
-```python
+```rust
 class UserService:
     def __init__(self, db_connection):
         self.db = db_connection  # Explicit dependency!
@@ -95,7 +95,7 @@ user_service = UserService(db)
 
 **Testing**:
 
-```python
+```rust
 def test_user_service():
     mock_db = MockDatabaseConnection()
     service = UserService(mock_db)
@@ -109,7 +109,7 @@ def test_user_service():
 
 **Code**:
 
-```python
+```rust
 from contextlib import contextmanager
 
 class ConnectionPool:
@@ -146,7 +146,7 @@ def create_user(pool, name):
 
 **Code**:
 
-```python
+```rust
 # db.py
 _connection = None
 
@@ -179,21 +179,21 @@ Singleton is appropriate only for:
 
 **1. True Hardware Resources**
 
-```python
+```rust
 class PrinterPort:  # Only one physical printer port
     ...
 ```
 
 **2. Application-Wide Configuration (Read-Only)**
 
-```python
+```rust
 class AppConfig:  # Immutable config loaded once at startup
     ...
 ```
 
 **3. Logging Infrastructure**
 
-```python
+```rust
 class Logger:  # Application-wide logging (but use logging library instead!)
     ...
 ```
@@ -222,7 +222,7 @@ class Logger:  # Application-wide logging (but use logging library instead!)
 
 **Example for Flask/FastAPI**:
 
-```python
+```rust
 # app.py
 from flask import Flask, g
 
@@ -241,7 +241,7 @@ def create_user():
 
 Or with dependency injection framework:
 
-```python
+```rust
 # Using dependency-injector library
 from dependency_injector import containers, providers
 
@@ -259,7 +259,7 @@ db = container.db()
 
 **If you already have Singleton**:
 
-```python
+```rust
 # Before (Singleton)
 class Database:
     _instance = None

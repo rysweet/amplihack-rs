@@ -28,7 +28,7 @@ Profile management for amplihack - collections of commands, context, agents, and
 
 ### Load a Profile
 
-```python
+```rust
 from profile_management import ProfileLoader, ProfileParser
 
 loader = ProfileLoader()
@@ -55,7 +55,7 @@ profile = parser.parse(yaml_content)
 
 ### Discover Components
 
-```python
+```rust
 from profile_management import ComponentDiscovery
 
 discovery = ComponentDiscovery()
@@ -66,7 +66,7 @@ inventory = discovery.discover_all()
 
 ### Filter Components
 
-```python
+```rust
 from profile_management import ComponentFilter
 
 filter_obj = ComponentFilter()

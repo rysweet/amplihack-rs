@@ -84,7 +84,7 @@ The Agent SDK implements a sophisticated agent loop that handles the complete li
 
 **Context Growth Management:**
 
-```python
+```rust
 # Default: No automatic compaction
 agent = Agent(model="claude-sonnet-4-5-20250929")
 
@@ -105,7 +105,7 @@ Subagents create isolated context bubbles:
 - Subset of parent's tools (optional additional tools)
 - Results summarized back to parent
 
-```python
+```rust
 # Parent context: Full conversation with user
 parent = Agent(model="claude-sonnet-4-5-20250929")
 
@@ -135,7 +135,7 @@ with parent.subagent(
 
 **Tool Execution Modes:**
 
-```python
+```rust
 # Sequential tool execution (default for single tools)
 result = tool_function(**validated_args)
 
@@ -152,7 +152,7 @@ results = await asyncio.gather(*[
 
 When a tool fails, the SDK returns an error result to Claude:
 
-```python
+```rust
 {
     "tool_use_id": "toolu_123",
     "type": "tool_result",
@@ -183,7 +183,7 @@ Agent SDK ←→ MCP Client ←→ MCP Server ←→ External Service
 
 1. **stdio**: Process-based communication (npm packages)
 
-```python
+```rust
 from claude_agents.mcp import MCPClient
 
 mcp = MCPClient("npx", ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allow"])
@@ -191,7 +191,7 @@ mcp = MCPClient("npx", ["-y", "@modelcontextprotocol/server-filesystem", "/path/
 
 2. **SSE**: HTTP Server-Sent Events (remote servers)
 
-```python
+```rust
 mcp = MCPClient.from_sse("http://localhost:3000/mcp")
 ```
 
@@ -206,7 +206,7 @@ MCP servers expose their tools via the protocol. The SDK automatically:
 
 **Multiple MCP Servers:**
 
-```python
+```rust
 agent = Agent(
     model="claude-sonnet-4-5-20250929",
     mcp_clients=[
@@ -233,7 +233,7 @@ pip install claude-agents[all]  # Includes MCP clients, dev tools
 
 **Basic Configuration:**
 
-```python
+```rust
 from claude_agents import Agent
 
 agent = Agent(
@@ -268,7 +268,7 @@ agent = Agent(
 
 **Advanced Options:**
 
-```python
+```rust
 agent = Agent(
     model="claude-sonnet-4-5-20250929",
 
@@ -348,7 +348,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."  # pragma: allowlist secret
 
 **Explicit in Code:**
 
-```python
+```rust
 agent = Agent(
     model="claude-sonnet-4-5-20250929",
     api_key="sk-ant-..."  # pragma: allowlist secret
@@ -357,7 +357,7 @@ agent = Agent(
 
 **From File:**
 
-```python
+```rust
 import os
 from pathlib import Path
 
@@ -390,7 +390,7 @@ MCP_MAX_RETRIES=3
 
 Tools are defined using JSON Schema for input validation:
 
-```python
+```rust
 from claude_agents.tools import Tool
 
 tool = Tool(
@@ -433,7 +433,7 @@ tool = Tool(
 
 **Advanced Schema Features:**
 
-```python
+```rust
 input_schema={
     "type": "object",
     "properties": {
@@ -465,7 +465,7 @@ The SDK includes production-ready built-in tools:
 
 **1. bash** - Execute shell commands
 
-```python
+```rust
 {
     "name": "bash",
     "description": "Execute shell commands. Returns stdout, stderr, and exit code.",
@@ -482,7 +482,7 @@ The SDK includes production-ready built-in tools:
 
 **2. read_file** - Read file contents
 
-```python
+```rust
 {
     "name": "read_file",
     "description": "Read the contents of a file.",
@@ -498,7 +498,7 @@ The SDK includes production-ready built-in tools:
 
 **3. write_file** - Write or create files
 
-```python
+```rust
 {
     "name": "write_file",
     "description": "Write content to a file, creating it if it doesn't exist.",
@@ -515,7 +515,7 @@ The SDK includes production-ready built-in tools:
 
 **4. edit_file** - Modify existing files
 
-```python
+```rust
 {
     "name": "edit_file",
     "description": "Edit a file by replacing old text with new text.",
@@ -533,7 +533,7 @@ The SDK includes production-ready built-in tools:
 
 **5. glob** - File pattern matching
 
-```python
+```rust
 {
     "name": "glob",
     "description": "Find files matching a pattern.",
@@ -550,7 +550,7 @@ The SDK includes production-ready built-in tools:
 
 **6. grep** - Content search
 
-```python
+```rust
 {
     "name": "grep",
     "description": "Search for text in files.",
@@ -568,7 +568,7 @@ The SDK includes production-ready built-in tools:
 
 **Using Built-in Tools:**
 
-```python
+```rust
 agent = Agent(
     model="claude-sonnet-4-5-20250929",
     allowed_tools=["read_file", "write_file", "glob"]
@@ -579,7 +579,7 @@ agent = Agent(
 
 **Simple Function Tool:**
 
-```python
+```rust
 def get_current_time() -> str:
     """Get the current time."""
     from datetime import datetime
@@ -595,7 +595,7 @@ time_tool = Tool(
 
 **Tool with Parameters:**
 
-```python
+```rust
 def calculate_compound_interest(
     principal: float,
     rate: float,
@@ -630,7 +630,7 @@ interest_tool = Tool(
 
 **Async Tool:**
 
-```python
+```rust
 import asyncio
 import aiohttp
 
@@ -658,7 +658,7 @@ fetch_tool = Tool(
 
 **Allowed Tools (Whitelist Approach):**
 
-```python
+```rust
 # Only specific tools can be used
 agent = Agent(
     model="claude-sonnet-4-5-20250929",
@@ -669,7 +669,7 @@ agent = Agent(
 
 **Disallowed Tools (Blacklist Approach):**
 
-```python
+```rust
 # All tools except specified ones
 agent = Agent(
     model="claude-sonnet-4-5-20250929",
@@ -680,7 +680,7 @@ agent = Agent(
 
 **Dynamic Permissions (via Hooks):**
 
-```python
+```rust
 from claude_agents.hooks import PreToolUseHook
 
 class DynamicPermissionHook(PreToolUseHook):
@@ -701,7 +701,7 @@ agent = Agent(
 
 **Permission Modes:**
 
-```python
+```rust
 # Permissive mode (default): Agent can use allowed tools freely
 agent = Agent(
     model="claude-sonnet-4-5-20250929",
@@ -721,7 +721,7 @@ agent = Agent(
 
 **Connecting MCP Servers:**
 
-```python
+```rust
 from claude_agents import Agent
 from claude_agents.mcp import MCPClient
 
@@ -742,14 +742,14 @@ agent = Agent(
 **MCP Tool Naming:**
 MCP tools are prefixed with server name to avoid conflicts:
 
-```python
+```rust
 # Filesystem tools: fs_read_file, fs_write_file, fs_list_directory
 # GitHub tools: github_create_issue, github_list_prs, github_create_pr
 ```
 
 **Filtering MCP Tools:**
 
-```python
+```rust
 agent = Agent(
     model="claude-sonnet-4-5-20250929",
     mcp_clients=[fs_mcp, github_mcp],
@@ -767,7 +767,7 @@ agent = Agent(
 
 **1. PreToolUseHook** - Before tool execution
 
-```python
+```rust
 from claude_agents.hooks import PreToolUseHook
 
 class MyPreHook(PreToolUseHook):
@@ -788,7 +788,7 @@ class MyPreHook(PreToolUseHook):
 
 **2. PostToolUseHook** - After tool execution
 
-```python
+```rust
 from claude_agents.hooks import PostToolUseHook
 
 class MyPostHook(PostToolUseHook):
@@ -810,7 +810,7 @@ class MyPostHook(PostToolUseHook):
 
 **3. PreSubagentStartHook** - Before subagent creation
 
-```python
+```rust
 from claude_agents.hooks import PreSubagentStartHook
 
 class MyPreSubagentHook(PreSubagentStartHook):
@@ -827,7 +827,7 @@ class MyPreSubagentHook(PreSubagentStartHook):
 
 **4. PostSubagentStopHook** - After subagent completes
 
-```python
+```rust
 from claude_agents.hooks import PostSubagentStopHook
 
 class MyPostSubagentHook(PostSubagentStopHook):
@@ -845,7 +845,7 @@ class MyPostSubagentHook(PostSubagentStopHook):
 
 **Logging Hook:**
 
-```python
+```rust
 import logging
 
 class LoggingHook(PreToolUseHook, PostToolUseHook):
@@ -862,7 +862,7 @@ class LoggingHook(PreToolUseHook, PostToolUseHook):
 
 **Validation Hook:**
 
-```python
+```rust
 class ValidationHook(PreToolUseHook):
     async def execute(self, context):
         # Validate file paths
@@ -883,7 +883,7 @@ class ValidationHook(PreToolUseHook):
 
 **Rate Limiting Hook:**
 
-```python
+```rust
 import time
 from collections import defaultdict
 
@@ -909,7 +909,7 @@ class RateLimitHook(PreToolUseHook):
 
 **Cost Tracking Hook:**
 
-```python
+```rust
 class CostTrackingHook(PostToolUseHook):
     def __init__(self):
         self.total_cost = 0.0
@@ -1012,7 +1012,7 @@ Domain-specific knowledge, patterns, and examples...
 
 **Automatic Activation:**
 
-```python
+```rust
 # User message contains activation keyword
 result = agent.run("How do I use agent sdk tools?")
 # → agent-sdk skill automatically included in system prompt
@@ -1020,7 +1020,7 @@ result = agent.run("How do I use agent sdk tools?")
 
 **Manual Activation:**
 
-```python
+```rust
 agent = Agent(
     model="claude-sonnet-4-5-20250929",
     skills=["claude-agent-sdk", "python-expert"]  # Explicitly activate skills
@@ -1029,7 +1029,7 @@ agent = Agent(
 
 **Conditional Activation:**
 
-```python
+```rust
 # Skills can check context and conditionally activate
 from claude_agents.skills import Skill
 

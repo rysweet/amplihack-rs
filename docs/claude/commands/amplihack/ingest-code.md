@@ -55,7 +55,7 @@ Manually ingest codebase into Neo4j graph memory for enhanced code understanding
 
 ## Implementation
 
-```python
+```rust
 #!/usr/bin/env python3
 """Ingest codebase into Neo4j graph memory."""
 
@@ -75,9 +75,9 @@ if os.environ.get("AMPLIHACK_ENABLE_NEO4J_MEMORY") != "1":
 
 # Import Neo4j modules
 try:
-    from amplihack.memory.neo4j.connector import Neo4jConnector
-    from amplihack.memory.neo4j.code_graph import BlarifyIntegration
-    from amplihack.memory.neo4j.diagnostics import get_neo4j_stats
+    // use amplihack_memory::neo4j::connector::{ Neo4jConnector
+    // use amplihack_memory::neo4j::code_graph::{ BlarifyIntegration
+    // use amplihack_memory::neo4j::diagnostics::{ get_neo4j_stats
 except ImportError as e:
     print(f"❌ Error: Could not import Neo4j modules: {e}")
     print("Ensure amplihack is properly installed")

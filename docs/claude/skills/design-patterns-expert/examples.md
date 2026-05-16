@@ -12,7 +12,7 @@ This file contains 10 real-world production examples demonstrating practical pat
 
 **Complete Code**:
 
-```python
+```rust
 import json
 from pathlib import Path
 from threading import Lock
@@ -88,7 +88,7 @@ database_url = config['database_url']
 
 **Complete Code**:
 
-```python
+```rust
 from abc import ABC, abstractmethod
 from typing import Dict, Type
 import importlib
@@ -200,7 +200,7 @@ print(data)  # {'ID': 1, 'NAME': 'Alice'}
 
 **Complete Code**:
 
-```python
+```rust
 from abc import ABC, abstractmethod
 from typing import List, Dict
 from datetime import datetime
@@ -327,7 +327,7 @@ ticker.set_price("AAPL", 155.00)  # No alert
 
 **Complete Code**:
 
-```python
+```rust
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
@@ -488,7 +488,7 @@ print(f"Result: {result}")
 
 **Complete Code**:
 
-```python
+```rust
 from abc import ABC, abstractmethod
 from typing import List
 
@@ -645,7 +645,7 @@ print(f"After redo: {doc}")  # "Hello"
 
 **Complete Code**:
 
-```python
+```rust
 from abc import ABC, abstractmethod
 from typing import Dict
 from dataclasses import dataclass
@@ -797,7 +797,7 @@ app.display_weather("Paris")
 
 **Complete Code**:
 
-```python
+```rust
 from pathlib import Path
 from typing import Optional
 
@@ -967,7 +967,7 @@ converter.convert_video(
 
 **Complete Code**:
 
-```python
+```rust
 from abc import ABC, abstractmethod
 import zlib
 import base64
@@ -1118,7 +1118,7 @@ connection.receive()
 
 **Complete Code**:
 
-```python
+```rust
 from abc import ABC, abstractmethod
 from typing import List
 
@@ -1246,7 +1246,7 @@ print(f"Python project size: {python_proj.get_size()} bytes")
 
 **Complete Code**:
 
-```python
+```rust
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any
 import json

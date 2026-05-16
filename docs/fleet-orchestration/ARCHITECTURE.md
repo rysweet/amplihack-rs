@@ -133,7 +133,7 @@ init, 1 CLI entry point, 1 `__main__`):
 
 The session reasoner uses a pluggable LLM backend:
 
-```python
+```rust
 class LLMBackend(Protocol):
     def complete(self, system_prompt: str, user_prompt: str) -> str: ...
 

@@ -100,7 +100,7 @@ All functions include comprehensive docstrings with examples.
 
 **Exports**:
 
-```python
+```rust
 __all__ = [
     "ClaudeProcess",
     "ProcessResult",
@@ -176,7 +176,7 @@ Summary of implementation with deliverables, features, and verification.
 
 **Type Hints**: Complete type annotations throughout
 
-```python
+```rust
 def run_parallel(
     processes: List[ClaudeProcess],
     max_workers: Optional[int] = None,
@@ -185,7 +185,7 @@ def run_parallel(
 
 **Docstrings**: Comprehensive documentation with examples
 
-```python
+```rust
 """Run multiple Claude processes in parallel.
 
 Executes processes concurrently using ThreadPoolExecutor...
@@ -205,7 +205,7 @@ Example:
 
 **Error Handling**: Try/except with proper cleanup
 
-```python
+```rust
 try:
     result = process.run()
 except Exception as e:
@@ -216,7 +216,7 @@ finally:
 
 **Logging**: Comprehensive logging at all levels
 
-```python
+```rust
 self.log(f"Starting process with timeout={self.timeout}s")
 ```
 
@@ -231,7 +231,7 @@ $ python3 -c "from orchestration import *; print('✓ Success')"
 
 ### Basic Functionality Test
 
-```python
+```rust
 from orchestration import OrchestratorSession
 session = OrchestratorSession('test', Path.cwd())
 process = session.create_process('test prompt', 'test-proc')
@@ -260,7 +260,7 @@ Total: ~1,481 lines of production code + documentation
 
 ### PTY Setup (lines 82-97)
 
-```python
+```rust
 master_fd, slave_fd = pty.openpty()
 process = subprocess.Popen(
     cmd,
@@ -275,7 +275,7 @@ os.close(slave_fd)  # Close in parent
 
 ### Output Reading (lines 103-108)
 
-```python
+```rust
 def read_stream(stream, output_list, mirror_stream):
     for line in iter(stream.readline, ""):
         output_list.append(line)
@@ -285,7 +285,7 @@ def read_stream(stream, output_list, mirror_stream):
 
 ### PTY Stdin Feeding (lines 110-127)
 
-```python
+```rust
 def feed_pty_stdin(fd, proc):
     try:
         while proc.poll() is None:
@@ -300,7 +300,7 @@ def feed_pty_stdin(fd, proc):
 
 ### Threading (lines 129-143)
 
-```python
+```rust
 stdout_thread = threading.Thread(target=read_stream, args=(...))
 stderr_thread = threading.Thread(target=read_stream, args=(...))
 stdin_thread = threading.Thread(target=feed_pty_stdin, args=(...), daemon=True)

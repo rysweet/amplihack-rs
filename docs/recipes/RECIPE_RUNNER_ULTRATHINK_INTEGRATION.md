@@ -128,7 +128,7 @@ amplihack recipe run default-workflow \
 
 Each workflow step executes through a Python adapter:
 
-```python
+```rust
 # Example: Step 5 (Research and Design) in default-workflow
 
 # Recipe YAML defines:
@@ -159,7 +159,7 @@ context['architecture'] = result['architecture']
 
 Context flows automatically between steps:
 
-```python
+```rust
 # Step 5: architect agent produces design
 context['design'] = {
     'modules': ['auth', 'tokens', 'validation'],
@@ -183,7 +183,7 @@ result = sdk_adapter.invoke_agent(
 
 Recipe Runner stops on first error:
 
-```python
+```rust
 # Step 5: architect agent succeeds
 # Step 6: builder agent fails (syntax error)
 

@@ -103,8 +103,8 @@ python main.py
 
 If you want more control, skip the generator and create an agent in code:
 
-```python
-from amplihack.agents.goal_seeking.sdk_adapters.factory import create_agent
+```rust
+// use amplihack_domain_agents:: create_agent
 
 agent = create_agent(
     name="my-learner",
@@ -208,7 +208,7 @@ Agents extract facts from content and store them in persistent memory. The learn
 
 **Example:**
 
-```python
+```rust
 agent.learn_from_content("""
 Title: Winter Olympics Medal Update - Day 9
 React 20.1 was released in January 2026 with 47 new features.
@@ -296,7 +296,7 @@ The `answer_question()` method uses a multi-step retrieval cascade:
 
 **Example:**
 
-```python
+```rust
 # The agent handles this automatically during answer_question(),
 # but you can also call the methods directly:
 
@@ -390,12 +390,12 @@ The teaching system implements a multi-turn dialogue between a teacher agent and
 
 All four SDK adapters share the same learning/answering core. The `GoalSeekingAgent` base class (in `base.py`) provides public `learn_from_content()` and `answer_question()` methods that delegate to an internal `LearningAgent` instance:
 
-```python
+```rust
 # base.py - GoalSeekingAgent
 def _get_learning_agent(self):
     """Lazily create a LearningAgent sharing this agent's storage path."""
     if not hasattr(self, "_learning_agent_cache"):
-        from amplihack.agents.goal_seeking.learning_agent import LearningAgent
+        // use amplihack_domain_agents:: LearningAgent
         self._learning_agent_cache = LearningAgent(
             agent_name=f"{self.name}_learning",
             model=eval_model,
@@ -432,8 +432,8 @@ The `GoalSeekingAgent` abstract base class defines four abstract methods that SD
 
 **Factory function:**
 
-```python
-from amplihack.agents.goal_seeking.sdk_adapters.factory import create_agent
+```rust
+// use amplihack_domain_agents:: create_agent
 
 # All four produce the same interface:
 agent = create_agent(name="x", sdk="copilot")   # GitHub Copilot SDK
@@ -508,8 +508,8 @@ MultiAgentLearningAgent (extends LearningAgent)
 
 **Usage:**
 
-```python
-from amplihack.agents.goal_seeking.sub_agents import MultiAgentLearningAgent
+```rust
+// use amplihack_domain_agents:: MultiAgentLearningAgent
 
 agent = MultiAgentLearningAgent(
     agent_name="multi_eval",
@@ -561,7 +561,7 @@ Twelve levels of increasing cognitive complexity, each testing a different reaso
 **Quick eval (L1-L6 only, single run):**
 
 ```bash
-PYTHONPATH=src python -m amplihack.eval.progressive_test_suite \
+amplihack eval progressive-test-suite \
     --output-dir /tmp/eval \
     --agent-name my-test-agent
 ```
@@ -569,7 +569,7 @@ PYTHONPATH=src python -m amplihack.eval.progressive_test_suite \
 **3-run median with 3-vote grading (recommended for stable benchmarks):**
 
 ```bash
-PYTHONPATH=src python -m amplihack.eval.progressive_test_suite \
+amplihack eval progressive-test-suite \
     --output-dir /tmp/eval_final \
     --runs 3 \
     --grader-votes 3 \
@@ -579,7 +579,7 @@ PYTHONPATH=src python -m amplihack.eval.progressive_test_suite \
 **Choose an SDK backend:**
 
 ```bash
-PYTHONPATH=src python -m amplihack.eval.progressive_test_suite \
+amplihack eval progressive-test-suite \
     --output-dir /tmp/eval \
     --sdk claude
 ```
@@ -605,15 +605,15 @@ The `long_horizon_memory` module stress-tests agent memory at scale with up to 1
 
 ```bash
 # Quick test
-PYTHONPATH=src python -m amplihack.eval.long_horizon_memory \
+amplihack eval long-horizon-memory \
     --turns 100 --questions 20
 
 # Full stress test
-PYTHONPATH=src python -m amplihack.eval.long_horizon_memory \
+amplihack eval long-horizon-memory \
     --turns 1000 --questions 100
 
 # Large-scale with subprocess segmentation (prevents OOM on 5000+ turns)
-PYTHONPATH=src python -m amplihack.eval.long_horizon_memory \
+amplihack eval long-horizon-memory \
     --turns 5000 --questions 200 --segment-size 100
 ```
 
@@ -631,10 +631,10 @@ The `matrix_eval` module runs a 5-way comparison across agent configurations usi
 
 ```bash
 # Run full matrix
-python -m amplihack.eval.matrix_eval --turns 500 --questions 50
+amplihack eval matrix-eval --turns 500 --questions 50
 
 # Run specific agents
-python -m amplihack.eval.matrix_eval --agents mini claude --turns 100 --questions 20
+amplihack eval matrix-eval --agents mini claude --turns 100 --questions 20
 ```
 
 Each agent uses a separate storage/DB path to avoid cross-contamination. Dialogue and questions are generated once and shared across all agents. Results include per-agent category breakdowns, best-performer-per-category analysis, and overall ranking.
@@ -645,7 +645,7 @@ The `sdk_eval_loop` module runs improvement loops for L1-L6 across SDKs:
 
 ```bash
 # Compare all 4 SDKs with 3 improvement loops
-PYTHONPATH=src python -m amplihack.eval.sdk_eval_loop --all-sdks --loops 3
+amplihack eval sdk-eval-loop --all-sdks --loops 3
 ```
 
 ### How Grading Works
@@ -694,14 +694,14 @@ EVAL --> ANALYZE --> RESEARCH --> IMPROVE --> RE-EVAL --> DECIDE
 
 ```bash
 # L1-L12 self-improvement
-python -m amplihack.eval.self_improve.runner --sdk mini --iterations 5
+amplihack eval self-improve --sdk mini --iterations 5
 
 # Long-horizon self-improvement
-python -m amplihack.eval.long_horizon_self_improve \
+amplihack eval long-horizon-self-improve \
     --turns 100 --questions 20 --iterations 3
 
 # With multi-agent architecture
-python -m amplihack.eval.long_horizon_self_improve \
+amplihack eval long-horizon-self-improve \
     --turns 100 --questions 20 --multi-agent
 ```
 
@@ -738,9 +738,9 @@ Domain agents extend `DomainAgent` (ABC) to create specialized, evaluable agents
 
 ### Domain-Specific Evaluation
 
-```python
-from amplihack.eval.domain_eval_harness import DomainEvalHarness
-from amplihack.agents.domain_agents.code_review.agent import CodeReviewAgent
+```rust
+// use amplihack_agent_eval::domain_eval_harness:: DomainEvalHarness
+// use amplihack_domain_agents:: CodeReviewAgent
 
 agent = CodeReviewAgent("test_reviewer")
 harness = DomainEvalHarness(agent)
@@ -893,8 +893,8 @@ multi-agent architecture, evaluations, and the self-improvement loop.
 
 ### Starting a Teaching Session
 
-```python
-from amplihack.agents.teaching.generator_teacher import GeneratorTeacher
+```rust
+// use amplihack_domain_agents:: GeneratorTeacher
 
 teacher = GeneratorTeacher()
 

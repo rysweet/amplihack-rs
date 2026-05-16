@@ -45,7 +45,7 @@ Native binary trace logging uses a modular architecture with four main component
 
 #### Class: `TraceLogger`
 
-```python
+```rust
 class TraceLogger:
     """
     Session-scoped trace logger for Claude API calls.
@@ -165,7 +165,7 @@ class TraceLogger:
 
 #### Configuration
 
-```python
+```rust
 # Environment variables
 AMPLIHACK_TRACE_LOGGING = os.getenv("AMPLIHACK_TRACE_LOGGING", "false")
 AMPLIHACK_TRACE_DIR = os.getenv(
@@ -195,7 +195,7 @@ TRACE_FILE_PATTERN = "trace_{date}_{time}_{session}.jsonl"
 
 #### Class: `TokenSanitizer`
 
-```python
+```rust
 class TokenSanitizer:
     """
     Sanitizes sensitive tokens and credentials from trace data.
@@ -288,7 +288,7 @@ class TokenSanitizer:
 
 #### Sanitization Rules
 
-```python
+```rust
 # Headers sanitized
 SANITIZED_HEADERS = [
     'x-api-key',
@@ -330,7 +330,7 @@ SANITIZED_ENV_VARS = [
 
 #### Class: `JSONLWriter`
 
-```python
+```rust
 class JSONLWriter:
     """
     Atomic JSONL file writer with automatic directory creation.
@@ -467,7 +467,7 @@ class JSONLWriter:
 
 ### Overhead Measurements
 
-```python
+```rust
 # Disabled (AMPLIHACK_TRACE_LOGGING=false)
 def measure_disabled_overhead():
     """
@@ -494,7 +494,7 @@ def measure_enabled_overhead():
 
 ### Optimization Techniques
 
-```python
+```rust
 # 1. Lazy initialization
 class TraceLogger:
     def __init__(self):
@@ -525,7 +525,7 @@ def log_request(self, request):
 
 ### File System Errors
 
-```python
+```rust
 class TraceLogger:
     def log_request(self, request):
         try:
@@ -543,7 +543,7 @@ class TraceLogger:
 
 ### Sanitization Errors
 
-```python
+```rust
 class TokenSanitizer:
     def sanitize(self, data):
         try:
@@ -560,7 +560,7 @@ class TokenSanitizer:
 
 ### Unit Tests
 
-```python
+```rust
 # tests/trace/test_trace_logger.py
 
 def test_trace_logger_disabled():
@@ -615,7 +615,7 @@ def test_token_sanitizer():
 
 ### Integration Tests
 
-```python
+```rust
 # tests/integration/test_trace_integration.py
 
 def test_end_to_end_trace_logging():
@@ -655,7 +655,7 @@ def test_end_to_end_trace_logging():
 
 ### Custom Sanitizers
 
-```python
+```rust
 class CustomSanitizer(TokenSanitizer):
     """Add custom sanitization rules."""
 
@@ -679,7 +679,7 @@ class CustomSanitizer(TokenSanitizer):
 
 ### Custom Trace Formats
 
-```python
+```rust
 class CSVTraceWriter(JSONLWriter):
     """Write traces in CSV format instead of JSONL."""
 
@@ -705,7 +705,7 @@ class CSVTraceWriter(JSONLWriter):
 
 ### File Permissions
 
-```python
+```rust
 # Trace files created with owner-only permissions
 def create_trace_file(path: Path):
     """Create trace file with restricted permissions."""
@@ -720,7 +720,7 @@ def create_trace_file(path: Path):
 
 ### API Key Redaction
 
-```python
+```rust
 # Multiple layers of protection
 class TokenSanitizer:
     # 1. Pattern matching

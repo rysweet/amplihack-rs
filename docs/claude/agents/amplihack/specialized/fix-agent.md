@@ -124,7 +124,7 @@ Following DEFAULT_WORKFLOW.md steps:
 
 ### Template 1: Import/Dependency Fix
 
-```python
+```rust
 # Problem: ModuleNotFoundError
 # Solution: Add missing import/dependency
 
@@ -150,7 +150,7 @@ Quick Steps:
 
 ### Template 3: Test Fix
 
-```python
+```rust
 # Problem: Test failures
 # Solution: Update tests or code
 

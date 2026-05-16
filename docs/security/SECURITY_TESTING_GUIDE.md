@@ -92,7 +92,7 @@ CI configuration includes:
 
 Security tests follow this structure:
 
-```python
+```rust
 """Tests for [feature] security.
 
 Testing pyramid:
@@ -102,7 +102,7 @@ Testing pyramid:
 """
 
 import pytest
-from amplihack.tracing.token_sanitizer import TokenSanitizer
+// use amplihack_tracing::token_sanitizer::{ TokenSanitizer
 
 # Unit tests (60%)
 class TestBasicFunctionality:
@@ -134,7 +134,7 @@ class TestCompleteWorkflows:
 
 Test token detection in isolation:
 
-```python
+```rust
 def test_github_token_detection():
     """Test detection of GitHub tokens (gho_, ghp_, ghs_, etc.)."""
     sanitizer = TokenSanitizer()
@@ -159,7 +159,7 @@ def test_github_token_detection():
 
 Test sanitization in real error scenarios:
 
-```python
+```rust
 def test_sanitize_github_api_error():
     """Test sanitizing GitHub API error messages."""
     sanitizer = TokenSanitizer()
@@ -195,7 +195,7 @@ def test_sanitize_github_api_error():
 
 Test complete sanitization workflow:
 
-```python
+```rust
 def test_complete_error_sanitization_workflow():
     """Test sanitizing a complete error report."""
     sanitizer = TokenSanitizer()
@@ -282,7 +282,7 @@ open htmlcov/index.html
 
 ### Testing Token Detection
 
-```python
+```rust
 def test_token_type_detection():
     """Test detection of specific token type."""
     sanitizer = TokenSanitizer()
@@ -309,7 +309,7 @@ def test_token_type_detection():
 
 ### Testing Sanitization
 
-```python
+```rust
 def test_sanitization_behavior():
     """Test sanitization redacts tokens but preserves other data."""
     sanitizer = TokenSanitizer()
@@ -336,7 +336,7 @@ def test_sanitization_behavior():
 
 ### Testing Edge Cases
 
-```python
+```rust
 def test_edge_case():
     """Test behavior with edge case input."""
     sanitizer = TokenSanitizer()
@@ -356,7 +356,7 @@ def test_edge_case():
 
 ### Testing Performance
 
-```python
+```rust
 def test_performance_requirement():
     """Test that operation completes within time limit."""
     import time
@@ -377,7 +377,7 @@ def test_performance_requirement():
 
 ### Testing False Positives
 
-```python
+```rust
 def test_no_false_positives():
     """Test that safe text is not flagged as tokens."""
     sanitizer = TokenSanitizer()

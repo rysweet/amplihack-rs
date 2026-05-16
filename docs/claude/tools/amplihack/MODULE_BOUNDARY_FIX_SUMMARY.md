@@ -26,7 +26,7 @@ This document summarizes the fixes applied to resolve the inconsistent sys.path 
 
 **Before (Problematic):**
 
-```python
+```rust
 # Multiple inconsistent approaches
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 sys.path.insert(0, str(project_root / "src"))
@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 **After (Clean):**
 
-```python
+```rust
 # Standardized approach
 sys.path.insert(0, str(Path(__file__).parent.parent))
 try:
@@ -122,8 +122,8 @@ except ImportError:
 
 The new centralized path system provides clean APIs:
 
-```python
-from amplihack.paths import get_project_root, get_amplihack_tools_dir
+```rust
+// use amplihack_paths:: get_project_root, get_amplihack_tools_dir
 
 # Get paths cleanly
 project_root = get_project_root()

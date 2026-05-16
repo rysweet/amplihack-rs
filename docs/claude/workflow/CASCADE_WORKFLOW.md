@@ -212,7 +212,7 @@ TERTIARY: Smoke tests (timeout: 10s)
 
 **Primary Execution:**
 
-```python
+```rust
 # Pseudocode for primary attempt
 try:
     result = execute_primary_approach(timeout=PRIMARY_TIMEOUT)
@@ -250,7 +250,7 @@ PRIMARY ATTEMPT: GPT-4 Analysis
 
 **Secondary Execution:**
 
-```python
+```rust
 # Pseudocode for secondary attempt
 log_degradation(from_level="PRIMARY", to_level="SECONDARY")
 try:
@@ -291,7 +291,7 @@ SECONDARY ATTEMPT: GPT-3.5 Analysis
 
 **Tertiary Execution:**
 
-```python
+```rust
 # Pseudocode for tertiary attempt
 log_degradation(from_level="SECONDARY", to_level="TERTIARY")
 try:
@@ -638,7 +638,7 @@ When implementing features with external dependencies:
 
 Test cascade behavior explicitly:
 
-```python
+```rust
 def test_cascade_levels():
     """Test all cascade levels independently"""
 
@@ -672,7 +672,7 @@ def test_cascade_levels():
 
 **Implementation**:
 
-```python
+```rust
 async def get_weather(location: str) -> WeatherData:
     """Get weather data with cascade fallback"""
 
@@ -742,7 +742,7 @@ This is still a thorough review, just less detailed than optimal.
 
 **Implementation**:
 
-```python
+```rust
 def search_and_rank(query: str) -> List[Result]:
     """Search with ML ranking, fallback to simple ranking"""
 

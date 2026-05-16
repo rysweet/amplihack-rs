@@ -24,7 +24,7 @@ User: "What is the Observer pattern?"
 
 **Quick Example**:
 
-```python
+```rust
 class Subject:
     def __init__(self):
         self.observers = []

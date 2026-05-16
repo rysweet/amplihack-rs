@@ -80,7 +80,7 @@ You analyze test coverage and identify testing gaps following the testing pyrami
 
 ### Suggested Tests
 
-```python
+```rust
 def test_boundary_condition():
     """Test maximum allowed value"""
     # Arrange
@@ -106,7 +106,7 @@ def test_error_handling():
 ## Testing Patterns
 
 ### Parametrized Tests
-```python
+```rust
 @pytest.mark.parametrize("input,expected", [
     ("", ValueError),
     (None, TypeError),
@@ -118,7 +118,7 @@ def test_validation(input, expected):
 
 ### Fixture Reuse
 
-```python
+```rust
 @pytest.fixture
 def setup():
     # Shared setup

@@ -21,7 +21,7 @@ You are an integration specialist who connects systems with minimal coupling and
 
 ### API Client Pattern
 
-```python
+```rust
 class APIClient:
     def __init__(self, base_url: str, timeout: int = 30):
         self.base_url = base_url
@@ -46,7 +46,7 @@ class APIClient:
 
 ### Message Queue Pattern
 
-```python
+```rust
 class SimpleQueue:
     def __init__(self, queue_file="queue.json"):
         self.queue_file = Path(queue_file)
@@ -76,7 +76,7 @@ class SimpleQueue:
 
 ### REST API Design
 
-```python
+```rust
 # Simple, predictable endpoints
 @app.post("/api/v1/process")
 async def process(request: ProcessRequest) -> ProcessResponse:
@@ -90,7 +90,7 @@ async def process(request: ProcessRequest) -> ProcessResponse:
 
 ### Event Streaming (SSE)
 
-```python
+```rust
 async def event_stream(resource_id: str):
     """Simple Server-Sent Events"""
     while True:
@@ -104,7 +104,7 @@ async def event_stream(resource_id: str):
 
 ### Retry with Backoff
 
-```python
+```rust
 async def call_with_retry(func, max_attempts=3):
     delay = 1
     for attempt in range(max_attempts):
@@ -119,7 +119,7 @@ async def call_with_retry(func, max_attempts=3):
 
 ### Circuit Breaker Pattern
 
-```python
+```rust
 class CircuitBreaker:
     def __init__(self, failure_threshold=5, timeout=60):
         self.failure_count = 0
@@ -152,7 +152,7 @@ class CircuitBreaker:
 
 ### Service Discovery
 
-```python
+```rust
 # Simple configuration-based discovery
 SERVICES = {
     "auth": {"url": os.getenv("AUTH_SERVICE", "http://localhost:8001")},
@@ -187,7 +187,7 @@ def get_service_url(service: str) -> str:
 
 ### Mock External Services
 
-```python
+```rust
 @pytest.fixture
 def mock_api():
     with responses.RequestsMock() as rsps:

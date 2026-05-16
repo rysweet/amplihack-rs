@@ -43,7 +43,7 @@ The `launch_copilot()` function performed redundant verification after installat
 
 The bug occurred in this flow:
 
-```python
+```rust
 # 1. Initial check passes (Copilot not installed)
 if not shutil.which("github-copilot-cli"):
 
@@ -67,7 +67,7 @@ The redundant verification in step 3 would fail because:
 
 **The fix removes the redundant verification and trusts the installer's return value:**
 
-```python
+```rust
 # Now correctly trusts the installer
 if not shutil.which("github-copilot-cli"):
     success = install_copilot()  # Validates via npm exit code
@@ -114,7 +114,7 @@ The fix includes comprehensive test coverage:
 
 ### Unit Tests
 
-```python
+```rust
 def test_launch_copilot_installs_when_missing():
     """Verify installation triggers when CLI not found."""
     with patch('shutil.which', return_value=None), \
