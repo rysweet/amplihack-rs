@@ -228,6 +228,11 @@ path = "tests/issue_537_git_optional_recipes.rs"
 name = "skill_frontmatter_name"
 path = "../../tests/integration/skill_frontmatter_name_test.rs"
 
+# QA-022: Formal specification for multitask orchestrator refactoring.
+[[test]]
+name = "multitask_orchestrator_spec"
+path = "../../tests/integration/multitask_orchestrator_spec_test.rs"
+
 # Issues #599–#608: Repo-sweep regression tests.
 # Guards against re-introduction of stale refs, broken links, missing feature gates.
 [[test]]
