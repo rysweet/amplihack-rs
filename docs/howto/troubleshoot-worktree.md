@@ -79,6 +79,32 @@ still resolves different runtime directories, that is a bug in
 `crates/amplihack-utils/src/worktree.rs`. Capture the output of
 `amplihack doctor` from each worktree and file an issue.
 
+### Symptom: recipe fails at step 19c/20b/21 after worktree removed
+
+**Cause (pre-#647):** Late-stage finalize steps used `${WORKTREE_SETUP_WORKTREE_PATH:?}`
+to `cd` into the worktree. If the worktree was already cleaned up (by the agent,
+a prior step, or manually), the `cd` failed and the recipe aborted — even though
+all actual work was pushed.
+
+**Current behavior:** Steps 19c, 20b, and 21 use a resilient fallback chain:
+worktree path → `REPO_PATH` → `$(pwd)`. A `WARNING` is emitted to stderr on
+each fallback. The recipe completes.
+
+If you still see a hard-fail on these steps, verify you are running the latest
+recipe files:
+
+```sh
+grep -n 'WORKTREE_SETUP_WORKTREE_PATH:?' \
+  amplifier-bundle/recipes/workflow-pr-review.yaml \
+  amplifier-bundle/recipes/workflow-finalize.yaml
+```
+
+Steps 15, 16, and 18c should still contain `:?` guards (they need the worktree).
+Steps 19c, 20b, and 21 should contain `if [ -d` conditionals instead.
+
+See [Issue #647 — Resilient Worktree Cleanup](../recipes/issue-647-resilient-worktree-cleanup.md)
+for full detail.
+
 ## See also
 
 - [Git Worktree Support](../concepts/worktree-support.md)

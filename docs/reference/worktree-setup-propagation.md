@@ -119,6 +119,23 @@ Inside shell steps, `worktree_setup` is a JSON string. The recipe runner flatten
 
 The flattening convention is: uppercase the parent key, replace dots with underscores, and uppercase each nested key. `worktree_setup.worktree_path` becomes `WORKTREE_SETUP_WORKTREE_PATH`.
 
+### Directory access tiers
+
+Not all steps that consume `WORKTREE_SETUP_WORKTREE_PATH` treat a missing
+directory the same way. Steps are classified into two tiers:
+
+| Tier | Steps | Guard pattern | Missing directory behavior |
+|------|-------|---------------|---------------------------|
+| **Hard-fail** | 15, 16, 18c | `cd "${WORKTREE_SETUP_WORKTREE_PATH:?…}"` | Recipe aborts (`:?` expansion errors on unset/null variable) |
+| **Resilient** | 19c, 20b, 21 | `if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then cd …; elif [ -d "${REPO_PATH:-}" ]; then cd …; fi` | Falls back to `REPO_PATH` then `$(pwd)`, emits WARNING to stderr |
+
+Hard-fail steps need worktree files to perform their work (review, verdict
+enforcement). Resilient steps perform read-only verification or cleanup that
+functions from any directory inside the repository.
+
+See [Issue #647 — Resilient Worktree Cleanup](../recipes/issue-647-resilient-worktree-cleanup.md)
+for the full rationale and fallback chain specification.
+
 ---
 
 ## Regression test coverage
@@ -162,3 +179,4 @@ python -m pytest amplifier-bundle/tools/test_default_workflow_fixes.py::TestWork
 - [Git Worktree Support](../concepts/worktree-support.md) — Runtime directory resolution for worktrees
 - [Recipe Execution Flow](../concepts/recipe-execution-flow.md) — How recipes are loaded and executed
 - [Smart-Orchestrator Recovery](../concepts/smart-orchestrator-recovery.md) — Hollow-success detection and the no-op guard
+- [Issue #647 — Resilient Worktree Cleanup](../recipes/issue-647-resilient-worktree-cleanup.md) — Late-stage fallback chain for missing worktree directories

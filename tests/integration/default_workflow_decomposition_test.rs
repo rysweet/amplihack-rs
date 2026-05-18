@@ -344,20 +344,36 @@ fn workflow_pr_review_fails_loud_for_required_worktree_context() {
     let push_command = step_command("workflow-pr-review", "step-18c-push-feedback-changes");
     let zero_bs_command = step_command("workflow-pr-review", "step-19c-zero-bs-verification");
 
-    for (step, command) in [
-        ("step-18c-push-feedback-changes", push_command.as_str()),
-        ("step-19c-zero-bs-verification", zero_bs_command.as_str()),
-    ] {
-        assert!(
-            command.contains("set -euo pipefail"),
-            "{step} must fail loudly on shell errors"
-        );
-        assert!(
-            command.contains("WORKTREE_SETUP_WORKTREE_PATH:?"),
-            "{step} must require worktree_setup.worktree_path instead of inventing a default"
-        );
-    }
+    // step-18c: early-stage — MUST keep hard-fail on missing worktree
+    assert!(
+        push_command.contains("set -euo pipefail"),
+        "step-18c must fail loudly on shell errors"
+    );
+    assert!(
+        push_command.contains("WORKTREE_SETUP_WORKTREE_PATH:?"),
+        "step-18c must require worktree_setup.worktree_path instead of inventing a default"
+    );
 
+    // step-19c: late-stage — MUST be resilient (issue #647)
+    // It can function from repo_path or cwd; hard-fail is wrong here.
+    assert!(
+        zero_bs_command.contains("set -euo pipefail"),
+        "step-19c must still fail loudly on shell errors (only cd target selection is resilient)"
+    );
+    assert!(
+        zero_bs_command.contains("WARNING"),
+        "step-19c must emit WARNING on stderr when falling back from missing worktree"
+    );
+    assert!(
+        zero_bs_command.contains("REPO_PATH"),
+        "step-19c must fall back to REPO_PATH when worktree is unavailable"
+    );
+    assert!(
+        !zero_bs_command.contains("cd \"${WORKTREE_SETUP_WORKTREE_PATH:?"),
+        "step-19c must NOT hard-fail on cd into missing worktree (issue #647)"
+    );
+
+    // step-18c specific assertions preserved from original
     let hidden_git_failures: Vec<&str> = push_command
         .lines()
         .filter(|line| {
@@ -376,6 +392,52 @@ fn workflow_pr_review_fails_loud_for_required_worktree_context() {
     assert!(
         push_command.contains("git push failed") && push_command.contains("exit \"$push_rc\""),
         "step-18c must surface git push failures and exit with the original status"
+    );
+}
+
+#[test]
+fn workflow_finalize_late_steps_are_resilient_to_missing_worktree() {
+    // Issue #647: steps 20b and 21 are late-stage — the worktree may have
+    // been cleaned up by the agent or a prior step. They must fall back to
+    // REPO_PATH or cwd instead of aborting the recipe.
+    let push_cleanup = step_command("workflow-finalize", "step-20b-push-cleanup");
+    let pr_ready = step_command("workflow-finalize", "step-21-pr-ready");
+
+    for (step, command) in [
+        ("step-20b-push-cleanup", push_cleanup.as_str()),
+        ("step-21-pr-ready", pr_ready.as_str()),
+    ] {
+        assert!(
+            command.contains("set -euo pipefail"),
+            "{step} must still fail loudly on shell errors (only cd target is resilient)"
+        );
+        assert!(
+            command.contains("WARNING"),
+            "{step} must emit WARNING on stderr when falling back from missing worktree"
+        );
+        assert!(
+            command.contains("REPO_PATH"),
+            "{step} must fall back to REPO_PATH when worktree is unavailable"
+        );
+        assert!(
+            !command.contains("cd \"${WORKTREE_SETUP_WORKTREE_PATH:?"),
+            "{step} must NOT hard-fail on cd into missing worktree (issue #647)"
+        );
+    }
+}
+
+#[test]
+fn workflow_pr_review_input_description_reflects_resilient_step_19c() {
+    // Issue #647: step-19c is now resilient, so the input description should
+    // only list step-18c as requiring the worktree path.
+    let text = recipe_text("workflow-pr-review");
+    assert!(
+        text.contains("Required by") && text.contains("step-18c"),
+        "worktree_setup.worktree_path input description must mention step-18c"
+    );
+    assert!(
+        !text.contains("step-19c-zero-bs-verification that cd into the worktree"),
+        "worktree_setup.worktree_path input description must not claim step-19c requires cd into worktree (issue #647)"
     );
 }
 

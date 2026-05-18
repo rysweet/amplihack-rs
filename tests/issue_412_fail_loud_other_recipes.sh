@@ -63,26 +63,29 @@ for f in "${ALL_TARGETS[@]}"; do
 done
 
 # --- Test 2: no `${WORKTREE_*:-…}` silent fallback in any execution path ----
-# Informational echo lines that intentionally use `:-(unset)` are exempt.
+# Exempt: informational echo lines using `:-(unset)`, and `[ -d "${VAR:-}" ]`
+# guard conditionals (issue #647 — these test existence, not silently cd).
 for f in "${ALL_TARGETS[@]}"; do
     name=$(basename "$f")
-    silent_count=$(grep -nE '\$\{WORKTREE_[A-Z_]*:-' "$f" | grep -v '(unset)' | wc -l | tr -d ' ')
+    silent_count=$(grep -nE '\$\{WORKTREE_[A-Z_]*:-' "$f" | grep -v '(unset)' | grep -v '\[ -d ' | wc -l | tr -d ' ')
     if [ "$silent_count" != "0" ]; then
         echo "      offending lines in $name:"
-        grep -nE '\$\{WORKTREE_[A-Z_]*:-' "$f" | grep -v '(unset)' | sed 's/^/        /'
+        grep -nE '\$\{WORKTREE_[A-Z_]*:-' "$f" | grep -v '(unset)' | grep -v '\[ -d ' | sed 's/^/        /'
     fi
     assert "no '\${WORKTREE_*:-…}' execution-path fallback in $name (found=$silent_count)" \
         "[ '$silent_count' = '0' ]"
 done
 
 # --- Test 3: known-fixed sites use :? fail-loud form -------------------------
+# Issue #647: steps 20b and 21 in finalize are now resilient (no :? on cd),
+# so the finalize count drops from 2 to 0. Only step-18c in pr-review keeps :?.
 finalize_failloud=$(grep -c '\${WORKTREE_SETUP_WORKTREE_PATH:?' "$FINALIZE" || true)
-assert "workflow-finalize.yaml has at least 2 \${WORKTREE_SETUP_WORKTREE_PATH:?...} sites (found=$finalize_failloud)" \
-    "[ '$finalize_failloud' -ge '2' ]"
+assert "workflow-finalize.yaml has 0 \${WORKTREE_SETUP_WORKTREE_PATH:?...} sites after #647 (found=$finalize_failloud)" \
+    "[ '$finalize_failloud' = '0' ]"
 
 pr_review_failloud=$(grep -c '\${WORKTREE_SETUP_WORKTREE_PATH:?' "$PR_REVIEW" || true)
-assert "workflow-pr-review.yaml has at least 2 \${WORKTREE_SETUP_WORKTREE_PATH:?...} sites (found=$pr_review_failloud)" \
-    "[ '$pr_review_failloud' -ge '2' ]"
+assert "workflow-pr-review.yaml has exactly 1 \${WORKTREE_SETUP_WORKTREE_PATH:?...} site after #647 (found=$pr_review_failloud)" \
+    "[ '$pr_review_failloud' = '1' ]"
 
 refactor_failloud=$(grep -c '\${WORKTREE_SETUP_WORKTREE_PATH:?' "$REFACTOR_REVIEW" || true)
 assert "workflow-refactor-review.yaml has at least 1 \${WORKTREE_SETUP_WORKTREE_PATH:?...} site (found=$refactor_failloud)" \
@@ -147,6 +150,25 @@ WORKTREE_SETUP_WORKTREE_PATH="$tmpdir" bash -c \
 rc=$?
 rm -rf "$tmpdir"
 assert "success path: cd succeeds when WORKTREE_SETUP_WORKTREE_PATH is set" "[ '$rc' = '0' ]"
+
+# --- Test 11: Issue #647 — resilient steps emit WARNING on fallback ---------
+# Steps 20b, 21 (finalize) and 19c (pr-review) must contain WARNING fallback
+# text so that when the worktree is missing, they fall back instead of aborting.
+for f in "$FINALIZE" "$PR_REVIEW"; do
+    name=$(basename "$f")
+    warn_count=$(grep -c 'WARNING' "$f" || true)
+    assert "$name has WARNING fallback text after #647 (count=$warn_count)" \
+        "[ '$warn_count' -ge '1' ]"
+done
+
+# --- Test 12: Issue #647 — resilient steps reference REPO_PATH fallback -----
+# The resilient if/elif/else must reference REPO_PATH as a fallback target.
+for f in "$FINALIZE" "$PR_REVIEW"; do
+    name=$(basename "$f")
+    repo_path_count=$(grep -c 'REPO_PATH' "$f" || true)
+    assert "$name references REPO_PATH for fallback after #647 (count=$repo_path_count)" \
+        "[ '$repo_path_count' -ge '1' ]"
+done
 
 # --- Summary ----------------------------------------------------------------
 echo

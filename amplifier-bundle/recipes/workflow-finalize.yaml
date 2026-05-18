@@ -66,7 +66,14 @@ steps:
     command: |
       set -euo pipefail
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-20b-push-cleanup requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
+      if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then
+        cd "$WORKTREE_SETUP_WORKTREE_PATH"
+      elif [ -d "${REPO_PATH:-}" ]; then
+        echo "WARNING: step-20b worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2
+        cd "$REPO_PATH"
+      else
+        echo "WARNING: step-20b worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2
+      fi
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "ERROR: step-20b-push-cleanup requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
         exit 1
@@ -218,7 +225,14 @@ steps:
     command: |
       set -euo pipefail
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-21-pr-ready requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
+      if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then
+        cd "$WORKTREE_SETUP_WORKTREE_PATH"
+      elif [ -d "${REPO_PATH:-}" ]; then
+        echo "WARNING: step-21 worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2
+        cd "$REPO_PATH"
+      else
+        echo "WARNING: step-21 worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2
+      fi
       echo "=== Step 20: Converting PR to Ready ==="
       echo ""
       echo "--- Verifying All Steps Complete ---"
