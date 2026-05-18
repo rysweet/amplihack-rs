@@ -355,9 +355,10 @@ mod tests {
         assert!(msg.contains("Unknown asset name"));
         assert!(msg.contains("multitask-orchestrator"));
         // Issue #614: helper-path and hooks-dir are now registered.
+        // Issue #634: session-tree-path is now registered.
         assert!(msg.contains("helper-path"));
         assert!(msg.contains("hooks-dir"));
-        assert!(!msg.contains("session-tree-path"));
+        assert!(msg.contains("session-tree-path"));
     }
 
     /// Issue #614: `resolve-bundle-asset hooks-dir` now resolves successfully
