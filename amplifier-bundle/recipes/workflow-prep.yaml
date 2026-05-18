@@ -98,7 +98,7 @@ steps:
       git status && \
       echo "" && \
       echo "--- Fetching Latest ---" && \
-      git fetch --all && \
+      git fetch --all --no-tags && \
       echo "" && \
       echo "--- Current Branch ---" && \
       git branch --show-current && \

@@ -1,0 +1,42 @@
+name: step4-worktree-resumable
+description: |
+  Verifies default-workflow Step 4 worktree setup is idempotent and
+  git fetch uses --no-tags to avoid tag namespace collisions.
+type: cli
+tags: [workflow, resumability, git, step4]
+
+scenarios:
+  - name: fetch-uses-no-tags-in-prep
+    description: workflow-prep.yaml uses --no-tags
+    steps:
+      - type: command
+        command: grep -q 'git fetch --all --no-tags' amplifier-bundle/recipes/workflow-prep.yaml && echo "PASS" || echo "FAIL"
+        expected_output: "PASS"
+
+  - name: fetch-uses-no-tags-in-worktree
+    description: workflow-worktree.yaml retry loop uses --no-tags
+    steps:
+      - type: command
+        command: grep -q 'git fetch origin --no-tags' amplifier-bundle/recipes/workflow-worktree.yaml && echo "PASS" || echo "FAIL"
+        expected_output: "PASS"
+
+  - name: worktree-has-idempotency-guard
+    description: Step 4 checks for existing worktree directory
+    steps:
+      - type: command
+        command: grep -q 'Reusing existing worktree directory' amplifier-bundle/recipes/workflow-worktree.yaml && grep -q 'Removing stale worktree' amplifier-bundle/recipes/workflow-worktree.yaml && echo "PASS" || echo "FAIL"
+        expected_output: "PASS"
+
+  - name: recipe-dry-run-succeeds
+    description: default-workflow parses and dry-runs after changes
+    steps:
+      - type: command
+        command: amplihack recipe run default-workflow -c task_description="test" -c repo_path="." --dry-run 2>&1 | grep -q "Success" && echo "PASS" || echo "FAIL"
+        expected_output: "PASS"
+
+  - name: step-inventory-unchanged
+    description: No steps accidentally added or removed
+    steps:
+      - type: command
+        command: cargo test --test default_workflow_decomposition -- composed_step_inventory_matches_expected_in_order --quiet 2>&1 | grep -q "ok" && echo "PASS" || echo "FAIL"
+        expected_output: "PASS"
