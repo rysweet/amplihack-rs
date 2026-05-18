@@ -465,13 +465,13 @@ mod ws3_asset_aliases {
         }
     }
 
-    /// NAMED_ASSETS must contain helper-path pointing to orch_helper.py.
+    /// NAMED_ASSETS must contain helper-path pointing to multitask-orchestrator.sh.
     #[test]
-    fn named_assets_helper_path_targets_orch_helper() {
+    fn named_assets_helper_path_targets_orchestrator() {
         let src = resolve_bundle_asset_mod();
         assert!(
-            src.contains("helper-path") && src.contains("orch_helper"),
-            "helper-path must point to orch_helper file (#614)"
+            src.contains("helper-path") && src.contains("multitask-orchestrator"),
+            "helper-path must point to multitask-orchestrator script (#614, #634)"
         );
     }
 

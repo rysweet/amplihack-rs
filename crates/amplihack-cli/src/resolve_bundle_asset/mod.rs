@@ -17,19 +17,23 @@ fn is_safe_path_char(ch: char) -> bool {
 ///
 /// Each entry is `(name, &[relative_paths])` where relative_paths are tried in order.
 const NAMED_ASSETS: &[(&str, &[&str])] = &[
-    // Issue #614: re-register hooks-dir and helper-path for smart-orchestrator
-    // preflight compatibility. hooks/ dir exists at amplifier-bundle/tools/amplihack/hooks/.
+    // hooks/ dir — native Rust hooks binary reads config from here.
     ("hooks-dir", &["amplifier-bundle/tools/amplihack/hooks"]),
-    // helper-path resolves to the orchestrator helper script.
+    // helper-path — orchestration helper script. The Python orch_helper.py
+    // was replaced by the native shell orchestrator in the Rust port.
     (
         "helper-path",
-        &[
-            "amplifier-bundle/tools/orch_helper.py",
-            "amplifier-bundle/tools/amplihack/orch_helper.py",
-        ],
+        &["amplifier-bundle/bin/multitask-orchestrator.sh"],
     ),
-    // Native compatibility wrapper for legacy callers that still resolve the
-    // multitask orchestrator by logical asset name.
+    // session-tree-path — session tree state directory. In the Rust port,
+    // session tree tracking is built into the amplihack binary
+    // (crates/amplihack-cli/src/commands/session_tree/). The asset resolves
+    // to the tools/session directory for callers that need a filesystem anchor.
+    (
+        "session-tree-path",
+        &["amplifier-bundle/tools/amplihack/session"],
+    ),
+    // multitask-orchestrator — native shell wrapper.
     (
         "multitask-orchestrator",
         &["amplifier-bundle/bin/multitask-orchestrator.sh"],
@@ -351,9 +355,10 @@ mod tests {
         assert!(msg.contains("Unknown asset name"));
         assert!(msg.contains("multitask-orchestrator"));
         // Issue #614: helper-path and hooks-dir are now registered.
+        // Issue #634: session-tree-path is now registered.
         assert!(msg.contains("helper-path"));
         assert!(msg.contains("hooks-dir"));
-        assert!(!msg.contains("session-tree-path"));
+        assert!(msg.contains("session-tree-path"));
     }
 
     /// Issue #614: `resolve-bundle-asset hooks-dir` now resolves successfully
