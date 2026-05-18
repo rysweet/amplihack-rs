@@ -126,9 +126,40 @@ This workflow ruthlessly applies:
 - **Ruthless Simplicity**: Flag over-engineered modules
 - **Module Size Limits**: Target <300 LOC per module
 - **Single Responsibility**: One purpose per brick
-- **Zero-BS**: No stubs, no TODOs, no dead code
+- **Zero-BS / Zero-Stubs**: No stubs, no TODOs, no dead code — see below
 - **Anti-Fallback** (#2805, #2810): Detect silent degradation and error swallowing patterns
 - **Structural Analysis** (#2809): Flag oversized files, deeply nested code, and tangled dependencies
+
+### Zero-Stubs Policy (MANDATORY)
+
+**Every audit cycle MUST include a dedicated stub scan.** A stub is any code that
+claims to implement functionality but actually defers, panics, or returns a
+meaningless default. Stubs are NEVER acceptable in production code — they are the
+#1 source of hollow success (recipe exits 0, but nothing was actually implemented).
+
+**Rust stub patterns** (highest priority — this is a Rust repo):
+
+| Pattern | Severity | Notes |
+|---|---|---|
+| `todo!()` | **critical** | Panics at runtime with "not yet implemented" |
+| `unimplemented!()` | **critical** | Same — panics at runtime |
+| `bail!("not implemented")` | **critical** | Returns error but masks missing logic |
+| `bail!("TODO")` or `bail!("unimplemented")` | **critical** | Same |
+| `panic!("not implemented")` or `panic!("TODO")` | **critical** | Intentional crash as stub |
+| `return Ok(())` in a function with documented side effects | **high** | Empty-body stub |
+| `// TODO:` / `// FIXME:` / `// STUB:` / `// HACK:` | **high** | Deferred work marker |
+| `eprintln!("not yet implemented"); return Ok(())` | **high** | Log-and-skip stub |
+
+**Other language stub patterns**:
+
+| Language | Patterns |
+|---|---|
+| TypeScript/JS | `throw new Error("not implemented")`, empty function body `{}`, `// TODO` |
+| Shell | Functions that just `echo` and `exit 0`, `: # stub` |
+
+**Post-audit double-check**: After every FIX cycle, run a final stub scan across
+ALL changed files. If any stub pattern is found, the cycle is NOT clean — the
+finding must be fixed before proceeding.
 
 ## Detection Categories
 

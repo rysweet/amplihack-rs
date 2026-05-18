@@ -510,3 +510,46 @@
 # For custom considerations, use checker: "generic" to enable simple keyword
 # matching. The generic analyzer looks for question keywords in the transcript.
 # For more sophisticated checks, implement a custom checker method.
+
+# ============================================================================
+# ZERO-STUBS VERIFICATION (Philosophy Compliance)
+# ============================================================================
+- id: zero_stubs_verification
+  category: Philosophy Compliance
+  question: Are there ZERO stubs in the codebase?
+  description: |
+    Post-audit double-check for stub patterns. A stub is any code that claims
+    to implement functionality but actually defers, panics, or returns a
+    meaningless default. This is the #1 source of hollow success.
+
+    CRITICAL stub patterns that MUST be absent in production code:
+
+    Rust (highest priority):
+    - todo!() — panics at runtime
+    - unimplemented!() — panics at runtime
+    - bail!("not implemented") / bail!("TODO") / bail!("unimplemented")
+    - panic!("not implemented") / panic!("TODO")
+    - return Ok(()) in functions with documented side effects (empty-body stub)
+    - // TODO: / // FIXME: / // STUB: / // HACK: comments
+
+    TypeScript/JavaScript:
+    - throw new Error("not implemented")
+    - Empty function bodies {}
+
+    Shell:
+    - Functions that just echo and exit 0
+    - : # stub
+
+    Verification commands:
+    ```bash
+    rg 'todo!\(\)|unimplemented!\(\)' --glob '*.rs' --glob '!*test*'
+    rg 'bail!\("not implemented|bail!\("TODO|bail!\("unimplemented' --glob '*.rs'
+    rg 'panic!\("not implemented|panic!\("TODO' --glob '*.rs' --glob '!*test*'
+    ```
+
+    If ANY stub pattern is found in production code (non-test files), the
+    audit cycle is NOT clean. The finding must be fixed before proceeding.
+  severity: blocker
+  checker: generic
+  enabled: true
+  applicable_session_types: ["DEVELOPMENT", "MAINTENANCE"]
