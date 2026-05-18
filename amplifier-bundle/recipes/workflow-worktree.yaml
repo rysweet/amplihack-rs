@@ -127,7 +127,23 @@ steps:
             # SECURITY: WORKTREE_PATH construction is safe because BRANCH_NAME
             # has passed git check-ref-format above (rejects .., leading -, etc.).
             WORKTREE_PATH="${REPO_PATH}/worktrees/${BRANCH_NAME}"
-            if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+            if [ -d "$WORKTREE_PATH" ]; then
+              # Issue #642: worktree dir exists from a prior run. If it's a
+              # valid git worktree on the right branch, reuse it. Otherwise
+              # remove the stale directory and re-create.
+              WT_BRANCH="$(git -C "$WORKTREE_PATH" symbolic-ref --short HEAD 2>/dev/null || true)"
+              if [ "$WT_BRANCH" = "$BRANCH_NAME" ]; then
+                echo "INFO: Reusing existing worktree directory at '$WORKTREE_PATH' (branch matches)." >&2
+              else
+                echo "INFO: Removing stale worktree at '$WORKTREE_PATH' (was '$WT_BRANCH', need '$BRANCH_NAME')." >&2
+                git worktree remove --force "$WORKTREE_PATH" >&2 2>/dev/null || rm -rf "$WORKTREE_PATH"
+                if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+                  git worktree add -- "$WORKTREE_PATH" "$BRANCH_NAME" >&2
+                elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
+                  git worktree add --track -b "$BRANCH_NAME" -- "$WORKTREE_PATH" "origin/$BRANCH_NAME" >&2
+                fi
+              fi
+            elif git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
               # Local branch exists: attach without -b (safe re-attach).
               git worktree add -- "$WORKTREE_PATH" "$BRANCH_NAME" >&2
             elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
@@ -193,7 +209,7 @@ steps:
         local max_attempts=3
 
         for attempt in 1 2 3; do
-          if git fetch origin >&2; then
+          if git fetch origin --no-tags >&2; then
             return 0
           fi
           status=$?
