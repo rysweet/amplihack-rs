@@ -376,6 +376,7 @@ steps:
       }
       scan_or_none "Checking for TODO/FIXME comments" "(TODO|FIXME)" '*.rs' '*.ts' '*.js' '*.sh' '*.bash' '*.md' '*.yaml' '*.yml' Makefile Dockerfile
       scan_or_none "Checking for stub indicators" "(todo!|unimplemented!|panic!.*stub)" '*.rs'
+      scan_or_none "Rust: bail/panic stubs (zero-stubs policy)" 'bail!\("not implemented|bail!\("TODO|bail!\("unimplemented|panic!\("not implemented|panic!\("TODO' '*.rs'
       echo "--- Checking for Forbidden Patterns ---"
       scan_or_none "Shell: || true, >/dev/null 2>&1, set +e" '\|\| true|\|\| :|>/dev/null 2>&1|2>/dev/null|&>/dev/null|set \+e' '*.sh' '*.bash' Makefile Dockerfile
       scan_or_none "Rust: unwrap without context, expect without message" '\.unwrap\(\)$|\.expect\(\"\"\)' '*.rs'
