@@ -63,13 +63,14 @@ for f in "${ALL_TARGETS[@]}"; do
 done
 
 # --- Test 2: no `${WORKTREE_*:-…}` silent fallback in any execution path ----
-# Informational echo lines that intentionally use `:-(unset)` are exempt.
+# Exempt: informational echo lines using `:-(unset)`, and `[ -d "${VAR:-}" ]`
+# guard conditionals (issue #647 — these test existence, not silently cd).
 for f in "${ALL_TARGETS[@]}"; do
     name=$(basename "$f")
-    silent_count=$(grep -nE '\$\{WORKTREE_[A-Z_]*:-' "$f" | grep -v '(unset)' | wc -l | tr -d ' ')
+    silent_count=$(grep -nE '\$\{WORKTREE_[A-Z_]*:-' "$f" | grep -v '(unset)' | grep -v '\[ -d ' | wc -l | tr -d ' ')
     if [ "$silent_count" != "0" ]; then
         echo "      offending lines in $name:"
-        grep -nE '\$\{WORKTREE_[A-Z_]*:-' "$f" | grep -v '(unset)' | sed 's/^/        /'
+        grep -nE '\$\{WORKTREE_[A-Z_]*:-' "$f" | grep -v '(unset)' | grep -v '\[ -d ' | sed 's/^/        /'
     fi
     assert "no '\${WORKTREE_*:-…}' execution-path fallback in $name (found=$silent_count)" \
         "[ '$silent_count' = '0' ]"
