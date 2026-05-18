@@ -14,13 +14,19 @@ tags: ["investigation","workflow","composable","explore","verify","report"]
 # Context flows automatically between sub-recipes.
 
 context:
-  # The main question to investigate
+  # The main question to investigate. When invoked via smart-orchestrator,
+  # this is set by the routing step. When invoked directly, it's populated
+  # from task_description (see investigation-prep preflight).
   investigation_question: ""
-context_validation:
-  task_description: "nonempty"
 
-  # Path to focus investigation on (optional)
+  # task_description is the canonical input from `amplihack recipe run -c`.
+  # Maps to investigation_question if that field is blank.
+  task_description: ""
+
+  # Path to focus investigation on (optional).
+  # repo_path is the canonical input; maps to codebase_path.
   codebase_path: ""
+  repo_path: ""
 
   # Investigation type determines agent selection:
   # - code: analyzer + patterns (default)
@@ -43,6 +49,9 @@ context_validation:
   # Efficiency tracking (internal)
   _start_time: ""
   _message_count: 0
+
+context_validation:
+  task_description: "nonempty"
 
 steps:
   - id: "investigation-prep"

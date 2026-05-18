@@ -64,6 +64,19 @@ steps:
       fi
     output: "investigation_question"
 
+  # Issue #594: normalize repo_path → codebase_path so direct invocation
+  # (`amplihack recipe run investigation-workflow -c repo_path=.`) propagates
+  # the path to downstream prompts that read {{codebase_path}}.
+  - id: "normalize-codebase-path"
+    type: "bash"
+    command: |
+      if [ -z "${CODEBASE_PATH:-}" ] && [ -n "${REPO_PATH:-}" ]; then
+        printf '%s' "${REPO_PATH}"
+      else
+        printf '%s' "${CODEBASE_PATH:-.}"
+      fi
+    output: "codebase_path"
+
   # ==========================================================================
   # INITIALIZATION: Track start time for efficiency metrics
   # ==========================================================================
