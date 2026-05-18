@@ -176,14 +176,50 @@ Any other non-empty response is treated as successful recovery.
 - Context keys matching `token`, `secret`, `password`, `key` are redacted
 - Uses existing adapter credentials (no new auth surface)
 
+## Late-Stage Worktree Cleanup Resilience
+
+### Problem
+
+Steps 19c (zero-BS verification), 20b (push-cleanup), and 21 (pr-ready) in the
+default workflow `cd` into `WORKTREE_SETUP_WORKTREE_PATH` using `${VAR:?}`
+guards. When the worktree directory has already been removed — by the agent, a
+prior cleanup step, or an external process — the `cd` fails with exit code 1,
+aborting the recipe after work is complete and pushed.
+
+### Solution: Resilient Fallback Chain
+
+Late-stage steps use a three-tier directory resolution:
+
+1. `WORKTREE_SETUP_WORKTREE_PATH` — preferred (worktree still exists)
+2. `REPO_PATH` — fallback (repo root, available via context propagation)
+3. `$(pwd)` — final (current directory)
+
+Each fallback emits a `WARNING` to stderr. Early-stage steps (15, 16, 18c) that
+genuinely require worktree files keep their hard-fail `${VAR:?}` guards.
+
+| Step | Phase | Behavior |
+|------|-------|----------|
+| 15, 16, 18c | review | Hard-fail (`:?` guard) |
+| 19c | verification | Resilient (fallback chain) |
+| 20b | finalize | Resilient (fallback chain) |
+| 21 | finalize | Resilient (fallback chain) |
+
+No `|| true`, `set +e`, or `>/dev/null` suppression is used. The fallback is
+explicit `if [ -d ]` conditional logic with `set -euo pipefail` preserved.
+
+See [Issue #647 — Resilient Worktree Cleanup](../recipes/issue-647-resilient-worktree-cleanup.md)
+for the full specification and test coverage.
+
 ## Configuration
 
 These features introduce no new configuration knobs. Branch sanitization,
 worktree base resolution, publish timeout-wrapper removal, optional design-spec
-handling, and sub-recipe recovery are always active.
+handling, sub-recipe recovery, and late-stage worktree cleanup resilience are
+always active.
 
 ## Related
 
 - [Auto Mode](../concepts/auto-mode.md) — autonomous agentic loop documentation
 - [Recipe Execution Flow](../concepts/recipe-execution-flow.md) — how recipes execute
 - [Run a Recipe](../howto/run-a-recipe.md) — step-by-step recipe usage
+- [Issue #647 — Resilient Worktree Cleanup](../recipes/issue-647-resilient-worktree-cleanup.md) — full detail on late-stage fallback
