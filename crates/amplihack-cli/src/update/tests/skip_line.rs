@@ -171,7 +171,7 @@ fn release_target_table_covers_windows_x86_64() {
     // assert the Windows arm exists without conditionally compiling the test
     // away, we read the source and check the literal arm is present. This is
     // a static guard — it fails any commit that drops the windows arm.
-    let src = include_str!("mod.rs");
+    let src = include_str!("../mod.rs");
     assert!(
         src.contains(r#"target_os = "windows", target_arch = "x86_64""#),
         "supported_release_target() must include a windows/x86_64 arm",
