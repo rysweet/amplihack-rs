@@ -16,6 +16,7 @@ const PHASE_RECIPES: &[&str] = &[
 const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "preflight-validation",
     "normalize-question",
+    "normalize-codebase-path",
     "init-tracking",
     "scope-definition",
     "clarify-ambiguities",
