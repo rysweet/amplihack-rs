@@ -329,6 +329,7 @@ dependencies = [
 name = "amplihack-orchestration"
 version = "0.9.3"
 dependencies = [
+ "amplihack-utils",
  "async-trait",
  "once_cell",
  "serde",

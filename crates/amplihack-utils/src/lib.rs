@@ -49,6 +49,9 @@ pub mod prerequisites;
 pub mod process;
 pub mod project_init;
 pub(crate) mod project_init_detect;
+/// Subprocess prompt-delivery helper (argv/tempfile/stdin). See Simard
+/// issue #1897. STUB module in the TDD red phase.
+pub mod prompt_delivery;
 /// Secure file and directory creation with restrictive permissions.
 pub mod secure_files;
 pub mod send_input_allowlist;
