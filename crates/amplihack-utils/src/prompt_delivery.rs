@@ -1,29 +1,39 @@
-//! Subprocess prompt-delivery helper — STUB for the TDD red phase.
+//! Subprocess prompt-delivery helper for amplihack-rs.
 //!
-//! This module is intentionally incomplete. It establishes the public API
-//! surface that the implementation must satisfy and lets the test suite at
-//! `tests/prompt_delivery.rs` *compile* while still *failing* — the canonical
-//! TDD "tests first" red state.
+//! Implements the three delivery modes (`argv` / `tempfile` / `stdin`) plus
+//! an `auto` selector and an `AMPLIHACK_PROMPT_DELIVERY` env-var override.
 //!
-//! Implementation tracks Simard issue #1897 and the follow-up amplihack-rs
-//! issue linked from there. See the design note on Simard #1897 for the
-//! full contract, including:
-//! - env var: `AMPLIHACK_PROMPT_DELIVERY` (`auto|argv|tempfile|stdin`)
-//! - auto-promotion threshold at 4 KiB
-//! - deterministic degradation order on unsupported modes
-//! - RAII lifecycle for temp files
+//! Tracking issue: Simard #1897. Working reference (shell-mktemp pattern):
+//! Simard #1878. Originating apostrophe-truncation bug: Simard #1871.
 //!
-//! DO NOT MERGE without replacing every `unimplemented_stub!` with a real
-//! implementation and removing this header note.
+//! ## Contract summary
+//!
+//! - **Env var:** `AMPLIHACK_PROMPT_DELIVERY` ∈ `{auto, argv, tempfile, stdin}`,
+//!   case-insensitive. Unset / empty / unrecognised values all resolve to
+//!   `auto` (unrecognised emits a `tracing::warn!`).
+//! - **Auto rule:** prompts ≤ [`AUTO_TEMPFILE_THRESHOLD_BYTES`] stay on
+//!   `argv` when the target binary supports it; otherwise the helper picks
+//!   `tempfile`, then `stdin`, then falls back to `argv`.
+//! - **Explicit override:** wins over `auto`. If the requested mode is not
+//!   supported by the binary, the helper degrades deterministically through
+//!   `tempfile → stdin → argv` and emits a `tracing::warn!`.
+//! - **Lifecycle:** [`deliver`] returns a [`DeliveryHandle`] that owns the
+//!   underlying [`tempfile::NamedTempFile`] (for `tempfile` mode) or marks
+//!   the child stdin as piped (for `stdin` mode). The handle MUST be kept
+//!   alive until the child has been waited on; dropping it unlinks the
+//!   temp file.
 
-use std::path::Path;
-use std::process::Command;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+use tempfile::NamedTempFile;
 
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
-/// Requested delivery mode. `Auto` defers to [`select_mode`].
+/// Caller-requested delivery mode. `Auto` defers to [`select_mode`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptDelivery {
     Auto,
@@ -32,15 +42,22 @@ pub enum PromptDelivery {
     Stdin,
 }
 
-/// Per-binary capability descriptor — mirrors the additions proposed for
-/// `crates/amplihack-launcher/src/flag_matrix.rs::FlagSet`.
+/// Per-binary capability descriptor.
+///
+/// Mirrors the additions made to
+/// [`crate::flag_matrix::FlagSet`](`crates/amplihack-launcher/src/flag_matrix.rs`)
+/// — kept here as a stand-alone struct so `amplihack-utils` does not depend
+/// on `amplihack-launcher`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeliveryCaps {
     pub supports_argv: bool,
     pub supports_tempfile: bool,
     pub supports_stdin: bool,
-    /// CLI flag the binary uses to consume a prompt file (e.g. `--prompt-file`).
-    /// `None` means the binary has no documented file-prompt flag.
+    /// CLI flag the binary uses to consume a prompt file (e.g.
+    /// `--prompt-file`). `Some("")` means "append only the path with no
+    /// preceding flag" (used by harness binaries like `cat`). `None` means
+    /// the binary has no documented file-prompt flag — interpreted the same
+    /// as `Some("")` if [`Tempfile`](DeliveryMode::Tempfile) is selected.
     pub tempfile_flag: Option<&'static str>,
 }
 
@@ -73,7 +90,7 @@ impl DeliveryCaps {
     }
 }
 
-/// The mode actually selected after considering caps + env.
+/// Mode actually selected after considering caps + env.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeliveryMode {
     Argv,
@@ -81,16 +98,19 @@ pub enum DeliveryMode {
     Stdin,
 }
 
-/// RAII handle returned by [`deliver`]. Owns temp resources for the lifetime
-/// of the spawned child. Drop unlinks any temp file and joins any stdin
-/// writer task.
+/// RAII handle returned by [`deliver`].
+///
+/// Owns the temp resources required for the lifetime of the spawned child.
+/// Dropping the handle unlinks any temp file. The caller MUST keep the
+/// handle alive until [`std::process::Child::wait`] (or equivalent) has
+/// returned — otherwise the child will see the temp file disappear.
 #[derive(Debug)]
 pub struct DeliveryHandle {
     mode: DeliveryMode,
-    // Real implementation will hold an `Option<tempfile::NamedTempFile>` here
-    // and (for stdin mode) a join handle or a writer thread.
-    #[allow(dead_code)]
-    _opaque: (),
+    path: Option<PathBuf>,
+    // Order matters for drop semantics: `_tempfile` is unlinked when the
+    // struct is dropped, so the field is declared last to drop last.
+    _tempfile: Option<NamedTempFile>,
 }
 
 impl DeliveryHandle {
@@ -100,77 +120,214 @@ impl DeliveryHandle {
 
     /// Path to the temp file, if `mode == Tempfile`. `None` otherwise.
     pub fn tempfile_path(&self) -> Option<&Path> {
-        // Stub returns None unconditionally — real impl returns the path.
-        None
-    }
-}
-
-impl Drop for DeliveryHandle {
-    fn drop(&mut self) {
-        // Empty stub Drop: the real impl unlinks the temp file (RAII via
-        // tempfile::NamedTempFile) and tears down any stdin writer task.
+        self.path.as_deref()
     }
 }
 
 // ---------------------------------------------------------------------------
-// Public API — STUBS
+// Public constants
 // ---------------------------------------------------------------------------
 
-/// The auto-promotion threshold (bytes). Prompts at-or-below this size stay
-/// on argv when the binary supports it. See PTY canonical-mode line cap
-/// rationale in Simard #1879.
+/// Auto-promotion threshold (bytes). Prompts strictly larger than this
+/// promote out of `argv` when the binary supports a longer-form channel.
+/// Rationale: PTY canonical-mode line cap per Simard #1879.
 pub const AUTO_TEMPFILE_THRESHOLD_BYTES: usize = 4096;
 
 /// Env-var name that selects the delivery mode at runtime.
 pub const ENV_VAR_NAME: &str = "AMPLIHACK_PROMPT_DELIVERY";
 
-/// Parse the [`ENV_VAR_NAME`] environment variable.
+// ---------------------------------------------------------------------------
+// from_env
+// ---------------------------------------------------------------------------
+
+/// Parse [`ENV_VAR_NAME`] from the process environment.
 ///
-/// - Unset, empty, or unrecognised values → `Auto` (with a `tracing::warn!`
-///   for unrecognised values; quiet for unset/empty).
-/// - Case-insensitive: `TempFile`, `TEMPFILE`, and `tempfile` all map to
-///   `Tempfile`.
+/// - Unset or empty → [`PromptDelivery::Auto`] (silent).
+/// - Recognised value → matching variant (case-insensitive).
+/// - Unrecognised → [`PromptDelivery::Auto`] + `tracing::warn!`.
 pub fn from_env() -> PromptDelivery {
-    // STUB: always returns Auto, ignoring the env. Tests will fail.
-    PromptDelivery::Auto
+    let raw = match std::env::var(ENV_VAR_NAME) {
+        Ok(v) => v,
+        Err(_) => return PromptDelivery::Auto,
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return PromptDelivery::Auto;
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "auto" => PromptDelivery::Auto,
+        "argv" => PromptDelivery::Argv,
+        "tempfile" => PromptDelivery::Tempfile,
+        "stdin" => PromptDelivery::Stdin,
+        other => {
+            tracing::warn!(
+                env = ENV_VAR_NAME,
+                value = other,
+                "unrecognised prompt-delivery mode; falling back to auto. \
+                 Valid values: auto, argv, tempfile, stdin (case-insensitive)."
+            );
+            PromptDelivery::Auto
+        }
+    }
 }
 
-/// Resolve the actual delivery mode given a requested mode, the prompt size,
-/// and the binary's capabilities.
+// ---------------------------------------------------------------------------
+// select_mode
+// ---------------------------------------------------------------------------
+
+/// Resolve the actual delivery mode for a request.
 ///
-/// Algorithm (see design note for the prose version):
-/// 1. If `requested != Auto`: honour it when supported, else degrade
-///    deterministically through `Tempfile → Stdin → Argv` and `tracing::warn!`.
-/// 2. If `requested == Auto`:
-///    a. `prompt_size <= AUTO_TEMPFILE_THRESHOLD_BYTES` + `supports_argv` → `Argv`.
-///    b. else `supports_tempfile` → `Tempfile`.
-///    c. else `supports_stdin` → `Stdin`.
-///    d. else `Argv` + warn.
+/// See module-level docs for the algorithm. Both the `auto` rule and the
+/// explicit-override degradation chain prefer `tempfile → stdin → argv`
+/// when their preferred mode is unsupported.
 pub fn select_mode(
-    _requested: PromptDelivery,
-    _prompt_size: usize,
-    _caps: &DeliveryCaps,
+    requested: PromptDelivery,
+    prompt_size: usize,
+    caps: &DeliveryCaps,
 ) -> DeliveryMode {
-    // STUB: always returns Argv — wrong for large prompts and explicit overrides.
-    DeliveryMode::Argv
+    match requested {
+        PromptDelivery::Auto => select_auto(prompt_size, caps),
+        PromptDelivery::Argv => {
+            if caps.supports_argv {
+                DeliveryMode::Argv
+            } else {
+                tracing::warn!("argv mode unsupported by binary capabilities; degrading");
+                degrade_chain(caps)
+            }
+        }
+        PromptDelivery::Tempfile => {
+            if caps.supports_tempfile {
+                DeliveryMode::Tempfile
+            } else {
+                tracing::warn!("tempfile mode unsupported by binary capabilities; degrading");
+                if caps.supports_stdin {
+                    DeliveryMode::Stdin
+                } else {
+                    DeliveryMode::Argv
+                }
+            }
+        }
+        PromptDelivery::Stdin => {
+            if caps.supports_stdin {
+                DeliveryMode::Stdin
+            } else {
+                tracing::warn!("stdin mode unsupported by binary capabilities; degrading");
+                if caps.supports_tempfile {
+                    DeliveryMode::Tempfile
+                } else {
+                    DeliveryMode::Argv
+                }
+            }
+        }
+    }
 }
 
-/// Apply prompt delivery to a `Command`.
+fn select_auto(prompt_size: usize, caps: &DeliveryCaps) -> DeliveryMode {
+    if prompt_size <= AUTO_TEMPFILE_THRESHOLD_BYTES && caps.supports_argv {
+        return DeliveryMode::Argv;
+    }
+    if caps.supports_tempfile {
+        return DeliveryMode::Tempfile;
+    }
+    if caps.supports_stdin {
+        return DeliveryMode::Stdin;
+    }
+    if caps.supports_argv {
+        tracing::warn!(
+            prompt_size,
+            "no long-form delivery mode supported by binary; falling back to argv. \
+             Large prompts may be truncated or corrupted by shell-escape limits."
+        );
+        DeliveryMode::Argv
+    } else {
+        tracing::warn!(
+            prompt_size,
+            "binary advertises no supported delivery modes; defaulting to argv"
+        );
+        DeliveryMode::Argv
+    }
+}
+
+fn degrade_chain(caps: &DeliveryCaps) -> DeliveryMode {
+    if caps.supports_tempfile {
+        DeliveryMode::Tempfile
+    } else if caps.supports_stdin {
+        DeliveryMode::Stdin
+    } else {
+        DeliveryMode::Argv
+    }
+}
+
+// ---------------------------------------------------------------------------
+// deliver
+// ---------------------------------------------------------------------------
+
+/// Apply prompt delivery to a [`Command`].
 ///
-/// Mutates `cmd` to either append the prompt as an argv element, append a
-/// path to a temp file (using `caps.tempfile_flag`), or configure piped
-/// stdin and stage the prompt to be written on spawn. Returns a
-/// [`DeliveryHandle`] that the caller MUST keep alive until the child has
-/// been waited on.
+/// Mutates `cmd` as required by the selected mode:
+/// - [`Argv`](DeliveryMode::Argv): appends the prompt as a single argv element.
+/// - [`Tempfile`](DeliveryMode::Tempfile): writes the prompt to a fresh
+///   `tempfile::NamedTempFile` with mode `0600` (Unix), then appends
+///   `caps.tempfile_flag` (when non-empty) followed by the path.
+/// - [`Stdin`](DeliveryMode::Stdin): configures the child's stdin as piped.
+///   The caller is responsible for writing the prompt bytes to
+///   [`std::process::Child::stdin`] and then closing it before waiting.
+///
+/// Returns a [`DeliveryHandle`] whose lifetime guards the temp resources.
 pub fn deliver(
-    _cmd: &mut Command,
-    _prompt: &str,
-    _requested: PromptDelivery,
-    _caps: &DeliveryCaps,
+    cmd: &mut Command,
+    prompt: &str,
+    requested: PromptDelivery,
+    caps: &DeliveryCaps,
 ) -> std::io::Result<DeliveryHandle> {
-    // STUB: returns an Argv handle but does NOT mutate the command. Tests fail.
-    Ok(DeliveryHandle {
-        mode: DeliveryMode::Argv,
-        _opaque: (),
-    })
+    let mode = select_mode(requested, prompt.len(), caps);
+    match mode {
+        DeliveryMode::Argv => {
+            cmd.arg(prompt);
+            Ok(DeliveryHandle {
+                mode,
+                path: None,
+                _tempfile: None,
+            })
+        }
+        DeliveryMode::Tempfile => {
+            let mut named = tempfile::Builder::new()
+                .prefix("simard-prompt-")
+                .tempfile()?;
+            named.write_all(prompt.as_bytes())?;
+            named.as_file_mut().sync_all().ok();
+
+            // tempfile::Builder already creates with 0600 on Unix; re-assert
+            // it here as a belt-and-braces guarantee against any future
+            // upstream behaviour change.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(0o600);
+                std::fs::set_permissions(named.path(), perms)?;
+            }
+
+            let path = named.path().to_path_buf();
+            if let Some(flag) = caps.tempfile_flag
+                && !flag.is_empty()
+            {
+                cmd.arg(flag);
+            }
+            cmd.arg(&path);
+
+            Ok(DeliveryHandle {
+                mode,
+                path: Some(path),
+                _tempfile: Some(named),
+            })
+        }
+        DeliveryMode::Stdin => {
+            cmd.stdin(Stdio::piped());
+            Ok(DeliveryHandle {
+                mode,
+                path: None,
+                _tempfile: None,
+            })
+        }
+    }
 }
