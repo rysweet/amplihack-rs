@@ -467,7 +467,7 @@ steps:
       export VALIDATED_FILE="$_VALIDATED_TMPFILE"
       export FIX_RESULTS_FILE="$_FIX_RESULTS_TMPFILE"
 
-      jq -n -r \
+      _JQ_OUTPUT=$(jq -n -r \
         --slurpfile validated "$VALIDATED_FILE" \
         --slurpfile fixes "$FIX_RESULTS_FILE" \
         --arg fix_all "$FIX_ALL" '
@@ -490,7 +490,20 @@ steps:
           else
             "VERIFY: PASS — \($total_fixed)/\($total_confirmed) fixed, rest skipped as false positive"
           end)' \
-        2>/dev/null || { echo "WARNING: Could not parse JSON for fix verification"; echo "VERIFY: SKIP (unparseable)"; }
+        2>/dev/null) || { echo "WARNING: Could not parse JSON for fix verification"; echo "VERIFY: SKIP (unparseable)"; exit 0; }
+
+      echo "$_JQ_OUTPUT"
+
+      # Bug #646: Cross-check fix-agent claims against actual file modifications.
+      # Guard: only run git diff if we're inside a git worktree (issue #537).
+      _FIXED_COUNT=$(echo "$_JQ_OUTPUT" | sed -n 's/^Fixed: \([0-9][0-9]*\)/\1/p' | head -n 1)
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        if [ "${_FIXED_COUNT:-0}" -gt 0 ] && git diff --quiet 2>/dev/null; then
+          echo "VERIFY: FAIL — fix-agent claims ${_FIXED_COUNT} files fixed but git diff shows no file modifications"
+        fi
+      else
+        echo "[skip] not a git repo — skipping git diff cross-check"
+      fi
     output: "fix_verification"
 
   # ========================================================================
@@ -627,23 +640,34 @@ steps:
     output: "next_cycle"
 
   - id: "run-recursive-cycle"
-    type: "recipe"
-    recipe: "quality-audit-cycle"
+    type: "bash"
     condition: "'CONTINUE:' in recurse_decision"
-    sub_context:
-      task_description: "{{task_description}}"
-      repo_path: "{{repo_path}}"
-      target_path: "{{target_path}}"
-      min_cycles: "{{min_cycles}}"
-      max_cycles: "{{max_cycles}}"
-      validation_threshold: "{{validation_threshold}}"
-      severity_threshold: "{{severity_threshold}}"
-      module_loc_limit: "{{module_loc_limit}}"
-      fix_all_per_cycle: "{{fix_all_per_cycle}}"
-      categories: "{{categories}}"
-      output_dir: "{{output_dir}}"
-      cycle_number: "{{next_cycle}}"
-      cycle_history: "{{cycle_history}}"
+    command: |
+      # Bug #646: Convert from type:recipe to subprocess invocation so results
+      # propagate back. Use heredoc-to-tmpfile for cycle_history (multi-line JSON).
+      _HISTORY_TMPFILE=$(mktemp)
+      chmod 600 "$_HISTORY_TMPFILE"
+      trap 'rm -f "$_HISTORY_TMPFILE"' EXIT
+      cat > "$_HISTORY_TMPFILE" <<'__AMPLIHACK_SAFE_HEREDOC_HISTORY_RECURSIVE__'
+      {{cycle_history}}
+      __AMPLIHACK_SAFE_HEREDOC_HISTORY_RECURSIVE__
+
+      # Bug #646: Shell timeout 900s prevents unbounded recursion hangs.
+      # Uses shell `timeout` (not YAML timeout: field) for issue #439 compliance.
+      timeout 900 amplihack recipe run quality-audit-cycle \
+        -c task_description="{{task_description}}" \
+        -c repo_path="{{repo_path}}" \
+        -c target_path="{{target_path}}" \
+        -c min_cycles="{{min_cycles}}" \
+        -c max_cycles="{{max_cycles}}" \
+        -c validation_threshold="{{validation_threshold}}" \
+        -c severity_threshold="{{severity_threshold}}" \
+        -c module_loc_limit="{{module_loc_limit}}" \
+        -c fix_all_per_cycle="{{fix_all_per_cycle}}" \
+        -c categories="{{categories}}" \
+        -c output_dir="{{output_dir}}" \
+        -c cycle_number="{{next_cycle}}" \
+        -c cycle_history="$(cat "$_HISTORY_TMPFILE")"
     output: "final_report"
 
   # ========================================================================

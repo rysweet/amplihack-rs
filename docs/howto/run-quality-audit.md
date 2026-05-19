@@ -105,7 +105,7 @@ The agent cannot find `target_path`. Likely causes:
 
 Template variables (`{{validated_findings}}`) are being interpreted as bash
 commands instead of being interpolated. This is a heredoc safety issue —
-see the [recipe reference](../reference/recipe-quick-reference.md)
+see the [recipe reference](../reference/quality-audit-cycle-recipe.md)
 for details on the fix.
 
 ### Recipe completes but agents produce empty results
@@ -116,9 +116,51 @@ This is a **hollow success**. Check:
 2. `target_path` contains files the agents can read
 3. The agent binary has access to file-reading tools
 
+### `VERIFY: FAIL — fix-agent claims N files fixed but git diff shows no file modifications`
+
+The `verify-fixes` step cross-checks the fix-agent's JSON output against
+`git diff --quiet`. This error means the fix-agent produced a structurally valid
+response claiming it fixed files, but no actual file modifications exist in the
+working tree.
+
+Common causes:
+
+1. **Fix-agent hallucinated changes** — the agent reported fixes in its JSON
+   output but did not actually write to disk. Re-run the cycle; the next
+   SEEK will rediscover the unfixed findings.
+2. **Changes were staged or committed** — if the fix-agent ran `git add` or
+   `git commit`, the unstaged diff will be empty. The verify step checks
+   unstaged changes only. This is unusual (fix-agents are not instructed to
+   commit) but check with `git log --oneline -3` and `git diff --cached --stat`.
+3. **Working directory mismatch** — the fix-agent modified files in a different
+   directory than `repo_path`. Verify `repo_path` is correct.
+
+### Recursive cycle times out after 15 minutes
+
+The `run-recursive-cycle` step wraps the subprocess invocation in
+`timeout 900` (15 minutes). If a cycle exceeds this limit:
+
+1. The subprocess receives SIGTERM and the recipe halts.
+2. Check `eval_results/quality_audit/` for partial output from completed steps.
+3. Consider reducing `max_cycles` or narrowing `target_path` to a smaller scope.
+4. For large codebases, run separate audits per directory instead of one
+   monolithic audit.
+
+### Recursive cycle returns empty output
+
+Prior to #646, the `run-recursive-cycle` step used `type: recipe` with
+`sub_context`, which silently dropped the sub-recipe's output. This has been
+replaced with a `type: bash` subprocess invocation that captures stdout.
+
+If you still see empty `final_report` output:
+
+1. Check that `amplihack recipe run` is on PATH and functional.
+2. Look for errors in stderr — the subprocess pipes stderr through.
+3. Verify `AMPLIHACK_HOME` is set (the subprocess needs it to locate recipes).
+
 ## See Also
 
-- [Quality Audit Recipe Reference](../reference/recipe-quick-reference.md) — full
+- [Quality Audit Recipe Reference](../reference/quality-audit-cycle-recipe.md) — full
   context variable table and step-by-step reference
-- [SKILL.md](#) — skill activation
-  triggers and detection categories
+- [Quality Audit Skill](../../amplifier-bundle/skills/quality-audit/SKILL.md) — skill
+  activation triggers and detection categories

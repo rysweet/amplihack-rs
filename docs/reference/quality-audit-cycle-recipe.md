@@ -29,17 +29,18 @@ These are managed by the recipe loop and should not be set manually:
 
 ## Steps
 
-| Step ID                | Type  | Purpose                                                            |
-| ---------------------- | ----- | ------------------------------------------------------------------ |
-| `seek`                 | agent | Scan codebase for quality issues (escalating depth)                |
+| Step ID                 | Type  | Purpose                                                            |
+| ----------------------- | ----- | ------------------------------------------------------------------ |
+| `seek`                  | agent | Scan codebase for quality issues (escalating depth)                |
 | `validate-agent-1/2/3` | agent | Three independent validators confirm/reject findings               |
-| `merge-validations`    | bash  | Merge validator outputs, require ≥`validation_threshold` agreement |
-| `fix`                  | agent | Fix ALL confirmed findings (fix-all-per-cycle rule)                |
-| `verify-fixes`         | bash  | Compare confirmed findings against fix results                     |
-| `accumulate-history`   | bash  | Append cycle findings to history for next cycle's SEEK             |
-| `recurse-decision`     | bash  | Decide CONTINUE or STOP based on cycle count and new findings      |
-| `summary`              | agent | Produce consolidated audit report                                  |
-| `self-improvement`     | agent | Review the audit process itself for workflow improvements          |
+| `merge-validations`     | bash  | Merge validator outputs, require ≥`validation_threshold` agreement |
+| `fix`                   | agent | Fix ALL confirmed findings (fix-all-per-cycle rule)                |
+| `verify-fixes`          | bash  | Compare fix results against confirmed findings AND git diff        |
+| `accumulate-history`    | bash  | Append cycle findings to history for next cycle's SEEK             |
+| `recurse-decision`      | bash  | Decide CONTINUE or STOP based on cycle count and new findings      |
+| `run-recursive-cycle`   | bash  | Re-invoke the recipe as a subprocess for the next cycle            |
+| `summary`               | agent | Produce consolidated audit report                                  |
+| `self-improvement`      | agent | Review the audit process itself for workflow improvements          |
 
 ### Loop Behavior
 
@@ -53,6 +54,79 @@ Cycle 3+: seek(deepest) → validate(×3) → merge → fix → verify → accum
 - **Continue past minimum** if any high/critical findings or >3 medium findings
   emerged in the current cycle.
 - **Stop** at `max_cycles` unconditionally.
+
+### verify-fixes: Git Diff Cross-Check (#646)
+
+The `verify-fixes` step performs a two-layer verification:
+
+1. **JSON-level check:** Parses the fix-agent's JSON output via `jq` to compare
+   confirmed finding IDs against the list of applied fixes and skipped fixes.
+   Any confirmed findings not accounted for trigger `VERIFY: FAIL` under the
+   fix-all-per-cycle rule.
+
+2. **Git diff cross-check:** After the jq parse, the step runs
+   `git diff --quiet` to check for actual file modifications in the working
+   tree. If the fix-agent claims `Fixed > 0` findings but `git diff --quiet`
+   exits 0 (no changes), the step overrides the jq result with:
+
+   ```
+   VERIFY: FAIL — fix-agent claims N files fixed but git diff shows no file modifications
+   ```
+
+   This prevents a class of bugs where the fix-agent produces structurally
+   valid JSON with `fixes_applied` entries but does not actually write changes
+   to disk.
+
+**Decision table:**
+
+| jq: total_fixed | git diff --quiet exit | Result |
+| ---------------- | --------------------- | ------ |
+| 0                | 0 (clean)             | Normal jq-only evaluation (PASS if no unfixed, FAIL if unfixed exist) |
+| > 0              | 0 (clean)             | `VERIFY: FAIL` — phantom fixes detected |
+| > 0              | 1 (dirty)             | Normal jq-only evaluation (git confirms real changes) |
+| 0                | 1 (dirty)             | Normal jq-only evaluation (changes from other sources ignored) |
+
+### run-recursive-cycle: Subprocess Invocation (#646)
+
+The `run-recursive-cycle` step re-invokes the quality-audit-cycle recipe for
+the next cycle. It uses `type: bash` with a subprocess call instead of
+`type: recipe` with `sub_context`.
+
+**Why subprocess instead of `type: recipe`:**
+
+The original `type: recipe` + `sub_context` dispatch did not propagate the
+sub-recipe's output back to the parent recipe's context. The `output:` field
+on a `type: recipe` step was silently ignored, causing the `final_report`
+variable to remain empty. Converting to a `type: bash` step that invokes
+`amplihack recipe run quality-audit-cycle` as a subprocess captures stdout
+directly into `output: "final_report"`.
+
+**Timeout guard:**
+
+The subprocess call is wrapped in `timeout 900` (15 minutes) inside the bash
+script to prevent unbounded recursion hangs. This is a **shell-level** timeout,
+not a YAML-level `timeout:` field — the recipe does not use a YAML `timeout:`
+on this step, which would violate the issue #439 no-per-step-timeout policy
+(bash step YAML timeouts are restricted to network commands and must be ≥1800s).
+
+On timeout, the subprocess receives SIGTERM, which the recipe runner handles
+gracefully. The step exits non-zero and the recipe halts.
+
+**cycle_history handling:**
+
+The `cycle_history` context variable can contain large multi-line JSON. To avoid
+shell injection and argument-length limits, the step writes `cycle_history` to
+a temp file via a single-quoted heredoc, then passes it to the subprocess via
+`-c "cycle_history=$(cat "$tmpfile")"`. The temp file is cleaned up via `trap`
+on EXIT.
+
+**Context variable propagation:**
+
+All 13 context variables are forwarded to the subprocess via `-c key=value`
+flags: `task_description`, `repo_path`, `target_path`, `min_cycles`,
+`max_cycles`, `validation_threshold`, `severity_threshold`, `module_loc_limit`,
+`fix_all_per_cycle`, `categories`, `output_dir`, `cycle_number`, and
+`cycle_history`.
 
 ## Bash Step Safety
 
@@ -92,7 +166,7 @@ interprets the content, then read from the file in Python:
 
     python3 - <<'PYEOF'
     import os
-    // use amplihack_utils::defensive::{ parse_llm_json
+    from amplihack_utils.defensive import parse_llm_json
     with open(os.environ['VALIDATED_FILE']) as f:
         validated = parse_llm_json(f.read())
     # ... process safely in Python ...
@@ -134,7 +208,7 @@ For simpler steps that only need one variable:
     __EOF__
 
     python3 - <<'PYEOF'
-    // use amplihack_utils::defensive::{ parse_llm_json
+    from amplihack_utils.defensive import parse_llm_json
     with open("'$_TMPFILE'") as f:
         data = parse_llm_json(f.read())
     PYEOF
@@ -164,5 +238,5 @@ amplihack recipe run quality-audit-cycle \
 ## See Also
 
 - [How to Run a Quality Audit](../howto/run-quality-audit.md) — task-focused guide
-- [SKILL.md](#) — skill activation
-  and detection categories
+- [Quality Audit Skill](../../amplifier-bundle/skills/quality-audit/SKILL.md) — skill
+  activation and detection categories
