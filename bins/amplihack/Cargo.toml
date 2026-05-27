@@ -248,6 +248,13 @@ path = "../../tests/integration/repo_sweep_issues_599_608_test.rs"
 name = "github_distributor_tdd"
 path = "../../tests/integration/github_distributor_tdd_test.rs"
 
+# Issues #655/#656: SKILL.md stale Python instructions + git fetch resilience.
+# #655 tests PASS (SKILL.md already fixed). #656 tests FAIL (TDD red) until
+# workflow-prep.yaml step-01 breaks git fetch out of the &&-chain.
+[[test]]
+name = "issue_655_656_skill_fetch_resilience"
+path = "../../tests/integration/issue_655_656_skill_fetch_resilience_test.rs"
+
 [[test]]
 name = "p1_workflow_reliability"
 path = "../../tests/integration/p1_workflow_reliability_test.rs"

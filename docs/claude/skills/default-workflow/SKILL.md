@@ -189,6 +189,17 @@ In most cases, it will activate first and invoke this workflow as a sub-recipe.
 Steps that commonly fail during workflow execution. Agents executing this workflow
 MUST apply the documented resilience patterns when encountering these steps.
 
+### Step 1 — Git Fetch (credential failure)
+
+**Failure**: `git fetch --all` fails with exit 128 when the remote requires credentials
+that are not configured — most commonly Azure DevOps remotes where only the GitHub
+credential helper (`gh auth git-credential`) is wired up.
+**Resilience**: Fetch failure is caught and downgraded to a WARNING. The step continues
+with local branch state. ADO remotes (`dev.azure.com`, `visualstudio.com`) receive
+specific remediation guidance (`az login`, GCM install, PAT setup). The remote URL is
+never echoed to avoid leaking embedded credentials. See
+`docs/recipes/issue-655-656-skill-invocation-and-fetch-resilience.md` for details.
+
 ### Step 3 — Issue Creation (label missing)
 
 **Failure**: `gh label create` fails silently when labels cannot be created (permission denied, API timeout).

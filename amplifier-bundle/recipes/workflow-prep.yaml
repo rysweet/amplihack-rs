@@ -97,14 +97,30 @@ steps:
       echo "--- Git Status ---" && \
       git status && \
       echo "" && \
-      echo "--- Fetching Latest ---" && \
-      git fetch --all --no-tags && \
-      echo "" && \
-      echo "--- Current Branch ---" && \
-      git branch --show-current && \
-      echo "" && \
-      echo "=== Workspace Prepared ===" && \
-      echo "" && \
+      echo "--- Fetching Latest ---"
+      FETCH_RC=0
+      git fetch --all --no-tags 2>/dev/null || FETCH_RC=$?
+      if [ "$FETCH_RC" -ne 0 ]; then
+        echo "WARNING: git fetch failed (exit $FETCH_RC) — continuing with local branch state" >&2
+        REMOTE_URL=$(git remote get-url origin 2>/dev/null || true)
+        case "$REMOTE_URL" in
+          *dev.azure.com*|*visualstudio.com*)
+            echo "WARNING: ADO remote detected. Remediation steps:" >&2
+            echo "  1. Run 'az login' to refresh Azure credentials" >&2
+            echo "  2. Configure git credential-manager: git config credential.helper manager" >&2
+            echo "  3. Or set a Personal Access Token (PAT) for authentication" >&2
+            ;;
+          *)
+            echo "WARNING: Check remote credentials or network connectivity" >&2
+            ;;
+        esac
+      fi
+      echo ""
+      echo "--- Current Branch ---"
+      git branch --show-current
+      echo ""
+      echo "=== Workspace Prepared ==="
+      echo ""
       # ── Pre-agent validation guard (issue #453) ──────────────────────
       # Do NOT add project validation commands (npm test, npm run build,
       # cargo test, etc.) outside this conditional. Validation only runs
