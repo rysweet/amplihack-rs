@@ -1,0 +1,33 @@
+scenario:
+  name: "Git Fetch Resilience — step-01-prepare-workspace (Issues #655/#656)"
+  description: |
+    Verifies that step-01-prepare-workspace in workflow-prep.yaml gracefully
+    handles git fetch failures instead of aborting the entire step.
+
+    Issue #656: git fetch broken out of &&-chain, exit code captured,
+    ADO-specific remediation, remote URL not echoed (credential safety).
+
+    Issue #655: default-workflow SKILL.md has no stale Python recipe runner
+    instructions (run_recipe_by_name, python3 -c, from amplihack.recipes).
+
+    Covers structural, behavioral, and security checks in one script.
+  type: cli
+  tags: [regression, workflow, git-fetch, ado, resilience, issue-655, issue-656]
+  agents:
+    - name: recipe-step-01
+      type: cli
+      command: bash
+
+  prerequisites:
+    - "Git repository exists in the working directory"
+    - "workflow-prep.yaml is present at amplifier-bundle/recipes/workflow-prep.yaml"
+
+  steps:
+    - action: run
+      target: "bash tests/outside-in/scripts/scenario8-checks.sh"
+      description: "Run all structural, behavioral, and security checks for issues #655/#656"
+      expected: success
+      timeout: 30000
+
+  cleanup:
+    - "rm -rf /tmp/tmp.* 2>/dev/null || true"
