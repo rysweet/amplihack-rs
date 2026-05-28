@@ -98,10 +98,11 @@ Two named assets re-registered in the `NAMED_ASSETS` table:
 | Name | Resolves to | Fallback |
 |---|---|---|
 | `hooks-dir` | `amplifier-bundle/tools/amplihack/hooks/` | — |
-| `helper-path` | `amplifier-bundle/tools/orch_helper.py` | `amplifier-bundle/tools/amplihack/orch_helper.py` |
+| `helper-path` | `amplihack orch helper` (native Rust) | Legacy: `amplifier-bundle/tools/orch_helper.py` |
 
-`helper-path` tries two candidate paths in order and returns the first that
-exists on disk.
+`helper-path` now resolves to the native Rust `amplihack orch helper` command.
+The legacy Python fallback paths are retained for backward compatibility but
+are no longer shipped.
 
 ### Usage
 
@@ -110,9 +111,9 @@ exists on disk.
 amplihack resolve-bundle-asset hooks-dir
 # /home/user/.amplihack/amplifier-bundle/tools/amplihack/hooks
 
-# Resolve the orchestrator helper
-amplihack resolve-bundle-asset helper-path
-# /home/user/.amplihack/amplifier-bundle/tools/orch_helper.py
+# The orchestrator helper is now a native Rust subcommand:
+amplihack orch helper
+# (No resolve-bundle-asset lookup needed — use directly)
 ```
 
 ### Configuration

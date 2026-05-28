@@ -121,7 +121,7 @@ Debug: [analyzer, environment, patterns, logs]
 **GitHub:**
 
 - gh CLI (preferred): `gh pr create`, `gh issue list`
-- API (fallback): ci_status.py, github_issue.py
+- Native Rust (fallback): `amplihack orch helper` for CI status and issue queries
 
 **CI/CD:**
 

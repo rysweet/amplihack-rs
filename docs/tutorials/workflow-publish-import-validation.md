@@ -6,6 +6,12 @@
 
 This tutorial walks through the publish-validation feature shipped for issue 4064.
 
+> **Note (May 2026):** Several Python files referenced in this tutorial
+> (`orch_helper.py`, `build_publish_validation_scope.py`, `check_imports.py`)
+> have been replaced by native Rust equivalents (see issues #666–#668).
+> The examples below preserve the legacy Python invocations for historical
+> context and to illustrate the validation workflow design.
+
 ## What You'll Learn
 
 By the end of this tutorial you will know how to:

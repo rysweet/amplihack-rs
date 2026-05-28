@@ -11,7 +11,7 @@ At runtime the system operates as a set of cooperating processes:
 - **Claude Code host** -- the AI coding assistant process, extended by hooks
   (session_start, pre_tool_use, post_tool_use, stop, user_prompt)
 - **Recipe Runner** -- executes YAML recipe steps, spawning agent sub-processes
-  with a recursion guard (session_tree.py, max depth 3)
+  with a native recursion guard (`AMPLIHACK_MAX_DEPTH` env var, default max depth 3)
 - **Agent Runtime** -- the agentic loop that drives tool-use cycles via SDK
   adapters (Anthropic, GitHub Copilot, Microsoft)
 - **Memory Store** -- LadybugDB (Kuzu graph) and JSON file store for persistent

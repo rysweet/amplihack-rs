@@ -40,6 +40,9 @@ src/amplihack/recipes/__init__.py
 src/amplihack/recipes/recipe_command.py
 ```
 
+> **Note:** `orch_helper.py` has been replaced by native Rust (`amplihack orch helper`).
+> This manifest example references the legacy Python codebase.
+
 Path rules:
 
 - manifest paths are repo-relative and point at files inside the repo
