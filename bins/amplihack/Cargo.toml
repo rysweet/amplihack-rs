@@ -258,3 +258,10 @@ path = "../../tests/integration/issue_655_656_skill_fetch_resilience_test.rs"
 [[test]]
 name = "p1_workflow_reliability"
 path = "../../tests/integration/p1_workflow_reliability_test.rs"
+
+# Regression guard: no stale Python recipe-runner patterns or gratuitous
+# python3 -c JSON/YAML one-liners in SKILL.md and skill shell scripts.
+# Excludes dynamic-debugger (debugpy is a legitimate Python tool).
+[[test]]
+name = "no_stale_python_patterns"
+path = "../../tests/integration/no_stale_python_patterns_test.rs"

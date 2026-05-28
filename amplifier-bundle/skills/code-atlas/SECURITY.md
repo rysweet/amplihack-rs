@@ -187,9 +187,8 @@ with open("package.json") as f:
 ```
 
 ```bash
-# Safe: use yq or python for YAML parsing, not bash eval
+# Safe: use yq for YAML parsing, not bash eval
 yq e '.services | keys' docker-compose.yml
-python3 -c "import yaml,sys; d=yaml.safe_load(sys.stdin); print(list(d.get('services',{}).keys()))" < docker-compose.yml
 ```
 
 **Anti-pattern:**

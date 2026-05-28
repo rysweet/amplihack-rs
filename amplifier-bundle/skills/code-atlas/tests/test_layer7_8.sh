@@ -448,16 +448,16 @@ assert_file_contains \
     "$RECIPE"
 
 # Validate YAML is parseable
-if command -v python3 &>/dev/null; then
-    if python3 -c "import yaml; yaml.safe_load(open('${RECIPE}'))" 2>/dev/null; then
-        echo "PASS: Recipe YAML is valid (python3 yaml.safe_load)"
+if command -v yq &>/dev/null; then
+    if yq '.' "${RECIPE}" >/dev/null 2>&1; then
+        echo "PASS: Recipe YAML is valid (yq)"
         PASS=$((PASS + 1))
     else
         echo "FAIL: Recipe YAML is invalid — parse error"
         FAIL=$((FAIL + 1))
     fi
 else
-    echo "SKIP: python3 not available — cannot validate YAML syntax"
+    echo "SKIP: yq not available — cannot validate YAML syntax"
 fi
 
 # ---------------------------------------------------------------------------

@@ -99,21 +99,15 @@ detect_cli() {
     local ctx="$cur/.claude/runtime/launcher_context.json"
     if [[ -f "$ctx" ]]; then
       local parsed
-      parsed="$(python3 -c 'import json,sys;import os
-try:
-  d=json.load(open(sys.argv[1]))
-  v=d.get("launcher")
-  if isinstance(v,str):
-    v=v.strip().lower()
-    if v in {"amplifier","claude","codex","copilot"}:
-      print(v)
-except Exception:
-  pass' "$ctx" 2>/dev/null || true)"
-      if [[ -n "$parsed" ]]; then
+      parsed="$(jq -r '.launcher // empty' "$ctx" 2>/dev/null || true)"
+      parsed="$(printf '%s' "$parsed" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+      if [[ -n "$parsed" && "$parsed" =~ $allowed_re ]]; then
         echo "$parsed"
         return
       fi
-      break
+      if [[ -n "$parsed" ]]; then
+        break
+      fi
     fi
     cur="$(dirname "$cur")"
     hops=$((hops + 1))

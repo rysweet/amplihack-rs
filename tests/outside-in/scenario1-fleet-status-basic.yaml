@@ -7,6 +7,10 @@ scenario:
     test for fleet cockpit parity (AC5) and no-Python runtime (AC9).
   type: cli
   tags: [smoke, fleet, ac5, ac9, issue-77]
+  agents:
+    - name: amplihack-cli
+      type: cli
+      command: amplihack
 
   prerequisites:
     - "amplihack release binary exists at ./target/release/amplihack"
