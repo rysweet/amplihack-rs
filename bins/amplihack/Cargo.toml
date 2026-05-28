@@ -258,3 +258,9 @@ path = "../../tests/integration/issue_655_656_skill_fetch_resilience_test.rs"
 [[test]]
 name = "p1_workflow_reliability"
 path = "../../tests/integration/p1_workflow_reliability_test.rs"
+
+# Issue #661: Scan SKILL.md files for stale Python recipe-runner patterns.
+# Prevents re-introduction of run_recipe_by_name, python3 -c recipe, etc.
+[[test]]
+name = "no_stale_python_patterns"
+path = "../../tests/integration/no_stale_python_patterns_test.rs"

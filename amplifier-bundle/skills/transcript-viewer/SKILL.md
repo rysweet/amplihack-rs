@@ -337,7 +337,7 @@ For **Claude Code** (`TOOL_CONTEXT="claude-code"`):
    ```bash
    $CCL <file> --format markdown --summary
    # If --summary flag is not supported, just show filename and date
-   head -1 <file> | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('timestamp',''))"
+   head -1 <file> | jq -r '.timestamp // empty'
    ```
 3. Print a summary table:
    ```
@@ -362,8 +362,7 @@ For **GitHub Copilot CLI** (`TOOL_CONTEXT="copilot"`):
      session_id=$(basename "$session_dir")
      events_file="$session_dir/events.jsonl"
      if [[ -f "$events_file" ]]; then
-       timestamp=$(head -1 "$events_file" | python3 -c \
-         "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('timestamp',''))" 2>/dev/null)
+       timestamp=$(head -1 "$events_file" | jq -r '.timestamp // empty' 2>/dev/null)
        echo "$timestamp  $session_id"
      fi
    done
