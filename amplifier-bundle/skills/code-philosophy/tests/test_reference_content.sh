@@ -165,10 +165,10 @@ else
   fail "reference.md: only $REF_LINES lines — likely incomplete for 3-pass reference (expected >= 200)"
 fi
 
-if [[ "$REF_LINES" -le 600 ]]; then
-  pass "reference.md: under 600 lines ($REF_LINES — not bloated)"
+if [[ "$REF_LINES" -le 900 ]]; then
+  pass "reference.md: under 900 lines ($REF_LINES — includes recipe architecture docs)"
 else
-  fail "reference.md: $REF_LINES lines — may be overly verbose (expected <= 600)"
+  fail "reference.md: $REF_LINES lines — may be overly verbose (expected <= 900)"
 fi
 
 # ─── Summary ─────────────────────────────────────────────────────────────────

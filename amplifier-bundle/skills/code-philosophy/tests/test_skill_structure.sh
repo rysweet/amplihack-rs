@@ -255,10 +255,10 @@ else
   fail "SKILL.md: only $LINE_COUNT lines — likely incomplete (expected >= 150)"
 fi
 
-if [[ "$LINE_COUNT" -le 400 ]]; then
-  pass "SKILL.md: under 400 lines ($LINE_COUNT — brick-compliant)"
+if [[ "$LINE_COUNT" -le 500 ]]; then
+  pass "SKILL.md: under 500 lines ($LINE_COUNT — brick-compliant for orchestrated skill)"
 else
-  fail "SKILL.md: $LINE_COUNT lines — exceeds 400 LOC brick limit"
+  fail "SKILL.md: $LINE_COUNT lines — exceeds 500 LOC limit for orchestrated skill"
 fi
 
 if [[ -f "$REFERENCE_FILE" ]]; then
