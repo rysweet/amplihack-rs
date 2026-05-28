@@ -264,3 +264,8 @@ path = "../../tests/integration/p1_workflow_reliability_test.rs"
 [[test]]
 name = "no_stale_python_patterns"
 path = "../../tests/integration/no_stale_python_patterns_test.rs"
+
+# code-philosophy-audit recipe structural parity tests.
+[[test]]
+name = "code_philosophy_audit_recipe"
+path = "../../tests/integration/code_philosophy_audit_recipe_test.rs"

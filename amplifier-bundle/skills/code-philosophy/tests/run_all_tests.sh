@@ -34,6 +34,7 @@ run_suite "Pass 2: QUALITY INVARIANTS" "$SCRIPT_DIR/test_pass2_quality_invariant
 run_suite "Pass 3: PHILOSOPHY SPIRIT"  "$SCRIPT_DIR/test_pass3_philosophy_spirit.sh"
 run_suite "Workflow & Integration"  "$SCRIPT_DIR/test_workflow_integration.sh"
 run_suite "reference.md Content"    "$SCRIPT_DIR/test_reference_content.sh"
+run_suite "Recipe Orchestration"    "$SCRIPT_DIR/test_recipe_orchestration.sh"
 
 echo ""
 echo "╔═══════════════════════════════════════════════════════╗"
