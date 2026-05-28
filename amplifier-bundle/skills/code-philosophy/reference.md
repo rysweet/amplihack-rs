@@ -3,6 +3,220 @@
 Detailed detection criteria, code examples, severity escalation rules, and
 report format specification for the code-philosophy audit skill.
 
+## Recipe Architecture
+
+The code-philosophy skill is executed via the `code-philosophy-audit` recipe
+(`amplifier-bundle/recipes/code-philosophy-audit.yaml`). The recipe orchestrates
+five layers, each as a separate recipe step.
+
+### Layer Interactions
+
+```
+Layer 1 (code-smell-detector)
+  │ findings passed forward
+  ▼
+Layer 2 (philosophy-compliance-workflow)
+  │ receives L1 findings for dedup, adds architecture findings
+  ▼
+Layer 3 (3-pass audit)
+  │ receives L1+L2 findings for dedup, runs brick/quality/spirit passes
+  ▼
+Layer 4 (consolidation)
+  │ merges all findings, deduplicates, sorts by severity
+  ▼
+Layer 5 (re-assessment) ← conditional: only if fixes were applied
+```
+
+Each layer receives the prior layers' findings as context and is responsible
+for de-duplicating against them. Layer 4 does a final cross-layer merge.
+
+### Finding Deduplication Logic
+
+Findings are deduplicated by matching on `file + line (±3 lines) + category`.
+When overlapping findings are detected across layers:
+
+| Layer 1 Category | Overlapping Layer 3 Category | Resolution |
+|-----------------|------------------------------|------------|
+| over-abstraction | Pass 3: over-abstraction | Keep higher severity, merge descriptions |
+| large-function | Pass 1: function-loc | Keep higher severity, note both sources |
+| inheritance | Pass 1: inheritance | Keep higher severity, note both sources |
+
+| Layer 2 Category | Overlapping Layer 3 Category | Resolution |
+|-----------------|------------------------------|------------|
+| ruthless-simplicity | Pass 3: ruthless-simplicity | Keep higher severity, merge descriptions |
+| brick-modularity | Pass 3: brick-modularity | Keep higher severity, note both sources |
+
+Non-overlapping findings pass through to consolidation unchanged.
+
+### Running Individual Layers vs Full Audit
+
+**Full audit** (recommended — runs all 5 layers):
+```bash
+amplihack recipe run code-philosophy-audit \
+  -c target_path="src/" \
+  -c task_description="Full philosophy audit" \
+  -c repo_path=.
+```
+
+**Individual skill invocation** (Layer 1 only):
+```bash
+# Invoke code-smell-detector directly
+Skill(skill="code-smell-detector")
+```
+
+**Individual skill invocation** (Layer 2 only):
+```bash
+# Invoke philosophy-compliance-workflow directly
+Skill(skill="philosophy-compliance-workflow")
+```
+
+**Layer 3 only** (3-pass audit without orchestration):
+```bash
+# Invoke code-philosophy skill directly — runs the 3-pass audit
+Skill(skill="code-philosophy")
+# Note: when invoked directly without the recipe, only Layer 3 runs
+```
+
+**Audit mode** controls scope via the `audit_mode` context variable:
+- `full` (default): Audit entire target path
+- Target path can be a file, directory, or left empty for full repo
+
+## Configuration Reference
+
+All context variables passed via `-c key=value` to the recipe:
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `repo_path` | path | `"."` | Repository root. All file paths are relative to this. |
+| `target_path` | path | `""` | Audit scope. A file, directory, or empty for full repo. |
+| `task_description` | string | `""` | Human-readable audit context. For diff/PR audits, include the diff command (e.g., `"Audit PR #42: gh pr diff 42"`). |
+| `audit_mode` | enum | `"full"` | Currently only `"full"` is supported. Reserved for future selective modes. |
+
+**Computed variables** (set by recipe steps, not user-configurable):
+
+| Variable | Set By | Description |
+|----------|--------|-------------|
+| `layer_1_findings` | Layer 1 | JSON findings from code-smell-detector |
+| `layer_2_findings` | Layer 2 | JSON findings from philosophy-compliance-workflow |
+| `layer_3_findings` | Layer 3 | JSON findings from 3-pass audit |
+| `consolidation_report` | Layer 4 | Unified deduplicated report with verdict |
+| `fix_results` | External | Set by dev-orchestrator if fixes were applied; triggers Layer 5 |
+| `reassessment_report` | Layer 5 | Post-fix re-assessment results |
+
+**Recursion limits** (set in recipe header, not overridable):
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| `max_depth` | 4 | Maximum nesting depth for agent sub-calls |
+| `max_total_steps` | 20 | Hard cap on total recipe steps to prevent runaway |
+
+## Integration Guide
+
+### With dev-orchestrator
+
+The audit produces findings but does not modify code. To complete the
+fix→verify cycle:
+
+1. Run the audit: `amplihack recipe run code-philosophy-audit -c ...`
+2. Review the consolidated report (Layer 4 output)
+3. For FAIL/PASS-WITH-WARNINGS verdicts, pass findings to dev-orchestrator:
+   ```
+   Skill(skill="dev-orchestrator")
+   Task: "Fix philosophy violations from audit report: <paste findings>"
+   ```
+4. After fixes, re-run the audit. If `fix_results` context is populated,
+   Layer 5 runs automatically on changed files only.
+
+### In CI/CD Pipelines
+
+The recipe runs as a standard `amplihack recipe run` command. Integrate
+into CI by checking the exit code and parsing the JSON verdict:
+
+```yaml
+# GitHub Actions example
+- name: Philosophy Audit
+  run: |
+    amplihack recipe run code-philosophy-audit \
+      -c target_path="src/" \
+      -c task_description="CI audit on push" \
+      -c repo_path=. 2>&1 | tee audit-output.log
+    # Parse verdict from output
+    if grep -q '"verdict": "FAIL"' audit-output.log; then
+      echo "::error::Philosophy audit FAIL — see findings"
+      exit 1
+    fi
+```
+
+### With quality-audit-cycle
+
+The `quality-audit-cycle` recipe can invoke `code-philosophy-audit` as a
+sub-recipe for periodic quality gates. The two recipes are complementary:
+- `code-philosophy-audit` — single-run audit with fix delegation
+- `quality-audit-cycle` — recurring audit loop with trend tracking
+
+### PR Review Integration
+
+For pull request reviews, combine with the skill trigger:
+
+```
+Skill(skill="code-philosophy")
+Target: PR #42
+```
+
+The skill parses the PR number, invokes the recipe with
+`task_description="Audit PR #42: gh pr diff 42"`, and returns
+the consolidated report as a review comment.
+
+## Troubleshooting
+
+### Recipe fails with "agent not found"
+
+The recipe uses `amplihack:core:reviewer` agents. Verify the agent is
+registered:
+
+```bash
+amplihack agent list | grep reviewer
+```
+
+If missing, run `amplihack install` to stage all bundled agents.
+
+### Layer 5 never runs
+
+Layer 5 is conditional — it only runs when `fix_results` is non-empty
+AND `consolidation_report` exists. This variable must be set externally
+after dev-orchestrator applies fixes. In a standalone audit (no fix
+cycle), Layer 5 is skipped by design.
+
+### Duplicate findings across layers
+
+The deduplication in Layers 2, 3, and 4 uses `file + line (±3 lines) +
+category` matching. If you see duplicates, they likely have different
+categories or line numbers >3 apart. Check the `dedup_stats` in the
+Layer 4 output for removal counts.
+
+### Audit takes too long on large repos
+
+Scope the audit with `target_path` to limit the file set. For >10,000
+file repos, audit directory-by-directory rather than full repo:
+
+```bash
+for dir in src/core src/api src/cli; do
+  amplihack recipe run code-philosophy-audit \
+    -c target_path="$dir" \
+    -c task_description="Audit $dir" \
+    -c repo_path=.
+done
+```
+
+### False positives on generated code
+
+Files with codegen markers (`// Code generated`, `@generated`) are
+tagged in Phase 0 and findings are demoted to **low** severity.
+If auto-detection misses a generated file, add the marker comment
+to the file's header.
+
+---
+
 ## Pass 1: BRICK RULE Compliance — Detection Criteria
 
 ### 1.1 File LOC Limit (≤400 lines per file)
@@ -509,3 +723,131 @@ When reporting, prioritize critical and high findings. Do not overwhelm the
 report with low-severity cosmetic issues. If a file has 20+ low-severity
 findings but zero critical/high, the verdict is still PASS-WITH-WARNINGS
 at most.
+
+## Output Schema Reference
+
+Each layer produces structured JSON output. The schemas below define the
+contract between layers and with downstream consumers.
+
+### Layer 1/2 Finding Schema
+
+```json
+{
+  "layer": 1,
+  "source": "code-smell-detector",
+  "findings": [{
+    "id": "L1-001",
+    "category": "over-abstraction|inheritance|large-function|tight-coupling|missing-exports",
+    "severity": "critical|high|medium|low",
+    "file": "path/to/file.rs",
+    "line": 42,
+    "description": "Single-implementation trait with no test mock usage",
+    "evidence": "trait DataStore used only by PostgresStore",
+    "fix": "Remove trait, use PostgresStore directly"
+  }],
+  "summary": {"total": 1, "critical": 0, "high": 1, "medium": 0, "low": 0}
+}
+```
+
+### Layer 3 Finding Schema
+
+Layer 3 adds `pass` and `classification` fields:
+
+```json
+{
+  "layer": 3,
+  "source": "code-philosophy-3-pass",
+  "classification": {
+    "total_files": 47,
+    "by_language": {"rust": 32, "python": 10, "shell": 5},
+    "excluded": ["vendor/lib.rs (vendored)", "build.rs (generated)"]
+  },
+  "findings": [{
+    "id": "L3-P1-001",
+    "pass": "brick-rule",
+    "category": "loc-limit",
+    "severity": "critical",
+    "file": "src/engine.rs",
+    "line": 1,
+    "description": "File exceeds 400 LOC (523 lines)",
+    "evidence": "wc -l: 523",
+    "fix": "Split into parser.rs, executor.rs, reporter.rs"
+  }],
+  "summary": {
+    "pass_1": {"total": 1, "critical": 1, "high": 0, "medium": 0, "low": 0},
+    "pass_2": {"total": 0, "critical": 0, "high": 0, "medium": 0, "low": 0},
+    "pass_3": {"total": 0, "critical": 0, "high": 0, "medium": 0, "low": 0},
+    "overall": {"total": 1, "critical": 1, "high": 0, "medium": 0, "low": 0}
+  }
+}
+```
+
+### Layer 4 Consolidated Report Schema
+
+```json
+{
+  "layer": 4,
+  "source": "consolidation",
+  "verdict": "FAIL",
+  "dedup_stats": {
+    "total_raw": 12,
+    "duplicates_removed": 3,
+    "total_consolidated": 9
+  },
+  "findings": [{
+    "id": "C-001",
+    "source_layers": [1, 3],
+    "category": "over-abstraction",
+    "severity": "high",
+    "file": "src/store.rs",
+    "line": 15,
+    "description": "Single-impl trait (L1) + over-abstraction (L3 Pass 3)",
+    "evidence": "trait DataStore → only PostgresStore impl",
+    "fix": "Remove trait, use concrete type"
+  }],
+  "summary": {
+    "by_severity": {"critical": 1, "high": 3, "medium": 4, "low": 1},
+    "by_source": {"layer_1": 4, "layer_2": 2, "layer_3": 3},
+    "by_category": {"over-abstraction": 2, "loc-limit": 1, "unwrap": 3}
+  },
+  "verdict_reason": "1 critical finding: src/engine.rs exceeds 400 LOC"
+}
+```
+
+### Layer 5 Re-Assessment Schema
+
+```json
+{
+  "layer": 5,
+  "source": "reassessment",
+  "changed_files": ["src/engine.rs", "src/parser.rs", "src/executor.rs"],
+  "original_findings_resolved": 7,
+  "new_findings_introduced": 1,
+  "verdict": "PASS-WITH-WARNINGS",
+  "findings": [{
+    "id": "R-001",
+    "type": "new",
+    "category": "naming",
+    "severity": "medium",
+    "file": "src/executor.rs",
+    "line": 5,
+    "description": "Class named 'ExecutorHelper' uses vague Helper suffix",
+    "fix": "Rename to CommandRunner or TaskExecutor"
+  }],
+  "summary": {
+    "original_total": 9,
+    "resolved": 7,
+    "remaining": 2,
+    "new_violations": 1
+  },
+  "verdict_reason": "No critical findings; 1 new medium finding introduced"
+}
+```
+
+### Verdict Decision Table
+
+| Condition | Verdict |
+|-----------|---------|
+| Any `critical` finding present | `FAIL` |
+| No `critical`, but `high` or `medium` present | `PASS-WITH-WARNINGS` |
+| Only `low` findings or no findings | `PASS` |
