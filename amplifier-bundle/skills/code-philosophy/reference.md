@@ -50,38 +50,14 @@ Non-overlapping findings pass through to consolidation unchanged.
 
 ### Running Individual Layers vs Full Audit
 
-**Full audit** (recommended — runs all 5 layers):
-```bash
-amplihack recipe run code-philosophy-audit \
-  -c target_path="src/" \
-  -c task_description="Full philosophy audit" \
-  -c repo_path=.
-```
+| Mode | Command |
+|------|---------|
+| Full audit (all 5 layers) | `amplihack recipe run code-philosophy-audit -c target_path="src/" -c task_description="Full audit" -c repo_path=.` |
+| Layer 1 only | `Skill(skill="code-smell-detector")` |
+| Layer 2 only | `Skill(skill="philosophy-compliance-workflow")` |
+| Layer 3 only | `Skill(skill="code-philosophy")` — launches full recipe if runtime supports `recipe:` frontmatter |
 
-**Individual skill invocation** (Layer 1 only):
-```bash
-# Invoke code-smell-detector directly
-Skill(skill="code-smell-detector")
-```
-
-**Individual skill invocation** (Layer 2 only):
-```bash
-# Invoke philosophy-compliance-workflow directly
-Skill(skill="philosophy-compliance-workflow")
-```
-
-**Layer 3 only** (3-pass audit without orchestration):
-```bash
-# Invoke code-philosophy skill directly
-Skill(skill="code-philosophy")
-# Behavior depends on agent runtime:
-# - If runtime supports recipe: frontmatter → launches full 5-layer recipe
-# - If runtime ignores recipe: frontmatter → runs Layer 3 (3-pass audit) only
-# For guaranteed full-pipeline execution, use amplihack recipe run (above)
-```
-
-**Audit scope** is controlled by the `target_path` context variable — a file,
-directory, or empty string for full repo.
+Audit scope is controlled by `target_path`: a file, directory, or empty for full repo.
 
 ## Configuration Reference
 
@@ -170,51 +146,13 @@ the consolidated report as a review comment.
 
 ## Troubleshooting
 
-### Recipe fails with "agent not found"
-
-The recipe uses `amplihack:core:reviewer` agents. Verify the agent is
-registered:
-
-```bash
-amplihack agent list | grep reviewer
-```
-
-If missing, run `amplihack install` to stage all bundled agents.
-
-### Layer 5 never runs
-
-Layer 5 is conditional — it only runs when `fix_results` is non-empty
-AND `consolidation_report` exists. This variable must be set externally
-after dev-orchestrator applies fixes. In a standalone audit (no fix
-cycle), Layer 5 is skipped by design.
-
-### Duplicate findings across layers
-
-The deduplication in Layers 2, 3, and 4 uses `file + line (±3 lines) +
-category` matching. If you see duplicates, they likely have different
-categories or line numbers >3 apart. Check the `dedup_stats` in the
-Layer 4 output for removal counts.
-
-### Audit takes too long on large repos
-
-Scope the audit with `target_path` to limit the file set. For >10,000
-file repos, audit directory-by-directory rather than full repo:
-
-```bash
-for dir in src/core src/api src/cli; do
-  amplihack recipe run code-philosophy-audit \
-    -c target_path="$dir" \
-    -c task_description="Audit $dir" \
-    -c repo_path=.
-done
-```
-
-### False positives on generated code
-
-Files with codegen markers (`// Code generated`, `@generated`) are
-tagged in Phase 0 and findings are demoted to **low** severity.
-If auto-detection misses a generated file, add the marker comment
-to the file's header.
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| "agent not found" | `amplihack:core:reviewer` not registered | Run `amplihack install` to stage bundled agents |
+| Layer 5 never runs | `fix_results` not set externally | Set `fix_results` after dev-orchestrator applies fixes; skipped by design in standalone audits |
+| Duplicate findings | Different categories or line numbers >3 apart | Check `dedup_stats` in Layer 4 output |
+| Audit too slow | Full repo scan on large codebase | Use `target_path` to scope; for >10K files, audit per-directory |
+| False positives on generated code | Missing codegen markers | Add `// Code generated` or `@generated` to file header; Phase 0 auto-detects and demotes to **low** |
 
 ## Performance Optimization Guide
 
