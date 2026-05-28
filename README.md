@@ -53,7 +53,7 @@ scale.
 **The Solution**: amplihack builds the engineering system around your coding
 agent:
 
-- **Structured workflows** replace ad-hoc prompting 
+- **Structured workflows** replace ad-hoc prompting
 - **Specialized agents** handle architecture, building, testing, and review with
   defined responsibilities
 - **Persistent memory** across sessions with knowledge graphs and discoveries

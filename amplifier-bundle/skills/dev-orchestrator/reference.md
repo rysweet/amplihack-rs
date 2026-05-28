@@ -213,4 +213,3 @@ tool call after this skill is invoked. It tracks:
 If 3+ tool calls pass without evidence of recipe runner execution, the hook
 emits a hard WARNING. This is not a suggestion — it means you are violating
 the mandatory workflow. State is stored in `/tmp/amplihack-workflow-state/`.
-
