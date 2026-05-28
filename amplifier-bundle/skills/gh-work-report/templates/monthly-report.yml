@@ -94,9 +94,9 @@ jobs:
           mkdir -p docs/reports
 
           REPO_COUNT=$(cat /tmp/report-data/repos.json | wc -l)
-          PR_CREATED=$(python3 -c "import json; print(len(json.load(open('/tmp/report-data/prs-created.json'))))")
-          PR_MERGED=$(python3 -c "import json; print(len(json.load(open('/tmp/report-data/prs-merged.json'))))")
-          ISSUES=$(python3 -c "import json; print(len(json.load(open('/tmp/report-data/issues.json'))))")
+          PR_CREATED=$(jq 'length' /tmp/report-data/prs-created.json)
+          PR_MERGED=$(jq 'length' /tmp/report-data/prs-merged.json)
+          ISSUES=$(jq 'length' /tmp/report-data/issues.json)
 
           cat > "$REPORT" << EOF
           # GitHub Activity Report: ${START} → ${END}
@@ -119,62 +119,37 @@ jobs:
 
           echo "| # | Title | Repository | Status | Created |" >> "$REPORT"
           echo "|---|-------|-----------|--------|---------|" >> "$REPORT"
-          python3 -c "
-          import json
-          prs = json.load(open('/tmp/report-data/prs-created.json'))
-          for pr in prs[:100]:
-              repo = pr.get('repository', {})
-              repo_name = repo.get('nameWithOwner', 'unknown') if isinstance(repo, dict) else str(repo)
-              print(f'| [#{pr[\"number\"]}]({pr[\"url\"]}) | {pr[\"title\"]} | {repo_name} | {pr[\"state\"]} | {pr[\"createdAt\"][:10]} |')
-          " >> "$REPORT"
+          jq -r '.[:100][] | "| [#\(.number)](\(.url)) | \(.title) | \((.repository.nameWithOwner // .repository // "unknown") | tostring) | \(.state) | \(.createdAt[:10]) |"' \
+            /tmp/report-data/prs-created.json >> "$REPORT"
 
           echo "" >> "$REPORT"
           echo "## Active Repositories" >> "$REPORT"
           echo "" >> "$REPORT"
           echo "| Repository | Description | Last Push |" >> "$REPORT"
           echo "|-----------|-------------|-----------|" >> "$REPORT"
-          cat /tmp/report-data/repos.json | python3 -c "
-          import json, sys
-          for line in sys.stdin:
-              r = json.loads(line)
-              desc = (r.get('description') or '—')[:60]
-              print(f'| [{r[\"nameWithOwner\"]}]({r[\"url\"]}) | {desc} | {r[\"pushedAt\"][:10]} |')
-          " >> "$REPORT"
+          jq -Rs 'split("\n") | map(select(length > 0)) | map(fromjson) | .[] | "| [\(.nameWithOwner)](\(.url)) | \((.description // "—")[:60]) | \(.pushedAt[:10]) |"' \
+            /tmp/report-data/repos.json >> "$REPORT"
 
           sed -i 's/^          //' "$REPORT"
 
       - name: Update index page
         run: |
-          python3 << 'PYEOF'
-          import os, re
-
-          reports_dir = "docs/reports"
-          reports = sorted(
-              [f for f in os.listdir(reports_dir) if f.endswith(".md") and f != ".gitkeep"],
-              reverse=True
-          )
-
-          index_items = []
-          for r in reports:
-              match = re.search(r"report-(\d{4}-\d{2}-\d{2})-to-(\d{4}-\d{2}-\d{2})", r)
-              if match:
-                  start, end = match.groups()
-                  index_items.append(f'<li><a href="reports/{r}">{start} → {end}</a></li>')
-
-          with open("docs/index.html", "r") as f:
-              html = f.read()
-
-          list_html = "\n".join(index_items) if index_items else "<li>No reports yet</li>"
-          html = re.sub(
-              r"(<!-- REPORT_LIST_START -->).*?(<!-- REPORT_LIST_END -->)",
-              rf"\1\n{list_html}\n\2",
-              html,
-              flags=re.DOTALL
-          )
-
-          with open("docs/index.html", "w") as f:
-              f.write(html)
-          PYEOF
+          reports_dir="docs/reports"
+          list_html=""
+          for r in $(ls -r "$reports_dir"/report-*.md 2>/dev/null); do
+            fname=$(basename "$r")
+            start=$(echo "$fname" | sed -n 's/report-\([0-9-]*\)-to-.*/\1/p')
+            end=$(echo "$fname" | sed -n 's/report-[0-9-]*-to-\([0-9-]*\)\.md/\1/p')
+            if [ -n "$start" ] && [ -n "$end" ]; then
+              list_html="${list_html}<li><a href=\"reports/${fname}\">${start} → ${end}</a></li>\n"
+            fi
+          done
+          [ -z "$list_html" ] && list_html="<li>No reports yet</li>"
+          awk -v items="$list_html" '
+            /<!-- REPORT_LIST_START -->/ { print; printf "%s\n", items; skip=1; next }
+            /<!-- REPORT_LIST_END -->/   { skip=0 }
+            !skip
+          ' docs/index.html > docs/index.html.tmp && mv docs/index.html.tmp docs/index.html
 
       - name: Commit and push
         run: |

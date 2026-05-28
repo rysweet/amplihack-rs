@@ -178,29 +178,15 @@ fi
 echo ""
 echo "=== YAML Validity ==="
 
-if command -v python3 >/dev/null 2>&1; then
-    yaml_valid=$(python3 -c "
-import sys
-try:
-    import yaml
-    with open('${CI_WORKFLOW}') as f:
-        yaml.safe_load(f)
-    print('true')
-except Exception as e:
-    print('false')
-    sys.stderr.write(str(e) + '\n')
-" 2>/dev/null || echo "false")
-    assert_pass "atlas-ci.yml is valid YAML (python3+yaml)" "$yaml_valid"
-elif command -v yq >/dev/null 2>&1; then
+if command -v yq >/dev/null 2>&1; then
     if yq '.' "$CI_WORKFLOW" > /dev/null 2>&1; then
-        echo "PASS: atlas-ci.yml is valid YAML (yq)"
-        PASS=$((PASS + 1))
+        assert_pass "atlas-ci.yml is valid YAML (yq)" "true"
     else
         echo "FAIL: atlas-ci.yml has invalid YAML syntax"
         FAIL=$((FAIL + 1))
     fi
 else
-    echo "SKIP: YAML validity check (python3+yaml or yq required)"
+    echo "SKIP: YAML validity check (yq required)"
 fi
 
 # ============================================================================

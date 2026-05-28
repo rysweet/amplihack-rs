@@ -8,6 +8,11 @@ scenario:
   type: cli
   tags: [smoke, fleet, ac5, ac9, issue-77]
 
+  agents:
+    - name: amplihack-cli
+      type: cli
+      command: amplihack
+
   prerequisites:
     - "amplihack release binary exists at ./target/release/amplihack"
     - "No Python interpreter required on PATH"
