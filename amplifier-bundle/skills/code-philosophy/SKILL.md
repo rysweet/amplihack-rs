@@ -259,6 +259,15 @@ avoids redundant file-type checks across passes.
 This phase uses a single `find` + `wc -l` + `head` pipeline to collect paths,
 sizes, and header lines in one pass.
 
+**Diff-mode optimization**: For git-diff or PR-diff audits, replace the
+directory walk with `git diff --name-only` (or `gh pr diff --name-only`) to
+enumerate only changed files. This avoids scanning the entire repo tree.
+
+**Caching contract**: Phase 0 output (file list, LOC counts, language tags,
+exclusion flags) is the single source of truth for all three passes. No pass
+may re-enumerate or re-count files. Store the classification in memory and
+reference it by index.
+
 ### Pass 1: BRICK RULE Compliance
 
 Verify structural constraints from the Brick Philosophy:
@@ -281,6 +290,11 @@ flag it for full rewrite and skip detailed Pass 2/3 analysis on that file.
 Record a single finding: "File flagged for rewrite — 3+ critical violations."
 
 ### Pass 2: QUALITY INVARIANTS
+
+> **Parallelism note**: Pass 2 and Pass 3 are independent — both read from
+> Phase 0 classification and Pass 1 results, but neither depends on the
+> other's output. Agent runtimes supporting parallel tool calls should
+> execute Pass 2 and Pass 3 concurrently.
 
 Verify zero-BS implementation quality from PHILOSOPHY.md §3:
 
@@ -391,9 +405,14 @@ restrictions) and the recipe design (no write steps).
 - Enumerate and classify files exactly once (Phase 0)
 - Reuse LOC counts from Phase 0 in all passes — do not re-count
 - Use combined regex patterns per language to minimize tool calls
+  (one grep per language bucket, not one per check — see reference.md)
+- Batch file reads: when checking multiple files, use parallel tool calls
+  rather than sequential reads where the agent runtime supports it
 - Skip files tagged `vendored` or `generated` in Passes 2 and 3 (flag at
   **low** in Phase 0 classification output instead)
 - Skip all detailed analysis on files already flagged for full rewrite
+- For cross-layer dedup, build a `file:line:category` skip-set from prior
+  layer findings before scanning — O(1) lookup, not full-JSON comparison
 
 Scope file access to the repository root. No absolute paths outside the repo,
 no `..` traversal beyond the repo boundary.

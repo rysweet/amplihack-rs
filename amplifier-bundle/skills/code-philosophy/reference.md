@@ -216,6 +216,94 @@ tagged in Phase 0 and findings are demoted to **low** severity.
 If auto-detection misses a generated file, add the marker comment
 to the file's header.
 
+## Performance Optimization Guide
+
+### Phase 0 Caching
+
+Phase 0 (file classification) is the single most impactful optimization
+point. Its output — file paths, LOC counts, language tags, exclusion flags —
+is reused by all three passes. Rules:
+
+1. **Enumerate once**: A single `find` + `wc -l` + `head` pipeline collects
+   all data. No pass may re-run `find` or `wc -l`.
+2. **Diff-mode shortcut**: For diff-based audits, replace the directory walk
+   with `git diff --name-only` (staged) or `gh pr diff --name-only` (PR).
+   This reduces the file list from thousands to tens.
+3. **Store as a lookup table**: Build a dict/map keyed by file path so
+   passes can look up LOC, language, and exclusions in O(1).
+
+### Combined Regex Scanning
+
+Instead of running N separate greps per check type, run **one combined grep
+per language bucket**:
+
+```bash
+# Rust: 1 grep covers unwrap + panic + unsafe + todo + let-ignore
+grep -nE '\.unwrap\(\)|panic!\(|unsafe \{|unsafe fn|todo!\(\)|unimplemented!\(\)|let _ =' src/**/*.rs
+
+# Python: 1 grep covers swallowed exceptions + stubs + naming
+grep -nE 'except.*:.*pass|raise NotImplementedError|# TODO|# FIXME|class .*(Manager|Helper|Util)' **/*.py
+```
+
+Then categorize each match line by pattern. This turns 6+ tool calls per
+language into 1.
+
+### Parallel Execution
+
+Within Layer 3, **Pass 2 and Pass 3 are independent** — both depend on
+Phase 0 and Pass 1 but not on each other. Agent runtimes supporting
+parallel tool calls should execute them concurrently. Expected speedup:
+~40% reduction in Layer 3 wall-clock time on average.
+
+At the recipe level, Layers 1→2→3 must run sequentially (each receives
+prior findings for dedup). There is no safe parallelism across layers.
+
+### Cross-Layer Dedup Efficiency
+
+Layers 2, 3, and 4 all deduplicate against prior findings. The efficient
+approach:
+
+1. **Before scanning**, extract `file:line:category` tuples from prior
+   layer findings into a skip-set (hash set or dict)
+2. **During scanning**, check each candidate location against the skip-set
+   — O(1) lookup per candidate
+3. **Do NOT** re-parse the full JSON of prior findings for each check
+
+This avoids O(N×M) comparison where N = current findings and M = prior
+findings.
+
+### Layer 5 Scoped Re-checks
+
+Layer 5 (re-assessment) should not blindly re-run all checks on changed
+files. Instead:
+
+1. Map each changed file to the original finding categories on that file
+2. Re-run only those check categories (e.g., if only `unwrap` was flagged,
+   skip brick-rule and philosophy-spirit checks)
+3. Run a lightweight scan for NEW violation types not in the original report
+4. Expected savings: 50-70% fewer checks when fixes target specific issues
+
+### Token Budget Management
+
+The recipe passes `{{layer_N_findings}}` as raw text into subsequent layer
+prompts. For large codebases, this can consume significant tokens. Strategies:
+
+- **Agents should output concise findings**: Use short evidence snippets
+  (1-2 lines), not full function bodies
+- **Layer 4 consolidation**: If combined findings exceed token limits,
+  prioritize critical > high > medium > low and truncate low findings
+- **Layer 5 receives only the consolidated report**, not all three layers'
+  raw output — this is already optimized by the recipe design
+
+### Early Exit Conditions
+
+| Condition | Optimization |
+|-----------|-------------|
+| Phase 0 finds 0 files | Skip all passes, emit PASS |
+| Pass 1 flags file for rewrite (>3 critical) | Skip Pass 2/3 on that file |
+| All three layers report 0 findings | Layer 4 short-circuits to PASS |
+| Layer 5 changed-file list is empty | Skip re-assessment |
+
 ---
 
 ## Pass 1: BRICK RULE Compliance — Detection Criteria

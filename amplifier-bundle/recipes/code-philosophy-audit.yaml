@@ -189,8 +189,10 @@ steps:
       - Sycophancy in comments → low
       - Future-proofing anti-patterns → medium
 
-      **De-duplication rule:** Skip any file:line already reported in
-      Layer 1 or Layer 2 findings above. Only report NEW findings.
+      **De-duplication (efficient):** Before scanning, extract a skip-set of
+      `file:line:category` tuples from Layer 1/2 findings above. During
+      analysis, check each candidate against the skip-set — O(1) lookup,
+      not full-JSON comparison. Only report findings NOT in the skip-set.
 
       **Early exit:** If a file has >3 critical findings in Pass 1,
       flag it for rewrite and skip Pass 2/3 analysis on that file.
@@ -310,6 +312,9 @@ steps:
       - PASS-WITH-WARNINGS: No critical, but high or medium findings
       - PASS: No critical, high, or medium findings (low-only or clean)
 
+      **Short-circuit:** If all three layers report 0 findings, emit a
+      PASS verdict immediately without dedup or severity analysis.
+
       Sort findings by severity (critical first), then by file path.
     output: "consolidation_report"
 
@@ -340,12 +345,15 @@ steps:
 
       **Scope:** Extract the list of changed files from fix_results.
       Only audit those files — do not re-audit the entire codebase.
+      For each file, only re-run check categories that produced original
+      findings on that file — skip irrelevant categories to save time.
 
       **Process:**
-      1. Identify changed files from fix_results
-      2. Run code-smell-detector checks on changed files
-      3. Run philosophy-compliance checks on changed files
-      4. Run the 3-pass audit (brick rules, quality, spirit) on changed files
+      1. Extract changed files from fix_results
+      2. Map each file to its original finding categories
+      3. Re-run only those check categories on each changed file
+      4. Additionally, run a lightweight scan for NEW violation types
+         not present in the original report (catch regressions)
       5. Consolidate using the same dedup rules as Layer 4
       6. Compare against original report — are original findings resolved?
          Did fixes introduce new violations?
