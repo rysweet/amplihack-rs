@@ -72,14 +72,16 @@ Skill(skill="philosophy-compliance-workflow")
 
 **Layer 3 only** (3-pass audit without orchestration):
 ```bash
-# Invoke code-philosophy skill directly — runs the 3-pass audit
+# Invoke code-philosophy skill directly
 Skill(skill="code-philosophy")
-# Note: when invoked directly without the recipe, only Layer 3 runs
+# Behavior depends on agent runtime:
+# - If runtime supports recipe: frontmatter → launches full 5-layer recipe
+# - If runtime ignores recipe: frontmatter → runs Layer 3 (3-pass audit) only
+# For guaranteed full-pipeline execution, use amplihack recipe run (above)
 ```
 
-**Audit mode** controls scope via the `audit_mode` context variable:
-- `full` (default): Audit entire target path
-- Target path can be a file, directory, or left empty for full repo
+**Audit scope** is controlled by the `target_path` context variable — a file,
+directory, or empty string for full repo.
 
 ## Configuration Reference
 
@@ -90,7 +92,6 @@ All context variables passed via `-c key=value` to the recipe:
 | `repo_path` | path | `"."` | Repository root. All file paths are relative to this. |
 | `target_path` | path | `""` | Audit scope. A file, directory, or empty for full repo. |
 | `task_description` | string | `""` | Human-readable audit context. For diff/PR audits, include the diff command (e.g., `"Audit PR #42: gh pr diff 42"`). |
-| `audit_mode` | enum | `"full"` | Currently only `"full"` is supported. Reserved for future selective modes. |
 
 **Computed variables** (set by recipe steps, not user-configurable):
 
@@ -100,7 +101,7 @@ All context variables passed via `-c key=value` to the recipe:
 | `layer_2_findings` | Layer 2 | JSON findings from philosophy-compliance-workflow |
 | `layer_3_findings` | Layer 3 | JSON findings from 3-pass audit |
 | `consolidation_report` | Layer 4 | Unified deduplicated report with verdict |
-| `fix_results` | External | Set by dev-orchestrator if fixes were applied; triggers Layer 5 |
+| `fix_results` | External | Set externally by user/dev-orchestrator after fixes are applied. The recipe does NOT invoke dev-orchestrator itself — fix delegation is a manual step between Layer 4 output and Layer 5 re-assessment. |
 | `reassessment_report` | Layer 5 | Post-fix re-assessment results |
 
 **Recursion limits** (set in recipe header, not overridable):

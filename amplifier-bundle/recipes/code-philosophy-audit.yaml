@@ -1,0 +1,385 @@
+name: "code-philosophy-audit"
+description: |
+  Orchestrated code philosophy audit composing code-smell-detector,
+  philosophy-compliance-workflow, and the 3-pass brick/quality/spirit audit.
+  Five layers: anti-patterns → architecture alignment → 3-pass audit →
+  consolidation → conditional re-assessment.
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["philosophy", "audit", "quality", "compliance", "orchestrated"]
+
+recursion:
+  max_depth: 4
+  max_total_steps: 20
+
+context:
+  repo_path: "."
+  target_path: ""
+  task_description: ""
+  layer_1_findings: ""
+  layer_2_findings: ""
+  layer_3_findings: ""
+  consolidation_report: ""
+  fix_results: ""
+  reassessment_report: ""
+
+steps:
+  # ========================================================================
+  # LAYER 1: Anti-Pattern Detection (code-smell-detector)
+  # Detects: over-abstraction, complex inheritance, large functions,
+  # tight coupling, missing __all__ exports.
+  # ========================================================================
+  - id: "layer-1-anti-patterns"
+    agent: "amplihack:core:reviewer"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      # Code Philosophy Audit — Layer 1: Anti-Pattern Detection
+
+      **Repository:** {{repo_path}}
+      **Target:** {{target_path}}
+      **Task:** {{task_description}}
+
+      You are the first layer of a 5-layer philosophy audit. Your job is to
+      detect anti-patterns using the code-smell-detector skill.
+
+      **Invoke the skill:**
+      Activate Skill(skill="code-smell-detector") against the target path.
+      Focus on these categories:
+      1. Over-abstraction (unnecessary layers, single-impl traits)
+      2. Complex inheritance (depth >2 levels)
+      3. Large functions (>50 lines)
+      4. Tight coupling (circular deps, reaching into internals)
+      5. Missing `__all__` exports (Python modules)
+
+      **Scope:** If target_path is empty, audit the full repo. If set,
+      audit only that path. For diff-based audits, the task_description
+      will specify the diff source (git diff, PR number).
+
+      **Output format — JSON:**
+      ```json
+      {
+        "layer": 1,
+        "source": "code-smell-detector",
+        "findings": [
+          {
+            "id": "L1-001",
+            "category": "over-abstraction|inheritance|large-function|tight-coupling|missing-exports",
+            "severity": "critical|high|medium|low",
+            "file": "path/to/file",
+            "line": 42,
+            "description": "what was found",
+            "evidence": "code snippet or grep output",
+            "fix": "suggested remediation"
+          }
+        ],
+        "summary": {"total": 0, "critical": 0, "high": 0, "medium": 0, "low": 0}
+      }
+      ```
+
+      Verify each finding by reading the actual code before reporting.
+      Do NOT report speculative issues.
+    output: "layer_1_findings"
+
+  # ========================================================================
+  # LAYER 2: Architecture Alignment (philosophy-compliance-workflow)
+  # Checks: ruthless simplicity, brick philosophy, Zen minimalism.
+  # Has access to Layer 1 findings to avoid re-reporting.
+  # ========================================================================
+  - id: "layer-2-architecture"
+    agent: "amplihack:core:reviewer"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      # Code Philosophy Audit — Layer 2: Architecture Alignment
+
+      **Repository:** {{repo_path}}
+      **Target:** {{target_path}}
+      **Task:** {{task_description}}
+
+      **Layer 1 findings (already reported — do NOT duplicate):**
+      {{layer_1_findings}}
+
+      You are the second layer. Your job is to check architecture alignment
+      using the philosophy-compliance-workflow skill.
+
+      **Invoke the skill:**
+      Activate Skill(skill="philosophy-compliance-workflow") against the target.
+      Focus on:
+      1. Ruthless simplicity — over-engineered solutions where simpler exists
+      2. Brick philosophy — modules not self-contained or regeneratable
+      3. Zen minimalism — unnecessary complexity, gratuitous patterns
+      4. Present-moment focus — code built for hypothetical futures
+      5. Composition over inheritance — deep hierarchies vs flat composition
+
+      **De-duplication rule:** If Layer 1 already flagged an issue (e.g.,
+      over-abstraction in file X), do NOT re-report the same file:line.
+      Only report architecture-level findings not covered by anti-pattern
+      detection. When in doubt, check `layer_1_findings` above.
+
+      **Output format — JSON:**
+      ```json
+      {
+        "layer": 2,
+        "source": "philosophy-compliance-workflow",
+        "findings": [
+          {
+            "id": "L2-001",
+            "category": "ruthless-simplicity|brick-modularity|zen-minimalism|future-proofing|composition",
+            "severity": "critical|high|medium|low",
+            "file": "path/to/file",
+            "line": 42,
+            "description": "what was found",
+            "evidence": "code snippet or grep output",
+            "fix": "suggested remediation"
+          }
+        ],
+        "summary": {"total": 0, "critical": 0, "high": 0, "medium": 0, "low": 0}
+      }
+      ```
+    output: "layer_2_findings"
+
+  # ========================================================================
+  # LAYER 3: Three-Pass Structured Audit (code-philosophy SKILL.md)
+  # Pass 1: Brick Rules (LOC limits, god objects, inheritance depth)
+  # Pass 2: Quality Invariants (unwrap/panic, error handling, stubs)
+  # Pass 3: Philosophy Spirit (naming, sycophancy, over-abstraction)
+  # See SKILL.md and reference.md for full check tables.
+  # ========================================================================
+  - id: "layer-3-three-pass-audit"
+    agent: "amplihack:core:reviewer"
+    working_dir: "{{repo_path}}"
+    prompt: |
+      # Code Philosophy Audit — Layer 3: Three-Pass Structured Audit
+
+      **Repository:** {{repo_path}}
+      **Target:** {{target_path}}
+      **Task:** {{task_description}}
+
+      **Already reported by prior layers (do NOT duplicate):**
+      - Layer 1 (anti-patterns): {{layer_1_findings}}
+      - Layer 2 (architecture): {{layer_2_findings}}
+
+      You are the third layer. Perform the structured 3-pass audit defined
+      in the code-philosophy skill (amplifier-bundle/skills/code-philosophy/).
+      Read SKILL.md for the full check tables and thresholds.
+
+      **Phase 0: File Classification**
+      Classify target files by language and tag exclusions (test, vendored,
+      generated, small-script). Store the classification for all three passes.
+
+      **Pass 1: BRICK RULE Compliance**
+      - File >400 LOC → critical
+      - Function >50 lines → high
+      - God object (>10 fields OR >10 methods) → high
+      - Deep inheritance (>2 levels) → medium
+
+      **Pass 2: QUALITY INVARIANTS**
+      - unwrap/panic in production Rust → high
+      - unsafe blocks → medium
+      - Swallowed errors (empty catch, except:pass) → high
+      - Missing error propagation → medium
+      - Stubs/TODOs/FIXMEs → medium
+      - Install-completeness gaps → critical
+
+      **Pass 3: PHILOSOPHY SPIRIT**
+      - Ruthless simplicity violations → medium
+      - Zero-BS naming (Manager, Helper, Util, etc.) → medium
+      - Brick modularity issues → medium
+      - Over-abstraction (single-impl traits) → high
+      - Sycophancy in comments → low
+      - Future-proofing anti-patterns → medium
+
+      **De-duplication rule:** Skip any file:line already reported in
+      Layer 1 or Layer 2 findings above. Only report NEW findings.
+
+      **Early exit:** If a file has >3 critical findings in Pass 1,
+      flag it for rewrite and skip Pass 2/3 analysis on that file.
+
+      **Output format — JSON:**
+      ```json
+      {
+        "layer": 3,
+        "source": "code-philosophy-3-pass",
+        "classification": {"total_files": 0, "by_language": {}, "excluded": []},
+        "findings": [
+          {
+            "id": "L3-P1-001",
+            "pass": "brick-rule|quality-invariants|philosophy-spirit",
+            "category": "loc-limit|function-loc|god-object|inheritance|unwrap|...",
+            "severity": "critical|high|medium|low",
+            "file": "path/to/file",
+            "line": 42,
+            "description": "what was found",
+            "evidence": "code snippet or grep output",
+            "fix": "suggested remediation"
+          }
+        ],
+        "summary": {
+          "pass_1": {"total": 0, "critical": 0, "high": 0, "medium": 0, "low": 0},
+          "pass_2": {"total": 0, "critical": 0, "high": 0, "medium": 0, "low": 0},
+          "pass_3": {"total": 0, "critical": 0, "high": 0, "medium": 0, "low": 0},
+          "overall": {"total": 0, "critical": 0, "high": 0, "medium": 0, "low": 0}
+        }
+      }
+      ```
+    output: "layer_3_findings"
+
+  # ========================================================================
+  # LAYER 4: Consolidation
+  # Merges findings from all three layers, deduplicates by file:line +
+  # category, resolves severity conflicts (keep highest), and produces
+  # a unified severity-sorted report.
+  # ========================================================================
+  - id: "layer-4-consolidation"
+    agent: "amplihack:core:reviewer"
+    working_dir: "{{repo_path}}"
+    condition: "layer_1_findings or layer_2_findings or layer_3_findings"
+    prompt: |
+      # Code Philosophy Audit — Layer 4: Consolidation
+
+      **Repository:** {{repo_path}}
+      **Target:** {{target_path}}
+
+      Merge findings from all three layers into a unified report.
+
+      **Layer 1 findings (anti-patterns):**
+      {{layer_1_findings}}
+
+      **Layer 2 findings (architecture):**
+      {{layer_2_findings}}
+
+      **Layer 3 findings (3-pass audit):**
+      {{layer_3_findings}}
+
+      **Deduplication rules:**
+      1. Match findings by file + line number (±3 lines tolerance)
+      2. If two findings target the same location with overlapping categories,
+         keep the one with higher severity and merge descriptions
+      3. Overlap mapping for known category overlaps:
+         - L1 over-abstraction ↔ L3 Pass 3 over-abstraction
+         - L1 large-function ↔ L3 Pass 1 function-loc
+         - L1 inheritance ↔ L3 Pass 1 inheritance
+         - L2 ruthless-simplicity ↔ L3 Pass 3 ruthless-simplicity
+         - L2 brick-modularity ↔ L3 Pass 3 brick-modularity
+      4. When merging, note both source layers in the consolidated finding
+
+      **Severity resolution:** When two layers report different severities
+      for the same issue, use the HIGHER severity.
+
+      **Severity escalation:** Apply the escalation rules from reference.md:
+      - Violation in critical path (auth, payment, data) → bump one level
+      - Same violation repeated >5 times → bump one level
+      - Violation in public API surface → bump one level
+      - Generated/vendored code → demote to low
+
+      **Output format — unified report:**
+      ```json
+      {
+        "layer": 4,
+        "source": "consolidation",
+        "verdict": "PASS|FAIL|PASS-WITH-WARNINGS",
+        "dedup_stats": {
+          "total_raw": 0,
+          "duplicates_removed": 0,
+          "total_consolidated": 0
+        },
+        "findings": [
+          {
+            "id": "C-001",
+            "source_layers": [1, 3],
+            "category": "category",
+            "severity": "critical|high|medium|low",
+            "file": "path/to/file",
+            "line": 42,
+            "description": "merged description",
+            "evidence": "evidence",
+            "fix": "suggested remediation"
+          }
+        ],
+        "summary": {
+          "by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+          "by_source": {"layer_1": 0, "layer_2": 0, "layer_3": 0},
+          "by_category": {}
+        },
+        "verdict_reason": "why this verdict"
+      }
+      ```
+
+      **Verdict rules:**
+      - FAIL: Any critical finding present
+      - PASS-WITH-WARNINGS: No critical, but high or medium findings
+      - PASS: No critical, high, or medium findings (low-only or clean)
+
+      Sort findings by severity (critical first), then by file path.
+    output: "consolidation_report"
+
+  # ========================================================================
+  # LAYER 5: Re-Assessment (conditional)
+  # Only runs if fixes were applied via dev-orchestrator delegation.
+  # Re-runs Layers 1-3 on changed files only, then re-consolidates.
+  # Max 1 re-assessment — no recursion.
+  # ========================================================================
+  - id: "layer-5-reassessment"
+    agent: "amplihack:core:reviewer"
+    working_dir: "{{repo_path}}"
+    condition: "fix_results and fix_results != '' and consolidation_report"
+    prompt: |
+      # Code Philosophy Audit — Layer 5: Re-Assessment
+
+      **Repository:** {{repo_path}}
+      **Target:** {{target_path}}
+
+      **Original consolidated report:**
+      {{consolidation_report}}
+
+      **Fix results (what was changed):**
+      {{fix_results}}
+
+      Fixes were applied. Re-assess ONLY the changed files to verify
+      fixes did not introduce new philosophy violations.
+
+      **Scope:** Extract the list of changed files from fix_results.
+      Only audit those files — do not re-audit the entire codebase.
+
+      **Process:**
+      1. Identify changed files from fix_results
+      2. Run code-smell-detector checks on changed files
+      3. Run philosophy-compliance checks on changed files
+      4. Run the 3-pass audit (brick rules, quality, spirit) on changed files
+      5. Consolidate using the same dedup rules as Layer 4
+      6. Compare against original report — are original findings resolved?
+         Did fixes introduce new violations?
+
+      **Output format — JSON:**
+      ```json
+      {
+        "layer": 5,
+        "source": "reassessment",
+        "changed_files": ["list of files re-assessed"],
+        "original_findings_resolved": 0,
+        "new_findings_introduced": 0,
+        "verdict": "PASS|FAIL|PASS-WITH-WARNINGS",
+        "findings": [
+          {
+            "id": "R-001",
+            "type": "new|regression",
+            "category": "category",
+            "severity": "critical|high|medium|low",
+            "file": "path/to/file",
+            "line": 42,
+            "description": "what was found",
+            "fix": "suggested remediation"
+          }
+        ],
+        "summary": {
+          "original_total": 0,
+          "resolved": 0,
+          "remaining": 0,
+          "new_violations": 0
+        },
+        "verdict_reason": "why this verdict"
+      }
+      ```
+
+      **IMPORTANT:** This is the final layer. Do NOT trigger another
+      re-assessment. Max 1 re-assessment per audit run.
+    output: "reassessment_report"
