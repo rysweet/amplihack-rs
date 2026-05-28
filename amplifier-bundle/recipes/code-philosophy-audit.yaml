@@ -177,6 +177,7 @@ steps:
       - unsafe blocks → medium
       - Swallowed errors (empty catch, except:pass) → high
       - Missing error propagation → medium
+      - Test-to-prod ratio imbalance → medium
       - Stubs/TODOs/FIXMEs → medium
       - Install-completeness gaps → critical
 

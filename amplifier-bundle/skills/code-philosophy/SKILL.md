@@ -218,18 +218,6 @@ all findings into a unified severity-sorted report.
 - PR review for philosophy alignment
 - Post-refactoring verification
 
-## Input Modes
-
-This skill accepts targets in four modes:
-
-1. **Specific files**: Provide one or more file paths to audit
-2. **Directories**: Provide a directory path to audit all source files within
-3. **Git diff (staged/unstaged)**: Use `git diff` or `git diff --staged` to audit only changed lines
-4. **PR diff (pull request)**: Use `gh pr diff <number>` to audit a pull request's changes
-
-When operating on diffs, only the changed files and surrounding context are
-audited. When operating on directories, all source files are scanned.
-
 ## Philosophy Reference
 
 Before each audit, read the authoritative philosophy document:
