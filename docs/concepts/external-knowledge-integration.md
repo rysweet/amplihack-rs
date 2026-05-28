@@ -75,7 +75,7 @@ src/amplihack/memory/neo4j/
 #### Basic Document Fetching
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 // use amplihack_memory::neo4j::{ (
     Neo4jConnector,
     ExternalKnowledgeManager,
@@ -100,7 +100,7 @@ with Neo4jConnector() as conn:
 #### Linking to Code
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 # Link documentation to code file
 manager.link_to_code(
     doc_url="https://docs.python.org/3/library/json.html",
@@ -126,7 +126,7 @@ manager.link_to_memory(
 #### Querying Knowledge
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 results = manager.query_external_knowledge(
     query_text="json parsing",
     source=KnowledgeSource.PYTHON_DOCS,
@@ -149,7 +149,7 @@ docs = manager.get_function_documentation("parse_json_data:1.0")
 #### API References
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 // use amplihack_memory::neo4j::{ APIReference, KnowledgeSource
 
 api_ref = APIReference(
@@ -170,7 +170,7 @@ manager.store_api_reference(api_ref)
 #### Maintenance
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 stats = manager.get_knowledge_stats()
 print(f"Total docs: {stats['total_docs']}")
 print(f"Average trust: {stats['avg_trust_score']:.2f}")
@@ -210,7 +210,7 @@ Trust scores are configurable per-source and affect query ranking.
 External documentation supports version tracking:
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 # Import Rust 1.75 docs
 manager.fetch_api_docs(url="...", version="1.75", ...)
 

@@ -25,7 +25,7 @@ Access via CLI:
 amplihack doctor          # Reports worktree status, state dir, .disabled files
 ```
 
-## Upstream Python API (Reference Specification)
+## API Specification
 
 Technical documentation for `amplihack.tools.amplihack.git_utils` module providing git worktree detection and shared directory utilities.
 

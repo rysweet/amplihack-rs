@@ -11,7 +11,7 @@ Kuzu's next-generation embedded graph database.
 
 The class name (`KuzuGraphStore`) and its public API are **unchanged**.
 
-!!! note "Upstream Python API reference"
+!!! note "API reference"
     The import paths, installation commands, and code snippets in this guide
     refer to the **upstream Python amplihack** implementation. The architectural
     concepts (ladybug vs kuzu migration, locking, read-only mode) apply equally

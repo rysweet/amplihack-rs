@@ -62,10 +62,8 @@ This directory contains the core infrastructure for the Amplihack framework's in
 │   ├── context_preservation.py # Context extraction and export
 │   ├── xpia_defense.py         # Cross-Process Injection Attack defense
 │   └── paths.py                # Path utilities
-├── ci_status.py                # CI/CD status checking
 ├── ci_workflow.py              # CI diagnostic workflow
 ├── precommit_workflow.py       # Pre-commit diagnostic workflow
-├── github_issue.py             # GitHub issue creation
 ├── improvement_validator.py    # Improvement validation
 └── test-utilities/             # Testing utilities
 ```
@@ -631,7 +629,6 @@ if issue_number:
 
 ### CI Status Checker
 
-**File**: `ci_status.py`
 
 **Usage**:
 
@@ -650,7 +647,6 @@ print(f"URL: {status['url']}")
 
 ### GitHub Issue Creation
 
-**File**: `github_issue.py`
 
 **Usage**:
 

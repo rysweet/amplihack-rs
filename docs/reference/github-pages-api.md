@@ -1,6 +1,6 @@
 # GitHub Pages API Reference
 
-Complete Python API reference for generating, validating, and deploying documentation sites to GitHub Pages.
+Reference for generating, validating, and deploying documentation sites to GitHub Pages.
 
 ## Module
 

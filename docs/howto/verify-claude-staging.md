@@ -26,7 +26,6 @@ ls ~/.amplihack/.claude/skills/
 
 # Verify tools are staged
 ls ~/.amplihack/.claude/tools/
-# Expected: github_issue.py, ci_status.py, etc.
 ```
 
 ## Expected Output

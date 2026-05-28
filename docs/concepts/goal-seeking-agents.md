@@ -113,7 +113,7 @@ python main.py
 ### 4. Use the Python API directly
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 // use amplihack_domain_agents:: create_agent
 
 agent = create_agent(
@@ -395,7 +395,7 @@ See [Goal Agent Generator](agent-generator.md) for the generation system and
 ### GoalSeekingAgent Interface
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 class GoalSeekingAgent(ABC):
     def learn_from_content(self, content: str) -> dict[str, Any]: ...
     def answer_question(self, question: str) -> str: ...

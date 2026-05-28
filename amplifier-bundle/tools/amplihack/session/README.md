@@ -57,15 +57,6 @@ See `crates/amplihack-session/examples/` for `basic_usage.rs` and
 
 ## Migration Notes
 
-| Python API                                     | Rust replacement                                          |
-| ---------------------------------------------- | --------------------------------------------------------- |
-| `with toolkit.session("x") as s:`              | `quick_session("x", |toolkit, sid| { ... })`              |
-| Heartbeat thread                                | Explicit `session.check_health(now)` (call as needed)     |
-| Auto-save thread                                | Explicit `manager.save_all_active()` (and `Drop` does it) |
-| `_simulate_command_execution()`                 | `trait CommandExecutor` + `NoopExecutor` default          |
-| `safe_read_json(path, default=...)`             | `safe_read_json(path)` returns `default` on missing/invalid; large files (>64 MiB) → `SessionError::TooLarge` |
-| `BatchFileOperations.write_json(...)`           | Same; rejects absolute paths and `..` components          |
-
 ## Status
 
 Sync-only in v1. An async wrapper may be considered later if a caller

@@ -14,7 +14,7 @@
 ## Import Documentation
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 // use amplihack_memory::neo4j::{ Neo4jConnector, DocGraphIntegration
 from pathlib import Path
 
@@ -46,7 +46,7 @@ amplihack memory index --project my-project docs/
 ## Link to Code
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 link_count = doc_integration.link_docs_to_code()
 print(f"Created {link_count} links")
 ```
@@ -56,7 +56,7 @@ print(f"Created {link_count} links")
 ## Query Documentation
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 results = doc_integration.query_relevant_docs("authentication", limit=5)
 
 for doc in results:
@@ -116,7 +116,7 @@ From each markdown file:
 ### Find documentation about a topic
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 docs = doc_integration.query_relevant_docs("neo4j memory")
 ```
 
@@ -146,7 +146,7 @@ RETURN df.title, df.path
 ## Statistics
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 stats = doc_integration.get_doc_stats()
 print(f"Documents: {stats['doc_count']}")
 print(f"Concepts: {stats['concept_count']}")
@@ -176,7 +176,7 @@ See [Blarify Integration](../concepts/blarify-integration.md) for how the code
 graph connects to the documentation knowledge graph.
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 # 1. Import code graph
 blarify = BlarifyIntegration(connector)
 blarify.import_blarify_output(Path("code_graph.json"))
@@ -194,7 +194,7 @@ See [Agent Memory Architecture](../concepts/agent-memory-architecture.md) for
 the full memory integration story.
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 doc_integration.import_documentation(Path("docs/"))
 doc_integration.link_docs_to_memories()
 ```
@@ -243,7 +243,7 @@ cargo test --package amplihack-memory -- doc_graph
 ### Import all project docs
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 from pathlib import Path
 
 project_root = Path(".")
@@ -260,7 +260,7 @@ for doc_file in doc_files:
 ### Find documentation for current task
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 def get_relevant_docs(task_description: str):
     """Find documentation relevant to a task."""
     key_terms = extract_keywords(task_description)
