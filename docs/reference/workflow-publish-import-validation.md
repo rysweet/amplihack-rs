@@ -113,7 +113,6 @@ Example:
 
 ```text
 manifest seeds:
-  amplifier-bundle/tools/orch_helper.py
   src/amplihack/recipes/recipe_command.py
 
 allowed roots:
@@ -121,12 +120,10 @@ allowed roots:
   src/amplihack/
 ```
 
-> **Note:** `orch_helper.py` has been replaced by native Rust (`amplihack orch helper`).
 > These examples reference the legacy Python codebase for historical context.
 
 In that case, dependency expansion may move between those two roots because
 both were seeded explicitly. If the manifest seeds only
-`amplifier-bundle/tools/orch_helper.py`, the builder must **not** infer a hidden
 alias that broadens the scope into `src/amplihack/`.
 
 This rule is deliberate: bundle wrappers that rely on runtime package files
@@ -141,12 +138,10 @@ The publish manifest is a UTF-8 text file with one repo-relative path per line.
 ### Accepted Input
 
 ```text
-amplifier-bundle/tools/orch_helper.py
 src/amplihack/recipes/__init__.py
 src/amplihack/recipes/recipe_command.py
 ```
 
-> **Note:** `orch_helper.py` has been replaced by native Rust (`amplihack orch helper`).
 > The publish manifest format examples reference the legacy Python codebase.
 
 ### Rejected Input

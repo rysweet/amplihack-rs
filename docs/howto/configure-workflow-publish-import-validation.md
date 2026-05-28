@@ -35,12 +35,10 @@ The publish manifest is the source of truth for the validator. It is a
 newline-delimited UTF-8 file with one repo-relative path per line:
 
 ```text
-amplifier-bundle/tools/orch_helper.py
 src/amplihack/recipes/__init__.py
 src/amplihack/recipes/recipe_command.py
 ```
 
-> **Note:** `orch_helper.py` has been replaced by native Rust (`amplihack orch helper`).
 > This manifest example references the legacy Python codebase.
 
 Path rules:

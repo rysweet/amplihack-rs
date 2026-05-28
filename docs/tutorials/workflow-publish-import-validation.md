@@ -7,7 +7,6 @@
 This tutorial walks through the publish-validation feature shipped for issue 4064.
 
 > **Note (May 2026):** Several Python files referenced in this tutorial
-> (`orch_helper.py`, `build_publish_validation_scope.py`, `check_imports.py`)
 > have been replaced by native Rust equivalents (see issues #666–#668).
 > The examples below preserve the legacy Python invocations for historical
 > context and to illustrate the validation workflow design.
@@ -44,7 +43,6 @@ Start with the publish surface you intend to validate:
 cat > /tmp/workflow-publish-manifest.txt <<'EOF'
 src/amplihack/recipes/__init__.py
 src/amplihack/recipes/recipe_command.py
-amplifier-bundle/tools/orch_helper.py
 EOF
 ```
 
@@ -88,7 +86,6 @@ The expected scope file for the manifest above is:
 ```text
 src/amplihack/recipes/__init__.py
 src/amplihack/recipes/recipe_command.py
-amplifier-bundle/tools/orch_helper.py
 ```
 
 If any of those files import other repo-local Python modules that still resolve
@@ -117,7 +114,6 @@ Checking imports for 3 file(s)...
 2. Testing module imports...
   ✅ src/amplihack/recipes/__init__.py: OK
   ✅ src/amplihack/recipes/recipe_command.py: OK
-  ✅ amplifier-bundle/tools/orch_helper.py: OK
 
 ✅ All imports valid!
 ```
