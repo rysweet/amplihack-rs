@@ -69,7 +69,7 @@ Works with existing amplihack tools:
 | **fix-agent**              | Uses Template 1 (import) and Template 4 (CI) |
 | **pre-commit-diagnostic**  | Hand-off for hook failures                   |
 | **ci-diagnostic-workflow** | Hand-off for post-push issues                |
-| **ci_status.py**           | Checks CI status after fixes                 |
+| **gh CLI** (`gh run list`) | Checks CI status after fixes                 |
 
 ## Common Patterns Detected
 

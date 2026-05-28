@@ -390,8 +390,12 @@ The architect agent's response was not parseable. The task will still run as a
 Development/1-workstream default. Re-run for better results or simplify the
 task description.
 
-**"orch_helper.py not found"**
-The recipe cannot locate its helper module. This happens when:
+**"orch helper" or asset resolution failures**
+
+> **Note:** The legacy `orch_helper.py` has been replaced by the native Rust
+> command `amplihack orch helper` (source: `crates/amplihack-cli/src/commands/orch.rs`).
+
+If the recipe cannot locate orchestration helpers, this typically means:
 
 - **Cloned-repo users**: Not running from the repo root. Fix:
   ```bash
@@ -400,7 +404,7 @@ The recipe cannot locate its helper module. This happens when:
   # OR set AMPLIHACK_HOME:
   export AMPLIHACK_HOME=/path/to/your/amplihack
   ```
-- **`uvx` users**: This indicates a packaging issue. Try reinstalling:
+- **Binary mismatch**: The CLI binary is outdated. Try reinstalling:
   ```bash
   cargo install amplihack-rs
   ```

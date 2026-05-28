@@ -103,7 +103,7 @@ AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack copilot
 Absolute path to the native bundle-asset resolver. Child processes can execute this binary with a single relative asset path argument, for example:
 
 ```sh
-"$AMPLIHACK_ASSET_RESOLVER" amplifier-bundle/tools/orch_helper.py
+"$AMPLIHACK_ASSET_RESOLVER" amplifier-bundle/recipes/smart-orchestrator.yaml
 ```
 
 That returns the resolved absolute path on stdout and exits non-zero on invalid input or missing assets.

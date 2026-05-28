@@ -145,5 +145,17 @@ Engineering system for coding CLIs (Claude, Copilot, Amplifier): 5 mechanisms, 2
 - @~/.amplihack/.claude/commands/amplihack/: All commands
 - @~/.amplihack/.claude/tools/amplihack/hooks/: Hook system
 - amplifier-bundle/recipes/smart-orchestrator.yaml: Core orchestration recipe
-- amplifier-bundle/tools/session_tree.py: Recursion guard (depth limits)
-- amplifier-bundle/tools/orch_helper.py: JSON extraction helper
+- Native recursion guard via `AMPLIHACK_MAX_DEPTH` env var (replaces legacy `session_tree.py`)
+- `amplihack orch helper`: Native Rust JSON extraction (replaces legacy `orch_helper.py`, source: `crates/amplihack-cli/src/commands/orch.rs`)
+
+## Known Failure Points
+
+### Rate-limit resilience
+
+When an upstream API (Copilot, Anthropic) returns a rate-limit error during an
+agent step, the recipe runner treats it as a hard failure by default. Non-critical
+steps such as `step-06c-documentation-refinement` set `continue_on_error: true`
+so that documentation polish does not abort the entire recipe. For critical steps,
+the agent runtime retries with exponential back-off (configured by the SDK adapter).
+If a rate-limit error aborts your workflow, check which step failed — if it is a
+polish/review step, adding `continue_on_error: true` is the recommended fix.

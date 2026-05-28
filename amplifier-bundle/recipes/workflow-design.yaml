@@ -171,6 +171,7 @@ steps:
   - id: "step-06c-documentation-refinement"
     agent: "amplihack:documentation-writer"
     working_dir: "{{worktree_setup.worktree_path}}"
+    continue_on_error: true
     prompt: |
       # Step 6c: Documentation Refinement
 

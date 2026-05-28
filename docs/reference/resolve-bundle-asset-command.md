@@ -25,7 +25,7 @@ steps, providing the same path-resolution logic without a Python dependency.
 | Name | Resolves to |
 |------|-------------|
 | `hooks-dir` | `amplifier-bundle/tools/amplihack/hooks/` |
-| `helper-path` | `amplifier-bundle/tools/orch_helper.py` (fallback: `amplifier-bundle/tools/amplihack/orch_helper.py`) |
+| `helper-path` | `amplihack orch helper` (native Rust; legacy fallback: `amplifier-bundle/tools/orch_helper.py`) |
 | `multitask-orchestrator` | `amplifier-bundle/bin/multitask-orchestrator.sh` |
 
 `hooks-dir` and `helper-path` were re-registered in issue #614 to restore
@@ -54,9 +54,9 @@ amplihack resolve-bundle-asset multitask-orchestrator
 amplihack resolve-bundle-asset hooks-dir
 # Output: /home/user/.amplihack/amplifier-bundle/tools/amplihack/hooks
 
-# Resolve the orchestrator helper script
+# Resolve the orchestrator helper (now native Rust)
 amplihack resolve-bundle-asset helper-path
-# Output: /home/user/.amplihack/amplifier-bundle/tools/orch_helper.py
+# Output: Use `amplihack orch helper` directly — helper-path is a native Rust subcommand
 
 # Resolve a relative path under amplifier-bundle/
 amplihack resolve-bundle-asset amplifier-bundle/tools/statusline.sh

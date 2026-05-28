@@ -7,6 +7,30 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ## [Unreleased] — Recipe Execution Hardening
 
+### Fixed
+
+- **Stale Python tool references across documentation (#666)** — All
+  `orch_helper.py` and `session_tree.py` references in SKILL.md, tutorials,
+  reference docs, and audit reports now point to their native Rust replacements
+  (`amplihack orch helper` and `AMPLIHACK_MAX_DEPTH` env var). Historical docs
+  retain inline deprecation notes for accuracy.
+
+- **`ci_status.py` / `github_issue.py` references in skill docs (#666)** —
+  `amplihack-expert/reference.md` and `dependency-resolver/README.md` updated
+  to reference `gh CLI` and `amplihack orch helper` instead of removed Python
+  scripts.
+
+- **`build_publish_validation_scope.py` soft dependency (#667)** — Confirmed
+  `test-pr-always-opens.sh` already handles missing script gracefully
+  (warn-and-continue at L131-133). No code change required; test-fixture
+  references in `test-static-guard-validation-scope.sh` are legitimate.
+
+- **Rate-limit kills recipe with no retry (#668)** — `step-06c-documentation-
+  refinement` in `workflow-design.yaml` now sets `continue_on_error: true` so
+  documentation polish steps do not abort the entire recipe on transient API
+  failures. New "Known Failure Points" section in `amplihack-expert/SKILL.md`
+  documents rate-limit resilience patterns.
+
 ### Added
 
 - **Copilot `--remote` by default** — `amplihack copilot` now injects
