@@ -420,6 +420,39 @@ worst verdict across all passes.
 
 ## Language-Specific Detection Patterns
 
+### Combined Detection Commands
+
+To minimize tool calls, run a single combined grep per language bucket from
+Phase 0. These patterns cover Pass 2 and Pass 3 checks simultaneously.
+
+**Rust** (production files only — exclude test-tagged files):
+```bash
+grep -nE '\.unwrap\(\)|panic!\(|unsafe \{|unsafe fn|todo!\(\)|unimplemented!\(\)|let _ =' src/**/*.rs
+```
+
+**Python**:
+```bash
+grep -nE 'except.*:.*pass|raise NotImplementedError|# TODO|# FIXME|class .*(Manager|Helper|Util|Handler|Processor|Base)' **/*.py
+```
+
+**JavaScript/TypeScript**:
+```bash
+grep -nE 'catch\s*\([^)]*\)\s*\{\s*\}|\.catch\(\s*\(\)\s*=>\s*\{\s*\}\)|// TODO|// FIXME|throw new Error\(.not implemented' **/*.{js,ts,tsx}
+```
+
+**Go**:
+```bash
+grep -nE '_, _ =|// TODO|// FIXME|panic\("not implemented' **/*.go
+```
+
+**Shell**:
+```bash
+grep -nEL 'set -e' **/*.sh   # files MISSING error handling
+```
+
+After the combined scan, categorize each match into its specific check type
+for the findings table. This turns N separate scans into 1 per language.
+
 ### Rust (.rs files)
 
 | Check | Pattern | Notes |
