@@ -92,4 +92,3 @@ When state verification passes (PR mergeable + CI passing), it can override tran
 3. **Pre-compact hook saves valuable context**: The full transcript IS preserved - other hooks just need to know where to find it
 
 ---
-
