@@ -398,14 +398,16 @@ mod tests {
     #[test]
     fn binary_detection() {
         let dir = tempfile::tempdir().unwrap();
-
         let text_file = dir.path().join("text.txt");
         std::fs::write(&text_file, b"hello world").unwrap();
         assert!(!is_binary(&text_file));
-
         let bin_file = dir.path().join("binary.bin");
         std::fs::write(&bin_file, b"hello\x00world").unwrap();
         assert!(is_binary(&bin_file));
+        let empty = dir.path().join("empty");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(!is_binary(&empty));
+        assert!(is_binary(std::path::Path::new("/nonexistent/file")));
     }
 
     #[test]
@@ -414,6 +416,10 @@ mod tests {
         assert!(glob_match(".env*", ".env.local"));
         assert!(glob_match(".git/*", ".git/objects"));
         assert!(!glob_match("*.pyc", "foo.py"));
+        assert!(glob_match(".DS_Store", ".DS_Store"));
+        assert!(!glob_match(".DS_Store", ".DS_Store2"));
+        assert!(glob_match("*secret*", "my_secret_file.txt"));
+        assert!(!glob_match("*secret*", "public.txt"));
     }
 
     #[test]
@@ -434,5 +440,27 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         let m2: SecretMatch = serde_json::from_str(&json).unwrap();
         assert_eq!(m2.file_path, "src/main.rs");
+    }
+
+    #[test]
+    fn excluded_security_and_build_files() {
+        assert!(is_excluded("cert.pem"));
+        assert!(is_excluded("server.key"));
+        assert!(is_excluded(".ssh/id_rsa"));
+        assert!(is_excluded(".aws/credentials"));
+        assert!(is_excluded("__pycache__/module.pyc"));
+        assert!(is_excluded(".venv/lib/python3.11/site.py"));
+        assert!(is_excluded("compiled.pyc"));
+        assert!(is_excluded(".DS_Store"));
+    }
+
+    #[test]
+    fn context_packager_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = ContextPackager::new(dir.path(), 100, true);
+        assert_eq!(p.max_size_bytes, 100 * 1024 * 1024);
+        assert!(p.skip_secret_scan);
+        let p2 = ContextPackager::new(dir.path(), 500, false);
+        assert!(!p2.skip_secret_scan);
     }
 }

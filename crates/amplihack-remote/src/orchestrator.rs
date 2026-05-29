@@ -424,4 +424,62 @@ mod tests {
         let vm2: VM = serde_json::from_str(&json).unwrap();
         assert_eq!(vm2.name, "test-vm");
     }
+
+    #[test]
+    fn vm_age_with_timestamp() {
+        use chrono::Duration;
+        let two_hours_ago = Utc::now() - Duration::hours(2);
+        let vm = VM {
+            name: "test".into(),
+            size: "s".into(),
+            region: "eastus".into(),
+            created_at: Some(two_hours_ago),
+            tags: None,
+        };
+        let age = vm.age_hours();
+        // Should be approximately 2 hours (within tolerance)
+        assert!(age >= 1.9 && age <= 2.1, "age was {age}");
+    }
+
+    #[test]
+    fn vm_age_very_recent() {
+        let vm = VM {
+            name: "test".into(),
+            size: "s".into(),
+            region: "eastus".into(),
+            created_at: Some(Utc::now()),
+            tags: None,
+        };
+        assert!(vm.age_hours() < 0.01);
+    }
+
+    #[test]
+    fn vm_with_tags() {
+        let mut tags = std::collections::HashMap::new();
+        tags.insert("workflow".into(), "true".into());
+        let vm = VM {
+            name: "tagged-vm".into(),
+            size: "Standard_D2s_v3".into(),
+            region: "eastus".into(),
+            created_at: Some(Utc::now()),
+            tags: Some(tags),
+        };
+        let json = serde_json::to_string(&vm).unwrap();
+        let vm2: VM = serde_json::from_str(&json).unwrap();
+        assert!(vm2.tags.unwrap().contains_key("workflow"));
+    }
+
+    #[test]
+    fn vm_options_serialization() {
+        let opts = VMOptions {
+            size: "Standard_D2s_v3".into(),
+            region: Some("eastus".into()),
+            no_reuse: true,
+            ..VMOptions::default()
+        };
+        let json = serde_json::to_string(&opts).unwrap();
+        let opts2: VMOptions = serde_json::from_str(&json).unwrap();
+        assert!(opts2.no_reuse);
+        assert_eq!(opts2.region.as_deref(), Some("eastus"));
+    }
 }

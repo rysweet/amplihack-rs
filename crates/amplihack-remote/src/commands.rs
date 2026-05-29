@@ -460,3 +460,36 @@ fn default_state_file() -> PathBuf {
         .join(".amplihack")
         .join("remote-state.json")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validators() {
+        assert!(validate_prompt("").is_err());
+        assert!(validate_prompt("ok").is_ok());
+        assert!(validate_max_turns(0).is_err());
+        assert!(validate_max_turns(25).is_ok());
+        assert!(validate_max_turns(51).is_err());
+        assert!(validate_timeout(4).is_err());
+        assert!(validate_timeout(60).is_ok());
+        assert!(validate_timeout(481).is_err());
+        assert!(validate_api_key("").is_err());
+        assert!(validate_api_key("sk-123").is_ok());
+    }
+
+    #[test]
+    fn state_json_io() {
+        let ok = read_state_json(&PathBuf::from("/tmp/no-such-99999.json"));
+        assert!(ok.unwrap().get("sessions").is_some());
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("s.json");
+        std::fs::write(&p, "").unwrap();
+        assert!(read_state_json(&p).unwrap().get("sessions").is_some());
+        std::fs::write(&p, "bad{").unwrap();
+        assert!(read_state_json(&p).is_err());
+        let sf = default_state_file();
+        assert!(sf.to_str().unwrap().contains("remote-state.json"));
+    }
+}
