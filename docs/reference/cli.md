@@ -103,7 +103,11 @@ amplihack update [--skip-install | --no-install]
    atomically replace the running binary.
 3. **Unless `--skip-install` was passed**, invoke the same code path as
    `amplihack install` (in-process — no subprocess) to re-stage framework
-   assets to `~/.amplihack/.claude`. This is non-interactive.
+   assets to `~/.amplihack/.claude`. This is non-interactive. Unlike a
+   standalone `amplihack install`, the post-update install **forces a fresh
+   bundle download** from the upstream archive (`REPO_ARCHIVE_URL`) rather
+   than reusing the local `~/.amplihack/amplifier-bundle/` directory. This
+   ensures the new binary always gets matching framework assets (issue #675).
 
 If step 2 fails, the install step does **not** run and the original binary
 remains in place. If step 3 fails, the new binary is already installed; you
@@ -132,6 +136,13 @@ A binary-only update can leave the on-disk agents, hooks, prompts, and recipes
 out of sync with the new binary, producing confusing behavior (missing skills,
 stale prompts, hook signature mismatches). Running `install` immediately after
 a successful update keeps the binary and the staged framework consistent.
+
+Prior to issue #675, the post-update install could re-stage the **old** bundle
+from `~/.amplihack/amplifier-bundle/` instead of downloading the new one,
+because `find_bundled_framework_root()` found the stale local copy before
+falling through to the network download. The fix ensures that post-update
+install always downloads a fresh bundle, so new binary + fresh recipes = no
+more "orch_helper.py not found" errors.
 
 **Startup-prompt updates**
 

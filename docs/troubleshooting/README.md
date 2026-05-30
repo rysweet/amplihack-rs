@@ -28,6 +28,10 @@ Ahoy, matey! Hit a snag? This be yer map to fix common issues and get back on co
 - [Copilot Installation False Negative](copilot-installation-false-negative.md) - Installation reports failure when it actually succeeded
 - [Copilot npm Hang on WSL/Linux](copilot-npm-hang-wsl-linux.md) - npm hangs indefinitely during `@github/copilot` install on WSL/Linux due to platform-mismatched optional deps
 
+### Update Issues
+
+- **Stale bundle after update** — If `amplihack update` completes but recipes fail with errors like "orch_helper.py not found", you are on a pre-#675 binary. Run `amplihack install` manually, or update to a version that includes issue #675 (which forces a fresh bundle download during update).
+
 ### Startup Issues
 
 - [Startup Conflict Prompt](startup-conflict-prompt.md) - Fix "Uncommitted changes detected in .claude/" prompt on every startup

@@ -30,7 +30,13 @@ Every launch, before command dispatch, `amplihack` performs a startup-time
 2. Read the version stamp at `~/.amplihack/.installed-version`.
 3. If the stamp is missing **or** differs from the binary version, run
    `amplihack install` automatically (equivalent to
-   `commands::install::run_install(None, false)`).
+   `commands::install::run_install(None, false, false)`).
+   The third argument (`force_refresh: false`) means self-heal prefers the
+   local `~/.amplihack/amplifier-bundle/` if it exists, falling back to a
+   network download only when no local source is found. This keeps startup
+   fast for the common case. For the post-update install path (where a fresh
+   download is required), see `update::check` which passes
+   `force_refresh: true`.
 4. On success, write the new version into the stamp file and emit a single
    line on stderr:
 

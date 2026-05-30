@@ -13,6 +13,8 @@ Bootstraps the amplihack environment on the current machine. On first run, it pe
 
 Since issue #254, framework assets are bundled in the amplihack-rs source tree. The installer resolves the framework source in this order: (1) compile-time workspace root, (2) `AMPLIHACK_HOME`, (3) walk-up from executable, (4) `~/.amplihack`, (5) network download from upstream (legacy fallback).
 
+Since issue #675, the post-update installer bypasses steps 1–4 and always downloads a fresh bundle from the network (step 5). This prevents stale `amplifier-bundle/` assets at `~/.amplihack/` from being re-staged after a binary update. Standalone `amplihack install` still uses the original resolution order.
+
 You can invoke the same command through the npm wrapper package when desired:
 
 ```sh
@@ -161,11 +163,29 @@ amplihack uninstall
 
 ## Internal API (for contributors)
 
-The functions below are in `crates/amplihack-cli/src/commands/install.rs`.
+The functions below are in `crates/amplihack-cli/src/commands/install/mod.rs`.
 
-### `run_install(local: Option<PathBuf>, interactive: bool) -> Result<()>`
+### `run_install(local: Option<PathBuf>, interactive: bool, force_refresh: bool) -> Result<()>`
 
-Entry point called by the command dispatcher. When `interactive` is true and stdin is a TTY, runs the interactive wizard before proceeding. Canonicalizes and validates `--local` path when provided. Without `--local`, resolves the bundled framework root from the amplihack-rs source tree (compile-time path, `AMPLIHACK_HOME`, executable walk-up, `~/.amplihack`). Falls back to network download only when no local source is found.
+Entry point called by the command dispatcher. When `interactive` is true and stdin is a TTY, runs the interactive wizard before proceeding. Canonicalizes and validates `--local` path when provided.
+
+The `force_refresh` parameter controls framework source resolution:
+
+| `force_refresh` | Behavior |
+|-----------------|----------|
+| `false` | **Default.** Resolves the bundled framework root from the amplihack-rs source tree (compile-time path, `AMPLIHACK_HOME`, executable walk-up, `~/.amplihack`). Falls back to network download only when no local source is found. This is the behavior for standalone `amplihack install` and self-heal. |
+| `true` | **Skips local bundle resolution entirely.** Goes directly to `download_and_extract_framework_repo()` to fetch a fresh `amplifier-bundle/` from the upstream archive (`REPO_ARCHIVE_URL`). Used by the post-update installer to ensure that `amplihack update` always refreshes stale framework assets rather than re-staging the old bundle that was already present at `~/.amplihack/amplifier-bundle/`. |
+
+**Priority rule:** When `local` is `Some(path)`, it takes precedence over `force_refresh` — the function returns early with the user-specified path before the bundled-root check. This is correct by design: `--local` is an explicit user override that should not be bypassed.
+
+**Call sites and their `force_refresh` values:**
+
+| Caller | `force_refresh` | Rationale |
+|--------|-----------------|-----------|
+| `amplihack install` (command dispatcher) | `false` | Standalone install prefers local bundle |
+| `amplihack update` (post-update closure) | `true` | **Root cause fix for issue #675** — forces fresh download |
+| Self-heal (startup version-stamp check) | `false` | Prefers local bundle for startup speed |
+| `ensure_framework_installed()` (bootstrap) | `false` | Bootstrap prefers local bundle |
 
 ### `run_uninstall() -> Result<()>`
 

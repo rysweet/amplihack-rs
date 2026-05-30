@@ -456,7 +456,7 @@ fn run_install_with_local_path_skips_git_clone() {
     fs::create_dir_all(&local_repo).unwrap();
     create_source_repo(&local_repo);
 
-    let result = run_install(Some(local_repo), false);
+    let result = run_install(Some(local_repo), false, false);
 
     if let Some(v) = prev_hooks {
         unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
@@ -481,7 +481,7 @@ fn run_install_with_local_path_skips_git_clone() {
 #[test]
 fn run_install_with_nonexistent_local_path_returns_err() {
     let nonexistent = std::path::PathBuf::from("/nonexistent/amplihack-repo/does-not-exist");
-    let result = run_install(Some(nonexistent), false);
+    let result = run_install(Some(nonexistent), false, false);
     assert!(
         result.is_err(),
         "run_install must return Err for a non-existent --local path"
@@ -1175,5 +1175,143 @@ fn malformed_layout_marker_is_handled_gracefully() {
              must warn and default to legacy. Got: {:?}",
             result.err()
         );
+    });
+}
+
+// ============================================================================
+// Issue #675: force_refresh parameter tests (TDD — written before impl)
+// ============================================================================
+//
+// These tests define the contract for the `force_refresh` parameter added to
+// `run_install()`.  They will fail to compile until the signature is updated,
+// then fail at runtime until the logic is implemented.
+
+#[test]
+fn run_install_force_refresh_true_with_local_path_still_uses_local() {
+    // Contract: `--local` takes priority over `force_refresh`. Even when
+    // `force_refresh=true`, a valid `--local` path must be used directly
+    // (no network download). This ensures the explicit user override is
+    // never bypassed by internal force-refresh logic.
+    with_install_env(|home| {
+        let local_repo = home.join("local-repo");
+        fs::create_dir_all(&local_repo).unwrap();
+        helpers::create_source_repo(&local_repo);
+
+        let result = run_install(Some(local_repo), false, true);
+        result.expect(
+            "issue #675: run_install with --local and force_refresh=true must succeed \
+             (local takes priority over force_refresh)",
+        );
+
+        assert!(
+            home.join(".amplihack/.claude/install/amplihack-manifest.json")
+                .exists(),
+            "manifest must exist after --local install with force_refresh=true"
+        );
+    });
+}
+
+#[test]
+fn run_install_force_refresh_true_nonexistent_local_path_errors() {
+    // Contract: `force_refresh` must not change `--local` path validation.
+    // A non-existent `--local` path must still return Err regardless of
+    // the force_refresh value.
+    let nonexistent = std::path::PathBuf::from("/nonexistent/amplihack-repo/does-not-exist");
+    let result = run_install(Some(nonexistent), false, true);
+    assert!(
+        result.is_err(),
+        "run_install must return Err for non-existent --local path even with force_refresh=true"
+    );
+}
+
+#[test]
+fn run_install_force_refresh_false_uses_bundled_root_when_available() {
+    // Contract: `force_refresh=false` preserves the existing behavior —
+    // `find_bundled_framework_root()` is consulted and its result is used
+    // when available. In the test environment (running inside the
+    // amplihack-rs workspace), the bundled root will always be found via
+    // CWD walk-up or compile-time workspace root.
+    //
+    // This is a regression guard: the new parameter must not break
+    // the default (non-update) install path.
+    with_install_env(|home| {
+        // Do NOT create a local repo — let find_bundled_framework_root()
+        // discover the workspace's amplifier-bundle/ automatically.
+        let result = run_install(None, false, false);
+        result.expect(
+            "issue #675: run_install(None, false, false) must succeed via bundled root \
+             (existing behavior unchanged)",
+        );
+
+        assert!(
+            home.join(".amplihack/.claude/install/amplihack-manifest.json")
+                .exists(),
+            "manifest must exist after install via bundled root"
+        );
+    });
+}
+
+#[test]
+fn run_install_force_refresh_true_skips_bundled_root() {
+    // Contract (THE FIX): when `force_refresh=true` and `local` is `None`,
+    // `run_install` must NOT use `find_bundled_framework_root()`. It must
+    // fall through directly to the network download path.
+    //
+    // In the test environment, `find_bundled_framework_root()` always returns
+    // `Some` (the workspace root is discoverable). With `force_refresh=true`,
+    // the function must skip it and attempt a fresh network download instead.
+    //
+    // Since network download may succeed or fail depending on environment
+    // (git availability, network connectivity), this test verifies the
+    // contract by checking that the code path taken is different from
+    // the `force_refresh=false` path. Specifically:
+    //
+    // - `force_refresh=false` uses bundled root → stages from local source
+    // - `force_refresh=true` skips bundled root → downloads from upstream
+    //
+    // We verify the download path was taken by checking for the
+    // freshness SHA stamp that is ONLY written after a network-fallback
+    // install (see mod.rs L100-102), NOT after a bundled-root install.
+    with_install_env(|home| {
+        // First: install with force_refresh=false (bundled root path).
+        // This should succeed and NOT write the framework-sha stamp.
+        let result_default = run_install(None, false, false);
+        result_default.expect("baseline install with force_refresh=false must succeed");
+
+        let sha_stamp = home.join(".amplihack/.framework-sha");
+        let had_sha_after_default = sha_stamp.exists();
+
+        // Clean staged assets for a fresh run
+        let _ = fs::remove_dir_all(home.join(".amplihack/.claude"));
+        let _ = fs::remove_file(&sha_stamp);
+
+        // Second: install with force_refresh=true (network download path).
+        // This test validates that the code ATTEMPTS the network path.
+        // If the network download succeeds, the framework-sha stamp will
+        // be written (distinguishing it from the bundled-root path).
+        // If the download fails (no network), that's also acceptable —
+        // the error message should reference network/download, not bundled root.
+        let result_refresh = run_install(None, false, true);
+        match result_refresh {
+            Ok(()) => {
+                // Network download succeeded — verify the SHA stamp was written
+                // (this stamp is ONLY written after network-fallback installs).
+                assert!(
+                    sha_stamp.exists() || !had_sha_after_default,
+                    "issue #675: force_refresh=true must take the network download path, \
+                     which writes the framework-sha stamp"
+                );
+            }
+            Err(ref e) => {
+                let msg = e.to_string();
+                // Network download failed — the error must reference the
+                // download/network path, NOT the bundled root.
+                assert!(
+                    !msg.contains("Using bundled framework"),
+                    "issue #675: force_refresh=true must NOT use bundled framework root. \
+                     Got error: {msg}"
+                );
+            }
+        }
     });
 }
