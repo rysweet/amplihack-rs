@@ -36,7 +36,7 @@ let result = sanitizer.sanitize("Token: gho_abc123xyz");
 assert_eq!(result, "Token: [REDACTED-GITHUB-TOKEN]");
 ```
 
-### Upstream Python API (reference only)
+### API Reference
 
 ```rust
 // use amplihack_tracing::token_sanitizer::{ TokenSanitizer

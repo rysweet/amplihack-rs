@@ -274,7 +274,7 @@ PHASE 5: TEARDOWN → complete-session
 
 #### F-ROUTE-1: Multiple JSON blocks use first — may be wrong (🔴 Critical)
 
-- **File**: `amplifier-bundle/tools/orch_helper.py:14-56` *(now replaced by native Rust: `amplihack orch helper`)*
+- **File**: `amplihack orch helper (native Rust)*
 - **Issue**: `extract_json()` takes the first JSON block found. If an agent produces an initial analysis then a revised one, the wrong (first) block is used.
 - **Fix**: Use last JSON block, or validate expected schema and pick best match. *(Addressed in native Rust implementation.)*
 
@@ -407,7 +407,7 @@ PHASE 5: TEARDOWN → complete-session
 | Execution logic                   | `src/amplihack/recipes/rust_runner_execution.py`       |
 | Data models / Condition evaluator | `src/amplihack/recipes/models.py`                      |
 | Recipe parser                     | `src/amplihack/recipes/parser.py`                      |
-| Orchestrator helper               | `amplihack orch helper` (native Rust; replaces legacy `amplifier-bundle/tools/orch_helper.py`) |
+| Orchestrator helper               | `amplihack orch helper` (native Rust) |
 | Default workflow                  | `amplifier-bundle/recipes/default-workflow.yaml`       |
 | Smart orchestrator                | `amplifier-bundle/recipes/smart-orchestrator.yaml`     |
 | Investigation workflow            | `amplifier-bundle/recipes/investigation-workflow.yaml` |

@@ -128,7 +128,7 @@ Find relevant documentation:
 ### Import Documentation
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 // use amplihack_memory::neo4j::{ Neo4jConnector, DocGraphIntegration
 
 connector = Neo4jConnector()
@@ -158,7 +158,7 @@ amplihack memory index --project my-project docs/my_documentation.md
 ### Link to Code
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 link_count = doc_integration.link_docs_to_code(project_id="my-project")
 print(f"Created {link_count} doc-code links")
 ```
@@ -166,7 +166,7 @@ print(f"Created {link_count} doc-code links")
 ### Query Documentation
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 results = doc_integration.query_relevant_docs(
     query_text="neo4j memory",
     limit=5
@@ -185,7 +185,7 @@ amplihack memory query "neo4j memory" --limit 5
 ### Get Statistics
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 stats = doc_integration.get_doc_stats()
 print(f"Total documents: {stats['doc_count']}")
 print(f"Total concepts: {stats['concept_count']}")

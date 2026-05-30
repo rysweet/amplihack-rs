@@ -12,7 +12,7 @@ sanitization.
 ## Quick Start
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 // use amplihack_utils::token_sanitizer::{ TokenSanitizer
 
 sanitizer = TokenSanitizer()
@@ -44,7 +44,7 @@ TokenSanitizer detects and redacts these token types:
 When API calls fail, error messages often contain authentication tokens:
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 sanitizer = TokenSanitizer()
 
 try:
@@ -59,7 +59,7 @@ except Exception as e:
 When debugging configuration, sanitize before printing:
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 config = {
     "github_token": "gho_1234567890abcdefghij",
     "openai_key": "sk-proj-abc123xyz",
@@ -79,7 +79,7 @@ print(safe_config)
 Process existing log files to remove tokens:
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 from pathlib import Path
 
 sanitizer = TokenSanitizer()
@@ -97,7 +97,7 @@ log_file.write_text(sanitized)
 Create a logging wrapper that auto-sanitizes:
 
 ```rust
-# Upstream Python API (reference only)
+# API Reference
 import logging
 
 class SanitizingLogger:

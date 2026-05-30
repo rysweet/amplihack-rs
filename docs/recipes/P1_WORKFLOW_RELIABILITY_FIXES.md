@@ -98,10 +98,10 @@ Two named assets re-registered in the `NAMED_ASSETS` table:
 | Name | Resolves to | Fallback |
 |---|---|---|
 | `hooks-dir` | `amplifier-bundle/tools/amplihack/hooks/` | — |
-| `helper-path` | `amplihack orch helper` (native Rust) | Legacy: `amplifier-bundle/tools/orch_helper.py` |
+| `helper-path` | `amplihack orch helper` (native Rust) |  |
 
 `helper-path` now resolves to the native Rust `amplihack orch helper` command.
-The legacy Python fallback paths are retained for backward compatibility but
+The fallback paths are retained but
 are no longer shipped.
 
 ### Usage

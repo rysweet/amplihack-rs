@@ -24,7 +24,7 @@ Field-level contract for configurable timeout handling, durable workstream state
 ## Contract Status
 
 - `ParallelOrchestrator.monitor()` enforces configurable runtime budgets and transitions over-budget workstreams to resumable lifecycle states instead of deleting them.
-- `rust_runner_execution.py` publishes both the legacy PID-scoped progress file and a durable workstream progress sidecar under `tmp_base/state/`.
+- The runner publishes both the PID-scoped progress file and a durable workstream progress sidecar under `tmp_base/state/`.
 - `timeout_policy`, `lifecycle_state`, and `checkpoint_id` are shipped contract names for automation, reporting, and cleanup decisions.
 
 ---

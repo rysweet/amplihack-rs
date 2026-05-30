@@ -145,8 +145,8 @@ Engineering system for coding CLIs (Claude, Copilot, Amplifier): 5 mechanisms, 2
 - @~/.amplihack/.claude/commands/amplihack/: All commands
 - @~/.amplihack/.claude/tools/amplihack/hooks/: Hook system
 - amplifier-bundle/recipes/smart-orchestrator.yaml: Core orchestration recipe
-- Native recursion guard via `AMPLIHACK_MAX_DEPTH` env var (replaces legacy `session_tree.py`)
-- `amplihack orch helper`: Native Rust JSON extraction (replaces legacy `orch_helper.py`, source: `crates/amplihack-cli/src/commands/orch.rs`)
+- Native recursion guard via `AMPLIHACK_MAX_DEPTH` env var
+- `amplihack orch helper`: Native Rust JSON extraction (source: `crates/amplihack-cli/src/commands/orch.rs`)
 
 ## Known Failure Points
 

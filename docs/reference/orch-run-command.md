@@ -164,7 +164,7 @@ inside `orch run` itself.
 | Subcommand                | Purpose                                                                  |
 | ------------------------- | ------------------------------------------------------------------------ |
 | `amplihack orch run`      | Recipe-facing alias for executing a workstreams JSON file (this command) |
-| `amplihack orch helper`   | Smart-orchestrator JSON helpers (port of `tools/amplihack/orch_helper.py`) |
+| `amplihack orch helper`   | Smart-orchestrator JSON helpers (native Rust) |
 | `amplihack multitask run` | Full multitask engine with all flags exposed                             |
 
 `orch run` is intentionally minimal — for advanced flags (mode selection,

@@ -392,7 +392,7 @@ task description.
 
 **"orch helper" or asset resolution failures**
 
-> **Note:** The legacy `orch_helper.py` has been replaced by the native Rust
+> **Note:** The native Rust
 > command `amplihack orch helper` (source: `crates/amplihack-cli/src/commands/orch.rs`).
 
 If the recipe cannot locate orchestration helpers, this typically means:

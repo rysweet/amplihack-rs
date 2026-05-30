@@ -26,7 +26,6 @@ dependencies:
   required:
     - .claude/workflow/FIX_WORKFLOW.md
   optional:
-    - .claude/tools/ci_status.py
 examples:
   - "/fix"
   - "/fix import"

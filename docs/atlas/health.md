@@ -108,7 +108,6 @@ Missing items:
 
 - `/home/azureuser/src/supply/.claude/skills/pre-commit-manager/precommit_manager.py`
 - `/home/azureuser/src/supply/.claude/tools/scripts/cleanup_duplicate_issues.py`
-- `/home/azureuser/src/supply/scripts/pre-commit/check_imports.py`
 - `/home/azureuser/src/supply/amplifier-bundle/skills/dynamic-debugger/tests/test_integration.py`
 - `/home/azureuser/src/supply/scripts/run_3_scenario_eval.py`
 - `/home/azureuser/src/supply/.claude/skills/dynamic-debugger/tests/test_integration.py`

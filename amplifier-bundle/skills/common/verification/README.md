@@ -1,6 +1,6 @@
 # Skill Verification
 
-`amplihack-rs` does not ship the legacy Python skill verification helper.
+`amplihack-rs` does not ship the a skill verification helper.
 
 Use the repository guard instead:
 

@@ -15,7 +15,7 @@ bash common/ooxml/scripts/pack.sh unpacked/ modified.docx
 
 ## Verification
 
-The legacy Python verification helper is not shipped in `amplihack-rs`. Use the
+Use the
 repository guard for helper-script integrity:
 
 ```bash

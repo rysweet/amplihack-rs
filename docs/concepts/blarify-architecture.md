@@ -370,7 +370,7 @@ Full Text Search:
 
 ## Extension Points
 
-!!! info "Upstream Python API Reference"
+!!! info "API Reference"
     The code examples in this section show the upstream Python API from
     `amplihack.tools.amplihack.code_graph`. amplihack-rs implements equivalent
     functionality in Rust via the `amplihack-memory` crate. The Cypher query

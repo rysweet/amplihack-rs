@@ -2,7 +2,7 @@
 
 The `amplihack` Rust CLI binary (`recipe-runner-rs`) handles subprocess management, progress tracking, JSONL event emission, and log I/O for recipe execution.
 
-Subprocess management, progress tracking, JSONL event emission, and log I/O helpers for the Rust recipe runner. The Rust binary replaces the legacy Python recipe-runner module. Callers should use `amplihack recipe run` instead of the Python API.
+Subprocess management, progress tracking, JSONL event emission, and log I/O helpers for the Rust recipe runner. Callers should use `amplihack recipe run`.
 
 ## Contents
 

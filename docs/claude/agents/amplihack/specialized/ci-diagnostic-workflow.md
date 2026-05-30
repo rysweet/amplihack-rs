@@ -113,7 +113,6 @@ Do NOT merge automatically - wait for:
 ### Essential Tools
 
 - **ci_workflow.py**: CI workflow automation (diagnose, iterate-fixes, poll-status)
-- **ci_status.py**: Monitor CI state
 - **Bash**: Git operations and fixes
 - **MultiEdit**: Fix code issues
 - **Task**: Coordinate diagnostic agents
