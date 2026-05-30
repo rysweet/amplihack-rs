@@ -36,7 +36,7 @@ use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn run_install(local: Option<PathBuf>, interactive: bool) -> Result<()> {
+pub fn run_install(local: Option<PathBuf>, interactive: bool, force_refresh: bool) -> Result<()> {
     // Run the interactive wizard if --interactive was passed.
     // The wizard produces an optional config; if None, we proceed with defaults.
     let wizard_config = interactive::maybe_run_wizard(interactive)?;
@@ -55,16 +55,24 @@ pub fn run_install(local: Option<PathBuf>, interactive: bool) -> Result<()> {
         return local_install(&canonical, wizard_config.as_ref());
     }
 
-    // Issue #254: prefer bundled framework assets from the amplihack-rs source
-    // tree.  Only fall back to network download when the local source tree is
-    // not reachable (e.g. binary installed via `cargo install` on a machine
-    // that doesn't have the checkout).
-    if let Some(bundled_root) = find_bundled_framework_root() {
-        println!(
-            "📦 Using bundled framework assets from {}",
-            bundled_root.display()
-        );
-        return local_install(&bundled_root, wizard_config.as_ref());
+    // Issue #675: when triggered by `amplihack update`, force_refresh=true
+    // skips the bundled-root check so we always download fresh assets from
+    // upstream.  This prevents stale Python-era recipes from persisting after
+    // a binary update.
+    if !force_refresh {
+        // Issue #254: prefer bundled framework assets from the amplihack-rs source
+        // tree.  Only fall back to network download when the local source tree is
+        // not reachable (e.g. binary installed via `cargo install` on a machine
+        // that doesn't have the checkout).
+        if let Some(bundled_root) = find_bundled_framework_root() {
+            println!(
+                "📦 Using bundled framework assets from {}",
+                bundled_root.display()
+            );
+            return local_install(&bundled_root, wizard_config.as_ref());
+        }
+    } else {
+        println!("📦 Forcing fresh framework download from upstream...");
     }
 
     println!("⚠️  Bundled framework source not found, falling back to network download...");
@@ -177,7 +185,7 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
     // framework updates are delivered via amplihack-rs binary updates instead.
     if presence_bootstrap_needed {
         println!("🔧 Bootstrapping amplihack framework assets...");
-        run_install(None, false)?;
+        run_install(None, false, false)?;
     }
 
     // Verify hooks are registered in settings.json — even after a fresh install.

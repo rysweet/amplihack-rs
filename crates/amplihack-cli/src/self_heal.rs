@@ -82,7 +82,7 @@ pub fn ensure_assets_match_binary_version(args: &[OsString]) -> Result<()> {
     }
 
     ensure_assets_match_binary_version_with(args, &mut std::io::stderr(), || {
-        crate::commands::install::run_install(None, false)
+        crate::commands::install::run_install(None, false, false)
     })
 }
 

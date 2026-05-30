@@ -40,7 +40,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             local,
             interactive,
             verbose: _,
-        } => install::run_install(local, interactive),
+        } => install::run_install(local, interactive, false),
         Commands::Uninstall => install::run_uninstall(),
         Commands::Launch {
             resume,

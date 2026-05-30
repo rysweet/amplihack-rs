@@ -172,7 +172,11 @@ When you run `amplihack update`, the following happens in order:
    `amplihack` runs the same logic as `amplihack install` (in-process — no
    subprocess) to re-stage framework assets (agents, hooks, prompts, recipes)
    under `~/.amplihack/.claude`. This step is non-interactive and uses the
-   default install location.
+   default install location. Unlike a standalone `amplihack install`, the
+   post-update install **forces a fresh bundle download** from the upstream
+   archive rather than reusing any existing local bundle at
+   `~/.amplihack/amplifier-bundle/`. This ensures the updated binary always
+   gets matching framework assets (issue #675).
 3. **Done.** Both the binary and the on-disk framework now match.
 
 If the binary swap fails, the install step does **not** run and the original
