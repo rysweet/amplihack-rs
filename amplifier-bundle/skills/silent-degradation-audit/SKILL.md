@@ -39,7 +39,7 @@ Production-ready skill for detecting silent degradation across codebases. Uses m
 - **Wave 4-6**: Edge cases and subtleties (10-20%)
 - **Convergence**: Stops when < 10 new findings or < 5% of Wave 1
 
-### 6 Category Agents
+### 7 Category Agents
 
 1. **Dependency Failures** (Category A): "What happens when X is down?"
 2. **Config Errors** (Category B): "What happens when config is wrong?"
@@ -47,6 +47,7 @@ Production-ready skill for detecting silent degradation across codebases. Uses m
 4. **Test Effectiveness** (Category D): "Do tests actually detect failures?"
 5. **Operator Visibility** (Category E): "Is the error visible to operators?"
 6. **Functional Stubs** (Category F): "Does this code actually do what its name says?"
+7. **Resource Accumulation** (Category G): "What grows without bound over the lifetime of this process?"
 
 ### Multi-Agent Validation Panel
 
