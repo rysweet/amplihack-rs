@@ -19,11 +19,9 @@ recursion:
 context: {}
 
 steps:
-  # ==========================================================================
   # STEP 0: WORKFLOW PREPARATION (MANDATORY - DO NOT SKIP)
-  # Creates tracking structure for all 23 workflow steps.
-  # CRITICAL: Must complete before ANY implementation work begins.
-  # Prevents "completion bias" - ensures mandatory review steps (0, 14, 17-18) not skipped.
+  # Creates tracking structure. Must complete before ANY implementation work.
+  # Prevents "completion bias" - ensures mandatory review steps not skipped.
   # ==========================================================================
   - id: "step-00-workflow-preparation"
     type: "bash"
@@ -77,11 +75,7 @@ steps:
       printf 'Repository: %s\n' "$REPO_PATH"
     output: "workflow_init"
 
-  # ==========================================================================
   # STEP 1: PREPARE THE WORKSPACE
-  # Ensure a clean local environment that is up to date.
-  # Actions: verify no unstashed changes, git fetch, check git status
-  # ==========================================================================
   - id: "step-01-prepare-workspace"
     type: "bash"
     command: |
@@ -135,9 +129,7 @@ steps:
       fi
     output: "workspace_status"
 
-  # ==========================================================================
   # STEP 2: REWRITE AND CLARIFY REQUIREMENTS
-  # ==========================================================================
   - id: "step-02-clarify-requirements"
     agent: "amplihack:prompt-writer"
     prompt: |
@@ -249,10 +241,28 @@ steps:
     output: "final_requirements"
 
   # ==========================================================================
-  # STEP 3: CREATE GITHUB ISSUE
-  # Create a GitHub issue documenting the task with problem description,
-  # requirements, constraints, success criteria, and appropriate labels.
+  # STEP 02d: DETECT REMOTE HOST TYPE
+  # Output propagates via parent context to all downstream sub-recipes.
   # ==========================================================================
+  - id: "step-02d-detect-host-type"
+    type: "bash"
+    command: |
+      set -euo pipefail; cd "$REPO_PATH"
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "[skip] not a git repo — defaulting to 'other'" >&2
+        printf 'other'; exit 0
+      fi
+      REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+      case "$REMOTE_URL" in
+        *github.com*) HT="github" ;;
+        *dev.azure.com*|*visualstudio.com*|*ssh.dev.azure.com*) HT="azdo" ;;
+        *) HT="other" ;;
+      esac
+      echo "INFO: Remote host type: $HT" >&2
+      printf '%s' "$HT"
+    output: "remote_host_type"
+
+  # STEP 3: CREATE TRACKING ISSUE (GitHub / AzDO / local fallback)
   - id: "step-03-create-issue"
     type: "bash"
     command: |
@@ -269,21 +279,15 @@ steps:
         printf 'local-tracking:%s\n' "$LOCAL_ISSUE"
         exit 0
       fi
-      # FIX #684: Detect remote host type before issuing host-specific commands
+      HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
       REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
-      case "$REMOTE_URL" in
-        *github.com*) REMOTE_HOST_TYPE="github" ;;
-        *dev.azure.com*|*visualstudio.com*|*ssh.dev.azure.com*) REMOTE_HOST_TYPE="azdo" ;;
-        *) REMOTE_HOST_TYPE="other" ;;
-      esac
-      echo "INFO: Remote host type: $REMOTE_HOST_TYPE" >&2
       # Extract referenced issue/work-item from task_description (idempotency)
       REF_ISSUE_NUM=""
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"; fi
       [ -n "$REF_ISSUE_NUM" ] && ! [[ "$REF_ISSUE_NUM" =~ ^[0-9]+$ ]] && REF_ISSUE_NUM=""
       # --- GitHub path ---
-      if [ "$REMOTE_HOST_TYPE" = "github" ]; then
+      if [ "$HOST_TYPE" = "github" ]; then
         if [ -n "$REF_ISSUE_NUM" ]; then
           EXISTING_URL=$(timeout 60 gh issue view "$REF_ISSUE_NUM" --json url --jq '.url // ""' 2>/dev/null || echo '')
           [ -n "$EXISTING_URL" ] && { printf '%s\n' "$EXISTING_URL"; exit 0; }
@@ -302,7 +306,7 @@ steps:
         exit $?
       fi
       # --- Azure DevOps path (az boards work-item) ---
-      if [ "$REMOTE_HOST_TYPE" = "azdo" ]; then
+      if [ "$HOST_TYPE" = "azdo" ]; then
         AZDO_ORG=""; AZDO_PROJECT=""
         # Bash regex replaces 6 echo|sed subprocess spawns with built-in matching
         if [[ "$REMOTE_URL" =~ dev\.azure\.com/([^/]+)/([^/]+)/ ]]; then
@@ -312,12 +316,32 @@ steps:
         elif [[ "$REMOTE_URL" =~ ssh\.dev\.azure\.com[:/]v3/([^/]+)/([^/]+)/ ]]; then
           AZDO_ORG="${BASH_REMATCH[1]}"; AZDO_PROJECT="${BASH_REMATCH[2]}"
         fi
+        # FIX #684: Decode %XX percent-encoding (e.g. My%20Project → My Project)
+        _pct_decode() {
+          local e="$1" d="" i=0 ch hex
+          while [ "$i" -lt "${#e}" ]; do
+            ch="${e:$i:1}"
+            if [ "$ch" = "%" ] && [ "$((i+2))" -le "${#e}" ]; then
+              hex="${e:$((i+1)):2}"
+              if [[ "$hex" =~ ^[0-9a-fA-F]{2}$ ]]; then
+                d+=$(printf "\\x$hex"); i=$((i+3)); continue
+              fi
+              echo "WARN: Invalid percent-encoding '%${hex}' — using local tracking" >&2
+              echo ""; return 1
+            fi
+            d+="$ch"; i=$((i+1))
+          done
+          printf '%s' "$d"
+        }
+        [ -n "$AZDO_ORG" ] && { AZDO_ORG=$(_pct_decode "$AZDO_ORG") || { AZDO_ORG=""; AZDO_PROJECT=""; }; }
+        [ -n "$AZDO_PROJECT" ] && { AZDO_PROJECT=$(_pct_decode "$AZDO_PROJECT") || { AZDO_ORG=""; AZDO_PROJECT=""; }; }
         # Security: validate org/project captures against safe character set
         if [[ -n "$AZDO_ORG" ]] && ! [[ "$AZDO_ORG" =~ ^[a-zA-Z0-9._-]+$ ]]; then
           echo "WARN: AZDO_ORG contains unexpected characters — using local tracking" >&2
           AZDO_ORG=""
         fi
-        if [[ -n "$AZDO_PROJECT" ]] && ! [[ "$AZDO_PROJECT" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        # Project names may contain spaces (decoded from %20)
+        if [[ -n "$AZDO_PROJECT" ]] && ! [[ "$AZDO_PROJECT" =~ ^[a-zA-Z0-9._ -]+$ ]]; then
           echo "WARN: AZDO_PROJECT contains unexpected characters — using local tracking" >&2
           AZDO_PROJECT=""
         fi
@@ -341,7 +365,7 @@ steps:
         fi
       fi
       # --- Local tracking fallback (unknown remote or az CLI unavailable) ---
-      echo "INFO: Using local tracking for issue management (remote: $REMOTE_HOST_TYPE)" >&2
+      echo "INFO: Using local tracking for issue management (remote: $HOST_TYPE)" >&2
       LOCAL_ISSUE=$(($(date +%s) % 1000000))
       printf 'local-tracking:%s\n' "$LOCAL_ISSUE"
     output: "issue_creation"
@@ -350,8 +374,7 @@ steps:
   - id: "step-03b-extract-issue-number"
     type: "bash"
     command: |
-      # FIX #684: Extract issue number — handles GitHub, AzDO, and local tracking.
-      # Bash regex replaces ~14 printf|grep|grep|head subprocess chains with built-in matching
+      # Extract issue number — handles GitHub, AzDO, and local tracking.
       ISSUE_CREATION="$ISSUE_CREATION"; TASK_DESC_RAW="$TASK_DESCRIPTION"
       EXTRACTED=""
       if [[ "$ISSUE_CREATION" =~ issues/([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
@@ -373,7 +396,4 @@ steps:
       printf '%s' "$EXTRACTED"
     output: "issue_number"
 
-  # ==========================================================================
   # STEP 4: SETUP WORKTREE AND BRANCH
-  # Creates isolated worktree and outputs structured JSON for subsequent steps.
-  # ==========================================================================

@@ -95,6 +95,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-02-clarify-requirements",
     "step-02b-analyze-codebase",
     "step-02c-resolve-ambiguity",
+    "step-02d-detect-host-type",
     "step-03-create-issue",
     "step-03b-extract-issue-number",
     // Phase 1b: workflow-worktree (step 04)
@@ -594,29 +595,34 @@ fn mandatory_steps_still_present() {
 // ==========================================================================
 
 #[test]
-fn workflow_prep_step_03_detects_remote_host_type() {
-    let command = step_command("workflow-prep", "step-03-create-issue");
-
-    // Must classify the remote into a REMOTE_HOST_TYPE variable
-    assert!(
-        command.contains("REMOTE_HOST_TYPE"),
-        "step-03 must classify the git remote into a REMOTE_HOST_TYPE variable"
-    );
+fn workflow_prep_step_02d_detects_remote_host_type() {
+    let command = step_command("workflow-prep", "step-02d-detect-host-type");
 
     // Must check for GitHub
     assert!(
         command.contains("github.com"),
-        "step-03 must detect github.com in the remote URL"
+        "step-02d must detect github.com in the remote URL"
     );
 
     // Must check for Azure DevOps (both modern and legacy domains)
     assert!(
         command.contains("dev.azure.com"),
-        "step-03 must detect dev.azure.com in the remote URL"
+        "step-02d must detect dev.azure.com in the remote URL"
     );
     assert!(
         command.contains("visualstudio.com"),
-        "step-03 must detect visualstudio.com in the remote URL"
+        "step-02d must detect visualstudio.com in the remote URL"
+    );
+}
+
+#[test]
+fn workflow_prep_step_03_consumes_remote_host_type() {
+    let command = step_command("workflow-prep", "step-03-create-issue");
+
+    // Step-03 must consume REMOTE_HOST_TYPE from step-02d (not re-detect)
+    assert!(
+        command.contains("REMOTE_HOST_TYPE"),
+        "step-03 must consume REMOTE_HOST_TYPE from step-02d"
     );
 }
 
@@ -630,16 +636,16 @@ fn workflow_prep_step_03_has_github_path_inside_host_conditional() {
         "step-03 must retain 'gh issue' commands for GitHub remotes"
     );
 
-    // gh issue must NOT appear before REMOTE_HOST_TYPE is set
+    // gh issue must NOT appear before HOST_TYPE is set from REMOTE_HOST_TYPE
     let host_type_pos = command
-        .find("REMOTE_HOST_TYPE")
-        .expect("REMOTE_HOST_TYPE must exist in step-03");
+        .find("HOST_TYPE")
+        .expect("HOST_TYPE must exist in step-03");
     let first_gh_issue_pos = command
         .find("gh issue")
         .expect("'gh issue' must exist in step-03");
     assert!(
         first_gh_issue_pos > host_type_pos,
-        "step-03 must not invoke 'gh issue' before classifying the remote host type"
+        "step-03 must not invoke 'gh issue' before consuming the remote host type"
     );
 }
 

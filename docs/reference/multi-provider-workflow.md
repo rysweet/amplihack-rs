@@ -7,11 +7,6 @@ Reference for the multi-provider detection and routing logic in
 against GitHub, Azure DevOps (AzDO), or a local/unknown repository without
 requiring the user to select a provider manually.
 
-> **Note**: This document describes the target design for issue #684. Recipe
-> YAML changes to match this specification are implementation-pending. The
-> current code has host detection inline in step-03 and does not yet propagate
-> `remote_host_type` via the context block.
-
 ## Contents
 
 - [Overview](#overview)
@@ -141,10 +136,9 @@ az boards work-item create \
   --description "$ISSUE_BODY"
 ```
 
-**Work item type**: Defaults to `Task` when no type is specified. The agent
-may choose a different type (`Bug`, `User Story`, `Feature`, `Epic`) based
-on the `classification` field from step 02's clarified requirements. Users
-can also override the type by passing `-c work_item_type=Bug` to the recipe.
+**Work item type**: Defaults to `Task`. The `work_item_type` context variable
+override is planned but not yet implemented. Users can create work items
+manually and reference them via `AB#N` in the task description.
 
 The output is an AzDO work item URL:
 
@@ -157,7 +151,8 @@ The idempotency guards (Guard 1 and Guard 2 from
 
 - **Guard 1**: Extracts `AB#NNNN` or `#NNNN` references; verifies via
   `az boards work-item show --id <N>`
-- **Guard 2**: Searches via `az boards query` using WIQL title match
+- **Guard 2**: Not yet implemented. Planned: search via `az boards query`
+  using WIQL title match (similar to `gh issue list --search`)
 
 ### Other/Local (`remote_host_type = "other"`)
 
@@ -465,7 +460,7 @@ validation regex.
 
 | Field       | Value                                             |
 | ----------- | ------------------------------------------------- |
-| Status      | Specification (implementation pending)             |
+| Status      | Implemented                                        |
 | Issue       | #684                                              |
 | Recipe file | `amplifier-bundle/recipes/workflow-prep.yaml`      |
 | Parent      | `amplifier-bundle/recipes/default-workflow.yaml`   |

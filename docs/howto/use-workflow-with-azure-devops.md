@@ -8,9 +8,6 @@ repository. For design rationale, see
 For full reference, see
 [Multi-Provider Workflow Reference](../reference/multi-provider-workflow.md).
 
-> **Note**: This document describes the target design for issue #684. Some
-> recipe YAML changes are implementation-pending.
-
 ---
 
 ## Prerequisites
@@ -58,17 +55,10 @@ The workflow automatically:
 
 ### Override the work item type
 
-By default, step 03 creates a `Task`. Override for other types:
-
-```bash
-amplihack recipe run default-workflow \
-  -c task_description="Fix null reference in auth module" \
-  -c work_item_type=Bug \
-  -c repo_path=.
-```
-
-Valid types depend on your AzDO process template (Agile, Scrum, Basic, CMMI).
-Common types: `Task`, `Bug`, `User Story`, `Feature`, `Epic`.
+By default, step 03 creates a `Task`. The `work_item_type` context variable
+override is planned but not yet implemented. To use a different work item
+type, create the work item manually and reference it via `AB#N` in the
+task description.
 
 ---
 
@@ -104,7 +94,7 @@ sequences before validation, so project names with spaces work correctly.
 | PR creation         | Automated (`gh pr create`)     | Manual (instructions logged)         |
 | Auth prerequisite   | `gh auth login`                | `az login` + DevOps extension        |
 | Idempotency Guard 1 | `gh issue view`               | `az boards work-item show`           |
-| Idempotency Guard 2 | `gh issue list --search`      | `az boards query` (WIQL)             |
+| Idempotency Guard 2 | `gh issue list --search`      | Not yet implemented (planned: WIQL query) |
 | Summary (step 22b)  | `PR: <url>`                   | `PR: N/A (manual creation required)` |
 
 ---
@@ -160,5 +150,5 @@ rejected and the workflow falls back to local tracking.
 
 | Field  | Value     |
 | ------ | --------- |
-| Status | Specification (implementation pending) |
+| Status | Implemented |
 | Issue  | #684      |

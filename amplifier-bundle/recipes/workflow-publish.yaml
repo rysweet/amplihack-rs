@@ -103,7 +103,14 @@ steps:
       TASK_DESC="$TASK_DESCRIPTION"
       ISSUE_NUMBER="$ISSUE_NUMBER"
       COMMIT_TITLE=$(printf 'feat: %.72s' "$(printf '%s' "$TASK_DESC" | tr '\n\r' ' ' | head -1)")
-      COMMIT_MSG=$(printf '%s\n\nImplements issue #%s\n\nChanges:\n- Implementation as per design specification\n- Tests added for new functionality\n- Documentation updated\n\nCloses #%s' "$COMMIT_TITLE" "$ISSUE_NUMBER" "$ISSUE_NUMBER")
+      # FIX #684: Host-aware commit references
+      HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
+      case "$HOST_TYPE" in
+        github) ISSUE_REF="Closes #${ISSUE_NUMBER}"; ISSUE_IMPL="issue #${ISSUE_NUMBER}" ;;
+        azdo)   ISSUE_REF="AB#${ISSUE_NUMBER}"; ISSUE_IMPL="AB#${ISSUE_NUMBER}" ;;
+        *)      ISSUE_REF="Ref #${ISSUE_NUMBER}"; ISSUE_IMPL="issue #${ISSUE_NUMBER}" ;;
+      esac
+      COMMIT_MSG=$(printf '%s\n\nImplements %s\n\nChanges:\n- Implementation as per design specification\n- Tests added for new functionality\n- Documentation updated\n\n%s' "$COMMIT_TITLE" "$ISSUE_IMPL" "$ISSUE_REF")
       if [ -n "$(git diff --cached --name-only)" ]; then
         git commit -m "$COMMIT_MSG"
       else
@@ -184,16 +191,10 @@ steps:
       fi
       echo "=== Step 16: Creating Draft PR ===" >&2
 
-      # FIX #684: Detect remote host type — skip PR creation for non-GitHub hosts
-      REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
-      REMOTE_HOST_TYPE="other"
-      case "$REMOTE_URL" in
-        *github.com*)            REMOTE_HOST_TYPE="github" ;;
-        *dev.azure.com*|*visualstudio.com*|*ssh.dev.azure.com*)
-                                 REMOTE_HOST_TYPE="azdo" ;;
-      esac
-      if [ "$REMOTE_HOST_TYPE" != "github" ]; then
-          echo "INFO: Non-GitHub remote ($REMOTE_HOST_TYPE) — skipping draft PR creation" >&2
+      # FIX #684: Consume REMOTE_HOST_TYPE from step-02d — skip PR creation for non-GitHub
+      HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
+      if [ "$HOST_TYPE" != "github" ]; then
+          echo "INFO: Non-GitHub remote ($HOST_TYPE) — skipping draft PR creation" >&2
           printf ''
           exit 0
       fi
@@ -350,7 +351,9 @@ steps:
       PR_TITLE="${TASK_DESC//$'\n'/ }"
       PR_TITLE="${PR_TITLE//$'\r'/ }"
       PR_TITLE="${PR_TITLE:0:200}"
-      PR_BODY=$(printf '## Summary\n%s\n\n## Issue\nCloses #%s\n\n## Changes\n%s\n\n## Testing\n- Unit tests added\n- Local testing completed\n- Pre-commit hooks pass\n\n## Checklist\n- [x] Tests pass\n- [x] Documentation updated\n- [x] No stubs or TODOs\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$TASK_DESC" "$ISSUE_NUM" "$PR_DESIGN")
+      # Host-aware PR body (only reached for GitHub due to early exit above)
+      ISSUE_LINK="Closes #${ISSUE_NUM}"
+      PR_BODY=$(printf '## Summary\n%s\n\n## Issue\n%s\n\n## Changes\n%s\n\n## Testing\n- Unit tests added\n- Local testing completed\n- Pre-commit hooks pass\n\n## Checklist\n- [x] Tests pass\n- [x] Documentation updated\n- [x] No stubs or TODOs\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$TASK_DESC" "$ISSUE_LINK" "$PR_DESIGN")
       gh_pr_create_with_retry
     output: "pr_url"
 
