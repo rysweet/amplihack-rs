@@ -262,6 +262,13 @@ steps:
       TASK_DESC="$TASK_DESCRIPTION"
       ISSUE_TITLE="${TASK_DESC//$'\n'/ }"; ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"; ISSUE_TITLE="${ISSUE_TITLE:0:200}"
       ISSUE_REQS="$FINAL_REQUIREMENTS"
+      # FIX #684: Guard git commands — fall back to local tracking outside git repos
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "[skip] not a git repo — using local tracking" >&2
+        LOCAL_ISSUE=$(($(date +%s) % 1000000))
+        printf 'local-tracking:%s\n' "$LOCAL_ISSUE"
+        exit 0
+      fi
       # FIX #684: Detect remote host type before issuing host-specific commands
       REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
       case "$REMOTE_URL" in
