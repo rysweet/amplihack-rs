@@ -260,6 +260,9 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Tutorial: Recover PR 579 Readiness](tutorials/pr-recovery-readiness.md) - Walk through hook and additive-copy readiness evidence for an interrupted PR recovery
 - [PR Recovery Readiness Reference](reference/pr-recovery-readiness.md) - Context fields, readiness evidence schema, publish contract, and finalization states
 - [Workflow Issue Extraction Reference](reference/workflow-issue-extraction.md) - Three-tier issue-number resolution (direct URL → PR closing-refs → `#N` verify) in step 03b
+- [Multi-Provider Workflow Reference](reference/multi-provider-workflow.md) - Provider detection, issue tracking, and PR routing for GitHub, AzDO, and local repos
+- [How to Use the Workflow with Azure DevOps](howto/use-workflow-with-azure-devops.md) - Run default-workflow against an AzDO repository
+- [Multi-Provider Workflow Architecture](concepts/multi-provider-workflow-architecture.md) - Design decisions: detect-once pattern, issue number contract, PR asymmetry
 - [Run a Quality Audit](howto/run-quality-audit.md) - Invoke quality-audit-cycle recipe, target subdirectories, filter categories
 - [CLI Reference](reference/cli.md) - Top-level `amplihack` command, `--version` flag, global environment variables
 - [Recipe CLI Reference](reference/recipe-cli-reference.md) - Complete command-line documentation

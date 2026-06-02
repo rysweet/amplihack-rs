@@ -265,6 +265,23 @@ and that `gh issue view <N>` returns a URL containing `/issues/`.
 
 ---
 
+## Multi-Provider Extraction
+
+When `remote_provider` is not `"github"`, step 03b extracts issue numbers
+from provider-specific URL formats in addition to the GitHub patterns above:
+
+| Provider | URL pattern                                           | Extraction regex             |
+| -------- | ----------------------------------------------------- | ---------------------------- |
+| GitHub   | `https://github.com/owner/repo/issues/N`               | `issues/[0-9]+`              |
+| AzDO     | `https://dev.azure.com/org/project/_workitems/edit/N`   | `_workitems/edit/[0-9]+`     |
+| Local    | Bare numeric string from synthetic ID                   | `^[0-9]+$`                   |
+
+The `issue_number` output contract is unchanged: a plain integer regardless
+of provider. See [Multi-Provider Workflow Reference](multi-provider-workflow.md)
+for full details.
+
+---
+
 ## Related
 
 - [Workflow Execution Guardrails Reference](recipe-quick-reference.md)
@@ -274,6 +291,7 @@ and that `gh issue view <N>` returns a URL containing `/issues/`.
 - [Default Workflow](../concepts/default-workflow.md) — full step list
 - [Lock Session ID Sanitization](security-recommendations.md)
   — the security fix delivered alongside this extraction improvement (PR #4143)
+- [Multi-Provider Workflow Reference](multi-provider-workflow.md) — provider detection and routing
 - Issues [#3960](https://github.com/rysweet/amplihack-rs/issues/3960) and
   [#3983](https://github.com/rysweet/amplihack-rs/issues/3983) — originating work
 - PR [#4143](https://github.com/rysweet/amplihack-rs/pull/4143) — implementation

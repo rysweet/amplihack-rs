@@ -333,9 +333,20 @@ reference would have matched.
 
 ---
 
+## Multi-Provider Note
+
+The idempotency guards documented above are **GitHub-specific** — they use
+`gh issue view` and `gh issue list`. When `remote_provider` is `"azdo"` or
+`"local"`, step-03 takes a different code path that does not execute these
+guards. See [Multi-Provider Workflow Reference](multi-provider-workflow.md)
+for the provider-specific issue creation logic.
+
+---
+
 ## Related
 
 - `step-16-create-draft-pr` idempotency guards — pattern source (#3324)
 - `step-03b-extract-issue-number` — downstream step that parses step-03 output
 - `tests/gadugi/step-03-issue-creation-idempotency.yaml` — test suite
 - `docs/investigations/step-03-idempotency-guards-analysis.md` — security analysis and implementation notes
+- [Multi-Provider Workflow Reference](multi-provider-workflow.md) — provider detection and routing
