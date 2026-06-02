@@ -457,6 +457,40 @@ pub fn check_node_minimum_version(minimum_major: u32) -> Result<(), NodeVersionE
 }
 
 // ---------------------------------------------------------------------------
+// Node.js auto-ensure (detection portion)
+// ---------------------------------------------------------------------------
+
+/// The Node.js major version required by Copilot CLI.
+pub const NODE_MINIMUM_MAJOR: u32 = 24;
+
+/// The specific Node.js release to download when auto-ensuring.
+pub const NODE_AUTO_INSTALL_VERSION: &str = "v24.1.0";
+
+/// Map the current platform to the Node.js download naming convention.
+/// Returns `(os_name, arch_name)` — e.g. `("linux", "x64")`.
+pub fn node_platform_triple() -> Option<(&'static str, &'static str)> {
+    let os_name = if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "windows") {
+        "win"
+    } else {
+        return None;
+    };
+
+    let arch_name = if cfg!(target_arch = "x86_64") {
+        "x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        return None;
+    };
+
+    Some((os_name, arch_name))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

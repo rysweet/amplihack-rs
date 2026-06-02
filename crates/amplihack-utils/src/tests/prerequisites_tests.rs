@@ -326,3 +326,41 @@ fn node_version_error_not_found_is_distinct() {
         "undetectable error should explain the situation: {msg}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Node.js auto-ensure helpers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn node_platform_triple_returns_known_values() {
+    let (os, arch) = node_platform_triple().expect("should detect platform");
+    assert!(
+        ["linux", "darwin", "win"].contains(&os),
+        "unexpected OS: {os}"
+    );
+    assert!(["x64", "arm64"].contains(&arch), "unexpected arch: {arch}");
+}
+
+#[test]
+fn node_auto_install_version_is_valid_semver() {
+    assert!(
+        NODE_AUTO_INSTALL_VERSION.starts_with('v'),
+        "auto-install version should start with 'v': {NODE_AUTO_INSTALL_VERSION}"
+    );
+    let major = parse_node_major_version(NODE_AUTO_INSTALL_VERSION);
+    assert!(
+        major.is_some() && major.unwrap() >= NODE_MINIMUM_MAJOR,
+        "auto-install version must satisfy minimum: {NODE_AUTO_INSTALL_VERSION} vs v{NODE_MINIMUM_MAJOR}"
+    );
+}
+
+#[test]
+fn node_auto_install_version_and_minimum_are_consistent() {
+    // The bundled download version must always satisfy the minimum.
+    let major = parse_node_major_version(NODE_AUTO_INSTALL_VERSION).unwrap();
+    assert!(
+        major >= NODE_MINIMUM_MAJOR,
+        "NODE_AUTO_INSTALL_VERSION ({NODE_AUTO_INSTALL_VERSION}, major={major}) \
+         must be >= NODE_MINIMUM_MAJOR ({NODE_MINIMUM_MAJOR})"
+    );
+}

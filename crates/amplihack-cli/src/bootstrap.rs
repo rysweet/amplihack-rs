@@ -44,14 +44,11 @@ pub fn prepare_launcher(tool: &str) -> Result<()> {
     match tool {
         "copilot" => {
             // Hard gate: Copilot CLI requires Node.js >= 24.
-            // Fail early with an actionable message instead of letting the CLI
-            // launch and crash with a cryptic version error.
-            use amplihack_utils::prerequisites::check_node_minimum_version;
-            if let Err(err) = check_node_minimum_version(24) {
-                bail!(
-                    "GitHub Copilot CLI cannot start: {err}\n\
-                     Run `amplihack doctor` to verify all prerequisites."
-                );
+            // If the system version is insufficient, auto-install a managed
+            // copy to ~/.amplihack/runtimes/node/ and prepend it to PATH.
+            if let Some(managed_bin_dir) = ensure_node_for_copilot()? {
+                prepend_path(&managed_bin_dir)?;
+                persist_path_hint(&managed_bin_dir)?;
             }
             copilot_setup::ensure_copilot_home_staged()?;
         }
@@ -94,6 +91,110 @@ fn which(tool: &str) -> Option<PathBuf> {
             if full.is_file() { Some(full) } else { None }
         })
     })
+}
+
+/// Ensure Node.js >= 24 is available for Copilot CLI. If the system version
+/// is insufficient, downloads a managed copy to `~/.amplihack/runtimes/node/`.
+/// Returns `Some(bin_dir)` when a managed install was used, `None` when the
+/// system node is sufficient.
+fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
+    use amplihack_utils::prerequisites::{
+        NODE_AUTO_INSTALL_VERSION, check_node_minimum_version, node_platform_triple,
+    };
+
+    const MIN: u32 = 24;
+
+    // Fast path: system node is sufficient.
+    if check_node_minimum_version(MIN).is_ok() {
+        return Ok(None);
+    }
+
+    // Non-interactive environments should not auto-install.
+    if is_noninteractive() {
+        bail!(
+            "Node.js >= v{MIN} is required but not found, and \
+             auto-install is disabled in non-interactive mode.\n\
+             Install Node.js manually: https://nodejs.org/"
+        );
+    }
+
+    let (os_name, arch_name) = node_platform_triple().ok_or_else(|| {
+        anyhow!(
+            "Node.js >= v{MIN} is required but auto-install is not supported \
+             on this platform.\nInstall Node.js manually: https://nodejs.org/"
+        )
+    })?;
+
+    let runtimes_dir = home_dir()?.join(".amplihack").join("runtimes");
+    let dir_name = format!("node-{NODE_AUTO_INSTALL_VERSION}-{os_name}-{arch_name}");
+    let install_dir = runtimes_dir.join(&dir_name);
+    let bin_dir = install_dir.join("bin");
+
+    // Already installed?
+    if bin_dir.join("node").exists() {
+        tracing::info!(path = %bin_dir.display(), "managed Node.js already present");
+        println!("  ✅ Managed Node.js {NODE_AUTO_INSTALL_VERSION} already installed");
+        return Ok(Some(bin_dir));
+    }
+
+    let ext = if os_name == "win" { "zip" } else { "tar.xz" };
+    let filename = format!("node-{NODE_AUTO_INSTALL_VERSION}-{os_name}-{arch_name}.{ext}");
+    let url = format!("https://nodejs.org/dist/{NODE_AUTO_INSTALL_VERSION}/{filename}");
+
+    println!("  ⬇️  Downloading Node.js {NODE_AUTO_INSTALL_VERSION} ({os_name}-{arch_name})...");
+    tracing::info!(%url, "downloading Node.js");
+
+    fs::create_dir_all(&runtimes_dir)
+        .with_context(|| format!("failed to create {}", runtimes_dir.display()))?;
+
+    let tmp_path = runtimes_dir.join(&filename);
+
+    let status = Command::new("curl")
+        .args(["-fsSL", "-o"])
+        .arg(&tmp_path)
+        .arg(&url)
+        .status()
+        .context("failed to run curl")?;
+
+    if !status.success() {
+        let _ = fs::remove_file(&tmp_path);
+        bail!(
+            "failed to download Node.js from {url} (exit {})\n\
+             Install Node.js manually: https://nodejs.org/",
+            status.code().unwrap_or(-1)
+        );
+    }
+
+    println!("  📦 Installing Node.js {NODE_AUTO_INSTALL_VERSION}...");
+    let extract_status = Command::new("tar")
+        .args(["-xJf"])
+        .arg(&tmp_path)
+        .arg("-C")
+        .arg(&runtimes_dir)
+        .status()
+        .context("failed to run tar")?;
+
+    let _ = fs::remove_file(&tmp_path);
+
+    if !extract_status.success() {
+        bail!(
+            "failed to extract Node.js tarball (exit {})",
+            extract_status.code().unwrap_or(-1)
+        );
+    }
+
+    if !bin_dir.exists() {
+        bail!(
+            "Node.js extraction succeeded but expected bin dir not found: {}",
+            bin_dir.display()
+        );
+    }
+
+    println!(
+        "  ✅ Node.js {NODE_AUTO_INSTALL_VERSION} installed to {}",
+        install_dir.display()
+    );
+    Ok(Some(bin_dir))
 }
 
 pub fn ensure_tool_available(tool: &str) -> Result<BinaryInfo> {
