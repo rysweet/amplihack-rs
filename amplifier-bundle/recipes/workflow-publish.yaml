@@ -172,6 +172,20 @@ steps:
       fi
       echo "=== Step 16: Creating Draft PR ===" >&2
 
+      # FIX #684: Detect remote host type — skip PR creation only for known non-GitHub hosts
+      REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+      REMOTE_HOST_TYPE="other"
+      case "$REMOTE_URL" in
+        *github.com*)            REMOTE_HOST_TYPE="github" ;;
+        *dev.azure.com*|*visualstudio.com*|*ssh.dev.azure.com*)
+                                 REMOTE_HOST_TYPE="azdo" ;;
+      esac
+      if [ "$REMOTE_HOST_TYPE" = "azdo" ]; then
+          echo "INFO: Remote is Azure DevOps — skipping draft PR creation (use az repos pr create)" >&2
+          printf '\n'
+          exit 0
+      fi
+
       # Idempotency guard: detect pre-existing PRs before creating one.
       CURRENT_BRANCH=$(git branch --show-current)
       ISSUE_NUM="$ISSUE_NUMBER"

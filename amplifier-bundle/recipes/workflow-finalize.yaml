@@ -233,15 +233,24 @@ steps:
       else
         echo "WARNING: step-21 worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2
       fi
-      echo "=== Step 20: Converting PR to Ready ==="
+      echo "=== Step 21: Converting PR to Ready ==="
       echo ""
+
+      # FIX #684/#682: Guard PR_URL before invoking gh commands
+      PR_URL="${PR_URL:-}"
+      if [ -z "$PR_URL" ]; then
+        echo "INFO: PR_URL is empty (non-GitHub remote or PR creation skipped) — skipping gh pr ready" >&2
+        echo "=== PR Ready: SKIPPED (no PR URL) ==="
+        exit 0
+      fi
+
       echo "--- Verifying All Steps Complete ---"
       echo ""
       echo "--- Converting PR to Ready ---"
-      gh pr ready
+      gh pr ready "$PR_URL"
       echo ""
       echo "--- Adding Ready Comment ---"
-      gh pr comment --body "## Ready for Final Review
+      gh pr comment "$PR_URL" --body "## Ready for Final Review
 
       All workflow steps completed:
       - [x] Requirements clarified
