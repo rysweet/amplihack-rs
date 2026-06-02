@@ -107,6 +107,30 @@ Successful install prints a phase-by-phase progress summary:
 amplihack installed successfully.
 ```
 
+#### XPIA Verification Output
+
+When the XPIA hooks directory exists, install prints per-file verification for the three optional XPIA hook scripts:
+
+```
+    ✅ session_start.py found
+    ✅ post_tool_use.py found
+    ✅ pre_tool_use.py found
+```
+
+If a hook file is missing, the corresponding line shows `❌`:
+
+```
+    ❌ pre_tool_use.py missing
+```
+
+If the XPIA directory itself is absent, a single informational line appears instead:
+
+```
+  ℹ️  XPIA security hooks not installed (optional feature)
+```
+
+XPIA verification is **non-fatal** — install succeeds regardless of XPIA hook presence. The output is diagnostic only. See [XPIA](../claude/commands/amplihack/xpia.md) for XPIA installation details.
+
 If `~/.local/bin` is not in `$PATH`, an advisory is printed (install still succeeds):
 
 ```

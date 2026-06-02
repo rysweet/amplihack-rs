@@ -159,7 +159,7 @@ pub(super) const RUNTIME_DIRS: &[&str] = &[
     "runtime/analysis",
 ];
 pub(super) const XPIA_HOOK_FILES: &[&str] =
-    &["session_start.sh", "post_tool_use.sh", "pre_tool_use.sh"];
+    &["session_start.py", "post_tool_use.py", "pre_tool_use.py"];
 
 /// Discriminates between hook command styles.
 #[derive(Clone)]
@@ -387,6 +387,23 @@ mod tests {
         for (src, dst) in LEGACY_DIR_MAPPING {
             assert_no_parent("LEGACY_DIR_MAPPING.src", src);
             assert_no_parent("LEGACY_DIR_MAPPING.dst", dst);
+        }
+    }
+
+    /// Issue #683 drift guard: XPIA_HOOK_FILES must use `.py` extensions.
+    /// Deployed XPIA hooks are Python scripts; `.sh` would cause false-
+    /// negative verification warnings on every install/update.
+    #[test]
+    fn xpia_hook_files_all_use_py_extension() {
+        for file in XPIA_HOOK_FILES {
+            assert!(
+                file.ends_with(".py"),
+                "XPIA_HOOK_FILES entry `{file}` must end with .py (issue #683)"
+            );
+            assert!(
+                !file.ends_with(".sh"),
+                "XPIA_HOOK_FILES entry `{file}` must NOT end with .sh (issue #683)"
+            );
         }
     }
 

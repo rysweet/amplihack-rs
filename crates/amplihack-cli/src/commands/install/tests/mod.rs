@@ -13,3 +13,4 @@ mod uninstall_tests;
 mod wrapper_tests;
 
 mod interactive_tests;
+mod xpia_verification_tests;

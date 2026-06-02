@@ -23,6 +23,8 @@ The installer stages the framework components described by the install mapping i
 
 Additional source categories, such as `commands/` or `hooks/`, are source-conditional required: if the source-derived manifest includes them, they must be copied and verified. They are not best-effort optional assets.
 
+XPIA hooks (`session_start.py`, `post_tool_use.py`, `pre_tool_use.py`) are **optional**. Their presence is verified with per-file `✅`/`❌` output during install, but missing XPIA hooks do not cause install failure. See [XPIA](../claude/commands/amplihack/xpia.md) for details.
+
 The full `amplifier-bundle/` is also staged under the user's Amplihack home directory so local installs have the same framework assets available after update and install.
 
 ## Usage

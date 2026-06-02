@@ -108,15 +108,17 @@ amplihack install  # This will reconfigure hooks automatically
 
 ### Problem: XPIA hooks warning
 
-**Symptom:** Warning about missing XPIA hooks during configuration
+**Symptom:** `❌ session_start.py missing`, `❌ post_tool_use.py missing`, or `❌ pre_tool_use.py missing` during `amplihack install` verification, even though XPIA hook files exist on disk.
 
-**Cause:** XPIA security hooks are optional and not installed
+**Cause:** XPIA security hooks are optional. The verification step checks for `session_start.py`, `post_tool_use.py`, and `pre_tool_use.py` inside the XPIA hooks directory. If you see `❌` markers but the files exist, confirm you are running amplihack ≥ the version that includes the issue #683 fix (earlier versions checked for `.sh` extensions instead of `.py`, producing false negatives).
 
 **Solution:**
 
-- This is normal if you haven't installed XPIA
-- To install XPIA: Follow XPIA installation instructions
-- To disable warning: Ignore (it's informational only)
+- If XPIA is not installed: this is normal — the `ℹ️` message confirms XPIA is absent and install still succeeds.
+- If XPIA is installed but shows `❌`: update amplihack to pick up the corrected `.py` file-extension check.
+- To install XPIA: follow the [XPIA installation instructions](../claude/commands/amplihack/xpia.md).
+
+> **Historical note (issue #683):** Before the fix, `XPIA_HOOK_FILES` in `types.rs` listed `.sh` extensions while the actual deployed hooks use `.py`. This caused verification to report all three XPIA hooks as missing even when they were correctly installed. The fix changed the constant to use `.py` extensions.
 
 ## Advanced: Path Expansion
 
