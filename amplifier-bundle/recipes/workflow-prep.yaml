@@ -305,14 +305,23 @@ steps:
         elif [[ "$REMOTE_URL" =~ ssh\.dev\.azure\.com[:/]v3/([^/]+)/([^/]+)/ ]]; then
           AZDO_ORG="${BASH_REMATCH[1]}"; AZDO_PROJECT="${BASH_REMATCH[2]}"
         fi
+        # Security: validate org/project captures against safe character set
+        if [[ -n "$AZDO_ORG" ]] && ! [[ "$AZDO_ORG" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+          echo "WARN: AZDO_ORG contains unexpected characters — using local tracking" >&2
+          AZDO_ORG=""
+        fi
+        if [[ -n "$AZDO_PROJECT" ]] && ! [[ "$AZDO_PROJECT" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+          echo "WARN: AZDO_PROJECT contains unexpected characters — using local tracking" >&2
+          AZDO_PROJECT=""
+        fi
         AZDO_ORG_URL="https://dev.azure.com/${AZDO_ORG}"
         if command -v az >/dev/null 2>&1; then
           if [ -n "$REF_ISSUE_NUM" ]; then
-            WI_URL=$(az boards work-item show --id "$REF_ISSUE_NUM" --org "$AZDO_ORG_URL" --query "url" -o tsv 2>/dev/null || echo "")
+            WI_URL=$(timeout 60 az boards work-item show --id "$REF_ISSUE_NUM" --org "$AZDO_ORG_URL" --query "url" -o tsv 2>/dev/null || echo "")
             [ -n "$WI_URL" ] && { echo "INFO: Reusing work item AB#$REF_ISSUE_NUM" >&2; printf '%s\n' "$WI_URL"; exit 0; }
           fi
           if [ -n "$AZDO_ORG" ] && [ -n "$AZDO_PROJECT" ]; then
-            WI_RESULT=$(az boards work-item create --title "$ISSUE_TITLE" --type "Task" \
+            WI_RESULT=$(timeout 60 az boards work-item create --title "$ISSUE_TITLE" --type "Task" \
               --org "$AZDO_ORG_URL" --project "$AZDO_PROJECT" --query "[id,url]" -o tsv 2>/dev/null || echo "")
             if [ -n "$WI_RESULT" ]; then
               read -r _ WI_URL <<< "$WI_RESULT"
