@@ -422,17 +422,32 @@ Before releasing changes:
 - `subprocess.run()` - Execute npm, launch CLI
 - `sys.exit()` - Exit with status code
 
+## Node.js Runtime Prerequisite
+
+Before any npm-based installation can proceed, the Rust CLI ensures a
+compatible Node.js runtime is available. `check_node_minimum_version()`
+probes the system and returns one of:
+
+- `Ok(())` — system node is ≥ 18, proceed normally
+- `Err(NotFound)` — `node` binary is absent from PATH
+- `Err(TooOld)` — node exists but version < 18
+- `Err(VersionUndetectable)` — node exists but version output is unparseable
+
+Any `Err` variant triggers `ensure_node_for_copilot()`, which downloads
+an official Node.js binary distribution to `~/.amplihack/runtimes/` and
+prepends its `bin/` directory to `PATH`. Extraction uses atomic staging
+(`.extracting` temp directory → rename) to prevent broken partial installs.
+
+See [Node.js Runtime Auto-Install](../concepts/node-runtime-auto-install.md)
+for full details and [`NodeVersionError` Reference](../reference/node-version-error.md)
+for the error enum API.
+
 ## Rust CLI: Two-Phase Installation (Current)
 
-The Rust CLI (`bootstrap.rs`) replaces the Python launcher and will use a
+The Rust CLI (`bootstrap.rs`) replaces the Python launcher and uses a
 two-phase installation strategy to work around an npm 9.x bug where
 platform-mismatched optional dependencies cause npm to hang indefinitely
 during the reify phase.
-
-> **Implementation status:** Planned for issue
-> [#585](https://github.com/rysweet/amplihack-rs/issues/585). The functions
-> and behavior described below are the target design — update this section
-> after implementation lands.
 
 ### Architecture (Rust)
 
@@ -542,5 +557,11 @@ approach is correct because:
 
 **Audience**: Maintainers and contributors
 **Scope**: Implementation details
-**Last Updated**: 2026-05-11
+**Last Updated**: 2026-06-02
 **Version**: Rust CLI (bootstrap.rs)
+
+## See Also
+
+- [Node.js Runtime Auto-Install](../concepts/node-runtime-auto-install.md) — automatic Node.js provisioning
+- [`NodeVersionError` Reference](../reference/node-version-error.md) — error enum API
+- [Bug Fix #679](../bugfixes/bugfix-679-node-auto-install-quality-fixes.md) — quality audit fixes for auto-install

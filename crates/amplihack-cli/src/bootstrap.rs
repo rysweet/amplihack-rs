@@ -137,7 +137,7 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
         return Ok(Some(bin_dir));
     }
 
-    let ext = if os_name == "win" { "zip" } else { "tar.xz" };
+    let ext = "tar.xz";
     let filename = format!("node-{NODE_AUTO_INSTALL_VERSION}-{os_name}-{arch_name}.{ext}");
     let url = format!("https://nodejs.org/dist/{NODE_AUTO_INSTALL_VERSION}/{filename}");
 
@@ -166,29 +166,51 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
     }
 
     println!("  📦 Installing Node.js {NODE_AUTO_INSTALL_VERSION}...");
+
+    // Extract to a temp directory, then atomically rename to install_dir.
+    // This prevents partial extraction (disk full, interrupted) from leaving
+    // a broken install that the next run would accept as valid.
+    let temp_dir = runtimes_dir.join(format!("{dir_name}.extracting"));
+
+    // Clean up any stale temp dir from a prior crash
+    let _ = fs::remove_dir_all(&temp_dir);
+    fs::create_dir_all(&temp_dir)
+        .with_context(|| format!("failed to create temp dir {}", temp_dir.display()))?;
+
     let extract_status = Command::new("tar")
-        .args(["-xJf"])
+        .args(["--strip-components=1", "-xJf"])
         .arg(&tmp_path)
         .arg("-C")
-        .arg(&runtimes_dir)
+        .arg(&temp_dir)
         .status()
         .context("failed to run tar")?;
 
     let _ = fs::remove_file(&tmp_path);
 
     if !extract_status.success() {
+        let _ = fs::remove_dir_all(&temp_dir);
         bail!(
             "failed to extract Node.js tarball (exit {})",
             extract_status.code().unwrap_or(-1)
         );
     }
 
-    if !bin_dir.exists() {
+    if !temp_dir.join("bin").join("node").exists() {
+        let _ = fs::remove_dir_all(&temp_dir);
         bail!(
-            "Node.js extraction succeeded but expected bin dir not found: {}",
-            bin_dir.display()
+            "Node.js extraction succeeded but bin/node not found in {}",
+            temp_dir.display()
         );
     }
+
+    fs::rename(&temp_dir, &install_dir).with_context(|| {
+        let _ = fs::remove_dir_all(&temp_dir);
+        format!(
+            "failed to rename {} to {}",
+            temp_dir.display(),
+            install_dir.display()
+        )
+    })?;
 
     println!(
         "  ✅ Node.js {NODE_AUTO_INSTALL_VERSION} installed to {}",

@@ -388,6 +388,13 @@ pub enum NodeVersionError {
          Install with: {install_hint}"
     )]
     VersionUndetectable { install_hint: String },
+
+    /// `node` binary was not found on PATH at all.
+    #[error(
+        "Node.js is not installed — the `node` binary was not found on PATH.\n\
+         Install with: {install_hint}"
+    )]
+    NotFound { install_hint: String },
 }
 
 /// Extract the major version number from a Node.js version string.
@@ -417,10 +424,9 @@ pub fn parse_node_major_version(version_str: &str) -> Option<u32> {
 /// Check that the installed Node.js meets a minimum major version.
 ///
 /// Uses `check_tool("node")` to get the version string and parses it.
-/// Returns `Ok(())` when the version is sufficient or undetectable (fail-open
-/// so that missing-tool handling is left to the existing `check_prerequisites`
-/// flow). Returns `Err(NodeVersionError)` only when node IS found but its
-/// version is definitively too low.
+/// Returns `Ok(())` when the version is sufficient. Returns
+/// `Err(NodeVersionError)` when node is missing, its version is too low,
+/// or its version cannot be determined.
 pub fn check_node_minimum_version(minimum_major: u32) -> Result<(), NodeVersionError> {
     let result = check_tool("node");
     let platform = detect_platform();
@@ -433,8 +439,8 @@ pub fn check_node_minimum_version(minimum_major: u32) -> Result<(), NodeVersionE
                 // node binary exists but version extraction failed
                 return Err(NodeVersionError::VersionUndetectable { install_hint: hint });
             }
-            // node not found at all — handled by check_prerequisites
-            return Ok(());
+            // node not found at all — callers must handle this
+            return Err(NodeVersionError::NotFound { install_hint: hint });
         }
     };
 
@@ -474,7 +480,8 @@ pub fn node_platform_triple() -> Option<(&'static str, &'static str)> {
     } else if cfg!(target_os = "macos") {
         "darwin"
     } else if cfg!(target_os = "windows") {
-        "win"
+        // Node.js Windows downloads are .zip — tar -xJf won't work.
+        return None;
     } else {
         return None;
     };

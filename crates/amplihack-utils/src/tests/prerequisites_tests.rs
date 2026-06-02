@@ -316,7 +316,7 @@ fn node_version_error_displays_actionable_message() {
 }
 
 #[test]
-fn node_version_error_not_found_is_distinct() {
+fn node_version_error_undetectable_is_distinct() {
     let err = NodeVersionError::VersionUndetectable {
         install_hint: "sudo apt install nodejs".into(),
     };
@@ -328,16 +328,65 @@ fn node_version_error_not_found_is_distinct() {
 }
 
 // ---------------------------------------------------------------------------
+// TDD: NotFound variant (Issue 1) — tests for code that doesn't exist yet
+// ---------------------------------------------------------------------------
+
+#[test]
+fn node_version_error_not_installed_displays_actionable_message() {
+    // Issue 1: NotFound variant must exist and produce a clear,
+    // actionable error message distinct from VersionUndetectable.
+    let err = NodeVersionError::NotFound {
+        install_hint: "brew install node".into(),
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not installed"),
+        "NotFound error should say 'not installed': {msg}"
+    );
+    assert!(
+        msg.contains("brew install node"),
+        "NotFound error should include the install hint: {msg}"
+    );
+    assert!(
+        msg.contains("not found on PATH"),
+        "NotFound error should mention PATH: {msg}"
+    );
+}
+
+#[test]
+fn node_version_error_not_found_is_distinct_from_undetectable() {
+    // NotFound and VersionUndetectable must produce different messages
+    // so users get the right guidance for their situation.
+    let not_found = NodeVersionError::NotFound {
+        install_hint: "sudo apt install nodejs".into(),
+    };
+    let undetectable = NodeVersionError::VersionUndetectable {
+        install_hint: "sudo apt install nodejs".into(),
+    };
+    let not_found_msg = not_found.to_string();
+    let undetectable_msg = undetectable.to_string();
+    assert_ne!(
+        not_found_msg, undetectable_msg,
+        "NotFound and VersionUndetectable must produce different messages"
+    );
+    assert!(
+        not_found_msg.contains("not installed"),
+        "NotFound should say 'not installed': {not_found_msg}"
+    );
+    assert!(
+        undetectable_msg.contains("detect") || undetectable_msg.contains("Could not"),
+        "VersionUndetectable should mention detection: {undetectable_msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Node.js auto-ensure helpers
 // ---------------------------------------------------------------------------
 
 #[test]
 fn node_platform_triple_returns_known_values() {
     let (os, arch) = node_platform_triple().expect("should detect platform");
-    assert!(
-        ["linux", "darwin", "win"].contains(&os),
-        "unexpected OS: {os}"
-    );
+    assert!(["linux", "darwin"].contains(&os), "unexpected OS: {os}");
     assert!(["x64", "arm64"].contains(&arch), "unexpected arch: {arch}");
 }
 
