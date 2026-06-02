@@ -1,0 +1,28 @@
+name: pr-689-merge-ready
+description: |
+  Merge-ready QA coverage for PR #689. Exercises Azure DevOps remote detection,
+  GitHub regression protection, and the resume path fallback when step-04 is skipped.
+type: cli
+tags: [merge-ready, workflow, azdo, github, resume]
+
+scenarios:
+  - name: azdo-remote-detection-in-workflow-prep
+    description: workflow-prep routes Azure DevOps remotes and preserves the local fallback.
+    steps:
+      - type: command
+        command: bash ./issue_684_azdo_remote_detection.sh
+        expected_exit_code: 0
+
+  - name: github-remote-still-works-no-regression
+    description: GitHub issue and PR handling still exist after adding host detection.
+    steps:
+      - type: command
+        command: "bash -lc 'cargo test --test default_workflow_decomposition -- workflow_prep_step_03_has_github_path_inside_host_conditional --quiet && cargo test --test default_workflow_decomposition -- workflow_prep_step_03b_handles_azdo_work_item_urls --quiet'"
+        expected_exit_code: 0
+
+  - name: resume-path-works-when-step-04-skipped
+    description: Mid-stage steps fall back to REPO_PATH and PR readiness guards empty PR_URL.
+    steps:
+      - type: command
+        command: "bash -lc 'cargo test --test default_workflow_decomposition -- mid_stage_worktree_steps_fall_back_to_repo_path --quiet && cargo test --test default_workflow_decomposition -- workflow_finalize_step_21_guards_pr_url_before_gh_commands --quiet && bash ./issue_682_worktree_resume.sh'"
+        expected_exit_code: 0

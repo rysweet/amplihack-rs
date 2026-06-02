@@ -336,11 +336,8 @@ fn default_workflow_chain_has_no_yaml_timeout_fields() {
                         "{name}.yaml: step `{id}` has YAML `agent.{field}:`"
                     ));
                 }
-                if let Some(bash) = step.get("bash") {
-                    if bash.get(field).is_some() {
-                        violations
-                            .push(format!("{name}.yaml: step `{id}` has YAML `bash.{field}:`"));
-                    }
+                if step.get("bash").and_then(|b| b.get(field)).is_some() {
+                    violations.push(format!("{name}.yaml: step `{id}` has YAML `bash.{field}:`"));
                 }
             }
         }

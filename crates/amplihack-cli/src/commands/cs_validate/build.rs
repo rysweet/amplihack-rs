@@ -201,8 +201,10 @@ Program.cs(12,1): error CS0246: The type or namespace name 'Foo' could not be fo
         assert_eq!(diags.len(), 0);
 
         // With "Warning" threshold — should include
-        let mut config2 = CsValidatorConfig::default();
-        config2.analyzer_severity_threshold = "Warning".to_string();
+        let config2 = CsValidatorConfig {
+            analyzer_severity_threshold: "Warning".to_string(),
+            ..CsValidatorConfig::default()
+        };
         let diags = parse_dotnet_diagnostics(output, &config2);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
@@ -216,8 +218,10 @@ Program.cs(12,1): error CS0246: The type or namespace name 'Foo' could not be fo
         let diags = parse_dotnet_diagnostics(output, &config);
         assert_eq!(diags.len(), 0);
 
-        let mut config2 = CsValidatorConfig::default();
-        config2.analyzer_severity_threshold = "Info".to_string();
+        let config2 = CsValidatorConfig {
+            analyzer_severity_threshold: "Info".to_string(),
+            ..CsValidatorConfig::default()
+        };
         let diags = parse_dotnet_diagnostics(output, &config2);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, DiagnosticSeverity::Info);

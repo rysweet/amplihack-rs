@@ -100,6 +100,7 @@ context:
   refactored_code: ""
   pre_commit_review: ""
   review_feedback: ""
+  remote_host_type: ""
   pr_url: ""
   pr_review: ""
   pr_security_review: ""

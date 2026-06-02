@@ -27,7 +27,7 @@ struct Recipe {
 struct Step {
     id: String,
     #[serde(rename = "type", default)]
-    step_type: Option<String>,
+    _step_type: Option<String>,
     #[serde(default)]
     agent: Option<String>,
     #[serde(default)]
@@ -35,7 +35,7 @@ struct Step {
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
-    output: Option<String>,
+    _output: Option<String>,
 }
 
 fn workflow_tdd_path() -> PathBuf {

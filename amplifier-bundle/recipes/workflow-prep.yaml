@@ -19,11 +19,9 @@ recursion:
 context: {}
 
 steps:
-  # ==========================================================================
   # STEP 0: WORKFLOW PREPARATION (MANDATORY - DO NOT SKIP)
-  # Creates tracking structure for all 23 workflow steps.
-  # CRITICAL: Must complete before ANY implementation work begins.
-  # Prevents "completion bias" - ensures mandatory review steps (0, 14, 17-18) not skipped.
+  # Creates tracking structure. Must complete before ANY implementation work.
+  # Prevents "completion bias" - ensures mandatory review steps not skipped.
   # ==========================================================================
   - id: "step-00-workflow-preparation"
     type: "bash"
@@ -77,11 +75,7 @@ steps:
       printf 'Repository: %s\n' "$REPO_PATH"
     output: "workflow_init"
 
-  # ==========================================================================
   # STEP 1: PREPARE THE WORKSPACE
-  # Ensure a clean local environment that is up to date.
-  # Actions: verify no unstashed changes, git fetch, check git status
-  # ==========================================================================
   - id: "step-01-prepare-workspace"
     type: "bash"
     command: |
@@ -135,9 +129,7 @@ steps:
       fi
     output: "workspace_status"
 
-  # ==========================================================================
   # STEP 2: REWRITE AND CLARIFY REQUIREMENTS
-  # ==========================================================================
   - id: "step-02-clarify-requirements"
     agent: "amplihack:prompt-writer"
     prompt: |
@@ -249,120 +241,157 @@ steps:
     output: "final_requirements"
 
   # ==========================================================================
-  # STEP 3: CREATE GITHUB ISSUE
-  # Create a GitHub issue documenting the task with problem description,
-  # requirements, constraints, success criteria, and appropriate labels.
+  # STEP 02d: DETECT REMOTE HOST TYPE
+  # Output propagates via parent context to all downstream sub-recipes.
   # ==========================================================================
+  - id: "step-02d-detect-host-type"
+    type: "bash"
+    command: |
+      set -euo pipefail; cd "$REPO_PATH"
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "[skip] not a git repo — defaulting to 'other'" >&2
+        printf 'other'; exit 0
+      fi
+      REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+      case "$REMOTE_URL" in
+        https://github.com/*|git@github.com:*|ssh://git@github.com/*|https://*@github.com/*) HT="github" ;;
+        *dev.azure.com*|*visualstudio.com*|*ssh.dev.azure.com*) HT="azdo" ;;
+        *) HT="other" ;;
+      esac
+      echo "INFO: Remote host type: $HT" >&2
+      printf '%s' "$HT"
+    output: "remote_host_type"
+
+  # STEP 3: CREATE TRACKING ISSUE (GitHub / AzDO / local fallback)
   - id: "step-03-create-issue"
     type: "bash"
     command: |
       set -euo pipefail
       cd "$REPO_PATH"
-      echo "=== Step 3: Creating GitHub Issue ===" >&2
-
-      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
+      echo "=== Step 3: Creating Tracking Issue ===" >&2
       TASK_DESC="$TASK_DESCRIPTION"
-      # Bash builtins replace tr|cut pipeline — avoids 2 subprocess spawns (matches step-16)
-      ISSUE_TITLE="${TASK_DESC//$'\n'/ }"
-      ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"
-      ISSUE_TITLE="${ISSUE_TITLE:0:200}"
+      ISSUE_TITLE="${TASK_DESC//$'\n'/ }"; ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"; ISSUE_TITLE="${ISSUE_TITLE:0:200}"
       ISSUE_REQS="$FINAL_REQUIREMENTS"
-
-      # Idempotency Guard 1: Reuse issue referenced in task_description (#NNNN)
-      # Mirrors step-16-create-draft-pr idempotency pattern (#3324).
-      # Bash regex replaces printf|grep|head|tr pipeline — avoids 4 subprocess spawns
-      if [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then
-          REF_ISSUE_NUM="${BASH_REMATCH[1]}"
-      else
-          REF_ISSUE_NUM=""
+      # FIX #684: Guard git commands — fall back to local tracking outside git repos
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "[skip] not a git repo — using local tracking" >&2
+        LOCAL_ISSUE=$(($(date +%s) % 1000000))
+        printf 'local-tracking:%s\n' "$LOCAL_ISSUE"
+        exit 0
       fi
-      # Defense-in-depth: validate numeric before interpolating into gh command
-      if [ -n "$REF_ISSUE_NUM" ] && ! [[ "$REF_ISSUE_NUM" =~ ^[0-9]+$ ]]; then
-          echo "WARN: Extracted issue reference is not numeric: $REF_ISSUE_NUM — skipping guard 1" >&2
-          REF_ISSUE_NUM=""
-      fi
-      if [ -n "$REF_ISSUE_NUM" ]; then
-          echo "INFO: task_description references issue #$REF_ISSUE_NUM — verifying it exists" >&2
+      HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
+      # Extract referenced issue/work-item from task_description (idempotency)
+      REF_ISSUE_NUM=""
+      if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
+      elif [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"; fi
+      [ -n "$REF_ISSUE_NUM" ] && ! [[ "$REF_ISSUE_NUM" =~ ^[0-9]+$ ]] && REF_ISSUE_NUM=""
+      # --- GitHub path ---
+      if [ "$HOST_TYPE" = "github" ]; then
+        if [ -n "$REF_ISSUE_NUM" ]; then
           EXISTING_URL=$(timeout 60 gh issue view "$REF_ISSUE_NUM" --json url --jq '.url // ""' 2>/dev/null || echo '')
-          if [ -n "$EXISTING_URL" ]; then
-              echo "INFO: Reusing existing issue #$REF_ISSUE_NUM — skipping creation" >&2
-              printf '%s\n' "$EXISTING_URL"
-              exit 0
+          [ -n "$EXISTING_URL" ] && { printf '%s\n' "$EXISTING_URL"; exit 0; }
+        fi
+        SEARCH_Q="${ISSUE_TITLE:0:100}"
+        if [ -n "$SEARCH_Q" ]; then
+          FOUND_URL=$(timeout 60 gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo '')
+          [ -n "$FOUND_URL" ] && { printf '%s\n' "$FOUND_URL"; exit 0; }
+        fi
+        ISSUE_BODY=$(printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$ISSUE_REQS")
+        LABEL_NAME="workflow:default"
+        gh label create "$LABEL_NAME" --color "0366d6" --description "Created by default-workflow recipe" 2>/dev/null || true
+        gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" --label "$LABEL_NAME" 2>&1 || \
+          gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY"
+        exit $?
+      fi
+      # --- Azure DevOps path (az boards work-item) ---
+      if [ "$HOST_TYPE" = "azdo" ]; then
+        REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+        AZDO_ORG=""; AZDO_PROJECT=""
+        # Bash regex replaces 6 echo|sed subprocess spawns with built-in matching
+        if [[ "$REMOTE_URL" =~ dev\.azure\.com/([^/]+)/([^/]+)/ ]]; then
+          AZDO_ORG="${BASH_REMATCH[1]}"; AZDO_PROJECT="${BASH_REMATCH[2]}"
+        elif [[ "$REMOTE_URL" =~ ([^/.]+)\.visualstudio\.com/([^/]+)/ ]]; then
+          AZDO_ORG="${BASH_REMATCH[1]}"; AZDO_PROJECT="${BASH_REMATCH[2]}"
+        elif [[ "$REMOTE_URL" =~ ssh\.dev\.azure\.com[:/]v3/([^/]+)/([^/]+)/ ]]; then
+          AZDO_ORG="${BASH_REMATCH[1]}"; AZDO_PROJECT="${BASH_REMATCH[2]}"
+        fi
+        # FIX #684: Decode %XX percent-encoding (e.g. My%20Project → My Project)
+        _pct_decode() {
+          local e="$1" d="" i=0 ch hex
+          while [ "$i" -lt "${#e}" ]; do
+            ch="${e:$i:1}"
+            if [ "$ch" = "%" ] && [ "$((i+2))" -le "${#e}" ]; then
+              hex="${e:$((i+1)):2}"
+              if [[ "$hex" =~ ^[0-9a-fA-F]{2}$ ]]; then
+                [ "$hex" = "00" ] && { echo "WARN: NUL byte in percent-encoding" >&2; echo ""; return 1; }
+                printf -v tmp "\\x$hex"; d+="$tmp"; i=$((i+3)); continue
+              fi
+              echo "WARN: Invalid percent-encoding '%${hex}' — using local tracking" >&2
+              echo ""; return 1
+            fi
+            d+="$ch"; i=$((i+1))
+          done
+          printf '%s' "$d"
+        }
+        [ -n "$AZDO_ORG" ] && { AZDO_ORG=$(_pct_decode "$AZDO_ORG") || { AZDO_ORG=""; AZDO_PROJECT=""; }; }
+        [ -n "$AZDO_PROJECT" ] && { AZDO_PROJECT=$(_pct_decode "$AZDO_PROJECT") || { AZDO_ORG=""; AZDO_PROJECT=""; }; }
+        # Security: validate org/project captures against safe character set
+        if [[ -n "$AZDO_ORG" ]] && ! [[ "$AZDO_ORG" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+          echo "WARN: AZDO_ORG contains unexpected characters — using local tracking" >&2
+          AZDO_ORG=""
+        fi
+        # Project names may contain spaces (decoded from %20)
+        if [[ -n "$AZDO_PROJECT" ]] && ! [[ "$AZDO_PROJECT" =~ ^[a-zA-Z0-9._ -]+$ ]]; then
+          echo "WARN: AZDO_PROJECT contains unexpected characters — using local tracking" >&2
+          AZDO_PROJECT=""
+        fi
+        if command -v az >/dev/null 2>&1 && [ -n "$AZDO_ORG" ] && [ -n "$AZDO_PROJECT" ]; then
+          AZDO_ORG_URL="https://dev.azure.com/${AZDO_ORG}"
+          if [ -n "$REF_ISSUE_NUM" ]; then
+            WI_URL=$(timeout 60 az boards work-item show --id "$REF_ISSUE_NUM" --org "$AZDO_ORG_URL" --query "url" -o tsv 2>/dev/null || echo "")
+            [ -n "$WI_URL" ] && { echo "INFO: Reusing work item AB#$REF_ISSUE_NUM" >&2; printf '%s\n' "$WI_URL"; exit 0; }
           fi
-          echo "WARN: Referenced issue #$REF_ISSUE_NUM not found — will search or create" >&2
-      fi
-
-      # Idempotency Guard 2: Search open issues for similar title
-      SEARCH_QUERY="${ISSUE_TITLE:0:100}"
-      if [ -n "$SEARCH_QUERY" ]; then
-          echo "INFO: Searching open issues for similar title" >&2
-          FOUND_URL=$(timeout 60 gh issue list --state open --search "$SEARCH_QUERY" --json url --jq '.[0].url // ""' 2>/dev/null || echo '')
-          if [ -n "$FOUND_URL" ]; then
-              echo "INFO: Found existing open issue matching title — skipping creation" >&2
-              printf '%s\n' "$FOUND_URL"
-              exit 0
+          WI_RESULT=$(timeout 60 az boards work-item create --title "$ISSUE_TITLE" --type "Task" \
+            --org "$AZDO_ORG_URL" --project "$AZDO_PROJECT" --query "[id,url]" -o tsv 2>/dev/null || echo "")
+          if [ -n "$WI_RESULT" ]; then
+            read -r _ WI_URL <<< "$WI_RESULT"
+            [ -n "$WI_URL" ] && { printf '%s\n' "$WI_URL"; exit 0; }
           fi
-          echo "INFO: No matching open issue found — proceeding to create" >&2
+          echo "WARN: az boards work-item create failed — using local tracking" >&2
+        else
+          echo "WARN: 'az' CLI not found or org/project empty — using local tracking for AzDO remote" >&2
+        fi
       fi
-
-      # Normal path: create a new issue
-      ISSUE_BODY=$(printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$ISSUE_REQS")
-      LABEL_NAME="workflow:default"
-      if ! gh label list --limit 1000 2>/dev/null | grep -qw "$LABEL_NAME"; then
-        gh label create "$LABEL_NAME" \
-          --color "0366d6" \
-          --description "Created by default-workflow recipe" 2>/dev/null || true
-      fi
-      gh issue create \
-        --title "$ISSUE_TITLE" \
-        --body "$ISSUE_BODY" \
-        --label "$LABEL_NAME" 2>&1 || \
-      gh issue create \
-        --title "$ISSUE_TITLE" \
-        --body "$ISSUE_BODY"
+      # --- Local tracking fallback (unknown remote or az CLI unavailable) ---
+      echo "INFO: Using local tracking for issue management (remote: $HOST_TYPE)" >&2
+      LOCAL_ISSUE=$(($(date +%s) % 1000000))
+      printf 'local-tracking:%s\n' "$LOCAL_ISSUE"
     output: "issue_creation"
     parse_json: false
 
   - id: "step-03b-extract-issue-number"
     type: "bash"
     command: |
-      # Extract issue number from the creation output.
-      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
-      ISSUE_CREATION="$ISSUE_CREATION"
-      TASK_DESC_RAW="$TASK_DESCRIPTION"
-      # FIX (#4233): Match both issue URLs (issues/NNN) and PR URLs (pull/NNN).
-      # If the output is a PR URL, resolve the linked issue via gh pr view.
-      EXTRACTED=$(printf '%s' "$ISSUE_CREATION" | grep -oE 'issues/[0-9]+' | grep -oE '[0-9]+' | head -1)
-      if [ -z "$EXTRACTED" ]; then
-        # Try PR URL — step-03 may have returned a PR URL if reusing an existing PR
-        PR_NUMBER=$(printf '%s' "$ISSUE_CREATION" | grep -oE 'pull/[0-9]+' | grep -oE '[0-9]+' | head -1)
-        if [ -n "$PR_NUMBER" ]; then
-          echo "INFO: step-03b found PR URL (not issue URL) — resolving linked issue from PR #$PR_NUMBER" >&2
-          EXTRACTED=$(timeout 60 gh pr view "$PR_NUMBER" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // ""' 2>/dev/null || echo '')
-          # If no linked issue, use the PR number as the issue number
-          # (downstream steps can handle PR-only workflows)
-          if [ -z "$EXTRACTED" ]; then
-            echo "INFO: PR #$PR_NUMBER has no linked issue — using PR number as reference" >&2
-            EXTRACTED="$PR_NUMBER"
-          fi
-        fi
-      fi
-      if [ -z "$EXTRACTED" ]; then
-        # Last resort: scan for bare #NNNN references in the task description
-        EXTRACTED=$(printf '%s' "$TASK_DESC_RAW" | grep -oE '#[0-9]+' | grep -oE '[0-9]+' | head -1)
+      # Extract issue number — handles GitHub, AzDO, and local tracking.
+      ISSUE_CREATION="$ISSUE_CREATION"; TASK_DESC_RAW="$TASK_DESCRIPTION"
+      EXTRACTED=""
+      if [[ "$ISSUE_CREATION" =~ issues/([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
+      elif [[ "$ISSUE_CREATION" =~ pull/([0-9]+) ]]; then
+        PR_NUMBER="${BASH_REMATCH[1]}"
+        EXTRACTED=$(timeout 60 gh pr view "$PR_NUMBER" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // ""' 2>/dev/null || echo '')
+        [ -z "$EXTRACTED" ] && EXTRACTED="$PR_NUMBER"
+      elif [[ "$ISSUE_CREATION" =~ _workitems/edit/([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
+      elif [[ "$ISSUE_CREATION" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
+      elif [[ "$ISSUE_CREATION" =~ local-tracking:([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
+      elif [[ "$TASK_DESC_RAW" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
+      elif [[ "$TASK_DESC_RAW" =~ \#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       fi
       if [ -z "$EXTRACTED" ]; then
         echo "ERROR: step-03b failed to extract issue number from issue_creation output." >&2
-        echo "Raw issue_creation output was:" >&2
         printf '%s\n' "$ISSUE_CREATION" >&2
-        echo "This means step-03a (create-issue) likely failed or returned unexpected output." >&2
-        echo "Downstream steps (commit, PR) will fail without a valid issue number." >&2
         exit 1
       fi
       printf '%s' "$EXTRACTED"
     output: "issue_number"
 
-  # ==========================================================================
   # STEP 4: SETUP WORKTREE AND BRANCH
-  # Creates isolated worktree and outputs structured JSON for subsequent steps.
-  # ==========================================================================

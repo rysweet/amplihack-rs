@@ -376,7 +376,7 @@ fn no_production_code_references_xpia_hook_files() {
     for entry in fs::read_dir(&install_dir).unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();
-        if path.extension().map_or(false, |e| e == "rs")
+        if path.extension().is_some_and(|e| e == "rs")
             && !path.to_str().unwrap_or("").contains("tests")
         {
             let content = fs::read_to_string(&path).unwrap();

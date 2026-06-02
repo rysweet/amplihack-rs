@@ -14,12 +14,12 @@
 //!    `step-08c-enforce-verdict` against synthetic `VERDICT_JSON`,
 //!    `IMPLEMENTATION`, and `ALLOW_NO_OP` inputs and assert the exit
 //!    code mapping required by issue #615:
-//!      WORK_VERIFIED          -> 0 silent
-//!      INSUFFICIENT_EVIDENCE  -> 0 with WARN on stderr
-//!      HOLLOW_SUCCESS         -> 1 with rationale on stderr
-//!      empty / unparseable    -> 0 with WARN (fail-safe per issue #615)
-//!      ALLOW_NO_OP=true       -> 0 (issue #425 fast-path)
-//!      orchestration sentinel -> 0 (issue #425 fast-path)
+//!    - WORK_VERIFIED          -> 0 silent
+//!    - INSUFFICIENT_EVIDENCE  -> 0 with WARN on stderr
+//!    - HOLLOW_SUCCESS         -> 1 with rationale on stderr
+//!    - empty / unparseable    -> 0 with WARN (fail-safe per issue #615)
+//!    - ALLOW_NO_OP=true       -> 0 (issue #425 fast-path)
+//!    - orchestration sentinel -> 0 (issue #425 fast-path)
 //!
 //! Why both layers: prompt-content checks would silently pass even if the
 //! bash gate's case-arm logic regressed. Runtime checks would silently pass
