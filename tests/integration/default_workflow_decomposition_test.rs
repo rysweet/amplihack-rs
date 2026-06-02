@@ -587,3 +587,191 @@ fn mandatory_steps_still_present() {
         );
     }
 }
+
+// ==========================================================================
+// Issue #684: step-03 must detect remote host type and branch accordingly.
+// TDD — these tests define the required contract BEFORE implementation.
+// ==========================================================================
+
+#[test]
+fn workflow_prep_step_03_detects_remote_host_type() {
+    let command = step_command("workflow-prep", "step-03-create-issue");
+
+    // Must classify the remote into a REMOTE_HOST_TYPE variable
+    assert!(
+        command.contains("REMOTE_HOST_TYPE"),
+        "step-03 must classify the git remote into a REMOTE_HOST_TYPE variable"
+    );
+
+    // Must check for GitHub
+    assert!(
+        command.contains("github.com"),
+        "step-03 must detect github.com in the remote URL"
+    );
+
+    // Must check for Azure DevOps (both modern and legacy domains)
+    assert!(
+        command.contains("dev.azure.com"),
+        "step-03 must detect dev.azure.com in the remote URL"
+    );
+    assert!(
+        command.contains("visualstudio.com"),
+        "step-03 must detect visualstudio.com in the remote URL"
+    );
+}
+
+#[test]
+fn workflow_prep_step_03_has_github_path_inside_host_conditional() {
+    let command = step_command("workflow-prep", "step-03-create-issue");
+
+    // gh issue commands must still exist (for GitHub remotes)
+    assert!(
+        command.contains("gh issue"),
+        "step-03 must retain 'gh issue' commands for GitHub remotes"
+    );
+
+    // gh issue must NOT appear before REMOTE_HOST_TYPE is set
+    let host_type_pos = command
+        .find("REMOTE_HOST_TYPE")
+        .expect("REMOTE_HOST_TYPE must exist in step-03");
+    let first_gh_issue_pos = command
+        .find("gh issue")
+        .expect("'gh issue' must exist in step-03");
+    assert!(
+        first_gh_issue_pos > host_type_pos,
+        "step-03 must not invoke 'gh issue' before classifying the remote host type"
+    );
+}
+
+#[test]
+fn workflow_prep_step_03_has_azdo_work_item_path() {
+    let command = step_command("workflow-prep", "step-03-create-issue");
+
+    // Must have Azure DevOps work item creation path
+    assert!(
+        command.contains("az boards"),
+        "step-03 must use 'az boards' for Azure DevOps work item creation"
+    );
+
+    // Must support explicit work item ID (AB#NNN pattern)
+    assert!(
+        command.contains("AB#"),
+        "step-03 must support explicit Azure Boards work item references (AB#NNN)"
+    );
+}
+
+#[test]
+fn workflow_prep_step_03_has_local_tracking_fallback() {
+    let command = step_command("workflow-prep", "step-03-create-issue");
+
+    // Must have a fallback for unknown remote types (not GitHub, not AzDO)
+    assert!(
+        command.contains("local-tracking")
+            || command.contains("LOCAL_ISSUE")
+            || command.contains("local_issue")
+            || command.contains("local tracking"),
+        "step-03 must have a local tracking fallback for unknown remote types"
+    );
+
+    // Must NOT hard-fail for unknown remotes
+    assert!(
+        !command.contains("gh auth login"),
+        "step-03 must not suggest 'gh auth login' for non-GitHub remotes"
+    );
+}
+
+#[test]
+fn workflow_prep_step_03_no_host_specific_error_messages_for_wrong_host() {
+    let command = step_command("workflow-prep", "step-03-create-issue");
+
+    // The old error "none of the git remotes configured for this repository
+    // point to a known GitHub host" must not appear as a possible output
+    // for non-GitHub remotes.
+    assert!(
+        !command.contains("none of the git remotes"),
+        "step-03 must not contain GitHub-specific error messages that leak to non-GitHub remotes"
+    );
+}
+
+#[test]
+fn workflow_prep_step_03b_handles_azdo_work_item_urls() {
+    let command = step_command("workflow-prep", "step-03b-extract-issue-number");
+
+    // Must handle Azure DevOps work item URLs (_workitems/edit/NNN)
+    assert!(
+        command.contains("_workitems/edit/"),
+        "step-03b must extract issue numbers from AzDO work item URLs (_workitems/edit/NNN)"
+    );
+
+    // Must handle AB#NNN references
+    assert!(
+        command.contains("AB#"),
+        "step-03b must extract issue numbers from Azure Boards references (AB#NNN)"
+    );
+
+    // Must still handle GitHub issue URLs (regression check)
+    assert!(
+        command.contains("issues/"),
+        "step-03b must still handle GitHub issue URLs (issues/NNN)"
+    );
+
+    // Must still handle GitHub PR URLs (regression check)
+    assert!(
+        command.contains("pull/"),
+        "step-03b must still handle GitHub PR URLs (pull/NNN)"
+    );
+}
+
+// ==========================================================================
+// Issue #684: step-16 must handle non-GitHub remotes gracefully.
+// ==========================================================================
+
+#[test]
+fn workflow_publish_step_16_guards_non_github_remotes() {
+    let command = step_command("workflow-publish", "step-16-create-draft-pr");
+
+    // step-16 must detect remote host type before creating a PR
+    assert!(
+        command.contains("REMOTE_HOST_TYPE")
+            || command.contains("remote_host_type")
+            || command.contains("github.com"),
+        "step-16 must detect the remote host type before attempting PR creation"
+    );
+}
+
+// ==========================================================================
+// Issue #684 + #682: step-21 must guard PR_URL before gh commands.
+// ==========================================================================
+
+#[test]
+fn workflow_finalize_step_21_guards_pr_url_before_gh_commands() {
+    let command = step_command("workflow-finalize", "step-21-pr-ready");
+
+    // Must reference PR_URL variable
+    assert!(
+        command.contains("PR_URL"),
+        "step-21 must reference PR_URL to guard against empty values"
+    );
+
+    // Must check PR_URL is non-empty before calling gh pr ready
+    assert!(
+        command.contains("-z \"$PR_URL\"")
+            || command.contains("-n \"$PR_URL\"")
+            || command.contains("[ -z \"${PR_URL")
+            || command.contains("[ -n \"${PR_URL"),
+        "step-21 must check PR_URL is non-empty before invoking gh commands"
+    );
+
+    // gh pr ready must NOT be invoked unconditionally at the top level
+    // It should be inside a conditional that checks PR_URL
+    let pr_url_check_pos = command
+        .find("PR_URL")
+        .expect("PR_URL must appear in step-21");
+    let gh_pr_ready_pos = command
+        .find("gh pr ready")
+        .expect("'gh pr ready' must still exist for GitHub PRs");
+    assert!(
+        gh_pr_ready_pos > pr_url_check_pos,
+        "step-21 must check PR_URL before invoking 'gh pr ready'"
+    );
+}
