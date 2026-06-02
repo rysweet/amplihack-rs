@@ -723,6 +723,52 @@ fn workflow_prep_step_03b_handles_azdo_work_item_urls() {
 }
 
 // ==========================================================================
+// Issue #684: mid-stage steps must fall back to REPO_PATH when the worktree
+// variable is not propagated from sub-recipe context (step-04).
+// ==========================================================================
+
+#[test]
+fn mid_stage_worktree_steps_fall_back_to_repo_path() {
+    // These steps are mid-pipeline — they SHOULD hard-fail when REPO_PATH is
+    // also empty (via :?), but MUST accept REPO_PATH as a defensive fallback
+    // so that context propagation failures between sub-recipes don't crash
+    // the entire workflow when a valid repo directory is available.
+    let cases = [
+        ("workflow-publish", "step-15-commit-push"),
+        ("workflow-publish", "step-16-create-draft-pr"),
+        ("workflow-tdd", "checkpoint-after-implementation"),
+        (
+            "workflow-refactor-review",
+            "checkpoint-after-review-feedback",
+        ),
+    ];
+    for (recipe, step_id) in cases {
+        let command = step_command(recipe, step_id);
+        assert!(
+            command.contains(":-$REPO_PATH"),
+            "{recipe}/{step_id} must fall back to $REPO_PATH when worktree var is empty"
+        );
+        // Must still hard-fail if BOTH worktree and REPO_PATH are empty
+        assert!(
+            command.contains("WORKTREE_SETUP_WORKTREE_PATH:?"),
+            "{recipe}/{step_id} must hard-fail when worktree AND REPO_PATH are both empty"
+        );
+    }
+}
+
+#[test]
+fn step_18c_does_not_fall_back_to_repo_path() {
+    // step-18c is early-stage and must keep hard-fail (per test
+    // workflow_pr_review_fails_loud_for_required_worktree_context).
+    // It must NOT have a REPO_PATH fallback in the default chain.
+    let command = step_command("workflow-pr-review", "step-18c-push-feedback-changes");
+    assert!(
+        !command.contains(":-$REPO_PATH"),
+        "step-18c must NOT fall back to REPO_PATH — it requires the worktree"
+    );
+}
+
+// ==========================================================================
 // Issue #684: step-16 must handle non-GitHub remotes gracefully.
 // ==========================================================================
 
