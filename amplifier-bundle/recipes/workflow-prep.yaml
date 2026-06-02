@@ -280,7 +280,6 @@ steps:
         exit 0
       fi
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-      REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
       # Extract referenced issue/work-item from task_description (idempotency)
       REF_ISSUE_NUM=""
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
@@ -299,14 +298,14 @@ steps:
         fi
         ISSUE_BODY=$(printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$ISSUE_REQS")
         LABEL_NAME="workflow:default"
-        gh label list --limit 1000 2>/dev/null | grep -qw "$LABEL_NAME" || \
-          gh label create "$LABEL_NAME" --color "0366d6" --description "Created by default-workflow recipe" 2>/dev/null || true
+        gh label create "$LABEL_NAME" --color "0366d6" --description "Created by default-workflow recipe" 2>/dev/null || true
         gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" --label "$LABEL_NAME" 2>&1 || \
           gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY"
         exit $?
       fi
       # --- Azure DevOps path (az boards work-item) ---
       if [ "$HOST_TYPE" = "azdo" ]; then
+        REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
         AZDO_ORG=""; AZDO_PROJECT=""
         # Bash regex replaces 6 echo|sed subprocess spawns with built-in matching
         if [[ "$REMOTE_URL" =~ dev\.azure\.com/([^/]+)/([^/]+)/ ]]; then
@@ -324,7 +323,7 @@ steps:
             if [ "$ch" = "%" ] && [ "$((i+2))" -le "${#e}" ]; then
               hex="${e:$((i+1)):2}"
               if [[ "$hex" =~ ^[0-9a-fA-F]{2}$ ]]; then
-                d+=$(printf "\\x$hex"); i=$((i+3)); continue
+                printf -v tmp "\\x$hex"; d+="$tmp"; i=$((i+3)); continue
               fi
               echo "WARN: Invalid percent-encoding '%${hex}' — using local tracking" >&2
               echo ""; return 1

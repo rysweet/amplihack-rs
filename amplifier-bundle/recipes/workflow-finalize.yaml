@@ -317,7 +317,7 @@ steps:
         fi
       elif [ "$HOST_TYPE" = "github" ]; then
         echo "PR Status:"
-        gh pr view "$PR_URL" --json state,mergeable,reviews,statusCheckRollup
+        timeout 60 gh pr view "$PR_URL" --json state,mergeable,reviews,statusCheckRollup
       else
         echo "WARNING: PR_URL set but host is '$HOST_TYPE'; skipping gh pr view" >&2
       fi
