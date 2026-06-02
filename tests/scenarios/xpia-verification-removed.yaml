@@ -1,0 +1,24 @@
+name: xpia-verification-removed
+description: Verifies dead Python XPIA hook verification was removed and native XPIA paths still pass QA.
+type: cli
+scenarios:
+  - name: production-code-has-no-xpia-hook-files-constant
+    description: Grep production install code and confirm XPIA_HOOK_FILES no longer exists outside tests.
+    steps:
+      - type: command
+        command: "bash -lc \"! grep -R -n --include='*.rs' 'XPIA_HOOK_FILES' ../crates/amplihack-cli/src/commands/install | grep -v '/tests/'\""
+        expected_exit_code: 0
+
+  - name: xpia-unit-tests-pass
+    description: Run the XPIA-focused amplihack-cli library tests.
+    steps:
+      - type: command
+        command: "cargo test -p amplihack-cli --lib -- xpia"
+        expected_exit_code: 0
+
+  - name: cargo-build-succeeds
+    description: Build the workspace successfully after removing dead verification.
+    steps:
+      - type: command
+        command: "cargo build"
+        expected_exit_code: 0
