@@ -438,7 +438,7 @@ mod tests {
         };
         let age = vm.age_hours();
         // Should be approximately 2 hours (within tolerance)
-        assert!(age >= 1.9 && age <= 2.1, "age was {age}");
+        assert!((1.9..=2.1).contains(&age), "age was {age}");
     }
 
     #[test]

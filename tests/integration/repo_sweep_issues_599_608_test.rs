@@ -126,11 +126,13 @@ mod ultrathink_refs {
 
     /// Returns true if a line has a stale `/ultrathink` command reference.
     fn is_stale_ultrathink(line: &str, rel_path: &str) -> bool {
-        line.contains("/ultrathink")
-            && !line.contains("feat/ultrathink")
-            && !line.contains("ultrathink-orchestrator")
-            && !line.contains("ultrathink-recipe")
-            && !(rel_path.contains("dev-orchestrator") && line.contains("deprecated"))
+        if !line.contains("/ultrathink") {
+            return false;
+        }
+        !(line.contains("feat/ultrathink")
+            || line.contains("ultrathink-orchestrator")
+            || line.contains("ultrathink-recipe")
+            || (rel_path.contains("dev-orchestrator") && line.contains("deprecated")))
     }
 
     /// TC-SWEEP-602-01: No SKILL.md file (except ultrathink-orchestrator and
@@ -193,7 +195,7 @@ mod python_hook_refs {
 
         for path in collect_skill_files() {
             let content = fs::read_to_string(&path).unwrap_or_default();
-            let rel = path.strip_prefix(&root).unwrap_or(&path);
+            let rel = path.strip_prefix(root).unwrap_or(&path);
             let mut in_code_block = false;
 
             for (i, line) in content.lines().enumerate() {
@@ -496,7 +498,7 @@ mod docs_internal_links {
                     // Resolve relative to the file's directory
                     let target = file_dir.join(path_part);
                     if !target.exists() {
-                        let rel = file.strip_prefix(&workspace_root()).unwrap_or(file);
+                        let rel = file.strip_prefix(workspace_root()).unwrap_or(file);
                         broken.push(format!(
                             "  {}:{}: -> {} (not found)",
                             rel.display(),
@@ -546,7 +548,7 @@ mod docs_internal_links {
 
         for file in &md_files {
             let content = fs::read_to_string(file).unwrap_or_default();
-            let rel = file.strip_prefix(&workspace_root()).unwrap_or(file);
+            let rel = file.strip_prefix(workspace_root()).unwrap_or(file);
 
             for (line_num, line) in content.lines().enumerate() {
                 for dir in &deleted_dirs {
