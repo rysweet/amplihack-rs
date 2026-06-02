@@ -265,6 +265,12 @@ path = "../../tests/integration/p1_workflow_reliability_test.rs"
 name = "no_stale_python_patterns"
 path = "../../tests/integration/no_stale_python_patterns_test.rs"
 
+# Issue #684: Host-aware workflow steps (commit refs, PR body, summary, percent-decode).
+# TDD-RED tests — fail until implementation lands across 4 recipe files.
+[[test]]
+name = "issue_684_host_aware_workflow"
+path = "../../tests/integration/issue_684_host_aware_workflow_test.rs"
+
 # code-philosophy-audit recipe structural parity tests.
 [[test]]
 name = "code_philosophy_audit_recipe"
