@@ -236,9 +236,9 @@ steps:
       echo "=== Step 21: Converting PR to Ready ==="
       echo ""
 
-      # FIX #684/#682: Guard PR_URL before invoking gh commands
+      # FIX #684/#682: Guard PR_URL before invoking gh commands (whitespace-tolerant)
       PR_URL="${PR_URL:-}"
-      if [ -z "$PR_URL" ]; then
+      if [[ ! "$PR_URL" =~ [^[:space:]] ]]; then
         echo "INFO: PR_URL is empty (non-GitHub remote or PR creation skipped) — skipping gh pr ready" >&2
         echo "=== PR Ready: SKIPPED (no PR URL) ==="
         exit 0

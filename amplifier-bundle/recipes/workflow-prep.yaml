@@ -345,8 +345,8 @@ steps:
         [ -z "$EXTRACTED" ] && EXTRACTED="$PR_NUMBER"
       elif [[ "$ISSUE_CREATION" =~ _workitems/edit/([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$ISSUE_CREATION" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
-      elif [[ "$TASK_DESC_RAW" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$ISSUE_CREATION" =~ local-tracking:([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
+      elif [[ "$TASK_DESC_RAW" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC_RAW" =~ \#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       fi
       if [ -z "$EXTRACTED" ]; then

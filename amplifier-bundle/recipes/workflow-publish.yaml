@@ -69,7 +69,7 @@ steps:
     condition: "goal_already_met != 'true'"
     command: |
       set -euo pipefail
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-$REPO_PATH}}"
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-15 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "ERROR: step-15-commit-push requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
@@ -164,7 +164,7 @@ steps:
     condition: "goal_already_met != 'true' && commit_result.pushed == 'true'"
     command: |
       set -euo pipefail
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-$REPO_PATH}}"
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-16 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "ERROR: step-16-create-draft-pr requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
@@ -172,7 +172,7 @@ steps:
       fi
       echo "=== Step 16: Creating Draft PR ===" >&2
 
-      # FIX #684: Detect remote host type — skip PR creation only for known non-GitHub hosts
+      # FIX #684: Detect remote host type — skip PR creation for non-GitHub hosts
       REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
       REMOTE_HOST_TYPE="other"
       case "$REMOTE_URL" in
@@ -180,9 +180,9 @@ steps:
         *dev.azure.com*|*visualstudio.com*|*ssh.dev.azure.com*)
                                  REMOTE_HOST_TYPE="azdo" ;;
       esac
-      if [ "$REMOTE_HOST_TYPE" = "azdo" ]; then
-          echo "INFO: Remote is Azure DevOps — skipping draft PR creation (use az repos pr create)" >&2
-          printf '\n'
+      if [ "$REMOTE_HOST_TYPE" != "github" ]; then
+          echo "INFO: Non-GitHub remote ($REMOTE_HOST_TYPE) — skipping draft PR creation" >&2
+          printf ''
           exit 0
       fi
 
