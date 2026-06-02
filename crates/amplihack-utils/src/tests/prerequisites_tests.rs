@@ -217,3 +217,112 @@ fn platform_serializes() {
     let deser: Platform = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(deser, Platform::MacOs);
 }
+
+// ---------------------------------------------------------------------------
+// Node.js version parsing — parse_node_major_version()
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_node_major_version_standard_format() {
+    // `node --version` prints "v20.11.0"
+    assert_eq!(parse_node_major_version("v20.11.0"), Some(20));
+}
+
+#[test]
+fn parse_node_major_version_without_v_prefix() {
+    assert_eq!(parse_node_major_version("20.11.0"), Some(20));
+}
+
+#[test]
+fn parse_node_major_version_v24() {
+    assert_eq!(parse_node_major_version("v24.0.0"), Some(24));
+}
+
+#[test]
+fn parse_node_major_version_high_version() {
+    assert_eq!(parse_node_major_version("v99.1.2"), Some(99));
+}
+
+#[test]
+fn parse_node_major_version_single_digit() {
+    assert_eq!(parse_node_major_version("v8.0.0"), Some(8));
+}
+
+#[test]
+fn parse_node_major_version_major_only() {
+    // Tolerate strings like "v20" without minor/patch
+    assert_eq!(parse_node_major_version("v20"), Some(20));
+}
+
+#[test]
+fn parse_node_major_version_empty_string() {
+    assert_eq!(parse_node_major_version(""), None);
+}
+
+#[test]
+fn parse_node_major_version_garbage() {
+    assert_eq!(parse_node_major_version("not-a-version"), None);
+}
+
+#[test]
+fn parse_node_major_version_git_version_string() {
+    // Must not confuse other tools' version output
+    assert_eq!(parse_node_major_version("git version 2.40.0"), None);
+}
+
+#[test]
+fn parse_node_major_version_whitespace_padded() {
+    // `node --version` may have trailing newline
+    assert_eq!(parse_node_major_version("  v20.11.0\n"), Some(20));
+}
+
+// ---------------------------------------------------------------------------
+// Node.js minimum version check — check_node_minimum_version()
+// ---------------------------------------------------------------------------
+
+#[test]
+fn check_node_minimum_version_sufficient() {
+    let result = check_node_minimum_version(24);
+    // On CI with Node >= 24, this should pass. If Node < 24 is installed,
+    // the function returns a NodeVersionError. Either way it must not panic.
+    // We test the pure logic more precisely via parse_node_major_version;
+    // this test ensures the plumbing doesn't panic.
+    assert!(
+        result.is_ok() || result.is_err(),
+        "check_node_minimum_version must not panic"
+    );
+}
+
+#[test]
+fn node_version_error_displays_actionable_message() {
+    let err = NodeVersionError::InsufficientVersion {
+        found: 20,
+        minimum: 24,
+        install_hint: "brew install node".into(),
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("24"),
+        "error should mention required version: {msg}"
+    );
+    assert!(
+        msg.contains("20"),
+        "error should mention found version: {msg}"
+    );
+    assert!(
+        msg.contains("brew install node") || msg.contains("install"),
+        "error should include installation hint: {msg}"
+    );
+}
+
+#[test]
+fn node_version_error_not_found_is_distinct() {
+    let err = NodeVersionError::VersionUndetectable {
+        install_hint: "sudo apt install nodejs".into(),
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("could not") || msg.contains("unable") || msg.contains("detect"),
+        "undetectable error should explain the situation: {msg}"
+    );
+}

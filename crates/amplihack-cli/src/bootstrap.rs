@@ -42,7 +42,19 @@ pub fn prepare_launcher(tool: &str) -> Result<()> {
     freshness::ensure_recipe_runner_up_to_date();
 
     match tool {
-        "copilot" => copilot_setup::ensure_copilot_home_staged()?,
+        "copilot" => {
+            // Hard gate: Copilot CLI requires Node.js >= 24.
+            // Fail early with an actionable message instead of letting the CLI
+            // launch and crash with a cryptic version error.
+            use amplihack_utils::prerequisites::check_node_minimum_version;
+            if let Err(err) = check_node_minimum_version(24) {
+                bail!(
+                    "GitHub Copilot CLI cannot start: {err}\n\
+                     Run `amplihack doctor` to verify all prerequisites."
+                );
+            }
+            copilot_setup::ensure_copilot_home_staged()?;
+        }
         "claude" => {
             // Register amplihack as a Claude Code plugin so the agents,
             // skills, and commands staged under ~/.amplihack/.claude/ are

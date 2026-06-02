@@ -51,6 +51,8 @@ The `--interactive` and `--local` flags compose: `--interactive` controls config
 | `1` | `--local` path does not contain a `.claude` directory |
 | `1` | Framework archive download or extraction failed (non-local mode only) |
 
+Note: A Node.js version below v24 does **not** cause a non-zero exit from `amplihack install`. It produces a warning at the Copilot plugin step. By contrast, `amplihack copilot` exits with code 1 if Node.js < v24. See [Node.js Version Checking](./node-version-checking.md).
+
 ### Install Phases
 
 ```

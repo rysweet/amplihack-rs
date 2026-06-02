@@ -365,6 +365,98 @@ pub fn summary_string(results: &[ToolCheckResult]) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Node.js version checking
+// ---------------------------------------------------------------------------
+
+/// Errors related to Node.js version requirements.
+#[derive(Debug, Error)]
+pub enum NodeVersionError {
+    /// Node.js is installed but its major version is too low.
+    #[error(
+        "Node.js v{found} is installed but v{minimum}+ is required.\n\
+         Upgrade with: {install_hint}"
+    )]
+    InsufficientVersion {
+        found: u32,
+        minimum: u32,
+        install_hint: String,
+    },
+
+    /// `node --version` output could not be parsed (node may not be installed).
+    #[error(
+        "Could not detect Node.js version — node may not be installed or is not on PATH.\n\
+         Install with: {install_hint}"
+    )]
+    VersionUndetectable { install_hint: String },
+}
+
+/// Extract the major version number from a Node.js version string.
+///
+/// Handles formats like `"v20.11.0"`, `"20.11.0"`, `"v24"`, and
+/// leading/trailing whitespace. Returns `None` for unrecognisable input
+/// (fail-open: callers decide whether to block or warn).
+pub fn parse_node_major_version(version_str: &str) -> Option<u32> {
+    let trimmed = version_str.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Strip optional leading 'v'/'V'
+    let without_v = trimmed
+        .strip_prefix('v')
+        .or_else(|| trimmed.strip_prefix('V'))
+        .unwrap_or(trimmed);
+    // The first segment before '.' (or the whole string) should be the major version
+    let major_str = without_v.split('.').next()?;
+    // Must be purely numeric
+    if major_str.is_empty() || !major_str.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    major_str.parse::<u32>().ok()
+}
+
+/// Check that the installed Node.js meets a minimum major version.
+///
+/// Uses `check_tool("node")` to get the version string and parses it.
+/// Returns `Ok(())` when the version is sufficient or undetectable (fail-open
+/// so that missing-tool handling is left to the existing `check_prerequisites`
+/// flow). Returns `Err(NodeVersionError)` only when node IS found but its
+/// version is definitively too low.
+pub fn check_node_minimum_version(minimum_major: u32) -> Result<(), NodeVersionError> {
+    let result = check_tool("node");
+    let platform = detect_platform();
+    let hint = install_hint("node", platform);
+
+    let version_str = match result.version {
+        Some(v) => v,
+        None => {
+            if result.found {
+                // node binary exists but version extraction failed
+                return Err(NodeVersionError::VersionUndetectable { install_hint: hint });
+            }
+            // node not found at all — handled by check_prerequisites
+            return Ok(());
+        }
+    };
+
+    match parse_node_major_version(&version_str) {
+        Some(major) if major >= minimum_major => Ok(()),
+        Some(major) => Err(NodeVersionError::InsufficientVersion {
+            found: major,
+            minimum: minimum_major,
+            install_hint: hint,
+        }),
+        None => {
+            // Unparseable version string — fail-open
+            tracing::warn!(
+                version_str,
+                "could not parse Node.js version; skipping version check"
+            );
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
