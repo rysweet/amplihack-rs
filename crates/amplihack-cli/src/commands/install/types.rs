@@ -158,9 +158,6 @@ pub(super) const RUNTIME_DIRS: &[&str] = &[
     "runtime/security",
     "runtime/analysis",
 ];
-pub(super) const XPIA_HOOK_FILES: &[&str] =
-    &["session_start.sh", "post_tool_use.sh", "pre_tool_use.sh"];
-
 /// Discriminates between hook command styles.
 #[derive(Clone)]
 pub(super) enum HookCommandKind {

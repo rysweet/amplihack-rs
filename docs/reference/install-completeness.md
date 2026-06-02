@@ -17,7 +17,7 @@ The installer stages the framework components described by the install mapping i
 | `amplifier-bundle/context/` | Shared framework context | Required |
 | `amplifier-bundle/recipes/` | Workflow recipes | Required |
 | `amplifier-bundle/tools/amplihack/` | Amplihack framework tools | Required |
-| `amplifier-bundle/tools/xpia/` | XPIA framework tools | Required |
+| `amplifier-bundle/tools/xpia/` | XPIA framework tools (security patterns, configs) | Required |
 | `amplifier-bundle/behaviors/` | Behavior definitions | Required |
 | `amplifier-bundle/modules/` | Shared framework modules | Required |
 

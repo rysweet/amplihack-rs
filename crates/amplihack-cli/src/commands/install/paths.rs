@@ -67,8 +67,8 @@ pub(super) fn global_settings_path() -> Result<PathBuf> {
 ///
 /// Fresh native installs use unified `amplihack-hooks <subcmd>` entries for the
 /// live hook path, but the presence of staged XPIA assets is still used to
-/// verify optional installation state and to upgrade legacy `tools/xpia/hooks/*.py`
-/// settings entries in place during reinstall.
+/// verify optional installation state and to upgrade legacy hook settings
+/// entries in place during reinstall.
 pub(super) fn xpia_hooks_dir() -> Result<PathBuf> {
     Ok(home_dir()?
         .join(".amplihack")

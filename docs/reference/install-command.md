@@ -104,7 +104,7 @@ Successful install prints a phase-by-phase progress summary:
 ✓ Created runtime directories
 ✓ Backed up ~/.claude/settings.json → settings.json.backup.1741651200
 ✓ Registered 7 Claude Code hooks
-✓ Verified hook scripts
+✓ XPIA hooks directory found
 ✓ Wrote install manifest
 amplihack installed successfully.
 ```
@@ -219,7 +219,7 @@ Copies `amplihack` (current executable) and `amplihack-hooks` (resolved by `find
 
 ### `ensure_settings_json(staging_dir: &Path, timestamp: u64, hooks_bin: &Path) -> Result<(bool, Vec<String>)>`
 
-Reads or creates `~/.claude/settings.json`. Creates a timestamped backup and backup metadata JSON (both with `0o600` permissions). Calls `validate_hook_command_string()` on each command before writing. Calls `update_hook_paths()` for amplihack hooks and (if XPIA is installed) for XPIA hooks. Returns `(settings_existed, registered_event_names)`.
+Reads or creates `~/.claude/settings.json`. Creates a timestamped backup and backup metadata JSON (both with `0o600` permissions). Calls `validate_hook_command_string()` on each command before writing. Calls `update_hook_paths()` for amplihack hooks and, when the XPIA tools directory exists, for XPIA hooks (using `XPIA_HOOK_SPECS` which route through the `amplihack-hooks` binary). Returns `(settings_existed, registered_event_names)`.
 
 ### `validate_hook_command_string(cmd: &str) -> Result<()>`
 
@@ -229,7 +229,7 @@ Validates that a hook command string does not contain shell metacharacters (`|&;
 
 Iterates `specs` and calls `validate_hook_command_string()` on each command string before upserting its hook wrapper into `settings["hooks"][event]`. Uses `wrapper_matches()` for idempotency. Preserves order — `workflow-classification-reminder` always precedes `user-prompt-submit` in the `UserPromptSubmit` array.
 
-The active amplihack install path registers hook **binary subcommands** such as `"amplihack-hooks post-tool-use"`. Historical hook files may still appear in older installations, but they are no longer treated as required runtime hook registrations.
+All hook registrations use **binary subcommands** such as `"amplihack-hooks post-tool-use"`. Both amplihack and XPIA hooks route through the compiled `amplihack-hooks` binary — there are no Python or shell script hook files to deploy or verify.
 
 ### `remove_hook_registrations(settings) -> Result<()>`
 

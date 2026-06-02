@@ -75,7 +75,7 @@ fn ensure_settings_json_succeeds_without_legacy_python_hook_files() {
 }
 
 #[test]
-fn ensure_settings_json_with_xpia_assets_keeps_unified_native_wrappers() {
+fn ensure_settings_json_with_xpia_dir_keeps_unified_native_wrappers() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -85,13 +85,11 @@ fn ensure_settings_json_with_xpia_assets_keeps_unified_native_wrappers() {
     let staging_dir = temp.path().join(".amplihack/.claude");
     let xpia_hooks = staging_dir.join("tools/xpia/hooks");
     fs::create_dir_all(&xpia_hooks).unwrap();
-    for file in XPIA_HOOK_FILES {
-        fs::write(xpia_hooks.join(file), "print(1)\n").unwrap();
-    }
+    // No .py or .sh stub files — the Rust binary IS the XPIA implementation.
     let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
 
     let result = settings::ensure_settings_json(&staging_dir, 99999, &hooks_bin)
-        .expect("settings setup should succeed with staged xpia assets");
+        .expect("settings setup should succeed with xpia dir present (no script files needed)");
     assert!(result.0, "settings setup must succeed");
 
     let settings_raw = fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap();
@@ -230,5 +228,163 @@ fn backup_metadata_is_always_valid_json() {
             meta.get("backup_path").is_some(),
             "backup metadata must have 'backup_path'"
         );
+    }
+}
+
+// ─── TDD: XPIA Python removal — tests written before implementation ─────────
+
+#[test]
+fn xpia_hook_files_constant_must_not_exist() {
+    // After the change, XPIA_HOOK_FILES should be deleted from types.rs.
+    // This test verifies the constant is not referenced anywhere in production
+    // code by checking the source file directly.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let types_src = fs::read_to_string(
+        std::path::Path::new(manifest_dir).join("src/commands/install/types.rs"),
+    )
+    .expect("types.rs must be readable");
+
+    assert!(
+        !types_src.contains("XPIA_HOOK_FILES"),
+        "XPIA_HOOK_FILES constant must be removed from types.rs — \
+         XPIA security is implemented by the Rust amplihack-hooks binary, \
+         not by .py/.sh script files"
+    );
+}
+
+#[test]
+fn verify_framework_assets_does_not_check_individual_xpia_files() {
+    // After the change, verify_framework_assets should NOT iterate over
+    // individual hook files in the xpia directory. It should only check
+    // whether the xpia directory exists.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let settings_src = fs::read_to_string(
+        std::path::Path::new(manifest_dir).join("src/commands/install/settings.rs"),
+    )
+    .expect("settings.rs must be readable");
+
+    // The per-file loop `for file in XPIA_HOOK_FILES` must be gone
+    assert!(
+        !settings_src.contains("XPIA_HOOK_FILES"),
+        "verify_framework_assets must not reference XPIA_HOOK_FILES — \
+         the per-file verification loop should be removed"
+    );
+
+    // Should still have the xpia_dir.exists() check (informational)
+    assert!(
+        settings_src.contains("xpia_dir") || settings_src.contains("xpia_hooks_dir"),
+        "verify_framework_assets should still check for xpia directory existence"
+    );
+}
+
+#[test]
+fn xpia_hooks_dir_docstring_has_no_python_reference() {
+    // After the change, the xpia_hooks_dir() docstring should not mention *.py files.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let paths_src = fs::read_to_string(
+        std::path::Path::new(manifest_dir).join("src/commands/install/paths.rs"),
+    )
+    .expect("paths.rs must be readable");
+
+    // Find the docstring for xpia_hooks_dir (between /// comments before the fn)
+    let fn_idx = paths_src
+        .find("fn xpia_hooks_dir")
+        .expect("xpia_hooks_dir function must exist");
+    let preceding = &paths_src[..fn_idx];
+
+    assert!(
+        !preceding.contains("*.py"),
+        "xpia_hooks_dir docstring must not reference *.py files — \
+         Python XPIA hooks are dead legacy code"
+    );
+}
+
+#[test]
+fn verify_framework_assets_succeeds_with_empty_xpia_dir() {
+    // After the change, verify_framework_assets should succeed when the
+    // xpia directory exists but contains NO script files — because the
+    // Rust binary handles everything.
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    // Create staged assets
+    create_minimal_staged_assets(temp.path());
+
+    // Create the xpia hooks directory but leave it EMPTY
+    let xpia_dir = temp.path().join(".amplihack/.claude/tools/xpia/hooks");
+    fs::create_dir_all(&xpia_dir).unwrap();
+
+    let result = settings::verify_framework_assets(&temp.path().join(".amplihack/.claude"));
+
+    crate::test_support::restore_home(previous);
+
+    // Must succeed — no individual file checks
+    assert!(
+        result.is_ok(),
+        "verify_framework_assets must succeed with empty xpia dir — \
+         it should not check for individual .py/.sh files: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn xpia_hook_specs_use_binary_subcmd_not_scripts() {
+    // XPIA_HOOK_SPECS must remain intact and use BinarySubcmd exclusively.
+    // This is the CORRECT way XPIA hooks are implemented — via the Rust binary.
+    for spec in XPIA_HOOK_SPECS {
+        match &spec.cmd {
+            HookCommandKind::BinarySubcmd { subcmd } => {
+                assert!(
+                    !subcmd.is_empty(),
+                    "XPIA hook spec for '{}' must have a non-empty subcmd",
+                    spec.event
+                );
+                assert!(
+                    !subcmd.contains(".py") && !subcmd.contains(".sh"),
+                    "XPIA hook spec subcmd must not reference script files: {subcmd}"
+                );
+            }
+        }
+    }
+
+    // Verify the three expected XPIA events are present
+    let events: Vec<&str> = XPIA_HOOK_SPECS.iter().map(|s| s.event).collect();
+    assert!(
+        events.contains(&"SessionStart"),
+        "XPIA must include SessionStart"
+    );
+    assert!(
+        events.contains(&"PreToolUse"),
+        "XPIA must include PreToolUse"
+    );
+    assert!(
+        events.contains(&"PostToolUse"),
+        "XPIA must include PostToolUse"
+    );
+}
+
+#[test]
+fn no_production_code_references_xpia_hook_files() {
+    // Comprehensive check: no non-test production code should reference
+    // XPIA_HOOK_FILES after the cleanup.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let install_dir = std::path::Path::new(manifest_dir).join("src/commands/install");
+
+    for entry in fs::read_dir(&install_dir).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.extension().map_or(false, |e| e == "rs")
+            && !path.to_str().unwrap_or("").contains("tests")
+        {
+            let content = fs::read_to_string(&path).unwrap();
+            assert!(
+                !content.contains("XPIA_HOOK_FILES"),
+                "Production file {} must not reference XPIA_HOOK_FILES",
+                path.display()
+            );
+        }
     }
 }
