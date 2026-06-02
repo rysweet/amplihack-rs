@@ -214,7 +214,7 @@ neutral reference that does not trigger automation on any platform.
 | Host type | Tool                  | Behavior                                                |
 | --------- | --------------------- | ------------------------------------------------------- |
 | `github`  | `gh pr create`        | Unchanged from current behavior                          |
-| `azdo`    | (manual)              | Logs instructions; automated `az repos pr create` planned |
+| `azdo`    | (skipped)             | Exits early; user creates PR manually afterward      |
 | `other`   | (skipped)             | Logs "no remote — skipping PR creation"                  |
 
 Step 16 consumes `$REMOTE_HOST_TYPE` from the propagated context variable
@@ -224,10 +224,10 @@ the same host-aware reference format as step 15.
 
 **PR creation asymmetry**: GitHub PR creation is fully automated because `gh`
 supports draft PRs, labels, and reviewers in a single command. AzDO PR
-creation via `az repos pr create` is planned but not yet automated because
-the AzDO CLI requires additional parameters (repository ID, target branch
-resolution) that vary by project configuration. The workflow logs clear
-instructions for manual PR creation in the meantime.
+creation is skipped — the workflow exits step 16 early with an informational
+message on stderr. After the workflow completes, create a PR manually using
+`az repos pr create` or the Azure DevOps web UI (see the
+[How-To guide](../howto/use-workflow-with-azure-devops.md#create-a-pr-manually)).
 
 ---
 

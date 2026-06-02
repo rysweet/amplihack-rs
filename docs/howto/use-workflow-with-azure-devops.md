@@ -50,7 +50,7 @@ The workflow automatically:
 1. Detects `azdo` as the remote host type (step 02d)
 2. Creates an AzDO work item of type `Task` (step 03)
 3. Uses `AB#N` commit references (step 15)
-4. Logs manual PR creation instructions (step 16)
+4. Skips automated PR creation (step 16)
 5. Produces a host-aware summary (step 22b)
 
 ### Override the work item type
@@ -91,7 +91,7 @@ sequences before validation, so project names with spaces work correctly.
 | Host detection      | step 02d → `github`            | step 02d → `azdo`                    |
 | Issue creation      | `gh issue create`              | `az boards work-item create`         |
 | Commit reference    | `Closes #N`                    | `AB#N`                               |
-| PR creation         | Automated (`gh pr create`)     | Manual (instructions logged)         |
+| PR creation         | Automated (`gh pr create`)     | Skipped (create manually after)      |
 | Auth prerequisite   | `gh auth login`                | `az login` + DevOps extension        |
 | Idempotency Guard 1 | `gh issue view`               | `az boards work-item show`           |
 | Idempotency Guard 2 | `gh issue list --search`      | Not yet implemented (planned: WIQL query) |
