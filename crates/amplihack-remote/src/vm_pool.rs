@@ -371,4 +371,126 @@ mod tests {
         let s2: PoolStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(s2.total_vms, 2);
     }
+
+    #[test]
+    fn vm_size_display() {
+        assert_eq!(VMSize::S.to_string(), "s");
+        assert_eq!(VMSize::M.to_string(), "m");
+        assert_eq!(VMSize::L.to_string(), "l");
+        assert_eq!(VMSize::XL.to_string(), "xl");
+    }
+
+    #[test]
+    fn vm_size_from_str() {
+        assert_eq!("s".parse::<VMSize>().unwrap(), VMSize::S);
+        assert_eq!("S".parse::<VMSize>().unwrap(), VMSize::S);
+        assert_eq!("m".parse::<VMSize>().unwrap(), VMSize::M);
+        assert_eq!("M".parse::<VMSize>().unwrap(), VMSize::M);
+        assert_eq!("l".parse::<VMSize>().unwrap(), VMSize::L);
+        assert_eq!("L".parse::<VMSize>().unwrap(), VMSize::L);
+        assert_eq!("xl".parse::<VMSize>().unwrap(), VMSize::XL);
+        assert_eq!("XL".parse::<VMSize>().unwrap(), VMSize::XL);
+    }
+
+    #[test]
+    fn vm_size_from_str_invalid() {
+        assert!("xxl".parse::<VMSize>().is_err());
+        assert!("".parse::<VMSize>().is_err());
+        assert!("large".parse::<VMSize>().is_err());
+    }
+
+    #[test]
+    fn vm_size_azure_mapping_all() {
+        assert_eq!(VMSize::S.azure_size(), "Standard_D8s_v3");
+        assert_eq!(VMSize::M.azure_size(), "Standard_E8s_v5");
+        assert_eq!(VMSize::L.azure_size(), "Standard_E16s_v5");
+        assert_eq!(VMSize::XL.azure_size(), "Standard_E32s_v5");
+    }
+
+    #[test]
+    fn vm_size_serialization() {
+        let size = VMSize::L;
+        let json = serde_json::to_string(&size).unwrap();
+        let s2: VMSize = serde_json::from_str(&json).unwrap();
+        assert_eq!(s2, VMSize::L);
+    }
+
+    #[test]
+    fn pool_entry_zero_capacity() {
+        let entry = VMPoolEntry {
+            vm: VM {
+                name: "vm1".into(),
+                size: "s".into(),
+                region: "eastus".into(),
+                created_at: None,
+                tags: None,
+            },
+            capacity: 2,
+            active_sessions: vec!["s1".into(), "s2".into()],
+            region: "eastus".into(),
+        };
+        assert_eq!(entry.available_capacity(), 0);
+    }
+
+    #[test]
+    fn pool_entry_overflow_sessions() {
+        let entry = VMPoolEntry {
+            vm: VM {
+                name: "vm1".into(),
+                size: "s".into(),
+                region: "eastus".into(),
+                created_at: None,
+                tags: None,
+            },
+            capacity: 1,
+            active_sessions: vec!["s1".into(), "s2".into(), "s3".into()],
+            region: "eastus".into(),
+        };
+        // saturating_sub prevents underflow
+        assert_eq!(entry.available_capacity(), 0);
+    }
+
+    #[test]
+    fn pool_entry_full_capacity() {
+        let entry = VMPoolEntry {
+            vm: VM {
+                name: "vm1".into(),
+                size: "s".into(),
+                region: "eastus".into(),
+                created_at: None,
+                tags: None,
+            },
+            capacity: 4,
+            active_sessions: vec![],
+            region: "eastus".into(),
+        };
+        assert_eq!(entry.available_capacity(), 4);
+    }
+
+    #[test]
+    fn pool_entry_serialization() {
+        let entry = VMPoolEntry {
+            vm: VM {
+                name: "vm1".into(),
+                size: "Standard_D8s_v3".into(),
+                region: "eastus".into(),
+                created_at: None,
+                tags: None,
+            },
+            capacity: 4,
+            active_sessions: vec!["s1".into()],
+            region: "eastus".into(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let e2: VMPoolEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(e2.vm.name, "vm1");
+        assert_eq!(e2.capacity, 4);
+        assert_eq!(e2.active_sessions.len(), 1);
+    }
+
+    #[test]
+    fn dirs_home_returns_path() {
+        let home = dirs_home();
+        assert!(!home.to_str().unwrap_or("").is_empty());
+    }
 }

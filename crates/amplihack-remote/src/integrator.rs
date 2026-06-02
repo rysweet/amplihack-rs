@@ -392,70 +392,16 @@ mod tests {
     }
 
     #[test]
-    fn integration_summary_report() {
-        let summary = IntegrationSummary {
-            branches: vec![BranchInfo {
-                name: "feature".into(),
-                commit: "abc12345def".into(),
-                is_new: true,
-            }],
-            commits_count: 3,
-            files_changed: 5,
-            logs_copied: true,
-            has_conflicts: false,
-            conflict_details: None,
-        };
-        let _integrator_path = std::env::current_dir().unwrap();
-        // We can't create a real Integrator without .git,
-        // so test the report formatting via a standalone call.
-        let report = format_summary_report(&summary);
-        assert!(report.contains("feature"));
-        assert!(report.contains("NEW"));
-        assert!(report.contains("Commits: 3"));
-    }
-
-    /// Standalone report formatter for testing without git repo.
-    fn format_summary_report(summary: &IntegrationSummary) -> String {
-        let sep = "=".repeat(60);
-        let mut lines = vec![
-            String::new(),
-            sep.clone(),
-            "Remote Execution Results".into(),
-            sep.clone(),
-            String::new(),
-        ];
-        lines.push(format!("Branches ({}):", summary.branches.len()));
-        for b in &summary.branches {
-            let status = if b.is_new { "NEW" } else { "UPDATED" };
-            lines.push(format!(
-                "  - {} ({status}): {}",
-                b.name,
-                &b.commit[..b.commit.len().min(8)]
-            ));
-        }
-        lines.push(String::new());
-        lines.push(format!("Commits: {}", summary.commits_count));
-        lines.push(format!("Files changed: {}", summary.files_changed));
-        lines.push(format!(
-            "Logs copied: {}",
-            if summary.logs_copied { "Yes" } else { "No" }
-        ));
-        lines.push(String::new());
-        if summary.has_conflicts {
-            lines.push("WARNING: Conflicts detected!".into());
-        } else {
-            lines.push("Status: No conflicts detected".into());
-        }
-        lines.push(String::new());
-        lines.push(sep);
-        lines.join("\n")
+    fn integrator_rejects_non_git_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(Integrator::new(dir.path()).is_err());
     }
 
     #[test]
-    fn integrator_rejects_non_git_dir() {
+    fn integrator_accepts_git_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let result = Integrator::new(dir.path());
-        assert!(result.is_err());
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        assert!(Integrator::new(dir.path()).is_ok());
     }
 
     #[test]

@@ -476,4 +476,23 @@ mod tests {
         let exec = Executor::new(vm, 10, None);
         assert!(exec.tunnel_port.is_none());
     }
+
+    #[test]
+    fn b64_encode_vectors() {
+        assert_eq!(b64_encode(b""), "");
+        assert_eq!(b64_encode(b"A"), "QQ==");
+        assert_eq!(b64_encode(b"AB"), "QUI=");
+        assert_eq!(b64_encode(b"ABC"), "QUJD");
+        assert_eq!(b64_encode(b"Hello, World!"), "SGVsbG8sIFdvcmxkIQ==");
+        let data: Vec<u8> = (0..=255).collect();
+        assert_eq!(b64_encode(&data).len() % 4, 0);
+    }
+
+    #[test]
+    fn shell_escape_strips_unsafe() {
+        assert_eq!(shell_escape("hello-world_2.0"), "hello-world_2.0");
+        assert_eq!(shell_escape("test;rm -rf /"), "testrm-rf");
+        assert_eq!(shell_escape(""), "");
+        assert_eq!(shell_escape("!@#$%^&*()"), "");
+    }
 }
