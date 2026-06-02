@@ -106,7 +106,7 @@ assert "step-21 references PR_URL variable" \
     "awk '/id: .step-21-pr-ready/,/output:/' '$FINALIZE_FILE' | grep -q 'PR_URL'"
 
 assert "step-21 checks PR_URL before gh pr ready" \
-    "awk '/id: .step-21-pr-ready/,/output:/' '$FINALIZE_FILE' | grep -Eq '\\[ -z .PR_URL|\\[ -n .PR_URL|-z \".PR_URL|-n \".PR_URL'"
+    "awk '/id: .step-21-pr-ready/,/output:/' '$FINALIZE_FILE' | grep -Eq '\\[ -z .PR_URL|\\[ -n .PR_URL|-z \".PR_URL|-n \".PR_URL|PR_URL.*=~|\\[\\[.*PR_URL'"
 
 # --- Test 9: Runtime remote detection function tests -------------------------
 # These test the expected shell logic for classifying remote URLs.

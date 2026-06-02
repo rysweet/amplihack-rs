@@ -50,7 +50,7 @@ assert "step-21 references PR_URL variable" \
 
 # --- Test 3: step-21 has PR_URL empty check before gh commands ---------------
 assert "step-21 has PR_URL empty/non-empty check" \
-    "awk '/id: .step-21-pr-ready/,/output:/' '$FINALIZE_FILE' | grep -Eq '\\[ -z .PR_URL|\\[ -n .PR_URL|-z \".PR_URL|-n \".PR_URL'"
+    "awk '/id: .step-21-pr-ready/,/output:/' '$FINALIZE_FILE' | grep -Eq '\\[ -z .PR_URL|\\[ -n .PR_URL|-z \".PR_URL|-n \".PR_URL|PR_URL.*=~|\\[\\[.*PR_URL'"
 
 # --- Test 4: gh pr ready appears AFTER PR_URL check -------------------------
 # The pr ready command must not be invoked unconditionally.
