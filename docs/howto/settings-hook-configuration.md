@@ -4,55 +4,80 @@
 
 Amplihack automatically configures hooks in `~/.claude/settings.json` during installation and CLI initialization. This guide explains the hook configuration process and how to troubleshoot issues.
 
-## Automatic Configuration (New in v0.5.27)
+## Automatic Configuration
 
-Starting in v0.5.27, hook configuration is **completely automatic** - no user prompts required.
+Hook configuration is **completely automatic** — no user prompts required.
 
-When `amplihack-hooks` is installed, amplihack registers native hook
-subcommands automatically. Hook configuration is binary-first and does not
-require helper scripts in the installed framework bundle.
+The `amplihack-hooks` binary provides all hook functionality as native subcommands. There are no Python or shell script hook files to install, validate, or maintain. Hook registration writes `amplihack-hooks <subcommand>` entries directly into `settings.json`.
 
 ### What Happens Automatically
 
 When you run `amplihack` or install the framework:
 
-1. **Validation**: Hook files are validated before configuration
+1. **Binary resolution**: The installer locates the `amplihack-hooks` binary (see [Binary Resolution](../reference/binary-resolution.md))
 2. **Backup**: Settings are backed up to `~/.claude/settings.json.backup.<timestamp>`
-3. **Configuration**: Hooks are added/updated in settings.json
+3. **Registration**: Hook subcommand entries are added/updated in settings.json
 4. **Verification**: System confirms hooks are properly configured
 
 **No user intervention required!**
 
-## Hook Validation
+## Hook Architecture
+
+### Rust-Native Hooks
+
+All hooks are implemented as subcommands of the compiled `amplihack-hooks` binary. The installer registers entries like:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "amplihack-hooks session-start"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "command": "amplihack-hooks post-tool-use"
+      }
+    ]
+  }
+}
+```
+
+**Hook Subcommands:**
+
+| Subcommand | Event | Purpose |
+|---|---|---|
+| `session-start` | SessionStart | Session initialization and context setup |
+| `pre-tool-use` | PreToolUse | Pre-tool analysis (registered when XPIA assets present) |
+| `post-tool-use` | PostToolUse | Post-tool analysis and workflow enforcement |
+| `stop` | Stop | Session cleanup and metrics flush |
+| `pre-compact` | PreCompact | Context preservation before compaction |
+
+**XPIA security behavior:** When the `tools/xpia` directory is present in the staged framework assets, the `session-start`, `pre-tool-use`, and `post-tool-use` subcommands additionally activate XPIA defense logic (implemented in `amplihack-security::XpiaDefender`). No extra hook entries are added — the same `amplihack-hooks <subcommand>` invocation handles both framework and security duties. The `pre-tool-use` subcommand is only registered when XPIA assets are present.
 
 ### What Is Validated
 
-The system validates that all required hook files exist before configuring them:
+The installer validates:
 
-**Amplihack Hooks (Required):**
+- The `amplihack-hooks` binary exists and is executable
+- Hook command strings contain no shell metacharacters (injection prevention)
+- Each hook entry is syntactically correct before writing to settings.json
 
-- `session_start.py` - Runs when Claude Code session starts
-- `stop.py` - Runs when Claude Code session stops
-- `post_tool_use.py` - Runs after each tool invocation
-- `pre_compact.py` - Runs before context compaction
-
-**XPIA Hooks (Optional):**
-
-- `session_start.py` - Security initialization
-- `post_tool_use.py` - Security monitoring
-- `pre_tool_use.py` - Input validation
+**No per-file hook script validation occurs** — all hook logic lives in the compiled binary.
 
 ### Error Messages
 
-If required hooks are missing, you'll see:
+If the hooks binary is not found:
 
 ```
-❌ Hook validation failed - missing required hooks:
-   • amplihack/session_start.py (expected at /home/user/.amplihack/.claude/tools/amplihack/hooks/session_start.py)
-💡 Please reinstall amplihack to restore missing hooks
+❌ amplihack-hooks binary not found
+💡 Please reinstall amplihack to restore the hooks binary
 ```
 
-**Resolution:** Run `amplihack install` to restore missing hooks.
+**Resolution:** Run `amplihack install` to redeploy the binary.
 
 ## Backups
 
@@ -80,16 +105,16 @@ cp ~/.claude/settings.json.backup.1739673234 ~/.claude/settings.json
 
 ## Troubleshooting
 
-### Problem: "Hook validation failed"
+### Problem: Hooks binary not found
 
-**Symptom:** Error message listing missing hooks during installation
+**Symptom:** Error message about missing `amplihack-hooks` during installation
 
-**Cause:** Required hook files are missing from `~/.amplihack/.claude/tools/amplihack/hooks/`
+**Cause:** The `amplihack-hooks` binary is not in any of the 5 resolution locations
 
 **Solution:**
 
 ```bash
-# Reinstall amplihack to restore hooks
+# Reinstall amplihack to redeploy the binary
 amplihack install
 ```
 
@@ -97,84 +122,65 @@ amplihack install
 
 **Symptom:** Session start hooks or tool hooks don't run
 
-**Cause:** Settings.json not properly configured
+**Cause:** Settings.json not properly configured, or `amplihack-hooks` not on `$PATH`
 
 **Solution:**
 
 ```bash
+# Verify the binary is accessible
+which amplihack-hooks
+
 # Reconfigure settings
 amplihack install  # This will reconfigure hooks automatically
 ```
 
-### Problem: XPIA hooks warning
+### Problem: XPIA hooks directory info message
 
-**Symptom:** Warning about missing XPIA hooks during configuration
+**Symptom:** Informational message that XPIA security hooks directory is not installed
 
-**Cause:** XPIA security hooks are optional and not installed
+**Cause:** The `tools/xpia` directory was not present in the staged framework assets
 
 **Solution:**
 
-- This is normal if you haven't installed XPIA
-- To install XPIA: Follow XPIA installation instructions
-- To disable warning: Ignore (it's informational only)
+- This is normal if your framework bundle does not include XPIA assets
+- XPIA security is an optional feature — the info message is not an error
+- When XPIA assets are present, the installer automatically registers the XPIA hook subcommands via the `amplihack-hooks` binary
 
 ## Advanced: Path Expansion
 
-Hook paths support environment variable expansion:
+Hook command paths support environment variable expansion:
 
 - `$HOME` expands to your home directory
 - `~` expands to your home directory
 - Other environment variables are expanded automatically
 
-Example:
-
-```
-$HOME/.amplihack/.claude/tools/amplihack/hooks/session_start.py
-→ /home/username/.amplihack/.claude/tools/amplihack/hooks/session_start.py
-```
+The `amplihack-hooks` binary is typically deployed to `~/.local/bin/amplihack-hooks` and found via `$PATH`.
 
 ## For Developers
 
-### validate_hook_paths() Function
+### Hook Registration Internals
 
-New in v0.5.27, this function validates hook files exist before configuration:
+Hook specifications are defined in `crates/amplihack-cli/src/commands/install/types.rs`:
 
-```rust
-// use amplihack_settings:: validate_hook_paths
+- `AMPLIHACK_HOOK_SPECS` — required amplihack hook subcommands
+- `XPIA_HOOK_SPECS` — optional XPIA security hook subcommands
 
-hooks = [
-    {"type": "SessionStart", "file": "session_start.py", "timeout": 10}
-]
-
-all_valid, missing = validate_hook_paths(
-    "amplihack",
-    hooks,
-    "~/.amplihack/.claude/tools/amplihack/hooks"
-)
-
-if not all_valid:
-    print(f"Missing hooks: {missing}")
-```
-
-**Returns:**
-
-- `all_valid` (bool): True if all hooks exist
-- `missing` (list): List of missing hook descriptions with expected paths
+Both use `HookCommandKind::BinarySubcmd` to generate `"amplihack-hooks <subcmd>"` command strings. The installer calls `validate_hook_command_string()` on each generated command before writing to settings.json.
 
 ### Running Tests
 
 ```bash
-# Run hook validation tests
-python -m unittest tests.unit.test_validate_hook_paths
+# Run settings-related tests
+cargo test -p amplihack-cli -- settings
 
-# Run all settings tests
-python -m unittest discover -s tests -p "test_*settings*.py"
+# Run all install tests
+cargo test -p amplihack-cli -- install
 ```
 
 ## Related Documentation
 
 - [How to Configure the Copilot Parity Control Plane](./configure-copilot-parity-control-plane.md)
 - [Copilot Parity Control Plane Reference](../reference/hook-specifications.md)
+- [Binary Resolution](../reference/binary-resolution.md)
 - Main README: Setup and installation guide
 - PHILOSOPHY.md: Zero-BS principle and validation approach
-- Settings migration: See `src/amplihack/settings.py` docstrings

@@ -122,14 +122,7 @@ pub(super) fn verify_framework_assets(claude_dir: &Path) -> Result<()> {
     if !xpia_dir.exists() {
         println!("  ℹ️  XPIA security hooks not installed (optional feature)");
     } else {
-        for file in XPIA_HOOK_FILES {
-            let hook_path = xpia_dir.join(file);
-            if hook_path.exists() {
-                println!("    ✅ {file} found");
-            } else {
-                println!("    ❌ {file} missing");
-            }
-        }
+        println!("  ✅ XPIA security hooks directory found");
     }
 
     Ok(())
