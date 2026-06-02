@@ -8,6 +8,9 @@ repository. For design rationale, see
 For full reference, see
 [Multi-Provider Workflow Reference](../reference/multi-provider-workflow.md).
 
+> **Note**: This document describes the target design for issue #684. Some
+> recipe YAML changes are implementation-pending.
+
 ---
 
 ## Prerequisites
@@ -47,10 +50,11 @@ amplihack recipe run default-workflow \
 
 The workflow automatically:
 
-1. Detects `azdo` as the remote provider (step 01b)
+1. Detects `azdo` as the remote host type (step 02d)
 2. Creates an AzDO work item of type `Task` (step 03)
 3. Uses `AB#N` commit references (step 15)
 4. Logs manual PR creation instructions (step 16)
+5. Produces a host-aware summary (step 22b)
 
 ### Override the work item type
 
@@ -70,7 +74,9 @@ Common types: `Task`, `Bug`, `User Story`, `Feature`, `Epic`.
 
 ## Run the Workflow with an Existing Work Item
 
-Reference the work item number in `task_description`:
+Reference the work item number in `task_description` — the idempotency
+guard in step 03 will detect the `AB#N` reference and reuse the existing
+work item:
 
 ```bash
 amplihack recipe run default-workflow \
@@ -78,14 +84,13 @@ amplihack recipe run default-workflow \
   -c repo_path=.
 ```
 
-Or pass the issue number directly to skip step 03:
+---
 
-```bash
-amplihack recipe run default-workflow \
-  -c issue_number=12345 \
-  -c task_description="Fix the auth bug" \
-  -c repo_path=.
-```
+## Percent-Encoded Project Names
+
+AzDO project names containing spaces (e.g., `My Project`) appear
+percent-encoded in remote URLs as `My%20Project`. Step 03 decodes `%XX`
+sequences before validation, so project names with spaces work correctly.
 
 ---
 
@@ -93,12 +98,14 @@ amplihack recipe run default-workflow \
 
 | Aspect              | GitHub                         | Azure DevOps                         |
 | ------------------- | ------------------------------ | ------------------------------------ |
+| Host detection      | step 02d → `github`            | step 02d → `azdo`                    |
 | Issue creation      | `gh issue create`              | `az boards work-item create`         |
-| Issue reference     | `#N`                           | `AB#N`                               |
+| Commit reference    | `Closes #N`                    | `AB#N`                               |
 | PR creation         | Automated (`gh pr create`)     | Manual (instructions logged)         |
 | Auth prerequisite   | `gh auth login`                | `az login` + DevOps extension        |
 | Idempotency Guard 1 | `gh issue view`               | `az boards work-item show`           |
 | Idempotency Guard 2 | `gh issue list --search`      | `az boards query` (WIQL)             |
+| Summary (step 22b)  | `PR: <url>`                   | `PR: N/A (manual creation required)` |
 
 ---
 
@@ -121,11 +128,15 @@ Or use the Azure DevOps web UI to create the PR from the pushed branch.
 
 ## Troubleshooting
 
-**Provider detected as `local` instead of `azdo`**
+**Host detected as `other` instead of `azdo`**
 
-Verify the remote URL contains `dev.azure.com` or `visualstudio.com`:
-`git remote get-url origin`. SSH-style AzDO URLs
-(`git@ssh.dev.azure.com:v3/org/project/repo`) are also detected.
+Verify the remote URL contains `dev.azure.com`, `visualstudio.com`, or
+`ssh.dev.azure.com`: `git remote get-url origin`. All three URL forms are
+detected:
+
+- HTTPS: `https://dev.azure.com/org/project/_git/repo`
+- Legacy: `https://org.visualstudio.com/project/_git/repo`
+- SSH: `git@ssh.dev.azure.com:v3/org/project/repo`
 
 **`az boards` fails with authentication error**
 
@@ -137,11 +148,17 @@ Run `az login` to refresh credentials. For PAT-based auth:
 List available types: `az boards work-item type list --project YOUR_PROJECT`.
 Type names are case-sensitive and vary by process template.
 
+**Project name with spaces not recognized**
+
+Ensure the remote URL uses standard percent-encoding (`%20` for spaces).
+Step 03 decodes these automatically. Invalid sequences like `%ZZ` are
+rejected and the workflow falls back to local tracking.
+
 ---
 
 **Metadata**
 
-| Field  | Value                                                     |
-| ------ | --------------------------------------------------------- |
-| Status | In Progress (retcon documentation; implementation pending) |
-| Issue  | #684                                                      |
+| Field  | Value     |
+| ------ | --------- |
+| Status | Specification (implementation pending) |
+| Issue  | #684      |

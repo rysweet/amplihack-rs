@@ -21,13 +21,13 @@ fail silently or produce broken output.
 ## Detect-Once, Branch-Everywhere
 
 The core pattern: **one detection step** early in the workflow writes a
-`remote_provider` context variable. Every downstream step reads it and
+`remote_host_type` context variable. Every downstream step reads it and
 branches to the correct code path.
 
 ```
-Step 01b (once) → remote_provider = "github" | "azdo" | "local"
+Step 02d (once) → remote_host_type = "github" | "azdo" | "other"
     ↓
-Steps 03, 03b, 15, 16, 21 → case $REMOTE_PROVIDER in ...
+Steps 03, 03b, 15, 16, 21 → case $REMOTE_HOST_TYPE in ...
 ```
 
 **Why not adapters?** An adapter/strategy pattern would add a layer of
@@ -44,17 +44,17 @@ another `case` branch is lower than maintaining an adapter registry.
 All providers produce the same output: a plain integer `issue_number`. This
 is the contract that downstream steps depend on.
 
-| Provider | Source                    | Example |
-| -------- | ------------------------- | ------- |
-| GitHub   | `gh issue create` URL     | `684`   |
-| AzDO     | `az boards` work item ID  | `12345` |
-| Local    | Synthetic (PID + epoch)   | `4821937` |
+| Provider   | Source                    | Example   |
+| ---------- | ------------------------- | --------- |
+| GitHub     | `gh issue create` URL     | `684`     |
+| AzDO       | `az boards` work item ID  | `12345`   |
+| Other/Local | Synthetic (PID + epoch)  | `4821937` |
 
 By normalizing to an integer at step 03b, no downstream step needs to know
 which provider produced it. Branch names, commit messages, and PR
 descriptions all use `issue_number` as a plain number with provider-specific
-formatting applied only at the point of use (e.g., `#684` for GitHub,
-`AB#12345` for AzDO, `[local-4821937]` for local).
+formatting applied only at the point of use (e.g., `Closes #684` for GitHub,
+`AB#12345` for AzDO, `Ref #4821937` for other).
 
 ---
 
@@ -77,11 +77,11 @@ integration is more robust.
 
 ---
 
-## Local Fallback Rationale
+## Other/Local Fallback Rationale
 
-The `local` provider is not an error state — it is a first-class mode that
+The `other` host type is not an error state — it is a first-class mode that
 enables the workflow to run in isolated environments (CI containers,
-air-gapped systems, fresh `git init` repos). Local mode:
+air-gapped systems, fresh `git init` repos). Other/local mode:
 
 - Generates a synthetic `issue_number` using PID + epoch seconds for
   collision resistance
@@ -98,7 +98,7 @@ air-gapped systems, fresh `git init` repos). Local mode:
 | Detect-once pattern          | Single detection, no repeated work | One step to maintain                  |
 | `case` over adapters         | Simpler, no indirection            | Adding providers requires editing steps |
 | Numeric issue_number contract | Downstream steps stay unchanged   | Provider URL information is lost       |
-| Local as fallback            | Works everywhere                   | No tracking system updated             |
+| Other as fallback            | Works everywhere                   | No tracking system updated             |
 | Manual AzDO PR creation      | Avoids brittle automation          | Extra manual step for AzDO users       |
 | Context propagation required | Explicit data flow                 | Must declare vars in parent recipe     |
 
@@ -117,5 +117,5 @@ air-gapped systems, fresh `git init` repos). Local mode:
 
 | Field  | Value                                                     |
 | ------ | --------------------------------------------------------- |
-| Status | In Progress (retcon documentation; implementation pending) |
+| Status | Specification (implementation pending)                      |
 | Issue  | #684                                                      |
