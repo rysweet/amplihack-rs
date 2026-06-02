@@ -323,6 +323,7 @@ steps:
             if [ "$ch" = "%" ] && [ "$((i+2))" -le "${#e}" ]; then
               hex="${e:$((i+1)):2}"
               if [[ "$hex" =~ ^[0-9a-fA-F]{2}$ ]]; then
+                [ "$hex" = "00" ] && { echo "WARN: NUL byte in percent-encoding" >&2; echo ""; return 1; }
                 printf -v tmp "\\x$hex"; d+="$tmp"; i=$((i+3)); continue
               fi
               echo "WARN: Invalid percent-encoding '%${hex}' — using local tracking" >&2
@@ -344,23 +345,21 @@ steps:
           echo "WARN: AZDO_PROJECT contains unexpected characters — using local tracking" >&2
           AZDO_PROJECT=""
         fi
-        AZDO_ORG_URL="https://dev.azure.com/${AZDO_ORG}"
-        if command -v az >/dev/null 2>&1; then
+        if command -v az >/dev/null 2>&1 && [ -n "$AZDO_ORG" ] && [ -n "$AZDO_PROJECT" ]; then
+          AZDO_ORG_URL="https://dev.azure.com/${AZDO_ORG}"
           if [ -n "$REF_ISSUE_NUM" ]; then
             WI_URL=$(timeout 60 az boards work-item show --id "$REF_ISSUE_NUM" --org "$AZDO_ORG_URL" --query "url" -o tsv 2>/dev/null || echo "")
             [ -n "$WI_URL" ] && { echo "INFO: Reusing work item AB#$REF_ISSUE_NUM" >&2; printf '%s\n' "$WI_URL"; exit 0; }
           fi
-          if [ -n "$AZDO_ORG" ] && [ -n "$AZDO_PROJECT" ]; then
-            WI_RESULT=$(timeout 60 az boards work-item create --title "$ISSUE_TITLE" --type "Task" \
-              --org "$AZDO_ORG_URL" --project "$AZDO_PROJECT" --query "[id,url]" -o tsv 2>/dev/null || echo "")
-            if [ -n "$WI_RESULT" ]; then
-              read -r _ WI_URL <<< "$WI_RESULT"
-              [ -n "$WI_URL" ] && { printf '%s\n' "$WI_URL"; exit 0; }
-            fi
-            echo "WARN: az boards work-item create failed — using local tracking" >&2
+          WI_RESULT=$(timeout 60 az boards work-item create --title "$ISSUE_TITLE" --type "Task" \
+            --org "$AZDO_ORG_URL" --project "$AZDO_PROJECT" --query "[id,url]" -o tsv 2>/dev/null || echo "")
+          if [ -n "$WI_RESULT" ]; then
+            read -r _ WI_URL <<< "$WI_RESULT"
+            [ -n "$WI_URL" ] && { printf '%s\n' "$WI_URL"; exit 0; }
           fi
+          echo "WARN: az boards work-item create failed — using local tracking" >&2
         else
-          echo "WARN: 'az' CLI not found — using local tracking for AzDO remote" >&2
+          echo "WARN: 'az' CLI not found or org/project empty — using local tracking for AzDO remote" >&2
         fi
       fi
       # --- Local tracking fallback (unknown remote or az CLI unavailable) ---
