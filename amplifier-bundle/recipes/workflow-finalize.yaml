@@ -308,7 +308,7 @@ steps:
       echo ""
       # FIX #684: Host-aware summary — guard gh commands with both PR_URL and host type
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-      PR_URL="$PR_URL"
+      PR_URL="${PR_URL:-}"
       if [ -z "$PR_URL" ]; then
         if [ "$HOST_TYPE" = "azdo" ]; then
           echo "PR Status: N/A (manual creation required)" >&2

@@ -254,7 +254,7 @@ steps:
       fi
       REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
       case "$REMOTE_URL" in
-        *github.com*) HT="github" ;;
+        https://github.com/*|git@github.com:*|ssh://git@github.com/*|https://*@github.com/*) HT="github" ;;
         *dev.azure.com*|*visualstudio.com*|*ssh.dev.azure.com*) HT="azdo" ;;
         *) HT="other" ;;
       esac

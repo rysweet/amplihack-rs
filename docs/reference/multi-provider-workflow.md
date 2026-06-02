@@ -73,7 +73,8 @@ step `02c` (requirements clarification) and before step `03` (issue creation).
 ```bash
 REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
 case "$REMOTE_URL" in
-  *github.com*)         REMOTE_HOST_TYPE="github" ;;
+  https://github.com/*|git@github.com:*|ssh://git@github.com/*|https://*@github.com/*)
+                        REMOTE_HOST_TYPE="github" ;;
   *dev.azure.com*|*visualstudio.com*|*ssh.dev.azure.com*)
                         REMOTE_HOST_TYPE="azdo" ;;
   *)                    REMOTE_HOST_TYPE="other" ;;
@@ -90,8 +91,9 @@ step 03 where the values are consumed.
 
 - No remote configured → `REMOTE_URL` is empty → `REMOTE_HOST_TYPE="other"`
 - Multiple remotes → only `origin` is checked (convention)
-- SSH URLs → pattern matching works on both `git@github.com:` and
-  `https://github.com/` forms
+- SSH URLs → explicit patterns match `git@github.com:`, `ssh://git@github.com/`,
+  and `https://github.com/` forms; AzDO uses substring matching for
+  `dev.azure.com`, `visualstudio.com`, and `ssh.dev.azure.com`
 - Not a git repo → step falls back to `"other"` before step 03 runs
 
 ---
