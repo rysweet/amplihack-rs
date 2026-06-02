@@ -117,7 +117,7 @@ extract the AzDO organization and project names, then creates a work item.
 | URL form | Example | Regex |
 | -------- | ------- | ----- |
 | HTTPS    | `https://dev.azure.com/org/project/_git/repo` | `dev\.azure\.com/([^/]+)/([^/]+)/` |
-| Legacy   | `https://org.visualstudio.com/project/_git/repo` | `([^.]+)\.visualstudio\.com/([^/]+)/` |
+| Legacy   | `https://org.visualstudio.com/project/_git/repo` | `([^/.]+)\.visualstudio\.com/([^/]+)/` |
 | SSH      | `git@ssh.dev.azure.com:v3/org/project/repo` | `ssh\.dev\.azure\.com[:/]v3/([^/]+)/([^/]+)/` |
 
 **Percent-encoding**: AzDO project names may contain spaces, which appear as

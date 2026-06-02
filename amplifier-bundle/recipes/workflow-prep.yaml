@@ -310,7 +310,7 @@ steps:
         # Bash regex replaces 6 echo|sed subprocess spawns with built-in matching
         if [[ "$REMOTE_URL" =~ dev\.azure\.com/([^/]+)/([^/]+)/ ]]; then
           AZDO_ORG="${BASH_REMATCH[1]}"; AZDO_PROJECT="${BASH_REMATCH[2]}"
-        elif [[ "$REMOTE_URL" =~ ([^.]+)\.visualstudio\.com/([^/]+)/ ]]; then
+        elif [[ "$REMOTE_URL" =~ ([^/.]+)\.visualstudio\.com/([^/]+)/ ]]; then
           AZDO_ORG="${BASH_REMATCH[1]}"; AZDO_PROJECT="${BASH_REMATCH[2]}"
         elif [[ "$REMOTE_URL" =~ ssh\.dev\.azure\.com[:/]v3/([^/]+)/([^/]+)/ ]]; then
           AZDO_ORG="${BASH_REMATCH[1]}"; AZDO_PROJECT="${BASH_REMATCH[2]}"
