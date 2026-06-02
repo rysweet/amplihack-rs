@@ -346,6 +346,17 @@ fn local_install(
 
     println!();
     println!("🐙 Configuring GitHub Copilot CLI plugin (if installed):");
+
+    // Warn when Node.js is too old for Copilot CLI — don't fail the whole
+    // install (it does many unrelated things), but make it visible.
+    {
+        use amplihack_utils::prerequisites::check_node_minimum_version;
+        if let Err(err) = check_node_minimum_version(24) {
+            eprintln!("  ⚠️  {err}");
+            eprintln!("     Copilot CLI sessions will fail until this is resolved.");
+        }
+    }
+
     match copilot_plugin::register_copilot_plugin(repo_root, &hooks_bin)
         .context("failed to register Copilot CLI plugin")?
     {

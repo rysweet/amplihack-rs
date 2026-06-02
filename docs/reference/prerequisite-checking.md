@@ -320,6 +320,7 @@ echo $PATH | grep -o '[^:]*node[^:]*'
 
 - [Installation Guide](../howto/first-install.md)
 - [Prerequisites Overview](prerequisites.md)
+- [Node.js Version Checking](node-version-checking.md) — version validation for Copilot CLI (v24+ requirement)
 - [Platform Support](#)
 
 ## Security Considerations

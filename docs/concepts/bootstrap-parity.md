@@ -100,5 +100,6 @@ Both installers write the same logical hooks. The difference is that the Rust in
 ## See Also
 
 - [Idempotent Installation](./idempotent-installation.md) — how repeated installs are safe
+- [Node.js Runtime Auto-Install](./node-runtime-auto-install.md) — automatic Node.js provisioning for npm-backed CLIs
 - [Hook Specifications](../reference/hook-specifications.md) — the canonical 7-hook table
 - [Install from a Local Repository](../howto/local-install.md) — offline install workflow

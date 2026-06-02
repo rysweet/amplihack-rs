@@ -8,7 +8,7 @@ The amplihack framework requires the following tools. Each entry explains **what
 
 | Tool        | Min Version    | What It Does                  | Why amplihack Needs It                                                                                 |
 | ----------- | -------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------ |
-| **Node.js** | v18+           | JavaScript runtime            | Runs Claude CLI                                                                                        |
+| **Node.js** | v18+ (v24+ for Copilot CLI) | JavaScript runtime | Runs Claude CLI and Copilot CLI. Copilot CLI requires v24+; see [Node version checking](reference/node-version-checking.md) |
 | **npm**     | (with Node.js) | Node.js package manager       | Installs Claude CLI                                                                                    |
 | **uv**      | latest         | Fast Python package installer | Installs amplihack itself and its Python dependencies                                                  |
 | **git**     | 2.0+           | Version control               | Branch management, PRs, and workflow automation                                                        |
@@ -464,16 +464,21 @@ uv --version
 
 ### Node.js version too old
 
-**Problem:** Node.js version < 18
+**Problem:** Node.js version < 18 (or < 24 for Copilot CLI)
+
+GitHub Copilot CLI requires Node.js v24 or higher. If you use `amplihack copilot`, you need v24+. Claude CLI works with v18+.
+
+`amplihack install` warns at the Copilot plugin step if Node.js < v24. `amplihack copilot` refuses to launch.
+
+See [Troubleshooting: Node.js Version Too Low for Copilot CLI](troubleshooting/node-version-copilot-cli.md) for full details.
 
 **Solution:**
 
-**Using nvm:**
+**Using nvm (recommended for Copilot CLI):**
 
 ```bash
-# Install latest LTS version
-nvm install --lts
-nvm use --lts
+nvm install 24
+nvm use 24
 ```
 
 **Using package manager:**
@@ -483,7 +488,7 @@ nvm use --lts
 brew upgrade node
 
 # Ubuntu/Debian - use NodeSource repository
-curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
 # Fedora

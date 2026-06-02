@@ -1,0 +1,81 @@
+name: issue-679-node-version-and-config
+description: |
+  Verifies amplihack install validates Node.js version requirements and
+  repairs malformed Copilot CLI config.json. Covers the three behaviors
+  added in PR #680:
+    1. Node.js version parsing and minimum-version checking
+    2. Config.json recovery for empty/malformed files
+    3. Node.js auto-download when version is insufficient
+type: cli
+tags: [install, prerequisites, copilot, node, config]
+
+scenarios:
+  - name: parse-node-major-version-unit-tests-pass
+    description: All parse_node_major_version unit tests pass
+    steps:
+      - type: command
+        command: cargo test -p amplihack-utils --lib -- parse_node_major_version 2>&1 | tail -1
+        expected_output: "test result: ok"
+
+  - name: check-node-minimum-version-tests-pass
+    description: check_node_minimum_version unit tests pass
+    steps:
+      - type: command
+        command: cargo test -p amplihack-utils --lib -- check_node_minimum_version 2>&1 | tail -1
+        expected_output: "test result: ok"
+
+  - name: node-platform-triple-returns-valid-values
+    description: node_platform_triple detects current platform
+    steps:
+      - type: command
+        command: cargo test -p amplihack-utils --lib -- node_platform_triple 2>&1 | tail -1
+        expected_output: "test result: ok"
+
+  - name: auto-install-version-satisfies-minimum
+    description: NODE_AUTO_INSTALL_VERSION >= NODE_MINIMUM_MAJOR
+    steps:
+      - type: command
+        command: cargo test -p amplihack-utils --lib -- node_auto_install_version 2>&1 | tail -1
+        expected_output: "test result: ok"
+
+  - name: empty-config-json-is-recovered
+    description: Empty config.json triggers recovery instead of parse error
+    steps:
+      - type: command
+        command: cargo test -p amplihack-cli --lib -- empty_config_json_is_recovered 2>&1 | tail -1
+        expected_output: "test result: ok"
+
+  - name: whitespace-only-config-json-is-recovered
+    description: Whitespace-only config.json triggers recovery
+    steps:
+      - type: command
+        command: cargo test -p amplihack-cli --lib -- whitespace_only_config_json_is_recovered 2>&1 | tail -1
+        expected_output: "test result: ok"
+
+  - name: comment-only-config-json-is-recovered
+    description: JSONC comment-only config.json triggers recovery
+    steps:
+      - type: command
+        command: cargo test -p amplihack-cli --lib -- config_json_with_only_comments_is_recovered 2>&1 | tail -1
+        expected_output: "test result: ok"
+
+  - name: bootstrap-node-check-integrated
+    description: Bootstrap code references ensure_node_for_copilot
+    steps:
+      - type: command
+        command: grep -q 'ensure_node_for_copilot' crates/amplihack-cli/src/bootstrap.rs && echo "PASS" || echo "FAIL"
+        expected_output: "PASS"
+
+  - name: no-anyhow-leak-in-utils
+    description: prerequisites.rs does not depend on anyhow (uses Option for platform)
+    steps:
+      - type: command
+        command: "! grep -q 'anyhow' crates/amplihack-utils/src/prerequisites.rs && echo 'PASS' || echo 'FAIL'"
+        expected_output: "PASS"
+
+  - name: full-prerequisite-test-suite
+    description: All 33 prerequisite tests pass
+    steps:
+      - type: command
+        command: cargo test -p amplihack-utils --lib -- prerequisites 2>&1 | grep 'test result' | tail -1
+        expected_output: "test result: ok"

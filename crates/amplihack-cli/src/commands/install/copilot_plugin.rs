@@ -716,4 +716,90 @@ mod tests {
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed.get("a").and_then(|v| v.as_i64()), Some(1));
     }
+
+    // -----------------------------------------------------------------------
+    // Empty / whitespace config.json recovery (issue #679)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn empty_config_json_is_recovered_not_errored() {
+        let td = TempDir::new().unwrap();
+        let copilot_home = fake_copilot_home(&td);
+        let cfg_path = copilot_home.join("config.json");
+        // Simulate a completely empty config.json (0 bytes)
+        fs::write(&cfg_path, "").unwrap();
+
+        let repo = fake_repo(&td, false);
+        let hooks_bin = td.path().join("amplihack-hooks");
+        fs::write(&hooks_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        let result = register_copilot_plugin_in(&copilot_home, &repo, &hooks_bin);
+        assert!(
+            result.is_ok(),
+            "empty config.json must be gracefully recovered as {{}}, not error: {:?}",
+            result.err()
+        );
+        assert!(
+            result.unwrap(),
+            "registration should succeed (return true) with empty config"
+        );
+
+        // Verify the written config is valid JSON with amplihack registered
+        let after = fs::read_to_string(&cfg_path).unwrap();
+        let cfg: Value = serde_json::from_str(&after).unwrap_or_else(|e| {
+            panic!("post-recovery config.json must be valid JSON: {e}\ngot: {after}")
+        });
+        assert!(
+            cfg.get("installedPlugins")
+                .and_then(|p| p.as_array())
+                .is_some_and(|arr| arr
+                    .iter()
+                    .any(|p| p.get("name").and_then(|n| n.as_str()) == Some("amplihack"))),
+            "amplihack must be registered even when starting from empty config"
+        );
+    }
+
+    #[test]
+    fn whitespace_only_config_json_is_recovered() {
+        let td = TempDir::new().unwrap();
+        let copilot_home = fake_copilot_home(&td);
+        let cfg_path = copilot_home.join("config.json");
+        // Simulate a config.json with only whitespace/newlines
+        fs::write(&cfg_path, "  \n\t\n  ").unwrap();
+
+        let repo = fake_repo(&td, false);
+        let hooks_bin = td.path().join("amplihack-hooks");
+        fs::write(&hooks_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        let result = register_copilot_plugin_in(&copilot_home, &repo, &hooks_bin);
+        assert!(
+            result.is_ok(),
+            "whitespace-only config.json must be recovered: {:?}",
+            result.err()
+        );
+        assert!(
+            result.unwrap(),
+            "registration should succeed with whitespace-only config"
+        );
+    }
+
+    #[test]
+    fn config_json_with_only_comments_is_recovered() {
+        let td = TempDir::new().unwrap();
+        let copilot_home = fake_copilot_home(&td);
+        let cfg_path = copilot_home.join("config.json");
+        // config.json with only JSONC comments and no body
+        fs::write(&cfg_path, "// Copilot CLI managed file\n// end\n").unwrap();
+
+        let repo = fake_repo(&td, false);
+        let hooks_bin = td.path().join("amplihack-hooks");
+        fs::write(&hooks_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        let result = register_copilot_plugin_in(&copilot_home, &repo, &hooks_bin);
+        assert!(
+            result.is_ok(),
+            "comments-only config.json must be recovered: {:?}",
+            result.err()
+        );
+    }
 }

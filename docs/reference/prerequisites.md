@@ -10,7 +10,7 @@ across different platforms.
 | Tool        | Min Version | Purpose                               |
 | ----------- | ----------- | ------------------------------------- |
 | **Rust**    | 1.70+       | Compiles and runs amplihack-rs        |
-| **Node.js** | v18+        | Runs Claude Code CLI                  |
+| **Node.js** | v18+ (v24+ for Copilot CLI) | Runs Claude Code CLI / Copilot CLI |
 | **npm**     | (with Node) | Installs Claude Code CLI              |
 | **git**     | 2.0+        | Version control, worktrees, workflows |
 | **claude**  | latest      | Claude Code CLI (AI coding assistant) |
@@ -137,10 +137,16 @@ rustup update stable
 # Check version
 node --version
 
-# If < 18, use nvm to install latest LTS
+# For Copilot CLI, you need v24+
+# If < 24, use nvm to install latest
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
-nvm install --lts
+nvm install 24
+nvm use 24
 ```
+
+See [Node.js Version Checking](node-version-checking.md) for the version
+validation API and [Troubleshooting: Node Version](../troubleshooting/node-version-copilot-cli.md)
+for the user-facing fix guide.
 
 ### Claude Code CLI Not Found
 

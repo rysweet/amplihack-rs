@@ -365,6 +365,139 @@ pub fn summary_string(results: &[ToolCheckResult]) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Node.js version checking
+// ---------------------------------------------------------------------------
+
+/// Errors related to Node.js version requirements.
+#[derive(Debug, Error)]
+pub enum NodeVersionError {
+    /// Node.js is installed but its major version is too low.
+    #[error(
+        "Node.js v{found} is installed but v{minimum}+ is required.\n\
+         Upgrade with: {install_hint}"
+    )]
+    InsufficientVersion {
+        found: u32,
+        minimum: u32,
+        install_hint: String,
+    },
+
+    /// `node --version` output could not be parsed (node may not be installed).
+    #[error(
+        "Could not detect Node.js version — node may not be installed or is not on PATH.\n\
+         Install with: {install_hint}"
+    )]
+    VersionUndetectable { install_hint: String },
+
+    /// `node` binary was not found on PATH at all.
+    #[error(
+        "Node.js is not installed — the `node` binary was not found on PATH.\n\
+         Install with: {install_hint}"
+    )]
+    NotFound { install_hint: String },
+}
+
+/// Extract the major version number from a Node.js version string.
+///
+/// Handles formats like `"v20.11.0"`, `"20.11.0"`, `"v24"`, and
+/// leading/trailing whitespace. Returns `None` for unrecognisable input
+/// (fail-open: callers decide whether to block or warn).
+pub fn parse_node_major_version(version_str: &str) -> Option<u32> {
+    let trimmed = version_str.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Strip optional leading 'v'/'V'
+    let without_v = trimmed
+        .strip_prefix('v')
+        .or_else(|| trimmed.strip_prefix('V'))
+        .unwrap_or(trimmed);
+    // The first segment before '.' (or the whole string) should be the major version
+    let major_str = without_v.split('.').next()?;
+    // Must be purely numeric
+    if major_str.is_empty() || !major_str.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    major_str.parse::<u32>().ok()
+}
+
+/// Check that the installed Node.js meets a minimum major version.
+///
+/// Uses `check_tool("node")` to get the version string and parses it.
+/// Returns `Ok(())` when the version is sufficient. Returns
+/// `Err(NodeVersionError)` when node is missing, its version is too low,
+/// or its version cannot be determined.
+pub fn check_node_minimum_version(minimum_major: u32) -> Result<(), NodeVersionError> {
+    let result = check_tool("node");
+    let platform = detect_platform();
+    let hint = install_hint("node", platform);
+
+    let version_str = match result.version {
+        Some(v) => v,
+        None => {
+            if result.found {
+                // node binary exists but version extraction failed
+                return Err(NodeVersionError::VersionUndetectable { install_hint: hint });
+            }
+            // node not found at all — callers must handle this
+            return Err(NodeVersionError::NotFound { install_hint: hint });
+        }
+    };
+
+    match parse_node_major_version(&version_str) {
+        Some(major) if major >= minimum_major => Ok(()),
+        Some(major) => Err(NodeVersionError::InsufficientVersion {
+            found: major,
+            minimum: minimum_major,
+            install_hint: hint,
+        }),
+        None => {
+            // Unparseable version string — fail-open
+            tracing::warn!(
+                version_str,
+                "could not parse Node.js version; skipping version check"
+            );
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Node.js auto-ensure (detection portion)
+// ---------------------------------------------------------------------------
+
+/// The Node.js major version required by Copilot CLI.
+pub const NODE_MINIMUM_MAJOR: u32 = 24;
+
+/// The specific Node.js release to download when auto-ensuring.
+pub const NODE_AUTO_INSTALL_VERSION: &str = "v24.1.0";
+
+/// Map the current platform to the Node.js download naming convention.
+/// Returns `(os_name, arch_name)` — e.g. `("linux", "x64")`.
+pub fn node_platform_triple() -> Option<(&'static str, &'static str)> {
+    let os_name = if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "macos") {
+        "darwin"
+    } else if cfg!(target_os = "windows") {
+        // Node.js Windows downloads are .zip — tar -xJf won't work.
+        return None;
+    } else {
+        return None;
+    };
+
+    let arch_name = if cfg!(target_arch = "x86_64") {
+        "x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        return None;
+    };
+
+    Some((os_name, arch_name))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
