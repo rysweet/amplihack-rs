@@ -90,14 +90,31 @@ pub fn run_update(skip_install: bool) -> Result<()> {
         "New version available: v{} -> v{}",
         CURRENT_VERSION, release.version
     );
-    super::install::download_and_replace(&release)?;
+    let installed_exe = super::install::download_and_replace(&release)?;
     write_cache(&cache_path()?, &release.version)?;
 
-    // Re-stage framework assets after binary swap (fix #249, #487).
+    // Re-stage framework assets after binary swap (fix #249, #487, #683).
     // The new binary may depend on updated assets in amplifier-bundle.
     // Users can opt out with --skip-install (alias --no-install).
+    //
+    // Issue #683: We must NOT call `run_install` in-process — that would
+    // execute the OLD binary's compiled-in code. Instead we spawn the NEW
+    // binary as a subprocess so the freshly-installed code runs.
     super::post_install::run_post_update_install(skip_install, || {
-        crate::commands::install::run_install(None, false, true)
+        let mut cmd = build_install_command(&installed_exe);
+        let status = cmd.status().with_context(|| {
+            format!(
+                "failed to spawn post-update install subprocess {}",
+                installed_exe.display()
+            )
+        })?;
+        if !status.success() {
+            bail!(
+                "post-update install subprocess {} exited with {status}",
+                installed_exe.display()
+            );
+        }
+        Ok(())
     })?;
     Ok(())
 }
@@ -328,4 +345,27 @@ fn print_update_notice(latest: &str) {
     eprintln!(
         "\x1b[33mA newer version of amplihack is available (v{latest}). Run 'amplihack update' to upgrade.\x1b[0m"
     );
+}
+
+/// Build a `Command` that re-execs the newly installed binary with
+/// `install --force-refresh` so the NEW binary's install code runs.
+///
+/// # Issue #683
+/// After `download_and_replace` writes the new binary to disk, we must NOT
+/// call `run_install` in-process (that runs OLD compiled-in code). Instead
+/// we spawn the new binary as a subprocess.
+///
+/// The `installed_exe` path comes from `download_and_replace`'s return value
+/// — never from `current_exe()`, which may resolve to a deleted inode after
+/// atomic rename on Linux.
+pub(super) fn build_install_command(installed_exe: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(installed_exe);
+    cmd.arg("install")
+        .arg("--force-refresh")
+        .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
+        .env("AMPLIHACK_NONINTERACTIVE", "1")
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit());
+    cmd
 }

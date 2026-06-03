@@ -9,6 +9,16 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ### Fixed
 
+- **`amplihack update` runs OLD binary's install code (#683)** — After
+  downloading a new binary, the post-update install step now spawns the
+  **new** binary as a subprocess (`amplihack install --force-refresh`)
+  instead of calling `run_install` in-process with the old binary's code.
+  `download_and_replace()` returns the installed binary path explicitly,
+  avoiding reliance on `current_exe()` which resolves to a deleted inode
+  on Linux after atomic rename. The subprocess runs with
+  `AMPLIHACK_NO_UPDATE_CHECK=1` and `AMPLIHACK_NONINTERACTIVE=1` to
+  prevent recursion and interactive prompts.
+
 - **Stale Python tool references across documentation (#666)** — All
   `orch_helper.py` and `session_tree.py` references in SKILL.md, tutorials,
   reference docs, and audit reports now point to their native Rust replacements

@@ -34,9 +34,9 @@ Every launch, before command dispatch, `amplihack` performs a startup-time
    The third argument (`force_refresh: false`) means self-heal prefers the
    local `~/.amplihack/amplifier-bundle/` if it exists, falling back to a
    network download only when no local source is found. This keeps startup
-   fast for the common case. For the post-update install path (where a fresh
-   download is required), see `update::check` which passes
-   `force_refresh: true`.
+   fast for the common case. For the post-update install path (where the
+   **new** binary is spawned as a subprocess with `--force-refresh`), see
+   [Post-Update Install — Re-exec New Binary](update-reexec-new-binary.md).
 4. On success, write the new version into the stamp file and emit a single
    line on stderr:
 
