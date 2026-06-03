@@ -168,10 +168,16 @@ fn update_check_source_includes_framework_restage() {
         run_update_body.contains("run_post_update_install"),
         "run_post_update_install() must be called inside run_update(), not elsewhere"
     );
-    // The closure passed to the helper must invoke the full install code path.
+    // Issue #683: run_update must NOT call run_install in-process after
+    // binary swap. The closure must use build_install_command to spawn the
+    // NEW binary as a subprocess instead.
     assert!(
-        run_update_body.contains("crate::commands::install::run_install"),
-        "the post-update install closure must call commands::install::run_install"
+        !run_update_body.contains("crate::commands::install::run_install"),
+        "run_update must NOT call run_install in-process (issue #683 fix)"
+    );
+    assert!(
+        run_update_body.contains("build_install_command"),
+        "run_update must use build_install_command to spawn the new binary as a subprocess"
     );
 }
 
@@ -349,5 +355,137 @@ fn clone_rs_error_mentions_both_markers() {
     assert!(
         bail_msg.contains(".claude") && bail_msg.contains("amplifier-bundle"),
         "error message must mention both .claude and amplifier-bundle, got: {bail_msg}"
+    );
+}
+
+// ============================================================================
+// Bug #683: run_update must re-exec NEW binary, not call old code in-process
+// ============================================================================
+
+#[test]
+fn download_and_replace_returns_pathbuf() {
+    // Contract (#683): download_and_replace must return Result<PathBuf>
+    // so run_update can pass the installed path to build_install_command.
+    // Returning Result<()> means the caller has no way to know where the
+    // new binary was written (current_exe() is unreliable after rename).
+    let install_src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/update/install.rs"
+    ));
+    let fn_sig_start = install_src
+        .find("fn download_and_replace")
+        .expect("download_and_replace must exist");
+    // Grab enough of the signature to see the return type
+    let fn_sig = &install_src[fn_sig_start..(fn_sig_start + 200).min(install_src.len())];
+    assert!(
+        fn_sig.contains("Result<PathBuf>"),
+        "download_and_replace must return Result<PathBuf> (not Result<()>), got: {}",
+        fn_sig.lines().next().unwrap_or("")
+    );
+}
+
+#[test]
+fn run_update_captures_installed_path_from_download() {
+    // Contract (#683): run_update must capture the PathBuf returned by
+    // download_and_replace and pass it to the subprocess builder.
+    // Without this, the subprocess would need to call current_exe() which
+    // is unreliable on Linux after atomic rename.
+    let check_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/update/check.rs"));
+    let run_update_start = check_src
+        .find("fn run_update(")
+        .expect("run_update must exist");
+    let run_update_body = &check_src[run_update_start..];
+    let next_fn = run_update_body[1..]
+        .find("\nfn ")
+        .unwrap_or(run_update_body.len());
+    let run_update_body = &run_update_body[..next_fn];
+    // Must assign download_and_replace result to a variable (let binding)
+    assert!(
+        run_update_body.contains("let "),
+        "run_update must capture download_and_replace return value in a let binding"
+    );
+    // Must pass the captured path to build_install_command
+    assert!(
+        run_update_body.contains("build_install_command"),
+        "run_update must pass installed path to build_install_command"
+    );
+}
+
+#[test]
+fn install_variant_has_hidden_force_refresh_flag() {
+    // Contract (#683): Commands::Install must have a hidden --force-refresh flag
+    // so the update subprocess can signal it was triggered by an update.
+    // This flag must be hidden from --help to avoid confusing users.
+    let cli_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/cli_commands.rs"));
+
+    // Must have the field
+    assert!(
+        cli_src.contains("force_refresh"),
+        "Install variant must have a force_refresh field"
+    );
+    // Must be wired as --force-refresh CLI flag
+    assert!(
+        cli_src.contains("force-refresh"),
+        "Install variant must expose --force-refresh flag"
+    );
+    // Must be hidden from --help output
+    assert!(
+        cli_src.contains("hide = true") || cli_src.contains("hide=true"),
+        "--force-refresh must be hidden from --help output (internal flag)"
+    );
+}
+
+#[test]
+fn build_install_command_source_sets_recursion_guard() {
+    // Contract (#683): build_install_command must set AMPLIHACK_NO_UPDATE_CHECK
+    // and AMPLIHACK_NONINTERACTIVE env vars in the subprocess to prevent
+    // infinite recursion and suppress interactive prompts.
+    let check_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/update/check.rs"));
+    let fn_start = check_src
+        .find("fn build_install_command")
+        .expect("build_install_command must exist in check.rs");
+    let fn_body = &check_src[fn_start..];
+    // Find the function's closing brace
+    let mut brace_depth = 0;
+    let mut fn_end = fn_body.len();
+    for (i, ch) in fn_body.char_indices() {
+        if ch == '{' {
+            brace_depth += 1;
+        }
+        if ch == '}' {
+            brace_depth -= 1;
+            if brace_depth == 0 {
+                fn_end = i + 1;
+                break;
+            }
+        }
+    }
+    let fn_body = &fn_body[..fn_end];
+    assert!(
+        fn_body.contains("AMPLIHACK_NO_UPDATE_CHECK"),
+        "build_install_command must set AMPLIHACK_NO_UPDATE_CHECK env var to prevent recursion"
+    );
+    assert!(
+        fn_body.contains("AMPLIHACK_NONINTERACTIVE"),
+        "build_install_command must set AMPLIHACK_NONINTERACTIVE env var to suppress prompts"
+    );
+}
+
+#[test]
+fn dispatch_passes_force_refresh_to_run_install() {
+    // Contract (#683): the dispatch function must destructure force_refresh
+    // from Commands::Install and pass it to run_install.
+    let dispatch_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands/mod.rs"));
+    let install_dispatch = dispatch_src
+        .find("Commands::Install")
+        .expect("Commands::Install dispatch must exist");
+    let dispatch_body = &dispatch_src[install_dispatch..];
+    let next_command = dispatch_body[1..]
+        .find("Commands::")
+        .unwrap_or(dispatch_body.len());
+    let install_block = &dispatch_body[..next_command];
+    assert!(
+        install_block.contains("force_refresh"),
+        "dispatch must destructure and pass force_refresh to run_install"
     );
 }

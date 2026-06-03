@@ -23,6 +23,11 @@ pub enum Commands {
         /// Accepted for diagnostic scripts; install already prints phase-level detail
         #[arg(long)]
         verbose: bool,
+        /// Force a fresh network download of amplifier-bundle assets.
+        /// Used internally by `amplihack update` when spawning the new binary
+        /// as a post-update install subprocess (issue #683).
+        #[arg(long = "force-refresh", hide = true)]
+        force_refresh: bool,
     },
     /// Remove amplihack agents and tools
     Uninstall,

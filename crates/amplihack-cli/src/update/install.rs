@@ -43,7 +43,7 @@ pub(super) fn verify_sha256(archive_bytes: &[u8], checksum_url: &str) -> Result<
     Ok(())
 }
 
-pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<()> {
+pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     let archive_bytes = super::network::http_get_with_retry(&release.asset_url)?;
 
     if let Some(checksum_url) = &release.checksum_url {
@@ -147,7 +147,7 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<()> {
         let _ = fs::remove_file(&path);
     }
 
-    Ok(())
+    Ok(current_exe)
 }
 
 /// Invoke `<binary> --version` and confirm the output contains `expected`.

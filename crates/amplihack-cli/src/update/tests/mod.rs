@@ -1,3 +1,4 @@
+mod build_install_command;
 mod classify_skip_reason;
 mod network;
 mod skip_line;
