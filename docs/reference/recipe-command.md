@@ -12,6 +12,7 @@ inspects, validates, and runs YAML recipe files.
   - [recipe validate](#recipe-validate)
   - [recipe run](#recipe-run)
 - [Output formats](#output-formats)
+- [Progress and stream contract](#progress-and-stream-contract)
 - [Recipe file format](#recipe-file-format)
   - [Required fields](#required-fields)
   - [Optional fields](#optional-fields)
@@ -203,7 +204,7 @@ amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
 | `<FILE>` | (required) | Path to the recipe YAML file |
 | `-c KEY=VALUE` | (none) | Set a context variable; repeat for multiple values |
 | `--dry-run` | false | Print the execution plan without running any steps |
-| `--verbose` | false | Print recipe name and dry-run status to stderr |
+| `--verbose` | false | Increase progress detail on stderr; basic step progress is emitted by default |
 | `--format <FORMAT>` | `table` | Output format for results: `table`, `json`, or `yaml` |
 | `--working-dir <DIR>` | `.` | Working directory for step execution |
 | `--step-timeout <SECONDS>` | (none) | Apply a global per-step timeout ceiling to **every** step in the recipe. Useful for CI guard rails. `0` disables all step timeouts. When omitted, agent steps run without a per-step timeout and bash steps use the YAML-defined `timeout_seconds` only when present |
@@ -301,6 +302,49 @@ and `--format yaml`.
 | `table` | Human-readable terminal output |
 | `json` | Scripting, CI pipelines, `jq` processing |
 | `yaml` | Config file integration |
+
+`recipe run` writes the final result in the selected format to stdout. Live
+progress, heartbeats, and failure diagnostics are written to stderr.
+
+---
+
+## Progress and stream contract
+
+This section describes the planned finished-state transparency contract.
+
+`amplihack recipe run` forwards `recipe-runner-rs` progress to stderr by
+default. This makes normal runs observable while keeping stdout safe for
+structured output.
+
+```sh
+amplihack recipe run default-workflow \
+  -c task_description="Add validation" \
+  -c repo_path=. \
+  --format json > result.json
+```
+
+In this example, the terminal shows step progress and heartbeats from stderr.
+`result.json` contains only the final JSON result.
+
+Progress includes:
+
+- recipe started/completed/failed
+- step started/completed/failed/skipped
+- rate-limited heartbeat lines for long-running recipe, agent, subprocess, and
+  nested-recipe steps
+- bounded recent stdout/stderr snippets in failure diagnostics
+
+`--verbose` adds detail such as child launch metadata and extra snippet context.
+`--progress` is not a supported `amplihack recipe run` flag. Passing it should
+fail fast with an actionable message explaining that progress is already emitted
+to `stderr` by default and `--verbose` only increases diagnostic detail.
+
+The final JSON result may include optional additive fields such as
+`duration_seconds`, `progress_summary`, `failure_context`, `step_name`, `phase`,
+`child`, `last_heartbeat_at`, and `recent_output`. Consumers must ignore unknown
+fields. The CLI must preserve these fields when formatting JSON or YAML instead
+of parsing and dropping unknown runner fields. See [RecipeResult Reference](./recipe-result.md)
+for schema details.
 
 ---
 
@@ -517,6 +561,7 @@ Recipe execution can fail at multiple levels. For diagnosis:
 | Duplicate issues filed | Repeated `gh issue create` on retries | [Issue Deduplication](./issue-dedup.md) |
 | Condition parse error | `condition` field uses unsupported expression | [Agentic Step Patterns](../concepts/agentic-step-patterns.md) |
 | Context variable missing | `{{var}}` renders as empty string | [Context variables](#context-variables) |
+| Opaque long-running step | No visible child output for a while | [Recipe Runner Logging](./recipe-runner-logging.md) |
 
 For general troubleshooting, see [Troubleshoot Recipe Execution Failures](../howto/troubleshoot-recipe-execution.md).
 
@@ -526,6 +571,7 @@ For general troubleshooting, see [Troubleshoot Recipe Execution Failures](../how
 
 - [Run a Recipe End-to-End](../howto/run-a-recipe.md) — Step-by-step guide to executing recipes
 - [Environment Variables](./environment-variables.md) — `AMPLIHACK_CONTEXT_*`, `AMPLIHACK_TASK_DESCRIPTION`, `RECIPE_RUNNER_RS_PATH`
+- [Recipe Runner Logging](./recipe-runner-logging.md) — stderr progress, heartbeats, snippets, and JSONL logs
 - [Parity Test Scenarios](./parity-test-scenarios.md) — `tier4-recipe-run.yaml` test cases
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — How `AMPLIHACK_AGENT_BINARY` affects recipe step execution
 - [Recipe Runner Architecture](../concepts/recipe-runner-architecture.md) — Why the runner is an external binary
