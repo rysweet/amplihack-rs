@@ -109,20 +109,21 @@ amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
   -c repo_path=/home/user/src/myapp
 ```
 
-The output shows each step as it completes:
+The command emits live progress to stderr while the recipe runs. The output
+shows each step as it starts, heartbeats for long-running steps, and completion
+or failure:
 
 ```
-Recipe: default-workflow
-Status: ✓ Success
-
-Steps:
-  ✓ requirements-clarification: completed
-    Output: Clarified 3 requirements from task description
-  ✓ implementation-planning: completed
-    Output: Created 5-step implementation plan
-  ✓ code-implementation: completed
-  ...
+[recipe default-workflow] started (23 steps)
+[step 01/23 requirements-clarification] started agent=prompt-writer
+[step 01/23 requirements-clarification] completed elapsed=24s
+[step 02/23 implementation-planning] started agent=architect
+[step 02/23 implementation-planning] heartbeat elapsed=60s status=running phase=agent agent=architect
+[step 02/23 implementation-planning] completed elapsed=91s
 ```
+
+The final result is printed to stdout in the requested format. This keeps
+human-readable progress separate from machine-readable output.
 
 ---
 
@@ -266,22 +267,40 @@ amplihack recipe run ~/.amplihack/.claude/recipes/verification.yaml \
   --format json
 ```
 
+Progress continues to appear on stderr. Stdout contains only the final JSON
+result, so this is safe:
+
+```sh
+amplihack recipe run ~/.amplihack/.claude/recipes/verification.yaml \
+  -c task_description="Bump version to 2.1.0" \
+  --format json > result.json
+```
+
 ```json
 {
   "recipe_name": "verification",
   "success": true,
+  "duration_seconds": 42.6,
   "step_results": [
     {
       "step_id": "pre-check",
       "status": "completed",
       "output": "All pre-conditions met",
-      "error": ""
+      "error": "",
+      "elapsed_seconds": 3.1,
+      "phase": "bash"
     },
     {
       "step_id": "implementation",
       "status": "completed",
       "output": "Version bumped in Cargo.toml and pyproject.toml",
-      "error": ""
+      "error": "",
+      "elapsed_seconds": 34.8,
+      "phase": "agent",
+      "child": {
+        "kind": "agent",
+        "name": "builder"
+      }
     }
   ]
 }
@@ -318,12 +337,22 @@ jobs:
         run: |
           amplihack recipe run \
             ~/.amplihack/.claude/recipes/default-workflow.yaml \
-            --format json \
-            --verbose
+            --format json > recipe-result.json
 ```
 
 Set `AMPLIHACK_NONINTERACTIVE=1` to suppress interactive prompts. The recipe
-runner exits 0 on success and 1 on failure, integrating naturally with CI pass/fail.
+runner exits 0 on success and 1 on failure, integrating naturally with CI
+pass/fail. Live progress and heartbeat lines are written to the job log on
+stderr; `recipe-result.json` contains only the final structured result.
+
+To keep the job log terse, redirect progress stderr to a file while preserving
+the final JSON result on stdout:
+
+```sh
+amplihack recipe run ~/.amplihack/.claude/recipes/default-workflow.yaml \
+  -c task_description="Regenerate API docs" \
+  --format json > recipe-result.json 2> recipe-progress.log
+```
 
 ---
 
@@ -369,19 +398,20 @@ fix the YAML and re-run.
 
 ### A step fails mid-recipe
 
-The output shows which step failed and why:
+The output shows which step failed, how long it ran, which child process or
+agent was active, and recent bounded output from that child:
 
 ```
-Recipe: default-workflow
-Status: ✗ Failed
+[step 08/23 code-implementation] failed elapsed=12m14s agent=builder
+error: agent exited with code 1
 
-Steps:
-  ✓ requirements-clarification: completed
-  ✗ implementation-planning: failed
-    Error: agent 'architect' exited with code 1
+recent stderr from agent:builder (last 20 lines, 8192 bytes max):
+  error[E0425]: cannot find value `cache_policy` in this scope
+  --> src/http/cache.rs:42:18
 ```
 
-Re-run with `--verbose` to see stderr output for more context:
+`--verbose` adds child launch details and extra diagnostic context, but it is not
+required for basic step progress or failure snippets:
 
 ```sh
 amplihack recipe run recipe.yaml -c task_description="..." --verbose
@@ -392,6 +422,8 @@ amplihack recipe run recipe.yaml -c task_description="..." --verbose
 ## Related
 
 - [amplihack recipe — Reference](../reference/recipe-command.md) — Full flag reference, output formats, and schema
+- [Recipe Runner Logging Reference](../reference/recipe-runner-logging.md) — stderr progress, heartbeats, bounded snippets, and JSON fields
+- [Observe Recipe Progress Tutorial](../tutorials/recipe-progress-transparency.md) — Learn the progress and failure-debugging workflow
 - [Environment Variables](../reference/environment-variables.md) — `AMPLIHACK_CONTEXT_*` and `RECIPE_RUNNER_RS_PATH`
 - [Run amplihack in Non-interactive Mode](./run-in-noninteractive-mode.md) — CI configuration
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — How agents are located during recipe execution

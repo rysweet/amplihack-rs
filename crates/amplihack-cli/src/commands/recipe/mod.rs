@@ -121,9 +121,21 @@ pub(crate) struct RecipeRunResult {
     pub(crate) step_results: Vec<RecipeRunStepResult>,
     #[serde(default)]
     pub(crate) context: JsonMap<String, JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) elapsed_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) heartbeat_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) progress_summary: Option<JsonValue>,
+    #[serde(default, flatten)]
+    pub(crate) extra: JsonMap<String, JsonValue>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct RecipeRunStepResult {
     pub(crate) step_id: String,
     pub(crate) status: String,
@@ -131,6 +143,22 @@ pub(crate) struct RecipeRunStepResult {
     pub(crate) output: String,
     #[serde(default)]
     pub(crate) error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) step_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) elapsed_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) heartbeat_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) child: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) recent_stdout: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) recent_stderr: Vec<String>,
+    #[serde(default, flatten)]
+    pub(crate) extra: JsonMap<String, JsonValue>,
 }
 
 pub(crate) fn default_version() -> String {

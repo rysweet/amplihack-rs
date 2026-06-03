@@ -516,18 +516,26 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
             context,
             dry_run,
             verbose,
+            progress,
             format,
             working_dir,
             step_timeout,
-        } => recipe::run_recipe(
-            &recipe_path,
-            &context,
-            dry_run,
-            verbose,
-            &format,
-            working_dir.as_deref(),
-            step_timeout,
-        ),
+        } => {
+            if progress {
+                anyhow::bail!(
+                    "--progress is no longer supported; recipe progress is streamed to stderr by default"
+                );
+            }
+            recipe::run_recipe(
+                &recipe_path,
+                &context,
+                dry_run,
+                verbose,
+                &format,
+                working_dir.as_deref(),
+                step_timeout,
+            )
+        }
         RecipeCommands::List {
             recipe_dir,
             format,

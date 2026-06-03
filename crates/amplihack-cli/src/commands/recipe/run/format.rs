@@ -1,6 +1,8 @@
 use super::super::*;
 
 const MAX_OUTPUT_LENGTH: usize = 200;
+const MAX_RECENT_SNIPPET_LINES: usize = 5;
+const MAX_RECENT_SNIPPET_CHARS: usize = 300;
 
 pub(super) fn format_recipe_run_result(
     result: &RecipeRunResult,
@@ -9,69 +11,22 @@ pub(super) fn format_recipe_run_result(
 ) -> Result<String> {
     match format {
         OutputFormat::Json => {
-            let mut data = JsonMap::new();
-            data.insert(
-                "recipe_name".to_string(),
-                JsonValue::String(result.recipe_name.clone()),
-            );
-            data.insert("success".to_string(), JsonValue::Bool(result.success));
-            data.insert(
-                "step_results".to_string(),
-                JsonValue::Array(
-                    result
-                        .step_results
-                        .iter()
-                        .map(|step| {
-                            json!({
-                                "step_id": step.step_id,
-                                "status": step.status,
-                                "output": step.output,
-                                "error": step.error,
-                            })
-                        })
-                        .collect(),
-                ),
-            );
-            if show_context && !result.context.is_empty() {
-                data.insert(
-                    "context".to_string(),
-                    JsonValue::Object(result.context.clone()),
-                );
+            let mut data = serde_json::to_value(result)?
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            if !show_context || result.context.is_empty() {
+                data.remove("context");
             }
             Ok(serde_json::to_string_pretty(&JsonValue::Object(data))?)
         }
         OutputFormat::Yaml => {
-            let mut data = JsonMap::new();
-            data.insert(
-                "recipe_name".to_string(),
-                JsonValue::String(result.recipe_name.clone()),
-            );
-            data.insert("success".to_string(), JsonValue::Bool(result.success));
-            data.insert(
-                "step_results".to_string(),
-                JsonValue::Array(
-                    result
-                        .step_results
-                        .iter()
-                        .map(|step| {
-                            JsonValue::Object(JsonMap::from_iter([
-                                (
-                                    "step_id".to_string(),
-                                    JsonValue::String(step.step_id.clone()),
-                                ),
-                                ("status".to_string(), JsonValue::String(step.status.clone())),
-                                ("output".to_string(), JsonValue::String(step.output.clone())),
-                                ("error".to_string(), JsonValue::String(step.error.clone())),
-                            ]))
-                        })
-                        .collect(),
-                ),
-            );
-            if show_context && !result.context.is_empty() {
-                data.insert(
-                    "context".to_string(),
-                    JsonValue::Object(result.context.clone()),
-                );
+            let mut data = serde_json::to_value(result)?
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            if !show_context || result.context.is_empty() {
+                data.remove("context");
             }
             Ok(serde_yaml::to_string(&JsonValue::Object(data))?)
         }
@@ -106,9 +61,32 @@ fn format_recipe_run_table(result: &RecipeRunResult, show_context: bool) -> Stri
             "skipped" => "⊘",
             _ => "?",
         };
+        let step_label = match &step.step_name {
+            Some(name) if !name.is_empty() => format!("{} ({name})", step.step_id),
+            _ => step.step_id.clone(),
+        };
+        let mut details = Vec::new();
+        if let Some(phase) = &step.phase
+            && !phase.is_empty()
+        {
+            details.push(format!("phase: {phase}"));
+        }
+        if let Some(elapsed_ms) = step.elapsed_ms {
+            details.push(format!("elapsed: {}", format_elapsed(elapsed_ms)));
+        }
+        if let Some(child) = &step.child
+            && let Some(label) = format_child(child)
+        {
+            details.push(format!("child: {label}"));
+        }
+        let detail_suffix = if details.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", details.join(", "))
+        };
         lines.push(format!(
-            "  {status_symbol} {}: {}",
-            step.step_id, step.status
+            "  {status_symbol} {step_label}: {}{detail_suffix}",
+            step.status
         ));
 
         if !step.output.is_empty() {
@@ -135,6 +113,8 @@ fn format_recipe_run_table(result: &RecipeRunResult, show_context: bool) -> Stri
         if !step.error.is_empty() {
             lines.push(format!("    Error: {}", step.error));
         }
+        append_recent_snippet_lines(&mut lines, "Recent stdout", &step.recent_stdout);
+        append_recent_snippet_lines(&mut lines, "Recent stderr", &step.recent_stderr);
     }
 
     if show_context && !result.context.is_empty() {
@@ -146,6 +126,58 @@ fn format_recipe_run_table(result: &RecipeRunResult, show_context: bool) -> Stri
     }
 
     lines.join("\n")
+}
+
+fn format_elapsed(elapsed_ms: u64) -> String {
+    if elapsed_ms >= 1_000 && elapsed_ms.is_multiple_of(1_000) {
+        format!("{}s", elapsed_ms / 1_000)
+    } else if elapsed_ms >= 1_000 {
+        format!("{:.1}s", elapsed_ms as f64 / 1_000.0)
+    } else {
+        format!("{elapsed_ms}ms")
+    }
+}
+
+fn format_child(child: &JsonValue) -> Option<String> {
+    match child {
+        JsonValue::String(value) if !value.is_empty() => Some(value.clone()),
+        JsonValue::Object(map) => {
+            let kind = map.get("kind").and_then(JsonValue::as_str).unwrap_or("");
+            let name = map.get("name").and_then(JsonValue::as_str).unwrap_or("");
+            match (kind.is_empty(), name.is_empty()) {
+                (false, false) => Some(format!("{kind} {name}")),
+                (false, true) => Some(kind.to_string()),
+                (true, false) => Some(name.to_string()),
+                (true, true) => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn append_recent_snippet_lines(lines: &mut Vec<String>, label: &str, snippets: &[String]) {
+    if snippets.is_empty() {
+        return;
+    }
+
+    lines.push(format!("    {label}:"));
+    let start = snippets.len().saturating_sub(MAX_RECENT_SNIPPET_LINES);
+    for snippet in &snippets[start..] {
+        lines.push(format!("      {}", truncate_snippet(snippet)));
+    }
+}
+
+fn truncate_snippet(value: &str) -> String {
+    if value.chars().count() <= MAX_RECENT_SNIPPET_CHARS {
+        return value.to_string();
+    }
+    format!(
+        "{}... (truncated)",
+        value
+            .chars()
+            .take(MAX_RECENT_SNIPPET_CHARS)
+            .collect::<String>()
+    )
 }
 
 fn json_scalar_to_string(value: &JsonValue) -> String {

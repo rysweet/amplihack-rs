@@ -1,11 +1,13 @@
 use super::*;
 use crate::env_builder::{EnvBuilder, active_agent_binary};
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 const STDERR_TAIL_LINES: usize = 5;
+const CAPTURED_STDERR_LINES: usize = 200;
 
 /// Threshold in bytes for total `--set` argument size before we switch
 /// to passing context via a temp file. Well under the typical Linux
@@ -16,7 +18,7 @@ pub(super) fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
     dry_run: bool,
-    verbose: bool,
+    _verbose: bool,
     working_dir: &Path,
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
@@ -45,13 +47,6 @@ pub(super) fn execute_recipe_via_rust(
         command.arg("--dry-run");
     }
 
-    // Issue #357: propagate --progress so step transitions are visible on
-    // stderr in real time. Without this, the only signal the user sees
-    // before the recipe finishes is the single "Executing recipe: …" line.
-    if verbose {
-        command.arg("--progress");
-    }
-
     // Pass context as a file when the total size would risk E2BIG (os error 7).
     // The temp file is kept alive until command.output() completes.
     let _context_file = pass_context(&mut command, context)?;
@@ -74,21 +69,7 @@ pub(super) fn execute_recipe_via_rust(
 
     env_builder.apply_to_command(&mut command);
 
-    if verbose {
-        spawn_with_streaming_stderr(command)
-    } else {
-        let output = command
-            .output()
-            .context("failed to spawn recipe-runner-rs")?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        parse_recipe_output(&stdout, &stderr, output.status.success()).with_context(|| {
-            format!(
-                "recipe-runner-rs exited with {}",
-                exit_status_label(&output.status)
-            )
-        })
-    }
+    spawn_with_streaming_stderr(command)
 }
 
 /// Spawn the runner with stdout captured (we need to parse JSON from it)
@@ -101,7 +82,7 @@ fn spawn_with_streaming_stderr(mut command: Command) -> Result<RecipeRunResult> 
         .spawn()
         .context("failed to spawn recipe-runner-rs")?;
 
-    let captured_stderr: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured_stderr: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let stderr_handle = child.stderr.take().expect("piped stderr");
     let captured_clone = Arc::clone(&captured_stderr);
     let pump = thread::spawn(move || {
@@ -119,10 +100,7 @@ fn spawn_with_streaming_stderr(mut command: Command) -> Result<RecipeRunResult> 
                     let line = String::from_utf8_lossy(&buf);
                     let trimmed = line.trim_end_matches(['\r', '\n']);
                     let _ = writeln!(stderr.lock(), "{trimmed}");
-                    captured_clone
-                        .lock()
-                        .expect("stderr mutex")
-                        .push(trimmed.to_string());
+                    push_bounded_stderr_line(&captured_clone, trimmed.to_string());
                 }
                 // I/O error reading from the pipe: log and stop pumping —
                 // we MUST NOT spin or leak the thread, but the child will
@@ -145,13 +123,21 @@ fn spawn_with_streaming_stderr(mut command: Command) -> Result<RecipeRunResult> 
     pump.join().expect("stderr pump thread panicked");
 
     let captured = captured_stderr.lock().expect("stderr mutex");
-    let stderr_joined = captured.join("\n");
+    let stderr_joined = captured.iter().cloned().collect::<Vec<_>>().join("\n");
     parse_recipe_output(&stdout_buf, &stderr_joined, status.success()).with_context(|| {
         format!(
             "recipe-runner-rs exited with {}",
             exit_status_label(&status)
         )
     })
+}
+
+fn push_bounded_stderr_line(captured: &Arc<Mutex<VecDeque<String>>>, line: String) {
+    let mut captured = captured.lock().expect("stderr mutex");
+    if captured.len() == CAPTURED_STDERR_LINES {
+        captured.pop_front();
+    }
+    captured.push_back(line);
 }
 
 /// Pure parser for recipe-runner-rs subprocess output.

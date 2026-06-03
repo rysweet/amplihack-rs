@@ -270,8 +270,10 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Token Sanitizer](reference/token-sanitizer.md) - Pattern ordering, audit labels, and custom patterns for secret redaction
 - [RecipeResult](reference/recipe-result.md) - `RecipeResult` and `StepResult` dataclasses, `str()` format, JSON serialisation
 - [AppendHandler](reference/append-handler.md) - `AppendResult` class, timestamp filename format, atomic file writes
-- [Rust Runner Execution Reference](reference/rust-runner-execution.md) - `execute_rust_command`, `read_progress_file`, `emit_step_transition`, progress file schema, security model
-- [Rust Runner Execution Architecture](concepts/rust-runner-execution-architecture.md) - Thread-based I/O streaming, atomic writes, JSONL events, workstream integration
+- [Rust Runner Execution Reference](reference/rust-runner-execution.md) - Wrapper contract, stderr/stdout streams, JSONL events, environment variables, and security model
+- [Rust Runner Execution Architecture](concepts/rust-runner-execution-architecture.md) - CLI/runner responsibility split, stream ownership, progress events, and additive JSON preservation
+- [Recipe Runner Logging Reference](reference/recipe-runner-logging.md) - stderr progress, heartbeats, bounded snippets, JSONL events, and additive result fields
+- [Observe Recipe Progress Tutorial](tutorials/recipe-progress-transparency.md) - Watch live workflow progress, capture JSON, and debug failed steps
 
 **Quick Start**:
 
@@ -281,7 +283,8 @@ amplihack recipe list
 
 # Execute a workflow recipe
 amplihack recipe run default-workflow \
-  --context '{"task_description": "Add user authentication", "repo_path": "."}'
+  -c task_description="Add user authentication" \
+  -c repo_path=.
 
 # Validate recipe YAML
 amplihack recipe validate my-workflow.yaml

@@ -377,6 +377,9 @@ pub enum RecipeCommands {
         /// Show detailed output
         #[arg(short, long)]
         verbose: bool,
+        /// Unsupported; progress is streamed to stderr by default.
+        #[arg(long = "progress")]
+        progress: bool,
         /// Output format
         #[arg(short, long, default_value = "table", value_parser = ["table", "json", "yaml"])]
         format: String,

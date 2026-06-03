@@ -21,8 +21,10 @@ fn make_result(success: bool) -> RecipeRunResult {
             } else {
                 "something broke".to_string()
             },
+            ..Default::default()
         }],
         context: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -103,21 +105,25 @@ fn test_format_recipe_run_result_table_step_symbols() {
                 status: "completed".to_string(),
                 output: String::new(),
                 error: String::new(),
+                ..Default::default()
             },
             RecipeRunStepResult {
                 step_id: "s2".to_string(),
                 status: "skipped".to_string(),
                 output: String::new(),
                 error: String::new(),
+                ..Default::default()
             },
             RecipeRunStepResult {
                 step_id: "s3".to_string(),
                 status: "failed".to_string(),
                 output: String::new(),
                 error: String::new(),
+                ..Default::default()
             },
         ],
         context: Default::default(),
+        ..Default::default()
     };
     let table = format::format_recipe_run_result(&result, OutputFormat::Table, false)
         .expect("format failed");

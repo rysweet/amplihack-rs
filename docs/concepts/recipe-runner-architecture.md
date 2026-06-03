@@ -9,6 +9,7 @@ it, and how recipe execution stays predictable.
 - [Binary resolution](#binary-resolution)
 - [Invocation contract](#invocation-contract)
 - [Data flow](#data-flow)
+- [Logging responsibility split](#logging-responsibility-split)
 - [What amplihack does NOT do](#what-amplihack-does-not-do)
 - [Operational contract](#operational-contract)
 
@@ -62,7 +63,9 @@ The runner:
 1. Resolves the recipe YAML from the search path
 2. Validates schema and step dependencies
 3. Executes steps sequentially, threading context variables between them
-4. Returns exit code 0 on success, 1 on failure
+4. Streams live progress, heartbeat, and failure diagnostics to stderr
+5. Writes the final structured result to stdout
+6. Returns exit code 0 on success, 1 on failure
 
 ## Data flow
 
@@ -82,6 +85,23 @@ The runner:
 
 Context variables flow forward: each step's `output` key becomes available
 to subsequent steps via `{{variable_name}}` interpolation.
+
+## Logging responsibility split
+
+`recipe-runner-rs` owns execution transparency because it is the process that
+knows which step, child process, agent, or nested recipe is active.
+
+| Component | Responsibility |
+| --- | --- |
+| `recipe-runner-rs` | Emit step lifecycle progress, heartbeats, JSONL log events, bounded recent stdout/stderr snippets, and failure context |
+| `amplihack` CLI | Resolve and launch the runner, forward stderr progress by default, preserve stdout for final structured output, and preserve additive JSON fields without requiring them |
+
+This split keeps recipe semantics inside the runner while letting the CLI remain
+a stable process supervisor. The CLI must not reinterpret step order or child
+state. It forwards the runner's stderr progress, captures stdout for the final
+`--format` result, and displays optional diagnostic fields when present. When
+the runner emits additive diagnostic fields, the CLI must not drop them while
+formatting JSON or YAML output.
 
 ## What amplihack does NOT do
 
@@ -108,5 +128,6 @@ The goal is a single native recipe runner. Consolidation requires:
 ## Related
 
 - [amplihack recipe](../reference/recipe-command.md) — CLI reference for the `recipe` subcommand
+- [Recipe Runner Logging](../reference/recipe-runner-logging.md) — Progress, heartbeat, snippets, and JSON schema
 - [Recipe Execution Flow](./recipe-execution-flow.md) — Step-by-step execution semantics
 - [Recipe Executor Environment](../reference/recipe-executor-environment.md) — Environment variables for recipe steps

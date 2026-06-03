@@ -18,6 +18,10 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [NODE_OPTIONS](#node_options)
 - [Variables injected by recipe executor](#variables-injected-by-recipe-executor)
   - [AMPLIHACK_STEP_TIMEOUT](#amplihack_step_timeout)
+  - [AMPLIHACK_RECIPE_HEARTBEAT_INTERVAL_SECONDS](#amplihack_recipe_heartbeat_interval_seconds)
+  - [AMPLIHACK_RECIPE_SNIPPET_LINES](#amplihack_recipe_snippet_lines)
+  - [AMPLIHACK_RECIPE_SNIPPET_BYTES](#amplihack_recipe_snippet_bytes)
+  - [AMPLIHACK_RECIPE_LOG_JSONL](#amplihack_recipe_log_jsonl)
   - [NONINTERACTIVE](#noninteractive)
   - [DEBIAN_FRONTEND](#debian_frontend)
   - [CI (recipe context)](#ci-recipe-context)
@@ -307,7 +311,11 @@ When startup does not supply an explicit value, `EnvBuilder` still falls back to
 
 ## Variables injected by recipe executor
 
-These variables are set by the recipe executor (`amplihack recipe run`) in every shell step's child process. They are always set — there is no opt-out. See [Recipe Executor Environment](./recipe-executor-environment.md) for full details.
+These variables are read or set by the recipe executor (`amplihack recipe run`)
+while running recipe steps. Non-interactive shell-step variables are always set.
+Heartbeat, snippet, and JSONL log variables are optional user configuration. See
+[Recipe Executor Environment](./recipe-executor-environment.md) and
+[Recipe Runner Logging](./recipe-runner-logging.md) for full details.
 
 ---
 
@@ -319,16 +327,15 @@ These variables are set by the recipe executor (`amplihack recipe run`) in every
 
 Overrides the `timeout_seconds` value defined in individual recipe steps. When set, every step in the recipe uses this value instead of its YAML-defined timeout. A value of `"0"` disables step timeouts entirely, allowing steps to run indefinitely.
 
-This variable is only present in the child environment when the user passes `--step-timeout` or `--no-step-timeouts` to `amplihack recipe run`. When neither flag is provided, YAML-defined `timeout_seconds` values apply as-is (though the default-workflow agent steps no longer define `timeout_seconds`).
+This variable is only present in the child environment when the user passes `--step-timeout` to `amplihack recipe run`. When the flag is omitted, YAML-defined `timeout_seconds` values apply as-is (though the default-workflow agent steps no longer define `timeout_seconds`).
 
 ```sh
 # Override all step timeouts to 10 minutes
 amplihack recipe run recipe.yaml --step-timeout 600
 # Child process sees: AMPLIHACK_STEP_TIMEOUT=600
 
-# Disable all step timeouts (two equivalent forms)
+# Disable all step timeouts
 amplihack recipe run recipe.yaml --step-timeout 0
-amplihack recipe run recipe.yaml --no-step-timeouts
 # Child process sees: AMPLIHACK_STEP_TIMEOUT=0
 
 # No override — YAML timeouts apply (agent steps have none by default)
@@ -339,6 +346,97 @@ amplihack recipe run recipe.yaml
 **Why it exists:** The default-workflow recipes no longer define `timeout_seconds` on agent steps, so agent steps run to completion without artificial time limits. This variable provides an opt-in escape hatch for CI environments that need wall-clock budgets. The env var approach is forward-compatible — `recipe-runner-rs` can adopt it independently without CLI changes.
 
 **Security note:** The value is always a `u64` rendered as a string. No shell metacharacters are possible. The CLI rejects non-numeric input at parse time via clap's type enforcement.
+
+---
+
+### AMPLIHACK_RECIPE_HEARTBEAT_INTERVAL_SECONDS
+
+**Type:** string (unsigned integer as text)
+**Values:** `"0"` (disable heartbeats) | `"60"` (default) | any non-negative integer
+**Read by:** `recipe-runner-rs`
+
+Controls how often long-running recipe, agent, subprocess, and nested-recipe
+steps emit heartbeat lines to stderr. The interval is rate-limited per active
+step. Short steps that complete before one interval do not emit heartbeats.
+
+```sh
+# Emit a heartbeat every 15 seconds while debugging a long-running agent step
+AMPLIHACK_RECIPE_HEARTBEAT_INTERVAL_SECONDS=15 \
+amplihack recipe run default-workflow \
+  -c task_description="Debug hanging test generation"
+
+# Disable heartbeat lines while preserving start/completion/failure progress
+AMPLIHACK_RECIPE_HEARTBEAT_INTERVAL_SECONDS=0 \
+amplihack recipe run default-workflow \
+  -c task_description="Run with minimal progress"
+```
+
+Equivalent config key: `recipe.heartbeat_interval_seconds` in
+`~/.amplihack/config`.
+
+---
+
+### AMPLIHACK_RECIPE_SNIPPET_LINES
+
+**Type:** string (unsigned integer as text)
+**Default:** `20`
+**Read by:** `recipe-runner-rs`
+
+Maximum number of recent lines retained per active child source and stream.
+Older lines are dropped from the rolling buffer. This bound applies to snippets
+printed in failure diagnostics, included in JSON results, and written to JSONL
+logs.
+
+```sh
+AMPLIHACK_RECIPE_SNIPPET_LINES=60 \
+amplihack recipe run default-workflow \
+  -c task_description="Diagnose compiler failure" \
+  --format json > result.json
+```
+
+Equivalent config key: `recipe.snippet_lines` in `~/.amplihack/config`.
+
+---
+
+### AMPLIHACK_RECIPE_SNIPPET_BYTES
+
+**Type:** string (unsigned integer as text)
+**Default:** `8192`
+**Read by:** `recipe-runner-rs`
+
+Maximum bytes retained per active child source and stream. This byte bound is
+enforced together with `AMPLIHACK_RECIPE_SNIPPET_LINES`; whichever limit is hit
+first controls truncation.
+
+```sh
+AMPLIHACK_RECIPE_SNIPPET_BYTES=32768 \
+amplihack recipe run default-workflow \
+  -c task_description="Diagnose noisy subprocess output" \
+  --format json > result.json
+```
+
+Equivalent config key: `recipe.snippet_bytes` in `~/.amplihack/config`.
+
+---
+
+### AMPLIHACK_RECIPE_LOG_JSONL
+
+**Type:** path
+**Read by:** `recipe-runner-rs`
+
+When set, writes structured JSONL recipe events to the specified file. Events
+include step lifecycle transitions, heartbeats, output snippets, and failure
+context. Human-readable progress still goes to stderr.
+
+```sh
+AMPLIHACK_RECIPE_LOG_JSONL=/tmp/default-workflow.jsonl \
+amplihack recipe run default-workflow \
+  -c task_description="Add retry budget metrics"
+
+jq 'select(.type == "heartbeat")' /tmp/default-workflow.jsonl
+```
+
+Equivalent config key: `recipe.log_jsonl` in `~/.amplihack/config`.
 
 ---
 
@@ -757,6 +855,7 @@ Override the directory where `uv tool install` places the `amplifier` binary. De
 - [Run amplihack in Non-interactive Mode](../howto/run-in-noninteractive-mode.md) — CI and pipe usage guide
 - [Bootstrap Parity](../concepts/bootstrap-parity.md) — How the Rust CLI matches the Python launcher's environment contract
 - [Memory Backend Reference](./memory-backend.md) — `AMPLIHACK_MEMORY_BACKEND` values, storage paths, schema, and security
+- [Recipe Runner Logging](./recipe-runner-logging.md) — Progress, heartbeat, snippet, and JSONL configuration
 - [amplihack install](./install-command.md) — Variables read during installation
 - [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md) — How `CI`, `AMPLIHACK_AGENT_BINARY`, `AMPLIHACK_NONINTERACTIVE`, `--subprocess-safe`, and non-TTY stdin each suppress the `Update now? [y/N] (5s timeout):` prompt
 - [Manage Tool Update Notifications](../howto/manage-tool-update-checks.md) — npm pre-launch tool update notice (separate code path)

@@ -817,6 +817,174 @@ fn parse_valid_json_with_unknown_fields_succeeds() {
     assert!(result.success);
 }
 
+#[test]
+fn parse_and_format_preserves_additive_transparency_fields() {
+    let stdout = r#"{
+        "recipe_name": "transparent-demo",
+        "success": false,
+        "status": "failed",
+        "phase": "agent",
+        "elapsed_ms": 91234,
+        "heartbeat_at": "2026-06-03T18:25:41Z",
+        "progress_summary": {
+            "phase": "agent",
+            "status": "running",
+            "heartbeat_count": 3
+        },
+        "step_results": [
+            {
+                "step_id": "step-07-tdd",
+                "step_name": "TDD - Write Tests First",
+                "status": "failed",
+                "phase": "agent",
+                "elapsed_ms": 45678,
+                "child": { "kind": "agent", "name": "builder" },
+                "recent_stdout": ["stdout tail line"],
+                "recent_stderr": ["stderr tail line"],
+                "error": "agent failed"
+            }
+        ],
+        "context": {}
+    }"#;
+
+    let result =
+        execute::parse_recipe_output(stdout, "", false).expect("additive JSON fields must parse");
+    let formatted = format::format_recipe_run_result(&result, OutputFormat::Json, false)
+        .expect("formatting parsed result as JSON must succeed");
+    let parsed: JsonValue =
+        serde_json::from_str(&formatted).expect("formatted JSON must remain valid JSON");
+
+    assert_eq!(
+        parsed["status"].as_str(),
+        Some("failed"),
+        "top-level additive status must be preserved in formatted JSON: {formatted}",
+    );
+    assert_eq!(
+        parsed["phase"].as_str(),
+        Some("agent"),
+        "top-level additive phase must be preserved in formatted JSON: {formatted}",
+    );
+    assert_eq!(
+        parsed["step_results"][0]["step_name"].as_str(),
+        Some("TDD - Write Tests First"),
+        "step name must be preserved in formatted JSON: {formatted}",
+    );
+    assert_eq!(
+        parsed["step_results"][0]["child"]["name"].as_str(),
+        Some("builder"),
+        "child identity must be preserved in formatted JSON: {formatted}",
+    );
+    assert_eq!(
+        parsed["step_results"][0]["recent_stderr"][0].as_str(),
+        Some("stderr tail line"),
+        "recent stderr snippets must be preserved in formatted JSON: {formatted}",
+    );
+}
+
+#[test]
+fn failure_table_surfaces_step_timing_child_and_recent_output() {
+    let stdout = r#"{
+        "recipe_name": "transparent-demo",
+        "success": false,
+        "step_results": [
+            {
+                "step_id": "step-08-implementation",
+                "step_name": "Implementation",
+                "status": "failed",
+                "phase": "agent",
+                "elapsed_ms": 65000,
+                "child": { "kind": "agent", "name": "builder" },
+                "recent_stdout": ["compiled 4 crates"],
+                "recent_stderr": ["error[E0425]: cannot find value `x`"],
+                "error": "step failed"
+            }
+        ],
+        "context": {}
+    }"#;
+
+    let result =
+        execute::parse_recipe_output(stdout, "", false).expect("additive JSON fields must parse");
+    let table = format::format_recipe_run_result(&result, OutputFormat::Table, false)
+        .expect("formatting parsed result as table must succeed");
+
+    assert!(
+        table.contains("Implementation"),
+        "failure table must include human step name for actionable context. Got:\n{table}",
+    );
+    assert!(
+        table.contains("65s") || table.contains("65000ms"),
+        "failure table must include elapsed time. Got:\n{table}",
+    );
+    assert!(
+        table.contains("builder"),
+        "failure table must include child agent/subprocess identity. Got:\n{table}",
+    );
+    assert!(
+        table.contains("cannot find value"),
+        "failure table must include bounded recent stderr snippet. Got:\n{table}",
+    );
+    assert!(
+        table.contains("compiled 4 crates"),
+        "failure table must include bounded recent stdout snippet. Got:\n{table}",
+    );
+}
+
+#[test]
+fn failure_table_bounds_recent_output_snippets() {
+    let stderr_lines = (0..40)
+        .map(|i| format!("stderr tail line {i:02}"))
+        .collect::<Vec<_>>();
+    let stdout_lines = (0..40)
+        .map(|i| format!("stdout tail line {i:02}"))
+        .collect::<Vec<_>>();
+    let stdout = serde_json::json!({
+        "recipe_name": "bounded-demo",
+        "success": false,
+        "step_results": [
+            {
+                "step_id": "long-agent-step",
+                "step_name": "Long Agent Step",
+                "status": "failed",
+                "phase": "agent",
+                "elapsed_ms": 120000,
+                "child": { "kind": "agent", "name": "builder" },
+                "recent_stdout": stdout_lines,
+                "recent_stderr": stderr_lines,
+                "error": "step failed"
+            }
+        ],
+        "context": {}
+    })
+    .to_string();
+
+    let result = execute::parse_recipe_output(&stdout, "", false)
+        .expect("additive JSON with long snippets must parse");
+    let table = format::format_recipe_run_result(&result, OutputFormat::Table, false)
+        .expect("formatting parsed result as table must succeed");
+
+    assert!(
+        table.contains("stderr tail line 39"),
+        "bounded snippet display should keep the newest stderr lines. Got:\n{table}",
+    );
+    assert!(
+        table.contains("stdout tail line 39"),
+        "bounded snippet display should keep the newest stdout lines. Got:\n{table}",
+    );
+    assert!(
+        !table.contains("stderr tail line 00"),
+        "bounded snippet display must omit oldest stderr lines instead of dumping all child output. Got:\n{table}",
+    );
+    assert!(
+        !table.contains("stdout tail line 00"),
+        "bounded snippet display must omit oldest stdout lines instead of dumping all child output. Got:\n{table}",
+    );
+    assert!(
+        table.len() < 4_000,
+        "bounded snippet display must stay compact; got {} bytes:\n{table}",
+        table.len(),
+    );
+}
+
 /// Whitespace-only stdout (e.g. trailing newline) must be treated as empty.
 #[test]
 fn parse_whitespace_only_stdout_success_returns_default() {
@@ -825,11 +993,12 @@ fn parse_whitespace_only_stdout_success_returns_default() {
     assert!(result.success);
 }
 
-// Issue #357: when verbose=true, --progress is propagated AND child stderr is
-// streamed live (not buffered until the child exits).
+// Issue #691: recipe-runner-rs owns progress emission. The CLI must not pass
+// the old unsupported --progress flag; it should forward child stderr by
+// default instead.
 #[test]
 #[cfg(unix)]
-fn test_execute_recipe_via_rust_verbose_passes_progress_flag_to_child() {
+fn test_execute_recipe_via_rust_verbose_does_not_pass_progress_flag_to_child() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -874,8 +1043,8 @@ fn test_execute_recipe_via_rust_verbose_passes_progress_flag_to_child() {
     result.expect("verbose mode with empty stdout success must not error");
     let logged = std::fs::read_to_string(&arg_log).expect("argv log must exist");
     assert!(
-        logged.lines().any(|l| l == "--progress"),
-        "verbose=true must propagate --progress to recipe-runner-rs.\nargv was:\n{logged}",
+        !logged.lines().any(|l| l == "--progress"),
+        "verbose=true must not pass unsupported --progress; progress is emitted by recipe-runner-rs by default.\nargv was:\n{logged}",
     );
 }
 

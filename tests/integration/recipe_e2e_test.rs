@@ -114,6 +114,13 @@ steps: []
     tmp
 }
 
+#[cfg(unix)]
+fn make_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to mark runner stub executable");
+}
+
 // ---------------------------------------------------------------------------
 // recipe list
 // ---------------------------------------------------------------------------
@@ -404,5 +411,114 @@ fn recipe_run_dry_run_default_workflow_exits_zero() {
         "recipe run --dry-run must exit 0. This is the WS3 critical-path gate. \
          Ensure recipe-runner-rs is installed or RECIPE_RUNNER_RS_PATH is set. \
          stdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// recipe run transparency (issue #691)
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(unix)]
+fn recipe_run_forwards_runner_stderr_by_default_without_polluting_stdout_json() {
+    let bin = amplihack_bin();
+    if !bin.exists() {
+        panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
+    }
+
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    std::fs::write(
+        &runner,
+        r#"#!/bin/sh
+echo '[step 01/02 setup] started' >&2
+echo '[step 01/02 setup] heartbeat elapsed=60s status=running phase=bash' >&2
+echo '[agent builder stderr] compiling generated tests' >&2
+printf '{"recipe_name":"stderr-forwarding","success":true,"step_results":[],"context":{}}\n'
+"#,
+    )
+    .expect("failed to write runner stub");
+    make_executable(&runner);
+
+    let recipe = write_temp_recipe("stderr-forwarding", true);
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create AMPLIHACK_HOME");
+
+    let (stdout, stderr, success) = run_output(
+        Command::new(&bin)
+            .args([
+                "recipe",
+                "run",
+                recipe.path().to_str().unwrap(),
+                "--format",
+                "json",
+            ])
+            .env("RECIPE_RUNNER_RS_PATH", &runner)
+            .env("AMPLIHACK_HOME", &amplihack_home),
+        "recipe run default stderr forwarding",
+    );
+
+    assert!(
+        success,
+        "recipe run with stub runner must exit 0. stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("[step 01/02 setup] started"),
+        "runner step lifecycle stderr must be forwarded by default. stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("heartbeat elapsed=60s"),
+        "runner heartbeat stderr must be forwarded by default. stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("compiling generated tests"),
+        "runner attributed child stderr snippets must be forwarded by default. stderr:\n{stderr}"
+    );
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must remain parseable JSON");
+    assert_eq!(
+        parsed["recipe_name"].as_str(),
+        Some("stderr-forwarding"),
+        "stdout must contain only the structured final result JSON. stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("heartbeat elapsed"),
+        "live progress must stay on stderr and not pollute structured stdout. stdout:\n{stdout}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn recipe_run_progress_flag_fails_with_explicit_default_progress_guidance() {
+    let bin = amplihack_bin();
+    if !bin.exists() {
+        panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
+    }
+
+    let recipe = write_temp_recipe("unsupported-progress", true);
+    let (stdout, stderr, success) = run_output(
+        Command::new(&bin).args([
+            "recipe",
+            "run",
+            recipe.path().to_str().unwrap(),
+            "--progress",
+        ]),
+        "recipe run --progress unsupported",
+    );
+
+    assert!(
+        !success,
+        "--progress must be rejected instead of silently changing execution semantics. stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("--progress"),
+        "error output must identify the unsupported flag. stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("progress is emitted by default")
+            || stderr.contains("progress is already emitted")
+            || stderr.contains("stderr by default"),
+        "error output must explain that live progress is already emitted to stderr by default. stderr:\n{stderr}"
     );
 }
