@@ -169,9 +169,9 @@ When this skill is activated:
 Your next tool call(s) must include the recipe runner launch (alongside
 `report_intent` if your runtime requires it).
 
-#### Default: Direct Execution (Rust CLI)
+#### Default: Direct Execution (Rust recipe-runner-rs via CLI)
 
-The recipe runner is the Rust `amplihack` binary — invoke it directly:
+Use the Rust `recipe-runner-rs` through the `amplihack recipe run` CLI:
 
 ```bash
 cd /path/to/repo && env -u CLAUDECODE \
@@ -184,7 +184,7 @@ cd /path/to/repo && env -u CLAUDECODE \
 
 **Key points:**
 
-- `amplihack recipe run` — the native Rust binary; no wrapper needed
+- `amplihack recipe run` — invokes Rust `recipe-runner-rs`; no Python runner or wrapper needed
 - `-c key=value` — passes context variables (equivalent to `user_context` dict)
 - `--verbose` — streams recipe-runner stderr live so you see nested step activity
 - The recipe runner manages its own child processes (agent sessions, bash steps) as direct subprocesses
