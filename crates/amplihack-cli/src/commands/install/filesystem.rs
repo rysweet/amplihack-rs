@@ -255,7 +255,6 @@ fn is_known_safe_bundle_symlink(path: &Path) -> bool {
         if components
             .next()
             .is_some_and(|component| component == OsStr::new("ooxml"))
-            && components.next().is_some()
         {
             return true;
         }
@@ -519,21 +518,21 @@ mod tests {
 
     #[test]
     fn known_safe_bundle_symlink_paths_are_quietly_recognized() {
-        let path = Path::new("/repo/amplifier-bundle/skills/docx/ooxml/shared.xml");
+        let path = Path::new("/repo/amplifier-bundle/skills/docx/ooxml");
         assert!(is_known_safe_bundle_symlink(path));
-        let path = Path::new("/repo/amplifier-bundle/skills/pptx/ooxml/shared.xml");
+        let path = Path::new("/repo/amplifier-bundle/skills/pptx/ooxml");
         assert!(is_known_safe_bundle_symlink(path));
         let path = Path::new("/repo/amplifier-bundle/skills/outside-in-testing/fixtures/link");
         assert!(is_known_safe_bundle_symlink(path));
-        let path = Path::new("/repo/amplifier-bundle/skills/docx/ooxml");
+        let path = Path::new("/repo/amplifier-bundle/skills/docx");
         assert!(!is_known_safe_bundle_symlink(path));
         let path = Path::new("/repo/amplifier-bundle/skills/outside-in-testing");
         assert!(!is_known_safe_bundle_symlink(path));
         let path = Path::new("/repo/amplifier-bundle/skills/other/link");
         assert!(!is_known_safe_bundle_symlink(path));
-        let path = Path::new("/repo/amplifier-bundle/not-skills/docx/ooxml/shared.xml");
+        let path = Path::new("/repo/amplifier-bundle/not-skills/docx/ooxml");
         assert!(!is_known_safe_bundle_symlink(path));
-        let path = Path::new("/repo/skills/other/link/skills/docx/ooxml/shared.xml");
+        let path = Path::new("/repo/skills/other/link/skills/docx/ooxml");
         assert!(is_known_safe_bundle_symlink(path));
     }
 
