@@ -11,6 +11,7 @@ tags: ["development", "prep", "worktree", "git"]
 # workflow via recipe-runner's automatic context-merging in
 # `_execute_sub_recipe()`; outputs declared by these steps propagate back to
 # the parent and are visible to subsequent phase recipes.
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
 
 recursion:
   max_depth: 6

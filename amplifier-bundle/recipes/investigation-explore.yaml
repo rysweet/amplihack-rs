@@ -7,6 +7,7 @@ tags: ["investigation", "explore", "deep-dive"]
 # investigation-explore: extracted from investigation-workflow.yaml as a composable phase brick.
 # Every original step preserved verbatim. Context flows in from the parent
 # investigation-workflow context via _execute_sub_recipe()'s automatic merging.
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
 
 recursion:
   max_depth: 6

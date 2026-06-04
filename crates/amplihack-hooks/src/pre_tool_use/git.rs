@@ -40,7 +40,9 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 /// - Any other error
 fn get_current_branch() -> Option<String> {
     let mut child = Command::new("git")
-        .args(["branch", "--show-current"])
+        .args(["--no-pager", "branch", "--show-current"])
+        .env("GIT_PAGER", "cat")
+        .env("PAGER", "cat")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -97,5 +99,23 @@ mod tests {
                 "block JSON should have 'block' key"
             );
         }
+    }
+
+    #[test]
+    fn git_branch_probe_is_non_paged() {
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pre_tool_use/git.rs"),
+        )
+        .expect("git.rs must be readable");
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source section");
+
+        assert!(
+            production_source.contains("--no-pager")
+                || production_source.contains(".env(\"GIT_PAGER\", \"cat\")"),
+            "PreToolUse git probes must use `git --no-pager` or set GIT_PAGER=cat so recipe agent subprocesses cannot hang behind an interactive pager"
+        );
     }
 }

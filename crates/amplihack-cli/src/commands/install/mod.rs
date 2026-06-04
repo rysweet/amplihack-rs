@@ -269,12 +269,6 @@ fn local_install(
     println!("🚀 Starting amplihack installation...");
     println!("   Source: {}", repo_root.display());
     println!("   Target: {}", claude_dir.display());
-    println!();
-    println!(
-        "ℹ️  Profile management unavailable (No module named 'profile_management'), using full installation"
-    );
-    println!();
-
     // Phase 0: deploy binaries
     println!();
     println!("🦀 Deploying binaries:");

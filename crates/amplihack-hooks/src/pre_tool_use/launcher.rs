@@ -12,12 +12,13 @@
 use amplihack_cli::launcher_context::{
     LauncherKind, is_launcher_context_stale, read_launcher_context,
 };
-use amplihack_types::ProjectDirs;
+use amplihack_types::paths::{ProjectDirs, framework_roots_from};
 use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const AGENTS_FILE: &str = "AGENTS.md";
 const CONTEXT_MARKER_START: &str = "<!-- AMPLIHACK_CONTEXT_START -->";
@@ -44,26 +45,15 @@ pub enum LauncherType {
 
 /// Detect which launcher is running by checking environment variables.
 pub fn detect_launcher() -> LauncherType {
-    detect_launcher_for_dirs(&ProjectDirs::from_cwd())
+    detect_launcher_from_env().unwrap_or(LauncherType::Unknown)
 }
 
 pub(crate) fn detect_launcher_for_dirs(dirs: &ProjectDirs) -> LauncherType {
-    // Copilot sets specific env vars.
-    if std::env::var("GITHUB_COPILOT_AGENT").is_ok() || std::env::var("COPILOT_AGENT").is_ok() {
-        return LauncherType::Copilot;
+    if let Some(launcher) = detect_launcher_from_env() {
+        return launcher;
     }
 
-    // Amplifier sets its own marker.
-    if std::env::var("AMPLIFIER_SESSION").is_ok() {
-        return LauncherType::Amplifier;
-    }
-
-    // Claude Code is the default.
-    if std::env::var("CLAUDE_CODE_SESSION").is_ok() || std::env::var("CLAUDE_SESSION_ID").is_ok() {
-        return LauncherType::ClaudeCode;
-    }
-
-    if let Some(context) = read_launcher_context(&dirs.root)
+    if let Some((_, context)) = read_launcher_context_from_project_or_ancestors(&dirs.root)
         && !is_launcher_context_stale(&context)
     {
         return match context.launcher {
@@ -75,6 +65,30 @@ pub(crate) fn detect_launcher_for_dirs(dirs: &ProjectDirs) -> LauncherType {
     }
 
     LauncherType::Unknown
+}
+
+fn detect_launcher_from_env() -> Option<LauncherType> {
+    if std::env::var("GITHUB_COPILOT_AGENT").is_ok() || std::env::var("COPILOT_AGENT").is_ok() {
+        return Some(LauncherType::Copilot);
+    }
+    if std::env::var("AMPLIFIER_SESSION").is_ok() {
+        return Some(LauncherType::Amplifier);
+    }
+    if std::env::var("CLAUDE_CODE_SESSION").is_ok() || std::env::var("CLAUDE_SESSION_ID").is_ok() {
+        return Some(LauncherType::ClaudeCode);
+    }
+    None
+}
+
+fn read_launcher_context_from_project_or_ancestors(
+    root: &Path,
+) -> Option<(PathBuf, amplihack_cli::launcher_context::LauncherContext)> {
+    for candidate in framework_roots_from(root) {
+        if let Some(context) = read_launcher_context(&candidate) {
+            return Some((candidate, context));
+        }
+    }
+    read_launcher_context(root).map(|context| (root.to_path_buf(), context))
 }
 
 /// Inject context based on the detected launcher.
@@ -100,14 +114,33 @@ pub fn inject_context(dirs: &ProjectDirs, input_data: &Value) {
 }
 
 fn inject_copilot_context(dirs: &ProjectDirs, input_data: &Value) {
-    if let Err(error) = write_copilot_context(dirs, input_data) {
+    let target_dirs = copilot_context_dirs(dirs);
+    if let Err(error) = write_copilot_context(&target_dirs, input_data) {
         tracing::warn!("Copilot context injection failed (non-fatal): {}", error);
     }
+}
+
+fn copilot_context_dirs(dirs: &ProjectDirs) -> ProjectDirs {
+    if let Some((root, context)) = read_launcher_context_from_project_or_ancestors(&dirs.root)
+        && !is_launcher_context_stale(&context)
+        && context.launcher == LauncherKind::Copilot
+    {
+        return ProjectDirs::from_root(&root);
+    }
+
+    dirs.clone()
 }
 
 fn write_copilot_context(dirs: &ProjectDirs, input_data: &Value) -> anyhow::Result<()> {
     let agents_path = dirs.root.join(AGENTS_FILE);
     validate_agents_path(&dirs.root, &agents_path)?;
+    if is_git_tracked_agents_file(&dirs.root) {
+        tracing::debug!(
+            "Skipping Copilot AGENTS.md context injection because {} is tracked by git",
+            agents_path.display()
+        );
+        return Ok(());
+    }
 
     let context_markdown = format_context_markdown(input_data)?;
     let mut content = if agents_path.exists() {
@@ -152,6 +185,17 @@ fn write_copilot_context(dirs: &ProjectDirs, input_data: &Value) -> anyhow::Resu
     fs::write(&marker_path, new_hash.to_string())?;
 
     Ok(())
+}
+
+fn is_git_tracked_agents_file(project_root: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(project_root)
+        .args(["ls-files", "--error-unmatch", "--", AGENTS_FILE])
+        .env("GIT_PAGER", "cat")
+        .env("PAGER", "cat")
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 fn validate_agents_path(project_root: &Path, agents_path: &Path) -> anyhow::Result<()> {

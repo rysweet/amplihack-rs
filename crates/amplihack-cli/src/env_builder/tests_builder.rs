@@ -274,22 +274,56 @@ fn apply_to_command_translates_kuzu_alias_to_graph_db_path_and_removes_kuzu_var(
 
 // ── WS3: with_amplihack_home ───────────────────────────────────────────────
 
-/// WS3-1: with_amplihack_home should derive AMPLIHACK_HOME from HOME when
-/// AMPLIHACK_HOME is not set.
+/// WS3-1: with_amplihack_home should prefer the checked-out bundle root over
+/// the user install when AMPLIHACK_HOME is not set.
 #[test]
-fn with_amplihack_home_sets_from_home() {
+fn with_amplihack_home_sets_from_bundle_root_before_home() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::create_dir(repo.path().join("amplifier-bundle")).unwrap();
+    let nested = repo.path().join("crates").join("amplihack-cli");
+    std::fs::create_dir_all(&nested).unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _home_guard = crate::test_support::HomeGuard::set(home.path());
+    let prev_amplihack_home = std::env::var_os("AMPLIHACK_HOME");
+    unsafe { std::env::remove_var("AMPLIHACK_HOME") };
+
+    let env = EnvBuilder::new().with_amplihack_home_from(&nested).build();
+
+    match prev_amplihack_home {
+        Some(v) => unsafe { std::env::set_var("AMPLIHACK_HOME", v) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+    }
+
+    let expected = repo.path().canonicalize().unwrap();
+    assert_eq!(
+        env.get("AMPLIHACK_HOME").map(String::as_str),
+        Some(expected.to_str().unwrap()),
+        "AMPLIHACK_HOME should be the repo/worktree root containing amplifier-bundle"
+    );
+}
+
+/// WS3-1b: with_amplihack_home should derive AMPLIHACK_HOME from HOME when
+/// AMPLIHACK_HOME is not set and no bundle root is available.
+#[test]
+fn with_amplihack_home_sets_from_home_when_no_bundle_root() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
 
     let temp = tempfile::tempdir().unwrap();
-    let prev_home = crate::test_support::set_home(temp.path());
+    let cwd = tempfile::tempdir().unwrap();
+    let _home_guard = crate::test_support::HomeGuard::set(temp.path());
     let prev_amplihack_home = std::env::var_os("AMPLIHACK_HOME");
     unsafe { std::env::remove_var("AMPLIHACK_HOME") };
 
-    let env = EnvBuilder::new().with_amplihack_home().build();
+    let env = EnvBuilder::new()
+        .with_amplihack_home_from(cwd.path())
+        .build();
 
-    crate::test_support::restore_home(prev_home);
     match prev_amplihack_home {
         Some(v) => unsafe { std::env::set_var("AMPLIHACK_HOME", v) },
         None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
@@ -337,11 +371,14 @@ fn with_amplihack_home_rejects_traversal_path() {
         .lock()
         .unwrap_or_else(|p| p.into_inner());
 
+    let cwd = tempfile::tempdir().unwrap();
     let prev_home = crate::test_support::set_home(std::path::Path::new("/tmp/../../etc"));
     let prev_amplihack_home = std::env::var_os("AMPLIHACK_HOME");
     unsafe { std::env::remove_var("AMPLIHACK_HOME") };
 
-    let env = EnvBuilder::new().with_amplihack_home().build();
+    let env = EnvBuilder::new()
+        .with_amplihack_home_from(cwd.path())
+        .build();
 
     crate::test_support::restore_home(prev_home);
     match prev_amplihack_home {

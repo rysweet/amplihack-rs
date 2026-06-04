@@ -231,13 +231,12 @@ fn backup_metadata_is_always_valid_json() {
     }
 }
 
-// ─── TDD: XPIA Python removal — tests written before implementation ─────────
+// ─── XPIA Python removal contracts ──────────────────────────────────────────
 
 #[test]
 fn xpia_hook_files_constant_must_not_exist() {
-    // After the change, XPIA_HOOK_FILES should be deleted from types.rs.
-    // This test verifies the constant is not referenced anywhere in production
-    // code by checking the source file directly.
+    // XPIA_HOOK_FILES must stay deleted from types.rs. Verify the constant is
+    // not referenced anywhere in production code by checking the source file.
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let types_src = fs::read_to_string(
         std::path::Path::new(manifest_dir).join("src/commands/install/types.rs"),
@@ -254,9 +253,8 @@ fn xpia_hook_files_constant_must_not_exist() {
 
 #[test]
 fn verify_framework_assets_does_not_check_individual_xpia_files() {
-    // After the change, verify_framework_assets should NOT iterate over
-    // individual hook files in the xpia directory. It should only check
-    // whether the xpia directory exists.
+    // verify_framework_assets must not iterate over individual hook files in
+    // the xpia directory. It should only check whether the xpia directory exists.
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let settings_src = fs::read_to_string(
         std::path::Path::new(manifest_dir).join("src/commands/install/settings.rs"),
@@ -279,7 +277,7 @@ fn verify_framework_assets_does_not_check_individual_xpia_files() {
 
 #[test]
 fn xpia_hooks_dir_docstring_has_no_python_reference() {
-    // After the change, the xpia_hooks_dir() docstring should not mention *.py files.
+    // The xpia_hooks_dir() docstring should not mention *.py files.
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let paths_src = fs::read_to_string(
         std::path::Path::new(manifest_dir).join("src/commands/install/paths.rs"),
@@ -301,9 +299,8 @@ fn xpia_hooks_dir_docstring_has_no_python_reference() {
 
 #[test]
 fn verify_framework_assets_succeeds_with_empty_xpia_dir() {
-    // After the change, verify_framework_assets should succeed when the
-    // xpia directory exists but contains NO script files — because the
-    // Rust binary handles everything.
+    // verify_framework_assets should succeed when the xpia directory exists
+    // but contains NO script files because the Rust binary handles everything.
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -387,4 +384,24 @@ fn no_production_code_references_xpia_hook_files() {
             );
         }
     }
+}
+
+#[test]
+fn post_update_install_softens_known_transitional_xpia_asset_errors() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let settings_src = fs::read_to_string(
+        std::path::Path::new(manifest_dir).join("src/commands/install/settings.rs"),
+    )
+    .expect("settings.rs must be readable");
+
+    assert!(
+        settings_src.contains("AMPLIHACK_POST_UPDATE_INSTALL"),
+        "verify_framework_assets must inspect AMPLIHACK_POST_UPDATE_INSTALL so update-launched installs can distinguish transitional old-binary asset gaps from normal install failures"
+    );
+    assert!(
+        settings_src.contains("self-heal on next invocation")
+            || settings_src.contains("self-heal")
+            || settings_src.contains("self heal"),
+        "post-update missing known XPIA shell assets should be reported as self-healing on next invocation rather than misleading ❌ hard errors"
+    );
 }

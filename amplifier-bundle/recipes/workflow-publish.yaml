@@ -6,6 +6,7 @@ tags: ["development", "version", "pr"]
 
 # workflow-publish: default-workflow phase brick. Parent context is merged by
 # recipe-runner and declared outputs propagate to later phase recipes.
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
 
 recursion:
   max_depth: 6
@@ -69,6 +70,9 @@ steps:
     condition: "goal_already_met != 'true'"
     command: |
       set -euo pipefail
+      export GIT_PAGER=cat
+      export PAGER=cat
+      export LESS=FRX
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-15 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -177,6 +181,9 @@ steps:
     condition: "goal_already_met != 'true' && commit_result.pushed == 'true'"
     command: |
       set -euo pipefail
+      export GIT_PAGER=cat
+      export PAGER=cat
+      export LESS=FRX
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-16 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -386,9 +393,3 @@ steps:
        Update the PR description with a "Step 16b: Outside-In Testing Results"
        section listing each scenario, command, result, key output, and fix count.
     output: "outside_in_fix_loop_results"
-
-  # ==========================================================================
-  # STEP 17: REVIEW THE PR (MANDATORY - DO NOT SKIP)
-  # Granular sub-steps with verification gates to prevent completion bias.
-  # Each sub-step invokes a specific agent and requires evidence.
-  # ==========================================================================

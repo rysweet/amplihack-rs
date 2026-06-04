@@ -18,11 +18,13 @@ tags: ["verification", "trivial", "config", "docs", "simple", "quick"]
 # If ANY doubt about complexity, escalate to default-workflow.
 #
 # Usage:
-#   amplifier recipes execute verification-workflow.yaml --context '{
+#   amplihack recipe run verification-workflow -c change_description="..." -c repo_path=/path/to/repo
+#   # equivalent context keys:
 #     "change_description": "Update config value",
 #     "files_to_change": "config.yaml",
 #     "repo_path": "/path/to/repo"
 #   }'
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
 
 context:
   # Description of the change
@@ -115,6 +117,7 @@ steps:
     # Step 3: Commit - Commit the verified change and push to branch
     command: |
       cd {{repo_path}} && \
+      export GIT_PAGER=cat PAGER=cat LESS=FRX && \
       echo "=== Step 3: Committing Changes ===" && \
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
         echo "ERROR: step-03-commit requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2; \

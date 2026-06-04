@@ -2,6 +2,7 @@ use super::*;
 use crate::test_support::env_lock;
 use amplihack_cli::launcher_context::{LauncherContext, write_launcher_context};
 use std::collections::BTreeMap;
+use std::process::Command;
 
 #[test]
 fn unknown_launcher_by_default() {
@@ -34,6 +35,31 @@ fn detects_copilot_from_persisted_launcher_context() {
     let result = detect_launcher_for_dirs(&ProjectDirs::new(dir.path()));
 
     assert!(matches!(result, LauncherType::Copilot));
+}
+
+#[test]
+fn detects_copilot_from_persisted_launcher_context_when_agent_cwd_is_nested() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    set_launcher_env(None, None, None, None);
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("worktrees/feature/subdir");
+    fs::create_dir_all(&nested).unwrap();
+    write_launcher_context(
+        dir.path(),
+        LauncherKind::Copilot,
+        "amplihack copilot",
+        BTreeMap::from([("AMPLIHACK_LAUNCHER".to_string(), "copilot".to_string())]),
+    )
+    .unwrap();
+
+    let result = detect_launcher_for_dirs(&ProjectDirs::new(&nested));
+
+    assert!(
+        matches!(result, LauncherType::Copilot),
+        "PreToolUse launcher detection must resolve persisted context from an ancestor repo root when recipe agent subprocesses run from nested CWDs; got {result:?}"
+    );
 }
 
 #[test]
@@ -101,6 +127,39 @@ fn inject_context_writes_agents_file_for_copilot() {
 }
 
 #[test]
+fn inject_context_uses_persisted_launcher_root_from_nested_agent_cwd() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    set_launcher_env(None, None, None, None);
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("worktrees/feature/subdir");
+    fs::create_dir_all(&nested).unwrap();
+    write_launcher_context(
+        dir.path(),
+        LauncherKind::Copilot,
+        "amplihack copilot",
+        BTreeMap::from([("AMPLIHACK_LAUNCHER".to_string(), "copilot".to_string())]),
+    )
+    .unwrap();
+    let input = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "git status"}});
+
+    inject_context(&ProjectDirs::new(&nested), &input);
+
+    let root_agents = dir.path().join("AGENTS.md");
+    assert!(
+        root_agents.exists(),
+        "recipe agent subprocesses running from nested CWDs must inject Copilot context at the persisted launcher root"
+    );
+    assert!(
+        !nested.join("AGENTS.md").exists(),
+        "nested subprocess CWD must not receive a stray AGENTS.md when launcher context identifies the root"
+    );
+    let content = fs::read_to_string(root_agents).unwrap();
+    assert!(content.contains("\"command\": \"git status\""));
+}
+
+#[test]
 fn inject_context_replaces_existing_marker_block() {
     let _guard = env_lock()
         .lock()
@@ -126,6 +185,57 @@ fn inject_context_replaces_existing_marker_block() {
     assert!(content.contains("\"tool_name\": \"Read\""));
     assert!(content.contains("keep me"));
     assert!(!content.contains("\nold\n"));
+}
+
+#[test]
+fn inject_context_preserves_git_tracked_agents_file() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    set_launcher_env(Some("1"), None, None, None);
+    let dir = tempfile::tempdir().unwrap();
+    let agents = dir.path().join("AGENTS.md");
+    let original = format!(
+        "# Amplihack Agents\n\n{CONTEXT_MARKER_START}\nsource-controlled instructions\n{CONTEXT_MARKER_END}\n\nkeep me\n"
+    );
+    fs::write(&agents, &original).unwrap();
+
+    let git_available = Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if !git_available {
+        set_launcher_env(None, None, None, None);
+        return;
+    }
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["add", "AGENTS.md"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    inject_context(
+        &ProjectDirs::new(dir.path()),
+        &serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "echo transient"}}),
+    );
+
+    let content = fs::read_to_string(&agents).unwrap();
+    set_launcher_env(None, None, None, None);
+    assert_eq!(
+        content, original,
+        "Copilot context injection must not rewrite source-controlled AGENTS.md"
+    );
 }
 
 #[test]

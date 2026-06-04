@@ -4,21 +4,10 @@ version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "cleanup", "merge"]
 
-# workflow-finalize: extracted from default-workflow.yaml as a composable phase brick.
-#
-# Preserves every original step verbatim — the layered review steps the LLM
-# converges through must remain intact. Context flows in from the parent
-# workflow via recipe-runner's automatic context-merging in
-# `_execute_sub_recipe()`; outputs declared by these steps propagate back to
-# the parent and are visible to subsequent phase recipes.
-
 recursion:
   max_depth: 6
   max_total_steps: 80
 
-# Required upstream outputs consumed by bash steps in this brick.
-# Documents the recipe-boundary contract; future compose-time validation
-# in amplihack-recipe-runner will hook here. See issue #414.
 inputs:
   - name: worktree_setup.worktree_path
     description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by bash steps in step-20b-push-cleanup and step-21-pr-ready that cd into the worktree."
@@ -78,6 +67,9 @@ steps:
         echo "ERROR: step-20b-push-cleanup requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
         exit 1
       fi
+      export GIT_PAGER=cat
+      export PAGER=cat
+      export LESS=FRX
       echo "=== Pushing Cleanup Changes ==="
       current_branch=$(git branch --show-current)
       if [ -z "$current_branch" ]; then
@@ -117,7 +109,7 @@ steps:
       fi
       push_output_file=$(mktemp -t step20b-cleanup-push-XXXXXX)
       if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
-        git pull --rebase
+        git --no-pager pull --rebase
         if git push >"$push_output_file" 2>&1; then
           cat "$push_output_file"
           rm -f "$push_output_file"
@@ -145,14 +137,6 @@ steps:
       echo "=== Cleanup Complete ==="
     output: "cleanup_push_result"
 
-  # ==========================================================================
-  # STEP 20c: QUALITY AUDIT LOOP
-  # Runs quality-audit-cycle: seek → multi-agent validate → fix → recurse.
-  # Minimum 3 iterations with escalating depth. Continues if >3 medium or
-  # any high/critical severity findings remain after cycle 3.
-  # Placed AFTER philosophy compliance and cleanup, BEFORE marking PR ready.
-  # Added per issues #2805, #2809, #2810.
-  # ==========================================================================
   - id: "step-20c-quality-audit"
     agent: "amplihack:core:reviewer"
     prompt: |
@@ -162,64 +146,19 @@ steps:
       **PR URL:** {{pr_url}}
       **Repository:** {{repo_path}}
 
-      Run a comprehensive, iterative quality audit on all files changed in
-      this PR. This step follows the quality-audit-cycle recipe (v3.0).
+      Run 3-6 quality-audit cycles over changed PR files. Each cycle must:
+      1. Seek issues in security, reliability, dead code, test/doc gaps,
+         silent fallbacks, swallowed errors, structural complexity, and docs.
+      2. Validate findings with technical, skeptical, and adversarial reads;
+         confirm only when at least two perspectives agree.
+      3. Fix confirmed findings minimally, with tests where appropriate.
+      4. Continue until at least cycle 3; after that stop only when no
+         high/critical and at most three medium findings remain, or at cycle 6.
 
-      NOTE: When recipe-in-recipe support is available (see issue #2821),
-      this step should use `type: "recipe"` with `recipe: "quality-audit-cycle"`.
-      Until then, execute the audit inline following these instructions.
-
-      ## Execution: Run 3+ Audit Cycles
-
-      For each cycle (minimum 3, maximum 6):
-
-      ### A. SEEK — Scan changed files for issues in 9 categories:
-      1. Security (hardcoded secrets, missing input validation)
-      2. Reliability (missing timeouts, bare except clauses)
-      3. Dead Code (unused imports, unreachable branches)
-      4. Test Gaps (files without tests, tests without assertions)
-      5. Doc Gaps (public functions without docstrings)
-      6. Silent Fallbacks (except:pass, broad catches returning defaults)
-      7. Error Swallowing (catch blocks with no logging/re-raise)
-      8. Structural Issues (files >500 LOC, functions >50 lines, nesting >4)
-      9. Documentation (point-in-time content, unprofessional tone like
-         pirate speak "fer"/"ye"/"arr", quality/correctness vs code)
-
-      Escalate depth each cycle: cycle 1 = broad scan, cycle 2 = deeper,
-      cycle 3+ = challenge assumptions, examine module interactions.
-
-      ### B. VALIDATE — For each finding, verify by reading actual code.
-      Deploy 3 independent validation perspectives:
-      - Technical merits check
-      - Skeptical verification (assume findings are wrong until proven)
-      - Adversarial review (look for reasons the finding is incorrect)
-      A finding is confirmed only if ≥2 perspectives agree.
-
-      ### C. FIX — Fix all confirmed findings:
-      1. Understand the finding and its context
-      2. Write or update tests that verify the fix
-      3. Implement the minimal fix
-      4. Run tests to verify nothing is broken
-
-      ### D. DECIDE — Continue or stop:
-      - Below cycle 3: always continue
-      - At cycle 3+: stop if ≤3 medium findings and no high/critical
-      - At cycle 6: always stop (safety valve)
-
-      ## After All Cycles: Self-Improvement
-
-      Step back and ask: "How else would you improve this code?"
-      Look for systemic issues, architectural improvements, and patterns
-      the audit missed. Fix any CRITICAL improvements found.
-
-      **Output:** "QUALITY AUDIT: CLEAN" if final cycle has no confirmed
-      findings, otherwise list remaining findings and fixes applied.
+      Finish with a self-improvement pass for systemic critical issues.
+      Output "QUALITY AUDIT: CLEAN" or list remaining findings and fixes.
     output: "quality_audit_results"
 
-  # ==========================================================================
-  # STEP 21: CONVERT PR TO READY FOR REVIEW
-  # Convert draft PR to ready-for-review.
-  # ==========================================================================
   - id: "step-21-pr-ready"
     type: "bash"
     command: |
@@ -233,44 +172,136 @@ steps:
       else
         echo "WARNING: step-21 worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2
       fi
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
       echo "=== Step 21: Converting PR to Ready ==="
       echo ""
-
-      # FIX #684/#682: Guard PR_URL and host type before invoking gh commands
-      PR_URL="${PR_URL:-}"
+      PR_URL="${PR_URL:-${RECIPE_VAR_pr_url:-}}"
+      PR_NUMBER="${PR_NUMBER:-${RECIPE_VAR_pr_number:-}}"
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-      if [[ ! "$PR_URL" =~ [^[:space:]] ]] || [ "$HOST_TYPE" != "github" ]; then
-        echo "INFO: PR_URL is empty or non-GitHub host ($HOST_TYPE) — skipping gh pr ready" >&2
+      if [ "$HOST_TYPE" != "github" ]; then
+        echo "INFO: non-GitHub host ($HOST_TYPE) — skipping gh pr ready" >&2
         echo "=== PR Ready: SKIPPED (no PR URL or non-GitHub host) ==="
         exit 0
       fi
 
-      echo "--- Verifying All Steps Complete ---"
-      echo ""
-      echo "--- Converting PR to Ready ---"
-      gh pr ready "$PR_URL"
-      echo ""
-      echo "--- Adding Ready Comment ---"
-      gh pr comment "$PR_URL" --body "## Ready for Final Review
+      if ! command -v gh >/dev/null 2>&1; then
+        echo "WARNING: gh CLI not found — skipping PR ready conversion" >&2
+        echo "=== PR Ready: SKIPPED (missing gh CLI) ==="
+        exit 0
+      fi
 
-      All workflow steps completed:
-      - [x] Requirements clarified
-      - [x] Design approved
-      - [x] Implementation complete
-      - [x] Tests passing
-      - [x] Code review addressed
-      - [x] Philosophy compliance verified
-      - [x] Final cleanup complete
-      - [x] Quality audit passed
+      if ! timeout 30 gh auth status >/dev/null 2>&1; then
+        echo "WARNING: gh CLI is unavailable or unauthenticated — skipping PR ready conversion" >&2
+        echo "=== PR Ready: SKIPPED (gh auth/network unavailable) ==="
+        exit 0
+      fi
 
-      Ready for merge approval."
+      pr_targets=()
+      add_pr_target() {
+        local target="$1"
+        [[ "$target" =~ [^[:space:]] ]] || return 0
+        local existing
+        for existing in "${pr_targets[@]}"; do
+          [ "$existing" = "$target" ] && return 0
+        done
+        pr_targets+=("$target")
+      }
+
+      if [[ "$PR_URL" =~ [^[:space:]] ]]; then
+        add_pr_target "$PR_URL"
+      fi
+      if [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+        add_pr_target "$PR_NUMBER"
+      elif [[ "$PR_NUMBER" =~ [^[:space:]] ]]; then
+        echo "WARNING: ignoring invalid PR_NUMBER '$PR_NUMBER' for step-21-pr-ready" >&2
+      fi
+      if [ "${#pr_targets[@]}" -eq 0 ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        current_branch=$(git branch --show-current 2>/dev/null || true)
+        if [[ "$current_branch" =~ [^[:space:]] ]]; then
+          while IFS= read -r branch_pr_number; do
+            add_pr_target "$branch_pr_number"
+          done < <(timeout 60 gh pr list --head "$current_branch" --state all --json number --jq '.[].number' 2>/dev/null || true)
+        fi
+      fi
+      if [ "${#pr_targets[@]}" -eq 0 ]; then
+        echo "INFO: [skip] not a git repo or no PR_URL, valid PR_NUMBER, or branch PR found — skipping gh pr ready" >&2
+        echo "=== PR Ready: SKIPPED (no PR found) ==="
+        exit 0
+      fi
+
+      if ! command -v jq >/dev/null 2>&1; then
+        echo "WARNING: jq CLI not found — skipping PR ready conversion" >&2
+        echo "=== PR Ready: SKIPPED (missing jq CLI) ==="
+        exit 0
+      fi
+
+      for pr_target in "${pr_targets[@]}"; do
+        echo "--- Processing PR target: $pr_target ---"
+        pr_json_file=$(mktemp -t step21-pr-view-XXXXXX)
+        if timeout 60 gh pr view "$pr_target" --json number,state,isDraft,mergedAt,url >"$pr_json_file" 2>&1; then
+          :
+        else
+          view_rc=$?
+          echo "WARNING: unable to inspect PR '$pr_target' with gh (exit $view_rc); skipping this PR" >&2
+          cat "$pr_json_file" >&2
+          rm -f "$pr_json_file"
+          continue
+        fi
+
+        pr_url=$(jq -r '.url // ""' "$pr_json_file")
+        pr_state=$(jq -r '.state // ""' "$pr_json_file")
+        pr_is_draft=$(jq -r '.isDraft // false' "$pr_json_file")
+        pr_merged_at=$(jq -r '.mergedAt // ""' "$pr_json_file")
+        rm -f "$pr_json_file"
+
+        if [ "$pr_state" = "MERGED" ] || [ -n "$pr_merged_at" ]; then
+          echo "INFO: PR is already merged — no ready-for-review action needed"
+          continue
+        fi
+        if [ "$pr_state" = "CLOSED" ]; then
+          echo "INFO: PR is closed — no ready-for-review action possible"
+          continue
+        fi
+
+        if [ "$pr_is_draft" = "true" ]; then
+          echo "--- Converting Draft PR to Ready ---"
+          ready_output_file=$(mktemp -t step21-pr-ready-XXXXXX)
+          if timeout 60 gh pr ready "$pr_url" >"$ready_output_file" 2>&1; then
+            cat "$ready_output_file"
+            rm -f "$ready_output_file"
+          else
+            ready_rc=$?
+            echo "WARNING: gh pr ready failed for '$pr_url' (exit $ready_rc); continuing with visible skip" >&2
+            cat "$ready_output_file" >&2
+            rm -f "$ready_output_file"
+            continue
+          fi
+        else
+          echo "INFO: PR is already ready for review"
+        fi
+
+        echo "--- Adding Ready Comment ---"
+        ready_body="## Ready for Final Review
+
+        Workflow steps completed: requirements, design, implementation, tests,
+        code review, philosophy compliance, cleanup, and quality audit.
+
+        Ready for merge approval."
+        comment_output_file=$(mktemp -t step21-pr-comment-XXXXXX)
+        if timeout 60 gh pr comment "$pr_url" --body "$ready_body" >"$comment_output_file" 2>&1; then
+          cat "$comment_output_file"
+          rm -f "$comment_output_file"
+        else
+          comment_rc=$?
+          echo "WARNING: gh pr comment failed for '$pr_url' (exit $comment_rc); PR ready state was still evaluated" >&2
+          cat "$comment_output_file" >&2
+          rm -f "$comment_output_file"
+        fi
+      done
       echo ""
-      echo "=== PR Marked Ready ==="
+      echo "=== PR Ready Step Complete ==="
     output: "pr_ready_result"
 
-  # ==========================================================================
-  # STEP 22: ENSURE PR IS MERGEABLE
-  # ==========================================================================
   - id: "step-22-ensure-mergeable"
     agent: "amplihack:ci-diagnostic-workflow"
     prompt: |
@@ -279,24 +310,9 @@ steps:
       **PR URL:** {{pr_url}}
       **Repository:** {{repo_path}}
 
-      Final verification that PR is ready to merge:
-
-      **Checklist:**
-      - [ ] CI status - all checks passing
-      - [ ] No merge conflicts
-      - [ ] All review comments addressed
-      - [ ] PR is approved
-
-      **Actions:**
-      1. Check CI status
-      2. If CI fails, diagnose and fix
-      3. Resolve any merge conflicts
-      4. Verify all review comments addressed (including any that appeared after marking ready)
-      5. Confirm PR is approved
-      6. Notify that PR is ready to merge
-
-      **THIS IS THE TASK COMPLETION POINT**
-      Task is complete when this step passes.
+      Verify the PR is ready to merge: CI passing, no conflicts, review
+      comments addressed, and approval present. If CI fails, diagnose and fix.
+      This is the task completion point.
     output: "ci_status"
 
   - id: "step-22b-final-status"
@@ -306,7 +322,7 @@ steps:
       cd "${REPO_PATH:?step-22b-final-status requires repo_path; ensure parent recipe propagated repo_path context}"
       echo "=== WORKFLOW COMPLETE ==="
       echo ""
-      # FIX #684: Host-aware summary — guard gh commands with both PR_URL and host type
+      export GH_PAGER=cat PAGER=cat LESS=FRX
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
       PR_URL="${PR_URL:-}"
       if [ -z "$PR_URL" ]; then
@@ -317,16 +333,18 @@ steps:
         fi
       elif [ "$HOST_TYPE" = "github" ]; then
         echo "PR Status:"
-        timeout 60 gh pr view "$PR_URL" --json state,mergeable,reviews,statusCheckRollup
+        if command -v gh >/dev/null 2>&1; then
+          timeout 60 gh pr view "$PR_URL" --json state,mergeable,reviews,statusCheckRollup
+        else
+          echo "WARNING: gh CLI not found; skipping final PR status lookup" >&2
+        fi
       else
         echo "WARNING: PR_URL set but host is '$HOST_TYPE'; skipping gh pr view" >&2
       fi
       echo ""
-      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
       TASK_DESC="$TASK_DESCRIPTION"
       ISSUE_NUMBER="$ISSUE_NUMBER"
       printf '=== Task: %s ===\n' "$TASK_DESC"
-      # Host-aware issue and PR references
       case "$HOST_TYPE" in
         github) echo "=== Issue: #${ISSUE_NUMBER} ===" ;;
         azdo)   echo "=== Issue: AB#${ISSUE_NUMBER} ===" ;;
@@ -343,22 +361,16 @@ steps:
       echo "All 23 workflow steps completed successfully."
     output: "final_status"
 
-  # ==========================================================================
-  # FINAL OUTPUT
-  # ==========================================================================
   - id: "workflow-complete"
     type: "bash"
     parse_json: true
     command: |
-      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
       TASK_VAL="$TASK_DESCRIPTION"
       export TASK_VAL
       ISSUE_VAL="$ISSUE_NUMBER"
       export ISSUE_VAL
       PR_VAL="$PR_URL"
       export PR_VAL
-      # Pure jq — no external dependency (#242).
-      # jq -n constructs the object; --arg passes env vars in safely (no quoting hazards).
       jq -n \
         --arg task "${TASK_VAL}" \
         --arg issue "${ISSUE_VAL}" \

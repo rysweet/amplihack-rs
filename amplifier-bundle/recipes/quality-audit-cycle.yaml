@@ -11,6 +11,8 @@ version: "4.0.0"
 author: "Amplihack Team"
 tags: ["quality", "audit", "eval", "improvement", "recursive"]
 
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
+
 # Recursion limits (safety valve per issue #2707)
 recursion:
   max_depth: 8

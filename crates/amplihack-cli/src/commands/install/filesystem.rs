@@ -2,9 +2,10 @@
 
 use anyhow::{Context, Result};
 use std::collections::{BTreeSet, VecDeque};
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Atomically deploy a binary from `src` to `dst` using rename-then-replace.
 ///
@@ -164,7 +165,10 @@ const MAX_WALK_DEPTH: usize = 64;
 /// The `include` predicate receives each `DirEntry` and controls whether it appears
 /// in the returned list.  Directories are always queued for traversal regardless of
 /// whether `include` returns `true` for them.  The root itself is always included.
-fn walk_bounded(root: &Path, include: impl Fn(&fs::DirEntry) -> bool) -> Result<Vec<PathBuf>> {
+fn walk_bounded(
+    root: &Path,
+    include: impl Fn(&fs::DirEntry, &fs::Metadata) -> bool,
+) -> Result<Vec<PathBuf>> {
     let mut results = vec![root.to_path_buf()];
     let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
     queue.push_back((root.to_path_buf(), 0));
@@ -179,19 +183,20 @@ fn walk_bounded(root: &Path, include: impl Fn(&fs::DirEntry) -> bool) -> Result<
             fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
         {
             let entry = entry?;
+            let path = entry.path();
             // symlink_metadata() does not follow symlinks — use it to detect them.
-            let meta = entry
-                .path()
+            let meta = path
                 .symlink_metadata()
-                .with_context(|| format!("failed to stat {}", entry.path().display()))?;
+                .with_context(|| format!("failed to stat {}", path.display()))?;
             if meta.file_type().is_symlink() {
                 continue; // never follow symlinks
             }
+            let include_entry = include(&entry, &meta);
             if meta.is_dir() {
-                queue.push_back((entry.path(), depth + 1));
+                queue.push_back((path.clone(), depth + 1));
             }
-            if include(&entry) {
-                results.push(entry.path());
+            if include_entry {
+                results.push(path);
             }
         }
     }
@@ -199,15 +204,13 @@ fn walk_bounded(root: &Path, include: impl Fn(&fs::DirEntry) -> bool) -> Result<
 }
 
 /// Return the root directory and all subdirectories (no files).
-fn walk_dirs(root: &Path) -> Result<Vec<PathBuf>> {
-    // DirEntry::file_type() does not follow symlinks; symlinks are already
-    // filtered out by walk_bounded, so this predicate safely identifies real dirs.
-    walk_bounded(root, |e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+pub(super) fn walk_dirs(root: &Path) -> Result<Vec<PathBuf>> {
+    walk_bounded(root, |_, meta| meta.is_dir())
 }
 
 /// Return the root directory and all entries within it (files and directories).
 pub(super) fn walk_all(root: &Path) -> Result<Vec<PathBuf>> {
-    walk_bounded(root, |_| true)
+    walk_bounded(root, |_, _| true)
 }
 
 /// Returns `true` for directory names that should be excluded from copy operations.
@@ -223,6 +226,40 @@ fn is_excluded_file(name: &std::ffi::OsStr) -> bool {
     name.to_str()
         .map(|s| s.ends_with(".pyc") || s.ends_with(".pyo"))
         .unwrap_or(false)
+}
+
+/// Expected bundle symlinks that are safe to ignore quietly during install.
+///
+/// The install copier must not follow symlinks, but these skill bundles contain
+/// known internal symlinks that otherwise create noisy warnings on every install.
+fn is_known_safe_bundle_symlink(path: &Path) -> bool {
+    let components = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => Some(value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    let Some(skills_index) = components
+        .iter()
+        .position(|component| *component == OsStr::new("skills"))
+    else {
+        return false;
+    };
+    let relative = &components[skills_index..];
+
+    matches!(
+        relative,
+        [skills, skill, ooxml]
+            if *skills == OsStr::new("skills")
+                && (*skill == OsStr::new("docx") || *skill == OsStr::new("pptx"))
+                && *ooxml == OsStr::new("ooxml")
+    ) || matches!(
+        relative,
+        [skills, skill, _first_child, ..]
+            if *skills == OsStr::new("skills") && *skill == OsStr::new("outside-in-testing")
+    )
 }
 
 /// Copy a directory recursively, skipping symlinks with a warning.
@@ -254,7 +291,9 @@ pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         let kind = entry.file_type()?;
         if kind.is_symlink() {
             // Skip symlinks with a warning to prevent directory traversal attacks
-            println!("  ⚠️  Skipping symlink: {}", source.display());
+            if !is_known_safe_bundle_symlink(&source) {
+                println!("  ⚠️  Skipping symlink: {}", source.display());
+            }
             continue;
         } else if kind.is_dir() {
             if is_excluded_dir(&file_name) {
@@ -267,7 +306,8 @@ pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
             }
             // Per-file same-path guard: protects against the case where the
             // top-level dirs differ but a recursed subdirectory aliases back.
-            if let (Ok(s), Ok(t)) = (source.canonicalize(), target.canonicalize())
+            if target.exists()
+                && let (Ok(s), Ok(t)) = (source.canonicalize(), target.canonicalize())
                 && s == t
             {
                 continue;
@@ -288,13 +328,13 @@ pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 pub(super) fn set_hook_permissions(target_dir: &Path) -> Result<usize> {
     let mut updated = 0usize;
     for path in walk_all(target_dir)? {
-        if path.is_file()
-            && path.extension().and_then(|value| value.to_str()) == Some("py")
+        if path.extension().and_then(|value| value.to_str()) == Some("py")
             && path
                 .parent()
                 .and_then(|value| value.file_name())
                 .and_then(|value| value.to_str())
                 == Some("hooks")
+            && path.is_file()
         {
             set_script_permissions(&path)?;
             updated += 1;
@@ -343,13 +383,13 @@ fn clean_broken_symlinks_inner(
         fs::read_dir(dir).with_context(|| format!("failed to read dir {}", dir.display()))?;
     for entry in entries {
         let entry = entry?;
-        let path = entry.path();
-        let meta = match path.symlink_metadata() {
-            Ok(m) => m,
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
             Err(_) => continue,
         };
-        if meta.file_type().is_symlink() {
+        if file_type.is_symlink() {
             // Check if the symlink target exists (broken = target missing)
+            let path = entry.path();
             if !path.exists() {
                 match fs::remove_file(&path) {
                     Ok(()) => {
@@ -365,7 +405,8 @@ fn clean_broken_symlinks_inner(
                     }
                 }
             }
-        } else if recursive && meta.is_dir() {
+        } else if recursive && file_type.is_dir() {
+            let path = entry.path();
             clean_broken_symlinks_inner(&path, recursive, removed, depth + 1)?;
         }
     }
@@ -472,6 +513,29 @@ mod tests {
 
         assert!(dst.join("real.txt").exists());
         assert!(!dst.join("link.txt").exists());
+    }
+
+    #[test]
+    fn known_safe_bundle_symlink_paths_are_quietly_recognized() {
+        let path = Path::new("/repo/amplifier-bundle/skills/docx/ooxml");
+        assert!(is_known_safe_bundle_symlink(path));
+        let path = Path::new("/repo/amplifier-bundle/skills/pptx/ooxml");
+        assert!(is_known_safe_bundle_symlink(path));
+        let path = Path::new("/repo/amplifier-bundle/skills/outside-in-testing/fixtures/link");
+        assert!(is_known_safe_bundle_symlink(path));
+        let path = Path::new("/repo/amplifier-bundle/skills/docx");
+        assert!(!is_known_safe_bundle_symlink(path));
+        let path = Path::new("/repo/amplifier-bundle/skills/outside-in-testing");
+        assert!(!is_known_safe_bundle_symlink(path));
+        let path = Path::new("/repo/amplifier-bundle/skills/other/link");
+        assert!(!is_known_safe_bundle_symlink(path));
+        let path = Path::new("/repo/amplifier-bundle/not-skills/docx/ooxml");
+        assert!(!is_known_safe_bundle_symlink(path));
+        let path = Path::new("/repo/skills/other/link/skills/docx/ooxml");
+        assert!(
+            !is_known_safe_bundle_symlink(path),
+            "nested arbitrary skill paths must not be treated as known-safe bundled symlinks"
+        );
     }
 
     #[test]

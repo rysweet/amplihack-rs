@@ -20,7 +20,7 @@ auto_activates:
 
 Execute multiple independent development tasks in parallel. Each workstream runs in an isolated `/tmp` clone with its own Recipe Runner process following code-enforced workflow steps.
 
-**Key Advantage**: Uses Recipe Runner YAML recipes instead of prompt-based markdown workflows. Python controls step execution, making it impossible to skip steps.
+**Key Advantage**: Uses Recipe Runner YAML recipes instead of prompt-based markdown workflows. recipe-runner-rs controls step execution, making it impossible to skip steps.
 
 ## Quick Start
 
@@ -80,7 +80,7 @@ Report: PR numbers, success/failure, runtime
 
 | Aspect             | Classic (markdown)       | Recipe Runner (YAML)                    |
 | ------------------ | ------------------------ | --------------------------------------- |
-| Step ordering      | Prompt-based (skippable) | Code-enforced (Python loop)             |
+| Step ordering      | Prompt-based (skippable) | Code-enforced (recipe-runner-rs)        |
 | Template variables | None                     | `{{task_description}}`, `{{repo_path}}` |
 | Error handling     | Implicit                 | Fail-fast per step                      |
 | Progress tracking  | Opaque                   | Step-by-step status                     |

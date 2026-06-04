@@ -4,11 +4,6 @@
 //! after downloading a new binary, `run_update` must spawn the NEW binary
 //! as a subprocess with `install --force-refresh`, not call `run_install`
 //! in-process with the OLD binary's compiled-in code.
-//!
-//! ## Test status (TDD Step 7)
-//! - `uses_provided_binary_path` → PASSES (stub has correct program)
-//! - All other tests → FAIL (stub is missing args/env vars)
-//! - Tests will PASS once implementation is complete (Step 8)
 
 use std::path::PathBuf;
 
@@ -153,5 +148,31 @@ fn sets_noninteractive_env() {
             Some("1".to_string())
         )),
         "must set AMPLIHACK_NONINTERACTIVE=1 to suppress prompts, got envs: {envs:?}"
+    );
+}
+
+/// The post-update install subprocess must mark its context so install-time
+/// framework verification can distinguish transitional old-binary/update noise
+/// from a normal broken install.
+#[test]
+fn sets_post_update_install_env() {
+    let fake_path = PathBuf::from("/usr/local/bin/amplihack");
+    let cmd = build_install_command(&fake_path);
+    let envs: Vec<(String, Option<String>)> = cmd
+        .get_envs()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().to_string(),
+                v.map(|v| v.to_string_lossy().to_string()),
+            )
+        })
+        .collect();
+
+    assert!(
+        envs.contains(&(
+            "AMPLIHACK_POST_UPDATE_INSTALL".to_string(),
+            Some("1".to_string())
+        )),
+        "post-update installs must set AMPLIHACK_POST_UPDATE_INSTALL=1 so known transitional XPIA asset gaps can be reported as self-healing instead of hard ❌ errors, got envs: {envs:?}"
     );
 }
