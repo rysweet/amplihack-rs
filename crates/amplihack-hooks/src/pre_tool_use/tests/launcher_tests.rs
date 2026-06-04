@@ -2,6 +2,7 @@ use super::*;
 use crate::test_support::env_lock;
 use amplihack_cli::launcher_context::{LauncherContext, write_launcher_context};
 use std::collections::BTreeMap;
+use std::process::Command;
 
 #[test]
 fn unknown_launcher_by_default() {
@@ -184,6 +185,57 @@ fn inject_context_replaces_existing_marker_block() {
     assert!(content.contains("\"tool_name\": \"Read\""));
     assert!(content.contains("keep me"));
     assert!(!content.contains("\nold\n"));
+}
+
+#[test]
+fn inject_context_preserves_git_tracked_agents_file() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    set_launcher_env(Some("1"), None, None, None);
+    let dir = tempfile::tempdir().unwrap();
+    let agents = dir.path().join("AGENTS.md");
+    let original = format!(
+        "# Amplihack Agents\n\n{CONTEXT_MARKER_START}\nsource-controlled instructions\n{CONTEXT_MARKER_END}\n\nkeep me\n"
+    );
+    fs::write(&agents, &original).unwrap();
+
+    let git_available = Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if !git_available {
+        set_launcher_env(None, None, None, None);
+        return;
+    }
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["add", "AGENTS.md"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    inject_context(
+        &ProjectDirs::new(dir.path()),
+        &serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "echo transient"}}),
+    );
+
+    let content = fs::read_to_string(&agents).unwrap();
+    set_launcher_env(None, None, None, None);
+    assert_eq!(
+        content, original,
+        "Copilot context injection must not rewrite source-controlled AGENTS.md"
+    );
 }
 
 #[test]

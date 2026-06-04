@@ -18,6 +18,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const AGENTS_FILE: &str = "AGENTS.md";
 const CONTEXT_MARKER_START: &str = "<!-- AMPLIHACK_CONTEXT_START -->";
@@ -133,6 +134,13 @@ fn copilot_context_dirs(dirs: &ProjectDirs) -> ProjectDirs {
 fn write_copilot_context(dirs: &ProjectDirs, input_data: &Value) -> anyhow::Result<()> {
     let agents_path = dirs.root.join(AGENTS_FILE);
     validate_agents_path(&dirs.root, &agents_path)?;
+    if is_git_tracked_agents_file(&dirs.root) {
+        tracing::debug!(
+            "Skipping Copilot AGENTS.md context injection because {} is tracked by git",
+            agents_path.display()
+        );
+        return Ok(());
+    }
 
     let context_markdown = format_context_markdown(input_data)?;
     let mut content = if agents_path.exists() {
@@ -177,6 +185,17 @@ fn write_copilot_context(dirs: &ProjectDirs, input_data: &Value) -> anyhow::Resu
     fs::write(&marker_path, new_hash.to_string())?;
 
     Ok(())
+}
+
+fn is_git_tracked_agents_file(project_root: &Path) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(project_root)
+        .args(["ls-files", "--error-unmatch", "--", AGENTS_FILE])
+        .env("GIT_PAGER", "cat")
+        .env("PAGER", "cat")
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 fn validate_agents_path(project_root: &Path, agents_path: &Path) -> anyhow::Result<()> {
