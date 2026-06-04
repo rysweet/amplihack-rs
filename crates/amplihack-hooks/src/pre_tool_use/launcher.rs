@@ -12,7 +12,7 @@
 use amplihack_cli::launcher_context::{
     LauncherKind, is_launcher_context_stale, read_launcher_context,
 };
-use amplihack_types::ProjectDirs;
+use amplihack_types::paths::{ProjectDirs, framework_roots_from};
 use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
@@ -44,26 +44,15 @@ pub enum LauncherType {
 
 /// Detect which launcher is running by checking environment variables.
 pub fn detect_launcher() -> LauncherType {
-    detect_launcher_for_dirs(&ProjectDirs::from_cwd())
+    detect_launcher_from_env().unwrap_or(LauncherType::Unknown)
 }
 
 pub(crate) fn detect_launcher_for_dirs(dirs: &ProjectDirs) -> LauncherType {
-    // Copilot sets specific env vars.
-    if std::env::var("GITHUB_COPILOT_AGENT").is_ok() || std::env::var("COPILOT_AGENT").is_ok() {
-        return LauncherType::Copilot;
+    if let Some(launcher) = detect_launcher_from_env() {
+        return launcher;
     }
 
-    // Amplifier sets its own marker.
-    if std::env::var("AMPLIFIER_SESSION").is_ok() {
-        return LauncherType::Amplifier;
-    }
-
-    // Claude Code is the default.
-    if std::env::var("CLAUDE_CODE_SESSION").is_ok() || std::env::var("CLAUDE_SESSION_ID").is_ok() {
-        return LauncherType::ClaudeCode;
-    }
-
-    if let Some(context) = read_launcher_context(&dirs.root)
+    if let Some(context) = read_launcher_context_from_project_or_ancestors(&dirs.root)
         && !is_launcher_context_stale(&context)
     {
         return match context.launcher {
@@ -75,6 +64,30 @@ pub(crate) fn detect_launcher_for_dirs(dirs: &ProjectDirs) -> LauncherType {
     }
 
     LauncherType::Unknown
+}
+
+fn detect_launcher_from_env() -> Option<LauncherType> {
+    if std::env::var("GITHUB_COPILOT_AGENT").is_ok() || std::env::var("COPILOT_AGENT").is_ok() {
+        return Some(LauncherType::Copilot);
+    }
+    if std::env::var("AMPLIFIER_SESSION").is_ok() {
+        return Some(LauncherType::Amplifier);
+    }
+    if std::env::var("CLAUDE_CODE_SESSION").is_ok() || std::env::var("CLAUDE_SESSION_ID").is_ok() {
+        return Some(LauncherType::ClaudeCode);
+    }
+    None
+}
+
+fn read_launcher_context_from_project_or_ancestors(
+    root: &Path,
+) -> Option<amplihack_cli::launcher_context::LauncherContext> {
+    for candidate in framework_roots_from(root) {
+        if let Some(context) = read_launcher_context(&candidate) {
+            return Some(context);
+        }
+    }
+    read_launcher_context(root)
 }
 
 /// Inject context based on the detected launcher.

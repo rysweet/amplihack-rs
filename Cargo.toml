@@ -33,7 +33,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.9.3"
+version = "0.9.70"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/rysweet/amplihack-rs"

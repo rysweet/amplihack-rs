@@ -12,6 +12,7 @@ tags: ["smart-orchestrator", "routing", "execute", "fallback"]
 # recursion_guard, round_N_result, etc.) flows in from the parent
 # smart-orchestrator context via _execute_sub_recipe()'s automatic merging
 # and propagates back so subsequent phase recipes can consume it.
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
 
 recursion:
   max_depth: 6
@@ -64,6 +65,9 @@ steps:
     type: "bash"
     condition: "'Operations' in task_type"
     command: |
+      export GIT_PAGER=cat
+      export PAGER=cat
+      export LESS=FRX
       if [ ! -d "$REPO_PATH" ]; then echo "[skip] repo_path '$REPO_PATH' does not exist; skipping operations git telemetry" >&2; echo ""; exit 0; fi
       cd "$REPO_PATH"
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "[skip] not a git repo; skipping operations git telemetry" >&2; echo ""; exit 0; fi

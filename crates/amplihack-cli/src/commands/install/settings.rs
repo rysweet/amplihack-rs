@@ -106,6 +106,15 @@ pub(super) fn verify_framework_assets(claude_dir: &Path) -> Result<()> {
     let missing = missing_framework_paths(claude_dir)?;
     if missing.is_empty() {
         println!("  ✅ Required framework assets found");
+    } else if is_post_update_install()
+        && missing
+            .iter()
+            .all(|path| is_transitional_xpia_asset_gap(path))
+    {
+        println!("  ℹ️  Missing transitional XPIA shell assets will self-heal on next invocation");
+        for path in &missing {
+            println!("     • {path}");
+        }
     } else {
         println!("  ❌ Missing required framework assets:");
         for path in &missing {
@@ -126,6 +135,14 @@ pub(super) fn verify_framework_assets(claude_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn is_post_update_install() -> bool {
+    std::env::var_os("AMPLIHACK_POST_UPDATE_INSTALL").is_some_and(|value| value == "1")
+}
+
+fn is_transitional_xpia_asset_gap(path: &str) -> bool {
+    path.contains("xpia") && path.ends_with(".sh")
 }
 
 pub(super) fn read_settings_json(settings_path: &Path) -> Result<Value> {

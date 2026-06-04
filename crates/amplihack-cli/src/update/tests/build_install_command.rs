@@ -155,3 +155,29 @@ fn sets_noninteractive_env() {
         "must set AMPLIHACK_NONINTERACTIVE=1 to suppress prompts, got envs: {envs:?}"
     );
 }
+
+/// The post-update install subprocess must mark its context so install-time
+/// framework verification can distinguish transitional old-binary/update noise
+/// from a normal broken install.
+#[test]
+fn sets_post_update_install_env() {
+    let fake_path = PathBuf::from("/usr/local/bin/amplihack");
+    let cmd = build_install_command(&fake_path);
+    let envs: Vec<(String, Option<String>)> = cmd
+        .get_envs()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().to_string(),
+                v.map(|v| v.to_string_lossy().to_string()),
+            )
+        })
+        .collect();
+
+    assert!(
+        envs.contains(&(
+            "AMPLIHACK_POST_UPDATE_INSTALL".to_string(),
+            Some("1".to_string())
+        )),
+        "post-update installs must set AMPLIHACK_POST_UPDATE_INSTALL=1 so known transitional XPIA asset gaps can be reported as self-healing instead of hard ❌ errors, got envs: {envs:?}"
+    );
+}

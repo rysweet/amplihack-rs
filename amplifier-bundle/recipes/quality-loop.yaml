@@ -10,6 +10,7 @@ description: |
 version: "1.1.0"
 author: "Amplihack Team"
 tags: ["self-improvement", "automation", "quality", "ci", "iteration"]
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
 recursion:
   max_depth: 3
   max_total_steps: 60

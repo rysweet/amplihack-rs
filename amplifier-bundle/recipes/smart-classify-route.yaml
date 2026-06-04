@@ -12,6 +12,7 @@ tags: ["smart-orchestrator", "classify", "decompose"]
 # recursion_guard, round_N_result, etc.) flows in from the parent
 # smart-orchestrator context via _execute_sub_recipe()'s automatic merging
 # and propagates back so subsequent phase recipes can consume it.
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
 
 recursion:
   max_depth: 6
@@ -36,7 +37,7 @@ steps:
         ERRORS="${ERRORS}\n  ✗ repo_path '$REPO' does not exist"
       fi
       if ! command -v recipe-runner-rs >/dev/null 2>&1 && [ ! -f "$HOME/.cargo/bin/recipe-runner-rs" ]; then
-        ERRORS="${ERRORS}\n  ✗ recipe-runner-rs not found (run: cargo install --git https://github.com/rysweet/amplihack-recipe-runner)"
+        ERRORS="${ERRORS}\n  ✗ recipe-runner-rs not found (run: amplihack install, or use the Rust CLI: amplihack recipe run ...)"
       fi
       if [ -n "$ERRORS" ]; then
         echo "=== SMART-ORCHESTRATOR PRE-FLIGHT FAILED ===" >&2

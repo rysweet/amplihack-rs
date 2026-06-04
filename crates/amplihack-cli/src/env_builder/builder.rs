@@ -341,6 +341,13 @@ impl EnvBuilder {
             .set("NODE_OPTIONS", node_opts_value)
     }
 
+    /// Prevent child git/less invocations from blocking on interactive pagers.
+    pub fn with_pager_safe_defaults(self) -> Self {
+        self.set("GIT_PAGER", "cat")
+            .set("PAGER", "cat")
+            .set("LESS", "FRX")
+    }
+
     /// Build the final environment as key-value pairs.
     ///
     /// The returned map includes only the variables explicitly set via this builder,
@@ -459,5 +466,13 @@ mod tests {
         assert!(!env.contains_key("A"));
         assert_eq!(env.get("B").unwrap(), "2");
         assert_eq!(env.get("C").unwrap(), "3");
+    }
+
+    #[test]
+    fn pager_safe_defaults_are_set() {
+        let env = EnvBuilder::new().with_pager_safe_defaults().build();
+        assert_eq!(env.get("GIT_PAGER").map(String::as_str), Some("cat"));
+        assert_eq!(env.get("PAGER").map(String::as_str), Some("cat"));
+        assert_eq!(env.get("LESS").map(String::as_str), Some("FRX"));
     }
 }

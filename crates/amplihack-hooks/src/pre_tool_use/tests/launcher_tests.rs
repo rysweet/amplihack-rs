@@ -37,6 +37,31 @@ fn detects_copilot_from_persisted_launcher_context() {
 }
 
 #[test]
+fn detects_copilot_from_persisted_launcher_context_when_agent_cwd_is_nested() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    set_launcher_env(None, None, None, None);
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("worktrees/feature/subdir");
+    fs::create_dir_all(&nested).unwrap();
+    write_launcher_context(
+        dir.path(),
+        LauncherKind::Copilot,
+        "amplihack copilot",
+        BTreeMap::from([("AMPLIHACK_LAUNCHER".to_string(), "copilot".to_string())]),
+    )
+    .unwrap();
+
+    let result = detect_launcher_for_dirs(&ProjectDirs::new(&nested));
+
+    assert!(
+        matches!(result, LauncherType::Copilot),
+        "PreToolUse launcher detection must resolve persisted context from an ancestor repo root when recipe agent subprocesses run from nested CWDs; got {result:?}"
+    );
+}
+
+#[test]
 fn ignores_stale_persisted_launcher_context() {
     let _guard = env_lock()
         .lock()

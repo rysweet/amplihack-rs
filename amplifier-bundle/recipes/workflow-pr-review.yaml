@@ -4,6 +4,8 @@ version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "review", "pr"]
 
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
+
 recursion:
   max_depth: 6
   max_total_steps: 80
@@ -195,6 +197,9 @@ steps:
     type: "bash"
     command: |
       set -euo pipefail
+      export GIT_PAGER=cat
+      export PAGER=cat
+      export LESS=FRX
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-18c-push-feedback-changes requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

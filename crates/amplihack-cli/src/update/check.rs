@@ -364,6 +364,7 @@ pub(super) fn build_install_command(installed_exe: &Path) -> std::process::Comma
         .arg("--force-refresh")
         .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
         .env("AMPLIHACK_NONINTERACTIVE", "1")
+        .env("AMPLIHACK_POST_UPDATE_INSTALL", "1")
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit());

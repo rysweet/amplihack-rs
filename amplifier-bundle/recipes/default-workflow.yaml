@@ -24,6 +24,7 @@ tags: ["development", "feature", "bugfix", "refactoring", "standard", "full-work
 #
 # Context flows automatically between sub-recipes via recipe-runner's
 # `_execute_sub_recipe()` context-merging.
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
 #
 # NO-TIMEOUT POLICY: Neither this recipe nor any of its nine sub-recipes
 # declare a per-step `timeout:` YAML field. Agent steps run to natural

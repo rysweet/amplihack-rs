@@ -33,6 +33,8 @@ tags: ["eval", "self-improvement", "learning-agent", "iterative", "quality"]
 #     "regression_tolerance": 5.0
 #   }'
 
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
+
 recursion:
   max_depth: 4
   max_total_steps: 40

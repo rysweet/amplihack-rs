@@ -225,6 +225,17 @@ fn is_excluded_file(name: &std::ffi::OsStr) -> bool {
         .unwrap_or(false)
 }
 
+/// Expected bundle symlinks that are safe to ignore quietly during install.
+///
+/// The install copier must not follow symlinks, but these skill bundles contain
+/// known internal symlinks that otherwise create noisy warnings on every install.
+fn is_known_safe_bundle_symlink(path: &Path) -> bool {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    normalized.contains("/skills/docx/ooxml/")
+        || normalized.contains("/skills/pptx/ooxml/")
+        || normalized.contains("/skills/outside-in-testing/")
+}
+
 /// Copy a directory recursively, skipping symlinks with a warning.
 /// Device files, sockets, and FIFOs are skipped silently.
 /// `__pycache__` directories and `.pyc`/`.pyo` files are excluded.
@@ -254,7 +265,9 @@ pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         let kind = entry.file_type()?;
         if kind.is_symlink() {
             // Skip symlinks with a warning to prevent directory traversal attacks
-            println!("  ⚠️  Skipping symlink: {}", source.display());
+            if !is_known_safe_bundle_symlink(&source) {
+                println!("  ⚠️  Skipping symlink: {}", source.display());
+            }
             continue;
         } else if kind.is_dir() {
             if is_excluded_dir(&file_name) {
@@ -472,6 +485,18 @@ mod tests {
 
         assert!(dst.join("real.txt").exists());
         assert!(!dst.join("link.txt").exists());
+    }
+
+    #[test]
+    fn known_safe_bundle_symlink_paths_are_quietly_recognized() {
+        let path = Path::new("/repo/amplifier-bundle/skills/docx/ooxml/shared.xml");
+        assert!(is_known_safe_bundle_symlink(path));
+        let path = Path::new("/repo/amplifier-bundle/skills/pptx/ooxml/shared.xml");
+        assert!(is_known_safe_bundle_symlink(path));
+        let path = Path::new("/repo/amplifier-bundle/skills/outside-in-testing/fixtures/link");
+        assert!(is_known_safe_bundle_symlink(path));
+        let path = Path::new("/repo/amplifier-bundle/skills/other/link");
+        assert!(!is_known_safe_bundle_symlink(path));
     }
 
     #[test]

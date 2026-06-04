@@ -388,3 +388,23 @@ fn no_production_code_references_xpia_hook_files() {
         }
     }
 }
+
+#[test]
+fn post_update_install_softens_known_transitional_xpia_asset_errors() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let settings_src = fs::read_to_string(
+        std::path::Path::new(manifest_dir).join("src/commands/install/settings.rs"),
+    )
+    .expect("settings.rs must be readable");
+
+    assert!(
+        settings_src.contains("AMPLIHACK_POST_UPDATE_INSTALL"),
+        "verify_framework_assets must inspect AMPLIHACK_POST_UPDATE_INSTALL so update-launched installs can distinguish transitional old-binary asset gaps from normal install failures"
+    );
+    assert!(
+        settings_src.contains("self-heal on next invocation")
+            || settings_src.contains("self-heal")
+            || settings_src.contains("self heal"),
+        "post-update missing known XPIA shell assets should be reported as self-healing on next invocation rather than misleading ❌ hard errors"
+    );
+}

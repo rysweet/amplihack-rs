@@ -18,7 +18,7 @@ recursion:
 
 # Required upstream outputs consumed by bash steps in this brick.
 # Documents the recipe-boundary contract; future compose-time validation
-# in amplihack-recipe-runner will hook here. See issue #414.
+# in recipe-runner-rs will hook here. See issue #414.
 inputs:
   - name: worktree_setup.worktree_path
     description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by bash steps in step-20b-push-cleanup and step-21-pr-ready that cd into the worktree."
@@ -78,6 +78,9 @@ steps:
         echo "ERROR: step-20b-push-cleanup requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
         exit 1
       fi
+      export GIT_PAGER=cat
+      export PAGER=cat
+      export LESS=FRX
       echo "=== Pushing Cleanup Changes ==="
       current_branch=$(git branch --show-current)
       if [ -z "$current_branch" ]; then
@@ -117,7 +120,7 @@ steps:
       fi
       push_output_file=$(mktemp -t step20b-cleanup-push-XXXXXX)
       if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
-        git pull --rebase
+        git --no-pager pull --rebase
         if git push >"$push_output_file" 2>&1; then
           cat "$push_output_file"
           rm -f "$push_output_file"
@@ -233,6 +236,9 @@ steps:
       else
         echo "WARNING: step-21 worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2
       fi
+      export GIT_PAGER=cat
+      export PAGER=cat
+      export LESS=FRX
       echo "=== Step 21: Converting PR to Ready ==="
       echo ""
 
@@ -245,13 +251,81 @@ steps:
         exit 0
       fi
 
+      if ! git --no-pager rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: step-21-pr-ready requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
+        exit 1
+      fi
+
+      if ! command -v gh >/dev/null 2>&1; then
+        echo "WARNING: gh CLI not found — skipping PR ready conversion" >&2
+        echo "=== PR Ready: SKIPPED (missing gh CLI) ==="
+        exit 0
+      fi
+
+      if ! timeout 30 gh auth status >/dev/null 2>&1; then
+        echo "WARNING: gh CLI is unavailable or unauthenticated — skipping PR ready conversion" >&2
+        echo "=== PR Ready: SKIPPED (gh auth/network unavailable) ==="
+        exit 0
+      fi
+
+      if ! command -v jq >/dev/null 2>&1; then
+        echo "WARNING: jq CLI not found — skipping PR ready conversion" >&2
+        echo "=== PR Ready: SKIPPED (missing jq CLI) ==="
+        exit 0
+      fi
+
+      pr_json_file=$(mktemp -t step21-pr-view-XXXXXX)
+      if timeout 60 gh pr view "$PR_URL" --json number,state,isDraft,mergedAt,url >"$pr_json_file" 2>&1; then
+        :
+      else
+        view_rc=$?
+        echo "WARNING: unable to inspect PR with gh (exit $view_rc); skipping ready conversion" >&2
+        cat "$pr_json_file" >&2
+        rm -f "$pr_json_file"
+        echo "=== PR Ready: SKIPPED (PR lookup failed) ==="
+        exit 0
+      fi
+
+      pr_state=$(jq -r '.state // ""' "$pr_json_file")
+      pr_is_draft=$(jq -r '.isDraft // false' "$pr_json_file")
+      pr_merged_at=$(jq -r '.mergedAt // ""' "$pr_json_file")
+      rm -f "$pr_json_file"
+
+      if [ "$pr_state" = "MERGED" ] || [ -n "$pr_merged_at" ]; then
+        echo "INFO: PR is already merged — no ready-for-review action needed"
+        echo "=== PR Ready: SKIPPED (already merged) ==="
+        exit 0
+      fi
+      if [ "$pr_state" = "CLOSED" ]; then
+        echo "INFO: PR is closed — no ready-for-review action possible"
+        echo "=== PR Ready: SKIPPED (closed PR) ==="
+        exit 0
+      fi
+
       echo "--- Verifying All Steps Complete ---"
       echo ""
-      echo "--- Converting PR to Ready ---"
-      gh pr ready "$PR_URL"
+      if [ "$pr_is_draft" = "true" ]; then
+        echo "--- Converting Draft PR to Ready ---"
+        ready_output_file=$(mktemp -t step21-pr-ready-XXXXXX)
+        if timeout 60 gh pr ready "$PR_URL" >"$ready_output_file" 2>&1; then
+          cat "$ready_output_file"
+          rm -f "$ready_output_file"
+        else
+          ready_rc=$?
+          echo "WARNING: gh pr ready failed (exit $ready_rc); continuing with visible skip" >&2
+          cat "$ready_output_file" >&2
+          rm -f "$ready_output_file"
+          echo "=== PR Ready: SKIPPED (ready conversion failed) ==="
+          exit 0
+        fi
+      else
+        echo "INFO: PR is already ready for review"
+      fi
+
       echo ""
       echo "--- Adding Ready Comment ---"
-      gh pr comment "$PR_URL" --body "## Ready for Final Review
+      comment_output_file=$(mktemp -t step21-pr-comment-XXXXXX)
+      if timeout 60 gh pr comment "$PR_URL" --body "## Ready for Final Review
 
       All workflow steps completed:
       - [x] Requirements clarified
@@ -263,7 +337,15 @@ steps:
       - [x] Final cleanup complete
       - [x] Quality audit passed
 
-      Ready for merge approval."
+      Ready for merge approval." >"$comment_output_file" 2>&1; then
+        cat "$comment_output_file"
+        rm -f "$comment_output_file"
+      else
+        comment_rc=$?
+        echo "WARNING: gh pr comment failed (exit $comment_rc); PR ready state was still evaluated" >&2
+        cat "$comment_output_file" >&2
+        rm -f "$comment_output_file"
+      fi
       echo ""
       echo "=== PR Marked Ready ==="
     output: "pr_ready_result"
@@ -317,7 +399,11 @@ steps:
         fi
       elif [ "$HOST_TYPE" = "github" ]; then
         echo "PR Status:"
-        timeout 60 gh pr view "$PR_URL" --json state,mergeable,reviews,statusCheckRollup
+        if command -v gh >/dev/null 2>&1; then
+          timeout 60 gh pr view "$PR_URL" --json state,mergeable,reviews,statusCheckRollup
+        else
+          echo "WARNING: gh CLI not found; skipping final PR status lookup" >&2
+        fi
       else
         echo "WARNING: PR_URL set but host is '$HOST_TYPE'; skipping gh pr view" >&2
       fi
