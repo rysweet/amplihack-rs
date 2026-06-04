@@ -4,11 +4,6 @@
 //! after downloading a new binary, `run_update` must spawn the NEW binary
 //! as a subprocess with `install --force-refresh`, not call `run_install`
 //! in-process with the OLD binary's compiled-in code.
-//!
-//! ## Test status (TDD Step 7)
-//! - `uses_provided_binary_path` → PASSES (stub has correct program)
-//! - All other tests → FAIL (stub is missing args/env vars)
-//! - Tests will PASS once implementation is complete (Step 8)
 
 use std::path::PathBuf;
 

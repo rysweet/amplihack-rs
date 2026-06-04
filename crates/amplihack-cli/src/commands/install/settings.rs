@@ -142,7 +142,8 @@ fn is_post_update_install() -> bool {
 }
 
 fn is_transitional_xpia_asset_gap(path: &str) -> bool {
-    path.contains("xpia") && path.ends_with(".sh")
+    let normalized = path.replace('\\', "/");
+    normalized.contains("tools/xpia/hooks/") && normalized.ends_with(".sh")
 }
 
 pub(super) fn read_settings_json(settings_path: &Path) -> Result<Value> {
@@ -504,5 +505,22 @@ mod tests {
         let missing = missing_framework_paths(&claude_dir).unwrap();
         // Should report missing assets
         assert!(!missing.is_empty());
+    }
+
+    #[test]
+    fn transitional_xpia_asset_gap_is_limited_to_legacy_shell_hooks() {
+        assert!(is_transitional_xpia_asset_gap(
+            "tools/xpia/hooks/pre_tool_use.sh"
+        ));
+        assert!(is_transitional_xpia_asset_gap(
+            "tools\\xpia\\hooks\\pre_tool_use.sh"
+        ));
+        assert!(!is_transitional_xpia_asset_gap("tools/xpia"));
+        assert!(!is_transitional_xpia_asset_gap(
+            "tools/xpia/hooks/pre_tool_use.py"
+        ));
+        assert!(!is_transitional_xpia_asset_gap(
+            "tools/amplihack/xpia_status.sh"
+        ));
     }
 }

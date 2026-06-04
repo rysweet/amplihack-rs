@@ -233,34 +233,33 @@ fn is_excluded_file(name: &std::ffi::OsStr) -> bool {
 /// The install copier must not follow symlinks, but these skill bundles contain
 /// known internal symlinks that otherwise create noisy warnings on every install.
 fn is_known_safe_bundle_symlink(path: &Path) -> bool {
-    let mut components = path.components().filter_map(|component| match component {
-        Component::Normal(value) => Some(value),
-        _ => None,
-    });
+    let components = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => Some(value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
 
-    while let Some(component) = components.next() {
-        if component != OsStr::new("skills") {
-            continue;
-        }
+    let Some(skills_index) = components
+        .iter()
+        .position(|component| *component == OsStr::new("skills"))
+    else {
+        return false;
+    };
+    let relative = &components[skills_index..];
 
-        let Some(skill) = components.next() else {
-            return false;
-        };
-        if skill == OsStr::new("outside-in-testing") {
-            return components.next().is_some();
-        }
-        if skill != OsStr::new("docx") && skill != OsStr::new("pptx") {
-            continue;
-        }
-        if components
-            .next()
-            .is_some_and(|component| component == OsStr::new("ooxml"))
-        {
-            return true;
-        }
-    }
-
-    false
+    matches!(
+        relative,
+        [skills, skill, ooxml]
+            if *skills == OsStr::new("skills")
+                && (*skill == OsStr::new("docx") || *skill == OsStr::new("pptx"))
+                && *ooxml == OsStr::new("ooxml")
+    ) || matches!(
+        relative,
+        [skills, skill, _first_child, ..]
+            if *skills == OsStr::new("skills") && *skill == OsStr::new("outside-in-testing")
+    )
 }
 
 /// Copy a directory recursively, skipping symlinks with a warning.
@@ -533,7 +532,10 @@ mod tests {
         let path = Path::new("/repo/amplifier-bundle/not-skills/docx/ooxml");
         assert!(!is_known_safe_bundle_symlink(path));
         let path = Path::new("/repo/skills/other/link/skills/docx/ooxml");
-        assert!(is_known_safe_bundle_symlink(path));
+        assert!(
+            !is_known_safe_bundle_symlink(path),
+            "nested arbitrary skill paths must not be treated as known-safe bundled symlinks"
+        );
     }
 
     #[test]
