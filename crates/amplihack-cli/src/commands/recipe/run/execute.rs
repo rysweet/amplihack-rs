@@ -54,7 +54,7 @@ pub(super) fn execute_recipe_via_rust(
     let env_builder = EnvBuilder::new()
         .with_agent_binary(active_agent_binary())
         .with_session_tree_context()
-        .with_amplihack_home()
+        .with_amplihack_home_from(working_dir)
         .with_asset_resolver()
         .with_pager_safe_defaults()
         .with_python_sanitization()

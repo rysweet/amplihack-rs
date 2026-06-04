@@ -187,6 +187,71 @@ fn test_execute_recipe_via_rust_propagates_asset_resolver_env() {
 }
 
 #[test]
+fn test_execute_recipe_via_rust_sets_home_from_working_dir_bundle_root() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let repo = temp.path().join("repo");
+    let bundle = repo.join("amplifier-bundle");
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(&bundle).expect("failed to create bundle root");
+    std::fs::create_dir_all(&home).expect("failed to create home");
+
+    std::fs::write(
+        &runner,
+        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"home-probe\",\"success\":true,\"step_results\":[],\"context\":{\"home\":\"$AMPLIHACK_HOME\"}}\nEOF\n",
+    )
+    .expect("failed to write runner stub");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+            .expect("failed to chmod runner");
+    }
+
+    let recipe = repo.join("recipe.yaml");
+    std::fs::write(&recipe, "name: home-probe\nsteps: []\n").expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("HOME");
+    let prev_amplihack_home = std::env::var_os("AMPLIHACK_HOME");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("HOME", &home);
+        std::env::remove_var("AMPLIHACK_HOME");
+    }
+
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), true, false, &repo, &[], None)
+            .expect("recipe run must succeed");
+
+    match prev_runner {
+        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+    match prev_home {
+        Some(value) => unsafe { std::env::set_var("HOME", value) },
+        None => unsafe { std::env::remove_var("HOME") },
+    }
+    match prev_amplihack_home {
+        Some(value) => unsafe { std::env::set_var("AMPLIHACK_HOME", value) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+    }
+
+    let expected_home = repo.canonicalize().expect("repo should canonicalize");
+    assert_eq!(
+        result.context.get("home"),
+        Some(&JsonValue::String(
+            expected_home.to_string_lossy().into_owned()
+        )),
+        "recipe-runner subprocesses must resolve AMPLIHACK_HOME from working_dir bundle root before HOME"
+    );
+}
+
+#[test]
 fn test_execute_recipe_via_rust_propagates_agent_binary_env() {
     let _guard = crate::test_support::home_env_lock()
         .lock()

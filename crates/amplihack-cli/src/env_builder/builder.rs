@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use super::helpers::{
@@ -150,10 +150,11 @@ impl EnvBuilder {
     ///
     /// Resolution order:
     /// 1. If `AMPLIHACK_HOME` is already set in the current environment → no-op.
-    /// 2. If `HOME` is set → use `$HOME/.amplihack`.
-    /// 3. If `std::env::current_exe()` succeeds → use the parent directory of
+    /// 2. Walk up from the current directory for an `amplifier-bundle/` root.
+    /// 3. If `HOME` is set → use `$HOME/.amplihack`.
+    /// 4. If `std::env::current_exe()` succeeds → use the parent directory of
     ///    the running executable.
-    /// 4. All attempts fail → return `self` unchanged (silent degradation).
+    /// 5. All attempts fail → return `self` unchanged (silent degradation).
     ///
     /// # Security (SEC-WS3-01/02/03)
     ///
@@ -162,34 +163,23 @@ impl EnvBuilder {
     /// who controls `$HOME` from injecting traversal paths such as
     /// `/tmp/../../etc`. Non-absolute paths are also rejected.
     ///
-    /// Note: existence of the path is NOT checked — the consumer (recipe runner)
-    /// creates it on demand. Existence checks are avoided to keep this free of
-    /// filesystem side-effects and to work correctly in test environments.
+    /// Note: `$HOME/.amplihack` and executable-parent fallbacks are not
+    /// existence-checked — the consumer can create them on demand. The repo
+    /// root path is selected only when an `amplifier-bundle/` marker exists.
     pub fn with_amplihack_home(self) -> Self {
-        use std::path::{Component, Path, PathBuf};
-
-        /// Validate a candidate path and return it as a String if safe,
-        /// or `None` if it fails security checks (SEC-WS3-01/02).
-        fn validate_path(candidate: &Path) -> Option<String> {
-            // SEC-WS3-02: must be absolute.
-            if !candidate.is_absolute() {
-                tracing::warn!(
-                    path = %candidate.display(),
-                    "AMPLIHACK_HOME resolution produced a non-absolute path — skipping"
-                );
-                return None;
-            }
-            // SEC-WS3-01: reject any path containing '..' (ParentDir) components.
-            if candidate.components().any(|c| c == Component::ParentDir) {
-                tracing::warn!(
-                    path = %candidate.display(),
-                    "AMPLIHACK_HOME resolution produced a path with '..' components — skipping (SEC-WS3-01)"
-                );
-                return None;
-            }
-            Some(candidate.to_string_lossy().into_owned())
+        match env::current_dir() {
+            Ok(cwd) => self.with_amplihack_home_from(&cwd),
+            Err(_) => self.resolve_amplihack_home(None),
         }
+    }
 
+    /// Resolve and set `AMPLIHACK_HOME` using `start_dir` as the authoritative
+    /// bundle-root search anchor before falling back to the user install.
+    pub fn with_amplihack_home_from(self, start_dir: &Path) -> Self {
+        self.resolve_amplihack_home(Some(start_dir))
+    }
+
+    fn resolve_amplihack_home(self, start_dir: Option<&Path>) -> Self {
         // Step 1: already set in environment — preserve it.
         if let Ok(existing) = env::var("AMPLIHACK_HOME")
             && !existing.is_empty()
@@ -197,12 +187,21 @@ impl EnvBuilder {
             return self.set("AMPLIHACK_HOME", existing);
         }
 
-        // Step 2: derive from HOME env var → $HOME/.amplihack
+        // Step 2: prefer the checked-out bundle root when running from a repo
+        // or worktree so recipe subprocesses resolve assets from the same code.
+        if let Some(start_dir) = start_dir
+            && let Some(root) = find_bundle_root(start_dir)
+            && let Some(value) = validate_amplihack_home_path(&root)
+        {
+            return self.set("AMPLIHACK_HOME", value);
+        }
+
+        // Step 3: derive from HOME env var → $HOME/.amplihack
         if let Ok(home) = env::var("HOME")
             && !home.is_empty()
         {
             let candidate = PathBuf::from(&home).join(".amplihack");
-            if let Some(value) = validate_path(&candidate) {
+            if let Some(value) = validate_amplihack_home_path(&candidate) {
                 return self.set("AMPLIHACK_HOME", value);
             }
             // Path failed security check — do NOT fall through to exe-based
@@ -211,17 +210,17 @@ impl EnvBuilder {
             return self;
         }
 
-        // Step 3: fall back to the parent directory of the running executable.
+        // Step 4: fall back to the parent directory of the running executable.
         if let Ok(exe) = env::current_exe()
             && let Some(parent) = exe.parent()
         {
             let candidate = parent.to_path_buf();
-            if let Some(value) = validate_path(&candidate) {
+            if let Some(value) = validate_amplihack_home_path(&candidate) {
                 return self.set("AMPLIHACK_HOME", value);
             }
         }
 
-        // Step 4: all strategies exhausted — return unchanged (SEC-WS3-03 silent).
+        // Step 5: all strategies exhausted — return unchanged (SEC-WS3-03 silent).
         self
     }
 
@@ -380,6 +379,38 @@ impl Default for EnvBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn find_bundle_root(start_dir: &Path) -> Option<PathBuf> {
+    let start = if start_dir.is_absolute() {
+        start_dir.to_path_buf()
+    } else {
+        env::current_dir().ok()?.join(start_dir)
+    };
+    let start = start.canonicalize().unwrap_or(start);
+
+    start
+        .ancestors()
+        .find(|candidate| candidate.join("amplifier-bundle").is_dir())
+        .map(Path::to_path_buf)
+}
+
+fn validate_amplihack_home_path(candidate: &Path) -> Option<String> {
+    if !candidate.is_absolute() {
+        tracing::warn!(
+            path = %candidate.display(),
+            "AMPLIHACK_HOME resolution produced a non-absolute path — skipping"
+        );
+        return None;
+    }
+    if candidate.components().any(|c| c == Component::ParentDir) {
+        tracing::warn!(
+            path = %candidate.display(),
+            "AMPLIHACK_HOME resolution produced a path with '..' components — skipping (SEC-WS3-01)"
+        );
+        return None;
+    }
+    Some(candidate.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
