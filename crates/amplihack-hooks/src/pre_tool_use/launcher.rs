@@ -17,7 +17,7 @@ use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const AGENTS_FILE: &str = "AGENTS.md";
 const CONTEXT_MARKER_START: &str = "<!-- AMPLIHACK_CONTEXT_START -->";
@@ -52,7 +52,7 @@ pub(crate) fn detect_launcher_for_dirs(dirs: &ProjectDirs) -> LauncherType {
         return launcher;
     }
 
-    if let Some(context) = read_launcher_context_from_project_or_ancestors(&dirs.root)
+    if let Some((_, context)) = read_launcher_context_from_project_or_ancestors(&dirs.root)
         && !is_launcher_context_stale(&context)
     {
         return match context.launcher {
@@ -81,13 +81,13 @@ fn detect_launcher_from_env() -> Option<LauncherType> {
 
 fn read_launcher_context_from_project_or_ancestors(
     root: &Path,
-) -> Option<amplihack_cli::launcher_context::LauncherContext> {
+) -> Option<(PathBuf, amplihack_cli::launcher_context::LauncherContext)> {
     for candidate in framework_roots_from(root) {
         if let Some(context) = read_launcher_context(&candidate) {
-            return Some(context);
+            return Some((candidate, context));
         }
     }
-    read_launcher_context(root)
+    read_launcher_context(root).map(|context| (root.to_path_buf(), context))
 }
 
 /// Inject context based on the detected launcher.
@@ -113,9 +113,21 @@ pub fn inject_context(dirs: &ProjectDirs, input_data: &Value) {
 }
 
 fn inject_copilot_context(dirs: &ProjectDirs, input_data: &Value) {
-    if let Err(error) = write_copilot_context(dirs, input_data) {
+    let target_dirs = copilot_context_dirs(dirs);
+    if let Err(error) = write_copilot_context(&target_dirs, input_data) {
         tracing::warn!("Copilot context injection failed (non-fatal): {}", error);
     }
+}
+
+fn copilot_context_dirs(dirs: &ProjectDirs) -> ProjectDirs {
+    if let Some((root, context)) = read_launcher_context_from_project_or_ancestors(&dirs.root)
+        && !is_launcher_context_stale(&context)
+        && context.launcher == LauncherKind::Copilot
+    {
+        return ProjectDirs::from_root(&root);
+    }
+
+    dirs.clone()
 }
 
 fn write_copilot_context(dirs: &ProjectDirs, input_data: &Value) -> anyhow::Result<()> {

@@ -4,8 +4,6 @@ version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "review", "pr"]
 
-# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
-
 recursion:
   max_depth: 6
   max_total_steps: 80
@@ -52,8 +50,6 @@ steps:
       **Requirements:** {{final_requirements}}
       **Implementation:** {{review_feedback}}
 
-      **REQUIRED FOR ALL PRs** - Quality gates exist for a reason.
-
       **Review Checklist:**
       - [ ] Code quality and standards
       - [ ] Test coverage adequate
@@ -67,7 +63,7 @@ steps:
       2. Identify issues and improvements
       3. **POST review comments on PR** (this is required evidence)
 
-      **Output:** Structured review findings AND confirmation that review was posted to PR.
+      **Output:** Review findings and confirmation posted to PR.
     output: "pr_review"
 
   - id: "step-17c-security-review"
@@ -90,7 +86,7 @@ steps:
       1. Perform security analysis
       2. **POST security findings as PR comments** (this is required evidence)
 
-      **Output:** Security review findings AND confirmation that review was posted to PR.
+      **Output:** Security findings and confirmation posted to PR.
     output: "pr_security_review"
 
   - id: "step-17d-philosophy-guardian"
@@ -113,7 +109,7 @@ steps:
       1. Verify philosophy compliance
       2. **POST philosophy check as PR comment** (this is required evidence)
 
-      **Output:** Philosophy compliance status AND confirmation that review was posted to PR.
+      **Output:** Compliance status and confirmation posted to PR.
     output: "pr_philosophy_review"
 
   - id: "step-17e-address-blocking-issues"
@@ -182,15 +178,13 @@ steps:
       **Philosophy Review:** {{pr_philosophy_review}}
       **Current Implementation:** {{review_feedback}}
 
-      **REQUIRED FOR ALL PRs** - Unaddressed feedback means the review was pointless.
-
       **Checklist:**
       - [ ] Address EVERY blocking issue
       - [ ] Address suggestions where appropriate
       - [ ] For disagreements, document reasoning
       - [ ] Ensure changes don't introduce new issues
 
-      **Output:** Updated implementation with summary of changes for each feedback item.
+      **Output:** Summary of changes for each feedback item.
     output: "pr_feedback_changes"
 
   - id: "step-18c-push-feedback-changes"

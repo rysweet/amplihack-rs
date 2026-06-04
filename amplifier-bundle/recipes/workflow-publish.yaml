@@ -393,9 +393,3 @@ steps:
        Update the PR description with a "Step 16b: Outside-In Testing Results"
        section listing each scenario, command, result, key output, and fix count.
     output: "outside_in_fix_loop_results"
-
-  # ==========================================================================
-  # STEP 17: REVIEW THE PR (MANDATORY - DO NOT SKIP)
-  # Granular sub-steps with verification gates to prevent completion bias.
-  # Each sub-step invokes a specific agent and requires evidence.
-  # ==========================================================================

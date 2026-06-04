@@ -182,9 +182,12 @@ pub(super) fn find_framework_repo_root(root: &Path) -> Result<PathBuf> {
             fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
         {
             let entry = entry.with_context(|| format!("failed to inspect {}", dir.display()))?;
-            let path = entry.path();
-            if path.is_dir() {
-                queue.push_back(path);
+            if entry
+                .file_type()
+                .with_context(|| format!("failed to inspect {}", entry.path().display()))?
+                .is_dir()
+            {
+                queue.push_back(entry.path());
             }
         }
     }

@@ -143,6 +143,9 @@ fn finalize_pr_ready_step_is_defensive_and_bounded() {
         "gh auth status",
         "timeout",
         "gh pr view",
+        "PR_NUMBER",
+        "gh pr list",
+        "git branch --show-current",
         "isDraft",
         "state",
     ] {
@@ -154,6 +157,18 @@ fn finalize_pr_ready_step_is_defensive_and_bounded() {
     assert!(
         !command.contains("\ngh pr ready \"$PR_URL\""),
         "step-21-pr-ready must not call bare `gh pr ready \"$PR_URL\"`; it should be timeout-bounded and state-aware"
+    );
+    assert!(
+        !command.contains("requires a git repo"),
+        "step-21-pr-ready must not fail the whole finalize phase just because branch discovery cannot use a local git checkout"
+    );
+    assert!(
+        command.contains("for pr_target in"),
+        "step-21-pr-ready must iterate discovered PR targets instead of assuming a single PR_URL"
+    );
+    assert!(
+        command.contains("no PR_URL, valid PR_NUMBER, or branch PR found"),
+        "step-21-pr-ready must visibly skip when no relevant PR can be discovered"
     );
 }
 

@@ -1,6 +1,6 @@
 //! Source-derived post-install completeness verification.
 
-use super::filesystem::walk_all;
+use super::filesystem::walk_dirs;
 use super::types::{SOURCE_CONDITIONAL_BUNDLE_DIR_MAPPING, SourceLayout, dir_mapping};
 use anyhow::{Context, Result, bail};
 use std::fs;
@@ -137,8 +137,8 @@ fn require_real_dir(path: &Path, label: &str, rel: &str) -> Result<()> {
 
 fn real_relative_dirs(root: &Path) -> Result<Vec<PathBuf>> {
     let mut dirs = Vec::new();
-    for path in walk_all(root)? {
-        if path == root || !path.is_dir() {
+    for path in walk_dirs(root)? {
+        if path == root {
             continue;
         }
         let rel = path
@@ -154,11 +154,10 @@ fn immediate_real_child_dir_count(path: &Path) -> Result<usize> {
     let mut count = 0;
     for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
         let entry = entry?;
-        let meta = entry
-            .path()
-            .symlink_metadata()
+        let file_type = entry
+            .file_type()
             .with_context(|| format!("failed to stat {}", entry.path().display()))?;
-        if meta.is_dir() && !meta.file_type().is_symlink() {
+        if file_type.is_dir() {
             count += 1;
         }
     }

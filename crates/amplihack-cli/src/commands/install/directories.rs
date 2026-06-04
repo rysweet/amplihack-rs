@@ -263,10 +263,11 @@ fn copy_mapped_dir(
     // dropping the only copy of the staged tree in that edge case, we
     // canonicalise both ends first and skip the atomic-replace dance when
     // they alias.
-    let same_path = match (source_dir.canonicalize(), target_dir.canonicalize()) {
-        (Ok(s), Ok(t)) => s == t,
-        _ => false,
-    };
+    let same_path = target_dir.exists()
+        && match (source_dir.canonicalize(), target_dir.canonicalize()) {
+            (Ok(s), Ok(t)) => s == t,
+            _ => false,
+        };
 
     if same_path {
         // Source IS destination — nothing to copy, nothing to wipe.

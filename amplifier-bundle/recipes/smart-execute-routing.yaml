@@ -4,16 +4,6 @@ version: "1.0.0"
 author: "Amplihack Team"
 tags: ["smart-orchestrator", "routing", "execute", "fallback"]
 
-# smart-execute-routing: extracted from smart-orchestrator.yaml as a composable phase brick.
-#
-# Preserves every original step verbatim — every routing branch, recursion
-# guard, fallback path, adaptive-recovery step, reflection round, and
-# outside-in validation gate. Context (task_type, workstream_count,
-# recursion_guard, round_N_result, etc.) flows in from the parent
-# smart-orchestrator context via _execute_sub_recipe()'s automatic merging
-# and propagates back so subsequent phase recipes can consume it.
-# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
-
 recursion:
   max_depth: 6
   max_total_steps: 80

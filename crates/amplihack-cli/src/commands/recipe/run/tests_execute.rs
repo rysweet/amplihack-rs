@@ -264,7 +264,7 @@ fn test_execute_recipe_via_rust_sets_pager_safe_env() {
 
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"pager-probe\",\"success\":true,\"step_results\":[],\"context\":{\"git_pager\":\"$GIT_PAGER\",\"pager\":\"$PAGER\",\"less\":\"$LESS\"}}\nEOF\n",
+        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"pager-probe\",\"success\":true,\"step_results\":[],\"context\":{\"git_pager\":\"$GIT_PAGER\",\"gh_pager\":\"$GH_PAGER\",\"pager\":\"$PAGER\",\"less\":\"$LESS\"}}\nEOF\n",
     )
     .expect("failed to write runner stub");
 
@@ -278,12 +278,14 @@ fn test_execute_recipe_via_rust_sets_pager_safe_env() {
     let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     let prev_home = std::env::var_os("AMPLIHACK_HOME");
     let prev_git_pager = std::env::var_os("GIT_PAGER");
+    let prev_gh_pager = std::env::var_os("GH_PAGER");
     let prev_pager = std::env::var_os("PAGER");
     let prev_less = std::env::var_os("LESS");
     unsafe {
         std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
         std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
         std::env::remove_var("GIT_PAGER");
+        std::env::remove_var("GH_PAGER");
         std::env::remove_var("PAGER");
         std::env::remove_var("LESS");
     }
@@ -311,6 +313,10 @@ fn test_execute_recipe_via_rust_sets_pager_safe_env() {
         Some(value) => unsafe { std::env::set_var("GIT_PAGER", value) },
         None => unsafe { std::env::remove_var("GIT_PAGER") },
     }
+    match prev_gh_pager {
+        Some(value) => unsafe { std::env::set_var("GH_PAGER", value) },
+        None => unsafe { std::env::remove_var("GH_PAGER") },
+    }
     match prev_pager {
         Some(value) => unsafe { std::env::set_var("PAGER", value) },
         None => unsafe { std::env::remove_var("PAGER") },
@@ -324,6 +330,11 @@ fn test_execute_recipe_via_rust_sets_pager_safe_env() {
         result.context.get("git_pager"),
         Some(&JsonValue::String("cat".to_string())),
         "recipe-runner subprocesses must receive GIT_PAGER=cat to prevent git pager hangs"
+    );
+    assert_eq!(
+        result.context.get("gh_pager"),
+        Some(&JsonValue::String("cat".to_string())),
+        "recipe-runner subprocesses must receive GH_PAGER=cat to prevent gh pager hangs"
     );
     assert_eq!(
         result.context.get("pager"),
