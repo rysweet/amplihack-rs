@@ -58,6 +58,8 @@ pub(super) fn execute_recipe_via_rust(
         .with_asset_resolver()
         .with_pager_safe_defaults()
         .with_python_sanitization()
+        .unset("CLAUDECODE")
+        .set("AMPLIHACK_NONINTERACTIVE", "1")
         .with_project_graph_db(working_dir)?;
 
     // Issue #439: propagate --step-timeout as AMPLIHACK_STEP_TIMEOUT env var.
