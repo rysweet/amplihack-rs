@@ -59,6 +59,7 @@ nav:
       - PATH Conflict Tutorial: tutorials/repair-install-update-path-conflicts.md
       - Local Install: howto/local-install.md
       - Repair PATH Conflicts: howto/repair-install-update-path-conflicts.md
+      - Runtime Asset Resolution: howto/verify-runtime-asset-resolution.md
       - Uninstall: howto/uninstall.md
   - Core Concepts:
       - Philosophy: claude/context/PHILOSOPHY.md

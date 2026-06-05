@@ -40,7 +40,7 @@ reference the Rust replacements directly:
 | `amplifier-bundle/skills/dependency-resolver/README.md` L72 | `ci_status.py` → `gh CLI` (`gh run list`) |
 | `docs/atlas/runtime-topology/README.md` L14 | `session_tree.py` → native recursion guard |
 | `docs/tutorials/dev-orchestrator-tutorial.md` L393-406 | Troubleshooting rewritten for native Rust |
-| `docs/reference/resolve-bundle-asset-command.md` L28,59 | `helper-path` → `amplihack orch helper` |
+| `docs/reference/resolve-bundle-asset-command.md` | `helper-path` documented as a compatibility alias for `amplifier-bundle/bin/multitask-orchestrator.sh` |
 
 **Historical documentation** (audits, P1 plans, publish-validation tutorials)
 received inline deprecation notes preserving historical accuracy:
@@ -72,7 +72,7 @@ Files annotated:
 After this fix, all documentation paths resolve correctly:
 
 ```bash
-# Resolves to native Rust (no Python dependency)
+# Resolves to the native multitask orchestrator wrapper (no Python dependency)
 amplihack resolve-bundle-asset helper-path
 
 # Native recursion guard — no session_tree.py needed

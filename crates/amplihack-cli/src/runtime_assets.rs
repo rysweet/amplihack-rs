@@ -13,13 +13,15 @@ use tracing::{debug, info, warn};
 /// Each asset name maps to one or more candidate relative paths tried in order.
 pub fn asset_relative_paths() -> HashMap<&'static str, Vec<&'static str>> {
     let mut m = HashMap::new();
-    // NOTE (rysweet/amplihack-rs#285): the "hooks-dir" named asset was removed.
-    // Its only consumers were two `HOOKS_DIR=$(...) || true` lines in
-    // smart-orchestrator.yaml that never read the variable. Both the asset
-    // entry and those shell lines were deleted as part of the first slice of
-    // the umbrella issue eliminating the bundled-Python tools/amplihack/ tree.
-    // Native compatibility wrapper for legacy callers that still resolve the
-    // multitask orchestrator by logical asset name.
+    m.insert("hooks-dir", vec!["amplifier-bundle/tools/amplihack/hooks"]);
+    m.insert(
+        "helper-path",
+        vec!["amplifier-bundle/bin/multitask-orchestrator.sh"],
+    );
+    m.insert(
+        "session-tree-path",
+        vec!["amplifier-bundle/tools/amplihack/session"],
+    );
     m.insert(
         "multitask-orchestrator",
         vec!["amplifier-bundle/bin/multitask-orchestrator.sh"],
@@ -155,8 +157,9 @@ mod tests {
     fn asset_relative_paths_has_known_keys() {
         let paths = asset_relative_paths();
         assert!(paths.contains_key("multitask-orchestrator"));
-        assert!(!paths.contains_key("helper-path"));
-        assert!(!paths.contains_key("session-tree-path"));
+        assert!(paths.contains_key("helper-path"));
+        assert!(paths.contains_key("session-tree-path"));
+        assert!(paths.contains_key("hooks-dir"));
     }
 
     #[test]
@@ -167,18 +170,22 @@ mod tests {
         assert!(orch[0].contains("amplifier-bundle/bin"));
     }
 
-    /// Regression guard for rysweet/amplihack-rs#285: the "hooks-dir" named
-    /// asset and the underlying amplifier-bundle/tools/amplihack/hooks/
-    /// directory have been deleted. Re-introducing the asset key without
-    /// also restoring real consumers would re-create the dead code path
-    /// (HOOKS_DIR was assigned with `|| true` and never read), which is
-    /// exactly what this slice removed.
     #[test]
-    fn hooks_dir_is_not_registered_see_issue_285() {
+    fn helper_path_uses_native_wrapper() {
+        let paths = asset_relative_paths();
+        let helper = &paths["helper-path"];
+        assert_eq!(
+            helper,
+            &vec!["amplifier-bundle/bin/multitask-orchestrator.sh"]
+        );
+    }
+
+    #[test]
+    fn hooks_dir_is_registered_for_legacy_asset_resolution() {
         let paths = asset_relative_paths();
         assert!(
-            !paths.contains_key("hooks-dir"),
-            "hooks-dir asset must remain unregistered (see rysweet/amplihack-rs#285)"
+            paths.contains_key("hooks-dir"),
+            "hooks-dir asset must remain registered for issue #634 parity"
         );
     }
 

@@ -35,14 +35,21 @@ cat .claude/settings.json 2>/dev/null | grep -A5 hooks
 
 If you see hook definitions, you need to merge manually.
 
-### Step 2: Locate amplihack Hook Scripts
+### Step 2: Locate amplihack Hook Runtime
 
 ```bash
-# The install command places hooks relative to the bundle:
-amplihack resolve-bundle-asset hooks/session_start.py
-amplihack resolve-bundle-asset hooks/stop.py
-amplihack resolve-bundle-asset hooks/post_tool_use.py
+# Hook behavior is served by the native amplihack-hooks binary.
+which amplihack-hooks
+
+# The bundle hook directory remains available for hook metadata and parity checks.
+HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir)"
+printf 'hooks-dir -> %s\n' "$HOOKS_DIR"
+test -f "$HOOKS_DIR/README.md"
 ```
+
+Do not pass individual hook script names such as `hooks/session_start.py` to
+`resolve-bundle-asset`. The resolver accepts the named `hooks-dir` asset; hook
+commands themselves run through `amplihack-hooks <subcommand>`.
 
 ### Step 3: Add amplihack Hooks to Project Settings
 
@@ -61,7 +68,7 @@ your existing ones:
           },
           {
             "type": "command",
-            "command": "/home/you/.claude/tools/amplihack/hooks/session_start.py",
+            "command": "/home/you/.local/bin/amplihack-hooks session-start",
             "timeout": 10
           }
         ]
@@ -72,7 +79,7 @@ your existing ones:
         "hooks": [
           {
             "type": "command",
-            "command": "/home/you/.claude/tools/amplihack/hooks/stop.py",
+            "command": "/home/you/.local/bin/amplihack-hooks stop",
             "timeout": 120
           }
         ]
@@ -84,7 +91,7 @@ your existing ones:
         "hooks": [
           {
             "type": "command",
-            "command": "/home/you/.claude/tools/amplihack/hooks/post_tool_use.py"
+            "command": "/home/you/.local/bin/amplihack-hooks post-tool-use"
           }
         ]
       }
@@ -94,23 +101,24 @@ your existing ones:
 ```
 
 !!! warning "Use Absolute Paths"
-    Always use absolute paths for hook commands. Relative paths cause
-    "file not found" errors (exit code 127).
+    Always use the absolute path to `amplihack-hooks` when hand-editing
+    settings. Relative paths cause "file not found" errors (exit code 127).
 
 ### Step 4: Verify
 
 Start a new Claude Code session. Check the output panel for:
 
 ```
-SessionStart [/home/you/.claude/tools/amplihack/hooks/session_start.py] completed
+SessionStart [/home/you/.local/bin/amplihack-hooks session-start] completed
 ```
 
 ## Troubleshooting
 
 ### "Hook not found" (exit code 127)
 
-The hook path is wrong or relative. Use absolute paths starting with `/home/`
-(Linux) or `/Users/` (macOS).
+The `amplihack-hooks` path is wrong or relative. Use an absolute path starting
+with `/home/` (Linux) or `/Users/` (macOS), or rerun `amplihack install` to
+rewrite hook commands automatically.
 
 ### Hooks Not Running
 

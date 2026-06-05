@@ -98,11 +98,11 @@ Two named assets re-registered in the `NAMED_ASSETS` table:
 | Name | Resolves to | Fallback |
 |---|---|---|
 | `hooks-dir` | `amplifier-bundle/tools/amplihack/hooks/` | — |
-| `helper-path` | `amplihack orch helper` (native Rust) |  |
+| `helper-path` | `amplifier-bundle/bin/multitask-orchestrator.sh` | — |
 
-`helper-path` now resolves to the native Rust `amplihack orch helper` command.
-The fallback paths are retained but
-are no longer shipped.
+`helper-path` is a compatibility alias for callers that still request the
+legacy orchestration-helper asset name. It resolves to the native multitask
+orchestrator wrapper shipped with the bundle.
 
 ### Usage
 
@@ -111,9 +111,9 @@ are no longer shipped.
 amplihack resolve-bundle-asset hooks-dir
 # /home/user/.amplihack/amplifier-bundle/tools/amplihack/hooks
 
-# The orchestrator helper is now a native Rust subcommand:
-amplihack orch helper
-# (No resolve-bundle-asset lookup needed — use directly)
+# Resolve the legacy helper alias
+amplihack resolve-bundle-asset helper-path
+# /home/user/.amplihack/amplifier-bundle/bin/multitask-orchestrator.sh
 ```
 
 ### Configuration
