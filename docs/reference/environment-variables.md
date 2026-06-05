@@ -15,6 +15,7 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_DEPTH](#amplihack_depth)
   - [AMPLIHACK_RUST_RUNTIME](#amplihack_rust_runtime)
   - [AMPLIHACK_VERSION](#amplihack_version)
+  - [AMPLIHACK_RELEASE_VERSION](#amplihack_release_version)
   - [NODE_OPTIONS](#node_options)
 - [Variables injected by recipe executor](#variables-injected-by-recipe-executor)
   - [AMPLIHACK_STEP_TIMEOUT](#amplihack_step_timeout)
@@ -294,7 +295,30 @@ fi
 **Example:** `0.3.1`
 **Set by:** `EnvBuilder::with_amplihack_vars()`
 
-The version of the `amplihack-cli` crate that launched the session. Taken from `CARGO_PKG_VERSION` at compile time.
+The version of the `amplihack-cli` binary that launched the session. Release
+builds use `AMPLIHACK_RELEASE_VERSION` when it was set at compile time; local
+developer builds fall back to `CARGO_PKG_VERSION`.
+
+---
+
+### AMPLIHACK_RELEASE_VERSION
+
+**Type:** semver string
+**Example:** `0.9.78`
+**Set by:** release build environment
+**Read by:** Rust compile-time `option_env!("AMPLIHACK_RELEASE_VERSION")`
+
+Build-time override for the version embedded in released binaries. The release
+workflow sets this value while compiling so `amplihack --version`, doctor
+output, plugin manifests, hook context loading, and the runtime
+`AMPLIHACK_VERSION` child-process variable all report the release tag version.
+
+Local builds normally leave this unset and use `CARGO_PKG_VERSION`.
+
+```sh
+AMPLIHACK_RELEASE_VERSION=0.9.78 cargo build --release --locked --bin amplihack
+./target/release/amplihack --version
+```
 
 ---
 

@@ -6,7 +6,7 @@ Quick solution for when `amplihack copilot` or `amplihack install` reports that 
 
 ```bash
 node --version
-# If output is v23.x or lower, you need to upgrade
+# If output is v23.x or lower, use managed install or upgrade system Node.js
 ```
 
 ---
@@ -17,25 +17,23 @@ node --version
 
 One of two messages appears depending on the command:
 
-**`amplihack copilot`** (hard error — blocks launch):
+**`amplihack copilot`** (auto-remediation on supported interactive hosts):
 
 ```
-Error: GitHub Copilot CLI requires Node.js v24 or higher.
-Currently installed: v20.19.4
-Install Node.js v24+: https://nodejs.org/
-
-To upgrade:
-  nvm install 24 && nvm use 24    # if using nvm
-  brew install node@24             # macOS (Homebrew)
-  sudo apt install nodejs          # Ubuntu/Debian (after adding NodeSource v24 repo)
+Downloading Node.js v24.1.0 (linux-x64)...
+Installing Node.js v24.1.0...
+Node.js v24.1.0 installed to ~/.amplihack/runtimes/node-v24.1.0-linux-x64
 ```
+
+On unsupported platforms or in non-interactive environments, launch fails with
+manual installation guidance instead of downloading Node.js.
 
 **`amplihack install`** (warning — install continues):
 
 ```
 ⚠️  Node.js v20.19.4 detected — Copilot CLI requires v24+.
-   The Copilot CLI plugin was registered, but `amplihack copilot` will refuse
-   to launch until Node.js is upgraded.
+   The Copilot CLI plugin was registered. `amplihack copilot` may install a
+   managed Node.js runtime on a supported interactive host.
    Upgrade: nvm install 24 && nvm use 24
 ```
 
@@ -48,7 +46,9 @@ and `amplihack copilot` would fail with an opaque Node.js error.
 
 ### Solution
 
-Upgrade Node.js to v24 or higher:
+Use `amplihack copilot` on a supported interactive Linux or macOS host to let
+amplihack install managed Node.js automatically, or upgrade system Node.js to
+v24 or higher:
 
 **Using nvm (recommended):**
 
@@ -144,8 +144,8 @@ a parse error, because guessing the user's intended content would be unsafe.
 
 | Scenario | `amplihack install` | `amplihack copilot` |
 |----------|---------------------|---------------------|
-| Node.js missing entirely | Existing prerequisite check warns | Existing prerequisite check blocks |
-| Node.js < v24 | Warning at Copilot plugin step; install continues | Hard error before launch |
+| Node.js missing entirely | Warning at Copilot plugin step; install continues | Managed install on supported interactive hosts; otherwise hard error |
+| Node.js < v24 | Warning at Copilot plugin step; install continues | Managed install on supported interactive hosts; otherwise hard error |
 | Node.js ≥ v24 | No message | Normal launch |
 | Node version unparseable | No message (fail-open) | No message (fail-open) |
 | config.json empty/whitespace | Auto-recovered to `{}` | Auto-recovered to `{}` |
@@ -162,6 +162,6 @@ a parse error, because guessing the user's intended content would be unsafe.
 
 ---
 
-**Last Updated**: 2026-06-02
+**Last Updated**: 2026-06-05
 **Introduced In**: Issue #679
-**Affects**: `amplihack install` (warning), `amplihack copilot` (hard error)
+**Affects**: `amplihack install` (warning), `amplihack copilot` (launch-time remediation or hard error)

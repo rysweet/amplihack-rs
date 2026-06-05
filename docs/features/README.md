@@ -28,6 +28,9 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 ## Workflow Recovery
 
 - [Workflow-Owned PR Recovery Readiness](pr-recovery-readiness.md) — recover existing pull requests through `default-workflow`, reuse the PR branch, verify hook and additive-copy readiness, and finalize only through workflow-owned steps.
+- [Existing Branch Finalization Runbook](post-v0977-finalization.md) — inspect,
+  preserve, validate, publish, and merge an already-implemented branch; includes
+  the post-v0.9.77 issue-658 branch as the concrete example.
 
 ## GitHub Distribution
 

@@ -3,8 +3,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
+const { EventEmitter } = require('node:events');
 const { setTimeout: delay } = require('node:timers/promises');
 
 const {
@@ -12,6 +14,7 @@ const {
   binaryFilename,
   cacheStateRoot,
   copyFileAtomic,
+  download,
   findBinary,
   hasLocalCargoWorkspace,
   latestTagCachePath,
@@ -81,6 +84,109 @@ test('download URL validation only trusts GitHub release hosts', () => {
   assert.doesNotThrow(() => validateDownloadUrl('https://release-assets.githubusercontent.com/github-production-release-asset/123'));
   assert.throws(() => validateDownloadUrl('https://example.com/amplihack.tar.gz'));
 });
+
+function responseFor(statusCode, body = '', headers = {}) {
+  const response = new EventEmitter();
+  response.statusCode = statusCode;
+  response.headers = headers;
+  response.resume = () => {};
+  response.send = () => {
+    if (body.length > 0) {
+      response.emit('data', Buffer.from(body));
+    }
+    response.emit('end');
+  };
+  return response;
+}
+
+function withMockHttpsGet(handler, testFn) {
+  return async () => {
+    const originalGet = https.get;
+    https.get = (url, options, callback) => {
+      const request = new EventEmitter();
+      request.setTimeout = (_timeoutMs, onTimeout) => {
+        request.onTimeout = onTimeout;
+        return request;
+      };
+      request.destroy = (error) => {
+        process.nextTick(() => request.emit('error', error));
+        return request;
+      };
+      handler(String(url), options, callback, request);
+      return request;
+    };
+    try {
+      await testFn();
+    } finally {
+      https.get = originalGet;
+    }
+  };
+}
+
+let downloadRetriesTransientAttempts = 0;
+
+test('download retries transient HTTP failures', withMockHttpsGet((_, __, callback) => {
+  process.nextTick(() => {
+    downloadRetriesTransientAttempts += 1;
+    const response = downloadRetriesTransientAttempts === 1
+      ? responseFor(503)
+      : responseFor(200, 'ok');
+    callback(response);
+    response.send();
+  });
+}, async () => {
+  downloadRetriesTransientAttempts = 0;
+  const bytes = await download(
+    'https://github.com/rysweet/amplihack-rs/releases/download/v1.2.3/amplihack-x86_64-unknown-linux-gnu.tar.gz',
+    { attempts: 2, retryDelayMs: 0, timeoutMs: 1000 },
+  );
+  assert.equal(bytes.toString('utf8'), 'ok');
+  assert.equal(downloadRetriesTransientAttempts, 2);
+}));
+
+let downloadPermanentFailureAttempts = 0;
+
+test('download does not retry permanent HTTP failures', withMockHttpsGet((_, __, callback) => {
+  process.nextTick(() => {
+    downloadPermanentFailureAttempts += 1;
+    const response = responseFor(404);
+    callback(response);
+    response.send();
+  });
+}, async () => {
+  downloadPermanentFailureAttempts = 0;
+  await assert.rejects(
+    () => download(
+      'https://github.com/rysweet/amplihack-rs/releases/download/v1.2.3/missing.tar.gz',
+      { attempts: 3, retryDelayMs: 0, timeoutMs: 1000 },
+    ),
+    /HTTP 404/u,
+  );
+  assert.equal(downloadPermanentFailureAttempts, 1);
+}));
+
+let downloadTimeoutAttempts = 0;
+
+test('download retries request timeouts', withMockHttpsGet((_, __, callback, request) => {
+  process.nextTick(() => {
+    downloadTimeoutAttempts += 1;
+    if (downloadTimeoutAttempts === 1) {
+      request.onTimeout();
+      return;
+    }
+    const response = responseFor(200, 'after-timeout');
+    callback(response);
+    response.send();
+  });
+}, async () => {
+  downloadTimeoutAttempts = 0;
+  const bytes = await download(
+    'https://github.com/rysweet/amplihack-rs/releases/download/v1.2.3/amplihack-x86_64-unknown-linux-gnu.tar.gz.sha256',
+    { attempts: 2, retryDelayMs: 0, timeoutMs: 1 },
+  );
+  assert.equal(bytes.toString('utf8'), 'after-timeout');
+  assert.equal(downloadTimeoutAttempts, 2);
+}));
 
 test('findBinary locates nested binaries', async () => {
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'amplihack-npm-test-'));
