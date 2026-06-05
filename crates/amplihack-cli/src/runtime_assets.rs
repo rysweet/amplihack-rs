@@ -15,9 +15,16 @@ use crate::resolve_bundle_asset;
 /// Each asset name maps to one or more candidate relative paths tried in order.
 pub fn asset_relative_paths() -> HashMap<&'static str, Vec<&'static str>> {
     resolve_bundle_asset::named_asset_relative_paths()
-        .iter()
-        .map(|(name, paths)| (*name, (*paths).to_vec()))
+        .into_iter()
+        .map(|(name, paths)| (name, paths.to_vec()))
         .collect()
+}
+
+fn relative_paths_for(asset_name: &str) -> Option<&'static [&'static str]> {
+    resolve_bundle_asset::named_asset_relative_paths()
+        .into_iter()
+        .find(|(name, _)| *name == asset_name)
+        .map(|(_, paths)| paths)
 }
 
 /// Iterate candidate runtime root directories.
@@ -74,9 +81,7 @@ pub fn iter_runtime_roots() -> Vec<PathBuf> {
 ///
 /// Tries each relative path variant under each root in order.
 pub fn resolve_asset_path(asset_name: &str, search_roots: &[PathBuf]) -> Result<PathBuf> {
-    let asset_map = asset_relative_paths();
-    let rel_paths = asset_map
-        .get(asset_name)
+    let rel_paths = relative_paths_for(asset_name)
         .with_context(|| format!("unknown asset name: {asset_name}"))?;
 
     for root in search_roots {

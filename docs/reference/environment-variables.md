@@ -107,13 +107,22 @@ AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack copilot
 **Example:** `/home/alice/.local/bin/amplihack-asset-resolver`
 **Set by:** `EnvBuilder::with_asset_resolver()`
 
-Absolute path to the native bundle-asset resolver. Child processes can execute this binary with a single relative asset path argument, for example:
+Absolute path to the native bundle-asset resolver. Child processes can execute
+this binary with a single supported named asset or relative asset path argument,
+for example:
 
 ```sh
 "$AMPLIHACK_ASSET_RESOLVER" amplifier-bundle/recipes/smart-orchestrator.yaml
+"$AMPLIHACK_ASSET_RESOLVER" hooks-dir
 ```
 
 That returns the resolved absolute path on stdout and exits non-zero on invalid input or missing assets.
+The standalone binary resolves assets through the same CLI resolver as
+[`amplihack resolve-bundle-asset`](./resolve-bundle-asset-command.md).
+
+The CLI library's Rust named-asset table is the shared source for the
+standalone binary's usage/listing output and the runtime helper mappings, so
+those consumers stay in sync with the command.
 
 **Resolution order (first match wins):**
 

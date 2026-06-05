@@ -16,7 +16,7 @@ fn is_safe_path_char(ch: char) -> bool {
 /// Named asset mappings for runtime bundle assets.
 ///
 /// Each entry is `(name, &[relative_paths])` where relative_paths are tried in order.
-const NAMED_ASSETS: &[(&str, &[&str])] = &[
+const NAMED_ASSETS: [(&str, &[&str]); 4] = [
     // hooks/ dir — native Rust hooks binary reads config from here.
     ("hooks-dir", &["amplifier-bundle/tools/amplihack/hooks"]),
     // helper-path — orchestration helper script. The Python orch_helper.py
@@ -106,16 +106,23 @@ pub fn resolve_asset(relative_path: &str) -> Result<PathBuf> {
 /// 3. Walk up from cwd for a repo/project root marker
 /// 4. Workspace root (compile-time anchor)
 /// 5. cwd
-pub fn named_asset_relative_paths() -> &'static [(&'static str, &'static [&'static str])] {
+pub fn named_asset_relative_paths() -> [(&'static str, &'static [&'static str]); 4] {
     NAMED_ASSETS
 }
 
-pub fn named_asset_names() -> String {
-    NAMED_ASSETS
-        .iter()
-        .map(|(n, _)| *n)
-        .collect::<Vec<_>>()
-        .join(", ")
+pub fn named_asset_names() -> [&'static str; 4] {
+    NAMED_ASSETS.map(|(name, _)| name)
+}
+
+fn named_asset_names_csv() -> String {
+    named_asset_names().join(", ")
+}
+
+pub fn usage_text(program_name: &str) -> String {
+    format!(
+        "Usage: {program_name} <asset>\n  <asset> is either:\n    - a named asset: {}\n    - a relative path starting with 'amplifier-bundle/'",
+        named_asset_names_csv()
+    )
 }
 
 pub fn resolve_named_asset(name: &str) -> Result<PathBuf> {
@@ -126,7 +133,7 @@ pub fn resolve_named_asset(name: &str) -> Result<PathBuf> {
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "Unknown asset name {name:?}. Expected one of: {}",
-                named_asset_names()
+                named_asset_names_csv()
             )
         })?;
 
@@ -177,7 +184,7 @@ pub fn run_cli(arg: &str) -> i32 {
     if !arg.contains('/') {
         eprintln!(
             "ERROR: Unknown asset name {arg:?}. Expected one of: {}",
-            named_asset_names()
+            named_asset_names_csv()
         );
         return 1;
     }
