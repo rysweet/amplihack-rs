@@ -14,9 +14,10 @@ stale system-wide binary, usually `/usr/local/bin/amplihack` or
 `/usr/local/bin/amplihack-hooks`, is shadowing the current user-local binary in
 `~/.local/bin`.
 
-`amplihack` never runs `sudo`, deletes system files, or writes to privileged
-locations automatically. It repairs only user-writable install targets and gives
-explicit commands when system files need administrator action.
+`amplihack` never runs `sudo`, deletes system files, or writes to
+system-managed locations automatically. It repairs only user-level writable
+install targets and gives explicit commands when system files need
+administrator action.
 
 ## Check command resolution order
 
@@ -100,14 +101,15 @@ update that package or change `PATH` order instead.
 
 When `~/.local/bin/amplihack` and `~/.local/bin/amplihack-hooks` already exist
 and are writable, `amplihack update` uses them as the preferred replacement
-target even if stale root-owned copies also exist in `/usr/local/bin`.
+target even if stale copies also exist in system-managed prefixes such as
+`/usr/local/bin`, `/usr/bin`, `/bin`, or `/opt`.
 
 ```bash
 amplihack update
 ```
 
-If a root-owned system binary blocks automatic repair, the command fails before
-attempting a temporary copy into `/usr/local/bin` and prints manual guidance:
+If a system-managed binary blocks automatic repair, the command fails before
+attempting a temporary copy into that location and prints manual guidance:
 
 ```text
 Cannot update /usr/local/bin/amplihack automatically.
@@ -130,7 +132,7 @@ This is intentional. The updater avoids misleading errors such as:
 Permission denied (os error 13)
 ```
 
-from trying to copy temporary replacement files into `/usr/local/bin`.
+from trying to copy temporary replacement files into system-managed prefixes.
 
 ## Expected clean install/update output
 

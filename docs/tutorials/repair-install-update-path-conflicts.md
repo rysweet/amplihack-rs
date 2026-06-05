@@ -21,7 +21,7 @@ You will create two fake install roots:
 - a current user-style root that appears later on `PATH`
 
 Then you will change `PATH` order and see why `amplihack` prefers safe
-user-local repair instead of writing to privileged system directories.
+user-local repair instead of writing to system-managed directories.
 
 ## 1. Create temporary fake binaries
 

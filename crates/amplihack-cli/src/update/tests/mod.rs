@@ -1,5 +1,6 @@
 mod build_install_command;
 mod classify_skip_reason;
+mod install_target;
 mod network;
 mod skip_line;
 mod subcommand_routing;

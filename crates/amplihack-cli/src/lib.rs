@@ -35,10 +35,12 @@ pub mod env_builder;
 pub mod fleet_local;
 pub mod freshness;
 pub mod health_check;
+pub mod install_output_contract;
 pub mod launcher;
 pub mod launcher_context;
 pub mod memory_config;
 pub mod nesting;
+pub(crate) mod path_conflicts;
 pub mod pr_recovery_readiness;
 #[cfg(test)]
 mod remote_cli_tests;
