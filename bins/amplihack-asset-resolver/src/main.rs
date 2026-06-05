@@ -11,7 +11,8 @@ fn main() {
         eprintln!("Usage: amplihack-asset-resolver <asset>");
         eprintln!("  <asset> is either:");
         eprintln!(
-            "    - a named asset: hooks-dir, helper-path, session-tree-path, multitask-orchestrator"
+            "    - a named asset: {}",
+            resolve_bundle_asset::named_asset_names()
         );
         eprintln!("    - a relative path starting with 'amplifier-bundle/'");
         std::process::exit(2);

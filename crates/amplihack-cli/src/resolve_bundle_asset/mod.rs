@@ -106,7 +106,11 @@ pub fn resolve_asset(relative_path: &str) -> Result<PathBuf> {
 /// 3. Walk up from cwd for a repo/project root marker
 /// 4. Workspace root (compile-time anchor)
 /// 5. cwd
-fn named_asset_names() -> String {
+pub fn named_asset_relative_paths() -> &'static [(&'static str, &'static [&'static str])] {
+    NAMED_ASSETS
+}
+
+pub fn named_asset_names() -> String {
     NAMED_ASSETS
         .iter()
         .map(|(n, _)| *n)
@@ -115,7 +119,7 @@ fn named_asset_names() -> String {
 }
 
 pub fn resolve_named_asset(name: &str) -> Result<PathBuf> {
-    let rel_paths = NAMED_ASSETS
+    let rel_paths = named_asset_relative_paths()
         .iter()
         .find(|(n, _)| *n == name)
         .map(|(_, paths)| *paths)
@@ -160,7 +164,10 @@ fn resolve_result_to_exit(result: Result<PathBuf>) -> i32 {
 
 pub fn run_cli(arg: &str) -> i32 {
     // Dispatch named assets (e.g. "multitask-orchestrator")
-    if NAMED_ASSETS.iter().any(|(name, _)| *name == arg) {
+    if named_asset_relative_paths()
+        .iter()
+        .any(|(name, _)| *name == arg)
+    {
         return resolve_result_to_exit(resolve_named_asset(arg));
     }
 
