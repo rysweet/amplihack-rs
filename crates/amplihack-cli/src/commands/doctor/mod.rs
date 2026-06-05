@@ -21,7 +21,7 @@
 
 mod checks;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use std::path::PathBuf;
 
 pub use checks::{
@@ -107,8 +107,51 @@ pub fn print_summary(results: &[(bool, String)]) -> (usize, usize) {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-/// Run all doctor checks, print the summary, and exit 1 if any check failed.
-pub fn run_doctor() -> Result<()> {
+fn print_help() {
+    println!("Run system health checks");
+    println!();
+    println!("Usage:");
+    println!("  amplihack doctor");
+    println!("  amplihack doctor node [--ensure]");
+    println!("  amplihack doctor copilot [--ensure-node]");
+    println!();
+    println!("Commands:");
+    println!("  node       Diagnose Node.js >=24.0.0 for Copilot CLI");
+    println!("  copilot    Diagnose Copilot CLI prerequisites");
+    println!();
+    println!("Options:");
+    println!(
+        "  --ensure        Print remediation and use safe auto-remediation only when available"
+    );
+    println!("  --ensure-node   Run the Node.js ensure flow before Copilot checks");
+}
+
+/// Run doctor checks, print the summary, and exit 1 if any check failed.
+pub fn run_doctor(args: Vec<String>) -> Result<()> {
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        print_help();
+        return Ok(());
+    }
+    if let Some(command) = args.first() {
+        return match command.as_str() {
+            "node" => {
+                let ensure = args.iter().skip(1).any(|arg| arg == "--ensure");
+                crate::commands::node::run_node_diagnostic(ensure)
+            }
+            "copilot" => {
+                if args.iter().skip(1).any(|arg| arg == "--ensure-node") {
+                    crate::commands::node::run_node_diagnostic(true)?;
+                }
+                run_all_checks()
+            }
+            other => bail!("unsupported doctor diagnostic `{other}`"),
+        };
+    }
+
+    run_all_checks()
+}
+
+fn run_all_checks() -> Result<()> {
     use std::thread;
 
     // Spawn subprocess checks in parallel — they are independent and I/O-bound.
@@ -237,7 +280,7 @@ mod tests {
     #[test]
     #[ignore = "requires live environment with tmux, python3, recipe-runner-rs"]
     fn test_run_doctor_does_not_return_err_on_typical_machine() {
-        let result = run_doctor();
+        let result = run_doctor(Vec::new());
         assert!(
             result.is_ok(),
             "run_doctor should return Ok on healthy machine"

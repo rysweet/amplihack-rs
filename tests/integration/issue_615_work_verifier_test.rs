@@ -190,6 +190,48 @@ fn step_08c_work_verifier_prompt_documents_investigation_surfaces() {
 }
 
 #[test]
+fn step_08c_work_verifier_prompt_counts_tdd_checkpoint_commits_as_work_evidence() {
+    let recipe = load_workflow_tdd();
+    let step = step_by_id(&recipe, VERIFIER_STEP_ID);
+    let prompt = step.prompt.unwrap();
+    let lower = prompt.to_lowercase();
+
+    for needle in [
+        "checkpoint-after-implementation",
+        "wip: checkpoint after implementation",
+        "steps 7-8",
+        "tdd",
+        "committed implementation",
+    ] {
+        assert!(
+            lower.contains(needle),
+            "{VERIFIER_STEP_ID} prompt must explicitly count fresh TDD/checkpoint commits as concrete work evidence for issue #658; missing `{needle}`"
+        );
+    }
+}
+
+#[test]
+fn step_08c_work_verifier_prompt_preserves_true_noop_detection() {
+    let recipe = load_workflow_tdd();
+    let step = step_by_id(&recipe, VERIFIER_STEP_ID);
+    let prompt = step.prompt.unwrap();
+    let lower = prompt.to_lowercase();
+
+    for needle in [
+        "no commits",
+        "clean worktree",
+        "no related pr",
+        "no tdd artifact",
+        "hollow_success",
+    ] {
+        assert!(
+            lower.contains(needle),
+            "{VERIFIER_STEP_ID} prompt must keep the true no-op hollow-success contract for issue #658; missing `{needle}`"
+        );
+    }
+}
+
+#[test]
 fn step_08c_work_verifier_prompt_documents_fast_path_optouts() {
     let recipe = load_workflow_tdd();
     let step = step_by_id(&recipe, VERIFIER_STEP_ID);

@@ -250,6 +250,16 @@ test('package version stays aligned with Cargo workspace version', () => {
   assert.equal(packageJson.version, match[1]);
 });
 
+test('package declares Copilot-compatible Node engine', () => {
+  const repoRoot = packageRoot(__dirname);
+  const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+  assert.equal(
+    packageJson.engines && packageJson.engines.node,
+    '>=24',
+    'Copilot CLI remediation requires the npm wrapper to declare Node.js >=24',
+  );
+});
+
 test('resolveLatestReleaseTag honors AMPLIHACK_NPM_VERSION override', async () => {
   const prev = process.env.AMPLIHACK_NPM_VERSION;
   process.env.AMPLIHACK_NPM_VERSION = 'v9.9.9';

@@ -166,9 +166,23 @@ steps:
       6. **Working tree (SECONDARY)** — `git status --porcelain` and
          `git diff --stat HEAD`. Uncommitted edits and untracked files count
          as additional evidence, but a clean tree is NOT evidence of no work.
-      7. **Intent match** — for every artifact, decide whether it actually
+      7. **TDD/checkpoint commit evidence (issue #658)** — a fresh
+         `checkpoint-after-implementation` commit from the TDD window counts
+         as concrete work when it contains task-related tests or
+         implementation, even when the worktree is clean. In particular,
+         treat non-empty commits with the subject
+         `wip: checkpoint after implementation (steps 7-8)` as valid
+         evidence of committed implementation when the diff matches the task.
+         This is the expected path when step-08 legitimately committed
+         implementation before the verifier ran.
+      8. **Intent match** — for every artifact, decide whether it actually
          relates to the task description. Empty files, comment-only changes,
          or unrelated edits do NOT count.
+      9. **True no-op detection** — if there are no commits, a clean worktree,
+         no related PR, no issue closure, and no TDD artifact matching the
+         task, emit `HOLLOW_SUCCESS`. Do not convert a real no-op into
+         `WORK_VERIFIED` merely because a branch, issue, or prior workflow run
+         exists.
 
       ## Fast-path opt-outs (parity with legacy guard, issue #425)
       * If `allow_no_op` is the literal string `"true"` (orchestration /

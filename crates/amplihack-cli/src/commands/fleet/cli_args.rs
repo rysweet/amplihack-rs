@@ -111,6 +111,30 @@ pub(crate) enum NativeFleetCommand {
         #[arg(long)]
         protected: bool,
     },
+    VerifyVersion {
+        #[arg(long, value_delimiter = ',', required_unless_present = "host_file")]
+        hosts: Vec<String>,
+        #[arg(long = "host-file")]
+        host_file: Option<PathBuf>,
+        #[arg(long = "expected-version")]
+        expected_version: Option<String>,
+        #[arg(long, value_enum, default_value_t = NativeFleetOutputFormat::Table)]
+        format: NativeFleetOutputFormat,
+    },
+    Update {
+        #[arg(long, value_delimiter = ',', required_unless_present = "host_file")]
+        hosts: Vec<String>,
+        #[arg(long = "host-file")]
+        host_file: Option<PathBuf>,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        verify: bool,
+        #[arg(long, value_enum, default_value_t = NativeFleetOutputFormat::Table)]
+        format: NativeFleetOutputFormat,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -128,6 +152,12 @@ pub(crate) enum NativeFleetProjectCommand {
     Remove {
         name: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum NativeFleetOutputFormat {
+    Table,
+    Json,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

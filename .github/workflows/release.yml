@@ -36,7 +36,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          # Single source of truth: [workspace.package].version in Cargo.toml.
+          CURRENT=$(python3 - <<'PY'
+          import tomllib
+          with open("Cargo.toml", "rb") as f:
+              data = tomllib.load(f)
+          print(data["workspace"]["package"]["version"])
+          PY
+          )
           echo "Cargo.toml version: ${CURRENT}"
 
           IFS='.' read -r MAJOR MINOR PATCH <<< "${CURRENT}"
