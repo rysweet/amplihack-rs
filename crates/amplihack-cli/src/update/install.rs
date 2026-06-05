@@ -391,12 +391,15 @@ pub(super) fn find_binary(root: &Path, binary_name: &str) -> Result<PathBuf> {
         let entries = fs::read_dir(root).ok()?;
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() && path.file_name() == Some(OsStr::new(binary_name)) {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let is_file = file_type.is_file() || (file_type.is_symlink() && path.is_file());
+            if is_file && path.file_name() == Some(OsStr::new(binary_name)) {
                 return Some(path);
             }
-            if path.is_dir()
-                && let Some(found) = search(&path, binary_name, depth + 1)
-            {
+            let is_dir = file_type.is_dir() || (file_type.is_symlink() && path.is_dir());
+            if is_dir && let Some(found) = search(&path, binary_name, depth + 1) {
                 return Some(found);
             }
         }

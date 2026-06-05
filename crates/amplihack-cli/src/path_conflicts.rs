@@ -87,7 +87,9 @@ pub(crate) fn analyze_path_conflicts(input: &PathAnalysisInput) -> Result<PathCo
     let mut resolutions = BTreeMap::new();
 
     for binary_name in &input.binary_names {
-        let candidates = path_candidates(binary_name, &input.path_dirs)?;
+        let filename = binary_filename(binary_name);
+        let preferred_binary_path = preferred_user_bin.join(&filename);
+        let candidates = path_candidates(&filename, &input.path_dirs)?;
         if candidates.is_empty() {
             continue;
         }
@@ -95,9 +97,7 @@ pub(crate) fn analyze_path_conflicts(input: &PathAnalysisInput) -> Result<PathCo
         let resolved = candidates[0].clone();
         let preferred_user_candidate = candidates
             .iter()
-            .find(|candidate| {
-                candidate.path == preferred_user_bin.join(binary_filename(binary_name))
-            })
+            .find(|candidate| candidate.path == preferred_binary_path)
             .cloned();
         let canonical_candidates = collapse_canonical_candidates(&candidates);
         let preferred_is_shadowed = preferred_user_candidate.as_ref().is_some_and(|preferred| {
@@ -149,8 +149,9 @@ pub(crate) fn decide_update_install_target(
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| anyhow::anyhow!("current executable has no parent directory"))?;
+    let denied_system_prefixes = canonical_denied_prefixes(&input.denied_system_prefixes);
     let current_exe_denied =
-        is_under_denied_prefix(&input.report.current_exe, &input.denied_system_prefixes);
+        is_under_denied_prefix(&input.report.current_exe, &denied_system_prefixes);
     let current_exe_writable = input
         .candidate_probes
         .get(&input.report.current_exe)
@@ -232,12 +233,11 @@ pub(crate) fn binary_filename(name: &str) -> String {
     }
 }
 
-fn path_candidates(binary_name: &str, path_dirs: &[PathBuf]) -> Result<Vec<BinaryCandidate>> {
-    let filename = binary_filename(binary_name);
-    let mut candidates = Vec::new();
+fn path_candidates(filename: &str, path_dirs: &[PathBuf]) -> Result<Vec<BinaryCandidate>> {
+    let mut candidates = Vec::with_capacity(path_dirs.len().min(4));
 
     for (path_index, dir) in path_dirs.iter().enumerate() {
-        let path = dir.join(&filename);
+        let path = dir.join(filename);
         if !is_executable_file(&path) {
             continue;
         }
@@ -254,7 +254,7 @@ fn path_candidates(binary_name: &str, path_dirs: &[PathBuf]) -> Result<Vec<Binar
 
 fn collapse_canonical_candidates(candidates: &[BinaryCandidate]) -> Vec<BinaryCandidate> {
     let mut seen = BTreeSet::new();
-    let mut collapsed = Vec::new();
+    let mut collapsed = Vec::with_capacity(candidates.len());
     for candidate in candidates {
         if seen.insert(candidate.canonical_path.clone()) {
             collapsed.push(candidate.clone());
@@ -332,12 +332,25 @@ fn manual_repair_guidance(
     guidance
 }
 
-fn is_under_denied_prefix(path: &Path, prefixes: &[PathBuf]) -> bool {
+fn canonical_denied_prefixes(prefixes: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
+    prefixes
+        .iter()
+        .map(|prefix| {
+            let canonical = prefix.canonicalize().unwrap_or_else(|_| prefix.clone());
+            (prefix.clone(), canonical)
+        })
+        .collect()
+}
+
+fn is_under_denied_prefix(path: &Path, prefixes: &[(PathBuf, PathBuf)]) -> bool {
+    if prefixes.iter().any(|(prefix, _)| path.starts_with(prefix)) {
+        return true;
+    }
+
     let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    prefixes.iter().any(|prefix| {
-        let canonical_prefix = prefix.canonicalize().unwrap_or_else(|_| prefix.clone());
-        path.starts_with(prefix) || canonical_path.starts_with(canonical_prefix)
-    })
+    prefixes
+        .iter()
+        .any(|(_, canonical_prefix)| canonical_path.starts_with(canonical_prefix))
 }
 
 fn is_executable_file(path: &Path) -> bool {
