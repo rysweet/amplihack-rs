@@ -80,6 +80,40 @@ fn install_warns_for_python_shadow_with_long_shebang_line() {
 }
 
 #[test]
+fn install_uses_generic_shadow_warning_for_large_non_python_binary() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    let local_bin = temp.path().join(".local/bin");
+    let system_bin = temp.path().join("usr/local/bin");
+    let local_amplihack = create_exe_stub(&local_bin, "amplihack");
+    create_exe_stub(&local_bin, "amplihack-hooks");
+    let system_amplihack = create_exe_stub(&system_bin, "amplihack");
+    create_exe_stub(&system_bin, "amplihack-hooks");
+    fs::write(&system_amplihack, vec![b'x'; 2 * 1024 * 1024]).unwrap();
+
+    let report = analyze_path_conflicts(&PathAnalysisInput {
+        home_dir: temp.path().to_path_buf(),
+        current_exe: local_amplihack,
+        path_dirs: vec![system_bin, local_bin],
+        binary_names: vec!["amplihack".into()],
+    })
+    .unwrap();
+
+    let warning = binary::path_conflict_warning_after_install(&report)
+        .expect("shadowed non-Python binary should still produce generic warning text");
+
+    crate::test_support::restore_home(previous);
+
+    assert!(warning.contains("shadows the user-level binary"));
+    assert!(!warning.contains("Python `amplihack` script"));
+    assert!(!warning.contains("pip uninstall amplihack"));
+}
+
+#[test]
 fn install_does_not_warn_when_path_aliases_resolve_to_same_user_binary() {
     let _guard = crate::test_support::home_env_lock()
         .lock()

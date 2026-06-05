@@ -48,38 +48,69 @@ fn extract_archive_finds_both_binaries() {
 
 #[cfg(unix)]
 #[test]
-fn find_binary_ignores_symlinked_archive_entries() {
+fn find_binary_rejects_symlinked_candidates_that_escape_archive_root() {
     let temp = tempfile::tempdir().unwrap();
-    let symlinked_dir_root = temp.path().join("symlinked-dir-search");
-    let symlinked_file_root = temp.path().join("symlinked-file-search");
-    let outside_dir = temp.path().join("outside/real");
-    fs::create_dir_all(&symlinked_dir_root).unwrap();
-    fs::create_dir_all(&symlinked_file_root).unwrap();
-    fs::create_dir_all(&outside_dir).unwrap();
-    let outside_amplihack = outside_dir.join(binary_filename("amplihack"));
-    let outside_hooks = outside_dir.join(binary_filename("amplihack-hooks"));
-    fs::write(&outside_amplihack, b"#!/bin/sh\nexit 0\n").unwrap();
-    fs::write(&outside_hooks, b"#!/bin/sh\nexit 0\n").unwrap();
+    let search_root = temp.path().join("search");
+    let external_dir = temp.path().join("outside/real");
+    fs::create_dir_all(&search_root).unwrap();
+    fs::create_dir_all(&external_dir).unwrap();
+    let external_amplihack = external_dir.join(binary_filename("amplihack"));
+    let external_hooks = external_dir.join(binary_filename("amplihack-hooks"));
+    fs::write(&external_amplihack, b"#!/bin/sh\nexit 0\n").unwrap();
+    fs::write(&external_hooks, b"#!/bin/sh\nexit 0\n").unwrap();
 
     use std::os::unix::fs::symlink;
+    symlink(&external_dir, search_root.join("linked-dir")).unwrap();
     symlink(
-        &outside_dir,
-        symlinked_dir_root.join("archive-controlled-dir-link"),
-    )
-    .unwrap();
-    symlink(
-        &outside_hooks,
-        symlinked_file_root.join(binary_filename("amplihack-hooks")),
+        &external_amplihack,
+        search_root.join(binary_filename("amplihack")),
     )
     .unwrap();
 
     assert!(
-        find_binary(&symlinked_dir_root, binary_filename("amplihack")).is_err(),
-        "archive-controlled symlinked directories must not redirect binary discovery outside the extraction root"
+        find_binary(&search_root, binary_filename("amplihack")).is_err(),
+        "symlinked binary candidates must not be installable update payloads"
     );
     assert!(
-        find_binary(&symlinked_file_root, binary_filename("amplihack-hooks")).is_err(),
-        "archive-controlled symlinked files must not be accepted as install sources"
+        find_binary(&search_root, binary_filename("amplihack-hooks")).is_err(),
+        "symlinked directories must not be traversed outside the extracted archive"
+    );
+}
+
+#[test]
+fn find_binary_finds_nested_real_archive_binary() {
+    let temp = tempfile::tempdir().unwrap();
+    let search_root = temp.path().join("search");
+    let nested = search_root.join("pkg/bin");
+    fs::create_dir_all(&nested).unwrap();
+    let binary = nested.join(binary_filename("amplihack"));
+    fs::write(&binary, b"#!/bin/sh\nexit 0\n").unwrap();
+
+    assert_eq!(
+        find_binary(&search_root, binary_filename("amplihack")).unwrap(),
+        binary
+    );
+}
+
+#[test]
+fn find_binary_surfaces_archive_traversal_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    let search_root = temp.path().join("not-a-directory");
+    fs::write(
+        &search_root,
+        b"archive traversal should require a directory",
+    )
+    .unwrap();
+
+    let err = find_binary(&search_root, binary_filename("amplihack")).unwrap_err();
+    let message = err.to_string();
+    assert!(
+        message.contains("failed to read extracted archive directory"),
+        "archive traversal errors must be explicit, got: {message}"
+    );
+    assert!(
+        !message.contains("not found in downloaded archive"),
+        "filesystem traversal errors must not collapse into generic not-found failures: {message}"
     );
 }
 
@@ -223,7 +254,7 @@ fn release_target_table_covers_windows_x86_64() {
 fn binary_filename_appends_exe_on_windows() {
     // binary_filename() uses cfg!(windows) so on non-Windows hosts it returns
     // the bare name. Inspect the source to guarantee the .exe arm exists.
-    let src = include_str!("../install.rs");
+    let src = include_str!("../archive.rs");
     assert!(
         src.contains(r#""amplihack" => "amplihack.exe""#),
         "binary_filename() must append .exe to amplihack on windows",

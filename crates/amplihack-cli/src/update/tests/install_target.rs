@@ -3,10 +3,9 @@ use super::super::install::{
     probe_candidates_for_update_decision,
 };
 use crate::path_conflicts::{
-    BinaryProbe, InstallTargetDecision, PathAnalysisInput, TargetDecisionInput,
-    analyze_path_conflicts, decide_update_install_target,
+    InstallTargetDecision, PathAnalysisInput, TargetDecisionInput, analyze_path_conflicts,
+    decide_update_install_target, probe_candidates_without_exec,
 };
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -101,8 +100,8 @@ fn downloaded_update_plan_uses_preferred_user_bin_when_system_binary_shadows_cur
     let archive = temp.path().join("archive");
 
     let current_exe = write_executable(&usr_local_bin, "amplihack");
-    let user_amplihack = write_executable(&user_bin, "amplihack");
-    let user_hooks = write_executable(&user_bin, "amplihack-hooks");
+    write_executable(&user_bin, "amplihack");
+    write_executable(&user_bin, "amplihack-hooks");
     let new_amplihack = write_executable(&archive, "amplihack");
     let new_hooks = write_executable(&archive, "amplihack-hooks");
 
@@ -113,28 +112,7 @@ fn downloaded_update_plan_uses_preferred_user_bin_when_system_binary_shadows_cur
         binary_names: vec!["amplihack".into(), "amplihack-hooks".into()],
     })
     .unwrap();
-    let mut probes = BTreeMap::new();
-    probes.insert(
-        current_exe,
-        BinaryProbe {
-            version: Some("0.9.60".into()),
-            writable: false,
-        },
-    );
-    probes.insert(
-        user_amplihack.clone(),
-        BinaryProbe {
-            version: Some("0.9.71".into()),
-            writable: true,
-        },
-    );
-    probes.insert(
-        user_hooks,
-        BinaryProbe {
-            version: Some("0.9.71".into()),
-            writable: true,
-        },
-    );
+    let probes = probe_candidates_without_exec(&report);
 
     let decision = InstallTargetDecision::from(TargetDecisionInput {
         report,
@@ -180,14 +158,7 @@ fn downloaded_update_plan_returns_manual_repair_before_copying_into_denied_syste
         binary_names: vec!["amplihack".into(), "amplihack-hooks".into()],
     })
     .unwrap();
-    let mut probes = BTreeMap::new();
-    probes.insert(
-        current_exe,
-        BinaryProbe {
-            version: Some("0.9.60".into()),
-            writable: false,
-        },
-    );
+    let probes = probe_candidates_without_exec(&report);
 
     let decision = InstallTargetDecision::from(TargetDecisionInput {
         report,
