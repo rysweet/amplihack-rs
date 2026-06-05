@@ -82,6 +82,46 @@ impl From<TargetDecisionInput> for InstallTargetDecision {
     }
 }
 
+pub(crate) fn update_path_conflict_notice(
+    report: &PathConflictReport,
+    decision: &InstallTargetDecision,
+) -> Option<String> {
+    let InstallTargetDecision::PreferredUserBin { install_dir, .. } = decision else {
+        return None;
+    };
+
+    let mut notice = String::new();
+    for (binary_name, resolution) in &report.resolutions {
+        if !resolution.is_shadowed_by_earlier_path_entry {
+            continue;
+        }
+        let Some(preferred) = resolution.preferred_user_candidate.as_ref() else {
+            continue;
+        };
+        notice.push_str(&format!(
+            "  ⚠️  PATH conflict: {} appears before {}\n",
+            resolution.resolved.path.display(),
+            preferred.path.display()
+        ));
+        notice.push_str(&format!(
+            "     `{binary_name}` may continue to resolve to the stale earlier PATH candidate until PATH is repaired.\n"
+        ));
+    }
+
+    if notice.is_empty() {
+        return None;
+    }
+
+    notice.push_str(&format!(
+        "     Updating user-local targets under: {}\n",
+        install_dir.display()
+    ));
+    notice.push_str(
+        "     To run the updated binaries first, move ~/.local/bin earlier in PATH or remove stale system copies with sudo.",
+    );
+    Some(notice)
+}
+
 pub(crate) fn analyze_path_conflicts(input: &PathAnalysisInput) -> Result<PathConflictReport> {
     let preferred_user_bin = preferred_user_bin(&input.home_dir);
     let mut resolutions = BTreeMap::new();
@@ -699,6 +739,55 @@ mod tests {
         assert!(
             matches!(decision, InstallTargetDecision::ManualRepairRequired { .. }),
             "automatic updates must not target denied system prefixes even when the current process can write there: {decision:?}"
+        );
+    }
+
+    #[test]
+    fn update_notice_reports_shadowed_user_local_repair_without_permission_noise() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let user_bin = home.join(".local/bin");
+        let usr_local_bin = temp.path().join("usr/local/bin");
+        let user_amplihack = write_executable(&user_bin, "amplihack");
+        let user_hooks = write_executable(&user_bin, "amplihack-hooks");
+        let system_amplihack = write_executable(&usr_local_bin, "amplihack");
+        write_executable(&usr_local_bin, "amplihack-hooks");
+
+        let report = analyze_path_conflicts(&analysis_input(
+            &home,
+            &system_amplihack,
+            vec![usr_local_bin.clone(), user_bin.clone()],
+        ))
+        .unwrap();
+        let mut probes = BTreeMap::new();
+        for path in [user_amplihack, user_hooks] {
+            probes.insert(
+                path,
+                BinaryProbe {
+                    version: Some("0.9.71".into()),
+                    writable: true,
+                },
+            );
+        }
+
+        let decision = decide_update_install_target(TargetDecisionInput {
+            report: report.clone(),
+            current_version: "0.9.71".into(),
+            candidate_probes: probes,
+            denied_system_prefixes: vec![temp.path().join("usr/local")],
+        })
+        .unwrap();
+
+        let notice = super::update_path_conflict_notice(&report, &decision)
+            .expect("shadowed user-local repair should produce update guidance");
+        assert!(notice.contains("PATH conflict"));
+        assert!(notice.contains(&usr_local_bin.join("amplihack").display().to_string()));
+        assert!(notice.contains(&user_bin.join("amplihack").display().to_string()));
+        assert!(notice.contains("Updating user-local targets under"));
+        assert!(notice.contains("sudo"));
+        assert!(
+            !notice.contains("Permission denied copying") && !notice.contains("failed to copy"),
+            "repair guidance must replace temp-copy permission failures, got: {notice}"
         );
     }
 }
