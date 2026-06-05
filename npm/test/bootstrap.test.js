@@ -2,11 +2,13 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
+const { Readable } = require('node:stream');
 const { setTimeout: delay } = require('node:timers/promises');
 
 const {
@@ -15,6 +17,7 @@ const {
   cacheStateRoot,
   copyFileAtomic,
   download,
+  downloadFile,
   findBinary,
   hasLocalCargoWorkspace,
   latestTagCachePath,
@@ -73,7 +76,7 @@ test('checksum parser extracts the leading digest token', () => {
 
 test('checksum verification requires the published digest to match', () => {
   const archiveBytes = Buffer.from('amplihack');
-  const digest = require('node:crypto').createHash('sha256').update(archiveBytes).digest('hex');
+  const digest = crypto.createHash('sha256').update(archiveBytes).digest('hex');
   assert.doesNotThrow(() => verifyArchiveChecksum(archiveBytes, `${digest}  amplihack.tar.gz\n`, 'https://example.test/archive'));
   assert.throws(() => verifyArchiveChecksum(archiveBytes, `${'a'.repeat(64)}  amplihack.tar.gz\n`, 'https://example.test/archive'));
 });
@@ -86,15 +89,16 @@ test('download URL validation only trusts GitHub release hosts', () => {
 });
 
 function responseFor(statusCode, body = '', headers = {}) {
-  const response = new EventEmitter();
+  const response = new Readable({
+    read() {},
+  });
   response.statusCode = statusCode;
   response.headers = headers;
-  response.resume = () => {};
   response.send = () => {
     if (body.length > 0) {
-      response.emit('data', Buffer.from(body));
+      response.push(Buffer.from(body));
     }
-    response.emit('end');
+    response.push(null);
   };
   return response;
 }
@@ -193,6 +197,33 @@ test('download retries request timeouts', async () => {
     );
     assert.equal(bytes.toString('utf8'), 'after-timeout');
     assert.equal(attempts, 2);
+  });
+});
+
+test('downloadFile retries transient failures and streams bytes to disk', async () => {
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'amplihack-download-file-'));
+  const destination = path.join(tempDir, 'archive.tar.gz');
+  const body = 'streamed archive bytes';
+  let attempts = 0;
+  await withMockHttpsGet((_, __, callback) => {
+    process.nextTick(() => {
+      attempts += 1;
+      const response = attempts === 1
+        ? responseFor(503)
+        : responseFor(200, body);
+      callback(response);
+      response.send();
+    });
+  }, async () => {
+    const result = await downloadFile(
+      'https://github.com/rysweet/amplihack-rs/releases/download/v1.2.3/amplihack-x86_64-unknown-linux-gnu.tar.gz',
+      destination,
+      { attempts: 2, retryDelayMs: 0, timeoutMs: 1000 },
+    );
+    assert.equal(await fs.promises.readFile(destination, 'utf8'), body);
+    assert.equal(attempts, 2);
+    assert.equal(result.bytes, Buffer.byteLength(body));
+    assert.equal(result.sha256, crypto.createHash('sha256').update(body).digest('hex'));
   });
 });
 

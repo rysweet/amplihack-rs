@@ -6,6 +6,8 @@ const fsp = require('node:fs/promises');
 const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
+const { Transform } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 const { setTimeout: delay } = require('node:timers/promises');
 const { spawnSync } = require('node:child_process');
 
@@ -206,6 +208,10 @@ function validateDownloadUrl(url) {
 function verifyArchiveChecksum(archiveBytes, checksumText, archiveUrl) {
   const expectedHex = parseChecksumHex(checksumText);
   const actualHex = crypto.createHash('sha256').update(archiveBytes).digest('hex');
+  verifyArchiveDigest(actualHex, expectedHex, archiveUrl);
+}
+
+function verifyArchiveDigest(actualHex, expectedHex, archiveUrl) {
   if (actualHex.toLowerCase() !== expectedHex.toLowerCase()) {
     throw new Error(`SHA-256 mismatch for ${archiveUrl}`);
   }
@@ -365,6 +371,106 @@ async function download(url, {
   }
 }
 
+function downloadFileOnce(url, destination, { timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}) {
+  return new Promise((resolve, reject) => {
+    const seen = new Set();
+    let settled = false;
+
+    function finish(error, result) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (error) {
+        reject(error);
+      } else {
+        resolve(result);
+      }
+    }
+
+    function fetch(currentUrl) {
+      validateDownloadUrl(currentUrl);
+      if (seen.has(currentUrl)) {
+        finish(new Error(`Redirect loop while downloading ${url}`));
+        return;
+      }
+      seen.add(currentUrl);
+
+      const request = https
+        .get(currentUrl, {
+          headers: {
+            'User-Agent': 'amplihack-npm-wrapper',
+            Accept: 'application/octet-stream,application/vnd.github+json',
+          },
+        }, (response) => {
+          const statusCode = response.statusCode || 0;
+          if ([301, 302, 303, 307, 308].includes(statusCode) && response.headers.location) {
+            response.resume();
+            fetch(response.headers.location);
+            return;
+          }
+          if (statusCode < 200 || statusCode >= 300) {
+            response.resume();
+            const message = `HTTP ${statusCode} while downloading ${currentUrl}`;
+            finish([408, 429, 500, 502, 503, 504].includes(statusCode)
+              ? retryableDownloadError(message)
+              : new Error(message));
+            return;
+          }
+
+          let total = 0;
+          const hash = crypto.createHash('sha256');
+          const meter = new Transform({
+            transform(chunk, _encoding, callback) {
+              total += chunk.length;
+              if (total > DOWNLOAD_SIZE_LIMIT) {
+                callback(new Error(`Download exceeded ${DOWNLOAD_SIZE_LIMIT} bytes`));
+                return;
+              }
+              hash.update(chunk);
+              callback(null, chunk);
+            },
+          });
+
+          pipeline(response, meter, fs.createWriteStream(destination))
+            .then(() => finish(null, {
+              bytes: total,
+              sha256: hash.digest('hex'),
+            }))
+            .catch((error) => finish(error));
+        })
+        .on('error', (error) => finish(error));
+      request.setTimeout(timeoutMs, () => {
+        request.destroy(retryableDownloadError(`Timed out after ${timeoutMs}ms while downloading ${currentUrl}`));
+      });
+    }
+
+    fetch(url);
+  });
+}
+
+async function downloadFile(url, destination, {
+  attempts = DOWNLOAD_MAX_ATTEMPTS,
+  retryDelayMs = DOWNLOAD_RETRY_BASE_DELAY_MS,
+  timeoutMs = DOWNLOAD_TIMEOUT_MS,
+} = {}) {
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new Error(`Download attempts must be at least 1 for ${url}`);
+  }
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await downloadFileOnce(url, destination, { timeoutMs });
+    } catch (error) {
+      await fsp.rm(destination, { force: true }).catch(() => {});
+      if (attempt >= attempts || !isRetryableDownloadError(error)) {
+        throw error;
+      }
+      await delay(retryDelayMs * attempt);
+    }
+  }
+  throw new Error(`Download attempts exhausted for ${url}`);
+}
+
 /**
  * Resolve the latest published release tag for the configured GitHub repo.
  *
@@ -416,16 +522,16 @@ async function installFromRelease(version, installRoot) {
   }
 
   const { archiveUrl, checksumUrl } = releaseUrls(version, target);
-  const archiveBytes = await download(archiveUrl);
   const checksumBytes = await download(checksumUrl);
-  verifyArchiveChecksum(archiveBytes, checksumBytes.toString('utf8'), archiveUrl);
+  const expectedHex = parseChecksumHex(checksumBytes.toString('utf8'));
 
   const tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'amplihack-npm-'));
   try {
     const archivePath = path.join(tempRoot, 'amplihack.tar.gz');
     const extractDir = path.join(tempRoot, 'extract');
     await fsp.mkdir(extractDir, { recursive: true });
-    await fsp.writeFile(archivePath, archiveBytes);
+    const archiveDownload = await downloadFile(archiveUrl, archivePath);
+    verifyArchiveDigest(archiveDownload.sha256, expectedHex, archiveUrl);
 
     const tar = spawnSync('tar', ['-xzf', archivePath, '-C', extractDir], {
       stdio: 'inherit',
@@ -556,6 +662,7 @@ module.exports = {
   cacheStateRoot,
   copyFileAtomic,
   download,
+  downloadFile,
   ensureNativeBinaries,
   findBinary,
   hasLocalCargoWorkspace,
