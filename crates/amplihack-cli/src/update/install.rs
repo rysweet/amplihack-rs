@@ -2,6 +2,7 @@ use super::*;
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
+use std::io::Read;
 use std::process::Command;
 use std::time::Duration;
 use tar::Archive;
@@ -249,7 +250,7 @@ fn current_process_install_target_decision(
         home_dir,
         current_exe.to_path_buf(),
     )?;
-    let probes = crate::path_conflicts::probe_candidates_without_exec(&report);
+    let probes = probe_candidates_for_update_decision(&report, running_version);
     let decision = crate::path_conflicts::decide_update_install_target(
         crate::path_conflicts::TargetDecisionInput {
             report: report.clone(),
@@ -262,6 +263,80 @@ fn current_process_install_target_decision(
         println!("{notice}");
     }
     Ok(decision)
+}
+
+pub(super) fn probe_candidates_for_update_decision(
+    report: &crate::path_conflicts::PathConflictReport,
+    running_version: &str,
+) -> std::collections::BTreeMap<PathBuf, crate::path_conflicts::BinaryProbe> {
+    let mut probes = crate::path_conflicts::probe_candidates_without_exec(report);
+    let Some(current_install_dir) = report.current_exe.parent() else {
+        return probes;
+    };
+    let current_paths = [
+        ("amplihack", report.current_exe.clone()),
+        (
+            "amplihack-hooks",
+            current_install_dir.join(binary_filename("amplihack-hooks")),
+        ),
+    ];
+
+    for (name, current_path) in current_paths {
+        let path = report
+            .preferred_user_bin
+            .join(crate::path_conflicts::binary_filename(name));
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+        if let Some(probe) = probes.get_mut(&path) {
+            match file_contents_equal(&path, &current_path) {
+                Ok(true) => probe.version = Some(running_version.to_string()),
+                Ok(false) => {}
+                Err(err) => tracing::debug!(
+                    path = %path.display(),
+                    error = %err,
+                    "preferred user-bin identity probe did not produce a usable version"
+                ),
+            }
+        }
+    }
+    probes
+}
+
+fn file_contents_equal(left: &Path, right: &Path) -> Result<bool> {
+    let left_metadata =
+        fs::symlink_metadata(left).with_context(|| format!("stat {}", left.display()))?;
+    let right_metadata =
+        fs::symlink_metadata(right).with_context(|| format!("stat {}", right.display()))?;
+    if !left_metadata.is_file()
+        || !right_metadata.is_file()
+        || left_metadata.len() != right_metadata.len()
+    {
+        return Ok(false);
+    }
+
+    let mut left_file = fs::File::open(left).with_context(|| format!("open {}", left.display()))?;
+    let mut right_file =
+        fs::File::open(right).with_context(|| format!("open {}", right.display()))?;
+    let mut left_buffer = [0_u8; 8192];
+    let mut right_buffer = [0_u8; 8192];
+    loop {
+        let left_read = left_file
+            .read(&mut left_buffer)
+            .with_context(|| format!("read {}", left.display()))?;
+        let right_read = right_file
+            .read(&mut right_buffer)
+            .with_context(|| format!("read {}", right.display()))?;
+        if left_read != right_read || left_buffer[..left_read] != right_buffer[..right_read] {
+            return Ok(false);
+        }
+        if left_read == 0 {
+            return Ok(true);
+        }
+    }
 }
 
 /// Invoke `<binary> --version` and confirm the output contains `expected`.
@@ -398,12 +473,12 @@ pub(super) fn find_binary(root: &Path, binary_name: &str) -> Result<PathBuf> {
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
-            let is_file = file_type.is_file() || (file_type.is_symlink() && path.is_file());
-            if is_file && path.file_name() == Some(OsStr::new(binary_name)) {
+            if file_type.is_file() && path.file_name() == Some(OsStr::new(binary_name)) {
                 return Some(path);
             }
-            let is_dir = file_type.is_dir() || (file_type.is_symlink() && path.is_dir());
-            if is_dir && let Some(found) = search(&path, binary_name, depth + 1) {
+            if file_type.is_dir()
+                && let Some(found) = search(&path, binary_name, depth + 1)
+            {
                 return Some(found);
             }
         }
