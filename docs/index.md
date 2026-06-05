@@ -137,6 +137,7 @@ amplihack copilot
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
 - [Memory Configuration Consent](features/memory-consent-prompt.md) - Intelligent memory settings with timeout protection
 - [Verify .claude/ Staging](howto/verify-claude-staging.md) - Check that framework files are properly staged
+- [Verify Runtime Asset Resolution](howto/verify-runtime-asset-resolution.md) - Check helper, session, hooks, and multitask asset parity
 - [Verify Framework Injection](howto/verify-framework-injection.md) - Check that AMPLIHACK.md injection is working
 - [Enable Blarify Code Indexing](howto/enable-blarify.md) - Opt-in code graph indexing with env var, non-interactive mode, and staleness detection
 
@@ -454,6 +455,7 @@ Execute complex tasks with simple slash commands.
 
 - [Command Selection Guide](commands/COMMAND_SELECTION_GUIDE.md) - Choose the right command for your task
 - [Amplifier Command](reference/amplifier-command.md) - Launch Amplifier with amplihack bundle
+- [resolve-bundle-asset Command](reference/resolve-bundle-asset-command.md) - Resolve native bundle assets and legacy parity aliases
 
 ### Core Commands
 
