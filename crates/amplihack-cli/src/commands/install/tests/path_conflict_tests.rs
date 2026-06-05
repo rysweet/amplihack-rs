@@ -81,3 +81,69 @@ fn install_does_not_warn_when_path_aliases_resolve_to_same_user_binary() {
         "canonical symlink aliases to the same user-level binaries must not create noisy install warnings"
     );
 }
+
+#[test]
+fn install_warns_when_user_level_hooks_binary_is_shadowed() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    let local_bin = temp.path().join(".local/bin");
+    let system_bin = temp.path().join("usr/local/bin");
+    create_exe_stub(&local_bin, "amplihack");
+    let local_hooks = create_exe_stub(&local_bin, "amplihack-hooks");
+    create_exe_stub(&system_bin, "amplihack");
+    let system_hooks = create_exe_stub(&system_bin, "amplihack-hooks");
+
+    let report = analyze_path_conflicts(&PathAnalysisInput {
+        home_dir: temp.path().to_path_buf(),
+        current_exe: local_bin.join("amplihack"),
+        path_dirs: vec![system_bin.clone(), local_bin.clone()],
+        binary_names: vec!["amplihack-hooks".into()],
+    })
+    .unwrap();
+
+    let warning = binary::path_conflict_warning_after_install(&report)
+        .expect("shadowed hooks binary should produce actionable warning text");
+
+    crate::test_support::restore_home(previous);
+
+    assert!(warning.contains("amplihack-hooks"));
+    assert!(warning.contains(&system_hooks.display().to_string()));
+    assert!(warning.contains(&local_hooks.display().to_string()));
+    assert!(warning.contains("export PATH=\"$HOME/.local/bin:$PATH\""));
+}
+
+#[test]
+fn install_warns_when_multiple_distinct_binary_candidates_create_ambiguity() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    let local_bin = temp.path().join(".local/bin");
+    let other_bin = temp.path().join("other/bin");
+    let local_amplihack = create_exe_stub(&local_bin, "amplihack");
+    let other_amplihack = create_exe_stub(&other_bin, "amplihack");
+
+    let report = analyze_path_conflicts(&PathAnalysisInput {
+        home_dir: temp.path().to_path_buf(),
+        current_exe: local_amplihack.clone(),
+        path_dirs: vec![local_bin, other_bin],
+        binary_names: vec!["amplihack".into()],
+    })
+    .unwrap();
+
+    let warning = binary::path_conflict_warning_after_install(&report)
+        .expect("distinct duplicate candidates should produce ambiguity guidance");
+
+    crate::test_support::restore_home(previous);
+
+    assert!(warning.contains("Multiple distinct `amplihack` binaries"));
+    assert!(warning.contains(&local_amplihack.display().to_string()));
+    assert!(warning.contains(&other_amplihack.display().to_string()));
+    assert!(warning.contains("Remove stale candidates or reorder PATH"));
+}

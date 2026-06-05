@@ -173,18 +173,40 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
 pub(super) fn path_conflict_warning_after_install(
     report: &crate::path_conflicts::PathConflictReport,
 ) -> Option<String> {
-    let amplihack = report.resolution("amplihack")?;
-    let preferred = amplihack.preferred_user_candidate.as_ref()?;
-    if !amplihack.is_shadowed_by_earlier_path_entry {
-        return None;
+    let mut warning = String::new();
+    for binary_name in ["amplihack", "amplihack-hooks"] {
+        let Some(resolution) = report.resolution(binary_name) else {
+            continue;
+        };
+
+        if resolution.is_shadowed_by_earlier_path_entry {
+            let Some(preferred) = resolution.preferred_user_candidate.as_ref() else {
+                continue;
+            };
+            append_shadow_warning(&mut warning, binary_name, resolution, &preferred.path);
+        } else if resolution.has_ambiguous_candidates {
+            append_ambiguity_warning(&mut warning, binary_name, resolution);
+        }
     }
 
-    let mut warning = String::new();
-    if is_python_script(&amplihack.resolved.path) {
+    if warning.is_empty() {
+        None
+    } else {
+        Some(warning.trim_end().to_string())
+    }
+}
+
+fn append_shadow_warning(
+    warning: &mut String,
+    binary_name: &str,
+    resolution: &crate::path_conflicts::BinaryResolution,
+    preferred_path: &std::path::Path,
+) {
+    if binary_name == "amplihack" && is_python_script(&resolution.resolved.path) {
         warning.push_str(&format!(
             "  ⚠️  A Python `amplihack` script at {} shadows the Rust binary at {}.\n",
-            amplihack.resolved.path.display(),
-            preferred.path.display()
+            resolution.resolved.path.display(),
+            preferred_path.display()
         ));
         warning.push_str(
             "     The Python script will intercept `amplihack` commands, preventing the Rust CLI from running.\n",
@@ -192,28 +214,44 @@ pub(super) fn path_conflict_warning_after_install(
         warning.push_str("     To fix, do one of the following:\n");
         warning.push_str(&format!(
             "       1. Remove the Python script:  rm {}\n",
-            amplihack.resolved.path.display()
+            resolution.resolved.path.display()
         ));
         warning.push_str(
             "       2. Reorder PATH so ~/.local/bin comes first:  export PATH=\"$HOME/.local/bin:$PATH\"\n",
         );
-        warning.push_str("       3. Uninstall the Python package:  pip uninstall amplihack");
-    } else {
-        warning.push_str(&format!(
-            "  ⚠️  `{}` at {} shadows the Rust binary at {}.\n",
-            "amplihack",
-            amplihack.resolved.path.display(),
-            preferred.path.display()
-        ));
-        warning.push_str(
-            "     Reorder PATH so ~/.local/bin comes first:  export PATH=\"$HOME/.local/bin:$PATH\"\n",
-        );
-        warning.push_str(&format!(
-            "     Or run the user-level binary directly: {}",
-            preferred.path.display()
-        ));
+        warning.push_str("       3. Uninstall the Python package:  pip uninstall amplihack\n");
+        return;
     }
-    Some(warning)
+
+    warning.push_str(&format!(
+        "  ⚠️  `{}` at {} shadows the user-level binary at {}.\n",
+        binary_name,
+        resolution.resolved.path.display(),
+        preferred_path.display()
+    ));
+    warning.push_str(
+        "     Reorder PATH so ~/.local/bin comes first:  export PATH=\"$HOME/.local/bin:$PATH\"\n",
+    );
+    warning.push_str(&format!(
+        "     Or run the user-level binary directly: {}\n",
+        preferred_path.display()
+    ));
+}
+
+fn append_ambiguity_warning(
+    warning: &mut String,
+    binary_name: &str,
+    resolution: &crate::path_conflicts::BinaryResolution,
+) {
+    warning.push_str(&format!(
+        "  ⚠️  Multiple distinct `{binary_name}` binaries are on PATH:\n"
+    ));
+    for candidate in &resolution.canonical_candidates {
+        warning.push_str(&format!("     - {}\n", candidate.path.display()));
+    }
+    warning.push_str(
+        "     Remove stale candidates or reorder PATH so the intended user-level install resolves first.\n",
+    );
 }
 
 /// Check whether a file is a Python script (shebang or .py extension).
