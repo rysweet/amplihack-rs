@@ -414,6 +414,82 @@ fn test_execute_recipe_via_rust_sets_pager_safe_env() {
 }
 
 #[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_forces_noninteractive_and_strips_claudecode() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+    std::fs::write(
+        &runner,
+        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"subprocess-env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"noninteractive\":\"$AMPLIHACK_NONINTERACTIVE\",\"claudecode\":\"${CLAUDECODE+present}\"}}\nEOF\n",
+    )
+    .expect("failed to write runner stub");
+
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to chmod runner");
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: subprocess-env-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    let prev_noninteractive = std::env::var_os("AMPLIHACK_NONINTERACTIVE");
+    let prev_claudecode = std::env::var_os("CLAUDECODE");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+        std::env::set_var("AMPLIHACK_NONINTERACTIVE", "0");
+        std::env::set_var("CLAUDECODE", "1");
+    }
+
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        true,
+        false,
+        temp.path(),
+        &[],
+        None,
+    )
+    .expect("recipe run must succeed");
+
+    match prev_runner {
+        Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
+        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
+    }
+    match prev_home {
+        Some(value) => unsafe { std::env::set_var("AMPLIHACK_HOME", value) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+    }
+    match prev_noninteractive {
+        Some(value) => unsafe { std::env::set_var("AMPLIHACK_NONINTERACTIVE", value) },
+        None => unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") },
+    }
+    match prev_claudecode {
+        Some(value) => unsafe { std::env::set_var("CLAUDECODE", value) },
+        None => unsafe { std::env::remove_var("CLAUDECODE") },
+    }
+
+    assert_eq!(
+        result.context.get("noninteractive"),
+        Some(&JsonValue::String("1".to_string())),
+        "recipe-runner subprocesses must force AMPLIHACK_NONINTERACTIVE=1 even when the parent has another value"
+    );
+    assert_eq!(
+        result.context.get("claudecode"),
+        Some(&JsonValue::String(String::new())),
+        "recipe-runner subprocesses must not inherit CLAUDECODE because nested Claude sessions treat it as an active host marker"
+    );
+}
+
+#[test]
 fn test_execute_recipe_via_rust_reports_nonzero_exit_with_stderr() {
     let _guard = crate::test_support::home_env_lock()
         .lock()

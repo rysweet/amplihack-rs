@@ -7,6 +7,7 @@
 //! - Telemetry (stderr JSON line per invocation)
 
 use amplihack_types::HookInput;
+use anyhow::Context;
 use serde::Serialize;
 use std::io::{self, Read, Write};
 use std::panic::AssertUnwindSafe;
@@ -54,7 +55,8 @@ pub fn run_hook<H: Hook>(hook: H) {
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| -> anyhow::Result<()> {
         let input_json = read_stdin()?;
 
-        let input: HookInput = serde_json::from_str(&input_json).unwrap_or(HookInput::Unknown);
+        let input: HookInput =
+            serde_json::from_str(&input_json).context("failed to deserialize hook input JSON")?;
 
         // Unknown events get versioned empty output (graceful forward-compat).
         if matches!(input, HookInput::Unknown) {

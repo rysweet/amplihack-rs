@@ -39,6 +39,23 @@ fn blocks_no_verify() {
 }
 
 #[test]
+fn blocks_no_verify_from_camel_case_host_payload() {
+    let hook = PreToolUseHook;
+    let input: HookInput = serde_json::from_value(serde_json::json!({
+        "hookEventName": "PreToolUse",
+        "toolName": "Bash",
+        "toolInput": {"command": "git commit --no-verify -m 'test'"},
+        "sessionId": "session-123"
+    }))
+    .expect("camelCase PreToolUse host payload must deserialize");
+
+    let result = hook.process(input).unwrap();
+
+    assert_eq!(result["block"], true);
+    assert!(result["message"].as_str().unwrap().contains("--no-verify"));
+}
+
+#[test]
 fn blocks_no_verify_on_push() {
     let hook = PreToolUseHook;
     let result = hook
