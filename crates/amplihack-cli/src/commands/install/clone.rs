@@ -26,7 +26,7 @@
 //!    upstream, only attempted when none of the above yields a usable root.
 
 use super::types::{REPO_ARCHIVE_URL, REPO_GIT_URL};
-use crate::update::{extract_archive, http_get, validate_download_url};
+use crate::update::{extract_archive, http_get_with_retry, validate_download_url};
 use anyhow::{Context, Result, bail};
 use std::collections::VecDeque;
 use std::fs;
@@ -111,7 +111,7 @@ pub(super) fn download_and_extract_framework_repo(destination: &Path) -> Result<
 
     // git not available — fall back to HTTP tarball download
     validate_download_url(REPO_ARCHIVE_URL)?;
-    let archive_bytes = http_get(REPO_ARCHIVE_URL)
+    let archive_bytes = http_get_with_retry(REPO_ARCHIVE_URL)
         .with_context(|| format!("failed to download framework archive from {REPO_ARCHIVE_URL}"))?;
     extract_archive(&archive_bytes, destination).with_context(|| {
         format!(
