@@ -3,11 +3,9 @@ description: "Phase 6: bump + commit + push + draft PR + outside-in (14-16b)"
 version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "version", "pr"]
-
 # workflow-publish: default-workflow phase brick. Parent context is merged by
 # recipe-runner and declared outputs propagate to later phase recipes.
 # Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
-
 recursion:
   max_depth: 6
   max_total_steps: 80
@@ -81,10 +79,7 @@ steps:
       fi
       # Security: refuse to commit/push on protected branches (guards REPO_PATH fallback)
       _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
-      if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; then
-        echo "ERROR: step-15 landed on protected branch '$_CURRENT_BRANCH' — refusing to commit. Worktree setup likely failed." >&2
-        exit 1
-      fi
+      if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; then echo "ERROR: step-15 landed on protected branch '$_CURRENT_BRANCH' — refusing to commit. Worktree setup likely failed." >&2; exit 1; fi
       echo "=== Step 15: Commit and Push ===" >&2
       # FIX (#495): commit_result MUST be emitted on every exit path so step-16
       # (PR creation) can be gated on the actual push outcome. Trap installed
@@ -192,10 +187,7 @@ steps:
       fi
       # Security: refuse to create PR from protected branches (guards REPO_PATH fallback)
       _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
-      if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; then
-        echo "ERROR: step-16 landed on protected branch '$_CURRENT_BRANCH' — refusing to create PR. Worktree setup likely failed." >&2
-        exit 1
-      fi
+      if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; then echo "ERROR: step-16 landed on protected branch '$_CURRENT_BRANCH' — refusing to create PR. Worktree setup likely failed." >&2; exit 1; fi
       echo "=== Step 16: Creating Draft PR ===" >&2
 
       # FIX #684: Consume REMOTE_HOST_TYPE from step-02d — skip PR creation for non-GitHub
@@ -210,15 +202,8 @@ steps:
       CURRENT_BRANCH=$(git branch --show-current)
       ISSUE_NUM="$ISSUE_NUMBER"
 
-      if ! [[ "$ISSUE_NUM" =~ ^[0-9]+$ ]]; then
-          echo "ERROR: issue_number is not numeric: $ISSUE_NUM" >&2
-          exit 1
-      fi
-
-      if ! command -v gh >/dev/null 2>&1; then
-          echo "ERROR: step-16-create-draft-pr requires the GitHub CLI ('gh') on PATH." >&2
-          exit 127
-      fi
+      if ! [[ "$ISSUE_NUM" =~ ^[0-9]+$ ]]; then echo "ERROR: issue_number is not numeric: $ISSUE_NUM" >&2; exit 1; fi
+      if ! command -v gh >/dev/null 2>&1; then echo "ERROR: step-16-create-draft-pr requires the GitHub CLI ('gh') on PATH." >&2; exit 127; fi
 
       sanitize_gh_stderr() {
           sed -E 's#https://[^@[:space:]]+@#https://REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
@@ -353,14 +338,25 @@ steps:
           exit 1
       fi
 
-      TASK_DESC="$TASK_DESCRIPTION"
-      PR_DESIGN="${design_spec:-${DESIGN_SPEC:-${RECIPE_VAR_design_spec:-${RECIPE_VAR_DESIGN_SPEC:-}}}}"
-      PR_TITLE="${TASK_DESC//$'\n'/ }"
-      PR_TITLE="${PR_TITLE//$'\r'/ }"
+      CHANGED_FILES=$(git diff --name-only "${BASE_REF}..HEAD" 2>/dev/null | head -40 || true)
+      CHANGED_COUNT=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d' | wc -l | tr -d ' ')
+      DIFF_STAT=$(git diff --stat "${BASE_REF}..HEAD" 2>/dev/null | tail -20 || true)
+      RECENT_COMMITS=$(git log --oneline --no-decorate "${BASE_REF}..HEAD" -6 2>/dev/null || true)
+      FIRST_CHANGED=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d' | head -1)
+      case "$FIRST_CHANGED" in amplifier-bundle/recipes/*) PR_SCOPE="workflow recipes" ;; crates/amplihack-cli/*) PR_SCOPE="amplihack CLI" ;; crates/*) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f2)" ;; tests/*) PR_SCOPE="regression coverage" ;; docs/*) PR_SCOPE="documentation" ;; "") PR_SCOPE="workflow changes" ;; *) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f1)" ;; esac
+      if [ "$CHANGED_COUNT" -gt 1 ]; then PR_TITLE="Update ${PR_SCOPE} with ${CHANGED_COUNT} changed files"; else PR_TITLE="Update ${PR_SCOPE}"; fi
+      PR_TITLE="${PR_TITLE} (#${ISSUE_NUM})"
       PR_TITLE="${PR_TITLE:0:200}"
+      CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d; s/^/- /')
+      [ -n "$CHANGED_FILES_BODY" ] || CHANGED_FILES_BODY="- No changed files detected by git diff"
+      VALIDATION_SOURCE="${LOCAL_TESTING_GATE:-${local_testing_gate:-${PRECOMMIT_RESULTS:-${precommit_results:-}}}}"
+      if [ -n "$VALIDATION_SOURCE" ]; then VALIDATION_BODY=$(printf '%s\n' "$VALIDATION_SOURCE" | sed -n '1,12p'); else VALIDATION_BODY="step-13 local testing gate is expected before ready-for-review; no structured step-13 output was available to step-16."; fi
+      if [ -n "$RECENT_COMMITS" ]; then BEHAVIOR_BODY=$(printf 'Implemented behavior through these branch commits:\n%s' "$RECENT_COMMITS"); else BEHAVIOR_BODY="Branch is ${COMMITS_AHEAD} commit(s) ahead of ${BASE_BRANCH}; behavior impact is represented by the changed files and diff stat."; fi
+      case "$CHANGED_FILES" in *amplifier-bundle/recipes/*) RISK_BODY="Workflow behavior changed; review recipe gates and regression coverage carefully." ;; *crates/amplihack-cli/*) RISK_BODY="CLI behavior changed; verify command help, exit codes, and JSON/table output contracts." ;; *) RISK_BODY="No high-risk subsystem pattern detected from changed paths." ;; esac
+      DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
       # Host-aware PR body (only reached for GitHub due to early exit above)
       ISSUE_LINK="Closes #${ISSUE_NUM}"
-      PR_BODY=$(printf '## Summary\n%s\n\n## Issue\n%s\n\n## Changes\n%s\n\n## Testing\n- Unit tests added\n- Local testing completed\n- Pre-commit hooks pass\n\n## Checklist\n- [x] Tests pass\n- [x] Documentation updated\n- [x] No stubs or TODOs\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$TASK_DESC" "$ISSUE_LINK" "$PR_DESIGN")
+      PR_BODY=$(printf '## Summary\nConcise workflow-generated PR for %s.\n\n## Issue\n%s\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n\n## Behavior\n%s\n\n## Validation\n%s\n\n## Risk\n%s\n\n## Checklist\n- [x] Branch has %s commit(s) ahead of %s\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$PR_SCOPE" "$ISSUE_LINK" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY" "$BEHAVIOR_BODY" "$VALIDATION_BODY" "$RISK_BODY" "$COMMITS_AHEAD" "$BASE_BRANCH")
       gh_pr_create_with_retry
     output: "pr_url"
 

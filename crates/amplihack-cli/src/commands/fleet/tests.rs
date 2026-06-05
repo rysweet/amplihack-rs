@@ -184,6 +184,77 @@ fn parses_native_dry_run_command() {
 }
 
 #[test]
+fn parses_native_verify_version_command_contract() {
+    let parsed = parse_native_fleet_command(&[
+        String::from("verify-version"),
+        String::from("--hosts"),
+        String::from("host-a,host-b"),
+        String::from("--expected-version"),
+        String::from("0.9.78"),
+        String::from("--format"),
+        String::from("json"),
+    ])
+    .expect("fleet verify-version must parse");
+    let debug = format!("{parsed:?}");
+    for needle in [
+        "VerifyVersion",
+        "host-a",
+        "host-b",
+        "expected",
+        "0.9.78",
+        "Json",
+    ] {
+        assert!(
+            debug.contains(needle),
+            "parsed verify-version command must preserve `{needle}` in Debug output; got {debug}"
+        );
+    }
+}
+
+#[test]
+fn parses_native_update_command_contract() {
+    let parsed = parse_native_fleet_command(&[
+        String::from("update"),
+        String::from("--host-file"),
+        String::from("/tmp/hosts.txt"),
+        String::from("--version"),
+        String::from("0.9.78"),
+        String::from("--dry-run"),
+        String::from("--verify"),
+        String::from("--format"),
+        String::from("table"),
+    ])
+    .expect("fleet update must parse");
+    let debug = format!("{parsed:?}");
+    for needle in [
+        "Update",
+        "/tmp/hosts.txt",
+        "0.9.78",
+        "dry_run: true",
+        "verify: true",
+        "Table",
+    ] {
+        assert!(
+            debug.contains(needle),
+            "parsed update command must preserve `{needle}` in Debug output; got {debug}"
+        );
+    }
+}
+
+#[test]
+fn native_update_requires_explicit_targets() {
+    assert!(
+        parse_native_fleet_command(&[
+            String::from("update"),
+            String::from("--version"),
+            String::from("0.9.78"),
+        ])
+        .is_none(),
+        "fleet update must reject implicit target selection; hosts or host-file is required"
+    );
+}
+
+#[test]
 fn parses_native_scout_command() {
     match parse_native_fleet_command(&[
         String::from("scout"),

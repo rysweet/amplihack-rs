@@ -259,6 +259,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Tutorial: Workflow Execution Guardrails](tutorials/workflow-execution-guardrails.md) - End-to-end walkthrough of the guarded workflow contract
 - [Workflow Execution Guardrails Reference](reference/workflow-execution-guardrails.md) - Input fields, output schema, signals, and failure semantics
 - [Workflow-Owned PR Recovery Readiness](features/pr-recovery-readiness.md) - Recover an existing PR through `default-workflow` with branch reuse, hook readiness, additive-copy readiness, and workflow-owned finalization
+- [Existing Branch Finalization Runbook](features/post-v0977-finalization.md) - Finish an already-implemented branch through preservation, validation, PR publication, CI gating, and policy-ready merge
 - [How to Recover an Existing PR with `default-workflow`](howto/recover-existing-pr-with-default-workflow.md) - Supply `pr_number`, `existing_branch`, and issue requirements without manually merging
 - [Tutorial: Recover PR 579 Readiness](tutorials/pr-recovery-readiness.md) - Walk through hook and additive-copy readiness evidence for an interrupted PR recovery
 - [PR Recovery Readiness Reference](reference/pr-recovery-readiness.md) - Context fields, readiness evidence schema, publish contract, and finalization states

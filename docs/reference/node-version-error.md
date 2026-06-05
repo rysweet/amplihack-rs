@@ -7,9 +7,9 @@ Technical reference for the `NodeVersionError` enum in
 
 ```rust
 pub enum NodeVersionError {
-    NotFound { install_hint: String },
-    TooOld { found: String, minimum: String, install_hint: String },
+    InsufficientVersion { found: u32, minimum: u32, install_hint: String },
     VersionUndetectable { install_hint: String },
+    NotFound { install_hint: String },
 }
 ```
 
@@ -31,14 +31,14 @@ field is `false`.
 `install/mod.rs` calls treat this as a prerequisite failure and surface
 the error message.
 
-### `TooOld`
+### `InsufficientVersion`
 
 The `node` binary exists but its version is below the required minimum.
 
 **Display:**
 ```
-Node.js v16.20.2 is below the minimum required version v18.0.0.
-Install with: <platform-specific hint>
+Node.js v16 is installed but v24+ is required.
+Upgrade with: <platform-specific hint>
 ```
 
 **When returned:** `check_node_minimum_version()` successfully runs
@@ -65,10 +65,10 @@ stdout does not contain a parseable version string.
 ### Check and branch
 
 ```rust
-match check_node_minimum_version() {
+match check_node_minimum_version(24) {
     Ok(()) => { /* system node is sufficient */ }
     Err(NodeVersionError::NotFound { .. }) => { /* no node at all */ }
-    Err(NodeVersionError::TooOld { found, minimum, .. }) => {
+    Err(NodeVersionError::InsufficientVersion { found, minimum, .. }) => {
         eprintln!("Node {found} < {minimum}");
     }
     Err(NodeVersionError::VersionUndetectable { .. }) => {
@@ -77,10 +77,10 @@ match check_node_minimum_version() {
 }
 ```
 
-### Check as boolean gate
+### Check as boolean gate for Copilot launch
 
 ```rust
-if check_node_minimum_version().is_ok() {
+if check_node_minimum_version(24).is_ok() {
     // Node is present and sufficient — skip auto-install
 } else {
     // Any error variant — trigger auto-install
@@ -89,7 +89,8 @@ if check_node_minimum_version().is_ok() {
 ```
 
 All three `Err` variants correctly trigger the auto-install path when
-used with `.is_ok()` / `.is_err()`.
+used with `.is_ok()` / `.is_err()` in the Copilot launch path. Install-time
+callers use the same errors for warnings only.
 
 ## `node_platform_triple()`
 
@@ -98,9 +99,10 @@ Returns the Node.js download platform triple for the current OS, or
 
 | Target OS | Return value |
 |-----------|-------------|
-| Linux     | `Some("linux-x64")` or `Some("linux-arm64")` |
-| macOS     | `Some("darwin-x64")` or `Some("darwin-arm64")` |
-| Windows   | `None` |
+| Linux x86_64 | `Some(("linux", "x64"))` |
+| macOS x86_64 | `Some(("darwin", "x64"))` |
+| macOS aarch64 | `Some(("darwin", "arm64"))` |
+| Windows | `None` |
 
 Windows returns `None` because Node.js distributes Windows builds as
 `.zip` files, and the auto-install extraction code uses `tar -xJf`

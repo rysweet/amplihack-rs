@@ -365,7 +365,14 @@ pub enum Commands {
     },
 
     /// Run system health checks
-    Doctor,
+    #[command(
+        after_help = "Diagnostics:\n  node       Diagnose Node.js >=24.0.0 for Copilot CLI\n  copilot    Diagnose Copilot CLI prerequisites\n\nRemediation options:\n  amplihack doctor node --ensure\n  amplihack doctor copilot --ensure-node"
+    )]
+    Doctor {
+        /// Arguments forwarded to doctor diagnostics: node, copilot, --ensure, --ensure-node
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 
     /// Resolve a named bundle asset (multitask-orchestrator) or a relative path
     /// under amplifier-bundle/.
