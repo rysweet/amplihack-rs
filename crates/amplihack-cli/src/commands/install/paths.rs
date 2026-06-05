@@ -39,6 +39,10 @@ pub(super) fn home_dir() -> Result<PathBuf> {
         .context("HOME is not set")
 }
 
+pub(super) fn preferred_user_bin_dir() -> Result<PathBuf> {
+    Ok(crate::path_conflicts::preferred_user_bin(&home_dir()?))
+}
+
 pub(super) fn global_claude_dir() -> Result<PathBuf> {
     Ok(home_dir()?.join(".claude"))
 }

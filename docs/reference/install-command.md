@@ -231,10 +231,10 @@ Returns an actionable error if none of the five locations yield an executable.
 Copies `amplihack` (current executable) and `amplihack-hooks` (resolved by `find_hooks_binary`) to `~/.local/bin` with `0o755` permissions. When a sibling `amplihack-asset-resolver` binary is present, it is deployed too so launched tools and recipe runs can resolve bundle assets without falling back to Python. Returns the list of deployed paths for inclusion in the manifest.
 
 After deployment, install analyzes ordered `PATH` candidates for `amplihack` and
-`amplihack-hooks`. It warns when a system-wide candidate such as
+`amplihack-hooks`. It warns when a system-managed candidate such as
 `/usr/local/bin/amplihack` shadows the freshly deployed `~/.local/bin` binary or
 when the two binaries resolve from different install roots. The analysis is
-side-effect free; install never removes or rewrites privileged system binaries.
+side-effect free; install never removes or rewrites system-managed binaries.
 
 > **macOS note:** On macOS with System Integrity Protection (SIP) active, copying the running executable to `~/.local/bin` may produce a quarantined binary. See the [First-time install how-to](../howto/first-install.md#macos-sip-note) for the resolution step.
 

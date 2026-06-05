@@ -95,7 +95,7 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
     use super::filesystem::deploy_binary;
 
     let home = home_dir()?;
-    let local_bin = home.join(".local").join("bin");
+    let local_bin = super::paths::preferred_user_bin_dir()?;
     fs::create_dir_all(&local_bin)
         .with_context(|| format!("failed to create {}", local_bin.display()))?;
 
@@ -159,45 +159,61 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
         }
     }
 
-    if let Some(amplihack_dst) = deployed
-        .iter()
-        .find(|path| path.file_name().and_then(|value| value.to_str()) == Some("amplihack"))
-        && let Some(on_path) = find_binary("amplihack")
-        && on_path != *amplihack_dst
+    if let Ok(current_exe) = std::env::current_exe()
+        && let Ok(report) =
+            crate::path_conflicts::analyze_current_process_path_conflicts(home, current_exe)
+        && let Some(warning) = path_conflict_warning_after_install(&report)
     {
-        let is_python = is_python_script(&on_path);
-        if is_python {
-            println!(
-                "  ⚠️  A Python `amplihack` script at {} shadows the Rust binary at {}.",
-                on_path.display(),
-                amplihack_dst.display()
-            );
-            println!(
-                "     The Python script will intercept `amplihack` commands, preventing the Rust CLI from running."
-            );
-            println!("     To fix, do one of the following:");
-            println!(
-                "       1. Remove the Python script:  rm {}",
-                on_path.display()
-            );
-            println!(
-                "       2. Reorder PATH so ~/.local/bin comes first:  export PATH=\"$HOME/.local/bin:$PATH\""
-            );
-            println!("       3. Uninstall the Python package:  pip uninstall amplihack");
-        } else {
-            println!(
-                "  ⚠️  `amplihack` currently resolves to {} instead of the Rust binary at {}.",
-                on_path.display(),
-                amplihack_dst.display()
-            );
-            println!(
-                "     Use {} directly for the Rust CLI, or move ~/.local/bin ahead of older amplihack installs.",
-                amplihack_dst.display()
-            );
-        }
+        println!("{warning}");
     }
 
     Ok(deployed)
+}
+
+pub(super) fn path_conflict_warning_after_install(
+    report: &crate::path_conflicts::PathConflictReport,
+) -> Option<String> {
+    let amplihack = report.resolution("amplihack")?;
+    let preferred = amplihack.preferred_user_candidate.as_ref()?;
+    if !amplihack.is_shadowed_by_earlier_path_entry {
+        return None;
+    }
+
+    let mut warning = String::new();
+    if is_python_script(&amplihack.resolved.path) {
+        warning.push_str(&format!(
+            "  ⚠️  A Python `amplihack` script at {} shadows the Rust binary at {}.\n",
+            amplihack.resolved.path.display(),
+            preferred.path.display()
+        ));
+        warning.push_str(
+            "     The Python script will intercept `amplihack` commands, preventing the Rust CLI from running.\n",
+        );
+        warning.push_str("     To fix, do one of the following:\n");
+        warning.push_str(&format!(
+            "       1. Remove the Python script:  rm {}\n",
+            amplihack.resolved.path.display()
+        ));
+        warning.push_str(
+            "       2. Reorder PATH so ~/.local/bin comes first:  export PATH=\"$HOME/.local/bin:$PATH\"\n",
+        );
+        warning.push_str("       3. Uninstall the Python package:  pip uninstall amplihack");
+    } else {
+        warning.push_str(&format!(
+            "  ⚠️  `{}` at {} shadows the Rust binary at {}.\n",
+            "amplihack",
+            amplihack.resolved.path.display(),
+            preferred.path.display()
+        ));
+        warning.push_str(
+            "     Reorder PATH so ~/.local/bin comes first:  export PATH=\"$HOME/.local/bin:$PATH\"\n",
+        );
+        warning.push_str(&format!(
+            "     Or run the user-level binary directly: {}",
+            preferred.path.display()
+        ));
+    }
+    Some(warning)
 }
 
 /// Check whether a file is a Python script (shebang or .py extension).

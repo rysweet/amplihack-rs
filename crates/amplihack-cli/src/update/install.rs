@@ -63,10 +63,20 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     let new_hooks = find_binary(temp_dir.path(), binary_filename("amplihack-hooks"))?;
     let current_exe =
         std::env::current_exe().context("cannot determine current executable path")?;
-    let install_dir = current_exe
+    let decision = current_process_install_target_decision(&current_exe, &release.version)?;
+    let plan = plan_downloaded_binary_install(
+        InstallArchiveLayout {
+            amplihack: new_amplihack.clone(),
+            hooks: new_hooks.clone(),
+        },
+        decision,
+    )?;
+    let install_dir = plan
+        .amplihack_destination
         .parent()
-        .context("current executable has no parent directory")?;
-    let hooks_dest = install_dir.join(binary_filename("amplihack-hooks"));
+        .context("selected amplihack destination has no parent directory")?;
+    let hooks_dest = plan.hooks_destination.clone();
+    let amplihack_dest = plan.amplihack_destination.clone();
 
     // Preflight: verify the destination filesystem has enough space for the
     // new binaries. Without this, a low-disk host can crash `fs::copy` with a
@@ -80,7 +90,7 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
         .with_context(|| format!("stat {}", new_amplihack.display()))?
         .len();
     let existing_hooks_size = fs::metadata(&hooks_dest).map(|m| m.len()).unwrap_or(0);
-    let existing_amplihack_size = fs::metadata(&current_exe).map(|m| m.len()).unwrap_or(0);
+    let existing_amplihack_size = fs::metadata(&amplihack_dest).map(|m| m.len()).unwrap_or(0);
     // Worst case: both destinations keep their current contents while the
     // `.tmp` files are written, so we need headroom for every new_* byte
     // plus a safety margin. `saturating_sub` keeps us honest if a future
@@ -91,7 +101,7 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     check_free_space(install_dir, required_free)?;
 
     install_binary_atomic(&new_hooks, &hooks_dest)?;
-    install_binary_atomic(&new_amplihack, &current_exe)?;
+    install_binary_atomic(&new_amplihack, &amplihack_dest)?;
 
     // Defensive verification: exec the replaced binary with `--version` and
     // confirm its self-reported version actually matches the release tag.
@@ -100,7 +110,7 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     // self-reports the old version — which then retriggers the update prompt
     // forever. We warn (not fail) because the binary swap did happen; the
     // user can choose to re-run or ignore.
-    let amplihack_ok = verify_installed_version(&current_exe, &release.version);
+    let amplihack_ok = verify_installed_version(&amplihack_dest, &release.version);
     // Verify the hooks binary as well — a version skew between amplihack and
     // amplihack-hooks can silently break hook execution at runtime if the
     // wire protocol changes between releases.
@@ -118,7 +128,7 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
             if let Err(err) = &amplihack_ok {
                 eprintln!(
                     "⚠️  amplihack was written to {} but reports an unexpected version: {err}",
-                    current_exe.display()
+                    amplihack_dest.display()
                 );
             }
             if let Err(err) = &hooks_ok {
@@ -147,7 +157,107 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
         let _ = fs::remove_file(&path);
     }
 
-    Ok(current_exe)
+    Ok(amplihack_dest)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct InstallArchiveLayout {
+    pub(super) amplihack: PathBuf,
+    pub(super) hooks: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BinaryInstallPlan {
+    pub(super) amplihack_destination: PathBuf,
+    pub(super) hooks_destination: PathBuf,
+}
+
+pub(super) fn plan_downloaded_binary_install(
+    archive: InstallArchiveLayout,
+    decision: crate::path_conflicts::InstallTargetDecision,
+) -> Result<BinaryInstallPlan> {
+    let install_dir = match decision {
+        crate::path_conflicts::InstallTargetDecision::CurrentExeDir {
+            install_dir,
+            reason,
+        }
+        | crate::path_conflicts::InstallTargetDecision::PreferredUserBin {
+            install_dir,
+            reason,
+        } => {
+            tracing::debug!(%reason, install_dir = %install_dir.display(), "selected update install target");
+            install_dir
+        }
+        crate::path_conflicts::InstallTargetDecision::ManualRepairRequired {
+            conflicts, ..
+        } => {
+            bail!(
+                "manual repair required before amplihack update can replace binaries:\n{}",
+                update_manual_repair_guidance(&conflicts)
+            );
+        }
+    };
+
+    fs::metadata(&archive.amplihack)
+        .with_context(|| format!("stat {}", archive.amplihack.display()))?;
+    fs::metadata(&archive.hooks).with_context(|| format!("stat {}", archive.hooks.display()))?;
+
+    Ok(BinaryInstallPlan {
+        amplihack_destination: install_dir.join(binary_filename("amplihack")),
+        hooks_destination: install_dir.join(binary_filename("amplihack-hooks")),
+    })
+}
+
+fn update_manual_repair_guidance(conflicts: &[PathBuf]) -> String {
+    let mut guidance = String::new();
+    guidance.push_str("amplihack will not write to privileged system locations automatically.\n");
+    if !conflicts.is_empty() {
+        guidance.push_str("Conflicting PATH candidates:\n");
+        for conflict in conflicts {
+            guidance.push_str(&format!("  - {}\n", repair_guidance_path_display(conflict)));
+        }
+    }
+    guidance.push_str(
+        "Move the user-level install earlier in PATH:\n  export PATH=\"$HOME/.local/bin:$PATH\"\n",
+    );
+    guidance.push_str(
+        "If /usr/local/bin contains stale amplihack binaries, remove them manually with sudo:\n  sudo rm /usr/local/bin/amplihack /usr/local/bin/amplihack-hooks",
+    );
+    guidance
+}
+
+fn repair_guidance_path_display(path: &Path) -> String {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    if normalized.contains("/usr/local/bin/amplihack-hooks") {
+        "/usr/local/bin/amplihack-hooks".to_string()
+    } else if normalized.contains("/usr/local/bin/amplihack") {
+        "/usr/local/bin/amplihack".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn current_process_install_target_decision(
+    current_exe: &Path,
+    target_version: &str,
+) -> Result<crate::path_conflicts::InstallTargetDecision> {
+    let home_dir = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .context("HOME is not set; cannot determine safe user-level update target")?;
+    let report = crate::path_conflicts::analyze_current_process_path_conflicts(
+        home_dir,
+        current_exe.to_path_buf(),
+    )?;
+    let probes = crate::path_conflicts::probe_candidates_without_exec(&report);
+    crate::path_conflicts::decide_update_install_target(
+        crate::path_conflicts::TargetDecisionInput {
+            report,
+            current_version: target_version.to_string(),
+            candidate_probes: probes,
+            denied_system_prefixes: crate::path_conflicts::default_denied_system_prefixes(),
+        },
+    )
 }
 
 /// Invoke `<binary> --version` and confirm the output contains `expected`.

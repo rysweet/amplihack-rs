@@ -137,6 +137,48 @@ pub(super) fn verify_framework_assets(claude_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+pub(super) fn assert_no_noisy_install_update_regressions(output: &str) -> Result<()> {
+    crate::install_output_contract::assert_no_noisy_install_update_regressions(output)
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FrameworkAssetVerificationMode {
+    NormalInstall,
+    PostUpdateInstall,
+}
+
+#[cfg(test)]
+pub(super) fn render_framework_asset_verification_for_test(
+    missing: &[&str],
+    mode: FrameworkAssetVerificationMode,
+) -> Result<String> {
+    let mut output = String::new();
+    let post_update = mode == FrameworkAssetVerificationMode::PostUpdateInstall;
+    if missing.is_empty() {
+        output.push_str("  ✅ Required framework assets found\n");
+    } else if post_update
+        && missing
+            .iter()
+            .all(|path| is_transitional_xpia_asset_gap(path))
+    {
+        output.push_str(
+            "  ℹ️  Missing transitional XPIA shell assets will self-heal on next invocation\n",
+        );
+        for path in missing {
+            output.push_str(&format!("     • {path}\n"));
+        }
+    } else {
+        output.push_str("  ❌ Missing required framework assets:\n");
+        for path in missing {
+            output.push_str(&format!("     • {path}\n"));
+        }
+    }
+    Ok(output)
+}
+
 fn is_post_update_install() -> bool {
     std::env::var_os("AMPLIHACK_POST_UPDATE_INSTALL").is_some_and(|value| value == "1")
 }

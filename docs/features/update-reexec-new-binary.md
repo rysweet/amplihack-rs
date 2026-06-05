@@ -50,8 +50,8 @@ amplihack update
   │
   ├─ analyze PATH conflicts
   │    → inspect ordered candidates for amplihack + amplihack-hooks
-  │    → prefer ~/.local/bin when current/writable user binaries exist
-  │    → stop with manual repair guidance for unsafe system targets
+  │    → prefer ~/.local/bin when a safe user-level target exists
+  │    → stop with manual repair guidance for system-managed targets
   │
   ├─ download_and_replace(&release)
   │    → downloads, verifies SHA-256, atomic rename
@@ -106,10 +106,11 @@ amplihack update
 
 6. **Safe target selection** — Before replacing a binary, update analyzes
    ordered `PATH` candidates for `amplihack` and `amplihack-hooks`. If stale
-   root-owned `/usr/local/bin` entries shadow current user-local binaries,
-   update prefers the writable `~/.local/bin` target when available and prints
-   repair guidance. It never attempts privileged writes or temporary-file copies
-   into unwritable system directories.
+   system-managed entries such as `/usr/local/bin`, `/usr/bin`, `/bin`, or
+   `/opt` shadow current user-local binaries, update prefers the writable
+   `~/.local/bin` target when available and prints repair guidance. It never
+   writes automatically into system-managed prefixes, even when those
+   directories are writable.
 
 ### `--skip-install` bypass
 
@@ -153,7 +154,7 @@ propagates with full context. This should not happen in practice because
 If `/usr/local/bin/amplihack` appears before `~/.local/bin/amplihack` on
 `PATH`, update reports the conflict. When `~/.local/bin` is writable, the
 user-local binary is updated and the warning explains how to make the shell run
-it first. When no user-writable target exists, update stops before replacement
+it first. When no safe user-level target exists, update stops before replacement
 and prints sudo/manual repair guidance.
 
 See [Install/update PATH conflict reference](../reference/install-update-path-conflicts.md)
@@ -171,10 +172,14 @@ include the unrecognized flag name.
 
 | File | Role |
 |------|------|
-| `crates/amplihack-cli/src/path_conflicts.rs` | Shared side-effect-free PATH analysis and install target decision logic. |
+| `crates/amplihack-cli/src/path_conflicts.rs` | Shared side-effect-free PATH analysis, canonical duplicate handling, warning formatting, and install target decision logic. |
+| `crates/amplihack-cli/src/update/mod.rs` | Exposes update submodules so resolver-backed target selection is part of the update flow without leaking file layout. |
 | `crates/amplihack-cli/src/update/install.rs` | `download_and_replace()` returns `Result<PathBuf>` with the installed binary path (captured before atomic rename). |
 | `crates/amplihack-cli/src/update/check.rs` | `run_update()` captures the returned path, passes it to `build_install_command()`. The closure given to `run_post_update_install` spawns the subprocess and checks its exit status. |
 | `crates/amplihack-cli/src/update/check.rs` | `build_install_command(installed_exe: &Path) -> Command` — constructs the subprocess command with args and env vars. Visibility: `pub(super)` for testability. |
+| `crates/amplihack-cli/src/commands/install/binary.rs` | Deploys user-local binaries and invokes PATH conflict analysis for install-time warnings. |
+| `crates/amplihack-cli/src/commands/install/paths.rs` | Owns user-local path construction and safe path helpers reused by install/update target selection. |
+| `crates/amplihack-cli/src/commands/install/settings.rs` | Keeps hook registrations aligned with the selected `amplihack-hooks` binary path. |
 | `crates/amplihack-cli/src/cli_commands.rs` | `Commands::Install` gains a hidden `--force-refresh` flag (`#[arg(long = "force-refresh", hide = true)]`). |
 | `crates/amplihack-cli/src/commands/mod.rs` | Destructures and passes `force_refresh` through to `run_install`. |
 | `crates/amplihack-cli/src/update/post_install.rs` | Unchanged. The closure injection pattern continues to work — the closure now spawns a subprocess instead of calling `run_install`. |
@@ -192,7 +197,7 @@ No new crate dependencies introduced.
 | `update_check_source_includes_framework_restage` | `tests/bugfix_install_tests.rs` | Source-level assertion that `run_update` uses `build_install_command` (not `run_install` in-process) |
 | Existing `run_post_update_install` tests | `update/post_install.rs` | Skip-install bypass, closure invocation, error propagation — all still pass unchanged |
 | PATH conflict resolver tests | `path_conflicts.rs` | User-bin first, system-bin shadowing, duplicate candidates, safe user-bin preference, and manual repair decisions |
-| Install/update smoke output assertions | install/update tests | Normal output excludes stale hook-file `❌` lines, `profile_management` warnings, and known-safe bundled symlink skip warnings |
+| Install/update smoke output assertions | install/update tests | Normal output excludes stale hook-file `❌` lines, `profile_management` warnings, and literal `Skipping symlink` noise |
 
 ## Interaction with related features
 

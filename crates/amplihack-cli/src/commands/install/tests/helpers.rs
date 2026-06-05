@@ -126,6 +126,7 @@ pub(super) fn create_bundle_only_source_repo(root: &Path) {
 /// Creates an executable stub at `dir/name` (755 perms on Unix).
 /// Content is padded to > 1024 bytes so deploy_binaries size check passes.
 pub(super) fn create_exe_stub(dir: &Path, name: &str) -> std::path::PathBuf {
+    fs::create_dir_all(dir).unwrap();
     let path = dir.join(name);
     let content = format!("#!/usr/bin/env bash\nexit 0\n{}\n", "x".repeat(1100));
     fs::write(&path, content).unwrap();

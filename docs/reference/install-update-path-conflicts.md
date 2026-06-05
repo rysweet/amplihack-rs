@@ -24,7 +24,7 @@ The conflict detector covers these binary names:
 | `amplihack-hooks` | Rust-native hook dispatcher used by registered hooks |
 
 It does not execute discovered binaries. It inspects candidate paths, metadata,
-canonical forms when available, and user-writable target locations.
+canonical forms when available, and safe user-level target locations.
 
 ## Preferred install target
 
@@ -35,13 +35,19 @@ Target selection uses this priority:
 
 | Priority | Target | Used when |
 | --- | --- | --- |
-| 1 | Existing current executable directory | The running binary directory is user-writable and not a known unsafe system target. |
+| 1 | Existing current executable directory | The running binary directory is user-level, user-writable, and not under a denied system prefix. |
 | 2 | `~/.local/bin` | User-local binaries are present or the directory is creatable/writable. |
-| 3 | Manual repair required | The only viable target is system-owned, root-owned, or otherwise unwritable. |
+| 3 | Manual repair required | The only viable target is under a denied system prefix, system-owned, root-owned, or otherwise unsafe. |
 
-`/usr/local/bin` is never written automatically unless it is already writable by
-the current user. The updater does not invoke `sudo`, change ownership, delete
-files, or attempt privileged temporary-file copies.
+A target is **safe for automatic replacement** only when it is under the current
+user's home directory and neither its raw nor canonical path is under a denied
+system prefix. Denied system prefixes include `/usr/local/bin`, `/usr/bin`,
+`/bin`, `/usr/sbin`, `/sbin`, and `/opt`. These prefixes are never written
+automatically, even when filesystem permissions would allow the current user to
+write there.
+
+The updater does not invoke `sudo`, change ownership, delete files, or attempt
+privileged temporary-file copies.
 
 ## PATH conflict categories
 
@@ -49,13 +55,32 @@ files, or attempt privileged temporary-file copies.
 | --- | --- | --- |
 | User-local first | `~/.local/bin/<binary>` is the first candidate for both binaries. | No warning. Install/update proceeds normally. |
 | System shadowing user-local | A candidate such as `/usr/local/bin/<binary>` appears before `~/.local/bin/<binary>`. | Warn with the shadowing path and the preferred user-local path. |
-| Duplicate candidates | More than one distinct candidate exists for a binary. | Warn when the order is ambiguous or could run a stale binary. |
-| Root-owned stale candidate | Earlier candidate is not writable by the current user and user-local candidate exists. | Prefer safe user-local update when possible; otherwise fail with manual repair guidance. |
+| Duplicate candidates | More than one distinct binary identity exists for a binary after canonical de-duplication. | Warn when the order is ambiguous or could run a stale binary. |
+| System-managed stale candidate | Earlier candidate is under a denied system prefix and a user-local candidate exists. | Prefer safe user-local update when possible; otherwise fail with manual repair guidance. |
 | Mixed binary locations | `amplihack` and `amplihack-hooks` resolve from different install roots. | Warn because hooks may be updated independently from the CLI. |
 
 Canonicalization is best effort. If a path cannot be canonicalized because it
 does not exist or metadata cannot be read, the raw path is still included in the
 report and filesystem errors from later install operations are preserved.
+
+## Duplicate and canonical path handling
+
+The resolver keeps raw `PATH` candidates in shell resolution order for messages,
+then computes a stable identity for duplicate detection:
+
+1. Use the canonical path when both the candidate and its target can be
+   canonicalized.
+2. Otherwise use the normalized raw absolute path.
+
+Candidates with the same canonical identity are treated as aliases of the same
+binary and do not produce duplicate or stale-shadowing warnings by themselves.
+For example, `/usr/local/bin/amplihack` symlinked to
+`/home/alice/.local/bin/amplihack` is not reported as a stale duplicate solely
+because both raw paths appear on `PATH`.
+
+Warnings are emitted when ordered candidates resolve to distinct identities and
+an earlier candidate either creates ambiguous command resolution or is under a
+denied system prefix that shadows a safe user-local target.
 
 ## Update behavior
 
@@ -75,14 +100,14 @@ Example:
     To run the updated binary first, move ~/.local/bin earlier in PATH or remove the stale system copy.
 ```
 
-When no safe user-writable target exists, update exits non-zero before
+When no safe user-level target exists, update exits non-zero before
 replacement:
 
 ```text
-Cannot update amplihack automatically because the resolved target is not writable:
+Cannot update amplihack automatically because the resolved target is system-managed:
   /usr/local/bin/amplihack
 
-amplihack does not perform privileged writes.
+amplihack does not write system-managed prefixes automatically.
 
 Repair options:
   1. Move ~/.local/bin before /usr/local/bin in PATH.
@@ -94,7 +119,7 @@ Repair options:
 ```
 
 The error is explicit and actionable. It replaces generic permission-denied
-failures caused by blind temporary-file copies into privileged directories.
+failures caused by blind temporary-file copies into system-managed directories.
 
 ## Install behavior
 
@@ -165,6 +190,21 @@ Recommended shell configuration:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+## Implementation surfaces
+
+The feature is intentionally split so install and update share one resolver
+instead of duplicating PATH policy.
+
+| File | Planned role |
+| --- | --- |
+| `crates/amplihack-cli/src/path_conflicts.rs` | Shared side-effect-free resolver, warning formatter, and install target decision API. |
+| `crates/amplihack-cli/src/update/mod.rs` | Exposes update submodules and keeps the resolver available to update orchestration without coupling callers to file layout. |
+| `crates/amplihack-cli/src/update/check.rs` | Calls the resolver before binary replacement, handles `ManualRepairRequired`, and passes the chosen safe target to download/replacement code. |
+| `crates/amplihack-cli/src/update/install.rs` | Replaces only the selected safe target and returns the installed binary path used by post-update install re-exec. |
+| `crates/amplihack-cli/src/commands/install/binary.rs` | Deploys user-local binaries, then invokes PATH analysis for install-time warnings. |
+| `crates/amplihack-cli/src/commands/install/paths.rs` | Owns user-local path construction and safe path helpers reused by the resolver. |
+| `crates/amplihack-cli/src/commands/install/settings.rs` | Ensures hook registrations point at the selected `amplihack-hooks` binary path after install/update repair. |
+
 ## Contributor API
 
 The shared resolver lives in `crates/amplihack-cli/src/path_conflicts.rs`.
@@ -214,7 +254,7 @@ Decision used by update replacement logic.
 
 | Variant | Meaning |
 | --- | --- |
-| `CurrentExeDir { target }` | Replace the current executable path. |
+| `CurrentExeDir { target }` | Replace the current executable path only when it is a safe user-level target. |
 | `PreferredUserBin { target, warnings }` | Replace the safe user-local target and report conflicts. |
 | `ManualRepairRequired { attempted_target, guidance }` | Do not replace anything; return actionable guidance. |
 
@@ -232,7 +272,7 @@ contain:
 | `post_tool_use.sh ❌` | Obsolete Python/shell hook verification. |
 | `pre_tool_use.sh ❌` | Obsolete Python/shell hook verification. |
 | `profile_management` warning | Old noisy profile-management staging warning. |
-| Known-safe bundled symlink skip warnings | Non-actionable copy noise during normal install/update. |
+| `Skipping symlink` | Non-actionable copy noise for known-safe bundled symlinks during normal install/update. |
 
 Diagnostic modes may include explicit file-copy details, but normal
 install/update output must stay free of these known regressions.
