@@ -46,6 +46,37 @@ fn extract_archive_finds_both_binaries() {
     assert!(find_binary(&extract_dir, binary_filename("amplihack-hooks")).is_ok());
 }
 
+#[cfg(unix)]
+#[test]
+fn find_binary_follows_symlinked_archive_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let search_root = temp.path().join("search");
+    let real_dir = temp.path().join("target/real");
+    fs::create_dir_all(&search_root).unwrap();
+    fs::create_dir_all(&real_dir).unwrap();
+    let real_binary = real_dir.join(binary_filename("amplihack"));
+    fs::write(&real_binary, b"#!/bin/sh\nexit 0\n").unwrap();
+
+    use std::os::unix::fs::symlink;
+    symlink(&real_dir, search_root.join("linked-dir")).unwrap();
+    symlink(
+        &real_binary,
+        search_root.join(binary_filename("amplihack-hooks")),
+    )
+    .unwrap();
+
+    assert_eq!(
+        find_binary(&search_root, binary_filename("amplihack")).unwrap(),
+        search_root
+            .join("linked-dir")
+            .join(binary_filename("amplihack"))
+    );
+    assert_eq!(
+        find_binary(&search_root, binary_filename("amplihack-hooks")).unwrap(),
+        search_root.join(binary_filename("amplihack-hooks"))
+    );
+}
+
 fn create_test_archive(path: &Path) -> Result<()> {
     let tar_gz = fs::File::create(path)?;
     let encoder = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());

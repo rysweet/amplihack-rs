@@ -259,13 +259,23 @@ fn is_python_script(path: &std::path::Path) -> bool {
     if path.extension().and_then(|e| e.to_str()) == Some("py") {
         return true;
     }
-    // Read the first line to check for a Python shebang
-    if let Ok(content) = std::fs::read(path)
-        && let Some(first_line) = content
-            .split(|&b| b == b'\n')
-            .next()
-            .and_then(|line| std::str::from_utf8(line).ok())
+
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut first_line = Vec::new();
+    let mut reader = std::io::BufReader::new(file);
+    let Ok(_) = std::io::BufRead::read_until(&mut reader, b'\n', &mut first_line) else {
+        return false;
+    };
+    while first_line
+        .last()
+        .is_some_and(|byte| *byte == b'\n' || *byte == b'\r')
     {
+        first_line.pop();
+    }
+
+    if let Ok(first_line) = std::str::from_utf8(&first_line) {
         return first_line.starts_with("#!")
             && (first_line.contains("python") || first_line.contains("Python"));
     }

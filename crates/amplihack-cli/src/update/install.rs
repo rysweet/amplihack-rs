@@ -63,7 +63,7 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     let new_hooks = find_binary(temp_dir.path(), binary_filename("amplihack-hooks"))?;
     let current_exe =
         std::env::current_exe().context("cannot determine current executable path")?;
-    let decision = current_process_install_target_decision(&current_exe, &release.version)?;
+    let decision = current_process_install_target_decision(&current_exe, CURRENT_VERSION)?;
     let plan = plan_downloaded_binary_install(
         InstallArchiveLayout {
             amplihack: new_amplihack.clone(),
@@ -239,7 +239,7 @@ fn repair_guidance_path_display(path: &Path) -> String {
 
 fn current_process_install_target_decision(
     current_exe: &Path,
-    target_version: &str,
+    running_version: &str,
 ) -> Result<crate::path_conflicts::InstallTargetDecision> {
     let home_dir = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -250,14 +250,18 @@ fn current_process_install_target_decision(
         current_exe.to_path_buf(),
     )?;
     let probes = crate::path_conflicts::probe_candidates_without_exec(&report);
-    crate::path_conflicts::decide_update_install_target(
+    let decision = crate::path_conflicts::decide_update_install_target(
         crate::path_conflicts::TargetDecisionInput {
-            report,
-            current_version: target_version.to_string(),
+            report: report.clone(),
+            current_version: running_version.to_string(),
             candidate_probes: probes,
             denied_system_prefixes: crate::path_conflicts::default_denied_system_prefixes(),
         },
-    )
+    )?;
+    if let Some(notice) = crate::path_conflicts::update_path_conflict_notice(&report, &decision) {
+        println!("{notice}");
+    }
+    Ok(decision)
 }
 
 /// Invoke `<binary> --version` and confirm the output contains `expected`.
@@ -391,12 +395,15 @@ pub(super) fn find_binary(root: &Path, binary_name: &str) -> Result<PathBuf> {
         let entries = fs::read_dir(root).ok()?;
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() && path.file_name() == Some(OsStr::new(binary_name)) {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let is_file = file_type.is_file() || (file_type.is_symlink() && path.is_file());
+            if is_file && path.file_name() == Some(OsStr::new(binary_name)) {
                 return Some(path);
             }
-            if path.is_dir()
-                && let Some(found) = search(&path, binary_name, depth + 1)
-            {
+            let is_dir = file_type.is_dir() || (file_type.is_symlink() && path.is_dir());
+            if is_dir && let Some(found) = search(&path, binary_name, depth + 1) {
                 return Some(found);
             }
         }
