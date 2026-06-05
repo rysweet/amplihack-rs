@@ -263,19 +263,23 @@ fn is_python_script(path: &std::path::Path) -> bool {
     let Ok(file) = std::fs::File::open(path) else {
         return false;
     };
-    let mut first_line = Vec::new();
-    let mut reader = std::io::BufReader::new(file);
-    let Ok(_) = std::io::BufRead::read_until(&mut reader, b'\n', &mut first_line) else {
+    let mut first_bytes = Vec::new();
+    let mut limited = std::io::Read::take(std::io::BufReader::new(file), 1024);
+    let Ok(_) = std::io::Read::read_to_end(&mut limited, &mut first_bytes) else {
         return false;
     };
+    let mut first_line = first_bytes
+        .split(|byte| *byte == b'\n')
+        .next()
+        .unwrap_or(&first_bytes);
     while first_line
         .last()
         .is_some_and(|byte| *byte == b'\n' || *byte == b'\r')
     {
-        first_line.pop();
+        first_line = &first_line[..first_line.len() - 1];
     }
 
-    if let Ok(first_line) = std::str::from_utf8(&first_line) {
+    if let Ok(first_line) = std::str::from_utf8(first_line) {
         return first_line.starts_with("#!")
             && (first_line.contains("python") || first_line.contains("Python"));
     }

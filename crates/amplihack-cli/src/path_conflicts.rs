@@ -93,6 +93,19 @@ pub(crate) fn update_path_conflict_notice(
     let mut notice = String::new();
     for (binary_name, resolution) in &report.resolutions {
         if !resolution.is_shadowed_by_earlier_path_entry {
+            let user_target = install_dir.join(binary_filename(binary_name));
+            if resolution.resolved.path != user_target
+                && resolution.preferred_user_candidate.is_none()
+            {
+                notice.push_str(&format!(
+                    "  ⚠️  PATH conflict: `{binary_name}` resolves to {} instead of the user-local target {}\n",
+                    resolution.resolved.path.display(),
+                    user_target.display()
+                ));
+                notice.push_str(
+                    "     The updated binary may not run until the user-local install is earlier in PATH.\n",
+                );
+            }
             continue;
         }
         let Some(preferred) = resolution.preferred_user_candidate.as_ref() else {
@@ -129,6 +142,9 @@ pub(crate) fn analyze_path_conflicts(input: &PathAnalysisInput) -> Result<PathCo
     for binary_name in &input.binary_names {
         let filename = binary_filename(binary_name);
         let preferred_binary_path = preferred_user_bin.join(&filename);
+        let preferred_canonical_path = preferred_binary_path
+            .canonicalize()
+            .unwrap_or_else(|_| preferred_binary_path.clone());
         let candidates = path_candidates(&filename, &input.path_dirs)?;
         if candidates.is_empty() {
             continue;
@@ -137,7 +153,10 @@ pub(crate) fn analyze_path_conflicts(input: &PathAnalysisInput) -> Result<PathCo
         let resolved = candidates[0].clone();
         let preferred_user_candidate = candidates
             .iter()
-            .find(|candidate| candidate.path == preferred_binary_path)
+            .find(|candidate| {
+                candidate.path == preferred_binary_path
+                    || candidate.canonical_path == preferred_canonical_path
+            })
             .cloned();
         let canonical_candidates = collapse_canonical_candidates(&candidates);
         let preferred_is_shadowed = preferred_user_candidate.as_ref().is_some_and(|preferred| {
@@ -209,7 +228,10 @@ pub(crate) fn decide_update_install_target(
 
     if input.report.preferred_user_bin.exists()
         && !preferred_user_bin_denied
-        && user_bin_pair_is_writable(&input.report.preferred_user_bin, &input.candidate_probes)
+        && user_bin_pair_exists_and_is_writable(
+            &input.report.preferred_user_bin,
+            &input.candidate_probes,
+        )
         && (current_exe_denied || report_has_shadowing(&input.report))
     {
         return Ok(InstallTargetDecision::PreferredUserBin {
@@ -313,9 +335,15 @@ fn preferred_user_bin_is_safe_current(input: &TargetDecisionInput) -> bool {
     })
 }
 
-fn user_bin_pair_is_writable(user_bin: &Path, probes: &BTreeMap<PathBuf, BinaryProbe>) -> bool {
+fn user_bin_pair_exists_and_is_writable(
+    user_bin: &Path,
+    probes: &BTreeMap<PathBuf, BinaryProbe>,
+) -> bool {
     ["amplihack", "amplihack-hooks"].into_iter().all(|name| {
         let path = user_bin.join(binary_filename(name));
+        if !path.is_file() {
+            return false;
+        }
         probes
             .get(&path)
             .map(|probe| probe.writable)
@@ -576,6 +604,66 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn alias_to_user_bin_is_treated_as_preferred_candidate() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let user_bin = home.join(".local/bin");
+        let aliases = temp.path().join("aliases");
+        let user_amplihack = write_executable(&user_bin, "amplihack");
+
+        fs::create_dir_all(&aliases).unwrap();
+        std::os::unix::fs::symlink(&user_amplihack, aliases.join("amplihack")).unwrap();
+
+        let report = analyze_path_conflicts(&analysis_input(
+            &home,
+            &user_amplihack,
+            vec![aliases.clone()],
+        ))
+        .unwrap();
+
+        let amplihack = report.resolution("amplihack").unwrap();
+        assert_eq!(
+            amplihack.preferred_user_candidate.as_ref().map(|c| &c.path),
+            Some(&aliases.join("amplihack")),
+            "PATH aliases that canonicalize to ~/.local/bin must count as the preferred user binary"
+        );
+        assert!(
+            !amplihack.is_shadowed_by_earlier_path_entry,
+            "a PATH alias that resolves to the user binary should not produce repair noise"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn system_binary_shadowing_alias_to_user_bin_is_reported_as_shadowing() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let user_bin = home.join(".local/bin");
+        let aliases = temp.path().join("aliases");
+        let usr_local_bin = temp.path().join("usr/local/bin");
+        let user_amplihack = write_executable(&user_bin, "amplihack");
+        let system_amplihack = write_executable(&usr_local_bin, "amplihack");
+
+        fs::create_dir_all(&aliases).unwrap();
+        std::os::unix::fs::symlink(&user_amplihack, aliases.join("amplihack")).unwrap();
+
+        let report = analyze_path_conflicts(&analysis_input(
+            &home,
+            &system_amplihack,
+            vec![usr_local_bin.clone(), aliases.clone()],
+        ))
+        .unwrap();
+
+        let amplihack = report.resolution("amplihack").unwrap();
+        assert_eq!(amplihack.resolved.path, system_amplihack);
+        assert!(
+            amplihack.is_shadowed_by_earlier_path_entry,
+            "system binaries before a PATH alias to ~/.local/bin must still be reported as shadowing"
+        );
+    }
+
     #[test]
     fn distinct_duplicate_candidates_are_reported_as_ambiguous() {
         let temp = tempfile::tempdir().unwrap();
@@ -703,6 +791,45 @@ mod tests {
         assert!(
             !guidance.contains("Permission denied copying"),
             "guidance must avoid the old misleading temp-copy failure wording: {guidance}"
+        );
+    }
+
+    #[test]
+    fn writable_empty_user_bin_does_not_silently_repair_denied_system_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let user_bin = home.join(".local/bin");
+        let usr_local_bin = temp.path().join("usr/local/bin");
+        fs::create_dir_all(&user_bin).unwrap();
+        let system_amplihack = write_executable(&usr_local_bin, "amplihack");
+        write_executable(&usr_local_bin, "amplihack-hooks");
+
+        let report = analyze_path_conflicts(&analysis_input(
+            &home,
+            &system_amplihack,
+            vec![usr_local_bin.clone()],
+        ))
+        .unwrap();
+        let mut probes = BTreeMap::new();
+        probes.insert(
+            system_amplihack,
+            BinaryProbe {
+                version: Some("0.9.60".into()),
+                writable: false,
+            },
+        );
+
+        let decision = decide_update_install_target(TargetDecisionInput {
+            report,
+            current_version: "0.9.71".into(),
+            candidate_probes: probes,
+            denied_system_prefixes: vec![temp.path().join("usr/local")],
+        })
+        .unwrap();
+
+        assert!(
+            matches!(decision, InstallTargetDecision::ManualRepairRequired { .. }),
+            "a writable user-bin directory without existing user-level binaries is not enough to redirect updates away from a denied system install: {decision:?}"
         );
     }
 
@@ -851,6 +978,61 @@ mod tests {
         assert!(
             !notice.contains("Permission denied copying") && !notice.contains("failed to copy"),
             "repair guidance must replace temp-copy permission failures, got: {notice}"
+        );
+    }
+
+    #[test]
+    fn update_notice_reports_user_local_target_missing_from_path_resolution() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let user_bin = home.join(".local/bin");
+        let usr_local_bin = temp.path().join("usr/local/bin");
+        let user_amplihack = write_executable(&user_bin, "amplihack");
+        let user_hooks = write_executable(&user_bin, "amplihack-hooks");
+        let system_amplihack = write_executable(&usr_local_bin, "amplihack");
+        write_executable(&usr_local_bin, "amplihack-hooks");
+
+        let report = analyze_path_conflicts(&analysis_input(
+            &home,
+            &system_amplihack,
+            vec![usr_local_bin.clone()],
+        ))
+        .unwrap();
+        let mut probes = BTreeMap::new();
+        for path in [user_amplihack, user_hooks] {
+            probes.insert(
+                path,
+                BinaryProbe {
+                    version: Some("0.9.60".into()),
+                    writable: true,
+                },
+            );
+        }
+        probes.insert(
+            system_amplihack,
+            BinaryProbe {
+                version: Some("0.9.60".into()),
+                writable: false,
+            },
+        );
+
+        let decision = decide_update_install_target(TargetDecisionInput {
+            report: report.clone(),
+            current_version: "0.9.71".into(),
+            candidate_probes: probes,
+            denied_system_prefixes: vec![temp.path().join("usr/local")],
+        })
+        .unwrap();
+
+        let notice = super::update_path_conflict_notice(&report, &decision)
+            .expect("updating a user-local target that is not on PATH must produce guidance");
+        assert!(notice.contains("instead of the user-local target"));
+        assert!(notice.contains(&usr_local_bin.join("amplihack").display().to_string()));
+        assert!(notice.contains(&user_bin.join("amplihack").display().to_string()));
+        assert!(notice.contains("earlier in PATH"));
+        assert!(
+            !notice.contains("Permission denied copying") && !notice.contains("failed to copy"),
+            "PATH guidance must not regress to copy-failure noise, got: {notice}"
         );
     }
 }
