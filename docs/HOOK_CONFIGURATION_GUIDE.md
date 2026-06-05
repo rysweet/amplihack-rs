@@ -36,8 +36,12 @@ If you see hook definitions, you need to manually merge amplihack hooks.
 ### Step 2: Find Your Amplihack Installation
 
 ```bash
-# Find where amplihack hooks are installed
-ls -la ~/.claude/tools/amplihack/hooks/
+# Find the native hook runner.
+which amplihack-hooks
+
+# Resolve the bundle hook metadata directory used by parity checks.
+HOOKS_DIR="$(amplihack resolve-bundle-asset hooks-dir)"
+printf 'hooks-dir -> %s\n' "$HOOKS_DIR"
 ```
 
 ### Step 3: Add Amplihack Hooks to Your Project
@@ -58,7 +62,7 @@ Edit your project's `~/.amplihack/.claude/settings.json` and add the amplihack h
           // ADD AMPLIHACK HOOK
           {
             "type": "command",
-            "command": "/Users/YOUR_USERNAME/.claude/tools/amplihack/hooks/session_start.py",
+            "command": "/Users/YOUR_USERNAME/.local/bin/amplihack-hooks session-start",
             "timeout": 10
           }
         ]
@@ -71,7 +75,7 @@ Edit your project's `~/.amplihack/.claude/settings.json` and add the amplihack h
           // ADD AMPLIHACK HOOK
           {
             "type": "command",
-            "command": "/Users/YOUR_USERNAME/.claude/tools/amplihack/hooks/stop.py",
+            "command": "/Users/YOUR_USERNAME/.local/bin/amplihack-hooks stop",
             "timeout": 120
           }
         ]
@@ -85,7 +89,7 @@ Edit your project's `~/.amplihack/.claude/settings.json` and add the amplihack h
           // ADD AMPLIHACK HOOK
           {
             "type": "command",
-            "command": "/Users/YOUR_USERNAME/.claude/tools/amplihack/hooks/post_tool_use.py"
+            "command": "/Users/YOUR_USERNAME/.local/bin/amplihack-hooks post-tool-use"
           }
         ]
       }
@@ -94,15 +98,15 @@ Edit your project's `~/.amplihack/.claude/settings.json` and add the amplihack h
 }
 ```
 
-**Important:** Replace `/Users/YOUR_USERNAME` with your actual home directory path.
+**Important:** Replace `/Users/YOUR_USERNAME/.local/bin/amplihack-hooks` with
+the absolute path printed by `which amplihack-hooks`.
 
 ### Step 4: Verify Your Configuration
 
 ```bash
-# Check that all hook files exist
-ls -la /Users/YOUR_USERNAME/.claude/tools/amplihack/hooks/session_start.py
-ls -la /Users/YOUR_USERNAME/.claude/tools/amplihack/hooks/stop.py
-ls -la /Users/YOUR_USERNAME/.claude/tools/amplihack/hooks/post_tool_use.py
+# Check that the native hook runner exists and the bundle hook directory resolves.
+test -x /Users/YOUR_USERNAME/.local/bin/amplihack-hooks
+test -d "$(amplihack resolve-bundle-asset hooks-dir)"
 ```
 
 ## Troubleshooting
@@ -112,16 +116,17 @@ ls -la /Users/YOUR_USERNAME/.claude/tools/amplihack/hooks/post_tool_use.py
 If you see errors like:
 
 ```
-⏺ Stop [.claude/tools/amplihack/hooks/stop.py] failed with non-blocking status code 127
+⏺ Stop [amplihack-hooks stop] failed with non-blocking status code 127
 ```
 
 This means:
 
-1. The path is wrong (check for typos)
+1. The `amplihack-hooks` path is wrong (check for typos)
 2. The path is relative instead of absolute
-3. The hook file doesn't exist
+3. The `amplihack-hooks` binary is not installed
 
-**Solution:** Use absolute paths starting with `/Users/` (macOS) or `/home/` (Linux).
+**Solution:** Use the absolute path printed by `which amplihack-hooks`, or
+rerun `amplihack install` to rewrite hook commands automatically.
 
 ### Hooks Not Running At All
 
@@ -178,7 +183,9 @@ If you're still having issues:
 1. Check that amplihack is properly installed:
 
    ```bash
-   ls -la ~/.claude/tools/amplihack/
+   which amplihack
+   which amplihack-hooks
+   amplihack resolve-bundle-asset hooks-dir
    ```
 
 2. Verify your paths are absolute and correct
@@ -207,7 +214,7 @@ Here's a complete example of a project's `~/.amplihack/.claude/settings.json` wi
           },
           {
             "type": "command",
-            "command": "/Users/johndoe/.claude/tools/amplihack/hooks/session_start.py",
+            "command": "/Users/johndoe/.local/bin/amplihack-hooks session-start",
             "timeout": 10
           }
         ]
@@ -223,7 +230,7 @@ Here's a complete example of a project's `~/.amplihack/.claude/settings.json` wi
           },
           {
             "type": "command",
-            "command": "/Users/johndoe/.claude/tools/amplihack/hooks/stop.py",
+            "command": "/Users/johndoe/.local/bin/amplihack-hooks stop",
             "timeout": 120
           }
         ]
@@ -235,7 +242,7 @@ Here's a complete example of a project's `~/.amplihack/.claude/settings.json` wi
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/johndoe/.claude/tools/amplihack/hooks/post_tool_use.py"
+            "command": "/Users/johndoe/.local/bin/amplihack-hooks post-tool-use"
           }
         ]
       }

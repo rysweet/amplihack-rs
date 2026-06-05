@@ -13,13 +13,14 @@ cat ~/.claude/settings.json | grep -A5 hooks
 # Expected output: Should show SessionStart, Stop, and PostToolUse hooks
 ```
 
-### 2. Verify Hook Files Exist
+### 2. Verify Hook Runtime Exists
 
 ```bash
-# Check if hook files are installed
-ls -la ~/.claude/tools/amplihack/hooks/
+# Check if the native hook runner is installed
+which amplihack-hooks
 
-# Expected output: session_start.py, stop.py, post_tool_use.py
+# Check if the bundle hook directory resolves for metadata/parity checks
+amplihack resolve-bundle-asset hooks-dir
 ```
 
 ### 3. Check Hook Execution
@@ -27,7 +28,7 @@ ls -la ~/.claude/tools/amplihack/hooks/
 Start Claude Code and look for hook execution messages in the output:
 
 ```
-✓ SessionStart [/home/user/.claude/tools/amplihack/hooks/session_start.py] completed
+✓ SessionStart [/home/user/.local/bin/amplihack-hooks session-start] completed
 ```
 
 ## Common Issues and Solutions
@@ -55,10 +56,10 @@ cargo install amplihack-rs amplihack --version
 **Symptom:**
 
 ```
-⏺ Stop [.claude/tools/amplihack/hooks/stop.py] failed with non-blocking status code 127
+⏺ Stop [amplihack-hooks stop] failed with non-blocking status code 127
 ```
 
-**Cause:** Hook path is incorrect or relative instead of absolute.
+**Cause:** The `amplihack-hooks` path is incorrect, relative, or missing.
 
 **Solution:**
 
@@ -72,7 +73,7 @@ Check and fix hook paths in ~/.claude/settings.json:
         "hooks": [
           {
             "type": "command",
-            "command": "/home/user/.claude/tools/amplihack/hooks/stop.py"
+            "command": "/home/user/.local/bin/amplihack-hooks stop"
           }
         ]
       }
@@ -81,7 +82,8 @@ Check and fix hook paths in ~/.claude/settings.json:
 }
 ```
 
-**Automatic Fix:** As of v0.9.1, amplihack automatically fixes relative paths to absolute during launch.
+**Automatic Fix:** Rerun `amplihack install` to rewrite hook commands with the
+current absolute `amplihack-hooks` path.
 
 ### Issue 3: Hooks Not Running At All
 
@@ -114,13 +116,13 @@ Manually merge amplihack hooks into project settings. See [Hook Configuration Gu
 ⏺ SessionStart failed: Permission denied
 ```
 
-**Cause:** Hook files aren't executable.
+**Cause:** The `amplihack-hooks` binary is not executable.
 
 **Solution:**
 
 ```bash
-# Make hooks executable
-chmod +x ~/.claude/tools/amplihack/hooks/*.py
+# Reinstall to restore executable permissions
+amplihack install
 ```
 
 ### Issue 5: Hook Timeout
@@ -161,8 +163,9 @@ echo "2. Project Settings Hooks:"
 grep -A10 hooks .claude/settings.json 2>/dev/null || echo "   No project hooks found"
 echo ""
 
-echo "3. Hook Files:"
-ls -lh ~/.claude/tools/amplihack/hooks/ 2>/dev/null || echo "   Hook directory not found"
+echo "3. Hook Runtime:"
+which amplihack-hooks 2>/dev/null || echo "   amplihack-hooks not found"
+amplihack resolve-bundle-asset hooks-dir 2>/dev/null || echo "   hooks-dir not found"
 echo ""
 
 echo "4. Recent Hook Execution (from logs):"
