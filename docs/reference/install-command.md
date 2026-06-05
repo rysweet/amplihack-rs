@@ -62,6 +62,7 @@ amplihack install [--interactive]
 ├── 0. maybe_run_wizard()         — if --interactive, prompt for tool/scope/update prefs (skipped otherwise)
 ├── 1. Bundled source, --local path, OR GitHub fallback — obtain framework source
 ├── 2. deploy_binaries()          — copy amplihack + amplihack-hooks (+ asset resolver when present) to ~/.local/bin
+├── 2b. analyze PATH conflicts    — warn if stale earlier PATH entries shadow ~/.local/bin
 ├── 3. copy framework assets      — stage mapped framework assets to ~/.amplihack/.claude/
 ├── 4. create_runtime_dirs()      — create runtime/ subdirs with 0o755 permissions
 ├── 5. ensure_settings_json()     — backup settings.json, register hooks, set permissions
@@ -116,6 +117,19 @@ If `~/.local/bin` is not in `$PATH`, an advisory is printed (install still succe
 ⚠️  ~/.local/bin is not in $PATH
     Add: export PATH="$HOME/.local/bin:$PATH"
 ```
+
+If another candidate appears earlier on `$PATH`, install prints an advisory
+after deploying the user-local binaries:
+
+```text
+⚠️  PATH conflict: /usr/local/bin/amplihack appears before /home/alice/.local/bin/amplihack
+    Your shell may continue to run the stale system binary.
+    Fix: export PATH="$HOME/.local/bin:$PATH" or remove the stale system copy with sudo.
+```
+
+This warning does not mean install failed. It means the shell may still resolve
+`amplihack` or `amplihack-hooks` to an older candidate until `PATH` is repaired.
+See [Install/update PATH conflict reference](./install-update-path-conflicts.md).
 
 ---
 
@@ -216,6 +230,12 @@ Returns an actionable error if none of the five locations yield an executable.
 
 Copies `amplihack` (current executable) and `amplihack-hooks` (resolved by `find_hooks_binary`) to `~/.local/bin` with `0o755` permissions. When a sibling `amplihack-asset-resolver` binary is present, it is deployed too so launched tools and recipe runs can resolve bundle assets without falling back to Python. Returns the list of deployed paths for inclusion in the manifest.
 
+After deployment, install analyzes ordered `PATH` candidates for `amplihack` and
+`amplihack-hooks`. It warns when a system-wide candidate such as
+`/usr/local/bin/amplihack` shadows the freshly deployed `~/.local/bin` binary or
+when the two binaries resolve from different install roots. The analysis is
+side-effect free; install never removes or rewrites privileged system binaries.
+
 > **macOS note:** On macOS with System Integrity Protection (SIP) active, copying the running executable to `~/.local/bin` may produce a quarantined binary. See the [First-time install how-to](../howto/first-install.md#macos-sip-note) for the resolution step.
 
 ### `ensure_settings_json(staging_dir: &Path, timestamp: u64, hooks_bin: &Path) -> Result<(bool, Vec<String>)>`
@@ -247,6 +267,8 @@ Writes wizard results to the install manifest (`default_tool`, `update_check_pre
 ## See Also
 
 - [Interactive Install](../howto/interactive-install.md) — guided setup wizard walkthrough
+- [Repair install/update PATH conflicts](../howto/repair-install-update-path-conflicts.md) — repair stale system binaries that shadow `~/.local/bin`
+- [Install/update PATH conflict reference](./install-update-path-conflicts.md) — target selection and resolver API
 - [Hook Specifications](./hook-specifications.md) — the 7 hooks registered by amplihack install
 - [Install Manifest](./install-manifest.md) — manifest schema
 - [Binary Resolution](./binary-resolution.md) — find_hooks_binary lookup detail
