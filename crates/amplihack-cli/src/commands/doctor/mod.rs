@@ -21,6 +21,10 @@
 
 mod checks;
 
+use amplihack_launcher::flag_matrix::{
+    delivery_mode_name, prompt_delivery_name, prompt_delivery_report_for,
+};
+use amplihack_utils::prompt_delivery::{AUTO_TEMPFILE_THRESHOLD_BYTES, PromptDelivery, from_env};
 use anyhow::{Result, bail};
 use std::path::PathBuf;
 
@@ -107,23 +111,74 @@ pub fn print_summary(results: &[(bool, String)]) -> (usize, usize) {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+pub struct PromptDeliveryDoctorOptions {
+    pub requested: PromptDelivery,
+    pub diagnostic_prompt_size: usize,
+}
+
+pub fn render_prompt_delivery_diagnostics(options: PromptDeliveryDoctorOptions) -> String {
+    let report = prompt_delivery_report_for(options.requested, options.diagnostic_prompt_size);
+    let mut output = String::new();
+    output.push_str("Prompt delivery\n");
+    output.push_str(&format!(
+        "  requested: {}\n",
+        prompt_delivery_name(report.requested)
+    ));
+    output.push_str(&format!(
+        "  auto threshold: {} bytes\n",
+        AUTO_TEMPFILE_THRESHOLD_BYTES
+    ));
+    output.push('\n');
+    for entry in report.entries {
+        output.push_str(&format!("  {}\n", entry.binary));
+        output.push_str(&format!(
+            "    capabilities: {}\n",
+            capabilities_label(&entry.caps)
+        ));
+        if !entry.note.is_empty() {
+            output.push_str(&format!("    note: {}\n", entry.note));
+        }
+        output.push_str(&format!(
+            "    effective for long prompt: {}\n",
+            delivery_mode_name(entry.effective_mode)
+        ));
+        if !entry.warning.is_empty() {
+            output.push_str(&format!("    warning: {}\n", entry.warning));
+        }
+        output.push('\n');
+    }
+    output
+}
+
+fn capabilities_label(caps: &amplihack_utils::prompt_delivery::DeliveryCaps) -> String {
+    let mut labels = Vec::new();
+    if caps.supports_argv {
+        labels.push("argv");
+    }
+    if caps.supports_tempfile {
+        labels.push("tempfile");
+    }
+    if caps.supports_stdin {
+        labels.push("stdin");
+    }
+    if labels.is_empty() {
+        "none".to_string()
+    } else {
+        labels.join(", ")
+    }
+}
+
+pub fn render_doctor_help() -> String {
+    "Run system health checks\n\n\
+Usage:\n  amplihack doctor\n  amplihack doctor node [--ensure]\n  amplihack doctor copilot [--ensure-node]\n\n\
+Commands:\n  node       Diagnose Node.js >=24.0.0 for Copilot CLI\n  copilot    Diagnose Copilot CLI prerequisites\n\n\
+Options:\n  --ensure        Print remediation and use safe auto-remediation only when available\n  --ensure-node   Run the Node.js ensure flow before Copilot checks\n\n\
+Prompt delivery:\n  AMPLIHACK_PROMPT_DELIVERY=auto|argv|tempfile|stdin selects the requested subprocess prompt delivery mode.\n"
+        .to_string()
+}
+
 fn print_help() {
-    println!("Run system health checks");
-    println!();
-    println!("Usage:");
-    println!("  amplihack doctor");
-    println!("  amplihack doctor node [--ensure]");
-    println!("  amplihack doctor copilot [--ensure-node]");
-    println!();
-    println!("Commands:");
-    println!("  node       Diagnose Node.js >=24.0.0 for Copilot CLI");
-    println!("  copilot    Diagnose Copilot CLI prerequisites");
-    println!();
-    println!("Options:");
-    println!(
-        "  --ensure        Print remediation and use safe auto-remediation only when available"
-    );
-    println!("  --ensure-node   Run the Node.js ensure flow before Copilot checks");
+    print!("{}", render_doctor_help());
 }
 
 /// Run doctor checks, print the summary, and exit 1 if any check failed.
@@ -162,6 +217,10 @@ fn run_all_checks() -> Result<()> {
     let r1 = check_hooks_installed();
     let r2 = check_settings_valid_json();
     let r5 = check_amplihack_version();
+    let prompt_delivery = render_prompt_delivery_diagnostics(PromptDeliveryDoctorOptions {
+        requested: from_env(),
+        diagnostic_prompt_size: 64 * 1024,
+    });
 
     // Collect results in canonical display order (1–5), waiting for threads.
     let results = vec![
@@ -176,6 +235,7 @@ fn run_all_checks() -> Result<()> {
         h4.join()
             .unwrap_or_else(|_| (false, "tmux: internal thread panicked".to_string())),
         r5,
+        (true, prompt_delivery),
     ];
 
     let (_, failed) = print_summary(&results);

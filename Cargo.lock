@@ -131,6 +131,7 @@ version = "0.9.70"
 dependencies = [
  "amplihack-builders",
  "amplihack-hive",
+ "amplihack-launcher",
  "amplihack-memory",
  "amplihack-reflection",
  "amplihack-remote",
@@ -280,6 +281,7 @@ dependencies = [
 name = "amplihack-launcher"
 version = "0.9.70"
 dependencies = [
+ "amplihack-utils",
  "anyhow",
  "chrono",
  "libc",

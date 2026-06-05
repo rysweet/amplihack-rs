@@ -28,6 +28,7 @@ pub mod launcher_core;
 pub mod memory_config;
 pub mod nesting_detector;
 pub mod platform_check;
+pub mod prompt_delivery;
 pub mod repo_checkout;
 pub mod session_capture;
 pub mod session_tracker;

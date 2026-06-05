@@ -4,7 +4,7 @@
 //! retry logic, instruction injection, and session lifecycle.
 
 use anyhow::{Context, Result};
-use std::process::Command;
+use std::io::Write as _;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
@@ -12,6 +12,8 @@ use crate::auto_mode::{
     AutoModeConfig, SdkBackend, SessionMetrics, SessionResult, TurnResult, format_elapsed,
     is_retryable_output, sanitize_injected_content,
 };
+use crate::flag_matrix::{AgentBinary, prompt_delivery_caps_for};
+use crate::prompt_delivery::build_command_with_prompt_delivery;
 
 /// Autonomous execution engine.
 ///
@@ -147,22 +149,54 @@ impl AutoMode {
 
     fn run_sdk(&self, prompt: &str) -> Result<(i32, String)> {
         let binary = match self.config.sdk {
-            SdkBackend::Claude => "claude",
-            SdkBackend::Copilot => "copilot",
-            SdkBackend::Codex => "codex",
+            SdkBackend::Claude => AgentBinary::Claude,
+            SdkBackend::Copilot => AgentBinary::Copilot,
+            SdkBackend::Codex => AgentBinary::Codex,
         };
-        let mut cmd = Command::new(binary);
-        cmd.current_dir(&self.config.working_dir);
-        cmd.args(["--print", "--output-format", "text", "-p", prompt]);
+        let mut delivered = build_command_with_prompt_delivery(
+            std::ffi::OsStr::new(binary.env_value()),
+            ["--print", "--output-format", "text", "-p"],
+            prompt,
+            amplihack_utils::prompt_delivery::from_env(),
+            prompt_delivery_caps_for(binary),
+        )
+        .with_context(|| format!("failed to build {} prompt delivery", binary.env_value()))?;
+        delivered.command.current_dir(&self.config.working_dir);
         if let Some(timeout) = self.config.query_timeout_secs {
-            cmd.env("AMPLIHACK_QUERY_TIMEOUT", timeout.to_string());
+            delivered
+                .command
+                .env("AMPLIHACK_QUERY_TIMEOUT", timeout.to_string());
         }
-        let output = cmd
-            .output()
-            .with_context(|| format!("failed to run {binary}"))?;
+        let output = Self::run_delivered_output(delivered)
+            .with_context(|| format!("failed to run {}", binary.env_value()))?;
         let code = output.status.code().unwrap_or(1);
         let text = String::from_utf8_lossy(&output.stdout).to_string();
         Ok((code, text))
+    }
+
+    fn run_delivered_output(
+        delivered: crate::prompt_delivery::DeliveredCommand,
+    ) -> std::io::Result<std::process::Output> {
+        let crate::prompt_delivery::DeliveredCommand {
+            mut command,
+            delivery_handle,
+            stdin_payload,
+            ..
+        } = delivered;
+        let output = if let Some(payload) = stdin_payload {
+            command.stdout(std::process::Stdio::piped());
+            command.stderr(std::process::Stdio::piped());
+            let mut child = command.spawn()?;
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(&payload)?;
+                stdin.flush()?;
+            }
+            child.wait_with_output()?
+        } else {
+            command.output()?
+        };
+        drop(delivery_handle);
+        Ok(output)
     }
 
     pub(crate) fn should_continue(&self) -> bool {

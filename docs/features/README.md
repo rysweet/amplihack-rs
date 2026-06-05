@@ -39,4 +39,4 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 
 ## Additional Features
 
-Additional feature documentation will be added as features are ported from upstream.
+- [amplihack-rs Parity Reference](../amplihack-rs-parity.md) - subprocess prompt delivery configuration, binary capability matrix, doctor diagnostics, and Rust API.

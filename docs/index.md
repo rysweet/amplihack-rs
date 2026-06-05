@@ -63,6 +63,9 @@ amplihack copilot
 | Workflows           | ✅ All      | ✅ All    | ✅ All      | ⚠️ Limited |
 | Auto Mode           | ✅ Yes      | ✅ Yes    | ✅ Yes      | ⚠️ Limited |
 
+See [amplihack-rs parity](amplihack-rs-parity.md) for subprocess
+prompt delivery support across Claude Code, Amplifier, Copilot CLI, and Codex.
+
 **New to amplihack?** After launching, try the interactive tutorial:
 
 ```
@@ -177,6 +180,7 @@ Understand the philosophy and architecture behind amplihack.
 - [Enable Blarify Code Indexing](howto/enable-blarify.md) - `AMPLIHACK_ENABLE_BLARIFY`, non-interactive skip, staleness detection
 - [Blarify Architecture](blarify_architecture.md) - Understanding the Blarify integration
 - [Documentation Knowledge Graph](documentation_knowledge_graph.md) - How docs connect
+- [amplihack-rs Parity Reference](amplihack-rs-parity.md) - Subprocess prompt delivery capabilities, configuration, diagnostics, and Rust API
 
 ### Key Features
 
