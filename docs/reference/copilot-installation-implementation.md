@@ -424,19 +424,20 @@ Before releasing changes:
 
 ## Node.js Runtime Prerequisite
 
-Before any npm-based installation can proceed, the Rust CLI ensures a
-compatible Node.js runtime is available. `check_node_minimum_version()`
-probes the system and returns one of:
+Before launching Copilot, the Rust CLI ensures a compatible Node.js runtime is
+available. `check_node_minimum_version()` probes the system and returns one of:
 
-- `Ok(())` — system node is ≥ 18, proceed normally
+- `Ok(())` — system node is >= 24, proceed normally
 - `Err(NotFound)` — `node` binary is absent from PATH
-- `Err(TooOld)` — node exists but version < 18
+- `Err(InsufficientVersion)` — node exists but version < 24
 - `Err(VersionUndetectable)` — node exists but version output is unparseable
 
-Any `Err` variant triggers `ensure_node_for_copilot()`, which downloads
-an official Node.js binary distribution to `~/.amplihack/runtimes/` and
-prepends its `bin/` directory to `PATH`. Extraction uses atomic staging
-(`.extracting` temp directory → rename) to prevent broken partial installs.
+Any `Err` variant in the Copilot launch path triggers
+`ensure_node_for_copilot()`, which downloads an official Node.js binary
+distribution to `~/.amplihack/runtimes/` and prepends its `bin/` directory to
+`PATH`. Extraction uses atomic staging (`.extracting` temp directory, then
+rename) to prevent broken partial installs. `amplihack install` reports the
+same errors as warnings and does not download Node.js during install.
 
 See [Node.js Runtime Auto-Install](../concepts/node-runtime-auto-install.md)
 for full details and [`NodeVersionError` Reference](../reference/node-version-error.md)

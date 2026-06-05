@@ -1,8 +1,8 @@
 # Node.js Version Checking
 
 **Type**: Reference (Information-Oriented)
-**Last Updated**: 2026-06-02
-**Since**: Issue #679
+**Last Updated**: 2026-06-05
+**Since**: Issue #679; launch-time remediation refined for the post-v0.9.77 finalization work
 
 ## Overview
 
@@ -62,21 +62,19 @@ installed version is below `min_major`.
 |------|------|-------------|
 | `min_major` | `u32` | Minimum required major version (e.g., `24`) |
 
-**Returns:** `Ok(())` if:
+**Returns:** `Ok(())` when the detected Node.js major version is at least
+`min_major`.
 
-- Node.js is not installed (missing-tool is handled separately by `check_prerequisites`)
-- Node.js version output cannot be parsed (fail-open to avoid blocking on unusual environments)
-- Node.js major version is ≥ `min_major`
+Returns `Err(NodeVersionError)` when:
 
-Returns `Err(NodeVersionError)` only when the version is *known to be insufficient*.
+- The `node` binary is not found on `PATH`
+- Node.js exists but its version cannot be detected by the prerequisite checker
+- The detected major version is below `min_major`
 
-**Design rationale — fail-open:**
-
-The function intentionally returns `Ok(())` when Node.js is missing or its
-version output is unparseable. This avoids duplicating the "is node installed?"
-check (already handled by `check_prerequisites`) and prevents false negatives
-in unusual environments where `node --version` returns non-standard output.
-The only case that produces an error is a *confirmed* insufficient version.
+If a version string reaches the parser but has an unrecognized format, the
+function logs a warning and returns `Ok(())` to avoid blocking unusual Node.js
+builds. Most missing or undetectable installations are still surfaced as
+`NodeVersionError`.
 
 ### `NodeVersionError`
 
@@ -84,32 +82,38 @@ Error type returned by `check_node_minimum_version`.
 
 ```rust
 #[derive(Debug, Error)]
-#[error(
-    "Node.js v{min_required} or higher is required. \
-     Currently installed: v{current_major}.x\n\
-     {install_hint}"
-)]
-pub struct NodeVersionError {
-    pub min_required: u32,
-    pub current_major: u32,
-    pub install_hint: String,
+pub enum NodeVersionError {
+    InsufficientVersion {
+        found: u32,
+        minimum: u32,
+        install_hint: String,
+    },
+    VersionUndetectable {
+        install_hint: String,
+    },
+    NotFound {
+        install_hint: String,
+    },
 }
 ```
 
-**Fields:**
+**Variants:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `min_required` | `u32` | The minimum version that was required |
-| `current_major` | `u32` | The major version that was detected |
-| `install_hint` | `String` | Platform-specific upgrade instructions from `install_hint("node")` |
+| Variant | Description |
+|-------|-------------|
+| `InsufficientVersion` | Node.js is installed, but the major version is below the required minimum. |
+| `VersionUndetectable` | The `node` binary was found, but the prerequisite checker could not extract a version. |
+| `NotFound` | The `node` binary was not found on `PATH`. |
 
 ## Integration Points
 
 ### `amplihack copilot` (bootstrap.rs)
 
-**Behavior:** Hard error — prevents Copilot CLI from launching with an
-insufficient Node.js version.
+**Behavior:** launch-time remediation. `amplihack copilot` requires Node.js
+v24+. If the system Node.js is sufficient, launch continues without changes. If
+Node.js is missing or too old, `amplihack` attempts to install a managed Node.js
+runtime under `~/.amplihack/runtimes/` and prepends its `bin` directory to
+`PATH` for the current launch.
 
 **Location:** Called in the `"copilot"` arm of `ensure_tool_ready()`, before
 `ensure_copilot_home_staged()`.
@@ -120,18 +124,19 @@ ensure_tool_ready("copilot")
 ├── check_required_tools()
 ├── ensure_framework_installed()
 ├── ensure_recipe_runner_up_to_date()
-├── check_node_minimum_version(24)  ← NEW: hard error on Node < v24
+├── ensure_node_for_copilot()  ← auto-install managed Node.js when needed
 └── ensure_copilot_home_staged()
 ```
 
-If `check_node_minimum_version` returns an error, bootstrap prints the error
-(including the platform-specific install hint) and returns `Err`, preventing
-the Copilot CLI from launching into a guaranteed failure.
+Auto-install is supported for Linux x86_64, macOS x86_64, and macOS aarch64
+using official Node.js `.tar.xz` distributions. Unsupported platforms and
+non-interactive environments return a hard error with manual installation
+guidance instead of attempting a download.
 
 ### `amplihack install` (install/mod.rs)
 
-**Behavior:** Warning — prints a prominent message but does not fail the
-install, since `amplihack install` configures many tools beyond just Copilot.
+**Behavior:** warning only. `amplihack install` prints a prominent message but
+does not fail the install, since it configures many tools beyond just Copilot.
 
 **Location:** Called at the Copilot plugin registration step, before
 `register_copilot_plugin()`.
@@ -140,24 +145,26 @@ install, since `amplihack install` configures many tools beyond just Copilot.
 local_install(repo_root)
 ├── ...phases 1-5...
 ├── 🐙 Configuring GitHub Copilot CLI plugin:
-│   ├── check_node_minimum_version(24)  ← NEW: warning on Node < v24
+│   ├── check_node_minimum_version(24)  ← warning on missing or insufficient Node.js
 │   └── register_copilot_plugin()
 ├── ...phases 6-8...
 ```
 
 If the version check fails, the warning is printed with the `⚠️` prefix and
-includes the detected version and upgrade instructions. The install continues
-and the Copilot plugin is still registered (it may work after a future Node.js
-upgrade without re-running install).
+includes upgrade instructions. The install continues and the Copilot plugin is
+still registered. Launch-time `amplihack copilot` may later remediate Node.js by
+installing a managed runtime on supported interactive hosts.
 
 ## Configuration
 
-The minimum version (`24`) is passed as a parameter at each call site, not
-hardcoded in `amplihack_utils`. This allows call sites to adjust the threshold
-independently if requirements change.
+The minimum version (`24`) is passed as a parameter at each check call site. The
+Copilot launch path also exposes the same requirement as
+`NODE_MINIMUM_MAJOR = 24` and downloads `NODE_AUTO_INSTALL_VERSION` when managed
+Node.js is required.
 
-No environment variables, config files, or feature flags control this behavior.
-The check cannot be bypassed except by upgrading Node.js.
+No environment variables, config files, or feature flags bypass the version
+requirement. Use a compatible system Node.js or let `amplihack copilot` install
+the managed runtime on a supported interactive host.
 
 ## Security
 
@@ -166,9 +173,10 @@ The check cannot be bypassed except by upgrading Node.js.
   runs `node --version` via `ProcessManager` with the standard 5-second timeout.
 - **`parse_node_major_version` is a pure function** — `fn(&str) -> Option<u32>`.
   No shell expansion, no `eval`, no environment interaction.
-- **Fail-open on unparseable versions** — only blocks on *known-insufficient*
-  versions. This prevents the check from becoming a denial-of-service vector
-  in unusual environments.
+- **Explicit missing-tool errors** — missing Node.js and undetectable versions
+  produce typed errors so launch-time remediation can make a clear decision.
+- **Conservative parser fallback** — if an unusual version string reaches the
+  parser directly, the check logs a warning and avoids blocking that launch.
 - **Error messages are safe** — the `install_hint` is sourced from the
   sanitized `install_hint()` function (hardcoded per-platform strings). No
   user input is interpolated into error messages.

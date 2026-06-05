@@ -16,6 +16,7 @@ pub mod memory;
 pub mod mode;
 pub mod multitask;
 pub mod new_agent;
+pub mod node;
 pub mod orch;
 pub mod plugin;
 pub mod pr;
@@ -357,7 +358,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         }
         Commands::UvxHelp { find_path, info } => uvx_help::run_uvx_help(find_path, info),
         Commands::Completions { shell } => completions::run_completions(shell),
-        Commands::Doctor => doctor::run_doctor(),
+        Commands::Doctor { args } => doctor::run_doctor(args),
         Commands::ResolveBundleAsset { asset } => {
             let code = crate::resolve_bundle_asset::run_cli(&asset);
             std::process::exit(code);

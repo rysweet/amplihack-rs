@@ -77,7 +77,14 @@ jobs:
         shell: bash
         run: |
           SHORT_SHA=$(git rev-parse --short=7 "${GITHUB_SHA}")
-          BASE=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          # Single source of truth: [workspace.package].version in Cargo.toml.
+          BASE=$(python3 - <<'PY'
+          import tomllib
+          with open("Cargo.toml", "rb") as f:
+              data = tomllib.load(f)
+          print(data["workspace"]["package"]["version"])
+          PY
+          )
           echo "version=${BASE}+snapshot.${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Build (native)

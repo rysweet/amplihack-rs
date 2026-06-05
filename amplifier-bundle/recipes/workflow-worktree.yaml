@@ -222,8 +222,8 @@ steps:
             continue
           fi
 
-          echo "ERROR: git fetch origin failed after ${max_attempts} attempts (exit ${status})." >&2
-          return "$status"
+          echo "WARNING: git fetch origin failed after ${max_attempts} attempts (exit ${status}); continuing with local refs after repository validation succeeded." >&2
+          return 0
         done
       }
 

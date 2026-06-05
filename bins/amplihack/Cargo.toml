@@ -98,6 +98,22 @@ path = "../../tests/integration/default_workflow_decomposition_test.rs"
 [[test]]
 name = "issue_615_work_verifier"
 path = "../../tests/integration/issue_615_work_verifier_test.rs"
+
+[[test]]
+name = "workflow_prep_git_recovery"
+path = "../../tests/integration/workflow_prep_git_recovery_test.rs"
+
+[[test]]
+name = "version_contract"
+path = "../../tests/integration/version_contract_test.rs"
+
+[[test]]
+name = "workflow_publish_pr_metadata"
+path = "../../tests/integration/workflow_publish_pr_metadata_test.rs"
+
+[[test]]
+name = "doctor_node_remediation"
+path = "../../tests/integration/doctor_node_remediation_test.rs"
 # Consensus-workflow decomposition parity tests.
 # Locks the v3 contract: composer calls 11 phase sub-recipes, all 60 step IDs
 # preserved in order, brick budget enforced, and 7 mandatory consensus gates
