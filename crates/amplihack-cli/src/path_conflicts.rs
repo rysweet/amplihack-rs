@@ -192,22 +192,23 @@ pub(crate) fn decide_update_install_target(
     let denied_system_prefixes = canonical_denied_prefixes(&input.denied_system_prefixes);
     let current_exe_denied =
         is_under_denied_prefix(&input.report.current_exe, &denied_system_prefixes);
+    let preferred_user_bin_denied =
+        is_under_denied_prefix(&input.report.preferred_user_bin, &denied_system_prefixes);
     let current_exe_writable = input
         .candidate_probes
         .get(&input.report.current_exe)
         .map(|probe| probe.writable)
         .unwrap_or_else(|| path_is_writable(&input.report.current_exe));
 
-    if preferred_user_bin_is_safe_current(&input) {
+    if !preferred_user_bin_denied && preferred_user_bin_is_safe_current(&input) {
         return Ok(InstallTargetDecision::PreferredUserBin {
             install_dir: input.report.preferred_user_bin,
-            reason:
-                "current writable user-level binaries are preferred over stale system PATH candidates"
-                    .to_string(),
+            reason: "current writable user-level binaries are preferred for updates".to_string(),
         });
     }
 
     if input.report.preferred_user_bin.exists()
+        && !preferred_user_bin_denied
         && user_bin_pair_is_writable(&input.report.preferred_user_bin, &input.candidate_probes)
         && (current_exe_denied || report_has_shadowing(&input.report))
     {
@@ -657,7 +658,7 @@ mod tests {
             decision,
             InstallTargetDecision::PreferredUserBin {
                 install_dir: user_bin,
-                reason: "current writable user-level binaries are preferred over stale system PATH candidates".into(),
+                reason: "current writable user-level binaries are preferred for updates".into(),
             }
         );
     }
@@ -739,6 +740,68 @@ mod tests {
         assert!(
             matches!(decision, InstallTargetDecision::ManualRepairRequired { .. }),
             "automatic updates must not target denied system prefixes even when the current process can write there: {decision:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preferred_user_bin_symlink_to_denied_prefix_requires_manual_repair() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let local_parent = home.join(".local");
+        let preferred_user_bin = home.join(".local/bin");
+        let usr_local_bin = temp.path().join("usr/local/bin");
+        fs::create_dir_all(&local_parent).unwrap();
+        fs::create_dir_all(&usr_local_bin).unwrap();
+        std::os::unix::fs::symlink(&usr_local_bin, &preferred_user_bin).unwrap();
+        let system_amplihack = write_executable(&usr_local_bin, "amplihack");
+        let system_hooks = write_executable(&usr_local_bin, "amplihack-hooks");
+
+        let report = analyze_path_conflicts(&analysis_input(
+            &home,
+            &system_amplihack,
+            vec![preferred_user_bin.clone()],
+        ))
+        .unwrap();
+        let mut probes = BTreeMap::new();
+        for path in [
+            preferred_user_bin.join("amplihack"),
+            preferred_user_bin.join("amplihack-hooks"),
+        ] {
+            probes.insert(
+                path,
+                BinaryProbe {
+                    version: Some("0.9.71".into()),
+                    writable: true,
+                },
+            );
+        }
+        probes.insert(
+            system_amplihack,
+            BinaryProbe {
+                version: Some("0.9.71".into()),
+                writable: true,
+            },
+        );
+        probes.insert(
+            system_hooks,
+            BinaryProbe {
+                version: Some("0.9.71".into()),
+                writable: true,
+            },
+        );
+
+        let decision = decide_update_install_target(TargetDecisionInput {
+            report,
+            current_version: "0.9.71".into(),
+            candidate_probes: probes,
+            denied_system_prefixes: vec![temp.path().join("usr/local")],
+        })
+        .unwrap();
+
+        assert!(
+            matches!(decision, InstallTargetDecision::ManualRepairRequired { .. }),
+            "preferred user-bin paths that canonicalize into denied prefixes must not be selected: {decision:?}"
         );
     }
 
