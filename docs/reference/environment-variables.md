@@ -19,6 +19,8 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [NODE_OPTIONS](#node_options)
 - [Variables injected by recipe executor](#variables-injected-by-recipe-executor)
   - [AMPLIHACK_STEP_TIMEOUT](#amplihack_step_timeout)
+  - [AMPLIHACK_NONINTERACTIVE (recipe runner subprocess)](#amplihack_noninteractive-recipe-runner-subprocess)
+  - [CLAUDECODE (recipe runner subprocess)](#claudecode-recipe-runner-subprocess)
   - [AMPLIHACK_RECIPE_HEARTBEAT_INTERVAL_SECONDS](#amplihack_recipe_heartbeat_interval_seconds)
   - [AMPLIHACK_RECIPE_SNIPPET_LINES](#amplihack_recipe_snippet_lines)
   - [AMPLIHACK_RECIPE_SNIPPET_BYTES](#amplihack_recipe_snippet_bytes)
@@ -335,11 +337,11 @@ When startup does not supply an explicit value, `EnvBuilder` still falls back to
 
 ## Variables injected by recipe executor
 
-These variables are read or set by the recipe executor (`amplihack recipe run`)
-while running recipe steps. Non-interactive shell-step variables are always set.
-Heartbeat, snippet, and JSONL log variables are optional user configuration. See
-[Recipe Executor Environment](./recipe-executor-environment.md) and
-[Recipe Runner Logging](./recipe-runner-logging.md) for full details.
+These variables are read, set, or removed by the recipe execution path
+(`amplihack recipe run`) while launching `recipe-runner-rs` and running recipe
+steps. Heartbeat, snippet, and JSONL log variables are optional user
+configuration. See [Recipe Executor Environment](./recipe-executor-environment.md)
+and [Recipe Runner Logging](./recipe-runner-logging.md) for full details.
 
 ---
 
@@ -370,6 +372,56 @@ amplihack recipe run recipe.yaml
 **Why it exists:** The default-workflow recipes no longer define `timeout_seconds` on agent steps, so agent steps run to completion without artificial time limits. This variable provides an opt-in escape hatch for CI environments that need wall-clock budgets. The env var approach is forward-compatible — `recipe-runner-rs` can adopt it independently without CLI changes.
 
 **Security note:** The value is always a `u64` rendered as a string. No shell metacharacters are possible. The CLI rejects non-numeric input at parse time via clap's type enforcement.
+
+---
+
+### AMPLIHACK_NONINTERACTIVE (recipe runner subprocess)
+
+**Type:** flag
+**Value:** `1`
+**Set by:** `amplihack recipe run` centralized subprocess environment
+
+The recipe runner launch writes `AMPLIHACK_NONINTERACTIVE=1` into the
+`recipe-runner-rs` child environment. This is stronger than top-level launcher
+propagation: the value is forced for recipe execution even when the parent
+process is interactive and the parent environment does not contain
+`AMPLIHACK_NONINTERACTIVE`.
+
+This prevents nested recipe, hook, and agent subprocesses from asking for input
+or showing interactive update prompts while an automated workflow is already in
+progress.
+
+```sh
+# The recipe-runner child receives AMPLIHACK_NONINTERACTIVE=1.
+env -u AMPLIHACK_NONINTERACTIVE \
+  amplihack recipe run default-workflow \
+  -c task_description="Update generated docs" \
+  -c repo_path=.
+```
+
+---
+
+### CLAUDECODE (recipe runner subprocess)
+
+**Type:** removed environment variable
+**Removed by:** `amplihack recipe run` centralized subprocess environment
+
+The recipe runner launch explicitly removes `CLAUDECODE` from the
+`recipe-runner-rs` child environment. The variable is Claude-Code-specific
+session state, not a portable amplihack routing signal. Leaving it set in a
+nested recipe can make downstream agents believe they are running inside the
+original Claude Code host even when the active launcher is Copilot, Codex, or
+Amplifier.
+
+Use `AMPLIHACK_AGENT_BINARY` for runtime routing. It is validated, propagated,
+and documented as the active agent selector.
+
+```sh
+# The parent value is ignored for the recipe-runner child.
+CLAUDECODE=1 amplihack recipe run smart-orchestrator \
+  -c task_description="Review the open PR" \
+  -c repo_path=.
+```
 
 ---
 
