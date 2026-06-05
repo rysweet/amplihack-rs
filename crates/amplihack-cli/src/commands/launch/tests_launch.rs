@@ -5,6 +5,15 @@ use crate::test_support::{home_env_lock, restore_home, set_home};
 use std::fs;
 use std::process::Command;
 
+fn restore_prompt_delivery(previous: Option<std::ffi::OsString>) {
+    unsafe {
+        match previous {
+            Some(value) => std::env::set_var("AMPLIHACK_PROMPT_DELIVERY", value),
+            None => std::env::remove_var("AMPLIHACK_PROMPT_DELIVERY"),
+        }
+    }
+}
+
 #[test]
 fn render_session_argv_includes_checkout_repo_flag() {
     assert_eq!(
@@ -25,6 +34,64 @@ fn render_session_argv_includes_checkout_repo_flag() {
             "continue parity",
         ]
     );
+}
+
+#[test]
+fn run_launch_rejects_explicit_unsupported_amplifier_prompt_delivery_modes() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let previous = std::env::var_os("AMPLIHACK_PROMPT_DELIVERY");
+
+    for mode in ["tempfile", "stdin"] {
+        unsafe { std::env::set_var("AMPLIHACK_PROMPT_DELIVERY", mode) };
+        let err = run_launch(
+            "amplifier",
+            "amplifier",
+            false,
+            false,
+            false,
+            true,
+            true,
+            false,
+            true,
+            None,
+            vec!["run".to_string(), "review repo".to_string()],
+        )
+        .expect_err("unsupported Amplifier delivery must fail before launch");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("Amplifier prompt delivery mode"),
+            "error should identify Amplifier prompt-delivery policy; got: {message}"
+        );
+        assert!(
+            message.contains(mode),
+            "error should name rejected mode {mode}; got: {message}"
+        );
+    }
+
+    restore_prompt_delivery(previous);
+}
+
+#[test]
+fn amplifier_launch_prompt_delivery_policy_allows_auto_and_argv() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let previous = std::env::var_os("AMPLIHACK_PROMPT_DELIVERY");
+
+    for mode in [None, Some("auto"), Some("argv")] {
+        unsafe {
+            match mode {
+                Some(value) => std::env::set_var("AMPLIHACK_PROMPT_DELIVERY", value),
+                None => std::env::remove_var("AMPLIHACK_PROMPT_DELIVERY"),
+            }
+        }
+        validate_launch_prompt_delivery("amplifier")
+            .expect("Amplifier must allow unset, auto, and argv prompt delivery requests");
+    }
+
+    restore_prompt_delivery(previous);
 }
 
 #[test]

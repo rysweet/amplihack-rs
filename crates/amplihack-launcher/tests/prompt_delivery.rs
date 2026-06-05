@@ -177,24 +177,13 @@ fn amplifier_argv_uses_documented_positional_prompt_contract() {
     );
 
     let args = argv(&delivered.command);
+    let expected_args: Vec<String> = ["run", "--dry-run", "--model", "amp-test", prompt]
+        .into_iter()
+        .map(String::from)
+        .collect();
     assert_eq!(
-        args.first().map(String::as_str),
-        Some("run"),
-        "Amplifier must use the documented `amplifier run [OPTIONS] [PROMPT]` shape"
-    );
-    assert!(
-        !args.iter().any(|arg| arg == "--prompt"),
-        "Amplifier has no documented --prompt contract; prompt must be positional. Args: {args:?}"
-    );
-    assert_eq!(
-        args.last().map(String::as_str),
-        Some(prompt),
-        "Amplifier prompt must be the final positional argv element after run options. Args: {args:?}"
-    );
-    assert_eq!(
-        args.iter().filter(|arg| arg.as_str() == prompt).count(),
-        1,
-        "Amplifier prompt must be passed exactly once as one structured argv element. Args: {args:?}"
+        args, expected_args,
+        "Amplifier must use the documented `amplifier run [OPTIONS] [PROMPT]` shape without a synthetic --prompt flag"
     );
 }
 
@@ -202,7 +191,10 @@ fn amplifier_argv_uses_documented_positional_prompt_contract() {
 fn amplifier_rejects_explicit_tempfile_and_stdin_before_launch() {
     let prompt = synthetic_prompt();
 
-    for requested in [PromptDelivery::Tempfile, PromptDelivery::Stdin] {
+    for (requested, mode_name) in [
+        (PromptDelivery::Tempfile, "tempfile"),
+        (PromptDelivery::Stdin, "stdin"),
+    ] {
         let err = build_tool_command_with_prompt_delivery(
             AgentBinary::Amplifier,
             Path::new("/tmp"),
@@ -221,11 +213,7 @@ fn amplifier_rejects_explicit_tempfile_and_stdin_before_launch() {
         assert!(
             message.contains("Amplifier")
                 && message.contains("unsupported")
-                && message.contains(match requested {
-                    PromptDelivery::Tempfile => "tempfile",
-                    PromptDelivery::Stdin => "stdin",
-                    _ => unreachable!("loop only covers explicit long-form modes"),
-                }),
+                && message.contains(mode_name),
             "error should name the unsupported Amplifier mode without leaking the prompt body; got: {message}"
         );
         assert!(

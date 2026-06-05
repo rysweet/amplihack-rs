@@ -12,20 +12,6 @@ doc_type: reference
 This reference describes Rust subprocess prompt delivery parity for `amplihack`
 launcher, orchestration, auto-mode, and doctor surfaces.
 
-## Contents
-
-- [Subprocess prompt delivery](#subprocess-prompt-delivery)
-- [Configuration](#configuration)
-- [Binary capability matrix](#binary-capability-matrix)
-- [Amplifier prompt-delivery contract](#amplifier-prompt-delivery-contract)
-- [Mode selection](#mode-selection)
-- [Usage examples](#usage-examples)
-- [Rust API](#rust-api)
-- [Doctor reporting](#doctor-reporting)
-- [Regression contract](#regression-contract)
-- [Security and lifecycle guarantees](#security-and-lifecycle-guarantees)
-- [Troubleshooting](#troubleshooting)
-
 ## Subprocess prompt delivery
 
 amplihack-rs routes prompt-bearing subprocess launches through
@@ -107,51 +93,24 @@ When a future binary version adds a prompt-file or stdin contract, update
 
 ## Amplifier prompt-delivery contract
 
-Amplifier task prompts are delivered through documented argv only.
-
-The supported upstream prompt shape is:
+Amplifier task prompts are argv-only because the documented upstream prompt
+shape is:
 
 ```text
 amplifier run [OPTIONS] [PROMPT]
 ```
-
-`amplihack` must therefore treat Amplifier as `argv`-only:
 
 | Capability | Amplifier behavior |
 | --- | --- |
 | Structured argv prompt | Supported. The task prompt is one `Command::arg` value. |
 | Temporary prompt file | Unsupported. Amplifier does not document a `--prompt-file`, `--prompt-path`, or equivalent task-prompt file option. |
 | Stdin task prompt | Unsupported. Amplifier does not document stdin as a task-prompt input channel. |
-| Shell command prompt delivery | Unsupported. `amplihack` must not build `sh -c` strings or interpolate prompt text into shell commands. |
 
-This is a capability boundary, not a size optimization. A long Amplifier prompt
-may still appear as one child argv element because no stable long-form
-task-prompt channel exists for Amplifier. `AMPLIHACK_PROMPT_DELIVERY=tempfile`
-and `AMPLIHACK_PROMPT_DELIVERY=stdin` do not override this capability matrix.
-
-### Requesting unsupported modes with Amplifier
-
-If `AMPLIHACK_PROMPT_DELIVERY=tempfile` is set for Amplifier, `amplihack` must
-return an error before spawning `amplifier`. It must not create a temporary
-prompt file and must not silently continue with `argv`.
-
-If `AMPLIHACK_PROMPT_DELIVERY=stdin` is set for Amplifier, `amplihack` must
-return an error before spawning `amplifier`. It must not write prompt bytes to
-child stdin, must not silently continue with `argv`, and must not substitute
-tempfile delivery.
-
-The error message must name the requested mode, state that Amplifier supports
-only argv prompt delivery, and point to `amplifier run [OPTIONS] [PROMPT]` as
-the supported prompt contract.
-
-The Amplifier launch path must build the upstream command as:
-
-```text
-amplifier run [OPTIONS] [PROMPT]
-```
-
-It must not add a synthetic `--prompt` flag for Amplifier unless upstream
-Amplifier documents that flag as a stable task-prompt contract.
+`AMPLIHACK_PROMPT_DELIVERY=tempfile` and
+`AMPLIHACK_PROMPT_DELIVERY=stdin` fail before spawning Amplifier. The launcher
+does not create a temporary prompt file, write prompt bytes to stdin, silently
+degrade to argv, add a synthetic `--prompt` flag, or interpolate prompts into
+shell command strings.
 
 ### Evidence required to enable Amplifier long-form delivery
 
@@ -219,10 +178,9 @@ AMPLIHACK_PROMPT_DELIVERY=tempfile \
   amplihack doctor
 ```
 
-For Amplifier, doctor reports `capabilities: argv` and a runtime policy that
-explicit `tempfile` and `stdin` requests are rejected before launch. Runtime
-Amplifier launches must pass prompts as structured argv only when the requested
-mode is unset, `auto`, or `argv`.
+For Amplifier, doctor reports `capabilities: argv`. Runtime Amplifier launches
+reject explicit `tempfile` and `stdin` requests before launch and pass prompts
+as structured argv only when the requested mode is unset, `auto`, or `argv`.
 
 ### Run Amplifier with the documented prompt channel
 
@@ -239,7 +197,9 @@ contract; Amplifier has no supported tempfile or stdin task-prompt channel.
 
 ### Use prompt delivery in auto-mode
 
-Auto-mode uses the same prompt delivery path as ordinary launcher execution.
+Auto-mode prompt-bearing wrappers use prompt delivery. Ordinary Amplifier
+passthrough launch validates the same Amplifier unsupported-mode policy before
+spawning the child process.
 
 ```bash
 AMPLIHACK_PROMPT_DELIVERY=auto \
@@ -272,22 +232,10 @@ fn build_command(prompt: &str) -> std::io::Result<(Command, DeliveryHandle)> {
 }
 ```
 
-### Public types
-
-| Type | Purpose |
-| --- | --- |
-| `PromptDelivery` | Caller-requested mode: `Auto`, `Argv`, `Tempfile`, or `Stdin`. |
-| `DeliveryMode` | Effective mode selected after applying capabilities and degradation rules. |
-| `DeliveryCaps` | Per-binary capability descriptor for argv, tempfile, stdin, and tempfile flag support. |
-| `DeliveryHandle` | RAII owner for delivery resources. Keep it alive until the child process has exited. |
-
-### Public functions
-
-| Function | Purpose |
-| --- | --- |
-| `from_env()` | Parses `AMPLIHACK_PROMPT_DELIVERY` and returns a `PromptDelivery` request. |
-| `select_mode(requested, prompt_size, caps)` | Resolves a requested mode to an effective `DeliveryMode`. |
-| `deliver(cmd, prompt, requested, caps)` | Mutates a structured `std::process::Command` for the effective delivery mode and returns a `DeliveryHandle`. |
+Public types include `PromptDelivery`, `DeliveryMode`, `DeliveryCaps`, and
+`DeliveryHandle`. Public functions include `from_env()`,
+`select_mode(requested, prompt_size, caps)`, and
+`deliver(cmd, prompt, requested, caps)`.
 
 ### Launcher API
 
@@ -368,7 +316,7 @@ Prompt delivery
   amplifier
     capabilities: argv
     effective for long prompt: argv
-    runtime policy: explicit tempfile/stdin requests are rejected before launch
+    warning: requested tempfile is unsupported; degrading to argv
 ```
 
 Doctor diagnostics are deterministic:
@@ -376,8 +324,7 @@ Doctor diagnostics are deterministic:
 - they list the requested mode,
 - they list static capabilities per binary,
 - they show the effective mode for a long prompt,
-- they show degradation warnings or binary-specific rejection policies when a
-  requested mode is unsupported,
+- they show degradation warnings when a requested mode is unsupported,
 - they never include raw prompt data.
 
 ## Regression contract
@@ -421,10 +368,10 @@ AMPLIHACK_PROMPT_DELIVERY=tempfile amplihack doctor
 ```
 
 If the selected binary lists only `argv`, the requested long-form mode is not
-available for that binary. Generic launch paths may degrade to `argv` with a
-warning; Amplifier must reject explicit `tempfile` and `stdin` requests before
-launch. Use a binary with a verified long-form prompt contract or leave
-`AMPLIHACK_PROMPT_DELIVERY=auto`.
+available for that binary. Doctor reports capability selection only; the
+Amplifier launch path separately rejects explicit `tempfile` and `stdin`
+requests before launch. Use a binary with a verified long-form prompt contract
+or leave `AMPLIHACK_PROMPT_DELIVERY=auto`.
 
 ### A long prompt still appears in argv
 

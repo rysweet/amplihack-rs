@@ -13,7 +13,10 @@ use std::process::Command;
 use tracing::{debug, info, warn};
 
 use crate::flag_matrix::AgentBinary;
-use crate::prompt_delivery::{DeliveredCommand, build_tool_command_from_env};
+use crate::prompt_delivery::{
+    DeliveredCommand, build_tool_command_from_env, build_tool_command_with_prompt_delivery,
+};
+use amplihack_utils::prompt_delivery::PromptDelivery;
 
 /// Amplifier binary detection result.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -115,9 +118,15 @@ pub fn build_amplifier_command(
     project_path: &Path,
     extra_args: &[String],
 ) -> Command {
-    build_amplifier_command_with_prompt_delivery(prompt, project_path, extra_args)
-        .expect("argv-only amplifier prompt delivery should not fail")
-        .command
+    build_tool_command_with_prompt_delivery(
+        AgentBinary::Amplifier,
+        project_path,
+        extra_args,
+        prompt,
+        PromptDelivery::Auto,
+    )
+    .expect("auto amplifier prompt delivery should not fail")
+    .command
 }
 
 pub fn build_amplifier_command_with_prompt_delivery(

@@ -83,3 +83,35 @@ fn auto_mode_does_not_duplicate_prompt_between_wrapper_and_child_args() {
         "auto mode must not pass the prompt once to amplihack and again to the nested child; args: {args:?}"
     );
 }
+
+#[test]
+fn amplifier_auto_mode_rejects_explicit_unsupported_prompt_delivery_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let prompt = synthetic_prompt();
+
+    for requested_delivery in [PromptDelivery::Tempfile, PromptDelivery::Stdin] {
+        let err = build_auto_command_with_prompt_delivery(AutoModePromptDeliveryOptions {
+            tool: AutoModeTool::Amplifier,
+            execution_dir: dir.path().to_path_buf(),
+            project_dir: dir.path().to_path_buf(),
+            node_options: None,
+            passthrough_args: vec![],
+            prompt: prompt.clone(),
+            requested_delivery,
+        })
+        .expect_err("Amplifier auto-mode must reject unsupported explicit delivery modes");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("Amplifier prompt delivery mode"),
+            "error should identify Amplifier prompt-delivery policy; got: {message}"
+        );
+        assert!(
+            message.contains(match requested_delivery {
+                PromptDelivery::Tempfile => "tempfile",
+                PromptDelivery::Stdin => "stdin",
+                _ => unreachable!(),
+            }),
+            "error should name rejected mode; got: {message}"
+        );
+    }
+}

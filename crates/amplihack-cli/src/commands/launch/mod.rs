@@ -58,6 +58,8 @@ use crate::signals;
 use crate::tool_update_check::maybe_print_npm_update_notice;
 use crate::util::is_noninteractive;
 
+use amplihack_launcher::flag_matrix::AgentBinary;
+use amplihack_launcher::prompt_delivery::validate_prompt_delivery_env_for;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -81,6 +83,8 @@ pub fn run_launch(
     checkout_repo: Option<String>,
     extra_args: Vec<String>,
 ) -> Result<()> {
+    validate_launch_prompt_delivery(tool)?;
+
     let current_dir = std::env::current_dir()
         .ok()
         .unwrap_or_else(|| PathBuf::from("."));
@@ -214,6 +218,29 @@ pub fn run_launch(
         let _ = tracker.crash_session(&session_id);
     }
     result
+}
+
+fn validate_launch_prompt_delivery(tool: &str) -> Result<()> {
+    let Some(binary) = agent_binary_for_tool(tool) else {
+        return Ok(());
+    };
+    validate_prompt_delivery_env_for(binary).with_context(|| {
+        format!(
+            "invalid prompt delivery configuration for {}",
+            binary.env_value()
+        )
+    })?;
+    Ok(())
+}
+
+fn agent_binary_for_tool(tool: &str) -> Option<AgentBinary> {
+    match tool {
+        "claude" | "rusty" | "rustyclawd" => Some(AgentBinary::Claude),
+        "copilot" => Some(AgentBinary::Copilot),
+        "codex" => Some(AgentBinary::Codex),
+        "amplifier" => Some(AgentBinary::Amplifier),
+        _ => None,
+    }
 }
 
 fn resolve_launch_node_options(_subprocess_safe: bool) -> Result<String> {

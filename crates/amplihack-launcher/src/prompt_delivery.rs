@@ -1,12 +1,12 @@
 //! Delivery-aware command builders for launcher subprocesses.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::process::Command;
 
 use amplihack_utils::prompt_delivery::{
-    DeliveryCaps, DeliveryHandle, DeliveryMode, PromptDelivery, deliver, from_env, select_mode,
+    DeliveryCaps, DeliveryHandle, DeliveryMode, PromptDelivery, deliver, from_env,
 };
 
 use crate::flag_matrix::{
@@ -40,6 +40,28 @@ impl DeliveryWarning {
     }
 }
 
+pub fn validate_prompt_delivery_request(
+    binary: AgentBinary,
+    requested: PromptDelivery,
+) -> io::Result<()> {
+    if binary == AgentBinary::Amplifier
+        && matches!(requested, PromptDelivery::Tempfile | PromptDelivery::Stdin)
+    {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "Amplifier prompt delivery mode '{}' is unsupported: upstream documents only `amplifier run [OPTIONS] [PROMPT]`; no stable prompt-file or stdin prompt contract is available",
+                prompt_delivery_name(requested)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_prompt_delivery_env_for(binary: AgentBinary) -> io::Result<()> {
+    validate_prompt_delivery_request(binary, from_env())
+}
+
 pub fn build_command_with_prompt_delivery<I, S>(
     program: &OsStr,
     args: I,
@@ -63,15 +85,13 @@ pub fn build_tool_command_with_prompt_delivery(
     prompt: &str,
     requested: PromptDelivery,
 ) -> io::Result<DeliveredCommand> {
-    reject_unsupported_explicit_delivery(binary, requested)?;
+    validate_prompt_delivery_request(binary, requested)?;
 
     let mut command = Command::new(binary.env_value());
     command.current_dir(project_path);
     command.env("AMPLIHACK_AGENT_BINARY", binary.env_value());
 
-    for arg in prompt_prefix_args(binary, extra_args) {
-        command.arg(arg);
-    }
+    add_prompt_prefix_args(&mut command, binary, extra_args);
 
     finish_prompt_delivery(command, prompt, requested, prompt_delivery_caps_for(binary))
 }
@@ -91,9 +111,9 @@ fn finish_prompt_delivery(
     requested: PromptDelivery,
     caps: DeliveryCaps,
 ) -> io::Result<DeliveredCommand> {
-    let selected_mode = select_mode(requested, prompt.len(), &caps);
-    let warnings = warnings_for(requested, selected_mode, &caps);
     let delivery_handle = deliver(&mut command, prompt, requested, &caps)?;
+    let selected_mode = delivery_handle.mode();
+    let warnings = warnings_for(requested, selected_mode, &caps);
     let stdin_payload = (selected_mode == DeliveryMode::Stdin).then(|| prompt.as_bytes().to_vec());
     Ok(DeliveredCommand {
         command,
@@ -103,26 +123,6 @@ fn finish_prompt_delivery(
         warnings,
         stdin_payload,
     })
-}
-
-fn reject_unsupported_explicit_delivery(
-    binary: AgentBinary,
-    requested: PromptDelivery,
-) -> io::Result<()> {
-    if binary != AgentBinary::Amplifier {
-        return Ok(());
-    }
-
-    match requested {
-        PromptDelivery::Tempfile | PromptDelivery::Stdin => Err(io::Error::new(
-            ErrorKind::InvalidInput,
-            format!(
-                "Amplifier prompt delivery mode '{}' is unsupported: upstream documents only `amplifier run [OPTIONS] [PROMPT]`; no stable prompt-file or stdin prompt contract is available",
-                prompt_delivery_name(requested)
-            ),
-        )),
-        PromptDelivery::Auto | PromptDelivery::Argv => Ok(()),
-    }
 }
 
 fn warnings_for(
@@ -150,26 +150,24 @@ fn warnings_for(
     }]
 }
 
-fn prompt_prefix_args(binary: AgentBinary, extra_args: &[String]) -> Vec<OsString> {
-    let mut args = Vec::new();
+fn add_prompt_prefix_args(command: &mut Command, binary: AgentBinary, extra_args: &[String]) {
     match binary {
         AgentBinary::Claude => {
-            args.push("--dangerously-skip-permissions".into());
-            args.extend(extra_args.iter().map(OsString::from));
-            args.push("-p".into());
+            command.arg("--dangerously-skip-permissions");
+            command.args(extra_args);
+            command.arg("-p");
         }
         AgentBinary::Copilot => {
-            args.extend(extra_args.iter().map(OsString::from));
-            args.push("-p".into());
+            command.args(extra_args);
+            command.arg("-p");
         }
         AgentBinary::Codex => {
-            args.extend(extra_args.iter().map(OsString::from));
-            args.push("--prompt".into());
+            command.args(extra_args);
+            command.arg("--prompt");
         }
         AgentBinary::Amplifier => {
-            args.push("run".into());
-            args.extend(extra_args.iter().map(OsString::from));
+            command.arg("run");
+            command.args(extra_args);
         }
     }
-    args
 }

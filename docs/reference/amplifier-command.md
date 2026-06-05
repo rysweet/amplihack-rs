@@ -17,8 +17,8 @@ Launch Microsoft Amplifier with the amplihack bundle for enhanced AI-assisted de
 amplihack amplifier [OPTIONS] [-- AMPLIFIER_ARGS]
 ```
 
-Pass Amplifier CLI arguments after `--`. For non-interactive task prompts, use
-Amplifier's documented `run [PROMPT]` command shape:
+Pass Amplifier CLI arguments after `--`. Amplifier's documented
+non-interactive prompt shape is `run [PROMPT]`:
 
 ```bash
 amplihack amplifier -- run "Summarize this repository"
@@ -109,7 +109,7 @@ is passed as a `std::process::Command` argument, so apostrophes, quotes,
 semicolons, dollar signs, and newlines are not interpreted by a shell.
 
 Amplifier does not currently have a documented task-prompt file or stdin
-contract. The prompt-delivery capability matrix is therefore:
+contract:
 
 | Delivery mode | Amplifier support | Behavior |
 | --- | --- | --- |
@@ -117,22 +117,17 @@ contract. The prompt-delivery capability matrix is therefore:
 | `tempfile` | Unsupported | Explicit requests fail before spawning `amplifier`. No prompt tempfile is created. |
 | `stdin` | Unsupported | Explicit requests fail before spawning `amplifier`. No prompt bytes are written to stdin. |
 
-Configure requested prompt delivery with `AMPLIHACK_PROMPT_DELIVERY`, but treat
-it as a request, not a capability override:
+`AMPLIHACK_PROMPT_DELIVERY` is a request, not a capability override:
 
 ```bash
 AMPLIHACK_PROMPT_DELIVERY=tempfile \
   amplihack amplifier -- run "Review this repository"
 ```
 
-This command must fail before launching Amplifier because Amplifier does not
-document a task-prompt file contract. The same hard rejection applies to
-`AMPLIHACK_PROMPT_DELIVERY=stdin`.
-
-The effective mode for Amplifier is `argv` only when the requested mode is
-unset, `auto`, or `argv`. Amplifier remains `argv`-only until upstream documents
-a stable `run` prompt-file or stdin task-prompt contract. Use `amplihack doctor`
-to inspect the current capability report.
+This command fails before launching Amplifier. The same hard rejection applies
+to `AMPLIHACK_PROMPT_DELIVERY=stdin`. Amplifier remains `argv`-only until
+upstream documents a stable `run` prompt-file or stdin task-prompt contract.
+Use `amplihack doctor` to inspect the capability report.
 
 The Amplifier launch path must build the upstream command as
 `amplifier run [OPTIONS] [PROMPT]`. It must not add a synthetic `--prompt` flag

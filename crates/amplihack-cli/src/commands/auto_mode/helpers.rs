@@ -1,6 +1,8 @@
 use super::*;
 use amplihack_launcher::flag_matrix::{AgentBinary, prompt_delivery_caps_for};
-use amplihack_launcher::prompt_delivery::{DeliveredCommand, build_command_with_prompt_delivery};
+use amplihack_launcher::prompt_delivery::{
+    DeliveredCommand, build_command_with_prompt_delivery, validate_prompt_delivery_request,
+};
 use amplihack_utils::prompt_delivery::PromptDelivery;
 use std::ffi::OsString;
 
@@ -98,6 +100,15 @@ pub fn build_auto_command_with_prompt_delivery(
     options: AutoModePromptDeliveryOptions,
 ) -> Result<DeliveredCommand> {
     let current_exe = env::current_exe().context("failed to resolve current executable")?;
+    let agent_binary = agent_binary_for_tool(options.tool);
+    validate_prompt_delivery_request(agent_binary, options.requested_delivery).with_context(
+        || {
+            format!(
+                "invalid prompt delivery configuration for {}",
+                agent_binary.env_value()
+            )
+        },
+    )?;
     let mut args = vec![
         OsString::from(options.tool.subcommand()),
         OsString::from("--no-reflection"),
@@ -113,7 +124,7 @@ pub fn build_auto_command_with_prompt_delivery(
         args.iter(),
         &options.prompt,
         options.requested_delivery,
-        prompt_delivery_caps_for(agent_binary_for_tool(options.tool)),
+        prompt_delivery_caps_for(agent_binary),
     )?;
     delivered.command.current_dir(&options.execution_dir);
     let env_builder = EnvBuilder::new()
