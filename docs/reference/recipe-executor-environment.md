@@ -4,10 +4,47 @@ Complete reference for the environment variables, prerequisite checks, and conte
 
 ## Contents
 
+- [Recipe runner subprocess launch](#recipe-runner-subprocess-launch)
 - [Shell step environment injection](#shell-step-environment-injection)
 - [Agent step context augmentation](#agent-step-context-augmentation)
 - [Prerequisite validation](#prerequisite-validation)
 - [Interaction with AMPLIHACK_NONINTERACTIVE](#interaction-with-amplihack_noninteractive)
+
+---
+
+## Recipe runner subprocess launch
+
+`amplihack recipe run` launches `recipe-runner-rs` through the centralized
+Rust subprocess environment builder. The child process is prepared for
+non-interactive nested execution before the runner receives any recipe context.
+
+| Variable | Child value | Behavior |
+|----------|-------------|----------|
+| `AMPLIHACK_NONINTERACTIVE` | `1` | Always forced for the recipe-runner subprocess, even when the parent shell is interactive |
+| `CLAUDECODE` | *(removed)* | Explicitly unset so nested agents do not detect a parent Claude Code session |
+| `AMPLIHACK_AGENT_BINARY` | Active launcher binary | Propagates the current runtime selection, such as `copilot`, `claude`, `codex`, or `amplifier` |
+| `AMPLIHACK_HOME` | Resolved framework home | Gives the runner access to installed recipes, hooks, skills, and agents |
+| `AMPLIHACK_ASSET_RESOLVER` | Resolved native resolver path, when available | Lets nested tools resolve bundled assets without hardcoded paths |
+| `AMPLIHACK_GRAPH_DB_PATH` | Project-local graph DB path | Keeps launched hooks and memory/code-graph features on the same project store |
+| `PAGER` / pager-related defaults | Pager-safe values | Prevents child commands from blocking on interactive pagers |
+
+This contract applies to the runner subprocess itself. Shell and agent steps
+inside the recipe receive the additional step-level variables described below.
+
+### Example
+
+```bash
+# Parent has Claude Code session state and no explicit non-interactive flag.
+CLAUDECODE=1 env -u AMPLIHACK_NONINTERACTIVE \
+  amplihack recipe run default-workflow \
+  -c task_description="Summarize the current repository" \
+  -c repo_path=.
+```
+
+The `recipe-runner-rs` child sees `AMPLIHACK_NONINTERACTIVE=1` and does not see
+`CLAUDECODE`. Nested agent launches therefore use the active agent routing
+contract instead of inheriting Claude-specific session behavior from the parent
+environment.
 
 ---
 
@@ -87,10 +124,13 @@ The recipe executor's environment injection is independent of the top-level `AMP
 | Scope | Variable | Set by |
 |-------|----------|--------|
 | Top-level CLI launch | `AMPLIHACK_NONINTERACTIVE=1` | User or CI configuration |
+| Recipe runner subprocess | `AMPLIHACK_NONINTERACTIVE=1` | `amplihack recipe run` centralized subprocess environment |
 | Recipe shell steps | `CI=true`, `NONINTERACTIVE=1`, `DEBIAN_FRONTEND=noninteractive` | Recipe executor (always) |
 | Recipe agent steps | `NONINTERACTIVE=1` in context map | Recipe executor (always) |
 
-The recipe executor always sets non-interactive flags for its child processes, even when the top-level CLI is running interactively. This is by design: recipe steps are automated and should never prompt for input.
+The runner subprocess contract aligns the top-level recipe launch with the
+existing step-level non-interactive behavior. Recipe execution is automated and
+must never prompt for input.
 
 ---
 

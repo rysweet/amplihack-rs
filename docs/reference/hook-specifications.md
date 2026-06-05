@@ -74,6 +74,100 @@ Each hook is written as a wrapper object under the event key:
 - The two `UserPromptSubmit` entries must appear in order: `workflow-classification-reminder` first, then `user-prompt-submit`. The installer preserves this order on both fresh install and idempotent update.
 - Hook commands are written with the **absolute path** to `amplihack-hooks` resolved at install time. If the binary moves, re-run `amplihack install` to update the paths.
 
+## Hook Input JSON Contract
+
+Hook binaries read one JSON object from stdin and deserialize it into the shared
+`HookInput` type. The compatibility contract is host-agnostic: Claude Code,
+Copilot wrappers, Amplifier, and tests can send the same semantic payload.
+
+The contract has two layers:
+
+- **Typed input boundary:** known events deserialize with their required fields;
+  malformed known-event payloads are invalid.
+- **Hook executable boundary:** hooks keep their existing fail-open policy for
+  processing errors and panics, but do not convert malformed known-event JSON
+  into `Unknown`. `Unknown` is reserved for valid payloads whose event name is
+  not recognized yet.
+
+### Event discriminator
+
+The canonical discriminator is `hook_event_name`. The deserializer also accepts
+the known camelCase alias `hookEventName`.
+
+```json
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "pwd"
+  }
+}
+```
+
+Equivalent camelCase input:
+
+```json
+{
+  "hookEventName": "PreToolUse",
+  "toolName": "Bash",
+  "toolInput": {
+    "command": "pwd"
+  }
+}
+```
+
+### Field aliases
+
+| Canonical field | Accepted alias | Used by |
+|-----------------|----------------|---------|
+| `hook_event_name` | `hookEventName` | All hook events |
+| `tool_name` | `toolName` | `PreToolUse`, `PostToolUse` |
+| `tool_input` | `toolInput` | `PreToolUse`, `PostToolUse` |
+| `tool_result` | `toolResult` | `PostToolUse` |
+| `session_id` | `sessionId` | All events with session context |
+| `stop_hook_active` | `stopHookActive` | `Stop` |
+| `transcript_path` | `transcriptPath` | `Stop`, `SessionStop`, `PreCompact` |
+| `user_prompt` | `userPrompt` | `UserPromptSubmit` |
+
+Unknown additional fields are ignored unless a variant explicitly captures them
+as extra event data.
+
+### Required and optional fields
+
+Missing optional fields deserialize to `None` / absent values. Required semantic
+fields remain strict at both the typed boundary and the hook executable entry.
+
+| Event | Required fields | Optional fields |
+|-------|-----------------|-----------------|
+| `PreToolUse` | `tool_name`, `tool_input` | `session_id` |
+| `PostToolUse` | `tool_name`, `tool_input` | `tool_result`, `session_id` |
+| `Stop` | none beyond event name | `stop_hook_active`, `transcript_path`, `session_id` |
+| `SessionStart` | none beyond event name | `session_id`, `cwd`, extra fields |
+| `SessionStop` | none beyond event name | `session_id`, `transcript_path`, extra fields |
+| `UserPromptSubmit` | none beyond event name | `user_prompt`, `session_id`, extra fields |
+| `PreCompact` | none beyond event name | `session_id`, `transcript_path`, extra fields |
+
+Malformed JSON, a missing event discriminator, or a missing required field for a
+tool event is invalid input. The compatibility layer is intentionally narrow: it
+accepts known host schema drift without treating incomplete tool payloads as
+valid or silently mapping them to `Unknown`.
+
+### Unknown events
+
+Future hook events with a valid event discriminator deserialize to `Unknown`
+instead of failing. This makes the hook boundary forward-compatible while
+keeping known event payloads typed and strict. Malformed known events are not
+future events and must not use this path.
+
+```json
+{
+  "hook_event_name": "FutureEvent",
+  "payload": {
+    "anything": true
+  }
+}
+```
+
 ## Hook Descriptions
 
 ### 1. SessionStart — `session-start`

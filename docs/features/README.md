@@ -31,6 +31,7 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 - [Existing Branch Finalization Runbook](post-v0977-finalization.md) — inspect,
   preserve, validate, publish, and merge an already-implemented branch; includes
   the post-v0.9.77 issue-658 branch as the concrete example.
+- [Recipe Subprocess and Hook Input Contracts](../howto/validate-recipe-subprocess-hook-contract.md) — recipe-runner child environment and hook input compatibility contract; see the [recipe environment reference](../reference/recipe-executor-environment.md#recipe-runner-subprocess-launch) and [hook input contract](../reference/hook-specifications.md#hook-input-json-contract).
 
 ## GitHub Distribution
 
