@@ -56,6 +56,19 @@ pub(crate) fn update_path_conflict_notice(
     let mut notice = String::new();
     for (binary_name, resolution) in &report.resolutions {
         if !resolution.is_shadowed_by_earlier_path_entry {
+            let user_target = install_dir.join(binary_filename(binary_name));
+            if resolution.resolved.path != user_target
+                && resolution.preferred_user_candidate.is_none()
+            {
+                notice.push_str(&format!(
+                    "  ⚠️  PATH conflict: `{binary_name}` resolves to {} instead of the user-local target {}\n",
+                    resolution.resolved.path.display(),
+                    user_target.display()
+                ));
+                notice.push_str(
+                    "     The updated binary may not run until the user-local install is earlier in PATH.\n",
+                );
+            }
             continue;
         }
         let Some(preferred) = resolution.preferred_user_candidate.as_ref() else {
@@ -104,7 +117,10 @@ pub(crate) fn decide_update_install_target(
         .unwrap_or_else(|| path_is_writable(&input.report.current_exe));
 
     if input.report.preferred_user_bin.exists()
-        && user_bin_pair_is_writable(&input.report.preferred_user_bin, &input.candidate_probes)
+        && user_bin_pair_exists_and_is_writable(
+            &input.report.preferred_user_bin,
+            &input.candidate_probes,
+        )
         && (current_exe_denied || report_has_shadowing(&input.report))
     {
         return Ok(InstallTargetDecision::PreferredUserBin {
@@ -181,9 +197,15 @@ pub(crate) fn probe_candidates_without_exec(
     probes
 }
 
-fn user_bin_pair_is_writable(user_bin: &Path, probes: &BTreeMap<PathBuf, BinaryProbe>) -> bool {
+fn user_bin_pair_exists_and_is_writable(
+    user_bin: &Path,
+    probes: &BTreeMap<PathBuf, BinaryProbe>,
+) -> bool {
     ["amplihack", "amplihack-hooks"].into_iter().all(|name| {
         let path = user_bin.join(binary_filename(name));
+        if !path.is_file() {
+            return false;
+        }
         probes
             .get(&path)
             .map(|probe| probe.writable)

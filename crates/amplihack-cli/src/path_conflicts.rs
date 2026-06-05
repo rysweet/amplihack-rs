@@ -58,6 +58,9 @@ pub(crate) fn analyze_path_conflicts(input: &PathAnalysisInput) -> Result<PathCo
     for binary_name in &input.binary_names {
         let filename = binary_filename(binary_name);
         let preferred_binary_path = preferred_user_bin.join(&filename);
+        let preferred_canonical_path = preferred_binary_path
+            .canonicalize()
+            .unwrap_or_else(|_| preferred_binary_path.clone());
         let candidates = path_candidates(&filename, &input.path_dirs)?;
         if candidates.is_empty() {
             continue;
@@ -66,7 +69,10 @@ pub(crate) fn analyze_path_conflicts(input: &PathAnalysisInput) -> Result<PathCo
         let resolved = candidates[0].clone();
         let preferred_user_candidate = candidates
             .iter()
-            .find(|candidate| candidate.path == preferred_binary_path)
+            .find(|candidate| {
+                candidate.path == preferred_binary_path
+                    || candidate.canonical_path == preferred_canonical_path
+            })
             .cloned();
         let canonical_candidates = collapse_canonical_candidates(&candidates);
         let preferred_is_shadowed = preferred_user_candidate.as_ref().is_some_and(|preferred| {
