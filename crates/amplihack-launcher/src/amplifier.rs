@@ -145,7 +145,11 @@ pub fn ensure_and_build(
     }
     ensure_bundle_registered(project_path)?;
     sync_agents_md(project_path)?;
-    Ok(build_amplifier_command(prompt, project_path, extra_args))
+    Ok(
+        build_amplifier_command_with_prompt_delivery(prompt, project_path, extra_args)
+            .context("failed to build Amplifier command with prompt delivery")?
+            .command,
+    )
 }
 
 fn which_binary(name: &str) -> Option<PathBuf> {

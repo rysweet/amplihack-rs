@@ -1,7 +1,7 @@
 //! Delivery-aware command builders for launcher subprocesses.
 
 use std::ffi::{OsStr, OsString};
-use std::io;
+use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::process::Command;
 
@@ -63,6 +63,8 @@ pub fn build_tool_command_with_prompt_delivery(
     prompt: &str,
     requested: PromptDelivery,
 ) -> io::Result<DeliveredCommand> {
+    reject_unsupported_explicit_delivery(binary, requested)?;
+
     let mut command = Command::new(binary.env_value());
     command.current_dir(project_path);
     command.env("AMPLIHACK_AGENT_BINARY", binary.env_value());
@@ -101,6 +103,26 @@ fn finish_prompt_delivery(
         warnings,
         stdin_payload,
     })
+}
+
+fn reject_unsupported_explicit_delivery(
+    binary: AgentBinary,
+    requested: PromptDelivery,
+) -> io::Result<()> {
+    if binary != AgentBinary::Amplifier {
+        return Ok(());
+    }
+
+    match requested {
+        PromptDelivery::Tempfile | PromptDelivery::Stdin => Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "Amplifier prompt delivery mode '{}' is unsupported: upstream documents only `amplifier run [OPTIONS] [PROMPT]`; no stable prompt-file or stdin prompt contract is available",
+                prompt_delivery_name(requested)
+            ),
+        )),
+        PromptDelivery::Auto | PromptDelivery::Argv => Ok(()),
+    }
 }
 
 fn warnings_for(
@@ -147,7 +169,6 @@ fn prompt_prefix_args(binary: AgentBinary, extra_args: &[String]) -> Vec<OsStrin
         AgentBinary::Amplifier => {
             args.push("run".into());
             args.extend(extra_args.iter().map(OsString::from));
-            args.push("--prompt".into());
         }
     }
     args

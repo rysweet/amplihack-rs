@@ -5,6 +5,7 @@
 //! the selected mode, warnings, and RAII handle alongside the `Command`.
 
 use std::ffi::OsStr;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use amplihack_launcher::flag_matrix::{
@@ -149,6 +150,89 @@ fn unsupported_tempfile_request_degrades_to_argv_with_warning() {
         "explicit tempfile on an argv-only binary must produce a deterministic degradation warning; got {:?}",
         delivered.warnings
     );
+}
+
+#[test]
+fn amplifier_argv_uses_documented_positional_prompt_contract() {
+    let prompt = "issue #709: keep `$PATH`, quotes, and\nnewlines as one argv element";
+    let extra_args = vec![
+        "--dry-run".to_string(),
+        "--model".to_string(),
+        "amp-test".to_string(),
+    ];
+
+    let delivered = build_tool_command_with_prompt_delivery(
+        AgentBinary::Amplifier,
+        Path::new("/tmp"),
+        &extra_args,
+        prompt,
+        PromptDelivery::Auto,
+    )
+    .expect("Amplifier argv prompt delivery should build");
+
+    assert_eq!(delivered.selected_mode, DeliveryMode::Argv);
+    assert!(
+        delivered.delivery_handle.tempfile_path().is_none(),
+        "Amplifier argv mode must not create a tempfile"
+    );
+
+    let args = argv(&delivered.command);
+    assert_eq!(
+        args.first().map(String::as_str),
+        Some("run"),
+        "Amplifier must use the documented `amplifier run [OPTIONS] [PROMPT]` shape"
+    );
+    assert!(
+        !args.iter().any(|arg| arg == "--prompt"),
+        "Amplifier has no documented --prompt contract; prompt must be positional. Args: {args:?}"
+    );
+    assert_eq!(
+        args.last().map(String::as_str),
+        Some(prompt),
+        "Amplifier prompt must be the final positional argv element after run options. Args: {args:?}"
+    );
+    assert_eq!(
+        args.iter().filter(|arg| arg.as_str() == prompt).count(),
+        1,
+        "Amplifier prompt must be passed exactly once as one structured argv element. Args: {args:?}"
+    );
+}
+
+#[test]
+fn amplifier_rejects_explicit_tempfile_and_stdin_before_launch() {
+    let prompt = synthetic_prompt();
+
+    for requested in [PromptDelivery::Tempfile, PromptDelivery::Stdin] {
+        let err = build_tool_command_with_prompt_delivery(
+            AgentBinary::Amplifier,
+            Path::new("/tmp"),
+            &[],
+            &prompt,
+            requested,
+        )
+        .expect_err("Amplifier must reject unsupported explicit long-form delivery modes");
+
+        assert_eq!(
+            err.kind(),
+            ErrorKind::InvalidInput,
+            "unsupported Amplifier prompt delivery should be a deterministic caller error"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("Amplifier")
+                && message.contains("unsupported")
+                && message.contains(match requested {
+                    PromptDelivery::Tempfile => "tempfile",
+                    PromptDelivery::Stdin => "stdin",
+                    _ => unreachable!("loop only covers explicit long-form modes"),
+                }),
+            "error should name the unsupported Amplifier mode without leaking the prompt body; got: {message}"
+        );
+        assert!(
+            !message.contains(&prompt[..256]),
+            "unsupported-mode error must not leak prompt content"
+        );
+    }
 }
 
 #[test]

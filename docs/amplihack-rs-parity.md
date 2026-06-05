@@ -17,6 +17,7 @@ launcher, orchestration, auto-mode, and doctor surfaces.
 - [Subprocess prompt delivery](#subprocess-prompt-delivery)
 - [Configuration](#configuration)
 - [Binary capability matrix](#binary-capability-matrix)
+- [Amplifier prompt-delivery contract](#amplifier-prompt-delivery-contract)
 - [Mode selection](#mode-selection)
 - [Usage examples](#usage-examples)
 - [Rust API](#rust-api)
@@ -45,7 +46,7 @@ into a shell command string.
 
 | Parity area | Rust behavior |
 | --- | --- |
-| Subprocess prompt delivery | `argv`, `tempfile`, and `stdin` are selected through `amplihack-utils::prompt_delivery` using static per-binary capabilities. Unsupported explicit `tempfile` requests degrade to `stdin` when supported, otherwise `argv`. Unsupported explicit `stdin` requests degrade directly to `argv`. |
+| Subprocess prompt delivery | `argv`, `tempfile`, and `stdin` are selected through `amplihack-utils::prompt_delivery` using static per-binary capabilities. Unsupported explicit `tempfile` requests degrade to `stdin` when supported, otherwise `argv`, unless a binary-specific contract requires rejection. Unsupported explicit `stdin` requests degrade directly to `argv`, unless a binary-specific contract requires rejection. |
 
 ## Configuration
 
@@ -84,6 +85,10 @@ warning. The environment variable is a request, not a capability override: a
 binary only uses `tempfile` or `stdin` when the launcher has a verified contract
 for that binary.
 
+Amplifier is the explicit rejection case: `AMPLIHACK_PROMPT_DELIVERY=tempfile`
+and `AMPLIHACK_PROMPT_DELIVERY=stdin` must fail before launching Amplifier
+because Amplifier has no documented task-prompt file or stdin contract.
+
 ## Binary capability matrix
 
 Capabilities are static launcher metadata, not user-controlled configuration.
@@ -95,10 +100,73 @@ task-prompt contract for that channel.
 | Claude Code | Supported | Pending verification | None for task prompts | Unsupported | `--append-system-prompt` is a system-prompt file contract. It must not be used for task-prompt delivery unless the implementation intentionally changes prompt role and documents that role change. Until a verified task-prompt file contract exists, Claude task prompts remain on `argv`. |
 | GitHub Copilot CLI | Supported | Unsupported | None | Unsupported | Copilot receives prompts through argv because no verified prompt-file or stdin prompt contract is advertised. |
 | Codex | Supported | Unsupported | None | Pending verification | Codex stdin delivery requires a named, tested command contract that reads the task prompt from stdin. Until that contract is verified, Codex task prompts remain on `argv`. |
-| Microsoft Amplifier | Supported | Unsupported | None | Unsupported | Amplifier is routed through `prompt_delivery`, but tempfile and stdin remain unsupported until Amplifier exposes a verified contract. |
+| Microsoft Amplifier | Supported | Unsupported | None | Unsupported | Amplifier is routed through `prompt_delivery`, but tempfile and stdin remain unsupported because Amplifier documents `run [PROMPT]` and does not document a task-prompt file or stdin contract. |
 
 When a future binary version adds a prompt-file or stdin contract, update
 `crates/amplihack-launcher/src/flag_matrix.rs` first, then update this table.
+
+## Amplifier prompt-delivery contract
+
+Amplifier task prompts are delivered through documented argv only.
+
+The supported upstream prompt shape is:
+
+```text
+amplifier run [OPTIONS] [PROMPT]
+```
+
+`amplihack` must therefore treat Amplifier as `argv`-only:
+
+| Capability | Amplifier behavior |
+| --- | --- |
+| Structured argv prompt | Supported. The task prompt is one `Command::arg` value. |
+| Temporary prompt file | Unsupported. Amplifier does not document a `--prompt-file`, `--prompt-path`, or equivalent task-prompt file option. |
+| Stdin task prompt | Unsupported. Amplifier does not document stdin as a task-prompt input channel. |
+| Shell command prompt delivery | Unsupported. `amplihack` must not build `sh -c` strings or interpolate prompt text into shell commands. |
+
+This is a capability boundary, not a size optimization. A long Amplifier prompt
+may still appear as one child argv element because no stable long-form
+task-prompt channel exists for Amplifier. `AMPLIHACK_PROMPT_DELIVERY=tempfile`
+and `AMPLIHACK_PROMPT_DELIVERY=stdin` do not override this capability matrix.
+
+### Requesting unsupported modes with Amplifier
+
+If `AMPLIHACK_PROMPT_DELIVERY=tempfile` is set for Amplifier, `amplihack` must
+return an error before spawning `amplifier`. It must not create a temporary
+prompt file and must not silently continue with `argv`.
+
+If `AMPLIHACK_PROMPT_DELIVERY=stdin` is set for Amplifier, `amplihack` must
+return an error before spawning `amplifier`. It must not write prompt bytes to
+child stdin, must not silently continue with `argv`, and must not substitute
+tempfile delivery.
+
+The error message must name the requested mode, state that Amplifier supports
+only argv prompt delivery, and point to `amplifier run [OPTIONS] [PROMPT]` as
+the supported prompt contract.
+
+The Amplifier launch path must build the upstream command as:
+
+```text
+amplifier run [OPTIONS] [PROMPT]
+```
+
+It must not add a synthetic `--prompt` flag for Amplifier unless upstream
+Amplifier documents that flag as a stable task-prompt contract.
+
+### Evidence required to enable Amplifier long-form delivery
+
+Do not enable Amplifier tempfile or stdin support from observed behavior,
+internal experiments, or generic `prompt_delivery` support alone. The launcher
+capability matrix can mark Amplifier as supporting a long-form channel only when
+upstream Amplifier exposes a documented, stable task-prompt contract such as:
+
+- a named prompt-file option in `amplifier run --help`,
+- documentation that stdin is read as the task prompt for a named command mode,
+- or an upstream release note/API document that commits to one of those
+contracts.
+
+When that evidence exists, update `flag_matrix.rs`, add round-trip regression
+coverage for a 64 KiB prompt containing apostrophes, and update this reference.
 
 ## Mode selection
 
@@ -115,6 +183,10 @@ prompt size and the selected binary's capabilities.
 Every unsupported explicit-mode degradation emits a warning that names the
 requested mode and the effective mode. The warning does not include the raw
 prompt, temporary-file contents, or stdin payload.
+
+Binary-specific rejection rules override the generic degradation table. For
+Amplifier, explicit `tempfile` and `stdin` requests are invalid and must fail
+before execution.
 
 ## Usage examples
 
@@ -139,17 +211,31 @@ tempfile contract, the effective child delivery mode for Claude is `argv`.
 
 ### Diagnose unsupported requested modes
 
-Requesting tempfile delivery for a binary without a verified tempfile contract
-degrades safely.
+Requesting tempfile delivery for a generic binary without a verified tempfile
+contract degrades safely unless the binary has a stricter rejection rule.
 
 ```bash
 AMPLIHACK_PROMPT_DELIVERY=tempfile \
-  amplihack copilot -- "Explain the current branch"
+  amplihack doctor
 ```
 
-Copilot CLI has no verified tempfile flag, so the effective mode is `argv` and a
-warning is emitted. The prompt is still passed as a structured argv element; it
-is not shell-interpolated.
+For Amplifier, doctor reports `capabilities: argv` and a runtime policy that
+explicit `tempfile` and `stdin` requests are rejected before launch. Runtime
+Amplifier launches must pass prompts as structured argv only when the requested
+mode is unset, `auto`, or `argv`.
+
+### Run Amplifier with the documented prompt channel
+
+Amplifier's documented prompt input is the positional `PROMPT` argument on
+`amplifier run`.
+
+```bash
+amplihack amplifier -- run "Explain the authentication flow in this repository"
+```
+
+This remains argv delivery even when the prompt is long. If the prompt must stay
+out of child argv, use a different agent binary with a verified long-form prompt
+contract; Amplifier has no supported tempfile or stdin task-prompt channel.
 
 ### Use prompt delivery in auto-mode
 
@@ -205,8 +291,8 @@ fn build_command(prompt: &str) -> std::io::Result<(Command, DeliveryHandle)> {
 
 ### Launcher API
 
-Launcher command builders will expose delivery-aware construction instead of
-pushing prompt strings directly into argv.
+Launcher command builders expose delivery-aware construction instead of pushing
+prompt strings directly into argv.
 
 ```rust
 use amplihack_launcher::flag_matrix::AgentBinary;
@@ -233,7 +319,7 @@ The `DeliveredCommand` shape is:
 | `command` | Structured `std::process::Command` with prompt delivery applied. |
 | `delivery_handle` | RAII handle that owns tempfile resources or marks stdin ownership. |
 | `requested_mode` | Mode requested by configuration. |
-| `effective_mode` | Mode actually selected for the target binary. |
+| `selected_mode` | Mode actually selected for the target binary. |
 | `warnings` | Deterministic degradation or invalid-configuration warnings safe for logs. |
 | `stdin_payload` | Prompt bytes to write when the effective mode is `stdin`; absent for `argv` and `tempfile`. |
 
@@ -282,7 +368,7 @@ Prompt delivery
   amplifier
     capabilities: argv
     effective for long prompt: argv
-    warning: requested tempfile is unsupported; degrading to argv
+    runtime policy: explicit tempfile/stdin requests are rejected before launch
 ```
 
 Doctor diagnostics are deterministic:
@@ -290,7 +376,8 @@ Doctor diagnostics are deterministic:
 - they list the requested mode,
 - they list static capabilities per binary,
 - they show the effective mode for a long prompt,
-- they show degradation warnings when a requested mode is unsupported,
+- they show degradation warnings or binary-specific rejection policies when a
+  requested mode is unsupported,
 - they never include raw prompt data.
 
 ## Regression contract
@@ -302,8 +389,9 @@ Prompt delivery behavior is defined by these externally visible contracts:
 | Long prompt privacy | For every migrated command builder with a verified long-form mode, a raw 64 KiB prompt containing apostrophes is absent from child argv when `auto`, `tempfile`, or `stdin` selects that long-form delivery mode. Binaries with only `argv` support are explicitly exempt and must still pass the prompt as one structured argv element. |
 | Prompt fidelity | The same 64 KiB apostrophe-containing prompt round-trips unchanged through the selected delivery channel. |
 | Structured argv safety | When `argv` is selected, the prompt is passed as one argv element. Apostrophes, quotes, semicolons, dollar signs, and shell metacharacters are not interpreted by a shell. |
-| Unsupported tempfile request | A requested `tempfile` mode degrades to `stdin` when supported, otherwise to `argv`, and emits a warning. |
-| Unsupported stdin request | A requested `stdin` mode degrades directly to `argv` and emits a warning. It does not degrade to `tempfile`. |
+| Unsupported tempfile request | A requested `tempfile` mode degrades to `stdin` when supported, otherwise to `argv`, and emits a warning, unless the target binary has a stricter rejection policy. |
+| Unsupported stdin request | A requested `stdin` mode degrades directly to `argv` and emits a warning, unless the target binary has a stricter rejection policy. It does not degrade to `tempfile`. |
+| Amplifier unsupported mode request | For Amplifier, explicit `tempfile` and `stdin` requests fail before spawning `amplifier`; they do not degrade to `argv`. |
 | Tempfile lifetime | Tempfile prompts remain readable until the child process exits and are unlinked when the `DeliveryHandle` is dropped. |
 | Stdin lifecycle | Stdin payloads are written completely, flushed, and closed before the child is awaited. |
 | Diagnostics safety | Doctor output, logs, and warnings include modes, capabilities, and degradation messages, but never include raw prompt bytes. |
@@ -320,11 +408,11 @@ Prompt delivery follows these guarantees:
 | Child-lifetime ownership | `DeliveryHandle` lives until the child exits, preventing premature tempfile deletion. |
 | Closed stdin | Stdin payloads are written, flushed, and closed before waiting, preventing deadlocks. |
 | Static capabilities | Users cannot force an unsupported binary to claim tempfile or stdin support. |
-| Deterministic degradation | Unsupported modes always degrade through the documented order with warnings. |
+| Deterministic handling | Unsupported modes either degrade through the documented order with warnings or fail through a documented binary-specific rejection policy. |
 
 ## Troubleshooting
 
-### A requested mode is not used
+### A requested mode is not used or is rejected
 
 Run doctor with the same environment:
 
@@ -333,8 +421,10 @@ AMPLIHACK_PROMPT_DELIVERY=tempfile amplihack doctor
 ```
 
 If the selected binary lists only `argv`, the requested long-form mode is not
-available for that binary. Use a binary with a verified long-form prompt contract
-or leave `AMPLIHACK_PROMPT_DELIVERY=auto`.
+available for that binary. Generic launch paths may degrade to `argv` with a
+warning; Amplifier must reject explicit `tempfile` and `stdin` requests before
+launch. Use a binary with a verified long-form prompt contract or leave
+`AMPLIHACK_PROMPT_DELIVERY=auto`.
 
 ### A long prompt still appears in argv
 
