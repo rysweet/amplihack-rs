@@ -1,47 +1,9 @@
+pub(crate) use super::archive::extract_archive;
+pub(super) use super::archive::{binary_filename, find_binary};
+use super::checksum::verify_sha256;
 use super::*;
-use flate2::read::GzDecoder;
-use sha2::{Digest, Sha256};
-use std::ffi::OsStr;
 use std::process::Command;
 use std::time::Duration;
-use tar::Archive;
-
-/// Verify a downloaded archive against its SHA-256 checksum.
-pub(super) fn verify_sha256(archive_bytes: &[u8], checksum_url: &str) -> Result<()> {
-    let checksum_body = super::network::http_get_with_retry(checksum_url)
-        .with_context(|| format!("failed to download checksum from {checksum_url}"))?;
-    let checksum_text =
-        std::str::from_utf8(&checksum_body).context("checksum file is not valid UTF-8")?;
-
-    let expected_hex = checksum_text
-        .split_ascii_whitespace()
-        .next()
-        .ok_or_else(|| anyhow!("checksum file is empty or malformed: {checksum_url}"))?;
-
-    if expected_hex.len() != 64 || !expected_hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!(
-            "checksum file does not contain a valid SHA-256 hex digest (got {expected_hex:?}): {checksum_url}"
-        );
-    }
-
-    let mut hasher = Sha256::new();
-    hasher.update(archive_bytes);
-    let actual_bytes = hasher.finalize();
-    let actual_hex = format!("{actual_bytes:x}");
-
-    if !actual_hex.eq_ignore_ascii_case(expected_hex) {
-        bail!(
-            "SHA-256 checksum mismatch for downloaded archive:\n  expected: {expected_hex}\n  actual:   {actual_hex}\nAborted to prevent installing a corrupt or tampered binary."
-        );
-    }
-
-    tracing::debug!(
-        checksum_url,
-        sha256 = actual_hex,
-        "archive checksum verified"
-    );
-    Ok(())
-}
 
 pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     let archive_bytes = super::network::http_get_with_retry(&release.asset_url)?;
@@ -63,7 +25,7 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     let new_hooks = find_binary(temp_dir.path(), binary_filename("amplihack-hooks"))?;
     let current_exe =
         std::env::current_exe().context("cannot determine current executable path")?;
-    let decision = current_process_install_target_decision(&current_exe, CURRENT_VERSION)?;
+    let decision = current_process_install_target_decision(&current_exe)?;
     let plan = plan_downloaded_binary_install(
         InstallArchiveLayout {
             amplihack: new_amplihack.clone(),
@@ -153,8 +115,16 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     // binary to trust the old cache for up to 24h. (Belt-and-braces: the
     // cache's mtime-line check should already refuse stale entries, but we
     // delete here to avoid waiting for the next launch to discover that.)
-    if let Ok(path) = super::cache_path() {
-        let _ = fs::remove_file(&path);
+    match super::cache_path() {
+        Ok(path) => match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => tracing::warn!(
+                "failed to remove stale update cache {}: {err}",
+                path.display()
+            ),
+        },
+        Err(err) => tracing::warn!("failed to resolve update cache path for invalidation: {err}"),
     }
 
     Ok(amplihack_dest)
@@ -239,7 +209,6 @@ fn repair_guidance_path_display(path: &Path) -> String {
 
 fn current_process_install_target_decision(
     current_exe: &Path,
-    running_version: &str,
 ) -> Result<crate::path_conflicts::InstallTargetDecision> {
     let home_dir = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -253,7 +222,6 @@ fn current_process_install_target_decision(
     let decision = crate::path_conflicts::decide_update_install_target(
         crate::path_conflicts::TargetDecisionInput {
             report: report.clone(),
-            current_version: running_version.to_string(),
             candidate_probes: probes,
             denied_system_prefixes: crate::path_conflicts::default_denied_system_prefixes(),
         },
@@ -290,8 +258,12 @@ fn verify_installed_version(binary: &Path, expected: &str) -> Result<()> {
         }
 
         if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            if let Err(err) = child.kill() {
+                tracing::warn!("failed to kill timed-out version check process: {err}");
+            }
+            if let Err(err) = child.wait() {
+                tracing::warn!("failed to reap timed-out version check process: {err}");
+            }
             bail!("timed out waiting for --version from updated binary");
         }
 
@@ -326,29 +298,14 @@ fn verify_installed_version(binary: &Path, expected: &str) -> Result<()> {
 /// `fs::copy` than to block updates on hosts we can't probe.
 #[cfg(unix)]
 fn check_free_space(dir: &Path, required_bytes: u64) -> Result<()> {
-    use std::ffi::CString;
-    use std::mem::MaybeUninit;
-    use std::os::unix::ffi::OsStrExt;
-
-    let c_path =
-        CString::new(dir.as_os_str().as_bytes()).context("install dir contains a NUL byte")?;
-    let mut stat = MaybeUninit::<libc::statvfs>::uninit();
-    let rc = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
-    if rc != 0 {
-        // Can't measure — don't block the update.
+    let Some(available) = available_space_bytes(dir)? else {
         tracing::warn!(
             "statvfs({}) failed; skipping free-space preflight",
             dir.display()
         );
         return Ok(());
-    }
-    let stat = unsafe { stat.assume_init() };
-    // `statvfs` field widths differ by OS: Linux uses `c_ulong` (u64 on our
-    // 64-bit targets), macOS uses `u32`. Cast both to `u64` so the math works
-    // on every supported host. Clippy flags the cast as unnecessary on Linux
-    // but it's mandatory on macOS, so silence the lint on the one line.
-    #[allow(clippy::unnecessary_cast)]
-    let available: u64 = (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64);
+    };
+
     if available < required_bytes {
         bail!(
             "not enough free space to install update: {} needs {} bytes free but has {} bytes. Free up disk and re-run `amplihack update`.",
@@ -360,58 +317,33 @@ fn check_free_space(dir: &Path, required_bytes: u64) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn available_space_bytes(dir: &Path) -> Result<Option<u64>> {
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path =
+        CString::new(dir.as_os_str().as_bytes()).context("install dir contains a NUL byte")?;
+    let mut stat = MaybeUninit::<libc::statvfs>::uninit();
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return Ok(None);
+    }
+    // SAFETY: statvfs returned success, so it initialized `stat`.
+    let stat = unsafe { stat.assume_init() };
+    // `statvfs` field widths differ by OS: Linux uses `c_ulong` (u64 on our
+    // 64-bit targets), macOS uses `u32`. Cast both to `u64` so the math works
+    // on every supported host. Clippy flags the cast as unnecessary on Linux
+    // but it's mandatory on macOS, so silence the lint on the one line.
+    #[allow(clippy::unnecessary_cast)]
+    let available: u64 = (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64);
+    Ok(Some(available))
+}
+
 #[cfg(not(unix))]
 fn check_free_space(_dir: &Path, _required_bytes: u64) -> Result<()> {
     Ok(())
-}
-
-pub(super) fn binary_filename(name: &'static str) -> &'static str {
-    if cfg!(windows) {
-        match name {
-            "amplihack" => "amplihack.exe",
-            "amplihack-hooks" => "amplihack-hooks.exe",
-            _ => name,
-        }
-    } else {
-        name
-    }
-}
-
-pub(crate) fn extract_archive(archive_bytes: &[u8], destination: &Path) -> Result<()> {
-    let decoder = GzDecoder::new(std::io::Cursor::new(archive_bytes));
-    let mut archive = Archive::new(decoder);
-    archive
-        .unpack(destination)
-        .with_context(|| format!("failed to unpack archive into {}", destination.display()))?;
-    Ok(())
-}
-
-pub(super) fn find_binary(root: &Path, binary_name: &str) -> Result<PathBuf> {
-    fn search(root: &Path, binary_name: &str, depth: usize) -> Option<PathBuf> {
-        if depth > 3 {
-            return None;
-        }
-
-        let entries = fs::read_dir(root).ok()?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            let is_file = file_type.is_file() || (file_type.is_symlink() && path.is_file());
-            if is_file && path.file_name() == Some(OsStr::new(binary_name)) {
-                return Some(path);
-            }
-            let is_dir = file_type.is_dir() || (file_type.is_symlink() && path.is_dir());
-            if is_dir && let Some(found) = search(&path, binary_name, depth + 1) {
-                return Some(found);
-            }
-        }
-        None
-    }
-
-    search(root, binary_name, 0)
-        .ok_or_else(|| anyhow!("binary '{binary_name}' not found in downloaded archive"))
 }
 
 fn install_binary_atomic(source: &Path, destination: &Path) -> Result<()> {

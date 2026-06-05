@@ -238,14 +238,14 @@ fn update_subcommand_supports_skip_install_flag() {
 fn verify_sha256_uses_retry_variant() {
     // Contract: verify_sha256() must use http_get_with_retry() instead of
     // http_get() when fetching the checksum file.
-    let install_src = include_str!(concat!(
+    let checksum_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/update/install.rs"
+        "/src/update/checksum.rs"
     ));
-    let verify_fn_start = install_src
+    let verify_fn_start = checksum_src
         .find("fn verify_sha256")
         .expect("verify_sha256 must exist");
-    let verify_fn_body = &install_src[verify_fn_start..];
+    let verify_fn_body = &checksum_src[verify_fn_start..];
     // Find the closing brace of the function
     let mut brace_depth = 0;
     let mut fn_end = 0;
@@ -294,12 +294,12 @@ fn download_and_replace_also_uses_retry() {
 fn sha256_hex_validation_rejects_short_digest() {
     // Contract: A checksum file with fewer than 64 hex characters must be
     // rejected.
-    let install_src = include_str!(concat!(
+    let checksum_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/update/install.rs"
+        "/src/update/checksum.rs"
     ));
     assert!(
-        install_src.contains("expected_hex.len() != 64"),
+        checksum_src.contains("expected_hex.len() != 64"),
         "verify_sha256 must validate digest is exactly 64 hex chars"
     );
 }
@@ -307,12 +307,12 @@ fn sha256_hex_validation_rejects_short_digest() {
 #[test]
 fn sha256_hex_validation_rejects_non_hex() {
     // Contract: A checksum with non-hex characters must be rejected.
-    let install_src = include_str!(concat!(
+    let checksum_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/src/update/install.rs"
+        "/src/update/checksum.rs"
     ));
     assert!(
-        install_src.contains("is_ascii_hexdigit"),
+        checksum_src.contains("is_ascii_hexdigit"),
         "verify_sha256 must validate hex characters"
     );
 }
