@@ -8,7 +8,7 @@ pub use check::{
     should_skip_update_check_for_subcommand,
 };
 pub(crate) use install::extract_archive;
-pub(crate) use network::{fetch_branch_head_sha, http_get, validate_download_url};
+pub(crate) use network::{fetch_branch_head_sha, http_get_with_retry, validate_download_url};
 
 use anyhow::{Result, anyhow, bail};
 use semver::Version;

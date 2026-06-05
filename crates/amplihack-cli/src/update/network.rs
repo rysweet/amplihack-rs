@@ -12,6 +12,35 @@ const HTTP_MAX_ATTEMPTS: u32 = 3;
 /// Initial backoff delay in milliseconds (doubles on each retry).
 const HTTP_INITIAL_BACKOFF_MS: u64 = 500;
 
+#[derive(Debug, thiserror::Error)]
+enum HttpClientError {
+    #[error("no stable v* release has been published for {repo} yet")]
+    LatestReleaseNotFound { repo: &'static str },
+    #[error("{message}")]
+    Status {
+        status: u16,
+        url: String,
+        message: String,
+    },
+    #[error("HTTP request failed for {url}: {source}")]
+    Transport {
+        url: String,
+        source: Box<ureq::Error>,
+    },
+    #[error("failed to read HTTP response from {url}: {source}")]
+    Read { url: String, source: std::io::Error },
+}
+
+impl HttpClientError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::LatestReleaseNotFound { .. } => false,
+            Self::Status { status, .. } => *status == 429 || *status >= 500,
+            Self::Transport { .. } | Self::Read { .. } => true,
+        }
+    }
+}
+
 /// Fetch the current HEAD commit SHA for `<owner>/<repo>` on `branch`.
 ///
 /// Uses the GitHub commits API — the full object is large, so we ask for
@@ -23,7 +52,7 @@ const HTTP_INITIAL_BACKOFF_MS: u64 = 500;
 /// endpoint (neither repo publishes tagged releases we can rely on).
 pub(crate) fn fetch_branch_head_sha(owner_repo: &str, branch: &str) -> Result<String> {
     let url = format!("https://api.github.com/repos/{owner_repo}/commits/{branch}");
-    let body = http_get(&url).with_context(|| format!("failed to query {url}"))?;
+    let body = http_get_with_retry(&url).with_context(|| format!("failed to query {url}"))?;
     let value: serde_json::Value =
         serde_json::from_slice(&body).with_context(|| format!("invalid JSON from {url}"))?;
     let sha = value
@@ -61,7 +90,7 @@ pub(super) fn fetch_latest_release() -> Result<UpdateRelease> {
 
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
     let asset_name = expected_archive_name()?;
-    let response = http_get(&url)
+    let response = http_get_with_retry(&url)
         .with_context(|| format!("failed to query latest stable release from {GITHUB_REPO}"))?;
     parse_latest_release(response, &asset_name)
 }
@@ -89,6 +118,16 @@ pub(super) fn is_retryable_error(error: &ureq::Error) -> bool {
         ureq::Error::Status(status, _) => *status == 429 || *status >= 500,
         ureq::Error::Transport(_) => true,
     }
+}
+
+pub(super) fn is_retryable_http_get_error(error: &anyhow::Error) -> bool {
+    if let Some(error) = error.downcast_ref::<HttpClientError>() {
+        return error.is_retryable();
+    }
+    if let Some(error) = error.downcast_ref::<ureq::Error>() {
+        return is_retryable_error(error);
+    }
+    false
 }
 
 /// User-friendly message for GitHub-specific HTTP error codes.
@@ -119,10 +158,7 @@ pub(crate) fn http_get_with_retry(url: &str) -> Result<Vec<u8>> {
         match http_get(url) {
             Ok(body) => return Ok(body),
             Err(err) => {
-                let is_retryable = err
-                    .downcast_ref::<ureq::Error>()
-                    .map(is_retryable_error)
-                    .unwrap_or(true);
+                let is_retryable = is_retryable_http_get_error(&err);
 
                 if !is_retryable || attempt == HTTP_MAX_ATTEMPTS {
                     return Err(err);
@@ -143,7 +179,7 @@ pub(crate) fn http_get_with_retry(url: &str) -> Result<Vec<u8>> {
     unreachable!("loop exits via return inside the body")
 }
 
-pub(crate) fn http_get(url: &str) -> Result<Vec<u8>> {
+fn http_get(url: &str) -> Result<Vec<u8>> {
     // SEC-1: Reject URLs from unexpected hosts before making any network call.
     validate_download_url(url)?;
 
@@ -160,12 +196,23 @@ pub(crate) fn http_get(url: &str) -> Result<Vec<u8>> {
     {
         Ok(response) => response,
         Err(ureq::Error::Status(404, _)) if url.ends_with("/releases/latest") => {
-            bail!("no stable v* release has been published for {GITHUB_REPO} yet")
+            return Err(HttpClientError::LatestReleaseNotFound { repo: GITHUB_REPO }.into());
         }
-        Err(ureq::Error::Status(status @ (403 | 429), _)) => {
-            bail!("{}", github_error_message(status, url))
+        Err(ureq::Error::Status(status, _)) => {
+            return Err(HttpClientError::Status {
+                status,
+                url: url.to_string(),
+                message: github_error_message(status, url),
+            }
+            .into());
         }
-        Err(error) => return Err(anyhow!("HTTP request failed for {url}: {error}")),
+        Err(error) => {
+            return Err(HttpClientError::Transport {
+                url: url.to_string(),
+                source: Box::new(error),
+            }
+            .into());
+        }
     };
 
     let limit = MAX_BINARY_DOWNLOAD_BYTES;
@@ -179,7 +226,10 @@ pub(crate) fn http_get(url: &str) -> Result<Vec<u8>> {
         .into_reader()
         .take(limit as u64)
         .read_to_end(&mut body)
-        .with_context(|| format!("failed to read HTTP response from {url}"))?;
+        .map_err(|source| HttpClientError::Read {
+            url: url.to_string(),
+            source,
+        })?;
 
     if body.len() == limit {
         bail!(
@@ -229,4 +279,37 @@ pub(super) fn parse_latest_release(body: Vec<u8>, asset_name: &str) -> Result<Up
         asset_url: asset.browser_download_url.clone(),
         checksum_url,
     })
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn retry_classifier_preserves_structured_http_status_semantics() {
+        for (status, retryable) in [(403, false), (404, false), (429, true), (500, true)] {
+            let url = "https://api.github.com/repos/rysweet/amplihack-rs/releases/latest";
+            let err: anyhow::Error = HttpClientError::Status {
+                status,
+                url: url.to_string(),
+                message: github_error_message(status, url),
+            }
+            .into();
+            assert_eq!(
+                is_retryable_http_get_error(&err),
+                retryable,
+                "unexpected retry classification for HTTP {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn retry_classifier_does_not_retry_permanent_local_errors() {
+        let err: anyhow::Error =
+            HttpClientError::LatestReleaseNotFound { repo: GITHUB_REPO }.into();
+        assert!(!is_retryable_http_get_error(&err));
+
+        let err = anyhow!("download URL is not from an allowed GitHub host");
+        assert!(!is_retryable_http_get_error(&err));
+    }
 }
