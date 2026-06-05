@@ -350,19 +350,19 @@ async function download(url, {
   retryDelayMs = DOWNLOAD_RETRY_BASE_DELAY_MS,
   timeoutMs = DOWNLOAD_TIMEOUT_MS,
 } = {}) {
-  let lastError;
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new Error(`Download attempts must be at least 1 for ${url}`);
+  }
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       return await downloadOnce(url, { timeoutMs });
     } catch (error) {
-      lastError = error;
       if (attempt >= attempts || !isRetryableDownloadError(error)) {
         throw error;
       }
       await delay(retryDelayMs * attempt);
     }
   }
-  throw lastError;
 }
 
 /**
