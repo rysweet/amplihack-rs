@@ -7,14 +7,18 @@
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::process::Command as StdCommand;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use amplihack_utils::prompt_delivery::{
+    DeliveryCaps, DeliveryHandle, DeliveryMode, PromptDelivery, deliver, from_env, select_mode,
+};
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command as TokioCommand;
 use tokio::time::timeout as tokio_timeout;
 
 /// Pre-split command lookup: maps `AMPLIHACK_DELEGATE` value to its binary
@@ -38,6 +42,12 @@ pub static DELEGATE_COMMANDS: Lazy<HashMap<String, Vec<String>>> = Lazy::new(|| 
 /// Appends `--dangerously-skip-permissions -p <prompt>` and optional
 /// `--model <model>`.
 pub fn build_command(delegate: Option<&str>, prompt: &str, model: Option<&str>) -> Vec<String> {
+    let mut cmd = build_command_prefix(delegate, model);
+    cmd.push(prompt.to_string());
+    cmd
+}
+
+fn build_command_prefix(delegate: Option<&str>, model: Option<&str>) -> Vec<String> {
     let prefix: Vec<String> = match delegate {
         None => {
             tracing::warn!(
@@ -60,13 +70,44 @@ pub fn build_command(delegate: Option<&str>, prompt: &str, model: Option<&str>) 
 
     let mut cmd = prefix;
     cmd.push("--dangerously-skip-permissions".to_string());
-    cmd.push("-p".to_string());
-    cmd.push(prompt.to_string());
     if let Some(m) = model {
         cmd.push("--model".to_string());
         cmd.push(m.to_string());
     }
+    cmd.push("-p".to_string());
     cmd
+}
+
+#[derive(Debug)]
+pub struct DeliveredProcessCommand {
+    pub command: StdCommand,
+    pub delivery_handle: DeliveryHandle,
+    pub selected_mode: DeliveryMode,
+    pub stdin_payload: Option<Vec<u8>>,
+}
+
+pub fn build_command_with_prompt_delivery<I, S>(
+    program: &str,
+    args: I,
+    prompt: &str,
+    requested: PromptDelivery,
+    caps: DeliveryCaps,
+) -> std::io::Result<DeliveredProcessCommand>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let mut command = StdCommand::new(program);
+    command.args(args);
+    let selected_mode = select_mode(requested, prompt.len(), &caps);
+    let delivery_handle = deliver(&mut command, prompt, requested, &caps)?;
+    let stdin_payload = (selected_mode == DeliveryMode::Stdin).then(|| prompt.as_bytes().to_vec());
+    Ok(DeliveredProcessCommand {
+        command,
+        delivery_handle,
+        selected_mode,
+        stdin_payload,
+    })
 }
 
 /// Result of a single process execution.
@@ -147,6 +188,41 @@ impl TokioProcessRunner {
     pub fn new() -> Self {
         Self
     }
+
+    pub async fn run_with_prompt_delivery_for_test<I, S>(
+        &self,
+        opts: RunOptions,
+        requested: PromptDelivery,
+        caps: DeliveryCaps,
+        program: &str,
+        args: I,
+    ) -> ProcessResult
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        let start = Instant::now();
+        let mut delivered = match build_command_with_prompt_delivery(
+            program,
+            args,
+            &opts.prompt,
+            requested,
+            caps,
+        ) {
+            Ok(command) => command,
+            Err(e) => {
+                return ProcessResult::err(
+                    format!("prompt delivery failed: {e}"),
+                    opts.process_id,
+                    start.elapsed(),
+                );
+            }
+        };
+        if let Some(dir) = &opts.working_dir {
+            delivered.command.current_dir(dir);
+        }
+        run_delivered_command(delivered, opts.timeout, opts.process_id, start).await
+    }
 }
 
 #[async_trait]
@@ -154,7 +230,7 @@ impl ProcessRunner for TokioProcessRunner {
     async fn run(&self, opts: RunOptions) -> ProcessResult {
         let start = Instant::now();
         let delegate = std::env::var("AMPLIHACK_DELEGATE").ok();
-        let cmd_parts = build_command(delegate.as_deref(), &opts.prompt, opts.model.as_deref());
+        let cmd_parts = build_command_prefix(delegate.as_deref(), opts.model.as_deref());
         let (program, args) = match cmd_parts.split_first() {
             Some(parts) => parts,
             None => {
@@ -166,72 +242,140 @@ impl ProcessRunner for TokioProcessRunner {
             }
         };
 
-        let mut command = Command::new(program);
-        command.args(args);
-        command.stdin(std::process::Stdio::null());
-        command.stdout(std::process::Stdio::piped());
-        command.stderr(std::process::Stdio::piped());
-        // Ensure the child is terminated if we drop it before wait completes
-        // (e.g., on timeout). Mirrors Python's terminate()/kill() behavior.
-        command.kill_on_drop(true);
-        if let Some(dir) = &opts.working_dir {
-            command.current_dir(dir);
-        }
-
-        let spawn_result = command.spawn();
-        let mut child = match spawn_result {
-            Ok(c) => c,
+        let mut delivered = match build_command_with_prompt_delivery(
+            program,
+            args,
+            &opts.prompt,
+            from_env(),
+            delivery_caps_for_delegate(delegate.as_deref()),
+        ) {
+            Ok(command) => command,
             Err(e) => {
                 return ProcessResult::err(
-                    format!("Failed to spawn '{program}': {e}"),
+                    format!("prompt delivery failed: {e}"),
                     opts.process_id,
                     start.elapsed(),
                 );
             }
         };
+        if let Some(dir) = &opts.working_dir {
+            delivered.command.current_dir(dir);
+        }
 
-        let mut stdout_pipe = child.stdout.take();
-        let mut stderr_pipe = child.stderr.take();
+        run_delivered_command(delivered, opts.timeout, opts.process_id, start).await
+    }
+}
 
-        let read_streams = async {
-            let mut out = String::new();
-            let mut err = String::new();
-            if let Some(p) = stdout_pipe.as_mut() {
-                let _ = p.read_to_string(&mut out).await;
-            }
-            if let Some(p) = stderr_pipe.as_mut() {
-                let _ = p.read_to_string(&mut err).await;
-            }
-            let status = child.wait().await;
-            (status, out, err)
-        };
+async fn run_delivered_command(
+    delivered: DeliveredProcessCommand,
+    timeout: Option<Duration>,
+    process_id: String,
+    start: Instant,
+) -> ProcessResult {
+    let DeliveredProcessCommand {
+        mut command,
+        delivery_handle,
+        stdin_payload,
+        ..
+    } = delivered;
+    if stdin_payload.is_none() {
+        command.stdin(std::process::Stdio::null());
+    }
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    let program = command.get_program().to_string_lossy().into_owned();
+    let mut command = TokioCommand::from(command);
+    command.kill_on_drop(true);
+    let spawn_result = command.spawn();
+    let mut child = match spawn_result {
+        Ok(c) => c,
+        Err(e) => {
+            return ProcessResult::err(
+                format!("Failed to spawn '{program}': {e}"),
+                process_id,
+                start.elapsed(),
+            );
+        }
+    };
 
-        let (status, out, err) = match opts.timeout {
-            Some(t) => match tokio_timeout(t, read_streams).await {
-                Ok(v) => v,
-                Err(_) => {
-                    return ProcessResult::err(
-                        format!("Timed out after {t:?}"),
-                        opts.process_id,
-                        start.elapsed(),
-                    );
-                }
-            },
-            None => read_streams.await,
-        };
-
-        let duration = start.elapsed();
-        match status {
-            Ok(s) => ProcessResult {
-                exit_code: s.code().unwrap_or(-1),
-                output: out,
-                stderr: err,
-                duration,
-                process_id: opts.process_id,
-            },
-            Err(e) => ProcessResult::err(format!("wait failed: {e}"), opts.process_id, duration),
+    if let Some(payload) = stdin_payload
+        && let Some(mut stdin) = child.stdin.take()
+    {
+        if let Err(e) = stdin.write_all(&payload).await {
+            return ProcessResult::err(
+                format!("failed to write prompt to child stdin: {e}"),
+                process_id,
+                start.elapsed(),
+            );
+        }
+        if let Err(e) = stdin.flush().await {
+            return ProcessResult::err(
+                format!("failed to flush child stdin: {e}"),
+                process_id,
+                start.elapsed(),
+            );
         }
     }
+
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+
+    let read_streams = async {
+        let mut out = String::new();
+        let mut err = String::new();
+        if let Some(p) = stdout_pipe.as_mut() {
+            let _ = p.read_to_string(&mut out).await;
+        }
+        if let Some(p) = stderr_pipe.as_mut() {
+            let _ = p.read_to_string(&mut err).await;
+        }
+        let status = child.wait().await;
+        (status, out, err)
+    };
+
+    let (status, out, err) = match timeout {
+        Some(t) => match tokio_timeout(t, read_streams).await {
+            Ok(v) => v,
+            Err(_) => {
+                return ProcessResult::err(
+                    format!("Timed out after {t:?}"),
+                    process_id,
+                    start.elapsed(),
+                );
+            }
+        },
+        None => read_streams.await,
+    };
+
+    drop(delivery_handle);
+    let duration = start.elapsed();
+    match status {
+        Ok(s) => ProcessResult {
+            exit_code: s.code().unwrap_or(-1),
+            output: out,
+            stderr: err,
+            duration,
+            process_id,
+        },
+        Err(e) => ProcessResult::err(format!("wait failed: {e}"), process_id, duration),
+    }
+}
+
+fn delivery_caps_for_delegate(_delegate: Option<&str>) -> DeliveryCaps {
+    DeliveryCaps::argv_only()
+}
+
+pub async fn run_delivered_command_for_test(
+    delivered: DeliveredProcessCommand,
+    timeout: Duration,
+) -> std::io::Result<ProcessResult> {
+    Ok(run_delivered_command(
+        delivered,
+        Some(timeout),
+        "prompt-delivery-test".to_string(),
+        Instant::now(),
+    )
+    .await)
 }
 
 /// Internal mock expectation entry.

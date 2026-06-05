@@ -13,6 +13,9 @@ use std::process::Command;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
+use crate::flag_matrix::AgentBinary;
+use crate::prompt_delivery::{DeliveredCommand, build_tool_command_from_env};
+
 /// Maximum time to wait for a version-check subprocess.
 const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -95,17 +98,17 @@ pub fn configure_codex(project_path: &Path) -> Result<()> {
 
 /// Build the command to launch Codex with the given prompt.
 pub fn build_codex_command(prompt: &str, project_path: &Path, extra_args: &[String]) -> Command {
-    let mut cmd = Command::new("codex");
-    cmd.current_dir(project_path);
-    if !prompt.is_empty() {
-        cmd.args(["--prompt", prompt]);
-    }
-    for arg in extra_args {
-        cmd.arg(arg);
-    }
-    // Set agent binary env var for nested sessions
-    cmd.env("AMPLIHACK_AGENT_BINARY", "codex");
-    cmd
+    build_codex_command_with_prompt_delivery(prompt, project_path, extra_args)
+        .expect("argv-only codex prompt delivery should not fail")
+        .command
+}
+
+pub fn build_codex_command_with_prompt_delivery(
+    prompt: &str,
+    project_path: &Path,
+    extra_args: &[String],
+) -> std::io::Result<DeliveredCommand> {
+    build_tool_command_from_env(AgentBinary::Codex, project_path, extra_args, prompt)
 }
 
 /// Ensure Codex is installed and up-to-date, then return a ready command.

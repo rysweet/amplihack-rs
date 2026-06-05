@@ -11,7 +11,7 @@ use crate::env_builder::EnvBuilder;
 use crate::memory_config::prepare_memory_config;
 use crate::nesting::NestingDetector;
 use crate::session_tracker::SessionTracker;
-use crate::util::run_output_with_timeout;
+use amplihack_launcher::prompt_delivery::DeliveredCommand;
 use anyhow::{Context, Result, bail};
 use chrono::Local;
 use std::env;
@@ -22,6 +22,7 @@ use std::process::Command;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
+    mpsc,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -29,6 +30,7 @@ mod helpers;
 mod run;
 mod session;
 
+pub use helpers::{AutoModePromptDeliveryOptions, build_auto_command_with_prompt_delivery};
 pub use run::run_auto_mode;
 
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -103,13 +105,16 @@ impl PromptExecutor for SystemPromptExecutor {
         passthrough_args: &[String],
         prompt: &str,
     ) -> Result<ExecutionResult> {
-        let command = helpers::build_auto_command(
-            tool,
-            execution_dir,
-            project_dir,
-            self.node_options.as_deref(),
-            passthrough_args,
-            prompt,
+        let delivered = helpers::build_auto_command_with_prompt_delivery(
+            helpers::AutoModePromptDeliveryOptions {
+                tool,
+                execution_dir: execution_dir.to_path_buf(),
+                project_dir: project_dir.to_path_buf(),
+                node_options: self.node_options.clone(),
+                passthrough_args: passthrough_args.to_vec(),
+                prompt: prompt.to_string(),
+                requested_delivery: amplihack_utils::prompt_delivery::from_env(),
+            },
         )
         .with_context(|| {
             format!(
@@ -117,7 +122,7 @@ impl PromptExecutor for SystemPromptExecutor {
                 tool.subcommand()
             )
         })?;
-        let output = run_output_with_timeout(command, QUERY_TIMEOUT)?;
+        let output = run_delivered_output_with_timeout(delivered, QUERY_TIMEOUT)?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -139,6 +144,56 @@ impl PromptExecutor for SystemPromptExecutor {
             stdout,
             stderr,
         })
+    }
+}
+
+fn run_delivered_output_with_timeout(
+    delivered: DeliveredCommand,
+    timeout: Duration,
+) -> Result<std::process::Output> {
+    let DeliveredCommand {
+        mut command,
+        delivery_handle,
+        stdin_payload,
+        ..
+    } = delivered;
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    let mut child = command.spawn().context("failed to spawn subprocess")?;
+    let pid = child.id();
+    if let Some(payload) = stdin_payload
+        && let Some(mut stdin) = child.stdin.take()
+    {
+        stdin
+            .write_all(&payload)
+            .context("failed to write prompt to child stdin")?;
+        stdin.flush().context("failed to flush child stdin")?;
+    }
+    let (tx, rx) = mpsc::channel::<std::io::Result<std::process::Output>>();
+    std::thread::spawn(move || {
+        let result = child.wait_with_output();
+        drop(delivery_handle);
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result.context("failed to wait for subprocess output"),
+        Err(_elapsed) => {
+            #[cfg(unix)]
+            {
+                let kill_result = Command::new("kill")
+                    .args(["-TERM", &pid.to_string()])
+                    .status();
+                if let Err(e) = kill_result {
+                    tracing::warn!(pid, error = %e, "failed to terminate timed-out subprocess");
+                }
+            }
+            bail!(
+                "subprocess timed out after {} seconds (pid {})",
+                timeout.as_secs(),
+                pid
+            )
+        }
     }
 }
 

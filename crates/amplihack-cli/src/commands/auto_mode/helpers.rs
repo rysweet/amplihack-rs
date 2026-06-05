@@ -1,4 +1,8 @@
 use super::*;
+use amplihack_launcher::flag_matrix::{AgentBinary, prompt_delivery_caps_for};
+use amplihack_launcher::prompt_delivery::{DeliveredCommand, build_command_with_prompt_delivery};
+use amplihack_utils::prompt_delivery::PromptDelivery;
+use std::ffi::OsString;
 
 pub(super) fn philosophy_context() -> &'static str {
     "AUTONOMOUS MODE: You are in auto mode. Do NOT ask questions. Make decisions using:\n1. Explicit user requirements (highest priority)\n2. @.claude/context/USER_PREFERENCES.md guidance\n3. @.claude/context/PHILOSOPHY.md principles\n4. @.claude/workflow/DEFAULT_WORKFLOW.md patterns\n5. @.claude/context/USER_REQUIREMENT_PRIORITY.md for conflicts\n\nDecision Authority:\n- YOU DECIDE implementation details and architecture\n- YOU PRESERVE explicit user requirements and hard constraints\n- WHEN AMBIGUOUS choose the simplest modular option"
@@ -56,6 +60,7 @@ pub(super) fn extract_prompt_args(args: &[String]) -> Option<ParsedPromptArgs> {
     })
 }
 
+#[cfg(test)]
 pub(super) fn build_auto_command(
     tool: AutoModeTool,
     execution_dir: &Path,
@@ -64,33 +69,72 @@ pub(super) fn build_auto_command(
     passthrough_args: &[String],
     prompt: &str,
 ) -> Result<Command> {
+    Ok(
+        build_auto_command_with_prompt_delivery(AutoModePromptDeliveryOptions {
+            tool,
+            execution_dir: execution_dir.to_path_buf(),
+            project_dir: project_dir.to_path_buf(),
+            node_options: node_options.map(str::to_string),
+            passthrough_args: passthrough_args.to_vec(),
+            prompt: prompt.to_string(),
+            requested_delivery: amplihack_utils::prompt_delivery::from_env(),
+        })?
+        .command,
+    )
+}
+
+#[derive(Debug, Clone)]
+pub struct AutoModePromptDeliveryOptions {
+    pub tool: AutoModeTool,
+    pub execution_dir: PathBuf,
+    pub project_dir: PathBuf,
+    pub node_options: Option<String>,
+    pub passthrough_args: Vec<String>,
+    pub prompt: String,
+    pub requested_delivery: PromptDelivery,
+}
+
+pub fn build_auto_command_with_prompt_delivery(
+    options: AutoModePromptDeliveryOptions,
+) -> Result<DeliveredCommand> {
     let current_exe = env::current_exe().context("failed to resolve current executable")?;
-    let mut command = Command::new(current_exe);
-    command.current_dir(execution_dir);
+    let mut args = vec![
+        OsString::from(options.tool.subcommand()),
+        OsString::from("--no-reflection"),
+        OsString::from("--subprocess-safe"),
+        OsString::from("--"),
+    ];
+    args.extend(build_tool_passthrough_prefix_args(
+        options.tool,
+        &options.passthrough_args,
+    ));
+    let mut delivered = build_command_with_prompt_delivery(
+        current_exe.as_os_str(),
+        args.iter(),
+        &options.prompt,
+        options.requested_delivery,
+        prompt_delivery_caps_for(agent_binary_for_tool(options.tool)),
+    )?;
+    delivered.command.current_dir(&options.execution_dir);
     let env_builder = EnvBuilder::new()
         .with_amplihack_session_id()
         .with_incremented_session_tree_context()
-        .with_amplihack_vars_with_node_options(node_options)
-        .with_agent_binary(tool.slug())
+        .with_amplihack_vars_with_node_options(options.node_options.as_deref())
+        .with_agent_binary(options.tool.slug())
         .with_amplihack_home()
         .with_asset_resolver()
-        .with_project_graph_db(project_dir)?;
-    let env_builder = if execution_dir != project_dir {
+        .with_project_graph_db(&options.project_dir)?;
+    let env_builder = if options.execution_dir != options.project_dir {
         env_builder.set("AMPLIHACK_IS_STAGED", "1").set(
             "AMPLIHACK_ORIGINAL_CWD",
-            project_dir.to_string_lossy().into_owned(),
+            options.project_dir.to_string_lossy().into_owned(),
         )
     } else {
         env_builder
     };
     let env_builder = env_builder.set("AMPLIHACK_AUTO_MODE", "1");
-    env_builder.apply_to_command(&mut command);
-    command.arg(tool.subcommand());
-    command.arg("--no-reflection");
-    command.arg("--subprocess-safe");
-    command.arg("--");
-    command.args(build_tool_passthrough_args(tool, passthrough_args, prompt));
-    Ok(command)
+    env_builder.apply_to_command(&mut delivered.command);
+    Ok(delivered)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,6 +235,7 @@ fn extract_leading_slash_commands(prompt: &str) -> (String, String) {
     (commands.join(" "), trimmed[index..].trim().to_string())
 }
 
+#[cfg(test)]
 pub(super) fn build_tool_passthrough_args(
     tool: AutoModeTool,
     passthrough_args: &[String],
@@ -247,6 +292,62 @@ pub(super) fn build_tool_passthrough_args(
         }
     }
     args
+}
+
+fn build_tool_passthrough_prefix_args(
+    tool: AutoModeTool,
+    passthrough_args: &[String],
+) -> Vec<OsString> {
+    let mut args = passthrough_args.to_vec();
+    match tool {
+        AutoModeTool::Claude | AutoModeTool::RustyClawd => {
+            if !args
+                .iter()
+                .any(|arg| arg == "--dangerously-skip-permissions")
+            {
+                args.push("--dangerously-skip-permissions".to_string());
+            }
+            if !args.iter().any(|arg| arg == "--verbose") {
+                args.push("--verbose".to_string());
+            }
+            args.push("-p".to_string());
+        }
+        AutoModeTool::Copilot => {
+            args = strip_claude_only_flags(args);
+            let has_allow_all = args.iter().any(|a| a == "--allow-all");
+            let has_allow_all_tools = args.iter().any(|a| a == "--allow-all-tools");
+            if !has_allow_all && !has_allow_all_tools {
+                args.push("--allow-all".to_string());
+            }
+            if !args.iter().any(|arg| arg == "--add-dir") {
+                args.push("--add-dir".to_string());
+                args.push("/".to_string());
+            }
+            args.push("-p".to_string());
+        }
+        AutoModeTool::Codex => {
+            if !args
+                .iter()
+                .any(|arg| arg == "--dangerously-bypass-approvals-and-sandbox")
+            {
+                args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+            }
+            args.push("exec".to_string());
+        }
+        AutoModeTool::Amplifier => {
+            args.push("-p".to_string());
+        }
+    }
+    args.into_iter().map(OsString::from).collect()
+}
+
+fn agent_binary_for_tool(tool: AutoModeTool) -> AgentBinary {
+    match tool {
+        AutoModeTool::Claude | AutoModeTool::RustyClawd => AgentBinary::Claude,
+        AutoModeTool::Copilot => AgentBinary::Copilot,
+        AutoModeTool::Codex => AgentBinary::Codex,
+        AutoModeTool::Amplifier => AgentBinary::Amplifier,
+    }
 }
 
 /// Strip Claude-only flags that Copilot CLI does not accept.

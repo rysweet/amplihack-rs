@@ -212,11 +212,7 @@ pub fn select_mode(
                 DeliveryMode::Stdin
             } else {
                 tracing::warn!("stdin mode unsupported by binary capabilities; degrading");
-                if caps.supports_tempfile {
-                    DeliveryMode::Tempfile
-                } else {
-                    DeliveryMode::Argv
-                }
+                DeliveryMode::Argv
             }
         }
     }

@@ -13,6 +13,7 @@ pub enum AgentBinary {
     Claude,
     Copilot,
     Codex,
+    Amplifier,
 }
 
 impl AgentBinary {
@@ -22,6 +23,7 @@ impl AgentBinary {
             Self::Claude => "claude",
             Self::Copilot => "copilot",
             Self::Codex => "codex",
+            Self::Amplifier => "amplifier",
         }
     }
 }
@@ -57,6 +59,14 @@ pub struct FlagSet {
     pub supports_allow_all_tools: bool,
     /// Supports `--remote` (Copilot-specific — offload to GitHub cloud).
     pub supports_remote: bool,
+    /// Supports structured argv task-prompt delivery.
+    pub supports_prompt_argv: bool,
+    /// Supports task-prompt tempfile delivery through a verified CLI contract.
+    pub supports_prompt_tempfile: bool,
+    /// Supports task-prompt stdin delivery through a verified CLI contract.
+    pub supports_prompt_stdin: bool,
+    /// Verified task-prompt tempfile flag, when supported.
+    pub prompt_tempfile_flag: Option<&'static str>,
     /// The env var name set to identify the agent binary in nested sessions.
     pub agent_binary_env: &'static str,
 }
@@ -78,6 +88,10 @@ pub fn flags_for(binary: AgentBinary) -> FlagSet {
             supports_print: true,
             supports_allow_all_tools: false,
             supports_remote: false,
+            supports_prompt_argv: true,
+            supports_prompt_tempfile: false,
+            supports_prompt_stdin: false,
+            prompt_tempfile_flag: None,
             agent_binary_env: "AMPLIHACK_AGENT_BINARY",
         },
         AgentBinary::Copilot => FlagSet {
@@ -90,6 +104,10 @@ pub fn flags_for(binary: AgentBinary) -> FlagSet {
             supports_print: false,
             supports_allow_all_tools: true,
             supports_remote: true,
+            supports_prompt_argv: true,
+            supports_prompt_tempfile: false,
+            supports_prompt_stdin: false,
+            prompt_tempfile_flag: None,
             agent_binary_env: "AMPLIHACK_AGENT_BINARY",
         },
         AgentBinary::Codex => FlagSet {
@@ -102,8 +120,143 @@ pub fn flags_for(binary: AgentBinary) -> FlagSet {
             supports_print: false,
             supports_allow_all_tools: false,
             supports_remote: false,
+            supports_prompt_argv: true,
+            supports_prompt_tempfile: false,
+            supports_prompt_stdin: false,
+            prompt_tempfile_flag: None,
             agent_binary_env: "AMPLIHACK_AGENT_BINARY",
         },
+        AgentBinary::Amplifier => FlagSet {
+            binary: AgentBinary::Amplifier,
+            supports_append_prompt: false,
+            supports_add_dir: false,
+            supports_model: false,
+            supports_skip_permissions: false,
+            supports_resume: false,
+            supports_print: false,
+            supports_allow_all_tools: false,
+            supports_remote: false,
+            supports_prompt_argv: true,
+            supports_prompt_tempfile: false,
+            supports_prompt_stdin: false,
+            prompt_tempfile_flag: None,
+            agent_binary_env: "AMPLIHACK_AGENT_BINARY",
+        },
+    }
+}
+
+/// Return prompt-delivery capabilities for a binary.
+pub fn prompt_delivery_caps_for(
+    binary: AgentBinary,
+) -> amplihack_utils::prompt_delivery::DeliveryCaps {
+    let flags = flags_for(binary);
+    amplihack_utils::prompt_delivery::DeliveryCaps {
+        supports_argv: flags.supports_prompt_argv,
+        supports_tempfile: flags.supports_prompt_tempfile,
+        supports_stdin: flags.supports_prompt_stdin,
+        tempfile_flag: flags.prompt_tempfile_flag,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromptDeliveryReport {
+    pub requested: amplihack_utils::prompt_delivery::PromptDelivery,
+    pub prompt_size: usize,
+    pub entries: Vec<PromptDeliveryReportEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromptDeliveryReportEntry {
+    pub binary: AgentBinary,
+    pub caps: amplihack_utils::prompt_delivery::DeliveryCaps,
+    pub effective_mode: amplihack_utils::prompt_delivery::DeliveryMode,
+    pub warning: String,
+    pub note: String,
+}
+
+/// Build deterministic prompt-delivery diagnostics for doctor output.
+pub fn prompt_delivery_report_for(
+    requested: amplihack_utils::prompt_delivery::PromptDelivery,
+    prompt_size: usize,
+) -> PromptDeliveryReport {
+    let entries = ALL_BINARIES
+        .iter()
+        .copied()
+        .map(|binary| {
+            let caps = prompt_delivery_caps_for(binary);
+            let effective_mode =
+                amplihack_utils::prompt_delivery::select_mode(requested, prompt_size, &caps);
+            PromptDeliveryReportEntry {
+                binary,
+                caps,
+                effective_mode,
+                warning: warning_for(requested, effective_mode, &caps),
+                note: note_for(binary),
+            }
+        })
+        .collect();
+    PromptDeliveryReport {
+        requested,
+        prompt_size,
+        entries,
+    }
+}
+
+fn warning_for(
+    requested: amplihack_utils::prompt_delivery::PromptDelivery,
+    effective: amplihack_utils::prompt_delivery::DeliveryMode,
+    caps: &amplihack_utils::prompt_delivery::DeliveryCaps,
+) -> String {
+    use amplihack_utils::prompt_delivery::PromptDelivery;
+    let unsupported = match requested {
+        PromptDelivery::Auto => false,
+        PromptDelivery::Argv => !caps.supports_argv,
+        PromptDelivery::Tempfile => !caps.supports_tempfile,
+        PromptDelivery::Stdin => !caps.supports_stdin,
+    };
+    if !unsupported {
+        return String::new();
+    }
+    format!(
+        "requested {} is unsupported; degrading to {}",
+        prompt_delivery_name(requested),
+        delivery_mode_name(effective)
+    )
+}
+
+fn note_for(binary: AgentBinary) -> String {
+    match binary {
+        AgentBinary::Claude => {
+            "task-prompt tempfile/stdin support pending verified Claude contract".to_string()
+        }
+        AgentBinary::Copilot => {
+            "no verified Copilot prompt-file or stdin task-prompt contract".to_string()
+        }
+        AgentBinary::Codex => {
+            "stdin support pending verified Codex command contract".to_string()
+        }
+        AgentBinary::Amplifier => {
+            "Amplifier is routed through prompt_delivery as argv-only until a long-form contract exists".to_string()
+        }
+    }
+}
+
+pub fn prompt_delivery_name(
+    mode: amplihack_utils::prompt_delivery::PromptDelivery,
+) -> &'static str {
+    match mode {
+        amplihack_utils::prompt_delivery::PromptDelivery::Auto => "auto",
+        amplihack_utils::prompt_delivery::PromptDelivery::Argv => "argv",
+        amplihack_utils::prompt_delivery::PromptDelivery::Tempfile => "tempfile",
+        amplihack_utils::prompt_delivery::PromptDelivery::Stdin => "stdin",
+    }
+}
+
+pub fn delivery_mode_name(mode: amplihack_utils::prompt_delivery::DeliveryMode) -> &'static str {
+    match mode {
+        amplihack_utils::prompt_delivery::DeliveryMode::Argv => "argv",
+        amplihack_utils::prompt_delivery::DeliveryMode::Tempfile => "tempfile",
+        amplihack_utils::prompt_delivery::DeliveryMode::Stdin => "stdin",
     }
 }
 
@@ -112,6 +265,7 @@ pub const ALL_BINARIES: &[AgentBinary] = &[
     AgentBinary::Claude,
     AgentBinary::Copilot,
     AgentBinary::Codex,
+    AgentBinary::Amplifier,
 ];
 
 // ---------------------------------------------------------------------------
@@ -169,6 +323,17 @@ mod tests {
     }
 
     #[test]
+    fn prompt_delivery_caps_are_argv_only_until_contracts_are_verified() {
+        for binary in ALL_BINARIES {
+            let caps = prompt_delivery_caps_for(*binary);
+            assert!(caps.supports_argv);
+            assert!(!caps.supports_tempfile);
+            assert!(!caps.supports_stdin);
+            assert_eq!(caps.tempfile_flag, None);
+        }
+    }
+
+    #[test]
     fn codex_does_not_support_remote() {
         let flags = flags_for(AgentBinary::Codex);
         assert!(!flags.supports_remote);
@@ -197,6 +362,14 @@ mod tests {
         assert!(!flags.supports_print);
         assert!(!flags.supports_allow_all_tools);
         assert!(!flags.supports_remote);
+    }
+
+    #[test]
+    fn amplifier_has_explicit_prompt_delivery_row() {
+        let flags = flags_for(AgentBinary::Amplifier);
+        assert!(flags.supports_prompt_argv);
+        assert!(!flags.supports_prompt_tempfile);
+        assert!(!flags.supports_prompt_stdin);
     }
 
     // -----------------------------------------------------------------------
@@ -296,6 +469,6 @@ mod tests {
 
     #[test]
     fn all_binaries_contains_three_variants() {
-        assert_eq!(ALL_BINARIES.len(), 3);
+        assert_eq!(ALL_BINARIES.len(), 4);
     }
 }

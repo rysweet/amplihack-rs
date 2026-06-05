@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{debug, info, warn};
 
+use crate::flag_matrix::AgentBinary;
+use crate::prompt_delivery::{DeliveredCommand, build_tool_command_from_env};
+
 /// Amplifier binary detection result.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AmplifierInfo {
@@ -112,17 +115,17 @@ pub fn build_amplifier_command(
     project_path: &Path,
     extra_args: &[String],
 ) -> Command {
-    let mut cmd = Command::new("amplifier");
-    cmd.current_dir(project_path);
-    cmd.arg("run");
-    if !prompt.is_empty() {
-        cmd.args(["--prompt", prompt]);
-    }
-    for arg in extra_args {
-        cmd.arg(arg);
-    }
-    cmd.env("AMPLIHACK_AGENT_BINARY", "amplifier");
-    cmd
+    build_amplifier_command_with_prompt_delivery(prompt, project_path, extra_args)
+        .expect("argv-only amplifier prompt delivery should not fail")
+        .command
+}
+
+pub fn build_amplifier_command_with_prompt_delivery(
+    prompt: &str,
+    project_path: &Path,
+    extra_args: &[String],
+) -> std::io::Result<DeliveredCommand> {
+    build_tool_command_from_env(AgentBinary::Amplifier, project_path, extra_args, prompt)
 }
 
 /// Full launch: ensure installed, register bundle, sync docs, build command.

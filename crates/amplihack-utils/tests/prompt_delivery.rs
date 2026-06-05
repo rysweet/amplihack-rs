@@ -195,6 +195,24 @@ fn explicit_env_with_unsupported_mode_degrades_deterministically() {
     );
 }
 
+#[test]
+fn explicit_stdin_request_degrades_directly_to_argv_not_tempfile() {
+    let caps = DeliveryCaps {
+        supports_argv: true,
+        supports_tempfile: true,
+        supports_stdin: false,
+        tempfile_flag: Some("--prompt-file"),
+    };
+
+    let mode = select_mode(PromptDelivery::Stdin, 64 * 1024, &caps);
+
+    assert_eq!(
+        mode,
+        DeliveryMode::Argv,
+        "explicit Stdin on a binary without a verified stdin contract must degrade directly to Argv; it must not switch prompt roles by falling back to Tempfile"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 7. invalid_env_value_warns_and_defaults_to_auto
 // ---------------------------------------------------------------------------
