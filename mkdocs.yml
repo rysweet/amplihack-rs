@@ -56,7 +56,9 @@ nav:
       - Installation: PREREQUISITES.md
       - Interactive Setup: INTERACTIVE_INSTALLATION.md
       - First-Time Install: howto/first-install.md
+      - PATH Conflict Tutorial: tutorials/repair-install-update-path-conflicts.md
       - Local Install: howto/local-install.md
+      - Repair PATH Conflicts: howto/repair-install-update-path-conflicts.md
       - Uninstall: howto/uninstall.md
   - Core Concepts:
       - Philosophy: claude/context/PHILOSOPHY.md
@@ -203,6 +205,7 @@ nav:
       - Rust Code Quality: reference/rust-code-quality.md
       - CLI Reference: reference/cli.md
       - install Command: reference/install-command.md
+      - Install/Update PATH Conflicts: reference/install-update-path-conflicts.md
       - recipe Command: reference/recipe-command.md
       - RustyClawd Command: reference/rustyclawd-command.md
       - uvx-help Command: reference/uvx-help-command.md

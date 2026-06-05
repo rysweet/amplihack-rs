@@ -41,12 +41,17 @@ process image remains the old executable regardless of filesystem changes.
 
 ## How it works
 
-After `download_and_replace()` atomically installs the new binary,
-`run_update()` spawns the new binary as a child process instead of calling
-`run_install` in-process:
+After `run_update()` selects a safe replacement target and
+`download_and_replace()` atomically installs the new binary, it spawns the new
+binary as a child process instead of calling `run_install` in-process:
 
 ```
 amplihack update
+  │
+  ├─ analyze PATH conflicts
+  │    → inspect ordered candidates for amplihack + amplihack-hooks
+  │    → prefer ~/.local/bin when current/writable user binaries exist
+  │    → stop with manual repair guidance for unsafe system targets
   │
   ├─ download_and_replace(&release)
   │    → downloads, verifies SHA-256, atomic rename
@@ -99,6 +104,13 @@ amplihack update
    user sees install progress in real time. The subprocess behaves as if the
    user ran `amplihack install` directly.
 
+6. **Safe target selection** — Before replacing a binary, update analyzes
+   ordered `PATH` candidates for `amplihack` and `amplihack-hooks`. If stale
+   root-owned `/usr/local/bin` entries shadow current user-local binaries,
+   update prefers the writable `~/.local/bin` target when available and prints
+   repair guidance. It never attempts privileged writes or temporary-file copies
+   into unwritable system directories.
+
 ### `--skip-install` bypass
 
 The existing `--skip-install` (alias `--no-install`) flag on
@@ -136,6 +148,17 @@ execute permission, `Command::new().status()` returns an I/O error that
 propagates with full context. This should not happen in practice because
 `download_and_replace()` sets `0o755` permissions and uses atomic rename.
 
+### System binary shadows user-local binary
+
+If `/usr/local/bin/amplihack` appears before `~/.local/bin/amplihack` on
+`PATH`, update reports the conflict. When `~/.local/bin` is writable, the
+user-local binary is updated and the warning explains how to make the shell run
+it first. When no user-writable target exists, update stops before replacement
+and prints sudo/manual repair guidance.
+
+See [Install/update PATH conflict reference](../reference/install-update-path-conflicts.md)
+for the target-selection rules.
+
 ### Old binary without `--force-refresh`
 
 If an older binary (pre-#683) is somehow spawned as the subprocess, it will
@@ -148,6 +171,7 @@ include the unrecognized flag name.
 
 | File | Role |
 |------|------|
+| `crates/amplihack-cli/src/path_conflicts.rs` | Shared side-effect-free PATH analysis and install target decision logic. |
 | `crates/amplihack-cli/src/update/install.rs` | `download_and_replace()` returns `Result<PathBuf>` with the installed binary path (captured before atomic rename). |
 | `crates/amplihack-cli/src/update/check.rs` | `run_update()` captures the returned path, passes it to `build_install_command()`. The closure given to `run_post_update_install` spawns the subprocess and checks its exit status. |
 | `crates/amplihack-cli/src/update/check.rs` | `build_install_command(installed_exe: &Path) -> Command` — constructs the subprocess command with args and env vars. Visibility: `pub(super)` for testability. |
@@ -167,6 +191,8 @@ No new crate dependencies introduced.
 | `build_install_command_sets_noninteractive_env` | `update/tests/build_install_command.rs` | `AMPLIHACK_NONINTERACTIVE=1` is set |
 | `update_check_source_includes_framework_restage` | `tests/bugfix_install_tests.rs` | Source-level assertion that `run_update` uses `build_install_command` (not `run_install` in-process) |
 | Existing `run_post_update_install` tests | `update/post_install.rs` | Skip-install bypass, closure invocation, error propagation — all still pass unchanged |
+| PATH conflict resolver tests | `path_conflicts.rs` | User-bin first, system-bin shadowing, duplicate candidates, safe user-bin preference, and manual repair decisions |
+| Install/update smoke output assertions | install/update tests | Normal output excludes stale hook-file `❌` lines, `profile_management` warnings, and known-safe bundled symlink skip warnings |
 
 ## Interaction with related features
 
@@ -194,6 +220,10 @@ own update prompt. The `AMPLIHACK_NO_UPDATE_CHECK=1` env var set by
 
 - [Install Command Reference](../reference/install-command.md) — the install
   procedure invoked by the subprocess.
+- [Install/update PATH conflict reference](../reference/install-update-path-conflicts.md) —
+  safe target selection, PATH shadowing warnings, and manual repair guidance.
+- [Repair install/update PATH conflicts](../howto/repair-install-update-path-conflicts.md) —
+  user-facing repair steps for stale `/usr/local/bin` binaries.
 - [Self-Heal Asset Re-Stage](self-heal-asset-restage.md) — the startup-time
   safety net that catches missed post-update installs.
 - [Startup Self-Update Prompt — Subprocess-Safe Skip](startup-update-prompt-subprocess-safe.md) —

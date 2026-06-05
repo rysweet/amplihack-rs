@@ -87,6 +87,8 @@ Centralized plugin system that works across all your projects:
 - [Prerequisites](PREREQUISITES.md) - System requirements and dependencies
 - [Interactive Installation](INTERACTIVE_INSTALLATION.md) - Step-by-step setup wizard
 - [Quick Start](../README.md) - Basic usage and first commands
+- [PATH Conflict Tutorial](tutorials/repair-install-update-path-conflicts.md) - Learn why stale system binaries can shadow current user-local installs
+- [Repair Install/Update PATH Conflicts](howto/repair-install-update-path-conflicts.md) - Fix stale `/usr/local/bin` binaries that shadow current `~/.local/bin` installs
 
 ### Configuration
 
@@ -142,6 +144,7 @@ amplihack copilot
 
 - [Release Installation](howto/first-install.md) - Install from published binaries or source
 - [Install Manifest](reference/install-manifest.md) - Understand installed files and uninstall state
+- [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Target selection, PATH analysis, and output regression guarantees
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
 
 ---

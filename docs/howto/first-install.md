@@ -6,9 +6,7 @@ This guide walks through running `amplihack install` on a machine that has never
 
 | Requirement | Minimum version | Why |
 |-------------|----------------|-----|
-| Rust toolchain | 1.85 (2024 edition) | Build from source |
-| Python 3 | 3.11+ | amplihack SDK hooks run as Python subprocesses |
-| `amplihack` Python package | any | Hooks import `amplihack` at runtime |
+| Rust toolchain | 1.88 (2024 edition) | Build from source |
 | Internet access | — | Default install clones from GitHub (skip with `--local`) |
 | Node.js + npm (optional) | 18+ | Only needed when using the npm/npx wrapper path |
 
@@ -153,6 +151,13 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
+**`⚠️  PATH conflict`**
+
+The installer deployed current binaries to `~/.local/bin`, but another
+`amplihack` or `amplihack-hooks` appears earlier on `PATH`. Follow
+[Repair install/update PATH conflicts](repair-install-update-path-conflicts.md)
+to reorder `PATH` or remove stale system binaries.
+
 **Re-running install**
 
 Install is idempotent. Re-running updates hook registrations in place without duplicating entries. Existing settings (permissions, directories) are preserved. See [Idempotent Installation](../concepts/idempotent-installation.md).
@@ -161,5 +166,6 @@ Install is idempotent. Re-running updates hook registrations in place without du
 
 - [Interactive Install](./interactive-install.md) — guided wizard for tool, scope, and update preferences
 - [Install from a Local Repository](./local-install.md) — offline install without git clone
+- [Repair install/update PATH conflicts](./repair-install-update-path-conflicts.md) — fix stale `/usr/local/bin` binaries
 - [Uninstall amplihack](./uninstall.md) — clean removal
 - [amplihack install reference](../reference/install-command.md) — all flags and options
