@@ -23,6 +23,9 @@ const INSTALL_LOCK_POLL_MS = 200;
 const LATEST_TAG_CACHE_FILE = '.latest-tag.json';
 const LATEST_TAG_CACHE_SCHEMA = 1;
 const DEFAULT_LATEST_TAG_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const DOWNLOAD_TIMEOUT_MS = 30000;
+const DOWNLOAD_MAX_ATTEMPTS = 3;
+const DOWNLOAD_RETRY_BASE_DELAY_MS = 250;
 const TAG_REGEX = /^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/u;
 
 function binaryFilename(name, platform = process.platform) {
@@ -208,6 +211,16 @@ function verifyArchiveChecksum(archiveBytes, checksumText, archiveUrl) {
   }
 }
 
+function retryableDownloadError(message) {
+  const error = new Error(message);
+  error.retryable = true;
+  return error;
+}
+
+function isRetryableDownloadError(error) {
+  return Boolean(error && error.retryable === true);
+}
+
 function processExists(pidText) {
   const pid = Number.parseInt(String(pidText || '').trim(), 10);
   if (!Number.isInteger(pid) || pid <= 0) {
@@ -273,7 +286,7 @@ async function copyFileAtomic(source, destination, mode = 0o755) {
   }
 }
 
-function download(url) {
+function downloadOnce(url, { timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     const seen = new Set();
 
@@ -285,7 +298,7 @@ function download(url) {
       }
       seen.add(currentUrl);
 
-      https
+      const request = https
         .get(currentUrl, {
           headers: {
             'User-Agent': 'amplihack-npm-wrapper',
@@ -300,7 +313,12 @@ function download(url) {
           }
           if (statusCode < 200 || statusCode >= 300) {
             response.resume();
-            reject(new Error(`HTTP ${statusCode} while downloading ${currentUrl}`));
+            const message = `HTTP ${statusCode} while downloading ${currentUrl}`;
+            if ([408, 429, 500, 502, 503, 504].includes(statusCode)) {
+              reject(retryableDownloadError(message));
+            } else {
+              reject(new Error(message));
+            }
             return;
           }
 
@@ -318,10 +336,33 @@ function download(url) {
           response.on('error', reject);
         })
         .on('error', reject);
+      request.setTimeout(timeoutMs, () => {
+        request.destroy(retryableDownloadError(`Timed out after ${timeoutMs}ms while downloading ${currentUrl}`));
+      });
     }
 
     fetch(url);
   });
+}
+
+async function download(url, {
+  attempts = DOWNLOAD_MAX_ATTEMPTS,
+  retryDelayMs = DOWNLOAD_RETRY_BASE_DELAY_MS,
+  timeoutMs = DOWNLOAD_TIMEOUT_MS,
+} = {}) {
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new Error(`Download attempts must be at least 1 for ${url}`);
+  }
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await downloadOnce(url, { timeoutMs });
+    } catch (error) {
+      if (attempt >= attempts || !isRetryableDownloadError(error)) {
+        throw error;
+      }
+      await delay(retryDelayMs * attempt);
+    }
+  }
 }
 
 /**
@@ -514,6 +555,7 @@ module.exports = {
   cacheRoot,
   cacheStateRoot,
   copyFileAtomic,
+  download,
   ensureNativeBinaries,
   findBinary,
   hasLocalCargoWorkspace,
