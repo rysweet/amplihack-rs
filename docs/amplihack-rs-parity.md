@@ -327,6 +327,12 @@ Doctor diagnostics are deterministic:
 - they show degradation warnings when a requested mode is unsupported,
 - they never include raw prompt data.
 
+Doctor is a capability report. It shows the effective delivery mode for each
+binary under the requested setting, but it does not model every launch-time
+policy. The Amplifier launch path is stricter than the generic doctor
+degradation report: explicit `tempfile` and `stdin` launch requests fail before
+spawning `amplifier` instead of degrading to `argv`.
+
 ## Regression contract
 
 Prompt delivery behavior is defined by these externally visible contracts:

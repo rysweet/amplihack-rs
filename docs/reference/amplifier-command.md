@@ -117,6 +117,34 @@ contract:
 | `tempfile` | Unsupported | Explicit requests fail before spawning `amplifier`. No prompt tempfile is created. |
 | `stdin` | Unsupported | Explicit requests fail before spawning `amplifier`. No prompt bytes are written to stdin. |
 
+### Prompt delivery configuration
+
+`AMPLIHACK_PROMPT_DELIVERY` controls the requested delivery mode for migrated
+subprocess launch paths. For Amplifier, the capability policy is intentionally
+narrow:
+
+| Setting | Amplifier result |
+| --- | --- |
+| unset, empty, or `auto` | Use structured argv delivery. |
+| `argv` | Use structured argv delivery. |
+| `tempfile` | Fail before launching Amplifier. |
+| `stdin` | Fail before launching Amplifier. |
+
+Examples:
+
+```bash
+# Default: Amplifier receives the prompt as one positional argv value.
+amplihack amplifier -- run "Summarize this repository"
+
+# Explicit compatibility mode: same argv delivery, useful in diagnostics.
+AMPLIHACK_PROMPT_DELIVERY=argv \
+  amplihack amplifier -- run "Summarize this repository"
+
+# Invalid for Amplifier: fails before spawning the child process.
+AMPLIHACK_PROMPT_DELIVERY=tempfile \
+  amplihack amplifier -- run "Summarize this repository"
+```
+
 `AMPLIHACK_PROMPT_DELIVERY` is a request, not a capability override:
 
 ```bash
@@ -156,6 +184,13 @@ Execute a single task:
 
 ```bash
 amplihack amplifier -- run "Explain the authentication flow in this codebase"
+```
+
+The prompt remains a single argv value even when it contains shell metacharacters
+after parent-shell expansion:
+
+```bash
+amplihack amplifier -- run "Review this safely: don't expand \$HOME; keep 'quotes'"
 ```
 
 ### Single Response Mode
@@ -254,7 +289,7 @@ Continue? [y/N] y
 | Code | Meaning                                              |
 | ---- | ---------------------------------------------------- |
 | `0`  | Success                                              |
-| `1`  | Error (installation failed, command not found, etc.) |
+| `1`  | Error (installation failed, command not found, unsupported prompt delivery request, etc.) |
 
 ## Troubleshooting
 
