@@ -2,18 +2,19 @@
 
 > [Home](../index.md) > Reference > Workflow Issue Extraction
 
-Reference for the three-tier issue-number extraction logic in
-`default-workflow` step `03b`. This step resolves a GitHub issue number from
-the workflow context so that downstream steps can link the working branch,
-commit, and pull request to the correct issue.
+Reference for the issue-number extraction logic in `default-workflow` step
+`03b`. This step resolves a provider-neutral tracking number from the workflow
+context so downstream steps can link the working branch, commit, and pull
+request to the correct GitHub issue, Azure Boards work item, or local tracking
+ID.
 
 ## Contents
 
 - [Overview](#overview)
-- [Three-Tier Extraction](#three-tier-extraction)
-  - [Tier 1 — Direct issue URL](#tier-1--direct-issue-url)
-  - [Tier 2 — Pull request URL](#tier-2--pull-request-url)
-  - [Tier 3 — Bare #N reference](#tier-3--bare-n-reference)
+- [Extraction Order](#extraction-order)
+  - [Primary source: Step 03 output](#primary-source-step-03-output)
+  - [Compatibility fallback: task text references](#compatibility-fallback-task-text-references)
+- [Provider Output Formats](#provider-output-formats)
 - [Output Contract](#output-contract)
 - [Shell Security Constraints](#shell-security-constraints)
 - [Configuration](#configuration)
@@ -25,95 +26,111 @@ commit, and pull request to the correct issue.
 
 ## Overview
 
-Step `03b` accepts a free-form `task_description` string (e.g. a copied GitHub
-issue URL, a PR URL, or a plain-text description containing `#123`) and
-produces a canonical `issue_number` integer that the rest of the workflow uses.
+Step `03b` accepts the `issue_creation` output from step 03 plus the original
+`task_description`, then produces a canonical `issue_number` integer that the
+rest of the workflow uses.
 
 ```
-task_description  ──►  03b extraction  ──►  issue_number (int | null)
-                                             branch_prefix
-                                             issue_title (str | null)
+issue_creation + task_description ──► 03b extraction ──► issue_number (int)
 ```
 
-If no issue number can be resolved, `issue_number` is `null` and the workflow
-continues with an anonymous branch name.
+Step 03 is responsible for emitting a parseable tracking reference. If neither
+Step 03 output nor the compatibility task-text fallback is parseable, Step 03b
+fails loudly instead of silently continuing with the wrong branch or commit
+reference.
 
 ---
 
-## Three-Tier Extraction
+## Extraction Order
 
-The tiers are evaluated in order; the first match wins.
+The sources are evaluated in order; the first match wins.
 
-### Tier 1 — Direct issue URL
+### Primary source: Step 03 output
 
-**Pattern**: `https://github.com/<owner>/<repo>/issues/<N>`
+Step 03b first parses the `issue_creation` value emitted by Step 03. This is
+the canonical source because Step 03 owns host dispatch, provider validation,
+reuse decisions, and create/fallback behavior.
 
-When `task_description` contains a URL whose path component is
-`/issues/<digits>`, the issue number is extracted directly from the URL without
-any network call.
+Supported `issue_creation` formats:
+
+| Step 03 output | Extraction behavior |
+| -------------- | ------------------- |
+| `https://github.com/owner/repo/issues/N` | Extracts `N` from `/issues/N` without a network call |
+| `https://github.com/owner/repo/pull/N` | Uses `gh pr view` to read the first closing issue; falls back to PR number `N` if no closing issue resolves |
+| `https://dev.azure.com/org/project/_workitems/edit/N` | Extracts `N` from `/_workitems/edit/N` without a network call |
+| `AB#N` | Extracts `N` without a network call |
+| `local-tracking:N` | Extracts `N` without a network call |
 
 ```
-Input:  "Fix the crash described in https://github.com/rysweet/amplihack-rs/issues/3960"
+Input:  "https://github.com/rysweet/amplihack-rs/issues/3960"
 Match:  issues/3960
 Output: issue_number=3960
 ```
 
-This tier is purely regex-based and never calls `gh`.
-
----
-
-### Tier 2 — Pull request URL
-
-**Pattern**: `https://github.com/<owner>/<repo>/pull/<N>`
-
-When `task_description` contains a PR URL, step `03b` calls `gh pr view` to
-retrieve the list of issues that the PR closes:
+For pull request URLs, Step 03b calls:
 
 ```bash
 gh pr view <N> \
-    --repo <owner>/<repo> \
     --json closingIssuesReferences \
     --jq '.closingIssuesReferences[0].number'
 ```
 
-The first closing issue reference is used. If the PR closes no issues,
-extraction falls through to Tier 3.
+The first closing issue reference is used. If the PR closes no issues or the
+lookup fails, the PR number itself is used as the numeric tracking ID. Step 03b
+does not scan `task_description` for GitHub issue or PR URLs.
 
 ```
-Input:  "Continue work on https://github.com/rysweet/amplihack-rs/pull/4143"
+Input:  "https://github.com/rysweet/amplihack-rs/pull/4143"
 gh call: closingIssuesReferences → [3960, 3983]
 Output: issue_number=3960   (first reference)
 ```
 
-**Timeout**: 60 seconds. If `gh` does not respond within the timeout, Tier 2
-is skipped and extraction falls through to Tier 3.
+**Timeout**: 60 seconds. If `gh` does not respond within the timeout, the PR
+number is used as the fallback tracking ID.
 
 ---
 
-### Tier 3 — Bare `#N` reference
+### Compatibility fallback: task text references
 
-**Pattern**: `#<digits>` anywhere in `task_description`
+If `issue_creation` is not parseable, Step 03b falls back to references in
+`task_description` for compatibility with older or manually supplied contexts:
 
-When neither a direct issue URL nor a PR URL is found, step `03b` scans
-`task_description` for bare `#N` patterns. Each candidate is verified with:
-
-```bash
-gh issue view <N> --json url --jq '.url // ""'
-```
-
-The command returns the issue URL. If the URL path contains `/issues/`, the
-candidate is accepted. Candidates that return an empty URL (non-existent or
-wrong repo) are skipped.
+| Task text pattern | Extraction behavior |
+| ----------------- | ------------------- |
+| `AB#N` | Extracts `N` |
+| `#N` | Extracts `N` |
 
 ```
-Input:  "Resume work on #3983 and #3960"
-gh verify 3983 → url: "https://github.com/rysweet/amplihack-rs/issues/3983"
-  → contains /issues/ → issue_number=3983
+issue_creation:   "unparseable legacy value"
+task_description: "Continue work on AB#12345"
+Output:           issue_number=12345
 ```
 
-**Timeout**: 60 seconds per candidate.
+This fallback is intentionally regex-only. Step 03 is responsible for deciding
+whether `#N` means a GitHub issue, Azure Boards work item, or local reference;
+Step 03b only preserves the numeric workflow contract.
 
-If no candidate passes verification, `issue_number` is `null`.
+---
+
+## Provider Output Formats
+
+Step 03b extracts IDs from the provider-specific output formats produced by
+`step-03-create-issue`, plus task-text fallback references used for
+compatibility.
+
+| Provider path | Step 03 output | Extraction result |
+| ------------- | -------------- | ----------------- |
+| GitHub issue | `https://github.com/owner/repo/issues/3960` | `3960` |
+| GitHub PR fallback | `https://github.com/owner/repo/pull/4143` | First closing issue, or `4143` if none resolves |
+| Azure DevOps work item URL | `https://dev.azure.com/org/project/_workitems/edit/12345` | `12345` |
+| Azure Boards shorthand | `AB#12345` | `12345` |
+| Local tracking | `local-tracking:482193` | `482193` |
+| Compatibility Azure Boards reference | `AB#12345` in `task_description` | `12345` |
+| Compatibility bare reference | `#12345` in `task_description` | `12345` |
+
+The `AB#N` shorthand is the canonical reuse output for Azure DevOps runs that
+start with an existing `issue_number` context value. It lets Step 03 reuse a
+known work item without requiring a live Azure CLI lookup.
 
 ---
 
@@ -123,13 +140,9 @@ After step `03b` completes, the workflow context contains:
 
 | Field          | Type          | Description                                             |
 | -------------- | ------------- | ------------------------------------------------------- |
-| `issue_number` | `int \| null` | Resolved GitHub issue number, or `null` if unresolvable |
+| `issue_number` | `int` | Provider-neutral tracking number extracted from step 03 output |
 
-> **Planned enhancements**: `issue_title` (fetched from GitHub), `branch_prefix`
-> (inferred from context), and `extraction_tier` (which tier produced the result)
-> are targeted for a follow-up to improve debuggability.
-
-### Example output (Tier 1)
+### Example output
 
 ```json
 {
@@ -137,13 +150,8 @@ After step `03b` completes, the workflow context contains:
 }
 ```
 
-### Example output (no match)
-
-```json
-{
-  "issue_number": null
-}
-```
+If extraction fails, step 03b exits non-zero and prints the unparseable
+`issue_creation` value to stderr.
 
 ---
 
@@ -152,12 +160,13 @@ After step `03b` completes, the workflow context contains:
 Step `03b` follows the same shell-security rules as the rest of the default
 workflow:
 
-| Constraint                          | Detail                                                                                                                                                                         |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **No `shell=True`**                 | All `gh` subprocess calls use a list-form argv; no shell interpolation                                                                                                         |
-| **Heredoc delimiter single-quoted** | The `EOFISSUECREATION` delimiter in the issue-creation heredoc is always single-quoted (`'EOFISSUECREATION'`) to prevent shell metacharacter expansion from `task_description` |
-| **60-second timeout**               | Every `gh` subprocess call carries `timeout=60`; hung subprocesses do not stall the workflow                                                                                   |
-| **No credential logging**           | `gh` output is captured in memory and never written to disk unredacted                                                                                                         |
+| Constraint | Detail |
+| ---------- | ------ |
+| **Quoted variables** | `ISSUE_CREATION` and `TASK_DESCRIPTION` are assigned and matched with quoted shell variables |
+| **Regex-only numeric capture** | Every accepted identifier is captured with `[0-9]+`; no provider CLI receives an unvalidated ID |
+| **60-second timeout** | GitHub PR closing-issue lookup uses `timeout 60`; hung subprocesses do not stall the workflow |
+| **No provider crossover** | Azure Boards formats (`AB#N`, `_workitems/edit/N`) are parsed locally and do not require GitHub CLI calls |
+| **Visible failure** | If no supported pattern matches, the step exits non-zero and prints the unparseable `issue_creation` value to stderr |
 
 ---
 
@@ -165,14 +174,14 @@ workflow:
 
 Step `03b` reads the following values from the workflow context:
 
-| Context key           | Required | Description                                                                |
-| --------------------- | -------- | -------------------------------------------------------------------------- |
-| `task_description`    | Yes      | Free-form string describing the task                                       |
-| `repo_path`           | Yes      | Absolute path used to derive `owner/repo` from `git remote get-url origin` |
-| `expected_gh_account` | No       | If set, `gh api /user` is checked before Tier 2/3 network calls            |
+| Context key | Required | Description |
+| ----------- | -------- | ----------- |
+| `issue_creation` | Yes | Step 03 output: GitHub URL, Azure Boards URL, `AB#N`, or `local-tracking:N` |
+| `task_description` | Yes | Free-form string used only as a compatibility fallback source for `AB#N` or `#N` references |
 
-No environment variables are specific to step `03b`; it relies on the
-authenticated `gh` CLI configured in the user's shell.
+No environment variables are specific to step `03b`. GitHub PR closing-issue
+lookup relies on the authenticated `gh` CLI configured in the user's shell.
+Azure Boards and local tracking extraction are regex-only.
 
 ---
 
@@ -182,13 +191,11 @@ authenticated `gh` CLI configured in the user's shell.
 
 ```yaml
 # Recipe context snippet
-task_description: |
-  Fix path-traversal bug.
-  See https://github.com/rysweet/amplihack-rs/issues/3960
+issue_creation: "https://github.com/rysweet/amplihack-rs/issues/3960"
 ```
 
 ```
-Tier 1 match: 3960
+issues/ match: 3960
 issue_number: 3960
 ```
 
@@ -197,11 +204,10 @@ issue_number: 3960
 ### Resolving from a PR URL
 
 ```yaml
-task_description: "Resume https://github.com/rysweet/amplihack-rs/pull/4143"
+issue_creation: "https://github.com/rysweet/amplihack-rs/pull/4143"
 ```
 
 ```
-No issues/ URL found → Tier 2
 gh pr view 4143 --json closingIssuesReferences
 → [3960, 3983]
 issue_number: 3960
@@ -209,29 +215,56 @@ issue_number: 3960
 
 ---
 
-### Resolving from a bare `#N` pattern
+### Resolving from compatibility task text fallback
 
 ```yaml
+issue_creation: "legacy output"
 task_description: "Continue work on #3983"
 ```
 
 ```
-No issues/ URL, no pull/ URL → Tier 3
-gh issue view 3983 → url contains /issues/ → accepted
+No supported issue_creation format → task text fallback
 issue_number: 3983
 ```
 
 ---
 
-### No resolvable issue
+### Resolving from an Azure Boards shorthand
 
 ```yaml
-task_description: "Refactor the config module for clarity"
+issue_creation: "AB#12345"
+task_description: "Address review feedback for the Azure DevOps PR"
 ```
 
 ```
-No URL, no #N → issue_number: null
-branch name falls back to slugified task_description
+AB# match: 12345
+issue_number: 12345
+```
+
+---
+
+### Resolving from local tracking
+
+```yaml
+issue_creation: "local-tracking:482193"
+```
+
+```
+local-tracking match: 482193
+issue_number: 482193
+```
+
+---
+
+### Invalid step 03 output
+
+```yaml
+issue_creation: "unparseable provider output"
+```
+
+```
+No supported pattern → step 03b exits non-zero
+stderr includes the unparseable issue_creation value
 ```
 
 ---
@@ -241,43 +274,41 @@ branch name falls back to slugified task_description
 **`gh: command not found`**
 
 Install and authenticate the GitHub CLI: `gh auth login`.
-Step `03b` degrades gracefully — Tier 1 (regex-only) still works without `gh`.
+Only GitHub PR closing-issue lookup requires `gh`; direct issue URLs, Azure
+Boards outputs, `AB#N`, and `local-tracking:N` still parse without it.
 
-**Tier 2 returns no closing issues**
+**GitHub PR lookup returns no closing issues**
 
-The PR may not use closing keywords (`Closes #N`, `Fixes #N`). Add a closing
-keyword to the PR description, or supply the issue URL directly in
-`task_description`.
+The PR may not use closing keywords (`Closes #N`, `Fixes #N`). In that case
+Step 03b uses the PR number itself as the numeric tracking ID.
 
-**Tier 3 skips a valid issue number**
+**Task text fallback resolves a bare `#N` unexpectedly**
 
-The issue may not exist in the repository that `gh` is authenticated against,
-or the `gh issue view` call returned an empty URL. Check that the issue exists
-and that `gh auth status` shows the correct account. Closed issues that are
-still in the repository will also resolve successfully — verification is
-URL-based (`*/issues/*`), not state-based.
+Step 03b does not verify bare `#N` against a provider. Provider validation must
+happen in Step 03 before it emits `issue_creation`.
 
-**Tier 3 does not resolve a `#N` that is present**
+**Task text fallback does not resolve a `#N` that is present**
 
 The `#N` pattern requires at least one digit. Values like `#` alone or
-`#abc` are not matched. Check that the issue exists in the resolved repository
-and that `gh issue view <N>` returns a URL containing `/issues/`.
+`#abc` are not matched.
 
 ---
 
 ## Multi-Provider Extraction
 
-When `remote_provider` is not `"github"`, step 03b extracts issue numbers
-from provider-specific URL formats in addition to the GitHub patterns above:
+Step 03b extracts issue numbers from provider-specific URL formats in addition
+to GitHub issue and PR patterns:
 
-| Provider | URL pattern                                           | Extraction regex             |
-| -------- | ----------------------------------------------------- | ---------------------------- |
-| GitHub   | `https://github.com/owner/repo/issues/N`               | `issues/[0-9]+`              |
-| AzDO     | `https://dev.azure.com/org/project/_workitems/edit/N`   | `_workitems/edit/[0-9]+`     |
-| Local    | Bare numeric string from synthetic ID                   | `^[0-9]+$`                   |
+| Provider | Accepted pattern | Extraction regex |
+| -------- | ---------------- | ---------------- |
+| GitHub | `https://github.com/owner/repo/issues/N` | `issues/([0-9]+)` |
+| GitHub PR | `https://github.com/owner/repo/pull/N` | `pull/([0-9]+)` plus closing-issue lookup |
+| Azure DevOps | `https://dev.azure.com/org/project/_workitems/edit/N` | `_workitems/edit/([0-9]+)` |
+| Azure DevOps | `AB#N` | `AB#([0-9]+)` |
+| Local | `local-tracking:N` | `local-tracking:([0-9]+)` |
 
-The `issue_number` output contract is unchanged: a plain integer regardless
-of provider. See [Multi-Provider Workflow Reference](multi-provider-workflow.md)
+The `issue_number` output contract is unchanged: a plain integer regardless of
+provider. See [Multi-Provider Workflow Reference](multi-provider-workflow.md)
 for full details.
 
 ---
@@ -302,8 +333,8 @@ for full details.
 
 | Field       | Value                                                         |
 | ----------- | ------------------------------------------------------------- |
-| Status      | Planned / PR #4143                                            |
-| Issues      | #3960, #3983                                                  |
+| Status      | Issue #718 target contract                                    |
+| Issues      | #3960, #3983, #718                                            |
 | PR          | #4143                                                         |
 | Recipe file | `amplifier-bundle/recipes/default-workflow.yaml` (step `03b`) |
 | Test file   | `amplifier-bundle/tools/test_default_workflow_fixes.py`       |

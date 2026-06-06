@@ -1,11 +1,17 @@
-# step-03-create-issue: Idempotency Guards
+# step-03-create-issue: Host-Aware Tracking Idempotency
 
-`step-03-create-issue` is the issue-creation step in `default-workflow.yaml`.
-It creates a GitHub issue to track the current workflow run. Since the
-default-workflow is often re-run against the same task (e.g., when resuming
-after an interruption, retrying a failed step, or running in a loop), the step
-uses two idempotency guards to detect and reuse an existing issue instead of
-creating a duplicate.
+`step-03-create-issue` is the tracking-record step in `workflow-prep.yaml`,
+the preparation phase used by `default-workflow`. It creates or reuses the
+tracking record for the current workflow run:
+
+- GitHub remotes use GitHub Issues.
+- Azure DevOps remotes use Azure Boards work items.
+- Unknown, empty, or local remotes use local synthetic tracking IDs.
+
+Since `default-workflow` is often re-run against the same task (for example
+when resuming after an interruption, retrying a failed step, or following up on
+an existing PR/work item), the step detects existing tracking references before
+creating anything new.
 
 **Added in:** PR #3952 (merged 2026-04-03)
 **Pattern source:** `step-16-create-draft-pr` idempotency guards (#3324)
@@ -14,61 +20,90 @@ creating a duplicate.
 
 ## Quick Start
 
-No configuration is required. The guards activate automatically every time
-`step-03-create-issue` runs.
+No configuration is required for GitHub repositories. Step 02d detects the
+remote host and step 03 routes by `remote_host_type`.
 
 ```bash
-# Run the default workflow — step-03 handles deduplication transparently
-amplihack recipe run default-workflow -c task_description="Fix login timeout bug in #4194" \
+# GitHub: reuse issue #4194 if it exists, otherwise search/create as needed
+amplihack recipe run default-workflow \
+  -c task_description="Fix login timeout bug in #4194" \
   -c repo_path="$(pwd)"
 ```
 
-If a prior run already created an issue for this task, step-03 reuses it and
-logs:
+Azure DevOps repositories may use either `azdo` or `azure-devops` as the host
+type. Both values route to the Azure Boards path.
+
+```bash
+# Azure DevOps: reuse existing work item 12345 without creating a GitHub issue
+amplihack recipe run default-workflow \
+  -c remote_host_type=azure-devops \
+  -c issue_number=12345 \
+  -c task_description="Continue ADO PR follow-up work" \
+  -c repo_path="$(pwd)"
+```
+
+Step 03 emits a parseable tracking reference, and step 03b extracts the same
+numeric ID for downstream branch, commit, and PR logic.
 
 ```
-INFO: task_description references issue #4194 — verifying it exists
-INFO: Reusing existing issue #4194 — skipping creation
+AB#12345
 ```
 
 ---
 
 ## How It Works
 
-The step runs three checks in priority order before creating a new issue:
+The step dispatches by host type before it performs any provider-specific
+operation. `remote_host_type` is treated as untrusted recipe context, so the
+dispatch uses quoted variables and explicit host matching.
 
 ```
-input: task_description + ISSUE_TITLE
+input: remote_host_type + issue_number + task_description + repo_path
          │
          ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Guard 1 — Reference Guard                                      │
-│  Does task_description contain #NNNN?                           │
-│  yes → gh issue view #NNNN (timeout 60s)                        │
-│         issue found? → output URL, exit 0 (reuse)              │
-│         not found   → fall through to Guard 2                   │
-│  no  → fall through to Guard 2                                  │
+│  Host Dispatch                                                  │
+│  github              → GitHub issue reuse/search/create          │
+│  azdo|azure-devops   → Azure Boards reuse/create                 │
+│  other|empty|unknown → local synthetic tracking                  │
 └─────────────────────────────────────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Guard 2 — Title Search Guard                                   │
-│  gh issue list --state open --search <first 100 chars of title> │
-│         match found? → output URL, exit 0 (reuse)              │
-│         no match    → fall through to creation                  │
+│  Existing Reference Guards                                      │
+│  explicit issue_number? host-specific reuse, exit 0              │
+│  task_description contains AB#N or #N? host-specific candidate   │
 └─────────────────────────────────────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Fallback — Create New Issue                                    │
-│  gh issue create (original behavior, unchanged)                 │
+│  Provider Create or Fallback                                    │
+│  GitHub: gh issue create                                        │
+│  Azure DevOps: az boards work-item create                       │
+│  Other: local-tracking:N                                        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Guard 1: Reference Guard
+### Host Dispatch
 
-Triggered when `task_description` contains a GitHub issue reference in the form
-`#NNNN` (e.g., `Fix the bug in #4194`).
+Step 03 accepts these `remote_host_type` values:
+
+| Value | Meaning | Step 03 behavior |
+| ----- | ------- | ---------------- |
+| `github` | GitHub repository | Runs GitHub issue reuse/search/create logic with `gh` |
+| `azdo` | Azure DevOps repository | Runs Azure Boards work-item reuse/create logic |
+| `azure-devops` | Azure DevOps repository alias | Same behavior as `azdo` |
+| `other` | Unknown or local repository | Uses local tracking fallback |
+| empty/unset | Unknown or local repository | Uses local tracking fallback |
+
+Step 02d normally emits `github`, `azdo`, or `other`. The `azure-devops` alias
+exists for callers that pass host context from Azure DevOps PR/work-item
+follow-up workflows.
+
+### GitHub Guard 1: Reference Guard
+
+Triggered when the host is `github` and `task_description` contains a GitHub
+issue reference in the form `#NNNN` (for example, `Fix the bug in #4194`).
 
 1. Extracts the first `#NNNN` pattern using bash regex `[[ =~ \#([0-9]+) ]]`
 2. Validates the extracted value is purely numeric (defense-in-depth)
@@ -79,10 +114,10 @@ Triggered when `task_description` contains a GitHub issue reference in the form
 This guard is the cheapest and most specific. It requires zero search and makes
 a single API call to a known issue number.
 
-### Guard 2: Title Search Guard
+### GitHub Guard 2: Title Search Guard
 
-Always runs when Guard 1 does not match. Uses `gh issue list` to search open
-issues for a title similar to the current one.
+Runs only for the `github` host path when Guard 1 does not match. Uses
+`gh issue list` to search open issues for a title similar to the current one.
 
 1. Truncates the issue title to its first 100 characters (GitHub search limit)
 2. Calls `gh issue list --state open --search "<query>"` with a 60-second timeout
@@ -93,31 +128,97 @@ This guard catches the case where the workflow was re-run without explicitly
 referencing an issue number — for example, when the task description is
 re-submitted verbatim.
 
-### Fallback: Create New Issue
+### GitHub Fallback: Create New Issue
 
 If neither guard matches, the step creates a new issue using the same logic
-as before the idempotency guards were added. This path is completely unchanged.
+as before the idempotency guards were added. This path is unchanged for GitHub
+repositories.
+
+### Azure DevOps Existing Work Item Reuse
+
+Runs when `remote_host_type` is `azdo` or `azure-devops`.
+
+The Azure DevOps path never calls `gh issue view`, `gh issue list`, or
+`gh issue create`. Existing work-item reuse is checked before any create
+operation:
+
+1. If the recipe context already contains numeric `issue_number=N`, step 03
+   emits `AB#N` and exits 0 before GitHub logic, Azure CLI lookup, remote URL
+   parsing, or work-item creation.
+2. Otherwise, if `task_description` contains `AB#N`, step 03 reuses that work
+   item reference when the Azure Boards path can validate or resolve it.
+3. Otherwise, if `task_description` contains `#N`, step 03 treats it as an
+   Azure Boards work-item candidate only because the host dispatch already
+   selected Azure DevOps.
+
+Only explicit `issue_number=N` is trusted as an already-known workflow context
+value. IDs discovered in `task_description` are provider-scoped candidates:
+they must stay in the Azure DevOps branch, but they may still fall through to
+work-item creation or local tracking if Azure CLI, organization, project, or
+work-item resolution is unavailable.
+
+When Azure CLI and the DevOps extension are available, validated referenced
+work items may be resolved to full work-item URLs:
+
+```text
+https://dev.azure.com/myorg/myproject/_workitems/edit/12345
+```
+
+When an existing `issue_number` is already present, no Azure Boards lookup or
+create command is needed; the parseable `AB#N` output is enough for step 03b
+and all downstream workflow steps.
+
+### Azure DevOps Create Path
+
+If no existing work item is supplied, step 03 parses the Azure DevOps remote
+URL to derive organization and project, then creates a `Task` work item with
+`az boards work-item create`. Supported remote URL forms are:
+
+| Form | Example |
+| ---- | ------- |
+| Modern HTTPS | `https://dev.azure.com/myorg/MyProject/_git/myrepo` |
+| Legacy HTTPS | `https://myorg.visualstudio.com/MyProject/_git/myrepo` |
+| SSH | `git@ssh.dev.azure.com:v3/myorg/MyProject/myrepo` |
+
+Percent-encoded project names such as `My%20Project` are decoded before
+validation. Invalid org/project captures fall back to local tracking with a
+warning rather than crossing into GitHub logic.
+
+### Local Tracking Fallback
+
+Unknown hosts, empty hosts, non-git directories, malformed Azure DevOps remote
+metadata, or unavailable Azure CLI support produce a local tracking reference:
+
+```text
+local-tracking:482193
+```
+
+Local tracking preserves the workflow's numeric `issue_number` contract without
+calling GitHub or Azure DevOps APIs.
 
 ---
 
 ## Output Format
 
-All three paths (both guards and the creation fallback) write a single GitHub
-issue URL to stdout:
+Step 03 writes exactly one tracking reference to stdout. Diagnostic output goes
+to stderr.
 
-```
-https://github.com/owner/repo/issues/123
-```
+| Host path | Reuse output | Create output |
+| --------- | ------------ | ------------- |
+| GitHub | `https://github.com/owner/repo/issues/123` | `https://github.com/owner/repo/issues/123` |
+| Azure DevOps | `AB#12345` for explicit `issue_number`, or `https://dev.azure.com/org/project/_workitems/edit/12345` for validated task-text reuse | `https://dev.azure.com/org/project/_workitems/edit/12345` |
+| Other/local | `local-tracking:482193` | `local-tracking:482193` |
 
-The downstream step `step-03b-extract-issue-number` extracts the issue number
-from this URL using:
+The downstream step `step-03b-extract-issue-number` accepts every output above.
+It extracts the numeric ID from:
 
-```bash
-grep -oE 'issues/[0-9]+' | grep -oE '[0-9]+' | head -1
-```
+- GitHub issue URLs containing `/issues/N`
+- GitHub PR URLs containing `/pull/N` with closing-issue lookup fallback
+- Azure DevOps work-item URLs containing `/_workitems/edit/N`
+- Azure Boards references in the form `AB#N`
+- Local tracking references in the form `local-tracking:N`
 
-This extraction works identically for guard output and newly-created issue
-output, so `step-03b` requires no changes.
+This keeps the downstream `issue_number` output provider-agnostic.
 
 ---
 
@@ -125,7 +226,9 @@ output, so `step-03b` requires no changes.
 
 All diagnostic output goes to **stderr** and is not captured by the recipe
 runner's output pipeline. You can view it in the recipe's verbose log or by
-redirecting stderr.
+redirecting stderr. The table below is the expected diagnostic contract for
+the Issue #718 implementation; exact wording should not be treated as a stable
+public API.
 
 | Message                                                                      | When                             |
 | ---------------------------------------------------------------------------- | -------------------------------- |
@@ -136,19 +239,25 @@ redirecting stderr.
 | `INFO: Found existing open issue matching title — skipping creation`         | Guard 2 matched and reused       |
 | `INFO: No matching open issue found — proceeding to create`                  | Guard 2 fell through             |
 | `WARN: Extracted issue reference is not numeric: <value> — skipping guard 1` | Guard 1 rejected an unsafe value |
+| `INFO: Reusing work item AB#N`                                               | Azure DevOps path reused a work item |
+| `INFO: Using local tracking for issue management (remote: HOST)`             | Fallback path selected local tracking |
+| `WARN: 'az' CLI not found or org/project empty — using local tracking for AzDO remote` | Azure DevOps create path could not run |
 
 ---
 
 ## Error Handling
 
-| Failure mode                           | Behavior                                                                                                                           |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `gh issue view` times out (> 60 s)     | `timeout` returns exit 124; `\|\| echo ''` catches it; guard falls through                                                         |
-| `gh issue view` returns HTTP error     | `2>/dev/null` suppresses noise; `\|\| echo ''` falls through                                                                       |
-| `gh issue list --search` times out     | Same as above                                                                                                                      |
-| `gh issue list --search` returns empty | Empty string; guard falls through to creation                                                                                      |
-| `gh` not authenticated                 | `2>/dev/null` and `\|\| echo ''` suppress; both guards fall through; creation proceeds normally (or fails with a clear auth error) |
-| Non-numeric issue reference extracted  | Explicit `^[0-9]+$` validation skips guard 1 with a `WARN` message                                                                 |
+| Failure mode | Behavior |
+| ------------ | -------- |
+| `gh issue view` times out (> 60 s) | GitHub Guard 1 falls through |
+| `gh issue view` returns HTTP error | GitHub Guard 1 falls through |
+| `gh issue list --search` times out | GitHub Guard 2 falls through |
+| `gh issue list --search` returns empty | GitHub Guard 2 falls through to creation |
+| `gh` not authenticated on GitHub path | Reuse guards fall through; creation fails clearly if authentication is required |
+| `remote_host_type=azdo` or `azure-devops` with existing `issue_number` | Emits `AB#N` and exits 0 without calling `gh` or creating a work item |
+| Azure CLI missing on Azure DevOps create path | Falls back to `local-tracking:N` with a warning |
+| Azure DevOps org/project cannot be parsed | Falls back to `local-tracking:N` with a warning |
+| Non-numeric issue reference extracted | Explicit `^[0-9]+$` validation rejects it before any provider CLI receives it |
 
 The step uses `set -euo pipefail`. All expected-failure exit paths use
 `|| echo ''` or `|| true` so the script does not abort unexpectedly.
@@ -165,31 +274,44 @@ The step uses `set -euo pipefail`. All expected-failure exit paths use
 | Captured number contains semicolons, pipes, or other characters    | Explicit `^[0-9]+$` validation rejects anything non-numeric before it reaches `gh issue view "$REF_ISSUE_NUM"`                                                                                                                 |
 | Long or special-character title passed to `gh issue list --search` | Double-quoted variable `"$SEARCH_QUERY"` prevents shell word-splitting; `gh` CLI handles API-level escaping                                                                                                                    |
 | Template injection via `task_description` or `final_requirements`  | Both are captured via unquoted heredoc (`<<EOFTASKDESC`) into bash variables (`TASK_DESC`, `ISSUE_REQS`). The issue body is assembled with `printf` using double-quoted variable expansions — no `eval`, no unquoted expansion |
+| Untrusted `remote_host_type` value | Quoted host dispatch routes only explicit `github`, `azdo`, and `azure-devops` values to provider logic; all other values use local tracking |
+| Azure DevOps alias with shell metacharacters | The alias match is exact; values such as `azure-devops; gh issue create ...` do not match and fall back to local tracking |
 
 ### Trusted Inputs
 
 The recipe context variables `task_description` and `final_requirements` must
 never contain secrets or authentication tokens. They are embedded verbatim in
-the GitHub issue body, which is publicly visible on public repositories.
+new GitHub issue bodies or Azure Boards work-item descriptions. Public
+repositories and shared Azure DevOps projects may expose that text to broad
+audiences.
 
 ---
 
 ## Configuration
 
-The guards require no configuration. They activate automatically on every
-`step-03-create-issue` execution.
+Step 03 reads these recipe context keys:
 
-The only tuneable behaviour is the `condition: "not issue_number"` guard on
-the step itself: if `issue_number` is already set in the recipe context (e.g.,
-passed in explicitly via `-c issue_number=42`), the entire step is skipped.
+| Context key | Required | Description |
+| ----------- | -------- | ----------- |
+| `repo_path` | Yes | Repository or worktree path where `git remote get-url origin` runs |
+| `task_description` | Yes | Free-form task text used for title creation and existing reference extraction |
+| `final_requirements` | No | Requirements text included in newly created GitHub issues or Azure Boards work items |
+| `remote_host_type` | No | Host routing value; accepts `github`, `azdo`, `azure-devops`, `other`, or empty |
+| `issue_number` | No | Existing tracking ID. On Azure DevOps, this is reused as `AB#N` without GitHub issue logic |
+
+Step 02d normally sets `remote_host_type`. Callers may override it when
+resuming from external workflow context.
 
 ```bash
-# Skip step-03 entirely — use a pre-existing issue number
+# Explicit Azure DevOps alias and existing work item reuse
 amplihack recipe run default-workflow \
-  -c issue_number=42 \
-  -c task_description="Fix login timeout" \
+  -c remote_host_type=azure-devops \
+  -c issue_number=12345 \
+  -c task_description="Follow up on existing Azure Boards work item" \
   -c repo_path="$(pwd)"
 ```
+
+GitHub behavior remains unchanged when `remote_host_type=github`.
 
 ---
 
@@ -221,7 +343,48 @@ No duplicate issue created. Step-03b extracts `4194` as normal.
 
 ---
 
-### Example 2: Re-running without an explicit issue reference
+### Example 2: Azure DevOps PR follow-up with an existing work item
+
+An Azure DevOps follow-up workflow already knows the Boards work item ID from
+the PR or workstream context.
+
+```bash
+amplihack recipe run default-workflow \
+  -c remote_host_type=azure-devops \
+  -c issue_number=12345 \
+  -c task_description="Address review feedback for the Azure DevOps PR" \
+  -c repo_path=/worktrees/ado-pr-follow-up
+```
+
+**Step-03 output (stdout):**
+
+```text
+AB#12345
+```
+
+The GitHub issue path is not entered. No `gh issue` command runs, and no
+duplicate Azure Boards work item is created.
+
+---
+
+### Example 3: Azure DevOps task description reference
+
+```bash
+amplihack recipe run default-workflow \
+  -c remote_host_type=azdo \
+  -c task_description="Fix pipeline timeout described in AB#12345" \
+  -c repo_path="$(pwd)"
+```
+
+Step 03 routes to the Azure DevOps path because the host is `azdo`. The
+`AB#12345` reference is treated as an Azure Boards candidate, never as a
+GitHub issue. If Azure Boards lookup resolves the work item, the workflow uses
+that ID; otherwise the Azure DevOps create/fallback path continues without
+crossing into GitHub logic.
+
+---
+
+### Example 4: Re-running GitHub without an explicit issue reference
 
 Previous run created issue #4200 with title `"Add user profile page"`. New run
 has the same `task_description` but no `#NNNN` reference.
@@ -245,7 +408,7 @@ https://github.com/myorg/myrepo/issues/4200
 
 ---
 
-### Example 3: First run — no existing issue
+### Example 5: First GitHub run — no existing issue
 
 No prior issues match. Both guards fall through; a new issue is created.
 
@@ -264,7 +427,26 @@ https://github.com/myorg/myrepo/issues/4201
 
 ---
 
-### Example 4: Very long task description
+### Example 6: Unknown host fallback
+
+```bash
+amplihack recipe run default-workflow \
+  -c remote_host_type=gitlab \
+  -c task_description="Add config parser" \
+  -c repo_path="$(pwd)"
+```
+
+**Step-03 output (stdout):**
+
+```text
+local-tracking:482193
+```
+
+Unknown host values never enter GitHub or Azure DevOps provider logic.
+
+---
+
+### Example 7: Very long task description
 
 `task_description` is 500 characters long. The issue title is truncated to 200
 characters (recipe-level truncation). Guard 2's search query uses only the
@@ -293,53 +475,50 @@ gadugi-test run tests/gadugi/step-03-issue-creation-idempotency.yaml --verbose
 gadugi-test validate tests/gadugi/step-03-issue-creation-idempotency.yaml
 ```
 
-**Coverage (20 scenarios):**
+**Coverage includes:**
 
 | Area                                               | Scenarios |
 | -------------------------------------------------- | --------- |
-| Guard 1: `#NNNN` extraction                        | S11, S12  |
-| Guard 1: numeric validation / injection prevention | S13       |
-| Guard 2: title truncation                          | S14, S15  |
-| Output URL compatibility with step-03b             | S16       |
-| Both guards exit 0 on reuse                        | S10       |
-| Guard ordering (1 before 2, creation last)         | S17       |
-| API failure fallthrough (`\|\| echo ''`)           | S20       |
-| `timeout 60` wrappers                              | S7        |
-| Stderr routing                                     | S8        |
-| `set -euo pipefail`                                | S19       |
-| Pattern provenance (step-16 reference)             | S18       |
-| YAML structure grep checks                         | S1–S9     |
+| GitHub Guard 1: `#NNNN` extraction | Existing GitHub issue reuse |
+| GitHub Guard 1: numeric validation / injection prevention | Unsafe reference rejection |
+| GitHub Guard 2: title truncation | Long title search safety |
+| Azure DevOps alias dispatch | `remote_host_type=azdo` and `remote_host_type=azure-devops` route identically |
+| Azure DevOps existing context reuse | `issue_number=N` emits `AB#N` without calling `gh` |
+| Azure DevOps task text candidates | `AB#N` and host-scoped `#N` references stay in Azure Boards logic and never trigger GitHub issue commands |
+| Generic fallback | Unknown, empty, and non-git hosts emit `local-tracking:N` |
+| Output compatibility with step-03b | GitHub URL, Azure Boards URL, `AB#N`, and `local-tracking:N` parse to numeric IDs |
+| Host isolation | Azure DevOps and generic paths never execute `gh issue` commands |
+| `set -euo pipefail` and quoted host dispatch | Shell syntax remains safe for empty or malformed context |
 
 ---
 
 ## Known Limitations
 
-**Guard 2 false positives.** `gh issue list --search` uses GitHub's full-text
-search, which can match issues whose titles differ from the current one. When
-this happens, step-03 reuses the matched issue instead of creating a new one.
-This is intentional: a false-positive reuse is preferable to creating a
-duplicate. The matched issue URL is passed downstream as normal, and the
+**GitHub Guard 2 false positives.** `gh issue list --search` uses GitHub's
+full-text search, which can match issues whose titles differ from the current
+one. When this happens, step-03 reuses the matched issue instead of creating a
+new one. This is intentional: a false-positive reuse is preferable to creating
+a duplicate. The matched issue URL is passed downstream as normal, and the
 workflow tracks progress there.
 
-**TOCTOU race.** Between Guard 2's search and `gh issue create`, a concurrent
-workflow run could create a matching issue. In that case, two issues would
-exist — the same worst-case as before the guards were added. GitHub issue
+**GitHub TOCTOU race.** Between Guard 2's search and `gh issue create`, a
+concurrent workflow run could create a matching issue. In that case, two issues
+would exist — the same worst-case as before the guards were added. GitHub issue
 creation is inherently non-atomic, so this is not mitigated.
 
-**Guard 1 uses only the first `#NNNN` reference.** If `task_description`
-contains multiple issue references, only the first one is checked. If that
-issue was closed or deleted, Guard 1 falls through to Guard 2 even if a later
-reference would have matched.
+**Reference guards use the first matching ID.** If `task_description` contains
+multiple `#NNNN` or `AB#NNNN` references, the first host-appropriate reference
+is used.
 
 ---
 
 ## Multi-Provider Note
 
-The idempotency guards documented above are **GitHub-specific** — they use
-`gh issue view` and `gh issue list`. When `remote_provider` is `"azdo"` or
-`"local"`, step-03 takes a different code path that does not execute these
-guards. See [Multi-Provider Workflow Reference](multi-provider-workflow.md)
-for the provider-specific issue creation logic.
+The GitHub idempotency guards use `gh issue view` and `gh issue list` only
+inside the `github` host branch. Azure DevOps host values (`azdo` and
+`azure-devops`) use Azure Boards references and never fall through into GitHub
+issue logic. See [Multi-Provider Workflow Reference](multi-provider-workflow.md)
+for the provider-specific workflow contract.
 
 ---
 

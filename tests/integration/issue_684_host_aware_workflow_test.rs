@@ -32,7 +32,10 @@
 /// These tests are written **TDD-RED**. They FAIL until the implementation
 /// changes land across the four recipe files.
 use std::fs;
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
 
 use serde_yaml::Value;
 
@@ -113,6 +116,98 @@ fn step_output(recipe: &Value, step_id: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn write_executable(path: &std::path::Path, content: &str) {
+    let mut file = fs::File::create(path).expect("create shim executable");
+    file.write_all(content.as_bytes())
+        .expect("write shim executable");
+    drop(file);
+    let mut perms = fs::metadata(path).expect("shim metadata").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(path, perms).expect("chmod shim executable");
+}
+
+#[derive(Debug)]
+struct Step03Run {
+    output: Output,
+    gh_log: String,
+    az_log: String,
+}
+
+fn run_step_03(host_type: &str, issue_number: &str, task_description: &str) -> Step03Run {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo_dir = temp.path().join("repo");
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&repo_dir).expect("mkdir repo");
+    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+
+    let gh_log = temp.path().join("gh.log");
+    let az_log = temp.path().join("az.log");
+
+    write_executable(
+        &bin_dir.join("git"),
+        r#"#!/bin/sh
+case "$1:$2" in
+  rev-parse:--is-inside-work-tree) exit 0 ;;
+  remote:get-url) printf '%s\n' 'https://dev.azure.com/example-org/My%20Project/_git/example-repo'; exit 0 ;;
+  *) echo "unexpected git invocation: $*" >&2; exit 2 ;;
+esac
+"#,
+    );
+
+    write_executable(
+        &bin_dir.join("gh"),
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$GH_LOG"
+if [ "$1:$2:$3" = "issue:view:718" ]; then
+  printf '%s\n' 'https://github.com/example-org/example-repo/issues/718'
+  exit 0
+fi
+echo "unexpected gh invocation: $*" >&2
+exit 7
+"#,
+    );
+
+    write_executable(
+        &bin_dir.join("az"),
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$AZ_LOG"
+echo "unexpected az invocation: $*" >&2
+exit 7
+"#,
+    );
+
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let command = extract_step_body(&load_recipe("workflow-prep"), "step-03-create-issue");
+
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg(command)
+        .env_clear()
+        .env("PATH", path)
+        .env("REPO_PATH", &repo_dir)
+        .env("REMOTE_HOST_TYPE", host_type)
+        .env("TASK_DESCRIPTION", task_description)
+        .env("FINAL_REQUIREMENTS", "Issue #718 regression requirements")
+        .env("ISSUE_NUMBER", issue_number)
+        .env("GH_LOG", &gh_log)
+        .env("AZ_LOG", &az_log)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run step-03-create-issue");
+
+    Step03Run {
+        output,
+        gh_log: fs::read_to_string(&gh_log).unwrap_or_default(),
+        az_log: fs::read_to_string(&az_log).unwrap_or_default(),
+    }
 }
 
 /// Get the context block from default-workflow.yaml.
@@ -518,6 +613,129 @@ fn step_03_rejects_invalid_percent_sequences() {
         "step-03 must have percent-decode logic that implicitly rejects invalid \
          sequences (e.g., %%ZZ). The decode itself will fail or pass through invalid \
          sequences which the expanded regex then catches. (Issue #684, BLOCKER 3)"
+    );
+}
+
+// ===========================================================================
+// Issue #718: step-03 reuses existing Azure DevOps work item context
+// ===========================================================================
+
+#[test]
+fn step_03_reuses_existing_issue_number_for_azure_devops_alias_without_gh_or_az() {
+    let run = run_step_03(
+        "azure-devops",
+        "718",
+        "ADO follow-up work with existing issue context",
+    );
+
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        run.output.status.success(),
+        "azure-devops host with existing ISSUE_NUMBER must succeed; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert_eq!(
+        stdout.trim(),
+        "AB#718",
+        "azure-devops host with existing ISSUE_NUMBER must reuse the Azure Boards work item directly"
+    );
+    assert!(
+        run.gh_log.is_empty(),
+        "azure-devops host must not enter GitHub issue logic when ISSUE_NUMBER exists; gh log:\n{}",
+        run.gh_log
+    );
+    assert!(
+        run.az_log.is_empty(),
+        "azure-devops host must not call Azure CLI when ISSUE_NUMBER already supplies the work item; az log:\n{}",
+        run.az_log
+    );
+}
+
+#[test]
+fn step_03_reuses_existing_issue_number_for_azdo_alias_without_gh_or_az() {
+    let run = run_step_03(
+        "azdo",
+        "718",
+        "ADO follow-up work with existing issue context",
+    );
+
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        run.output.status.success(),
+        "azdo host with existing ISSUE_NUMBER must succeed; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert_eq!(
+        stdout.trim(),
+        "AB#718",
+        "azdo host with existing ISSUE_NUMBER must reuse the Azure Boards work item directly"
+    );
+    assert!(
+        run.gh_log.is_empty(),
+        "azdo host must not enter GitHub issue logic when ISSUE_NUMBER exists; gh log:\n{}",
+        run.gh_log
+    );
+    assert!(
+        run.az_log.is_empty(),
+        "azdo host must not call Azure CLI when ISSUE_NUMBER already supplies the work item; az log:\n{}",
+        run.az_log
+    );
+}
+
+#[test]
+fn step_03_preserves_github_existing_issue_reuse_path() {
+    let run = run_step_03("github", "718", "GitHub follow-up for #718");
+
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        run.output.status.success(),
+        "github host with referenced issue must succeed; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert_eq!(
+        stdout.trim(),
+        "https://github.com/example-org/example-repo/issues/718",
+        "github host must preserve existing gh issue reuse semantics"
+    );
+    assert!(
+        run.gh_log.contains("issue view 718"),
+        "github host must use gh issue view for referenced issues; gh log:\n{}",
+        run.gh_log
+    );
+    assert!(
+        run.az_log.is_empty(),
+        "github host must not call Azure CLI; az log:\n{}",
+        run.az_log
+    );
+}
+
+#[test]
+fn step_03_preserves_generic_local_tracking_fallback() {
+    let run = run_step_03(
+        "other",
+        "718",
+        "Generic host follow-up with existing context",
+    );
+
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        run.output.status.success(),
+        "generic host must succeed via local tracking fallback; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.trim().starts_with("local-tracking:"),
+        "generic host must preserve local tracking fallback; stdout:\n{stdout}"
+    );
+    assert!(
+        run.gh_log.is_empty(),
+        "generic host must not call gh issue commands; gh log:\n{}",
+        run.gh_log
+    );
+    assert!(
+        run.az_log.is_empty(),
+        "generic host must not call Azure CLI; az log:\n{}",
+        run.az_log
     );
 }
 
