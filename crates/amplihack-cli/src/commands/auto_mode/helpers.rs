@@ -43,14 +43,22 @@ pub(super) fn extract_prompt_args(args: &[String]) -> Option<ParsedPromptArgs> {
     // We only do this when there's exactly one non-flag arg to avoid ambiguity
     // (e.g. `--model sonnet "prompt"` has two non-flag args: "sonnet" and "prompt").
     if prompt.is_none() {
-        let non_flag_indices: Vec<usize> = passthrough_args
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| !a.starts_with('-'))
-            .map(|(i, _)| i)
-            .collect();
-        if non_flag_indices.len() == 1 {
-            prompt = Some(passthrough_args.remove(non_flag_indices[0]));
+        let mut non_flag_index = None;
+        let mut non_flag_count = 0;
+        for (index, arg) in passthrough_args.iter().enumerate() {
+            if !arg.starts_with('-') {
+                non_flag_count += 1;
+                if non_flag_count == 1 {
+                    non_flag_index = Some(index);
+                } else {
+                    break;
+                }
+            }
+        }
+        if non_flag_count == 1
+            && let Some(index) = non_flag_index
+        {
+            prompt = Some(passthrough_args.remove(index));
         }
     }
 
@@ -298,6 +306,13 @@ fn build_tool_passthrough_prefix_args(
     tool: AutoModeTool,
     passthrough_args: &[String],
 ) -> Vec<OsString> {
+    if matches!(tool, AutoModeTool::Amplifier) {
+        let mut args = Vec::with_capacity(passthrough_args.len() + 1);
+        args.extend(passthrough_args.iter().map(OsString::from));
+        args.push("-p".into());
+        return args;
+    }
+
     let mut args = passthrough_args.to_vec();
     match tool {
         AutoModeTool::Claude | AutoModeTool::RustyClawd => {
@@ -334,9 +349,7 @@ fn build_tool_passthrough_prefix_args(
             }
             args.push("exec".to_string());
         }
-        AutoModeTool::Amplifier => {
-            args.push("-p".to_string());
-        }
+        AutoModeTool::Amplifier => {}
     }
     args.into_iter().map(OsString::from).collect()
 }
