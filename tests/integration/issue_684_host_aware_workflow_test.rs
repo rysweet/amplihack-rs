@@ -131,6 +131,7 @@ fn write_executable(path: &std::path::Path, content: &str) {
 #[derive(Debug)]
 struct Step03Run {
     output: Output,
+    git_log: String,
     gh_log: String,
     az_log: String,
 }
@@ -144,10 +145,12 @@ fn run_step_03(host_type: &str, issue_number: &str, task_description: &str) -> S
 
     let gh_log = temp.path().join("gh.log");
     let az_log = temp.path().join("az.log");
+    let git_log = temp.path().join("git.log");
 
     write_executable(
         &bin_dir.join("git"),
         r#"#!/bin/sh
+printf '%s\n' "$*" >> "$GIT_LOG"
 case "$1:$2" in
   rev-parse:--is-inside-work-tree) exit 0 ;;
   remote:get-url) printf '%s\n' 'https://dev.azure.com/example-org/My%20Project/_git/example-repo'; exit 0 ;;
@@ -195,6 +198,7 @@ exit 7
         .env("TASK_DESCRIPTION", task_description)
         .env("FINAL_REQUIREMENTS", "Issue #718 regression requirements")
         .env("ISSUE_NUMBER", issue_number)
+        .env("GIT_LOG", &git_log)
         .env("GH_LOG", &gh_log)
         .env("AZ_LOG", &az_log)
         .stdin(Stdio::null())
@@ -205,6 +209,7 @@ exit 7
 
     Step03Run {
         output,
+        git_log: fs::read_to_string(&git_log).unwrap_or_default(),
         gh_log: fs::read_to_string(&gh_log).unwrap_or_default(),
         az_log: fs::read_to_string(&az_log).unwrap_or_default(),
     }
@@ -640,6 +645,11 @@ fn step_03_reuses_existing_issue_number_for_azure_devops_alias_without_gh_or_az(
         "azure-devops host with existing ISSUE_NUMBER must reuse the Azure Boards work item directly"
     );
     assert!(
+        run.git_log.is_empty(),
+        "azure-devops host must not probe git when ISSUE_NUMBER already supplies the work item; git log:\n{}",
+        run.git_log
+    );
+    assert!(
         run.gh_log.is_empty(),
         "azure-devops host must not enter GitHub issue logic when ISSUE_NUMBER exists; gh log:\n{}",
         run.gh_log
@@ -669,6 +679,11 @@ fn step_03_reuses_existing_issue_number_for_azdo_alias_without_gh_or_az() {
         stdout.trim(),
         "AB#718",
         "azdo host with existing ISSUE_NUMBER must reuse the Azure Boards work item directly"
+    );
+    assert!(
+        run.git_log.is_empty(),
+        "azdo host must not probe git when ISSUE_NUMBER already supplies the work item; git log:\n{}",
+        run.git_log
     );
     assert!(
         run.gh_log.is_empty(),

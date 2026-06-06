@@ -274,14 +274,18 @@ steps:
       TASK_DESC="$TASK_DESCRIPTION"
       ISSUE_TITLE="${TASK_DESC//$'\n'/ }"; ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"; ISSUE_TITLE="${ISSUE_TITLE:0:200}"
       ISSUE_REQS="$FINAL_REQUIREMENTS"
+      HOST_TYPE="${REMOTE_HOST_TYPE:-other}"; EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+      case "$HOST_TYPE" in
+      azdo|azure-devops)
+        [[ "$EXISTING_ISSUE_NUMBER" =~ ^[0-9]+$ ]] && { printf 'ISSUE_REFERENCE=AB#%s\n' "$EXISTING_ISSUE_NUMBER" >> "${GITHUB_OUTPUT:-/dev/null}"; printf 'AB#%s\n' "$EXISTING_ISSUE_NUMBER"; exit 0; }
+        ;;
+      esac
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "[skip] not a git repo — using local tracking" >&2
         LOCAL_ISSUE=$(($(date +%s) % 1000000))
         printf 'local-tracking:%s\n' "$LOCAL_ISSUE"
         exit 0
       fi
-      HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-      EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
       REF_ISSUE_NUM=""
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"; fi
@@ -305,10 +309,6 @@ steps:
         exit $?
         ;;
       azdo|azure-devops)
-        if [[ "$EXISTING_ISSUE_NUMBER" =~ ^[0-9]+$ ]]; then
-          printf 'ISSUE_REFERENCE=AB#%s\n' "$EXISTING_ISSUE_NUMBER" >> "${GITHUB_OUTPUT:-/dev/null}"
-          printf 'AB#%s\n' "$EXISTING_ISSUE_NUMBER"; exit 0
-        fi
         REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
         AZDO_ORG=""; AZDO_PROJECT=""
         if [[ "$REMOTE_URL" =~ dev\.azure\.com/([^/]+)/([^/]+)/ ]]; then
