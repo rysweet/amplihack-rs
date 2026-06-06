@@ -282,13 +282,13 @@ steps:
         exit 0
       fi
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-      # Extract referenced issue/work-item from task_description (idempotency)
+      EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
       REF_ISSUE_NUM=""
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"; fi
       [ -n "$REF_ISSUE_NUM" ] && ! [[ "$REF_ISSUE_NUM" =~ ^[0-9]+$ ]] && REF_ISSUE_NUM=""
-      # --- GitHub path ---
-      if [ "$HOST_TYPE" = "github" ]; then
+      case "$HOST_TYPE" in
+      github)
         if [ -n "$REF_ISSUE_NUM" ]; then
           EXISTING_URL=$(timeout 60 gh issue view "$REF_ISSUE_NUM" --json url --jq '.url // ""' 2>/dev/null || echo '')
           [ -n "$EXISTING_URL" ] && { printf '%s\n' "$EXISTING_URL"; exit 0; }
@@ -304,12 +304,11 @@ steps:
         gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" --label "$LABEL_NAME" 2>&1 || \
           gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY"
         exit $?
-      fi
-      # --- Azure DevOps path (az boards work-item) ---
-      if [ "$HOST_TYPE" = "azdo" ]; then
+        ;;
+      azdo|azure-devops)
+        if [[ "$EXISTING_ISSUE_NUMBER" =~ ^[0-9]+$ ]]; then printf 'AB#%s\n' "$EXISTING_ISSUE_NUMBER"; exit 0; fi
         REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
         AZDO_ORG=""; AZDO_PROJECT=""
-        # Bash regex replaces 6 echo|sed subprocess spawns with built-in matching
         if [[ "$REMOTE_URL" =~ dev\.azure\.com/([^/]+)/([^/]+)/ ]]; then
           AZDO_ORG="${BASH_REMATCH[1]}"; AZDO_PROJECT="${BASH_REMATCH[2]}"
         elif [[ "$REMOTE_URL" =~ ([^/.]+)\.visualstudio\.com/([^/]+)/ ]]; then
@@ -337,13 +336,12 @@ steps:
         }
         [ -n "$AZDO_ORG" ] && { AZDO_ORG=$(_pct_decode "$AZDO_ORG") || { AZDO_ORG=""; AZDO_PROJECT=""; }; }
         [ -n "$AZDO_PROJECT" ] && { AZDO_PROJECT=$(_pct_decode "$AZDO_PROJECT") || { AZDO_ORG=""; AZDO_PROJECT=""; }; }
-        # Security: validate org/project captures against safe character set
         if [[ -n "$AZDO_ORG" ]] && ! [[ "$AZDO_ORG" =~ ^[a-zA-Z0-9._-]+$ ]]; then
           echo "WARN: AZDO_ORG contains unexpected characters — using local tracking" >&2
           AZDO_ORG=""
         fi
         # Project names may contain spaces (decoded from %20)
-        if [[ -n "$AZDO_PROJECT" ]] && ! [[ "$AZDO_PROJECT" =~ ^[a-zA-Z0-9._ -]+$ ]]; then
+        if [[ -n "$AZDO_PROJECT" ]] && ! [[ "$AZDO_PROJECT" =~ ^[a-zA-Z0-9._[:space:]-]+$ ]]; then
           echo "WARN: AZDO_PROJECT contains unexpected characters — using local tracking" >&2
           AZDO_PROJECT=""
         fi
@@ -363,7 +361,8 @@ steps:
         else
           echo "WARN: 'az' CLI not found or org/project empty — using local tracking for AzDO remote" >&2
         fi
-      fi
+        ;;
+      esac
       # --- Local tracking fallback (unknown remote or az CLI unavailable) ---
       echo "INFO: Using local tracking for issue management (remote: $HOST_TYPE)" >&2
       LOCAL_ISSUE=$(($(date +%s) % 1000000))

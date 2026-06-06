@@ -627,6 +627,57 @@ fn workflow_prep_step_03_consumes_remote_host_type() {
 }
 
 #[test]
+fn workflow_prep_step_03_accepts_azure_devops_host_alias() {
+    let command = step_command("workflow-prep", "step-03-create-issue");
+
+    assert!(
+        command.contains("azdo"),
+        "step-03 must continue to support the existing 'azdo' Azure DevOps host value"
+    );
+    assert!(
+        command.contains("azure-devops"),
+        "step-03 must also support the explicit 'azure-devops' host value from recipe context"
+    );
+
+    let alias_dispatch = command.contains("azdo|azure-devops")
+        || command.contains("azure-devops|azdo")
+        || (command.contains("\"azdo\"") && command.contains("\"azure-devops\""))
+        || (command.contains("'azdo'") && command.contains("'azure-devops'"));
+    assert!(
+        alias_dispatch,
+        "step-03 must dispatch 'azdo' and 'azure-devops' through the same Azure DevOps branch"
+    );
+}
+
+#[test]
+fn workflow_prep_step_03_reuses_existing_issue_number_before_provider_commands() {
+    let command = step_command("workflow-prep", "step-03-create-issue");
+
+    let issue_number_pos = command
+        .find("ISSUE_NUMBER")
+        .expect("step-03 must read existing ISSUE_NUMBER context before creating/searching issues");
+    let first_gh_issue_pos = command
+        .find("gh issue")
+        .expect("step-03 must retain GitHub issue logic for GitHub hosts");
+    let first_az_boards_pos = command
+        .find("az boards")
+        .expect("step-03 must retain Azure Boards create/lookup logic for Azure DevOps hosts");
+
+    assert!(
+        issue_number_pos < first_gh_issue_pos,
+        "step-03 must check existing ISSUE_NUMBER before entering GitHub issue logic"
+    );
+    assert!(
+        issue_number_pos < first_az_boards_pos,
+        "step-03 must check existing ISSUE_NUMBER before Azure CLI work-item logic"
+    );
+    assert!(
+        command.contains("AB#"),
+        "step-03 must emit an Azure Boards reference such as AB#N when reusing existing work items"
+    );
+}
+
+#[test]
 fn workflow_prep_step_03_has_github_path_inside_host_conditional() {
     let command = step_command("workflow-prep", "step-03-create-issue");
 
