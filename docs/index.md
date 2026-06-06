@@ -460,7 +460,7 @@ Execute complex tasks with simple slash commands.
 ### Command Reference
 
 - [Command Selection Guide](commands/COMMAND_SELECTION_GUIDE.md) - Choose the right command for your task
-- [Amplifier Command](reference/amplifier-command.md) - Launch Amplifier with amplihack bundle
+- [Amplifier Command](reference/amplifier-command.md) - Launch Amplifier with the amplihack bundle and argv-only prompt delivery
 - [resolve-bundle-asset Command](reference/resolve-bundle-asset-command.md) - Resolve native bundle assets and legacy parity aliases
 
 ### Core Commands

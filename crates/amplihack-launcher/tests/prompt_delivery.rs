@@ -5,6 +5,7 @@
 //! the selected mode, warnings, and RAII handle alongside the `Command`.
 
 use std::ffi::OsStr;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use amplihack_launcher::flag_matrix::{
@@ -149,6 +150,77 @@ fn unsupported_tempfile_request_degrades_to_argv_with_warning() {
         "explicit tempfile on an argv-only binary must produce a deterministic degradation warning; got {:?}",
         delivered.warnings
     );
+}
+
+#[test]
+fn amplifier_argv_uses_documented_positional_prompt_contract() {
+    let prompt = "issue #709: keep `$PATH`, quotes, and\nnewlines as one argv element";
+    let extra_args = vec![
+        "--dry-run".to_string(),
+        "--model".to_string(),
+        "amp-test".to_string(),
+    ];
+
+    let delivered = build_tool_command_with_prompt_delivery(
+        AgentBinary::Amplifier,
+        Path::new("/tmp"),
+        &extra_args,
+        prompt,
+        PromptDelivery::Auto,
+    )
+    .expect("Amplifier argv prompt delivery should build");
+
+    assert_eq!(delivered.selected_mode, DeliveryMode::Argv);
+    assert!(
+        delivered.delivery_handle.tempfile_path().is_none(),
+        "Amplifier argv mode must not create a tempfile"
+    );
+
+    let args = argv(&delivered.command);
+    let expected_args: Vec<String> = ["run", "--dry-run", "--model", "amp-test", prompt]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    assert_eq!(
+        args, expected_args,
+        "Amplifier must use the documented `amplifier run [OPTIONS] [PROMPT]` shape without a synthetic --prompt flag"
+    );
+}
+
+#[test]
+fn amplifier_rejects_explicit_tempfile_and_stdin_before_launch() {
+    let prompt = synthetic_prompt();
+
+    for (requested, mode_name) in [
+        (PromptDelivery::Tempfile, "tempfile"),
+        (PromptDelivery::Stdin, "stdin"),
+    ] {
+        let err = build_tool_command_with_prompt_delivery(
+            AgentBinary::Amplifier,
+            Path::new("/tmp"),
+            &[],
+            &prompt,
+            requested,
+        )
+        .expect_err("Amplifier must reject unsupported explicit long-form delivery modes");
+
+        assert_eq!(
+            err.kind(),
+            ErrorKind::InvalidInput,
+            "unsupported Amplifier prompt delivery should be a deterministic caller error"
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("Amplifier")
+                && message.contains("unsupported")
+                && message.contains(mode_name),
+            "error should name the unsupported Amplifier mode without leaking the prompt body; got: {message}"
+        );
+        assert!(
+            !message.contains(&prompt[..256]),
+            "unsupported-mode error must not leak prompt content"
+        );
+    }
 }
 
 #[test]
