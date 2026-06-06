@@ -70,6 +70,7 @@ Complete documentation for using the Recipe Runner:
 - **[Recipe CLI Commands How-To](../howto/recipe-cli-commands.md)** - Task-oriented guide for using recipe commands
 - **[Recipe CLI Reference](../reference/recipe-cli-reference.md)** - Complete command-line reference with all options and exit codes
 - **[Recipe CLI Examples](cli-examples.md)** - Real-world usage scenarios (development, testing, CI/CD, team workflows)
+- **[Step 03 Host-Aware Tracking Idempotency](../reference/recipe-step-03-idempotency.md)** - GitHub issue, Azure Boards work-item, and local tracking reuse/create contract
 
 ## Why It Exists
 

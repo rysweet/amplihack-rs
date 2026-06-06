@@ -114,6 +114,25 @@ These tools follow clean architecture principles:
 
 ## Common Workflows
 
+### 0. Run `default-workflow` with Azure Boards tracking
+
+`default-workflow` detects Azure DevOps remotes and routes Step 03 tracking to
+Azure Boards instead of GitHub Issues. Existing work items can be reused with
+either `issue_number=N` or `AB#N`.
+
+```bash
+amplihack recipe run default-workflow \
+  -c remote_host_type=azure-devops \
+  -c issue_number=12345 \
+  -c task_description="Address review feedback for the Azure DevOps PR" \
+  -c repo_path=.
+```
+
+See [How to Use the Default Workflow with Azure DevOps](../howto/use-workflow-with-azure-devops.md)
+for the task-oriented guide and
+[Step 03 Host-Aware Tracking Idempotency](../reference/recipe-step-03-idempotency.md)
+for the issue/work-item reuse contract.
+
 ### 1. Create Epic → Feature → Story Hierarchy
 
 ```bash

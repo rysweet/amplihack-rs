@@ -270,6 +270,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [How to Recover an Existing PR with `default-workflow`](howto/recover-existing-pr-with-default-workflow.md) - Supply `pr_number`, `existing_branch`, and issue requirements without manually merging
 - [Tutorial: Recover PR 579 Readiness](tutorials/pr-recovery-readiness.md) - Walk through hook and additive-copy readiness evidence for an interrupted PR recovery
 - [PR Recovery Readiness Reference](reference/pr-recovery-readiness.md) - Context fields, readiness evidence schema, publish contract, and finalization states
+- [Step 03 Host-Aware Tracking Idempotency](reference/recipe-step-03-idempotency.md) - GitHub issue, Azure Boards work-item, and local tracking reuse/create behavior
 - [Workflow Issue Extraction Reference](reference/workflow-issue-extraction.md) - Three-tier issue-number resolution (direct URL → PR closing-refs → `#N` verify) in step 03b
 - [Multi-Provider Workflow Reference](reference/multi-provider-workflow.md) - Provider detection, issue tracking, and PR routing for GitHub, AzDO, and local repos
 - [How to Use the Workflow with Azure DevOps](howto/use-workflow-with-azure-devops.md) - Run default-workflow against an AzDO repository

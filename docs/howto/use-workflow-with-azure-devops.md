@@ -55,24 +55,50 @@ The workflow automatically:
 
 ### Override the work item type
 
-By default, step 03 creates a `Task`. The `work_item_type` context variable
-override is planned but not yet implemented. To use a different work item
-type, create the work item manually and reference it via `AB#N` in the
-task description.
+By default, step 03 creates a `Task`. To use a different work item type,
+create the work item manually and pass its ID with `issue_number=N` or
+reference it via `AB#N` in the task description.
 
 ---
 
 ## Run the Workflow with an Existing Work Item
 
-Reference the work item number in `task_description` — the idempotency
-guard in step 03 will detect the `AB#N` reference and reuse the existing
-work item:
+Use either an explicit `issue_number` context value or an `AB#N` reference in
+`task_description`. Step 03 keeps both forms inside the Azure DevOps branch and
+does not create a GitHub issue.
+
+### Explicit work item context
+
+Use this form for Azure DevOps PR follow-up work where the recipe context
+already contains a work item ID:
+
+```bash
+amplihack recipe run default-workflow \
+  -c remote_host_type=azure-devops \
+  -c issue_number=12345 \
+  -c task_description="Address review feedback for the Azure DevOps PR" \
+  -c repo_path=.
+```
+
+`remote_host_type=azure-devops` is accepted as an alias for `azdo`. Step 03
+emits `AB#12345`, step 03b extracts `12345`, and downstream steps use
+Azure Boards references such as `AB#12345`. This explicit context form is
+trusted and does not require Azure CLI lookup before reuse.
+
+### Work item reference in task text
+
+Reference the work item number in `task_description`:
 
 ```bash
 amplihack recipe run default-workflow \
   -c task_description="Fix the auth bug described in AB#12345" \
   -c repo_path=.
 ```
+
+Because host dispatch has already selected Azure DevOps, a bare `#12345`
+inside the task description is also treated as an Azure Boards candidate rather
+than a GitHub issue. Task-text candidates may still require Azure CLI,
+organization, project, and work-item resolution before they are reused.
 
 ---
 
@@ -93,8 +119,9 @@ sequences before validation, so project names with spaces work correctly.
 | Commit reference    | `Closes #N`                    | `AB#N`                               |
 | PR creation         | Automated (`gh pr create`)     | Skipped (create manually after)      |
 | Auth prerequisite   | `gh auth login`                | `az login` + DevOps extension        |
-| Idempotency Guard 1 | `gh issue view`               | `az boards work-item show`           |
-| Idempotency Guard 2 | `gh issue list --search`      | Not yet implemented (planned: WIQL query) |
+| Idempotency Guard 1 | `gh issue view`               | Explicit `issue_number` emits `AB#N`; task-text candidates may use `az boards work-item show` |
+| Existing `issue_number` | Reuses the supplied issue ID | Emits `AB#N`; no GitHub or Azure CLI lookup required |
+| Idempotency Guard 2 | `gh issue list --search`      | Host-isolated; no GitHub title search |
 | Summary (step 22b)  | `PR: <url>`                   | `PR: N/A (manual creation required)` |
 
 ---
@@ -128,6 +155,18 @@ detected:
 - Legacy: `https://org.visualstudio.com/project/_git/repo`
 - SSH: `git@ssh.dev.azure.com:v3/org/project/repo`
 
+If the workflow is launched from an external Azure DevOps context that already
+knows the host, pass `-c remote_host_type=azure-devops`. The alias routes to
+the same Azure Boards path as `azdo`.
+
+**Workflow tries to create or inspect a GitHub issue**
+
+Ensure `remote_host_type` is `azdo` or `azure-devops`. For guaranteed reuse
+without Azure CLI lookup, pass the existing work item as `issue_number=N`.
+`AB#N` in task text remains Azure DevOps-scoped, but may need Azure Boards
+lookup before reuse. Unknown or misspelled host values use local tracking
+rather than GitHub.
+
 **`az boards` fails with authentication error**
 
 Run `az login` to refresh credentials. For PAT-based auth:
@@ -150,5 +189,5 @@ rejected and the workflow falls back to local tracking.
 
 | Field  | Value     |
 | ------ | --------- |
-| Status | Implemented |
-| Issue  | #684      |
+| Status | Issue #718 target contract |
+| Issues | #684, #718 |
