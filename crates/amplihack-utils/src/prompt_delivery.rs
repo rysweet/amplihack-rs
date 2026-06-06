@@ -291,7 +291,6 @@ pub fn deliver(
                 .prefix("simard-prompt-")
                 .tempfile()?;
             named.write_all(prompt.as_bytes())?;
-            named.as_file_mut().sync_all().ok();
 
             // tempfile::Builder already creates with 0600 on Unix; re-assert
             // it here as a belt-and-braces guarantee against any future
