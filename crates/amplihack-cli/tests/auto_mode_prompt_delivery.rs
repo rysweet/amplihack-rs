@@ -85,6 +85,47 @@ fn auto_mode_does_not_duplicate_prompt_between_wrapper_and_child_args() {
 }
 
 #[test]
+fn amplifier_auto_mode_uses_documented_run_positional_prompt_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let prompt = "issue #709: keep quotes, $PATH, and\nnewlines".to_string();
+
+    let delivered = build_auto_command_with_prompt_delivery(AutoModePromptDeliveryOptions {
+        tool: AutoModeTool::Amplifier,
+        execution_dir: dir.path().to_path_buf(),
+        project_dir: dir.path().to_path_buf(),
+        node_options: None,
+        passthrough_args: vec![
+            "--provider".to_string(),
+            "openai".to_string(),
+            "--model".to_string(),
+            "amp-test".to_string(),
+        ],
+        prompt: prompt.clone(),
+        requested_delivery: PromptDelivery::Auto,
+    })
+    .expect("amplifier auto-mode delivery-aware command should build");
+
+    let args = argv(&delivered.command);
+    let passthrough_start = args
+        .iter()
+        .position(|arg| arg == "--")
+        .expect("nested amplihack command must separate wrapper and Amplifier args")
+        + 1;
+    assert_eq!(
+        &args[passthrough_start..],
+        &[
+            "run".to_string(),
+            "--provider".to_string(),
+            "openai".to_string(),
+            "--model".to_string(),
+            "amp-test".to_string(),
+            prompt,
+        ],
+        "Amplifier auto-mode must use `amplifier run [OPTIONS] [PROMPT]` without a synthetic prompt flag"
+    );
+}
+
+#[test]
 fn amplifier_auto_mode_rejects_explicit_unsupported_prompt_delivery_modes() {
     let dir = tempfile::tempdir().unwrap();
     let prompt = synthetic_prompt();

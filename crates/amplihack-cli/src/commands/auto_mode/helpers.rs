@@ -298,7 +298,7 @@ pub(super) fn build_tool_passthrough_args(
             args.push(prompt.to_string());
         }
         AutoModeTool::Amplifier => {
-            args.push("-p".to_string());
+            args.insert(0, "run".to_string());
             args.push(prompt.to_string());
         }
     }
@@ -346,7 +346,7 @@ fn build_tool_passthrough_prefix_args(
             args.push("exec".to_string());
         }
         AutoModeTool::Amplifier => {
-            args.push("-p".to_string());
+            args.insert(0, "run".to_string());
         }
     }
     args.into_iter().map(OsString::from).collect()
