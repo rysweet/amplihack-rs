@@ -1378,11 +1378,16 @@ fn tc15_fleet_tui_projects_tab_adds_and_removes_projects_without_python() {
     probe.drain(Duration::from_millis(1200));
     probe.send(b"p", Duration::from_millis(800));
     probe.send(b"i", Duration::from_millis(300));
-    probe.send(
+    probe.send_and_wait_for(
         b"https://github.com/org/new-repo\n",
-        Duration::from_millis(1200),
+        "Added project 'new-repo' to the dashboard.",
+        Duration::from_secs(5),
     );
-    probe.send(b"x", Duration::from_millis(1200));
+    probe.send_and_wait_for(
+        b"x",
+        "Removed project 'new-repo' from the dashboard.",
+        Duration::from_secs(5),
+    );
     probe.send(b"q", Duration::from_millis(200));
 
     let dashboard = probe.dashboard_contents();

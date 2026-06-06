@@ -71,7 +71,7 @@ fn workspace_version_matches_latest_release_line() {
         .expect("workspace.package.version must exist");
 
     assert_eq!(
-        version, "0.9.70",
+        version, "0.10.0",
         "workspace.package.version must match the latest release line"
     );
 }
