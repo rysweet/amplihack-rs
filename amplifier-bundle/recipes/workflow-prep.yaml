@@ -274,7 +274,6 @@ steps:
       TASK_DESC="$TASK_DESCRIPTION"
       ISSUE_TITLE="${TASK_DESC//$'\n'/ }"; ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"; ISSUE_TITLE="${ISSUE_TITLE:0:200}"
       ISSUE_REQS="$FINAL_REQUIREMENTS"
-      # FIX #684: Guard git commands — fall back to local tracking outside git repos
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "[skip] not a git repo — using local tracking" >&2
         LOCAL_ISSUE=$(($(date +%s) % 1000000))
@@ -306,7 +305,10 @@ steps:
         exit $?
         ;;
       azdo|azure-devops)
-        if [[ "$EXISTING_ISSUE_NUMBER" =~ ^[0-9]+$ ]]; then printf 'AB#%s\n' "$EXISTING_ISSUE_NUMBER"; exit 0; fi
+        if [[ "$EXISTING_ISSUE_NUMBER" =~ ^[0-9]+$ ]]; then
+          printf 'ISSUE_REFERENCE=AB#%s\n' "$EXISTING_ISSUE_NUMBER" >> "${GITHUB_OUTPUT:-/dev/null}"
+          printf 'AB#%s\n' "$EXISTING_ISSUE_NUMBER"; exit 0
+        fi
         REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
         AZDO_ORG=""; AZDO_PROJECT=""
         if [[ "$REMOTE_URL" =~ dev\.azure\.com/([^/]+)/([^/]+)/ ]]; then
@@ -316,7 +318,6 @@ steps:
         elif [[ "$REMOTE_URL" =~ ssh\.dev\.azure\.com[:/]v3/([^/]+)/([^/]+)/ ]]; then
           AZDO_ORG="${BASH_REMATCH[1]}"; AZDO_PROJECT="${BASH_REMATCH[2]}"
         fi
-        # FIX #684: Decode %XX percent-encoding (e.g. My%20Project → My Project)
         _pct_decode() {
           local e="$1" d="" i=0 ch hex
           while [ "$i" -lt "${#e}" ]; do
