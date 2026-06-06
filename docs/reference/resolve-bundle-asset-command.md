@@ -30,6 +30,11 @@ This is the native Rust asset resolver for recipe shell steps, hooks, and
 child tools. It keeps the legacy Python asset names that recipes and helper
 scripts still use, while resolving them to the current Rust/runtime assets.
 
+The Rust `NAMED_ASSETS` table in the CLI library is the code-owned source for
+named assets. The CLI command, standalone `amplihack-asset-resolver` binary,
+and runtime asset helpers use that table instead of maintaining separate
+mapping or usage lists.
+
 ## Arguments
 
 | Argument | Required | Description |
@@ -40,10 +45,19 @@ scripts still use, while resolving them to the current Rust/runtime assets.
 
 | Name | Resolves to | Expected type | Purpose |
 | ---- | ----------- | ------------- | ------- |
+| `hooks-dir` | `amplifier-bundle/tools/amplihack/hooks` | directory | Compatibility alias for hook configuration assets used by launcher and recipe preflight paths. |
 | `helper-path` | `amplifier-bundle/bin/multitask-orchestrator.sh` | file | Compatibility alias for legacy orchestration-helper callers. |
 | `session-tree-path` | `amplifier-bundle/tools/amplihack/session` | directory | Compatibility anchor for callers that still request the old session-tree asset name. |
-| `hooks-dir` | `amplifier-bundle/tools/amplihack/hooks` | directory | Compatibility alias for hook configuration assets used by launcher and recipe preflight paths. |
 | `multitask-orchestrator` | `amplifier-bundle/bin/multitask-orchestrator.sh` | file | Native multitask orchestrator wrapper. |
+
+This documentation mirrors the canonical Rust `NAMED_ASSETS` table; the code
+table owns supported names. Named assets are matched by exact static name only:
+there are no aliases, fuzzy matches, path traversal forms, environment
+expansions, shell fragments, or absolute paths for named-asset lookup.
+
+Unknown-name diagnostics, usage text, runtime asset lookup, and standalone
+resolver behavior derive from that same ordered table, so generated name lists
+stay in this order.
 
 Named assets are resolved against runtime roots in priority order:
 
@@ -118,10 +132,13 @@ The value must point at the directory that contains `amplifier-bundle/`.
 
 Launchers and recipe runners set `AMPLIHACK_ASSET_RESOLVER` to the absolute
 path of `amplihack-asset-resolver` when the standalone binary is available.
-Child tools can call it without knowing where `amplihack` itself is installed:
+Child tools can call it with either a supported named asset or a safe
+`amplifier-bundle/...` relative path without knowing where `amplihack` itself
+is installed:
 
 ```sh
 "$AMPLIHACK_ASSET_RESOLVER" amplifier-bundle/recipes/smart-orchestrator.yaml
+"$AMPLIHACK_ASSET_RESOLVER" hooks-dir
 ```
 
 See [Environment Variables](./environment-variables.md#amplihack_asset_resolver)
@@ -133,10 +150,24 @@ The CLI and standalone binary share the same resolver module.
 
 | Function | Purpose |
 | -------- | ------- |
+| `named_asset_relative_paths()` | Return the canonical read-only named-asset table as ordered `(name, relative_paths)` entries. Runtime consumers use this instead of defining their own map. |
+| `named_asset_names()` | Return the supported named assets in canonical order for usage text, listing output, tests, and diagnostics. |
 | `resolve_named_asset(name)` | Resolve one of the named assets above to an existing path. |
 | `resolve_asset(relative_path)` | Resolve a validated `amplifier-bundle/...` relative path. |
 | `validate_relative_path(relative_path)` | Reject traversal, absolute paths, unsafe characters, and paths outside `amplifier-bundle/`. |
 | `run_cli(arg)` | Dispatch one CLI argument and return the process exit code. |
+
+### Canonical mapping refactor contract
+
+- `runtime_assets` delegates its named-asset map to the
+  `named_asset_relative_paths()` helper, preserving its public behavior while
+  removing duplicate mapping data.
+- `amplihack-asset-resolver` delegates argument dispatch, supported-name
+  listing, and resolution to the CLI library. It does not keep independent
+  asset-name knowledge.
+- New named assets are added only to the canonical table. Documentation, usage
+  output, runtime compatibility checks, and unknown-name diagnostics must all
+  reflect that table.
 
 ## Exit Codes
 
@@ -166,6 +197,9 @@ This distinction matters for recipes that use `|| true` guards: exit 1
 
 ## Security Constraints
 
+- Named assets match exact static names only; aliases, fuzzy matching, path
+  traversal, environment expansion, shell fragments, and absolute paths are not
+  accepted as named assets.
 - Path traversal (`..`) is rejected at validation time.
 - Only characters in `A-Z a-z 0-9 _ - . /` are allowed.
 - Resolved paths are canonicalized; symlinks are followed but must resolve

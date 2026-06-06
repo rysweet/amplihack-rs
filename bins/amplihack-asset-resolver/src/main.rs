@@ -6,17 +6,17 @@ fn main() {
         .with_target(false)
         .init();
 
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: amplihack-asset-resolver <asset>");
-        eprintln!("  <asset> is either:");
-        eprintln!(
-            "    - a named asset: {}",
-            resolve_bundle_asset::named_asset_names()
-        );
-        eprintln!("    - a relative path starting with 'amplifier-bundle/'");
-        std::process::exit(2);
-    }
+    let mut args = std::env::args();
+    let _program = args.next();
 
-    std::process::exit(resolve_bundle_asset::run_cli(&args[1]));
+    match (args.next(), args.next()) {
+        (Some(asset), None) => std::process::exit(resolve_bundle_asset::run_cli(&asset)),
+        _ => {
+            eprintln!(
+                "{}",
+                resolve_bundle_asset::usage_text("amplihack-asset-resolver")
+            );
+            std::process::exit(2);
+        }
+    }
 }
