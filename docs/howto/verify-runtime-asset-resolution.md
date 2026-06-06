@@ -32,10 +32,10 @@ stale system binary appears first, repair the path order with
 
 ## Resolve every parity asset
 
-Run the fixed allowlist of runtime assets:
+Run the canonical ordered list of runtime assets:
 
 ```bash
-for asset in helper-path session-tree-path hooks-dir multitask-orchestrator; do
+for asset in hooks-dir helper-path session-tree-path multitask-orchestrator; do
   path="$(amplihack resolve-bundle-asset "$asset")"
   printf '%s -> %s\n' "$asset" "$path"
   test -e "$path"
@@ -45,9 +45,9 @@ done
 Expected output shape:
 
 ```text
+hooks-dir -> /home/alice/.amplihack/amplifier-bundle/tools/amplihack/hooks
 helper-path -> /home/alice/.amplihack/amplifier-bundle/bin/multitask-orchestrator.sh
 session-tree-path -> /home/alice/.amplihack/amplifier-bundle/tools/amplihack/session
-hooks-dir -> /home/alice/.amplihack/amplifier-bundle/tools/amplihack/hooks
 multitask-orchestrator -> /home/alice/.amplihack/amplifier-bundle/bin/multitask-orchestrator.sh
 ```
 
@@ -91,11 +91,8 @@ amplihack-asset-resolver session-tree-path
 ```
 
 Both forms print the same absolute paths as `amplihack resolve-bundle-asset`.
-
-Some standalone `amplihack-asset-resolver` no-argument usage text may still
-list only `multitask-orchestrator` as the named-asset example. That help text
-is stale; the standalone resolver dispatches valid arguments through the same
-registered asset table used by `amplihack resolve-bundle-asset`.
+The standalone resolver also derives its no-argument usage text from the same
+Rust named-asset table, so usage output and accepted names stay in sync.
 
 ## Interpret failures
 
@@ -104,7 +101,6 @@ registered asset table used by `amplihack resolve-bundle-asset`.
 | `Unknown asset name` | The binary does not know the named asset. | Update `amplihack` and rerun `amplihack install`. |
 | `Bundle asset not found` | The name is registered, but the file or directory is missing from every runtime root. | Set `AMPLIHACK_HOME` to the installed bundle root or reinstall amplihack. |
 | Exit code `2` | The argument is an invalid relative path. | Use one of the named assets above or a safe `amplifier-bundle/...` path. |
-| Help text omits a valid asset | The help example is stale, not a resolver failure. | Use the named asset table in the reference as the source of truth. |
 
 ## Related
 

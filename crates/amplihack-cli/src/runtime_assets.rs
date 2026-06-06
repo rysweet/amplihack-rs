@@ -8,25 +8,23 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
+use crate::resolve_bundle_asset;
+
 /// Well-known asset relative paths keyed by logical asset name.
 ///
 /// Each asset name maps to one or more candidate relative paths tried in order.
 pub fn asset_relative_paths() -> HashMap<&'static str, Vec<&'static str>> {
-    let mut m = HashMap::new();
-    m.insert("hooks-dir", vec!["amplifier-bundle/tools/amplihack/hooks"]);
-    m.insert(
-        "helper-path",
-        vec!["amplifier-bundle/bin/multitask-orchestrator.sh"],
-    );
-    m.insert(
-        "session-tree-path",
-        vec!["amplifier-bundle/tools/amplihack/session"],
-    );
-    m.insert(
-        "multitask-orchestrator",
-        vec!["amplifier-bundle/bin/multitask-orchestrator.sh"],
-    );
-    m
+    resolve_bundle_asset::named_asset_relative_paths()
+        .into_iter()
+        .map(|(name, paths)| (name, paths.to_vec()))
+        .collect()
+}
+
+fn relative_paths_for(asset_name: &str) -> Option<&'static [&'static str]> {
+    resolve_bundle_asset::named_asset_relative_paths()
+        .into_iter()
+        .find(|(name, _)| *name == asset_name)
+        .map(|(_, paths)| paths)
 }
 
 /// Iterate candidate runtime root directories.
@@ -83,9 +81,7 @@ pub fn iter_runtime_roots() -> Vec<PathBuf> {
 ///
 /// Tries each relative path variant under each root in order.
 pub fn resolve_asset_path(asset_name: &str, search_roots: &[PathBuf]) -> Result<PathBuf> {
-    let asset_map = asset_relative_paths();
-    let rel_paths = asset_map
-        .get(asset_name)
+    let rel_paths = relative_paths_for(asset_name)
         .with_context(|| format!("unknown asset name: {asset_name}"))?;
 
     for root in search_roots {
