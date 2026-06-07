@@ -1,5 +1,5 @@
 use crate::Cli;
-use clap::{CommandFactory, Parser};
+use clap::CommandFactory;
 
 fn long_help_for(path: &[&str]) -> String {
     let mut command = Cli::command();

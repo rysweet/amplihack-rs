@@ -8,7 +8,6 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use amplihack_cli::{Cli, Commands, resolve_bundle_asset, runtime_assets};
-use clap::Parser;
 
 #[derive(Clone, Copy)]
 enum ExpectedKind {

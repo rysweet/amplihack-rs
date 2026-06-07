@@ -337,7 +337,7 @@ mod tests {
                 stop_hook_active: Some(true),
                 transcript_path: Some(transcript_path),
                 session_id: Some(session_id),
-            } if transcript_path == PathBuf::from("/tmp/transcript.jsonl")
+            } if transcript_path.as_path() == std::path::Path::new("/tmp/transcript.jsonl")
                 && session_id == "session-789"
         ));
     }
