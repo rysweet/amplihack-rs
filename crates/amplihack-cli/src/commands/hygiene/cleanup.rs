@@ -706,8 +706,10 @@ fn is_running_session(path: &Path, guards: &SessionGuards) -> bool {
     if guards.protected_ids.contains(name) {
         return true;
     }
-    if let Some(runtime_locks) = &guards.runtime_locks
-        && runtime_locks.join(name).exists()
+    if guards
+        .runtime_locks
+        .as_ref()
+        .is_some_and(|runtime_locks| runtime_locks.join(name).exists())
     {
         return true;
     }
