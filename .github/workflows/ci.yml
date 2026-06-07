@@ -56,6 +56,10 @@ jobs:
           df -h /
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # The full workspace test profile links large native artifacts. Restoring
+          # target/ can exhaust GitHub-hosted runner disk before tests start.
+          cache-targets: false
       - run: cargo test --workspace --locked
 
   install-smoke:
