@@ -149,6 +149,35 @@ fn publish_retries_all_github_pr_metadata_and_mutation_calls() {
 }
 
 #[test]
+fn publish_helper_discovers_prs_with_exact_identity_validation() {
+    let command = helper_text("workflow_publish_pr.sh");
+
+    for required in [
+        "--head \"$CURRENT_BRANCH\"",
+        "baseRefName",
+        "headRefName",
+        "headRefOid",
+        "headRepositoryOwner",
+        "headRepository",
+        "baseRepository",
+        "validate_pr_identity",
+        "parse_github_repo_identity",
+        "does not match current repo",
+    ] {
+        assert!(
+            command.contains(required),
+            "publish helper must validate exact PR identity before trusting an existing PR; missing `{required}`"
+        );
+    }
+
+    assert!(
+        !command.contains("test(\"issue-$ISSUE_NUM\")")
+            && !command.contains("test(\\\"issue-$ISSUE_NUM"),
+        "publish helper must not use broad issue-number PR fallback matching"
+    );
+}
+
+#[test]
 fn publish_treats_non_github_hosts_as_structured_successful_skip() {
     let recipe = load_publish_recipe();
     let command = step_command(&recipe, "step-16-create-draft-pr");

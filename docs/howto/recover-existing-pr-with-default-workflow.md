@@ -260,7 +260,7 @@ finalization:
     "terminal_reason": "Worktree is clean and the branch has no meaningful diff against origin/main.",
     "publish_status": "NO_DIFF_SUCCESS",
     "should_publish": false,
-    "should_finalize": true,
+    "should_finalize": false,
     "should_run_ci_wait": false,
     "should_merge": false
   }

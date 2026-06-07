@@ -110,9 +110,9 @@ The loud blocking states include:
 
 | State | Meaning |
 | --- | --- |
-| `BLOCKED_DIRTY_WORKTREE` | Uncommitted changes are present. Commit, stash, or remove them through the workflow before claiming terminal success. |
-| `BLOCKED_CLOSED_UNMERGED` | The PR is closed without merge evidence and obsolete/no-diff proof is missing. |
-| `BLOCKED_UNMERGED_DIFF` | Meaningful branch changes remain but cannot be safely published. |
+| `FAILED_DIRTY_WORKTREE` | Uncommitted changes are present. Commit, stash, or remove them through the workflow before claiming terminal success. |
+| `FAILED_CLOSED_UNMERGED` | The PR is closed without merge evidence and obsolete/no-diff proof is missing. |
+| `FAILED_MEANINGFUL_DIFF` | Meaningful branch changes remain but cannot be safely published. |
 | `BLOCKED_CI` | Required checks are failing or a CI policy blocks publish or merge. |
 
 Malformed inputs, unavailable PR metadata, missing base refs, and GitHub CLI

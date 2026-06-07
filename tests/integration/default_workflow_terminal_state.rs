@@ -5,9 +5,13 @@
 //! implementation exists.
 
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 
+use serde_json::Value as JsonValue;
 use serde_yaml::Value;
+use tempfile::TempDir;
 
 fn workspace_root() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -43,6 +47,183 @@ fn step_commands(recipe: &Value) -> String {
         .filter_map(|step| step.get("command").and_then(Value::as_str))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+struct TerminalRun {
+    success: bool,
+    stdout: String,
+    stderr: String,
+    json: JsonValue,
+}
+
+struct GitFixture {
+    _tmp: TempDir,
+    repo: PathBuf,
+}
+
+fn run_cmd(dir: &Path, program: &str, args: &[&str]) {
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|e| panic!("run {program} {args:?} in {}: {e}", dir.display()));
+    assert!(
+        output.status.success(),
+        "command failed: {program} {args:?}\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn write_file(path: &Path, content: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap_or_else(|e| panic!("create {}: {e}", parent.display()));
+    }
+    fs::write(path, content).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+}
+
+fn setup_repo() -> GitFixture {
+    let tmp = TempDir::new().expect("tempdir");
+    let repo = tmp.path().join("repo");
+    fs::create_dir(&repo).expect("create repo dir");
+    run_cmd(&repo, "git", &["init", "-b", "main"]);
+    run_cmd(&repo, "git", &["config", "user.email", "test@example.com"]);
+    run_cmd(&repo, "git", &["config", "user.name", "Workflow Test"]);
+    write_file(&repo.join("README.md"), "base\n");
+    run_cmd(&repo, "git", &["add", "README.md"]);
+    run_cmd(&repo, "git", &["commit", "-m", "base"]);
+    run_cmd(
+        &repo,
+        "git",
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/owner/repo.git",
+        ],
+    );
+    GitFixture { _tmp: tmp, repo }
+}
+
+fn create_feature_worktree(fixture: &GitFixture) -> PathBuf {
+    run_cmd(&fixture.repo, "git", &["branch", "feature"]);
+    let worktree = fixture._tmp.path().join("feature-worktree");
+    run_cmd(
+        &fixture.repo,
+        "git",
+        &["worktree", "add", worktree.to_str().unwrap(), "feature"],
+    );
+    worktree
+}
+
+fn commit_feature_change(worktree: &Path) {
+    write_file(&worktree.join("feature.txt"), "feature\n");
+    run_cmd(worktree, "git", &["add", "feature.txt"]);
+    run_cmd(worktree, "git", &["commit", "-m", "feature"]);
+}
+
+fn git_head(dir: &Path) -> String {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|e| panic!("git rev-parse in {}: {e}", dir.display()));
+    assert!(
+        output.status.success(),
+        "git rev-parse failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("utf8 git head")
+        .trim()
+        .to_string()
+}
+
+fn fake_gh(tmp: &TempDir, body: &str, exit_code: i32) -> PathBuf {
+    let bin_dir = tmp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create fake gh bin");
+    let gh = bin_dir.join("gh");
+    let script = format!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [ {exit_code} -ne 0 ]; then
+  echo "fake gh failure" >&2
+  exit {exit_code}
+fi
+cat <<'JSON'
+{body}
+JSON
+"#
+    );
+    fs::write(&gh, script).expect("write fake gh");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("chmod fake gh");
+    }
+    bin_dir
+}
+
+fn matching_pr_json(worktree: &Path, state: &str, merged_at: &str) -> String {
+    serde_json::json!({
+        "url": "https://github.com/owner/repo/pull/7",
+        "number": 7,
+        "state": state,
+        "mergedAt": merged_at,
+        "headRefName": "feature",
+        "baseRefName": "main",
+        "headRefOid": git_head(worktree),
+        "headRepositoryOwner": { "login": "owner" },
+        "headRepository": { "name": "repo" },
+        "baseRepository": { "name": "repo", "owner": { "login": "owner" } },
+        "statusCheckRollup": []
+    })
+    .to_string()
+}
+
+fn run_terminal_state(
+    repo_path: &Path,
+    worktree_path: Option<&Path>,
+    branch_name: &str,
+    pr_url: Option<&str>,
+    fake_path: &Path,
+) -> TerminalRun {
+    let command = step_commands(&load_recipe("workflow-terminal-state"));
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let path = format!("{}:{old_path}", fake_path.display());
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c")
+        .arg(command)
+        .env("PATH", path)
+        .env("REPO_PATH", repo_path)
+        .env("BRANCH_NAME", branch_name)
+        .env("BASE_REF", "main")
+        .env("PR_NUMBER", "")
+        .env("PR_URL", pr_url.unwrap_or(""))
+        .env("GOAL_ALREADY_MET", "false");
+    if let Some(worktree_path) = worktree_path {
+        cmd.env("RECIPE_VAR_worktree_setup__worktree_path", worktree_path);
+    }
+    let output = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("run workflow-terminal-state: {e}"));
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let json_line = stdout
+        .lines()
+        .rev()
+        .find(|line| line.trim_start().starts_with('{'))
+        .unwrap_or_else(|| {
+            panic!("terminal-state emitted no JSON\nstdout:\n{stdout}\nstderr:\n{stderr}")
+        });
+    let json = serde_json::from_str(json_line)
+        .unwrap_or_else(|e| panic!("parse terminal JSON `{json_line}`: {e}"));
+    TerminalRun {
+        success: output.status.success(),
+        stdout,
+        stderr,
+        json,
+    }
 }
 
 fn assert_contains_all(haystack: &str, needles: &[&str], context: &str) {
@@ -83,6 +264,7 @@ fn terminal_state_recipe_exists_with_required_io_contract() {
         .collect();
 
     for required_input in [
+        "worktree_setup.worktree_path",
         "repo_path",
         "branch_name",
         "base_ref",
@@ -256,4 +438,175 @@ fn pr_review_phase_skips_stale_review_steps_after_terminal_success() {
             "workflow-pr-review step `{id}` must be gated off for terminal_success=true"
         );
     }
+}
+
+#[test]
+fn terminal_state_uses_worktree_checkout_for_meaningful_diff() {
+    let fixture = setup_repo();
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh(&fake_tmp, "{}", 0);
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert!(
+        run.success,
+        "meaningful diff should continue workflow, not fail\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_success"], "false");
+    assert_eq!(run.json["terminal_state"], "FOLLOWUP_CREATED");
+    assert_eq!(run.json["branch_diff_status"], "has-diff");
+}
+
+#[test]
+fn terminal_state_fails_when_repo_checkout_is_not_requested_branch() {
+    let fixture = setup_repo();
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh(&fake_tmp, "{}", 0);
+
+    let run = run_terminal_state(&fixture.repo, None, "feature", None, &fake_path);
+
+    assert!(!run.success, "wrong checkout must fail closed");
+    assert_eq!(run.json["terminal_state"], "FAILED_WRONG_BRANCH");
+}
+
+#[test]
+fn terminal_state_fails_closed_for_dirty_target_worktree() {
+    let fixture = setup_repo();
+    let worktree = create_feature_worktree(&fixture);
+    write_file(&worktree.join("dirty.txt"), "uncommitted\n");
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh(&fake_tmp, "{}", 0);
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert!(!run.success, "dirty worktree must fail closed");
+    assert_eq!(run.json["terminal_state"], "FAILED_DIRTY_WORKTREE");
+}
+
+#[test]
+fn terminal_state_rejects_stale_pr_head_sha() {
+    let fixture = setup_repo();
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    let mut pr: JsonValue =
+        serde_json::from_str(&matching_pr_json(&worktree, "OPEN", "")).expect("matching PR JSON");
+    pr["headRefOid"] = JsonValue::String("0000000000000000000000000000000000000000".to_string());
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh(&fake_tmp, &pr.to_string(), 0);
+
+    let run = run_terminal_state(
+        &fixture.repo,
+        Some(&worktree),
+        "feature",
+        Some("https://github.com/owner/repo/pull/7"),
+        &fake_path,
+    );
+
+    assert!(!run.success, "stale PR head SHA must fail closed");
+    assert_eq!(run.json["terminal_state"], "FAILED_INVALID_INPUT");
+    assert!(
+        run.stderr.contains("stale PR metadata"),
+        "stderr should explain stale PR metadata: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn terminal_state_rejects_cross_repo_pr_url() {
+    let fixture = setup_repo();
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    let mut pr: JsonValue =
+        serde_json::from_str(&matching_pr_json(&worktree, "OPEN", "")).expect("matching PR JSON");
+    pr["headRepositoryOwner"]["login"] = JsonValue::String("other".to_string());
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh(&fake_tmp, &pr.to_string(), 0);
+
+    let run = run_terminal_state(
+        &fixture.repo,
+        Some(&worktree),
+        "feature",
+        Some("https://github.com/other/repo/pull/7"),
+        &fake_path,
+    );
+
+    assert!(!run.success, "cross-repo PR metadata must fail closed");
+    assert_eq!(run.json["terminal_state"], "FAILED_INVALID_INPUT");
+    assert!(
+        run.stderr.contains("does not match current repo"),
+        "stderr should explain repo identity mismatch: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn terminal_state_rejects_closed_unmerged_pr_with_meaningful_diff() {
+    let fixture = setup_repo();
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh(&fake_tmp, &matching_pr_json(&worktree, "CLOSED", ""), 0);
+
+    let run = run_terminal_state(
+        &fixture.repo,
+        Some(&worktree),
+        "feature",
+        Some("https://github.com/owner/repo/pull/7"),
+        &fake_path,
+    );
+
+    assert!(
+        !run.success,
+        "closed-unmerged PR with diff must fail closed"
+    );
+    assert_eq!(run.json["terminal_state"], "FAILED_CLOSED_UNMERGED");
+}
+
+#[test]
+fn terminal_state_fails_closed_when_required_pr_metadata_is_unavailable() {
+    let fixture = setup_repo();
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh(&fake_tmp, "", 1);
+
+    let run = run_terminal_state(
+        &fixture.repo,
+        Some(&worktree),
+        "feature",
+        Some("https://github.com/owner/repo/pull/7"),
+        &fake_path,
+    );
+
+    assert!(
+        !run.success,
+        "explicit PR metadata failure must fail closed\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_state"], "FAILED_INVALID_INPUT");
+    assert!(
+        run.stderr.contains("unavailable PR metadata"),
+        "stderr should explain unavailable metadata: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn terminal_state_allows_git_only_no_diff_when_no_pr_dependency_exists() {
+    let fixture = setup_repo();
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh(&fake_tmp, "", 1);
+
+    let run = run_terminal_state(&fixture.repo, None, "main", None, &fake_path);
+
+    assert!(
+        run.success,
+        "clean no-diff branch can prove terminal success without PR metadata\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_success"], "true");
+    assert_eq!(run.json["terminal_state"], "NO_DIFF_SUCCESS");
 }
