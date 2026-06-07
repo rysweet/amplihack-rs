@@ -8,37 +8,19 @@
 //! source-of-truth in Rust source code. No binary execution required — these
 //! are pure file-content assertions.
 
-use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::path::PathBuf;
 
-fn workspace_root() -> &'static Path {
-    static WORKSPACE_ROOT: OnceLock<PathBuf> = OnceLock::new();
-    WORKSPACE_ROOT
-        .get_or_init(|| {
-            let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            path.pop(); // tests/
-            path.pop(); // workspace root
-            path
-        })
-        .as_path()
+fn workspace_root() -> PathBuf {
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.pop(); // tests/
+    path.pop(); // workspace root
+    path
 }
 
 fn read_doc(relative: &str) -> String {
-    static DOC_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-    let cache = DOC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = cache.lock().expect("doc cache mutex poisoned");
-
-    if let Some(doc) = cache.get(relative) {
-        return doc.clone();
-    }
-
     let path = workspace_root().join(relative);
-    let doc = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
-    cache.insert(relative.to_owned(), doc.clone());
-    doc
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
 }
 
 fn doc_exists(relative: &str) -> bool {
