@@ -78,6 +78,26 @@ fn cleanup_rejects_apply_without_age_guardrail() {
 }
 
 #[test]
+fn cleanup_rejects_apply_with_unsafe_age_guardrail() {
+    let error = Cli::try_parse_from([
+        "amplihack",
+        "hygiene",
+        "cleanup",
+        "--apply",
+        "--worktrees",
+        "--older-than",
+        "1h",
+    ])
+    .expect_err("--apply with --older-than below 48h must be rejected");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("--older-than") && message.contains("at least 48h"),
+        "error must explain the minimum destructive age guardrail; got: {message}"
+    );
+}
+
+#[test]
 fn cleanup_exposes_safety_skip_reasons_in_contract_help() {
     let error = Cli::try_parse_from(["amplihack", "hygiene", "cleanup", "--help"])
         .expect_err("clap help exits through an error-like display result");

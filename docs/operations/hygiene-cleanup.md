@@ -17,7 +17,7 @@ opt-in, and dry-run by default.
 - anything during a dry run.
 
 Only paths classified as `candidate` in a reviewed plan may be deleted, and only
-when `--apply` is explicitly set.
+when `--apply` is explicitly set with `--older-than` of at least `48h`.
 
 ## Quick start
 
@@ -68,14 +68,15 @@ amplihack hygiene cleanup [OPTIONS]
 | `--cargo-targets` | off | Include detached Cargo `target/` candidates. |
 | `--sessions` | off | Include stale session artifact candidates. Alias: `--session-artifacts`. |
 | `--all` | off | Include all cleanup categories. Equivalent to the three category flags. |
-| `--older-than <DURATION>` | required for deletion | Minimum candidate age. Supports `h`, `d`, and `w` suffixes, such as `48h`, `14d`, or `8w`. |
+| `--older-than <DURATION>` | required for deletion | Minimum candidate age. `--apply` requires at least `48h`. Supports `h`, `d`, and `w` suffixes, such as `48h`, `14d`, or `8w`. |
 | `--repo <PATH>` | current directory | Repository whose active paths must be protected. |
 | `--apply` | off | Delete approved candidates. Without this flag the command is a dry run. |
 | `--format text|json` | `text` | Output format. JSON is intended for automation and CI evidence. |
 | `--include-skipped` | off | Include skipped candidates in text output. JSON always includes skipped counts. |
 
 At least one cleanup category is required. `--apply` also requires
-`--older-than`; destructive cleanup without an age threshold is rejected.
+`--older-than` of at least `48h`; destructive cleanup without a safe age
+threshold is rejected.
 
 ## Safety classification
 

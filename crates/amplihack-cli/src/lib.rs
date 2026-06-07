@@ -83,9 +83,9 @@ pub const VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
 
 pub use cli_commands::Commands;
 pub use cli_subcommands::{
-    BuilderCommands, HygieneCleanupArgs, HygieneCommands, MemoryCommands, ModeCommands,
-    MultitaskCommands, PluginCommands, QueryCodeCommands, RecipeCommands, ReflectCommands,
-    RemoteCommands,
+    BuilderCommands, HygieneCleanupArgs, HygieneCommands, MIN_CLEANUP_APPLY_OLDER_THAN_HOURS,
+    MIN_CLEANUP_APPLY_OLDER_THAN_SECS, MemoryCommands, ModeCommands, MultitaskCommands,
+    PluginCommands, QueryCodeCommands, RecipeCommands, ReflectCommands, RemoteCommands,
 };
 
 fn graph_db_backend_value_parser() -> PossibleValuesParser {
@@ -164,6 +164,26 @@ impl Cli {
                     clap::error::ErrorKind::MissingRequiredArgument,
                     "hygiene cleanup --apply requires an --older-than guardrail before deleting files",
                 ));
+            }
+            if let (true, Some(older_than)) = (*apply, older_than) {
+                match commands::hygiene::cleanup::parse_duration(older_than) {
+                    Ok(duration) if duration.as_secs() >= MIN_CLEANUP_APPLY_OLDER_THAN_SECS => {}
+                    Ok(_) => {
+                        return Err(clap::Error::raw(
+                            clap::error::ErrorKind::ValueValidation,
+                            format!(
+                                "hygiene cleanup --apply requires --older-than of at least {}h before deleting files",
+                                MIN_CLEANUP_APPLY_OLDER_THAN_HOURS
+                            ),
+                        ));
+                    }
+                    Err(error) => {
+                        return Err(clap::Error::raw(
+                            clap::error::ErrorKind::ValueValidation,
+                            format!("invalid hygiene cleanup --older-than guardrail: {error}"),
+                        ));
+                    }
+                }
             }
         }
         Ok(())

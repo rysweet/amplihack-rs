@@ -9,15 +9,55 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
-use crate::HygieneCleanupArgs;
+use crate::{
+    HygieneCleanupArgs, MIN_CLEANUP_APPLY_OLDER_THAN_HOURS, MIN_CLEANUP_APPLY_OLDER_THAN_SECS,
+};
 
 #[derive(Clone, Debug, Serialize)]
 struct CleanupItem {
     category: &'static str,
-    classification: String,
+    classification: &'static str,
     path: PathBuf,
     age_seconds: Option<u64>,
     reason: String,
+}
+
+fn resolve_active_worktrees(
+    config: &CleanupConfig,
+    items: &mut Vec<CleanupItem>,
+) -> Option<BTreeSet<PathBuf>> {
+    if !config.worktrees && !config.cargo_targets {
+        return Some(BTreeSet::new());
+    }
+
+    match active_worktrees(&config.repo) {
+        Ok(paths) => Some(paths),
+        Err(error) => {
+            let reason = format!(
+                "cannot determine active git worktrees for {}: {error}",
+                config.repo.display()
+            );
+            if config.worktrees {
+                items.push(skipped(
+                    "worktrees",
+                    config.repo.clone(),
+                    "skipped_ambiguous",
+                    None,
+                    reason.clone(),
+                ));
+            }
+            if config.cargo_targets {
+                items.push(skipped(
+                    "cargo-targets",
+                    config.repo.clone(),
+                    "skipped_ambiguous",
+                    None,
+                    reason,
+                ));
+            }
+            None
+        }
+    }
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -45,16 +85,24 @@ struct CleanupConfig {
     apply: bool,
     older_than: Option<Duration>,
     repo: PathBuf,
+    repo_target: PathBuf,
+    repo_target_canonical: Option<PathBuf>,
     format: String,
     include_skipped: bool,
 }
 
+#[derive(Debug)]
+struct SessionGuards {
+    protected_ids: BTreeSet<String>,
+    runtime_locks: Option<PathBuf>,
+}
+
 pub fn run(args: HygieneCleanupArgs) -> Result<()> {
     let config = CleanupConfig::from_args(args)?;
-    let mut report = scan(&config);
+    let (mut report, active_worktrees) = scan(&config);
 
     if config.apply {
-        apply_deletions(&mut report);
+        apply_deletions(&mut report, &config, &active_worktrees);
     }
 
     compute_summary(&mut report);
@@ -89,6 +137,16 @@ impl CleanupConfig {
         if args.apply && older_than.is_none() {
             bail!("hygiene cleanup --apply requires an --older-than guardrail");
         }
+        if args.apply
+            && older_than
+                .map(|duration| duration.as_secs() < MIN_CLEANUP_APPLY_OLDER_THAN_SECS)
+                .unwrap_or(false)
+        {
+            bail!(
+                "hygiene cleanup --apply requires --older-than of at least {}h",
+                MIN_CLEANUP_APPLY_OLDER_THAN_HOURS
+            );
+        }
 
         let repo_input = match args.repo {
             Some(path) => path,
@@ -96,6 +154,8 @@ impl CleanupConfig {
         };
         let repo = canonicalize_existing_dir(&repo_input)
             .with_context(|| format!("canonicalize repository path {}", repo_input.display()))?;
+        let repo_target = repo.join("target");
+        let repo_target_canonical = canonicalize_existing_dir(&repo_target).ok();
 
         Ok(Self {
             worktrees,
@@ -103,6 +163,8 @@ impl CleanupConfig {
             sessions,
             apply: args.apply,
             older_than,
+            repo_target,
+            repo_target_canonical,
             repo,
             format: args.format,
             include_skipped: args.include_skipped,
@@ -110,7 +172,53 @@ impl CleanupConfig {
     }
 }
 
-fn parse_duration(value: &str) -> Result<Duration> {
+fn deletion_guard(
+    item: &CleanupItem,
+    config: &CleanupConfig,
+    active_worktrees: &BTreeSet<PathBuf>,
+    session_guards: &SessionGuards,
+    apply_time: SystemTime,
+) -> Result<()> {
+    if is_current_repo_protected_path(&item.path, config) {
+        bail!("candidate is protected by current repository boundary");
+    }
+    let canonical = canonicalize_existing_dir(&item.path)
+        .with_context(|| format!("canonicalize candidate {}", item.path.display()))?;
+    if canonical != item.path {
+        bail!(
+            "candidate path changed during cleanup: {} -> {}",
+            item.path.display(),
+            canonical.display()
+        );
+    }
+    if is_current_repo_protected_path(&canonical, config) {
+        bail!("candidate is protected by current repository boundary");
+    }
+    if overlaps_active_worktree(&canonical, active_worktrees) {
+        bail!("candidate overlaps an active git worktree");
+    }
+    let age = path_age_at(&canonical, apply_time);
+    if is_recent(age, config.older_than) {
+        bail!("candidate became newer than --older-than");
+    }
+    match item.category {
+        "worktrees" if canonical.join(".git").exists() => {
+            if git_has_dirty_state(&canonical) {
+                bail!("worktree has dirty state");
+            }
+            if git_has_unpushed_commits(&canonical) {
+                bail!("worktree has unpushed commits or no upstream");
+            }
+        }
+        "sessions" if is_running_session(&canonical, session_guards) => {
+            bail!("session became active");
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub(crate) fn parse_duration(value: &str) -> Result<Duration> {
     let trimmed = value.trim();
     if trimmed.len() < 2 {
         bail!("expected duration like 48h, 14d, or 8w");
@@ -137,37 +245,53 @@ fn parse_duration(value: &str) -> Result<Duration> {
     Ok(Duration::from_secs(seconds))
 }
 
-fn scan(config: &CleanupConfig) -> CleanupReport {
+fn scan(config: &CleanupConfig) -> (CleanupReport, BTreeSet<PathBuf>) {
     let mut items = Vec::new();
-    let active_worktrees = active_worktrees(&config.repo);
+    let scan_time = SystemTime::now();
+    let active_worktrees = resolve_active_worktrees(config, &mut items);
 
-    if config.worktrees {
-        scan_worktrees(config, &active_worktrees, &mut items);
-    }
-    if config.cargo_targets {
-        scan_cargo_targets(config, &active_worktrees, &mut items);
+    if let Some(active_worktrees) = active_worktrees.as_ref() {
+        if config.worktrees {
+            scan_worktrees(config, active_worktrees, scan_time, &mut items);
+        }
+        if config.cargo_targets {
+            scan_cargo_targets(config, active_worktrees, scan_time, &mut items);
+        }
     }
     if config.sessions {
-        scan_sessions(config, &mut items);
+        scan_sessions(config, scan_time, &mut items);
     }
 
-    CleanupReport {
-        mode: if config.apply { "apply" } else { "dry-run" },
-        repo: config.repo.clone(),
-        older_than_seconds: config.older_than.map(|duration| duration.as_secs()),
-        summary: CleanupSummary::default(),
-        items,
-    }
+    let active_worktrees = active_worktrees.unwrap_or_default();
+    (
+        CleanupReport {
+            mode: if config.apply { "apply" } else { "dry-run" },
+            repo: config.repo.clone(),
+            older_than_seconds: config.older_than.map(|duration| duration.as_secs()),
+            summary: CleanupSummary::default(),
+            items,
+        },
+        active_worktrees,
+    )
 }
 
 fn scan_worktrees(
     config: &CleanupConfig,
     active_worktrees: &BTreeSet<PathBuf>,
+    scan_time: SystemTime,
     items: &mut Vec<CleanupItem>,
 ) {
     for root in worktree_roots(&config.repo) {
         for child in read_worktree_candidates(&root) {
-            classify_path("worktrees", child, config, active_worktrees, items, true);
+            classify_path(
+                "worktrees",
+                child,
+                config,
+                active_worktrees,
+                scan_time,
+                items,
+                true,
+            );
         }
     }
 }
@@ -175,45 +299,46 @@ fn scan_worktrees(
 fn scan_cargo_targets(
     config: &CleanupConfig,
     active_worktrees: &BTreeSet<PathBuf>,
+    scan_time: SystemTime,
     items: &mut Vec<CleanupItem>,
 ) {
     let Some(parent) = config.repo.parent() else {
         return;
     };
 
+    let mut targets = BTreeSet::new();
     for target in [
-        config.repo.join("target"),
+        config.repo_target.clone(),
         parent.join("target"),
         parent.join("debug").join("target"),
     ] {
         if target.is_dir() {
-            classify_path(
-                "cargo-targets",
-                target,
-                config,
-                active_worktrees,
-                items,
-                false,
-            );
+            targets.insert(target);
         }
     }
 
     for child in read_child_dirs(parent) {
         let target = child.join("target");
         if target.is_dir() {
-            classify_path(
-                "cargo-targets",
-                target,
-                config,
-                active_worktrees,
-                items,
-                false,
-            );
+            targets.insert(target);
         }
+    }
+
+    for target in targets {
+        classify_path(
+            "cargo-targets",
+            target,
+            config,
+            active_worktrees,
+            scan_time,
+            items,
+            false,
+        );
     }
 }
 
-fn scan_sessions(config: &CleanupConfig, items: &mut Vec<CleanupItem>) {
+fn scan_sessions(config: &CleanupConfig, scan_time: SystemTime, items: &mut Vec<CleanupItem>) {
+    let session_guards = SessionGuards::current();
     for root in session_roots() {
         for child in read_child_dirs(&root) {
             let canonical = match canonicalize_existing_dir(&child) {
@@ -230,7 +355,7 @@ fn scan_sessions(config: &CleanupConfig, items: &mut Vec<CleanupItem>) {
                 }
             };
 
-            if is_running_session(&canonical) {
+            if is_running_session(&canonical, &session_guards) {
                 items.push(skipped(
                     "sessions",
                     canonical,
@@ -241,7 +366,7 @@ fn scan_sessions(config: &CleanupConfig, items: &mut Vec<CleanupItem>) {
                 continue;
             }
 
-            let age = path_age(&canonical);
+            let age = path_age_at(&canonical, scan_time);
             if is_recent(age, config.older_than) {
                 items.push(skipped(
                     "sessions",
@@ -268,9 +393,21 @@ fn classify_path(
     path: PathBuf,
     config: &CleanupConfig,
     active_worktrees: &BTreeSet<PathBuf>,
+    scan_time: SystemTime,
     items: &mut Vec<CleanupItem>,
     check_git_state: bool,
 ) {
+    if is_current_repo_protected_path(&path, config) {
+        items.push(skipped(
+            category,
+            path,
+            "skipped_current_repo",
+            None,
+            "current repository paths are protected",
+        ));
+        return;
+    }
+
     let canonical = match canonicalize_existing_dir(&path) {
         Ok(path) => path,
         Err(error) => {
@@ -285,7 +422,7 @@ fn classify_path(
         }
     };
 
-    if canonical == config.repo || canonical.starts_with(config.repo.join("target")) {
+    if is_current_repo_protected_path(&canonical, config) {
         items.push(skipped(
             category,
             canonical,
@@ -296,9 +433,7 @@ fn classify_path(
         return;
     }
 
-    if active_worktrees.iter().any(|active| {
-        canonical == *active || canonical.starts_with(active) || active.starts_with(&canonical)
-    }) {
+    if overlaps_active_worktree(&canonical, active_worktrees) {
         items.push(skipped(
             category,
             canonical,
@@ -332,7 +467,7 @@ fn classify_path(
         }
     }
 
-    let age = path_age(&canonical);
+    let age = path_age_at(&canonical, scan_time);
     if is_recent(age, config.older_than) {
         items.push(skipped(
             category,
@@ -352,18 +487,31 @@ fn classify_path(
     ));
 }
 
-fn apply_deletions(report: &mut CleanupReport) {
+fn apply_deletions(
+    report: &mut CleanupReport,
+    config: &CleanupConfig,
+    active_worktrees: &BTreeSet<PathBuf>,
+) {
+    let session_guards = SessionGuards::current();
+    let apply_time = SystemTime::now();
     for item in &mut report.items {
         if item.classification != "candidate" {
             continue;
         }
+        if let Err(error) =
+            deletion_guard(item, config, active_worktrees, &session_guards, apply_time)
+        {
+            item.classification = "error";
+            item.reason = format!("candidate failed pre-delete safety check: {error}");
+            continue;
+        }
         match fs::remove_dir_all(&item.path) {
             Ok(()) => {
-                item.classification = "deleted".to_string();
+                item.classification = "deleted";
                 item.reason = "deleted by --apply".to_string();
             }
             Err(error) => {
-                item.classification = "error".to_string();
+                item.classification = "error";
                 item.reason = format!("failed to delete candidate: {error}");
             }
         }
@@ -373,7 +521,7 @@ fn apply_deletions(report: &mut CleanupReport) {
 fn compute_summary(report: &mut CleanupReport) {
     report.summary = CleanupSummary::default();
     for item in &report.items {
-        match item.classification.as_str() {
+        match item.classification {
             "candidate" => report.summary.candidates += 1,
             "deleted" => report.summary.deleted += 1,
             "error" => report.summary.errors += 1,
@@ -424,26 +572,51 @@ fn print_report(report: &CleanupReport, config: &CleanupConfig) -> Result<()> {
     Ok(())
 }
 
-fn active_worktrees(repo: &Path) -> BTreeSet<PathBuf> {
+fn active_worktrees(repo: &Path) -> Result<BTreeSet<PathBuf>> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
         .arg("worktree")
         .arg("list")
         .arg("--porcelain")
-        .output();
-    let Ok(output) = output else {
-        return BTreeSet::new();
-    };
+        .output()
+        .with_context(|| format!("run git worktree list for {}", repo.display()))?;
     if !output.status.success() {
-        return BTreeSet::new();
+        bail!(
+            "git worktree list failed: {}",
+            sanitized_stderr(&output.stderr)
+        );
     }
 
-    String::from_utf8_lossy(&output.stdout)
+    let paths: BTreeSet<_> = String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| line.strip_prefix("worktree "))
         .filter_map(|path| canonicalize_existing_dir(Path::new(path)).ok())
-        .collect()
+        .collect();
+    if paths.is_empty() {
+        bail!("git worktree list returned no canonical worktree paths");
+    }
+    Ok(paths)
+}
+
+fn sanitized_stderr(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr).replace(['\n', '\r'], " ");
+    let sanitized = text
+        .split_whitespace()
+        .map(|part| {
+            if part.starts_with("https://") && part.contains('@') {
+                "https://REDACTED@"
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if sanitized.is_empty() {
+        "no stderr".to_string()
+    } else {
+        sanitized.chars().take(500).collect()
+    }
 }
 
 fn git_has_dirty_state(path: &Path) -> bool {
@@ -489,6 +662,14 @@ fn git_has_unpushed_commits(path: &Path) -> bool {
     }
 }
 
+fn overlaps_active_worktree(path: &Path, active_worktrees: &BTreeSet<PathBuf>) -> bool {
+    path.ancestors()
+        .any(|ancestor| active_worktrees.contains(ancestor))
+        || active_worktrees
+            .iter()
+            .any(|active| active.starts_with(path))
+}
+
 fn session_roots() -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return Vec::new();
@@ -503,25 +684,32 @@ fn session_roots() -> Vec<PathBuf> {
     .collect()
 }
 
-fn is_running_session(path: &Path) -> bool {
+impl SessionGuards {
+    fn current() -> Self {
+        let runtime_locks = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join(".claude").join("runtime").join("locks"));
+        Self {
+            protected_ids: protected_session_ids(),
+            runtime_locks,
+        }
+    }
+}
+
+fn is_running_session(path: &Path, guards: &SessionGuards) -> bool {
     if path.join("LOCK").exists() || path.join("lock").exists() || path.join(".lock").exists() {
         return true;
     }
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return true;
     };
-    if protected_session_ids().contains(name) {
+    if guards.protected_ids.contains(name) {
         return true;
     }
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        let runtime_lock = home
-            .join(".claude")
-            .join("runtime")
-            .join("locks")
-            .join(name);
-        if runtime_lock.exists() {
-            return true;
-        }
+    if let Some(runtime_locks) = &guards.runtime_locks
+        && runtime_locks.join(name).exists()
+    {
+        return true;
     }
     if has_live_pid_marker(path) {
         return true;
@@ -613,8 +801,11 @@ fn read_child_dirs(root: &Path) -> Vec<PathBuf> {
     };
     entries
         .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
+        .filter_map(|entry| match entry.file_type() {
+            Ok(file_type) if file_type.is_dir() => Some(entry.path()),
+            Ok(file_type) if file_type.is_symlink() && entry.path().is_dir() => Some(entry.path()),
+            _ => None,
+        })
         .collect()
 }
 
@@ -630,9 +821,9 @@ fn canonicalize_existing_dir(path: &Path) -> std::io::Result<PathBuf> {
     }
 }
 
-fn path_age(path: &Path) -> Option<Duration> {
+fn path_age_at(path: &Path, now: SystemTime) -> Option<Duration> {
     let modified = fs::metadata(path).ok()?.modified().ok()?;
-    SystemTime::now().duration_since(modified).ok()
+    now.duration_since(modified).ok()
 }
 
 fn is_recent(age: Option<Duration>, older_than: Option<Duration>) -> bool {
@@ -651,7 +842,7 @@ fn candidate(
 ) -> CleanupItem {
     CleanupItem {
         category,
-        classification: "candidate".to_string(),
+        classification: "candidate",
         path,
         age_seconds,
         reason: reason.into(),
@@ -667,11 +858,20 @@ fn skipped(
 ) -> CleanupItem {
     CleanupItem {
         category,
-        classification: classification.to_string(),
+        classification,
         path,
         age_seconds,
         reason: reason.into(),
     }
+}
+
+fn is_current_repo_protected_path(path: &Path, config: &CleanupConfig) -> bool {
+    path == config.repo
+        || path.starts_with(&config.repo_target)
+        || config
+            .repo_target_canonical
+            .as_ref()
+            .is_some_and(|target| path == target || path.starts_with(target))
 }
 
 #[cfg(test)]
@@ -705,6 +905,8 @@ mod tests {
             apply: false,
             older_than: None,
             repo: active.clone(),
+            repo_target: active.join("target"),
+            repo_target_canonical: None,
             format: "text".to_string(),
             include_skipped: false,
         };
@@ -717,11 +919,187 @@ mod tests {
             parent,
             &config,
             &active_worktrees,
+            SystemTime::now(),
             &mut items,
             false,
         );
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].classification, "skipped_active_worktree");
+    }
+
+    #[test]
+    fn scanner_skips_cleanup_when_active_worktrees_cannot_be_discovered() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let stale = temp.path().join("worktrees").join("old");
+        fs::create_dir_all(stale.join(".git")).expect("create stale-looking worktree");
+
+        let config = CleanupConfig {
+            worktrees: true,
+            cargo_targets: true,
+            sessions: false,
+            apply: false,
+            older_than: None,
+            repo: temp.path().to_path_buf(),
+            repo_target: temp.path().join("target"),
+            repo_target_canonical: None,
+            format: "text".to_string(),
+            include_skipped: true,
+        };
+
+        let (report, _) = scan(&config);
+
+        assert!(
+            report
+                .items
+                .iter()
+                .all(|item| item.classification != "candidate"),
+            "cleanup must not produce deletion candidates when active worktree discovery fails"
+        );
+        assert!(
+            report
+                .items
+                .iter()
+                .any(|item| item.classification == "skipped_ambiguous"),
+            "fail-closed discovery should be visible in the report"
+        );
+    }
+
+    #[test]
+    fn apply_requires_safe_age_guardrail() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let args = HygieneCleanupArgs {
+            worktrees: true,
+            cargo_targets: false,
+            sessions: false,
+            all: false,
+            apply: true,
+            older_than: Some("1h".to_string()),
+            repo: Some(temp.path().to_path_buf()),
+            format: "text".to_string(),
+            include_skipped: false,
+        };
+
+        let error = CleanupConfig::from_args(args).expect_err("1h must be unsafe for --apply");
+
+        assert!(
+            error.to_string().contains("at least 48h"),
+            "error must explain the minimum destructive age threshold: {error}"
+        );
+    }
+
+    #[test]
+    fn apply_accepts_minimum_safe_age_guardrail() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let args = HygieneCleanupArgs {
+            worktrees: true,
+            cargo_targets: false,
+            sessions: false,
+            all: false,
+            apply: true,
+            older_than: Some("48h".to_string()),
+            repo: Some(temp.path().to_path_buf()),
+            format: "text".to_string(),
+            include_skipped: false,
+        };
+
+        let config = CleanupConfig::from_args(args).expect("48h is the minimum safe age");
+
+        assert_eq!(
+            config.older_than.map(|duration| duration.as_secs()),
+            Some(MIN_CLEANUP_APPLY_OLDER_THAN_SECS)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_repo_target_is_skipped_before_canonicalization() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        let outside_target = temp.path().join("outside-target");
+        fs::create_dir_all(&repo).expect("create repo");
+        fs::create_dir_all(&outside_target).expect("create outside target");
+        std::os::unix::fs::symlink(&outside_target, repo.join("target"))
+            .expect("create target symlink");
+        let repo = repo.canonicalize().expect("canonical repo");
+        let repo_target = repo.join("target");
+        let config = CleanupConfig {
+            worktrees: false,
+            cargo_targets: true,
+            sessions: false,
+            apply: false,
+            older_than: None,
+            repo,
+            repo_target: repo_target.clone(),
+            repo_target_canonical: canonicalize_existing_dir(&repo_target).ok(),
+            format: "text".to_string(),
+            include_skipped: true,
+        };
+        let mut items = Vec::new();
+
+        classify_path(
+            "cargo-targets",
+            repo_target.clone(),
+            &config,
+            &BTreeSet::new(),
+            SystemTime::now(),
+            &mut items,
+            false,
+        );
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].classification, "skipped_current_repo");
+        assert_eq!(items[0].path, repo_target);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deletion_guard_refuses_resolved_symlinked_repo_target() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = temp.path().join("repo");
+        let outside_target = temp.path().join("outside-target");
+        fs::create_dir_all(&repo).expect("create repo");
+        fs::create_dir_all(&outside_target).expect("create outside target");
+        std::os::unix::fs::symlink(&outside_target, repo.join("target"))
+            .expect("create target symlink");
+        let repo = repo.canonicalize().expect("canonical repo");
+        let repo_target = repo.join("target");
+        let resolved_target = canonicalize_existing_dir(&repo_target).expect("canonical target");
+        let config = CleanupConfig {
+            worktrees: false,
+            cargo_targets: true,
+            sessions: false,
+            apply: true,
+            older_than: Some(Duration::from_secs(MIN_CLEANUP_APPLY_OLDER_THAN_SECS)),
+            repo,
+            repo_target,
+            repo_target_canonical: Some(resolved_target.clone()),
+            format: "text".to_string(),
+            include_skipped: true,
+        };
+        let item = CleanupItem {
+            category: "cargo-targets",
+            classification: "candidate",
+            path: resolved_target,
+            age_seconds: None,
+            reason: "pre-fix canonicalized candidate".to_string(),
+        };
+
+        let error = deletion_guard(
+            &item,
+            &config,
+            &BTreeSet::new(),
+            &SessionGuards {
+                protected_ids: BTreeSet::new(),
+                runtime_locks: None,
+            },
+            SystemTime::now(),
+        )
+        .expect_err("resolved repo/target symlink must remain protected");
+
+        assert!(
+            error.to_string().contains("current repository boundary"),
+            "error must identify the protected boundary: {error}"
+        );
     }
 }
