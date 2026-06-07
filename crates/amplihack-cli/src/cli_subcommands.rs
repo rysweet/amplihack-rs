@@ -1,8 +1,60 @@
 //! Subcommand enums for nested CLI commands.
 
-use clap::Subcommand;
+use clap::{Args, Subcommand};
+use std::path::PathBuf;
 
 use super::{graph_db_backend_value_parser, raw_db_format_value_parser};
+
+pub const MIN_CLEANUP_APPLY_OLDER_THAN_SECS: u64 = 48 * 60 * 60;
+pub const MIN_CLEANUP_APPLY_OLDER_THAN_HOURS: u64 = MIN_CLEANUP_APPLY_OLDER_THAN_SECS / (60 * 60);
+
+#[derive(Subcommand, Debug)]
+pub enum HygieneCommands {
+    /// Conservative local cleanup for stale worktrees, detached Cargo targets, and session artifacts
+    Cleanup(HygieneCleanupArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+#[command(
+    after_help = "Safety: dry-run by default. --apply requires at least one cleanup category (--worktrees, --cargo-targets, or --sessions) plus an --older-than guardrail of at least 48h. The scanner skips active worktree paths, current repository paths, running session locks, and recent session artifacts."
+)]
+pub struct HygieneCleanupArgs {
+    /// Include stale Git worktree candidates.
+    #[arg(long)]
+    pub worktrees: bool,
+
+    /// Include detached Cargo target directories outside the current repository.
+    #[arg(long = "cargo-targets")]
+    pub cargo_targets: bool,
+
+    /// Include stale session artifacts. Alias: --session-artifacts.
+    #[arg(long = "sessions", alias = "session-artifacts")]
+    pub sessions: bool,
+
+    /// Include all cleanup categories.
+    #[arg(long)]
+    pub all: bool,
+
+    /// Delete approved candidates. Without --apply this command is a dry-run.
+    #[arg(long)]
+    pub apply: bool,
+
+    /// Minimum candidate age guardrail. --apply requires at least 48h. Supports h, d, and w suffixes, such as 48h, 14d, or 8w.
+    #[arg(long = "older-than", value_name = "guardrail")]
+    pub older_than: Option<String>,
+
+    /// Repository whose active worktree and target directory must be protected.
+    #[arg(long)]
+    pub repo: Option<PathBuf>,
+
+    /// Output format.
+    #[arg(long, default_value = "text", value_parser = ["text", "json"])]
+    pub format: String,
+
+    /// Include skipped paths in text output. JSON always includes all scanned items.
+    #[arg(long = "include-skipped")]
+    pub include_skipped: bool,
+}
 
 #[derive(Subcommand, Debug)]
 pub enum PluginCommands {

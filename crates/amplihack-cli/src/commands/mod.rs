@@ -8,6 +8,7 @@ pub mod cs_validate;
 pub mod doctor;
 pub mod fleet;
 pub mod hive_haymaker;
+pub mod hygiene;
 pub mod install;
 pub mod launch;
 pub mod lock;
@@ -29,8 +30,8 @@ pub mod session_tree;
 pub mod uvx_help;
 
 use crate::{
-    BuilderCommands, Commands, MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands,
-    RecipeCommands, ReflectCommands, RemoteCommands,
+    BuilderCommands, Commands, HygieneCommands, MemoryCommands, ModeCommands, MultitaskCommands,
+    PluginCommands, RecipeCommands, ReflectCommands, RemoteCommands,
 };
 use anyhow::Result;
 
@@ -369,6 +370,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::SessionTree { command } => session_tree::run(command),
         Commands::Reflect { command } => dispatch_reflect(command),
         Commands::Builder { command } => dispatch_builder(command),
+        Commands::Hygiene { command } => dispatch_hygiene(command),
         Commands::CsValidate {
             path,
             level,
@@ -382,6 +384,12 @@ pub fn dispatch(command: Commands) -> Result<()> {
             output,
             config,
         } => mcp_eval::dispatch(adapter, scenario, mock, output, config),
+    }
+}
+
+fn dispatch_hygiene(command: HygieneCommands) -> Result<()> {
+    match command {
+        HygieneCommands::Cleanup(args) => hygiene::cleanup::run(args),
     }
 }
 

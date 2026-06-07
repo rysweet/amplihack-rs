@@ -276,6 +276,13 @@ pub fn deliver(
     requested: PromptDelivery,
     caps: &DeliveryCaps,
 ) -> std::io::Result<DeliveryHandle> {
+    if prompt.as_bytes().contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "prompt contains a NUL byte; refusing to pass invalid prompt data to child process",
+        ));
+    }
+
     let mode = select_mode(requested, prompt.len(), caps);
     match mode {
         DeliveryMode::Argv => {
