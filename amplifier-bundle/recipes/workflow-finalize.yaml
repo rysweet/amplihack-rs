@@ -17,10 +17,23 @@ inputs:
 context:
   worktree_setup: ""
   allow_no_op: false
+  terminal_success: "false"
+  terminal_state: ""
+  terminal_reason: ""
+  publish_status: ""
+  should_publish: "true"
+  should_finalize: "true"
+  should_run_ci_wait: "true"
+  should_merge: "true"
 
 steps:
+  - id: "finalize-terminal-state"
+    type: "recipe"
+    recipe: "workflow-terminal-state"
+
   - id: "step-20-final-cleanup"
     agent: "amplihack:cleanup"
+    condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     prompt: |
       # Step 20: Final Cleanup and Verification
 
@@ -52,6 +65,7 @@ steps:
 
   - id: "step-20b-push-cleanup"
     type: "bash"
+    condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     command: |
       set -euo pipefail
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
@@ -139,6 +153,7 @@ steps:
 
   - id: "step-20c-quality-audit"
     agent: "amplihack:core:reviewer"
+    condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     prompt: |
       # Step 20c: Quality Audit Loop
 
@@ -161,6 +176,7 @@ steps:
 
   - id: "step-21-pr-ready"
     type: "bash"
+    condition: "terminal_state.terminal_success != 'true' && terminal_state.should_run_ci_wait == 'true'"
     command: |
       set -euo pipefail
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
@@ -180,6 +196,7 @@ steps:
 
   - id: "step-22-ensure-mergeable"
     agent: "amplihack:ci-diagnostic-workflow"
+    condition: "terminal_state.terminal_success != 'true' && terminal_state.should_run_ci_wait == 'true'"
     prompt: |
       # Step 21: Ensure PR is Mergeable (TASK COMPLETION POINT)
 
@@ -193,6 +210,7 @@ steps:
 
   - id: "step-22b-final-status"
     type: "bash"
+    condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     command: |
       set -euo pipefail
       cd "${REPO_PATH:?step-22b-final-status requires repo_path; ensure parent recipe propagated repo_path context}"
@@ -201,6 +219,7 @@ steps:
       PR_URL="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
       if [ -z "$PR_URL" ]; then : "N/A"; fi
       # Helper contract: git diff --quiet identifies no-diff; terminal_status accepts no-diff, already-merged, and closed-after-merge; GitHub-only status uses gh pr view.
+      # Terminal-state contract: FAILED_DIRTY_WORKTREE, FAILED_CLOSED_UNMERGED, FAILED_MEANINGFUL_DIFF, BLOCKED_CI, MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED.
       FINAL_STATUS_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_final_status.sh"
       if [ ! -f "$FINAL_STATUS_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then FINAL_STATUS_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_final_status.sh"; fi
       [ -f "$FINAL_STATUS_HELPER" ] || { echo "ERROR: workflow final-status helper not found: $FINAL_STATUS_HELPER" >&2; exit 1; }
@@ -217,13 +236,21 @@ steps:
       export ISSUE_VAL
       PR_VAL="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
       export PR_VAL
-      TERMINAL_OUTCOME="${PR_PUBLISH_RESULT_STATE:-${RECIPE_VAR_pr_publish_result__state:-active-pr}}"
+      TERMINAL_STATE_VALUE="${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-${PR_PUBLISH_RESULT_STATE:-${RECIPE_VAR_pr_publish_result__state:-active-pr}}}}"
+      TERMINAL_SUCCESS_VALUE="${TERMINAL_STATE_TERMINAL_SUCCESS:-${RECIPE_VAR_terminal_state__terminal_success:-false}}"
+      PUBLISH_STATUS_VALUE="${TERMINAL_STATE_PUBLISH_STATUS:-${RECIPE_VAR_terminal_state__publish_status:-${PR_PUBLISH_RESULT_STATE:-${RECIPE_VAR_pr_publish_result__state:-active-pr}}}}"
+      TERMINAL_REASON_VALUE="${TERMINAL_STATE_TERMINAL_REASON:-${RECIPE_VAR_terminal_state__terminal_reason:-}}"
+      TERMINAL_OUTCOME="$TERMINAL_STATE_VALUE"
       export TERMINAL_OUTCOME
       jq -n \
         --arg task "${TASK_VAL}" \
         --arg issue "${ISSUE_VAL}" \
         --arg pr "${PR_VAL}" \
         --arg terminal_outcome "${TERMINAL_OUTCOME}" \
+        --arg terminal_state "${TERMINAL_STATE_VALUE}" \
+        --arg terminal_success "${TERMINAL_SUCCESS_VALUE}" \
+        --arg terminal_reason "${TERMINAL_REASON_VALUE}" \
+        --arg publish_status "${PUBLISH_STATUS_VALUE}" \
         '{
           workflow: "default-workflow",
           version: "2.0.0",
@@ -231,6 +258,11 @@ steps:
           issue_number: $issue,
           pr_url: $pr,
           terminal_outcome: $terminal_outcome,
+          terminal_state: $terminal_state,
+          terminal_success: $terminal_success,
+          terminal_reason: $terminal_reason,
+          publish_status: $publish_status,
+          terminal_vocabulary: ["MERGED", "CLOSED_OBSOLETE", "NO_DIFF_SUCCESS", "FOLLOWUP_CREATED", "BLOCKED_CI"],
           status: "complete",
           steps_completed: 23,
           phases_completed: [
@@ -244,6 +276,6 @@ steps:
             step_18_implement_feedback: true
           },
           philosophy_compliant: true,
-          ready_to_merge: ($terminal_outcome == "active-pr" or $terminal_outcome == "create-new-pr" or $terminal_outcome == "existing-open-pr")
+          ready_to_merge: (($terminal_success != "true") and ($terminal_outcome == "active-pr" or $terminal_outcome == "create-new-pr" or $terminal_outcome == "existing-open-pr" or $terminal_outcome == "FOLLOWUP_CREATED"))
         }'
     output: "workflow_result"

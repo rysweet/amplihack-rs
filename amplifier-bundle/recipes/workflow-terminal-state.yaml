@@ -1,0 +1,357 @@
+name: "workflow-terminal-state"
+description: "Reusable default-workflow terminal-state probe for merged, obsolete, no-diff, follow-up, and blocked states"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["development", "terminal-state", "publish", "finalize"]
+
+recursion:
+  max_depth: 1
+  max_total_steps: 4
+
+inputs:
+  - name: worktree_setup.worktree_path
+    description: "Preferred workflow worktree path. When present, all git and gh probes operate in this checkout instead of repo_path."
+  - name: repo_path
+    description: "Repository path used for git and gh probes."
+  - name: branch_name
+    description: "Expected branch name; defaults to the current branch when empty."
+  - name: base_ref
+    description: "Intended base ref; defaults to origin/HEAD, origin/main, origin/master, or origin/develop."
+  - name: pr_number
+    description: "Optional PR number to validate and inspect."
+  - name: pr_url
+    description: "Optional PR URL to validate and inspect."
+  - name: goal_already_met
+    description: "Legacy design signal; used only as supporting evidence and never as an override."
+
+context:
+  repo_path: "."
+  branch_name: ""
+  base_ref: ""
+  pr_number: ""
+  pr_url: ""
+  goal_already_met: "false"
+
+steps:
+  - id: "probe-terminal-state"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -euo pipefail
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+
+      if ! command -v jq >/dev/null 2>&1; then
+        echo "ERROR: jq is required by workflow-terminal-state." >&2
+        exit 2
+      fi
+
+      terminal_success="false"
+      terminal_state="FOLLOWUP_CREATED"
+      terminal_reason="meaningful unmerged work remains; publish should continue"
+      publish_status="FOLLOWUP_CREATED"
+      should_publish="true"
+      should_finalize="true"
+      should_run_ci_wait="true"
+      should_merge="true"
+      pr_url_result=""
+      pr_number_result=""
+      branch_diff_status="unknown"
+      commits_ahead="0"
+
+      emit_terminal_state() {
+        jq -nc \
+          --arg terminal_success "$terminal_success" \
+          --arg terminal_state "$terminal_state" \
+          --arg terminal_reason "$terminal_reason" \
+          --arg publish_status "$publish_status" \
+          --arg should_publish "$should_publish" \
+          --arg should_finalize "$should_finalize" \
+          --arg should_run_ci_wait "$should_run_ci_wait" \
+          --arg should_merge "$should_merge" \
+          --arg pr_url "$pr_url_result" \
+          --arg pr_number "$pr_number_result" \
+          --arg branch_diff_status "$branch_diff_status" \
+          --arg commits_ahead "$commits_ahead" \
+          '{terminal_success:$terminal_success,terminal_state:$terminal_state,terminal_reason:$terminal_reason,publish_status:$publish_status,should_publish:$should_publish,should_finalize:$should_finalize,should_run_ci_wait:$should_run_ci_wait,should_merge:$should_merge,pr_url:$pr_url,pr_number:$pr_number,branch_diff_status:$branch_diff_status,commits_ahead:$commits_ahead}'
+      }
+
+      fail_terminal_state() {
+        terminal_success="false"
+        terminal_state="$1"
+        terminal_reason="$2"
+        publish_status="$1"
+        should_publish="false"
+        should_finalize="false"
+        should_run_ci_wait="false"
+        should_merge="false"
+        emit_terminal_state
+        echo "ERROR: workflow-terminal-state: $terminal_state: $terminal_reason" >&2
+        exit 1
+      }
+
+      success_terminal_state() {
+        terminal_success="true"
+        terminal_state="$1"
+        terminal_reason="$2"
+        publish_status="$1"
+        should_publish="false"
+        should_finalize="false"
+        should_run_ci_wait="false"
+        should_merge="false"
+        emit_terminal_state
+        exit 0
+      }
+
+      sanitize_gh_stderr() {
+        sed -E 's#https://[^@[:space:]]+@#https://REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
+      }
+
+      is_transient_gh_error() {
+        [ -s "$1" ] && grep -Eiq 'HTTP 5[0-9][0-9]|(^|[^0-9])(502|503|504)([^0-9]|$)|rate limit|timed out|timeout|temporar|connection reset|connection refused|TLS handshake|network|server error' "$1"
+      }
+
+      gh_with_retry() {
+        local label="$1" stderr_file output status attempt delay=1
+        shift
+        for attempt in 1 2 3; do
+          stderr_file=$(mktemp -t terminal-state-gh-XXXXXX)
+          if output=$(timeout 60 gh "$@" 2>"$stderr_file"); then
+            rm -f "$stderr_file"
+            printf '%s\n' "$output"
+            return 0
+          else
+            status=$?
+          fi
+          if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
+            echo "WARNING: gh $label failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_gh_stderr "$stderr_file")" >&2
+            rm -f "$stderr_file"
+            sleep "$delay"
+            delay=$((delay * 2))
+            continue
+          fi
+          echo "ERROR: gh $label failed (exit ${status})" >&2
+          [ ! -s "$stderr_file" ] || echo "gh $label stderr: $(sanitize_gh_stderr "$stderr_file")" >&2
+          rm -f "$stderr_file"
+          return "$status"
+        done
+      }
+
+      parse_github_repo_identity() {
+        local url="$1" path owner repo
+        case "$url" in
+          git@github.com:*) path="${url#git@github.com:}" ;;
+          ssh://git@github.com/*) path="${url#ssh://git@github.com/}" ;;
+          https://github.com/*) path="${url#https://github.com/}" ;;
+          http://github.com/*) path="${url#http://github.com/}" ;;
+          *) return 1 ;;
+        esac
+        path="${path%%\?*}"
+        path="${path%%#*}"
+        path="${path%.git}"
+        owner="${path%%/*}"
+        repo="${path#*/}"
+        repo="${repo%%/*}"
+        [ -n "$owner" ] && [ -n "$repo" ] && [ "$owner" != "$repo" ] || return 1
+        printf '%s/%s\n' "$owner" "$repo"
+      }
+
+      normalize_base_name() {
+        local ref="$1"
+        ref="${ref#refs/heads/}"
+        ref="${ref#origin/}"
+        printf '%s\n' "$ref"
+      }
+
+      WORKTREE_INPUT="${WORKTREE_SETUP_WORKTREE_PATH:-}"
+      [ -n "$WORKTREE_INPUT" ] || WORKTREE_INPUT="${RECIPE_VAR_worktree_setup__worktree_path:-}"
+      REPO_DIR="${REPO_PATH:-}"
+      [ -n "$REPO_DIR" ] || REPO_DIR="${RECIPE_VAR_repo_path:-}"
+      [ -n "$REPO_DIR" ] || REPO_DIR="{{repo_path}}"
+      BRANCH_INPUT="${BRANCH_NAME:-}"
+      [ -n "$BRANCH_INPUT" ] || BRANCH_INPUT="${RECIPE_VAR_branch_name:-}"
+      [ -n "$BRANCH_INPUT" ] || BRANCH_INPUT="{{branch_name}}"
+      BASE_INPUT="${BASE_REF:-}"
+      [ -n "$BASE_INPUT" ] || BASE_INPUT="${RECIPE_VAR_base_ref:-}"
+      [ -n "$BASE_INPUT" ] || BASE_INPUT="{{base_ref}}"
+      PR_NUMBER_INPUT="${PR_NUMBER:-}"
+      [ -n "$PR_NUMBER_INPUT" ] || PR_NUMBER_INPUT="${RECIPE_VAR_pr_number:-}"
+      [ -n "$PR_NUMBER_INPUT" ] || PR_NUMBER_INPUT="{{pr_number}}"
+      PR_URL_INPUT="${PR_URL:-}"
+      [ -n "$PR_URL_INPUT" ] || PR_URL_INPUT="${RECIPE_VAR_pr_url:-}"
+      [ -n "$PR_URL_INPUT" ] || PR_URL_INPUT="{{pr_url}}"
+      GOAL_ALREADY_MET_INPUT="${GOAL_ALREADY_MET:-}"
+      [ -n "$GOAL_ALREADY_MET_INPUT" ] || GOAL_ALREADY_MET_INPUT="${RECIPE_VAR_goal_already_met:-}"
+      [ -n "$GOAL_ALREADY_MET_INPUT" ] || GOAL_ALREADY_MET_INPUT="{{goal_already_met}}"
+      [ "$REPO_DIR" != "{{repo_path}}" ] || REPO_DIR="."
+      case "$BRANCH_INPUT" in "{{branch_name}}"|"''") BRANCH_INPUT="" ;; esac
+      case "$BASE_INPUT" in "{{base_ref}}"|"''") BASE_INPUT="" ;; esac
+      case "$PR_NUMBER_INPUT" in "{{pr_number}}"|"''") PR_NUMBER_INPUT="" ;; esac
+      case "$PR_URL_INPUT" in "{{pr_url}}"|"''") PR_URL_INPUT="" ;; esac
+      case "$GOAL_ALREADY_MET_INPUT" in "{{goal_already_met}}"|"''") GOAL_ALREADY_MET_INPUT="false" ;; esac
+      TARGET_REPO_DIR="$REPO_DIR"
+      if [ -n "$WORKTREE_INPUT" ] && [ "$WORKTREE_INPUT" != "''" ]; then
+        TARGET_REPO_DIR="$WORKTREE_INPUT"
+      fi
+
+      [ -n "$TARGET_REPO_DIR" ] || fail_terminal_state "FAILED_INVALID_INPUT" "repo_path or worktree_setup.worktree_path is required"
+      cd "$TARGET_REPO_DIR" 2>/dev/null || fail_terminal_state "FAILED_INVALID_INPUT" "target checkout does not exist or is not accessible: $TARGET_REPO_DIR"
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail_terminal_state "FAILED_INVALID_INPUT" "workflow-terminal-state requires a git repo at target checkout; either git init or rerun from a checkout"
+
+      current_branch="$(git branch --show-current 2>/dev/null || true)"
+      if [ -z "$BRANCH_INPUT" ] || [ "$BRANCH_INPUT" = "''" ]; then
+        BRANCH_INPUT="$current_branch"
+      fi
+      [ -n "$BRANCH_INPUT" ] || fail_terminal_state "FAILED_INVALID_INPUT" "branch_name is empty and current HEAD is detached"
+      git check-ref-format --branch "$BRANCH_INPUT" >/dev/null 2>&1 || fail_terminal_state "FAILED_INVALID_INPUT" "branch_name is malformed: $BRANCH_INPUT"
+      if [ "$current_branch" != "$BRANCH_INPUT" ]; then
+        fail_terminal_state "FAILED_WRONG_BRANCH" "target checkout branch '$current_branch' does not match branch_name '$BRANCH_INPUT'"
+      fi
+      local_head="$(git rev-parse --verify HEAD 2>/dev/null)" || fail_terminal_state "FAILED_INVALID_INPUT" "target checkout HEAD does not resolve"
+
+      resolve_base_ref() {
+        local candidate
+        if [ -n "$BASE_INPUT" ] && [ "$BASE_INPUT" != "''" ]; then
+          printf '%s\n' "$BASE_INPUT"
+          return 0
+        fi
+        candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+        if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "$candidate"; return 0; fi
+        git remote set-head origin -a >/dev/null 2>&1 || true
+        candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+        if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "$candidate"; return 0; fi
+        for candidate in origin/main origin/master origin/develop main master develop; do
+          if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "$candidate"; return 0; fi
+        done
+        return 1
+      }
+
+      base_ref="$(resolve_base_ref)" || fail_terminal_state "FAILED_INVALID_INPUT" "base_ref is missing and no supported base ref could be resolved"
+      if ! git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null; then
+        fail_terminal_state "FAILED_INVALID_INPUT" "base_ref does not resolve to a commit: $base_ref"
+      fi
+
+      if [ -n "$PR_NUMBER_INPUT" ] && [ "$PR_NUMBER_INPUT" != "''" ] && ! [[ "$PR_NUMBER_INPUT" =~ ^[0-9][0-9]*$ ]]; then
+        fail_terminal_state "FAILED_INVALID_INPUT" "pr_number is malformed: $PR_NUMBER_INPUT"
+      fi
+      if [ -n "$PR_URL_INPUT" ] && [ "$PR_URL_INPUT" != "''" ] && ! [[ "$PR_URL_INPUT" =~ ^https://[^[:space:]]+/pull/[0-9]+$ ]]; then
+        fail_terminal_state "FAILED_INVALID_INPUT" "pr_url is malformed or not a pull request URL"
+      fi
+
+      # Dirty worktree is the first trust boundary. No terminal success is
+      # allowed while uncommitted state might contain real work.
+      if [ -n "$(git status --porcelain)" ]; then
+        fail_terminal_state "FAILED_DIRTY_WORKTREE" "dirty worktree blocks terminal success"
+      fi
+
+      repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
+      repo_owner="${repo_identity%%/*}"
+      repo_name="${repo_identity#*/}"
+
+      pr_json=""
+      pr_target=""
+      pr_lookup_failed="false"
+      if [ -n "$PR_URL_INPUT" ] && [ "$PR_URL_INPUT" != "''" ]; then
+        pr_target="$PR_URL_INPUT"
+      elif [ -n "$PR_NUMBER_INPUT" ] && [ "$PR_NUMBER_INPUT" != "''" ]; then
+        pr_target="$PR_NUMBER_INPUT"
+      fi
+
+      if [ -n "$pr_target" ]; then
+        command -v gh >/dev/null 2>&1 || fail_terminal_state "FAILED_INVALID_INPUT" "gh is required when pr_number or pr_url is provided"
+        if ! pr_json="$(gh_with_retry "pr view" pr view "$pr_target" --json state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,baseRepository,number,url,statusCheckRollup)"; then
+          fail_terminal_state "FAILED_INVALID_INPUT" "unavailable PR metadata for $pr_target"
+        fi
+      elif command -v gh >/dev/null 2>&1; then
+        # Same-branch discovery is exact. If it fails, only clean no-diff can
+        # still prove terminal success without PR metadata.
+        if ! pr_json="$(gh_with_retry "pr list" pr list --head "$BRANCH_INPUT" --state all --json state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,baseRepository,number,url,statusCheckRollup --jq '.[0] // {}')"; then
+          echo "WARNING: gh pr list failed during same-branch PR discovery; meaningful diffs will fail closed" >&2
+          pr_json="{}"
+          pr_lookup_failed="true"
+        fi
+      fi
+
+      if [ -n "$pr_json" ] && [ "$pr_json" != "{}" ]; then
+        mapfile -t pr_fields < <(
+          printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // "", .headRefName // "", .baseRefName // "", .headRefOid // "", (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // ""), (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // ""), (.baseRepository.owner.login // .baseRepository.owner.name // ((.baseRepository.nameWithOwner // "") | split("/") | .[0]) // ""), (.baseRepository.name // ((.baseRepository.nameWithOwner // "") | split("/") | .[-1]) // ""), ([.statusCheckRollup[]? | select((.conclusion? // "") as $c | $c == "FAILURE" or $c == "ERROR" or $c == "TIMED_OUT" or $c == "CANCELLED")] | length | tostring)'
+        )
+        pr_url_result="${pr_fields[0]:-}"
+        pr_number_result="${pr_fields[1]:-}"
+        pr_state="${pr_fields[2]:-}"
+        pr_merged_at="${pr_fields[3]:-}"
+        pr_head="${pr_fields[4]:-}"
+        pr_base="${pr_fields[5]:-}"
+        pr_head_oid="${pr_fields[6]:-}"
+        pr_head_owner="${pr_fields[7]:-}"
+        pr_head_repo="${pr_fields[8]:-}"
+        pr_base_owner="${pr_fields[9]:-}"
+        pr_base_repo="${pr_fields[10]:-}"
+        failing_checks="${pr_fields[11]:-0}"
+        expected_base="$(normalize_base_name "$base_ref")"
+        [ -n "$repo_identity" ] || fail_terminal_state "FAILED_INVALID_INPUT" "unable to determine current GitHub repo identity from origin remote"
+        [ -n "$pr_head" ] || fail_terminal_state "FAILED_INVALID_INPUT" "PR metadata is missing headRefName"
+        [ -n "$pr_base" ] || fail_terminal_state "FAILED_INVALID_INPUT" "PR metadata is missing baseRefName"
+        [ -n "$pr_head_oid" ] || fail_terminal_state "FAILED_INVALID_INPUT" "PR metadata is missing headRefOid"
+        [ -n "$pr_head_owner" ] && [ -n "$pr_head_repo" ] || fail_terminal_state "FAILED_INVALID_INPUT" "PR metadata is missing head repository identity"
+        [ -n "$pr_base_owner" ] && [ -n "$pr_base_repo" ] || fail_terminal_state "FAILED_INVALID_INPUT" "PR metadata is missing base repository identity"
+        if [ "$pr_head" != "$BRANCH_INPUT" ]; then
+          fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: headRefName '$pr_head' does not match branch_name '$BRANCH_INPUT'"
+        fi
+        if [ "$pr_base" != "$expected_base" ]; then
+          fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: baseRefName '$pr_base' does not match base_ref '$expected_base'"
+        fi
+        if [ "$pr_head_oid" != "$local_head" ]; then
+          fail_terminal_state "FAILED_INVALID_INPUT" "stale PR metadata: headRefOid '$pr_head_oid' does not match local HEAD '$local_head'"
+        fi
+        if [ "$pr_head_owner/$pr_head_repo" != "$repo_owner/$repo_name" ] || [ "$pr_base_owner/$pr_base_repo" != "$repo_owner/$repo_name" ]; then
+          fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: PR repo '$pr_head_owner/$pr_head_repo' -> '$pr_base_owner/$pr_base_repo' does not match current repo '$repo_owner/$repo_name'"
+        fi
+
+        if [ "${failing_checks:-0}" -gt 0 ]; then
+          fail_terminal_state "BLOCKED_CI" "real failing checks block terminal success"
+        fi
+
+        if [ "$pr_state" = "MERGED" ] || { [ "$pr_state" = "CLOSED" ] && [ -n "$pr_merged_at" ] && [ "$pr_merged_at" != "null" ]; }; then
+          success_terminal_state "MERGED" "PR is merged or closed-after-merge"
+        fi
+      fi
+
+      # Closed-unmerged PRs are failure unless git proves no meaningful work remains.
+      if [ -n "$pr_json" ] && [ "$pr_json" != "{}" ] && [ "${pr_state:-}" = "CLOSED" ]; then
+        echo "INFO: closed-unmerged PR found; checking obsolete proof" >&2
+        if git diff --quiet "${base_ref}..HEAD"; then
+          branch_diff_status="no-diff"
+          commits_ahead="$(git rev-list --count "${base_ref}..HEAD" 2>/dev/null || echo "0")"
+          success_terminal_state "CLOSED_OBSOLETE" "closed-unmerged PR is obsolete because no meaningful diff remains"
+        fi
+        fail_terminal_state "FAILED_CLOSED_UNMERGED" "closed-unmerged PR still has meaningful diff"
+      fi
+
+      if git diff --quiet "${base_ref}..HEAD"; then
+        branch_diff_status="no-diff"
+        commits_ahead="$(git rev-list --count "${base_ref}..HEAD" 2>/dev/null || echo "0")"
+        if [ "$commits_ahead" = "0" ]; then
+          success_terminal_state "NO_DIFF_SUCCESS" "clean branch has no meaningful diff or commits against base"
+        fi
+        success_terminal_state "CLOSED_OBSOLETE" "branch is superseded upstream: no meaningful diff remains despite local commits"
+      fi
+
+      branch_diff_status="has-diff"
+      commits_ahead="$(git rev-list --count "${base_ref}..HEAD" 2>/dev/null || echo "0")"
+      if [ "$pr_lookup_failed" = "true" ]; then
+        fail_terminal_state "FAILED_PR_METADATA_UNAVAILABLE" "unavailable PR metadata for branch '$BRANCH_INPUT'; refusing to continue with meaningful diff"
+      fi
+      if [ "$GOAL_ALREADY_MET_INPUT" = "true" ]; then
+        fail_terminal_state "FAILED_MEANINGFUL_DIFF" "goal_already_met=true is ambiguous because meaningful unmerged diff remains"
+      fi
+
+      terminal_success="false"
+      terminal_state="FOLLOWUP_CREATED"
+      terminal_reason="meaningful unmerged work remains; follow-up publish should continue"
+      publish_status="FOLLOWUP_CREATED"
+      should_publish="true"
+      should_finalize="true"
+      should_run_ci_wait="true"
+      should_merge="true"
+      emit_terminal_state
+    output: "terminal_state"
