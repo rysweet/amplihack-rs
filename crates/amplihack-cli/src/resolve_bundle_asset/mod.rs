@@ -520,7 +520,6 @@ mod cli_dispatch_tests {
     //! parses correctly and that recipes don't regress to the old legacy
     //! runtime-asset invocation.
     use crate::{Cli, Commands};
-    use clap::Parser;
 
     #[test]
     fn parses_named_asset_argument() {
