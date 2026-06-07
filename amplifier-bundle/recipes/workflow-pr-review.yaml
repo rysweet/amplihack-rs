@@ -46,7 +46,7 @@ steps:
     prompt: |
       # Step 17b: Comprehensive Code Review (MANDATORY)
 
-      **PR URL:** {{pr_url}}
+      **PR URL:** {{pr_publish_result.pr_url}}
       **Requirements:** {{final_requirements}}
       **Implementation:** {{review_feedback}}
 
@@ -71,7 +71,7 @@ steps:
     prompt: |
       # Step 17c: Security Review (MANDATORY)
 
-      **PR URL:** {{pr_url}}
+      **PR URL:** {{pr_publish_result.pr_url}}
       **Implementation:** {{review_feedback}}
       **Previous Review:** {{pr_review}}
 
@@ -94,7 +94,7 @@ steps:
     prompt: |
       # Step 17d: Philosophy Guardian Review (MANDATORY)
 
-      **PR URL:** {{pr_url}}
+      **PR URL:** {{pr_publish_result.pr_url}}
       **Implementation:** {{review_feedback}}
       **Code Review:** {{pr_review}}
 

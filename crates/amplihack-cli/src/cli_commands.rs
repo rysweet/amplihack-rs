@@ -5,8 +5,8 @@ use clap_complete::Shell;
 use std::path::PathBuf;
 
 use super::{
-    BuilderCommands, MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands,
-    QueryCodeCommands, RecipeCommands, ReflectCommands, RemoteCommands,
+    BuilderCommands, HygieneCommands, MemoryCommands, ModeCommands, MultitaskCommands,
+    PluginCommands, QueryCodeCommands, RecipeCommands, ReflectCommands, RemoteCommands,
 };
 
 #[derive(Subcommand, Debug)]
@@ -211,6 +211,11 @@ pub enum Commands {
     Builder {
         #[command(subcommand)]
         command: BuilderCommands,
+    },
+    /// Conservative local cleanup automation
+    Hygiene {
+        #[command(subcommand)]
+        command: HygieneCommands,
     },
     /// Remote execution and detached session management
     Remote {

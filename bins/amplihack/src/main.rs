@@ -7,7 +7,6 @@ use amplihack_cli::Cli;
 use amplihack_cli::command_error;
 use amplihack_cli::commands;
 use amplihack_cli::update;
-use clap::Parser;
 
 fn main() {
     tracing_subscriber::fmt()

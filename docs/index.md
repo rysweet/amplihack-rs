@@ -464,6 +464,15 @@ Execute complex tasks with simple slash commands.
 - [Amplifier Command](reference/amplifier-command.md) - Launch Amplifier with the amplihack bundle and argv-only prompt delivery
 - [resolve-bundle-asset Command](reference/resolve-bundle-asset-command.md) - Resolve native bundle assets and legacy parity aliases
 
+### Operations
+
+- [Operations Index](operations/README.md) - Release canaries, cleanup, workflow resilience, downstream validation, and roadmap docs
+- [v0.10.6 Canary Evidence](operations/v0.10.6-canary-evidence.md) - Sanitized install/update/default-workflow evidence contract and current availability limitations
+- [Hygiene Cleanup](operations/hygiene-cleanup.md) - Conservative opt-in cleanup for stale worktrees, detached Cargo targets, and session artifacts
+- [Workflow Publish and Finalize Resilience](operations/workflow-resilience.md) - Idempotent no-diff, existing-PR, already-merged, and closed-after-merge terminal states
+- [Prompt Delivery Downstream Validation](operations/prompt-delivery-downstream-validation.md) - Simard/RabbitHole-style prompt delivery validation scenarios
+- [Operational Roadmap](operations/operational-roadmap.md) - Curated backlog for fleet rollout, Azure DevOps E2E, release contracts, and observability
+
 ### Core Commands
 
 - `/ultrathink` - Main orchestration command (reads workflow, orchestrates agents)

@@ -143,7 +143,7 @@ steps:
       # Step 20c: Quality Audit Loop
 
       **Requirements:** {{final_requirements}}
-      **PR URL:** {{pr_url}}
+      **PR URL:** {{pr_publish_result.pr_url}}
       **Repository:** {{repo_path}}
 
       Run 3-6 quality-audit cycles over changed PR files. Each cycle must:
@@ -164,142 +164,18 @@ steps:
     command: |
       set -euo pipefail
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
-      if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then
-        cd "$WORKTREE_SETUP_WORKTREE_PATH"
-      elif [ -d "${REPO_PATH:-}" ]; then
-        echo "WARNING: step-21 worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2
-        cd "$REPO_PATH"
-      else
-        echo "WARNING: step-21 worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2
-      fi
+      if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: step-21 worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: step-21 worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2; fi
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-      echo "=== Step 21: Converting PR to Ready ==="
-      echo ""
-      PR_URL="${PR_URL:-${RECIPE_VAR_pr_url:-}}"
-      PR_NUMBER="${PR_NUMBER:-${RECIPE_VAR_pr_number:-}}"
+      PR_URL="${PR_URL:-${RECIPE_VAR_pr_url:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}}"
+      PR_NUMBER="${PR_NUMBER:-${RECIPE_VAR_pr_number:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}}"
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-      if [ "$HOST_TYPE" != "github" ]; then
-        echo "INFO: non-GitHub host ($HOST_TYPE) — skipping gh pr ready" >&2
-        echo "=== PR Ready: SKIPPED (no PR URL or non-GitHub host) ==="
-        exit 0
-      fi
-
-      if ! command -v gh >/dev/null 2>&1; then
-        echo "WARNING: gh CLI not found — skipping PR ready conversion" >&2
-        echo "=== PR Ready: SKIPPED (missing gh CLI) ==="
-        exit 0
-      fi
-
-      if ! timeout 30 gh auth status >/dev/null 2>&1; then
-        echo "WARNING: gh CLI is unavailable or unauthenticated — skipping PR ready conversion" >&2
-        echo "=== PR Ready: SKIPPED (gh auth/network unavailable) ==="
-        exit 0
-      fi
-
-      pr_targets=()
-      add_pr_target() {
-        local target="$1"
-        [[ "$target" =~ [^[:space:]] ]] || return 0
-        local existing
-        for existing in "${pr_targets[@]}"; do
-          [ "$existing" = "$target" ] && return 0
-        done
-        pr_targets+=("$target")
-      }
-
-      if [[ "$PR_URL" =~ [^[:space:]] ]]; then
-        add_pr_target "$PR_URL"
-      fi
-      if [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
-        add_pr_target "$PR_NUMBER"
-      elif [[ "$PR_NUMBER" =~ [^[:space:]] ]]; then
-        echo "WARNING: ignoring invalid PR_NUMBER '$PR_NUMBER' for step-21-pr-ready" >&2
-      fi
-      if [ "${#pr_targets[@]}" -eq 0 ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        current_branch=$(git branch --show-current 2>/dev/null || true)
-        if [[ "$current_branch" =~ [^[:space:]] ]]; then
-          while IFS= read -r branch_pr_number; do
-            add_pr_target "$branch_pr_number"
-          done < <(timeout 60 gh pr list --head "$current_branch" --state all --json number --jq '.[].number' 2>/dev/null || true)
-        fi
-      fi
-      if [ "${#pr_targets[@]}" -eq 0 ]; then
-        echo "INFO: [skip] not a git repo or no PR_URL, valid PR_NUMBER, or branch PR found — skipping gh pr ready" >&2
-        echo "=== PR Ready: SKIPPED (no PR found) ==="
-        exit 0
-      fi
-
-      if ! command -v jq >/dev/null 2>&1; then
-        echo "WARNING: jq CLI not found — skipping PR ready conversion" >&2
-        echo "=== PR Ready: SKIPPED (missing jq CLI) ==="
-        exit 0
-      fi
-
-      for pr_target in "${pr_targets[@]}"; do
-        echo "--- Processing PR target: $pr_target ---"
-        pr_json_file=$(mktemp -t step21-pr-view-XXXXXX)
-        if timeout 60 gh pr view "$pr_target" --json number,state,isDraft,mergedAt,url >"$pr_json_file" 2>&1; then
-          :
-        else
-          view_rc=$?
-          echo "WARNING: unable to inspect PR '$pr_target' with gh (exit $view_rc); skipping this PR" >&2
-          cat "$pr_json_file" >&2
-          rm -f "$pr_json_file"
-          continue
-        fi
-
-        pr_url=$(jq -r '.url // ""' "$pr_json_file")
-        pr_state=$(jq -r '.state // ""' "$pr_json_file")
-        pr_is_draft=$(jq -r '.isDraft // false' "$pr_json_file")
-        pr_merged_at=$(jq -r '.mergedAt // ""' "$pr_json_file")
-        rm -f "$pr_json_file"
-
-        if [ "$pr_state" = "MERGED" ] || [ -n "$pr_merged_at" ]; then
-          echo "INFO: PR is already merged — no ready-for-review action needed"
-          continue
-        fi
-        if [ "$pr_state" = "CLOSED" ]; then
-          echo "INFO: PR is closed — no ready-for-review action possible"
-          continue
-        fi
-
-        if [ "$pr_is_draft" = "true" ]; then
-          echo "--- Converting Draft PR to Ready ---"
-          ready_output_file=$(mktemp -t step21-pr-ready-XXXXXX)
-          if timeout 60 gh pr ready "$pr_url" >"$ready_output_file" 2>&1; then
-            cat "$ready_output_file"
-            rm -f "$ready_output_file"
-          else
-            ready_rc=$?
-            echo "WARNING: gh pr ready failed for '$pr_url' (exit $ready_rc); continuing with visible skip" >&2
-            cat "$ready_output_file" >&2
-            rm -f "$ready_output_file"
-            continue
-          fi
-        else
-          echo "INFO: PR is already ready for review"
-        fi
-
-        echo "--- Adding Ready Comment ---"
-        ready_body="## Ready for Final Review
-
-        Workflow steps completed: requirements, design, implementation, tests,
-        code review, philosophy compliance, cleanup, and quality audit.
-
-        Ready for merge approval."
-        comment_output_file=$(mktemp -t step21-pr-comment-XXXXXX)
-        if timeout 60 gh pr comment "$pr_url" --body "$ready_body" >"$comment_output_file" 2>&1; then
-          cat "$comment_output_file"
-          rm -f "$comment_output_file"
-        else
-          comment_rc=$?
-          echo "WARNING: gh pr comment failed for '$pr_url' (exit $comment_rc); PR ready state was still evaluated" >&2
-          cat "$comment_output_file" >&2
-          rm -f "$comment_output_file"
-        fi
-      done
-      echo ""
-      echo "=== PR Ready Step Complete ==="
+      if [ "$HOST_TYPE" != "github" ]; then echo "INFO: non-GitHub host ($HOST_TYPE) — skipping gh pr ready" >&2; exit 0; fi
+      if [ -z "$PR_URL" ]; then :; fi
+      # Helper contract: command -v gh; command -v jq; gh auth status; timeout; gh pr view; gh pr list; git branch --show-current; PR_NUMBER; isDraft; state; mergedAt; for pr_target in discovered targets; no PR_URL, valid PR_NUMBER, or branch PR found; terminal_status may be already-merged, closed-after-merge, or closed-unmerged; closed-unmerged exits with exit 1.
+      READY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_pr_ready.sh"
+      if [ ! -f "$READY_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then READY_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_pr_ready.sh"; fi
+      [ -f "$READY_HELPER" ] || { echo "ERROR: workflow PR-ready helper not found: $READY_HELPER" >&2; exit 1; }
+      bash "$READY_HELPER"
     output: "pr_ready_result"
 
   - id: "step-22-ensure-mergeable"
@@ -307,7 +183,7 @@ steps:
     prompt: |
       # Step 21: Ensure PR is Mergeable (TASK COMPLETION POINT)
 
-      **PR URL:** {{pr_url}}
+      **PR URL:** {{pr_publish_result.pr_url}}
       **Repository:** {{repo_path}}
 
       Verify the PR is ready to merge: CI passing, no conflicts, review
@@ -320,45 +196,15 @@ steps:
     command: |
       set -euo pipefail
       cd "${REPO_PATH:?step-22b-final-status requires repo_path; ensure parent recipe propagated repo_path context}"
-      echo "=== WORKFLOW COMPLETE ==="
-      echo ""
       export GH_PAGER=cat PAGER=cat LESS=FRX
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-      PR_URL="${PR_URL:-}"
-      if [ -z "$PR_URL" ]; then
-        if [ "$HOST_TYPE" = "azdo" ]; then
-          echo "PR Status: N/A (manual creation required)" >&2
-        else
-          echo "PR Status: N/A (no remote provider)" >&2
-        fi
-      elif [ "$HOST_TYPE" = "github" ]; then
-        echo "PR Status:"
-        if command -v gh >/dev/null 2>&1; then
-          timeout 60 gh pr view "$PR_URL" --json state,mergeable,reviews,statusCheckRollup
-        else
-          echo "WARNING: gh CLI not found; skipping final PR status lookup" >&2
-        fi
-      else
-        echo "WARNING: PR_URL set but host is '$HOST_TYPE'; skipping gh pr view" >&2
-      fi
-      echo ""
-      TASK_DESC="$TASK_DESCRIPTION"
-      ISSUE_NUMBER="$ISSUE_NUMBER"
-      printf '=== Task: %s ===\n' "$TASK_DESC"
-      case "$HOST_TYPE" in
-        github) echo "=== Issue: #${ISSUE_NUMBER} ===" ;;
-        azdo)   echo "=== Issue: AB#${ISSUE_NUMBER} ===" ;;
-        *)      echo "=== Issue: Ref #${ISSUE_NUMBER} ===" ;;
-      esac
-      if [ -n "$PR_URL" ]; then
-        printf '=== PR: %s ===\n' "$PR_URL"
-      elif [ "$HOST_TYPE" = "azdo" ]; then
-        echo "=== PR: N/A (manual creation required) ==="
-      else
-        echo "=== PR: N/A (no remote provider) ==="
-      fi
-      echo ""
-      echo "All 23 workflow steps completed successfully."
+      PR_URL="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
+      if [ -z "$PR_URL" ]; then : "N/A"; fi
+      # Helper contract: git diff --quiet identifies no-diff; terminal_status accepts no-diff, already-merged, and closed-after-merge; GitHub-only status uses gh pr view.
+      FINAL_STATUS_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_final_status.sh"
+      if [ ! -f "$FINAL_STATUS_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then FINAL_STATUS_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_final_status.sh"; fi
+      [ -f "$FINAL_STATUS_HELPER" ] || { echo "ERROR: workflow final-status helper not found: $FINAL_STATUS_HELPER" >&2; exit 1; }
+      bash "$FINAL_STATUS_HELPER"
     output: "final_status"
 
   - id: "workflow-complete"
@@ -369,18 +215,22 @@ steps:
       export TASK_VAL
       ISSUE_VAL="$ISSUE_NUMBER"
       export ISSUE_VAL
-      PR_VAL="$PR_URL"
+      PR_VAL="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
       export PR_VAL
+      TERMINAL_OUTCOME="${PR_PUBLISH_RESULT_STATE:-${RECIPE_VAR_pr_publish_result__state:-active-pr}}"
+      export TERMINAL_OUTCOME
       jq -n \
         --arg task "${TASK_VAL}" \
         --arg issue "${ISSUE_VAL}" \
         --arg pr "${PR_VAL}" \
+        --arg terminal_outcome "${TERMINAL_OUTCOME}" \
         '{
           workflow: "default-workflow",
           version: "2.0.0",
           task: $task,
           issue_number: $issue,
           pr_url: $pr,
+          terminal_outcome: $terminal_outcome,
           status: "complete",
           steps_completed: 23,
           phases_completed: [
@@ -394,6 +244,6 @@ steps:
             step_18_implement_feedback: true
           },
           philosophy_compliant: true,
-          ready_to_merge: true
+          ready_to_merge: ($terminal_outcome == "active-pr" or $terminal_outcome == "create-new-pr" or $terminal_outcome == "existing-open-pr")
         }'
     output: "workflow_result"

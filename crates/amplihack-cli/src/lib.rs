@@ -83,8 +83,9 @@ pub const VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
 
 pub use cli_commands::Commands;
 pub use cli_subcommands::{
-    BuilderCommands, MemoryCommands, ModeCommands, MultitaskCommands, PluginCommands,
-    QueryCodeCommands, RecipeCommands, ReflectCommands, RemoteCommands,
+    BuilderCommands, HygieneCleanupArgs, HygieneCommands, MemoryCommands, ModeCommands,
+    MultitaskCommands, PluginCommands, QueryCodeCommands, RecipeCommands, ReflectCommands,
+    RemoteCommands,
 };
 
 fn graph_db_backend_value_parser() -> PossibleValuesParser {
@@ -113,6 +114,60 @@ fn raw_db_format_value_parser() -> PossibleValuesParser {
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
+}
+
+impl Cli {
+    pub fn try_parse_from<I, T>(itr: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        let cli = <Self as Parser>::try_parse_from(itr)?;
+        cli.validate_hygiene_cleanup()?;
+        Ok(cli)
+    }
+
+    pub fn parse_from<I, T>(itr: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        match Self::try_parse_from(itr) {
+            Ok(cli) => cli,
+            Err(error) => error.exit(),
+        }
+    }
+
+    fn validate_hygiene_cleanup(&self) -> Result<(), clap::Error> {
+        if let Commands::Hygiene {
+            command:
+                HygieneCommands::Cleanup(HygieneCleanupArgs {
+                    worktrees,
+                    cargo_targets,
+                    sessions,
+                    all,
+                    apply,
+                    older_than,
+                    ..
+                }),
+        } = &self.command
+        {
+            let has_category = *all || *worktrees || *cargo_targets || *sessions;
+            if *apply && !has_category {
+                return Err(clap::Error::raw(
+                    clap::error::ErrorKind::MissingRequiredArgument,
+                    "hygiene cleanup --apply requires at least one cleanup category: --worktrees, --cargo-targets, or --sessions",
+                ));
+            }
+            if *apply && older_than.is_none() {
+                return Err(clap::Error::raw(
+                    clap::error::ErrorKind::MissingRequiredArgument,
+                    "hygiene cleanup --apply requires an --older-than guardrail before deleting files",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 pub mod memory {

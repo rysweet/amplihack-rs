@@ -176,189 +176,25 @@ steps:
     condition: "goal_already_met != 'true' && commit_result.pushed == 'true'"
     command: |
       set -euo pipefail
-      export GIT_PAGER=cat
-      export PAGER=cat
-      export LESS=FRX
+      export GIT_PAGER=cat PAGER=cat LESS=FRX
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-16 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
-      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "ERROR: step-16-create-draft-pr requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
-        exit 1
-      fi
-      # Security: refuse to create PR from protected branches (guards REPO_PATH fallback)
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "ERROR: step-16-create-draft-pr requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2; exit 1; }
       _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
       if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; then echo "ERROR: step-16 landed on protected branch '$_CURRENT_BRANCH' — refusing to create PR. Worktree setup likely failed." >&2; exit 1; fi
-      echo "=== Step 16: Creating Draft PR ===" >&2
-
-      # FIX #684: Consume REMOTE_HOST_TYPE from step-02d — skip PR creation for non-GitHub
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-      if [ "$HOST_TYPE" != "github" ]; then
-          echo "INFO: Non-GitHub remote ($HOST_TYPE) — skipping draft PR creation" >&2
-          printf ''
-          exit 0
-      fi
-
-      # Idempotency guard: detect pre-existing PRs before creating one.
-      CURRENT_BRANCH=$(git branch --show-current)
-      ISSUE_NUM="$ISSUE_NUMBER"
-
-      if ! [[ "$ISSUE_NUM" =~ ^[0-9]+$ ]]; then echo "ERROR: issue_number is not numeric: $ISSUE_NUM" >&2; exit 1; fi
-      if ! command -v gh >/dev/null 2>&1; then echo "ERROR: step-16-create-draft-pr requires the GitHub CLI ('gh') on PATH." >&2; exit 127; fi
-
-      sanitize_gh_stderr() {
-          sed -E 's#https://[^@[:space:]]+@#https://REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
-      }
-
-      is_transient_gh_error() {
-          [ -s "$1" ] && grep -Eiq 'HTTP 5[0-9][0-9]|(^|[^0-9])(502|503|504)([^0-9]|$)|rate limit|timed out|timeout|temporar|connection reset|connection refused|TLS handshake|network|server error' "$1"
-      }
-
-      gh_pr_list_or_empty() {
-          local stderr_file
-          local output
-          local status
-          local attempt
-          local delay=1
-          local max_attempts=3
-
-          for attempt in 1 2 3; do
-              stderr_file=$(mktemp -t step16-gh-pr-list-XXXXXX)
-              if output=$(gh pr list "$@" 2>"$stderr_file"); then
-                  rm -f "$stderr_file"
-                  printf '%s\n' "$output"
-                  return 0
-              fi
-              status=$?
-
-              if [ "$attempt" -lt "$max_attempts" ] && is_transient_gh_error "$stderr_file"; then
-                  echo "WARNING: gh pr list failed transiently (exit ${status}); retrying (${attempt}/${max_attempts}): $(sanitize_gh_stderr "$stderr_file")" >&2
-                  rm -f "$stderr_file"
-                  sleep "$delay"
-                  delay=$((delay * 2))
-                  continue
-              fi
-
-              echo "WARNING: gh pr list failed (exit ${status}); continuing as if no existing PR was found." >&2
-              if [ -s "$stderr_file" ]; then
-                  echo "gh pr list stderr: $(sanitize_gh_stderr "$stderr_file")" >&2
-              fi
-              rm -f "$stderr_file"
-              printf '\n'
-              return 0
-          done
-      }
-
-      gh_pr_create_with_retry() {
-          local stderr_file
-          local output
-          local status
-          local attempt
-          local delay=1
-          local max_attempts=3
-
-          for attempt in 1 2 3; do
-              stderr_file=$(mktemp -t step16-gh-pr-create-XXXXXX)
-              if output=$(gh pr create --draft --title "$PR_TITLE" --body "$PR_BODY" 2>"$stderr_file"); then
-                  rm -f "$stderr_file"
-                  printf '%s\n' "$output"
-                  return 0
-              fi
-              status=$?
-
-              if [ "$attempt" -lt "$max_attempts" ] && is_transient_gh_error "$stderr_file"; then
-                  echo "WARNING: gh pr create failed transiently (exit ${status}); retrying (${attempt}/${max_attempts}): $(sanitize_gh_stderr "$stderr_file")" >&2
-                  rm -f "$stderr_file"
-                  sleep "$delay"
-                  delay=$((delay * 2))
-                  continue
-              fi
-
-              echo "ERROR: gh pr create failed (exit $status) — PR may already exist for this branch or GitHub API is unavailable" >&2
-              if [ -s "$stderr_file" ]; then
-                  echo "gh pr create stderr: $(sanitize_gh_stderr "$stderr_file")" >&2
-              fi
-              rm -f "$stderr_file"
-              return "$status"
-          done
-      }
-
-      resolve_pr_base_ref() {
-          local candidate
-
-          candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-          if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
-              printf '%s\n' "$candidate"
-              return 0
-          fi
-
-          git remote set-head origin -a >/dev/null 2>&1 || true
-          candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-          if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
-              printf '%s\n' "$candidate"
-              return 0
-          fi
-
-          for candidate in origin/master origin/develop; do
-              if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
-                  printf '%s\n' "$candidate"
-                  return 0
-              fi
-          done
-
-          echo "ERROR: no supported remote base ref found. Expected origin/HEAD, origin/master, or origin/develop." >&2
-          return 1
-      }
-
-      # gh pr list failures are explicit but non-blocking; empty means no PR found.
-      EXISTING_PR=$(gh_pr_list_or_empty --head "$CURRENT_BRANCH" --json url --jq '.[0].url // ""')
-
-      if [ -z "$EXISTING_PR" ]; then
-          EXISTING_PR=$(gh_pr_list_or_empty --json url,headRefName --jq "[.[] | select(.headRefName | test(\"issue-$ISSUE_NUM\"))] | .[0].url // \"\"")
-      fi
-
-      if [ -n "$EXISTING_PR" ]; then
-          echo "INFO: PR already exists — skipping creation" >&2
-          echo "Existing PR: $EXISTING_PR" >&2
-          printf '%s\n' "$EXISTING_PR"
-          exit 0
-      fi
-
-      BASE_REF="$(resolve_pr_base_ref)"
-      BASE_BRANCH="${BASE_REF#origin/}"
-      COMMITS_AHEAD=$(git rev-list --count "${BASE_REF}..HEAD" 2>/dev/null || echo "0")
-
-      if [ "$COMMITS_AHEAD" -eq 0 ]; then
-          echo "ERROR: 0 commits ahead of ${BASE_BRANCH} and no related PR found for issue-$ISSUE_NUM." >&2
-          echo "This is a hollow-success condition: the workflow ran but produced no commits." >&2
-          echo "Possible causes:" >&2
-          echo "  1. step-15-commit-push failed silently (check commit_result output)" >&2
-          echo "  2. Implementation agents wrote files outside the worktree" >&2
-          echo "  3. Work was done on a different branch" >&2
-          git --no-pager log --oneline -5 >&2
-          exit 1
-      fi
-
-      CHANGED_FILES=$(git diff --name-only "${BASE_REF}..HEAD" 2>/dev/null | head -40 || true)
-      CHANGED_COUNT=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d' | wc -l | tr -d ' ')
-      DIFF_STAT=$(git diff --stat "${BASE_REF}..HEAD" 2>/dev/null | tail -20 || true)
-      RECENT_COMMITS=$(git log --oneline --no-decorate "${BASE_REF}..HEAD" -6 2>/dev/null || true)
-      FIRST_CHANGED=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d' | head -1)
-      case "$FIRST_CHANGED" in amplifier-bundle/recipes/*) PR_SCOPE="workflow recipes" ;; crates/amplihack-cli/*) PR_SCOPE="amplihack CLI" ;; crates/*) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f2)" ;; tests/*) PR_SCOPE="regression coverage" ;; docs/*) PR_SCOPE="documentation" ;; "") PR_SCOPE="workflow changes" ;; *) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f1)" ;; esac
-      if [ "$CHANGED_COUNT" -gt 1 ]; then PR_TITLE="Update ${PR_SCOPE} with ${CHANGED_COUNT} changed files"; else PR_TITLE="Update ${PR_SCOPE}"; fi
-      PR_TITLE="${PR_TITLE} (#${ISSUE_NUM})"
-      PR_TITLE="${PR_TITLE:0:200}"
-      CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d; s/^/- /')
-      [ -n "$CHANGED_FILES_BODY" ] || CHANGED_FILES_BODY="- No changed files detected by git diff"
-      VALIDATION_SOURCE="${LOCAL_TESTING_GATE:-${local_testing_gate:-${PRECOMMIT_RESULTS:-${precommit_results:-}}}}"
-      if [ -n "$VALIDATION_SOURCE" ]; then VALIDATION_BODY=$(printf '%s\n' "$VALIDATION_SOURCE" | sed -n '1,12p'); else VALIDATION_BODY="step-13 local testing gate is expected before ready-for-review; no structured step-13 output was available to step-16."; fi
-      if [ -n "$RECENT_COMMITS" ]; then BEHAVIOR_BODY=$(printf 'Implemented behavior through these branch commits:\n%s' "$RECENT_COMMITS"); else BEHAVIOR_BODY="Branch is ${COMMITS_AHEAD} commit(s) ahead of ${BASE_BRANCH}; behavior impact is represented by the changed files and diff stat."; fi
-      case "$CHANGED_FILES" in *amplifier-bundle/recipes/*) RISK_BODY="Workflow behavior changed; review recipe gates and regression coverage carefully." ;; *crates/amplihack-cli/*) RISK_BODY="CLI behavior changed; verify command help, exit codes, and JSON/table output contracts." ;; *) RISK_BODY="No high-risk subsystem pattern detected from changed paths." ;; esac
-      DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
-      # Host-aware PR body (only reached for GitHub due to early exit above)
-      ISSUE_LINK="Closes #${ISSUE_NUM}"
-      PR_BODY=$(printf '## Summary\nConcise workflow-generated PR for %s.\n\n## Issue\n%s\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n\n## Behavior\n%s\n\n## Validation\n%s\n\n## Risk\n%s\n\n## Checklist\n- [x] Branch has %s commit(s) ahead of %s\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$PR_SCOPE" "$ISSUE_LINK" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY" "$BEHAVIOR_BODY" "$VALIDATION_BODY" "$RISK_BODY" "$COMMITS_AHEAD" "$BASE_BRANCH")
-      gh_pr_create_with_retry
-    output: "pr_url"
+      if [ "$HOST_TYPE" != "github" ]; then :; fi
+      # Contract implemented by workflow_publish_pr.sh: --state all; gh pr view; headRefName; headRefOid; mergedAt; git diff --quiet; terminal_status; non-github.
+      # Base-ref contract: resolve_pr_base_ref checks refs/remotes/origin/HEAD, runs git remote set-head origin -a, falls back through origin/master origin/develop, and fails with ERROR: no supported remote base ref found.
+      # Metadata contract: ISSUE_NUM, git diff, git log, git diff --name-only, Changed files, Validation, Behavior, Risk, and step-13 shape PR title/body context.
+      # PUBLISH_STATE="no-diff"; PUBLISH_STATE="existing-open-pr"; PUBLISH_STATE="already-merged"; PUBLISH_STATE="closed-after-merge"; PUBLISH_STATE="closed-unmerged-with-diff".
+      # gh_pr_create_with_retry is called by the helper only after PUBLISH_STATE classification.
+      PUBLISH_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_publish_pr.sh"
+      if [ ! -f "$PUBLISH_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then PUBLISH_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_publish_pr.sh"; fi
+      [ -f "$PUBLISH_HELPER" ] || { echo "ERROR: workflow publish helper not found: $PUBLISH_HELPER" >&2; exit 1; }
+      bash "$PUBLISH_HELPER"
+    output: "pr_publish_result"
+    parse_json: true
 
   - id: "step-16b-outside-in-fix-loop"
     agent: "amplihack:builder"
@@ -370,7 +206,7 @@ steps:
        Test from the PR branch as a user would, fix failures, and update the PR.
 
        **Task:** {{task_description}}
-       **PR URL:** {{pr_url}}
+       **PR URL:** {{pr_publish_result.pr_url}}
 
        Required:
        1. Get branch and remote with `git branch --show-current` and `git remote get-url origin`.

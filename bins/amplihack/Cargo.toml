@@ -112,6 +112,18 @@ name = "workflow_publish_pr_metadata"
 path = "../../tests/integration/workflow_publish_pr_metadata_test.rs"
 
 [[test]]
+name = "workflow_publish_resilience"
+path = "../../tests/integration/workflow_publish_resilience.rs"
+
+[[test]]
+name = "workflow_finalize_resilience"
+path = "../../tests/integration/workflow_finalize_resilience.rs"
+
+[[test]]
+name = "hygiene_cleanup"
+path = "../../tests/integration/hygiene_cleanup.rs"
+
+[[test]]
 name = "doctor_node_remediation"
 path = "../../tests/integration/doctor_node_remediation_test.rs"
 # Consensus-workflow decomposition parity tests.
