@@ -23,6 +23,10 @@ fn read_doc(relative: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
 }
 
+fn doc_exists(relative: &str) -> bool {
+    workspace_root().join(relative).exists()
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // D1: launch-flag-injection.md — drift fixes
 // ═══════════════════════════════════════════════════════════════════════════
@@ -752,6 +756,54 @@ mod mkdocs_navigation {
             assert!(
                 reference_section.contains(doc_file),
                 "'{doc_file}' must be in the Reference section of mkdocs.yml nav"
+            );
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Docs site recovery: top-level README/index conflicts and operations entry
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod docs_site_recovery {
+    use super::*;
+
+    #[test]
+    fn top_level_docs_readme_does_not_conflict_with_index() {
+        assert!(
+            doc_exists("docs/index.md"),
+            "docs/index.md must remain the MkDocs landing page"
+        );
+        assert!(
+            !doc_exists("docs/README.md"),
+            "docs/README.md must not exist because MkDocs treats README.md as an index alias \
+             and strict builds exclude it when docs/index.md is present"
+        );
+    }
+
+    #[test]
+    fn operations_entrypoint_remains_discoverable_from_docs_index() {
+        assert!(
+            doc_exists("docs/operations/README.md"),
+            "docs/operations/README.md must exist as the operations documentation entry point"
+        );
+
+        let index = read_doc("docs/index.md");
+        assert!(
+            index.contains("operations/README.md"),
+            "docs/index.md must link to docs/operations/README.md so deleting the top-level \
+             docs/README.md does not remove operations-doc discoverability"
+        );
+
+        let operations = read_doc("docs/operations/README.md");
+        for expected_link in [
+            "../AUTO_MODE.md",
+            "../AUTOMODE_SAFETY.md",
+            "../PR_RECOVERY_READINESS.md",
+        ] {
+            assert!(
+                operations.contains(expected_link),
+                "docs/operations/README.md must preserve operational guidance link {expected_link}"
             );
         }
     }

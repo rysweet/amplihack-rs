@@ -2,7 +2,7 @@
 
 Operational documentation covers release canaries, workflow terminal-state
 behavior, conservative local cleanup, downstream validation, and the curated
-roadmap for rollout work.
+roadmap for rollout work, autonomous mode, and PR recovery readiness.
 
 ## Runbooks and references
 
@@ -13,6 +13,9 @@ roadmap for rollout work.
 | [Workflow Publish and Finalize Resilience](workflow-resilience.md) | Idempotent publish/finalize behavior for no-diff, already-merged, closed-after-merge, and existing-PR states. |
 | [Prompt Delivery Downstream Validation](prompt-delivery-downstream-validation.md) | Simard/RabbitHole-style delegated workflow validation against prompt delivery behavior. |
 | [Operational Roadmap](operational-roadmap.md) | Curated backlog for fleet rollout, Azure DevOps E2E, release contract monitoring, and workflow observability. |
+| [Auto Mode](../AUTO_MODE.md) | Autonomous multi-turn execution. |
+| [Auto Mode Safety](../AUTOMODE_SAFETY.md) | Safety guardrails and approval boundaries for autonomous execution. |
+| [PR Recovery Readiness](../PR_RECOVERY_READINESS.md) | Existing-PR recovery readiness contract. |
 
 ## Operating principles
 
