@@ -45,6 +45,85 @@ You can customize this workflow by editing this file.
 - CI/CD integration points
 - Review and merge requirements
 
+`default-workflow` is also idempotent around completed or obsolete work. Before
+publish, PR review, CI waiting, or merge can mutate Git or GitHub state, the
+workflow evaluates a terminal-state contract. Finalization remains the
+non-mutating arbiter that records the final decision. A proven terminal success
+stops the remaining mutation path instead of creating duplicate commits,
+duplicate follow-up PRs, or stale post-merge publish attempts.
+
+### Terminal-State Contract
+
+`workflow-terminal-state` is the evidence gate shared by publish, PR review, and
+finalize. It returns these outputs:
+
+| Output | Meaning |
+| --- | --- |
+| `terminal_success` | `true` only when the workflow can stop successfully without publishing more work. |
+| `terminal_state` | Stable status such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, or `BLOCKED_CI`. |
+| `terminal_reason` | Human-readable evidence for the decision. |
+| `publish_status` | Publish-facing status using the same vocabulary as the terminal state. |
+| `should_publish` | `true` only when meaningful unmerged work should be committed, pushed, and represented by a PR. |
+| `should_finalize` | `true` when the workflow should route to finalize so it can emit the non-mutating final decision; `false` when no finalize phase is part of the current path. |
+| `should_run_ci_wait` | `true` only when CI should be waited on for an active publish path. |
+| `should_merge` | `true` only when merge remains valid for green, active work. |
+
+The probe fails closed. It validates these context inputs before trusting shell
+or GitHub CLI output:
+
+| Input | Requirement |
+| --- | --- |
+| `repo_path` | Existing Git repository used for all local diff and status checks. |
+| `branch_name` | Current or expected branch ref; malformed refs block terminal success. |
+| `base_ref` | Intended comparison base, usually the resolved remote default branch. |
+| `pr_number` | Numeric PR identifier when recovery is tied to an existing PR. |
+| `pr_url` | Same-repository PR URL when a URL is supplied instead of `pr_number`. |
+| `goal_already_met` | Optional design evidence; never overrides dirty, diff, PR, or CI blockers. |
+
+Malformed inputs, unavailable PR metadata, missing base refs, and GitHub CLI
+errors fail closed. The workflow reports the specific evidence gap instead of
+converting an untrusted probe into terminal success.
+
+Terminal-state detection uses this order:
+
+1. Dirty worktree check. Any uncommitted change blocks terminal success because
+   the workflow cannot prove the work is complete or safe to ignore.
+2. Merged PR evidence. A merged PR, including a closed PR with `mergedAt`
+   evidence, returns `MERGED`.
+3. Closed obsolete proof. A closed, unmerged PR returns `CLOSED_OBSOLETE` only
+   when the branch is clean and the intended changes are already represented
+   upstream or there is no meaningful remaining diff.
+4. Clean no-diff proof. A clean branch with no meaningful diff or commits
+   against the intended base returns `NO_DIFF_SUCCESS`.
+5. Meaningful remaining diff. The workflow continues to the publish path and
+   may emit `FOLLOWUP_CREATED`, or `BLOCKED_CI` if checks fail.
+
+The successful terminal states are:
+
+| State | Required evidence | Workflow behavior |
+| --- | --- | --- |
+| `MERGED` | PR is merged, or is closed with merge evidence such as `mergedAt`. | Stop before version bump, commit, push, PR creation/update, CI wait, and merge. |
+| `CLOSED_OBSOLETE` | PR is closed without merge evidence, the worktree is clean, and equivalent work is already upstream or no meaningful branch work remains. | Stop successfully and record the obsolete proof. |
+| `NO_DIFF_SUCCESS` | Worktree is clean and there are no meaningful diffs or commits against the intended base. | Stop successfully without creating a no-op commit or follow-up PR. |
+
+The loud blocking states include:
+
+| State | Meaning |
+| --- | --- |
+| `BLOCKED_DIRTY_WORKTREE` | Uncommitted changes are present. Commit, stash, or remove them through the workflow before claiming terminal success. |
+| `BLOCKED_CLOSED_UNMERGED` | The PR is closed without merge evidence and obsolete/no-diff proof is missing. |
+| `BLOCKED_UNMERGED_DIFF` | Meaningful branch changes remain but cannot be safely published. |
+| `BLOCKED_CI` | Required checks are failing or a CI policy blocks publish or merge. |
+
+Malformed inputs, unavailable PR metadata, missing base refs, and GitHub CLI
+errors are loud blockers even when they do not share one stable status name.
+
+`goal_already_met` remains compatible with older design outputs, but it is not a
+shortcut around evidence. A goal-met claim can support terminal success only
+when the terminal-state probe also proves a clean no-diff, merged, or obsolete
+state. Dirty work, failing CI, closed-unmerged PRs, and meaningful unmerged diffs
+override `goal_already_met`.
+
 ## When This Workflow Applies
 
 This workflow should be followed for:
@@ -315,6 +394,10 @@ Test like a user would use the feature - outside-in - not just unit tests.
 
 ### Step 14: Commit and Push
 
+- [ ] Before staging, version bumping, committing, or pushing, run the
+      terminal-state gate.
+- [ ] If `terminal_success=true`, stop the publish path successfully and do not
+      create a commit, push a branch, create a PR, wait for CI, or merge.
 - [ ] Stage all changes
 - [ ] Write detailed commit message
 - [ ] Reference issue number in commit
@@ -353,6 +436,14 @@ either `design_spec` or `DESIGN_SPEC`; if both are present, `design_spec` takes
 precedence. If both are missing or empty, `workflow-publish` treats the design
 spec as an empty optional section and does not fail under `set -u`.
 
+When the terminal-state gate returns `MERGED`, `CLOSED_OBSOLETE`, or
+`NO_DIFF_SUCCESS`, `workflow-publish` treats the publish step as complete and
+does not run version bump, stage, commit, push, PR create/update, CI wait, or
+merge commands. When it returns `should_publish=true`, publish keeps the normal
+behavior: meaningful diffs are committed and pushed, an existing PR is updated
+or a follow-up PR is created, and the status is reported as `FOLLOWUP_CREATED`
+when that PR represents the remaining work.
+
 **Why Draft First:**
 
 - Allows review and feedback while still iterating
@@ -366,6 +457,12 @@ This ensures you see success messages, error details, and PR URLs.
 ### Step 16: Review the PR
 
 **⚠️ MANDATORY - DO NOT SKIP ⚠️**
+
+Skip PR review only when the terminal-state gate has already returned a
+successful terminal state. This prevents stale post-merge review or CI behavior
+after a PR is already merged, closed obsolete, or proven no-diff. Closed-unmerged
+PRs without obsolete proof, dirty worktrees, meaningful unmerged diffs, and real
+CI failures are not review skips; they remain blockers.
 
 **REQUIRED FOR ALL PRs**
 
@@ -433,6 +530,9 @@ This ensures you see success messages, error details, and PR URLs.
 
 ### Step 20: Convert PR to Ready for Review
 
+- [ ] Re-check terminal state before changing PR readiness.
+- [ ] If `terminal_success=true`, do not call `gh pr ready`; record the terminal
+      state instead.
 - [ ] Convert draft PR to ready-for-review using `gh pr ready`
 - [ ] Verify all previous steps completed
 - [ ] Ensure all review feedback has been addressed
@@ -460,6 +560,13 @@ gh pr ready 2>&1 | cat
 
 ### Step 21: Ensure PR is Mergeable
 
+- [ ] Re-check terminal, dirty, diff, PR, and CI state before waiting on checks
+      or merging.
+- [ ] If the re-check returns `MERGED`, `CLOSED_OBSOLETE`, or
+      `NO_DIFF_SUCCESS`, stop successfully without CI wait or merge.
+- [ ] If the re-check returns `BLOCKED_CI`, `BLOCKED_DIRTY_WORKTREE`,
+      `BLOCKED_CLOSED_UNMERGED`, or `BLOCKED_UNMERGED_DIFF`, fail loudly with
+      the evidence instead of converting the result to success.
 - [ ] Check CI status (all checks passing)
 - [ ] **Always use** ci-diagnostic-workflow agent if CI fails
 - [ ] **💡 TIP**: When investigating CI failures, use `parallel agent investigation` (see `amplifier-bundle/CLAUDE.md` in the amplifier-bundle) to explore logs and code simultaneously

@@ -25,6 +25,14 @@ fn load_publish_recipe() -> Value {
     serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
+fn helper_text(name: &str) -> String {
+    let path = workspace_root()
+        .join("amplifier-bundle")
+        .join("tools")
+        .join(name);
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
 fn step<'a>(recipe: &'a Value, id: &str) -> &'a Value {
     recipe
         .get("steps")
@@ -110,6 +118,34 @@ fn publish_never_invokes_create_for_no_diff_or_existing_pr_states() {
             "terminal state `{terminal}` must return before PR creation"
         );
     }
+}
+
+#[test]
+fn publish_retries_all_github_pr_metadata_and_mutation_calls() {
+    let command = helper_text("workflow_publish_pr.sh");
+
+    for required in [
+        "sanitize_gh_stderr",
+        "is_transient_gh_error",
+        "gh_pr_list_with_retry",
+        "gh_pr_view_with_retry",
+        "gh_pr_create_with_retry",
+        "timeout 60 gh pr list",
+        "timeout 60 gh pr view",
+        "timeout 60 gh pr create",
+        "retrying (${attempt}/3)",
+        "refusing to risk duplicate PR creation",
+    ] {
+        assert!(
+            command.contains(required),
+            "publish helper contract must include resilient GitHub call handling; missing `{required}`"
+        );
+    }
+
+    assert!(
+        !command.contains("VIEW_JSON=\"$(gh pr view"),
+        "publish helper must not inspect existing PRs with a raw gh pr view call"
+    );
 }
 
 #[test]

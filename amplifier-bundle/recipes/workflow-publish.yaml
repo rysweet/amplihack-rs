@@ -19,12 +19,24 @@ inputs:
 context:
   worktree_setup: ""
   allow_no_op: false
+  terminal_success: "false"
+  terminal_state: ""
+  terminal_reason: ""
+  publish_status: ""
+  should_publish: "true"
+  should_finalize: "true"
+  should_run_ci_wait: "true"
+  should_merge: "true"
 
 steps:
+  - id: "publish-terminal-state"
+    type: "recipe"
+    recipe: "workflow-terminal-state"
+
   - id: "step-14-bump-version"
     agent: "amplihack:architect"
     working_dir: "{{worktree_setup.worktree_path}}"
-    condition: "goal_already_met != 'true'"
+    condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
     prompt: |
        # Step 14: Bump Version in Cargo.toml (MANDATORY)
 
@@ -65,7 +77,7 @@ steps:
 
   - id: "step-15-commit-push"
     type: "bash"
-    condition: "goal_already_met != 'true'"
+    condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
     command: |
       set -euo pipefail
       export GIT_PAGER=cat
@@ -173,7 +185,7 @@ steps:
 
   - id: "step-16-create-draft-pr"
     type: "bash"
-    condition: "goal_already_met != 'true' && commit_result.pushed == 'true'"
+    condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true' && commit_result.pushed == 'true'"
     command: |
       set -euo pipefail
       export GIT_PAGER=cat PAGER=cat LESS=FRX
@@ -188,6 +200,7 @@ steps:
       # Base-ref contract: resolve_pr_base_ref checks refs/remotes/origin/HEAD, runs git remote set-head origin -a, falls back through origin/master origin/develop, and fails with ERROR: no supported remote base ref found.
       # Metadata contract: ISSUE_NUM, git diff, git log, git diff --name-only, Changed files, Validation, Behavior, Risk, and step-13 shape PR title/body context.
       # PUBLISH_STATE="no-diff"; PUBLISH_STATE="existing-open-pr"; PUBLISH_STATE="already-merged"; PUBLISH_STATE="closed-after-merge"; PUBLISH_STATE="closed-unmerged-with-diff".
+      # Terminal vocabulary: MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED, BLOCKED_CI.
       # gh_pr_create_with_retry is called by the helper only after PUBLISH_STATE classification.
       PUBLISH_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_publish_pr.sh"
       if [ ! -f "$PUBLISH_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then PUBLISH_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_publish_pr.sh"; fi
@@ -199,7 +212,7 @@ steps:
   - id: "step-16b-outside-in-fix-loop"
     agent: "amplihack:builder"
     working_dir: "{{worktree_setup.worktree_path}}"
-    condition: "goal_already_met != 'true'"
+    condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
     prompt: |
        # Step 16b: Outside-In Testing and Fix Loop (MANDATORY)
 

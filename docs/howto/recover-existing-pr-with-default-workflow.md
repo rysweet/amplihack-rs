@@ -13,7 +13,7 @@ You need:
 - the existing PR number
 - the exact existing PR branch name
 - issue requirements or acceptance criteria for the recovery scope
-- `gh auth status` working when publish or finalization may touch GitHub
+- `gh auth status` working so the workflow can inspect PR and check metadata
 
 Do not create a replacement branch and do not merge the PR manually. The
 workflow owns branch reuse, readiness remediation, publish, and finalization.
@@ -76,18 +76,36 @@ Run the workflow from the recovery worktree:
 
 ```bash
 REPO_PATH=/home/user/src/amplihack-rs
+BASE_REF=$(gh pr view "$PR_NUMBER" --json baseRefName --jq .baseRefName)
+PR_URL=$(gh pr view "$PR_NUMBER" --json url --jq .url)
 
 amplihack recipe run default-workflow \
   -c "repo_path=${REPO_PATH}" \
   -c "pr_number=${PR_NUMBER}" \
+  -c "pr_url=${PR_URL}" \
   -c "existing_branch=${EXISTING_BRANCH}" \
+  -c "base_ref=${BASE_REF}" \
   -c "expected_head_sha=${expected_head_sha}" \
+  -c "goal_already_met=false" \
   -c "task_description=Recover PR #579 after interrupted workflow; resolve Copilot hook readiness and additive-copy readiness only; do not manually merge" \
   -c "issue_requirements=#577: Copilot plugin and native hooks are staged, registered, idempotent, and verified. #578: mapped framework directories replace stale amplihack-owned trees safely, preserve rollback, and guard source/destination aliasing."
 ```
 
 The workflow verifies that the PR belongs to the repository at `repo_path` and
 that the PR head branch matches `existing_branch`.
+
+Terminal-state recovery depends on the same configuration context:
+
+| Context value | Purpose |
+| --- | --- |
+| `repo_path` | Repository where the worktree, diff, and status checks run. |
+| `pr_number` | Existing PR to inspect for merged, closed, or active state. |
+| `pr_url` | Same-repository PR URL when the workflow receives a URL alongside or instead of the number. |
+| `existing_branch` | Branch expected to match the PR head and local checkout. |
+| `base_ref` | Comparison base for no-diff and obsolete proof. Resolve it from PR metadata or the repository default branch before terminal-state checks. |
+| `expected_head_sha` | Optional exact head guard for no-op and recovery readiness evidence. |
+| `goal_already_met` | Optional design signal. Keep it false unless external evidence says the goal is already satisfied; it never overrides Git, PR, diff, or CI evidence. |
+| `task_description` and `issue_requirements` | Scope context for recovery and remediation. They do not prove obsolete state; obsolete proof must come from Git and PR evidence. |
 
 ## 4. Check Branch Reuse Evidence
 
@@ -225,7 +243,54 @@ cargo test -p amplihack-cli read_manifest_rejects_path_traversal_in_dirs --lib
 Missing source assets, symlinked source roots, unsafe path entries, failed
 copy/swap, incomplete verification, or an incomplete manifest are blockers.
 
-## 7. Let `workflow-publish` Own Commits and Pushes
+## 7. Interpret Terminal-State Outcomes
+
+During recovery, the workflow checks terminal state before any version bump,
+commit, push, PR creation, CI wait, or merge. A successful terminal state means
+the recovery is complete without more Git or GitHub mutation.
+
+The terminal-state block uses the same shape in publish, PR review, and
+finalization:
+
+```json
+{
+  "workflow_terminal_state": {
+    "terminal_success": true,
+    "terminal_state": "NO_DIFF_SUCCESS",
+    "terminal_reason": "Worktree is clean and the branch has no meaningful diff against origin/main.",
+    "publish_status": "NO_DIFF_SUCCESS",
+    "should_publish": false,
+    "should_finalize": true,
+    "should_run_ci_wait": false,
+    "should_merge": false
+  }
+}
+```
+
+Use the status exactly as emitted:
+
+| Status | Meaning | What the workflow does next |
+| --- | --- | --- |
+| `MERGED` | The PR is already merged, or it is closed with merge evidence. | Stops successfully before publish, CI wait, or merge. |
+| `CLOSED_OBSOLETE` | The PR is closed without merge evidence, but the branch is clean and the intended changes are already upstream or no meaningful work remains. | Stops successfully and records the obsolete proof. |
+| `NO_DIFF_SUCCESS` | The worktree is clean and no meaningful diff or branch-only commits remain against the intended base. | Stops successfully without creating a no-op commit or follow-up PR. |
+| `FOLLOWUP_CREATED` | Meaningful unmerged work remains and the workflow created or updated a PR for it. | Continues through normal CI and merge readiness checks. |
+| `BLOCKED_CI` | Required checks are failing or policy blocks merge. | Fails loudly; do not reinterpret as terminal success. |
+
+Closed-unmerged PRs are failures unless the workflow proves
+`CLOSED_OBSOLETE`. A closed PR with remaining diff evidence is reported as a
+blocker, not as recovered work.
+
+Dirty worktrees also block terminal success. If `git status --porcelain` has
+any output, the workflow cannot prove whether recovery work is complete or safe
+to ignore, so it fails before accepting `MERGED`, `CLOSED_OBSOLETE`, or
+`NO_DIFF_SUCCESS`.
+
+Malformed inputs, unavailable PR metadata, missing base refs, and `gh` command
+errors fail closed. Treat them as blockers to fix in workflow context, not as
+accepted no-op recovery.
+
+## 8. Let `workflow-publish` Own Commits and Pushes
 
 If readiness remediation changes files, the workflow commits and pushes those
 changes to the existing branch. This example shows PR 579:
@@ -245,6 +310,32 @@ changes to the existing branch. This example shows PR 579:
 If no changes are required, `changes_required` and `pushed` are `false`, and the
 workflow records that no publish action was necessary.
 
+If the terminal state is already successful, publish is skipped instead of being
+reported as a no-op publish attempt:
+
+```json
+{
+  "workflow_publish": {
+    "target_pr": 579,
+    "target_branch": "fix/issues-577-578-copilot-hooks-and-additive-copy",
+    "publish_status": "MERGED",
+    "terminal_success": true,
+    "terminal_state": "MERGED",
+    "version_bump_ran": false,
+    "commit_ran": false,
+    "push_ran": false,
+    "pr_create_or_update_ran": false,
+    "ci_wait_ran": false,
+    "merge_ran": false
+  }
+}
+```
+
+Those suppression flags are part of the recovery evidence. They prove the
+workflow did not perform Git or GitHub mutation, including version bump, stage,
+commit, push, PR create/update, CI wait, merge, or duplicate/no-op follow-up PR
+creation after completion was already established.
+
 Dirty readiness documentation or evidence files are handled in one of two ways:
 
 - committed by the workflow as recovery evidence, or
@@ -252,7 +343,7 @@ Dirty readiness documentation or evidence files are handled in one of two ways:
 
 Unclassified dirty readiness files block final readiness.
 
-## 8. Use `workflow-finalize` as the Final Decision
+## 9. Use `workflow-finalize` as the Final Decision
 
 The finalization step emits the recovery decision. This example shows PR 579:
 
@@ -301,6 +392,34 @@ state:
 Do not convert that result into a manual merge. Pending Test and blocked merge
 state mean the PR remains under normal GitHub protection while being recovered
 from the workflow's point of view.
+
+Finalization re-checks terminal, dirty, diff, PR, and CI state before reporting
+completion. A terminal-success finalization looks like this:
+
+```json
+{
+  "workflow_finalize": {
+    "pr_number": 579,
+    "final_status": "finalized",
+    "terminal_success": true,
+    "terminal_state": "CLOSED_OBSOLETE",
+    "terminal_reason": "PR #579 is closed without merge evidence, but the branch is clean and equivalent changes are present on origin/main.",
+    "remaining_blockers": [],
+    "version_bump_ran": false,
+    "commit_ran": false,
+    "push_ran": false,
+    "pr_create_or_update_ran": false,
+    "ci_wait_ran": false,
+    "merge_ran": false
+  }
+}
+```
+
+If finalization observes a dirty worktree, a closed-unmerged PR without obsolete
+proof, a meaningful unmerged diff, or failing required checks, it emits a
+blocking status such as `BLOCKED_DIRTY_WORKTREE`, `BLOCKED_CLOSED_UNMERGED`,
+`BLOCKED_UNMERGED_DIFF`, or `BLOCKED_CI`. Those statuses require remediation;
+they are not successful no-op completions.
 
 Interpret the status exactly as emitted:
 

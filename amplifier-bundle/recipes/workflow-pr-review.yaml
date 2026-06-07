@@ -3,22 +3,19 @@ description: "Phase 7: PR review cycle — compliance, reviewer, gates (17a-19d)
 version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "review", "pr"]
-
 recursion:
   max_depth: 6
   max_total_steps: 80
-
 inputs:
   - name: worktree_setup.worktree_path
     description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by bash steps in step-18c-push-feedback-changes that cd into the worktree. step-19c-zero-bs-verification falls back to REPO_PATH or cwd if the worktree is already cleaned up."
-
 context:
   worktree_setup: ""
   allow_no_op: false
-
 steps:
   - id: "step-17a-compliance-verification"
     type: "bash"
+    condition: "terminal_state.terminal_success != 'true'"
     command: |
       echo "=== Step 17a: Step 13 Compliance Verification ===" && \
       echo "" && \
@@ -40,16 +37,14 @@ steps:
       echo "" && \
       echo "=== Compliance Check PASSED ==="
     output: "step_13_compliance_check"
-
   - id: "step-17b-reviewer-agent"
     agent: "amplihack:reviewer"
+    condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 17b: Comprehensive Code Review (MANDATORY)
-
       **PR URL:** {{pr_publish_result.pr_url}}
       **Requirements:** {{final_requirements}}
       **Implementation:** {{review_feedback}}
-
       **Review Checklist:**
       - [ ] Code quality and standards
       - [ ] Test coverage adequate
@@ -57,82 +52,68 @@ steps:
       - [ ] No unimplemented functions
       - [ ] Logic correctness
       - [ ] Edge case handling
-
       **Actions:**
       1. Perform comprehensive code review
       2. Identify issues and improvements
       3. **POST review comments on PR** (this is required evidence)
-
       **Output:** Review findings and confirmation posted to PR.
     output: "pr_review"
-
   - id: "step-17c-security-review"
     agent: "amplihack:security"
+    condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 17c: Security Review (MANDATORY)
-
       **PR URL:** {{pr_publish_result.pr_url}}
       **Implementation:** {{review_feedback}}
       **Previous Review:** {{pr_review}}
-
       Security review of the PR:
       - [ ] Verify all security requirements met
       - [ ] Check for any new vulnerabilities
       - [ ] Confirm sensitive data handling
       - [ ] Review authentication/authorization if applicable
       - [ ] Check for injection vulnerabilities
-
       **Actions:**
       1. Perform security analysis
       2. **POST security findings as PR comments** (this is required evidence)
-
       **Output:** Security findings and confirmation posted to PR.
     output: "pr_security_review"
-
   - id: "step-17d-philosophy-guardian"
     agent: "amplihack:philosophy-guardian"
+    condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 17d: Philosophy Guardian Review (MANDATORY)
-
       **PR URL:** {{pr_publish_result.pr_url}}
       **Implementation:** {{review_feedback}}
       **Code Review:** {{pr_review}}
-
       Philosophy compliance review:
       - [ ] Ruthless simplicity achieved
       - [ ] Bricks & studs pattern followed
       - [ ] Zero-BS implementation (no stubs, faked APIs, swallowed exceptions)
       - [ ] No over-engineering
       - [ ] Clean module boundaries
-
       **Actions:**
       1. Verify philosophy compliance
       2. **POST philosophy check as PR comment** (this is required evidence)
-
       **Output:** Compliance status and confirmation posted to PR.
     output: "pr_philosophy_review"
-
   - id: "step-17e-address-blocking-issues"
     agent: "amplihack:builder"
+    condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 17e: Address Blocking Issues (MANDATORY)
-
       **PR Review:** {{pr_review}}
       **Security Review:** {{pr_security_review}}
       **Philosophy Review:** {{pr_philosophy_review}}
-
       Review all findings from Steps 16a-16d and address any blocking issues:
-
       1. Identify blocking issues from each review
       2. Implement fixes for each blocking issue
       3. If issues found, re-run applicable reviews after fixing
-
       **Output:** Summary of blocking issues found and how they were addressed.
       If no blocking issues, state "No blocking issues found."
     output: "blocking_issues_addressed"
-
   - id: "step-17f-verification-gate"
     type: "bash"
+    condition: "terminal_state.terminal_success != 'true'"
     command: |
       echo "=== STEP 17 VERIFICATION GATE ===" && \
       echo "" && \
@@ -149,46 +130,40 @@ steps:
       echo "" && \
       echo "=== GATE PASSED - Proceed to Step 18 ==="
     output: "step_17_gate_status"
-
   - id: "step-18a-analyze-feedback"
     agent: "amplihack:architect"
+    condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 18a: Analyze Review Feedback (MANDATORY)
-
       **PR Review:** {{pr_review}}
       **Security Review:** {{pr_security_review}}
       **Philosophy Review:** {{pr_philosophy_review}}
-
       Analyze ALL feedback from Step 16 reviews:
       1. Categorize each item: blocking issues vs. suggestions vs. questions
       2. Prioritize blocking issues first
       3. Create action plan for addressing each item
-
       **Output:** Structured analysis of all feedback with action plan.
     output: "feedback_analysis"
-
   - id: "step-18b-implement-feedback"
     agent: "amplihack:builder"
+    condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 18b: Implement Review Feedback (MANDATORY)
-
       **Feedback Analysis:** {{feedback_analysis}}
       **PR Review:** {{pr_review}}
       **Security Review:** {{pr_security_review}}
       **Philosophy Review:** {{pr_philosophy_review}}
       **Current Implementation:** {{review_feedback}}
-
       **Checklist:**
       - [ ] Address EVERY blocking issue
       - [ ] Address suggestions where appropriate
       - [ ] For disagreements, document reasoning
       - [ ] Ensure changes don't introduce new issues
-
       **Output:** Summary of changes for each feedback item.
     output: "pr_feedback_changes"
-
   - id: "step-18c-push-feedback-changes"
     type: "bash"
+    condition: "terminal_state.terminal_success != 'true'"
     command: |
       set -euo pipefail
       export GIT_PAGER=cat
@@ -274,9 +249,9 @@ steps:
       fi
       echo "=== Changes Pushed ==="
     output: "feedback_push_result"
-
   - id: "step-18d-respond-to-comments"
     type: "bash"
+    condition: "terminal_state.terminal_success != 'true'"
     command: |
       echo "=== Responding to Review Comments ===" && \
       echo "" && \
@@ -288,9 +263,9 @@ steps:
       echo "" && \
       echo "=== Comment Responses Complete ==="
     output: "comment_responses"
-
   - id: "step-18e-verification-gate"
     type: "bash"
+    condition: "terminal_state.terminal_success != 'true'"
     command: |
       echo "=== STEP 18 VERIFICATION GATE ===" && \
       echo "" && \
@@ -305,15 +280,13 @@ steps:
       echo "" && \
       echo "=== GATE PASSED - Proceed to Step 19 ==="
     output: "step_18_gate_status"
-
   - id: "step-19a-philosophy-check"
     agent: "amplihack:reviewer"
+    condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 19a: Philosophy Compliance Review (MANDATORY)
-
       **Implementation:** {{pr_feedback_changes}}
       **Requirements:** {{final_requirements}}
-
       Philosophy compliance verification:
       - [ ] Ruthless simplicity achieved
       - [ ] No over-engineering or unnecessary complexity
@@ -321,29 +294,25 @@ steps:
       - [ ] No Forbidden Pattern violations (FORBIDDEN_PATTERNS.md): no error swallowing, no silent fallbacks, no data loss, no shell anti-patterns (|| true, >/dev/null), no async misuse, no config divergence, no validation gaps
       - [ ] All tests passing
       - [ ] Documentation complete and accurate
-
       **Output:** Detailed philosophy compliance findings.
     output: "philosophy_check"
-
   - id: "step-19b-patterns-check"
     agent: "amplihack:patterns"
+    condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 19b: Pattern Compliance Review (MANDATORY)
-
       **Implementation:** {{pr_feedback_changes}}
-
       Pattern compliance verification:
       - [ ] Design patterns used correctly
       - [ ] Architectural patterns followed
       - [ ] Code organization patterns maintained
       - [ ] No anti-patterns introduced
       - [ ] No Forbidden Patterns (error swallowing, silent fallbacks, || true, >/dev/null, fire-and-forget async, unchecked HTTP responses, log-only catches)
-
       **Output:** Pattern compliance findings with any violations.
     output: "patterns_check"
-
   - id: "step-19c-zero-bs-verification"
     type: "bash"
+    condition: "terminal_state.terminal_success != 'true'"
     command: |
       set -euo pipefail
       echo "=== ZERO-BS VERIFICATION ==="
@@ -383,9 +352,9 @@ steps:
       echo ""
       echo "=== Zero-BS Verification Complete ==="
     output: "zero_bs_check"
-
   - id: "step-19d-verification-gate"
     type: "bash"
+    condition: "terminal_state.terminal_success != 'true'"
     command: |
       PHIL_CHECK="$PHILOSOPHY_CHECK"
       PAT_CHECK="$PATTERNS_CHECK"

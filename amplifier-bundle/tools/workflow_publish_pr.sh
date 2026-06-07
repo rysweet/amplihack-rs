@@ -7,6 +7,7 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 PUBLISH_STATE="unknown"
+LEGACY_PUBLISH_STATE="unknown"
 TERMINAL_STATUS="failure"
 PR_URL_RESULT=""
 PR_NUMBER_RESULT=""
@@ -16,12 +17,13 @@ MESSAGE="not classified"
 emit_publish_result() {
   jq -nc \
     --arg state "$PUBLISH_STATE" \
+    --arg legacy_state "$LEGACY_PUBLISH_STATE" \
     --arg terminal_status "$TERMINAL_STATUS" \
     --arg pr_url "$PR_URL_RESULT" \
     --arg pr_number "$PR_NUMBER_RESULT" \
     --arg branch_diff_status "$BRANCH_DIFF_STATUS" \
     --arg message "$MESSAGE" \
-    '{state:$state,terminal_status:$terminal_status,pr_url:$pr_url,pr_number:$pr_number,branch_diff_status:$branch_diff_status,message:$message}'
+    '{state:$state,legacy_state:$legacy_state,terminal_status:$terminal_status,pr_url:$pr_url,pr_number:$pr_number,branch_diff_status:$branch_diff_status,message:$message}'
 }
 
 resolve_pr_base_ref() {
@@ -50,7 +52,7 @@ gh_pr_list_with_retry() {
   local stderr_file output status attempt delay=1
   for attempt in 1 2 3; do
     stderr_file=$(mktemp -t step16-gh-pr-list-XXXXXX)
-    if output=$(gh pr list "$@" 2>"$stderr_file"); then rm -f "$stderr_file"; printf '%s\n' "$output"; return 0; fi
+    if output=$(timeout 60 gh pr list "$@" 2>"$stderr_file"); then rm -f "$stderr_file"; printf '%s\n' "$output"; return 0; fi
     status=$?
     if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
       echo "WARNING: gh pr list failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_gh_stderr "$stderr_file")" >&2
@@ -63,11 +65,28 @@ gh_pr_list_with_retry() {
   done
 }
 
+gh_pr_view_with_retry() {
+  local stderr_file output status attempt delay=1
+  for attempt in 1 2 3; do
+    stderr_file=$(mktemp -t step16-gh-pr-view-XXXXXX)
+    if output=$(timeout 60 gh pr view "$@" 2>"$stderr_file"); then rm -f "$stderr_file"; printf '%s\n' "$output"; return 0; fi
+    status=$?
+    if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
+      echo "WARNING: gh pr view failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_gh_stderr "$stderr_file")" >&2
+      rm -f "$stderr_file"; sleep "$delay"; delay=$((delay * 2)); continue
+    fi
+    echo "ERROR: gh pr view failed (exit ${status}); existing PR state is ambiguous." >&2
+    [ ! -s "$stderr_file" ] || echo "gh pr view stderr: $(sanitize_gh_stderr "$stderr_file")" >&2
+    rm -f "$stderr_file"
+    return "$status"
+  done
+}
+
 gh_pr_create_with_retry() {
   local stderr_file output status attempt delay=1
   for attempt in 1 2 3; do
     stderr_file=$(mktemp -t step16-gh-pr-create-XXXXXX)
-    if output=$(gh pr create --draft --title "$PR_TITLE" --body "$PR_BODY" 2>"$stderr_file"); then rm -f "$stderr_file"; printf '%s\n' "$output"; return 0; fi
+    if output=$(timeout 60 gh pr create --draft --title "$PR_TITLE" --body "$PR_BODY" 2>"$stderr_file"); then rm -f "$stderr_file"; printf '%s\n' "$output"; return 0; fi
     status=$?
     if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
       echo "WARNING: gh pr create failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_gh_stderr "$stderr_file")" >&2
@@ -82,7 +101,7 @@ gh_pr_create_with_retry() {
 
 HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
 if [ "$HOST_TYPE" != "github" ]; then
-  PUBLISH_STATE="non-github"; TERMINAL_STATUS="success"; MESSAGE="non-GitHub host does not use gh pr create"
+  PUBLISH_STATE="non-github"; LEGACY_PUBLISH_STATE="non-github"; TERMINAL_STATUS="success"; MESSAGE="non-GitHub host does not use gh pr create"
   emit_publish_result
   exit 0
 fi
@@ -103,34 +122,34 @@ fi
 
 EXISTING_PR="$(printf '%s' "$PR_JSON" | jq -r '.url // ""')"
 if [ -n "$EXISTING_PR" ]; then
-  VIEW_JSON="$(gh pr view "$EXISTING_PR" --json url,number,state,headRefName,headRefOid,mergedAt)"
+  VIEW_JSON="$(gh_pr_view_with_retry "$EXISTING_PR" --json url,number,state,headRefName,headRefOid,mergedAt)"
   PR_URL_RESULT="$(printf '%s' "$VIEW_JSON" | jq -r '.url // ""')"
   PR_NUMBER_RESULT="$(printf '%s' "$VIEW_JSON" | jq -r '(.number // "") | tostring')"
   PR_STATE="$(printf '%s' "$VIEW_JSON" | jq -r '.state // ""')"
   PR_MERGED_AT="$(printf '%s' "$VIEW_JSON" | jq -r '.mergedAt // ""')"
   case "$PR_STATE:$PR_MERGED_AT" in
-    OPEN:*) PUBLISH_STATE="existing-open-pr"; TERMINAL_STATUS="success"; MESSAGE="existing open PR found for branch"; emit_publish_result; exit 0 ;;
-    MERGED:*) PUBLISH_STATE="already-merged"; TERMINAL_STATUS="success"; MESSAGE="branch PR is already merged"; emit_publish_result; exit 0 ;;
-    CLOSED:?*) PUBLISH_STATE="closed-after-merge"; TERMINAL_STATUS="success"; MESSAGE="branch PR is closed after merge"; emit_publish_result; exit 0 ;;
+    OPEN:*) PUBLISH_STATE="existing-open-pr"; LEGACY_PUBLISH_STATE="existing-open-pr"; TERMINAL_STATUS="success"; MESSAGE="existing open PR found for branch"; emit_publish_result; exit 0 ;;
+    MERGED:*) PUBLISH_STATE="MERGED"; LEGACY_PUBLISH_STATE="already-merged"; TERMINAL_STATUS="success"; MESSAGE="branch PR is already merged"; emit_publish_result; exit 0 ;;
+    CLOSED:?*) PUBLISH_STATE="MERGED"; LEGACY_PUBLISH_STATE="closed-after-merge"; TERMINAL_STATUS="success"; MESSAGE="branch PR is closed after merge"; emit_publish_result; exit 0 ;;
     CLOSED:*)
       if [ "$BRANCH_DIFF_STATUS" = "has-diff" ]; then
-        PUBLISH_STATE="closed-unmerged-with-diff"; TERMINAL_STATUS="failure"; MESSAGE="existing PR was closed without merge and branch still has diff; reopen it or create a new branch intentionally"
+        PUBLISH_STATE="FAILED_CLOSED_UNMERGED"; LEGACY_PUBLISH_STATE="closed-unmerged-with-diff"; TERMINAL_STATUS="failure"; MESSAGE="existing PR was closed without merge and branch still has diff; reopen it or create a new branch intentionally"
         emit_publish_result
         exit 1
       fi
-      PUBLISH_STATE="no-diff"; TERMINAL_STATUS="success"; MESSAGE="closed unmerged PR exists but branch has no diff against base"; emit_publish_result; exit 0 ;;
+      PUBLISH_STATE="CLOSED_OBSOLETE"; LEGACY_PUBLISH_STATE="no-diff"; TERMINAL_STATUS="success"; MESSAGE="closed unmerged PR exists but branch has no diff against base"; emit_publish_result; exit 0 ;;
   esac
 fi
 
 if [ "$BRANCH_DIFF_STATUS" = "no-diff" ]; then
-  PUBLISH_STATE="no-diff"; TERMINAL_STATUS="success"; MESSAGE="branch has no diff against base; no PR created"
+  PUBLISH_STATE="NO_DIFF_SUCCESS"; LEGACY_PUBLISH_STATE="no-diff"; TERMINAL_STATUS="success"; MESSAGE="branch has no diff against base; no PR created"
   emit_publish_result
   exit 0
 fi
 
 COMMITS_AHEAD=$(git rev-list --count "${BASE_REF}..HEAD" 2>/dev/null || echo "0")
 if [ "$COMMITS_AHEAD" -eq 0 ]; then
-  PUBLISH_STATE="no-diff"; TERMINAL_STATUS="success"; BRANCH_DIFF_STATUS="no-diff"; MESSAGE="0 commits ahead of ${BASE_BRANCH}; no PR created"
+  PUBLISH_STATE="NO_DIFF_SUCCESS"; LEGACY_PUBLISH_STATE="no-diff"; TERMINAL_STATUS="success"; BRANCH_DIFF_STATUS="no-diff"; MESSAGE="0 commits ahead of ${BASE_BRANCH}; no PR created"
   emit_publish_result
   exit 0
 fi
@@ -154,7 +173,8 @@ DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
 ISSUE_LINK="Closes #${ISSUE_NUM}"
 PR_BODY=$(printf '## Summary\nConcise workflow-generated PR for %s.\n\n## Issue\n%s\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n\n## Behavior\n%s\n\n## Validation\n%s\n\n## Risk\n%s\n\n## Checklist\n- [x] Branch has %s commit(s) ahead of %s\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$PR_SCOPE" "$ISSUE_LINK" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY" "$BEHAVIOR_BODY" "$VALIDATION_BODY" "$RISK_BODY" "$COMMITS_AHEAD" "$BASE_BRANCH")
 
-PUBLISH_STATE="create-new-pr"
+PUBLISH_STATE="FOLLOWUP_CREATED"
+LEGACY_PUBLISH_STATE="create-new-pr"
 PR_URL_RESULT="$(gh_pr_create_with_retry)"
 PR_NUMBER_RESULT="$(printf '%s\n' "$PR_URL_RESULT" | sed -nE 's#.*/pull/([0-9]+).*#\1#p' | head -1)"
 TERMINAL_STATUS="success"

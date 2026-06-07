@@ -193,7 +193,9 @@ steps:
   #
   # Defensive: if `gh` is missing, ISSUE_NUMBER is unset, or any probe call
   # fails, we set goal_already_met="false" and let the workflow proceed
-  # normally — never short-circuit on uncertainty.
+  # normally — never short-circuit on uncertainty. Even when true, this legacy
+  # signal is only supporting evidence; workflow-terminal-state remains the
+  # authoritative fail-closed arbiter for dirty worktrees, PR state, diffs, and CI.
   - id: "step-06d-goal-already-met-probe"
     type: "bash"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"

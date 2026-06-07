@@ -112,6 +112,17 @@ context:
   final_cleanup: ""
   quality_audit_results: ""
   ci_status: ""
+  # Evidence-based terminal-state outputs produced by workflow-terminal-state.
+  # These suppress stale mutation/publish/finalize work after a branch is
+  # already merged, obsolete, or cleanly no-diff.
+  terminal_success: "false"
+  terminal_state: ""
+  terminal_reason: ""
+  publish_status: ""
+  should_publish: "true"
+  should_finalize: "true"
+  should_run_ci_wait: "true"
+  should_merge: "true"
 
 steps:
   # Git precondition is enforced in workflow-prep/step-01 before the first

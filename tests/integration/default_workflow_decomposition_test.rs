@@ -129,7 +129,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     // Phase 5: workflow-precommit-test (steps 12-13)
     "step-12-run-precommit",
     "step-13-local-testing",
-    // Phase 6: workflow-publish (steps 14-16b)
+    // Phase 6: workflow-publish (terminal gate + steps 14-16b)
+    "publish-terminal-state",
     "step-14-bump-version",
     "step-15-commit-push",
     "step-16-create-draft-pr",
@@ -150,7 +151,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-19b-patterns-check",
     "step-19c-zero-bs-verification",
     "step-19d-verification-gate",
-    // Phase 8: workflow-finalize (steps 20-22b + complete)
+    // Phase 8: workflow-finalize (terminal gate + steps 20-22b + complete)
+    "finalize-terminal-state",
     "step-20-final-cleanup",
     "step-20b-push-cleanup",
     "step-20c-quality-audit",

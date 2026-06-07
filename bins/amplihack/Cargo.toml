@@ -116,6 +116,18 @@ name = "workflow_publish_resilience"
 path = "../../tests/integration/workflow_publish_resilience.rs"
 
 [[test]]
+name = "default_workflow_terminal_state"
+path = "../../tests/integration/default_workflow_terminal_state.rs"
+
+[[test]]
+name = "workflow_publish_terminal_gate"
+path = "../../tests/integration/workflow_publish_terminal_gate.rs"
+
+[[test]]
+name = "workflow_finalize_terminal_state"
+path = "../../tests/integration/workflow_finalize_terminal_state.rs"
+
+[[test]]
 name = "workflow_finalize_resilience"
 path = "../../tests/integration/workflow_finalize_resilience.rs"
 
