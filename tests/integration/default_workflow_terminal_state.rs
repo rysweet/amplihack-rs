@@ -698,14 +698,14 @@ steps:
         );
         write_file(&recipe_path, &recipe);
 
-        let output = Command::new("recipe-runner-rs")
+        let output = Command::new(env!("CARGO_BIN_EXE_amplihack"))
+            .args(["recipe", "run"])
             .arg(&recipe_path)
-            .arg("--output-format")
-            .arg("json")
-            .arg("-C")
+            .args(["--format", "json"])
+            .arg("--working-dir")
             .arg(tmp.path())
             .output()
-            .unwrap_or_else(|e| panic!("run recipe-runner-rs for {terminal_state}: {e}"));
+            .unwrap_or_else(|e| panic!("run amplihack recipe run for {terminal_state}: {e}"));
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         assert!(
