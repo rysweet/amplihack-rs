@@ -49,6 +49,18 @@ fn step_commands(recipe: &Value) -> String {
         .join("\n")
 }
 
+fn step_condition(recipe: &Value, id: &str) -> String {
+    recipe
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .expect("recipe must contain top-level steps")
+        .iter()
+        .find(|step| step.get("id").and_then(Value::as_str) == Some(id))
+        .and_then(|step| step.get("condition").and_then(Value::as_str))
+        .unwrap_or_else(|| panic!("recipe step `{id}` must declare a condition"))
+        .to_string()
+}
+
 struct TerminalRun {
     success: bool,
     stdout: String,
@@ -175,7 +187,7 @@ fn matching_pr_json(worktree: &Path, state: &str, merged_at: &str) -> String {
         "headRefOid": git_head(worktree),
         "headRepositoryOwner": { "login": "owner" },
         "headRepository": { "name": "repo" },
-        "baseRepository": { "name": "repo", "owner": { "login": "owner" } },
+        "isCrossRepository": false,
         "statusCheckRollup": []
     })
     .to_string()
@@ -303,7 +315,7 @@ fn terminal_state_probe_detects_outcomes_in_safe_fail_closed_order() {
         &command,
         &[
             "git status --porcelain",
-            "FAILED_DIRTY_WORKTREE",
+            "dirty worktree blocks terminal success",
             "mergedAt",
             "MERGED",
             "closed-unmerged",
@@ -473,7 +485,7 @@ fn terminal_state_fails_when_repo_checkout_is_not_requested_branch() {
 }
 
 #[test]
-fn terminal_state_fails_closed_for_dirty_target_worktree() {
+fn terminal_state_continues_for_dirty_target_worktree_without_terminal_success() {
     let fixture = setup_repo();
     let worktree = create_feature_worktree(&fixture);
     write_file(&worktree.join("dirty.txt"), "uncommitted\n");
@@ -482,8 +494,15 @@ fn terminal_state_fails_closed_for_dirty_target_worktree() {
 
     let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
 
-    assert!(!run.success, "dirty worktree must fail closed");
-    assert_eq!(run.json["terminal_state"], "FAILED_DIRTY_WORKTREE");
+    assert!(
+        run.success,
+        "dirty worktree should continue publish/finalize so pending work can be committed\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_success"], "false");
+    assert_eq!(run.json["terminal_state"], "FOLLOWUP_CREATED");
+    assert_eq!(run.json["should_publish"], "true");
+    assert_eq!(run.json["should_finalize"], "true");
 }
 
 #[test]
@@ -609,4 +628,121 @@ fn terminal_state_allows_git_only_no_diff_when_no_pr_dependency_exists() {
     );
     assert_eq!(run.json["terminal_success"], "true");
     assert_eq!(run.json["terminal_state"], "NO_DIFF_SUCCESS");
+}
+
+#[test]
+fn terminal_success_states_execute_runner_skip_gates_for_mutation_publish_ci_and_merge() {
+    let publish = load_recipe("workflow-publish");
+    let finalize = load_recipe("workflow-finalize");
+    let tmp = TempDir::new().expect("tempdir");
+    let marker = tmp.path().join("mutation-marker");
+
+    for terminal_state in ["MERGED", "CLOSED_OBSOLETE", "NO_DIFF_SUCCESS"] {
+        let recipe_path = tmp
+            .path()
+            .join(format!("terminal-gates-{terminal_state}.yaml"));
+        let recipe = format!(
+            r#"name: terminal-gates-{terminal_state}
+steps:
+  - id: terminal
+    type: bash
+    parse_json: true
+    output: terminal_state
+    command: |
+      jq -nc --arg state "{terminal_state}" '{{terminal_success:"true",terminal_state:$state,publish_status:$state,should_publish:"false",should_finalize:"false",should_run_ci_wait:"false",should_merge:"false"}}'
+  - id: publish-version
+    type: bash
+    condition: {publish_version_condition:?}
+    command: |
+      echo publish-version >> {marker:?}
+  - id: publish-commit-push
+    type: bash
+    condition: {publish_commit_condition:?}
+    command: |
+      echo publish-commit-push >> {marker:?}
+  - id: publish-create-pr
+    type: bash
+    condition: {publish_pr_condition:?}
+    command: |
+      echo publish-create-pr >> {marker:?}
+  - id: publish-outside-in
+    type: bash
+    condition: {publish_outside_in_condition:?}
+    command: |
+      echo publish-outside-in >> {marker:?}
+  - id: finalize-push-cleanup
+    type: bash
+    condition: {finalize_cleanup_condition:?}
+    command: |
+      echo finalize-push-cleanup >> {marker:?}
+  - id: finalize-pr-ready
+    type: bash
+    condition: {finalize_ready_condition:?}
+    command: |
+      echo finalize-pr-ready >> {marker:?}
+  - id: finalize-ci-wait
+    type: bash
+    condition: {finalize_ci_condition:?}
+    command: |
+      echo finalize-ci-wait >> {marker:?}
+"#,
+            terminal_state = terminal_state,
+            marker = marker.display().to_string(),
+            publish_version_condition = step_condition(&publish, "step-14-bump-version"),
+            publish_commit_condition = step_condition(&publish, "step-15-commit-push"),
+            publish_pr_condition = step_condition(&publish, "step-16-create-draft-pr"),
+            publish_outside_in_condition = step_condition(&publish, "step-16b-outside-in-fix-loop"),
+            finalize_cleanup_condition = step_condition(&finalize, "step-20b-push-cleanup"),
+            finalize_ready_condition = step_condition(&finalize, "step-21-pr-ready"),
+            finalize_ci_condition = step_condition(&finalize, "step-22-ensure-mergeable"),
+        );
+        write_file(&recipe_path, &recipe);
+
+        let output = Command::new("recipe-runner-rs")
+            .arg(&recipe_path)
+            .arg("--output-format")
+            .arg("json")
+            .arg("-C")
+            .arg(tmp.path())
+            .output()
+            .unwrap_or_else(|e| panic!("run recipe-runner-rs for {terminal_state}: {e}"));
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(
+            output.status.success(),
+            "terminal gate recipe for {terminal_state} must succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+
+        let result: JsonValue = serde_json::from_str(&stdout)
+            .unwrap_or_else(|e| panic!("parse runner JSON: {e}\n{stdout}"));
+        for skipped_step in [
+            "publish-version",
+            "publish-commit-push",
+            "publish-create-pr",
+            "publish-outside-in",
+            "finalize-push-cleanup",
+            "finalize-pr-ready",
+            "finalize-ci-wait",
+        ] {
+            let status = result["step_results"]
+                .as_array()
+                .and_then(|steps| {
+                    steps.iter().find_map(|step| {
+                        (step["step_id"] == skipped_step).then(|| step["status"].as_str())
+                    })
+                })
+                .flatten()
+                .unwrap_or_else(|| panic!("missing step status for {skipped_step}: {stdout}"));
+            assert_eq!(
+                status, "skipped",
+                "{skipped_step} must be skipped for terminal state {terminal_state}"
+            );
+        }
+    }
+
+    assert!(
+        !marker.exists(),
+        "terminal-success gate failure executed a mutation step: {}",
+        fs::read_to_string(&marker).unwrap_or_default()
+    );
 }

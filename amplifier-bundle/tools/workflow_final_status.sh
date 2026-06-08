@@ -11,7 +11,7 @@ PUBLISH_STATE="${PR_PUBLISH_RESULT_STATE:-${RECIPE_VAR_pr_publish_result__state:
 terminal_status="${PUBLISH_STATE:-active-pr}"
 
 sanitize_gh_stderr() {
-  sed -E 's#https://[^@[:space:]]+@#https://REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
+  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
 }
 
 is_transient_gh_error() {
@@ -26,8 +26,9 @@ gh_pr_view_with_retry() {
       rm -f "$stderr_file"
       printf '%s\n' "$output"
       return 0
+    else
+      status=$?
     fi
-    status=$?
     if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
       echo "WARNING: final PR status lookup failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_gh_stderr "$stderr_file")" >&2
       rm -f "$stderr_file"

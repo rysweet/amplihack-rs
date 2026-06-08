@@ -6,20 +6,20 @@ PR_URL="${PR_URL:-${RECIPE_VAR_pr_url:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_
 PR_NUMBER="${PR_NUMBER:-${RECIPE_VAR_pr_number:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}}"
 
 if ! command -v gh >/dev/null 2>&1; then
-  echo "WARNING: gh CLI not found — skipping PR ready conversion" >&2
-  exit 0
+  echo "ERROR: gh CLI not found — cannot verify or mutate GitHub PR readiness" >&2
+  exit 127
 fi
 if ! timeout 30 gh auth status >/dev/null 2>&1; then
-  echo "WARNING: gh CLI is unavailable or unauthenticated — skipping PR ready conversion" >&2
-  exit 0
+  echo "ERROR: gh CLI is unavailable or unauthenticated — cannot verify or mutate GitHub PR readiness" >&2
+  exit 1
 fi
 if ! command -v jq >/dev/null 2>&1; then
-  echo "WARNING: jq CLI not found — skipping PR ready conversion" >&2
-  exit 0
+  echo "ERROR: jq CLI not found — cannot validate GitHub PR readiness metadata" >&2
+  exit 127
 fi
 
 sanitize_gh_stderr() {
-  sed -E 's#https://[^@[:space:]]+@#https://REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
+  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
 }
 
 is_transient_gh_error() {
@@ -35,8 +35,9 @@ gh_with_retry() {
       rm -f "$stderr_file"
       printf '%s\n' "$output"
       return 0
+    else
+      status=$?
     fi
-    status=$?
     if [ "$attempt" -lt 3 ] && is_transient_gh_error "$stderr_file"; then
       echo "WARNING: gh $label failed transiently (exit ${status}); retrying (${attempt}/3): $(sanitize_gh_stderr "$stderr_file")" >&2
       rm -f "$stderr_file"
@@ -49,6 +50,98 @@ gh_with_retry() {
     rm -f "$stderr_file"
     return "$status"
   done
+}
+
+parse_github_repo_identity() {
+  local url="$1" path owner repo
+  case "$url" in
+    git@github.com:*) path="${url#git@github.com:}" ;;
+    ssh://git@github.com/*) path="${url#ssh://git@github.com/}" ;;
+    https://*@github.com/*|http://*@github.com/*) path="${url#*://}"; path="${path#*@github.com/}" ;;
+    https://github.com/*) path="${url#https://github.com/}" ;;
+    http://github.com/*) path="${url#http://github.com/}" ;;
+    *) return 1 ;;
+  esac
+  path="${path%%\?*}"
+  path="${path%%#*}"
+  path="${path%.git}"
+  case "$path" in */*) ;; *) return 1 ;; esac
+  owner="${path%%/*}"
+  repo="${path#*/}"
+  repo="${repo%%/*}"
+  [ -n "$owner" ] && [ -n "$repo" ] || return 1
+  printf '%s/%s\n' "$owner" "$repo"
+}
+
+resolve_expected_base_branch() {
+  local candidate
+  candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
+  for candidate in origin/main origin/master origin/develop; do
+    if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
+  done
+  return 1
+}
+
+validate_pr_identity_before_mutation() {
+  local pr_json="$1" pr_url="$2" current_branch local_head repo_identity pr_base_identity expected_base
+  local pr_head_ref pr_base_ref pr_head_oid pr_head_owner pr_head_repo pr_cross_repo
+
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+    echo "ERROR: refusing to mutate PR '$pr_url'; workflow_pr_ready.sh is not running inside a git worktree" >&2
+    return 1
+  }
+  current_branch="$(git branch --show-current 2>/dev/null || true)"
+  [ -n "$current_branch" ] || {
+    echo "ERROR: refusing to mutate PR '$pr_url'; current branch is empty" >&2
+    return 1
+  }
+  local_head="$(git rev-parse --verify HEAD 2>/dev/null)" || {
+    echo "ERROR: refusing to mutate PR '$pr_url'; local HEAD does not resolve" >&2
+    return 1
+  }
+  repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
+  [ -n "$repo_identity" ] || {
+    echo "ERROR: refusing to mutate PR '$pr_url'; unable to determine current GitHub repo identity from origin remote" >&2
+    return 1
+  }
+  pr_base_identity="$(parse_github_repo_identity "$pr_url" || true)"
+  if [ "$pr_base_identity" != "$repo_identity" ]; then
+    echo "ERROR: refusing to mutate PR '$pr_url'; PR URL repo '${pr_base_identity:-unknown}' does not match current repo '$repo_identity'" >&2
+    return 1
+  fi
+
+  pr_head_ref=$(printf '%s' "$pr_json" | jq -r '.headRefName // ""')
+  pr_base_ref=$(printf '%s' "$pr_json" | jq -r '.baseRefName // ""')
+  pr_head_oid=$(printf '%s' "$pr_json" | jq -r '.headRefOid // ""')
+  pr_head_owner=$(printf '%s' "$pr_json" | jq -r '.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // ""')
+  pr_head_repo=$(printf '%s' "$pr_json" | jq -r '.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // ""')
+  pr_cross_repo=$(printf '%s' "$pr_json" | jq -r '.isCrossRepository // false')
+
+  if [ -z "$pr_head_ref" ] || [ -z "$pr_base_ref" ] || [ -z "$pr_head_oid" ] || [ -z "$pr_head_owner" ] || [ -z "$pr_head_repo" ]; then
+    echo "ERROR: refusing to mutate PR '$pr_url'; PR metadata is incomplete" >&2
+    return 1
+  fi
+  if [ "$pr_head_ref" != "$current_branch" ]; then
+    echo "ERROR: refusing to mutate PR '$pr_url'; headRefName '$pr_head_ref' does not match current branch '$current_branch'" >&2
+    return 1
+  fi
+  if [ "$pr_head_oid" != "$local_head" ]; then
+    echo "ERROR: refusing to mutate PR '$pr_url'; headRefOid '$pr_head_oid' does not match local HEAD '$local_head'" >&2
+    return 1
+  fi
+  if [ "$pr_cross_repo" = "true" ] || [ "$pr_head_owner/$pr_head_repo" != "$repo_identity" ]; then
+    echo "ERROR: refusing to mutate PR '$pr_url'; PR head repo '$pr_head_owner/$pr_head_repo' does not match current repo '$repo_identity'" >&2
+    return 1
+  fi
+  if ! expected_base="$(resolve_expected_base_branch)"; then
+    echo "ERROR: refusing to mutate PR '$pr_url'; unable to resolve expected base branch for baseRefName validation" >&2
+    return 1
+  fi
+  if [ "$pr_base_ref" != "$expected_base" ]; then
+    echo "ERROR: refusing to mutate PR '$pr_url'; baseRefName '$pr_base_ref' does not match expected base '$expected_base'" >&2
+    return 1
+  fi
 }
 
 pr_targets=()
@@ -71,7 +164,8 @@ if [ "${#pr_targets[@]}" -eq 0 ] && git rev-parse --is-inside-work-tree >/dev/nu
     if branch_pr_numbers="$(gh_with_retry "pr list" pr list --head "$current_branch" --state all --json number --jq '.[].number')"; then
       while IFS= read -r branch_pr_number; do add_pr_target "$branch_pr_number"; done <<< "$branch_pr_numbers"
     else
-      echo "WARNING: unable to discover PRs for branch '$current_branch'; skipping branch discovery" >&2
+      echo "ERROR: unable to discover PRs for branch '$current_branch'; refusing to treat ambiguous GitHub state as no PR found" >&2
+      exit 1
     fi
   fi
 fi
@@ -83,9 +177,9 @@ fi
 terminal_status="active-pr"
 closed_unmerged_seen="false"
 for pr_target in "${pr_targets[@]}"; do
-  if ! pr_json="$(gh_with_retry "pr view" pr view "$pr_target" --json number,state,isDraft,mergedAt,url)"; then
-    echo "WARNING: unable to inspect PR '$pr_target' with gh; skipping this PR" >&2
-    continue
+  if ! pr_json="$(gh_with_retry "pr view" pr view "$pr_target" --json number,state,isDraft,mergedAt,url,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository)"; then
+    echo "ERROR: unable to inspect PR '$pr_target' with gh; refusing to mutate ambiguous PR state" >&2
+    exit 1
   fi
   pr_url=$(printf '%s' "$pr_json" | jq -r '.url // ""')
   pr_state=$(printf '%s' "$pr_json" | jq -r '.state // ""')
@@ -105,12 +199,14 @@ for pr_target in "${pr_targets[@]}"; do
     continue
   fi
 
+  validate_pr_identity_before_mutation "$pr_json" "$pr_url" || exit 1
+
   if [ "$pr_is_draft" = "true" ]; then
     if ready_output="$(gh_with_retry "pr ready" pr ready "$pr_url")"; then
       printf '%s\n' "$ready_output"
     else
-      echo "WARNING: gh pr ready failed for '$pr_url'; continuing with visible skip" >&2
-      continue
+      echo "ERROR: gh pr ready failed for '$pr_url'; refusing to report successful finalization after mutation failure" >&2
+      exit 1
     fi
   else
     echo "INFO: PR is already ready for review"

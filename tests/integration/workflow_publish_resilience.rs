@@ -159,7 +159,7 @@ fn publish_helper_discovers_prs_with_exact_identity_validation() {
         "headRefOid",
         "headRepositoryOwner",
         "headRepository",
-        "baseRepository",
+        "isCrossRepository",
         "validate_pr_identity",
         "parse_github_repo_identity",
         "does not match current repo",
@@ -175,6 +175,10 @@ fn publish_helper_discovers_prs_with_exact_identity_validation() {
             && !command.contains("test(\\\"issue-$ISSUE_NUM"),
         "publish helper must not use broad issue-number PR fallback matching"
     );
+    assert!(
+        !command.contains("baseRepository"),
+        "publish helper must request only gh-supported fields; gh pr list/view do not support baseRepository"
+    );
 }
 
 #[test]
@@ -189,5 +193,28 @@ fn publish_treats_non_github_hosts_as_structured_successful_skip() {
     assert!(
         !command.contains("printf ''"),
         "non-GitHub skip must not be represented as an empty string output"
+    );
+}
+
+#[test]
+fn publish_commit_push_redacts_pull_and_push_failure_output() {
+    let recipe = load_publish_recipe();
+    let command = step_command(&recipe, "step-15-commit-push");
+
+    assert!(
+        command.contains("redact_sensitive_file"),
+        "publish commit/push step must use a shared redaction helper"
+    );
+    assert!(
+        command.contains("git pull --rebase >\"$pull_output_file\" 2>&1"),
+        "publish commit/push step must capture pull output before logging"
+    );
+    assert!(
+        !command.contains("cat \"$push_stderr_file\""),
+        "publish commit/push step must not print raw push stderr"
+    );
+    assert!(
+        command.contains("https?://"),
+        "publish redaction must cover both http:// and https:// credential-bearing URLs"
     );
 }
