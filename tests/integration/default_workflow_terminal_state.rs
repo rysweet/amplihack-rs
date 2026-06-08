@@ -262,6 +262,14 @@ fn assert_ordered(haystack: &str, needles: &[&str], context: &str) {
     }
 }
 
+fn parse_runner_json(stdout: &str) -> JsonValue {
+    let start = stdout
+        .rfind("{\n  \"duration\"")
+        .unwrap_or_else(|| panic!("recipe runner stdout did not contain result JSON:\n{stdout}"));
+    serde_json::from_str(stdout[start..].trim())
+        .unwrap_or_else(|e| panic!("parse runner JSON: {e}\n{stdout}"))
+}
+
 #[test]
 fn terminal_state_recipe_exists_with_required_io_contract() {
     let recipe = load_recipe("workflow-terminal-state");
@@ -713,8 +721,7 @@ steps:
             "terminal gate recipe for {terminal_state} must succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
         );
 
-        let result: JsonValue = serde_json::from_str(&stdout)
-            .unwrap_or_else(|e| panic!("parse runner JSON: {e}\n{stdout}"));
+        let result = parse_runner_json(&stdout);
         for skipped_step in [
             "publish-version",
             "publish-commit-push",
