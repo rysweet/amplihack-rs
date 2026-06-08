@@ -111,7 +111,6 @@ fn finalize_preserves_loud_blockers_instead_of_converting_them_to_success() {
     let text = recipe_text(&recipe);
 
     for blocker in [
-        "FAILED_DIRTY_WORKTREE",
         "FAILED_CLOSED_UNMERGED",
         "FAILED_MEANINGFUL_DIFF",
         "BLOCKED_CI",

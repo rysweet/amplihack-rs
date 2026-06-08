@@ -84,6 +84,9 @@ steps:
       export GIT_PAGER=cat
       export PAGER=cat
       export LESS=FRX
+      redact_sensitive_output() {
+        sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g'
+      }
       echo "=== Pushing Cleanup Changes ==="
       current_branch=$(git branch --show-current)
       if [ -z "$current_branch" ]; then
@@ -123,26 +126,37 @@ steps:
       fi
       push_output_file=$(mktemp -t step20b-cleanup-push-XXXXXX)
       if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
-        git --no-pager pull --rebase
+        pull_output_file=$(mktemp -t step20b-cleanup-pull-XXXXXX)
+        if git --no-pager pull --rebase >"$pull_output_file" 2>&1; then
+          redact_sensitive_output < "$pull_output_file"
+          rm -f "$pull_output_file"
+        else
+          pull_rc=$?
+          echo "ERROR: git pull --rebase failed during step-20b-push-cleanup (exit $pull_rc)" >&2
+          redact_sensitive_output < "$pull_output_file" >&2
+          rm -f "$pull_output_file"
+          git --no-pager status --short >&2
+          exit "$pull_rc"
+        fi
         if git push >"$push_output_file" 2>&1; then
-          cat "$push_output_file"
+          redact_sensitive_output < "$push_output_file"
           rm -f "$push_output_file"
         else
           push_rc=$?
           echo "ERROR: git push failed during step-20b-push-cleanup (exit $push_rc)" >&2
-          cat "$push_output_file" >&2
+          redact_sensitive_output < "$push_output_file" >&2
           rm -f "$push_output_file"
           git --no-pager status --short >&2
           exit "$push_rc"
         fi
       else
         if git push -u origin "$current_branch" >"$push_output_file" 2>&1; then
-          cat "$push_output_file"
+          redact_sensitive_output < "$push_output_file"
           rm -f "$push_output_file"
         else
           push_rc=$?
           echo "ERROR: git push failed during step-20b-push-cleanup (exit $push_rc)" >&2
-          cat "$push_output_file" >&2
+          redact_sensitive_output < "$push_output_file" >&2
           rm -f "$push_output_file"
           git --no-pager status --short >&2
           exit "$push_rc"
@@ -219,7 +233,7 @@ steps:
       PR_URL="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
       if [ -z "$PR_URL" ]; then : "N/A"; fi
       # Helper contract: git diff --quiet identifies no-diff; terminal_status accepts no-diff, already-merged, and closed-after-merge; GitHub-only status uses gh pr view.
-      # Terminal-state contract: FAILED_DIRTY_WORKTREE, FAILED_CLOSED_UNMERGED, FAILED_MEANINGFUL_DIFF, BLOCKED_CI, MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED.
+      # Terminal-state contract: FAILED_CLOSED_UNMERGED, FAILED_MEANINGFUL_DIFF, BLOCKED_CI, MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED.
       FINAL_STATUS_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_final_status.sh"
       if [ ! -f "$FINAL_STATUS_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then FINAL_STATUS_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_final_status.sh"; fi
       [ -f "$FINAL_STATUS_HELPER" ] || { echo "ERROR: workflow final-status helper not found: $FINAL_STATUS_HELPER" >&2; exit 1; }

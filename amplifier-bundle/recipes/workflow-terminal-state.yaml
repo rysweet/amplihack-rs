@@ -102,8 +102,22 @@ steps:
         exit 0
       }
 
+      continue_active_state() {
+        terminal_success="false"
+        terminal_state="FOLLOWUP_CREATED"
+        terminal_reason="$1"
+        publish_status="FOLLOWUP_CREATED"
+        should_publish="true"
+        should_finalize="true"
+        should_run_ci_wait="true"
+        should_merge="true"
+        emit_terminal_state
+        echo "INFO: workflow-terminal-state: active workflow state: $terminal_reason" >&2
+        exit 0
+      }
+
       sanitize_gh_stderr() {
-        sed -E 's#https://[^@[:space:]]+@#https://REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
+        sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
       }
 
       is_transient_gh_error() {
@@ -141,6 +155,7 @@ steps:
         case "$url" in
           git@github.com:*) path="${url#git@github.com:}" ;;
           ssh://git@github.com/*) path="${url#ssh://git@github.com/}" ;;
+          https://*@github.com/*|http://*@github.com/*) path="${url#*://}"; path="${path#*@github.com/}" ;;
           https://github.com/*) path="${url#https://github.com/}" ;;
           http://github.com/*) path="${url#http://github.com/}" ;;
           *) return 1 ;;
@@ -148,10 +163,11 @@ steps:
         path="${path%%\?*}"
         path="${path%%#*}"
         path="${path%.git}"
+        case "$path" in */*) ;; *) return 1 ;; esac
         owner="${path%%/*}"
         repo="${path#*/}"
         repo="${repo%%/*}"
-        [ -n "$owner" ] && [ -n "$repo" ] && [ "$owner" != "$repo" ] || return 1
+        [ -n "$owner" ] && [ -n "$repo" ] || return 1
         printf '%s/%s\n' "$owner" "$repo"
       }
 
@@ -238,9 +254,10 @@ steps:
       fi
 
       # Dirty worktree is the first trust boundary. No terminal success is
-      # allowed while uncommitted state might contain real work.
+      # allowed while uncommitted state might contain real work, but publish
+      # and finalize phases must still be able to commit pending work.
       if [ -n "$(git status --porcelain)" ]; then
-        fail_terminal_state "FAILED_DIRTY_WORKTREE" "dirty worktree blocks terminal success"
+        continue_active_state "dirty worktree blocks terminal success; continuing workflow so pending work can be committed"
       fi
 
       repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
@@ -258,13 +275,13 @@ steps:
 
       if [ -n "$pr_target" ]; then
         command -v gh >/dev/null 2>&1 || fail_terminal_state "FAILED_INVALID_INPUT" "gh is required when pr_number or pr_url is provided"
-        if ! pr_json="$(gh_with_retry "pr view" pr view "$pr_target" --json state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,baseRepository,number,url,statusCheckRollup)"; then
+        if ! pr_json="$(gh_with_retry "pr view" pr view "$pr_target" --json state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository,number,url,statusCheckRollup)"; then
           fail_terminal_state "FAILED_INVALID_INPUT" "unavailable PR metadata for $pr_target"
         fi
       elif command -v gh >/dev/null 2>&1; then
         # Same-branch discovery is exact. If it fails, only clean no-diff can
         # still prove terminal success without PR metadata.
-        if ! pr_json="$(gh_with_retry "pr list" pr list --head "$BRANCH_INPUT" --state all --json state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,baseRepository,number,url,statusCheckRollup --jq '.[0] // {}')"; then
+        if ! pr_json="$(gh_with_retry "pr list" pr list --head "$BRANCH_INPUT" --state all --json state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository,number,url,statusCheckRollup --jq '.[0] // {}')"; then
           echo "WARNING: gh pr list failed during same-branch PR discovery; meaningful diffs will fail closed" >&2
           pr_json="{}"
           pr_lookup_failed="true"
@@ -273,7 +290,7 @@ steps:
 
       if [ -n "$pr_json" ] && [ "$pr_json" != "{}" ]; then
         mapfile -t pr_fields < <(
-          printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // "", .headRefName // "", .baseRefName // "", .headRefOid // "", (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // ""), (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // ""), (.baseRepository.owner.login // .baseRepository.owner.name // ((.baseRepository.nameWithOwner // "") | split("/") | .[0]) // ""), (.baseRepository.name // ((.baseRepository.nameWithOwner // "") | split("/") | .[-1]) // ""), ([.statusCheckRollup[]? | select((.conclusion? // "") as $c | $c == "FAILURE" or $c == "ERROR" or $c == "TIMED_OUT" or $c == "CANCELLED")] | length | tostring)'
+          printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // "", .headRefName // "", .baseRefName // "", .headRefOid // "", (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // ""), (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // ""), (.isCrossRepository // false | tostring), ([.statusCheckRollup[]? | select((.conclusion? // "") as $c | $c == "FAILURE" or $c == "ERROR" or $c == "TIMED_OUT" or $c == "CANCELLED")] | length | tostring)'
         )
         pr_url_result="${pr_fields[0]:-}"
         pr_number_result="${pr_fields[1]:-}"
@@ -284,16 +301,16 @@ steps:
         pr_head_oid="${pr_fields[6]:-}"
         pr_head_owner="${pr_fields[7]:-}"
         pr_head_repo="${pr_fields[8]:-}"
-        pr_base_owner="${pr_fields[9]:-}"
-        pr_base_repo="${pr_fields[10]:-}"
-        failing_checks="${pr_fields[11]:-0}"
+        pr_cross_repo="${pr_fields[9]:-false}"
+        failing_checks="${pr_fields[10]:-0}"
+        pr_base_identity="$(parse_github_repo_identity "$pr_url_result" || true)"
         expected_base="$(normalize_base_name "$base_ref")"
         [ -n "$repo_identity" ] || fail_terminal_state "FAILED_INVALID_INPUT" "unable to determine current GitHub repo identity from origin remote"
         [ -n "$pr_head" ] || fail_terminal_state "FAILED_INVALID_INPUT" "PR metadata is missing headRefName"
         [ -n "$pr_base" ] || fail_terminal_state "FAILED_INVALID_INPUT" "PR metadata is missing baseRefName"
         [ -n "$pr_head_oid" ] || fail_terminal_state "FAILED_INVALID_INPUT" "PR metadata is missing headRefOid"
         [ -n "$pr_head_owner" ] && [ -n "$pr_head_repo" ] || fail_terminal_state "FAILED_INVALID_INPUT" "PR metadata is missing head repository identity"
-        [ -n "$pr_base_owner" ] && [ -n "$pr_base_repo" ] || fail_terminal_state "FAILED_INVALID_INPUT" "PR metadata is missing base repository identity"
+        [ -n "$pr_base_identity" ] || fail_terminal_state "FAILED_INVALID_INPUT" "PR metadata is missing base repository identity"
         if [ "$pr_head" != "$BRANCH_INPUT" ]; then
           fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: headRefName '$pr_head' does not match branch_name '$BRANCH_INPUT'"
         fi
@@ -303,12 +320,8 @@ steps:
         if [ "$pr_head_oid" != "$local_head" ]; then
           fail_terminal_state "FAILED_INVALID_INPUT" "stale PR metadata: headRefOid '$pr_head_oid' does not match local HEAD '$local_head'"
         fi
-        if [ "$pr_head_owner/$pr_head_repo" != "$repo_owner/$repo_name" ] || [ "$pr_base_owner/$pr_base_repo" != "$repo_owner/$repo_name" ]; then
-          fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: PR repo '$pr_head_owner/$pr_head_repo' -> '$pr_base_owner/$pr_base_repo' does not match current repo '$repo_owner/$repo_name'"
-        fi
-
-        if [ "${failing_checks:-0}" -gt 0 ]; then
-          fail_terminal_state "BLOCKED_CI" "real failing checks block terminal success"
+        if [ "$pr_cross_repo" = "true" ] || [ "$pr_head_owner/$pr_head_repo" != "$repo_owner/$repo_name" ] || [ "$pr_base_identity" != "$repo_owner/$repo_name" ]; then
+          fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: PR repo '$pr_head_owner/$pr_head_repo' -> '$pr_base_identity' does not match current repo '$repo_owner/$repo_name'"
         fi
 
         if [ "$pr_state" = "MERGED" ] || { [ "$pr_state" = "CLOSED" ] && [ -n "$pr_merged_at" ] && [ "$pr_merged_at" != "null" ]; }; then
@@ -325,6 +338,10 @@ steps:
           success_terminal_state "CLOSED_OBSOLETE" "closed-unmerged PR is obsolete because no meaningful diff remains"
         fi
         fail_terminal_state "FAILED_CLOSED_UNMERGED" "closed-unmerged PR still has meaningful diff"
+      fi
+
+      if [ -n "$pr_json" ] && [ "$pr_json" != "{}" ] && [ "${failing_checks:-0}" -gt 0 ]; then
+        fail_terminal_state "BLOCKED_CI" "real failing checks block terminal success"
       fi
 
       if git diff --quiet "${base_ref}..HEAD"; then

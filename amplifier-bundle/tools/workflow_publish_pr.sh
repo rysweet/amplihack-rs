@@ -44,7 +44,7 @@ finish_publish() {
 load_pr_fields() {
   local pr_json="$1"
   mapfile -t PR_FIELDS < <(
-    printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // "", .headRefName // "", .baseRefName // "", .headRefOid // "", (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // ""), (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // ""), (.baseRepository.owner.login // .baseRepository.owner.name // ((.baseRepository.nameWithOwner // "") | split("/") | .[0]) // ""), (.baseRepository.name // ((.baseRepository.nameWithOwner // "") | split("/") | .[-1]) // "")'
+    printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // "", .headRefName // "", .baseRefName // "", .headRefOid // "", (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // ""), (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // ""), (.isCrossRepository // false | tostring)'
   )
   PR_URL_RESULT="${PR_FIELDS[0]:-}"
   PR_NUMBER_RESULT="${PR_FIELDS[1]:-}"
@@ -55,8 +55,7 @@ load_pr_fields() {
   PR_HEAD_OID="${PR_FIELDS[6]:-}"
   PR_HEAD_OWNER="${PR_FIELDS[7]:-}"
   PR_HEAD_REPO="${PR_FIELDS[8]:-}"
-  PR_BASE_OWNER="${PR_FIELDS[9]:-}"
-  PR_BASE_REPO="${PR_FIELDS[10]:-}"
+  PR_IS_CROSS_REPO="${PR_FIELDS[9]:-false}"
 }
 
 resolve_pr_base_ref() {
@@ -78,6 +77,7 @@ parse_github_repo_identity() {
   case "$url" in
     git@github.com:*) path="${url#git@github.com:}" ;;
     ssh://git@github.com/*) path="${url#ssh://git@github.com/}" ;;
+    https://*@github.com/*|http://*@github.com/*) path="${url#*://}"; path="${path#*@github.com/}" ;;
     https://github.com/*) path="${url#https://github.com/}" ;;
     http://github.com/*) path="${url#http://github.com/}" ;;
     *) return 1 ;;
@@ -85,10 +85,11 @@ parse_github_repo_identity() {
   path="${path%%\?*}"
   path="${path%%#*}"
   path="${path%.git}"
+  case "$path" in */*) ;; *) return 1 ;; esac
   owner="${path%%/*}"
   repo="${path#*/}"
   repo="${repo%%/*}"
-  [ -n "$owner" ] && [ -n "$repo" ] && [ "$owner" != "$repo" ] || return 1
+  [ -n "$owner" ] && [ -n "$repo" ] || return 1
   printf '%s/%s\n' "$owner" "$repo"
 }
 
@@ -109,16 +110,17 @@ validate_pr_identity() {
   if [ "$PR_HEAD_OID" != "$LOCAL_HEAD" ]; then
     finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "existing PR headRefOid '$PR_HEAD_OID' does not match local HEAD '$LOCAL_HEAD'" 1
   fi
-  if [ -z "$PR_HEAD_OWNER" ] || [ -z "$PR_HEAD_REPO" ] || [ -z "$PR_BASE_OWNER" ] || [ -z "$PR_BASE_REPO" ]; then
+  PR_BASE_IDENTITY="$(parse_github_repo_identity "$PR_URL_RESULT" || true)"
+  if [ -z "$PR_HEAD_OWNER" ] || [ -z "$PR_HEAD_REPO" ] || [ -z "$PR_BASE_IDENTITY" ]; then
     finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "existing PR metadata is missing repository identity" 1
   fi
-  if [ "$PR_HEAD_OWNER/$PR_HEAD_REPO" != "$REPO_IDENTITY" ] || [ "$PR_BASE_OWNER/$PR_BASE_REPO" != "$REPO_IDENTITY" ]; then
-    finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "existing PR repo '$PR_HEAD_OWNER/$PR_HEAD_REPO' -> '$PR_BASE_OWNER/$PR_BASE_REPO' does not match current repo '$REPO_IDENTITY'" 1
+  if [ "$PR_IS_CROSS_REPO" = "true" ] || [ "$PR_HEAD_OWNER/$PR_HEAD_REPO" != "$REPO_IDENTITY" ] || [ "$PR_BASE_IDENTITY" != "$REPO_IDENTITY" ]; then
+    finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "existing PR repo '$PR_HEAD_OWNER/$PR_HEAD_REPO' -> '$PR_BASE_IDENTITY' does not match current repo '$REPO_IDENTITY'" 1
   fi
 }
 
 sanitize_gh_stderr() {
-  sed -E 's#https://[^@[:space:]]+@#https://REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
+  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
 }
 
 is_transient_gh_error() {
@@ -200,16 +202,19 @@ REPO_IDENTITY="$(parse_github_repo_identity "$(git config --get remote.origin.ur
 
 BASE_REF="$(resolve_pr_base_ref)"
 BASE_BRANCH="${BASE_REF#origin/}"
+if [ -n "$(git status --porcelain)" ]; then
+  finish_publish "FAILED_DIRTY_WORKTREE" "dirty-worktree" "failure" "dirty worktree blocks no-diff or obsolete terminal success; commit or discard changes explicitly" 1
+fi
 if git diff --quiet "${BASE_REF}..HEAD"; then BRANCH_DIFF_STATUS="no-diff"; else BRANCH_DIFF_STATUS="has-diff"; fi
 
-if ! PR_JSON="$(gh_pr_list_with_retry --head "$CURRENT_BRANCH" --state all --json url,number,state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,baseRepository --jq '.[0] // {}')"; then
+if ! PR_JSON="$(gh_pr_list_with_retry --head "$CURRENT_BRANCH" --state all --json url,number,state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository --jq '.[0] // {}')"; then
   finish_publish "FAILED_PR_METADATA_UNAVAILABLE" "pr-metadata-unavailable" "failure" "unavailable PR metadata for branch; refusing to risk duplicate PR creation" 1
 fi
 load_pr_fields "$PR_JSON"
 
 if [ -n "$PR_URL_RESULT" ]; then
   if [ -z "$PR_STATE" ]; then
-    VIEW_JSON="$(gh_pr_view_with_retry "$PR_URL_RESULT" --json url,number,state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,baseRepository)"
+    VIEW_JSON="$(gh_pr_view_with_retry "$PR_URL_RESULT" --json url,number,state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository)"
     load_pr_fields "$VIEW_JSON"
   fi
   validate_pr_identity "$BASE_BRANCH"
