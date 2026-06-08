@@ -324,10 +324,6 @@ steps:
           fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: PR repo '$pr_head_owner/$pr_head_repo' -> '$pr_base_identity' does not match current repo '$repo_owner/$repo_name'"
         fi
 
-        if [ "${failing_checks:-0}" -gt 0 ]; then
-          fail_terminal_state "BLOCKED_CI" "real failing checks block terminal success"
-        fi
-
         if [ "$pr_state" = "MERGED" ] || { [ "$pr_state" = "CLOSED" ] && [ -n "$pr_merged_at" ] && [ "$pr_merged_at" != "null" ]; }; then
           success_terminal_state "MERGED" "PR is merged or closed-after-merge"
         fi
@@ -342,6 +338,10 @@ steps:
           success_terminal_state "CLOSED_OBSOLETE" "closed-unmerged PR is obsolete because no meaningful diff remains"
         fi
         fail_terminal_state "FAILED_CLOSED_UNMERGED" "closed-unmerged PR still has meaningful diff"
+      fi
+
+      if [ -n "$pr_json" ] && [ "$pr_json" != "{}" ] && [ "${failing_checks:-0}" -gt 0 ]; then
+        fail_terminal_state "BLOCKED_CI" "real failing checks block terminal success"
       fi
 
       if git diff --quiet "${base_ref}..HEAD"; then

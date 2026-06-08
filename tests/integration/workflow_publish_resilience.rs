@@ -5,9 +5,12 @@
 //! handled branch states.
 
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 
 use serde_yaml::Value;
+use tempfile::TempDir;
 
 fn workspace_root() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -31,6 +34,43 @@ fn helper_text(name: &str) -> String {
         .join("tools")
         .join(name);
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+fn workspace_helper_path(name: &str) -> PathBuf {
+    workspace_root()
+        .join("amplifier-bundle")
+        .join("tools")
+        .join(name)
+}
+
+fn write_file(path: &Path, content: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap_or_else(|e| panic!("create {}: {e}", parent.display()));
+    }
+    fs::write(path, content).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+}
+
+fn make_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|e| panic!("chmod {}: {e}", path.display()));
+    }
+}
+
+fn run_cmd(dir: &Path, program: &str, args: &[&str]) {
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|e| panic!("run {program} {args:?} in {}: {e}", dir.display()));
+    assert!(
+        output.status.success(),
+        "command failed: {program} {args:?}\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn step<'a>(recipe: &'a Value, id: &str) -> &'a Value {
@@ -216,5 +256,128 @@ fn publish_commit_push_redacts_pull_and_push_failure_output() {
     assert!(
         command.contains("https?://"),
         "publish redaction must cover both http:// and https:// credential-bearing URLs"
+    );
+}
+
+#[test]
+fn publish_helper_fails_dirty_no_diff_instead_of_terminal_success() {
+    let tmp = TempDir::new().expect("tempdir");
+    let repo = tmp.path().join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    run_cmd(&repo, "git", &["init", "-b", "main"]);
+    run_cmd(&repo, "git", &["config", "user.email", "test@example.com"]);
+    run_cmd(&repo, "git", &["config", "user.name", "Workflow Test"]);
+    write_file(&repo.join("README.md"), "base\n");
+    run_cmd(&repo, "git", &["add", "README.md"]);
+    run_cmd(&repo, "git", &["commit", "-m", "base"]);
+    run_cmd(
+        &repo,
+        "git",
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/owner/repo.git",
+        ],
+    );
+    run_cmd(
+        &repo,
+        "git",
+        &["update-ref", "refs/remotes/origin/main", "main"],
+    );
+    write_file(&repo.join("dirty.txt"), "uncommitted\n");
+
+    let bin_dir = tmp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let gh = bin_dir.join("gh");
+    write_file(
+        &gh,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+echo "gh must not be called before dirty worktree failure: $*" >&2
+exit 77
+"#,
+    );
+    make_executable(&gh);
+
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let output = Command::new("bash")
+        .arg(workspace_helper_path("workflow_publish_pr.sh"))
+        .current_dir(&repo)
+        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+        .env("REMOTE_HOST_TYPE", "github")
+        .env("ISSUE_NUMBER", "7")
+        .output()
+        .expect("run workflow_publish_pr.sh");
+
+    assert!(
+        !output.status.success(),
+        "dirty no-diff worktree must fail instead of producing NO_DIFF_SUCCESS\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(r#""state":"FAILED_DIRTY_WORKTREE""#),
+        "publish helper must emit structured dirty-worktree failure, stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("NO_DIFF_SUCCESS"),
+        "dirty worktree must not be represented as no-diff success, stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn commit_push_marks_already_pushed_branch_as_publishable() {
+    let recipe = load_publish_recipe();
+    let command = step_command(&recipe, "step-15-commit-push");
+    let tmp = TempDir::new().expect("tempdir");
+    let origin = tmp.path().join("origin.git");
+    let repo = tmp.path().join("repo");
+
+    run_cmd(
+        tmp.path(),
+        "git",
+        &["init", "--bare", origin.to_str().unwrap()],
+    );
+    run_cmd(
+        tmp.path(),
+        "git",
+        &["clone", origin.to_str().unwrap(), repo.to_str().unwrap()],
+    );
+    run_cmd(&repo, "git", &["switch", "-c", "main"]);
+    run_cmd(&repo, "git", &["config", "user.email", "test@example.com"]);
+    run_cmd(&repo, "git", &["config", "user.name", "Workflow Test"]);
+    write_file(&repo.join("README.md"), "base\n");
+    run_cmd(&repo, "git", &["add", "README.md"]);
+    run_cmd(&repo, "git", &["commit", "-m", "base"]);
+    run_cmd(&repo, "git", &["push", "-u", "origin", "main"]);
+    run_cmd(&repo, "git", &["switch", "-c", "feature"]);
+    write_file(&repo.join("feature.txt"), "feature\n");
+    run_cmd(&repo, "git", &["add", "feature.txt"]);
+    run_cmd(&repo, "git", &["commit", "-m", "feature"]);
+    run_cmd(&repo, "git", &["push", "-u", "origin", "feature"]);
+
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg(command)
+        .current_dir(&repo)
+        .env("WORKTREE_SETUP_WORKTREE_PATH", &repo)
+        .env("TASK_DESCRIPTION", "publish existing feature branch")
+        .env("ISSUE_NUMBER", "7")
+        .env("REMOTE_HOST_TYPE", "github")
+        .output()
+        .expect("run step-15 commit-push command");
+
+    assert!(
+        output.status.success(),
+        "already-pushed branch must continue to PR publication\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(r#""pushed":"true""#) && stdout.contains(r#""reason":"already-pushed""#),
+        "step-15 must mark already-pushed work as publishable, stdout:\n{stdout}"
     );
 }

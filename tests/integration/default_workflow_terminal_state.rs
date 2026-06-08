@@ -328,6 +328,7 @@ fn terminal_state_probe_detects_outcomes_in_safe_fail_closed_order() {
             "MERGED",
             "closed-unmerged",
             "CLOSED_OBSOLETE",
+            "BLOCKED_CI",
             "git diff --quiet",
             "NO_DIFF_SUCCESS",
             "FOLLOWUP_CREATED",
@@ -590,6 +591,60 @@ fn terminal_state_rejects_closed_unmerged_pr_with_meaningful_diff() {
         "closed-unmerged PR with diff must fail closed"
     );
     assert_eq!(run.json["terminal_state"], "FAILED_CLOSED_UNMERGED");
+}
+
+#[test]
+fn terminal_state_treats_merged_pr_as_success_even_with_historical_failing_checks() {
+    let fixture = setup_repo();
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    let mut pr: JsonValue =
+        serde_json::from_str(&matching_pr_json(&worktree, "MERGED", "")).expect("matching PR JSON");
+    pr["statusCheckRollup"] = serde_json::json!([{ "conclusion": "FAILURE" }]);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh(&fake_tmp, &pr.to_string(), 0);
+
+    let run = run_terminal_state(
+        &fixture.repo,
+        Some(&worktree),
+        "feature",
+        Some("https://github.com/owner/repo/pull/7"),
+        &fake_path,
+    );
+
+    assert!(
+        run.success,
+        "merged PR terminal success must not wait on stale status checks\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_success"], "true");
+    assert_eq!(run.json["terminal_state"], "MERGED");
+}
+
+#[test]
+fn terminal_state_blocks_active_pr_with_real_failing_checks() {
+    let fixture = setup_repo();
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    let mut pr: JsonValue =
+        serde_json::from_str(&matching_pr_json(&worktree, "OPEN", "")).expect("matching PR JSON");
+    pr["statusCheckRollup"] = serde_json::json!([{ "conclusion": "FAILURE" }]);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh(&fake_tmp, &pr.to_string(), 0);
+
+    let run = run_terminal_state(
+        &fixture.repo,
+        Some(&worktree),
+        "feature",
+        Some("https://github.com/owner/repo/pull/7"),
+        &fake_path,
+    );
+
+    assert!(
+        !run.success,
+        "active failing checks must block terminal success"
+    );
+    assert_eq!(run.json["terminal_state"], "BLOCKED_CI");
 }
 
 #[test]

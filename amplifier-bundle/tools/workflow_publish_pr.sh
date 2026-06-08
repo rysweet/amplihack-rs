@@ -202,6 +202,9 @@ REPO_IDENTITY="$(parse_github_repo_identity "$(git config --get remote.origin.ur
 
 BASE_REF="$(resolve_pr_base_ref)"
 BASE_BRANCH="${BASE_REF#origin/}"
+if [ -n "$(git status --porcelain)" ]; then
+  finish_publish "FAILED_DIRTY_WORKTREE" "dirty-worktree" "failure" "dirty worktree blocks no-diff or obsolete terminal success; commit or discard changes explicitly" 1
+fi
 if git diff --quiet "${BASE_REF}..HEAD"; then BRANCH_DIFF_STATUS="no-diff"; else BRANCH_DIFF_STATUS="has-diff"; fi
 
 if ! PR_JSON="$(gh_pr_list_with_retry --head "$CURRENT_BRANCH" --state all --json url,number,state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository --jq '.[0] // {}')"; then

@@ -9,6 +9,7 @@ HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
 PR_URL="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
 PUBLISH_STATE="${PR_PUBLISH_RESULT_STATE:-${RECIPE_VAR_pr_publish_result__state:-}}"
 terminal_status="${PUBLISH_STATE:-active-pr}"
+final_status_rc=0
 
 sanitize_gh_stderr() {
   sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
@@ -51,10 +52,15 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   BASE_REF="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   [ -n "$BASE_REF" ] || BASE_REF="origin/main"
   if git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null && [ -z "$(git status --porcelain)" ] && git diff --quiet "${BASE_REF}..HEAD"; then
-    terminal_status="NO_DIFF_SUCCESS"
-    echo "terminal_status=NO_DIFF_SUCCESS"
-  elif [ "$terminal_status" = "no-diff" ] || [ "$terminal_status" = "NO_DIFF_SUCCESS" ]; then
-    echo "WARNING: publish reported no-diff but final clean-worktree diff could not confirm that state" >&2
+    if [ "$terminal_status" = "CLOSED_OBSOLETE" ]; then
+      echo "terminal_status=CLOSED_OBSOLETE"
+    else
+      terminal_status="NO_DIFF_SUCCESS"
+      echo "terminal_status=NO_DIFF_SUCCESS"
+    fi
+  elif [ "$terminal_status" = "no-diff" ] || [ "$terminal_status" = "NO_DIFF_SUCCESS" ] || [ "$terminal_status" = "CLOSED_OBSOLETE" ]; then
+    echo "ERROR: publish reported terminal no-diff/obsolete state but final clean-worktree diff could not confirm that state" >&2
+    final_status_rc=1
   fi
 fi
 
@@ -94,4 +100,9 @@ else
 fi
 
 echo ""
+if [ "$final_status_rc" -ne 0 ]; then
+  echo "Workflow final status failed; terminal success was not proven." >&2
+  exit "$final_status_rc"
+fi
+
 echo "All 23 workflow steps completed successfully."

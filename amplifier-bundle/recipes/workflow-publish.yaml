@@ -141,10 +141,7 @@ steps:
           echo "current branch '$CURRENT_BRANCH' is $ALT_WORKTREE_COMMITS commit(s) ahead of upstream." >&2
           git --no-pager log --oneline -"$ALT_WORKTREE_COMMITS" >&2
         else
-          echo "ERROR: Nothing staged to commit. Implementation may have written files outside the worktree." >&2
-          git --no-pager status >&2
-          reason="nothing-to-commit"
-          exit 1
+          echo "INFO: Nothing staged to commit; continuing so already-pushed meaningful work can be published or classified." >&2
         fi
       fi
       echo "--- Pushing to Remote ---" >&2
@@ -190,8 +187,13 @@ steps:
           exit "$push_rc"
         fi
       else
-        echo "WARNING: Nothing to push - branch is up to date with remote" >&2
-        reason="nothing-to-push"
+        echo "INFO: Nothing to push - branch is already up to date with remote" >&2
+        raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
+        if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then
+          sha="$raw_sha"
+        fi
+        pushed="true"
+        reason="already-pushed"
       fi
       echo "=== Commit and Push Complete ===" >&2
     output: "commit_result"
