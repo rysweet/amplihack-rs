@@ -50,11 +50,11 @@ esac
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   BASE_REF="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   [ -n "$BASE_REF" ] || BASE_REF="origin/main"
-  if git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null && git diff --quiet "${BASE_REF}..HEAD"; then
+  if git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null && [ -z "$(git status --porcelain)" ] && git diff --quiet "${BASE_REF}..HEAD"; then
     terminal_status="NO_DIFF_SUCCESS"
     echo "terminal_status=NO_DIFF_SUCCESS"
   elif [ "$terminal_status" = "no-diff" ] || [ "$terminal_status" = "NO_DIFF_SUCCESS" ]; then
-    echo "WARNING: publish reported no-diff but final diff could not confirm that state" >&2
+    echo "WARNING: publish reported no-diff but final clean-worktree diff could not confirm that state" >&2
   fi
 fi
 

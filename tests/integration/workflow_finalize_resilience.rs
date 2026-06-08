@@ -722,6 +722,70 @@ exit 42
 }
 
 #[test]
+fn final_status_does_not_confirm_no_diff_success_with_dirty_worktree() {
+    let tmp = TempDir::new().expect("tempdir");
+    let repo = tmp.path().join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    for args in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "user.name", "Workflow Test"],
+    ] {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .status()
+            .expect("git setup");
+        assert!(status.success(), "git setup command failed");
+    }
+    write_file(&repo.join("README.md"), "base\n");
+    for args in [
+        vec!["add", "README.md"],
+        vec!["commit", "-m", "base"],
+        vec![
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/owner/repo.git",
+        ],
+        vec!["update-ref", "refs/remotes/origin/main", "main"],
+    ] {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .status()
+            .expect("git setup");
+        assert!(status.success(), "git setup command failed");
+    }
+    write_file(&repo.join("dirty.txt"), "uncommitted\n");
+
+    let output = Command::new("bash")
+        .arg(workspace_helper_path("workflow_final_status.sh"))
+        .current_dir(&repo)
+        .env("REMOTE_HOST_TYPE", "other")
+        .env("PR_PUBLISH_RESULT_STATE", "no-diff")
+        .env("TASK_DESCRIPTION", "test task")
+        .env("ISSUE_NUMBER", "7")
+        .output()
+        .expect("run workflow_final_status.sh");
+
+    assert!(
+        output.status.success(),
+        "final status helper should report without mutating dirty worktree"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.contains("terminal_status=NO_DIFF_SUCCESS"),
+        "dirty worktree must not be confirmed as NO_DIFF_SUCCESS\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("clean-worktree diff could not confirm"),
+        "dirty no-diff claim must produce a visible warning, stderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn cleanup_push_logging_redacts_embedded_remote_credentials() {
     let command = step_command(&load_finalize_recipe(), "step-20b-push-cleanup");
 
