@@ -28,11 +28,7 @@ pub(super) fn stage_skills(source_skills: &Path, copilot_home: &Path) -> Result<
         return Ok(0);
     }
 
-    let legacy_cli_skill = copilot_home.join("skills").join("azure-devops-cli");
-    if legacy_cli_skill.exists() {
-        fs::remove_dir_all(&legacy_cli_skill)
-            .with_context(|| format!("remove legacy skill dir {}", legacy_cli_skill.display()))?;
-    }
+    remove_legacy_cli_skill(copilot_home)?;
 
     let mut count = 0;
     for entry in fs::read_dir(source_skills)
@@ -50,6 +46,28 @@ pub(super) fn stage_skills(source_skills: &Path, copilot_home: &Path) -> Result<
     }
 
     Ok(count)
+}
+
+fn remove_legacy_cli_skill(copilot_home: &Path) -> Result<()> {
+    let legacy_cli_skill = copilot_home.join("skills").join("azure-devops-cli");
+    let Ok(metadata) = fs::symlink_metadata(&legacy_cli_skill) else {
+        return Ok(());
+    };
+
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        fs::remove_file(&legacy_cli_skill)
+            .with_context(|| format!("remove legacy skill file {}", legacy_cli_skill.display()))?;
+    } else if metadata.is_dir() {
+        fs::remove_dir_all(&legacy_cli_skill)
+            .with_context(|| format!("remove legacy skill dir {}", legacy_cli_skill.display()))?;
+    } else {
+        return Err(anyhow!(
+            "legacy skill path is not a file, directory, or symlink: {}",
+            legacy_cli_skill.display()
+        ));
+    }
+
+    Ok(())
 }
 
 pub(super) fn stage_command_docs(source_commands: &Path, copilot_home: &Path) -> Result<usize> {

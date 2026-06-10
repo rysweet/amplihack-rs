@@ -301,6 +301,37 @@ mod tests {
         assert!(copilot_config_raw.contains("\"name\": \"amplihack\""));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn legacy_cli_skill_cleanup_removes_symlink_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let _env_guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = crate::test_support::HomeGuard::set(temp.path());
+
+        let staged = temp.path().join(".amplihack/.claude");
+        fs::create_dir_all(staged.join("skills/dev-orchestrator")).unwrap();
+        fs::write(staged.join("skills/dev-orchestrator/SKILL.md"), "skill").unwrap();
+
+        let legacy_parent = temp.path().join(".copilot/skills");
+        fs::create_dir_all(&legacy_parent).unwrap();
+        let external_target = temp.path().join("user-owned-skill-target");
+        fs::create_dir_all(&external_target).unwrap();
+        fs::write(external_target.join("keep.md"), "do not delete").unwrap();
+        symlink(&external_target, legacy_parent.join("azure-devops-cli")).unwrap();
+
+        ensure_copilot_home_staged_in(None).unwrap();
+
+        assert!(!legacy_parent.join("azure-devops-cli").exists());
+        assert!(
+            external_target.join("keep.md").exists(),
+            "legacy cleanup must not follow symlinks into user-owned content"
+        );
+    }
+
     fn event_basename(event: &str) -> &'static str {
         match event {
             "sessionStart" => "session-start",

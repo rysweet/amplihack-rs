@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
+use serde_yaml::Value;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -85,13 +86,7 @@ fn skill_files() -> &'static [PathBuf] {
 /// Extract the YAML frontmatter `name:` value from a SKILL.md file.
 /// Returns `None` if no frontmatter or no `name:` field found.
 fn extract_frontmatter_name(content: &str) -> Option<String> {
-    if !content.starts_with("---\n") {
-        return None;
-    }
-    // Find closing `---`
-    let after_open = &content[3..];
-    let close_idx = after_open.find("\n---")?;
-    let frontmatter = &after_open[..close_idx];
+    let frontmatter = extract_frontmatter(content)?;
 
     for line in frontmatter.lines() {
         let line = line.trim();
@@ -104,14 +99,9 @@ fn extract_frontmatter_name(content: &str) -> Option<String> {
 
 /// Extract activation_keywords list from YAML frontmatter.
 fn extract_activation_keywords(content: &str) -> Vec<String> {
-    if !content.starts_with("---\n") {
-        return Vec::new();
-    }
-    let after_open = &content[3..];
-    let Some(close_idx) = after_open.find("\n---") else {
+    let Some(frontmatter) = extract_frontmatter(content) else {
         return Vec::new();
     };
-    let frontmatter = &after_open[..close_idx];
 
     let mut keywords = Vec::new();
     let mut in_keywords_block = false;
@@ -135,6 +125,12 @@ fn extract_activation_keywords(content: &str) -> Vec<String> {
     }
 
     keywords
+}
+
+fn extract_frontmatter(content: &str) -> Option<&str> {
+    let after_open = content.strip_prefix("---\n")?;
+    let close_idx = after_open.find("\n---")?;
+    Some(&after_open[..close_idx])
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -477,7 +473,16 @@ fn tc_skill_10_azure_devops_cli_is_not_registered_as_a_skill() {
     let mut violations = Vec::new();
     for file in files {
         let content = fs::read_to_string(&file).expect("read registry file");
-        if content.contains("azure-devops-cli") {
+        let registered_content = if file.ends_with("known_skills.rs") {
+            content
+                .split_once("static AMPLIHACK_SKILLS: &[&str] = &[")
+                .and_then(|(_, rest)| rest.split_once("];"))
+                .map(|(registry, _)| registry)
+                .unwrap_or(&content)
+        } else {
+            content.as_str()
+        };
+        if registered_content.contains("azure-devops-cli") {
             violations.push(relative_path(&file));
         }
     }
@@ -493,5 +498,40 @@ fn tc_skill_10_azure_devops_cli_is_not_registered_as_a_skill() {
             .join("azure-devops/cli-automation.md")
             .is_file(),
         "Azure DevOps CLI automation material must be preserved under azure-devops"
+    );
+}
+
+/// TC-SKILL-11: Every bundled SKILL.md must have syntactically valid YAML
+/// frontmatter.
+#[test]
+fn tc_skill_11_frontmatter_is_valid_yaml() {
+    let skills = skills_dir();
+    if !skills.is_dir() {
+        eprintln!(
+            "SKIP: amplifier-bundle/skills/ not found at {}",
+            skills.display()
+        );
+        return;
+    }
+
+    let mut violations = Vec::new();
+    for path in skill_files() {
+        let content = fs::read_to_string(path).expect("read SKILL.md");
+        let Some(frontmatter) = extract_frontmatter(&content) else {
+            violations.push(format!("  {} -> missing frontmatter", relative_path(path)));
+            continue;
+        };
+        if let Err(err) = serde_yaml::from_str::<Value>(frontmatter) {
+            violations.push(format!(
+                "  {} -> invalid YAML frontmatter: {err}",
+                relative_path(path)
+            ));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "SKILL.md frontmatter must be valid YAML:\n{}",
+        violations.join("\n")
     );
 }
