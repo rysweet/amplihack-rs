@@ -25,6 +25,7 @@
 //! 6. **Network download** (legacy fallback) — `git clone` / tarball from
 //!    upstream, only attempted when none of the above yields a usable root.
 
+use super::bundle_compat::is_compatible_framework_bundle;
 use super::types::{REPO_ARCHIVE_URL, REPO_GIT_URL};
 use crate::update::{extract_archive, http_get_with_retry, validate_download_url};
 use anyhow::{Context, Result, bail};
@@ -44,8 +45,8 @@ pub(super) fn find_bundled_framework_root() -> Option<PathBuf> {
     // 1. AMPLIHACK_HOME env var — explicit user override
     if let Ok(home) = std::env::var("AMPLIHACK_HOME") {
         let p = PathBuf::from(&home);
-        if p.join("amplifier-bundle").is_dir() {
-            return Some(p);
+        if let Some(root) = compatible_candidate(p, "AMPLIHACK_HOME") {
+            return Some(root);
         }
     }
 
@@ -53,8 +54,8 @@ pub(super) fn find_bundled_framework_root() -> Option<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
         let mut dir: Option<PathBuf> = Some(cwd);
         while let Some(d) = dir {
-            if d.join("amplifier-bundle").is_dir() {
-                return Some(d);
+            if let Some(root) = compatible_candidate(d.clone(), "current directory") {
+                return Some(root);
             }
             dir = d.parent().map(Path::to_path_buf);
         }
@@ -64,8 +65,8 @@ pub(super) fn find_bundled_framework_root() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.parent().map(Path::to_path_buf);
         while let Some(d) = dir {
-            if d.join("amplifier-bundle").is_dir() {
-                return Some(d);
+            if let Some(root) = compatible_candidate(d.clone(), "executable parent") {
+                return Some(root);
             }
             dir = d.parent().map(Path::to_path_buf);
         }
@@ -80,18 +81,35 @@ pub(super) fn find_bundled_framework_root() -> Option<PathBuf> {
         .map(Path::to_path_buf);
     if let Some(ref root) = workspace_root
         && root.join("amplifier-bundle").is_dir()
+        && let Some(root) = compatible_candidate(root.clone(), "compile-time workspace root")
     {
-        return Some(root.clone());
+        return Some(root);
     }
 
     // 5. ~/.amplihack (from prior staged install)
     if let Ok(home) = std::env::var("HOME") {
         let dot = PathBuf::from(home).join(".amplihack");
-        if dot.join("amplifier-bundle").is_dir() && dot.join(".claude").is_dir() {
-            return Some(dot);
+        if dot.join(".claude").is_dir()
+            && let Some(root) = compatible_candidate(dot, "~/.amplihack")
+        {
+            return Some(root);
         }
     }
 
+    None
+}
+
+fn compatible_candidate(candidate: PathBuf, label: &str) -> Option<PathBuf> {
+    if !candidate.join("amplifier-bundle").is_dir() {
+        return None;
+    }
+    if is_compatible_framework_bundle(&candidate) {
+        return Some(candidate);
+    }
+    eprintln!(
+        "⚠️  Skipping incompatible framework bundle from {label}: {}",
+        candidate.display()
+    );
     None
 }
 

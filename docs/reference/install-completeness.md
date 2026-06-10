@@ -38,9 +38,9 @@ Capture the command output when diagnosing install behavior. A successful instal
 
 ## Verification behavior
 
-After copying files, `amplihack install` verifies the staged framework against a source-derived manifest.
+After copying files, `amplihack install` verifies the staged framework against a source-derived completeness manifest. This is separate from the on-disk uninstall manifest that is persisted only after install succeeds.
 
-The manifest is generated from the resolved source at install time. This avoids hard-coded skill counts and stale component lists.
+The completeness manifest is generated from the resolved source at install time. This avoids hard-coded skill counts and stale component lists. Smart-orchestrator compatibility is validated as an additional structural/content gate, not as a hard-coded file hash or line-count check.
 
 Verification checks:
 
@@ -50,7 +50,8 @@ Verification checks:
 4. Every source skill directory exists at the staged skills destination.
 5. The staged skill directory count is at least the source skill directory count. This is an additional guard; extra destination skills cannot mask a missing source skill.
 6. The full staged `amplifier-bundle/` exists under the user's Amplihack home directory.
-7. Source-conditional categories such as `commands/` and `hooks/` are verified when they exist in the source-derived manifest.
+7. The staged `amplifier-bundle/` passes framework bundle compatibility validation, including the composable smart-orchestrator contract.
+8. Source-conditional categories such as `commands/` and `hooks/` are verified when they exist in the source-derived manifest.
 
 If any check fails, `amplihack install` exits non-zero with an actionable error message.
 
@@ -80,6 +81,15 @@ If an individual source component directory is missing from the staged destinati
 
 ```text
 install failed: staged framework component missing: skills/github
+```
+
+If the staged smart-orchestrator bundle is stale:
+
+```text
+install failed: staged framework bundle is incompatible:
+  recipes/smart-orchestrator.yaml is stale: expected composable sub-recipes
+  smart-classify-route, smart-execute-routing, smart-reflect-loop,
+  smart-validate-summarize
 ```
 
 If a copy operation fails:
@@ -154,7 +164,9 @@ The test asserts:
 4. Every source-conditional category is present at the destination when it exists in the source manifest.
 5. The staged skill count is at least the source skill count, in addition to exact source skill name coverage.
 6. The full `amplifier-bundle/` is staged.
-7. Package metadata includes `amplifier-bundle/`.
-8. Copy failures surface both source and destination paths.
+7. The staged `amplifier-bundle/` contains the composable smart-orchestrator and the required companion recipes.
+8. A stale monolithic smart-orchestrator cannot remain staged after install/update repair.
+9. Package metadata includes `amplifier-bundle/`.
+10. Copy failures surface both source and destination paths.
 
 This test prevents regressions where published or local installs silently omit framework components.

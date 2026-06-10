@@ -102,18 +102,56 @@ fn create_bundle_missing_skills(root: &Path) {
         "#!/bin/sh\necho status\n",
     )
     .expect("write statusline");
+    write_compatible_recipe_bundle(&bundle.join("recipes"));
+    fs::write(bundle.join("CLAUDE.md"), "# test bundle\n").expect("write CLAUDE.md");
+}
+
+fn write_compatible_recipe_bundle(recipes: &Path) {
+    fs::write(
+        recipes.join("smart-orchestrator.yaml"),
+        r#"name: "smart-orchestrator"
+steps:
+  - id: "smart-classify-route"
+    type: "recipe"
+    recipe: "smart-classify-route"
+  - id: "smart-execute-routing"
+    type: "recipe"
+    recipe: "smart-execute-routing"
+  - id: "smart-reflect-loop"
+    type: "recipe"
+    recipe: "smart-reflect-loop"
+  - id: "smart-validate-summarize"
+    type: "recipe"
+    recipe: "smart-validate-summarize"
+"#,
+    )
+    .expect("write smart-orchestrator recipe");
     for recipe in [
-        "smart-orchestrator.yaml",
-        "default-workflow.yaml",
-        "investigation-workflow.yaml",
+        "default-workflow",
+        "investigation-workflow",
+        "smart-classify-route",
+        "smart-execute-routing",
+        "smart-reflect-loop",
+        "smart-validate-summarize",
     ] {
         fs::write(
-            bundle.join("recipes").join(recipe),
-            "name: test\nsteps: []\n",
+            recipes.join(format!("{recipe}.yaml")),
+            format!("name: \"{recipe}\"\nsteps: []\n"),
         )
-        .expect("write recipe");
+        .expect("write companion recipe");
     }
-    fs::write(bundle.join("CLAUDE.md"), "# test bundle\n").expect("write CLAUDE.md");
+    fs::write(
+        recipes.join("_recipe_manifest.json"),
+        r#"{
+  "smart-classify-route": "250c8da0ee348745",
+  "smart-execute-routing": "11612506ae846a47",
+  "smart-orchestrator": "8d55ee4817dbc815",
+  "smart-reflect-loop": "7b8101dfce096480",
+  "smart-validate-summarize": "007548c49e9654fb"
+}
+"#,
+    )
+    .expect("write recipe manifest");
 }
 
 #[test]

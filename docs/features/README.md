@@ -23,6 +23,7 @@ Intelligent guidance system that prevents common mistakes and ensures work compl
 
 - [Post-Update Install — Re-exec New Binary](update-reexec-new-binary.md) — after `amplihack update` downloads a new binary, the post-update install step spawns the **new** binary as a subprocess instead of running the old binary's compiled-in install code (issue [#683](https://github.com/rysweet/amplihack-rs/issues/683)).
 - [Install/Update PATH Conflict Handling](../reference/install-update-path-conflicts.md) — detects stale system binaries that shadow `~/.local/bin`, prefers safe user-local update targets, and reports manual sudo repair guidance without attempting privileged writes.
+- [Framework Bundle Compatibility](../reference/framework-bundle-compatibility.md) — validates smart-orchestrator source and staged bundles so stale monolithic recipes cannot survive install/update repair (issue [#734](https://github.com/rysweet/amplihack-rs/issues/734)).
 - [Startup Self-Update Prompt — Subprocess-Safe Skip](startup-update-prompt-subprocess-safe.md) — startup self-update prompt skips automatically in CI, delegated agents, non-TTY stdin, with `--subprocess-safe`, or when `AMPLIHACK_NONINTERACTIVE` / `AMPLIHACK_AGENT_BINARY` is set; emits a single skip-line to stderr (issue [#625](https://github.com/rysweet/amplihack-rs/issues/625)).
 
 ## Workflow Recovery

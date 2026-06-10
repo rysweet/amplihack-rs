@@ -1,5 +1,8 @@
 //! Directory creation, tree copying, and framework asset initialization.
 
+use super::bundle_compat::{
+    validate_framework_bundle_compatibility, validate_staged_framework_bundle,
+};
 use super::filesystem::*;
 use super::types::*;
 use anyhow::{Context, Result};
@@ -413,6 +416,12 @@ pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Resu
             source_bundle.display()
         );
     }
+    validate_framework_bundle_compatibility(&source_bundle).with_context(|| {
+        format!(
+            "source amplifier-bundle at {} is incompatible",
+            source_bundle.display()
+        )
+    })?;
 
     let target_bundle = claude_dir
         .parent()
@@ -442,6 +451,15 @@ pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Resu
             staging_temp.display()
         )
     })?;
+    if let Err(err) = validate_staged_framework_bundle(&staging_temp) {
+        let _ = fs::remove_dir_all(&staging_temp);
+        return Err(err).with_context(|| {
+            format!(
+                "copied amplifier-bundle staging dir {} is incompatible",
+                staging_temp.display()
+            )
+        });
+    }
 
     if target_bundle.exists() {
         let backup = target_bundle.with_extension("old");
@@ -478,6 +496,12 @@ pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Resu
         "  ✅ Staged amplifier-bundle to {}",
         target_bundle.display()
     );
+    validate_staged_framework_bundle(&target_bundle).with_context(|| {
+        format!(
+            "installed amplifier-bundle at {} is incompatible",
+            target_bundle.display()
+        )
+    })?;
     Ok(true)
 }
 
