@@ -233,9 +233,12 @@ fn stage_commands(repo_root: &Path, plugin_dir: &Path) -> Result<bool> {
             && entry.path().extension().and_then(|e| e.to_str()) == Some("md")
         {
             let dst = staging.join(entry.file_name());
-            fs::copy(entry.path(), &dst).with_context(|| {
+            let body = fs::read_to_string(entry.path())
+                .with_context(|| format!("failed to read {}", entry.path().display()))?;
+            let normalized = normalize_command_frontmatter_name(&entry.path(), &body)?;
+            fs::write(&dst, normalized).with_context(|| {
                 format!(
-                    "failed to copy {} to {}",
+                    "failed to write normalized command {} to {}",
                     entry.path().display(),
                     dst.display()
                 )
@@ -278,6 +281,76 @@ fn stage_commands(repo_root: &Path, plugin_dir: &Path) -> Result<bool> {
         target.display()
     );
     Ok(true)
+}
+
+fn normalize_command_frontmatter_name(path: &Path, body: &str) -> Result<String> {
+    let file_stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .with_context(|| format!("command file has no UTF-8 stem: {}", path.display()))?;
+    let mut lines: Vec<String> = body.lines().map(ToOwned::to_owned).collect();
+    let has_trailing_newline = body.ends_with('\n');
+
+    if lines.first().map(String::as_str) != Some("---") {
+        return Ok(body.to_string());
+    }
+    let Some(frontmatter_end) = lines
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find_map(|(idx, line)| (line.trim() == "---").then_some(idx))
+    else {
+        return Ok(body.to_string());
+    };
+
+    for line in lines.iter_mut().take(frontmatter_end).skip(1) {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("name:") else {
+            continue;
+        };
+        let indent_len = line.len() - trimmed.len();
+        let value = rest.trim();
+        let normalized = value
+            .strip_prefix("amplihack:")
+            .unwrap_or(value)
+            .trim_matches('"')
+            .trim_matches('\'');
+        let command_name = if normalized.is_empty() {
+            file_stem
+        } else {
+            normalized
+        };
+        validate_copilot_command_name(command_name)
+            .with_context(|| format!("invalid Copilot command name in {}", path.display()))?;
+        *line = format!("{}name: {command_name}", " ".repeat(indent_len));
+        let mut result = lines.join("\n");
+        if has_trailing_newline {
+            result.push('\n');
+        }
+        return Ok(result);
+    }
+
+    validate_copilot_command_name(file_stem)
+        .with_context(|| format!("invalid Copilot command filename {}", path.display()))?;
+    lines.insert(1, format!("name: {file_stem}"));
+    let mut result = lines.join("\n");
+    if has_trailing_newline {
+        result.push('\n');
+    }
+    Ok(result)
+}
+
+fn validate_copilot_command_name(name: &str) -> Result<()> {
+    if name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ' '))
+    {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "Command name must contain only letters, numbers, hyphens, underscores, dots, and spaces: {name:?}"
+        )
+    }
 }
 
 /// Idempotently insert the amplihack@local entry into
@@ -390,8 +463,12 @@ mod tests {
                 .join("commands")
                 .join("amplihack");
             fs::create_dir_all(&cmd_dir).unwrap();
-            fs::write(cmd_dir.join("dev.md"), "# /dev\n").unwrap();
-            fs::write(cmd_dir.join("analyze.md"), "# /analyze\n").unwrap();
+            fs::write(cmd_dir.join("dev.md"), "---\nname: dev\n---\n# /dev\n").unwrap();
+            fs::write(
+                cmd_dir.join("analyze.md"),
+                "---\nname: amplihack:analyze\n---\n# /analyze\n",
+            )
+            .unwrap();
             fs::write(cmd_dir.join("not-a-command.txt"), "ignored\n").unwrap();
         }
         root
@@ -533,6 +610,11 @@ mod tests {
             cmd_dir.join("analyze.md").exists(),
             "analyze.md should be staged"
         );
+        let analyze = fs::read_to_string(cmd_dir.join("analyze.md")).unwrap();
+        assert!(
+            analyze.contains("name: analyze") && !analyze.contains("amplihack:analyze"),
+            "staged Copilot commands must strip the invalid amplihack: namespace"
+        );
         assert!(
             !cmd_dir.join("not-a-command.txt").exists(),
             "non-md files must not be staged"
@@ -546,6 +628,75 @@ mod tests {
             Some("./commands"),
             "manifest must advertise commands when staged"
         );
+    }
+
+    #[test]
+    fn normalizes_all_namespaced_amplihack_command_frontmatter() {
+        let td = TempDir::new().unwrap();
+        let copilot_home = fake_copilot_home(&td);
+        let repo = td.path().join("repo");
+        let cmd_dir = repo
+            .join("docs")
+            .join("claude")
+            .join("commands")
+            .join("amplihack");
+        fs::create_dir_all(&cmd_dir).unwrap();
+        for command in [
+            "analyze",
+            "auto",
+            "cascade",
+            "customize",
+            "debate",
+            "expert-panel",
+            "fix",
+            "improve",
+            "ingest-code",
+            "install",
+            "knowledge-builder",
+            "lock",
+            "modular-build",
+            "n-version",
+            "reflect",
+            "remote",
+            "skill-builder",
+            "socratic",
+            "transcripts",
+            "ultrathink",
+            "uninstall",
+            "unlock",
+            "xpia",
+        ] {
+            fs::write(
+                cmd_dir.join(format!("{command}.md")),
+                format!("---\nname: amplihack:{command}\n---\n# /{command}\n"),
+            )
+            .unwrap();
+        }
+        let hooks_bin = td.path().join("amplihack-hooks");
+        fs::write(&hooks_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        run_with_copilot_home(&copilot_home, &repo, &hooks_bin);
+
+        let staged = copilot_home
+            .join("installed-plugins")
+            .join("amplihack@local")
+            .join("commands");
+        for entry in fs::read_dir(staged).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let raw = fs::read_to_string(&path).unwrap();
+            let command = path.file_stem().unwrap().to_str().unwrap();
+            assert!(
+                raw.contains(&format!("name: {command}")),
+                "{} must use bare Copilot command name, got:\n{raw}",
+                path.display()
+            );
+            assert!(
+                !raw.contains("name: amplihack:"),
+                "{} must not keep invalid namespaced command name",
+                path.display()
+            );
+        }
     }
 
     #[test]
