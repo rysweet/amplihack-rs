@@ -500,6 +500,49 @@ fn find_framework_repo_root_finds_github_tarball_layout() {
 }
 
 #[test]
+fn find_compatible_framework_repo_root_accepts_downloaded_composable_bundle() {
+    let temp = tempfile::tempdir().unwrap();
+    let extracted = temp.path().join("amplihack-main");
+    create_source_repo(&extracted);
+
+    let found = clone::find_compatible_framework_repo_root(temp.path(), "test download").unwrap();
+
+    assert_eq!(found, extracted);
+}
+
+#[test]
+fn find_compatible_framework_repo_root_rejects_downloaded_stale_bundle() {
+    let temp = tempfile::tempdir().unwrap();
+    let extracted = temp.path().join("amplihack-main");
+    create_source_repo(&extracted);
+    fs::write(
+        extracted.join("amplifier-bundle/recipes/smart-orchestrator.yaml"),
+        r#"name: "smart-orchestrator"
+steps:
+  - id: "parse-decomposition"
+    type: "shell"
+    command: |
+      HELPER="$(amplihack resolve-bundle-asset helper-path)"
+      python3 - <<'PY'
+      import importlib
+      PY
+"#,
+    )
+    .unwrap();
+
+    let err = clone::find_compatible_framework_repo_root(temp.path(), "test download")
+        .expect_err("downloaded stale smart-orchestrator bundle must be rejected");
+    let msg = err.to_string();
+
+    assert!(
+        msg.contains("downloaded framework bundle")
+            && msg.contains("incompatible")
+            && msg.contains("smart-orchestrator"),
+        "error must explain the incompatible downloaded bundle, got: {msg}"
+    );
+}
+
+#[test]
 fn find_framework_repo_root_errors_when_archive_lacks_claude_dir() {
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir_all(temp.path().join("archive-root/empty")).unwrap();

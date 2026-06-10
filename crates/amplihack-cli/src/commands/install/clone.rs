@@ -25,7 +25,9 @@
 //! 6. **Network download** (legacy fallback) — `git clone` / tarball from
 //!    upstream, only attempted when none of the above yields a usable root.
 
-use super::bundle_compat::is_compatible_framework_bundle;
+use super::bundle_compat::{
+    is_compatible_framework_bundle, validate_framework_bundle_compatibility,
+};
 use super::types::{REPO_ARCHIVE_URL, REPO_GIT_URL};
 use crate::update::{extract_archive, http_get_with_retry, validate_download_url};
 use anyhow::{Context, Result, bail};
@@ -124,7 +126,7 @@ fn compatible_candidate(candidate: PathBuf, label: &str) -> Option<PathBuf> {
 pub(super) fn download_and_extract_framework_repo(destination: &Path) -> Result<PathBuf> {
     if let Ok(git_path) = which_git() {
         git_clone_framework_repo(&git_path, destination)?;
-        return find_framework_repo_root(destination);
+        return find_compatible_framework_repo_root(destination, REPO_GIT_URL);
     }
 
     // git not available — fall back to HTTP tarball download
@@ -137,7 +139,7 @@ pub(super) fn download_and_extract_framework_repo(destination: &Path) -> Result<
             destination.display()
         )
     })?;
-    find_framework_repo_root(destination)
+    find_compatible_framework_repo_root(destination, REPO_ARCHIVE_URL)
 }
 
 /// Resolve the `git` binary path from PATH.
@@ -196,6 +198,7 @@ pub(super) fn find_framework_repo_root(root: &Path) -> Result<PathBuf> {
         if dir.join(".claude").is_dir() || dir.join("amplifier-bundle").is_dir() {
             return Ok(dir);
         }
+
         for entry in
             fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
         {
@@ -214,4 +217,15 @@ pub(super) fn find_framework_repo_root(root: &Path) -> Result<PathBuf> {
         "downloaded framework archive did not contain a repository root with .claude or amplifier-bundle under {}",
         root.display()
     )
+}
+
+pub(super) fn find_compatible_framework_repo_root(root: &Path, source: &str) -> Result<PathBuf> {
+    let repo_root = find_framework_repo_root(root)?;
+    if let Err(error) = validate_framework_bundle_compatibility(&repo_root) {
+        return Err(anyhow::anyhow!(
+            "downloaded framework bundle from {source} is incompatible at {}: {error}",
+            repo_root.display()
+        ));
+    }
+    Ok(repo_root)
 }
