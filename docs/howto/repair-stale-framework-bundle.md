@@ -167,7 +167,7 @@ Capture the compatibility error and the resolved paths:
 amplihack --version
 which -a amplihack
 echo "AMPLIHACK_HOME=${AMPLIHACK_HOME:-$HOME/.amplihack}"
-amplihack install 2>&1 | tee /tmp/amplihack-install.log
+amplihack install 2>&1 | tee ./amplihack-install.log
 ```
 
 Do not repair this by copying `orch_helper.py` into the bundle or remapping

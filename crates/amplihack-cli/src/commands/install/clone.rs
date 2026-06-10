@@ -32,6 +32,8 @@ use anyhow::{Context, Result, bail};
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::thread;
@@ -184,7 +186,8 @@ fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
         .context("failed to create temporary stdout file for git clone")?;
     let stderr_file = tempfile::NamedTempFile::new()
         .context("failed to create temporary stderr file for git clone")?;
-    let mut child = std::process::Command::new(git_path)
+    let mut command = std::process::Command::new(git_path);
+    command
         .args([
             "clone",
             "--depth",
@@ -204,7 +207,19 @@ fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
                 .as_file()
                 .try_clone()
                 .context("failed to clone git stderr handle")?,
-        ))
+        ));
+    #[cfg(unix)]
+    // SAFETY: `pre_exec` runs after fork and before exec. `setsid` is async-signal-safe
+    // and isolates the git clone process tree so timeout cleanup can terminate it.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command
         .spawn()
         .with_context(|| format!("failed to spawn git clone for {REPO_GIT_URL}"))?;
     let started = Instant::now();
@@ -216,8 +231,7 @@ fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
             break status;
         }
         if started.elapsed() >= GIT_CLONE_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_git_clone(&mut child);
             let stdout = read_limited(stdout_file.path())?;
             let stderr = read_limited(stderr_file.path())?;
             bail!(
@@ -241,6 +255,21 @@ fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn terminate_git_clone(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as libc::pid_t;
+        if pid > 0 {
+            // Negative pid targets the process group created with setsid above.
+            unsafe {
+                let _ = libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn read_limited(path: &Path) -> Result<String> {
@@ -343,7 +372,14 @@ mod tests {
     #[test]
     fn git_clone_times_out_and_reaps_child() {
         let temp = tempfile::tempdir().unwrap();
-        let fake = fake_git(temp.path(), "echo started; /bin/sleep 5");
+        let marker = temp.path().join("orphan-marker");
+        let fake = fake_git(
+            temp.path(),
+            &format!(
+                "(/bin/sleep 1; echo orphan > '{}') & echo started; /bin/sleep 5",
+                marker.display()
+            ),
+        );
         let start = Instant::now();
 
         let err = git_clone_framework_repo(&fake, &temp.path().join("dest"))
@@ -359,6 +395,11 @@ mod tests {
         assert!(
             msg.contains("started"),
             "timeout error must include captured output: {msg}"
+        );
+        thread::sleep(Duration::from_millis(1_200));
+        assert!(
+            !marker.exists(),
+            "timeout cleanup must terminate git clone descendants"
         );
     }
 }

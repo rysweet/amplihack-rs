@@ -52,6 +52,14 @@ pub(super) enum BundleCompatibilityError {
         "framework bundle compatibility check failed: smart-orchestrator at {path} does not reference required sub-recipe {recipe}"
     )]
     MissingSmartRecipeReference { path: PathBuf, recipe: String },
+    #[error(
+        "framework bundle compatibility check failed: companion recipe {recipe} at {path} is invalid: {reason}"
+    )]
+    InvalidCompanionRecipe {
+        recipe: String,
+        path: PathBuf,
+        reason: String,
+    },
     #[error("framework bundle compatibility check failed: missing recipe manifest at {0}")]
     MissingManifest(PathBuf),
     #[error(
@@ -102,7 +110,8 @@ pub(super) fn validate_framework_bundle_compatibility(
     for &recipe in REQUIRED_SMART_RECIPES {
         let companion_path = require_recipe_file(&recipes, recipe)?;
         let companion = read_file(&companion_path)?;
-        parse_yaml(&companion_path, &companion)?;
+        let companion_yaml = parse_yaml(&companion_path, &companion)?;
+        validate_companion_recipe_contract(&companion_path, recipe, &companion_yaml)?;
         if !smart_recipe_refs.contains(recipe) {
             return Err(BundleCompatibilityError::MissingSmartRecipeReference {
                 path: smart_path.clone(),
@@ -233,6 +242,68 @@ fn top_level_recipe_steps(value: &Value) -> BTreeSet<&str> {
     references
 }
 
+fn validate_companion_recipe_contract(
+    path: &Path,
+    recipe: &str,
+    value: &Value,
+) -> Result<(), BundleCompatibilityError> {
+    let Value::Mapping(mapping) = value else {
+        return Err(invalid_companion_recipe(
+            path,
+            recipe,
+            "recipe YAML root must be a mapping",
+        ));
+    };
+    match mapping_string(mapping, "name") {
+        Some(name) if name == recipe => {}
+        Some(name) => {
+            return Err(invalid_companion_recipe(
+                path,
+                recipe,
+                format!("name is {name:?}, expected {recipe:?}"),
+            ));
+        }
+        None => {
+            return Err(invalid_companion_recipe(
+                path,
+                recipe,
+                "missing required name field",
+            ));
+        }
+    }
+
+    match mapping.get(Value::String("steps".to_string())) {
+        Some(Value::Sequence(steps)) if !steps.is_empty() => Ok(()),
+        Some(Value::Sequence(_)) => Err(invalid_companion_recipe(
+            path,
+            recipe,
+            "steps must contain at least one step",
+        )),
+        Some(_) => Err(invalid_companion_recipe(
+            path,
+            recipe,
+            "steps must be a sequence",
+        )),
+        None => Err(invalid_companion_recipe(
+            path,
+            recipe,
+            "missing required steps field",
+        )),
+    }
+}
+
+fn invalid_companion_recipe(
+    path: &Path,
+    recipe: &str,
+    reason: impl Into<String>,
+) -> BundleCompatibilityError {
+    BundleCompatibilityError::InvalidCompanionRecipe {
+        recipe: recipe.to_string(),
+        path: path.to_path_buf(),
+        reason: reason.into(),
+    }
+}
+
 fn mapping_value<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
     let Value::Mapping(mapping) = value else {
         return None;
@@ -308,7 +379,7 @@ mod tests {
         for recipe in REQUIRED_SMART_RECIPES {
             fs::write(
                 recipes.join(format!("{recipe}.yaml")),
-                format!("name: \"{recipe}\"\nsteps: []\n"),
+                format!("name: \"{recipe}\"\nsteps:\n  - id: smoke\n    type: bash\n    command: 'true'\n"),
             )
             .unwrap();
         }
@@ -418,6 +489,46 @@ steps:
         assert!(
             msg.contains("smart-reflect-loop") && msg.contains("recipe"),
             "error must name the missing companion recipe, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_required_companion_recipe_steps() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("amplifier-bundle");
+        write_compatible_bundle(&bundle);
+        fs::write(
+            bundle.join("recipes/smart-classify-route.yaml"),
+            "name: \"smart-classify-route\"\nsteps: []\n",
+        )
+        .unwrap();
+
+        let err = validate_framework_bundle_compatibility(&bundle)
+            .expect_err("empty companion recipe must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("smart-classify-route") && msg.contains("steps"),
+            "error must name empty companion recipe steps, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_required_companion_recipe_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("amplifier-bundle");
+        write_compatible_bundle(&bundle);
+        fs::write(
+            bundle.join("recipes/smart-execute-routing.yaml"),
+            "name: \"wrong-recipe\"\nsteps:\n  - id: smoke\n    type: bash\n    command: 'true'\n",
+        )
+        .unwrap();
+
+        let err = validate_framework_bundle_compatibility(&bundle)
+            .expect_err("wrong-name companion recipe must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("smart-execute-routing") && msg.contains("wrong-recipe"),
+            "error must name wrong companion recipe name, got: {msg}"
         );
     }
 

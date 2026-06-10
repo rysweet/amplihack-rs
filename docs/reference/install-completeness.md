@@ -122,9 +122,9 @@ find ~/.amplihack/.claude/agents -maxdepth 2 -type d | sort
 Reproduce a clean install with logs:
 
 ```bash
-amplihack update 2>&1 | tee /tmp/amp-update.log
+amplihack update 2>&1 | tee ./amp-update.log
 rm -rf ~/.amplihack/.claude
-amplihack install 2>&1 | tee /tmp/amp-install.log
+amplihack install 2>&1 | tee ./amp-install.log
 find ~/.amplihack/.claude -maxdepth 3 -type d | sort > /tmp/installed-dirs.txt
 ```
 

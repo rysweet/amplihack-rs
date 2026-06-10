@@ -139,7 +139,9 @@ steps:
     ] {
         fs::write(
             recipes.join(format!("{recipe}.yaml")),
-            format!("name: \"{recipe}\"\nsteps: []\n"),
+            format!(
+                "name: \"{recipe}\"\nsteps:\n  - id: smoke\n    type: bash\n    command: 'true'\n"
+            ),
         )
         .unwrap();
     }
