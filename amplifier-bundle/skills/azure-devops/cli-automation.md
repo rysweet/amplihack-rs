@@ -9,16 +9,18 @@ Install the extension and authenticate before running Azure DevOps commands:
 ```bash
 az extension add --name azure-devops
 az login
+export AZURE_DEVOPS_ORG_URL="${AZURE_DEVOPS_ORG_URL:?set the Azure DevOps organization URL}"
+export AZURE_DEVOPS_PROJECT="${AZURE_DEVOPS_PROJECT:?set the Azure DevOps project name}"
 az devops configure --defaults \
-  organization=https://dev.azure.com/ORG \
-  project=PROJECT
+  organization="$AZURE_DEVOPS_ORG_URL" \
+  project="$AZURE_DEVOPS_PROJECT"
 az devops project list --output table
 ```
 
 For non-interactive automation, use the narrowest available credential:
 
 ```bash
-az devops login --organization https://dev.azure.com/ORG
+az devops login --organization "$AZURE_DEVOPS_ORG_URL"
 ```
 
 Paste a least-privilege PAT only at the prompt or provide it through a reviewed secret store in CI. Do not put PAT values, tenant IDs, organization-specific URLs, or project identifiers in scripts committed to the repository.
@@ -29,8 +31,8 @@ Configure defaults once to avoid repeating organization and project flags:
 
 ```bash
 az devops configure --defaults \
-  organization=https://dev.azure.com/ORG \
-  project=PROJECT
+  organization="$AZURE_DEVOPS_ORG_URL" \
+  project="$AZURE_DEVOPS_PROJECT"
 az devops configure --list
 ```
 
@@ -54,8 +56,8 @@ az devops configure --defaults use-git-aliases=true
 
 ```bash
 az devops project list --output table
-az devops project show --project PROJECT --output json
-az devops team list --project PROJECT --output table
+az devops project show --project "$AZURE_DEVOPS_PROJECT" --output json
+az devops team list --project "$AZURE_DEVOPS_PROJECT" --output table
 ```
 
 ### Boards
@@ -74,8 +76,8 @@ az boards iteration project list --output table
 ### Repos
 
 ```bash
-az repos list --project PROJECT --output table
-az repos create --name "service-api" --project PROJECT
+az repos list --project "$AZURE_DEVOPS_PROJECT" --output table
+az repos create --name "service-api" --project "$AZURE_DEVOPS_PROJECT"
 az repos pr list --repository service-api --status active --output table
 az repos pr show --id 456 --output json
 ```
@@ -83,18 +85,18 @@ az repos pr show --id 456 --output json
 ### Pipelines
 
 ```bash
-az pipelines list --project PROJECT --output table
+az pipelines list --project "$AZURE_DEVOPS_PROJECT" --output table
 az pipelines run --name "API-Build" --branch main
-az pipelines runs show --id RUN_ID --output json
-az pipelines runs list --pipeline-ids PIPELINE_ID --top 10 --output table
+az pipelines runs show --id "$AZURE_DEVOPS_RUN_ID" --output json
+az pipelines runs list --pipeline-ids "$AZURE_DEVOPS_PIPELINE_ID" --top 10 --output table
 ```
 
 ### Artifacts
 
 ```bash
-az artifacts feed list --project PROJECT --output table
-az artifacts feed create --name "internal-packages" --project PROJECT
-az artifacts universal list --feed internal-packages --project PROJECT --output table
+az artifacts feed list --project "$AZURE_DEVOPS_PROJECT" --output table
+az artifacts feed create --name "internal-packages" --project "$AZURE_DEVOPS_PROJECT"
+az artifacts universal list --feed internal-packages --project "$AZURE_DEVOPS_PROJECT" --output table
 ```
 
 ## Pipeline Automation
@@ -184,7 +186,7 @@ az artifacts universal publish \
 Export project, pipeline, and pull request data for dashboards:
 
 ```bash
-az devops project show --project MyProject > project.json
+az devops project show --project "$AZURE_DEVOPS_PROJECT" > project.json
 az pipelines runs list --top 50 > recent-runs.json
 az repos pr list --status all > all-prs.json
 ```
@@ -194,9 +196,9 @@ az repos pr list --status all > all-prs.json
 Export pipeline variables and use them to create a variable group:
 
 ```bash
-az pipelines variable list --pipeline-name "MyPipeline" --output json > vars.json
+az pipelines variable list --pipeline-name "$AZURE_DEVOPS_PIPELINE" --output json > vars.json
 # Convert reviewed JSON values into key=value pairs before creating the group.
-az pipelines variable-group create --name "Production" --variables KEY=value OTHER=value
+az pipelines variable-group create --name "Production" --variables ENVIRONMENT=production REGION=westus
 ```
 
 ## Direct REST API Access
@@ -207,14 +209,14 @@ Use `az devops invoke` only when a first-class command group does not expose the
 az devops invoke \
   --area build \
   --resource builds \
-  --route-parameters project=MyProject \
+  --route-parameters project="$AZURE_DEVOPS_PROJECT" \
   --api-version 6.0 \
   --http-method GET
 
 az devops invoke \
   --area git \
   --resource repositories \
-  --route-parameters project=MyProject \
+  --route-parameters project="$AZURE_DEVOPS_PROJECT" \
   --http-method POST \
   --in-file payload.json
 ```
@@ -256,7 +258,7 @@ az account show --output table
 If a command returns an authorization error, verify the account, organization, project, and least-privilege scope before broadening permissions:
 
 ```bash
-az devops project show --project PROJECT --organization https://dev.azure.com/ORG
+az devops project show --project "$AZURE_DEVOPS_PROJECT" --organization "$AZURE_DEVOPS_ORG_URL"
 ```
 
 For WIQL quoting issues, keep the query in a variable or file so shell quoting does not corrupt brackets and string literals:

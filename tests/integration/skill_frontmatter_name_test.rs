@@ -48,8 +48,8 @@ fn relative_path(path: &Path) -> String {
         .to_string()
 }
 
-/// Recursively find every canonical `SKILL.md` under `dir`.
-fn find_skill_files(dir: &Path) -> Vec<PathBuf> {
+/// Recursively find every file named `filename` under `dir`.
+fn find_files_named(dir: &Path, filename: &str) -> Vec<PathBuf> {
     let mut result = Vec::new();
     if !dir.is_dir() {
         return result;
@@ -58,11 +58,11 @@ fn find_skill_files(dir: &Path) -> Vec<PathBuf> {
         let entry = entry.expect("read dir entry");
         let path = entry.path();
         if path.is_dir() {
-            result.extend(find_skill_files(&path));
+            result.extend(find_files_named(&path, filename));
         } else if path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n == "SKILL.md")
+            .is_some_and(|n| n == filename)
         {
             result.push(path);
         }
@@ -70,26 +70,8 @@ fn find_skill_files(dir: &Path) -> Vec<PathBuf> {
     result
 }
 
-/// Recursively find every lowercase `skill.md` under `dir`.
-fn find_lowercase_skill_files(dir: &Path) -> Vec<PathBuf> {
-    let mut result = Vec::new();
-    if !dir.is_dir() {
-        return result;
-    }
-    for entry in fs::read_dir(dir).expect("read skills dir") {
-        let entry = entry.expect("read dir entry");
-        let path = entry.path();
-        if path.is_dir() {
-            result.extend(find_lowercase_skill_files(&path));
-        } else if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n == "skill.md")
-        {
-            result.push(path);
-        }
-    }
-    result
+fn find_skill_files(dir: &Path) -> Vec<PathBuf> {
+    find_files_named(dir, "SKILL.md")
 }
 
 /// Extract the YAML frontmatter `name:` value from a SKILL.md file.
@@ -341,7 +323,7 @@ fn tc_skill_06_no_lowercase_skill_md_files() {
         return;
     }
 
-    let lowercase_files = find_lowercase_skill_files(&skills);
+    let lowercase_files = find_files_named(&skills, "skill.md");
     assert!(
         lowercase_files.is_empty(),
         "Bundled skills must use canonical SKILL.md filenames, found lowercase files:\n{}",

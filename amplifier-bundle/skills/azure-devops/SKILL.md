@@ -55,7 +55,9 @@ Complete Azure DevOps integration covering boards, repositories, pipelines, and 
 ```bash
 az extension add --name azure-devops
 az login
-az devops configure --defaults organization=https://dev.azure.com/ORG project=PROJECT
+export AZURE_DEVOPS_ORG_URL="${AZURE_DEVOPS_ORG_URL:?set the Azure DevOps organization URL}"
+export AZURE_DEVOPS_PROJECT="${AZURE_DEVOPS_PROJECT:?set the Azure DevOps project name}"
+az devops configure --defaults organization="$AZURE_DEVOPS_ORG_URL" project="$AZURE_DEVOPS_PROJECT"
 az devops configure --list
 ```
 
