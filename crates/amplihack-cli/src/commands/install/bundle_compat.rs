@@ -10,14 +10,6 @@ pub(super) const REQUIRED_SMART_RECIPES: &[&str] = &[
     "smart-validate-summarize",
 ];
 
-const REQUIRED_MANIFEST_RECIPES: &[&str] = &[
-    "smart-orchestrator",
-    "smart-classify-route",
-    "smart-execute-routing",
-    "smart-reflect-loop",
-    "smart-validate-summarize",
-];
-
 const STALE_SMART_ORCHESTRATOR_MARKERS: &[&str] = &[
     "resolve-bundle-asset helper-path",
     "importlib",
@@ -229,17 +221,19 @@ fn validate_recipe_manifest(recipes: &Path) -> Result<(), BundleCompatibilityErr
     let Some(object) = manifest.as_object() else {
         return Err(BundleCompatibilityError::NonObjectManifest(path));
     };
-    for recipe in REQUIRED_MANIFEST_RECIPES {
-        let Some(value) = object.get(*recipe) else {
+    for recipe in
+        std::iter::once("smart-orchestrator").chain(REQUIRED_SMART_RECIPES.iter().copied())
+    {
+        let Some(value) = object.get(recipe) else {
             return Err(BundleCompatibilityError::MissingManifestEntry {
                 path: path.clone(),
-                recipe: (*recipe).to_string(),
+                recipe: recipe.to_string(),
             });
         };
         if !matches!(value, serde_json::Value::String(hash) if !hash.trim().is_empty()) {
             return Err(BundleCompatibilityError::InvalidManifestEntry {
                 path: path.clone(),
-                recipe: (*recipe).to_string(),
+                recipe: recipe.to_string(),
             });
         }
     }
@@ -252,18 +246,11 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    const REQUIRED_SUB_RECIPES: &[&str] = &[
-        "smart-classify-route",
-        "smart-execute-routing",
-        "smart-reflect-loop",
-        "smart-validate-summarize",
-    ];
-
     fn write_compatible_bundle(bundle: &Path) {
         let recipes = bundle.join("recipes");
         fs::create_dir_all(&recipes).unwrap();
         fs::write(recipes.join("smart-orchestrator.yaml"), compatible_smart()).unwrap();
-        for recipe in REQUIRED_SUB_RECIPES {
+        for recipe in REQUIRED_SMART_RECIPES {
             fs::write(
                 recipes.join(format!("{recipe}.yaml")),
                 format!("name: \"{recipe}\"\nsteps: []\n"),

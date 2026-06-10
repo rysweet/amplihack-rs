@@ -1,5 +1,6 @@
 use super::helpers::*;
 use super::*;
+use crate::commands::install::bundle_compat::REQUIRED_SMART_RECIPES;
 use std::fs;
 
 #[test]
@@ -743,13 +744,6 @@ fn copy_amplifier_bundle_replaces_existing_atomically() {
     );
 }
 
-const ISSUE_734_REQUIRED_SMART_RECIPES: &[&str] = &[
-    "smart-classify-route",
-    "smart-execute-routing",
-    "smart-reflect-loop",
-    "smart-validate-summarize",
-];
-
 fn issue_734_compatible_smart_orchestrator() -> &'static str {
     r#"name: "smart-orchestrator"
 description: "Composable smart task orchestrator"
@@ -786,46 +780,9 @@ steps:
 }
 
 fn issue_734_create_bundle_repo(root: &Path, smart_orchestrator: &str) {
-    let bundle = root.join("amplifier-bundle");
-    for dir in BUNDLE_ESSENTIAL_DESTS {
-        fs::create_dir_all(bundle.join(dir)).unwrap();
-        fs::write(bundle.join(dir).join("marker.txt"), "x\n").unwrap();
-    }
-    fs::create_dir_all(bundle.join("tools")).unwrap();
-    fs::write(bundle.join("tools/statusline.sh"), "echo hi\n").unwrap();
-    fs::write(bundle.join("CLAUDE.md"), "framework\n").unwrap();
-
-    let recipes = bundle.join("recipes");
+    helpers::create_bundle_only_source_repo(root);
+    let recipes = root.join("amplifier-bundle/recipes");
     fs::write(recipes.join("smart-orchestrator.yaml"), smart_orchestrator).unwrap();
-    fs::write(
-        recipes.join("default-workflow.yaml"),
-        "name: \"default-workflow\"\nsteps: []\n",
-    )
-    .unwrap();
-    fs::write(
-        recipes.join("investigation-workflow.yaml"),
-        "name: \"investigation-workflow\"\nsteps: []\n",
-    )
-    .unwrap();
-    for recipe in ISSUE_734_REQUIRED_SMART_RECIPES {
-        fs::write(
-            recipes.join(format!("{recipe}.yaml")),
-            format!("name: \"{recipe}\"\nsteps: []\n"),
-        )
-        .unwrap();
-    }
-    fs::write(
-        recipes.join("_recipe_manifest.json"),
-        r#"{
-  "smart-classify-route": "250c8da0ee348745",
-  "smart-execute-routing": "11612506ae846a47",
-  "smart-orchestrator": "8d55ee4817dbc815",
-  "smart-reflect-loop": "7b8101dfce096480",
-  "smart-validate-summarize": "007548c49e9654fb"
-}
-"#,
-    )
-    .unwrap();
 }
 
 #[test]
@@ -868,7 +825,6 @@ fn issue_734_copy_rejects_stale_monolithic_smart_orchestrator_without_overwritin
 fn issue_734_run_install_skips_stale_amplihack_home_and_stages_compatible_cwd_bundle() {
     with_install_env(|home| {
         let stale_home = home.join("stale-amplihack-home");
-        fs::create_dir_all(stale_home.join(".claude")).unwrap();
         issue_734_create_bundle_repo(&stale_home, issue_734_stale_monolithic_smart_orchestrator());
 
         let fresh_checkout = home.join("fresh-checkout");
@@ -894,7 +850,7 @@ fn issue_734_run_install_skips_stale_amplihack_home_and_stages_compatible_cwd_bu
             home.join(".amplihack/amplifier-bundle/recipes/smart-orchestrator.yaml"),
         )
         .unwrap();
-        for recipe in ISSUE_734_REQUIRED_SMART_RECIPES {
+        for recipe in REQUIRED_SMART_RECIPES {
             assert!(
                 staged_smart.contains(&format!("recipe: \"{recipe}\"")),
                 "staged smart-orchestrator must reference required sub-recipe {recipe}; got:\n{staged_smart}"
