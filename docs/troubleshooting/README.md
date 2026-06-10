@@ -30,7 +30,7 @@ Ahoy, matey! Hit a snag? This be yer map to fix common issues and get back on co
 
 ### Update Issues
 
-- **Stale bundle after update** — If `amplihack update` completes but recipes fail with errors like "orch_helper.py not found", you are on a pre-#675 binary. Run `amplihack install` manually, or update to a version that includes issue #675 (which forces a fresh bundle download during update).
+- **Stale bundle after update** — If `amplihack update` completes but recipes fail with errors like "orch_helper.py not found" or `smart-orchestrator` fails during `parse-decomposition`, run `amplihack install` or `amplihack update` with a version that includes the framework bundle compatibility validator. Current installs skip incompatible `AMPLIHACK_HOME` bundles and verify the staged composable smart-orchestrator. See [Repair a stale framework bundle](../howto/repair-stale-framework-bundle.md).
 
 ### Startup Issues
 

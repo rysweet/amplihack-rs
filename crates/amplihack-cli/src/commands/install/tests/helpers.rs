@@ -42,17 +42,7 @@ pub(super) fn create_source_repo(root: &Path) {
         fs::write(bundle.join(dir).join("marker.txt"), "x\n").unwrap();
     }
     fs::write(bundle.join("tools/statusline.sh"), "echo hi\n").unwrap();
-    for recipe in [
-        "smart-orchestrator.yaml",
-        "default-workflow.yaml",
-        "investigation-workflow.yaml",
-    ] {
-        fs::write(
-            bundle.join("recipes").join(recipe),
-            "name: test-recipe\nsteps: []\n",
-        )
-        .unwrap();
-    }
+    write_compatible_recipe_bundle(&bundle.join("recipes"));
 }
 
 pub(super) fn create_minimal_staged_assets(root: &Path) {
@@ -68,17 +58,7 @@ pub(super) fn create_minimal_staged_assets(root: &Path) {
     let bundle = root.join(".amplihack/amplifier-bundle");
     fs::create_dir_all(bundle.join("recipes")).unwrap();
     fs::create_dir_all(bundle.join("tools")).unwrap();
-    for recipe in [
-        "smart-orchestrator.yaml",
-        "default-workflow.yaml",
-        "investigation-workflow.yaml",
-    ] {
-        fs::write(
-            bundle.join("recipes").join(recipe),
-            "name: test-recipe\nsteps: []\n",
-        )
-        .unwrap();
-    }
+    write_compatible_recipe_bundle(&bundle.join("recipes"));
 }
 
 /// Build a bundle-only source repo (no top-level `.claude/`), as shipped by
@@ -103,17 +83,7 @@ pub(super) fn create_bundle_only_source_repo(root: &Path) {
         fs::write(bundle.join(dir).join("marker.txt"), "x\n").unwrap();
     }
     fs::write(bundle.join("tools/statusline.sh"), "echo hi\n").unwrap();
-    for recipe in [
-        "smart-orchestrator.yaml",
-        "default-workflow.yaml",
-        "investigation-workflow.yaml",
-    ] {
-        fs::write(
-            bundle.join("recipes").join(recipe),
-            "name: test-recipe\nsteps: []\n",
-        )
-        .unwrap();
-    }
+    write_compatible_recipe_bundle(&bundle.join("recipes"));
     fs::write(root.join("CLAUDE.md"), "root\n").unwrap();
     // Crucially: NO `.claude/` directory anywhere — that's the bug condition
     // for issue #416.
@@ -136,6 +106,57 @@ pub(super) fn create_exe_stub(dir: &Path, name: &str) -> std::path::PathBuf {
         fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     path
+}
+
+fn write_compatible_recipe_bundle(recipes: &Path) {
+    fs::create_dir_all(recipes).unwrap();
+    fs::write(
+        recipes.join("smart-orchestrator.yaml"),
+        r#"name: "smart-orchestrator"
+steps:
+  - id: "smart-classify-route"
+    type: "recipe"
+    recipe: "smart-classify-route"
+  - id: "smart-execute-routing"
+    type: "recipe"
+    recipe: "smart-execute-routing"
+  - id: "smart-reflect-loop"
+    type: "recipe"
+    recipe: "smart-reflect-loop"
+  - id: "smart-validate-summarize"
+    type: "recipe"
+    recipe: "smart-validate-summarize"
+"#,
+    )
+    .unwrap();
+    for recipe in [
+        "default-workflow",
+        "investigation-workflow",
+        "smart-classify-route",
+        "smart-execute-routing",
+        "smart-reflect-loop",
+        "smart-validate-summarize",
+    ] {
+        fs::write(
+            recipes.join(format!("{recipe}.yaml")),
+            format!(
+                "name: \"{recipe}\"\nsteps:\n  - id: smoke\n    type: bash\n    command: 'true'\n"
+            ),
+        )
+        .unwrap();
+    }
+    fs::write(
+        recipes.join("_recipe_manifest.json"),
+        r#"{
+  "smart-classify-route": "250c8da0ee348745",
+  "smart-execute-routing": "11612506ae846a47",
+  "smart-orchestrator": "8d55ee4817dbc815",
+  "smart-reflect-loop": "7b8101dfce096480",
+  "smart-validate-summarize": "007548c49e9654fb"
+}
+"#,
+    )
+    .unwrap();
 }
 
 pub(super) fn build_canonical_native_hook_settings(hooks_bin: &Path) -> serde_json::Value {

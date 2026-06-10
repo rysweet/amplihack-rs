@@ -88,7 +88,10 @@ amplihack update
    `amplihack install --force-refresh`, a hidden CLI flag that forces a fresh
    network download of `amplifier-bundle/` assets instead of reusing stale
    local copies. This flag is not shown in `--help` output; it exists solely
-   for the update→install subprocess path.
+   for the update→install subprocess path. The downloaded source and staged
+   destination are still validated by the framework bundle compatibility
+   checker, including the composable smart-orchestrator contract added for
+   issue [#734](https://github.com/rysweet/amplihack-rs/issues/734).
 
 3. **Recursion prevention** — The subprocess environment includes
    `AMPLIHACK_NO_UPDATE_CHECK=1`, which prevents the child `amplihack install`
@@ -126,7 +129,8 @@ amplihack update --skip-install
 
 Users can then run `amplihack install` manually at a time of their choosing.
 The [self-heal](self-heal-asset-restage.md) mechanism will also catch the
-version mismatch on the next launch and trigger an automatic re-install.
+version mismatch on the next launch and trigger an automatic re-install when
+the version stamp still indicates the framework was not staged successfully.
 
 ## Failure modes
 
@@ -140,7 +144,8 @@ Error: post-update install subprocess /home/user/.local/bin/amplihack exited wit
 
 The binary update itself has already succeeded. The user can re-run
 `amplihack install` manually. The self-heal mechanism will also retry
-automatically on the next `amplihack` invocation.
+automatically on the next `amplihack` invocation when the version stamp still
+requires an install.
 
 ### New binary missing or not executable
 
@@ -180,6 +185,7 @@ include the unrecognized flag name.
 | `crates/amplihack-cli/src/commands/install/binary.rs` | Deploys user-local binaries and invokes PATH conflict analysis for install-time warnings. |
 | `crates/amplihack-cli/src/commands/install/paths.rs` | Owns user-local path construction and safe path helpers reused by install/update target selection. |
 | `crates/amplihack-cli/src/commands/install/settings.rs` | Keeps hook registrations aligned with the selected `amplihack-hooks` binary path. |
+| `crates/amplihack-cli/src/commands/install/bundle_compat.rs` | Validates source and staged framework bundles so stale smart-orchestrator assets cannot be accepted or remain installed. |
 | `crates/amplihack-cli/src/cli_commands.rs` | `Commands::Install` gains a hidden `--force-refresh` flag (`#[arg(long = "force-refresh", hide = true)]`). |
 | `crates/amplihack-cli/src/commands/mod.rs` | Destructures and passes `force_refresh` through to `run_install`. |
 | `crates/amplihack-cli/src/update/post_install.rs` | Unchanged. The closure injection pattern continues to work — the closure now spawns a subprocess instead of calling `run_install`. |
@@ -198,6 +204,7 @@ No new crate dependencies introduced.
 | Existing `run_post_update_install` tests | `update/post_install.rs` | Skip-install bypass, closure invocation, error propagation — all still pass unchanged |
 | PATH conflict resolver tests | `path_conflicts.rs` | User-bin first, system-bin shadowing, duplicate candidates, safe user-bin preference, and manual repair decisions |
 | Install/update smoke output assertions | install/update tests | Normal output excludes stale hook-file `❌` lines, `profile_management` warnings, and literal `Skipping symlink` noise |
+| Bundle compatibility tests | `commands/install/bundle_compat.rs` and install-flow tests | Stale monolithic smart-orchestrator bundles are rejected; missing companion recipes fail; stale `AMPLIHACK_HOME` is skipped; staged repair cannot leave stale `smart-orchestrator.yaml` behind |
 
 ## Interaction with related features
 
@@ -210,9 +217,13 @@ automatically. The self-heal path calls `run_install` **in-process** (not
 via subprocess), which is correct because there is no binary replacement in
 flight — the running binary IS the new binary by that point.
 
-The self-heal doc's reference to the post-update install path (line 37–39,
-`force_refresh: true`) remains accurate — the subprocess passes
-`--force-refresh` which has the same semantic effect.
+Self-heal does not perform a separate startup-time framework compatibility
+scan. When it re-runs install, that install run uses the same source and staged
+bundle compatibility validation as an explicit `amplihack install`.
+
+The post-update install subprocess still passes `--force-refresh`, so update
+continues to bypass local bundle reuse and validate the downloaded source and
+staged destination.
 
 ### Startup self-update prompt
 

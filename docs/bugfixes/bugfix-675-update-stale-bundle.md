@@ -7,10 +7,16 @@
 ## Summary
 
 After `amplihack update` downloads a new binary, the post-update install
-re-stages the **old** `amplifier-bundle/` from `~/.amplihack/` instead of
-downloading fresh framework assets from the upstream archive. This causes
+re-staged the **old** `amplifier-bundle/` from `~/.amplihack/` instead of
+downloading fresh framework assets from the upstream archive. This caused
 new binary + stale recipes, producing errors like "orch_helper.py not found"
 for users who upgraded from Python-era versions.
+
+Issue [#734](https://github.com/rysweet/amplihack-rs/issues/734) adds the
+second half of this protection: local source candidates and staged destinations
+are now validated against the smart-orchestrator compatibility contract, so a
+stale monolithic `smart-orchestrator.yaml` cannot remain staged after a
+successful install/update repair.
 
 ## Root Cause
 
@@ -22,14 +28,15 @@ and triggers post-update install, `run_install()` finds the OLD bundle at
 `~/.amplihack/` and re-stages it — the local copy wins the resolution race
 against the network download.
 
-**Resolution order before fix:**
+**Non-force-refresh local resolution order:**
 
 ```
-1. Compile-time workspace root
-2. AMPLIHACK_HOME
+1. AMPLIHACK_HOME
+2. CWD walk-up
 3. Walk-up from executable
-4. ~/.amplihack/amplifier-bundle/    ← OLD bundle found here, stops looking
-5. Network download (never reached)
+4. Compile-time workspace root
+5. ~/.amplihack/amplifier-bundle/    ← OLD bundle can be found here
+6. Network download
 ```
 
 ## Fix
@@ -43,10 +50,10 @@ a fresh bundle from `REPO_ARCHIVE_URL` (the `main.tar.gz` archive).
 
 | Caller | `force_refresh` | Behavior |
 |--------|-----------------|----------|
-| `amplihack install` (standalone) | `false` | Unchanged — prefers local bundle |
+| `amplihack install` (standalone) | `false` | Prefers compatible local sources |
 | `amplihack update` (post-update) | `true` | **Fix** — always downloads fresh |
-| Self-heal (startup check) | `false` | Unchanged — prefers local for speed |
-| `ensure_framework_installed()` | `false` | Unchanged — bootstrap prefers local |
+| Self-heal (startup check) | `false` | Re-runs install with normal compatible-source resolution |
+| `ensure_framework_installed()` | `false` | Bootstrap prefers compatible local sources |
 
 **No user-facing behavior change** for standalone `amplihack install`. The
 `--local` flag continues to take priority over `force_refresh` (returns early
@@ -101,3 +108,4 @@ amplihack install
   `run_install()` API documentation including `force_refresh`
 - [Manage Tool Update Checks](../howto/manage-tool-update-checks.md) — What
   happens during `amplihack update`
+- [Framework Bundle Compatibility](../reference/framework-bundle-compatibility.md) — stale smart-orchestrator detection and repair

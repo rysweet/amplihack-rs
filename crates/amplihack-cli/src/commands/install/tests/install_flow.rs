@@ -1,5 +1,8 @@
 use super::helpers::*;
 use super::*;
+use crate::commands::install::bundle_compat::{
+    REQUIRED_SMART_RECIPES, validate_staged_framework_bundle,
+};
 use std::fs;
 
 #[test]
@@ -500,6 +503,49 @@ fn find_framework_repo_root_finds_github_tarball_layout() {
 }
 
 #[test]
+fn find_compatible_framework_repo_root_accepts_downloaded_composable_bundle() {
+    let temp = tempfile::tempdir().unwrap();
+    let extracted = temp.path().join("amplihack-main");
+    create_source_repo(&extracted);
+
+    let found = clone::find_compatible_framework_repo_root(temp.path(), "test download").unwrap();
+
+    assert_eq!(found, extracted);
+}
+
+#[test]
+fn find_compatible_framework_repo_root_rejects_downloaded_stale_bundle() {
+    let temp = tempfile::tempdir().unwrap();
+    let extracted = temp.path().join("amplihack-main");
+    create_source_repo(&extracted);
+    fs::write(
+        extracted.join("amplifier-bundle/recipes/smart-orchestrator.yaml"),
+        r#"name: "smart-orchestrator"
+steps:
+  - id: "parse-decomposition"
+    type: "shell"
+    command: |
+      HELPER="$(amplihack resolve-bundle-asset helper-path)"
+      python3 - <<'PY'
+      import importlib
+      PY
+"#,
+    )
+    .unwrap();
+
+    let err = clone::find_compatible_framework_repo_root(temp.path(), "test download")
+        .expect_err("downloaded stale smart-orchestrator bundle must be rejected");
+    let msg = err.to_string();
+
+    assert!(
+        msg.contains("downloaded framework bundle")
+            && msg.contains("incompatible")
+            && msg.contains("smart-orchestrator"),
+        "error must explain the incompatible downloaded bundle, got: {msg}"
+    );
+}
+
+#[test]
 fn find_framework_repo_root_errors_when_archive_lacks_claude_dir() {
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir_all(temp.path().join("archive-root/empty")).unwrap();
@@ -650,30 +696,46 @@ fn copy_amplifier_bundle_replaces_existing_atomically() {
     let claude_dir = temp.path().join(".amplihack/.claude");
     fs::create_dir_all(&claude_dir).unwrap();
 
-    let bundle_src = repo_root.join("amplifier-bundle");
-    fs::create_dir_all(bundle_src.join("recipes")).unwrap();
-    fs::write(bundle_src.join("recipes/smart-orchestrator.yaml"), "v1\n").unwrap();
+    issue_734_create_bundle_repo(
+        &repo_root,
+        &issue_734_compatible_smart_orchestrator().replace(
+            "Composable smart task orchestrator",
+            "Composable smart task orchestrator v1",
+        ),
+    );
     directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
 
     let staged = temp.path().join(".amplihack/amplifier-bundle");
-    assert_eq!(
-        fs::read_to_string(staged.join("recipes/smart-orchestrator.yaml")).unwrap(),
-        "v1\n"
+    assert!(
+        fs::read_to_string(staged.join("recipes/smart-orchestrator.yaml"))
+            .unwrap()
+            .contains("v1")
     );
 
-    fs::write(bundle_src.join("recipes/smart-orchestrator.yaml"), "v2\n").unwrap();
+    let bundle_src = repo_root.join("amplifier-bundle");
+    fs::write(
+        bundle_src.join("recipes/smart-orchestrator.yaml"),
+        issue_734_compatible_smart_orchestrator().replace(
+            "Composable smart task orchestrator",
+            "Composable smart task orchestrator v2",
+        ),
+    )
+    .unwrap();
     fs::write(bundle_src.join("recipes/new-recipe.yaml"), "fresh\n").unwrap();
     directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
 
-    assert_eq!(
-        fs::read_to_string(staged.join("recipes/smart-orchestrator.yaml")).unwrap(),
-        "v2\n",
+    assert!(
+        fs::read_to_string(staged.join("recipes/smart-orchestrator.yaml"))
+            .unwrap()
+            .contains("v2"),
         "re-install must replace existing content"
     );
     assert!(
         staged.join("recipes/new-recipe.yaml").is_file(),
         "re-install must add new files from the source"
     );
+    validate_staged_framework_bundle(&staged)
+        .expect("post-copy destination must satisfy the framework bundle compatibility invariant");
 
     let parent = temp.path().join(".amplihack");
     assert!(
@@ -684,6 +746,132 @@ fn copy_amplifier_bundle_replaces_existing_atomically() {
         !parent.join("amplifier-bundle.old").exists(),
         "no backup dir must remain after a successful install"
     );
+}
+
+fn issue_734_compatible_smart_orchestrator() -> &'static str {
+    r#"name: "smart-orchestrator"
+description: "Composable smart task orchestrator"
+steps:
+  - id: "smart-classify-route"
+    type: "recipe"
+    recipe: "smart-classify-route"
+  - id: "smart-execute-routing"
+    type: "recipe"
+    recipe: "smart-execute-routing"
+  - id: "smart-reflect-loop"
+    type: "recipe"
+    recipe: "smart-reflect-loop"
+  - id: "smart-validate-summarize"
+    type: "recipe"
+    recipe: "smart-validate-summarize"
+"#
+}
+
+fn issue_734_stale_monolithic_smart_orchestrator() -> &'static str {
+    r#"name: "smart-orchestrator"
+description: "stale monolithic smart task orchestrator"
+steps:
+  - id: "parse-decomposition"
+    type: "shell"
+    command: |
+      HELPER="$(amplihack resolve-bundle-asset helper-path)"
+      python3 - <<'PY'
+      import importlib
+      helper = importlib.import_module("orch_helper")
+      helper.parse_decomposition()
+      PY
+"#
+}
+
+fn issue_734_create_bundle_repo(root: &Path, smart_orchestrator: &str) {
+    helpers::create_bundle_only_source_repo(root);
+    let recipes = root.join("amplifier-bundle/recipes");
+    fs::write(recipes.join("smart-orchestrator.yaml"), smart_orchestrator).unwrap();
+}
+
+#[test]
+fn issue_734_copy_rejects_stale_monolithic_smart_orchestrator_without_overwriting_good_bundle() {
+    let temp = tempfile::tempdir().unwrap();
+    let claude_dir = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+
+    let good_repo = temp.path().join("good-repo");
+    issue_734_create_bundle_repo(&good_repo, issue_734_compatible_smart_orchestrator());
+    directories::copy_amplifier_bundle(&good_repo, &claude_dir).unwrap();
+
+    let stale_repo = temp.path().join("stale-repo");
+    issue_734_create_bundle_repo(&stale_repo, issue_734_stale_monolithic_smart_orchestrator());
+
+    let result = directories::copy_amplifier_bundle(&stale_repo, &claude_dir);
+
+    assert!(
+        result.is_err(),
+        "stale monolithic smart-orchestrator bundles must be rejected before staging"
+    );
+    let staged_smart = fs::read_to_string(
+        temp.path()
+            .join(".amplihack/amplifier-bundle/recipes/smart-orchestrator.yaml"),
+    )
+    .unwrap();
+    assert!(
+        staged_smart.contains("recipe: \"smart-classify-route\""),
+        "existing compatible staged bundle must remain after rejecting stale source"
+    );
+    assert!(
+        !staged_smart.contains("resolve-bundle-asset helper-path")
+            && !staged_smart.contains("importlib")
+            && !staged_smart.contains("orch_helper"),
+        "stale monolithic smart-orchestrator content must not remain staged:\n{staged_smart}"
+    );
+}
+
+#[test]
+fn issue_734_run_install_skips_stale_amplihack_home_and_stages_compatible_cwd_bundle() {
+    with_install_env(|home| {
+        let stale_home = home.join("stale-amplihack-home");
+        issue_734_create_bundle_repo(&stale_home, issue_734_stale_monolithic_smart_orchestrator());
+
+        let fresh_checkout = home.join("fresh-checkout");
+        issue_734_create_bundle_repo(&fresh_checkout, issue_734_compatible_smart_orchestrator());
+        let nested = fresh_checkout.join("nested/project");
+        fs::create_dir_all(&nested).unwrap();
+
+        let previous_amplihack_home = std::env::var_os("AMPLIHACK_HOME");
+        unsafe { std::env::set_var("AMPLIHACK_HOME", &stale_home) };
+        let _cwd = crate::test_support::CwdGuard::set(&nested).unwrap();
+
+        let result = run_install(None, false, false);
+
+        match previous_amplihack_home {
+            Some(value) => unsafe { std::env::set_var("AMPLIHACK_HOME", value) },
+            None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
+        }
+        result.expect(
+            "install must skip an incompatible AMPLIHACK_HOME bundle and use the compatible cwd checkout",
+        );
+
+        let staged_smart = fs::read_to_string(
+            home.join(".amplihack/amplifier-bundle/recipes/smart-orchestrator.yaml"),
+        )
+        .unwrap();
+        for recipe in REQUIRED_SMART_RECIPES {
+            assert!(
+                staged_smart.contains(&format!("recipe: \"{recipe}\"")),
+                "staged smart-orchestrator must reference required sub-recipe {recipe}; got:\n{staged_smart}"
+            );
+            assert!(
+                home.join(format!(".amplihack/amplifier-bundle/recipes/{recipe}.yaml"))
+                    .is_file(),
+                "staged bundle must include required companion recipe {recipe}.yaml"
+            );
+        }
+        assert!(
+            !staged_smart.contains("resolve-bundle-asset helper-path")
+                && !staged_smart.contains("importlib")
+                && !staged_smart.contains("orch_helper"),
+            "stale AMPLIHACK_HOME smart-orchestrator must not remain staged:\n{staged_smart}"
+        );
+    });
 }
 
 // ============================================================================

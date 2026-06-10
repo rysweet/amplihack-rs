@@ -25,13 +25,26 @@
 //! 6. **Network download** (legacy fallback) — `git clone` / tarball from
 //!    upstream, only attempted when none of the above yields a usable root.
 
+use super::bundle_compat::validate_framework_bundle_compatibility;
 use super::types::{REPO_ARCHIVE_URL, REPO_GIT_URL};
 use crate::update::{extract_archive, http_get_with_retry, validate_download_url};
 use anyhow::{Context, Result, bail};
 use std::collections::VecDeque;
 use std::fs;
+use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::thread;
+use std::time::{Duration, Instant};
+
+#[cfg(not(test))]
+const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
+#[cfg(test)]
+const GIT_CLONE_TIMEOUT: Duration = Duration::from_millis(250);
+const GIT_CLONE_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const CAPTURE_LIMIT: usize = 8192;
 
 /// Locate the bundled framework source from the amplihack-rs source tree.
 ///
@@ -44,8 +57,8 @@ pub(super) fn find_bundled_framework_root() -> Option<PathBuf> {
     // 1. AMPLIHACK_HOME env var — explicit user override
     if let Ok(home) = std::env::var("AMPLIHACK_HOME") {
         let p = PathBuf::from(&home);
-        if p.join("amplifier-bundle").is_dir() {
-            return Some(p);
+        if let Some(root) = compatible_candidate(p, "AMPLIHACK_HOME") {
+            return Some(root);
         }
     }
 
@@ -53,8 +66,8 @@ pub(super) fn find_bundled_framework_root() -> Option<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
         let mut dir: Option<PathBuf> = Some(cwd);
         while let Some(d) = dir {
-            if d.join("amplifier-bundle").is_dir() {
-                return Some(d);
+            if let Some(root) = compatible_candidate(d.clone(), "current directory") {
+                return Some(root);
             }
             dir = d.parent().map(Path::to_path_buf);
         }
@@ -64,8 +77,8 @@ pub(super) fn find_bundled_framework_root() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.parent().map(Path::to_path_buf);
         while let Some(d) = dir {
-            if d.join("amplifier-bundle").is_dir() {
-                return Some(d);
+            if let Some(root) = compatible_candidate(d.clone(), "executable parent") {
+                return Some(root);
             }
             dir = d.parent().map(Path::to_path_buf);
         }
@@ -80,19 +93,38 @@ pub(super) fn find_bundled_framework_root() -> Option<PathBuf> {
         .map(Path::to_path_buf);
     if let Some(ref root) = workspace_root
         && root.join("amplifier-bundle").is_dir()
+        && let Some(root) = compatible_candidate(root.clone(), "compile-time workspace root")
     {
-        return Some(root.clone());
+        return Some(root);
     }
 
     // 5. ~/.amplihack (from prior staged install)
     if let Ok(home) = std::env::var("HOME") {
         let dot = PathBuf::from(home).join(".amplihack");
-        if dot.join("amplifier-bundle").is_dir() && dot.join(".claude").is_dir() {
-            return Some(dot);
+        if dot.join(".claude").is_dir()
+            && let Some(root) = compatible_candidate(dot, "~/.amplihack")
+        {
+            return Some(root);
         }
     }
 
     None
+}
+
+fn compatible_candidate(candidate: PathBuf, label: &str) -> Option<PathBuf> {
+    if !candidate.join("amplifier-bundle").is_dir() {
+        return None;
+    }
+    match validate_framework_bundle_compatibility(&candidate) {
+        Ok(()) => Some(candidate),
+        Err(err) => {
+            eprintln!(
+                "⚠️  Skipping incompatible framework bundle from {label}: {}: {err:#}",
+                candidate.display()
+            );
+            None
+        }
+    }
 }
 
 /// Fetch the framework repository into `destination`.
@@ -106,7 +138,7 @@ pub(super) fn find_bundled_framework_root() -> Option<PathBuf> {
 pub(super) fn download_and_extract_framework_repo(destination: &Path) -> Result<PathBuf> {
     if let Ok(git_path) = which_git() {
         git_clone_framework_repo(&git_path, destination)?;
-        return find_framework_repo_root(destination);
+        return find_compatible_framework_repo_root(destination, REPO_GIT_URL);
     }
 
     // git not available — fall back to HTTP tarball download
@@ -119,7 +151,7 @@ pub(super) fn download_and_extract_framework_repo(destination: &Path) -> Result<
             destination.display()
         )
     })?;
-    find_framework_repo_root(destination)
+    find_compatible_framework_repo_root(destination, REPO_ARCHIVE_URL)
 }
 
 /// Resolve the `git` binary path from PATH.
@@ -150,7 +182,12 @@ fn which_git() -> Result<PathBuf> {
 
 /// Run `git clone --depth 1 <REPO_GIT_URL> <destination>`.
 fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
-    let status = std::process::Command::new(git_path)
+    let stdout_file = tempfile::NamedTempFile::new()
+        .context("failed to create temporary stdout file for git clone")?;
+    let stderr_file = tempfile::NamedTempFile::new()
+        .context("failed to create temporary stderr file for git clone")?;
+    let mut command = std::process::Command::new(git_path);
+    command
         .args([
             "clone",
             "--depth",
@@ -159,14 +196,107 @@ fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
             &destination.to_string_lossy(),
         ])
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
+        .stdout(Stdio::from(
+            stdout_file
+                .as_file()
+                .try_clone()
+                .context("failed to clone git stdout handle")?,
+        ))
+        .stderr(Stdio::from(
+            stderr_file
+                .as_file()
+                .try_clone()
+                .context("failed to clone git stderr handle")?,
+        ));
+    #[cfg(unix)]
+    // SAFETY: `pre_exec` runs after fork and before exec. `setsid` is async-signal-safe
+    // and isolates the git clone process tree so timeout cleanup can terminate it.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command
+        .spawn()
         .with_context(|| format!("failed to spawn git clone for {REPO_GIT_URL}"))?;
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .context("failed to poll git clone status")?
+        {
+            break status;
+        }
+        if started.elapsed() >= GIT_CLONE_TIMEOUT {
+            terminate_git_clone(&mut child);
+            let stdout = read_limited(stdout_file.path())?;
+            let stderr = read_limited(stderr_file.path())?;
+            bail!(
+                "git clone timed out after {:?} for {REPO_GIT_URL} into {}\nstdout:\n{}\nstderr:\n{}",
+                GIT_CLONE_TIMEOUT,
+                destination.display(),
+                stdout,
+                stderr
+            );
+        }
+        thread::sleep(GIT_CLONE_POLL_INTERVAL);
+    };
     if !status.success() {
-        return Err(crate::command_error::exit_error(1));
+        let stdout = read_limited(stdout_file.path())?;
+        let stderr = read_limited(stderr_file.path())?;
+        bail!(
+            "git clone failed with status {status} for {REPO_GIT_URL} into {}\nstdout:\n{}\nstderr:\n{}",
+            destination.display(),
+            stdout,
+            stderr
+        );
     }
     Ok(())
+}
+
+fn terminate_git_clone(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as libc::pid_t;
+        if pid > 0 {
+            // Negative pid targets the process group created with setsid above.
+            unsafe {
+                let _ = libc::kill(-pid, libc::SIGKILL);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        let pid = child.id().to_string();
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid, "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn read_limited(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("failed to open captured output {}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take((CAPTURE_LIMIT + 1) as u64)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read captured output {}", path.display()))?;
+    let truncated = bytes.len() > CAPTURE_LIMIT;
+    bytes.truncate(CAPTURE_LIMIT);
+    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+    if truncated {
+        text.push_str("\n...<truncated>");
+    }
+    Ok(text)
 }
 
 pub(super) fn find_framework_repo_root(root: &Path) -> Result<PathBuf> {
@@ -178,6 +308,7 @@ pub(super) fn find_framework_repo_root(root: &Path) -> Result<PathBuf> {
         if dir.join(".claude").is_dir() || dir.join("amplifier-bundle").is_dir() {
             return Ok(dir);
         }
+
         for entry in
             fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
         {
@@ -196,4 +327,89 @@ pub(super) fn find_framework_repo_root(root: &Path) -> Result<PathBuf> {
         "downloaded framework archive did not contain a repository root with .claude or amplifier-bundle under {}",
         root.display()
     )
+}
+
+pub(super) fn find_compatible_framework_repo_root(root: &Path, source: &str) -> Result<PathBuf> {
+    let repo_root = find_framework_repo_root(root)?;
+    if let Err(error) = validate_framework_bundle_compatibility(&repo_root) {
+        return Err(anyhow::anyhow!(
+            "downloaded framework bundle from {source} is incompatible at {}: {error}",
+            repo_root.display()
+        ));
+    }
+
+    Ok(repo_root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    fn fake_git(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join("git");
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_clone_reports_nonzero_exit_with_captured_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake = fake_git(
+            temp.path(),
+            "echo stdout-marker; echo stderr-marker >&2; exit 42",
+        );
+
+        let err = git_clone_framework_repo(&fake, &temp.path().join("dest"))
+            .expect_err("non-zero git clone must fail");
+        let msg = format!("{err:#}");
+
+        assert!(
+            msg.contains("status"),
+            "error must include exit status: {msg}"
+        );
+        assert!(
+            msg.contains("stdout-marker") && msg.contains("stderr-marker"),
+            "error must include captured stdout/stderr: {msg}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_clone_times_out_and_reaps_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("orphan-marker");
+        let fake = fake_git(
+            temp.path(),
+            &format!(
+                "(/bin/sleep 1; echo orphan > '{}') & echo started; /bin/sleep 5",
+                marker.display()
+            ),
+        );
+        let start = Instant::now();
+
+        let err = git_clone_framework_repo(&fake, &temp.path().join("dest"))
+            .expect_err("hung git clone must time out");
+        let msg = format!("{err:#}");
+
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "test timeout should be bounded, elapsed {:?}",
+            start.elapsed()
+        );
+        assert!(msg.contains("timed out"), "error must name timeout: {msg}");
+        assert!(
+            msg.contains("started"),
+            "timeout error must include captured output: {msg}"
+        );
+        thread::sleep(Duration::from_millis(1_200));
+        assert!(
+            !marker.exists(),
+            "timeout cleanup must terminate git clone descendants"
+        );
+    }
 }

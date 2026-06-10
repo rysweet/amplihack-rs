@@ -194,13 +194,13 @@ pub(super) fn read_settings_json(settings_path: &Path) -> Result<Value> {
     match serde_json::from_str::<Value>(&raw) {
         Ok(Value::Object(map)) => Ok(Value::Object(map)),
         Ok(_) => Ok(Value::Object(Map::new())),
-        Err(_) => {
-            tracing::warn!(
-                "Settings file {} contains invalid JSON, using empty defaults",
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "failed to parse JSON in {}. The original file was left unchanged; \
+                 fix the malformed settings.json or move it aside before running install",
                 settings_path.display()
-            );
-            Ok(Value::Object(Map::new()))
-        }
+            )
+        }),
     }
 }
 
@@ -421,12 +421,20 @@ mod tests {
     }
 
     #[test]
-    fn read_invalid_json_returns_empty_object() {
+    fn read_invalid_json_returns_error() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         fs::write(tmp.path(), "not json at all").unwrap();
-        let result = read_settings_json(tmp.path()).unwrap();
-        assert!(result.is_object());
-        assert!(result.as_object().unwrap().is_empty());
+        let err = read_settings_json(tmp.path())
+            .expect_err("malformed settings.json must fail loudly, not become {}");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(tmp.path().to_string_lossy().as_ref())
+                && (msg.contains("parse")
+                    || msg.contains("JSON")
+                    || msg.contains("expected")
+                    || msg.contains("invalid")),
+            "error must name the malformed settings file and parse problem, got:\n{msg}"
+        );
     }
 
     #[test]

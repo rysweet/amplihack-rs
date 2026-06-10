@@ -11,6 +11,7 @@ Use this guide when a recipe step fails unexpectedly — a shell step hangs, an 
 - [Workflow step requires a Git repository](#workflow-step-requires-a-git-repository)
 - [Agent step killed by step timeout](#agent-step-killed-by-step-timeout)
 - [Update completes but assets are stale](#update-completes-but-assets-are-stale)
+- [smart-orchestrator fails after update with stale Python behavior](#smart-orchestrator-fails-after-update-with-stale-python-behavior)
 - [Install fails after switching to the Rust repository](#install-fails-after-switching-to-the-rust-repository)
 - [Step-08c fails with WORKTREE_SETUP_WORKTREE_PATH not set](#step-08c-fails-with-worktree_setup_worktree_path-not-set)
 - [Step-08c rejects a valid verdict synonym](#step-08c-rejects-a-valid-verdict-synonym)
@@ -240,7 +241,7 @@ If `AMPLIHACK_STEP_TIMEOUT` is set in your shell or CI environment, unset it (`u
 
 ## Update completes but assets are stale
 
-**Symptom:** After running `amplihack update`, the binary version is correct but skills, hooks, or bundled assets show old behavior. Running `amplihack install` manually fixes it.
+**Symptom:** After running `amplihack update`, the binary version is correct but skills, hooks, recipes, or bundled assets show old behavior. Running `amplihack install` manually fixes it.
 
 **Cause:** The update command replaced the binary but did not re-stage framework assets from the new binary's embedded `amplifier-bundle/`.
 
@@ -262,6 +263,61 @@ amplihack --version
 ls ~/.amplihack/.claude/
 # Asset files should have recent timestamps matching the update time
 ```
+
+Since issue #734, the install/update path also validates smart-orchestrator
+compatibility before accepting local bundle candidates and after staging the
+destination. Stale `AMPLIHACK_HOME` bundles are skipped or repaired instead of
+being silently reused.
+
+---
+
+## smart-orchestrator fails after update with stale Python behavior
+
+**Symptom:** `amplihack recipe run smart-orchestrator` fails during
+`parse-decomposition` after update. The installed
+`~/.amplihack/amplifier-bundle/recipes/smart-orchestrator.yaml` may be a large
+old monolithic recipe and may mention Python/importlib, `orch_helper.py`, or an
+old `resolve-bundle-asset helper-path` orchestration-helper path.
+
+**Cause:** The binary is current, but `AMPLIHACK_HOME` still contains stale
+framework bundle assets from an older release. The current smart-orchestrator is
+a composable parent recipe that delegates to four companion recipes:
+
+```text
+smart-classify-route
+smart-execute-routing
+smart-reflect-loop
+smart-validate-summarize
+```
+
+**Fix:** Run install or update with a version that includes the framework bundle
+compatibility validator:
+
+```sh
+amplihack update
+# or
+amplihack install
+```
+
+The installer validates candidate bundles before selecting them. A stale
+`AMPLIHACK_HOME` bundle is skipped, and a successful install validates that the
+staged destination contains the composable smart-orchestrator and all required
+companion recipes.
+
+**Verify:**
+
+```sh
+grep -E 'recipe: "(smart-classify-route|smart-execute-routing|smart-reflect-loop|smart-validate-summarize)"' \
+  ~/.amplihack/amplifier-bundle/recipes/smart-orchestrator.yaml
+```
+
+All four recipes should be present.
+
+Do not repair this by restoring `orch_helper.py`. Do not remap `helper-path` to
+`orch_helper.py`. `helper-path` intentionally resolves to
+`amplifier-bundle/bin/multitask-orchestrator.sh`.
+
+See [Repair a stale framework bundle](repair-stale-framework-bundle.md).
 
 ---
 
