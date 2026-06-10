@@ -173,6 +173,7 @@ mod tests {
         fs::create_dir_all(staged.join("agents/amplihack/core")).unwrap();
         fs::create_dir_all(staged.join("skills/dev-orchestrator")).unwrap();
         fs::create_dir_all(staged.join("skills/quality-audit")).unwrap();
+        fs::create_dir_all(temp.path().join(".copilot/skills/azure-devops-cli")).unwrap();
         fs::create_dir_all(staged.join("workflow")).unwrap();
         fs::create_dir_all(staged.join("context")).unwrap();
         fs::create_dir_all(staged.join("commands/amplihack")).unwrap();
@@ -203,6 +204,12 @@ mod tests {
         assert!(
             temp.path()
                 .join(".copilot/skills/quality-audit/SKILL.md")
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(".copilot/skills/azure-devops-cli")
                 .exists()
         );
         assert!(

@@ -7,6 +7,8 @@ use std::path::Path;
 
 use super::{fs_helpers, jsonc};
 
+const REMOVED_SKILL_DIRS: &[&str] = &["azure-devops-cli"];
+
 pub(super) fn stage_agents(source_agents: &Path, copilot_home: &Path) -> Result<usize> {
     let dest = copilot_home.join("agents").join("amplihack");
     fs_helpers::reset_markdown_dir(&dest)?;
@@ -26,6 +28,14 @@ pub(super) fn stage_directory(
 pub(super) fn stage_skills(source_skills: &Path, copilot_home: &Path) -> Result<usize> {
     if !source_skills.is_dir() {
         return Ok(0);
+    }
+
+    for removed_skill in REMOVED_SKILL_DIRS {
+        let dest = copilot_home.join("skills").join(removed_skill);
+        if dest.exists() {
+            fs::remove_dir_all(&dest)
+                .with_context(|| format!("remove legacy skill dir {}", dest.display()))?;
+        }
     }
 
     let mut count = 0;

@@ -73,7 +73,6 @@ skills:
   agent-sdk: { path: skills/claude-agent-sdk/SKILL.md }
   azure-admin: { path: skills/azure-admin/SKILL.md }
   azure-devops: { path: skills/azure-devops/SKILL.md }
-  azure-devops-cli: { path: skills/azure-devops-cli/skill.md }
   code-smell-detector: { path: skills/code-smell-detector/SKILL.md }
   context-management: { path: skills/context-management/SKILL.md }
   design-patterns-expert: { path: skills/design-patterns-expert/SKILL.md }
@@ -83,7 +82,7 @@ skills:
   goal-seeking-agent-pattern: { path: skills/goal-seeking-agent-pattern/SKILL.md }
   mcp-manager: { path: skills/mcp-manager/SKILL.md }
   mermaid-diagram-generator: { path: skills/mermaid-diagram-generator/SKILL.md }
-  microsoft-agent-framework: { path: skills/microsoft-agent-framework/skill.md }
+  microsoft-agent-framework: { path: skills/microsoft-agent-framework/SKILL.md }
   module-spec-generator: { path: skills/module-spec-generator/SKILL.md }
   outside-in-testing: { path: skills/outside-in-testing/SKILL.md }
   qa-team: { path: skills/qa-team/SKILL.md }
@@ -98,17 +97,17 @@ skills:
   xlsx: { path: skills/xlsx/SKILL.md }
 
   # Meta skills (11)
-  backlog-curator: { path: skills/backlog-curator/skill.md }
+  backlog-curator: { path: skills/backlog-curator/SKILL.md }
   knowledge-extractor: { path: skills/knowledge-extractor/SKILL.md }
   learning-path-builder: { path: skills/learning-path-builder/SKILL.md }
   meeting-synthesizer: { path: skills/meeting-synthesizer/SKILL.md }
   model-evaluation-benchmark: { path: skills/model-evaluation-benchmark/SKILL.md }
-  pm-architect: { path: skills/pm-architect/skill.md }
+  pm-architect: { path: skills/pm-architect/SKILL.md }
   pr-review-assistant: { path: skills/pr-review-assistant/SKILL.md }
-  roadmap-strategist: { path: skills/roadmap-strategist/skill.md }
+  roadmap-strategist: { path: skills/roadmap-strategist/SKILL.md }
   storytelling-synthesizer: { path: skills/storytelling-synthesizer/SKILL.md }
-  work-delegator: { path: skills/work-delegator/skill.md }
-  workstream-coordinator: { path: skills/workstream-coordinator/skill.md }
+  work-delegator: { path: skills/work-delegator/SKILL.md }
+  workstream-coordinator: { path: skills/workstream-coordinator/SKILL.md }
 
   # Nested skills - collaboration (1)
   creating-pull-requests: { path: skills/collaboration/creating-pull-requests/SKILL.md }

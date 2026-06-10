@@ -17,7 +17,6 @@ static AMPLIHACK_SKILLS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "awesome-copilot-sync",
         "azure-admin",
         "azure-devops",
-        "azure-devops-cli",
         "backlog-curator",
         "biologist-analyst",
         "cascade-workflow",
