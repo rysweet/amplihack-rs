@@ -460,7 +460,6 @@ pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Resu
             )
         });
     }
-    // This validated staging tree is the exact tree moved into place below.
 
     if target_bundle.exists() {
         let backup = target_bundle.with_extension("old");
@@ -492,6 +491,13 @@ pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Resu
             )
         })?;
     }
+
+    validate_staged_framework_bundle(&target_bundle).with_context(|| {
+        format!(
+            "staged amplifier-bundle at {} is incompatible after atomic replacement",
+            target_bundle.display()
+        )
+    })?;
 
     println!(
         "  ✅ Staged amplifier-bundle to {}",

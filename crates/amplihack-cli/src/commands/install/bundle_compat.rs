@@ -1,5 +1,5 @@
 use serde_yaml::Value;
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -15,7 +15,10 @@ const STALE_SMART_ORCHESTRATOR_MARKERS: &[&str] = &[
     "resolve-bundle-asset helper-path",
     "importlib",
     "parse-decomposition",
+    "orch_helper.py",
 ];
+
+const EXECUTABLE_STEP_FIELDS: &[&str] = &["command", "script", "run"];
 
 #[derive(Debug, Error)]
 pub(super) enum BundleCompatibilityError {
@@ -92,9 +95,9 @@ pub(super) fn validate_framework_bundle_compatibility(
     let smart_path = recipes.join("smart-orchestrator.yaml");
     require_recipe_file(&recipes, "smart-orchestrator")?;
     let smart = read_file(&smart_path)?;
-    reject_stale_smart_orchestrator(&smart_path, &smart)?;
     let smart_yaml = parse_yaml(&smart_path, &smart)?;
-    let smart_recipe_refs = recipe_references(&smart_yaml);
+    reject_stale_smart_orchestrator(&smart_path, &smart_yaml)?;
+    let smart_recipe_refs = top_level_recipe_steps(&smart_yaml);
 
     for &recipe in REQUIRED_SMART_RECIPES {
         let companion_path = require_recipe_file(&recipes, recipe)?;
@@ -179,43 +182,79 @@ fn parse_yaml(path: &Path, raw: &str) -> Result<Value, BundleCompatibilityError>
     })
 }
 
-fn reject_stale_smart_orchestrator(path: &Path, raw: &str) -> Result<(), BundleCompatibilityError> {
-    for marker in STALE_SMART_ORCHESTRATOR_MARKERS {
-        if raw.contains(marker) {
-            return Err(BundleCompatibilityError::StaleSmartOrchestrator {
-                path: path.to_path_buf(),
-                marker: (*marker).to_string(),
-            });
+fn reject_stale_smart_orchestrator(
+    path: &Path,
+    yaml: &Value,
+) -> Result<(), BundleCompatibilityError> {
+    let Some(Value::Sequence(steps)) = mapping_value(yaml, "steps") else {
+        return Ok(());
+    };
+
+    for step in steps {
+        let Value::Mapping(mapping) = step else {
+            continue;
+        };
+        for field in EXECUTABLE_STEP_FIELDS {
+            let Some(executable) = mapping_string(mapping, field) else {
+                continue;
+            };
+            for marker in STALE_SMART_ORCHESTRATOR_MARKERS {
+                if executable.contains(marker) {
+                    return Err(BundleCompatibilityError::StaleSmartOrchestrator {
+                        path: path.to_path_buf(),
+                        marker: (*marker).to_string(),
+                    });
+                }
+            }
         }
     }
     Ok(())
 }
 
-fn recipe_references(value: &Value) -> HashSet<&str> {
-    let mut references = HashSet::new();
-    collect_recipe_references(value, &mut references);
+fn top_level_recipe_steps(value: &Value) -> BTreeSet<&str> {
+    let mut references = BTreeSet::new();
+    let Some(Value::Sequence(steps)) = mapping_value(value, "steps") else {
+        return references;
+    };
+
+    for step in steps {
+        let Value::Mapping(mapping) = step else {
+            continue;
+        };
+        if mapping_string(mapping, "type") != Some("recipe") {
+            continue;
+        }
+        if let Some(recipe) = mapping_string(mapping, "recipe") {
+            references.insert(recipe);
+        }
+    }
+
     references
 }
 
-fn collect_recipe_references<'a>(value: &'a Value, references: &mut HashSet<&'a str>) {
-    match value {
-        Value::Mapping(mapping) => {
-            for (key, value) in mapping {
-                if matches!(key, Value::String(k) if k == "recipe")
-                    && let Value::String(recipe) = value
-                {
-                    references.insert(recipe.as_str());
-                }
-                collect_recipe_references(value, references);
-            }
+fn mapping_value<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    let Value::Mapping(mapping) = value else {
+        return None;
+    };
+    mapping.iter().find_map(|(candidate, value)| {
+        if matches!(candidate, Value::String(candidate) if candidate == key) {
+            Some(value)
+        } else {
+            None
         }
-        Value::Sequence(items) => {
-            for item in items {
-                collect_recipe_references(item, references);
-            }
+    })
+}
+
+fn mapping_string<'a>(mapping: &'a serde_yaml::Mapping, key: &str) -> Option<&'a str> {
+    mapping.iter().find_map(|(candidate, value)| {
+        if matches!(candidate, Value::String(candidate) if candidate == key)
+            && let Value::String(value) = value
+        {
+            Some(value.as_str())
+        } else {
+            None
         }
-        _ => {}
-    }
+    })
 }
 
 fn validate_recipe_manifest(recipes: &Path) -> Result<(), BundleCompatibilityError> {
@@ -401,6 +440,90 @@ steps:
         assert!(
             msg.contains("smart-execute-routing") && msg.contains("smart-orchestrator"),
             "error must name the missing sub-recipe reference, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_required_recipe_names_only_in_metadata_or_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("amplifier-bundle");
+        write_compatible_bundle(&bundle);
+        fs::write(
+            bundle.join("recipes/smart-orchestrator.yaml"),
+            r#"name: "smart-orchestrator"
+description: "Recipe names below are inert metadata, not executable recipe steps"
+metadata:
+  recipes:
+    - recipe: "smart-classify-route"
+    - recipe: "smart-execute-routing"
+context:
+  smart_reflect_loop:
+    recipe: "smart-reflect-loop"
+  smart_validate_summarize:
+    recipe: "smart-validate-summarize"
+steps:
+  - id: "metadata-only"
+    type: "bash"
+    command: "echo metadata only"
+"#,
+        )
+        .unwrap();
+
+        let err = validate_framework_bundle_compatibility(&bundle)
+            .expect_err("required smart sub-recipes must be top-level type: recipe steps");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("smart-classify-route") && msg.contains("smart-orchestrator"),
+            "metadata/context recipe keys must not satisfy the structural recipe-step contract, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn accepts_stale_marker_text_in_comments_and_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("amplifier-bundle");
+        write_compatible_bundle(&bundle);
+        fs::write(
+            bundle.join("recipes/smart-orchestrator.yaml"),
+            format!(
+                r#"{}
+# Historical note only: resolve-bundle-asset helper-path importlib parse-decomposition orch_helper.py
+metadata:
+  migration_note: "Old text resolve-bundle-asset helper-path importlib parse-decomposition orch_helper.py is inert"
+"#,
+                compatible_smart()
+            ),
+        )
+        .unwrap();
+
+        validate_framework_bundle_compatibility(&bundle)
+            .expect("comments and inert metadata must not trip stale executable marker checks");
+    }
+
+    #[test]
+    fn rejects_executable_stale_orch_helper_py_reference() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("amplifier-bundle");
+        write_compatible_bundle(&bundle);
+        fs::write(
+            bundle.join("recipes/smart-orchestrator.yaml"),
+            format!(
+                r#"{}
+  - id: "old-helper-script"
+    type: "bash"
+    command: "python3 amplifier-bundle/tools/orch_helper.py"
+"#,
+                compatible_smart()
+            ),
+        )
+        .unwrap();
+
+        let err = validate_framework_bundle_compatibility(&bundle)
+            .expect_err("executable orch_helper.py references must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("orch_helper.py") && msg.contains("smart-orchestrator"),
+            "error must name the stale executable helper marker, got: {msg}"
         );
     }
 

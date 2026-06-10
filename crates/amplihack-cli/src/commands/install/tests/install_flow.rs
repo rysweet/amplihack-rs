@@ -1,6 +1,8 @@
 use super::helpers::*;
 use super::*;
-use crate::commands::install::bundle_compat::REQUIRED_SMART_RECIPES;
+use crate::commands::install::bundle_compat::{
+    REQUIRED_SMART_RECIPES, validate_staged_framework_bundle,
+};
 use std::fs;
 
 #[test]
@@ -732,6 +734,8 @@ fn copy_amplifier_bundle_replaces_existing_atomically() {
         staged.join("recipes/new-recipe.yaml").is_file(),
         "re-install must add new files from the source"
     );
+    validate_staged_framework_bundle(&staged)
+        .expect("post-copy destination must satisfy the framework bundle compatibility invariant");
 
     let parent = temp.path().join(".amplihack");
     assert!(
