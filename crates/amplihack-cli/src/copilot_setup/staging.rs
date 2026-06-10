@@ -191,3 +191,33 @@ pub(super) fn register_plugin(source_commands: &Path, copilot_home: &Path) -> Re
 
     Ok(true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_cli_skill_cleanup_rejects_unsupported_file_type() {
+        use std::os::unix::net::UnixListener;
+
+        let temp = tempfile::tempdir().unwrap();
+        let copilot_home = temp.path().join(".copilot");
+        let legacy_parent = copilot_home.join("skills");
+        fs::create_dir_all(&legacy_parent).unwrap();
+        let legacy_path = legacy_parent.join("azure-devops-cli");
+        let _listener = UnixListener::bind(&legacy_path).unwrap();
+
+        let err = remove_legacy_cli_skill(&copilot_home).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("legacy skill path is not a file, directory, or symlink"),
+            "unexpected cleanup error: {err}"
+        );
+        assert!(
+            legacy_path.exists(),
+            "unsupported legacy path should be left untouched"
+        );
+    }
+}
