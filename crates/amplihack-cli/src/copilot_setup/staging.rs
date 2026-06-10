@@ -50,8 +50,14 @@ pub(super) fn stage_skills(source_skills: &Path, copilot_home: &Path) -> Result<
 
 fn remove_legacy_cli_skill(copilot_home: &Path) -> Result<()> {
     let legacy_cli_skill = copilot_home.join("skills").join("azure-devops-cli");
-    let Ok(metadata) = fs::symlink_metadata(&legacy_cli_skill) else {
-        return Ok(());
+    let metadata = match fs::symlink_metadata(&legacy_cli_skill) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("inspect legacy skill path {}", legacy_cli_skill.display())
+            });
+        }
     };
 
     if metadata.file_type().is_symlink() || metadata.is_file() {
