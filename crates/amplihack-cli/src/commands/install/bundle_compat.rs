@@ -1,4 +1,5 @@
 use serde_yaml::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -93,15 +94,16 @@ pub(super) fn validate_framework_bundle_compatibility(
     let smart = read_file(&smart_path)?;
     reject_stale_smart_orchestrator(&smart_path, &smart)?;
     let smart_yaml = parse_yaml(&smart_path, &smart)?;
+    let smart_recipe_refs = recipe_references(&smart_yaml);
 
-    for recipe in REQUIRED_SMART_RECIPES {
+    for &recipe in REQUIRED_SMART_RECIPES {
         let companion_path = require_recipe_file(&recipes, recipe)?;
         let companion = read_file(&companion_path)?;
         parse_yaml(&companion_path, &companion)?;
-        if !contains_recipe_reference(&smart_yaml, recipe) {
+        if !smart_recipe_refs.contains(recipe) {
             return Err(BundleCompatibilityError::MissingSmartRecipeReference {
                 path: smart_path.clone(),
-                recipe: (*recipe).to_string(),
+                recipe: recipe.to_string(),
             });
         }
     }
@@ -189,17 +191,30 @@ fn reject_stale_smart_orchestrator(path: &Path, raw: &str) -> Result<(), BundleC
     Ok(())
 }
 
-fn contains_recipe_reference(value: &Value, expected: &str) -> bool {
+fn recipe_references(value: &Value) -> HashSet<&str> {
+    let mut references = HashSet::new();
+    collect_recipe_references(value, &mut references);
+    references
+}
+
+fn collect_recipe_references<'a>(value: &'a Value, references: &mut HashSet<&'a str>) {
     match value {
-        Value::Mapping(mapping) => mapping.iter().any(|(key, value)| {
-            (matches!(key, Value::String(k) if k == "recipe")
-                && matches!(value, Value::String(v) if v == expected))
-                || contains_recipe_reference(value, expected)
-        }),
-        Value::Sequence(items) => items
-            .iter()
-            .any(|item| contains_recipe_reference(item, expected)),
-        _ => false,
+        Value::Mapping(mapping) => {
+            for (key, value) in mapping {
+                if matches!(key, Value::String(k) if k == "recipe")
+                    && let Value::String(recipe) = value
+                {
+                    references.insert(recipe.as_str());
+                }
+                collect_recipe_references(value, references);
+            }
+        }
+        Value::Sequence(items) => {
+            for item in items {
+                collect_recipe_references(item, references);
+            }
+        }
+        _ => {}
     }
 }
 
