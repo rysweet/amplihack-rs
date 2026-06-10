@@ -23,17 +23,25 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use regex::Regex;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Workspace root: `bins/amplihack/` → pop twice → workspace root.
-fn workspace_root() -> PathBuf {
+static WORKSPACE_ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     root.pop(); // bins/amplihack → bins/
     root.pop(); // bins/ → workspace root
     root
+});
+
+static SKILL_FILES: LazyLock<Vec<PathBuf>> =
+    LazyLock::new(|| find_files_named(&skills_dir(), "SKILL.md"));
+
+/// Workspace root: `bins/amplihack/` → pop twice → workspace root.
+fn workspace_root() -> &'static Path {
+    WORKSPACE_ROOT.as_path()
 }
 
 /// Path to `amplifier-bundle/skills/`.
@@ -70,8 +78,8 @@ fn find_files_named(dir: &Path, filename: &str) -> Vec<PathBuf> {
     result
 }
 
-fn find_skill_files(dir: &Path) -> Vec<PathBuf> {
-    find_files_named(dir, "SKILL.md")
+fn skill_files() -> &'static [PathBuf] {
+    SKILL_FILES.as_slice()
 }
 
 /// Extract the YAML frontmatter `name:` value from a SKILL.md file.
@@ -149,7 +157,7 @@ fn tc_skill_01_all_bundled_skill_names_match_kebab_pattern() {
         return;
     }
 
-    let skill_files = find_skill_files(&skills);
+    let skill_files = skill_files();
     assert!(
         !skill_files.is_empty(),
         "Expected to find SKILL.md files under {}",
@@ -158,7 +166,7 @@ fn tc_skill_01_all_bundled_skill_names_match_kebab_pattern() {
 
     let mut violations = Vec::new();
 
-    for path in &skill_files {
+    for path in skill_files {
         let content = fs::read_to_string(path).expect("read SKILL.md");
         if let Some(name) = extract_frontmatter_name(&content)
             && !name_re.is_match(&name)
@@ -351,10 +359,10 @@ fn tc_skill_07_frontmatter_starts_at_first_byte() {
     }
 
     let mut violations = Vec::new();
-    for path in find_skill_files(&skills) {
-        let content = fs::read_to_string(&path).expect("read SKILL.md");
+    for path in skill_files() {
+        let content = fs::read_to_string(path).expect("read SKILL.md");
         if !content.starts_with("---\n") {
-            violations.push(format!("  {}", relative_path(&path)));
+            violations.push(format!("  {}", relative_path(path)));
         }
     }
 
@@ -380,8 +388,8 @@ fn tc_skill_08_bundled_skill_names_are_unique() {
     let mut seen: HashMap<String, PathBuf> = HashMap::new();
     let mut duplicates = Vec::new();
 
-    for path in find_skill_files(&skills) {
-        let content = fs::read_to_string(&path).expect("read SKILL.md");
+    for path in skill_files() {
+        let content = fs::read_to_string(path).expect("read SKILL.md");
         let name = extract_frontmatter_name(&content).unwrap_or_else(|| {
             panic!(
                 "SKILL.md must have a frontmatter name: field: {}",
@@ -393,7 +401,7 @@ fn tc_skill_08_bundled_skill_names_are_unique() {
             duplicates.push(format!(
                 "  {name}: {} and {}",
                 relative_path(&first_path),
-                relative_path(&path)
+                relative_path(path)
             ));
         }
     }
@@ -424,8 +432,8 @@ fn tc_skill_09_skill_names_match_directory_names() {
     let exceptions = HashSet::from([("migrate", "amplihack-migrate")]);
     let mut violations = Vec::new();
 
-    for path in find_skill_files(&skills) {
-        let content = fs::read_to_string(&path).expect("read SKILL.md");
+    for path in skill_files() {
+        let content = fs::read_to_string(path).expect("read SKILL.md");
         let name = extract_frontmatter_name(&content).unwrap_or_else(|| {
             panic!(
                 "SKILL.md must have a frontmatter name: field: {}",
@@ -441,7 +449,7 @@ fn tc_skill_09_skill_names_match_directory_names() {
         if name != dir_name && !exceptions.contains(&(dir_name, name.as_str())) {
             violations.push(format!(
                 "  {} → name: \"{}\" but directory is \"{}\"",
-                relative_path(&path),
+                relative_path(path),
                 name,
                 dir_name
             ));
