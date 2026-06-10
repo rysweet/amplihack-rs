@@ -959,4 +959,345 @@ mod tests {
         assert_eq!(syms[1].name, "bar");
         assert_eq!(syms[1].container_name.as_deref(), Some("Foo"));
     }
+
+    // ── Additional edge-case tests for parse functions ────────────────
+
+    #[test]
+    fn parse_locations_primitive_returns_empty() {
+        assert!(parse_locations(&json!("string"), Path::new("/x")).is_empty());
+        assert!(parse_locations(&json!(42), Path::new("/x")).is_empty());
+        assert!(parse_locations(&json!(true), Path::new("/x")).is_empty());
+    }
+
+    #[test]
+    fn parse_location_link_target_range_fallback() {
+        let val = json!([{
+            "targetUri": "file:///project/lib.rs",
+            "targetRange": {
+                "start": { "line": 5, "character": 0 },
+                "end": { "line": 5, "character": 10 }
+            }
+        }]);
+        let locs = parse_locations(&val, Path::new("/project"));
+        assert_eq!(locs.len(), 1);
+        assert_eq!(locs[0].range.start.line, 5);
+        assert_eq!(locs[0].range.start.character, 0);
+    }
+
+    #[test]
+    fn parse_location_link_no_ranges_uses_zero() {
+        let val = json!([{ "targetUri": "file:///project/lib.rs" }]);
+        let locs = parse_locations(&val, Path::new("/project"));
+        assert_eq!(locs.len(), 1);
+        assert_eq!(locs[0].range.start.line, 0);
+        assert_eq!(locs[0].range.end.line, 0);
+    }
+
+    #[test]
+    fn location_outside_root_has_no_relative_path() {
+        let val = json!({
+            "uri": "file:///other/path/main.rs",
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 5 } }
+        });
+        let locs = parse_locations(&val, Path::new("/project"));
+        assert_eq!(locs.len(), 1);
+        assert!(locs[0].relative_path.is_none());
+        assert_eq!(
+            locs[0].absolute_path.as_deref(),
+            Some("/other/path/main.rs")
+        );
+    }
+
+    #[test]
+    fn location_with_missing_range_uses_zero() {
+        let val = json!({
+            "uri": "file:///project/main.rs"
+        });
+        let locs = parse_locations(&val, Path::new("/project"));
+        assert_eq!(locs.len(), 1);
+        assert_eq!(locs[0].range.start.line, 0);
+    }
+
+    #[test]
+    fn parse_range_missing_fields_returns_none() {
+        assert!(parse_range(&json!({})).is_none());
+        assert!(parse_range(&json!({"start": {"line": 0}})).is_none());
+        assert!(parse_range(&json!({"start": {"line": 0, "character": 0}})).is_none());
+    }
+
+    #[test]
+    fn parse_hover_no_range_field() {
+        let val = json!({ "contents": { "kind": "plaintext", "value": "hello" } });
+        let hover = parse_hover(&val).unwrap();
+        assert_eq!(hover.contents, "hello");
+        assert!(hover.range.is_none());
+    }
+
+    #[test]
+    fn parse_hover_empty_contents_returns_none() {
+        let val = json!({ "contents": {} });
+        assert!(parse_hover(&val).is_none());
+    }
+
+    #[test]
+    fn parse_hover_missing_contents_returns_none() {
+        let val = json!({ "other": "data" });
+        assert!(parse_hover(&val).is_none());
+    }
+
+    #[test]
+    fn extract_hover_text_array_of_strings() {
+        let contents = json!(["first part", "second part"]);
+        let text = extract_hover_text(&contents);
+        assert!(text.contains("first part"));
+        assert!(text.contains("second part"));
+    }
+
+    #[test]
+    fn extract_hover_text_array_with_markup() {
+        let contents = json!([{"value": "part one"}, "part two"]);
+        let text = extract_hover_text(&contents);
+        assert!(text.contains("part one"));
+        assert!(text.contains("part two"));
+    }
+
+    #[test]
+    fn extract_hover_text_empty_object_returns_empty() {
+        assert!(extract_hover_text(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn extract_hover_text_null_returns_empty() {
+        assert!(extract_hover_text(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn parse_completions_null_returns_empty() {
+        assert!(parse_completions(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn parse_completions_primitive_returns_empty() {
+        assert!(parse_completions(&json!("string")).is_empty());
+    }
+
+    #[test]
+    fn parse_completions_with_text_edit() {
+        let val = json!([{
+            "label": "println",
+            "kind": 3,
+            "textEdit": { "newText": "println!()" },
+            "detail": "A macro for printing"
+        }]);
+        let items = parse_completions(&val);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].completion_text, "println!()");
+        assert_eq!(items[0].detail.as_deref(), Some("A macro for printing"));
+    }
+
+    #[test]
+    fn parse_completions_missing_text_filtered_out() {
+        let val = json!([{ "kind": 3 }]);
+        assert!(parse_completions(&val).is_empty());
+    }
+
+    #[test]
+    fn parse_completions_insert_text_fallback() {
+        let val = json!([{
+            "label": "foo",
+            "kind": 6,
+            "insertText": "foo_expanded"
+        }]);
+        let items = parse_completions(&val);
+        assert_eq!(items[0].completion_text, "foo_expanded");
+    }
+
+    #[test]
+    fn parse_completions_empty_items_list() {
+        let val = json!({ "isIncomplete": false, "items": [] });
+        assert!(parse_completions(&val).is_empty());
+    }
+
+    #[test]
+    fn parse_diagnostics_direct_array() {
+        let val = json!([{
+            "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 5 } },
+            "message": "warning here",
+            "severity": 2
+        }]);
+        let diags = parse_diagnostics(&val);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].message, "warning here");
+    }
+
+    #[test]
+    fn parse_diagnostics_null_returns_empty() {
+        assert!(parse_diagnostics(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn parse_diagnostics_string_returns_empty() {
+        assert!(parse_diagnostics(&json!("nope")).is_empty());
+    }
+
+    #[test]
+    fn parse_diagnostics_numeric_code() {
+        let val = json!({ "items": [{
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 5 } },
+            "message": "error",
+            "code": 42
+        }]});
+        let diags = parse_diagnostics(&val);
+        assert_eq!(diags[0].code.as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn parse_diagnostics_minimal_fields() {
+        let val = json!({ "items": [{
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 5 } },
+            "message": "oops"
+        }]});
+        let diags = parse_diagnostics(&val);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].severity.is_none());
+        assert!(diags[0].source.is_none());
+        assert!(diags[0].code.is_none());
+    }
+
+    #[test]
+    fn parse_diagnostics_missing_message_filtered() {
+        let val = json!({ "items": [{
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 5 } }
+        }]});
+        assert!(parse_diagnostics(&val).is_empty());
+    }
+
+    #[test]
+    fn parse_diagnostics_missing_range_filtered() {
+        let val = json!({ "items": [{ "message": "oops" }] });
+        assert!(parse_diagnostics(&val).is_empty());
+    }
+
+    #[test]
+    fn parse_diagnostics_with_source() {
+        let val = json!({ "items": [{
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 5 } },
+            "message": "warn",
+            "severity": 1,
+            "source": "clippy",
+            "code": "needless_return"
+        }]});
+        let diags = parse_diagnostics(&val);
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(diags[0].source.as_deref(), Some("clippy"));
+        assert_eq!(diags[0].code.as_deref(), Some("needless_return"));
+    }
+
+    #[test]
+    fn parse_symbols_null_returns_empty() {
+        assert!(parse_symbols(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn parse_symbols_non_array_returns_empty() {
+        assert!(parse_symbols(&json!("string")).is_empty());
+        assert!(parse_symbols(&json!(42)).is_empty());
+    }
+
+    #[test]
+    fn flatten_symbol_missing_name_skipped() {
+        let mut out = Vec::new();
+        flatten_symbol(&json!({"kind": 5}), None, &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn flatten_symbol_deprecated_and_detail() {
+        let val = json!({
+            "name": "old_func",
+            "kind": 12,
+            "deprecated": true,
+            "detail": "Use new_func instead",
+            "location": {
+                "uri": "file:///a.rs",
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 1, "character": 0 } }
+            }
+        });
+        let mut out = Vec::new();
+        flatten_symbol(&val, None, &mut out);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].deprecated);
+        assert_eq!(out[0].detail.as_deref(), Some("Use new_func instead"));
+        assert!(out[0].location.is_some());
+    }
+
+    #[test]
+    fn flatten_symbol_container_name_from_value() {
+        let val = json!({
+            "name": "method",
+            "kind": 6,
+            "containerName": "MyClass"
+        });
+        let mut out = Vec::new();
+        flatten_symbol(&val, None, &mut out);
+        assert_eq!(out[0].container_name.as_deref(), Some("MyClass"));
+    }
+
+    #[test]
+    fn flatten_symbol_parent_overrides_container() {
+        let val = json!({
+            "name": "child",
+            "kind": 6,
+            "containerName": "Ignored"
+        });
+        let mut out = Vec::new();
+        flatten_symbol(&val, Some("Parent"), &mut out);
+        assert_eq!(out[0].container_name.as_deref(), Some("Parent"));
+    }
+
+    #[test]
+    fn flatten_symbol_with_ranges_no_location() {
+        let val = json!({
+            "name": "Foo",
+            "kind": 5,
+            "range": { "start": {"line":0,"character":0}, "end": {"line":10,"character":1} },
+            "selectionRange": { "start": {"line":0,"character":7}, "end": {"line":0,"character":10} }
+        });
+        let mut out = Vec::new();
+        flatten_symbol(&val, None, &mut out);
+        assert!(out[0].range.is_some());
+        assert!(out[0].selection_range.is_some());
+        assert!(out[0].location.is_none());
+    }
+
+    #[test]
+    fn flatten_symbol_location_missing_range_uses_zero() {
+        let val = json!({
+            "name": "thing",
+            "kind": 13,
+            "location": { "uri": "file:///a.rs" }
+        });
+        let mut out = Vec::new();
+        flatten_symbol(&val, None, &mut out);
+        assert!(out[0].location.is_some());
+        let loc = out[0].location.as_ref().unwrap();
+        assert_eq!(loc.range.start.line, 0);
+    }
+
+    #[test]
+    fn flatten_symbol_default_kind() {
+        let val = json!({ "name": "x" });
+        let mut out = Vec::new();
+        flatten_symbol(&val, None, &mut out);
+        assert_eq!(out[0].kind, SymbolKind(1));
+        assert!(!out[0].deprecated);
+    }
+
+    #[test]
+    fn parse_completions_default_kind() {
+        let val = json!([{ "label": "item" }]);
+        let items = parse_completions(&val);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, CompletionItemKind::TEXT);
+    }
 }

@@ -187,4 +187,27 @@ mod tests {
         let folders = params["workspaceFolders"].as_array().unwrap();
         assert_eq!(folders[0]["name"].as_str().unwrap(), "go-app");
     }
+
+    #[tokio::test]
+    async fn shutdown_noop_when_not_started() {
+        let mut server = GoplsServer::new(
+            MultilspyConfig::new(Language::Go),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn delegation_errors_when_not_started() {
+        let server = GoplsServer::new(
+            MultilspyConfig::new(Language::Go),
+            PathBuf::from("/tmp/test"),
+        );
+        assert!(server.definitions("main.go", 0, 0).await.is_err());
+        assert!(server.references("main.go", 0, 0).await.is_err());
+        assert!(server.hover("main.go", 0, 0).await.is_err());
+        assert!(server.completions("main.go", 0, 0).await.is_err());
+        assert!(server.diagnostics("main.go").await.is_err());
+        assert!(server.document_symbols("main.go").await.is_err());
+    }
 }

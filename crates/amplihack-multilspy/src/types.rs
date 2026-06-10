@@ -400,4 +400,240 @@ mod tests {
         let parsed: HoverResult = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, hover);
     }
+
+    // ── Additional edge-case tests ───────────────────────────────────
+
+    #[test]
+    fn path_to_uri_backslashes_normalized() {
+        let path = Path::new("C:\\Users\\user\\project\\main.rs");
+        let uri = path_to_uri(path);
+        assert!(!uri.contains('\\'));
+        assert!(uri.starts_with("file:///"));
+        assert!(uri.contains("C:/Users/user/project/main.rs"));
+    }
+
+    #[test]
+    fn uri_to_path_windows_drive() {
+        let path = uri_to_path("file:///C:/Users/user/main.rs").unwrap();
+        assert_eq!(path, "C:/Users/user/main.rs");
+    }
+
+    #[test]
+    fn uri_to_path_non_file_uri_returns_none() {
+        assert!(uri_to_path("https://example.com/file.rs").is_none());
+    }
+
+    #[test]
+    fn detect_language_id_all_extensions() {
+        assert_eq!(detect_language_id("component.tsx"), "typescript");
+        assert_eq!(detect_language_id("component.jsx"), "javascript");
+        assert_eq!(detect_language_id("util.mjs"), "javascript");
+        assert_eq!(detect_language_id("util.cjs"), "javascript");
+        assert_eq!(detect_language_id("types.pyi"), "python");
+        assert_eq!(detect_language_id("Program.cs"), "csharp");
+        assert_eq!(detect_language_id("server.rb"), "ruby");
+        assert_eq!(detect_language_id("index.php"), "php");
+        assert_eq!(detect_language_id("main.dart"), "dart");
+        assert_eq!(detect_language_id("no_extension"), "plaintext");
+        assert_eq!(detect_language_id("file.unknown"), "plaintext");
+    }
+
+    #[test]
+    fn diagnostic_severity_display_all() {
+        assert_eq!(DiagnosticSeverity::INFORMATION.to_string(), "Information");
+        assert_eq!(DiagnosticSeverity(99).to_string(), "Unknown(99)");
+    }
+
+    #[test]
+    fn completion_item_kind_display_all_variants() {
+        assert_eq!(CompletionItemKind::TEXT.to_string(), "Text");
+        assert_eq!(CompletionItemKind::METHOD.to_string(), "Method");
+        assert_eq!(CompletionItemKind::CONSTRUCTOR.to_string(), "Constructor");
+        assert_eq!(CompletionItemKind::FIELD.to_string(), "Field");
+        assert_eq!(CompletionItemKind::VARIABLE.to_string(), "Variable");
+        assert_eq!(CompletionItemKind::INTERFACE.to_string(), "Interface");
+        assert_eq!(CompletionItemKind::MODULE.to_string(), "Module");
+        assert_eq!(CompletionItemKind::PROPERTY.to_string(), "Property");
+        assert_eq!(CompletionItemKind::UNIT.to_string(), "Unit");
+        assert_eq!(CompletionItemKind::VALUE.to_string(), "Value");
+        assert_eq!(CompletionItemKind::ENUM.to_string(), "Enum");
+        assert_eq!(CompletionItemKind::KEYWORD.to_string(), "Keyword");
+        assert_eq!(CompletionItemKind::SNIPPET.to_string(), "Snippet");
+        assert_eq!(CompletionItemKind::COLOR.to_string(), "Color");
+        assert_eq!(CompletionItemKind::FILE.to_string(), "File");
+        assert_eq!(CompletionItemKind::REFERENCE.to_string(), "Reference");
+        assert_eq!(CompletionItemKind::FOLDER.to_string(), "Folder");
+        assert_eq!(CompletionItemKind::ENUM_MEMBER.to_string(), "EnumMember");
+        assert_eq!(CompletionItemKind::CONSTANT.to_string(), "Constant");
+        assert_eq!(CompletionItemKind::STRUCT.to_string(), "Struct");
+        assert_eq!(CompletionItemKind::EVENT.to_string(), "Event");
+        assert_eq!(CompletionItemKind::OPERATOR.to_string(), "Operator");
+        assert_eq!(
+            CompletionItemKind::TYPE_PARAMETER.to_string(),
+            "TypeParameter"
+        );
+    }
+
+    #[test]
+    fn symbol_kind_display_all_variants() {
+        assert_eq!(SymbolKind::FILE.to_string(), "File");
+        assert_eq!(SymbolKind::MODULE.to_string(), "Module");
+        assert_eq!(SymbolKind::NAMESPACE.to_string(), "Namespace");
+        assert_eq!(SymbolKind::PACKAGE.to_string(), "Package");
+        assert_eq!(SymbolKind::CONSTRUCTOR.to_string(), "Constructor");
+        assert_eq!(SymbolKind::ENUM.to_string(), "Enum");
+        assert_eq!(SymbolKind::INTERFACE.to_string(), "Interface");
+        assert_eq!(SymbolKind::VARIABLE.to_string(), "Variable");
+        assert_eq!(SymbolKind::CONSTANT.to_string(), "Constant");
+        assert_eq!(SymbolKind::STRING.to_string(), "String");
+        assert_eq!(SymbolKind::NUMBER.to_string(), "Number");
+        assert_eq!(SymbolKind::BOOLEAN.to_string(), "Boolean");
+        assert_eq!(SymbolKind::ARRAY.to_string(), "Array");
+        assert_eq!(SymbolKind::OBJECT.to_string(), "Object");
+        assert_eq!(SymbolKind::KEY.to_string(), "Key");
+        assert_eq!(SymbolKind::NULL.to_string(), "Null");
+        assert_eq!(SymbolKind::ENUM_MEMBER.to_string(), "EnumMember");
+        assert_eq!(SymbolKind::EVENT.to_string(), "Event");
+        assert_eq!(SymbolKind::OPERATOR.to_string(), "Operator");
+        assert_eq!(SymbolKind::TYPE_PARAMETER.to_string(), "TypeParameter");
+    }
+
+    #[test]
+    fn markup_kind_serde() {
+        let json = serde_json::to_value(MarkupKind::PlainText).unwrap();
+        assert_eq!(json, "plaintext");
+        let json = serde_json::to_value(MarkupKind::Markdown).unwrap();
+        assert_eq!(json, "markdown");
+        let parsed: MarkupKind = serde_json::from_str("\"plaintext\"").unwrap();
+        assert_eq!(parsed, MarkupKind::PlainText);
+    }
+
+    #[test]
+    fn markup_content_serde() {
+        let mc = MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: "# Hello".into(),
+        };
+        let json = serde_json::to_string(&mc).unwrap();
+        let parsed: MarkupContent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, mc);
+    }
+
+    #[test]
+    fn text_document_identifier_serde() {
+        let tdi = TextDocumentIdentifier {
+            uri: "file:///test.rs".into(),
+        };
+        let json = serde_json::to_string(&tdi).unwrap();
+        let parsed: TextDocumentIdentifier = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, tdi);
+    }
+
+    #[test]
+    fn completion_item_serde_roundtrip() {
+        let item = CompletionItem {
+            completion_text: "println!".into(),
+            kind: CompletionItemKind::FUNCTION,
+            detail: Some("a macro".into()),
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let parsed: CompletionItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, item);
+    }
+
+    #[test]
+    fn diagnostic_serde_roundtrip() {
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 5)),
+            message: "unused var".into(),
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("rustc".into()),
+            code: Some("dead_code".into()),
+        };
+        let json = serde_json::to_string(&diag).unwrap();
+        let parsed: Diagnostic = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, diag);
+    }
+
+    #[test]
+    fn symbol_info_serde_roundtrip() {
+        let sym = SymbolInfo {
+            name: "main".into(),
+            kind: SymbolKind::FUNCTION,
+            location: Some(Location {
+                uri: "file:///a.rs".into(),
+                range: Range::new(Position::new(0, 0), Position::new(5, 1)),
+                absolute_path: None,
+                relative_path: None,
+            }),
+            container_name: None,
+            detail: Some("fn()".into()),
+            range: None,
+            selection_range: None,
+            deprecated: false,
+        };
+        let json = serde_json::to_string(&sym).unwrap();
+        let parsed: SymbolInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, sym);
+    }
+
+    #[test]
+    fn hover_result_no_range() {
+        let hover = HoverResult {
+            contents: "info".into(),
+            range: None,
+        };
+        let json = serde_json::to_string(&hover).unwrap();
+        assert!(!json.contains("range"));
+        let parsed: HoverResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, hover);
+    }
+
+    #[test]
+    fn location_with_paths_serde() {
+        let loc = Location {
+            uri: "file:///project/src/main.rs".into(),
+            range: Range::new(Position::new(0, 0), Position::new(0, 5)),
+            absolute_path: Some("/project/src/main.rs".into()),
+            relative_path: Some("src/main.rs".into()),
+        };
+        let json = serde_json::to_string(&loc).unwrap();
+        assert!(json.contains("absolute_path"));
+        assert!(json.contains("relative_path"));
+        let parsed: Location = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, loc);
+    }
+
+    #[test]
+    fn diagnostic_minimal_serde() {
+        let diag = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 1)),
+            message: "err".into(),
+            severity: None,
+            source: None,
+            code: None,
+        };
+        let json = serde_json::to_string(&diag).unwrap();
+        assert!(!json.contains("severity"));
+        assert!(!json.contains("source"));
+        assert!(!json.contains("code"));
+    }
+
+    #[test]
+    fn symbol_info_with_all_fields() {
+        let sym = SymbolInfo {
+            name: "MyStruct".into(),
+            kind: SymbolKind::STRUCT,
+            location: None,
+            container_name: Some("my_mod".into()),
+            detail: Some("struct".into()),
+            range: Some(Range::new(Position::new(0, 0), Position::new(10, 1))),
+            selection_range: Some(Range::new(Position::new(0, 7), Position::new(0, 15))),
+            deprecated: true,
+        };
+        let json = serde_json::to_string(&sym).unwrap();
+        let parsed: SymbolInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, sym);
+        assert!(parsed.deprecated);
+    }
 }
