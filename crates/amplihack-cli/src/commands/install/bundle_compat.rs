@@ -121,7 +121,8 @@ pub(super) fn validate_staged_framework_bundle(
     validate_framework_bundle_compatibility(bundle)
 }
 
-pub(super) fn is_compatible_framework_bundle(root_or_bundle: &Path) -> bool {
+#[cfg(test)]
+fn is_compatible_framework_bundle(root_or_bundle: &Path) -> bool {
     validate_framework_bundle_compatibility(root_or_bundle).is_ok()
 }
 
