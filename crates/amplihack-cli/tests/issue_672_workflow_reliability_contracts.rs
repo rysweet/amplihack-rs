@@ -247,3 +247,52 @@ fn recipe_files_with_git_commands_disable_interactive_pagers() {
             .join("\n")
     );
 }
+
+#[test]
+fn issue_749_prompts_and_dev_orchestrator_docs_state_development_routing_invariant() {
+    let required = "Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.";
+
+    for rel in [
+        "amplifier-bundle/recipes/smart-classify-route.yaml",
+        "amplifier-bundle/recipes/smart-execute-routing.yaml",
+        "amplifier-bundle/skills/dev-orchestrator/SKILL.md",
+        "amplifier-bundle/skills/dev-orchestrator/reference.md",
+    ] {
+        let content = read_repo_file(rel);
+        assert!(
+            content.contains(required),
+            "{rel} must explicitly state the Development routing invariant"
+        );
+    }
+}
+
+#[test]
+fn issue_749_prompts_and_dev_orchestrator_docs_state_per_workstream_hybrid_routing() {
+    let required =
+        "Hybrid decompositions route each workstream by its own normalized classification.";
+
+    for rel in [
+        "amplifier-bundle/recipes/smart-classify-route.yaml",
+        "amplifier-bundle/recipes/smart-execute-routing.yaml",
+        "amplifier-bundle/skills/dev-orchestrator/SKILL.md",
+        "amplifier-bundle/skills/dev-orchestrator/reference.md",
+    ] {
+        let content = read_repo_file(rel);
+        assert!(
+            content.contains(required),
+            "{rel} must document per-workstream routing for hybrid decompositions"
+        );
+    }
+}
+
+#[test]
+fn issue_749_routing_hook_prompt_reinforces_development_invariant() {
+    let content = read_repo_file("crates/amplihack-hooks/src/routing_prompt.txt");
+
+    assert!(
+        content.contains(
+            "Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant."
+        ),
+        "routing hook prompt must reinforce the Development routing invariant"
+    );
+}

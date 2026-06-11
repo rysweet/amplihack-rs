@@ -75,6 +75,14 @@ flowchart TD
 This is the **default orchestrator** for all non-trivial development and investigation tasks
 in amplihack. It replaces the `ultrathink-orchestrator` skill.
 
+## Development Routing Invariant
+
+Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
+
+Hybrid decompositions route each workstream by its own normalized classification.
+
+This invariant is enforced by the Rust orchestration helper before workstream execution. Prompt instructions guide the model, but model-emitted `recipe` values are not trusted for Development workstreams.
+
 When a user asks you to build, implement, fix, investigate, or create anything non-trivial,
 this skill ensures:
 
@@ -203,7 +211,7 @@ fallback recipes, and enforcement details, see [reference.md](./reference.md).
 | Q&A           | "what is", "explain", "how does", "how do I", "quick question" | Respond directly                                    |
 | Operations    | "clean up", "delete", "git status", "run command"              | builder agent (direct execution, no workflow steps) |
 | Investigation | "investigate", "analyze", "understand", "explore"              | investigation-workflow                              |
-| Development   | "implement", "build", "create", "add", "fix", "refactor"       | smart-orchestrator                                  |
+| Development   | "implement", "build", "create", "add", "fix", "refactor"       | `default-workflow` through smart-orchestrator       |
 | Hybrid\*      | Both investigation + development keywords                      | Decomposed into investigation + dev workstreams     |
 
 \* Hybrid is not a distinct task_type — the orchestrator classifies as Development and decomposes into multiple workstreams (one investigation, one development).

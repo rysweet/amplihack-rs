@@ -52,5 +52,7 @@ Actions:
   OPS → Execute directly. No workflow needed.
   SKIP → Respect the bypass.
 
+Downstream invariant: Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
+
 When in doubt, choose DEV. False positive costs minutes. False negative costs quality.
 </system-reminder>

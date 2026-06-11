@@ -9,9 +9,9 @@ doc_type: reference
 
 # Dev-Orchestrator Routing Contract
 
-The issue #749 feature will make the dev-orchestrator route every normalized `Development` workstream to `default-workflow`.
+The dev-orchestrator routes every normalized `Development` workstream to `default-workflow`.
 
-This document defines the target contract for issue #749. The feature to build is Rust-helper enforcement before workstream execution: model-produced `recipe` fields are advisory input only and cannot override the `Development` routing invariant.
+This document defines the routing contract. Rust-helper enforcement runs before workstream execution: model-produced `recipe` fields are advisory input only and cannot override the `Development` routing invariant.
 
 ## Contents
 
@@ -28,7 +28,7 @@ This document defines the target contract for issue #749. The feature to build i
 
 Any workstream whose normalized classification is `Development` must run `default-workflow`.
 
-The issue #749 override must apply when the workstream recipe is:
+The override applies when the workstream recipe is:
 
 - missing
 - an empty string after trimming
@@ -39,7 +39,7 @@ The invariant applies per workstream. A top-level hybrid task can contain multip
 
 ## Classification authority
 
-The issue #749 routing implementation must use the most specific classification available.
+The routing implementation uses the most specific classification available.
 
 | Source | Authority | Routing effect |
 | --- | --- | --- |
@@ -59,7 +59,7 @@ This keeps hybrid decomposition safe: investigation, Q&A, operations, and consen
 
 ## Recipe normalization
 
-The issue #749 deterministic normalization rule is:
+The deterministic normalization rule is:
 
 | Normalized workstream classification | Input recipe | Normalized recipe |
 | --- | --- | --- |
@@ -81,7 +81,7 @@ Non-Development classifications must not be rewritten by the Development invaria
 
 ## Workstream JSON API
 
-The issue #749 implementation updates `amplihack orch helper build-workstreams-config` so it accepts the decomposition JSON emitted by `smart-classify-route` and writes a workstreams JSON file for `amplihack orch run` with deterministic Development routing applied.
+`amplihack orch helper build-workstreams-config` accepts the decomposition JSON emitted by `smart-classify-route` and writes a workstreams JSON file for `amplihack orch run` with deterministic Development routing applied.
 
 ### Input shape
 
@@ -131,7 +131,7 @@ The output uses the `amplihack orch run` workstreams schema. See [`orch run`](./
 
 ## Configuration
 
-The issue #749 feature should expose no configuration flag that disables the Development routing invariant.
+There is no configuration flag that disables the Development routing invariant.
 
 | Setting | Effect on routing |
 | --- | --- |
@@ -144,7 +144,7 @@ Prompt text in `dev-orchestrator`, `smart-classify-route`, `smart-execute-routin
 
 > Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
 
-That prompt text is supportive documentation for the model. The issue #749 implementation makes the Rust helper authoritative.
+That prompt text is supportive documentation for the model. The Rust helper is authoritative.
 
 ## Examples
 
@@ -295,7 +295,7 @@ The workstream has no own classification, so the helper falls back to the top-le
 
 Decomposition JSON is model-produced and treated as untrusted input.
 
-The issue #749 routing helper must:
+The routing helper must:
 
 - trim recipe strings before checking whether they are empty
 - normalize classification before comparing it to `Development`

@@ -9,7 +9,7 @@ doc_type: howto
 
 # Verify Dev-Orchestrator Routing
 
-Use this guide to verify the issue #749 target routing contract from the command line after the implementation is present. Current binaries that predate issue #749 may fail these checks by preserving an incorrect model-provided `recipe`.
+Use this guide to verify the deterministic Development-to-`default-workflow` routing contract from the command line. Binaries that predate this behavior may fail these checks by preserving an incorrect model-provided `recipe`.
 
 ## Prerequisites
 

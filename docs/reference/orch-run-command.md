@@ -129,7 +129,7 @@ An empty array is accepted; the engine logs `No workstreams defined in
 | `branch`          | string          | yes      | Git branch name for this workstream                                          |
 | `task`            | string          | yes      | Task description handed to the recipe / agent                                |
 | `description`     | string          | no       | Optional human-readable summary                                              |
-| `recipe`          | string          | no       | Per-workstream recipe selected by the upstream workstream generator. Issue #749 defines the target deterministic normalization rule for `Development`; see [Dev-Orchestrator Routing Contract](./dev-orchestrator-routing.md) |
+| `recipe`          | string          | no       | Per-workstream recipe selected by the upstream workstream generator. `Development` workstreams are deterministically normalized to `default-workflow`; see [Dev-Orchestrator Routing Contract](./dev-orchestrator-routing.md) |
 | `max_runtime`     | integer (secs)  | no       | Per-workstream runtime budget override                                       |
 | `timeout_policy`  | string          | no       | `interrupt-preserve` or `continue-preserve`                                  |
 

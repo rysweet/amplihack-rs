@@ -430,12 +430,51 @@ pub fn count_workstreams(decomp: &str) -> usize {
     raw.max(1)
 }
 
+fn workstream_classification<'a>(
+    ws: &'a serde_json::Value,
+    top_level_task_type: Option<&'a str>,
+) -> Option<&'a str> {
+    ["classification", "task_type", "type"]
+        .iter()
+        .find_map(|field| ws.get(*field).and_then(|v| v.as_str()))
+        .or(top_level_task_type)
+}
+
+fn normalise_workstream_classification(raw: &str) -> &'static str {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("consensus") {
+        return "Consensus";
+    }
+    normalise_type(raw)
+}
+
+fn normalise_workstream_recipe(
+    ws: &serde_json::Value,
+    top_level_task_type: Option<&str>,
+) -> String {
+    let raw_recipe = ws
+        .get("recipe")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default-workflow");
+
+    let is_development = workstream_classification(ws, top_level_task_type)
+        .map(normalise_workstream_classification)
+        == Some("Development");
+
+    if is_development {
+        "default-workflow".to_string()
+    } else {
+        raw_recipe.to_string()
+    }
+}
+
 /// Build the workstreams-config tempfile from a decomposition JSON blob and
 /// return the path. Mirrors the `create-workstreams-config` Python heredoc:
 /// each entry has `issue: "TBD"`, `branch: feat/orch-{i}-{slug}`,
 /// `description`, `task`, `recipe` (default `default-workflow`).
 pub fn build_workstreams_config_to_tempfile(decomp: &str) -> Result<String> {
     let obj = extract_json(decomp).unwrap_or(serde_json::json!({}));
+    let top_level_task_type = obj.get("task_type").and_then(|v| v.as_str());
     let workstreams = obj
         .get("workstreams")
         .and_then(|v| v.as_array())
@@ -456,11 +495,7 @@ pub fn build_workstreams_config_to_tempfile(decomp: &str) -> Result<String> {
             .and_then(|v| v.as_str())
             .unwrap_or(&name)
             .to_string();
-        let recipe = ws
-            .get("recipe")
-            .and_then(|v| v.as_str())
-            .unwrap_or("default-workflow")
-            .to_string();
+        let recipe = normalise_workstream_recipe(ws, top_level_task_type);
         entries.push(serde_json::json!({
             "issue": "TBD",
             "branch": format!("feat/orch-{idx}-{slug}"),
@@ -717,6 +752,13 @@ mod tests {
 
     // --- build_workstreams_config_to_tempfile --------------------------------
 
+    fn workstreams_config_from(decomp: &str) -> serde_json::Value {
+        let path = build_workstreams_config_to_tempfile(decomp).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        serde_json::from_str(&body).unwrap()
+    }
+
     #[test]
     fn build_workstreams_config_writes_tempfile_with_entries() {
         let decomp = r#"{
@@ -751,6 +793,87 @@ mod tests {
         }
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn development_workstream_missing_recipe_routes_to_default_workflow() {
+        let parsed = workstreams_config_from(
+            r#"{
+                "task_type": "Development",
+                "workstreams": [
+                    {"name": "dev task", "classification": "Development", "description": "Add tests"}
+                ]
+            }"#,
+        );
+
+        assert_eq!(parsed[0]["recipe"], "default-workflow");
+    }
+
+    #[test]
+    fn development_workstream_empty_recipe_routes_to_default_workflow() {
+        let parsed = workstreams_config_from(
+            r#"{
+                "task_type": "Development",
+                "workstreams": [
+                    {"name": "dev task", "classification": "Development", "recipe": "   "}
+                ]
+            }"#,
+        );
+
+        assert_eq!(parsed[0]["recipe"], "default-workflow");
+    }
+
+    #[test]
+    fn development_workstream_wrong_recipe_routes_to_default_workflow() {
+        let parsed = workstreams_config_from(
+            r#"{
+                "task_type": "Development",
+                "workstreams": [
+                    {
+                        "name": "dev task",
+                        "classification": "Development",
+                        "description": "Refactor src/orch.rs",
+                        "recipe": "investigation-workflow"
+                    }
+                ]
+            }"#,
+        );
+
+        assert_eq!(parsed[0]["recipe"], "default-workflow");
+    }
+
+    #[test]
+    fn unclassified_workstream_under_top_level_development_routes_to_default_workflow() {
+        let parsed = workstreams_config_from(
+            r#"{
+                "task_type": "Development",
+                "workstreams": [
+                    {"name": "dev task", "recipe": "investigation-workflow"}
+                ]
+            }"#,
+        );
+
+        assert_eq!(parsed[0]["recipe"], "default-workflow");
+    }
+
+    #[test]
+    fn non_development_workstream_recipes_are_preserved() {
+        let parsed = workstreams_config_from(
+            r#"{
+                "task_type": "Development",
+                "workstreams": [
+                    {"name": "research", "classification": "Investigation", "recipe": "investigation-workflow"},
+                    {"name": "answer", "classification": "Q&A", "recipe": "qa-workflow"},
+                    {"name": "ops", "classification": "Operations", "recipe": "ops-sentinel-workflow"},
+                    {"name": "consensus", "classification": "Consensus", "recipe": "consensus-workflow"}
+                ]
+            }"#,
+        );
+
+        assert_eq!(parsed[0]["recipe"], "investigation-workflow");
+        assert_eq!(parsed[1]["recipe"], "qa-workflow");
+        assert_eq!(parsed[2]["recipe"], "ops-sentinel-workflow");
+        assert_eq!(parsed[3]["recipe"], "consensus-workflow");
     }
 
     #[test]
