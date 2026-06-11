@@ -112,7 +112,7 @@ Falls back to single-session prompt-based execution with `--subprocess-safe`
 to avoid concurrent staging races (see issue #2567):
 
 ```bash
-amplihack claude --subprocess-safe -- -p "@TASK.md Execute autonomously following DEFAULT_WORKFLOW.md."
+amplihack claude --subprocess-safe -- -p "@TASK.md Execute autonomously following the default-workflow skill/recipe."
 ```
 
 The `--subprocess-safe` flag skips all staging/env updates so parallel

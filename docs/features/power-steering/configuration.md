@@ -93,7 +93,7 @@ Add to USER_PREFERENCES.md:
 
 **Step 13 Local Testing - NO EXCEPTIONS**
 
-EVERY PR MUST have local testing completed. Step 13 in DEFAULT_WORKFLOW.md
+EVERY PR MUST have local testing completed. The local testing step in the `default-workflow` skill/recipe
 is MANDATORY and cannot be skipped through rationalization.
 
 **Implementation Requirements:**

@@ -182,7 +182,7 @@ From research (PR #946):
 
 ## Integration with Workflow
 
-**DEFAULT_WORKFLOW.md Integration:**
+**`default-workflow` skill/recipe Integration:**
 
 **Step 4 (Design):** Use for critical architecture decisions
 **Step 5 (Implementation):** Use for security-critical code

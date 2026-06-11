@@ -16,10 +16,10 @@ triggers:
   - "Orchestrate workflow"
   - "Break down and solve"
 invokes:
-  - type: workflow
-    path: .claude/workflow/DEFAULT_WORKFLOW.md
-  - type: workflow
-    path: .claude/workflow/INVESTIGATION_WORKFLOW.md
+  - type: skill
+    name: default-workflow
+  - type: skill
+    name: investigation-workflow
 ---
 
 # Ultra-Think Command
@@ -46,14 +46,14 @@ Execute this exact sequence for the task: `{TASK_DESCRIPTION}`
    - **Investigation keywords**: investigate, explain, understand, how does, why does, analyze, research, explore, examine, study
    - **Development keywords**: implement, build, create, add feature, fix, refactor, deploy
    - **If both types detected**: Use hybrid workflow (investigation first, then development)
-   - If only investigation keywords found: Use @~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md
-   - If only development keywords found: Use @~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md
+   - If only investigation keywords found: Use the `investigation-workflow` skill/recipe
+   - If only development keywords found: Use the `default-workflow` skill/recipe
 2. Mandatory - not doing this wil require rework **Invoke the appropriate workflow skill** using the Skill tool:
    - Investigation: Skill(skill="investigation-workflow")`
    - Development: `Skill(skill="default-workflow")`
-   - **FALLBACK**: If skill invocation fails (skill not found), fall back to reading markdown workflows:
-     - Investigation: @~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md
-     - Development: @~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md
+   - **FALLBACK**: If direct skill invocation is unavailable, run the corresponding recipe:
+     - Investigation: `amplihack recipe run investigation-workflow`
+     - Development: `amplihack recipe run default-workflow`
 3. ALWAYS **Create a comprehensive todo list** using TodoWrite tool that includes all workflow steps/phases
 4. ALWAYS **Execute each step systematically**, marking todos as in_progress and completed
 
@@ -126,7 +126,7 @@ User: "/ultrathink implement JWT authentication"
 1. Detect: Development task (contains "implement")
 2. Select: default-workflow skill
 3. Try: Skill(skill="default-workflow")
-4. Fallback if needed: Read `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md`
+4. Fallback if needed: run `amplihack recipe run default-workflow`
 5. Begin executing workflow steps with deep analysis
 6. Orchestrate multiple agents where complexity requires
 7. Follow all workflow steps as defined
@@ -176,7 +176,7 @@ Phase 2: Transition to Development
 
 **When Investigation Leads to Development:**
 
-Some development tasks require investigation first (Step 4 of DEFAULT_WORKFLOW.md):
+Some development tasks require investigation first in the `default-workflow` skill/recipe:
 
 - Unfamiliar codebase areas
 - Complex subsystems requiring understanding

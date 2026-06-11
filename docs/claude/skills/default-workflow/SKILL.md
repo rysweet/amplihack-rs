@@ -128,11 +128,11 @@ compliance throughout.
 
 ## Canonical Sources
 
+- **Skill documentation**: `amplifier-bundle/skills/default-workflow/SKILL.md`
 - **Executable source (recipe)**: `amplifier-bundle/recipes/default-workflow.yaml`
-- **Reference documentation**: `.claude/workflow/DEFAULT_WORKFLOW.md`
 
-The recipe YAML is the authoritative execution definition. The `.md` file serves as
-human-readable reference documentation for the workflow steps.
+The skill and recipe are the authoritative representation. Legacy
+`DEFAULT_WORKFLOW.md` files are deprecated compatibility references only.
 
 ## Execution Instructions
 
@@ -162,7 +162,7 @@ cd /path/to/repo && amplihack recipe run default-workflow \
   --verbose
 ```
 
-**Do NOT** read `DEFAULT_WORKFLOW.md` and follow steps manually. The recipe runner
+**Do NOT** read legacy `DEFAULT_WORKFLOW.md` files and follow steps manually. The recipe runner
 enforces step ordering, recursion guards, checkpoints, and quality gates that manual
 execution cannot replicate.
 
@@ -256,8 +256,8 @@ If a step fails after a checkpoint, the worktree branch retains all committed wo
 
 ## Related Files
 
+- **Skill docs**: `amplifier-bundle/skills/default-workflow/SKILL.md`
 - **Recipe (executable)**: `amplifier-bundle/recipes/default-workflow.yaml`
-- **Reference docs**: `.claude/workflow/DEFAULT_WORKFLOW.md`
 - **Command Interface**: `.claude/commands/amplihack/dev.md`
 - **Orchestrator Skill**: `.claude/skills/dev-orchestrator/`
 - **Investigation Workflow**: `.claude/skills/investigation-workflow/`

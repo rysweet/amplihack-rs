@@ -252,4 +252,4 @@ Use explicit commands:
 
 - Workflow Reference - Detailed workflow documentation
 - Recipe Runner Guide - How Recipe Runner works
-- [DEFAULT_WORKFLOW.md](../concepts/default-workflow.md) - Complete 23-step development workflow
+- [`default-workflow` skill/recipe](../claude/skills/default-workflow/SKILL.md) - Complete 23-step development workflow

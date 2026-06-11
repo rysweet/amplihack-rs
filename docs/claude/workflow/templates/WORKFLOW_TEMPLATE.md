@@ -342,7 +342,7 @@ This workflow succeeds when:
 
 <!-- Explain relationship to other workflows -->
 
-**Relationship to DEFAULT_WORKFLOW.md**:
+**Relationship to legacy DEFAULT_WORKFLOW.md**:
 
 - [How this differs]
 - [What's shared]

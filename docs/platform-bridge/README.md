@@ -29,7 +29,7 @@ pr = bridge.create_draft_pr(
 
 ## What Problem Does This Solve?
 
-Before the platform bridge, DEFAULT_WORKFLOW.md hardcoded GitHub-specific commands (`gh issue create`, `gh pr create`) throughout all 22 steps. This meant:
+Before the platform bridge, the legacy `DEFAULT_WORKFLOW.md` hardcoded GitHub-specific commands (`gh issue create`, `gh pr create`) throughout all 22 steps. This meant:
 
 - Azure DevOps users couldn't use the workflow without manual workarounds
 - Every workflow step required platform-specific instructions
@@ -203,9 +203,9 @@ except CLIToolMissingError as e:
 4. **Authentication Required**: CLI tool not authenticated
    - Error: "GitHub CLI not authenticated. Run: gh auth login"
 
-## Integration with DEFAULT_WORKFLOW
+## Integration with `default-workflow`
 
-The platform bridge be integrated into DEFAULT_WORKFLOW.md at these steps:
+The platform bridge is integrated into the `default-workflow` skill/recipe at these steps:
 
 **Step 3: Create Issue/Work Item**
 
@@ -336,5 +336,5 @@ See [Security Documentation](../security/platform-bridge-security.md) fer comple
 
 - [Platform Bridge API Reference](../reference/platform-bridge-api.md) - Complete API documentation
 - Contributing to Platform Bridge - Extend with new platforms
-- [DEFAULT_WORKFLOW.md](../claude/workflow/DEFAULT_WORKFLOW.md) - Full workflow integration
+- [`default-workflow` skill/recipe](../claude/skills/default-workflow/SKILL.md) - Full workflow integration
 - [Security Analysis](../security/platform-bridge-security.md) - Security implementation details

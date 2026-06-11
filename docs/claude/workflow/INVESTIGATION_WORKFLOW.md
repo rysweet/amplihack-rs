@@ -26,13 +26,13 @@ entry_points:
   - /ultrathink
 references:
   workflows:
-    - DEFAULT_WORKFLOW.md
+    - legacy DEFAULT_WORKFLOW.md
 customizable: true
 ---
 
 # Investigation Workflow
 
-This file defines the workflow for investigation and research tasks. Unlike DEFAULT_WORKFLOW.md which is optimized for development (implementation → testing → deployment), this workflow is optimized for exploration and understanding.
+This deprecated legacy file defines the workflow for investigation and research tasks. Unlike the legacy DEFAULT_WORKFLOW.md, which is optimized for development (implementation → testing → deployment), this workflow is optimized for exploration and understanding.
 
 > **DEPRECATION WARNING**: Markdown workflows deprecated. See `docs/WORKFLOW_TO_SKILLS_MIGRATION.md`
 
@@ -77,7 +77,7 @@ This workflow should be followed for tasks containing these keywords or patterns
 - "Analyze the reflection system architecture"
 - "Research what hooks are triggered during session start"
 
-**Not for development tasks** - If the task involves "implement", "build", "create", "add feature", use DEFAULT_WORKFLOW.md instead.
+**Not for development tasks** - If the task involves "implement", "build", "create", or "add feature", use the `default-workflow` skill/recipe instead.
 
 ## The 6-Phase Investigation Workflow
 
@@ -330,7 +330,7 @@ Verification: Examine reflection logs, trace message processing
 
 ### 🔄 Transitioning to Development Workflow
 
-**After investigation completes**, if the task requires implementation (not just understanding), transition to **DEFAULT_WORKFLOW.md**:
+**After investigation completes**, if the task requires implementation (not just understanding), transition to the **`default-workflow` skill/recipe**:
 
 1. **Resume at Step 4** (Research and Design) with the knowledge gained from investigation
 2. **Or resume at Step 5** (Implement the Solution) if the investigation already provided clear design guidance
@@ -347,7 +347,7 @@ Phase 1: Investigation
 → Document findings in DISCOVERIES.md
 
 Phase 2: Development
-→ Transition to DEFAULT_WORKFLOW.md
+→ Transition to `default-workflow` skill/recipe
 → Resume at Step 4 (Research and Design)
 → Use investigation insights to design OAuth integration
 → Continue through Step 15 (implementation → testing → PR)
@@ -382,7 +382,7 @@ _Note: These are target metrics to be validated through usage tracking._
 5. **Synthesis** ensures all questions answered
 6. **Knowledge Capture** prevents repeat investigations
 
-## Comparison to DEFAULT_WORKFLOW.md
+## Comparison to legacy DEFAULT_WORKFLOW.md
 
 ### Similarities (Structural Consistency)
 
@@ -396,7 +396,7 @@ Both workflows share core principles:
 
 ### Differences (Investigation vs. Development)
 
-| Aspect             | Investigation Workflow     | DEFAULT_WORKFLOW.md      |
+| Aspect             | Investigation Workflow     | legacy DEFAULT_WORKFLOW.md |
 | ------------------ | -------------------------- | ------------------------ |
 | **Goal**           | Understanding              | Implementation           |
 | **Phases**         | 6 phases                   | Multi-step workflow      |

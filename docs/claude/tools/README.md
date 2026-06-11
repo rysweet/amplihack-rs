@@ -901,7 +901,7 @@ When adding new tools to this directory:
 - [Claude Code Hooks Documentation](https://docs.claude.com/en/docs/claude-code/hooks)
 - [Project Philosophy](../../../amplifier-bundle/context/PHILOSOPHY.md)
 - [Development Patterns](../../../amplifier-bundle/context/PATTERNS.md)
-- [Workflow Definition](../workflow/DEFAULT_WORKFLOW.md)
+- [`default-workflow` skill/recipe](../skills/default-workflow/SKILL.md)
 
 ---
 

@@ -1432,8 +1432,8 @@ uvx --from git+https://github.com/rysweet/amplihack-rs amplihack
 │   ├── PROJECT.md
 │   ├── USER_PREFERENCES.md
 │   └── DISCOVERIES.md
-├── workflow/                  # Development workflows
-│   └── DEFAULT_WORKFLOW.md
+├── skills/                    # Workflow skills
+│   └── default-workflow/
 ├── hooks/                     # Git-style hooks
 ├── runtime/                   # Runtime data
 │   ├── logs/                  # Session logs

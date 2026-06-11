@@ -91,7 +91,7 @@ Follow the pattern in @src/middleware/auth.py.
 ```
 
 **3. Trust the Workflow:**
-UltraThink follows the DEFAULT_WORKFLOW.md pattern:
+Amplihack follows the `default-workflow` skill/recipe pattern:
 
 - Creates GitHub issues
 - Sets up worktrees
@@ -480,7 +480,7 @@ Amplihack improves itself through usage. You're part of that process.
 
 **Improved a workflow?** Update the relevant documentation:
 
-- `DEFAULT_WORKFLOW.md` for process improvements
+- `default-workflow` skill/recipe for process improvements
 - `PHILOSOPHY.md` for principle refinements
 - `THIS_IS_THE_WAY.md` for practical patterns
 
@@ -513,5 +513,5 @@ The challenges you overcome today become capabilities amplihack has tomorrow.
 
 - **PHILOSOPHY.md** - Core principles and the Brick Philosophy
 - **DISCOVERIES.md** - Documented problems and solutions
-- **DEFAULT_WORKFLOW.md** - The multi-step development workflow
+- **`default-workflow` skill/recipe** - The multi-step development workflow
 - **agents/** - Specialized agent documentation

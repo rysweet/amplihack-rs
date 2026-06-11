@@ -260,7 +260,7 @@ This skill orchestrates two canonical workflows:
 - **Microsoft**: [Best Practices for Exceptions](https://learn.microsoft.com/en-us/dotnet/standard/exceptions/best-practices-for-exceptions)
 - **ASP.NET Core**: [Handle Errors in Web APIs](https://learn.microsoft.com/en-us/aspnet/core/web-api/handle-errors)
 - **Investigation Workflow**: `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md`
-- **Default Workflow**: `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md`
+- **Default Workflow**: `default-workflow` skill/recipe
 
 ## Version History
 

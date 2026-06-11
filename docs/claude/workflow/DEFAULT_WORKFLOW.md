@@ -29,7 +29,11 @@ customizable: true
 
 # Default Coding Workflow
 
-This file defines the default workflow for all non-trivial code changes.
+> **Deprecated legacy reference**: the canonical default development workflow is
+> the `default-workflow` skill/recipe. This file remains only for migration and
+> backward-compatibility context.
+
+This legacy file describes the default workflow for non-trivial code changes.
 
 You can customize this workflow by editing this file.
 

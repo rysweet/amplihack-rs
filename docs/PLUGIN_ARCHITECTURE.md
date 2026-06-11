@@ -46,7 +46,7 @@ Plugin Architecture
 │  │  │           ├── post_tool_use.py                    │  │
 │  │  │           ├── user_prompt_submit.py               │  │
 │  │  │           └── pre_compact.py                      │  │
-│  │  ├── workflow/       # DEFAULT_WORKFLOW.md           │  │
+│  │  ├── skills/         # default-workflow skill/recipe  │  │
 │  │  └── context/        # PHILOSOPHY.md, PATTERNS.md    │  │
 │  └───────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘

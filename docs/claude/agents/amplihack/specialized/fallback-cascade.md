@@ -287,7 +287,7 @@ From research (PR #946):
 
 ## Integration with Workflow
 
-**DEFAULT_WORKFLOW.md Integration:**
+**`default-workflow` skill/recipe Integration:**
 
 **Step 5 (Implementation):** Use for external dependencies
 **Step 6 (Testing):** Use for unreliable test operations

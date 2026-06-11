@@ -58,7 +58,7 @@ Updated agent execution framework and prompt engineering to enforce message cons
 
 #### Problem Addressed
 
-DEFAULT_WORKFLOW.md is optimized for development tasks (Implementation → Testing → Deployment), not research. Investigation tasks adapted workflow on the fly, leading to inconsistent approaches and unclear user expectations.
+The legacy `DEFAULT_WORKFLOW.md` was optimized for development tasks (Implementation → Testing → Deployment), not research. Investigation tasks adapted workflow on the fly, leading to inconsistent approaches and unclear user expectations.
 
 #### Solution Implemented
 
@@ -351,7 +351,7 @@ Added to workflow initialization (Step 1.5):
 #### Files Changed
 
 - `~/.amplihack/.claude/context/VERBOSITY_MATRIX.md` - New verbosity mapping
-- `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md` - Added Step 1.5 (Task Analysis)
+- Legacy `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md` - Added Step 1.5 (Task Analysis)
 - `~/.amplihack/.claude/commands/amplihack/ultrathink.md` - Integrated verbosity calculation
 
 #### Integration Points
@@ -405,7 +405,7 @@ Added to both DEFAULT_WORKFLOW and INVESTIGATION_WORKFLOW.
 
 #### Files Changed
 
-- `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md` - Added phase announcement requirements
+- Legacy `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md` - Added phase announcement requirements
 - `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` - Added phase announcements
 - `~/.amplihack/.claude/commands/amplihack/ultrathink.md` - Implements announcement logic
 
@@ -1028,7 +1028,7 @@ See `Specs/complexity_estimator_architecture.md` for design rationale.
 #### Customizing Workflows
 
 - **Investigation tasks**: Edit `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md`
-- **Development tasks**: Edit `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md`
+- **Development tasks**: Update the `default-workflow` skill/recipe
 - Changes take effect immediately (no restart needed)
 
 #### Updating Templates

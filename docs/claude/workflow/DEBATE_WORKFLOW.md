@@ -29,7 +29,7 @@ philosophy_alignment:
     application: Debate format prevents premature convergence
 references:
   workflows:
-    - DEFAULT_WORKFLOW.md
+    - legacy DEFAULT_WORKFLOW.md
     - CONSENSUS_WORKFLOW.md
 customizable: true
 ---

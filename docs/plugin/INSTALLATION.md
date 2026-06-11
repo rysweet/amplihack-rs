@@ -110,9 +110,9 @@ After installation, your `~/.amplihack/.claude/` directory contains:
 │   ├── documentation-writing/
 │   ├── mermaid-diagram-generator/
 │   └── ...
-├── workflow/                     # 5 workflow definitions
-│   ├── DEFAULT_WORKFLOW.md
-│   ├── INVESTIGATION_WORKFLOW.md
+├── skills/                       # Workflow skills
+│   ├── default-workflow/
+│   ├── investigation-workflow/
 │   └── ...
 ├── tools/                        # Hooks and utilities
 │   ├── PostInit.sh              # Uses ${CLAUDE_PLUGIN_ROOT}

@@ -71,7 +71,7 @@ Available Workflows:
 
 1. DEFAULT_WORKFLOW
    Description: Standard workflow for most development tasks
-   Location: .claude/workflow/DEFAULT_WORKFLOW.md
+   Canonical target: `default-workflow` skill/recipe
    Steps: 15
    Best for: Features, bug fixes, refactoring, day-to-day work
 
