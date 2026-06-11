@@ -257,8 +257,8 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
 - [UltraThink Recipe Runner Integration](recipes/RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution
 - [Recipe CLI Commands How-To](howto/recipe-cli-commands.md) - Task-oriented guide for using recipe commands
-- [Dev-Orchestrator Routing Contract](reference/dev-orchestrator-routing.md) - Deterministic routing rules for Development and hybrid workstreams
-- [Verify Dev-Orchestrator Routing](howto/verify-dev-orchestrator-routing.md) - Check Development-to-default-workflow normalization from the CLI
+- [Dev-Orchestrator Routing Contract](reference/dev-orchestrator-routing.md) - Issue #749 target rules for Development and hybrid workstream routing
+- [Verify Dev-Orchestrator Routing](howto/verify-dev-orchestrator-routing.md) - Check the issue #749 Development-to-default-workflow target from the CLI
 - [Recipe Executor Environment](reference/recipe-executor-environment.md) - Step-level variables plus subprocess environment contract for forced non-interactive recipe execution
 - [Validate Recipe Subprocess and Hook Input Contracts](howto/validate-recipe-subprocess-hook-contract.md) - Validate recipe child env handling and hook JSON compatibility
 - [Workflow Publish Import Validation](features/workflow-publish-import-validation.md) - Scoped publish import validation before commit/push

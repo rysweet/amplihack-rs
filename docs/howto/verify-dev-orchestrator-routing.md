@@ -9,7 +9,7 @@ doc_type: howto
 
 # Verify Dev-Orchestrator Routing
 
-Use this guide to verify the dev-orchestrator routing contract from the command line.
+Use this guide to verify the issue #749 target routing contract from the command line after the implementation is present. Current binaries that predate issue #749 may fail these checks by preserving an incorrect model-provided `recipe`.
 
 ## Prerequisites
 
@@ -113,7 +113,7 @@ cat > /tmp/dev-routing-hybrid.json <<'JSON'
       "name": "operate",
       "classification": "Operations",
       "description": "Run routing diagnostics",
-      "recipe": "ops-workflow"
+      "recipe": "sentinel-preserved-operations-route"
     },
     {
       "name": "decide",
@@ -151,7 +151,7 @@ Expected output:
   },
   {
     "description": "operate",
-    "recipe": "ops-workflow"
+    "recipe": "sentinel-preserved-operations-route"
   },
   {
     "description": "decide",
@@ -160,7 +160,41 @@ Expected output:
 ]
 ```
 
-Only the `Development` workstream is rewritten. Non-Development workstreams keep the route selected by classification and decomposition.
+Only the `Development` workstream is rewritten. Non-Development workstreams keep the route selected by classification and decomposition. The Operations recipe above is a sentinel preservation value for helper-output verification, not a real bundle recipe to execute with `amplihack orch run`.
+
+## Verify top-level fallback for unclassified workstreams
+
+Create a decomposition payload where the workstream has no own `classification`, `task_type`, or `type`:
+
+```bash
+cat > /tmp/dev-routing-top-level-fallback.json <<'JSON'
+{
+  "task_type": "Development",
+  "workstreams": [
+    {
+      "name": "fallback",
+      "description": "Fix a workstream that relies on top-level classification",
+      "recipe": "investigation-workflow"
+    }
+  ]
+}
+JSON
+```
+
+Normalize it:
+
+```bash
+WS_FILE=$(amplihack orch helper build-workstreams-config < /tmp/dev-routing-top-level-fallback.json)
+jq '.[0].recipe' "$WS_FILE"
+```
+
+Expected output:
+
+```json
+"default-workflow"
+```
+
+Per-workstream classification wins when present. Top-level `task_type` is used only when the workstream has no own classification, so an unclassified workstream under top-level `Development` routes to `default-workflow`.
 
 ## Verify with focused tests
 
@@ -181,7 +215,7 @@ NODE_OPTIONS=--max-old-space-size=32768 cargo test -p amplihack-cli --test issue
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | Development workstream keeps `investigation-workflow` | An old binary or stale installed bundle is being used | Run `cargo build -p amplihack-cli`, then run the intended binary explicitly or refresh the install |
-| Every workstream becomes `default-workflow` | Top-level classification is being applied too broadly | Ensure each hybrid workstream carries its own `classification`, `task_type`, or `type` |
+| Every workstream becomes `default-workflow` | Top-level classification is being applied too broadly | Ensure each hybrid workstream that should keep a non-Development route carries its own `classification`, `task_type`, or `type` |
 | `amplihack orch helper` is missing | The installed CLI is too old | Rebuild or reinstall amplihack |
 | `jq` is missing | The examples use `jq` for display only | Inspect the workstreams file with another JSON viewer |
 

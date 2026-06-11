@@ -9,9 +9,9 @@ doc_type: reference
 
 # Dev-Orchestrator Routing Contract
 
-The dev-orchestrator routes every normalized `Development` workstream to `default-workflow`.
+The issue #749 feature will make the dev-orchestrator route every normalized `Development` workstream to `default-workflow`.
 
-This contract is enforced by the Rust orchestration helper before workstream execution. Model-produced `recipe` fields are advisory input only; they cannot override the `Development` routing invariant.
+This document defines the target contract for issue #749. The feature to build is Rust-helper enforcement before workstream execution: model-produced `recipe` fields are advisory input only and cannot override the `Development` routing invariant.
 
 ## Contents
 
@@ -26,34 +26,40 @@ This contract is enforced by the Rust orchestration helper before workstream exe
 
 ## Routing invariant
 
-Any workstream whose normalized classification is `Development` runs `default-workflow`.
+Any workstream whose normalized classification is `Development` must run `default-workflow`.
 
-This override applies when the workstream recipe is:
+The issue #749 override must apply when the workstream recipe is:
 
 - missing
 - an empty string after trimming
 - whitespace only
 - any recipe other than `default-workflow`
 
-The invariant applies per workstream. A top-level hybrid task can contain multiple workstreams with different classifications, and each workstream is routed from its own normalized classification.
+The invariant applies per workstream. A top-level hybrid task can contain multiple workstreams with different classifications, and each workstream must be routed from its own normalized classification.
 
 ## Classification authority
 
-Routing uses the most specific classification available.
+The issue #749 routing implementation must use the most specific classification available.
 
 | Source | Authority | Routing effect |
 | --- | --- | --- |
 | Per-workstream `classification`, `task_type`, or `type` | Highest | Used to normalize that workstream's recipe |
-| Top-level `task_type` | Fallback | Used only when a workstream has no own classification |
+| Top-level `task_type` | Fallback | Used only when the workstream has no per-workstream classification |
 | Model-provided `recipe` | Advisory | Preserved only when it does not violate deterministic routing |
 
-The normalized classification is authoritative for routing. The raw model text is normalized before routing decisions are made, so common variants such as `dev`, `development`, or mixed-case `Development` resolve to the same classification.
+The normalized classification is authoritative for routing. The raw model text must be normalized before routing decisions are made, so common variants such as `dev`, `development`, or mixed-case `Development` resolve to the same classification.
 
-If a workstream has no per-workstream classification, existing fallback behavior is preserved except where the item is already treated as `Development` by existing classification logic. This keeps hybrid decomposition safe: investigation, Q&A, operations, and consensus workstreams inside a broader development request do not inherit `Development` unless their own normalized classification is `Development` or existing fallback logic already classifies them that way.
+The exact fallback rule is:
+
+1. Use the workstream's own `classification`, `task_type`, or `type` when present.
+2. Use the top-level `task_type` only when the workstream has none of those fields.
+3. Route an unclassified workstream under top-level `Development` to `default-workflow`.
+
+This keeps hybrid decomposition safe: investigation, Q&A, operations, and consensus workstreams inside a broader development request must not inherit `Development` when they carry their own non-Development classification.
 
 ## Recipe normalization
 
-The deterministic normalization rule is:
+The issue #749 deterministic normalization rule is:
 
 | Normalized workstream classification | Input recipe | Normalized recipe |
 | --- | --- | --- |
@@ -64,18 +70,18 @@ The deterministic normalization rule is:
 | `Development` | `default-workflow` | `default-workflow` |
 | Non-Development | any value | Existing route is preserved |
 
-Non-Development classifications are not rewritten by the Development invariant. Their existing route selection remains in force:
+Non-Development classifications must not be rewritten by the Development invariant. Their existing route selection remains in force:
 
 | Classification | Existing routing behavior |
 | --- | --- |
 | `Investigation` | Uses the investigation route selected by smart-orchestrator, normally `investigation-workflow` for recipe execution |
 | `Q&A` | Uses the direct analyzer-answer route for top-level Q&A; workstream recipes are preserved when a plan explicitly contains Q&A workstreams |
-| `Operations` | Uses the operations route selected by smart-orchestrator; workstream recipes are preserved when a plan explicitly contains operations workstreams |
+| `Operations` | Uses the operations route selected by smart-orchestrator; workstream recipes are preserved when a plan explicitly contains operations workstreams. The current bundle does not define an `ops-workflow` recipe |
 | `Consensus` | Uses the consensus route selected by smart-orchestrator; workstream recipes are preserved when a plan explicitly contains consensus workstreams |
 
 ## Workstream JSON API
 
-`amplihack orch helper build-workstreams-config` accepts the decomposition JSON emitted by `smart-classify-route` and writes a workstreams JSON file for `amplihack orch run`.
+The issue #749 implementation updates `amplihack orch helper build-workstreams-config` so it accepts the decomposition JSON emitted by `smart-classify-route` and writes a workstreams JSON file for `amplihack orch run` with deterministic Development routing applied.
 
 ### Input shape
 
@@ -125,7 +131,7 @@ The output uses the `amplihack orch run` workstreams schema. See [`orch run`](./
 
 ## Configuration
 
-There is no configuration flag that disables the Development routing invariant.
+The issue #749 feature should expose no configuration flag that disables the Development routing invariant.
 
 | Setting | Effect on routing |
 | --- | --- |
@@ -134,11 +140,11 @@ There is no configuration flag that disables the Development routing invariant.
 | `AMPLIHACK_AGENT_BINARY` | Chooses the agent backend; does not affect workflow recipe selection |
 | `AMPLIHACK_HOME` | Locates recipe assets; does not affect the routing invariant |
 
-Prompt text in `dev-orchestrator`, `smart-classify-route`, `smart-execute-routing`, and the routing hook states the same rule for model guidance:
+Prompt text in `dev-orchestrator`, `smart-classify-route`, `smart-execute-routing`, and the routing hook should state the same rule for model guidance:
 
 > Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
 
-That prompt text is supportive documentation for the model. The Rust helper remains authoritative.
+That prompt text is supportive documentation for the model. The issue #749 implementation makes the Rust helper authoritative.
 
 ## Examples
 
@@ -252,17 +258,50 @@ Normalized output:
 
 The top-level task is `Development`, but the investigation workstream keeps its own route because its per-workstream classification is `Investigation`.
 
+### Unclassified workstream under top-level Development
+
+Input:
+
+```json
+{
+  "task_type": "Development",
+  "workstreams": [
+    {
+      "name": "unclassified-fix",
+      "description": "Fix an unclassified development workstream",
+      "recipe": "investigation-workflow"
+    }
+  ]
+}
+```
+
+Normalized output:
+
+```json
+[
+  {
+    "issue": "TBD",
+    "branch": "feat/orch-1-unclassified-fix",
+    "task": "Fix an unclassified development workstream",
+    "description": "unclassified-fix",
+    "recipe": "default-workflow"
+  }
+]
+```
+
+The workstream has no own classification, so the helper falls back to the top-level `Development` classification.
+
 ## Security contract
 
 Decomposition JSON is model-produced and treated as untrusted input.
 
-The routing helper:
+The issue #749 routing helper must:
 
-- trims recipe strings before checking whether they are empty
-- normalizes classification before comparing it to `Development`
-- does not let raw recipe strings choose the workflow for Development workstreams
-- does not build shell commands from model-provided recipe values
-- preserves non-Development behavior without broad fallback logic that masks malformed plans
+- trim recipe strings before checking whether they are empty
+- normalize classification before comparing it to `Development`
+- prevent raw recipe strings from choosing the workflow for Development workstreams
+- avoid building shell commands from model-provided recipe values
+- preserve non-Development behavior without broad fallback logic that masks malformed plans
 
 ## Related
 
