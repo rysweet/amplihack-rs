@@ -10,7 +10,8 @@ Python interpreter is on `PATH`. This is the acceptance test for AC9 in issue
 You need:
 
 - The amplihack-rs repository checked out
-- `cargo` available to build the binary
+- `cargo` available unless you reuse an already-built binary with
+  `AMPLIHACK_PROBE_BIN`
 - `bash` (the probe script uses bash features)
 
 ## Run the probe
@@ -21,6 +22,12 @@ You need:
 
 # Build release binary instead
 ./scripts/probe-no-python.sh --release
+
+# Reuse an already-built binary instead of building inside the probe
+AMPLIHACK_PROBE_BIN="$PWD/target/debug/amplihack" ./scripts/probe-no-python.sh
+
+# Reuse wins over --release when the supplied binary is executable
+AMPLIHACK_PROBE_BIN="$PWD/target/debug/amplihack" ./scripts/probe-no-python.sh --release
 
 # Verify no tracked Python source or package metadata exists
 ./scripts/check-no-python-assets.sh
@@ -44,16 +51,49 @@ Expected output when all tests pass:
   smoke: fleet --help ... PASS
   smoke: doctor --help ... PASS
   smoke: recipe --help ... PASS
-  smoke: memory index --help ... PASS
-  smoke: memory query --help ... PASS
-  smoke: memory query smoke (empty db) ... PASS
+  smoke: TC-04 index-code --help ... PASS
+  smoke: TC-05 query-code --help ... PASS
+  smoke: TC-06 query-code stats (empty DB) ... PASS
+  smoke: TC-07 index-scip --help ... PASS
+  smoke: TC-08 index-code + query-code populated graph ... PASS
 
-==> Results: 8 passed, 0 failed
+==> Results: 10 passed, 0 failed
 PASS: All smoke tests passed with no Python interpreter on PATH (AC9).
 ```
 
+When `AMPLIHACK_PROBE_BIN` points to an executable file, the probe skips the
+internal build step. In that reuse mode, do not expect the
+`==> Building amplihack-rs...` banner; expect the probe to use the supplied
+binary and continue with Python-free `PATH` stripping and the same smoke tests.
+
 Exit code 0 from both scripts means the binary is Python-free on all tested
 paths and the repository has no tracked Python source/package assets.
+
+## Reuse an existing binary
+
+`scripts/probe-no-python.sh` supports an optional `AMPLIHACK_PROBE_BIN`
+environment variable for callers that already built `amplihack`:
+
+```sh
+cargo build --locked
+AMPLIHACK_PROBE_BIN="$PWD/target/debug/amplihack" ./scripts/probe-no-python.sh
+```
+
+When `AMPLIHACK_PROBE_BIN` is set to an executable file, the probe uses that
+binary directly and skips its internal `cargo build`. The reusable binary is
+resolved before the script removes Python directories from `PATH`, so the smoke
+tests still run in the Python-free environment.
+
+`AMPLIHACK_PROBE_BIN` is explicit caller input. If it points to a stale binary,
+the probe validates that stale binary. If it is unset, the probe preserves the
+standalone behavior and builds `target/debug/amplihack`, or
+`target/release/amplihack` when `--release` is supplied.
+
+If `AMPLIHACK_PROBE_BIN` is set but does not point to an executable file, the
+script prints a warning to stderr and falls back to the standalone cargo build
+path. A valid `AMPLIHACK_PROBE_BIN` takes precedence over `--release`; passing
+`--release` does not force a release build when an executable reusable binary is
+provided.
 
 ## What the probe tests
 
@@ -62,16 +102,20 @@ paths and the repository has no tracked Python source/package assets.
 | TC-01: `--version` | Binary loads and reports its version without Python |
 | TC-02: `--help` | Top-level help page renders without Python |
 | TC-03: `fleet --help` | Fleet subcommand help page renders without Python |
-| TC-04: `doctor --help` | Doctor subcommand is registered and accessible |
-| TC-05: `recipe --help` | Recipe subcommand is registered and accessible |
-| TC-06: `memory index --help` | Memory index subcommand is registered and accessible |
-| TC-07: `memory query --help` | Memory query subcommand is registered and accessible |
-| TC-08: `memory query` smoke | `query-code stats` against an empty temp database exits without launching Python |
+| `doctor --help` | Doctor subcommand is registered and accessible |
+| `recipe --help` | Recipe subcommand is registered and accessible |
+| TC-04: `index-code --help` | Code-graph indexing help renders without Python |
+| TC-05: `query-code --help` | Code-graph query help renders without Python |
+| TC-06: `query-code stats` smoke | `query-code stats` against an empty temp database terminates without crashing or invoking Python |
+| TC-07: `index-scip --help` | SCIP indexing help renders without Python |
+| TC-08: `index-code` + `query-code` populated graph | Imports a tiny code graph, then verifies `query-code stats`, `search`, and `callers` without invoking Python |
 
-TC-08 uses `mktemp` to create a temporary LadybugDB database path, runs
-`query-code stats` against it, and cleans up via an `EXIT` trap. The test
-validates that the binary does not crash and does not invoke Python, even when
-the database is empty (LadybugDB auto-creates the schema on first open).
+TC-06 creates a fresh temporary code-graph database path for the empty-database
+smoke test. TC-08 creates a temporary workspace, writes a tiny Blarify-style
+JSON graph, imports it with `index-code`, queries it with `query-code stats`,
+`query-code search`, and `query-code callers`, and cleans up via an `EXIT`
+trap. Failing `python` and `python3` shims are placed first on `PATH` during
+TC-08 so any interpreter dependency is caught.
 
 ## How the probe strips Python
 
@@ -106,8 +150,11 @@ while Python was absent from `PATH`. Common causes:
 |---------|-------------|
 | `--version` FAIL | Binary was not built or is not executable |
 | `fleet --help` FAIL | A `fleet` subcommand path panics at startup |
-| `memory index --help` FAIL | The `index-scip` subcommand is not registered in the CLI router |
-| `memory query` smoke FAIL | The `query-code` binary panics when LadybugDB creates a new empty database |
+| `index-code --help` FAIL | The `index-code` subcommand is not registered in the CLI router |
+| `query-code --help` FAIL | The `query-code` subcommand is not registered in the CLI router |
+| `query-code stats` smoke FAIL | The `query-code` path crashes or tries to invoke Python when opening a fresh code-graph database |
+| `index-scip --help` FAIL | The `index-scip` subcommand is not registered in the CLI router |
+| `index-code + query-code` populated graph FAIL | Native graph import/querying broke or invoked Python during indexing, stats, search, or callers queries |
 
 Run the failing command manually with Python stripped:
 
@@ -124,16 +171,37 @@ Add the probe as a CI step after `cargo build`:
 
 ```yaml
 # GitHub Actions example
+- name: Build amplihack
+  run: cargo build --workspace --locked
+
+- name: Validate no-Python compliance
+  env:
+    AMPLIHACK_PROBE_BIN: ${{ github.workspace }}/target/debug/amplihack
+  run: ./scripts/probe-no-python.sh
+```
+
+For standalone use, the probe still builds the binary itself, so no separate
+build step is required before it:
+
+```yaml
 - name: Validate no-Python compliance
   run: ./scripts/probe-no-python.sh
 ```
 
-The probe builds the binary itself, so no separate build step is required
-before it. If you want to validate the release binary, pass `--release`:
+If you want standalone validation of the release binary, pass `--release`:
 
 ```yaml
 - name: Validate no-Python compliance (release)
   run: ./scripts/probe-no-python.sh --release
+```
+
+If CI already built the release binary, reuse it explicitly:
+
+```yaml
+- name: Validate no-Python compliance (release)
+  env:
+    AMPLIHACK_PROBE_BIN: ${{ github.workspace }}/target/release/amplihack
+  run: ./scripts/probe-no-python.sh
 ```
 
 The repository asset guard is lightweight and should run early in CI:

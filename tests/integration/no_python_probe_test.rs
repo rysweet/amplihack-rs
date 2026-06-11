@@ -25,10 +25,19 @@ use std::time::{Duration, Instant};
 
 /// Returns the path to the compiled debug binary.
 fn amplihack_bin() -> PathBuf {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_amplihack") {
+        return PathBuf::from(path);
+    }
+
+    let mut path = workspace_root();
+    path.push("target/debug/amplihack");
+    path
+}
+
+fn workspace_root() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop(); // tests/
     path.pop(); // workspace root
-    path.push("target/debug/amplihack");
     path
 }
 
@@ -580,12 +589,77 @@ fn tc08_index_code_and_query_code_work_without_python() {
 // cases (TC-04 through TC-07).  All pass — the script has been extended.
 
 fn read_probe_script() -> String {
-    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop(); // tests/
-    p.pop(); // workspace root
+    let mut p = workspace_root();
     p.push("scripts/probe-no-python.sh");
     std::fs::read_to_string(&p)
         .unwrap_or_else(|_| panic!("probe script not found at {p:?} — run from workspace root"))
+}
+
+fn probe_script_path() -> PathBuf {
+    let mut path = workspace_root();
+    path.push("scripts/probe-no-python.sh");
+    path
+}
+
+fn copy_probe_script_to_temp() -> (tempfile::TempDir, PathBuf) {
+    let temp_dir = tempfile::TempDir::new().expect("failed to create tempdir");
+    let script_dir = temp_dir.path().join("scripts");
+    fs::create_dir_all(&script_dir).expect("failed to create temporary scripts dir");
+    let script_path = script_dir.join("probe-no-python.sh");
+    fs::copy(probe_script_path(), &script_path).expect("failed to copy probe script");
+    (temp_dir, script_path)
+}
+
+fn fake_amplihack_script(command_log: &Path) -> String {
+    format!(
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> {command_log}
+
+case "$*" in
+  "--version"|"--help"|"fleet --help"|"doctor --help"|"recipe --help"|"index-code --help"|"query-code --help"|"index-scip --help")
+    exit 0
+    ;;
+esac
+
+if [ "$1" = "index-code" ]; then
+  exit 0
+fi
+
+if [ "$1" = "query-code" ]; then
+  case "$*" in
+    *" callers helper"*)
+      printf '%s\n' '[{{"caller":"process","callee":"helper"}}]'
+      exit 0
+      ;;
+    *" search helper"*)
+      printf '%s\n' '[{{"type":"function","name":"helper"}}]'
+      exit 0
+      ;;
+    *" stats"*)
+      printf '%s\n' '{{"files":2,"classes":1,"functions":2}}'
+      exit 0
+      ;;
+  esac
+fi
+
+echo "unexpected fake amplihack invocation: $*" >&2
+exit 64
+"#,
+        command_log = shell_quote_path(command_log)
+    )
+}
+
+fn shell_quote_path(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+}
+
+fn prepend_path(dir: &Path) -> String {
+    let original = std::env::var("PATH").unwrap_or_default();
+    if original.is_empty() {
+        dir.display().to_string()
+    } else {
+        format!("{}:{original}", dir.display())
+    }
 }
 
 /// TC-04 content gate: the probe script must call `index-code --help`.
@@ -663,6 +737,147 @@ fn probe_script_content_contains_tc08_populated_code_graph_probe() {
     );
 }
 
+/// Reuse contract: a valid AMPLIHACK_PROBE_BIN must be resolved before PATH
+/// stripping and must skip the internal cargo build, even when --release is
+/// supplied.
+#[test]
+fn probe_script_uses_valid_amplihack_probe_bin_without_internal_build_even_release() {
+    let (_temp_dir, script) = copy_probe_script_to_temp();
+    let test_root = script
+        .parent()
+        .and_then(Path::parent)
+        .expect("temporary script must be under scripts/");
+    let bin_dir = test_root.join("bin");
+    fs::create_dir_all(&bin_dir).expect("failed to create fake bin dir");
+
+    let command_log = test_root.join("amplihack-commands.log");
+    let cargo_log = test_root.join("cargo.log");
+    let fake_amplihack = test_root.join("reusable-amplihack");
+    write_executable(&fake_amplihack, &fake_amplihack_script(&command_log));
+    write_executable(
+        &bin_dir.join("cargo"),
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\nexit 97\n",
+            shell_quote_path(&cargo_log)
+        ),
+    );
+
+    let output = Command::new("bash")
+        .arg(&script)
+        .arg("--release")
+        .env("AMPLIHACK_PROBE_BIN", &fake_amplihack)
+        .env("PATH", prepend_path(&bin_dir))
+        .output()
+        .expect("failed to run probe script");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        output.status.success(),
+        "probe-no-python.sh should use valid AMPLIHACK_PROBE_BIN and skip cargo, \
+         but exited {:?}.\nOutput:\n{combined}",
+        output.status.code()
+    );
+    assert!(
+        !combined.contains("==> Building amplihack-rs"),
+        "valid AMPLIHACK_PROBE_BIN must skip the internal cargo build.\nOutput:\n{combined}"
+    );
+    assert!(
+        !cargo_log.exists(),
+        "valid AMPLIHACK_PROBE_BIN must not invoke cargo; cargo log:\n{}",
+        fs::read_to_string(&cargo_log).unwrap_or_default()
+    );
+
+    let commands = fs::read_to_string(&command_log).expect("fake binary should have been used");
+    assert!(
+        commands.contains("--version")
+            && commands.contains("query-code --db-path")
+            && commands.contains("index-code")
+            && commands.contains("callers helper"),
+        "probe did not exercise the expected smoke-test commands through \
+         AMPLIHACK_PROBE_BIN:\n{commands}"
+    );
+}
+
+/// Fallback contract: an invalid AMPLIHACK_PROBE_BIN must produce a visible
+/// warning and then preserve standalone cargo build behavior.
+#[test]
+fn probe_script_warns_and_falls_back_when_amplihack_probe_bin_is_invalid() {
+    let (_temp_dir, script) = copy_probe_script_to_temp();
+    let test_root = script
+        .parent()
+        .and_then(Path::parent)
+        .expect("temporary script must be under scripts/");
+    let bin_dir = test_root.join("bin");
+    fs::create_dir_all(&bin_dir).expect("failed to create fake bin dir");
+
+    let command_log = test_root.join("amplihack-commands.log");
+    let cargo_log = test_root.join("cargo.log");
+    let fake_amplihack = test_root.join("built-amplihack");
+    write_executable(&fake_amplihack, &fake_amplihack_script(&command_log));
+    write_executable(
+        &bin_dir.join("cargo"),
+        &format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {cargo_log}
+repo_root=''
+profile='debug'
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --manifest-path)
+      shift
+      repo_root="$(dirname "$1")"
+      ;;
+    --release)
+      profile='release'
+      ;;
+  esac
+  shift
+done
+if [ -z "$repo_root" ]; then
+  echo "missing --manifest-path" >&2
+  exit 65
+fi
+mkdir -p "$repo_root/target/$profile"
+cp {fake_amplihack} "$repo_root/target/$profile/amplihack"
+chmod 755 "$repo_root/target/$profile/amplihack"
+exit 0
+"#,
+            cargo_log = shell_quote_path(&cargo_log),
+            fake_amplihack = shell_quote_path(&fake_amplihack)
+        ),
+    );
+
+    let output = Command::new("bash")
+        .arg(&script)
+        .env("AMPLIHACK_PROBE_BIN", test_root.join("missing-amplihack"))
+        .env("PATH", prepend_path(&bin_dir))
+        .output()
+        .expect("failed to run probe script");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        output.status.success(),
+        "probe-no-python.sh should warn and fall back to cargo when \
+         AMPLIHACK_PROBE_BIN is invalid, but exited {:?}.\nOutput:\n{combined}",
+        output.status.code()
+    );
+    assert!(
+        combined.contains("WARNING") && combined.contains("AMPLIHACK_PROBE_BIN"),
+        "invalid AMPLIHACK_PROBE_BIN must emit a clear warning before fallback.\n\
+         Output:\n{combined}"
+    );
+    assert!(
+        fs::read_to_string(&cargo_log)
+            .unwrap_or_default()
+            .contains("build"),
+        "invalid AMPLIHACK_PROBE_BIN must preserve standalone cargo build fallback"
+    );
+}
+
 /// Validate that the probe shell script exits 0 and covers TC-04 through TC-08.
 ///
 /// Checks both:
@@ -673,13 +888,7 @@ fn probe_script_content_contains_tc08_populated_code_graph_probe() {
 /// execute bit set).
 #[test]
 fn probe_script_exits_zero_and_covers_tc04_through_tc08() {
-    let script = {
-        let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        p.pop(); // tests/
-        p.pop(); // workspace root
-        p.push("scripts/probe-no-python.sh");
-        p
-    };
+    let script = probe_script_path();
 
     if !script.exists() {
         eprintln!("SKIP: probe script not found at {script:?}");
@@ -696,8 +905,12 @@ fn probe_script_exits_zero_and_covers_tc04_through_tc08() {
         return;
     }
 
+    let bin = amplihack_bin();
+    require_binary!(bin);
+
     let output = Command::new("bash")
         .arg(&script)
+        .env("AMPLIHACK_PROBE_BIN", &bin)
         .output()
         .expect("failed to run probe script");
 
@@ -711,6 +924,11 @@ fn probe_script_exits_zero_and_covers_tc04_through_tc08() {
         "probe-no-python.sh exited {:?} — one or more smoke tests failed.\n\
          Output:\n{combined}",
         output.status.code()
+    );
+    assert!(
+        !combined.contains("==> Building amplihack-rs"),
+        "probe-no-python.sh must reuse AMPLIHACK_PROBE_BIN during integration \
+         tests instead of triggering a nested cargo build.\nOutput:\n{combined}"
     );
 
     // Gate 2: script output proves it ran TC-04 through TC-08.

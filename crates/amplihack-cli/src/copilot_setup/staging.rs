@@ -28,6 +28,8 @@ pub(super) fn stage_skills(source_skills: &Path, copilot_home: &Path) -> Result<
         return Ok(0);
     }
 
+    remove_legacy_cli_skill(copilot_home)?;
+
     let mut count = 0;
     for entry in fs::read_dir(source_skills)
         .with_context(|| format!("read skills dir {}", source_skills.display()))?
@@ -44,6 +46,34 @@ pub(super) fn stage_skills(source_skills: &Path, copilot_home: &Path) -> Result<
     }
 
     Ok(count)
+}
+
+fn remove_legacy_cli_skill(copilot_home: &Path) -> Result<()> {
+    let legacy_cli_skill = copilot_home.join("skills").join("azure-devops-cli");
+    let metadata = match fs::symlink_metadata(&legacy_cli_skill) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("inspect legacy skill path {}", legacy_cli_skill.display())
+            });
+        }
+    };
+
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        fs::remove_file(&legacy_cli_skill)
+            .with_context(|| format!("remove legacy skill file {}", legacy_cli_skill.display()))?;
+    } else if metadata.is_dir() {
+        fs::remove_dir_all(&legacy_cli_skill)
+            .with_context(|| format!("remove legacy skill dir {}", legacy_cli_skill.display()))?;
+    } else {
+        return Err(anyhow!(
+            "legacy skill path is not a file, directory, or symlink: {}",
+            legacy_cli_skill.display()
+        ));
+    }
+
+    Ok(())
 }
 
 pub(super) fn stage_command_docs(source_commands: &Path, copilot_home: &Path) -> Result<usize> {
@@ -160,4 +190,34 @@ pub(super) fn register_plugin(source_commands: &Path, copilot_home: &Path) -> Re
         .with_context(|| format!("write {}", config_path.display()))?;
 
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_cli_skill_cleanup_rejects_unsupported_file_type() {
+        use std::os::unix::net::UnixListener;
+
+        let temp = tempfile::tempdir().unwrap();
+        let copilot_home = temp.path().join(".copilot");
+        let legacy_parent = copilot_home.join("skills");
+        fs::create_dir_all(&legacy_parent).unwrap();
+        let legacy_path = legacy_parent.join("azure-devops-cli");
+        let _listener = UnixListener::bind(&legacy_path).unwrap();
+
+        let err = remove_legacy_cli_skill(&copilot_home).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("legacy skill path is not a file, directory, or symlink"),
+            "unexpected cleanup error: {err}"
+        );
+        assert!(
+            legacy_path.exists(),
+            "unsupported legacy path should be left untouched"
+        );
+    }
 }

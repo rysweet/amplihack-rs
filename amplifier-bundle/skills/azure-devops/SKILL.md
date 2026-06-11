@@ -32,6 +32,7 @@ references:
     url: "https://learn.microsoft.com/en-us/azure/devops/boards/queries/wiql-syntax"
 supporting_docs:
   - authentication.md
+  - cli-automation.md
   - work-items.md
   - queries.md
   - html-formatting.md
@@ -54,7 +55,9 @@ Complete Azure DevOps integration covering boards, repositories, pipelines, and 
 ```bash
 az extension add --name azure-devops
 az login
-az devops configure --defaults organization=https://dev.azure.com/ORG project=PROJECT
+export AZURE_DEVOPS_ORG_URL="${AZURE_DEVOPS_ORG_URL:?set the Azure DevOps organization URL}"
+export AZURE_DEVOPS_PROJECT="${AZURE_DEVOPS_PROJECT:?set the Azure DevOps project name}"
+az devops configure --defaults organization="$AZURE_DEVOPS_ORG_URL" project="$AZURE_DEVOPS_PROJECT"
 az devops configure --list
 ```
 
@@ -90,6 +93,7 @@ az repos pr create \
 ## Progressive Loading References
 
 - [@authentication.md] - Azure CLI login and project defaults
+- [@cli-automation.md] - CLI automation patterns, dashboards, `az devops invoke`, and JMESPath
 - [@work-items.md] - Work item creation, updates, links, and queries
 - [@queries.md] - WIQL query patterns
 - [@html-formatting.md] - Formatting HTML descriptions for Azure DevOps
