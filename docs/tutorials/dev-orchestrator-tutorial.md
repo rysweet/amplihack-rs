@@ -158,6 +158,20 @@ This is the recommended pattern for any non-trivial change to unfamiliar code.
 Running investigation first prevents the builder from making wrong assumptions
 about existing structure.
 
+### Routing guarantee
+
+Each decomposed workstream is routed from its own normalized classification.
+Any workstream classified as `Development` runs `default-workflow`, even if the
+model omitted `recipe`, emitted an empty recipe, or emitted another recipe such
+as `investigation-workflow`.
+
+This guarantee is per workstream, not per top-level task. In a hybrid request,
+an `Investigation` workstream keeps the investigation route while the
+`Development` workstream runs `default-workflow`.
+
+For the full contract, see the
+[Dev-Orchestrator Routing Contract](../reference/dev-orchestrator-routing.md).
+
 ---
 
 ## Part 4: The Goal-Seeking Loop (5 minutes)
