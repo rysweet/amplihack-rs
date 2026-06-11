@@ -4,12 +4,14 @@
 #
 # Usage:
 #   scripts/probe-no-python.sh [--release]
+#   AMPLIHACK_PROBE_BIN=/path/to/amplihack scripts/probe-no-python.sh [--release]
 #
 # Exits 0 if all smoke tests pass without a Python interpreter.
 # Exits 1 if any test fails or if a Python interpreter is still reachable.
 #
 # Design:
-#   1. Build (debug by default, --release if requested).
+#   1. Build (debug by default, --release if requested), unless
+#      AMPLIHACK_PROBE_BIN supplies an executable binary to reuse.
 #   2. Strip all python/python3 entries from PATH.
 #   3. Verify python and python3 are NOT on PATH.
 #   4. Run a sequence of binary smoke tests; each must succeed.
@@ -31,22 +33,43 @@ for arg in "$@"; do
     esac
 done
 
-# ── Build ─────────────────────────────────────────────────────────────────────
-echo "==> Building amplihack-rs..."
-if [[ $RELEASE -eq 1 ]]; then
-    cargo build --release --manifest-path "${REPO_ROOT}/Cargo.toml" 2>&1
-    BINARY="${REPO_ROOT}/target/release/amplihack"
-else
-    cargo build --manifest-path "${REPO_ROOT}/Cargo.toml" 2>&1
-    BINARY="${REPO_ROOT}/target/debug/amplihack"
+# ── Resolve probe binary before PATH stripping ────────────────────────────────
+BINARY=""
+if [[ -n "${AMPLIHACK_PROBE_BIN:-}" ]]; then
+    if [[ -x "${AMPLIHACK_PROBE_BIN}" ]]; then
+        BINARY="${AMPLIHACK_PROBE_BIN}"
+        echo "==> Reusing amplihack binary from AMPLIHACK_PROBE_BIN..."
+        echo "    binary: ${BINARY}"
+        echo ""
+    else
+        echo "WARNING: AMPLIHACK_PROBE_BIN is set but not executable: ${AMPLIHACK_PROBE_BIN}" >&2
+        echo "         Falling back to standalone cargo build." >&2
+    fi
 fi
 
-if [[ ! -x "${BINARY}" ]]; then
-    echo "FAIL: binary not found at ${BINARY}" >&2
-    exit 1
+# ── Build fallback ────────────────────────────────────────────────────────────
+if [[ -z "${BINARY}" ]]; then
+    echo "==> Building amplihack-rs..."
+    if [[ $RELEASE -eq 1 ]]; then
+        cargo build --release --manifest-path "${REPO_ROOT}/Cargo.toml" 2>&1
+        BINARY="${REPO_ROOT}/target/release/amplihack"
+    else
+        cargo build --manifest-path "${REPO_ROOT}/Cargo.toml" 2>&1
+        BINARY="${REPO_ROOT}/target/debug/amplihack"
+    fi
+
+    if [[ ! -x "${BINARY}" ]]; then
+        echo "FAIL: binary not found at ${BINARY}" >&2
+        exit 1
+    fi
+    echo "    binary: ${BINARY}"
+    echo ""
+else
+    if [[ ! -x "${BINARY}" ]]; then
+        echo "FAIL: binary not executable at ${BINARY}" >&2
+        exit 1
+    fi
 fi
-echo "    binary: ${BINARY}"
-echo ""
 
 # ── Capture essential tool paths before PATH stripping ───────────────────────
 # mktemp, grep, and rm may reside in the same directory as python3 (e.g.
