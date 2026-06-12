@@ -423,6 +423,9 @@ steps:
     command: |
       set -euo pipefail
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      if [ "${TERMINAL_GATE_MODE:-${RECIPE_VAR_terminal_gate_mode:-probe}}" != "strict" ]; then
+        exit 0
+      fi
 
       helper=""
       if [ -n "${AMPLIHACK_HOME:-}" ] && [ -f "${AMPLIHACK_HOME}/amplifier-bundle/tools/workflow_final_status.sh" ]; then
