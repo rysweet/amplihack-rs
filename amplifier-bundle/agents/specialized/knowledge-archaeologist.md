@@ -235,7 +235,7 @@ The workflow handles:
 - Optional nature (skippable step)
 - Workflow continuation (whether accepted or declined)
 
-See `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` for complete integration details.
+See the `investigation-workflow` skill/recipe for complete integration details.
 
 ### Best Practices
 

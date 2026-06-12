@@ -221,7 +221,7 @@ Agent is successful when:
 
 **Integration Points**:
 
-- DEFAULT_WORKFLOW.md: Step 7 (CI Check)
+- `default-workflow` skill/recipe: CI check step
 - CLAUDE.md: Agent delegation triggers
 - DISCOVERIES.md: CI failure patterns
 

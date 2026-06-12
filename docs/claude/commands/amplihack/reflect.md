@@ -179,7 +179,7 @@ Patterns trigger automation when:
 ### With UltraThink
 
 - Delegates implementation to workflow
-- Follows DEFAULT_WORKFLOW.md process
+- Follows the `default-workflow` skill/recipe process
 - Creates PRs automatically
 
 ### With GitHub

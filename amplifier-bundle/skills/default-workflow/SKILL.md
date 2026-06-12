@@ -128,11 +128,11 @@ compliance throughout.
 
 ## Canonical Sources
 
+- **Skill documentation**: `amplifier-bundle/skills/default-workflow/SKILL.md`
 - **Executable source (recipe)**: `amplifier-bundle/recipes/default-workflow.yaml`
-- **Reference documentation**: `.claude/workflow/DEFAULT_WORKFLOW.md`
 
-The recipe YAML is the authoritative execution definition. The `.md` file serves as
-human-readable reference documentation for the workflow steps.
+The skill and recipe are the authoritative representation. Legacy
+`DEFAULT_WORKFLOW.md` files are deprecated compatibility references only.
 
 ## Execution Instructions
 
@@ -145,7 +145,10 @@ orchestrator handles the full lifecycle including goal-seeking reflection loops.
 ### Direct invocation (standalone)
 
 If this skill is activated directly (not via dev-orchestrator), you MUST use the
-recipe runner — **do NOT read the .md file and follow steps manually**:
+recipe runner — **do NOT read a legacy markdown workflow file and follow steps
+manually**:
+
+The default workflow exposes one direct executable recipe interface:
 
 ```bash
 amplihack recipe run default-workflow \
@@ -153,15 +156,16 @@ amplihack recipe run default-workflow \
   -c repo_path="."
 ```
 
-Run it via the CLI:
+Or with verbose output:
 
 ```bash
-amplihack recipe run default-workflow \
+cd /path/to/repo && amplihack recipe run default-workflow \
   -c task_description="TASK_DESCRIPTION_HERE" \
-  -c repo_path=.
+  -c repo_path="." \
+  --verbose
 ```
 
-**Do NOT** read `DEFAULT_WORKFLOW.md` and follow steps manually. The recipe runner
+**Do NOT** read legacy `DEFAULT_WORKFLOW.md` files and follow steps manually. The recipe runner
 enforces step ordering, recursion guards, checkpoints, and quality gates that manual
 execution cannot replicate.
 
@@ -170,6 +174,52 @@ execution cannot replicate.
 For most tasks, invoke `Skill(skill="dev-orchestrator")` or use `/dev <task>` rather
 than activating this skill directly. The dev-orchestrator adds goal-seeking reflection,
 workstream decomposition, and adaptive error recovery on top of this workflow.
+
+## Command Interface
+
+The default workflow exposes one direct executable recipe interface:
+
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="Add password reset support" \
+  -c repo_path=.
+```
+
+| Context key | Required | Description |
+| --- | --- | --- |
+| `task_description` | Yes | Plain-language task to execute through the workflow. |
+| `repo_path` | Yes | Repository root for workspace setup, checks, commits, and PR work. |
+
+The normal orchestrated interface remains:
+
+```bash
+amplihack recipe run smart-orchestrator \
+  -c task_description="Add password reset support" \
+  -c repo_path=.
+```
+
+Agent runtimes that support skills should enter through
+`Skill(skill="dev-orchestrator")` for DEV, INVESTIGATE, and HYBRID tasks. Direct
+`Skill(skill="default-workflow")` activation is for explicit standalone use or
+orchestrator-unavailable compatibility.
+
+## Configuration
+
+Generated preferences and session context name the canonical skill/recipe, not a
+legacy markdown path:
+
+```markdown
+## Workflow Configuration
+
+**Selected**: `default-workflow` skill/recipe
+**Consensus Depth**: balanced
+
+Use the `consensus-workflow` skill/recipe for: ambiguous requirements,
+architectural changes, critical/security code, public APIs.
+```
+
+Do not render `DEFAULT_WORKFLOW.md` paths as selected workflow configuration.
+Those paths are compatibility references only.
 
 ## Auto-Activation Triggers
 
@@ -237,8 +287,8 @@ If a step fails after a checkpoint, the worktree branch retains all committed wo
 
 ## Related Files
 
+- **Skill docs**: `amplifier-bundle/skills/default-workflow/SKILL.md`
 - **Recipe (executable)**: `amplifier-bundle/recipes/default-workflow.yaml`
-- **Reference docs**: `.claude/workflow/DEFAULT_WORKFLOW.md`
 - **Command Interface**: `.claude/commands/amplihack/dev.md`
 - **Orchestrator Skill**: `.claude/skills/dev-orchestrator/`
 - **Investigation Workflow**: `.claude/skills/investigation-workflow/`

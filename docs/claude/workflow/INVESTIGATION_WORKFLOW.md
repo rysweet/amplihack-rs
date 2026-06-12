@@ -26,19 +26,23 @@ entry_points:
   - /ultrathink
 references:
   workflows:
-    - DEFAULT_WORKFLOW.md
+    - legacy DEFAULT_WORKFLOW.md
 customizable: true
 ---
 
 # Investigation Workflow
 
-This file defines the workflow for investigation and research tasks. Unlike DEFAULT_WORKFLOW.md which is optimized for development (implementation → testing → deployment), this workflow is optimized for exploration and understanding.
+This deprecated legacy file describes the old markdown workflow for
+investigation and research tasks. The canonical investigation path is the
+`investigation-workflow` skill/recipe, normally selected by
+`dev-orchestrator` through `smart-orchestrator`.
 
 > **DEPRECATION WARNING**: Markdown workflows deprecated. See `docs/WORKFLOW_TO_SKILLS_MIGRATION.md`
 
 ## How This Workflow Works
 
-**This workflow is the single source of truth for investigation tasks:**
+**This legacy reference is not the source of truth.** The canonical
+`investigation-workflow` skill/recipe defines active behavior for:
 
 - The order of phases (6 phases must be followed sequentially, except Phase 3 which uses parallel execution)
 - Agent deployment strategies for each phase
@@ -47,10 +51,10 @@ This file defines the workflow for investigation and research tasks. Unlike DEFA
 
 **Execution approach:**
 
-- Start with `/ultrathink` which will detect investigation keywords and suggest this workflow
-- UltraThink reads this workflow and orchestrates agents to execute it
-- Each phase leverages specialized agents for maximum effectiveness
-- The workflow defines the process; agents execute the work
+- Route investigation tasks through `dev-orchestrator` and `smart-orchestrator`
+- Use `amplihack recipe run investigation-workflow -c task_description="..." -c repo_path=.`
+  only for standalone compatibility execution
+- Treat the phases below as migration context for old markdown-workflow installs
 
 ## When This Workflow Applies
 
@@ -77,7 +81,7 @@ This workflow should be followed for tasks containing these keywords or patterns
 - "Analyze the reflection system architecture"
 - "Research what hooks are triggered during session start"
 
-**Not for development tasks** - If the task involves "implement", "build", "create", "add feature", use DEFAULT_WORKFLOW.md instead.
+**Not for development tasks** - If the task involves "implement", "build", "create", or "add feature", use the `default-workflow` skill/recipe instead.
 
 ## The 6-Phase Investigation Workflow
 
@@ -330,7 +334,7 @@ Verification: Examine reflection logs, trace message processing
 
 ### 🔄 Transitioning to Development Workflow
 
-**After investigation completes**, if the task requires implementation (not just understanding), transition to **DEFAULT_WORKFLOW.md**:
+**After investigation completes**, if the task requires implementation (not just understanding), transition to the **`default-workflow` skill/recipe**:
 
 1. **Resume at Step 4** (Research and Design) with the knowledge gained from investigation
 2. **Or resume at Step 5** (Implement the Solution) if the investigation already provided clear design guidance
@@ -347,7 +351,7 @@ Phase 1: Investigation
 → Document findings in DISCOVERIES.md
 
 Phase 2: Development
-→ Transition to DEFAULT_WORKFLOW.md
+→ Transition to `default-workflow` skill/recipe
 → Resume at Step 4 (Research and Design)
 → Use investigation insights to design OAuth integration
 → Continue through Step 15 (implementation → testing → PR)
@@ -382,7 +386,7 @@ _Note: These are target metrics to be validated through usage tracking._
 5. **Synthesis** ensures all questions answered
 6. **Knowledge Capture** prevents repeat investigations
 
-## Comparison to DEFAULT_WORKFLOW.md
+## Comparison to legacy DEFAULT_WORKFLOW.md
 
 ### Similarities (Structural Consistency)
 
@@ -396,7 +400,7 @@ Both workflows share core principles:
 
 ### Differences (Investigation vs. Development)
 
-| Aspect             | Investigation Workflow     | DEFAULT_WORKFLOW.md      |
+| Aspect             | Investigation Workflow     | legacy DEFAULT_WORKFLOW.md |
 | ------------------ | -------------------------- | ------------------------ |
 | **Goal**           | Understanding              | Implementation           |
 | **Phases**         | 6 phases                   | Multi-step workflow      |

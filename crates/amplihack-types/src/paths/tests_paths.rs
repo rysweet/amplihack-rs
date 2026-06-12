@@ -214,3 +214,40 @@ fn resolve_framework_file_rejects_path_traversal() {
 
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn resolve_workflow_file_supports_legacy_default_workflow_path_for_migration_only() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = temp_test_dir("legacy-workflow");
+    let project = dir.join("project");
+    let framework = dir.join("framework-root");
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(framework.join(".claude/workflow")).unwrap();
+    fs::write(
+        framework.join(".claude/workflow/DEFAULT_WORKFLOW.md"),
+        "# Legacy Default Workflow\n",
+    )
+    .unwrap();
+    let previous = env::var_os("AMPLIHACK_ROOT");
+    unsafe { env::set_var("AMPLIHACK_ROOT", &framework) };
+
+    let resolved = ProjectDirs::new(&project).resolve_workflow_file();
+
+    match previous {
+        Some(value) => unsafe { env::set_var("AMPLIHACK_ROOT", value) },
+        None => unsafe { env::remove_var("AMPLIHACK_ROOT") },
+    }
+
+    assert_eq!(
+        resolved.as_deref(),
+        Some(
+            framework
+                .join(".claude/workflow/DEFAULT_WORKFLOW.md")
+                .as_path()
+        )
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}

@@ -1,5 +1,6 @@
 //! Asset staging — agents, skills, command docs, and plugin registration.
 
+use amplihack_types::workflow;
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use std::fs;
@@ -13,14 +14,58 @@ pub(super) fn stage_agents(source_agents: &Path, copilot_home: &Path) -> Result<
     fs_helpers::flatten_markdown_tree(source_agents, &dest)
 }
 
-pub(super) fn stage_directory(
-    source_dir: &Path,
-    copilot_home: &Path,
-    dest_name: &str,
-) -> Result<usize> {
-    let dest = copilot_home.join(dest_name).join("amplihack");
+pub(super) fn stage_context(source_context: &Path, copilot_home: &Path) -> Result<usize> {
+    let dest = copilot_home.join("context").join("amplihack");
     fs_helpers::reset_markdown_dir(&dest)?;
-    fs_helpers::flatten_markdown_tree(source_dir, &dest)
+    fs::create_dir_all(&dest)?;
+
+    let mut count = 0;
+    for entry in fs::read_dir(source_context)
+        .with_context(|| format!("read context dir {}", source_context.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "md") {
+            continue;
+        }
+
+        let target = dest.join(entry.file_name());
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("read context file {}", path.display()))?;
+        let content = if entry.file_name() == "USER_PREFERENCES.md" {
+            canonicalize_user_preferences(&content)
+        } else {
+            content
+        };
+        fs::write(&target, content)
+            .with_context(|| format!("write context file {}", target.display()))?;
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+fn canonicalize_user_preferences(content: &str) -> String {
+    content
+        .lines()
+        .map(|line| {
+            if is_stale_selected_workflow_line(line) {
+                format!("**Selected**: {}", workflow::DEFAULT_WORKFLOW_SELECTION)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_stale_selected_workflow_line(line: &str) -> bool {
+    let lowered = line.to_ascii_lowercase();
+    lowered.contains("**selected**")
+        && (lowered.contains("default_workflow")
+            || lowered.contains("default workflow")
+            || lowered.contains(".claude/workflow/")
+            || lowered.contains(".claude/workflows/"))
 }
 
 pub(super) fn stage_skills(source_skills: &Path, copilot_home: &Path) -> Result<usize> {

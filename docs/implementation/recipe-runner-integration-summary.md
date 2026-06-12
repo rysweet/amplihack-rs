@@ -91,7 +91,7 @@ amplihack recipe run default-workflow \
 - **Environment**: `amplihack` CLI binary not installed
 - **Expected**: Falls back to Workflow Skills
 - **Result**: ✅ PASS - Fallback chain works as designed
-- **Evidence**: Current session successfully executing DEFAULT_WORKFLOW.md
+- **Evidence**: Current session successfully executing the `default-workflow` skill/recipe
 
 ### Test 2: Environment Variable Control
 
@@ -170,9 +170,9 @@ After this PR is merged:
 
 ✅ Check if amplihack CLI binary available
 ✅ If yes: invoke `amplihack recipe run default-workflow -c task="..." --verbose`
-✅ If no: fallback to Read(DEFAULT_WORKFLOW.md)
+✅ If no: fallback to `default-workflow` skill/recipe compatibility path
 ✅ Add AMPLIHACK_USE_RECIPES env var for opt-out
 ✅ Test both paths work
-✅ Follow DEFAULT_WORKFLOW.md
+✅ Follow the `default-workflow` skill/recipe
 ✅ Work autonomously
 ✅ Create PR when ready

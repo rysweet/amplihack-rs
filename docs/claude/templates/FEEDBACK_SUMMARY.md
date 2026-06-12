@@ -45,7 +45,7 @@ Use this template to document session outcomes and learning opportunities.
 - **Task Complexity:** [1-13 scale based on actual experience - explain the rating]
 - **Iterations Required:** [Number with explanation of why iterations were needed]
 - **Time Investment:** [Message count and approximate duration]
-- **Workflow Adherence:** [Detailed analysis: Which DEFAULT_WORKFLOW.md steps were followed? Which were skipped? Why?]
+- **Workflow Adherence:** [Detailed analysis: Which `default-workflow` skill/recipe steps were followed? Which were skipped? Why?]
 - **Subagent Usage:** [Comprehensive list: Which agents were used? Were they used effectively? Which agents should have been used but weren't?]
 
 ## RECOMMENDATIONS FOR IMPROVEMENT

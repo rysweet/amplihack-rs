@@ -7,7 +7,7 @@ use amplihack_utils::prompt_delivery::PromptDelivery;
 use std::ffi::OsString;
 
 pub(super) fn philosophy_context() -> &'static str {
-    "AUTONOMOUS MODE: You are in auto mode. Do NOT ask questions. Make decisions using:\n1. Explicit user requirements (highest priority)\n2. @.claude/context/USER_PREFERENCES.md guidance\n3. @.claude/context/PHILOSOPHY.md principles\n4. @.claude/workflow/DEFAULT_WORKFLOW.md patterns\n5. @.claude/context/USER_REQUIREMENT_PRIORITY.md for conflicts\n\nDecision Authority:\n- YOU DECIDE implementation details and architecture\n- YOU PRESERVE explicit user requirements and hard constraints\n- WHEN AMBIGUOUS choose the simplest modular option"
+    "AUTONOMOUS MODE: You are in auto mode. Do NOT ask questions. Make decisions using:\n1. Explicit user requirements (highest priority)\n2. @.claude/context/USER_PREFERENCES.md guidance\n3. @.claude/context/PHILOSOPHY.md principles\n4. The `default-workflow` skill/recipe routed through `dev-orchestrator` and `amplihack recipe run smart-orchestrator`\n5. @.claude/context/USER_REQUIREMENT_PRIORITY.md for conflicts\n\nDecision Authority:\n- YOU DECIDE implementation details and architecture\n- YOU PRESERVE explicit user requirements and hard constraints\n- WHEN AMBIGUOUS choose the simplest modular option"
 }
 
 pub(super) fn extract_prompt_args(args: &[String]) -> Option<ParsedPromptArgs> {

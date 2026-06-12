@@ -743,7 +743,7 @@ When adding new tools to this directory:
 - [Claude Code Hooks Documentation](https://docs.claude.com/en/docs/claude-code/hooks)
 - [Project Philosophy](~/.amplihack/.claude/context/PHILOSOPHY.md)
 - [Development Patterns](~/.amplihack/.claude/context/PATTERNS.md)
-- [Workflow Definition](~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md)
+- [`default-workflow` skill/recipe](../skills/default-workflow/SKILL.md)
 
 ---
 

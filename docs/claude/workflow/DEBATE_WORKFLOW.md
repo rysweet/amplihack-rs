@@ -29,7 +29,7 @@ philosophy_alignment:
     application: Debate format prevents premature convergence
 references:
   workflows:
-    - DEFAULT_WORKFLOW.md
+    - legacy DEFAULT_WORKFLOW.md
     - CONSENSUS_WORKFLOW.md
 customizable: true
 ---
@@ -133,14 +133,17 @@ This workflow implements structured multi-perspective debate for important archi
 
 ## How This Workflow Works
 
-**Integration with DEFAULT_WORKFLOW:**
+**Integration with `default-workflow` skill/recipe:**
 
-This workflow replaces Step 4 (Research and Design) of the DEFAULT_WORKFLOW when complex decisions require multi-perspective analysis. Implementation (Step 5) proceeds with the consensus decision.
+The canonical `debate-workflow` skill/recipe replaces the design phase of the
+`default-workflow` skill/recipe when complex decisions require
+multi-perspective analysis. Implementation proceeds with the consensus
+decision.
 
 **Execution:**
 
-- Invoke via `/ultrathink --workflow debate` for complex decisions
-- Or manually execute for specific architectural choices
+- Invoke the `debate-workflow` skill/recipe for complex decisions
+- Or use direct recipe execution for specific architectural choices
 - Each perspective runs in isolated subprocess
 - Facilitator synthesizes debate results
 
@@ -644,11 +647,11 @@ Decision Makers: [List perspectives included]
 - Documentation for team
 - Contingency plans for revisit triggers
 
-## Return to DEFAULT_WORKFLOW
+## Return to `default-workflow`
 
 After completing these steps:
 
-- [ ] Continue with Step 5 (Implement the Solution) of DEFAULT_WORKFLOW
+- [ ] Continue with the implementation phase of the `default-workflow` skill/recipe
 - [ ] Use debate decision as architectural specification
 - [ ] All subsequent steps (testing, CI/CD, PR) proceed normally
 

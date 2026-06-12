@@ -366,11 +366,11 @@ fn write_output(&self, output: &serde_json::Value) -> Result<()> {
 
 ### Problem
 
-AI agents (Opus) achieving low workflow compliance (36-64% in early tests). Added psychological framing (Workflow Contract + Completion Celebration) to DEFAULT_WORKFLOW.md assuming it would help like it does for humans.
+AI agents (Opus) achieving low workflow compliance (36-64% in early tests). Added psychological framing (Workflow Contract + Completion Celebration) to the legacy `DEFAULT_WORKFLOW.md` assuming it would help like it does for humans.
 
 ### Investigation
 
-V8 testing: Builder agent created 5 worktrees with IDENTICAL content instead of 5 different variations. All had psychological elements REMOVED from DEFAULT_WORKFLOW.md (443 lines vs main's 482 lines).
+V8 testing: Builder agent created 5 worktrees with IDENTICAL content instead of 5 different variations. All had psychological elements REMOVED from the legacy `DEFAULT_WORKFLOW.md` (443 lines vs main's 482 lines).
 
 ### Discovery
 

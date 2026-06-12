@@ -110,7 +110,7 @@ but can also be invoked directly via the recipe runner.
 ## Canonical Sources
 
 - **Executable source (recipe)**: `amplifier-bundle/recipes/investigation-workflow.yaml`
-- **Reference documentation**: `.claude/workflow/INVESTIGATION_WORKFLOW.md`
+- **Deprecated reference documentation**: `.claude/workflow/INVESTIGATION_WORKFLOW.md`
 
 The recipe YAML is the authoritative execution definition. The `.md` file serves as
 human-readable reference documentation for the workflow phases.
@@ -265,7 +265,7 @@ parallel workstreams: one running `investigation-workflow`, another running
 ## Related Resources
 
 - **Recipe (executable)**: `amplifier-bundle/recipes/investigation-workflow.yaml`
-- **Reference docs**: `.claude/workflow/INVESTIGATION_WORKFLOW.md`
+- **Deprecated reference docs**: `.claude/workflow/INVESTIGATION_WORKFLOW.md`
 - **Dev Orchestrator**: `.claude/skills/dev-orchestrator/`
 - **Default Workflow**: `.claude/skills/default-workflow/`
 - **Agent Catalog**: `.claude/agents/amplihack/` directory

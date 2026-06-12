@@ -25,7 +25,7 @@ philosophy_alignment:
     application: Accept higher latency for correctness and thoroughness
 references:
   workflows:
-    - DEFAULT_WORKFLOW.md
+    - legacy DEFAULT_WORKFLOW.md
     - DEBATE_WORKFLOW.md
     - N_VERSION_WORKFLOW.md
 customizable: true
@@ -45,7 +45,7 @@ This workflow enhances the default coding workflow with consensus mechanisms at 
 
 ## How This Workflow Works
 
-**This workflow extends DEFAULT_WORKFLOW.md with:**
+**This deprecated legacy workflow extends the legacy DEFAULT_WORKFLOW.md with:**
 
 - Multi-Agent Debate for ambiguous requirements and critical design decisions
 - N-Version Programming for critical code paths
@@ -54,8 +54,9 @@ This workflow enhances the default coding workflow with consensus mechanisms at 
 
 **Execution approach:**
 
-- Use `/ultrathink` with this workflow selected in USER_PREFERENCES.md
-- UltraThink reads this workflow and orchestrates consensus mechanisms
+- Use the `consensus-workflow` skill/recipe for active consensus execution
+- Route development tasks through `dev-orchestrator` and `smart-orchestrator`
+  when consensus is part of a broader implementation workflow
 - Specialized agents collaborate through structured protocols
 - Consensus ensures correctness and quality
 

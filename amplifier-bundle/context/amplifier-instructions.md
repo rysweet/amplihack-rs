@@ -48,7 +48,7 @@ includes:
 | Agents    | `../.claude/agents/`        | 36                |
 | Recipes   | `amplifier-bundle/recipes/` | 10                |
 | Context   | `../.claude/context/`       | 3 files           |
-| Workflows | `../.claude/workflow/`      | 7 docs            |
+| Workflows | `../.claude/workflow/`      | Deprecated legacy docs |
 | Bundles   | External includes           | 5 + amplihack = 6 |
 
 ## Tool Integration

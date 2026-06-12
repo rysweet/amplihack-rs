@@ -108,11 +108,11 @@ Would you like me to use /ultrathink to orchestrate this work?
 - Uses `Skill(skill="investigation-workflow")` for investigation tasks
 - Automatic task type detection from keywords
 
-**Fallback** (if skills not available):
+**Fallback** (if recipe runner is unavailable):
 
-- Reads `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md`
-- Reads `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md`
-- Provides same functionality via markdown workflows
+- Invokes `default-workflow` skill/recipe for development tasks
+- Invokes `investigation-workflow` skill/recipe for investigation tasks
+- Legacy markdown workflow files are deprecated compatibility references only
 
 ## Benefits
 
@@ -127,4 +127,4 @@ Would you like me to use /ultrathink to orchestrate this work?
 - Default Workflow Skill: `~/.amplihack/.claude/skills/default-workflow/`
 - Investigation Workflow Skill: `~/.amplihack/.claude/skills/investigation-workflow/`
 - Ultrathink Command: `~/.amplihack/.claude/commands/amplihack/ultrathink.md`
-- Workflow Files: `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md`, `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md`
+- Legacy Workflow Files: deprecated `.claude/workflow/*.md` compatibility references
