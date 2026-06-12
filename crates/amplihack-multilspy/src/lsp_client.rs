@@ -662,6 +662,7 @@ fn parse_completions(value: &Value) -> Vec<CompletionItem> {
                 .get("textEdit")
                 .and_then(|te| te.get("newText"))
                 .and_then(|v| v.as_str())
+                .or_else(|| item.get("textEditText").and_then(|v| v.as_str()))
                 .or_else(|| item.get("insertText").and_then(|v| v.as_str()))
                 .or_else(|| item.get("label").and_then(|v| v.as_str()))?;
 
@@ -1110,6 +1111,24 @@ mod tests {
         }]);
         let items = parse_completions(&val);
         assert_eq!(items[0].completion_text, "foo_expanded");
+    }
+
+    #[test]
+    fn parse_completions_uses_text_edit_text_before_label() {
+        let val = json!([{
+            "label": "println",
+            "kind": 3,
+            "textEditText": "println!($0)",
+            "textEdit": {
+                "range": {
+                    "start": { "line": 2, "character": 4 },
+                    "end": { "line": 2, "character": 11 }
+                }
+            }
+        }]);
+        let items = parse_completions(&val);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].completion_text, "println!($0)");
     }
 
     #[test]
