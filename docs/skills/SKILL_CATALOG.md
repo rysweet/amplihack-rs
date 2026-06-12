@@ -1,14 +1,12 @@
 # Skills Catalog
 
 This catalog is generated from the live bundled skills under `amplifier-bundle/skills/`.
-Those bundled `SKILL.md` / `skill.md` files are the install-time source of truth.
+Those bundled `SKILL.md` files are the install-time source of truth.
 
 ## Summary
 
-- **Unique bundled skill names:** 120
+- **Unique bundled skill names:** 121
 - **Skill definition files:** 121
-- **Legacy parity:** all 118 skill names from `/home/azureuser/src/amplihack/.claude/skills` are present.
-- **Additional current skills:** `amplihack-migrate`, `session-to-agent`
 
 ## Bundled Skills
 
@@ -25,13 +23,13 @@ Those bundled `SKILL.md` / `skill.md` files are the install-time source of truth
 | `awesome-copilot-sync` | `awesome-copilot-sync/SKILL.md` |
 | `azure-admin` | `azure-admin/SKILL.md` |
 | `azure-devops` | `azure-devops/SKILL.md` |
-| `azure-devops-cli` | `azure-devops-cli/skill.md` |
-| `backlog-curator` | `backlog-curator/skill.md` |
+| `backlog-curator` | `backlog-curator/SKILL.md` |
 | `biologist-analyst` | `biologist-analyst/SKILL.md` |
 | `cascade-workflow` | `cascade-workflow/SKILL.md` |
 | `chemist-analyst` | `chemist-analyst/SKILL.md` |
 | `claude-agent-sdk` | `claude-agent-sdk/SKILL.md` |
 | `code-atlas` | `code-atlas/SKILL.md` |
+| `code-philosophy` | `code-philosophy/SKILL.md` |
 | `code-smell-detector` | `code-smell-detector/SKILL.md` |
 | `code-visualizer` | `code-visualizer/SKILL.md` |
 | `computer-scientist-analyst` | `computer-scientist-analyst/SKILL.md` |
@@ -58,7 +56,7 @@ Those bundled `SKILL.md` / `skill.md` files are the install-time source of truth
 | `environmentalist-analyst` | `environmentalist-analyst/SKILL.md` |
 | `epidemiologist-analyst` | `epidemiologist-analyst/SKILL.md` |
 | `ethicist-analyst` | `ethicist-analyst/SKILL.md` |
-| `eval-recipes-runner` | `eval-recipes-runner/skill.md` |
+| `eval-recipes-runner` | `eval-recipes-runner/SKILL.md` |
 | `fleet` | `fleet/SKILL.md` |
 | `fleet-copilot` | `fleet-copilot/SKILL.md` |
 | `futurist-analyst` | `futurist-analyst/SKILL.md` |
@@ -83,7 +81,7 @@ Those bundled `SKILL.md` / `skill.md` files are the install-time source of truth
 | `meeting-synthesizer` | `meeting-synthesizer/SKILL.md` |
 | `merge-ready` | `merge-ready/SKILL.md` |
 | `mermaid-diagram-generator` | `mermaid-diagram-generator/SKILL.md` |
-| `microsoft-agent-framework` | `microsoft-agent-framework/skill.md` |
+| `microsoft-agent-framework` | `microsoft-agent-framework/SKILL.md` |
 | `model-evaluation-benchmark` | `model-evaluation-benchmark/SKILL.md` |
 | `module-spec-generator` | `module-spec-generator/SKILL.md` |
 | `multi-repo` | `multi-repo/SKILL.md` |
@@ -97,7 +95,6 @@ Those bundled `SKILL.md` / `skill.md` files are the install-time source of truth
 | `philosophy-compliance-workflow` | `philosophy-compliance-workflow/SKILL.md` |
 | `physicist-analyst` | `physicist-analyst/SKILL.md` |
 | `pm-architect` | `pm-architect/SKILL.md` |
-| `pm-architect` | `pm-architect/skill.md` |
 | `poet-analyst` | `poet-analyst/SKILL.md` |
 | `political-scientist-analyst` | `political-scientist-analyst/SKILL.md` |
 | `pptx` | `pptx/SKILL.md` |
@@ -109,7 +106,7 @@ Those bundled `SKILL.md` / `skill.md` files are the install-time source of truth
 | `remote-work` | `remote-work/SKILL.md` |
 | `researching-topics` | `research/researching-topics/SKILL.md` |
 | `reviewing-code` | `quality/reviewing-code/SKILL.md` |
-| `roadmap-strategist` | `roadmap-strategist/skill.md` |
+| `roadmap-strategist` | `roadmap-strategist/SKILL.md` |
 | `self-improving-agent-builder` | `self-improving-agent-builder/SKILL.md` |
 | `session-learning` | `session-learning/SKILL.md` |
 | `session-replay` | `session-replay/SKILL.md` |
@@ -121,6 +118,7 @@ Those bundled `SKILL.md` / `skill.md` files are the install-time source of truth
 | `smart-test` | `smart-test/SKILL.md` |
 | `sociologist-analyst` | `sociologist-analyst/SKILL.md` |
 | `socratic-review` | `socratic-review/SKILL.md` |
+| `statler-waldorf` | `statler-waldorf/SKILL.md` |
 | `storytelling-synthesizer` | `storytelling-synthesizer/SKILL.md` |
 | `supply-chain-audit` | `supply-chain-audit/SKILL.md` |
 | `test-gap-analyzer` | `test-gap-analyzer/SKILL.md` |
@@ -129,9 +127,9 @@ Those bundled `SKILL.md` / `skill.md` files are the install-time source of truth
 | `transcript-viewer` | `transcript-viewer/SKILL.md` |
 | `ultrathink-orchestrator` | `ultrathink-orchestrator/SKILL.md` |
 | `urban-planner-analyst` | `urban-planner-analyst/SKILL.md` |
-| `work-delegator` | `work-delegator/skill.md` |
+| `work-delegator` | `work-delegator/SKILL.md` |
 | `work-iq` | `work-iq/SKILL.md` |
 | `workflow-enforcement` | `workflow-enforcement/SKILL.md` |
 | `workiq-wsl` | `workiq-wsl/SKILL.md` |
-| `workstream-coordinator` | `workstream-coordinator/skill.md` |
+| `workstream-coordinator` | `workstream-coordinator/SKILL.md` |
 | `xlsx` | `xlsx/SKILL.md` |

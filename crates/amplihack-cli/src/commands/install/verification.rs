@@ -1,5 +1,6 @@
 //! Source-derived post-install completeness verification.
 
+use super::bundle_compat::validate_staged_framework_bundle;
 use super::filesystem::walk_dirs;
 use super::types::{SOURCE_CONDITIONAL_BUNDLE_DIR_MAPPING, SourceLayout, dir_mapping};
 use anyhow::{Context, Result, bail};
@@ -113,6 +114,12 @@ fn verify_staged_bundle(
                 staged_dir.display()
             ));
         }
+    }
+    if let Err(err) = validate_staged_framework_bundle(&staged_bundle) {
+        missing.push(format!(
+            "staged amplifier-bundle compatibility check failed at {}: {err}",
+            staged_bundle.display()
+        ));
     }
     Ok(())
 }

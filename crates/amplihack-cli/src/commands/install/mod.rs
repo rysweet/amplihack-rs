@@ -1,6 +1,7 @@
 //! Native install and uninstall commands.
 
 mod binary;
+mod bundle_compat;
 mod clone;
 mod copilot_plugin;
 mod directories;
@@ -20,6 +21,7 @@ pub(crate) mod version_stamp;
 mod tests;
 
 use binary::{deploy_binaries, find_hooks_binary};
+use bundle_compat::validate_framework_bundle_compatibility;
 use clone::{download_and_extract_framework_repo, find_bundled_framework_root};
 use directories::*;
 use filesystem::{all_rel_dirs, get_all_files_and_dirs};
@@ -289,6 +291,14 @@ fn local_install(
         layout.marker_str(),
         source_root.display()
     );
+    if layout == SourceLayout::Bundle {
+        validate_framework_bundle_compatibility(&source_root).with_context(|| {
+            format!(
+                "source amplifier-bundle at {} is incompatible",
+                source_root.display()
+            )
+        })?;
+    }
     let copied_dirs = copytree_manifest(&source_root, layout, &claude_dir)?;
     if copied_dirs.is_empty() {
         bail!(

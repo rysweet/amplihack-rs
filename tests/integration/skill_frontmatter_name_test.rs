@@ -1,8 +1,9 @@
 //! Skill frontmatter name validation tests — Issue #592.
 //!
 //! These tests enforce the constraint documented in FRONTMATTER_STANDARDS.md:
-//! the YAML `name:` field in every SKILL.md must match `^[a-z0-9-]+$`
-//! (lowercase letters, digits, hyphens only).
+//! the YAML `name:` field in every SKILL.md must match
+//! `^[a-z0-9]+(-[a-z0-9]+)*$` and each bundled skill must use a canonical
+//! uppercase `SKILL.md` entrypoint with frontmatter at byte 0.
 //!
 //! # Regression guard
 //!
@@ -18,19 +19,30 @@
 //! cargo test --test skill_frontmatter_name -- --nocapture
 //! ```
 
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use regex::Regex;
+use serde_yaml::Value;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Workspace root: `bins/amplihack/` → pop twice → workspace root.
-fn workspace_root() -> PathBuf {
+static WORKSPACE_ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     root.pop(); // bins/amplihack → bins/
     root.pop(); // bins/ → workspace root
     root
+});
+
+static SKILL_FILES: LazyLock<Vec<PathBuf>> =
+    LazyLock::new(|| find_files_named(&skills_dir(), "SKILL.md"));
+
+/// Workspace root: `bins/amplihack/` → pop twice → workspace root.
+fn workspace_root() -> &'static Path {
+    WORKSPACE_ROOT.as_path()
 }
 
 /// Path to `amplifier-bundle/skills/`.
@@ -38,8 +50,15 @@ fn skills_dir() -> PathBuf {
     workspace_root().join("amplifier-bundle/skills")
 }
 
-/// Recursively find every `SKILL.md` (case-insensitive) under `dir`.
-fn find_skill_files(dir: &Path) -> Vec<PathBuf> {
+fn relative_path(path: &Path) -> String {
+    path.strip_prefix(workspace_root())
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+/// Recursively find every file named `filename` under `dir`.
+fn find_files_named(dir: &Path, filename: &str) -> Vec<PathBuf> {
     let mut result = Vec::new();
     if !dir.is_dir() {
         return result;
@@ -48,11 +67,11 @@ fn find_skill_files(dir: &Path) -> Vec<PathBuf> {
         let entry = entry.expect("read dir entry");
         let path = entry.path();
         if path.is_dir() {
-            result.extend(find_skill_files(&path));
+            result.extend(find_files_named(&path, filename));
         } else if path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n.eq_ignore_ascii_case("SKILL.md"))
+            .is_some_and(|n| n == filename)
         {
             result.push(path);
         }
@@ -60,17 +79,14 @@ fn find_skill_files(dir: &Path) -> Vec<PathBuf> {
     result
 }
 
+fn skill_files() -> &'static [PathBuf] {
+    SKILL_FILES.as_slice()
+}
+
 /// Extract the YAML frontmatter `name:` value from a SKILL.md file.
 /// Returns `None` if no frontmatter or no `name:` field found.
 fn extract_frontmatter_name(content: &str) -> Option<String> {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
-        return None;
-    }
-    // Find closing `---`
-    let after_open = &trimmed[3..];
-    let close_idx = after_open.find("\n---")?;
-    let frontmatter = &after_open[..close_idx];
+    let frontmatter = extract_frontmatter(content)?;
 
     for line in frontmatter.lines() {
         let line = line.trim();
@@ -83,15 +99,9 @@ fn extract_frontmatter_name(content: &str) -> Option<String> {
 
 /// Extract activation_keywords list from YAML frontmatter.
 fn extract_activation_keywords(content: &str) -> Vec<String> {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
-        return Vec::new();
-    }
-    let after_open = &trimmed[3..];
-    let Some(close_idx) = after_open.find("\n---") else {
+    let Some(frontmatter) = extract_frontmatter(content) else {
         return Vec::new();
     };
-    let frontmatter = &after_open[..close_idx];
 
     let mut keywords = Vec::new();
     let mut in_keywords_block = false;
@@ -117,16 +127,23 @@ fn extract_activation_keywords(content: &str) -> Vec<String> {
     keywords
 }
 
+fn extract_frontmatter(content: &str) -> Option<&str> {
+    let after_open = content.strip_prefix("---\n")?;
+    let close_idx = after_open.find("\n---")?;
+    Some(&after_open[..close_idx])
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-/// TC-SKILL-01: Every bundled SKILL.md `name:` field must match `^[a-z0-9-]+$`.
+/// TC-SKILL-01: Every bundled SKILL.md `name:` field must match
+/// `^[a-z0-9]+(-[a-z0-9]+)*$`.
 ///
 /// This is a blanket guard — if any future skill is added with a colon,
 /// space, underscore, or uppercase character in the name field, this test
 /// catches it before merge.
 #[test]
 fn tc_skill_01_all_bundled_skill_names_match_kebab_pattern() {
-    let name_re = Regex::new(r"^[a-z0-9-]+$").expect("compile name regex");
+    let name_re = Regex::new(r"^[a-z0-9]+(-[a-z0-9]+)*$").expect("compile name regex");
     let skills = skills_dir();
     if !skills.is_dir() {
         eprintln!(
@@ -136,7 +153,7 @@ fn tc_skill_01_all_bundled_skill_names_match_kebab_pattern() {
         return;
     }
 
-    let skill_files = find_skill_files(&skills);
+    let skill_files = skill_files();
     assert!(
         !skill_files.is_empty(),
         "Expected to find SKILL.md files under {}",
@@ -145,16 +162,14 @@ fn tc_skill_01_all_bundled_skill_names_match_kebab_pattern() {
 
     let mut violations = Vec::new();
 
-    for path in &skill_files {
+    for path in skill_files {
         let content = fs::read_to_string(path).expect("read SKILL.md");
         if let Some(name) = extract_frontmatter_name(&content)
             && !name_re.is_match(&name)
         {
             violations.push(format!(
                 "  {} → name: \"{}\" (must be lowercase letters, numbers, hyphens only)",
-                path.strip_prefix(workspace_root())
-                    .unwrap_or(path)
-                    .display(),
+                relative_path(path),
                 name
             ));
         }
@@ -262,7 +277,7 @@ fn tc_skill_04_catalog_references_amplihack_hyphen_migrate() {
 /// against the same regex used by plugin_manifest).
 #[test]
 fn tc_skill_05_name_regex_rejects_colons() {
-    let name_re = Regex::new(r"^[a-z0-9-]+$").expect("compile name regex");
+    let name_re = Regex::new(r"^[a-z0-9]+(-[a-z0-9]+)*$").expect("compile name regex");
 
     // Valid names
     assert!(name_re.is_match("amplihack-migrate"));
@@ -280,6 +295,243 @@ fn tc_skill_05_name_regex_rejects_colons() {
     assert!(!name_re.is_match("My-Skill"), "uppercase must be rejected");
     assert!(!name_re.is_match("my_skill"), "underscore must be rejected");
     assert!(!name_re.is_match("my skill"), "spaces must be rejected");
+    assert!(
+        !name_re.is_match("-skill"),
+        "leading hyphen must be rejected"
+    );
+    assert!(
+        !name_re.is_match("skill-"),
+        "trailing hyphen must be rejected"
+    );
+    assert!(
+        !name_re.is_match("my--skill"),
+        "empty hyphen segment must be rejected"
+    );
     assert!(!name_re.is_match(""), "empty string must be rejected");
     assert!(!name_re.is_match("skill/path"), "slashes must be rejected");
+}
+
+/// TC-SKILL-06: Bundled skills must use exact `SKILL.md` filenames.
+///
+/// Copilot skill discovery is sensitive to canonical skill metadata paths; a
+/// lowercase `skill.md` can be missed even when its frontmatter is otherwise
+/// valid.
+#[test]
+fn tc_skill_06_no_lowercase_skill_md_files() {
+    let skills = skills_dir();
+    if !skills.is_dir() {
+        eprintln!(
+            "SKIP: amplifier-bundle/skills/ not found at {}",
+            skills.display()
+        );
+        return;
+    }
+
+    let lowercase_files = find_files_named(&skills, "skill.md");
+    assert!(
+        lowercase_files.is_empty(),
+        "Bundled skills must use canonical SKILL.md filenames, found lowercase files:\n{}",
+        lowercase_files
+            .iter()
+            .map(|path| format!("  {}", relative_path(path)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+/// TC-SKILL-07: Frontmatter must start at the first byte of every SKILL.md.
+///
+/// A Markdown title or comment before `---` prevents Copilot from parsing the
+/// skill metadata, which made the old `azure-devops-cli` skill invisible.
+#[test]
+fn tc_skill_07_frontmatter_starts_at_first_byte() {
+    let skills = skills_dir();
+    if !skills.is_dir() {
+        eprintln!(
+            "SKIP: amplifier-bundle/skills/ not found at {}",
+            skills.display()
+        );
+        return;
+    }
+
+    let mut violations = Vec::new();
+    for path in skill_files() {
+        let content = fs::read_to_string(path).expect("read SKILL.md");
+        if !content.starts_with("---\n") {
+            violations.push(format!("  {}", relative_path(path)));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "SKILL.md frontmatter must start at the first byte:\n{}",
+        violations.join("\n")
+    );
+}
+
+/// TC-SKILL-08: Bundled skill names must be unique.
+#[test]
+fn tc_skill_08_bundled_skill_names_are_unique() {
+    let skills = skills_dir();
+    if !skills.is_dir() {
+        eprintln!(
+            "SKIP: amplifier-bundle/skills/ not found at {}",
+            skills.display()
+        );
+        return;
+    }
+
+    let mut seen: HashMap<String, PathBuf> = HashMap::new();
+    let mut duplicates = Vec::new();
+
+    for path in skill_files() {
+        let content = fs::read_to_string(path).expect("read SKILL.md");
+        let name = extract_frontmatter_name(&content).unwrap_or_else(|| {
+            panic!(
+                "SKILL.md must have a frontmatter name: field: {}",
+                path.display()
+            )
+        });
+
+        if let Some(first_path) = seen.insert(name.clone(), path.clone()) {
+            duplicates.push(format!(
+                "  {name}: {} and {}",
+                relative_path(&first_path),
+                relative_path(path)
+            ));
+        }
+    }
+
+    assert!(
+        duplicates.is_empty(),
+        "Bundled skill names must be unique:\n{}",
+        duplicates.join("\n")
+    );
+}
+
+/// TC-SKILL-09: Skill names must match their containing directory name.
+///
+/// Nested category directories are allowed, but the leaf directory is the
+/// canonical skill directory. `migrate` is a deliberate legacy exception pinned
+/// by TC-SKILL-02 because the published skill name is `amplihack-migrate`.
+#[test]
+fn tc_skill_09_skill_names_match_directory_names() {
+    let skills = skills_dir();
+    if !skills.is_dir() {
+        eprintln!(
+            "SKIP: amplifier-bundle/skills/ not found at {}",
+            skills.display()
+        );
+        return;
+    }
+
+    let exceptions = HashSet::from([("migrate", "amplihack-migrate")]);
+    let mut violations = Vec::new();
+
+    for path in skill_files() {
+        let content = fs::read_to_string(path).expect("read SKILL.md");
+        let name = extract_frontmatter_name(&content).unwrap_or_else(|| {
+            panic!(
+                "SKILL.md must have a frontmatter name: field: {}",
+                path.display()
+            )
+        });
+        let dir_name = path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|n| n.to_str())
+            .expect("skill file has parent directory");
+
+        if name != dir_name && !exceptions.contains(&(dir_name, name.as_str())) {
+            violations.push(format!(
+                "  {} → name: \"{}\" but directory is \"{}\"",
+                relative_path(path),
+                name,
+                dir_name
+            ));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "Bundled skill names must match their containing directory:\n{}",
+        violations.join("\n")
+    );
+}
+
+/// TC-SKILL-10: `azure-devops-cli` is supporting documentation, not a
+/// standalone loadable skill.
+#[test]
+fn tc_skill_10_azure_devops_cli_is_not_registered_as_a_skill() {
+    let root = workspace_root();
+    let files = [
+        root.join("amplifier-bundle/bundle.md"),
+        root.join("docs/skills/SKILL_CATALOG.md"),
+        root.join("crates/amplihack-hooks/src/known_skills.rs"),
+    ];
+
+    let mut violations = Vec::new();
+    for file in files {
+        let content = fs::read_to_string(&file).expect("read registry file");
+        let registered_content = if file.ends_with("known_skills.rs") {
+            content
+                .split_once("static AMPLIHACK_SKILLS: &[&str] = &[")
+                .and_then(|(_, rest)| rest.split_once("];"))
+                .map(|(registry, _)| registry)
+                .unwrap_or(&content)
+        } else {
+            content.as_str()
+        };
+        if registered_content.contains("azure-devops-cli") {
+            violations.push(relative_path(&file));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "azure-devops-cli must not be registered as a standalone skill:\n{}",
+        violations.join("\n")
+    );
+
+    assert!(
+        skills_dir()
+            .join("azure-devops/cli-automation.md")
+            .is_file(),
+        "Azure DevOps CLI automation material must be preserved under azure-devops"
+    );
+}
+
+/// TC-SKILL-11: Every bundled SKILL.md must have syntactically valid YAML
+/// frontmatter.
+#[test]
+fn tc_skill_11_frontmatter_is_valid_yaml() {
+    let skills = skills_dir();
+    if !skills.is_dir() {
+        eprintln!(
+            "SKIP: amplifier-bundle/skills/ not found at {}",
+            skills.display()
+        );
+        return;
+    }
+
+    let mut violations = Vec::new();
+    for path in skill_files() {
+        let content = fs::read_to_string(path).expect("read SKILL.md");
+        let Some(frontmatter) = extract_frontmatter(&content) else {
+            violations.push(format!("  {} -> missing frontmatter", relative_path(path)));
+            continue;
+        };
+        if let Err(err) = serde_yaml::from_str::<Value>(frontmatter) {
+            violations.push(format!(
+                "  {} -> invalid YAML frontmatter: {err}",
+                relative_path(path)
+            ));
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "SKILL.md frontmatter must be valid YAML:\n{}",
+        violations.join("\n")
+    );
 }

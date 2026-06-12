@@ -11,9 +11,11 @@ amplihack uninstall
 
 Bootstraps the amplihack environment on the current machine. On first run, it performs full setup: locates the bundled framework source (or falls back to network download), deploys native binaries, stages framework assets, and registers Claude Code hooks. Subsequent runs are idempotent — they update existing registrations in place without duplication.
 
-Since issue #254, framework assets are bundled in the amplihack-rs source tree. The installer resolves the framework source in this order: (1) compile-time workspace root, (2) `AMPLIHACK_HOME`, (3) walk-up from executable, (4) `~/.amplihack`, (5) network download from upstream (legacy fallback).
+Since issue #254, framework assets are bundled in the amplihack-rs source tree. The installer resolves the framework source in this order: (1) `AMPLIHACK_HOME`, (2) current-working-directory walk-up, (3) executable-path walk-up, (4) compile-time workspace root, (5) `~/.amplihack`, (6) network download from upstream (legacy fallback).
 
-Since issue #675, the post-update installer bypasses steps 1–4 and always downloads a fresh bundle from the network (step 5). This prevents stale `amplifier-bundle/` assets at `~/.amplihack/` from being re-staged after a binary update. Standalone `amplihack install` still uses the original resolution order.
+Since issue #675, the post-update installer bypasses local source selection and always downloads a fresh bundle from the network. This prevents stale `amplifier-bundle/` assets at `~/.amplihack/` from being re-staged after a binary update.
+
+Since issue #734, every local framework source candidate is also checked for smart-orchestrator compatibility before it can be selected. Standalone `amplihack install` still uses the resolver order above, but stale or incompatible local bundles are skipped instead of being reused. See [Framework bundle compatibility](./framework-bundle-compatibility.md).
 
 You can invoke the same command through the npm wrapper package when desired:
 
@@ -24,7 +26,7 @@ npx --yes --package=git+https://github.com/rysweet/amplihack-rs.git -- amplihack
 The wrapper only changes how the native binaries are obtained. Once it hands off
 to the Rust CLI, the install phases below are unchanged.
 
-See [Install Completeness Verification](./install-completeness.md) for the hard-fail contract that prevents partial framework staging from being reported as a successful install.
+See [Install Completeness Verification](./install-completeness.md) for the hard-fail contract that prevents partial framework staging from being reported as a successful install. See [Framework bundle compatibility](./framework-bundle-compatibility.md) for the smart-orchestrator compatibility contract that prevents stale recipe bundles from being accepted.
 
 Published release archives currently cover Linux and macOS on `x64`/`arm64`.
 On Windows, or any other platform without a published release target, the npm
@@ -36,9 +38,9 @@ fall back to a source build.
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--interactive` | `bool` | `false` | Launch a guided setup wizard that prompts for default tool, hook scope, and update-check preference. Requires a TTY; falls back to defaults with a warning if stdin is not a terminal. See [Interactive Install](../howto/interactive-install.md). |
-| `--local <PATH>` | `PathBuf` | absent | Install from a specific local directory instead of using the bundled source. The path must exist, be a directory, and contain a `.claude` subdirectory (at `<PATH>/.claude` or `<PATH>/../.claude`). Without `--local`, the installer uses bundled framework assets from the amplihack-rs source tree. |
+| `--local <PATH>` | `PathBuf` | absent | Install from a specific local directory instead of using the bundled source. The path must exist, be a directory, contain a framework root marker, and pass framework bundle compatibility validation. Without `--local`, the installer uses compatible bundled framework assets from the amplihack-rs source tree or falls back to download. |
 | `--verbose` | `bool` | `false` | Accepted for diagnostic scripts. The install command already emits phase-level diagnostics by default. |
-| `--force-refresh` | `bool` | `false` | **Hidden.** Forces a fresh network download of `amplifier-bundle/` assets, bypassing the local source resolution order (steps 1–4). Used internally by `amplihack update` when spawning the new binary as a post-update install subprocess. Not shown in `--help` output. See [Post-Update Install — Re-exec New Binary](../features/update-reexec-new-binary.md). |
+| `--force-refresh` | `bool` | `false` | **Hidden.** Forces a fresh network download of `amplifier-bundle/` assets, bypassing local source resolution. Used internally by `amplihack update` when spawning the new binary as a post-update install subprocess. Not shown in `--help` output. See [Post-Update Install — Re-exec New Binary](../features/update-reexec-new-binary.md). |
 
 The `--interactive` and `--local` flags compose: `--interactive` controls configuration preferences while `--local` controls the framework source path.
 
@@ -49,7 +51,8 @@ The `--interactive` and `--local` flags compose: `--interactive` controls config
 | `0` | Install completed successfully |
 | `1` | `amplihack-hooks` binary not found after 5-step search |
 | `1` | `--local` path does not exist or is not a directory |
-| `1` | `--local` path does not contain a `.claude` directory |
+| `1` | `--local` path does not contain a framework root marker |
+| `1` | selected framework bundle is stale or incompatible |
 | `1` | Framework archive download or extraction failed (non-local mode only) |
 
 Note: A Node.js version below v24 does **not** cause a non-zero exit from `amplihack install`. It produces a warning at the Copilot plugin step. By contrast, `amplihack copilot` exits with code 1 if Node.js < v24. See [Node.js Version Checking](./node-version-checking.md).
@@ -60,10 +63,10 @@ Note: A Node.js version below v24 does **not** cause a non-zero exit from `ampli
 amplihack install [--interactive]
 │
 ├── 0. maybe_run_wizard()         — if --interactive, prompt for tool/scope/update prefs (skipped otherwise)
-├── 1. Bundled source, --local path, OR GitHub fallback — obtain framework source
+├── 1. Bundled source, --local path, OR GitHub fallback — obtain compatible framework source
 ├── 2. deploy_binaries()          — copy amplihack + amplihack-hooks (+ asset resolver when present) to ~/.local/bin
 ├── 2b. analyze PATH conflicts    — warn if stale earlier PATH entries shadow ~/.local/bin
-├── 3. copy framework assets      — stage mapped framework assets to ~/.amplihack/.claude/
+├── 3. copy framework assets      — validate source, stage mapped framework assets, validate staged bundle
 ├── 4. create_runtime_dirs()      — create runtime/ subdirs with 0o755 permissions
 ├── 5. ensure_settings_json()     — backup settings.json, register hooks, set permissions
 ├── 6. verify_framework_assets()  — confirm required staged framework assets exist
@@ -190,19 +193,57 @@ The `force_refresh` parameter controls framework source resolution:
 
 | `force_refresh` | Behavior |
 |-----------------|----------|
-| `false` | **Default.** Resolves the bundled framework root from the amplihack-rs source tree (compile-time path, `AMPLIHACK_HOME`, executable walk-up, `~/.amplihack`). Falls back to network download only when no local source is found. This is the behavior for standalone `amplihack install` and self-heal. |
-| `true` | **Skips local bundle resolution entirely.** Goes directly to `download_and_extract_framework_repo()` to fetch a fresh `amplifier-bundle/` from the upstream archive (`REPO_ARCHIVE_URL`). Used by the post-update installer to ensure that `amplihack update` always refreshes stale framework assets rather than re-staging the old bundle that was already present at `~/.amplihack/amplifier-bundle/`. |
+| `false` | **Default.** Resolves a compatible bundled framework root by checking `AMPLIHACK_HOME`, walking up from the current working directory, walking up from the executable path, checking the compile-time workspace root, then checking `~/.amplihack`. Incompatible local candidates are skipped. Falls back to network download only when no compatible local source is found. This is the behavior for standalone `amplihack install` and install runs triggered by self-heal. |
+| `true` | **Skips local bundle resolution entirely.** Goes directly to `download_and_extract_framework_repo()` to fetch a fresh `amplifier-bundle/` from the upstream archive (`REPO_ARCHIVE_URL`). Used by the post-update installer to ensure that `amplihack update` always refreshes stale framework assets rather than re-staging the old bundle that was already present at `~/.amplihack/amplifier-bundle/`. The downloaded source and staged destination are still validated for compatibility. |
 
-**Priority rule:** When `local` is `Some(path)`, it takes precedence over `force_refresh` — the function returns early with the user-specified path before the bundled-root check. This is correct by design: `--local` is an explicit user override that should not be bypassed.
+**Priority rule:** When `local` is `Some(path)`, it takes precedence over `force_refresh` for source selection, but not for compatibility. The user-specified path must still pass framework bundle validation. This is correct by design: `--local` is an explicit source override, not permission to stage stale smart-orchestrator assets.
 
 **Call sites and their `force_refresh` values:**
 
 | Caller | `force_refresh` | Rationale |
 |--------|-----------------|-----------|
-| `amplihack install` (command dispatcher) | `false` | Standalone install prefers local bundle |
+| `amplihack install` (command dispatcher) | `false` | Standalone install prefers compatible local sources |
 | `amplihack update` (post-update closure) | `true` | **Root cause fix for issue #675** — forces fresh download |
-| Self-heal (startup version-stamp check) | `false` | Prefers local bundle for startup speed |
-| `ensure_framework_installed()` (bootstrap) | `false` | Bootstrap prefers local bundle |
+| Self-heal (startup version-stamp check) | `false` | Re-runs install when the version stamp is stale; it benefits from install compatibility validation but does not perform a separate startup compatibility scan |
+| `ensure_framework_installed()` (bootstrap) | `false` | Bootstrap prefers compatible local sources |
+
+### `validate_framework_bundle_compatibility(root: &Path) -> Result<()>`
+
+Validates a candidate framework bundle before install accepts it as a source.
+The validator accepts either a repository root containing `amplifier-bundle/` or
+the `amplifier-bundle/` directory itself. It requires the composable
+`smart-orchestrator.yaml` and the four companion recipes:
+`smart-classify-route`, `smart-execute-routing`, `smart-reflect-loop`, and
+`smart-validate-summarize`.
+
+Stale monolithic smart-orchestrator recipes, Python/importlib orchestration,
+current-use `orch_helper.py` references, and old `helper-path` orchestration
+helper flows are rejected. `helper-path` itself remains valid and continues to
+resolve to `amplifier-bundle/bin/multitask-orchestrator.sh`.
+
+Those stale-marker checks are scoped to the current
+`recipes/smart-orchestrator.yaml` behavior. Historical docs and tests may still
+mention `orch_helper.py` or old helper-path behavior when describing past
+failures.
+
+Located in `crates/amplihack-cli/src/commands/install/bundle_compat.rs`.
+
+### `validate_staged_framework_bundle(root: &Path) -> Result<()>`
+
+Validates the installed `amplifier-bundle/` after staging. This is a hard
+install failure so stale destination files cannot remain after an otherwise
+successful install/update repair.
+
+Located in `crates/amplihack-cli/src/commands/install/bundle_compat.rs`.
+
+### `is_compatible_framework_bundle(root: &Path) -> bool`
+
+Boolean helper for local source discovery. Use it to skip optional stale
+candidates such as `AMPLIHACK_HOME` while continuing to the next candidate or
+network fallback. Final staging verification should use
+`validate_staged_framework_bundle()` for actionable diagnostics.
+
+Located in `crates/amplihack-cli/src/commands/install/bundle_compat.rs`.
 
 ### `run_uninstall() -> Result<()>`
 
@@ -272,3 +313,4 @@ Writes wizard results to the install manifest (`default_tool`, `update_check_pre
 - [Hook Specifications](./hook-specifications.md) — the 7 hooks registered by amplihack install
 - [Install Manifest](./install-manifest.md) — manifest schema
 - [Binary Resolution](./binary-resolution.md) — find_hooks_binary lookup detail
+- [Framework bundle compatibility](./framework-bundle-compatibility.md) — smart-orchestrator compatibility contract and stale bundle repair

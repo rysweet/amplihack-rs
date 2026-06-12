@@ -74,6 +74,19 @@ amplihack install --local .
 
 Hook command strings in `settings.json` are updated to point to the newly deployed binary.
 
+### Stale bundle repair
+
+Idempotency does not mean stale framework files are preserved. Each install
+validates the selected source bundle and the staged destination. If
+`~/.amplihack/amplifier-bundle/recipes/smart-orchestrator.yaml` contains an old
+monolithic recipe, a successful install replaces it with the composable
+smart-orchestrator and verifies the required companion recipes are present.
+
+The repair is structural, not line-count based: the parent recipe must delegate
+to `smart-classify-route`, `smart-execute-routing`, `smart-reflect-loop`, and
+`smart-validate-summarize`. Python/importlib orchestration and current-use
+`orch_helper.py` references are rejected.
+
 ## Example: Idempotent Run Output
 
 The second run of `amplihack install` produces output identical to the first, but each phase reports "updated" rather than "created":
@@ -98,3 +111,4 @@ amplihack installed successfully.
 - [Bootstrap Parity](./bootstrap-parity.md) — why the install sequence is ordered the way it is
 - [Hook Specifications](../reference/hook-specifications.md) — the 7 hooks and their idempotency matching rules
 - [amplihack install reference](../reference/install-command.md) — full command reference
+- [Framework Bundle Compatibility](../reference/framework-bundle-compatibility.md) — stale smart-orchestrator detection and repair

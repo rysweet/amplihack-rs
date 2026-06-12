@@ -32,10 +32,12 @@ Every launch, before command dispatch, `amplihack` performs a startup-time
    `amplihack install` automatically (equivalent to
    `commands::install::run_install(None, false, false)`).
    The third argument (`force_refresh: false`) means self-heal prefers the
-   local `~/.amplihack/amplifier-bundle/` if it exists, falling back to a
-   network download only when no local source is found. This keeps startup
-   fast for the common case. For the post-update install path (where the
-   **new** binary is spawned as a subprocess with `--force-refresh`), see
+   compatible local source selected by normal install source resolution,
+   falling back to a network download only when no compatible local source is
+   found. Self-heal does not perform a separate startup compatibility scan; the
+   automatic install run validates candidate and staged framework bundles. For
+   the post-update install path (where the **new** binary is spawned as a
+   subprocess with `--force-refresh`), see
    [Post-Update Install — Re-exec New Binary](update-reexec-new-binary.md).
 4. On success, write the new version into the stamp file and emit a single
    line on stderr:
