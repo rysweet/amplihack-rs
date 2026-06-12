@@ -51,17 +51,18 @@ changes. Customize active behavior in
 - CI/CD integration points
 - Review and merge requirements
 
-The canonical `default-workflow` skill/recipe is also idempotent around completed or obsolete work. Before
-publish, PR review, CI waiting, or merge can mutate Git or provider state, the
-workflow evaluates a terminal-state contract. Finalization remains the
-non-mutating arbiter that records the final decision. A proven terminal success
-stops the remaining mutation path instead of creating duplicate commits,
-duplicate follow-up PRs, or stale post-merge publish attempts.
+The terminal-state closure feature makes `default-workflow` idempotent around
+completed or obsolete work. Before publish, PR review, CI waiting, or merge can
+mutate Git or provider state, the workflow evaluates a terminal-state contract.
+Finalization remains the non-mutating arbiter that records the final decision. A
+proven terminal success stops the remaining mutation path instead of creating
+duplicate commits, duplicate follow-up PRs, or stale post-merge publish
+attempts.
 
-### Terminal-State Contract
+### Terminal-State Target Contract
 
-`workflow-terminal-state` is the evidence gate shared by publish, PR review, and
-finalize. It returns these outputs:
+`workflow-terminal-state` is the target evidence gate shared by publish, PR
+review, and finalize. It returns these outputs:
 
 | Output | Meaning |
 | --- | --- |
@@ -138,6 +139,24 @@ shortcut around evidence. A goal-met claim can support terminal success only
 when the terminal-state probe also proves a clean no-diff, merged, or obsolete
 state. Dirty work, failing CI, closed-unmerged PRs, and meaningful unmerged diffs
 override `goal_already_met`.
+
+The same terminal-state system is the target final closure gate for development
+tasks. A code-change workflow cannot report success after only planning,
+analysis, design, or worktree preparation. Before `default-workflow` or a routed
+`smart-orchestrator` development workstream exits successfully, it must prove one
+of these states:
+
+- implementation and verification completed
+- publish, PR, merge, obsolete, or no-diff state reached
+- explicit terminal no-op such as `allow_no_op`, `MERGED`, `SUPERSEDED`,
+  `CLOSED_OBSOLETE`, or `NO_DIFF_SUCCESS`
+
+If the evidence is missing, malformed, or contradictory, the workflow exits
+nonzero with observed phases, missing evidence, and the next action. See
+[Workflow Terminal-State Reference](../reference/workflow-terminal-state.md) for
+the marker contract and
+[How to Diagnose Workflow Terminal-State Failures](../howto/diagnose-workflow-terminal-state.md)
+for recovery examples.
 
 ## When This Workflow Applies
 

@@ -15,9 +15,6 @@ tags: ["development", "tdd", "implementation"]
 #   enforce-verdict bash gate), replacing the legacy bash hollow-success guard.
 #   Verdicts: WORK_VERIFIED→exit 0, INSUFFICIENT_EVIDENCE→warn+exit 0,
 #   HOLLOW_SUCCESS→exit 1. See issue #615 for full design.
-# FIX #624: enforce-verdict normalizes LLM synonym verdicts and fail-safes
-#   unknown strings to INSUFFICIENT_EVIDENCE instead of exit 1.
-
 recursion:
   max_depth: 6
   max_total_steps: 80
@@ -384,6 +381,18 @@ steps:
       fi
       echo "=== Checkpoint Complete ==="
     output: "impl_checkpoint"
+
+  - id: "implementation-terminal-evidence"
+    type: "bash"
+    condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
+    parse_json: true
+    command: |
+      set -euo pipefail
+      HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      [ -f "$HELPER" ] || HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      [ -f "$HELPER" ] || { echo "ERROR: workflow implementation evidence helper not found: $HELPER" >&2; exit 2; }
+      bash "$HELPER"
+    output: "implementation_terminal_evidence"
 
   # ==========================================================================
   # STEP 9: REFACTOR AND SIMPLIFY

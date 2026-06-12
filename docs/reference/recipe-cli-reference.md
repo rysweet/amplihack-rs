@@ -153,9 +153,19 @@ See [Environment Variables](./environment-variables.md) for full details.
 | `0` | Command succeeded |
 | `1` | Command failed, validation failed, recipe execution failed, runner missing, or arguments were malformed |
 
+For development workflows, exit `0` also requires terminal-state evidence. A
+code-change task that stops after planning, analysis, design, or worktree setup
+exits `1` with `FAILED_MISSING_TERMINAL_EVIDENCE` unless it reaches
+implementation/verification, publish/PR/merge state, or an explicit no-op state.
+The terminal-state shell helper has its own direct invocation exit code `2` for
+invalid helper usage, but `amplihack recipe run` surfaces helper failures as
+recipe failures and exits nonzero, currently `1`. See
+[Workflow Terminal-State Reference](./workflow-terminal-state.md).
+
 ## See also
 
 - [amplihack recipe Reference](./recipe-command.md) - Detailed command behavior
 - [Run a Recipe End-to-End](../howto/run-a-recipe.md) - Task-oriented usage
 - [Recipe Run Correlation Reference](./recipe-run-correlation.md) - Stable run IDs and log pointer events
 - [Recipe Runner Logging Reference](./recipe-runner-logging.md) - stderr progress, heartbeats, bounded snippets, and JSONL events
+- [Workflow Terminal-State Reference](./workflow-terminal-state.md) - Development workflow completion evidence and visible failure contract
