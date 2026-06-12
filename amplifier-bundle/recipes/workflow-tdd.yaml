@@ -52,9 +52,6 @@ steps:
       Output test files with clear file path headers.
     output: "test_spec"
 
-  # ==========================================================================
-  # STEP 8: IMPLEMENT THE SOLUTION
-  # ==========================================================================
   - id: "step-08-implement"
     agent: "amplihack:builder"
     working_dir: "{{worktree_setup.worktree_path}}"
@@ -321,9 +318,6 @@ steps:
       Skip if no external integrations are required.
     output: "integration_code"
 
-  # --------------------------------------------------------------------------
-  # CHECKPOINT: Stage implementation work to prevent loss if later steps fail
-  # --------------------------------------------------------------------------
   - id: "checkpoint-after-implementation"
     type: "bash"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
@@ -394,7 +388,3 @@ steps:
       [ -f "$HELPER" ] || { echo "ERROR: workflow implementation evidence helper not found: $HELPER" >&2; exit 2; }
       bash "$HELPER"
     output: "implementation_terminal_evidence"
-
-  # ==========================================================================
-  # STEP 9: REFACTOR AND SIMPLIFY
-  # ==========================================================================
