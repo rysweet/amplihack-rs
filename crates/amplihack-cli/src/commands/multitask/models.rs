@@ -36,6 +36,66 @@ pub const RESUMABLE_STATES: &[&str] = &[
 /// Lifecycle states eligible for cleanup.
 pub const CLEANUP_ELIGIBLE_STATES: &[&str] = &["completed", "failed_terminal", "abandoned"];
 
+/// Logical workflow ownership scope persisted with every workstream.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct WorkstreamScope {
+    #[serde(default)]
+    pub repository: String,
+    #[serde(default)]
+    pub repo_root: String,
+    #[serde(default)]
+    pub workdir: String,
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub base_ref: String,
+    #[serde(default)]
+    pub issue_id: String,
+    #[serde(default)]
+    pub work_item_id: String,
+    #[serde(default)]
+    pub recipe: String,
+    #[serde(default)]
+    pub recipe_run_id: String,
+    #[serde(default)]
+    pub tree_id: String,
+    #[serde(default)]
+    pub workstream_id: String,
+    #[serde(default)]
+    pub expected_title_prefix: String,
+    #[serde(default)]
+    pub started_at: String,
+}
+
+/// Concrete OS process ownership scope persisted with every launch.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ProcessScope {
+    #[serde(default)]
+    pub pid: Option<u32>,
+    #[serde(default)]
+    pub repository: String,
+    #[serde(default)]
+    pub repo_root: String,
+    #[serde(default)]
+    pub workdir: String,
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub issue_id: String,
+    #[serde(default)]
+    pub work_item_id: String,
+    #[serde(default)]
+    pub recipe_run_id: String,
+    #[serde(default)]
+    pub tree_id: String,
+    #[serde(default)]
+    pub workstream_id: String,
+    #[serde(default)]
+    pub process_started_at: String,
+    #[serde(default)]
+    pub recorded_at: String,
+}
+
 /// JSON config entry for a workstream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkstreamConfig {
@@ -93,6 +153,8 @@ pub struct Workstream {
     pub timeout_policy: String,
     pub max_runtime: u64,
     pub resume_checkpoint: String,
+    pub workstream_scope: WorkstreamScope,
+    pub process_scope: ProcessScope,
 }
 
 impl Workstream {
@@ -129,6 +191,8 @@ impl Workstream {
             timeout_policy: DEFAULT_TIMEOUT_POLICY.to_string(),
             max_runtime: DEFAULT_MAX_RUNTIME,
             resume_checkpoint: String::new(),
+            workstream_scope: WorkstreamScope::default(),
+            process_scope: ProcessScope::default(),
         }
     }
 
@@ -202,6 +266,10 @@ pub struct PersistedState {
     pub max_runtime: Option<u64>,
     #[serde(default)]
     pub timeout_policy: Option<String>,
+    #[serde(default)]
+    pub workstream_scope: WorkstreamScope,
+    #[serde(default)]
+    pub process_scope: ProcessScope,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]

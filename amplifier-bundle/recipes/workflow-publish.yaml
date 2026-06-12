@@ -227,7 +227,8 @@ steps:
       # Metadata contract: ISSUE_NUM, git diff, git log, git diff --name-only, Changed files, Validation, Behavior, Risk, and step-13 shape PR title/body context.
       # PUBLISH_STATE="no-diff"; PUBLISH_STATE="existing-open-pr"; PUBLISH_STATE="already-merged"; PUBLISH_STATE="closed-after-merge"; PUBLISH_STATE="closed-unmerged-with-diff".
       # Terminal vocabulary: MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED, BLOCKED_CI.
-      # gh_pr_create_with_retry is called by the helper only after PUBLISH_STATE classification.
+      # gh pr create is called by the helper only after PUBLISH_STATE classification.
+      # gh pr create failed is surfaced by workflow_publish_pr.sh as FAILED_PR_CREATE.
       PUBLISH_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_publish_pr.sh"
       if [ ! -f "$PUBLISH_HELPER" ] && [ -n "${REPO_PATH:-}" ]; then PUBLISH_HELPER="$REPO_PATH/amplifier-bundle/tools/workflow_publish_pr.sh"; fi
       [ -f "$PUBLISH_HELPER" ] || { echo "ERROR: workflow publish helper not found: $PUBLISH_HELPER" >&2; exit 1; }

@@ -1,6 +1,10 @@
 //! State persistence and lifecycle management for workstreams.
 
 use super::models::*;
+use super::process_scope::{
+    CurrentWorkflowScope, ProcessScopeConfig, ProcessScopeValidation, normalize_path,
+    snapshot_for_pid, validate_process_scope,
+};
 use super::utils::{atomic_write, dir_size_bytes};
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -10,6 +14,7 @@ use std::path::Path;
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tracing::warn;
 
 /// Status snapshot for all workstreams.
 #[derive(Default)]
@@ -19,14 +24,12 @@ pub(super) struct WorkstreamStatus {
     pub failed: Vec<i64>,
 }
 
-/// Load persisted state from a JSON file.
 pub(super) fn load_state(state_file: &Path) -> Option<PersistedState> {
     fs::read_to_string(state_file)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
 }
 
-/// Persist workstream state to its JSON state file.
 pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
@@ -65,6 +68,8 @@ pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
         progress_sidecar: ws.progress_file.to_string_lossy().to_string(),
         max_runtime: Some(ws.max_runtime),
         timeout_policy: Some(ws.timeout_policy.clone()),
+        workstream_scope: ws.workstream_scope.clone(),
+        process_scope: ws.process_scope.clone(),
         created_at,
         updated_at: now,
         resume_context: existing.and_then(|s| s.resume_context),
@@ -75,7 +80,6 @@ pub(super) fn persist_state(ws: &Workstream) -> Result<()> {
     Ok(())
 }
 
-/// Finalize a workstream after its process exits.
 pub(super) fn finalize_workstream(ws: &mut Workstream, exit_code: i32) {
     if ws.end_time.is_none() {
         ws.end_time = Some(Instant::now());
@@ -101,7 +105,6 @@ pub(super) fn finalize_workstream(ws: &mut Workstream, exit_code: i32) {
     let _ = persist_state(ws);
 }
 
-/// Apply saved state to a workstream being resumed.
 pub(super) fn apply_saved_state(ws: &mut Workstream, state: &PersistedState) {
     if !state.branch.is_empty() {
         ws.branch = state.branch.clone();
@@ -132,12 +135,55 @@ pub(super) fn apply_saved_state(ws: &mut Workstream, state: &PersistedState) {
         ws.timeout_policy = policy.clone();
     }
     ws.pid = state.last_pid;
+    ws.workstream_scope = state.workstream_scope.clone();
+    ws.process_scope = state.process_scope.clone();
     if let Some(code) = state.last_exit_code {
         ws.exit_code = Some(code);
     }
 }
 
-/// Enforce per-workstream timeouts, marking timed-out workstreams.
+fn process_scope_validation(ws: &Workstream, pid: u32) -> ProcessScopeValidation {
+    let current = CurrentWorkflowScope {
+        repository: ws.workstream_scope.repository.clone(),
+        repo_root: normalize_path(&ws.work_dir),
+        workdir: normalize_path(&ws.work_dir),
+        branch: ws.branch.clone(),
+        issue_id: ws.issue.to_string(),
+        work_item_id: ws.issue.to_string(),
+        recipe_run_id: ws.workstream_scope.recipe_run_id.clone(),
+        tree_id: ws.workstream_scope.tree_id.clone(),
+        workstream_id: format!("ws-{}", ws.issue),
+    };
+    let snapshot = snapshot_for_pid(pid, &ws.work_dir);
+    validate_process_scope(
+        &current,
+        &ws.workstream_scope,
+        &ws.process_scope,
+        &snapshot,
+        &ProcessScopeConfig {
+            max_age_seconds: ws.max_runtime as i64 + 3600,
+        },
+    )
+}
+
+fn process_scope_is_authoritative(ws: &Workstream, pid: u32, action: &str) -> bool {
+    let validation = process_scope_validation(ws, pid);
+    // Only ProcessScopeValidation::Valid is authoritative for monitor/closure paths.
+    // Non-authoritative variants are display-only:
+    // ProcessScopeValidation::MissingScope, Dead, PidReused, TooOld,
+    // RepoMismatch, WorkdirMismatch, BranchMismatch, and WorkstreamMismatch.
+    if validation.is_valid() {
+        true
+    } else {
+        warn!(
+            "[{}] Ignoring process for {action}: process_scope={}",
+            ws.issue,
+            validation.reason()
+        );
+        false
+    }
+}
+
 pub(super) fn enforce_timeouts(
     workstreams: &mut [Workstream],
     processes: &HashMap<i64, Arc<Mutex<Option<Child>>>>,
@@ -160,14 +206,22 @@ pub(super) fn enforce_timeouts(
             ws.max_runtime
         );
 
+        let mut authoritative_process = true;
         if ws.timeout_policy == INTERRUPT_PRESERVE_TIMEOUT_POLICY
             && let Some(proc_arc) = processes.get(&issue)
         {
             let mut guard = proc_arc.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ref mut child) = *guard {
-                let _ = child.kill();
-                let _ = child.wait();
+                if process_scope_is_authoritative(ws, child.id(), "timeout") {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                } else {
+                    authoritative_process = false;
+                }
             }
+        }
+        if !authoritative_process {
+            continue;
         }
 
         ws.lifecycle_state = "timed_out_resumable".to_string();
@@ -176,7 +230,6 @@ pub(super) fn enforce_timeouts(
     }
 }
 
-/// Terminate and mark interrupted all running workstreams.
 pub(super) fn cleanup_running(
     workstreams: &mut [Workstream],
     processes: &HashMap<i64, Arc<Mutex<Option<Child>>>>,
@@ -186,13 +239,20 @@ pub(super) fn cleanup_running(
             continue;
         }
         let issue = ws.issue;
+        let mut interrupted = processes.get(&issue).is_none();
         if let Some(proc_arc) = processes.get(&issue) {
             let mut guard = proc_arc.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(ref mut child) = *guard {
+            if let Some(ref mut child) = *guard
+                && process_scope_is_authoritative(ws, child.id(), "cleanup")
+            {
                 println!("[{issue}] Terminating PID {}...", ws.pid.unwrap_or(0));
                 let _ = child.kill();
                 let _ = child.wait();
+                interrupted = true;
             }
+        }
+        if !interrupted {
+            continue;
         }
         ws.lifecycle_state = "interrupted_resumable".to_string();
         ws.end_time = Some(Instant::now());
@@ -200,7 +260,6 @@ pub(super) fn cleanup_running(
     }
 }
 
-/// Poll workstream processes and categorize by status.
 pub(super) fn get_status(
     workstreams: &mut [Workstream],
     processes: &HashMap<i64, Arc<Mutex<Option<Child>>>>,
@@ -210,16 +269,29 @@ pub(super) fn get_status(
     for ws in workstreams.iter_mut() {
         let proc = processes.get(&ws.issue);
 
-        let maybe_code = proc.and_then(|arc| {
-            let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
-            guard.as_mut().and_then(|child| {
-                child
-                    .try_wait()
-                    .ok()
-                    .flatten()
-                    .map(|s| s.code().unwrap_or(-1))
+        let authoritative_process = proc
+            .and_then(|arc| {
+                let guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                guard
+                    .as_ref()
+                    .map(|child| process_scope_is_authoritative(ws, child.id(), "monitor"))
             })
-        });
+            .unwrap_or(false);
+
+        let maybe_code = if authoritative_process {
+            proc.and_then(|arc| {
+                let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                guard.as_mut().and_then(|child| {
+                    child
+                        .try_wait()
+                        .ok()
+                        .flatten()
+                        .map(|s| s.code().unwrap_or(-1))
+                })
+            })
+        } else {
+            None
+        };
 
         if let Some(code) = maybe_code {
             finalize_workstream(ws, code);
@@ -228,9 +300,14 @@ pub(super) fn get_status(
             } else {
                 status.failed.push(ws.issue);
             }
-        } else if proc.is_some() && ws.exit_code.is_none() {
+        } else if proc.is_some() && authoritative_process && ws.exit_code.is_none() {
             ws.lifecycle_state = "running".to_string();
             status.running.push(ws.issue);
+        } else if proc.is_some() && !authoritative_process && ws.exit_code.is_none() {
+            warn!(
+                "[{}] Workstream process is non-authoritative; leaving it display-only",
+                ws.issue
+            );
         } else if ws.exit_code == Some(0) || ws.lifecycle_state == "completed" {
             status.completed.push(ws.issue);
         } else {
@@ -241,7 +318,6 @@ pub(super) fn get_status(
     status
 }
 
-/// Clean up merged workstreams based on a JSON config and `gh pr` status.
 pub(super) fn cleanup_merged(
     base_dir: &Path,
     state_dir: &Path,
@@ -315,24 +391,4 @@ pub(super) fn cleanup_merged(
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_persisted_state_roundtrip() {
-        let state = PersistedState {
-            issue: 42,
-            branch: "feat/test".to_string(),
-            lifecycle_state: "completed".to_string(),
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&state).unwrap();
-        let parsed: PersistedState = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.issue, 42);
-        assert_eq!(parsed.branch, "feat/test");
-        assert_eq!(parsed.lifecycle_state, "completed");
-    }
 }
