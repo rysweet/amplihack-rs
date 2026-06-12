@@ -14,7 +14,6 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 context: {}
-
 steps:
   # STEP 0: WORKFLOW PREPARATION (MANDATORY - DO NOT SKIP)
   # Creates tracking structure. Must complete before ANY implementation work.
@@ -132,18 +131,14 @@ steps:
     agent: "amplihack:prompt-writer"
     prompt: |
       # Step 2: Rewrite and Clarify Requirements
-
       **Task Description:** {{task_description}}
       **Initial Requirements:** {{requirements}}
-
       Your role is to clarify and structure the task requirements.
-
       **Actions Required:**
       1. Identify explicit user requirements that CANNOT be optimized away
       2. Remove ambiguity from the task description
       3. Define clear success criteria
       4. Document acceptance criteria
-
       **Output Format:**
       ```json
       {
@@ -157,7 +152,6 @@ steps:
         "classification": "feature/bugfix/refactor/other"
       }
       ```
-
       Use your best judgment to work autonomously. Pass explicit requirements to ALL subsequent agents.
     output: "clarified_requirements"
     parse_json: true
@@ -166,13 +160,10 @@ steps:
     agent: "amplihack:architect"
     prompt: |
       # Step 2b: Analyze Existing Codebase Context
-
       **Task:** {{task_description}}
       **Clarified Requirements:** {{clarified_requirements}}
       **Repository:** {{repo_path}}
-
       ## IMPORTANT: Emit progress markers throughout this analysis
-
       This step runs under a watchdog that times out if no output is seen for
       60+ seconds. You MUST emit a progress line before each major exploration
       phase so the recipe runner can see activity. Use this format:
@@ -182,36 +173,28 @@ steps:
       ```
 
       ## Exploration Phases
-
       Work through these phases in order, emitting a progress marker before each:
-
       **Phase 1 — Project structure**
       Print: `## Progress: Phase 1/4 — Scanning project structure`
       Use Glob to identify top-level layout, key config files (Cargo.toml,
       package.json, etc.), and source directory organization.
-
       **Phase 2 — Relevant code paths**
       Print: `## Progress: Phase 2/4 — Searching for task-relevant code`
       Use Grep to find code related to the task: relevant class/function names,
       imports, config keys, and patterns mentioned in the requirements.
-
       **Phase 3 — Dependencies and integration points**
       Print: `## Progress: Phase 3/4 — Analyzing dependencies and interfaces`
       Read key files (imports, interfaces, config) to understand how components
       connect. Identify external dependencies relevant to the task.
-
       **Phase 4 — Synthesis**
       Print: `## Progress: Phase 4/4 — Synthesizing findings`
       Compile findings into a structured summary.
-
       ## Output
-
       Provide a codebase context summary covering:
       1. Relevant existing code and patterns
       2. Files that will likely need modification
       3. Dependencies and integration points
       4. Potential conflicts or considerations
-
       Use glob and grep to explore the codebase. Avoid web searches.
     output: "codebase_analysis"
 
@@ -219,22 +202,17 @@ steps:
     agent: "amplihack:ambiguity"
     prompt: |
       # Step 2c: Resolve Any Remaining Ambiguity
-
       **Task:** {{task_description}}
       **Clarified Requirements:** {{clarified_requirements}}
       **Codebase Analysis:** {{codebase_analysis}}
-
       Review for any remaining ambiguity in the requirements.
-
       If ambiguity exists:
       - Resolve it using best judgment
       - Document the decisions made
       - Explain rationale
-
       If no ambiguity:
       - Confirm requirements are clear
       - Proceed with confidence
-
       Output final, unambiguous requirements ready for design phase.
     output: "final_requirements"
 
@@ -269,8 +247,27 @@ steps:
       TASK_DESC="$TASK_DESCRIPTION"
       ISSUE_TITLE="${TASK_DESC//$'\n'/ }"; ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"; ISSUE_TITLE="${ISSUE_TITLE:0:200}"
       ISSUE_REQS="$FINAL_REQUIREMENTS"
-      HOST_TYPE="${REMOTE_HOST_TYPE:-other}"; EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"; case "$HOST_TYPE" in github|azdo|other) ;; azure-devops) HOST_TYPE="azdo" ;; *) echo "WARN: Unexpected REMOTE_HOST_TYPE — using local tracking" >&2; HOST_TYPE="other" ;; esac
-      derive_local_tracking_id() { if [[ "$EXISTING_ISSUE_NUMBER" =~ ^#?([0-9]+)$ ]]; then printf 'local-issue-%s' "${BASH_REMATCH[1]}"; elif [[ "$EXISTING_ISSUE_NUMBER" =~ AB#([0-9]+)|_workitems/edit/([0-9]+) ]]; then printf 'local-ab-%s' "${BASH_REMATCH[1]:-${BASH_REMATCH[2]}}"; elif [[ "$EXISTING_ISSUE_NUMBER" =~ local-(issue|ab)-([0-9]+)$ ]]; then printf '%s' "$EXISTING_ISSUE_NUMBER"; elif [[ "$TASK_DESC" =~ ([Ii]ssue[[:space:]#]*|#)([0-9]+) ]]; then printf 'local-issue-%s' "${BASH_REMATCH[2]}"; elif [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then printf 'local-ab-%s' "${BASH_REMATCH[1]}"; else printf 'local-%s' "$(printf '%s' "$TASK_DESC" | sha256sum | cut -c1-12)"; fi; }
+      HOST_TYPE="${REMOTE_HOST_TYPE:-other}"; EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+      case "$HOST_TYPE" in
+        github|azdo|other) ;;
+        azure-devops) HOST_TYPE="azdo" ;;
+        *) echo "WARN: Unexpected REMOTE_HOST_TYPE — using local tracking" >&2; HOST_TYPE="other" ;;
+      esac
+      derive_local_tracking_id() {
+        if [[ "$EXISTING_ISSUE_NUMBER" =~ ^#?([0-9]+)$ ]]; then
+          printf 'local-issue-%s' "${BASH_REMATCH[1]}"
+        elif [[ "$EXISTING_ISSUE_NUMBER" =~ AB#([0-9]+)|_workitems/edit/([0-9]+) ]]; then
+          printf 'local-ab-%s' "${BASH_REMATCH[1]:-${BASH_REMATCH[2]}}"
+        elif [[ "$EXISTING_ISSUE_NUMBER" =~ local-(issue|ab)-([0-9]+)$ ]]; then
+          printf '%s' "$EXISTING_ISSUE_NUMBER"
+        elif [[ "$TASK_DESC" =~ ([Ii]ssue[[:space:]#]*|#)([0-9]+) ]]; then
+          printf 'local-issue-%s' "${BASH_REMATCH[2]}"
+        elif [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then
+          printf 'local-ab-%s' "${BASH_REMATCH[1]}"
+        else
+          printf 'local-%s' "$(printf '%s' "$TASK_DESC" | sha256sum | cut -c1-12)"
+        fi
+      }
       emit_local_metadata() { LOCAL_REF="$(derive_local_tracking_id)"; LOCAL_NUM=""; [[ "$LOCAL_REF" =~ local-(issue|ab)-([0-9]+)$ ]] && LOCAL_NUM="${BASH_REMATCH[2]}"; printf 'tracking_system=local\ntracking_reference=%s\ntracking_issue=%s\nissue_creation=local-tracking\n' "$LOCAL_REF" "$LOCAL_REF"; [ -n "$LOCAL_NUM" ] && printf 'issue_number=%s\n' "$LOCAL_NUM"; }
       sanitize_cli_output() { printf '%s\n' "$1" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g'; }
       case "$HOST_TYPE" in
@@ -376,7 +373,6 @@ steps:
       emit_local_metadata
     output: "issue_creation"
     parse_json: false
-
   - id: "step-03b-extract-issue-number"
     type: "bash"
     command: |
@@ -393,7 +389,11 @@ steps:
       elif [[ "$TASK_DESC_RAW" =~ AB#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC_RAW" =~ \#([0-9]+) ]]; then EXTRACTED="${BASH_REMATCH[1]}"
       fi
-      if [ -z "$EXTRACTED" ]; then echo "ERROR: step-03b failed to extract issue number from issue_creation output." >&2; printf '%s\n' "$ISSUE_CREATION" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g' >&2; exit 1; fi
+      if [ -z "$EXTRACTED" ]; then
+        echo "ERROR: step-03b failed to extract issue number from issue_creation output." >&2
+        printf '%s\n' "$ISSUE_CREATION" | head -c 4000 | sed -E 's#https?://[^[:space:]]*@#https://<redacted>@#g; s#gh[pousr]_[A-Za-z0-9_]{8,}#<redacted-token>#g; s#github_pat_[A-Za-z0-9_]+#<redacted-token>#g' >&2
+        exit 1
+      fi
       printf '%s' "$EXTRACTED"
     output: "issue_number"
   # STEP 4: SETUP WORKTREE AND BRANCH
