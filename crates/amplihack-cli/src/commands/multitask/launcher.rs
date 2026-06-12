@@ -3,6 +3,7 @@
 use super::models::Workstream;
 use super::state::persist_state;
 use super::utils::{rand_u32, set_executable, tail_output};
+use amplihack_types::workflow;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::fs;
@@ -150,9 +151,13 @@ pub(super) fn write_classic_launcher(ws: &Workstream, delegate: &str) -> Result<
     fs::write(
         &task_md,
         format!(
-            "# Issue #{}\n\n{}\n\nFollow DEFAULT_WORKFLOW.md autonomously. \
-             NO QUESTIONS. Work through Steps 0-22. Create PR when complete.",
-            ws.issue, ws.task
+            "# Issue #{}\n\n{}\n\nUse the canonical {} autonomously via {} and {}. \
+             NO QUESTIONS. Work through all required workflow steps. Create PR when complete.",
+            ws.issue,
+            ws.task,
+            workflow::DEFAULT_WORKFLOW_SELECTION,
+            workflow::DEV_ORCHESTRATOR_SKILL,
+            workflow::SMART_ORCHESTRATOR_RECIPE_COMMAND
         ),
     )?;
 
@@ -173,10 +178,13 @@ export AMPLIHACK_TREE_ID='{tree_id}'
 export AMPLIHACK_SESSION_DEPTH='{depth}'
 export AMPLIHACK_MAX_DEPTH='{max_depth}'
 export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
-{delegate} --subprocess-safe -- -p "@TASK.md Execute task autonomously following DEFAULT_WORKFLOW.md. NO QUESTIONS. Work through all steps. Create PR when complete."
+{delegate} --subprocess-safe -- -p "@TASK.md Execute task autonomously using the canonical {workflow_selection} via {dev_orchestrator} and {smart_orchestrator}. NO QUESTIONS. Work through all required workflow steps. Create PR when complete."
 "#,
         work_dir = ws.work_dir.display(),
         depth = depth + 1,
+        workflow_selection = workflow::DEFAULT_WORKFLOW_SELECTION,
+        dev_orchestrator = workflow::DEV_ORCHESTRATOR_SKILL,
+        smart_orchestrator = workflow::SMART_ORCHESTRATOR_RECIPE_COMMAND,
     );
     fs::write(&run_sh, run_content)?;
     set_executable(&run_sh)?;

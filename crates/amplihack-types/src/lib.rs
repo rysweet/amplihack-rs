@@ -9,6 +9,8 @@ pub mod hook_io;
 pub mod paths;
 /// Global and project-level settings deserialization.
 pub mod settings;
+/// Canonical workflow labels and generated context snippets.
+pub mod workflow;
 
 /// Top-level hook input enum (tagged by `hook_event_name`).
 pub use hook_io::HookInput;

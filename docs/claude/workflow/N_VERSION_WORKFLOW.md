@@ -28,7 +28,7 @@ philosophy_alignment:
     application: Rejected versions provide valuable insights
 references:
   workflows:
-    - DEFAULT_WORKFLOW.md
+    - legacy DEFAULT_WORKFLOW.md
     - CONSENSUS_WORKFLOW.md
 customizable: true
 ---

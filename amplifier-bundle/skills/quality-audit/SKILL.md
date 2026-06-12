@@ -104,7 +104,7 @@ Skill: *activates automatically*
 ### Phase 4: Parallel PR Generation
 
 - Create worktree per remaining open issue (`worktrees/fix-issue-XXX`)
-- Run DEFAULT_WORKFLOW.md in each worktree
+- Run the `default-workflow` skill/recipe in each worktree
 - Generate fix PR for each confirmed open issue
 
 ### Phase 5: PM Review

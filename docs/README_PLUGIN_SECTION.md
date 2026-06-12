@@ -65,7 +65,7 @@ Plugin installs at:
 ├── tools/
 │   └── amplihack/
 │       └── hooks/   # Lifecycle hooks
-├── workflow/        # DEFAULT_WORKFLOW.md
+├── skills/          # default-workflow skill/recipe
 └── context/         # PHILOSOPHY.md, PATTERNS.md
 ```
 

@@ -14,7 +14,7 @@
 - Command: `SlashCommand(command="/ultrathink task")`
 - Skill: `Skill(skill="mermaid-diagram-generator")`
 - Agent: `Task([{subagent_type: "architect", ...}])`
-- Workflow: Read DEFAULT_WORKFLOW.md, follow steps
+- Workflow: Invoke the `default-workflow` skill/recipe, follow steps
 
 ## 2. Five-Layer Architecture
 
@@ -52,7 +52,7 @@ Layer 1: Runtime       │ Logs, metrics, state
 
 **UltraThink:**
 
-- Reads DEFAULT_WORKFLOW.md
+- Invokes the `default-workflow` skill/recipe
 - Creates task entries
 - Delegates to agents
 - Tracks progress
@@ -97,7 +97,7 @@ Debug: [analyzer, environment, patterns, logs]
 
 **Valid:**
 
-- Commands → Workflows: `/ultrathink` reads DEFAULT_WORKFLOW.md
+- Commands → Workflows: `/ultrathink` invokes the `default-workflow` skill/recipe
 - Commands → Commands: `/improve` invokes `/amplihack:reflect`
 - Commands → Agents: `/analyze` delegates to analyzer
 - Skills → Agents: `test-gap-analyzer` invokes tester

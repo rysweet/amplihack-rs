@@ -9,7 +9,8 @@ auto_activates:
 explicit_triggers:
   - /amplihack:workflow-enforcement
 related_files:
-  - .claude/workflow/DEFAULT_WORKFLOW.md
+  - skills/default-workflow/SKILL.md
+  - recipes/default-workflow.yaml
   - .claude/tools/amplihack/considerations.yaml
   - .claude/templates/workflow_state.yaml.template
 implementation_status: specification
@@ -383,7 +384,7 @@ If state file is missing or corrupt:
 
 ## Related Components
 
-- **DEFAULT_WORKFLOW.md**: Canonical workflow definition with Step 0 guidance
+- **`default-workflow` skill/recipe**: Canonical workflow definition with Step 0 guidance
 - **templates/workflow_state.yaml.template**: Template for structured state tracking
 - **amplihack-hooks stop**: Session-end enforcement (transcript-based)
 - **considerations.yaml**: `dev_workflow_complete` consideration definition

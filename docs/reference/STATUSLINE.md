@@ -311,7 +311,7 @@ Where `N` is the number of times the lock has **blocked a stop attempt** in **th
 /amplihack:lock Every function must have comprehensive tests and error handling
 
 # Workflow enforcement
-/amplihack:lock Follow DEFAULT_WORKFLOW.md exactly - do not skip steps
+/amplihack:lock Follow the default-workflow skill/recipe exactly - do not skip steps
 ```
 
 ### Examples

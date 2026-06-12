@@ -29,13 +29,19 @@ customizable: true
 
 # Default Coding Workflow
 
-This file defines the default workflow for all non-trivial code changes.
+> **Deprecated legacy reference**: the canonical default development workflow is
+> the `default-workflow` skill/recipe. This file remains only for migration and
+> backward-compatibility context.
 
-You can customize this workflow by editing this file.
+This legacy file describes the old markdown workflow for non-trivial code
+changes. Customize active behavior in
+`amplifier-bundle/skills/default-workflow/SKILL.md` and
+`amplifier-bundle/recipes/default-workflow.yaml`, not by editing this file.
 
 ## How This Workflow Works
 
-**This workflow is the single source of truth for:**
+**This legacy reference is not the source of truth.** The canonical
+`default-workflow` skill/recipe defines active behavior for:
 
 - The order of operations (steps must be followed sequentially)
 - Git workflow (branch, commit, push, PR process)
@@ -44,7 +50,7 @@ You can customize this workflow by editing this file.
 
 ## When This Workflow Applies
 
-This workflow should be followed for:
+The canonical `default-workflow` skill/recipe applies to:
 
 - New features
 - Bug fixes
@@ -53,11 +59,11 @@ This workflow should be followed for:
 
 **Execution approach:**
 
-- Start with using the SlashCommand(amplihack:ultrathink) for any non-trivial task
-- The workflow defines the process; agents execute the work
-- Each step below leverages specialized agents whenever possible
-- UltraThink orchestrates parallel agent execution for maximum efficiency
-- When you customize this workflow, UltraThink adapts automatically
+- Route normal DEV, INVESTIGATE, and HYBRID tasks through `dev-orchestrator`
+  and `smart-orchestrator`
+- Use `amplihack recipe run default-workflow -c task_description="..." -c repo_path=.`
+  only for standalone compatibility execution
+- Treat the steps below as migration context for old markdown-workflow installs
 
 ## TodoWrite Best Practices
 
@@ -135,7 +141,7 @@ Agents that skip workflow steps (especially mandatory review steps 10, 16-17) cr
 
 **Checklist:**
 
-- [ ] **Read this entire workflow file** - Understand all 22 steps (0-21) before starting
+- [ ] **Use the `default-workflow` skill/recipe** - Do not treat this legacy markdown file as authoritative
 - [ ] **Create TodoWrite entries for ALL steps (0-21)** using format: `Step N: [Step Name] - [Specific Action]`
 - [ ] **Mark each step complete ONLY when truly done** - No premature completion
 - [ ] **Task is NOT complete until Step 21 is marked complete**
@@ -203,7 +209,7 @@ of falling back to local `HEAD`.
 
 ### Step 5: Research and Design
 
-**⚠️ INVESTIGATION-FIRST PATTERN**: If the existing codebase or system is unfamiliar/complex, consider running the Skills tool Skill(investigation-workflow) or ~.claude/workflow/INVESTIGATION_WORKFLOW.md FIRST, then return here to continue development. This is especially valuable when:
+**⚠️ INVESTIGATION-FIRST PATTERN**: If the existing codebase or system is unfamiliar/complex, route through `dev-orchestrator`/`smart-orchestrator` or use the `investigation-workflow` skill/recipe first, then return to development. This is especially valuable when:
 
 - The codebase area is unfamiliar or poorly documented
 - The feature touches multiple complex subsystems

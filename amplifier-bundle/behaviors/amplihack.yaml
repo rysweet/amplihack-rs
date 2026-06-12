@@ -17,7 +17,7 @@ workflow_selection:
       doc: ../.claude/workflow/INVESTIGATION_WORKFLOW.md
     - name: DEFAULT
       triggers: ["implement", "add", "fix", "create", "refactor", "update", "build"]
-      doc: ../.claude/workflow/DEFAULT_WORKFLOW.md
+      doc: ../skills/default-workflow/SKILL.md
 
 # Philosophy enforcement
 philosophy:

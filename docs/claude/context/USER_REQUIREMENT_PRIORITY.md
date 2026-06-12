@@ -5,7 +5,7 @@
 When agents encounter conflicting guidance, follow this strict priority order:
 
 1. **EXPLICIT USER REQUIREMENTS** (HIGHEST PRIORITY - NEVER OVERRIDE)
-2. **WORKFLOW DEFINITION** (From DEFAULT_WORKFLOW.md - Defines HOW to execute)
+2. **WORKFLOW DEFINITION** (From the `default-workflow` skill/recipe - Defines HOW to execute)
 3. **IMPLICIT USER PREFERENCES** (From USER_PREFERENCES.md)
 4. **PROJECT PHILOSOPHY** (Simplicity, modularity, etc.)
 5. **DEFAULT BEHAVIORS** (LOWEST PRIORITY)
@@ -23,7 +23,7 @@ The workflow sits at level 2 because it defines the **execution methodology** - 
 
 ```
 User: "Add authentication" (WHAT - Level 1)
-Workflow: Follow steps 1-13 in DEFAULT_WORKFLOW.md (HOW - Level 2)
+Workflow: Follow the `default-workflow` skill/recipe (HOW - Level 2)
 Agents: architect → builder → tester (WHO - executing within workflow)
 Philosophy: Keep it simple, modular (STYLE - Level 4)
 ```

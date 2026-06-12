@@ -221,7 +221,7 @@ cat .claude/runtime/logs/auto_copilot_*/auto.log
 
 - `../docs/AUTO_MODE.md` - Complete auto mode documentation
 - `../../AGENTS.md` - Guide for Copilot CLI with amplihack
-- `../../.claude/workflow/DEFAULT_WORKFLOW.md` - Standard workflow
+- `default-workflow` skill/recipe - Standard development workflow
 
 ---
 

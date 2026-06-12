@@ -54,7 +54,8 @@ Use Q&A_WORKFLOW when ALL are true:
 - [ ] Verify single-response answer is possible
 - [ ] Check if answer is available in current context
 
-**If ANY doubt**: Escalate to INVESTIGATION_WORKFLOW or DEFAULT_WORKFLOW
+**If ANY doubt**: Escalate to the `investigation-workflow` or
+`default-workflow` skill/recipe
 
 ### Step 2: Provide Response
 
@@ -67,8 +68,8 @@ Use Q&A_WORKFLOW when ALL are true:
 
 - [ ] Verify answer fully addresses question
 - [ ] Check if follow-up suggests different workflow needed
-- [ ] If deeper understanding needed -> Offer INVESTIGATION_WORKFLOW
-- [ ] If implementation needed -> Offer DEFAULT_WORKFLOW
+- [ ] If deeper understanding needed -> Offer the `investigation-workflow` skill/recipe
+- [ ] If implementation needed -> Offer the `default-workflow` skill/recipe
 
 ## Escalation Examples
 

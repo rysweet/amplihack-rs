@@ -81,7 +81,7 @@ sequenceDiagram
 
 | File Path                                                                      | Purpose                                                | Key Components                          |
 | ------------------------------------------------------------------------------ | ------------------------------------------------------ | --------------------------------------- |
-| `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md`                      | Defines investigation workflow with documentation step | Step 6: Documentation generation        |
+| `investigation-workflow` skill/recipe                                          | Defines investigation workflow with documentation step | Step 6: Documentation generation        |
 | `~/.amplihack/.claude/agents/amplihack/specialized/knowledge-archaeologist.md` | Agent with documentation generation capability         | Documentation Generation section        |
 | `~/.amplihack/.claude/templates/investigation-doc-template.md`                 | Template for general investigations                    | Findings, Files, Integration, Examples  |
 | `~/.amplihack/.claude/templates/architecture-doc-template.md`                  | Template for architecture investigations               | Architecture diagrams, Design decisions |
@@ -307,7 +307,7 @@ This would create `~/.amplihack/.claude/docs/INVESTIGATION_HOOK_EXECUTION_BUG.md
 
 ## Related Documentation
 
-- `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` - Investigation workflow definition
+- `investigation-workflow` skill/recipe - Investigation workflow definition
 - `~/.amplihack/.claude/templates/README.md` - Template usage guide
 - `~/.amplihack/.claude/agents/amplihack/specialized/knowledge-archaeologist.md` - Agent definition
 - `~/.amplihack/.claude/context/PATTERNS.md` - Project patterns (should add documentation pattern)

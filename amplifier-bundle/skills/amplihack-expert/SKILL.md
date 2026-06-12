@@ -54,7 +54,7 @@ references:
   - "reference.md: Comprehensive architecture details"
   - "examples.md: Real-world usage scenarios"
   - "@~/.amplihack/.claude/context/PHILOSOPHY.md: Core principles"
-  - "@~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md: Main workflow"
+  - "`default-workflow` skill/recipe: Main workflow"
 ---
 
 # amplihack Expert Knowledge
@@ -140,7 +140,7 @@ Engineering system for coding CLIs (Claude, Copilot, Amplifier): 5 mechanisms, 2
 - reference.md: Architecture (5 mechanisms, 5 layers, hooks)
 - examples.md: Scenarios (5+ real examples)
 - @~/.amplihack/.claude/context/PHILOSOPHY.md: Core principles
-- @~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md: 23 steps
+- `default-workflow` skill/recipe: 23 steps
 - @~/.amplihack/.claude/agents/amplihack/: All agents
 - @~/.amplihack/.claude/commands/amplihack/: All commands
 - @~/.amplihack/.claude/tools/amplihack/hooks/: Hook system
