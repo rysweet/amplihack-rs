@@ -1,3 +1,4 @@
+use super::correlation::{RecipeRunCorrelation, RecipeRunFinalStatus, known_log_paths};
 use super::*;
 use crate::env_builder::{EnvBuilder, active_agent_binary};
 use std::collections::VecDeque;
@@ -24,7 +25,10 @@ pub(super) fn execute_recipe_via_rust(
     step_timeout: Option<u64>,
 ) -> Result<RecipeRunResult> {
     let binary = super::binary::find_recipe_runner_binary()?;
-    let mut command = Command::new(binary);
+    let recipe_name = recipe_name_for_correlation(recipe_path);
+    let correlation =
+        RecipeRunCorrelation::new(recipe_name, working_dir, context, binary.as_path());
+    let mut command = Command::new(&binary);
     command
         .arg(recipe_path)
         .arg("--output-format")
@@ -71,19 +75,34 @@ pub(super) fn execute_recipe_via_rust(
     };
 
     env_builder.apply_to_command(&mut command);
+    command.env("AMPLIHACK_RECIPE_RUN_ID", correlation.run_id());
 
-    spawn_with_streaming_stderr(command)
+    spawn_with_streaming_stderr(command, correlation)
 }
 
 /// Spawn the runner with stdout captured (we need to parse JSON from it)
 /// and stderr "teed": each line is forwarded live to our own stderr AND
 /// captured in a buffer so the error path can still surface a meaningful
 /// stderr tail. (#357)
-fn spawn_with_streaming_stderr(mut command: Command) -> Result<RecipeRunResult> {
+fn spawn_with_streaming_stderr(
+    mut command: Command,
+    correlation: RecipeRunCorrelation,
+) -> Result<RecipeRunResult> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .context("failed to spawn recipe-runner-rs")?;
+    correlation.emit_early();
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _summary = correlation.emit_final(
+                RecipeRunFinalStatus::SpawnFailure,
+                None,
+                None,
+                known_log_paths(None),
+            );
+            return Err(error).context("failed to spawn recipe-runner-rs");
+        }
+    };
+    let child_pid = Some(child.id());
 
     let captured_stderr: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let stderr_handle = child.stderr.take().expect("piped stderr");
@@ -127,12 +146,63 @@ fn spawn_with_streaming_stderr(mut command: Command) -> Result<RecipeRunResult> 
 
     let captured = captured_stderr.lock().expect("stderr mutex");
     let stderr_joined = captured.iter().cloned().collect::<Vec<_>>().join("\n");
-    parse_recipe_output(&stdout_buf, &stderr_joined, status.success()).with_context(|| {
-        format!(
-            "recipe-runner-rs exited with {}",
-            exit_status_label(&status)
-        )
-    })
+    match parse_recipe_output(&stdout_buf, &stderr_joined, status.success()) {
+        Ok(mut result) => {
+            let final_status = if status.success() && result.success {
+                RecipeRunFinalStatus::Success
+            } else {
+                RecipeRunFinalStatus::Failure
+            };
+            let summary = correlation.emit_final(
+                final_status,
+                child_pid,
+                status.code(),
+                known_log_paths(Some(&result)),
+            );
+            result.run_id = Some(summary.run_id.clone());
+            result.log_pointer = Some(summary);
+            Ok(result)
+        }
+        Err(error) => {
+            let final_status = if status.success() || !stdout_buf.trim().is_empty() {
+                RecipeRunFinalStatus::ParseFailure
+            } else {
+                RecipeRunFinalStatus::Failure
+            };
+            let _summary = correlation.emit_final(
+                final_status,
+                child_pid,
+                status.code(),
+                known_log_paths(None),
+            );
+            Err(error).with_context(|| {
+                format!(
+                    "recipe-runner-rs exited with {}",
+                    exit_status_label(&status)
+                )
+            })
+        }
+    }
+}
+
+fn recipe_name_for_correlation(recipe_path: &Path) -> String {
+    std::fs::read_to_string(recipe_path)
+        .ok()
+        .and_then(|content| serde_yaml::from_str::<serde_yaml::Value>(&content).ok())
+        .and_then(|value| {
+            value
+                .get("name")
+                .and_then(serde_yaml::Value::as_str)
+                .map(str::to_string)
+        })
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| {
+            recipe_path
+                .file_stem()
+                .map(|value| value.to_string_lossy().to_string())
+                .filter(|name| !name.trim().is_empty())
+        })
+        .unwrap_or_else(|| recipe_path.display().to_string())
 }
 
 fn push_bounded_stderr_line(captured: &Arc<Mutex<VecDeque<String>>>, line: String) {

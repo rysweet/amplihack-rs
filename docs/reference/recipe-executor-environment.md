@@ -21,6 +21,7 @@ non-interactive nested execution before the runner receives any recipe context.
 | Variable | Child value | Behavior |
 |----------|-------------|----------|
 | `AMPLIHACK_NONINTERACTIVE` | `1` | Always forced for the recipe-runner subprocess, even when the parent shell is interactive |
+| `AMPLIHACK_RECIPE_RUN_ID` | Generated UUID | Stable correlation identity for this `amplihack recipe run` invocation |
 | `CLAUDECODE` | *(removed)* | Explicitly unset so nested agents do not detect a parent Claude Code session |
 | `AMPLIHACK_AGENT_BINARY` | Active launcher binary | Propagates the current runtime selection, such as `copilot`, `claude`, `codex`, or `amplifier` |
 | `AMPLIHACK_HOME` | Resolved framework home | Gives the runner access to installed recipes, hooks, skills, and agents |
@@ -41,10 +42,10 @@ CLAUDECODE=1 env -u AMPLIHACK_NONINTERACTIVE \
   -c repo_path=.
 ```
 
-The `recipe-runner-rs` child sees `AMPLIHACK_NONINTERACTIVE=1` and does not see
-`CLAUDECODE`. Nested agent launches therefore use the active agent routing
-contract instead of inheriting Claude-specific session behavior from the parent
-environment.
+The `recipe-runner-rs` child sees `AMPLIHACK_NONINTERACTIVE=1` and
+`AMPLIHACK_RECIPE_RUN_ID=<uuid>`, and it does not see `CLAUDECODE`. Nested agent
+launches therefore use the active agent routing contract instead of inheriting
+Claude-specific session behavior from the parent environment.
 
 ---
 
@@ -124,7 +125,7 @@ The recipe executor's environment injection is independent of the top-level `AMP
 | Scope | Variable | Set by |
 |-------|----------|--------|
 | Top-level CLI launch | `AMPLIHACK_NONINTERACTIVE=1` | User or CI configuration |
-| Recipe runner subprocess | `AMPLIHACK_NONINTERACTIVE=1` | `amplihack recipe run` centralized subprocess environment |
+| Recipe runner subprocess | `AMPLIHACK_NONINTERACTIVE=1`, `AMPLIHACK_RECIPE_RUN_ID=<uuid>` | `amplihack recipe run` centralized subprocess environment |
 | Recipe shell steps | `CI=true`, `NONINTERACTIVE=1`, `DEBIAN_FRONTEND=noninteractive` | Recipe executor (always) |
 | Recipe agent steps | `NONINTERACTIVE=1` in context map | Recipe executor (always) |
 
@@ -138,5 +139,6 @@ must never prompt for input.
 
 - [amplihack recipe](./recipe-command.md) — Full CLI reference for the recipe subcommand
 - [Environment Variables](./environment-variables.md) — All variables read or injected by amplihack
+- [Recipe Run Correlation Reference](./recipe-run-correlation.md) — Stable recipe run IDs and pointer events
 - [Recipe Execution Flow](../concepts/recipe-execution-flow.md) — Step execution architecture
 - [Troubleshoot Recipe Execution](../howto/troubleshoot-recipe-execution.md) — Diagnosing common recipe failures

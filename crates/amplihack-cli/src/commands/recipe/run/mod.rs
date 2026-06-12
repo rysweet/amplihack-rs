@@ -1,6 +1,7 @@
 use super::*;
 
 mod binary;
+mod correlation;
 mod execute;
 mod format;
 

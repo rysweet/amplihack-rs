@@ -582,6 +582,339 @@ fn test_execute_recipe_via_rust_reports_signal_kill_clearly() {
 }
 
 // -------------------------------------------------------------------------
+// recipe run correlation — TDD tests for issue #753
+// -------------------------------------------------------------------------
+
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_sets_stable_run_id_env_and_result_metadata() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+    std::fs::write(
+        &runner,
+        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":true,\"step_results\":[],\"context\":{\"env_run_id\":\"$AMPLIHACK_RECIPE_RUN_ID\"}}\nEOF\n",
+    )
+    .expect("failed to write runner stub");
+    make_executable(&runner);
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: correlation-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+    }
+
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        false,
+        false,
+        temp.path(),
+        &[],
+        None,
+    )
+    .expect("recipe run must succeed");
+
+    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
+    restore_env_var("AMPLIHACK_HOME", prev_home);
+
+    let result_json = serde_json::to_value(&result).expect("result must serialize");
+    let run_id = result_json
+        .get("run_id")
+        .and_then(JsonValue::as_str)
+        .expect("RecipeRunResult must expose additive run_id metadata");
+    uuid::Uuid::parse_str(run_id).expect("run_id must be a UUID");
+    assert_eq!(
+        result.context.get("env_run_id").and_then(JsonValue::as_str),
+        Some(run_id),
+        "AMPLIHACK_RECIPE_RUN_ID must match the stable result run_id"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_emits_early_and_final_success_log_pointers() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+    std::fs::write(
+        &runner,
+        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":true,\"step_results\":[],\"context\":{}}\nEOF\n",
+    )
+    .expect("failed to write runner stub");
+    make_executable(&runner);
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: correlation-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+    }
+
+    let mut context = BTreeMap::new();
+    context.insert(
+        "task_description".to_string(),
+        "Fix issue #753 correlation logs".to_string(),
+    );
+    context.insert("issue_number".to_string(), "753".to_string());
+    context.insert(
+        "pr_url".to_string(),
+        "https://github.com/rysweet/amplihack-rs/pull/999".to_string(),
+    );
+
+    let (result, stderr) = capture_stderr_during(|| {
+        execute::execute_recipe_via_rust(&recipe, &context, false, false, temp.path(), &[], None)
+    });
+
+    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
+    restore_env_var("AMPLIHACK_HOME", prev_home);
+
+    result.expect("recipe run must succeed");
+    let pointers = parse_log_pointers(&stderr);
+    assert_eq!(
+        pointers.len(),
+        2,
+        "wrapper must emit exactly one early and one final pointer. stderr:\n{stderr}"
+    );
+
+    let early = pointers
+        .iter()
+        .find(|pointer| pointer["event"] == "early")
+        .expect("missing early pointer");
+    let final_pointer = pointers
+        .iter()
+        .find(|pointer| pointer["event"] == "final")
+        .expect("missing final pointer");
+    let run_id = early["run_id"].as_str().expect("early run_id is required");
+    uuid::Uuid::parse_str(run_id).expect("run_id must be a UUID");
+
+    assert_eq!(final_pointer["run_id"].as_str(), Some(run_id));
+    assert_eq!(early["schema_version"].as_u64(), Some(1));
+    assert_eq!(early["recipe_name"].as_str(), Some("correlation-probe"));
+    assert_eq!(early["cwd"].as_str(), Some(temp.path().to_str().unwrap()));
+    assert_eq!(
+        early["worktree"].as_str(),
+        Some(temp.path().to_str().unwrap())
+    );
+    assert_eq!(
+        early["runner_path"].as_str(),
+        Some(runner.to_str().unwrap())
+    );
+    assert_eq!(
+        early["task_description"].as_str(),
+        Some("Fix issue #753 correlation logs")
+    );
+    assert_eq!(early["issue_number"].as_str(), Some("753"));
+    assert_eq!(
+        early["pr_url"].as_str(),
+        Some("https://github.com/rysweet/amplihack-rs/pull/999")
+    );
+    assert!(
+        early.get("pr_number").is_none(),
+        "missing metadata must be omitted rather than guessed: {early}"
+    );
+    assert!(
+        early.get("child_pid").is_none(),
+        "early pointer must not claim a child PID before spawn: {early}"
+    );
+
+    assert_eq!(final_pointer["status"].as_str(), Some("success"));
+    assert_eq!(final_pointer["exit_code"].as_i64(), Some(0));
+    assert!(
+        final_pointer["child_pid"]
+            .as_u64()
+            .is_some_and(|pid| pid > 0),
+        "final success pointer must include child_pid: {final_pointer}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_nonzero_exit_emits_failure_pointer_and_result_summary() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+    std::fs::write(
+        &runner,
+        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":false,\"step_results\":[],\"context\":{}}\nEOF\nexit 7\n",
+    )
+    .expect("failed to write runner stub");
+    make_executable(&runner);
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: correlation-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+    }
+
+    let (result, stderr) = capture_stderr_during(|| {
+        execute::execute_recipe_via_rust(
+            &recipe,
+            &BTreeMap::new(),
+            false,
+            false,
+            temp.path(),
+            &[],
+            None,
+        )
+    });
+
+    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
+    restore_env_var("AMPLIHACK_HOME", prev_home);
+
+    let result = result.expect("parseable nonzero runner result should be returned");
+    let final_pointer = only_final_pointer(&stderr);
+    assert_eq!(final_pointer["status"].as_str(), Some("failure"));
+    assert_eq!(final_pointer["exit_code"].as_i64(), Some(7));
+    assert!(
+        final_pointer["child_pid"]
+            .as_u64()
+            .is_some_and(|pid| pid > 0),
+        "failure pointer must include the child PID: {final_pointer}"
+    );
+
+    let result_json = serde_json::to_value(&result).expect("result must serialize");
+    let log_pointer = result_json
+        .get("log_pointer")
+        .expect("parseable nonzero result must include final log_pointer summary");
+    assert_eq!(log_pointer["status"].as_str(), Some("failure"));
+    assert_eq!(log_pointer["exit_code"].as_i64(), Some(7));
+}
+
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_parse_failure_emits_final_pointer() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+    std::fs::write(&runner, "#!/bin/sh\necho 'not-json'\nexit 0\n")
+        .expect("failed to write runner stub");
+    make_executable(&runner);
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: parse-failure-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+    }
+
+    let (result, stderr) = capture_stderr_during(|| {
+        execute::execute_recipe_via_rust(
+            &recipe,
+            &BTreeMap::new(),
+            false,
+            false,
+            temp.path(),
+            &[],
+            None,
+        )
+    });
+
+    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
+    restore_env_var("AMPLIHACK_HOME", prev_home);
+
+    result.expect_err("invalid runner stdout must still fail parsing");
+    let final_pointer = only_final_pointer(&stderr);
+    assert_eq!(final_pointer["status"].as_str(), Some("parse_failure"));
+    assert_eq!(final_pointer["exit_code"].as_i64(), Some(0));
+    assert!(
+        final_pointer["child_pid"]
+            .as_u64()
+            .is_some_and(|pid| pid > 0),
+        "parse failure pointer must include child_pid: {final_pointer}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_spawn_failure_emits_final_pointer_without_child_pid() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let runner = temp.path().join("recipe-runner-rs");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+
+    std::fs::write(&runner, "#!/bin/sh\nexit 0\n").expect("failed to write runner stub");
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: spawn-failure-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+    }
+
+    let (result, stderr) = capture_stderr_during(|| {
+        execute::execute_recipe_via_rust(
+            &recipe,
+            &BTreeMap::new(),
+            false,
+            false,
+            temp.path(),
+            &[],
+            None,
+        )
+    });
+
+    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
+    restore_env_var("AMPLIHACK_HOME", prev_home);
+
+    result.expect_err("non-executable runner must fail to spawn");
+    let final_pointer = only_final_pointer(&stderr);
+    assert_eq!(final_pointer["status"].as_str(), Some("spawn_failure"));
+    assert_eq!(
+        final_pointer["runner_path"].as_str(),
+        Some(runner.to_str().unwrap())
+    );
+    assert!(
+        final_pointer.get("child_pid").is_none(),
+        "spawn failure must omit child_pid because no child exists: {final_pointer}"
+    );
+}
+
+// -------------------------------------------------------------------------
 // pass_context — unit tests for E2BIG mitigation (issues #209, #211)
 // -------------------------------------------------------------------------
 
@@ -945,6 +1278,65 @@ fn which_recipe_runner_available() -> bool {
         }
     }
     false
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to chmod runner");
+}
+
+fn restore_env_var(key: &str, previous: Option<std::ffi::OsString>) {
+    match previous {
+        Some(value) => unsafe { std::env::set_var(key, value) },
+        None => unsafe { std::env::remove_var(key) },
+    }
+}
+
+#[cfg(unix)]
+fn capture_stderr_during<F, T>(f: F) -> (T, String)
+where
+    F: FnOnce() -> T,
+{
+    use std::os::unix::io::AsRawFd;
+
+    let file = tempfile::NamedTempFile::new().expect("failed to create stderr capture file");
+    let stderr_fd = libc::STDERR_FILENO;
+    let saved_stderr = unsafe { libc::dup(stderr_fd) };
+    assert!(saved_stderr >= 0, "failed to duplicate stderr fd");
+
+    let redirect_result = unsafe { libc::dup2(file.as_file().as_raw_fd(), stderr_fd) };
+    assert!(redirect_result >= 0, "failed to redirect stderr");
+
+    let result = f();
+    let _ = std::io::stderr().lock().flush();
+
+    let restore_result = unsafe { libc::dup2(saved_stderr, stderr_fd) };
+    assert!(restore_result >= 0, "failed to restore stderr");
+    unsafe {
+        libc::close(saved_stderr);
+    }
+
+    let stderr = std::fs::read_to_string(file.path()).expect("failed to read captured stderr");
+    (result, stderr)
+}
+
+fn parse_log_pointers(stderr: &str) -> Vec<JsonValue> {
+    stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("amplihack.recipe.log_pointer "))
+        .map(|payload| serde_json::from_str(payload).expect("pointer payload must be valid JSON"))
+        .collect()
+}
+
+fn only_final_pointer(stderr: &str) -> JsonValue {
+    let pointers = parse_log_pointers(stderr);
+    pointers
+        .iter()
+        .find(|pointer| pointer["event"] == "final")
+        .cloned()
+        .unwrap_or_else(|| panic!("missing final pointer in stderr:\n{stderr}"))
 }
 
 // -------------------------------------------------------------------------
