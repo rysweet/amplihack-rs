@@ -72,9 +72,9 @@ The ultrathink command follows this execution hierarchy:
 └─────────────────────────────────────────────────────────────┘
                            ↓ Falls back to
 ┌─────────────────────────────────────────────────────────────┐
-│ TIER 3: Markdown Workflows (Baseline Prompt-Based)         │
-│ ✓ Always available (.claude/workflow/*.md)                 │
-│ ✓ Baseline workflow instructions                           │
+│ TIER 3: Deprecated Markdown Workflow References            │
+│ ✓ Migration context for old installs (.claude/workflow/)   │
+│ ✗ Not canonical; use skills/recipes for active workflows   │
 │ ✗ No code enforcement (relies on Claude following)         │
 │ ✗ No structured tracking                                   │
 └─────────────────────────────────────────────────────────────┘
@@ -94,11 +94,12 @@ The ultrathink command follows this execution hierarchy:
 - OR `AMPLIHACK_USE_RECIPES=0` is set
 - Skill definition exists in `.claude/skills/` directory
 
-**Markdown Workflows (Tier 3):**
+**Deprecated Markdown Workflow References (Tier 3):**
 
 - Recipe Runner unavailable
 - Workflow skill unavailable or fails to load
-- Always works (last resort - workflows always exist in `.claude/workflow/`)
+- Legacy markdown files exist in an old installation and are needed only for
+  migration or backward-compatibility context
 
 ## How Recipe Runner Works
 

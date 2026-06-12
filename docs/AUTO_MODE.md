@@ -519,7 +519,7 @@ amplihack claude --auto --max-turns 10 -- -p "complete feature X implementation:
 ## See Also
 
 - `AGENTS.md` - Guide for using subagents with Copilot CLI
-- `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md` - Standard workflow steps
+- `default-workflow` skill/recipe - Standard development workflow
 - `~/.amplihack/.claude/context/PHILOSOPHY.md` - Development principles
 
 ---

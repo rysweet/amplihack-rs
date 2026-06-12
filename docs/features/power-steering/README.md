@@ -341,7 +341,7 @@ Power-Steering automatically detects context and enables/disables checks accordi
 Power-Steering integrates seamlessly with amplihack workflows:
 
 ```markdown
-# In DEFAULT_WORKFLOW.md
+# In the default-workflow skill/recipe
 
 ## Step 21: Session Completion
 

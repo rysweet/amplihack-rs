@@ -60,7 +60,7 @@ Root directory accumulated documentation files that belonged in `docs/` subdirec
 
 ### Issue
 
-Claude consistently ignored workflow instructions even when explicitly invoked with `/ultrathink`. Despite the command being explicitly invoked, Claude would skip workflow steps or not follow the DEFAULT_WORKFLOW.md at all.
+Claude consistently ignored workflow instructions even when explicitly invoked with `/ultrathink`. Despite the command being explicitly invoked, Claude would skip workflow steps or not follow the legacy `DEFAULT_WORKFLOW.md` at all.
 
 ### Root Cause
 
@@ -69,8 +69,7 @@ Claude consistently ignored workflow instructions even when explicitly invoked w
 ```
 /ultrathink command
   -> ultrathink-orchestrator skill
-    -> default-workflow skill
-      -> DEFAULT_WORKFLOW.md
+    -> default-workflow skill/recipe
 ```
 
 Each layer of indirection loses context. By the time Claude reaches the actual workflow file, the instruction to follow it strictly has been diluted or lost.

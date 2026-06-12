@@ -87,7 +87,7 @@ When Recipe Runner is unavailable or you prefer single-session execution:
 /multitask sprint.json --mode classic
 ```
 
-Each workstream gets a single long-running Claude session that follows `DEFAULT_WORKFLOW.md` via prompt instructions.
+Each workstream gets a single long-running Claude session that follows the `default-workflow` skill/recipe via prompt instructions.
 
 ## Example 5: Monitoring During Execution
 

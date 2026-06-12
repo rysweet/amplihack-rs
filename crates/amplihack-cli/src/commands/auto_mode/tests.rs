@@ -1,5 +1,5 @@
 use super::helpers::{
-    build_auto_command, build_tool_passthrough_args, extract_prompt_args,
+    build_auto_command, build_tool_passthrough_args, extract_prompt_args, philosophy_context,
     transform_prompt_for_staging,
 };
 use super::run::render_auto_session_argv;
@@ -87,6 +87,18 @@ fn build_tool_passthrough_args_matches_codex_and_copilot_contracts() {
         copilot,
         vec!["--allow-all", "--add-dir", "/", "-p", "add logging"]
     );
+}
+
+#[test]
+fn philosophy_context_points_auto_mode_to_default_workflow_skill_recipe() {
+    let context = philosophy_context();
+
+    assert!(context.contains("`default-workflow` skill/recipe"));
+    assert!(context.contains("`dev-orchestrator`"));
+    assert!(context.contains("`amplihack recipe run smart-orchestrator`"));
+    assert!(!context.contains("@.claude/workflow/DEFAULT_WORKFLOW.md"));
+    assert!(!context.contains("@.claude/workflows/DEFAULT_WORKFLOW.md"));
+    assert!(!context.contains("DEFAULT_WORKFLOW.md patterns"));
 }
 
 #[test]

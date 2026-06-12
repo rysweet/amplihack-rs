@@ -105,7 +105,7 @@ mkdir .claude/scenarios/new-tool
 Tools integrate seamlessly with amplihack's existing systems:
 
 - **Agent System**: Tools can invoke specialized agents
-- **Workflow Integration**: Tools respect DEFAULT_WORKFLOW.md
+- **Workflow Integration**: Tools respect the `default-workflow` skill/recipe
 - **Philosophy Compliance**: All tools follow ruthless simplicity
 - **User Preferences**: Tools adapt to USER_PREFERENCES.md
 

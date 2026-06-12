@@ -578,20 +578,23 @@ All bundled recipes pass YAML validation without errors.
 
 ## Integration with Amplihack
 
-### UltraThink
+### Dev Orchestrator
 
-When `/ultrathink` is invoked, it reads `DEFAULT_WORKFLOW.md` and orchestrates agents through each step. The Recipe Runner replaces this orchestration with code-enforced execution. The `default-workflow` recipe encodes the same 22 steps from `DEFAULT_WORKFLOW.md` in YAML, so the process stays identical while enforcement moves from prompts to code.
+When `dev-orchestrator` is invoked, it routes through the `smart-orchestrator`
+recipe. Development work then executes the `default-workflow` skill/recipe with
+code-enforced ordering, checkpoints, recursion guards, and quality gates.
 
 ```bash
-# Before: prompt-based enforcement
-/ultrathink "Add user authentication"
+# Normal: orchestrated execution
+amplihack recipe run smart-orchestrator \
+  --context task_description="Add user authentication"
 
-# After: code-enforced execution (same 22 steps)
+# Direct compatibility: run the default workflow recipe
 amplihack recipe run default-workflow \
   --context task_description="Add user authentication"
 ```
 
-Both approaches produce the same result. The difference is that the recipe version cannot skip steps.
+The recipe version is canonical because it cannot skip steps.
 
 ### Existing Agents
 
@@ -603,11 +606,11 @@ Recipes reference agents by their filename (without `.md`) from `~/.amplihack/.c
 
 ### Workflow Files
 
-The `default-workflow` recipe is a direct translation of `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md` into executable YAML. If you edit the workflow markdown, re-generate the recipe to keep them in sync:
-
-```bash
-amplihack recipe sync default-workflow
-```
+Legacy markdown workflow files are deprecated compatibility references. The
+`default-workflow` skill/recipe is the canonical representation for the default
+development workflow. Update `amplifier-bundle/skills/default-workflow/SKILL.md`
+for user-facing documentation and `amplifier-bundle/recipes/default-workflow.yaml`
+for executable behavior.
 
 ### CLI Integration
 
@@ -617,6 +620,5 @@ Recipe Runner commands are available under the `amplihack recipe` subcommand gro
 amplihack recipe list                    # List available recipes
 amplihack recipe run <name> [options]    # Execute a recipe
 amplihack recipe validate <file>         # Validate recipe YAML
-amplihack recipe sync <name>             # Sync recipe from workflow markdown
 amplihack recipe show <name>             # Print recipe steps and metadata
 ```
