@@ -1,5 +1,6 @@
 //! Asset staging — agents, skills, command docs, and plugin registration.
 
+use amplihack_types::workflow;
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use std::fs;
@@ -49,7 +50,7 @@ fn canonicalize_user_preferences(content: &str) -> String {
         .lines()
         .map(|line| {
             if is_stale_selected_workflow_line(line) {
-                "**Selected**: `default-workflow` skill/recipe".to_string()
+                format!("**Selected**: {}", workflow::DEFAULT_WORKFLOW_SELECTION)
             } else {
                 line.to_string()
             }
