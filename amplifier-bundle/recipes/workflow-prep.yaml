@@ -3,7 +3,6 @@ description: "Phase 1a: requirements + issue creation (steps 00-03b)"
 version: "1.0.0"
 author: "Amplihack Team"
 tags: ["development", "prep", "requirements"]
-
 # workflow-prep: extracted from default-workflow.yaml as a composable phase brick.
 #
 # Preserves every original step verbatim — the layered review steps the LLM
@@ -12,11 +11,9 @@ tags: ["development", "prep", "requirements"]
 # `_execute_sub_recipe()`; outputs declared by these steps propagate back to
 # the parent and are visible to subsequent phase recipes.
 # Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
-
 recursion:
   max_depth: 6
   max_total_steps: 80
-
 context: {}
 
 steps:
@@ -280,6 +277,10 @@ steps:
       azdo|azure-devops)
         [[ "$EXISTING_ISSUE_NUMBER" =~ ^[0-9]+$ ]] && { printf 'ISSUE_REFERENCE=AB#%s\n' "$EXISTING_ISSUE_NUMBER" >> "${GITHUB_OUTPUT:-/dev/null}"; printf 'AB#%s\n' "$EXISTING_ISSUE_NUMBER"; exit 0; }
         ;;
+      esac
+      case "$HOST_TYPE" in
+      github|azdo|azure-devops) ;;
+      *) echo "INFO: Using local tracking for issue management (remote: $HOST_TYPE)" >&2; LOCAL_ISSUE=$(($(date +%s) % 1000000)); printf 'local-tracking:%s\n' "$LOCAL_ISSUE"; exit 0 ;;
       esac
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "[skip] not a git repo — using local tracking" >&2

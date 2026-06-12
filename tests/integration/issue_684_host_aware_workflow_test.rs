@@ -36,6 +36,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 
 use serde_yaml::Value;
 
@@ -66,10 +67,25 @@ fn recipe_text(name: &str) -> String {
 // Recipe parsing helpers (same pattern as issue_655_656 tests)
 // ---------------------------------------------------------------------------
 
-fn load_recipe(name: &str) -> Value {
+fn parse_recipe(name: &str) -> Value {
     let path = recipe_path(name);
     let text = recipe_text(name);
     serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {} as YAML: {e}", path.display()))
+}
+
+fn load_recipe(name: &str) -> &'static Value {
+    static DEFAULT_WORKFLOW: OnceLock<Value> = OnceLock::new();
+    static WORKFLOW_PREP: OnceLock<Value> = OnceLock::new();
+    static WORKFLOW_PUBLISH: OnceLock<Value> = OnceLock::new();
+    static WORKFLOW_FINALIZE: OnceLock<Value> = OnceLock::new();
+
+    match name {
+        "default-workflow" => DEFAULT_WORKFLOW.get_or_init(|| parse_recipe(name)),
+        "workflow-prep" => WORKFLOW_PREP.get_or_init(|| parse_recipe(name)),
+        "workflow-publish" => WORKFLOW_PUBLISH.get_or_init(|| parse_recipe(name)),
+        "workflow-finalize" => WORKFLOW_FINALIZE.get_or_init(|| parse_recipe(name)),
+        _ => panic!("uncached test recipe: {name}"),
+    }
 }
 
 /// Extract the `command:` body of a bash step by its `id:` field.
@@ -969,6 +985,11 @@ fn step_03_preserves_generic_local_tracking_fallback() {
     assert!(
         stdout.trim().starts_with("local-tracking:"),
         "generic host must preserve local tracking fallback; stdout:\n{stdout}"
+    );
+    assert!(
+        run.git_log.is_empty(),
+        "generic host must not probe git before local tracking fallback; git log:\n{}",
+        run.git_log
     );
     assert!(
         run.gh_log.is_empty(),
