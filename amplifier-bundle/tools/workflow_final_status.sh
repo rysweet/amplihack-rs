@@ -8,6 +8,7 @@ export GH_PAGER=cat PAGER=cat LESS=FRX
 
 HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
 PR_URL="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
+PR_NUMBER="${PR_NUMBER:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}"
 PUBLISH_STATE="${PR_PUBLISH_RESULT_STATE:-${RECIPE_VAR_pr_publish_result__state:-}}"
 TASK_DESC="${TASK_DESCRIPTION:-}"
 ISSUE_NUMBER="${ISSUE_NUMBER:-}"
@@ -23,6 +24,12 @@ terminal_no_op="false"
 missing_evidence=""
 invalid_evidence=""
 normalized_bool="false"
+terminal_status="${PUBLISH_STATE:-active-pr}"
+final_status_rc=0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${SCRIPT_DIR}/workflow_pr_scope.sh}"
+# workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
+# isCrossRepository, expected_pr_title_prefix, and created_after.
 
 sanitize_gh_stderr() {
   sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
@@ -151,6 +158,73 @@ case "$PUBLISH_STATE" in
     ;;
 esac
 
+parse_github_repo_identity() {
+  local url="$1" path owner repo
+  case "$url" in
+    git@github.com:*) path="${url#git@github.com:}" ;;
+    ssh://git@github.com/*) path="${url#ssh://git@github.com/}" ;;
+    https://*@github.com/*|http://*@github.com/*) path="${url#*://}"; path="${path#*@github.com/}" ;;
+    https://github.com/*) path="${url#https://github.com/}" ;;
+    http://github.com/*) path="${url#http://github.com/}" ;;
+    *) return 1 ;;
+  esac
+  path="${path%%\?*}"
+  path="${path%%#*}"
+  path="${path%.git}"
+  case "$path" in */*) ;; *) return 1 ;; esac
+  owner="${path%%/*}"
+  repo="${path#*/}"
+  repo="${repo%%/*}"
+  [ -n "$owner" ] && [ -n "$repo" ] || return 1
+  printf '%s/%s\n' "$owner" "$repo"
+}
+
+resolve_expected_base_branch() {
+  local candidate
+  candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
+  for candidate in origin/main origin/master origin/develop; do
+    if git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
+  done
+  return 1
+}
+
+validate_final_pr_scope() {
+  local current_branch local_head repo_identity expected_base scoped_json reason created_after
+  [ -x "$PR_SCOPE_HELPER" ] || { echo "ERROR: workflow_pr_scope.sh missing or not executable at $PR_SCOPE_HELPER" >&2; return 1; }
+  command -v jq >/dev/null 2>&1 || { echo "ERROR: jq CLI not found — cannot validate scoped final PR metadata" >&2; return 127; }
+  current_branch="$(git branch --show-current 2>/dev/null || true)"
+  local_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
+  repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
+  expected_base="$(resolve_expected_base_branch || true)"
+  [ -n "$repo_identity" ] && [ -n "$current_branch" ] && [ -n "$local_head" ] && [ -n "$expected_base" ] || {
+    echo "ERROR: scoped final PR validation lacks repo, branch, headRefOid, or baseRefName context" >&2
+    return 1
+  }
+  created_after="${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-${TASK_STARTED_AT:-}}}"
+  scope_args=(
+    --repo "$repo_identity"
+    --head "$current_branch"
+    --base "$expected_base"
+    --issue "${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+    --work-item "${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+    --head-sha "$local_head"
+  )
+  title_prefix="${EXPECTED_PR_TITLE_PREFIX:-${PR_EXPECTED_TITLE_PREFIX:-}}"
+  [ -n "$title_prefix" ] && scope_args+=(--expected-pr-title-prefix "$title_prefix")
+  [ -n "$PR_URL" ] && scope_args+=(--pr-url "$PR_URL")
+  [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] && scope_args+=(--pr-number "$PR_NUMBER")
+  [ -n "$created_after" ] && scope_args+=(--created-after "$created_after")
+  if scoped_json="$("$PR_SCOPE_HELPER" "${scope_args[@]}")"; then
+    PR_URL="$(printf '%s' "$scoped_json" | jq -r '.url // empty')"
+    PR_NUMBER="$(printf '%s' "$scoped_json" | jq -r '(.number // "") | tostring')"
+    return 0
+  fi
+  reason="$(printf '%s' "$scoped_json" | jq -r '.reason // ""' 2>/dev/null || true)"
+  echo "ERROR: scoped final PR validation failed: ${reason:-unknown}" >&2
+  return 1
+}
+
 case "$PUBLISH_STATE" in
   FOLLOWUP_CREATED|MERGED|CLOSED_OBSOLETE|NO_DIFF_SUCCESS)
     publish_state_reached="true"
@@ -221,7 +295,11 @@ if [ -z "$PR_URL" ]; then
 elif [ "$HOST_TYPE" = "github" ]; then
   echo "PR Status:"
   if command -v gh >/dev/null 2>&1; then
-    gh_pr_view_with_retry "$PR_URL" --json state,mergeable,reviews,statusCheckRollup || true
+    if validate_final_pr_scope; then
+      gh_pr_view_with_retry "$PR_URL" --json state,mergeable,reviews,statusCheckRollup || true
+    else
+      final_status_rc=1
+    fi
   else
     echo "WARNING: gh CLI not found; skipping final PR status lookup" >&2
   fi
@@ -246,4 +324,9 @@ else
 fi
 
 echo ""
+if [ "$final_status_rc" -ne 0 ]; then
+  echo "Workflow final status failed; terminal success was not proven." >&2
+  exit "$final_status_rc"
+fi
+
 echo "All 23 workflow steps completed successfully."

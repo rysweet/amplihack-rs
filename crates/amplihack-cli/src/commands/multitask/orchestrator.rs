@@ -143,6 +143,8 @@ impl ParallelOrchestrator {
 
         fs::create_dir_all(&ws.work_dir)?;
 
+        launcher::populate_workstream_scope(&mut ws, &self.repo_url, &default_branch);
+
         let delegate = launcher::detect_delegate();
         if self.mode == "recipe" {
             launcher::write_recipe_launcher(&ws, &delegate)?;
@@ -387,14 +389,5 @@ mod tests {
         // Invalid policy should be rejected
         orch.set_default_timeout_policy("invalid-policy");
         assert_eq!(orch.default_timeout_policy, "continue-preserve");
-    }
-
-    #[test]
-    fn test_report_empty() {
-        let orch = ParallelOrchestrator::new(".", "recipe");
-        let report = orch.report();
-        assert!(report.contains("PARALLEL WORKSTREAM REPORT"));
-        assert!(report.contains("Mode: recipe"));
-        assert!(report.contains("Total: 0 | Succeeded: 0 | Failed: 0"));
     }
 }

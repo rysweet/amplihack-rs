@@ -13,6 +13,10 @@ PR_URL_RESULT=""
 PR_NUMBER_RESULT=""
 BRANCH_DIFF_STATUS="unknown"
 MESSAGE="not classified"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${SCRIPT_DIR}/workflow_pr_scope.sh}"
+# workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
+# isCrossRepository, expected_pr_title_prefix, and created_after.
 
 emit_publish_result() {
   jq -nc \
@@ -93,32 +97,6 @@ parse_github_repo_identity() {
   printf '%s/%s\n' "$owner" "$repo"
 }
 
-validate_pr_identity() {
-  local expected_base="$1"
-  if [ -z "$REPO_IDENTITY" ]; then
-    finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "unable to determine current GitHub repo identity from origin remote" 1
-  fi
-  if [ -z "$PR_HEAD_REF" ] || [ -z "$PR_BASE_REF" ] || [ -z "$PR_HEAD_OID" ]; then
-    finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "existing PR metadata is incomplete; refusing to classify terminal state" 1
-  fi
-  if [ "$PR_HEAD_REF" != "$CURRENT_BRANCH" ]; then
-    finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "existing PR headRefName '$PR_HEAD_REF' does not match current branch '$CURRENT_BRANCH'" 1
-  fi
-  if [ "$PR_BASE_REF" != "$expected_base" ]; then
-    finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "existing PR baseRefName '$PR_BASE_REF' does not match base '$expected_base'" 1
-  fi
-  if [ "$PR_HEAD_OID" != "$LOCAL_HEAD" ]; then
-    finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "existing PR headRefOid '$PR_HEAD_OID' does not match local HEAD '$LOCAL_HEAD'" 1
-  fi
-  PR_BASE_IDENTITY="$(parse_github_repo_identity "$PR_URL_RESULT" || true)"
-  if [ -z "$PR_HEAD_OWNER" ] || [ -z "$PR_HEAD_REPO" ] || [ -z "$PR_BASE_IDENTITY" ]; then
-    finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "existing PR metadata is missing repository identity" 1
-  fi
-  if [ "$PR_IS_CROSS_REPO" = "true" ] || [ "$PR_HEAD_OWNER/$PR_HEAD_REPO" != "$REPO_IDENTITY" ] || [ "$PR_BASE_IDENTITY" != "$REPO_IDENTITY" ]; then
-    finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "existing PR repo '$PR_HEAD_OWNER/$PR_HEAD_REPO' -> '$PR_BASE_IDENTITY' does not match current repo '$REPO_IDENTITY'" 1
-  fi
-}
-
 sanitize_gh_stderr() {
   sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1" | tr '\n' ' ' | head -c 500
 }
@@ -187,6 +165,33 @@ gh_pr_create_with_retry() {
   done
 }
 
+scoped_pr_lookup() {
+  local scope_output reason created_after expected_pr_title_prefix
+  [ -x "$PR_SCOPE_HELPER" ] || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "workflow_pr_scope.sh is missing or not executable at $PR_SCOPE_HELPER" 1
+  created_after="${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-${TASK_STARTED_AT:-}}}"
+  expected_pr_title_prefix="${EXPECTED_PR_TITLE_PREFIX:-${PR_EXPECTED_TITLE_PREFIX:-Update}}"
+  scope_args=(
+    --repo "$REPO_IDENTITY"
+    --head "$CURRENT_BRANCH"
+    --base "$BASE_BRANCH"
+    --issue "$ISSUE_NUM"
+    --work-item "$ISSUE_NUM"
+    --expected-pr-title-prefix "$expected_pr_title_prefix"
+    --head-sha "$LOCAL_HEAD"
+  )
+  [ -n "$created_after" ] && scope_args+=(--created-after "$created_after")
+  if scope_output="$("$PR_SCOPE_HELPER" "${scope_args[@]}")"; then
+    printf '%s\n' "$scope_output"
+    return 0
+  fi
+  reason="$(printf '%s' "$scope_output" | jq -r '.reason // ""' 2>/dev/null || true)"
+  if [ "$reason" = "no_scoped_pr" ]; then
+    printf '{}\n'
+    return 0
+  fi
+  finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "scoped PR lookup failed: ${reason:-unknown}" 1
+}
+
 HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
 if [ "$HOST_TYPE" != "github" ]; then
   finish_publish "non-github" "non-github" "success" "non-GitHub host does not use gh pr create"
@@ -199,6 +204,7 @@ if ! command -v gh >/dev/null 2>&1; then echo "ERROR: workflow_publish_pr.sh req
 [ -n "$CURRENT_BRANCH" ] || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "current branch is empty; cannot publish from detached HEAD" 1
 LOCAL_HEAD="$(git rev-parse --verify HEAD 2>/dev/null)" || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "local HEAD does not resolve" 1
 REPO_IDENTITY="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
+[ -n "$REPO_IDENTITY" ] || finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" "unable to determine current GitHub repo identity from origin remote" 1
 
 BASE_REF="$(resolve_pr_base_ref)"
 BASE_BRANCH="${BASE_REF#origin/}"
@@ -207,9 +213,7 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 if git diff --quiet "${BASE_REF}..HEAD"; then BRANCH_DIFF_STATUS="no-diff"; else BRANCH_DIFF_STATUS="has-diff"; fi
 
-if ! PR_JSON="$(gh_pr_list_with_retry --head "$CURRENT_BRANCH" --state all --json url,number,state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository --jq '.[0] // {}')"; then
-  finish_publish "FAILED_PR_METADATA_UNAVAILABLE" "pr-metadata-unavailable" "failure" "unavailable PR metadata for branch; refusing to risk duplicate PR creation" 1
-fi
+PR_JSON="$(scoped_pr_lookup)"
 load_pr_fields "$PR_JSON"
 
 if [ -n "$PR_URL_RESULT" ]; then
@@ -217,7 +221,6 @@ if [ -n "$PR_URL_RESULT" ]; then
     VIEW_JSON="$(gh_pr_view_with_retry "$PR_URL_RESULT" --json url,number,state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository)"
     load_pr_fields "$VIEW_JSON"
   fi
-  validate_pr_identity "$BASE_BRANCH"
   case "$PR_STATE:$PR_MERGED_AT" in
     OPEN:*) finish_publish "existing-open-pr" "existing-open-pr" "success" "existing open PR found for branch" ;;
     MERGED:*) finish_publish "MERGED" "already-merged" "success" "branch PR is already merged" ;;
@@ -244,7 +247,7 @@ CHANGED_FILES=$(git diff --name-only "${BASE_REF}..HEAD" 2>/dev/null | head -40 
 CHANGED_COUNT=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d' | wc -l | tr -d ' ')
 DIFF_STAT=$(git diff --stat "${BASE_REF}..HEAD" 2>/dev/null | tail -20 || true)
 RECENT_COMMITS=$(git log --oneline --no-decorate "${BASE_REF}..HEAD" -6 2>/dev/null || true)
-FIRST_CHANGED=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d' | head -1)
+FIRST_CHANGED=$(printf '%s\n' "$CHANGED_FILES" | awk 'NF {print; exit}')
 case "$FIRST_CHANGED" in amplifier-bundle/recipes/*) PR_SCOPE="workflow recipes" ;; crates/amplihack-cli/*) PR_SCOPE="amplihack CLI" ;; crates/*) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f2)" ;; tests/*) PR_SCOPE="regression coverage" ;; docs/*) PR_SCOPE="documentation" ;; "") PR_SCOPE="workflow changes" ;; *) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f1)" ;; esac
 if [ "$CHANGED_COUNT" -gt 1 ]; then PR_TITLE="Update ${PR_SCOPE} with ${CHANGED_COUNT} changed files"; else PR_TITLE="Update ${PR_SCOPE}"; fi
 PR_TITLE="${PR_TITLE} (#${ISSUE_NUM})"
@@ -264,5 +267,5 @@ LEGACY_PUBLISH_STATE="create-new-pr"
 if ! PR_URL_RESULT="$(gh_pr_create_with_retry)"; then
   finish_publish "FAILED_PR_CREATE" "create-pr-failed" "failure" "draft PR creation failed; GitHub API state is ambiguous" 1
 fi
-PR_NUMBER_RESULT="$(printf '%s\n' "$PR_URL_RESULT" | sed -nE 's#.*/pull/([0-9]+).*#\1#p' | head -1)"
+PR_NUMBER_RESULT="$(printf '%s\n' "$PR_URL_RESULT" | awk -F/ '/\/pull\/[0-9]+/ {print $NF; exit}')"
 finish_publish "$PUBLISH_STATE" "$LEGACY_PUBLISH_STATE" "success" "draft PR created"

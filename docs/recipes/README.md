@@ -76,6 +76,7 @@ Complete documentation for using the Recipe Runner:
 - **[Workflow Terminal-State Reference](../reference/workflow-terminal-state.md)** - Target contract for development workflow completion evidence, no-op states, routed failure propagation, and `workflow_final_status.sh` API
 - **[How to Diagnose Workflow Terminal-State Failures](../howto/diagnose-workflow-terminal-state.md)** - Recovery guide for missing terminal evidence after planning, analysis, design, or worktree-only execution
 - **[Tutorial: Workflow Terminal-State Closure](../tutorials/workflow-terminal-state-closure.md)** - Walk through successful evidence, planning-only failure, and rerun behavior
+- **[Scoped Workflow Closure](../reference/scoped-workflow-closure.md)** - Persisted PR, process, and workstream ownership contract for default-workflow closure
 
 ## Why It Exists
 
