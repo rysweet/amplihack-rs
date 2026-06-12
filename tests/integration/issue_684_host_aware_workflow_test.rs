@@ -243,6 +243,26 @@ fn run_step_03(host_type: &str, issue_number: &str, task_description: &str) -> S
     run_step_03_with_env(host_type, issue_number, task_description, &[])
 }
 
+fn run_step_03b(issue_creation: &str, task_description: &str) -> Output {
+    let command = extract_step_body(
+        &load_recipe("workflow-prep"),
+        "step-03b-extract-issue-number",
+    );
+
+    Command::new("bash")
+        .arg("-c")
+        .arg(command)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("ISSUE_CREATION", issue_creation)
+        .env("TASK_DESCRIPTION", task_description)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run step-03b-extract-issue-number")
+}
+
 /// Get the context block from default-workflow.yaml.
 fn default_workflow_context(recipe: &Value) -> Value {
     recipe
@@ -831,13 +851,61 @@ fn step_03_github_repo_resolution_failure_falls_back_to_local_tracking() {
 }
 
 #[test]
-fn step_03b_extracts_issue_number_from_local_tracking_metadata() {
+fn step_03_github_repo_resolution_failure_uses_issue_number_for_local_tracking() {
+    let run = run_step_03_with_env(
+        "github",
+        "763",
+        "Create tracking for a workflow without an inline issue reference",
+        &[
+            (
+                "GH_CREATE_OUTPUT",
+                "GraphQL: Could not resolve to a Repository with the name 'cloud-ecosystem-security/hyenas'.",
+            ),
+            ("GH_CREATE_STATUS", "1"),
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        run.output.status.success(),
+        "repo-resolution failure with ISSUE_NUMBER must fall back locally; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("tracking_reference=local-issue-763")
+            && stdout.contains("issue_number=763"),
+        "fallback must preserve ISSUE_NUMBER as deterministic local metadata; stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn step_03b_has_local_tracking_metadata_extraction_contract() {
     let recipe = load_recipe("workflow-prep");
     let body = extract_step_body(&recipe, "step-03b-extract-issue-number");
 
     assert!(
         body.contains("issue_number=([0-9]+)") && body.contains("local-(issue|ab)-([0-9]+)"),
         "step-03b must extract numeric IDs from explicit local tracking metadata"
+    );
+}
+
+#[test]
+fn step_03b_extracts_issue_number_from_local_tracking_metadata() {
+    let output = run_step_03b(
+        "tracking_system=local\ntracking_reference=local-issue-763\ntracking_issue=local-issue-763\nissue_creation=local-tracking\nissue_number=763\n",
+        "Create tracking for local fallback",
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "step-03b must accept local tracking metadata; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert_eq!(
+        stdout.trim(),
+        "763",
+        "step-03b must return the numeric local tracking ID"
     );
 }
 

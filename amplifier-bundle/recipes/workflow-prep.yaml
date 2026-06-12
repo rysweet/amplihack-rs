@@ -275,7 +275,7 @@ steps:
       ISSUE_TITLE="${TASK_DESC//$'\n'/ }"; ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"; ISSUE_TITLE="${ISSUE_TITLE:0:200}"
       ISSUE_REQS="$FINAL_REQUIREMENTS"
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"; EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
-      derive_local_tracking_id() { if [[ "$TASK_DESC" =~ ([Ii]ssue[[:space:]#]*|#)([0-9]+) ]]; then printf 'local-issue-%s' "${BASH_REMATCH[2]}"; elif [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then printf 'local-ab-%s' "${BASH_REMATCH[1]}"; else printf 'local-%s' "$(printf '%s' "$TASK_DESC" | sha256sum | cut -c1-12)"; fi; }
+      derive_local_tracking_id() { if [[ "$EXISTING_ISSUE_NUMBER" =~ ^#?([0-9]+)$ ]]; then printf 'local-issue-%s' "${BASH_REMATCH[1]}"; elif [[ "$EXISTING_ISSUE_NUMBER" =~ AB#([0-9]+)|_workitems/edit/([0-9]+) ]]; then printf 'local-ab-%s' "${BASH_REMATCH[1]:-${BASH_REMATCH[2]}}"; elif [[ "$EXISTING_ISSUE_NUMBER" =~ local-(issue|ab)-([0-9]+)$ ]]; then printf '%s' "$EXISTING_ISSUE_NUMBER"; elif [[ "$TASK_DESC" =~ ([Ii]ssue[[:space:]#]*|#)([0-9]+) ]]; then printf 'local-issue-%s' "${BASH_REMATCH[2]}"; elif [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then printf 'local-ab-%s' "${BASH_REMATCH[1]}"; else printf 'local-%s' "$(printf '%s' "$TASK_DESC" | sha256sum | cut -c1-12)"; fi; }
       emit_local_metadata() { LOCAL_REF="$(derive_local_tracking_id)"; LOCAL_NUM=""; [[ "$LOCAL_REF" =~ local-(issue|ab)-([0-9]+)$ ]] && LOCAL_NUM="${BASH_REMATCH[2]}"; printf 'tracking_system=local\ntracking_reference=%s\ntracking_issue=%s\nissue_creation=local-tracking\n' "$LOCAL_REF" "$LOCAL_REF"; [ -n "$LOCAL_NUM" ] && printf 'issue_number=%s\n' "$LOCAL_NUM"; }
       case "$HOST_TYPE" in
       azdo|azure-devops)
@@ -396,5 +396,4 @@ steps:
       if [ -z "$EXTRACTED" ]; then echo "ERROR: step-03b failed to extract issue number from issue_creation output." >&2; printf '%s\n' "$ISSUE_CREATION" >&2; exit 1; fi
       printf '%s' "$EXTRACTED"
     output: "issue_number"
-
   # STEP 4: SETUP WORKTREE AND BRANCH
