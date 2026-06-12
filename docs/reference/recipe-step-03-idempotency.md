@@ -6,7 +6,7 @@ tracking record for the current workflow run:
 
 - GitHub remotes use GitHub Issues.
 - Azure DevOps remotes use Azure Boards work items.
-- Unknown, empty, or local remotes use local synthetic tracking IDs.
+- Unknown, empty, or local remotes use structured local metadata.
 
 Since `default-workflow` is often re-run against the same task (for example
 when resuming after an interruption, retrying a failed step, or following up on
@@ -36,7 +36,7 @@ type. Both values route to the Azure Boards path.
 ```bash
 # Azure DevOps: reuse existing work item 12345 without creating a GitHub issue
 amplihack recipe run default-workflow \
-  -c remote_host_type=azure-devops \
+  -c remote_host_type=azdo \
   -c issue_number=12345 \
   -c task_description="Continue ADO PR follow-up work" \
   -c repo_path="$(pwd)"
@@ -65,7 +65,7 @@ input: remote_host_type + issue_number + task_description + repo_path
 │  Host Dispatch                                                  │
 │  github              → GitHub issue reuse/search/create          │
 │  azdo|azure-devops   → Azure Boards reuse/create                 │
-│  other|empty|unknown → local synthetic tracking                  │
+│  other|empty|unknown → structured local metadata                 │
 └─────────────────────────────────────────────────────────────────┘
          │
          ▼
@@ -80,7 +80,7 @@ input: remote_host_type + issue_number + task_description + repo_path
 │  Provider Create or Fallback                                    │
 │  GitHub: gh issue create                                        │
 │  Azure DevOps: az boards work-item create                       │
-│  Other: local-tracking:N                                        │
+│  Other: structured local metadata                               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -181,33 +181,40 @@ URL to derive organization and project, then creates a `Task` work item with
 | SSH | `git@ssh.dev.azure.com:v3/myorg/MyProject/myrepo` |
 
 Percent-encoded project names such as `My%20Project` are decoded before
-validation. Invalid org/project captures fall back to local tracking with a
+validation. Invalid org/project captures fall back to local metadata with a
 warning rather than crossing into GitHub logic.
 
-### Local Tracking Fallback
+### Local Metadata Fallback
 
 Unknown hosts, empty hosts, non-git directories, malformed Azure DevOps remote
-metadata, or unavailable Azure CLI support produce a local tracking reference:
+metadata, or unavailable Azure CLI support produce structured local metadata:
 
 ```text
-local-tracking:482193
+tracking_system=local
+tracking_reference=local-issue-482193
+tracking_issue=local-issue-482193
+issue_creation=local-tracking
+issue_number=482193
 ```
 
-Local tracking preserves the workflow's numeric `issue_number` contract without
-calling GitHub or Azure DevOps APIs.
+Local metadata preserves the workflow's numeric `issue_number` contract when a
+numeric local reference can be derived from explicit `issue_number`, `AB#N`,
+`#N`, or `local-issue-N` / `local-ab-N`. If no numeric local reference is
+available, step 03b must fail visibly instead of inventing an ID silently.
 
 ---
 
 ## Output Format
 
-Step 03 writes exactly one tracking reference to stdout. Diagnostic output goes
-to stderr.
+Step 03 writes provider output to stdout. GitHub and Azure Boards success paths
+write a single URL or `AB#N`; local fallback writes multiline key/value
+metadata. Diagnostic output goes to stderr.
 
 | Host path | Reuse output | Create output |
 | --------- | ------------ | ------------- |
 | GitHub | `https://github.com/owner/repo/issues/123` | `https://github.com/owner/repo/issues/123` |
 | Azure DevOps | `AB#12345` for explicit `issue_number`, or `https://dev.azure.com/org/project/_workitems/edit/12345` for validated task-text reuse | `https://dev.azure.com/org/project/_workitems/edit/12345` |
-| Other/local | `local-tracking:482193` | `local-tracking:482193` |
+| Other/local | Structured local metadata | Structured local metadata |
 
 The downstream step `step-03b-extract-issue-number` accepts every output above.
 It extracts the numeric ID from:
@@ -216,7 +223,9 @@ It extracts the numeric ID from:
 - GitHub PR URLs containing `/pull/N` with closing-issue lookup fallback
 - Azure DevOps work-item URLs containing `/_workitems/edit/N`
 - Azure Boards references in the form `AB#N`
-- Local tracking references in the form `local-tracking:N`
+- Local metadata containing `issue_number=N`
+- Local metadata references in the form `tracking_reference=local-issue-N` or `tracking_reference=local-ab-N`
+- Legacy local tracking references in the form `local-tracking:N`
 
 This keeps the downstream `issue_number` output provider-agnostic.
 
@@ -254,9 +263,11 @@ public API.
 | `gh issue list --search` times out | GitHub Guard 2 falls through |
 | `gh issue list --search` returns empty | GitHub Guard 2 falls through to creation |
 | `gh` not authenticated on GitHub path | Reuse guards fall through; creation fails clearly if authentication is required |
+| `gh issue create` cannot resolve or access the repository | Emits structured local metadata with a warning |
+| Other `gh issue create` failure | Fails clearly and prints sanitized CLI output |
 | `remote_host_type=azdo` or `azure-devops` with existing `issue_number` | Emits `AB#N` and exits 0 without calling `gh` or creating a work item |
-| Azure CLI missing on Azure DevOps create path | Falls back to `local-tracking:N` with a warning |
-| Azure DevOps org/project cannot be parsed | Falls back to `local-tracking:N` with a warning |
+| Azure CLI missing on Azure DevOps create path | Falls back to structured local metadata with a warning |
+| Azure DevOps org/project cannot be parsed | Falls back to structured local metadata with a warning |
 | Non-numeric issue reference extracted | Explicit `^[0-9]+$` validation rejects it before any provider CLI receives it |
 
 The step uses `set -euo pipefail`. All expected-failure exit paths use
@@ -303,9 +314,9 @@ Step 02d normally sets `remote_host_type`. Callers may override it when
 resuming from external workflow context.
 
 ```bash
-# Explicit Azure DevOps alias and existing work item reuse
+# Explicit Azure DevOps host and existing work item reuse
 amplihack recipe run default-workflow \
-  -c remote_host_type=azure-devops \
+  -c remote_host_type=azdo \
   -c issue_number=12345 \
   -c task_description="Follow up on existing Azure Boards work item" \
   -c repo_path="$(pwd)"
@@ -350,7 +361,7 @@ the PR or workstream context.
 
 ```bash
 amplihack recipe run default-workflow \
-  -c remote_host_type=azure-devops \
+  -c remote_host_type=azdo \
   -c issue_number=12345 \
   -c task_description="Address review feedback for the Azure DevOps PR" \
   -c repo_path=/worktrees/ado-pr-follow-up
@@ -432,14 +443,18 @@ https://github.com/myorg/myrepo/issues/4201
 ```bash
 amplihack recipe run default-workflow \
   -c remote_host_type=gitlab \
-  -c task_description="Add config parser" \
+  -c task_description="Add config parser #482193" \
   -c repo_path="$(pwd)"
 ```
 
 **Step-03 output (stdout):**
 
 ```text
-local-tracking:482193
+tracking_system=local
+tracking_reference=local-issue-482193
+tracking_issue=local-issue-482193
+issue_creation=local-tracking
+issue_number=482193
 ```
 
 Unknown host values never enter GitHub or Azure DevOps provider logic.
@@ -485,8 +500,8 @@ gadugi-test validate tests/gadugi/step-03-issue-creation-idempotency.yaml
 | Azure DevOps alias dispatch | `remote_host_type=azdo` and `remote_host_type=azure-devops` route identically |
 | Azure DevOps existing context reuse | `issue_number=N` emits `AB#N` without calling `gh` |
 | Azure DevOps task text candidates | `AB#N` and host-scoped `#N` references stay in Azure Boards logic and never trigger GitHub issue commands |
-| Generic fallback | Unknown, empty, and non-git hosts emit `local-tracking:N` |
-| Output compatibility with step-03b | GitHub URL, Azure Boards URL, `AB#N`, and `local-tracking:N` parse to numeric IDs |
+| Generic fallback | Unknown, empty, and non-git hosts emit structured local metadata |
+| Output compatibility with step-03b | GitHub URL, Azure Boards URL, `AB#N`, structured local metadata, and legacy `local-tracking:N` parse to numeric IDs |
 | Host isolation | Azure DevOps and generic paths never execute `gh issue` commands |
 | `set -euo pipefail` and quoted host dispatch | Shell syntax remains safe for empty or malformed context |
 

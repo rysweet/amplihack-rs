@@ -12,28 +12,28 @@ For full reference, see
 
 ## Prerequisites
 
-1. **Azure CLI** installed with the DevOps extension:
+1. **Git remote** named `origin` pointing to your AzDO repo:
+
+   ```bash
+   git remote -v
+   # origin  https://dev.azure.com/myorg/myproject/_git/myrepo (fetch)
+   ```
+
+2. **Azure CLI** is optional. Install and configure it only when you want
+   Azure Boards work-item reuse or creation:
 
    ```bash
    az --version
    az extension add --name azure-devops
-   ```
-
-2. **Authenticated** to your AzDO organization:
-
-   ```bash
    az login
    az devops configure --defaults \
      organization=https://dev.azure.com/YOUR_ORG \
      project=YOUR_PROJECT
    ```
 
-3. **Git remote** named `origin` pointing to your AzDO repo:
-
-   ```bash
-   git remote -v
-   # origin  https://dev.azure.com/myorg/myproject/_git/myrepo (fetch)
-   ```
+Without Azure CLI configuration, the workflow still detects `azdo`, skips all
+GitHub issue/label commands, and emits structured local metadata when step 03
+needs a tracking record.
 
 ---
 
@@ -48,7 +48,7 @@ amplihack recipe run default-workflow \
 The workflow automatically:
 
 1. Detects `azdo` as the remote host type (step 02d)
-2. Creates an AzDO work item of type `Task` (step 03)
+2. Creates an AzDO work item of type `Task`, or emits local metadata if Azure Boards is unavailable (step 03)
 3. Uses `AB#N` commit references (step 15)
 4. Skips automated PR creation (step 16)
 5. Produces a host-aware summary (step 22b)
@@ -74,13 +74,14 @@ already contains a work item ID:
 
 ```bash
 amplihack recipe run default-workflow \
-  -c remote_host_type=azure-devops \
+  -c remote_host_type=azdo \
   -c issue_number=12345 \
   -c task_description="Address review feedback for the Azure DevOps PR" \
   -c repo_path=.
 ```
 
-`remote_host_type=azure-devops` is accepted as an alias for `azdo`. Step 03
+`remote_host_type=azdo` is the primary Azure DevOps value. `azure-devops` is
+accepted as a compatibility alias for external contexts. Step 03
 emits `AB#12345`, step 03b extracts `12345`, and downstream steps use
 Azure Boards references such as `AB#12345`. This explicit context form is
 trusted and does not require Azure CLI lookup before reuse.
@@ -118,7 +119,7 @@ sequences before validation, so project names with spaces work correctly.
 | Issue creation      | `gh issue create`              | `az boards work-item create`         |
 | Commit reference    | `Closes #N`                    | `AB#N`                               |
 | PR creation         | Automated (`gh pr create`)     | Skipped (create manually after)      |
-| Auth prerequisite   | `gh auth login`                | `az login` + DevOps extension        |
+| Auth prerequisite   | `gh auth login`                | None for local metadata; `az login` + DevOps extension for Azure Boards |
 | Idempotency Guard 1 | `gh issue view`               | Explicit `issue_number` emits `AB#N`; task-text candidates may use `az boards work-item show` |
 | Existing `issue_number` | Reuses the supplied issue ID | Emits `AB#N`; no GitHub or Azure CLI lookup required |
 | Idempotency Guard 2 | `gh issue list --search`      | Host-isolated; no GitHub title search |
@@ -156,16 +157,18 @@ detected:
 - SSH: `git@ssh.dev.azure.com:v3/org/project/repo`
 
 If the workflow is launched from an external Azure DevOps context that already
-knows the host, pass `-c remote_host_type=azure-devops`. The alias routes to
-the same Azure Boards path as `azdo`.
+knows the host, pass `-c remote_host_type=azdo`. The `azure-devops` alias also
+routes to the same Azure Boards path for compatibility.
 
 **Workflow tries to create or inspect a GitHub issue**
 
-Ensure `remote_host_type` is `azdo` or `azure-devops`. For guaranteed reuse
-without Azure CLI lookup, pass the existing work item as `issue_number=N`.
-`AB#N` in task text remains Azure DevOps-scoped, but may need Azure Boards
-lookup before reuse. Unknown or misspelled host values use local tracking
-rather than GitHub.
+That violates the provider isolation contract. Confirm that `origin` uses one
+of the supported Azure DevOps URL forms and that the workflow is running with
+the intended `repo_path`. For guaranteed reuse without Azure CLI lookup, pass
+the existing work item as `issue_number=N` with
+`remote_host_type=azdo`.
+
+Unknown or misspelled host values use local tracking rather than GitHub.
 
 **`az boards` fails with authentication error**
 
@@ -187,7 +190,6 @@ rejected and the workflow falls back to local tracking.
 
 **Metadata**
 
-| Field  | Value     |
-| ------ | --------- |
-| Status | Issue #718 target contract |
-| Issues | #684, #718 |
+| Field    | Value                                |
+| -------- | ------------------------------------ |
+| Contract | Azure DevOps workflow-prep routing   |

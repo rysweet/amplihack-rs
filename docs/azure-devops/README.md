@@ -122,7 +122,7 @@ either `issue_number=N` or `AB#N`.
 
 ```bash
 amplihack recipe run default-workflow \
-  -c remote_host_type=azure-devops \
+  -c remote_host_type=azdo \
   -c issue_number=12345 \
   -c task_description="Address review feedback for the Azure DevOps PR" \
   -c repo_path=.

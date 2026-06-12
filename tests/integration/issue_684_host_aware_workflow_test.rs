@@ -25,12 +25,11 @@
 /// Mirrors `issue_655_656_skill_fetch_resilience_test.rs`:
 ///   - Parse recipe YAML with `serde_yaml` to inspect step command bodies
 ///   - Assert structural properties of bash scripts (keywords, patterns, absence)
-///   - No subprocess execution — all tests are structural/contract tests
+///   - Execute targeted workflow-prep bash steps with provider CLI shims
 ///
 /// ## Test status
 ///
-/// These tests are written **TDD-RED**. They FAIL until the implementation
-/// changes land across the four recipe files.
+/// These tests protect the host-aware workflow contract across recipe files.
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -145,11 +144,63 @@ fn write_executable(path: &std::path::Path, content: &str) {
 }
 
 #[derive(Debug)]
+struct Step02dRun {
+    output: Output,
+    git_log: String,
+}
+
+#[derive(Debug)]
 struct Step03Run {
     output: Output,
     git_log: String,
     gh_log: String,
     az_log: String,
+}
+
+fn run_step_02d_with_remote(remote_url: &str) -> Step02dRun {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo_dir = temp.path().join("repo");
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&repo_dir).expect("mkdir repo");
+    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+
+    let git_log = temp.path().join("git.log");
+    write_executable(
+        &bin_dir.join("git"),
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$GIT_LOG"
+case "$1:$2" in
+  rev-parse:--is-inside-work-tree) exit 0 ;;
+  remote:get-url) printf '%s\n' "$GIT_REMOTE_URL"; exit 0 ;;
+  *) echo "unexpected git invocation: $*" >&2; exit 2 ;;
+esac
+"#,
+    );
+
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let command = extract_step_body(&load_recipe("workflow-prep"), "step-02d-detect-host-type");
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg(command)
+        .env_clear()
+        .env("PATH", path)
+        .env("REPO_PATH", &repo_dir)
+        .env("GIT_LOG", &git_log)
+        .env("GIT_REMOTE_URL", remote_url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run step-02d-detect-host-type");
+
+    Step02dRun {
+        output,
+        git_log: fs::read_to_string(&git_log).unwrap_or_default(),
+    }
 }
 
 fn run_step_03_with_env(
@@ -257,6 +308,19 @@ exit 7
 
 fn run_step_03(host_type: &str, issue_number: &str, task_description: &str) -> Step03Run {
     run_step_03_with_env(host_type, issue_number, task_description, &[])
+}
+
+fn run_detect_then_step_03(remote_url: &str, task_description: &str) -> (Step02dRun, Step03Run) {
+    let detection = run_step_02d_with_remote(remote_url);
+    let stdout = String::from_utf8_lossy(&detection.output.stdout);
+    let detected_host_type = stdout.trim().to_owned();
+    let step_03 = run_step_03_with_env(
+        &detected_host_type,
+        "",
+        task_description,
+        &[("GIT_REMOTE_URL", remote_url)],
+    );
+    (detection, step_03)
 }
 
 fn run_step_03b(issue_creation: &str, task_description: &str) -> Output {
@@ -397,6 +461,57 @@ fn step_02d_does_not_echo_remote_url() {
          contain embedded PATs. Use pattern matching (case/[[]]) instead. \
          (Issue #684, security)"
     );
+}
+
+#[test]
+fn step_02d_executes_case_insensitive_azdo_remote_classification() {
+    let remotes = [
+        "HTTPS://DEV.AZURE.COM/example-org/My%20Project/_git/example-repo",
+        "https://ExampleOrg.VisualStudio.Com/My%20Project/_git/example-repo",
+        "git@SSH.DEV.AZURE.COM:v3/example-org/My%20Project/example-repo",
+    ];
+
+    for remote in remotes {
+        let run = run_step_02d_with_remote(remote);
+        let stdout = String::from_utf8_lossy(&run.output.stdout);
+        let stderr = String::from_utf8_lossy(&run.output.stderr);
+
+        assert!(
+            run.output.status.success(),
+            "step-02d must succeed for mixed-case AzDO remote {remote}; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert_eq!(
+            stdout.trim(),
+            "azdo",
+            "step-02d must lowercase before classifying AzDO remote {remote}; git log:\n{}",
+            run.git_log
+        );
+    }
+}
+
+#[test]
+fn step_02d_does_not_classify_spoofed_azdo_host_substrings_as_azdo() {
+    let remotes = [
+        "https://dev.azure.com.evil.example/example-org/MyProject/_git/example-repo",
+        "https://example.visualstudio.com.evil.example/MyProject/_git/example-repo",
+        "git@ssh.dev.azure.com.evil.example:v3/example-org/MyProject/example-repo",
+    ];
+
+    for remote in remotes {
+        let run = run_step_02d_with_remote(remote);
+        let stdout = String::from_utf8_lossy(&run.output.stdout);
+        let stderr = String::from_utf8_lossy(&run.output.stderr);
+
+        assert!(
+            run.output.status.success(),
+            "step-02d must succeed for spoofed non-AzDO remote {remote}; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert_eq!(
+            stdout.trim(),
+            "other",
+            "step-02d must classify spoofed AzDO-like host {remote} as other, not azdo"
+        );
+    }
 }
 
 #[test]
@@ -758,6 +873,114 @@ fn step_03_reuses_existing_issue_number_for_azdo_alias_without_gh_or_az() {
         run.az_log.is_empty(),
         "azdo host must not call Azure CLI when ISSUE_NUMBER already supplies the work item; az log:\n{}",
         run.az_log
+    );
+}
+
+#[test]
+fn workflow_prep_azdo_https_remote_bypasses_all_github_issue_commands() {
+    let (detection, step_03) = run_detect_then_step_03(
+        "https://dev.azure.com/example-org/My%20Project/_git/example-repo",
+        "Create tracking for Azure DevOps-backed repo without existing issue",
+    );
+
+    let detection_stdout = String::from_utf8_lossy(&detection.output.stdout);
+    let detection_stderr = String::from_utf8_lossy(&detection.output.stderr);
+    assert!(
+        detection.output.status.success(),
+        "AzDO HTTPS host detection must succeed; stdout:\n{detection_stdout}\nstderr:\n{detection_stderr}"
+    );
+    assert_eq!(
+        detection_stdout.trim(),
+        "azdo",
+        "dev.azure.com remotes must classify as azdo before step-03 dispatch"
+    );
+
+    let stdout = String::from_utf8_lossy(&step_03.output.stdout);
+    let stderr = String::from_utf8_lossy(&step_03.output.stderr);
+    assert!(
+        step_03.output.status.success(),
+        "AzDO HTTPS workflow-prep path must succeed via Azure Boards or local tracking; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("tracking_system=local") || stdout.contains("_workitems/edit/"),
+        "AzDO HTTPS workflow-prep path must use Azure Boards/local tracking output, not GitHub output; stdout:\n{stdout}"
+    );
+    assert!(
+        step_03.gh_log.is_empty(),
+        "AzDO HTTPS workflow-prep path must not invoke gh issue or gh label commands; gh log:\n{}",
+        step_03.gh_log
+    );
+}
+
+#[test]
+fn workflow_prep_azdo_visualstudio_remote_bypasses_all_github_issue_commands() {
+    let (detection, step_03) = run_detect_then_step_03(
+        "https://example-org.visualstudio.com/My%20Project/_git/example-repo",
+        "Create tracking for legacy Azure DevOps-backed repo without existing issue",
+    );
+
+    let detection_stdout = String::from_utf8_lossy(&detection.output.stdout);
+    let detection_stderr = String::from_utf8_lossy(&detection.output.stderr);
+    assert!(
+        detection.output.status.success(),
+        "Visual Studio host detection must succeed; stdout:\n{detection_stdout}\nstderr:\n{detection_stderr}"
+    );
+    assert_eq!(
+        detection_stdout.trim(),
+        "azdo",
+        "visualstudio.com remotes must classify as azdo before step-03 dispatch"
+    );
+
+    let stdout = String::from_utf8_lossy(&step_03.output.stdout);
+    let stderr = String::from_utf8_lossy(&step_03.output.stderr);
+    assert!(
+        step_03.output.status.success(),
+        "Visual Studio workflow-prep path must succeed via Azure Boards or local tracking; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("tracking_system=local") || stdout.contains("_workitems/edit/"),
+        "Visual Studio workflow-prep path must use Azure Boards/local tracking output, not GitHub output; stdout:\n{stdout}"
+    );
+    assert!(
+        step_03.gh_log.is_empty(),
+        "Visual Studio workflow-prep path must not invoke gh issue or gh label commands; gh log:\n{}",
+        step_03.gh_log
+    );
+}
+
+#[test]
+fn workflow_prep_azdo_ssh_remote_bypasses_all_github_issue_commands() {
+    let (detection, step_03) = run_detect_then_step_03(
+        "git@ssh.dev.azure.com:v3/example-org/My%20Project/example-repo",
+        "Create tracking for Azure DevOps SSH-backed repo without existing issue",
+    );
+
+    let detection_stdout = String::from_utf8_lossy(&detection.output.stdout);
+    let detection_stderr = String::from_utf8_lossy(&detection.output.stderr);
+    assert!(
+        detection.output.status.success(),
+        "AzDO SSH host detection must succeed; stdout:\n{detection_stdout}\nstderr:\n{detection_stderr}"
+    );
+    assert_eq!(
+        detection_stdout.trim(),
+        "azdo",
+        "ssh.dev.azure.com remotes must classify as azdo before step-03 dispatch"
+    );
+
+    let stdout = String::from_utf8_lossy(&step_03.output.stdout);
+    let stderr = String::from_utf8_lossy(&step_03.output.stderr);
+    assert!(
+        step_03.output.status.success(),
+        "AzDO SSH workflow-prep path must succeed via Azure Boards or local tracking; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("tracking_system=local") || stdout.contains("_workitems/edit/"),
+        "AzDO SSH workflow-prep path must use Azure Boards/local tracking output, not GitHub output; stdout:\n{stdout}"
+    );
+    assert!(
+        step_03.gh_log.is_empty(),
+        "AzDO SSH workflow-prep path must not invoke gh issue or gh label commands; gh log:\n{}",
+        step_03.gh_log
     );
 }
 
