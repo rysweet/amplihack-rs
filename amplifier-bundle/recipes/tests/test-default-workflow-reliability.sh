@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-default-workflow-reliability.sh — regression coverage for issue #573.
+# test-default-workflow-reliability.sh — regression coverage for default-workflow reliability issues.
 #
 # Contracts under test:
 #   1. workflow-worktree chooses a usable remote base without assuming origin/main.
@@ -15,6 +15,10 @@
 #      with git rev-parse --git-path hooks/pre-commit and scope
 #      PRE_COMMIT_ALLOW_NO_CONFIG=1 only to commits where that hook exists and
 #      .pre-commit-config.yaml is absent.
+#   5. Issue #752: development/code-change workflows fail closed unless terminal
+#      evidence proves implementation+verification, publish/PR state, explicit
+#      no-op, or an explicit failure. Planning, analysis, design, and worktree
+#      prep are not success evidence by themselves.
 #
 # This test SHOULD FAIL before the issue #573 reliability fixes land. It MUST
 # PASS once workflow-worktree resolves local/remote origin/HEAD before
@@ -30,10 +34,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 WORKTREE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-worktree.yaml"
 PUBLISH_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-publish.yaml"
+PUBLISH_HELPER="${REPO_ROOT}/amplifier-bundle/tools/workflow_publish_pr.sh"
 TDD_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-tdd.yaml"
 REFACTOR_REVIEW_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-refactor-review.yaml"
 PR_REVIEW_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-pr-review.yaml"
 FINALIZE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-finalize.yaml"
+TERMINAL_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-terminal-state.yaml"
+DEFAULT_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/default-workflow.yaml"
+SMART_EXECUTE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/smart-execute-routing.yaml"
+SMART_ORCHESTRATOR_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/smart-orchestrator.yaml"
+FINAL_STATUS_TOOL="${REPO_ROOT}/amplifier-bundle/tools/workflow_final_status.sh"
 
 if [[ ! -f "${WORKTREE_RECIPE}" ]]; then
     echo "HARNESS-ERROR: ${WORKTREE_RECIPE} not found" >&2
@@ -43,9 +53,19 @@ if [[ ! -f "${PUBLISH_RECIPE}" ]]; then
     echo "HARNESS-ERROR: ${PUBLISH_RECIPE} not found" >&2
     exit 2
 fi
+if [[ ! -f "${PUBLISH_HELPER}" ]]; then
+    echo "HARNESS-ERROR: ${PUBLISH_HELPER} not found" >&2
+    exit 2
+fi
 for recipe in "${TDD_RECIPE}" "${REFACTOR_REVIEW_RECIPE}" "${PR_REVIEW_RECIPE}" "${FINALIZE_RECIPE}"; do
     if [[ ! -f "${recipe}" ]]; then
         echo "HARNESS-ERROR: ${recipe} not found" >&2
+        exit 2
+    fi
+done
+for path in "${TERMINAL_RECIPE}" "${DEFAULT_RECIPE}" "${SMART_EXECUTE_RECIPE}" "${SMART_ORCHESTRATOR_RECIPE}" "${FINAL_STATUS_TOOL}"; do
+    if [[ ! -f "${path}" ]]; then
+        echo "HARNESS-ERROR: ${path} not found" >&2
         exit 2
     fi
 done
@@ -112,6 +132,122 @@ configure_identity() {
     local repo="$1"
     git -C "${repo}" config user.email "test@example.invalid"
     git -C "${repo}" config user.name "Recipe Reliability Test"
+}
+
+assert_yaml_recipe_step_present() {
+    local label="$1"
+    local recipe="$2"
+    local step_id="$3"
+    local child_recipe="$4"
+
+    awk -v step_id="${step_id}" -v child_recipe="${child_recipe}" '
+        $0 ~ "^[[:space:]]*- id: \"" step_id "\"[[:space:]]*$" {
+            in_step = 1
+            next
+        }
+        in_step && /^[[:space:]]*- id: / {
+            exit
+        }
+        in_step && $0 ~ "^[[:space:]]*recipe: \"" child_recipe "\"[[:space:]]*$" {
+            found = 1
+        }
+        END { exit found ? 0 : 1 }
+    ' "${recipe}" || fail "${label} must invoke recipe '${child_recipe}' via step '${step_id}'"
+}
+
+assert_yaml_step_not_fatal_false() {
+    local label="$1"
+    local recipe="$2"
+    local step_id="$3"
+
+    awk -v step_id="${step_id}" '
+        $0 ~ "^[[:space:]]*- id: \"" step_id "\"[[:space:]]*$" {
+            in_step = 1
+            next
+        }
+        in_step && /^[[:space:]]*- id: / {
+            exit
+        }
+        in_step && /^[[:space:]]*fatal:[[:space:]]*false[[:space:]]*$/ {
+            fatal_false = 1
+        }
+        END { exit fatal_false ? 1 : 0 }
+    ' "${recipe}" || fail "${label} must not mark '${step_id}' as fatal: false"
+}
+
+assert_terminal_recipe_uses_final_status_tool() {
+    grep -qF 'workflow_final_status.sh' "${TERMINAL_RECIPE}" \
+        || fail "workflow-terminal-state must wrap workflow_final_status.sh as the canonical terminal gate"
+}
+
+create_terminal_status_repo() {
+    local repo="$1"
+    local branch="${2:-feat/issue-752-terminal-state}"
+
+    git init -b main "${repo}" >/dev/null
+    configure_identity "${repo}"
+    printf 'base\n' > "${repo}/README.md"
+    git -C "${repo}" add README.md
+    git -C "${repo}" commit -m "base" >/dev/null
+    git -C "${repo}" checkout -b "${branch}" >/dev/null
+}
+
+assert_terminal_status_case() {
+    local label="$1"
+    local expected_rc="$2"
+    local expected_status="$3"
+    local expected_state="$4"
+    local expected_text="$5"
+    shift 5
+
+    local case_dir="${WORK}/terminal-status-${label}"
+    local repo="${case_dir}/repo"
+    local stdout_file="${case_dir}/stdout.log"
+    local stderr_file="${case_dir}/stderr.log"
+    local status=0
+
+    mkdir -p "${case_dir}"
+    create_terminal_status_repo "${repo}"
+
+    (
+        export REPO_PATH="${repo}"
+        export WORKTREE_SETUP_WORKTREE_PATH="${repo}"
+        export WORKFLOW_CLASSIFICATION="Development"
+        export RECIPE_NAME="default-workflow"
+        export TASK_DESCRIPTION="Issue 752 terminal-state ${label}"
+        export ISSUE_NUMBER="752"
+        export BRANCH_NAME="feat/issue-752-terminal-state"
+        export BASE_REF="main"
+        unset PR_URL PR_NUMBER PR_PUBLISH_RESULT_PR_URL RECIPE_VAR_pr_publish_result__pr_url
+        unset IMPLEMENTATION_COMPLETED VERIFICATION_COMPLETED PUBLISH_STATE_REACHED TERMINAL_NO_OP TERMINAL_FAILURE
+        unset TERMINAL_STATE TERMINAL_REASON OBSERVED_PHASES ALLOW_NO_OP
+        for assignment in "$@"; do
+            export "${assignment}"
+        done
+        bash "${FINAL_STATUS_TOOL}"
+    ) >"${stdout_file}" 2>"${stderr_file}" || status=$?
+
+    if [[ "${status}" != "${expected_rc}" ]]; then
+        echo "--- terminal-status ${label} stdout ---" >&2
+        cat "${stdout_file}" >&2
+        echo "--- terminal-status ${label} stderr ---" >&2
+        cat "${stderr_file}" >&2
+        fail "workflow_final_status ${label} exited ${status}, expected ${expected_rc}"
+    fi
+
+    grep -qF "terminal_success=${expected_status}" "${stdout_file}" \
+        || fail "workflow_final_status ${label} must emit terminal_success=${expected_status}"
+    grep -qF "terminal_state=${expected_state}" "${stdout_file}" \
+        || fail "workflow_final_status ${label} must emit terminal_state=${expected_state}"
+    if [[ -n "${expected_text}" ]]; then
+        if ! grep -qF "${expected_text}" "${stdout_file}" && ! grep -qF "${expected_text}" "${stderr_file}"; then
+            echo "--- terminal-status ${label} stdout ---" >&2
+            cat "${stdout_file}" >&2
+            echo "--- terminal-status ${label} stderr ---" >&2
+            cat "${stderr_file}" >&2
+            fail "workflow_final_status ${label} must mention '${expected_text}'"
+        fi
+    fi
 }
 
 assert_commit_guard_static() {
@@ -401,6 +537,103 @@ if not isinstance(data["created"], bool):
 PY
 }
 
+# Issue #752 terminal-state contract coverage. These assertions are expected
+# to fail before workflow_final_status.sh and workflow-terminal-state.yaml are
+# converted from publish-status summaries into the canonical fail-closed gate.
+assert_terminal_status_case \
+    "worktree-only-missing-evidence" \
+    "1" \
+    "false" \
+    "FAILED_MISSING_TERMINAL_EVIDENCE" \
+    "missing_evidence=implementation_completed,verification_completed,publish_state_reached,terminal_no_op" \
+    "OBSERVED_PHASES=workflow-prep,workflow-worktree"
+
+assert_terminal_status_case \
+    "analysis-design-only-missing-evidence" \
+    "1" \
+    "false" \
+    "FAILED_MISSING_TERMINAL_EVIDENCE" \
+    "workflow-design" \
+    "OBSERVED_PHASES=workflow-prep,workflow-worktree,workflow-design"
+
+assert_terminal_status_case \
+    "implementation-and-verification-success" \
+    "0" \
+    "true" \
+    "IMPLEMENTED_VERIFIED" \
+    "terminal_reason=implementation and verification evidence present" \
+    "OBSERVED_PHASES=workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-precommit-test" \
+    "IMPLEMENTATION_COMPLETED=true" \
+    "VERIFICATION_COMPLETED=true" \
+    "TERMINAL_STATE=IMPLEMENTED_VERIFIED" \
+    "TERMINAL_REASON=implementation and verification evidence present"
+
+assert_terminal_status_case \
+    "publish-state-success" \
+    "0" \
+    "true" \
+    "FOLLOWUP_CREATED" \
+    "publish_state_reached=true" \
+    "OBSERVED_PHASES=workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-precommit-test,workflow-publish" \
+    "IMPLEMENTATION_COMPLETED=true" \
+    "VERIFICATION_COMPLETED=true" \
+    "PUBLISH_STATE_REACHED=true" \
+    "TERMINAL_STATE=FOLLOWUP_CREATED" \
+    "TERMINAL_REASON=published follow-up pull request" \
+    "PR_URL=https://github.com/example/repo/pull/752"
+
+assert_terminal_status_case \
+    "explicit-no-op-success" \
+    "0" \
+    "true" \
+    "ALLOW_NO_OP" \
+    "terminal_no_op=true" \
+    "OBSERVED_PHASES=workflow-prep,workflow-worktree,workflow-design" \
+    "ALLOW_NO_OP=true" \
+    "TERMINAL_NO_OP=true" \
+    "TERMINAL_STATE=ALLOW_NO_OP" \
+    "TERMINAL_REASON=allow_no_op was explicitly selected for a non-code-change path"
+
+assert_terminal_status_case \
+    "terminal-probe-no-diff-success" \
+    "0" \
+    "true" \
+    "NO_DIFF_SUCCESS" \
+    "terminal_no_op=true" \
+    "OBSERVED_PHASES=workflow-prep,workflow-worktree,workflow-design,workflow-publish" \
+    "TERMINAL_STATE_TERMINAL_SUCCESS=true" \
+    "TERMINAL_STATE=NO_DIFF_SUCCESS" \
+    "TERMINAL_REASON=branch already has no meaningful diff"
+
+assert_terminal_status_case \
+    "malformed-evidence-fails" \
+    "2" \
+    "false" \
+    "FAILED_INVALID_EVIDENCE" \
+    "IMPLEMENTATION_COMPLETED" \
+    "OBSERVED_PHASES=workflow-prep,workflow-worktree,workflow-tdd" \
+    "IMPLEMENTATION_COMPLETED=maybe" \
+    "VERIFICATION_COMPLETED=true"
+
+assert_terminal_status_case \
+    "terminal-failure-overrides-success-looking-markers" \
+    "1" \
+    "false" \
+    "BLOCKED_CI" \
+    "terminal_failure=true" \
+    "OBSERVED_PHASES=workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-precommit-test" \
+    "IMPLEMENTATION_COMPLETED=true" \
+    "VERIFICATION_COMPLETED=true" \
+    "TERMINAL_FAILURE=true" \
+    "TERMINAL_STATE=BLOCKED_CI" \
+    "TERMINAL_REASON=required checks failed"
+
+assert_terminal_recipe_uses_final_status_tool
+assert_yaml_step_not_fatal_false "workflow-finalize final status" "${FINALIZE_RECIPE}" "step-22b-final-status"
+assert_yaml_recipe_step_present "smart-orchestrator routing" "${SMART_ORCHESTRATOR_RECIPE}" "smart-execute-routing" "smart-execute-routing"
+assert_yaml_step_not_fatal_false "smart-execute-routing development path" "${SMART_EXECUTE_RECIPE}" "execute-single-round-1-development"
+assert_yaml_step_not_fatal_false "smart-execute-routing adaptive development path" "${SMART_EXECUTE_RECIPE}" "adaptive-execute-development"
+
 # Integration coverage: non-main base branches and fallback behavior.
 extract_step_command "${WORKTREE_RECIPE}" "step-04-setup-worktree" "${STEP04}"
 run_worktree_case "origin-head-prefers-develop-over-master" "origin/develop" "no" "yes"
@@ -421,7 +654,7 @@ if ! awk '
         handled = 1
     }
     END { exit handled ? 0 : 1 }
-' "${PUBLISH_RECIPE}"; then
+' "${PUBLISH_RECIPE}" "${PUBLISH_HELPER}"; then
     fail "workflow-publish must keep explicit gh pr create failure handling"
 fi
 
@@ -490,6 +723,7 @@ chmod +x "${WORK}/bin/gh"
     export WORKTREE_SETUP_WORKTREE_PATH="${PR_REPO}"
     export TASK_DESCRIPTION="Fix default workflow reliability"
     export ISSUE_NUMBER="573"
+    export REMOTE_HOST_TYPE="github"
     unset DESIGN_SPEC design_spec RECIPE_VAR_design_spec RECIPE_VAR_DESIGN_SPEC
     bash "${STEP16}"
 ) >"${WORK}/step16.out" 2>"${WORK}/step16.err" || {
@@ -506,12 +740,12 @@ if ! grep -q '^pr create' "${GH_LOG}"; then
     fail "workflow-publish did not invoke gh pr create when DESIGN_SPEC was missing"
 fi
 
-if [[ "$(grep -c '^pr list' "${GH_LOG}")" -lt 3 ]]; then
+if [[ "$(grep -c '^pr list' "${GH_LOG}")" -ne 2 ]]; then
     echo "--- gh log ---" >&2
     cat "${GH_LOG}" >&2
     echo "--- step-16 stderr ---" >&2
     cat "${WORK}/step16.err" >&2
-    fail "workflow-publish must retry transient gh pr list failures before continuing"
+    fail "workflow-publish must retry one transient gh pr list failure before continuing"
 fi
 
 if [[ "$(grep -c '^pr create' "${GH_LOG}")" -ne 3 ]]; then

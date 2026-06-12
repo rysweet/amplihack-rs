@@ -117,6 +117,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-08c-enforce-verdict",
     "step-08b-integration",
     "checkpoint-after-implementation",
+    "implementation-terminal-evidence",
     // Phase 4: workflow-refactor-review (steps 09-11b)
     "step-09-refactor",
     "step-09b-optimize",
@@ -129,6 +130,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     // Phase 5: workflow-precommit-test (steps 12-13)
     "step-12-run-precommit",
     "step-13-local-testing",
+    "verification-terminal-evidence",
     // Phase 6: workflow-publish (terminal gate + steps 14-16b)
     "publish-terminal-state",
     "step-14-bump-version",
