@@ -309,6 +309,29 @@ fn tracked_generated_artifacts_are_blocked_even_when_not_staged() {
 }
 
 #[test]
+fn staged_deletion_of_tracked_generated_artifact_allows_cleanup_commit() {
+    let tmp = repo();
+    write_file(
+        &tmp.path().join("dist/plugin.js"),
+        "committed generated bundle\n",
+    );
+    run_git(tmp.path(), &["add", "-f", "dist/plugin.js"]);
+    run_git(
+        tmp.path(),
+        &["commit", "-qm", "accidentally commit plugin bundle"],
+    );
+    run_git(tmp.path(), &["rm", "-q", "dist/plugin.js"]);
+
+    let report = scan_artifacts(&default_config(tmp.path())).expect("scan artifacts");
+
+    assert!(
+        report.is_clean(),
+        "staged deletion cleanup commits should not be blocked; got {:#?}",
+        report.violations
+    );
+}
+
+#[test]
 fn narrow_allowlist_entry_exempts_only_the_exact_documented_artifact() {
     let tmp = repo();
     write_file(

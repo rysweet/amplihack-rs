@@ -274,7 +274,13 @@ pub fn scan_artifacts(
     if config.mode.scans_staged() {
         scan_git_paths(
             &repo,
-            &["diff", "--cached", "--name-only", "-z"],
+            &[
+                "diff",
+                "--cached",
+                "--diff-filter=ACMRTUXB",
+                "--name-only",
+                "-z",
+            ],
             ArtifactSource::Staged,
             &allowlist,
             &mut violations,
