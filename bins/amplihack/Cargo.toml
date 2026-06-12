@@ -305,6 +305,12 @@ path = "../../tests/integration/p1_workflow_reliability_test.rs"
 name = "no_stale_python_patterns"
 path = "../../tests/integration/no_stale_python_patterns_test.rs"
 
+# Issue #746: Default workflow guidance must point to skills/recipes, not
+# stale DEFAULT_WORKFLOW.md or UltraThink-era canonical instructions.
+[[test]]
+name = "issue_746_default_workflow_guidance"
+path = "../../tests/integration/issue_746_default_workflow_guidance_test.rs"
+
 # Issue #684: Host-aware workflow steps (commit refs, PR body, summary, percent-decode).
 # TDD-RED tests — fail until implementation lands across 4 recipe files.
 [[test]]

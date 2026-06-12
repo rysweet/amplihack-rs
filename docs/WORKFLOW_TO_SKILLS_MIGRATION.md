@@ -5,7 +5,7 @@
 ## Architecture Change
 
 **Before**: Workflows | Commands | Agents | Skills (4 mechanisms)
-**After**: Skills | Commands | Agents (3 mechanisms)
+**After**: Skills backed by recipes | Commands | Agents (3 mechanisms)
 
 Workflows are implemented as skills and executable recipes. The canonical default
 development workflow is the `default-workflow` skill/recipe:
@@ -16,6 +16,9 @@ development workflow is the `default-workflow` skill/recipe:
   `amplihack recipe run smart-orchestrator`
 - **Direct compatibility entry point**:
   `amplihack recipe run default-workflow -c task_description="..." -c repo_path=.`
+
+The default workflow exposes one direct executable recipe interface through the
+Rust CLI recipe runner.
 
 Generated preferences and bundled context describe the selected workflow as
 `default-workflow` skill/recipe. They do not present
@@ -87,6 +90,20 @@ for DEV, INVESTIGATE, and HYBRID tasks. Directly invoking
 `Skill(skill="default-workflow")` is reserved for explicit requests or
 orchestrator-unavailable compatibility.
 
+## Behavior Specification
+
+The finished migration has these externally visible behaviors:
+
+1. Generated user preferences select `` `default-workflow` skill/recipe ``.
+2. Session-start context and bundled agent guidance route development work
+   through `dev-orchestrator` and `smart-orchestrator`.
+3. Standalone default workflow usage is documented as
+   `amplihack recipe run default-workflow -c task_description="..." -c repo_path=.`
+4. Legacy markdown workflow paths are described only as deprecated migration or
+   backward-compatibility references.
+5. Documentation does not instruct users or agents to read
+   `DEFAULT_WORKFLOW.md` and manually execute the steps.
+
 ## Configuration
 
 The selected workflow setting names the canonical skill/recipe, not a filesystem
@@ -111,6 +128,27 @@ They also assert that stale canonical wording is absent:
 ~/.amplihack/.claude/workflows/DEFAULT_WORKFLOW.md
 @.claude/workflow/DEFAULT_WORKFLOW.md
 ```
+
+Remaining references to `DEFAULT_WORKFLOW.md` are acceptable only in deprecated
+file tables, compatibility notes, migration explanations, or explicit warnings
+not to use the file as canonical guidance.
+
+## Maintenance Audit
+
+When changing workflow guidance, audit for stale canonical references:
+
+```bash
+rg 'DEFAULT_WORKFLOW\.md|\.claude/workflow/DEFAULT_WORKFLOW|@~/.amplihack/.claude/workflows/DEFAULT_WORKFLOW|run_recipe_by_name|from amplihack\.recipes|python3 -c' \
+  docs amplifier-bundle
+```
+
+Classify each match before editing. Keep historical or compatibility references
+when they are clearly labeled as deprecated; update matches that present legacy
+markdown files, Python recipe imports, or `run_recipe_by_name` as the current
+execution path.
+
+`python3 -c` matches are stale only when they import or call workflow recipes;
+unrelated Python verification snippets can remain.
 
 ## Related
 

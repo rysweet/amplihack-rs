@@ -39,7 +39,7 @@ print(f"Selected: {result['selected']}")
 print(f"Rationale: {result['rationale']}")
 ```
 
-**Based on:** `~/.amplihack/.claude/workflow/N_VERSION_WORKFLOW.md`
+**Based on:** `n-version-workflow` skill/recipe
 
 **Key Features:**
 
@@ -90,7 +90,7 @@ print(f"Consensus: {result['synthesis'].output}")
 print(f"Confidence: {result['confidence']}")
 ```
 
-**Based on:** `~/.amplihack/.claude/workflow/DEBATE_WORKFLOW.md`
+**Based on:** `debate-workflow` skill/recipe
 
 **Key Features:**
 
@@ -143,7 +143,7 @@ if result['degradation']:
     print(f"Degradation: {result['degradation']}")
 ```
 
-**Based on:** `~/.amplihack/.claude/workflow/CASCADE_WORKFLOW.md`
+**Based on:** `cascade-workflow` skill/recipe
 
 **Key Features:**
 

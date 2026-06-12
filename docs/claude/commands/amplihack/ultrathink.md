@@ -143,7 +143,7 @@ User: "/ultrathink investigate how the reflection system works"
 2. Select: investigation-workflow skill (6 phases)
 3. Inform user: "Detected investigation task. Using investigation-workflow skill"
 4. Try: Skill(skill="investigation-workflow")
-5. Fallback if needed: Read `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md`
+5. Fallback if needed: run or invoke the `investigation-workflow` skill/recipe directly
 6. Execute Phase 1: Scope Definition
 7. Execute Phase 2: Exploration Strategy
 8. Execute Phase 3: Parallel Deep Dives (multiple agents simultaneously)

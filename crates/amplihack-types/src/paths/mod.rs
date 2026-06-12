@@ -188,7 +188,10 @@ impl ProjectDirs {
         self.resolve_framework_file(".claude/context/USER_PREFERENCES.md")
     }
 
-    /// Resolve the framework-owned default workflow file, if present.
+    /// Resolve the deprecated framework-owned default workflow file, if present.
+    ///
+    /// This is retained for migration and backward compatibility only. New
+    /// generated guidance should point to the `default-workflow` skill/recipe.
     pub fn resolve_workflow_file(&self) -> Option<PathBuf> {
         self.resolve_framework_file(".claude/workflow/DEFAULT_WORKFLOW.md")
     }

@@ -40,7 +40,7 @@ println!("Selected: {}", result.selected);
 println!("Rationale: {}", result.rationale);
 ```
 
-**Based on:** `~/.amplihack/.claude/workflow/N_VERSION_WORKFLOW.md`
+**Based on:** `n-version-workflow` skill/recipe
 
 **Key Features:**
 
@@ -92,7 +92,7 @@ println!("Consensus: {}", result.synthesis.output);
 println!("Confidence: {}", result.confidence);
 ```
 
-**Based on:** `~/.amplihack/.claude/workflow/DEBATE_WORKFLOW.md`
+**Based on:** `debate-workflow` skill/recipe
 
 **Key Features:**
 
@@ -147,7 +147,7 @@ if !result.degradation.is_empty() {
 }
 ```
 
-**Based on:** `~/.amplihack/.claude/workflow/CASCADE_WORKFLOW.md`
+**Based on:** `cascade-workflow` skill/recipe
 
 **Key Features:**
 

@@ -10,7 +10,7 @@ In PR #1606, the agent skipped mandatory code review steps from the legacy `DEFA
 
 ## Quick Start
 
-The skill auto-activates when you begin a DEFAULT_WORKFLOW. To invoke explicitly:
+The skill auto-activates when you begin the `default-workflow` skill/recipe. To invoke explicitly:
 
 ```
 User: "Invoke the workflow-enforcement skill"

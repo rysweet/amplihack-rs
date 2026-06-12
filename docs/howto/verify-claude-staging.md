@@ -104,7 +104,7 @@ The staging process copies:
 - **Tools**: `~/.amplihack/.claude/tools/`
 - **Hooks**: `~/.amplihack/.claude/hooks/`
 - **Context**: `~/.amplihack/.claude/context/`
-- **Workflows**: `~/.amplihack/.claude/workflow/`
+- **Workflows**: `~/.amplihack/.claude/workflow/` (deprecated legacy references)
 
 ## Related
 

@@ -259,7 +259,7 @@ This skill orchestrates two canonical workflows:
 - **Article**: [Top 10 Exception Handling Mistakes in .NET](https://abp.io/community/articles/top-10-exception-handling-mistakes-in-net-jhm8wzvg)
 - **Microsoft**: [Best Practices for Exceptions](https://learn.microsoft.com/en-us/dotnet/standard/exceptions/best-practices-for-exceptions)
 - **ASP.NET Core**: [Handle Errors in Web APIs](https://learn.microsoft.com/en-us/aspnet/core/web-api/handle-errors)
-- **Investigation Workflow**: `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md`
+- **Investigation Workflow**: `investigation-workflow` skill/recipe
 - **Default Workflow**: `default-workflow` skill/recipe
 
 ## Version History

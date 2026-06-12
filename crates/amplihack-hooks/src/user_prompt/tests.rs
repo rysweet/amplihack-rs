@@ -60,6 +60,35 @@ fn build_context() {
 }
 
 #[test]
+fn build_context_renders_selected_workflow_as_canonical_skill_recipe() {
+    let prefs = vec![(
+        "Selected".to_string(),
+        "DEFAULT_WORKFLOW (`@~/.amplihack/.claude/workflows/DEFAULT_WORKFLOW.md`)".to_string(),
+    )];
+
+    let ctx = build_preference_context(&prefs);
+
+    assert!(ctx.contains("- **Selected**: `default-workflow` skill/recipe"));
+    assert!(!ctx.contains("DEFAULT_WORKFLOW.md"));
+    assert!(!ctx.contains(".claude/workflow/DEFAULT_WORKFLOW.md"));
+    assert!(!ctx.contains(".claude/workflows/DEFAULT_WORKFLOW.md"));
+}
+
+#[test]
+fn build_context_preserves_unrelated_preferences_without_workflow_rewrite() {
+    let prefs = vec![
+        ("Verbosity".to_string(), "balanced".to_string()),
+        ("Consensus Depth".to_string(), "balanced".to_string()),
+    ];
+
+    let ctx = build_preference_context(&prefs);
+
+    assert!(ctx.contains("- **Verbosity**: balanced"));
+    assert!(ctx.contains("- **Consensus Depth**: balanced"));
+    assert!(!ctx.contains("default-workflow"));
+}
+
+#[test]
 fn detects_explicit_agent_references() {
     let agents = detect_agent_references(
         "Please inspect @.claude/agents/amplihack/core/architect.md for this task",

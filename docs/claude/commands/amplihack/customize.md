@@ -62,7 +62,7 @@ Captures user feedback to improve future interactions.
 
 `/amplihack:customize list-workflows`
 
-Displays all available workflows in `~/.amplihack/.claude/workflow/` directory with descriptions.
+Displays available workflow skills/recipes with descriptions.
 
 Example output:
 
@@ -77,7 +77,7 @@ Available Workflows:
 
 2. CONSENSUS_WORKFLOW
    Description: Enhanced workflow with consensus mechanisms
-   Location: .claude/workflow/CONSENSUS_WORKFLOW.md
+   Canonical target: `consensus-workflow` skill/recipe
    Steps: 15
    Best for: Critical tasks, ambiguous requirements, architectural changes
 

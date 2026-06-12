@@ -32,13 +32,17 @@ customizable: true
 
 # Investigation Workflow
 
-This deprecated legacy file defines the workflow for investigation and research tasks. Unlike the legacy DEFAULT_WORKFLOW.md, which is optimized for development (implementation → testing → deployment), this workflow is optimized for exploration and understanding.
+This deprecated legacy file describes the old markdown workflow for
+investigation and research tasks. The canonical investigation path is the
+`investigation-workflow` skill/recipe, normally selected by
+`dev-orchestrator` through `smart-orchestrator`.
 
 > **DEPRECATION WARNING**: Markdown workflows deprecated. See `docs/WORKFLOW_TO_SKILLS_MIGRATION.md`
 
 ## How This Workflow Works
 
-**This workflow is the single source of truth for investigation tasks:**
+**This legacy reference is not the source of truth.** The canonical
+`investigation-workflow` skill/recipe defines active behavior for:
 
 - The order of phases (6 phases must be followed sequentially, except Phase 3 which uses parallel execution)
 - Agent deployment strategies for each phase
@@ -47,10 +51,10 @@ This deprecated legacy file defines the workflow for investigation and research 
 
 **Execution approach:**
 
-- Start with `/ultrathink` which will detect investigation keywords and suggest this workflow
-- UltraThink reads this workflow and orchestrates agents to execute it
-- Each phase leverages specialized agents for maximum effectiveness
-- The workflow defines the process; agents execute the work
+- Route investigation tasks through `dev-orchestrator` and `smart-orchestrator`
+- Use `amplihack recipe run investigation-workflow -c task_description="..." -c repo_path=.`
+  only for standalone compatibility execution
+- Treat the phases below as migration context for old markdown-workflow installs
 
 ## When This Workflow Applies
 

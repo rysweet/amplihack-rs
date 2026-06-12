@@ -1,6 +1,6 @@
 //! User preference loading, extraction, and formatting.
 
-use amplihack_types::ProjectDirs;
+use amplihack_types::{ProjectDirs, workflow};
 use std::fs;
 
 /// Load user preferences from USER_PREFERENCES.md.
@@ -122,9 +122,28 @@ pub fn extract_preferences(content: &str) -> Vec<(String, String)> {
 pub fn build_preference_context(prefs: &[(String, String)]) -> String {
     let mut parts = vec!["## User Preferences".to_string()];
     for (key, value) in prefs {
-        parts.push(format!("- **{key}**: {value}"));
+        parts.push(format!(
+            "- **{key}**: {}",
+            canonical_preference_value(key, value)
+        ));
     }
     parts.join("\n")
+}
+
+fn canonical_preference_value<'a>(key: &str, value: &'a str) -> &'a str {
+    if key.trim().eq_ignore_ascii_case("selected") && is_legacy_default_workflow_value(value) {
+        workflow::DEFAULT_WORKFLOW_SELECTION
+    } else {
+        value
+    }
+}
+
+fn is_legacy_default_workflow_value(value: &str) -> bool {
+    let lowered = value.to_ascii_lowercase();
+    lowered.contains("default_workflow")
+        || lowered.contains("default workflow")
+        || lowered.contains(".claude/workflow/")
+        || lowered.contains(".claude/workflows/")
 }
 
 #[cfg(test)]

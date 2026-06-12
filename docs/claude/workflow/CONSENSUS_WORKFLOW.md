@@ -54,8 +54,9 @@ This workflow enhances the default coding workflow with consensus mechanisms at 
 
 **Execution approach:**
 
-- Use `/ultrathink` with this workflow selected in USER_PREFERENCES.md
-- UltraThink reads this workflow and orchestrates consensus mechanisms
+- Use the `consensus-workflow` skill/recipe for active consensus execution
+- Route development tasks through `dev-orchestrator` and `smart-orchestrator`
+  when consensus is part of a broader implementation workflow
 - Specialized agents collaborate through structured protocols
 - Consensus ensures correctness and quality
 

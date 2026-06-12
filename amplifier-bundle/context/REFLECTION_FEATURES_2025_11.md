@@ -62,7 +62,7 @@ The legacy `DEFAULT_WORKFLOW.md` was optimized for development tasks (Implementa
 
 #### Solution Implemented
 
-Created `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` with explicit phases for research:
+Created legacy `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` with explicit phases for research:
 
 1. **Scope Definition** - Define boundaries and success criteria
 2. **Exploration Strategy** - Plan agent deployment
@@ -83,7 +83,7 @@ Updated `/amplihack:ultrathink` to detect investigation vs development tasks and
 
 #### Files Changed
 
-- `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` - New investigation-specific workflow
+- Legacy `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` - New investigation-specific workflow
 - `~/.amplihack/.claude/commands/amplihack/ultrathink.md` - Added workflow detection logic
 
 #### Integration Points
@@ -172,7 +172,7 @@ Added final workflow step for investigation tasks that automatically offers to c
 
 #### Files Changed
 
-- `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` - Added documentation generation as final step
+- Legacy `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` - Added documentation generation as final step
 - `~/.amplihack/.claude/templates/INVESTIGATION_DOCUMENTATION_TEMPLATE.md` - New template for generated docs
 
 #### Integration Points
@@ -288,7 +288,7 @@ Created standardized **Investigation Summary Template** mandating comprehensive 
 #### Files Changed
 
 - `~/.amplihack/.claude/templates/INVESTIGATION_SUMMARY_TEMPLATE.md` - New comprehensive template
-- `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` - Reference template in synthesis phase
+- Legacy `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` - Reference template in synthesis phase
 - Explore agent prompts - Updated to include edge case discovery
 
 #### Integration Points
@@ -406,7 +406,7 @@ Added to both DEFAULT_WORKFLOW and INVESTIGATION_WORKFLOW.
 #### Files Changed
 
 - Legacy `~/.amplihack/.claude/workflow/DEFAULT_WORKFLOW.md` - Added phase announcement requirements
-- `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` - Added phase announcements
+- Legacy `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` - Added phase announcements
 - `~/.amplihack/.claude/commands/amplihack/ultrathink.md` - Implements announcement logic
 
 #### Integration Points
@@ -703,7 +703,7 @@ D) 📝 Clarify or expand on particular section
 
 #### Files Changed
 
-- `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` - Added satisfaction checkpoint after synthesis
+- Legacy `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` - Added satisfaction checkpoint after synthesis
 - `~/.amplihack/.claude/commands/amplihack/ultrathink.md` - Implemented checkpoint prompts
 
 #### Integration Points
@@ -1027,7 +1027,7 @@ See `Specs/complexity_estimator_architecture.md` for design rationale.
 
 #### Customizing Workflows
 
-- **Investigation tasks**: Edit `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md`
+- **Investigation tasks**: Update the `investigation-workflow` skill/recipe
 - **Development tasks**: Update the `default-workflow` skill/recipe
 - Changes take effect immediately (no restart needed)
 
@@ -1175,7 +1175,7 @@ Satisfaction Check → Documentation → Reflection → Metrics
 
 ### Related Documentation
 
-- `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` - Investigation execution process
+- Legacy `~/.amplihack/.claude/workflow/INVESTIGATION_WORKFLOW.md` - Investigation execution process
 - `~/.amplihack/.claude/context/VERBOSITY_MATRIX.md` - Verbosity mapping
 - `~/.amplihack/.claude/templates/INVESTIGATION_SUMMARY_TEMPLATE.md` - Comprehensive investigation structure
 - `Specs/complexity_estimator_architecture.md` - Complexity assessment design

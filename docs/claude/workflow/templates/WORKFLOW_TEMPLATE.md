@@ -14,7 +14,7 @@ This workflow [brief description of what makes this workflow unique].
 
 ## How This Workflow Works
 
-**This workflow is the single source of truth for:**
+**This workflow skill/recipe defines active behavior for:**
 
 <!-- Define what this workflow controls -->
 
@@ -27,8 +27,9 @@ This workflow [brief description of what makes this workflow unique].
 
 <!-- How to invoke this workflow -->
 
-- Start with `/ultrathink` with this workflow selected in USER_PREFERENCES.md
-- UltraThink reads this workflow and orchestrates agents to execute it
+- Add a skill under `.claude/skills/` for human-facing guidance
+- Add an executable recipe under `.claude/recipes/` for enforced execution
+- Route normal development work through `dev-orchestrator` and `smart-orchestrator`
 - [Any special execution characteristics]
 
 ## When This Workflow Applies

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use hooks::{build_wrapper_script, error_wrapper_script, replace_or_append_section};
 use hooks::{generate_copilot_instructions, stage_repo_hooks, write_user_level_hooks};
-use staging::{register_plugin, stage_agents, stage_command_docs, stage_directory, stage_skills};
+use staging::{register_plugin, stage_agents, stage_command_docs, stage_context, stage_skills};
 
 const INSTRUCTIONS_MARKER_START: &str = "<!-- AMPLIHACK_INSTRUCTIONS_START -->";
 const INSTRUCTIONS_MARKER_END: &str = "<!-- AMPLIHACK_INSTRUCTIONS_END -->";
@@ -104,11 +104,9 @@ pub(crate) fn ensure_copilot_home_staged_in(repo_root: Option<&Path>) -> Result<
         register_plugin(&commands_dir, &copilot_home)?;
     }
 
-    for dir_name in &["workflow", "context"] {
-        let source = staged.join(dir_name);
-        if source.is_dir() {
-            stage_directory(&source, &copilot_home, dir_name)?;
-        }
+    let context_dir = staged.join("context");
+    if context_dir.is_dir() {
+        stage_context(&context_dir, &copilot_home)?;
     }
 
     generate_copilot_instructions(&copilot_home)?;
@@ -180,8 +178,16 @@ mod tests {
         fs::write(staged.join("agents/amplihack/core/architect.md"), "agent").unwrap();
         fs::write(staged.join("skills/dev-orchestrator/SKILL.md"), "skill-a").unwrap();
         fs::write(staged.join("skills/quality-audit/SKILL.md"), "skill-b").unwrap();
-        fs::write(staged.join("workflow/DEFAULT_WORKFLOW.md"), "workflow").unwrap();
-        fs::write(staged.join("context/USER_PREFERENCES.md"), "prefs").unwrap();
+        fs::write(
+            staged.join("workflow/DEFAULT_WORKFLOW.md"),
+            "legacy workflow",
+        )
+        .unwrap();
+        fs::write(
+            staged.join("context/USER_PREFERENCES.md"),
+            "**Selected**: DEFAULT_WORKFLOW (`@~/.amplihack/.claude/workflows/DEFAULT_WORKFLOW.md`)",
+        )
+        .unwrap();
         fs::write(staged.join("commands/amplihack/dev.md"), "command").unwrap();
         fs::write(
             staged.join("commands/amplihack/plugin.json"),
@@ -213,10 +219,21 @@ mod tests {
                 .exists()
         );
         assert!(
-            temp.path()
+            !temp
+                .path()
                 .join(".copilot/workflow/amplihack/DEFAULT_WORKFLOW.md")
-                .exists()
+                .exists(),
+            "Copilot setup must not stage legacy DEFAULT_WORKFLOW.md as active guidance"
         );
+        let staged_preferences = fs::read_to_string(
+            temp.path()
+                .join(".copilot/context/amplihack/USER_PREFERENCES.md"),
+        )
+        .unwrap();
+        assert!(staged_preferences.contains("`default-workflow` skill/recipe"));
+        assert!(!staged_preferences.contains("DEFAULT_WORKFLOW.md"));
+        assert!(!staged_preferences.contains(".claude/workflow/DEFAULT_WORKFLOW.md"));
+        assert!(!staged_preferences.contains(".claude/workflows/DEFAULT_WORKFLOW.md"));
         assert!(
             temp.path()
                 .join(".copilot/commands/amplihack/dev.md")

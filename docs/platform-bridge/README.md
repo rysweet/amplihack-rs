@@ -1,6 +1,6 @@
 # Platform Bridge - Multi-Platform Support for Git Workflows
 
-Automatic platform detection and unified interface fer GitHub and Azure DevOps operations in DEFAULT_WORKFLOW.
+Automatic platform detection and unified interface fer GitHub and Azure DevOps operations in the `default-workflow` skill/recipe.
 
 ## Quick Start
 
@@ -44,7 +44,7 @@ The platform bridge solves this by:
 
 ## Core Capabilities
 
-The platform bridge supports five core operations needed by DEFAULT_WORKFLOW:
+The platform bridge supports five core operations needed by the `default-workflow` skill/recipe:
 
 | Operation       | GitHub Command         | Azure DevOps Command                 | Workflow Step |
 | --------------- | ---------------------- | ------------------------------------ | ------------- |

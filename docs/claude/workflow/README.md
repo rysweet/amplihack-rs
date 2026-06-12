@@ -35,11 +35,47 @@ amplihack recipe run default-workflow \
 ```
 
 Do not configure generated user preferences, session context, or agent prompts to
-select `DEFAULT_WORKFLOW.md`. Generated guidance must use:
+select legacy `DEFAULT_WORKFLOW.md`. Generated guidance must use:
 
 ```markdown
 **Selected**: `default-workflow` skill/recipe
 ```
+
+## Configuration Contract
+
+Workflow configuration names skills and recipes:
+
+```yaml
+selected_workflow: default-workflow
+consensus_depth: balanced
+```
+
+For critical, ambiguous, architectural, security-sensitive, or public API work,
+configuration and user guidance should point to `consensus-workflow` skill/recipe
+instead of a legacy markdown file.
+
+## Examples
+
+Run the canonical default workflow directly:
+
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="Update workflow guidance" \
+  -c repo_path=.
+```
+
+Run normal development routing:
+
+```bash
+amplihack recipe run smart-orchestrator \
+  -c task_description="Update workflow guidance" \
+  -c repo_path=.
+```
+
+For skill-capable agent runtimes, use `Skill(skill="dev-orchestrator")` for DEV,
+INVESTIGATE, and HYBRID tasks. Use `Skill(skill="default-workflow")` only when a
+standalone default workflow run is explicitly requested or the orchestrator is
+unavailable.
 
 ## Compatibility
 
