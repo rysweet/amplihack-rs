@@ -10,6 +10,19 @@ __pycache__/
 *.pyo
 worktrees/
 site/
+node_modules/
+dist/
+build/
+coverage/
+out/
+.cache/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.turbo/
+.parcel-cache/
+.pytest_cache/
+.next/
 
 # Amplihack runtime directories (auto-generated)
 .claude/logs/

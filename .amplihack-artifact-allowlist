@@ -1,0 +1,11 @@
+# Artifact Guard allowlist
+#
+# This file is repo-controlled and security-sensitive. Add only narrow,
+# reviewed exceptions for intentional generated artifacts. Do not allowlist
+# root artifact directories such as node_modules/, dist/, .claude/runtime/, or
+# worktrees/.
+#
+# No active exceptions are required for normal repository development. The
+# placeholder below documents the intended shape without matching generated
+# runtime paths.
+docs/fixtures/artifact-guard/intentional-placeholder.txt

@@ -63,6 +63,19 @@ steps:
       **FINAL CHECK:** All explicit user requirements preserved.
     output: "final_cleanup"
 
+  - id: "step-20a-artifact-guard"
+    type: "bash"
+    condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
+    command: |
+      set -euo pipefail
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+      if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then
+        cd "$WORKTREE_SETUP_WORKTREE_PATH"
+      elif [ -d "${REPO_PATH:-}" ]; then
+        cd "$REPO_PATH"
+      fi
+      amplihack hygiene artifact-guard --repo . --mode pre-publish
+
   - id: "step-20b-push-cleanup"
     type: "bash"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
@@ -93,6 +106,7 @@ steps:
         echo "ERROR: current branch is empty; cannot push cleanup changes from detached HEAD" >&2
         exit 1
       fi
+      amplihack hygiene artifact-guard --repo . --mode pre-publish
       git add -A
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then

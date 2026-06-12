@@ -135,6 +135,19 @@ path = "../../tests/integration/workflow_finalize_resilience.rs"
 name = "hygiene_cleanup"
 path = "../../tests/integration/hygiene_cleanup.rs"
 
+# Issue #755: Artifact Guard CLI, workflow, and pre-commit contracts.
+[[test]]
+name = "artifact_guard_cli"
+path = "../../tests/integration/artifact_guard_cli_tests.rs"
+
+[[test]]
+name = "artifact_guard_workflow"
+path = "../../tests/integration/artifact_guard_workflow_tests.rs"
+
+[[test]]
+name = "pre_commit_artifact_guard"
+path = "../../tests/integration/pre_commit_artifact_guard_tests.rs"
+
 [[test]]
 name = "doctor_node_remediation"
 path = "../../tests/integration/doctor_node_remediation_test.rs"
