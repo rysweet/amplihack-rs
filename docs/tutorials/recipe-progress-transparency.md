@@ -3,18 +3,16 @@
 Learn how to run a recipe, watch live progress, capture the structured result,
 and use bounded output snippets to diagnose a failed step.
 
-**Status:** Planned tutorial for the finished recipe-runner transparency
-feature.
-
 ## What you will do
 
 In this tutorial you will:
 
 1. Run `default-workflow` with live progress visible in the terminal.
 2. Save the final JSON result without mixing it with progress output.
-3. Read heartbeat lines during a long-running agent step.
-4. Inspect recent stdout/stderr snippets when a step fails.
-5. Tune heartbeat and snippet limits for a single run.
+3. Identify the run ID used to correlate stderr, stdout, child processes, and logs.
+4. Read heartbeat lines during a long-running agent step.
+5. Inspect recent stdout/stderr snippets when a step fails.
+6. Tune heartbeat and snippet limits for a single run.
 
 ## Before you start
 
@@ -37,9 +35,10 @@ amplihack recipe run default-workflow \
 ```
 
 The terminal shows lifecycle progress on `stderr` as each step starts, runs, and
-finishes:
+finishes. The first line is the early log pointer with the run ID:
 
 ```text
+amplihack.recipe.log_pointer {"schema_version":1,"event":"early","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","worktree":"/home/user/src/myapp","branch":"main","runner_path":"/home/user/.local/bin/recipe-runner-rs"}
 [recipe default-workflow] started (23 steps)
 [step 01/23 requirements-clarification] started agent=prompt-writer
 [step 01/23 requirements-clarification] completed elapsed=24s
@@ -48,6 +47,9 @@ finishes:
 
 Short steps may only show `started` and `completed`. Long-running steps also
 emit heartbeat lines.
+
+When the wrapper finishes, it emits a final pointer with the same `run_id`,
+terminal status, child PID, exit code, runner path, and known log paths.
 
 ## Capture JSON without losing progress
 
@@ -74,9 +76,12 @@ Example output:
 {
   "recipe_name": "default-workflow",
   "success": true,
+  "run_id": "5b60657b-76ef-4f49-8a22-8b89ed75f43e",
   "duration_seconds": 842.3
 }
 ```
+
+The same `run_id` appears in the early and final stderr pointer lines.
 
 ## Recognize a healthy long-running step
 
@@ -194,10 +199,12 @@ jq 'select(.type == "output_snippet") | {step_id, source, stream, recent_output}
 Recipe runs are observable by default. Live progress stays on `stderr`, final
 structured output stays on `stdout`, long-running steps emit rate-limited
 heartbeats, and failures include bounded recent output from the active child
-process.
+process. The stable run ID connects all of those surfaces.
 
 ## Related
 
 - [Recipe Runner Logging Reference](../reference/recipe-runner-logging.md)
+- [Trace a Recipe Run Across Terminal and JSON Logs](./recipe-run-correlation.md)
+- [Recipe Run Correlation Reference](../reference/recipe-run-correlation.md)
 - [Run a Recipe End-to-End](../howto/run-a-recipe.md)
 - [Troubleshoot Recipe Execution Failures](../howto/troubleshoot-recipe-execution.md)
